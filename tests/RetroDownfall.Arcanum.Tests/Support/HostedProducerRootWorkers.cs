@@ -2,6 +2,42 @@ namespace RetroDownfall.Arcanum.Tests.Support;
 
 internal static class HostedProducerRootWorkers
 {
+    // The cleanup value-flow and provenance walks recurse natively to the depth their work budgets bound
+    // (256 units, several frames each), which an unoptimized build cannot hold in the runtime's default
+    // 1.5 MB secondary-thread stack. Discovery and every root worker therefore run on a dedicated stack
+    // sized for that bound, so the budget, never the caller's stack, ends a walk.
+    internal const int AnalysisStackBytes = 64 * 1024 * 1024;
+
+    internal static T OnAnalysisStack<T>(Func<T> analysis) =>
+        StartOnAnalysisStack(analysis).GetAwaiter().GetResult();
+
+    private static Task<T> StartOnAnalysisStack<T>(Func<T> analysis)
+    {
+        TaskCompletionSource<T> completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        Thread thread = new(
+            () =>
+            {
+                try
+                {
+                    completion.SetResult(analysis());
+                }
+                catch (Exception error)
+                {
+                    completion.SetException(error);
+                }
+            },
+            AnalysisStackBytes)
+        {
+            IsBackground = true,
+            Name = "Hosted producer analysis",
+        };
+
+        thread.Start();
+
+        return completion.Task;
+    }
+
     internal static int[][] OrderFamilies(IEnumerable<(string Family, int Occurrence)> roots) => roots
         .GroupBy(static root => root.Family, StringComparer.Ordinal)
         .OrderBy(static family => FamilyPriority(family.Key))
@@ -228,7 +264,12 @@ internal static class HostedProducerRootWorkers
         else
         {
             Task[] workers = Enumerable.Range(0, workerCount)
-                .Select(worker => Task.Factory.StartNew(() => Work(worker), CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default))
+                .Select(worker => (Task)StartOnAnalysisStack(() =>
+                {
+                    Work(worker);
+
+                    return worker;
+                }))
                 .ToArray();
 
             try

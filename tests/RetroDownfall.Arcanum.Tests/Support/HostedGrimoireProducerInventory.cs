@@ -1865,9 +1865,9 @@ internal static class HostedGrimoireProducerInventory
 
         ProducerGraph CreateGraph() => new(compilations, evaluationEnvironmentMaximumMembers, evaluationEnvironmentMaximumDepth, traversalMaximumDepth, maximumAnalyzedStatesPerRoot, auditRecoveryReachabilityParity);
 
-        return rootWorkers == 1
+        return HostedProducerRootWorkers.OnAnalysisStack(() => rootWorkers == 1
             ? CreateGraph().Discover(registrations, catalog, nonHostedCatalog, recoverySelectionProbe)
-            : ProducerGraph.DiscoverParallel(CreateGraph, registrations, catalog, nonHostedCatalog, recoverySelectionProbe, rootWorkers, reverseRootFamilies);
+            : ProducerGraph.DiscoverParallel(CreateGraph, registrations, catalog, nonHostedCatalog, recoverySelectionProbe, rootWorkers, reverseRootFamilies));
     }
 
     internal static HostedProducerExpressionDependencyProbe ProbeExpressionDependency(
