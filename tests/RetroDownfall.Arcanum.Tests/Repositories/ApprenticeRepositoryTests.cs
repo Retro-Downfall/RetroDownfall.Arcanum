@@ -229,8 +229,6 @@ public sealed class ApprenticeRepositoryTests : IAsyncLifetime
 
         ApprenticeRepository repository = new(_db!, NullLogger<ApprenticeRepository>.Instance);
 
-        Guid sessionId = await AddSessionAsync();
-
         Apprentice stored = await repository.AddAsync(
             NewApprentice(ApprenticeStatus.Paused, currentStep: 0, errorMessage: "operator paused"),
             CancellationToken.None);
@@ -245,11 +243,11 @@ public sealed class ApprenticeRepositoryTests : IAsyncLifetime
 
         progressed.CurrentStep = 1;
 
-        progressed.SessionId = sessionId;
+        progressed.SessionId = await AddSessionAsync();
 
         progressed.CheckpointData = ApprenticeRepository.SerializeCheckpoint(new ApprenticeCheckpoint { CurrentStep = 1 });
 
-        Assert.True(await repository.UpdateProgressAsync(progressed, CancellationToken.None));
+        Assert.True(await repository.UpdateProgressAsync(progressed, stored.Plan, 0, CancellationToken.None));
 
         Apprentice loaded = (await repository.GetByIdAsync(stored.Id, CancellationToken.None))!;
 
@@ -261,13 +259,96 @@ public sealed class ApprenticeRepositoryTests : IAsyncLifetime
 
         Assert.Equal(1, loaded.CurrentStep);
 
-        Assert.Equal(sessionId, loaded.SessionId);
+        // The Session binding has a writer of its own and is never carried along by a progress write.
+        Assert.Null(loaded.SessionId);
 
         Assert.Equal(progressed.CheckpointData, loaded.CheckpointData);
 
         Assert.False(await repository.UpdateProgressAsync(
             NewApprentice(ApprenticeStatus.Running, currentStep: 0),
+            stored.Plan,
+            0,
             CancellationToken.None));
+    }
+
+    /// <summary>
+    /// A progress write is built on the plan and step its writer read. When another writer moved either first —
+    /// an operator's Reweave replacing the plan, or a step commit advancing the position — it writes nothing.
+    /// </summary>
+    [SkippableFact]
+    public async Task UpdateProgressAsync_writes_only_over_the_plan_and_step_it_was_built_on()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        ApprenticeRepository repository = new(_db!, NullLogger<ApprenticeRepository>.Instance);
+
+        Apprentice stored = await repository.AddAsync(
+            NewApprentice(ApprenticeStatus.Running, currentStep: 0),
+            CancellationToken.None);
+
+        string rewoven = ApprenticeRepository.SerializePlan([new PlanStep { Index = 1, Description = "Rewoven" }]);
+
+        Apprentice operatorReweave = CopyOf(stored);
+
+        operatorReweave.Plan = rewoven;
+
+        Assert.True(await repository.TryUpdateAsync(
+            operatorReweave,
+            [ApprenticeStatus.Running.ToString()],
+            0,
+            CancellationToken.None));
+
+        Apprentice staleCommit = CopyOf(stored);
+
+        staleCommit.Plan = ApprenticeRepository.SerializePlan([new PlanStep { Index = 0, Status = "completed" }]);
+
+        staleCommit.CurrentStep = 1;
+
+        Assert.False(await repository.UpdateProgressAsync(staleCommit, stored.Plan, 0, CancellationToken.None));
+
+        Assert.False(await repository.UpdateProgressAsync(staleCommit, rewoven, 1, CancellationToken.None));
+
+        Apprentice kept = (await repository.GetByIdAsync(stored.Id, CancellationToken.None))!;
+
+        Assert.Equal(rewoven, kept.Plan);
+
+        Assert.Equal(0, kept.CurrentStep);
+
+        Assert.True(await repository.UpdateProgressAsync(staleCommit, rewoven, 0, CancellationToken.None));
+
+        Assert.Equal(1, (await repository.GetByIdAsync(stored.Id, CancellationToken.None))!.CurrentStep);
+    }
+
+    [SkippableFact]
+    public async Task BindSessionAsync_binds_only_an_unbound_row_and_writes_nothing_else()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        ApprenticeRepository repository = new(_db!, NullLogger<ApprenticeRepository>.Instance);
+
+        Apprentice stored = await repository.AddAsync(
+            NewApprentice(ApprenticeStatus.Paused, currentStep: 0, errorMessage: "operator paused"),
+            CancellationToken.None);
+
+        Guid sessionId = await AddSessionAsync();
+
+        Assert.True(await repository.BindSessionAsync(stored.Id, sessionId, CancellationToken.None));
+
+        Apprentice bound = (await repository.GetByIdAsync(stored.Id, CancellationToken.None))!;
+
+        Assert.Equal(sessionId, bound.SessionId);
+
+        Assert.Equal(ApprenticeStatus.Paused.ToString(), bound.Status);
+
+        Assert.Equal("operator paused", bound.ErrorMessage);
+
+        Assert.Equal(stored.Plan, bound.Plan);
+
+        Assert.False(await repository.BindSessionAsync(stored.Id, await AddSessionAsync(), CancellationToken.None));
+
+        Assert.Equal(sessionId, (await repository.GetByIdAsync(stored.Id, CancellationToken.None))!.SessionId);
+
+        Assert.False(await repository.BindSessionAsync(Guid.NewGuid(), sessionId, CancellationToken.None));
     }
 
     [SkippableFact]
@@ -332,7 +413,7 @@ public sealed class ApprenticeRepositoryTests : IAsyncLifetime
 
         progressed.CurrentStep = 1;
 
-        Assert.True(await repository.UpdateProgressAsync(progressed, CancellationToken.None));
+        Assert.True(await repository.UpdateProgressAsync(progressed, stored.Plan, 0, CancellationToken.None));
 
         Assert.False(await repository.TryUpdateStatusAsync(
             stored.Id,

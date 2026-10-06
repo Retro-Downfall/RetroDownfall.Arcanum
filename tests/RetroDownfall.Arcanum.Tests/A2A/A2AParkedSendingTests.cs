@@ -998,7 +998,14 @@ public sealed class A2AParkedSendingTests
         public Task<Apprentice> UpdateAsync(Apprentice apprentice, CancellationToken cancellationToken = default) =>
             Task.FromResult(apprentice);
 
-        public Task<bool> UpdateProgressAsync(Apprentice apprentice, CancellationToken cancellationToken = default) =>
+        public Task<bool> UpdateProgressAsync(
+            Apprentice apprentice,
+            string expectedPlan,
+            int expectedCurrentStep,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(true);
+
+        public Task<bool> BindSessionAsync(Guid id, Guid sessionId, CancellationToken cancellationToken = default) =>
             Task.FromResult(true);
 
         public Task<bool> TryUpdateAsync(

@@ -689,7 +689,14 @@ public sealed class A2AServerTests
         public Task<Apprentice> UpdateAsync(Apprentice apprentice, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
 
-        public Task<bool> UpdateProgressAsync(Apprentice apprentice, CancellationToken cancellationToken = default) =>
+        public Task<bool> UpdateProgressAsync(
+            Apprentice apprentice,
+            string expectedPlan,
+            int expectedCurrentStep,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<bool> BindSessionAsync(Guid id, Guid sessionId, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
 
         public Task<bool> TryUpdateAsync(

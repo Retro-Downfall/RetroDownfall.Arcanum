@@ -4776,6 +4776,18 @@ public sealed partial class ApprenticeServiceReliabilityTests
             }
         }
 
+        /// <summary>
+        /// Changes the stored row in place, the way a write from another writer — an operator request, or the
+        /// run itself — lands between two of the code under test's own reads and writes.
+        /// </summary>
+        public void Mutate(Guid id, Action<Apprentice> change)
+        {
+            lock (_sync)
+            {
+                change(_store[id]);
+            }
+        }
+
         public virtual Task<Apprentice?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default)
         {
             lock (_sync)
@@ -4798,13 +4810,17 @@ public sealed partial class ApprenticeServiceReliabilityTests
 
         public virtual async Task<bool> UpdateProgressAsync(
             Apprentice apprentice,
+            string expectedPlan,
+            int expectedCurrentStep,
             CancellationToken cancellationToken = default)
         {
             Apprentice merged;
 
             lock (_sync)
             {
-                if (!_store.TryGetValue(apprentice.Id, out Apprentice? stored))
+                if (!_store.TryGetValue(apprentice.Id, out Apprentice? stored)
+                    || !string.Equals(stored.Plan, expectedPlan, StringComparison.Ordinal)
+                    || stored.CurrentStep != expectedCurrentStep)
                 {
                     return false;
                 }
@@ -4814,12 +4830,33 @@ public sealed partial class ApprenticeServiceReliabilityTests
 
             merged.CurrentStep = apprentice.CurrentStep;
 
-            merged.SessionId = apprentice.SessionId;
-
             merged.CheckpointData = apprentice.CheckpointData;
 
             // Routed through UpdateAsync so a repository that observes writes sees this one too.
             _ = await UpdateAsync(merged, cancellationToken);
+
+            return true;
+        }
+
+        public virtual async Task<bool> BindSessionAsync(
+            Guid id,
+            Guid sessionId,
+            CancellationToken cancellationToken = default)
+        {
+            Apprentice bound;
+
+            lock (_sync)
+            {
+                if (!_store.TryGetValue(id, out Apprentice? stored) || stored.SessionId is not null)
+                {
+                    return false;
+                }
+                bound = CloneApprentice(stored);
+            }
+            bound.SessionId = sessionId;
+
+            // Routed through UpdateAsync so a repository that observes writes sees this one too.
+            _ = await UpdateAsync(bound, cancellationToken);
 
             return true;
         }

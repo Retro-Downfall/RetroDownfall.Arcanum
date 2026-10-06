@@ -215,8 +215,8 @@ public sealed class ApprenticeCheckpointDelegationChainTests
             service,
             [
                 repo,
-                apprentice,
                 0,
+                apprentice.Plan,
                 "step one done",
                 12L,
                 apprenticeId,
@@ -324,11 +324,26 @@ public sealed class ApprenticeCheckpointDelegationChainTests
             return Task.FromResult(apprentice);
         }
 
-        public async Task<bool> UpdateProgressAsync(Apprentice apprentice, CancellationToken cancellationToken = default)
+        public async Task<bool> UpdateProgressAsync(
+            Apprentice apprentice,
+            string expectedPlan,
+            int expectedCurrentStep,
+            CancellationToken cancellationToken = default)
         {
             _ = await UpdateAsync(apprentice, cancellationToken);
 
             return true;
+        }
+
+        public Task<bool> BindSessionAsync(Guid id, Guid sessionId, CancellationToken cancellationToken = default)
+        {
+            if (!_store.TryGetValue(id, out Apprentice? stored) || stored.SessionId is not null)
+            {
+                return Task.FromResult(false);
+            }
+            stored.SessionId = sessionId;
+
+            return Task.FromResult(true);
         }
 
         public async Task<bool> TryUpdateAsync(
