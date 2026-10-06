@@ -44,6 +44,13 @@ internal sealed class CovenantMemoryReviewService(
     /// <summary>The delay between busy retries, or <see langword="null"/> for the shared backoff.</summary>
     internal Func<TimeSpan, CancellationToken, Task>? BusyRetryDelayForTesting { get; init; }
 
+    /// <summary>
+    /// The spelling a no-op decision persists, or <see langword="null"/> for the per-action closed one. A
+    /// seam so a test can write a receipt exactly as a build before the closed vocabulary did
+    /// (<c>NoChange</c>) and prove replay still reads it.
+    /// </summary>
+    internal string? NoOpOutcomeSpellingForTesting { get; init; }
+
     private static readonly Error InvalidToken = new(
         ErrorCodes.MemoryReview.InvalidToken,
         "The memory-review token is invalid, expired, stale, or bound to another queue.");
@@ -67,6 +74,19 @@ internal sealed class CovenantMemoryReviewService(
     private static readonly Error WriteFailed = new(
         ErrorCodes.Covenant.WriteFailed,
         "The Covenant review decisions could not be persisted. Nothing was written.");
+
+    // A database another writer held past the bounded retry is not a fault in the store: nothing was
+    // written and the same request succeeds once the writer lets go, so it is the retryable 503 the rest
+    // of Covenant uses for "not open for this work right now", never the 500 a real storage fault gets.
+    private static readonly Error DatabaseBusy = new(
+        ErrorCodes.Covenant.Unavailable,
+        "The Covenant database stayed busy, so the review decisions were not persisted. Nothing was written; retry the same request.");
+
+    /// <summary>
+    /// The spelling an earlier build persisted for every no-op decision, whatever the action. It is read on
+    /// replay and never written.
+    /// </summary>
+    private const string LegacyNoOpOutcome = "NoChange";
 
     public async ValueTask<Result<CovenantReviewPageDto>> ListAsync(
         CovenantReviewListRequest request,
@@ -459,6 +479,57 @@ internal sealed class CovenantMemoryReviewService(
         ArgumentNullException.ThrowIfNull(request);
         ArgumentNullException.ThrowIfNull(writeLease);
 
+        try
+        {
+            return await ApplyCoreAsync(request, writeLease, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception failure) when (failure is not OperationCanceledException
+            and not GrimoireMaintenanceUnavailableException)
+        {
+            // The whole apply is mapped, the way Saga maps its own: the connection acquisition and the
+            // replay read before the transaction are storage reads too, and a transaction that threw has
+            // already rolled back. Logged by type and error code only: a driver message can carry what it
+            // was trying to write.
+            return MapApplyFailure(failure);
+        }
+    }
+
+    private Result<MemoryReviewBulkResultDto> MapApplyFailure(Exception failure)
+    {
+        if (failure is GrimoireBusyTimeoutException || SqliteBusyRetry.IsBusyOrLocked(failure))
+        {
+            logger.LogError(
+                "Covenant memory review apply gave up on a busy database: {FailureType} (SQLite error {SqliteErrorCode}).",
+                failure.GetType(),
+                (failure.InnerException as SqliteException ?? failure as SqliteException)?.SqliteErrorCode);
+
+            return DatabaseBusy;
+        }
+
+        if (failure is InvalidDataException)
+        {
+            // Persisted state the review depends on is missing. A retry cannot succeed, which is the one
+            // thing the operator needs to know and the write-failed answer would hide.
+            logger.LogError(
+                "Covenant memory review apply found damaged review state: {FailureType}.",
+                failure.GetType());
+
+            return IntegrityFailure;
+        }
+
+        logger.LogError(
+            "Covenant memory review apply failed: {FailureType} (SQLite error {SqliteErrorCode}).",
+            failure.GetType(),
+            (failure as SqliteException)?.SqliteErrorCode);
+
+        return WriteFailed;
+    }
+
+    private async ValueTask<Result<MemoryReviewBulkResultDto>> ApplyCoreAsync(
+        CovenantReviewBulkApplyRequest request,
+        CovenantWriteLease writeLease,
+        CancellationToken cancellationToken)
+    {
         Result validation = request.Validate();
 
         if (validation.IsFailure)
@@ -541,39 +612,21 @@ internal sealed class CovenantMemoryReviewService(
             return InvalidToken;
         }
 
-        Result<MemoryReviewBulkResultDto> committed;
-
-        try
-        {
-            // The write transaction retries a busy database rather than surfacing the first SQLITE_BUSY, and
-            // every attempt starts from nothing: the previous one rolled back or never began.
-            committed = await SqliteBusyRetry.ExecuteAsync(
-                () => ApplyInTransactionAsync(
-                    connection,
-                    writeLease,
-                    preparedRequest,
-                    requestDigest,
-                    scopeDigest,
-                    plan,
-                    decodedObservations.Value,
-                    cancellationToken),
-                cancellationToken,
-                delayAsync: BusyRetryDelayForTesting,
-                deadline: BusyRetryDeadlineForTesting).ConfigureAwait(false);
-        }
-        catch (Exception failure) when (failure is not OperationCanceledException
-            and not GrimoireMaintenanceUnavailableException)
-        {
-            // The transaction rolled back with the exception. Mapped to this store's code, the way
-            // Lexicon maps its own, and logged by type and error code only: a driver message can carry
-            // what it was trying to write.
-            logger.LogError(
-                "Covenant memory review apply failed: {FailureType} (SQLite error {SqliteErrorCode}).",
-                failure.GetType(),
-                (failure as SqliteException)?.SqliteErrorCode);
-
-            return WriteFailed;
-        }
+        // The write transaction retries a busy database rather than surfacing the first SQLITE_BUSY, and
+        // every attempt starts from nothing: the previous one rolled back or never began.
+        Result<MemoryReviewBulkResultDto> committed = await SqliteBusyRetry.ExecuteAsync(
+            () => ApplyInTransactionAsync(
+                connection,
+                writeLease,
+                preparedRequest,
+                requestDigest,
+                scopeDigest,
+                plan,
+                decodedObservations.Value,
+                cancellationToken),
+            cancellationToken,
+            delayAsync: BusyRetryDelayForTesting,
+            deadline: BusyRetryDeadlineForTesting).ConfigureAwait(false);
 
         if (committed.IsSuccess && !committed.Value.Replayed)
         {
@@ -1945,18 +1998,29 @@ internal sealed class CovenantMemoryReviewService(
 
     private static string Outcome(MemoryReviewAction action) => MemoryReviewOutcomes.Applied(action);
 
-    private static string Outcome(MemoryReviewAction action, CovenantMutationOutcome mutationOutcome) =>
+    private string Outcome(MemoryReviewAction action, CovenantMutationOutcome mutationOutcome) =>
         mutationOutcome switch
         {
             CovenantMutationOutcome.Applied => Outcome(action),
-            CovenantMutationOutcome.NoChange => MemoryReviewOutcomes.NoChange,
+            CovenantMutationOutcome.NoChange => NoOpOutcomeSpellingForTesting ?? MemoryReviewOutcomes.NoOp(action),
             _ => throw new ArgumentOutOfRangeException(nameof(mutationOutcome)),
         };
 
+    /// <summary>Whether <paramref name="persisted"/> is a no-op spelling a receipt of <paramref name="action"/> may carry.</summary>
+    private static bool IsNoOpOutcome(MemoryReviewAction action, string persisted) =>
+        action != MemoryReviewAction.Confirm
+        && (string.Equals(persisted, MemoryReviewOutcomes.NoOp(action), StringComparison.Ordinal)
+            || string.Equals(persisted, LegacyNoOpOutcome, StringComparison.Ordinal));
+
+    /// <summary>The closed spelling a replay reports for a receipt, whichever spelling the receipt carries.</summary>
+    private static string ReportedOutcome(MemoryReviewAction action, string persisted) =>
+        string.Equals(persisted, LegacyNoOpOutcome, StringComparison.Ordinal) && action != MemoryReviewAction.Confirm
+            ? MemoryReviewOutcomes.NoOp(action)
+            : persisted;
+
     private static bool IsExpectedOutcome(MemoryReviewAction action, string outcome) =>
         string.Equals(outcome, Outcome(action), StringComparison.Ordinal)
-        || action != MemoryReviewAction.Confirm
-            && string.Equals(outcome, MemoryReviewOutcomes.NoChange, StringComparison.Ordinal);
+        || IsNoOpOutcome(action, outcome);
 
     private static CovenantOperationScope OperationScope(CovenantScope scope, Guid? campaignId) =>
         scope == CovenantScope.Global
@@ -2214,7 +2278,7 @@ internal sealed class CovenantMemoryReviewService(
                 originalEvent.Sequence,
                 Canonical(originalEvent.EntryId),
                 Canonical(originalEvent.VersionId),
-                original.Envelope.Outcome,
+                ReportedOutcome(request.Action, original.Envelope.Outcome),
                 original.Envelope.ResultingVersionId);
         }
 
@@ -2336,9 +2400,9 @@ internal sealed class CovenantMemoryReviewService(
         string? resultingVersionId,
         CancellationToken cancellationToken)
     {
-        if (string.Equals(outcome, nameof(CovenantMutationOutcome.NoChange), StringComparison.Ordinal))
+        if (IsNoOpOutcome(action, outcome))
         {
-            return action != MemoryReviewAction.Confirm && resultingVersionId is null;
+            return resultingVersionId is null;
         }
 
         if (!string.Equals(outcome, Outcome(action), StringComparison.Ordinal))

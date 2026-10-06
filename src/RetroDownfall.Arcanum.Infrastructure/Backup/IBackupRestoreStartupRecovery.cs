@@ -24,8 +24,11 @@ internal enum BackupRestorePhysicalRecoveryOutcome : byte
 /// How the authority half of startup recovery left this installation.
 /// </summary>
 /// <remarks>
-/// <see cref="KeptClosed"/> is not a failure code. It is the honest report that a restore journal is
-/// still active, admission is still shut, and neither the host nor the CLI may publish readiness.
+/// <see cref="KeptClosed"/> is not a failure code. It is startup's verdict that a restore journal is
+/// still active and neither the host nor the CLI may publish readiness. Admission is shut in every case
+/// but one: when only the one-shot post-disposition finalizer failed after the gate had already
+/// reopened, the gate is open in this process, which stops at this verdict and never serves it, and the
+/// next start resumes the same journal.
 /// <see cref="ReconciliationRequired"/> is the other way startup stops: the authenticated restore is
 /// finished and its anchor closed, but the plain journal kept beside it records local secrets the
 /// restore's own rollback could not reinstate, so readiness waits for an operator. Only

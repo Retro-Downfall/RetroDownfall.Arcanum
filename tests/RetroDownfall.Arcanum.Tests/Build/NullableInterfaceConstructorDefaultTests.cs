@@ -104,8 +104,6 @@ public sealed class NullableInterfaceConstructorDefaultTests
 
         ["src/RetroDownfall.Arcanum.Api/Intelligence/ToolExecutionPipeline.cs:ToolExecutionPipeline:toolResultMaterializer"] = "every use of the IToolResultMaterializer is null-safe; absence disables an observation, not a refusal",
 
-        ["src/RetroDownfall.Arcanum.Api/Intelligence/Tools/ArcanumBrowseWebTool.cs:ArcanumBrowseWebTool:dnsResolver"] = "the null coalesces to a constructed default at the use site (`_dnsResolver = dnsResolver ?? new SystemDnsResolver()`), so no host runs without a IDnsResolver; the parameter exists so browse_web tests can resolve names without live DNS",
-
         ["src/RetroDownfall.Arcanum.Api/Intelligence/Tools/ArcanumReadUrlTool.cs:ArcanumReadUrlTool:logger"] = "diagnostic sink; absence degrades logging, not a guard",
 
         ["src/RetroDownfall.Arcanum.Api/Intelligence/Tools/ArcanumSpellScriptTool.cs:ArcanumSpellScriptTool:logger"] = "diagnostic sink; absence degrades logging, not a guard",
@@ -275,8 +273,6 @@ public sealed class NullableInterfaceConstructorDefaultTests
 
         ["src/RetroDownfall.Arcanum.Infrastructure/Workspaces/CodingTools/WorkspaceSearchEngine.cs:WorkspaceSearchEngine:spillObserver"] = "every use of the IWorkspaceSearchLineSpillObserver is null-safe; absence disables an observation, not a refusal",
 
-        ["src/RetroDownfall.Compendium.Ux/Services/FamiliarProbeClient.cs:FamiliarProbeClient:httpClientFactory"] = "the null coalesces to a constructed default at the use site, so no host runs without a IHttpClientFactory",
-
         ["src/RetroDownfall.Compendium.Ux/ViewModels/ConfigurationViewModel.cs:ConfigurationViewModel:presetService"] = "owner is container-activated and IConfigurationPresetService is registered; the container supplies it in a composed host",
 
         ["src/RetroDownfall.Compendium.Ux/ViewModels/ConfigurationViewModel.cs:ConfigurationViewModel:probeClient"] = "owner is container-activated and IFamiliarProbeClient is registered; the container supplies it in a composed host",
@@ -394,23 +390,12 @@ public sealed class NullableInterfaceConstructorDefaultTests
     [Fact]
     public void Every_nullable_interface_constructor_default_is_removed_or_allowed_with_a_reason()
     {
-        List<string> offenders = [];
-
-        foreach (ProductionSource source in ProductionSourceInventory.Sources())
-        {
-            foreach (ConstructorParameters constructor in ConstructorParameterLists.Of(source.Text))
-            {
-                foreach (Match match in NullableInterfaceDefault.Matches(constructor.ParameterList))
-                {
-                    string key = $"{source.RelativePath}:{constructor.DeclaringType}:{match.Groups[2].Value}";
-
-                    if (!Allowed.ContainsKey(key))
-                    {
-                        offenders.Add($"{key} is a {match.Groups[1].Value} defaulting to null");
-                    }
-                }
-            }
-        }
+        List<string> offenders =
+        [
+            .. NullableInterfaceDefaults()
+                .Where(static found => !Allowed.ContainsKey(found.Key))
+                .Select(static found => $"{found.Key} is a {found.InterfaceType} defaulting to null"),
+        ];
 
         // Named rather than counted. Assert.Empty truncates each entry at fifty characters and prints
         // at most five of them, so a real regression arrived as a directory prefix and an ellipsis -
@@ -418,6 +403,46 @@ public sealed class NullableInterfaceConstructorDefaultTests
         Assert.True(
             offenders.Count == 0,
             string.Join("\n", offenders.Order(StringComparer.Ordinal)));
+    }
+
+    /// <summary>
+    /// An allow-list entry that no longer names a nullable interface default is removed, so the list only
+    /// shrinks. A parameter that was made required (or removed) leaves its excuse behind otherwise, and the
+    /// stale reason - "the container supplies it", "every use is null-safe" - stays on the record about a
+    /// parameter that is no longer optional.
+    /// </summary>
+    [Fact]
+    public void Every_allowed_entry_still_names_a_nullable_interface_default()
+    {
+        HashSet<string> present = [.. NullableInterfaceDefaults().Select(static found => found.Key)];
+
+        string[] stale = [.. Allowed.Keys.Where(key => !present.Contains(key)).Order(StringComparer.Ordinal)];
+
+        Assert.True(
+            stale.Length == 0,
+            string.Join("\n", stale.Select(static key => $"{key} is allowed but is no longer a nullable interface default")));
+    }
+
+    /// <summary>
+    /// Every constructor parameter under <c>src/</c> that is an interface type defaulting to null, by the
+    /// key the allow-list uses and the interface it names.
+    /// </summary>
+    private static List<(string Key, string InterfaceType)> NullableInterfaceDefaults()
+    {
+        List<(string Key, string InterfaceType)> found = [];
+
+        foreach (ProductionSource source in ProductionSourceInventory.Sources())
+        {
+            foreach (ConstructorParameters constructor in ConstructorParameterLists.Of(source.Text))
+            {
+                foreach (Match match in NullableInterfaceDefault.Matches(constructor.ParameterList))
+                {
+                    found.Add(($"{source.RelativePath}:{constructor.DeclaringType}:{match.Groups[2].Value}", match.Groups[1].Value));
+                }
+            }
+        }
+
+        return found;
     }
 
     /// <summary>

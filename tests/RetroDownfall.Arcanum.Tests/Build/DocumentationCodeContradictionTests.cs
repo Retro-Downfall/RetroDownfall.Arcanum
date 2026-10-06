@@ -1209,6 +1209,105 @@ public sealed class DocumentationCodeContradictionTests
             .Any(path => File.ReadAllText(path).Contains("SqliteNativeRuntimeValidator", StringComparison.Ordinal));
     }
 
+    /// <summary>
+    /// A kept-closed schema repair does not stop startup, so no text may borrow the consequence a
+    /// restore's kept-closed verdict has.
+    /// </summary>
+    /// <remarks>
+    /// The bootstrapper's schema-repair arm logs one warning and goes on to publish readiness: the
+    /// process serves with the adopted owner's Covenant admission shut, or, when only the one-shot
+    /// post-disposition finalizer failed after the gate reopened, with the gate open and the journal alone
+    /// still active. The restore arm is the one that throws. A sentence that says the schema-repair
+    /// verdict withholds readiness, or that its process "never serves", is the restore's sentence and is
+    /// false here, and the finalizer-only case is the one a reader acts on.
+    /// </remarks>
+    [Fact]
+    public void A_kept_closed_schema_repair_is_not_documented_as_stopping_startup()
+    {
+        string bootstrapper = ReadSource("Infrastructure", "Hosting", "GrimoireDatabaseBootstrapper.cs");
+
+        string repairArm = DocumentSection(
+            bootstrapper,
+            "if (recovered.Value is CovenantSchemaRepairStartupRecoveryOutcome.KeptClosed)",
+            "return new ProtectedMaintenanceRecovery(gate, adoptedErasureOwner);");
+
+        Assert.Contains("Log.Warning(", repairArm, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("throw", repairArm, StringComparison.Ordinal);
+
+        string restoreArm = DocumentSection(
+            bootstrapper,
+            "recovered.Value is BackupRestoreStartupRecoveryOutcome.KeptClosed",
+            "private static BackupRestoreRecovery? TryCreateRestoreRecovery(");
+
+        Assert.Contains("throw new GrimoireDatabaseUnavailableException", restoreArm, StringComparison.Ordinal);
+
+        // The remarks wrap, so a sentence is read with its line breaks and comment markers folded to a space.
+        string recovery = Regex.Replace(
+            ReadSource("Infrastructure", "Covenant", "CovenantSchemaRepairStartupRecovery.cs"),
+            @"\s*\n\s*///\s?",
+            " ",
+            RegexOptions.CultureInvariant,
+            TimeSpan.FromSeconds(5));
+
+        string paragraph = Assert.Single(
+            ReadDocument("Arcanum.DESIGN.md").Split('\n'),
+            static line => line.StartsWith("**Schema repair is journal-first and narrow.**", StringComparison.Ordinal));
+
+        foreach (string stale in (string[])
+                 [
+                     "never serves it",
+                     "stops at this verdict",
+                     "readiness must not be published",
+                     "blocks bootstrap",
+                     "so startup stays closed",
+                 ])
+        {
+            Assert.DoesNotContain(stale, recovery, StringComparison.Ordinal);
+
+            Assert.DoesNotContain(stale, paragraph, StringComparison.Ordinal);
+        }
+
+        Assert.Contains("does not stop", recovery, StringComparison.Ordinal);
+
+        Assert.Contains("does not stop startup", paragraph, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The gate's class remarks describe the revocation-fault log as the fixed message it is, not as a
+    /// count.
+    /// </summary>
+    /// <remarks>
+    /// <c>RequestRevocation</c> once logged how many callbacks faulted and now logs one fixed template
+    /// (reading the count meant classifying a framework collection property in the hosted-producer
+    /// analyzer). The remarks kept saying the fault was "logged by count only", which is the opposite of a
+    /// template with no placeholder.
+    /// </remarks>
+    [Fact]
+    public void The_gate_remarks_describe_the_revocation_fault_log_as_the_fixed_message_it_is()
+    {
+        string source = ReadSource("Infrastructure", "Covenant", "CovenantOperationGate.cs");
+
+        string log = DocumentSection(source, "_gate._logger.LogWarning(", ");");
+
+        Assert.DoesNotContain("{", log, StringComparison.Ordinal);
+
+        // The remarks wrap, so a sentence is read with its line breaks and comment markers folded to a space.
+        string gate = Regex.Replace(
+            source,
+            @"\s*\n\s*///\s?",
+            " ",
+            RegexOptions.CultureInvariant,
+            TimeSpan.FromSeconds(5));
+
+        foreach (string stale in (string[])["by count only", "logs is that count"])
+        {
+            Assert.DoesNotContain(stale, gate, StringComparison.Ordinal);
+        }
+
+        Assert.Contains("fixed message", gate, StringComparison.Ordinal);
+    }
+
     private static string ReadDocument(string fileName) =>
         File
             .ReadAllText(Path.Combine(TestRepositoryPaths.RepositoryRoot(), "docs", fileName))

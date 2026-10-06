@@ -504,6 +504,9 @@ public sealed class LexiconMemoryReviewServiceTests(GrimoireFixture fixture)
         MemoryReviewBulkItemResultDto originalItem = Assert.Single(original.Value.Items);
 
         Assert.Equal(expectedOutcome, originalItem.Outcome);
+
+        // The same per-action spelling Saga and Covenant report for the same situation (R-172).
+        Assert.Equal(MemoryReviewOutcomes.NoOp(action), originalItem.Outcome);
         Assert.Null(originalItem.ResultingVersionId);
         Assert.True(replay.IsSuccess, replay.Error.Message);
         Assert.True(replay.Value.Replayed);
@@ -739,12 +742,6 @@ public sealed class LexiconMemoryReviewServiceTests(GrimoireFixture fixture)
     }
 
     /// <summary>
-    /// R-025: a batch that applies one correction and then meets a stale target has to roll the applied
-    /// correction back with its receipts and marker. The earlier version of this test used Confirm, which
-    /// writes nothing, and receipts are written after the loop, so a zero receipt count held with or
-    /// without a rollback.
-    /// </summary>
-    /// <summary>
     /// R-172: a receipt an earlier build persisted spells its outcome in lowercase, in the receipt's
     /// identifier and in the digest that seals it. Replay has to keep accepting that spelling and report
     /// the closed vocabulary's. The legacy receipts are written here exactly as that build wrote them, by
@@ -916,6 +913,12 @@ public sealed class LexiconMemoryReviewServiceTests(GrimoireFixture fixture)
         }
     }
 
+    /// <summary>
+    /// R-025: a batch that applies one correction and then meets a stale target has to roll the applied
+    /// correction back with its receipts and marker. The earlier version of this test used Confirm, which
+    /// writes nothing, and receipts are written after the loop, so a zero receipt count held with or
+    /// without a rollback.
+    /// </summary>
     [Fact]
     public async Task One_stale_target_after_an_applied_correction_rolls_back_the_earlier_correction_receipts_and_marker()
     {

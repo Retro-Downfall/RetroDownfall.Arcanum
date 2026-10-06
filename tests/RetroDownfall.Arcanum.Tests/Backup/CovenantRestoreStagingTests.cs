@@ -13,6 +13,7 @@ using RetroDownfall.Arcanum.Infrastructure.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.InstallationReset;
 using RetroDownfall.Arcanum.Infrastructure.Security;
+using RetroDownfall.Arcanum.Infrastructure.Tower;
 using RetroDownfall.Arcanum.Secrets.Security;
 using RetroDownfall.Arcanum.Tests.Fixtures;
 
@@ -161,6 +162,12 @@ public sealed class CovenantRestoreStagingTests : IDisposable
 
         Assert.Equal("backup.restore_completion_failed", Assert.Single(result.Issues).Code);
 
+        // The archive was read and the reconciliation had already run before the step that failed, so
+        // what they found is reported rather than dropped with the failure.
+        Assert.NotNull(result.Manifest);
+
+        Assert.NotNull(result.Reconciliation);
+
         // One disposition, the commit, and no abort after it.
         Assert.Equal([CovenantExclusiveLeaseDisposition.CommitAndReopen], harness.Gate.Dispositions);
 
@@ -203,6 +210,121 @@ public sealed class CovenantRestoreStagingTests : IDisposable
         string staging = Assert.Single(harness.StagingRoots());
 
         Assert.True(File.Exists(Path.Combine(staging, BackupRestoreJournalAnchorStore.JournalFileName)));
+    }
+
+    /// <summary>
+    /// R-167: the cancellation arm's own guard. A token that fires after the disposition is spent, here
+    /// just before the journal's Cleanup record, used to reach a handler that put the prior installation
+    /// back whenever the commit had succeeded. The disposition is the line: once it is spent the restore is
+    /// finished, the cancellation is rethrown as it is, and nothing is reversed.
+    /// </summary>
+    [Fact]
+    public async Task A_cancellation_after_the_disposition_is_spent_does_not_reverse_the_restore()
+    {
+        Harness harness = await CreateHarnessAsync();
+
+        string archivedGeneration = await harness.ReadDatasetGenerationAsync();
+
+        using CancellationTokenSource cancellation = new();
+
+        harness.OnBeforePhase = phase =>
+        {
+            if (phase == BackupRestorePhase.Cleanup)
+            {
+                cancellation.Cancel();
+
+                cancellation.Token.ThrowIfCancellationRequested();
+            }
+        };
+
+        _ = await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => harness.RestoreAsync(cancellation.Token));
+
+        // One disposition, the commit, and no abort or rollback after it.
+        Assert.Equal([CovenantExclusiveLeaseDisposition.CommitAndReopen], harness.Gate.Dispositions);
+
+        // The restored generation is still the live one. A reversal would have put the archived one back.
+        Assert.NotEqual(archivedGeneration, await harness.ReadDatasetGenerationAsync());
+    }
+
+    /// <summary>
+    /// R-175: the inventory owns its opened roots until preparation takes them. When staging fails before
+    /// preparation is reached (here the operator's token fires as the inventory is handed over, so the first
+    /// staged read is cancelled), nothing else ever releases them, so the coordinator does.
+    /// </summary>
+    [Fact]
+    public async Task Staging_that_fails_before_preparation_releases_the_inventorys_root_authorities()
+    {
+        Harness harness = await CreateHarnessAsync();
+
+        using CancellationTokenSource cancellation = new();
+
+        string directory = Directory.CreateTempSubdirectory("restore-inventory-root-").FullName;
+
+        try
+        {
+            PhysicalCampaignRootOpener opener = new(new FixedRootIdentityKey());
+
+            CovenantDigest identity = opener.IdentifyExact(directory)!.Value;
+
+            Guid campaignId = Guid.NewGuid();
+
+            Result<CampaignPathMarkerRootAuthority> opened = await CampaignPathMarkerRootAuthority.Instance.OpenAsync(
+                opener,
+                campaignId,
+                1,
+                identity,
+                directory,
+                CancellationToken.None);
+
+            Assert.True(opened.IsSuccess);
+
+            CampaignPathMarkerRootAuthority authority = opened.Value;
+
+            harness.Markers.InventoryFactory = () =>
+            {
+                cancellation.Cancel();
+
+                return new CampaignPathRestoreCleanupInventory(
+                    [
+                        new CampaignPathRestoreCleanupSeed(
+                            campaignId,
+                            1,
+                            identity,
+                            directory,
+                            new CampaignPathCleanupRootObservation.Opened(authority)),
+                    ]);
+            };
+
+            _ = await Assert.ThrowsAnyAsync<OperationCanceledException>(
+                () => harness.RestoreAsync(cancellation.Token));
+
+            // Released: a disposed authority refuses the one question it exists to answer.
+            _ = await Assert.ThrowsAsync<ObjectDisposedException>(
+                async () => await authority.OpenMarkerOrProveAbsentNoFollowAsync(CancellationToken.None));
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    private sealed class FixedRootIdentityKey : ICampaignRootIdentityKeyProvider
+    {
+        private static readonly byte[] Key = Convert.FromHexString(
+            "000102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F");
+
+        public bool TryCopyRootIdentityKey(Span<byte> destination)
+        {
+            if (destination.Length < Key.Length)
+            {
+                return false;
+            }
+
+            Key.CopyTo(destination);
+
+            return true;
+        }
     }
 
     /// <summary>
@@ -783,6 +905,9 @@ public sealed class CovenantRestoreStagingTests : IDisposable
 
         internal HarnessOptions Options { get; set; } = new(null);
 
+        /// <summary>Runs before a phase in addition to <see cref="HarnessOptions.FailBeforePhase"/>.</summary>
+        internal Action<BackupRestorePhase>? OnBeforePhase { get; set; }
+
         internal List<BackupRestoreMarkerCleanupCheckpointV1?> Published { get; } = [];
 
         internal BackupRestoreMarkerCleanupCheckpointV1? FirstPublishedCheckpoint =>
@@ -884,6 +1009,8 @@ public sealed class CovenantRestoreStagingTests : IDisposable
                     {
                         CheckpointAtDisplacement = Markers.LastPreparedCheckpoint;
                     }
+
+                    OnBeforePhase?.Invoke(phase);
 
                     if (Options.FailBeforePhase == phase)
                     {
@@ -1426,13 +1553,17 @@ public sealed class CovenantRestoreStagingTests : IDisposable
         /// <summary>Runs once the reconcile has answered and before the caller sees the answer.</summary>
         internal Action? AfterReconcile { get; set; }
 
+        /// <summary>Builds the inventory the restore is handed, or <see langword="null"/> for an empty one.</summary>
+        internal Func<CampaignPathRestoreCleanupInventory>? InventoryFactory { get; set; }
+
         public Task<Result<CampaignPathRestoreCleanupInventory>> InventoryRestoreCleanupAsync(
             CovenantExclusiveRecoveryOwner owner,
             CancellationToken cancellationToken) =>
             Task.FromResult(
                 Result<CampaignPathRestoreCleanupInventory>.Success(
-                    new CampaignPathRestoreCleanupInventory(
-                        ImmutableArray<CampaignPathRestoreCleanupSeed>.Empty)));
+                    InventoryFactory?.Invoke()
+                        ?? new CampaignPathRestoreCleanupInventory(
+                            ImmutableArray<CampaignPathRestoreCleanupSeed>.Empty)));
 
         /// <summary>
         /// Answers the staged preparation with something other than a receipt, at the exact moment the

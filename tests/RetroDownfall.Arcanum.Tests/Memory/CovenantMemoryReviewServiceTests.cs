@@ -617,7 +617,7 @@ public sealed class CovenantMemoryReviewServiceTests
     }
 
     [Fact]
-    public async Task Identical_correction_is_acknowledged_as_no_change_without_a_replacement()
+    public async Task Identical_correction_is_acknowledged_as_unchanged_without_a_replacement()
     {
         await using ReviewRuntime runtime = await ReviewRuntime.CreateAsync();
 
@@ -679,7 +679,8 @@ public sealed class CovenantMemoryReviewServiceTests
 
         MemoryReviewBulkItemResultDto item = Assert.Single(first.Items);
 
-        Assert.Equal("NoChange", item.Outcome);
+        // R-172: the same spelling every store reports for a correction that carried the held content.
+        Assert.Equal(MemoryReviewOutcomes.Unchanged, item.Outcome);
 
         Assert.Null(item.ResultingVersionId);
 
@@ -728,7 +729,7 @@ public sealed class CovenantMemoryReviewServiceTests
     [InlineData(MemoryReviewAction.Retire)]
     [InlineData(MemoryReviewAction.Pin)]
     [InlineData(MemoryReviewAction.Unpin)]
-    public async Task Already_satisfied_lifecycle_action_is_acknowledged_as_no_change_and_replays_exactly(
+    public async Task Already_satisfied_lifecycle_action_reports_its_per_action_no_op_outcome_and_replays_exactly(
         MemoryReviewAction action)
     {
         await using ReviewRuntime runtime = await ReviewRuntime.CreateAsync();
@@ -813,7 +814,10 @@ public sealed class CovenantMemoryReviewServiceTests
 
         MemoryReviewBulkItemResultDto item = Assert.Single(first.Items);
 
-        Assert.Equal("NoChange", item.Outcome);
+        // R-172: the per-action no-op spelling Saga and Lexicon report for the same situation.
+        Assert.Equal(MemoryReviewOutcomes.NoOp(action), item.Outcome);
+
+        Assert.True(MemoryReviewOutcomes.IsKnown(item.Outcome));
 
         Assert.Null(item.ResultingVersionId);
 
@@ -854,6 +858,137 @@ public sealed class CovenantMemoryReviewServiceTests
         Assert.Equal(1L, await ScalarAsync(runtime.Fixture.Connection, "SELECT count(*) FROM covenant_versions;"));
 
         Assert.Equal(1L, await ScalarAsync(runtime.Fixture.Connection, "SELECT count(*) FROM covenant_review_decision_receipts;"));
+    }
+
+    /// <summary>
+    /// R-172: a Covenant build before the closed vocabulary persisted <c>NoChange</c> for every no-op, in
+    /// the receipt's identifier and in the digest that seals it, and persisted receipts can never be
+    /// rewritten. Replay has to keep accepting that spelling and report the per-action one every store
+    /// reports. The legacy receipt is written by the service's own encoding, with the spelling the earlier
+    /// build used substituted through its seam, so the digest is genuinely sealed over it.
+    /// </summary>
+    [Theory]
+    [InlineData(MemoryReviewAction.Correct)]
+    [InlineData(MemoryReviewAction.Retire)]
+    [InlineData(MemoryReviewAction.Pin)]
+    [InlineData(MemoryReviewAction.Unpin)]
+    public async Task A_receipt_persisted_with_the_legacy_no_change_outcome_still_replays_as_the_per_action_spelling(
+        MemoryReviewAction action)
+    {
+        await using ReviewRuntime runtime = await ReviewRuntime.CreateAsync(noOpOutcomeSpelling: "NoChange");
+
+        (CovenantReviewBulkApplyRequest apply, MemoryReviewBulkResultDto original) = await ApplyNoOpAsync(runtime, action);
+
+        Assert.Equal(
+            1L,
+            await ScalarAsync(
+                runtime.Fixture.Connection,
+                "SELECT count(*) FROM covenant_review_decision_receipts WHERE DecisionId LIKE '%:NoChange:%';"));
+
+        // The service that replays is the current one, without the substituted spelling.
+        CovenantMemoryReviewService current = runtime.CreateServiceWithoutSeam();
+
+        await using CovenantWriteLease replayLease = runtime.WriteLease();
+
+        Result<MemoryReviewBulkResultDto> replay = await current.ApplyAsync(apply, replayLease, Token);
+
+        Assert.True(replay.IsSuccess, replay.IsFailure ? replay.Error.Message : string.Empty);
+
+        Assert.True(replay.Value.Replayed);
+
+        MemoryReviewBulkItemResultDto item = Assert.Single(replay.Value.Items);
+
+        Assert.Equal(MemoryReviewOutcomes.NoOp(action), item.Outcome);
+
+        Assert.Null(item.ResultingVersionId);
+
+        Assert.Equal(original.ReviewedThroughEventSequence, replay.Value.ReviewedThroughEventSequence);
+    }
+
+    /// <summary>
+    /// Seeds one memory in the state the action finds already satisfied and applies the action, so the
+    /// store records and reports its no-op outcome.
+    /// </summary>
+    private static async Task<(CovenantReviewBulkApplyRequest Apply, MemoryReviewBulkResultDto First)> ApplyNoOpAsync(
+        ReviewRuntime runtime,
+        MemoryReviewAction action)
+    {
+        await runtime.Fixture.AddCampaignAsync(CampaignOne, "One", Token);
+
+        CovenantOperation operation = action == MemoryReviewAction.Retire
+            ? CovenantOperation.Retire
+            : CovenantOperation.Set;
+
+        const string Content = "Stable.";
+
+        _ = await runtime.Fixture.SeedHeadAsync(
+            CovenantScope.Campaign,
+            CampaignOne,
+            "noop.stable",
+            CovenantLane.Confirmed,
+            operation,
+            operation == CovenantOperation.Set ? Content : null,
+            Token);
+
+        if (action == MemoryReviewAction.Pin)
+        {
+            CovenantCurationIntent pin = CovenantCurationFixture.Pin(
+                CovenantOperationScope.ForCampaign(CampaignOne),
+                "noop.stable",
+                expectedRevision: 0,
+                keyEpoch: 1);
+
+            Result<CovenantCurationReceipt> pinned = await CovenantCurationFixture.ApplyAsync(
+                runtime.Fixture,
+                new CovenantCurationCommit(
+                    await runtime.Fixture.ReadDatasetGenerationAsync(Token),
+                    expectedKeyReclamationEpoch: 1,
+                    CovenantMutationFixture.CommitTime,
+                    pin),
+                Token);
+
+            Assert.True(pinned.IsSuccess, pinned.IsFailure ? pinned.Error.Message : string.Empty);
+        }
+
+        CovenantReviewItemDto observed;
+
+        await using (CovenantReadLease listLease = runtime.ReadLease())
+        {
+            observed = Assert.Single((await runtime.Service.ListAsync(
+                new CovenantReviewListRequest(
+                    CovenantScope.Campaign,
+                    CampaignOne,
+                    CovenantLane.Confirmed,
+                    MemoryReviewLimits.MaxPageSize,
+                    Cursor: null),
+                listLease,
+                Token)).Value.Items);
+        }
+
+        CovenantReviewBulkPrepareRequest request = new(
+            Guid.CreateVersion7(),
+            CovenantScope.Campaign,
+            CampaignOne,
+            CovenantLane.Confirmed,
+            action,
+            [new CovenantReviewDecision(observed.ObservationToken, action == MemoryReviewAction.Correct ? Content : null)]);
+
+        MemoryReviewBulkPlanDto plan;
+
+        await using (CovenantReadLease prepareLease = runtime.ReadLease())
+        {
+            plan = (await runtime.Service.PrepareAsync(request, prepareLease, Token)).Value;
+        }
+
+        CovenantReviewBulkApplyRequest apply = new(request, plan.PreparedPlanToken);
+
+        await using CovenantWriteLease writeLease = runtime.WriteLease();
+
+        Result<MemoryReviewBulkResultDto> applied = await runtime.Service.ApplyAsync(apply, writeLease, Token);
+
+        Assert.True(applied.IsSuccess, applied.IsFailure ? applied.Error.Message : string.Empty);
+
+        return (apply, applied.Value);
     }
 
     [Fact]
@@ -937,8 +1072,9 @@ public sealed class CovenantMemoryReviewServiceTests
     /// <summary>
     /// R-171: Covenant's apply took its write transaction outside any busy retry, so a database another
     /// writer briefly held surfaced as a raw SQLITE_BUSY exception from the first attempt. The transaction
-    /// now retries busy and, once the bound is spent, answers the store's own stable write-failed error
-    /// with nothing written; the same prepared request then applies cleanly when the writer lets go.
+    /// now retries busy and, once the bound is spent, answers the retryable <c>Covenant.Unavailable</c>
+    /// (a 503, because nothing is wrong with the store and the same request succeeds when the writer lets
+    /// go) with nothing written; the same prepared request then applies cleanly when the writer lets go.
     /// </summary>
     [Fact]
     public async Task Apply_returns_a_stable_error_when_the_database_is_busy()
@@ -1007,7 +1143,7 @@ public sealed class CovenantMemoryReviewServiceTests
 
         Assert.True(busy.IsFailure);
 
-        Assert.Equal(ErrorCodes.Covenant.WriteFailed, busy.Error.Code);
+        Assert.Equal(ErrorCodes.Covenant.Unavailable, busy.Error.Code);
 
         Assert.DoesNotContain("busy.key", busy.Error.Message, StringComparison.Ordinal);
 
@@ -1121,6 +1257,129 @@ public sealed class CovenantMemoryReviewServiceTests
         }
 
         Assert.Equal(1L, await ScalarAsync(runtime.Fixture.Connection, "SELECT count(*) FROM covenant_review_decision_receipts;"));
+    }
+
+    /// <summary>
+    /// R-171: the write transaction was the only part of the apply that mapped a storage fault, so the
+    /// replay read before it, the connection acquisition, and every other read-side fault escaped as a raw
+    /// exception and the host reported a bare 500, where Saga wraps its whole apply. A fault before the
+    /// transaction now answers the same store-specific code, content-free and logged once.
+    /// </summary>
+    [Fact]
+    public async Task Apply_maps_a_storage_fault_before_the_transaction_to_the_write_failed_error()
+    {
+        await using ReviewRuntime runtime = await ReviewRuntime.CreateAsync();
+
+        (CovenantReviewBulkPrepareRequest confirm, MemoryReviewBulkPlanDto plan) = await PrepareConfirmAsync(runtime);
+
+        // The replay lookup is the apply's first read and runs before BEGIN.
+        await ExecuteAsync(
+            runtime.Fixture.Connection,
+            "ALTER TABLE covenant_review_decision_receipts RENAME TO covenant_review_decision_receipts_gone;");
+
+        await using CovenantWriteLease writeLease = runtime.WriteLease();
+
+        Result<MemoryReviewBulkResultDto> failed = await runtime.Service.ApplyAsync(
+            new CovenantReviewBulkApplyRequest(confirm, plan.PreparedPlanToken),
+            writeLease,
+            Token);
+
+        Assert.True(failed.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.WriteFailed, failed.Error.Code);
+
+        Assert.DoesNotContain("busy.key", failed.Error.Message, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("covenant_review_decision_receipts", failed.Error.Message, StringComparison.Ordinal);
+
+        TestLogEntry logged = Assert.Single(runtime.Logger.Entries, static entry => entry.Level == LogLevel.Error);
+
+        Assert.Null(logged.Exception);
+
+        Assert.DoesNotContain("covenant_review_decision_receipts", logged.Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// R-171: an integrity throw inside the transaction (the canonical state row is gone) was reported as
+    /// <c>Covenant.WriteFailed</c> with "Nothing was written", which loses the one classification an
+    /// operator needs: the stored state is damaged, so a retry cannot succeed. It answers the review
+    /// integrity failure instead, content-free and logged once.
+    /// </summary>
+    [Fact]
+    public async Task Apply_classifies_a_missing_canonical_state_as_an_integrity_failure_not_a_write_failure()
+    {
+        await using ReviewRuntime runtime = await ReviewRuntime.CreateAsync();
+
+        (CovenantReviewBulkPrepareRequest confirm, MemoryReviewBulkPlanDto plan) = await PrepareConfirmAsync(runtime);
+
+        await ExecuteAsync(runtime.Fixture.Connection, "DELETE FROM covenant_state;");
+
+        await using CovenantWriteLease writeLease = runtime.WriteLease();
+
+        Result<MemoryReviewBulkResultDto> failed = await runtime.Service.ApplyAsync(
+            new CovenantReviewBulkApplyRequest(confirm, plan.PreparedPlanToken),
+            writeLease,
+            Token);
+
+        Assert.True(failed.IsFailure);
+
+        Assert.Equal(ErrorCodes.MemoryReview.IntegrityFailure, failed.Error.Code);
+
+        Assert.DoesNotContain("Nothing was written", failed.Error.Message, StringComparison.Ordinal);
+
+        TestLogEntry logged = Assert.Single(runtime.Logger.Entries, static entry => entry.Level == LogLevel.Error);
+
+        Assert.Null(logged.Exception);
+
+        Assert.DoesNotContain("canonical state is absent", logged.Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>Seeds one Confirmed head, lists it, and prepares a Confirm of it.</summary>
+    private static async Task<(CovenantReviewBulkPrepareRequest Request, MemoryReviewBulkPlanDto Plan)> PrepareConfirmAsync(
+        ReviewRuntime runtime)
+    {
+        await runtime.Fixture.AddCampaignAsync(CampaignOne, "One", Token);
+
+        _ = await runtime.Fixture.SeedHeadAsync(
+            CovenantScope.Campaign,
+            CampaignOne,
+            "busy.key",
+            CovenantLane.Confirmed,
+            CovenantOperation.Set,
+            "content",
+            Token);
+
+        CovenantReviewItemDto observed;
+
+        await using (CovenantReadLease listLease = runtime.ReadLease())
+        {
+            observed = Assert.Single((await runtime.Service.ListAsync(
+                new CovenantReviewListRequest(
+                    CovenantScope.Campaign,
+                    CampaignOne,
+                    CovenantLane.Confirmed,
+                    MemoryReviewLimits.MaxPageSize,
+                    Cursor: null),
+                listLease,
+                Token)).Value.Items);
+        }
+
+        CovenantReviewBulkPrepareRequest confirm = new(
+            Guid.CreateVersion7(),
+            CovenantScope.Campaign,
+            CampaignOne,
+            CovenantLane.Confirmed,
+            MemoryReviewAction.Confirm,
+            [new CovenantReviewDecision(observed.ObservationToken, null)]);
+
+        MemoryReviewBulkPlanDto plan;
+
+        await using (CovenantReadLease prepareLease = runtime.ReadLease())
+        {
+            plan = (await runtime.Service.PrepareAsync(confirm, prepareLease, Token)).Value;
+        }
+
+        return (confirm, plan);
     }
 
     [Fact]
@@ -1645,7 +1904,8 @@ public sealed class CovenantMemoryReviewServiceTests
             MemoryReviewTokenCodec codec,
             Guid datasetGeneration,
             FakeTimeProvider time,
-            TestCapturingLogger<CovenantMemoryReviewService> logger)
+            TestCapturingLogger<CovenantMemoryReviewService> logger,
+            bool withErasureEvidence)
         {
             Fixture = fixture;
             Service = service;
@@ -1653,6 +1913,7 @@ public sealed class CovenantMemoryReviewServiceTests
             DatasetGeneration = datasetGeneration;
             Time = time;
             Logger = logger;
+            WithErasureEvidence = withErasureEvidence;
         }
 
         internal CovenantCanonicalFixture Fixture { get; }
@@ -1667,6 +1928,8 @@ public sealed class CovenantMemoryReviewServiceTests
 
         private Guid DatasetGeneration { get; }
 
+        private bool WithErasureEvidence { get; }
+
         /// <param name="withErasureEvidence">
         /// Gives the catalog the erasure fingerprint table and builds the kernel over the fixture's own
         /// keyring, so the review captures the latch the suite drives.
@@ -1674,7 +1937,8 @@ public sealed class CovenantMemoryReviewServiceTests
         internal static async Task<ReviewRuntime> CreateAsync(
             bool withErasureEvidence = false,
             TimeSpan? busyRetryDeadline = null,
-            Func<TimeSpan, CancellationToken, Task>? busyRetryDelay = null)
+            Func<TimeSpan, CancellationToken, Task>? busyRetryDelay = null,
+            string? noOpOutcomeSpelling = null)
         {
             CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(
                 Token,
@@ -1684,7 +1948,41 @@ public sealed class CovenantMemoryReviewServiceTests
             MemoryReviewTokenCodec codec = new(time);
             TestCapturingLogger<CovenantMemoryReviewService> logger = new();
 
-            CovenantMemoryReviewService service = new(
+            CovenantMemoryReviewService service = BuildService(
+                fixture,
+                codec,
+                time,
+                logger,
+                withErasureEvidence,
+                busyRetryDeadline,
+                busyRetryDelay,
+                noOpOutcomeSpelling);
+
+            return new ReviewRuntime(fixture, service, codec, dataset, time, logger, withErasureEvidence);
+        }
+
+        /// <summary>A second service over the same store and codec that carries none of this runtime's seams.</summary>
+        internal CovenantMemoryReviewService CreateServiceWithoutSeam() =>
+            BuildService(
+                Fixture,
+                Codec,
+                Time,
+                Logger,
+                WithErasureEvidence,
+                busyRetryDeadline: null,
+                busyRetryDelay: null,
+                noOpOutcomeSpelling: null);
+
+        private static CovenantMemoryReviewService BuildService(
+            CovenantCanonicalFixture fixture,
+            MemoryReviewTokenCodec codec,
+            FakeTimeProvider time,
+            TestCapturingLogger<CovenantMemoryReviewService> logger,
+            bool withErasureEvidence,
+            TimeSpan? busyRetryDeadline,
+            Func<TimeSpan, CancellationToken, Task>? busyRetryDelay,
+            string? noOpOutcomeSpelling) =>
+            new(
                 new FixedCovenantConnectionSource(fixture.Connection),
                 new CovenantCompiler(),
                 codec,
@@ -1700,10 +1998,8 @@ public sealed class CovenantMemoryReviewServiceTests
                 BusyRetryDeadlineForTesting = busyRetryDeadline,
                 BusyRetryDelayForTesting = busyRetryDelay
                     ?? (busyRetryDeadline is null ? null : static (_, _) => Task.CompletedTask),
+                NoOpOutcomeSpellingForTesting = noOpOutcomeSpelling,
             };
-
-            return new ReviewRuntime(fixture, service, codec, dataset, time, logger);
-        }
 
         internal CovenantReadLease ReadLease(Guid? campaignId = null) =>
             new(new LeaseRegistration(

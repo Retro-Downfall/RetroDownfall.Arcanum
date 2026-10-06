@@ -41,6 +41,12 @@ internal sealed partial class CampaignPathMarkerLifecycle
     private const string BlockedObservationDomain =
         "Arcanum.Covenant.BackupRestore.BlockedRootObservation.v1";
 
+    /// <summary>
+    /// Runs after each registered root has been observed, or <see langword="null"/>. A seam so a test can
+    /// fail the inventory part-way and see what became of the seeds it had already built.
+    /// </summary>
+    internal Action<CampaignPathRestoreCleanupSeed>? AfterSeedObservedForTests { get; init; }
+
     /// <inheritdoc />
     public async Task<Result<CampaignPathRestoreCleanupInventory>> InventoryRestoreCleanupAsync(
         CovenantExclusiveRecoveryOwner owner,
@@ -79,7 +85,12 @@ internal sealed partial class CampaignPathMarkerLifecycle
         {
             foreach (RegisteredRoot root in registered.Value)
             {
-                seeds.Add(await ObserveRegisteredRootAsync(root, cancellationToken).ConfigureAwait(false));
+                CampaignPathRestoreCleanupSeed seed =
+                    await ObserveRegisteredRootAsync(root, cancellationToken).ConfigureAwait(false);
+
+                seeds.Add(seed);
+
+                AfterSeedObservedForTests?.Invoke(seed);
             }
         }
         catch

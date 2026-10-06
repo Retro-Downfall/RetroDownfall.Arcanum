@@ -7,6 +7,7 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Hosting;
 
 using RetroDownfall.Arcanum.Api.Security;
@@ -18,8 +19,13 @@ using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage.Entities;
 using RetroDownfall.Arcanum.Core.Tower;
 using RetroDownfall.Arcanum.Core.Workspaces;
+using RetroDownfall.Arcanum.Infrastructure.Covenant;
+using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Intelligence.Spells;
 using RetroDownfall.Arcanum.Core.Storage;
+using RetroDownfall.Arcanum.Tests.Covenant;
+using RetroDownfall.Arcanum.Tests.Data.Covenant;
+using RetroDownfall.Arcanum.Tests.Fixtures;
 using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Api;
@@ -314,6 +320,110 @@ public sealed class CovenantPlaintextExportTests
     }
 
     /// <summary>
+    /// R-026 end to end: the route composed with the shipped policy and a real ledger, the feature off. The
+    /// route test above uses a stub policy and the policy tests assert only the decision, so neither proves
+    /// that the policy's answer is what stops the export graph from being read. A Session whose ledger names
+    /// Covenant content is refused with 403 before the export is read, a Session with no ledger rows exports
+    /// as it always did, and the Campaign bundle (settings, spells and prompts, never artifacts) carries no
+    /// tainted content and no exclusion report.
+    /// </summary>
+    [Fact]
+    public async Task The_shipped_policy_refuses_a_tainted_session_over_the_route_when_the_feature_is_off()
+    {
+        Guid cleanSession = Guid.Parse("60718293-A4B5-4C6D-8E7F-8091A2B3C4D5");
+
+        await using CovenantSchemaScratchDatabase database =
+            await CovenantSchemaScratchDatabase.CreateAsync(CancellationToken.None);
+
+        await database.InstallCanonicalAsync(CancellationToken.None);
+
+        await database.InstallCoreObjectsAsync(
+            ["Campaigns", "Sessions", "artifact_sensitivity", "session_sensitivity_state"],
+            CancellationToken.None);
+
+        foreach (Guid session in new[] { SessionId, cleanSession })
+        {
+            await using SqliteCommand seed = database.Connection.CreateCommand();
+
+            seed.CommandText = """
+                INSERT INTO "Sessions" ("Id", "Title", "CreatedAt", "UpdatedAt")
+                VALUES ($sessionId, 'export', $now, $now);
+                """;
+
+            _ = seed.Parameters.AddWithValue("$sessionId", session.ToString().ToUpperInvariant());
+
+            _ = seed.Parameters.AddWithValue("$now", "2026-08-17T00:00:00.0000000+00:00");
+
+            _ = await seed.ExecuteNonQueryAsync(CancellationToken.None);
+        }
+
+        ArtifactSensitivityLedger ledger = new(new FixedCovenantConnectionSource(database.Connection));
+
+        Result<LabeledArtifactWriteReceipt> labelled = await ledger.LabelAsync(
+            new DerivedArtifactWrite(
+                SensitiveArtifactKind.AssistantEntry,
+                Guid.NewGuid(),
+                SessionId,
+                CampaignId,
+                null,
+                1,
+                new CovenantDigest([.. Enumerable.Repeat((byte)3, 32)]),
+                ContentSensitivity.CovenantDerived,
+                GenerationProvenance.CreateExact([Guid.Parse("3D4E5F60-7182-4D9E-8FA0-3B4C5D6E7F80")])),
+            CancellationToken.None);
+
+        Assert.True(labelled.IsSuccess);
+
+        FakeCovenantAvailability availability = new();
+
+        availability.Mutate(static current => current with { FeatureEnabled = false });
+
+        CovenantExportPolicy policy = new(
+            availability,
+            CovenantOperationGateFixture.CreateGate(availability),
+            new FixedCovenantConnectionSource(database.Connection));
+
+        await using ExportHost host = await ExportHost.CreateAsync(realPolicy: policy);
+
+        HttpResponseMessage refused = await host.Client.GetAsync(
+            $"/api/sessions/{SessionId:D}/export?format=json");
+
+        Assert.Equal(HttpStatusCode.Forbidden, refused.StatusCode);
+
+        Assert.False(host.Sessions.ExportCalled);
+
+        ApiResponse<SessionExportResult>? body = JsonSerializer.Deserialize(
+            await refused.Content.ReadAsStringAsync(),
+            ArcanumJsonContext.Default.ApiResponseSessionExportResult);
+
+        Assert.NotNull(body);
+
+        Assert.Equal(ErrorCodes.Covenant.PlaintextExportRefused, body.Error!.Value.Code);
+
+        // A Session the ledger says nothing about is exported as it always was.
+        HttpResponseMessage clean = await host.Client.GetAsync(
+            $"/api/sessions/{cleanSession:D}/export?format=json");
+
+        Assert.Equal(HttpStatusCode.OK, clean.StatusCode);
+
+        Assert.True(host.Sessions.ExportCalled);
+
+        // The Campaign bundle names a tainted artifact of that Campaign nowhere: it never carries
+        // artifacts, and with the feature off it reports no exclusions either.
+        HttpResponseMessage campaign = await host.Client.PostAsync(
+            $"/api/campaigns/{CampaignId:D}/export",
+            content: null);
+
+        Assert.Equal(HttpStatusCode.OK, campaign.StatusCode);
+
+        string payload = await campaign.Content.ReadAsStringAsync();
+
+        Assert.DoesNotContain("exclusions", payload, StringComparison.OrdinalIgnoreCase);
+
+        Assert.DoesNotContain("sensitivity", payload, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
     /// An arm that is on but cannot take its lease refuses before content on both routes. An export
     /// that proceeded because the ledger was unreadable would be exactly the disclosure the lease
     /// exists to prevent.
@@ -381,7 +491,9 @@ public sealed class CovenantPlaintextExportTests
 
         internal StubCampaignRepository Campaigns { get; } = new();
 
-        internal static async Task<ExportHost> CreateAsync(Action<StubExportPolicy>? configure = null)
+        internal static async Task<ExportHost> CreateAsync(
+            Action<StubExportPolicy>? configure = null,
+            ICovenantExportPolicy? realPolicy = null)
         {
             ExportHost host = new();
 
@@ -403,7 +515,9 @@ public sealed class CovenantPlaintextExportTests
 
             builder.Services.AddSingleton<ISpellRepository>(new StubSpellRepository());
 
-            builder.Services.AddSingleton<ICovenantExportPolicy>(policy);
+            // The stub by default; a test that is about the shipped policy composed with the shipped route
+            // supplies that policy instead, and the stub is then unused.
+            builder.Services.AddSingleton<ICovenantExportPolicy>(realPolicy ?? policy);
 
             builder.Services.ConfigureHttpJsonOptions(static options =>
                 options.SerializerOptions.TypeInfoResolverChain.Insert(0, ArcanumJsonContext.Default));

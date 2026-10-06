@@ -1,7 +1,10 @@
+using Microsoft.Extensions.Logging;
+
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Tower;
 using RetroDownfall.Arcanum.Infrastructure.Covenant;
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Covenant;
 
@@ -594,7 +597,9 @@ public sealed class CovenantOperationGateTests
     [Fact]
     public async Task Exclusive_acquisition_removes_its_closure_when_a_revocation_callback_throws()
     {
-        CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate();
+        TestCapturingLogger<CovenantOperationGate> logger = new();
+
+        CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate(logger: logger);
 
         CovenantReadLease reader = (await gate.AcquireReadAsync(CovenantOperationScope.Global, Token)).Value;
 
@@ -622,6 +627,57 @@ public sealed class CovenantOperationGateTests
             (await gate.AcquireReadAsync(CovenantOperationScope.Global, Token)).Value;
 
         Assert.Equal(CovenantScope.Global, reopened.Snapshot.Scope!.Value.Kind);
+
+        // The fault is not swallowed without a trace: one warning, and it carries nothing the callback threw.
+        TestLogEntry warning = Assert.Single(logger.Entries, static entry => entry.Level == LogLevel.Warning);
+
+        Assert.Null(warning.Exception);
+
+        Assert.DoesNotContain("a consumer callback that faults", warning.Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// R-166: the closure was removed on a revocation or drain failure, but the lock block that builds the
+    /// registration after a successful drain was outside that cleanup, so a fault there left the closure
+    /// installed for good. DESIGN says a close that fails for any reason after installing its closure
+    /// removes it before it answers, which is now true of that window too, for both acquisition paths.
+    /// </summary>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task A_close_that_faults_after_draining_removes_its_closure_before_it_answers(bool resumeOrAcquire)
+    {
+        int faults = 0;
+
+        CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate(
+            afterDrain: () =>
+            {
+                if (faults++ == 0)
+                {
+                    throw new InvalidOperationException("faulted after the drain");
+                }
+            });
+
+        CovenantExclusiveRecoveryOwner owner = CovenantOperationGateFixture.Owner(CovenantExclusiveOperation.CovenantReset);
+
+        _ = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => (resumeOrAcquire
+                ? gate.ResumeOrAcquireExclusiveAsync(owner, Token)
+                : gate.AcquireExclusiveAsync(owner, Token)).AsTask());
+
+        // Nothing stayed installed: admission is open, and the same close is not refused as owned.
+        CovenantReadLease reopened =
+            (await gate.AcquireReadAsync(CovenantOperationScope.Global, Token)).Value;
+
+        Assert.Equal(CovenantScope.Global, reopened.Snapshot.Scope!.Value.Kind);
+
+        await reopened.DisposeAsync();
+
+        Result<CovenantExclusiveLease> next = await gate.AcquireExclusiveAsync(owner, Token);
+
+        Assert.True(next.IsSuccess, next.IsFailure ? next.Error.Message : string.Empty);
+
+        await next.Value.DisposeAsync();
     }
 
     /// <summary>

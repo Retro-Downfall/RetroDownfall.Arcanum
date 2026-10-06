@@ -1384,14 +1384,9 @@ internal sealed partial class LexiconService
 
     private static string AppliedOutcomeForAction(MemoryReviewAction action) => MemoryReviewOutcomes.Applied(action);
 
-    private static string? NoOpOutcomeForAction(MemoryReviewAction action) => action switch
-    {
-        MemoryReviewAction.Correct => MemoryReviewOutcomes.Unchanged,
-        MemoryReviewAction.Retire => MemoryReviewOutcomes.AlreadyRetired,
-        MemoryReviewAction.Pin => MemoryReviewOutcomes.AlreadyPinned,
-        MemoryReviewAction.Unpin => MemoryReviewOutcomes.NotPinned,
-        _ => null,
-    };
+    // The one per-action table every store shares; a Confirm is always recorded, so it has none.
+    private static string? NoOpOutcomeForAction(MemoryReviewAction action) =>
+        action == MemoryReviewAction.Confirm ? null : MemoryReviewOutcomes.NoOp(action);
 
     /// <summary>
     /// Whether a persisted receipt's outcome is one this action can produce, in the closed spelling or in

@@ -1,6 +1,7 @@
 using System.Text;
 
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
 using RetroDownfall.Arcanum.Core.Configuration;
@@ -68,7 +69,9 @@ internal static class CovenantOperationGateFixture
         FakeCovenantAvailability? availability = null,
         FakeCovenantAuthorityProvider? authority = null,
         FakeCovenantCampaignScopeProbe? campaigns = null,
-        TimeSpan? drainTimeout = null)
+        TimeSpan? drainTimeout = null,
+        Action? afterDrain = null,
+        ILogger<CovenantOperationGate>? logger = null)
     {
         FakeCovenantAvailability resolvedAvailability = availability ?? new FakeCovenantAvailability();
 
@@ -87,8 +90,11 @@ internal static class CovenantOperationGateFixture
             return new CovenantOperationGate(
                 runtime,
                 campaigns ?? new FakeCovenantCampaignScopeProbe(),
-                NullLogger<CovenantOperationGate>.Instance,
-                drainTimeout ?? TimeSpan.FromSeconds(5));
+                logger ?? NullLogger<CovenantOperationGate>.Instance,
+                drainTimeout ?? TimeSpan.FromSeconds(5))
+            {
+                AfterDrainForTesting = afterDrain,
+            };
         }
 
         CovenantEnvelopeMasterKeyProvider keys = new(runtime);
@@ -132,8 +138,11 @@ internal static class CovenantOperationGateFixture
         return new CovenantOperationGate(
             runtime,
             campaigns ?? new FakeCovenantCampaignScopeProbe(),
-            NullLogger<CovenantOperationGate>.Instance,
-            drainTimeout ?? TimeSpan.FromSeconds(5));
+            logger ?? NullLogger<CovenantOperationGate>.Instance,
+            drainTimeout ?? TimeSpan.FromSeconds(5))
+        {
+            AfterDrainForTesting = afterDrain,
+        };
     }
 }
 

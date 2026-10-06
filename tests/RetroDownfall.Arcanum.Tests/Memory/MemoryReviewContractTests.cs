@@ -19,12 +19,15 @@ public sealed class MemoryReviewContractTests
 
     /// <summary>
     /// R-172: each store used to invent its own per-item outcome strings, and Lexicon mixed casings
-    /// (<c>corrected</c> beside <c>AlreadyRetired</c>). Every outcome is now one member of a single closed,
-    /// PascalCase set that API §8.34 enumerates, and receipts persisted with an earlier build's lowercase
-    /// spelling still read back as that set.
+    /// (<c>corrected</c> beside <c>AlreadyRetired</c>). The vocabulary every store writes from is one
+    /// closed, PascalCase set, and receipts persisted with an earlier build's lowercase spelling still read
+    /// back as that set. This is the helper's contract; that the three stores write only from it is
+    /// <see cref="Every_store_reports_outcomes_from_one_closed_vocabulary"/>, and the behaviour store by
+    /// store is pinned where each store is driven (<c>MemoryCrossStoreIsolationTests</c> for applied
+    /// outcomes, and the no-op tests of each review service for the per-action no-op spellings below).
     /// </summary>
     [Fact]
-    public void Every_store_reports_outcomes_from_one_closed_vocabulary()
+    public void The_outcome_helpers_define_one_closed_pascal_case_vocabulary_and_read_legacy_spellings()
     {
         Assert.Equal(MemoryReviewOutcomes.All.Count, MemoryReviewOutcomes.All.Distinct(StringComparer.Ordinal).Count());
 
@@ -62,6 +65,174 @@ public sealed class MemoryReviewContractTests
         Assert.Null(MemoryReviewOutcomes.FromPersisted(null));
 
         Assert.False(MemoryReviewOutcomes.IsKnown("corrected"));
+    }
+
+    /// <summary>
+    /// R-172: every store reports its per-item outcomes from the one closed vocabulary, which is what the
+    /// register row names.
+    /// </summary>
+    /// <remarks>
+    /// A store can only drift from the vocabulary in two ways, and this closes both over the three real
+    /// stores. What the helper hands a store is closed: every action's applied outcome and every no-op
+    /// action's outcome is a member of the set. And a store takes its outcomes from the helper and nowhere
+    /// else: each Infrastructure file that names an item result is one of the three review services, each
+    /// reaches <c>MemoryReviewOutcomes</c>, and none spells an outcome as a literal, so a word outside the
+    /// set cannot reach a client or a receipt. The only outcome-shaped literals they hold are two readers of
+    /// a spelling an earlier build persisted, which a replay must recognise and never writes. The behaviour
+    /// store by store is pinned where each store is driven: the applied outcome of every action through the
+    /// real routes in <c>MemoryCrossStoreIsolationTests</c>, and the no-op outcomes in each review
+    /// service's own tests.
+    /// </remarks>
+    [Fact]
+    public void Every_store_reports_outcomes_from_one_closed_vocabulary()
+    {
+        foreach (MemoryReviewAction action in Enum.GetValues<MemoryReviewAction>())
+        {
+            Assert.Contains(MemoryReviewOutcomes.Applied(action), MemoryReviewOutcomes.All);
+
+            if (action != MemoryReviewAction.Confirm)
+            {
+                Assert.Contains(MemoryReviewOutcomes.NoOp(action), MemoryReviewOutcomes.All);
+            }
+        }
+
+        // Every spelling a store could put in front of a client or into a receipt: the closed set in any
+        // casing, and the three words an earlier build persisted that its casing alone does not cover.
+        HashSet<string> spellings = new(MemoryReviewOutcomes.All, StringComparer.OrdinalIgnoreCase)
+        {
+            "NoChange",
+            "acknowledged",
+            "auto-acknowledged",
+        };
+
+        // The literals a store may hold, each a reader of what an earlier build wrote and never a writer.
+        Dictionary<string, string[]> readers = new(StringComparer.Ordinal)
+        {
+            // A replay reads the word an earlier Covenant persisted for every no-op and reports the per-action one.
+            ["Covenant/CovenantMemoryReviewService.cs"] = ["NoChange"],
+
+            // A replay of an earlier receipt reproduces the lowercase acknowledgement its digest was sealed over.
+            ["Lexicon/LexiconService.MemoryReview.cs"] = ["auto-acknowledged"],
+
+            ["Memory/SagaMemoryReviewService.cs"] = [],
+        };
+
+        string infrastructure = Path.Combine(
+            RetroDownfall.Arcanum.Tests.Support.TestRepositoryPaths.RepositoryRoot(),
+            "src",
+            "RetroDownfall.Arcanum.Infrastructure");
+
+        string[] builders =
+        [
+            .. Directory
+                .EnumerateFiles(infrastructure, "*.cs", SearchOption.AllDirectories)
+                .Select(path => Path.GetRelativePath(infrastructure, path).Replace('\\', '/'))
+                .Where(static relative => !relative.StartsWith("obj/", StringComparison.Ordinal)
+                    && !relative.StartsWith("bin/", StringComparison.Ordinal))
+                .Where(relative => File
+                    .ReadAllText(Path.Combine(infrastructure, relative))
+                    .Contains(nameof(MemoryReviewBulkItemResultDto), StringComparison.Ordinal))
+                .Order(StringComparer.Ordinal),
+        ];
+
+        // A fourth Infrastructure file that names item results has to be added here, with its literals, to
+        // be covered.
+        string[] stores = [.. readers.Keys.Order(StringComparer.Ordinal)];
+
+        Assert.Equal(stores, builders);
+
+        foreach ((string relative, string[] allowed) in readers)
+        {
+            Microsoft.CodeAnalysis.SyntaxNode root = Microsoft.CodeAnalysis.CSharp.CSharpSyntaxTree
+                .ParseText(File.ReadAllText(Path.Combine(infrastructure, relative)))
+                .GetRoot();
+
+            Assert.True(
+                root
+                    .DescendantNodes()
+                    .OfType<Microsoft.CodeAnalysis.CSharp.Syntax.IdentifierNameSyntax>()
+                    .Any(static name => name.Identifier.ValueText == "MemoryReviewOutcomes"),
+                $"{relative} does not take its outcomes from MemoryReviewOutcomes.");
+
+            Microsoft.CodeAnalysis.SyntaxToken[] literals =
+            [
+                .. root
+                    .DescendantTokens()
+                    .Where(static token => token.RawKind is (int)Microsoft.CodeAnalysis.CSharp.SyntaxKind.StringLiteralToken
+                        or (int)Microsoft.CodeAnalysis.CSharp.SyntaxKind.InterpolatedStringTextToken),
+            ];
+
+            string[] stray =
+            [
+                .. literals
+                    .Where(token => spellings.Contains(token.ValueText)
+                        && !allowed.Contains(token.ValueText, StringComparer.Ordinal))
+                    .Select(token => $"{relative}:{token.GetLocation().GetLineSpan().StartLinePosition.Line + 1} \"{token.ValueText}\""),
+            ];
+
+            Assert.True(
+                stray.Length == 0,
+                "A review store spells an outcome as a literal instead of taking it from MemoryReviewOutcomes: "
+                    + string.Join(", ", stray));
+
+            // An allowance for a reader that no longer exists would excuse the next literal that looks like it.
+            Assert.All(
+                allowed,
+                reader => Assert.Contains(literals, token => token.ValueText == reader));
+        }
+    }
+
+    /// <summary>
+    /// R-172: a no-op used to be reported differently by each store (Covenant answered one word for every
+    /// no-op while Saga and Lexicon named the state the memory was already in), so a client had to know
+    /// which store answered. There is now one spelling per action, drawn from the closed set, and none of
+    /// them is the word an earlier Covenant persisted.
+    /// </summary>
+    [Fact]
+    public void Every_no_op_action_has_one_distinct_outcome_in_the_closed_set()
+    {
+        MemoryReviewAction[] noOpActions =
+        [
+            MemoryReviewAction.Correct,
+            MemoryReviewAction.Retire,
+            MemoryReviewAction.Pin,
+            MemoryReviewAction.Unpin,
+        ];
+
+        string[] outcomes = [.. noOpActions.Select(MemoryReviewOutcomes.NoOp)];
+
+        Assert.All(outcomes, static outcome => Assert.True(MemoryReviewOutcomes.IsKnown(outcome), outcome));
+
+        Assert.Equal(outcomes.Length, outcomes.Distinct(StringComparer.Ordinal).Count());
+
+        Assert.Equal(
+            ["Unchanged", "AlreadyRetired", "AlreadyPinned", "NotPinned"],
+            outcomes);
+
+        // A Confirm is always recorded, so it has no no-op outcome to report.
+        _ = Assert.Throws<ArgumentOutOfRangeException>(static () => MemoryReviewOutcomes.NoOp(MemoryReviewAction.Confirm));
+
+        // The word an earlier Covenant persisted for every no-op is not a member any store writes now.
+        Assert.False(MemoryReviewOutcomes.IsKnown("NoChange"));
+    }
+
+    /// <summary>
+    /// R-172: API §8.34 says the closed set is enumerated there, so a member added to the code without the
+    /// section naming it (or the reverse) is a contract a client cannot read.
+    /// </summary>
+    [Fact]
+    public void The_api_reference_enumerates_every_outcome_of_the_closed_set()
+    {
+        string api = File.ReadAllText(
+            Path.Combine(RetroDownfall.Arcanum.Tests.Support.TestRepositoryPaths.RepositoryRoot(), "docs", "Arcanum.API.md"));
+
+        string paragraph = Assert.Single(
+            api.Split('\n'),
+            static line => line.StartsWith("**Per-item outcomes are one closed set.**", StringComparison.Ordinal));
+
+        Assert.All(
+            MemoryReviewOutcomes.All,
+            outcome => Assert.Contains($"`{outcome}`", paragraph, StringComparison.Ordinal));
     }
 
     /// <summary>

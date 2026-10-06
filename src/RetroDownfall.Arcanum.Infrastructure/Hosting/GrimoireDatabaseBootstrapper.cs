@@ -1162,11 +1162,16 @@ public static class GrimoireDatabaseBootstrapper
                 throw ProtectedRecoveryUnavailable();
             }
 
+            // Unlike a restore (RecoverRestoreAuthorityAsync), a kept-closed schema repair does not stop
+            // startup: the adopted owner keeps Covenant admission shut while the rest of the process serves,
+            // except when only the post-disposition finalizer failed after the gate had reopened, where the
+            // gate is open and the journal alone stays active. Either way the journal resumes next start.
             if (recovered.Value is CovenantSchemaRepairStartupRecoveryOutcome.KeptClosed)
             {
                 Log.Warning(
-                    "An interrupted Covenant schema repair could not be completed, so Covenant admission "
-                    + "stays closed and its journal remains active for the next start.");
+                    "An interrupted Covenant schema repair could not be completed, so its journal remains "
+                    + "active for the next start. Covenant admission stays shut, unless only the finalizer "
+                    + "failed after the gate had already reopened.");
             }
         }
 
