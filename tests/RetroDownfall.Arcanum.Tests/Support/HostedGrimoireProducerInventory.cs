@@ -846,6 +846,8 @@ internal static class HostedGrimoireProducerInventory
         "System.Int64.TryParse",
         "System.Net.IPAddress.TryParse",
         "System.Text.Encoding.TryGetBytes",
+        "System.Text.Rune.DecodeFromUtf16",
+        "System.Text.Rune.TryCreate",
         "System.Text.StringBuilder.AppendLine",
         "System.Text.Json.JsonElement.TryGetProperty",
         "System.Text.Json.Nodes.JsonValue.TryGetValue",
@@ -929,6 +931,7 @@ internal static class HostedGrimoireProducerInventory
         "System.Exception",
         "System.FormatException",
         "System.Globalization.CultureInfo",
+        "System.Globalization.StringInfo",
         "System.Guid",
         "System.IO.InvalidDataException",
         "System.IO.DirectoryNotFoundException",
@@ -978,6 +981,7 @@ internal static class HostedGrimoireProducerInventory
         "System.Text.RegularExpressions.Group",
         "System.Text.RegularExpressions.Match",
         "System.Text.RegularExpressions.Regex",
+        "System.Text.Rune",
         "System.Text.StringBuilder",
         "System.Text.UTF8Encoding",
         "System.Threading.Interlocked",
@@ -1144,6 +1148,8 @@ internal static class HostedGrimoireProducerInventory
         "System.IO.FileSystemWatcher.NotifyFilter setter",
         "System.IO.RenamedEventArgs.OldFullPath",
         "System.IO.ErrorEventArgs.GetException",
+        "System.IO.StreamReader.BaseStream",
+        "System.IO.StreamReader.CurrentEncoding",
         "System.Lazy`1..ctor",
         "System.Lazy`1.IsValueCreated",
         "System.Linq.Enumerable.Empty",
@@ -1291,11 +1297,13 @@ internal static class HostedGrimoireProducerInventory
         "System.Threading.Tasks.Task`1.ConfigureAwait",
         "System.Threading.Tasks.Task`1.GetAwaiter",
         "System.Threading.Tasks.Task`1.WaitAsync",
+        "System.Threading.Thread.Sleep",
         "System.Threading.WaitHandle.WaitOne",
         "System.TimeProvider.GetTimestamp",
         "System.TimeProvider.GetUtcNow",
         "System.TimeProvider.System",
         "System.Type.Assembly",
+        "System.Type.FullName",
     };
 
     private static readonly IReadOnlySet<string> CompletionOwnedExternalAwaitables = new HashSet<string>(StringComparer.Ordinal)
@@ -21044,7 +21052,7 @@ internal static class HostedGrimoireProducerInventory
                 || type == "System.String"
                     && definition.Name == "Create"
                 || type == "System.Linq.ImmutableArrayExtensions"
-                    && definition.Name is "First" or "FirstOrDefault"
+                    && definition.Name is "Any" or "First" or "FirstOrDefault"
                 || type == "System.Threading.Tasks.Parallel"
                     && definition.Name is "For" or "ForEach" or "Invoke";
         }
@@ -23946,6 +23954,7 @@ internal static class HostedGrimoireProducerInventory
             return type is
                     "System.Collections.Concurrent.ConcurrentDictionary`2"
                         or "System.Collections.Generic.Dictionary`2"
+                        or "System.Collections.Generic.Dictionary`2.AlternateLookup`1"
                         or "System.Collections.Generic.IReadOnlyDictionary`2"
                 && method.Name == "TryGetValue"
                 && !method.Parameters.Any(static parameter =>

@@ -10945,6 +10945,92 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
     }
 
     /// <summary>
+    /// The framework members the remediation reaches are in-memory work with no producer effect: Unicode
+    /// scalar decoding, text-element measurement, a process reader's stream and encoding getters, a bounded
+    /// sleep, a type's name, a dictionary's alternate-key lookup, and an immutable-array predicate test.
+    /// None of them is an unclassified site.
+    /// </summary>
+    [Theory]
+    [InlineData("System.Text.Rune rune = new System.Text.Rune('a'); _ = rune.Value; _ = System.Text.Rune.GetUnicodeCategory(rune); _ = System.Text.Rune.DecodeFromUtf16(System.MemoryExtensions.AsSpan(\"a\"), out System.Text.Rune decoded, out int consumed); _ = System.Text.Rune.TryCreate('a', out System.Text.Rune created);", "System.Text.Rune")]
+    [InlineData("_ = System.Globalization.StringInfo.GetNextTextElementLength(\"a\");", "System.Globalization.StringInfo")]
+    [InlineData("System.IO.StreamReader reader = null!; _ = reader.BaseStream; _ = reader.CurrentEncoding;", "System.IO.StreamReader.")]
+    [InlineData("System.Threading.Thread.Sleep(1);", "System.Threading.Thread.Sleep")]
+    [InlineData("_ = typeof(string).FullName;", "System.Type.FullName")]
+    [InlineData("System.Collections.Generic.Dictionary<string, int> owners = new(System.StringComparer.Ordinal); System.Collections.Generic.Dictionary<string, int>.AlternateLookup<System.ReadOnlySpan<char>> lookup = owners.GetAlternateLookup<System.ReadOnlySpan<char>>(); _ = lookup.TryGetValue(System.MemoryExtensions.AsSpan(\"a\"), out int owner);", "AlternateLookup")]
+    [InlineData("System.Collections.Immutable.ImmutableArray<int> values = System.Collections.Immutable.ImmutableArray.Create(1); _ = System.Linq.ImmutableArrayExtensions.Any(values, static value => value > 0);", "System.Linq.ImmutableArrayExtensions.Any")]
+    public void ReviewedRemediationBclMembersAreNotUnclassifiedSites(string body, string detailFragment)
+    {
+        HostedProducerDiscovery<HostedProducerSite> result = Discover(FixtureSource(body));
+
+        Assert.DoesNotContain(result.Diagnostics, diagnostic =>
+            diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED"
+            && diagnostic.Detail.Contains(detailFragment, StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// <c>ImmutableArrayExtensions.Any</c> runs its predicate synchronously, so the predicate is traversed
+    /// like <c>Enumerable.Any</c>'s rather than exempted: a file probe inside it is a discovered site.
+    /// </summary>
+    [Fact]
+    public void ImmutableArrayAnyTraversesItsPredicate()
+    {
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(R2Source(
+            R2Admission
+                + "System.Collections.Immutable.ImmutableArray<string> paths = System.Collections.Immutable.ImmutableArray.Create(\"path\"); _ = System.Linq.ImmutableArrayExtensions.Any(paths, static path => System.IO.File.Exists(path)); "));
+
+        Assert.Contains(result.Items, static site => site.Callee == "System.IO.File.Exists");
+    }
+
+    /// <summary>
+    /// Only <c>Thread.Sleep</c> is a reviewed thread member: creating and starting a thread is still an
+    /// unclassified site.
+    /// </summary>
+    [Fact]
+    public void ThreadMembersOtherThanSleepRemainUnclassified()
+    {
+        HostedProducerDiscovery<HostedProducerSite> result = Discover(FixtureSource(
+            "new System.Threading.Thread(static () => { }).Start();"));
+
+        Assert.Contains(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED"
+            && diagnostic.Detail.StartsWith("System.Threading.Thread.", StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// Reviewing the alternate-key <c>TryGetValue</c> exempts the lookup only. The dictionary's comparer is
+    /// still proven where the dictionary is constructed, so an authored comparer whose equality probes the
+    /// file system is still reported.
+    /// </summary>
+    [Fact]
+    public void AlternateLookupOverAnAuthoredComparerStillReportsTheComparer()
+    {
+        const string helper = """
+            sealed class Folding : System.Collections.Generic.IEqualityComparer<string>, System.Collections.Generic.IAlternateEqualityComparer<System.ReadOnlySpan<char>, string>
+            {
+                public bool Equals(string? x, string? y) => System.IO.File.Exists(x) && string.Equals(x, y, System.StringComparison.Ordinal);
+
+                public int GetHashCode(string obj) => 0;
+
+                public bool Equals(System.ReadOnlySpan<char> alternate, string other) => System.IO.File.Exists(other) && System.MemoryExtensions.SequenceEqual(alternate, other);
+
+                public int GetHashCode(System.ReadOnlySpan<char> alternate) => 0;
+
+                public string Create(System.ReadOnlySpan<char> alternate) => alternate.ToString();
+            }
+            """;
+
+        HostedProducerDiscovery<HostedProducerSite> result = Discover(FixtureSource(
+            "System.Collections.Generic.Dictionary<string, int> owners = new(new Folding()); System.Collections.Generic.Dictionary<string, int>.AlternateLookup<System.ReadOnlySpan<char>> lookup = owners.GetAlternateLookup<System.ReadOnlySpan<char>>(); _ = lookup.TryGetValue(System.MemoryExtensions.AsSpan(\"a\"), out int owner);",
+            helper));
+
+        bool comparerReported = result.Items.Any(static site => site.EnclosingType == "Folding")
+            || result.Diagnostics.Any(static diagnostic => diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED"
+                && diagnostic.Detail == "System.Collections.Generic.Dictionary`2..ctor");
+
+        Assert.True(comparerReported, "The authored comparer must still be reported where the dictionary is constructed.");
+    }
+
+    /// <summary>
     /// Matching a path segment against a fixed list of names with a case-insensitive span comparison is
     /// pure in-memory work, so the predicate that decides whether a workspace path may be indexed adds no
     /// unclassified site to the hosted workspace-indexing graph.
