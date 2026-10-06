@@ -802,7 +802,7 @@ public sealed partial class WorkspaceIndexingServiceTests : IAsyncLifetime
 
         WorkspaceIndexingService service = CreateService(weave, out _);
 
-        service.MaxFilesToIndexOverride = 1;
+        service.MaxFilesToIndexOverrideForTests = 1;
 
         Assert.True(service.QueueIndexNow(_workspace.Root).IsSuccess);
 

@@ -21,6 +21,8 @@ internal sealed partial class WorkspaceIndexingService
     /// </summary>
     private const int MaxConsecutiveRootFailures = 8;
 
+    private static readonly TimeSpan DefaultRetryBackoffBaseDelay = TimeSpan.FromSeconds(1);
+
     private readonly object _schedulerGate = new();
 
     private readonly Dictionary<string, WorkspaceEntry> _entries = new(CanonicalDirectoryComparer);
@@ -43,13 +45,19 @@ internal sealed partial class WorkspaceIndexingService
     /// Replaces the code-owned per-checkpoint file budget for the units the scheduler runs, so a test
     /// can exhaust it with a handful of files.
     /// </summary>
-    internal int? MaxFilesToIndexOverride { get; set; }
+    internal int? MaxFilesToIndexOverrideForTests { get; set; }
 
     /// <summary>
-    /// The first retry delay of a failed entry; it doubles per consecutive failure up to the
-    /// reconciliation interval. A property so a test can shorten the ladder.
+    /// Replaces <see cref="DefaultRetryBackoffBaseDelay"/>, so a test can shorten or stretch the retry
+    /// ladders.
     /// </summary>
-    internal TimeSpan RetryBackoffBaseDelay { get; set; } = TimeSpan.FromSeconds(1);
+    internal TimeSpan? RetryBackoffBaseDelayOverrideForTests { get; set; }
+
+    /// <summary>
+    /// The first retry delay of a failed entry or watcher; it doubles per consecutive failure up to the
+    /// reconciliation interval.
+    /// </summary>
+    private TimeSpan RetryBackoffBaseDelay => RetryBackoffBaseDelayOverrideForTests ?? DefaultRetryBackoffBaseDelay;
 
     internal WorkspaceSchedulerSnapshot GetSchedulerSnapshot()
     {
@@ -85,19 +93,20 @@ internal sealed partial class WorkspaceIndexingService
     }
 
     /// <summary>
-    /// When the scheduler loop next has work of its own: the next sweep, or the next future retry of
-    /// an entry whose watcher is not running. A retry already past is not a deadline: the loop has
-    /// just attempted it, or capacity or admission refused it, and waking at once would only spin.
+    /// When the scheduler loop next has work of its own: the next sweep, or the next retry of an entry
+    /// whose watcher is not running that the pass starting at <paramref name="passStartedAt"/> did not
+    /// already attempt. A retry due before the pass began was attempted by it (or refused for capacity,
+    /// and an admission refusal pushes its own deadline out), so waking at once for it would only spin;
+    /// one due after the pass began may have been a moment too early to attempt and is still owed even
+    /// when it is already past by the time the sleep is worked out.
     /// </summary>
-    private DateTimeOffset NextWakeLocked()
+    private DateTimeOffset NextWakeLocked(DateTimeOffset passStartedAt)
     {
         DateTimeOffset due = NextSweepDueLocked();
 
-        DateTimeOffset now = DateTimeOffset.UtcNow;
-
         foreach (WorkspaceEntry entry in _entries.Values)
         {
-            if (entry.Watcher is null && entry.WatcherRetryAt is { } retryAt && retryAt > now && retryAt < due)
+            if (entry.Watcher is null && entry.WatcherRetryAt is { } retryAt && retryAt > passStartedAt && retryAt < due)
             {
                 due = retryAt;
             }
@@ -418,6 +427,8 @@ internal sealed partial class WorkspaceIndexingService
                         if (demand.Full)
                         {
                             handle.Sweep = entry.Sweep;
+
+                            handle.RanFullUnit = true;
                         }
 
                         entry.Status.SetReconciling(true);
@@ -437,7 +448,7 @@ internal sealed partial class WorkspaceIndexingService
                     {
                         EmbeddingSettings embeddings = optionsMonitor.CurrentValue.ResolveEmbeddings();
 
-                        if (MaxFilesToIndexOverride is { } fileBudget)
+                        if (MaxFilesToIndexOverrideForTests is { } fileBudget)
                         {
                             embeddings.Codebase.MaxFilesToIndex = fileBudget;
                         }
@@ -545,6 +556,11 @@ internal sealed partial class WorkspaceIndexingService
 
         handle.DisposeCancellation();
 
+        // Read before the lock: it resolves settings, which allocates.
+        int? unsweptRetryIntervalMinutes = handle is { Failed: true, RanFullUnit: true, Sweep: null }
+            ? CurrentReconciliationIntervalMinutes()
+            : null;
+
         lock (_schedulerGate)
         {
             WorkspaceEntry entry = handle.Entry;
@@ -563,6 +579,13 @@ internal sealed partial class WorkspaceIndexingService
             if (handle.Sweep is not null || entry.Retired)
             {
                 SettleSweepLocked(entry, handle.Failed, handle.RootUnavailable);
+            }
+            else if (unsweptRetryIntervalMinutes is { } intervalMinutes && IsCurrentLocked(entry))
+            {
+                // A full unit that belongs to no sweep (a manual request, or the follow-up of one that
+                // stopped on its budget) failed: nothing else would retry what it did not reach before the
+                // next reconciliation interval, so it takes its place on the same ladder a sweep's does.
+                RecordFailureLocked(entry, handle.RootUnavailable, intervalMinutes);
             }
 
             if (IsCurrentLocked(entry) && entry.ConsecutiveRootFailures >= MaxConsecutiveRootFailures)
@@ -918,6 +941,9 @@ internal sealed partial class WorkspaceIndexingService
         internal WorkspaceEntry Entry { get; } = entry;
 
         internal ScheduledSweep? Sweep { get; set; }
+
+        /// <summary>The handle ran at least one full unit, as opposed to only incremental ones.</summary>
+        internal bool RanFullUnit { get; set; }
 
         internal bool Failed { get; set; }
 

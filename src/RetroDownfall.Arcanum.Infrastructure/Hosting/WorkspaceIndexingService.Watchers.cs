@@ -27,6 +27,25 @@ internal sealed partial class WorkspaceIndexingService
     /// </summary>
     internal bool BypassWatcherIntakeFilterForTests { get; set; }
 
+    /// <summary>
+    /// Runs on the scheduler loop between its watcher pass and the computation of how long it sleeps, so a
+    /// test can let a retry deadline arrive in exactly that window.
+    /// </summary>
+    internal Action? AfterWatcherPassForTests { get; set; }
+
+    /// <summary>
+    /// Replaces <see cref="DefaultStableWatcherPeriod"/>, so a test can decide whether a watcher counts as
+    /// having run stably when it delivers an event.
+    /// </summary>
+    internal TimeSpan? WatcherStablePeriodOverrideForTests { get; set; }
+
+    /// <summary>
+    /// How long a watcher must have been running before an event it delivers proves it healthy and starts
+    /// its failure ladder over. A watcher that errors right after it was created has shown nothing, so it
+    /// keeps climbing instead of being re-created at once, forever.
+    /// </summary>
+    private static readonly TimeSpan DefaultStableWatcherPeriod = TimeSpan.FromSeconds(30);
+
     internal int ActiveWatcherCount
     {
         get
@@ -69,6 +88,10 @@ internal sealed partial class WorkspaceIndexingService
                     entries = _entries.Values.ToArray();
                 }
 
+                // Every retry deadline later than this instant is still owed after the pass below: one the
+                // pass found a moment too early to attempt may be past by the time the sleep is computed.
+                DateTimeOffset passStartedAt = DateTimeOffset.UtcNow;
+
                 foreach (WorkspaceEntry entry in entries)
                 {
                     EnsureWatcher(entry);
@@ -76,13 +99,15 @@ internal sealed partial class WorkspaceIndexingService
 
                 StartScheduledSweep(embeddings);
 
+                AfterWatcherPassForTests?.Invoke();
+
                 TimeSpan wait;
 
                 lock (_schedulerGate)
                 {
                     wait = _sweep is not null
                         ? Timeout.InfiniteTimeSpan
-                        : NextWakeLocked() - DateTimeOffset.UtcNow;
+                        : NextWakeLocked(passStartedAt) - DateTimeOffset.UtcNow;
 
                     if (wait != Timeout.InfiniteTimeSpan && wait <= TimeSpan.Zero)
                     {
@@ -253,6 +278,15 @@ internal sealed partial class WorkspaceIndexingService
             return;
         }
 
+        RecordFailureLocked(entry, rootUnavailable, sweep.IntervalMinutes);
+    }
+
+    /// <summary>
+    /// Counts one more failure of <paramref name="entry"/> and schedules its next retry on an exponential
+    /// backoff capped at the reconciliation interval.
+    /// </summary>
+    private void RecordFailureLocked(WorkspaceEntry entry, bool rootUnavailable, int reconciliationIntervalMinutes)
+    {
         entry.ConsecutiveFailures++;
 
         entry.ConsecutiveRootFailures = rootUnavailable ? entry.ConsecutiveRootFailures + 1 : 0;
@@ -260,7 +294,7 @@ internal sealed partial class WorkspaceIndexingService
         entry.RetryAt = DateTimeOffset.UtcNow + NextRetryDelay(
             entry.ConsecutiveFailures,
             RetryBackoffBaseDelay,
-            TimeSpan.FromMinutes(sweep.IntervalMinutes));
+            TimeSpan.FromMinutes(reconciliationIntervalMinutes));
     }
 
     private void EnsureWatcher(WorkspaceEntry entry)
@@ -293,6 +327,10 @@ internal sealed partial class WorkspaceIndexingService
                 GrimoireWorkKind.WorkspaceIndexing,
                 out IGrimoireWorkLease? admitted))
         {
+            // Maintenance owns admission. The watcher is owed, not abandoned: without a deadline the
+            // scheduler loop would not look at this entry again until the next reconciliation.
+            DeferWatcherCreationAfterRefusal(entry);
+
             return;
         }
 
@@ -344,6 +382,9 @@ internal sealed partial class WorkspaceIndexingService
 
         IWorkspaceFileWatcher? created = null;
 
+        // Set when this watcher replaces one that failed: nothing watched in between.
+        bool recovered = false;
+
         try
         {
             created = watcherFactory.Create(entry.Path,
@@ -359,6 +400,8 @@ internal sealed partial class WorkspaceIndexingService
                     created = null;
 
                     entry.Status.SetWatching(true);
+
+                    recovered = entry.WatcherFailures > 0;
                 }
             }
         }
@@ -383,6 +426,55 @@ internal sealed partial class WorkspaceIndexingService
                 }
             }
         }
+
+        if (recovered)
+        {
+            RequestReconciliationAfterWatcherRecovery(entry);
+        }
+    }
+
+    /// <summary>
+    /// A creation attempt that maintenance refused keeps its place on the retry ladder, or starts a
+    /// one-step ladder when it had none, so the scheduler loop wakes for it instead of sleeping until the
+    /// next reconciliation. It is not a failure: nothing is counted and nothing is forced.
+    /// </summary>
+    private void DeferWatcherCreationAfterRefusal(WorkspaceEntry entry)
+    {
+        TimeSpan delay = RetryBackoffBaseDelay;
+
+        lock (_schedulerGate)
+        {
+            if (_intakeClosed || !IsCurrentLocked(entry) || entry.Watcher is not null)
+            {
+                return;
+            }
+
+            entry.WatcherRetryAt = DateTimeOffset.UtcNow + delay;
+        }
+    }
+
+    /// <summary>
+    /// A watcher that was down may have missed what changed meanwhile, and the next scheduled
+    /// reconciliation can be an hour away, so its creation asks for one. A plain one: a creation failure
+    /// delivered no events, so nothing was lost that a forced re-read would have to find.
+    /// </summary>
+    private void RequestReconciliationAfterWatcherRecovery(WorkspaceEntry entry)
+    {
+        WorkspaceHandle? start;
+
+        lock (_schedulerGate)
+        {
+            if (_intakeClosed || !IsCurrentLocked(entry))
+            {
+                return;
+            }
+
+            entry.Pending.Full = true;
+
+            start = ScheduleLocked(entry);
+        }
+
+        StartHandle(start);
     }
 
     private void QueueWatcherChange(WorkspaceEntry entry, WatcherRegistration registration, WorkspaceFileChange change)
@@ -407,8 +499,13 @@ internal sealed partial class WorkspaceIndexingService
 
             entry.Status.MarkEvent();
 
-            // A watcher that delivers events is healthy, so its next failure starts the ladder over.
-            entry.ClearWatcherFailureState();
+            // A watcher that has been running for a while and still delivers events is healthy, so its
+            // next failure starts the ladder over. One that errors right after it was created has shown
+            // nothing yet, so an event in between must not let it be re-created at once, forever.
+            if (DateTimeOffset.UtcNow - registration.CreatedAt >= (WatcherStablePeriodOverrideForTests ?? DefaultStableWatcherPeriod))
+            {
+                entry.ClearWatcherFailureState();
+            }
 
             if (!queueOldPath && !queuePath)
             {
@@ -508,6 +605,8 @@ internal sealed partial class WorkspaceIndexingService
     {
         IWorkspaceFileWatcher? watcher;
 
+        int intervalMinutes = CurrentReconciliationIntervalMinutes();
+
         lock (_schedulerGate)
         {
             if (_intakeClosed || !IsCurrentLocked(entry) || !ReferenceEquals(entry.Watcher, registration))
@@ -522,7 +621,7 @@ internal sealed partial class WorkspaceIndexingService
             // A watcher that ran and then failed may have lost events, so what it covered is re-read.
             entry.Pending.RequestForcedReconciliation();
 
-            RecordWatcherFailureLocked(entry);
+            RecordWatcherFailureLocked(entry, intervalMinutes);
         }
 
         try
@@ -547,6 +646,8 @@ internal sealed partial class WorkspaceIndexingService
     {
         TimeSpan retryIn;
 
+        int intervalMinutes = CurrentReconciliationIntervalMinutes();
+
         lock (_schedulerGate)
         {
             if (_intakeClosed || !IsCurrentLocked(entry) || !ReferenceEquals(entry.Watcher, registration))
@@ -558,7 +659,7 @@ internal sealed partial class WorkspaceIndexingService
 
             entry.Status.MarkDegraded(overflowed: false);
 
-            RecordWatcherFailureLocked(entry);
+            RecordWatcherFailureLocked(entry, intervalMinutes);
 
             retryIn = entry.WatcherRetryAt is { } retryAt ? retryAt - DateTimeOffset.UtcNow : TimeSpan.Zero;
         }
@@ -580,9 +681,9 @@ internal sealed partial class WorkspaceIndexingService
 
     /// <summary>
     /// Records a watcher failure and schedules the next creation attempt: the first retry is immediate,
-    /// then the delay doubles from <see cref="RetryBackoffBaseDelay"/> up to the reconciliation interval.
+    /// then the delay doubles from <see cref="DefaultRetryBackoffBaseDelay"/> up to the reconciliation interval.
     /// </summary>
-    private void RecordWatcherFailureLocked(WorkspaceEntry entry)
+    private void RecordWatcherFailureLocked(WorkspaceEntry entry, int reconciliationIntervalMinutes)
     {
         entry.WatcherFailures++;
 
@@ -593,14 +694,19 @@ internal sealed partial class WorkspaceIndexingService
             return;
         }
 
-        int interval = ArcanumSettingClamps.EmbeddingsCodebaseReconciliationIntervalMinutes(
-            optionsMonitor.CurrentValue.ResolveEmbeddings().Codebase.ReconciliationIntervalMinutes);
-
         entry.WatcherRetryAt = DateTimeOffset.UtcNow + NextRetryDelay(
             entry.WatcherFailures - 1,
             RetryBackoffBaseDelay,
-            TimeSpan.FromMinutes(interval));
+            TimeSpan.FromMinutes(reconciliationIntervalMinutes));
     }
+
+    /// <summary>
+    /// The reconciliation interval as the settings say now, read before any scheduler lock is taken:
+    /// resolving the embedding settings allocates a whole tree, which has no business inside the gate.
+    /// </summary>
+    private int CurrentReconciliationIntervalMinutes() =>
+        ArcanumSettingClamps.EmbeddingsCodebaseReconciliationIntervalMinutes(
+            optionsMonitor.CurrentValue.ResolveEmbeddings().Codebase.ReconciliationIntervalMinutes);
 
     private static bool IsWatcherBackoffActiveLocked(WorkspaceEntry entry) =>
         entry.WatcherRetryAt is { } retryAt && retryAt > DateTimeOffset.UtcNow;
@@ -821,5 +927,7 @@ internal sealed partial class WorkspaceIndexingService
     private sealed class WatcherRegistration
     {
         internal IWorkspaceFileWatcher? Watcher { get; set; }
+
+        internal DateTimeOffset CreatedAt { get; } = DateTimeOffset.UtcNow;
     }
 }

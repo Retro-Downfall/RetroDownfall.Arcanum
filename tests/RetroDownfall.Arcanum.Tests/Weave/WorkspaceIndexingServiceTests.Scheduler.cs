@@ -246,7 +246,7 @@ public sealed partial class WorkspaceIndexingServiceTests
 
         WorkspaceIndexingService service = CreateService(weave, out _);
 
-        service.MaxFilesToIndexOverride = 1;
+        service.MaxFilesToIndexOverrideForTests = 1;
 
         Assert.True(service.QueueIndexNow(_workspace.Root).IsSuccess);
 
@@ -292,7 +292,7 @@ public sealed partial class WorkspaceIndexingServiceTests
 
         WorkspaceIndexingService service = CreateService(new FakeWeaveService(), out _, watcherFactory: watchers, workAdmission: gate);
 
-        service.MaxFilesToIndexOverride = 1;
+        service.MaxFilesToIndexOverrideForTests = 1;
 
         service.RegisterWorkspace(_workspace.Root);
 
