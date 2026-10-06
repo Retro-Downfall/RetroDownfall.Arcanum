@@ -34,8 +34,9 @@ internal static class SessionDivinationEndpoints
 
     private const int ContentPreviewChars = 200;
 
-    // How many ranked candidates the first search looks at per requested result, and the most it will
-    // ever look at. The window doubles from the first to the second.
+    // How many ranked candidates the first search looks at per requested result, and the most any search
+    // looks at. A first window too few of whose hits survive the filters is followed by exactly one more
+    // search, at the cap.
     private const int InitialWindowMultiplier = 4;
 
     private const int MaxCandidateWindow = 500;
@@ -112,13 +113,19 @@ internal static class SessionDivinationEndpoints
                 // The vector search ranks every embedded entry in the installation, and the Campaign and
                 // status filters live on the Session the entry belongs to. Cutting the ranking at `limit`
                 // first and filtering afterwards returned nothing for a Campaign whose closest matches sat
-                // just below the cut, so the window widens until `limit` hits survive the filters (one more
-                // than `limit`, so hasMore can be answered), the ranking is exhausted, or the window cap is
-                // reached. The window only changes how many candidates are looked at: the similarity
-                // threshold is applied inside every search and is never relaxed.
+                // just below the cut. A first window of 4 x `limit` candidates that leaves too few
+                // survivors (one more than `limit` is wanted, so hasMore can be answered) and did not exhaust
+                // the ranking is followed by one search at the cap. Doubling in between repeated the whole
+                // search for a few more candidates each time: eight searches for limit 1, each a scan of
+                // every embedding on the managed path. The window only changes how many candidates are
+                // looked at: the similarity threshold is applied inside every search and is never relaxed.
                 int window = Math.Min(MaxCandidateWindow, limit * InitialWindowMultiplier);
 
-                SemanticSessionSearchResult[] survivors;
+                List<SemanticSessionSearchResult> survivors = [];
+
+                // The wider search returns the narrower one's hits again. Only the ones not yet joined are
+                // read, so the second pass never re-reads an Entry the first already filtered.
+                HashSet<string> joined = new(StringComparer.Ordinal);
 
                 bool rankingExhausted;
 
@@ -140,33 +147,38 @@ internal static class SessionDivinationEndpoints
                         return FailureResult(traceId, searchResult.Error);
                     }
 
-                    survivors = await JoinSessionMetadataAsync(
+                    DivinationResult[] unjoined = [.. searchResult.Value.Where(hit => joined.Add(hit.Id))];
+
+                    survivors.AddRange(await JoinSessionMetadataAsync(
                         db,
                         connections,
-                        searchResult.Value,
+                        unjoined,
                         request.CampaignId,
                         request.Status,
-                        ctx.RequestAborted).ConfigureAwait(false);
+                        ctx.RequestAborted).ConfigureAwait(false));
 
                     // A search that returned fewer rows than it was asked for has already ranked everything
                     // above the threshold, so widening the window cannot find another candidate.
                     rankingExhausted = searchResult.Value.Length < window;
 
-                    if (survivors.Length > limit || rankingExhausted || window >= MaxCandidateWindow)
+                    if (survivors.Count > limit || rankingExhausted || window >= MaxCandidateWindow)
                     {
                         break;
                     }
 
-                    window = Math.Min(MaxCandidateWindow, window * 2);
+                    window = MaxCandidateWindow;
                 }
+
+                // Each join ranks only its own hits, so the two passes are merged here, closest first.
+                SemanticSessionSearchResult[] ranked = [.. survivors.OrderByDescending(static r => r.Similarity)];
 
                 // Phase 2 does not implement cursor pagination over Divination hits, so hasMore says only
                 // that the answer was cut: more matching hits were found than `limit` returned, or the
                 // candidate window filled before the search could rule that out. It is never false while
                 // another matching hit could exist.
                 SemanticSearchResult payload = new(
-                    survivors.Take(limit).ToArray(),
-                    HasMore: survivors.Length > limit || !rankingExhausted,
+                    ranked.Take(limit).ToArray(),
+                    HasMore: ranked.Length > limit || !rankingExhausted,
                     NextCursor: null);
 
                 return Results.Ok(
@@ -234,7 +246,7 @@ internal static class SessionDivinationEndpoints
 
         StringBuilder sql = new(
             """
-            SELECT e."Id", e."SessionId", e."Content", e."Role", e."CreatedAt", s."Title"
+            SELECT e."Id", e."SessionId", substr(e."Content", 1, @previewChars), e."Role", e."CreatedAt", s."Title"
             FROM "Entries" e
             INNER JOIN "Sessions" s ON s."Id" = e."SessionId"
             WHERE e."Id" IN (
@@ -255,6 +267,12 @@ internal static class SessionDivinationEndpoints
         }
 
         sql.Append(')');
+
+        // Only the preview is returned, so only the preview is read: an Entry may hold up to
+        // MaxEntryContentBytes, and the cap window joins up to 500 of them. SQLite's substr counts
+        // characters (code points), and each is one or two UTF-16 units, so the first ContentPreviewChars
+        // of them always cover the ContentPreviewChars units the preview is cut from below.
+        AddParameter(cmd, "@previewChars", ContentPreviewChars);
 
         if (campaignIdFilter is { } campaignId)
         {
@@ -283,7 +301,7 @@ internal static class SessionDivinationEndpoints
 
             Guid sessionId = Guid.Parse(reader.GetString(1));
 
-            string content = reader.GetString(2);
+            string contentHead = reader.GetString(2);
 
             int roleValue = reader.GetInt32(3);
 
@@ -293,7 +311,7 @@ internal static class SessionDivinationEndpoints
 
             float similarity = similarityByEntryId.TryGetValue(entryIdText, out float sim) ? sim : 0f;
 
-            string preview = content[..Utf8Truncation.SafeCharSliceLength(content, ContentPreviewChars)];
+            string preview = contentHead[..Utf8Truncation.SafeCharSliceLength(contentHead, ContentPreviewChars)];
 
             results.Add(new SemanticSessionSearchResult(
                 sessionId,
