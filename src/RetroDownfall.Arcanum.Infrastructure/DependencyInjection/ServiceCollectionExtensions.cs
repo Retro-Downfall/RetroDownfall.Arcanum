@@ -492,8 +492,7 @@ public static class ServiceCollectionExtensions
 
         services.TryAddScoped<InstallationResetExistingGrimoire>(provider =>
             new InstallationResetExistingGrimoire(
-                new Lazy<DataProtectionSecretStore>(
-                    () => provider.GetRequiredService<DataProtectionSecretStore>()),
+                provider,
                 settings,
                 provider.GetService<TimeProvider>() ?? TimeProvider.System,
                 provider.GetService<ILoggerFactory>()
