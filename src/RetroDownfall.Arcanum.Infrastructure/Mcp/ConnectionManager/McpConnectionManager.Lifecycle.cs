@@ -69,7 +69,7 @@ public sealed partial class McpConnectionManager
             return await FinishStartAsync(
                     entry,
                     cfg,
-                    new McpClientGeneration(clientFactory(entry, transportGeneration)),
+                    new McpClientGeneration(clientFactory(transportGeneration)),
                     entry.ScopeWorkingDirectory ?? "global",
                     cancellationToken)
                 .ConfigureAwait(false);
@@ -83,10 +83,11 @@ public sealed partial class McpConnectionManager
         };
     }
 
-    /// <summary>Builds the client a start would otherwise create from the entry's real transport.</summary>
-    internal delegate IMcpClient ClientFactoryForTestsDelegate(
-        ManagedMcpServerEntry entry,
-        long transportGeneration);
+    /// <summary>
+    /// Builds the client a start would otherwise create from its real transport. It receives only the
+    /// start's transport generation: the entry stays with the manager that owns its client.
+    /// </summary>
+    internal delegate IMcpClient ClientFactoryForTestsDelegate(long transportGeneration);
 
     /// <summary>
     /// Test seam: when set, every start asks this factory for its client instead of spawning a stdio

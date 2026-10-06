@@ -30587,6 +30587,8 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
     [InlineData("callback-unknown-writer", false)]
     [InlineData("exact-result-wrapper", true)]
     [InlineData("unknown-result-wrapper", false)]
+    [InlineData("dormant-seam-carrier", false)]
+    [InlineData("dormant-seam-generation", true)]
     public void InternalCarrierOnPublicPartialOwnerRequiresExactAssemblyConfinement(
         string shape,
         bool resolved)
@@ -30600,6 +30602,18 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
             "registry-escape" => "UnknownCarrierInput.Accept(_registry);",
             "unknown-writer" => "entry.Cleanup = UnknownCarrierInput.Cleanup();",
             "callback-unknown-writer" => "System.Action poison = () => entry.Cleanup = UnknownCarrierInput.Cleanup(); poison();",
+            "dormant-seam-carrier" => "if (CarrierFactoryForTests is { } carrierFactory) { carrierFactory(entry); }",
+            "dormant-seam-generation" => "if (GenerationFactoryForTests is { } generationFactory) { generationFactory(entry.Id); }",
+            _ => string.Empty,
+        };
+
+        // A test seam no production code assigns is never invoked, yet handing it the carrier is still an
+        // escape: the analysis does not see into the delegate, so it cannot confine what the delegate keeps.
+        // Handing it only a value of the carrier keeps the carrier confined.
+        string seam = shape switch
+        {
+            "dormant-seam-carrier" => "internal System.Action<InternalEntry>? CarrierFactoryForTests { get; set; } ",
+            "dormant-seam-generation" => "internal System.Action<int>? GenerationFactoryForTests { get; set; } ",
             _ => string.Empty,
         };
 
@@ -30638,6 +30652,7 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
                 + "InternalEntry current = GetManagedEntryForTests(1)!; if (visited.Contains(current)) { ICarrierCleanup? cleanup = current.Cleanup; current.Cleanup = null; cleanup?.Dispose(); } } "
                 + wrapper
                 + publicEscape
+                + seam
                 + "} public sealed partial class PublicCarrierOwner { private static void Publish(InternalEntry entry) { entry.Cleanup = new CarrierCleanup(); } } "
                 + unknownWrapper
                 + authoredResult

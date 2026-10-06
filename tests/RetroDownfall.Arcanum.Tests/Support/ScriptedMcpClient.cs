@@ -69,7 +69,7 @@ internal sealed class ScriptedMcpClientFactory
         }
     }
 
-    public IMcpClient Create(ManagedMcpServerEntry entry, long transportGeneration)
+    public IMcpClient Create(long transportGeneration)
     {
         ScriptedMcpClient client = new(transportGeneration);
 
