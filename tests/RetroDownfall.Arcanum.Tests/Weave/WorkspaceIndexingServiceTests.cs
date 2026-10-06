@@ -2083,8 +2083,9 @@ public sealed partial class WorkspaceIndexingServiceTests : IAsyncLifetime
 
         public string WorkspacePath => workspacePath;
 
+        // The platform watcher reports whether an event names a directory; the fake reads it from disk.
         public void TriggerCreated(string path) =>
-            onChange(new WorkspaceFileChange(workspacePath, WorkspaceFileChangeKind.Created, path));
+            onChange(new WorkspaceFileChange(workspacePath, WorkspaceFileChangeKind.Created, path, IsDirectory: Directory.Exists(path)));
 
         public void TriggerChanged(string path) =>
             onChange(new WorkspaceFileChange(workspacePath, WorkspaceFileChangeKind.Changed, path));
@@ -2093,7 +2094,7 @@ public sealed partial class WorkspaceIndexingServiceTests : IAsyncLifetime
             onChange(new WorkspaceFileChange(workspacePath, WorkspaceFileChangeKind.Deleted, path));
 
         public void TriggerRenamed(string oldPath, string path) =>
-            onChange(new WorkspaceFileChange(workspacePath, WorkspaceFileChangeKind.Renamed, path, oldPath));
+            onChange(new WorkspaceFileChange(workspacePath, WorkspaceFileChangeKind.Renamed, path, oldPath, IsDirectory: Directory.Exists(path)));
 
         public void TriggerError(Exception exception) => onError(exception);
 
