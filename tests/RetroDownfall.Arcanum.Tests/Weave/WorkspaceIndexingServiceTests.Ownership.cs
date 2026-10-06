@@ -269,7 +269,7 @@ public sealed partial class WorkspaceIndexingServiceTests
 
         WorkspaceIndexingService service = CreateService(new FakeWeaveService(), out _, watcherFactory: watchers);
 
-        service.RetryBackoffBaseDelay = TimeSpan.FromMilliseconds(1);
+        service.RetryBackoffBaseDelayOverrideForTests = TimeSpan.FromMilliseconds(1);
 
         service.RegisterWorkspace(healthy);
 
@@ -326,6 +326,10 @@ public sealed partial class WorkspaceIndexingServiceTests
 
         WorkspaceIndexingService service = CreateService(new FakeWeaveService(), out _, watcherFactory: watchers, scopeFactory: scopes);
 
+        // The ladder after the one immediate retry starts at half a minute, so however slow this run is,
+        // exactly two attempts can fall inside the wait below; one per debounce cycle would be about five.
+        service.RetryBackoffBaseDelayOverrideForTests = TimeSpan.FromSeconds(30);
+
         service.RegisterWorkspace(_workspace.Root);
 
         await service.StartAsync(CancellationToken.None);
@@ -335,10 +339,10 @@ public sealed partial class WorkspaceIndexingServiceTests
             // The one scheduled reconciliation walks the workspace once and settles.
             await WaitForWorkspaceConditionAsync(() => scopes.ScopeCount == 1 && service.GetScheduledSweepSnapshot().Outstanding == 0);
 
-            await Task.Delay(TimeSpan.FromSeconds(2.5));
+            await Task.Delay(TimeSpan.FromSeconds(1.5));
 
-            // A retry at once, then one second, then two: never one attempt per debounce cycle.
-            Assert.InRange(watchers.Created.Count, 1, 4);
+            // The registration's attempt and its one immediate retry; the next is half a minute away.
+            Assert.Equal(2, watchers.Created.Count);
 
             // No creation failure forced another reconciliation.
             Assert.Equal(1, scopes.ScopeCount);
@@ -375,7 +379,7 @@ public sealed partial class WorkspaceIndexingServiceTests
 
         WorkspaceIndexingService service = CreateService(new FakeWeaveService(), out _, watcherFactory: watchers);
 
-        service.RetryBackoffBaseDelay = TimeSpan.FromMilliseconds(700);
+        service.RetryBackoffBaseDelayOverrideForTests = TimeSpan.FromMilliseconds(700);
 
         service.RegisterWorkspace(_workspace.Root);
 

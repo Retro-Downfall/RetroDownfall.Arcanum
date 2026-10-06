@@ -10926,6 +10926,38 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
         Assert.DoesNotContain(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED");
     }
 
+    /// <summary>
+    /// The alternate-lookup shape the workspace eligibility predicate used to match a path segment against
+    /// its ignored-directory set is not a reviewed neutral member, so the production analysis reported it
+    /// as one <c>HOSTED_SITE_UNCLASSIFIED</c> in <c>WorkspaceIndexEligibility</c>. This is that shape, so the
+    /// replacement below is shown to be the mechanism and not luck.
+    /// </summary>
+    [Fact]
+    public void ASpanAlternateLookupOverAHashSetIsAnUnclassifiedSite()
+    {
+        HostedProducerDiscovery<HostedProducerSite> result = Discover(FixtureSource(
+            "System.Collections.Generic.HashSet<string> ignored = new(System.StringComparer.OrdinalIgnoreCase) { \"bin\" }; System.Collections.Generic.HashSet<string>.AlternateLookup<System.ReadOnlySpan<char>> lookup = ignored.GetAlternateLookup<System.ReadOnlySpan<char>>(); _ = lookup.Contains(\"BIN\".AsSpan());"));
+
+        Assert.Contains(
+            result.Diagnostics,
+            static diagnostic => diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED"
+                && diagnostic.Detail.Contains("AlternateLookup", StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// Matching a path segment against a fixed list of names with a case-insensitive span comparison is
+    /// pure in-memory work, so the predicate that decides whether a workspace path may be indexed adds no
+    /// unclassified site to the hosted workspace-indexing graph.
+    /// </summary>
+    [Fact]
+    public void ASpanSegmentComparedWithFixedNamesIsNotAnUnclassifiedSite()
+    {
+        HostedProducerDiscovery<HostedProducerSite> result = Discover(FixtureSource(
+            "string[] ignored = [\"bin\", \"obj\"]; char[] separators = [System.IO.Path.DirectorySeparatorChar]; string relativePath = \"src/BIN/a.cs\"; int start = 0; while (start < relativePath.Length) { int separator = relativePath.IndexOfAny(separators, start); int end = separator < 0 ? relativePath.Length : separator; System.ReadOnlySpan<char> segment = relativePath.AsSpan(start, end - start); foreach (string name in ignored) { if (System.MemoryExtensions.Equals(segment, name, System.StringComparison.OrdinalIgnoreCase)) { return Task.CompletedTask; } } start = end + 1; }"));
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED");
+    }
+
     [Theory]
     [InlineData("SqliteErrorCode")]
     [InlineData("SqliteExtendedErrorCode")]
