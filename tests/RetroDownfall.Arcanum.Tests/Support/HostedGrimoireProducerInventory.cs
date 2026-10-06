@@ -32001,6 +32001,19 @@ internal static class HostedGrimoireProducerInventory
                     && AssemblyIdentityMatches(
                         definition.ContainingAssembly.Identity,
                         typeof(System.Diagnostics.Process).Assembly.GetName()),
+                "System.IO.FileSystemAclExtensions.Create" =>
+                    HasExactParameterTypes(
+                        definition,
+                        "System.IO.FileInfo",
+                        "System.IO.FileMode",
+                        "System.Security.AccessControl.FileSystemRights",
+                        "System.IO.FileShare",
+                        "System.Int32",
+                        "System.IO.FileOptions",
+                        "System.Security.AccessControl.FileSecurity")
+                    && FrameworkAssemblyIdentityMatches(
+                        definition.ContainingAssembly.Identity,
+                        typeof(System.IO.FileSystemAclExtensions).Assembly.GetName()),
                 "System.IO.File.OpenRead" =>
                     HasExactParameterTypes(definition, "System.String")
                     && FrameworkAssemblyIdentityMatches(
@@ -34223,6 +34236,14 @@ internal static class HostedGrimoireProducerInventory
                     registeredType))
             {
                 return ExactCleanupProvenance(member, registeredType);
+            }
+
+            if (expression is InvocationExpressionSyntax absentCall
+                && symbol is IMethodSymbol { MethodKind: MethodKind.DelegateInvoke }
+                && member.Model.GetSymbolInfo(DelegateReceiver(member, absentCall)).Symbol is { } absentSeam
+                && IsProvenAbsentCallable(absentSeam))
+            {
+                return new([], true, false);
             }
 
             if (expression is InvocationExpressionSyntax call
@@ -37547,6 +37568,14 @@ internal static class HostedGrimoireProducerInventory
                     context) is { } selectedFactoryValues)
             {
                 return selectedFactoryValues;
+            }
+
+            if (expression is InvocationExpressionSyntax absentCall
+                && symbol is IMethodSymbol { MethodKind: MethodKind.DelegateInvoke }
+                && member.Model.GetSymbolInfo(DelegateReceiver(member, absentCall)).Symbol is { } absentSeam
+                && IsProvenAbsentCallable(absentSeam))
+            {
+                return new([], true, false);
             }
 
             if (expression is InvocationExpressionSyntax call

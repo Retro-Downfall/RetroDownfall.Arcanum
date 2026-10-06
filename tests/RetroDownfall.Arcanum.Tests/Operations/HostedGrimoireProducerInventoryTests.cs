@@ -11166,6 +11166,83 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
     }
 
     /// <summary>
+    /// A factory that returns a test seam's stream when the seam is set and an exact construction
+    /// otherwise keeps exact cleanup provenance only when the traversal proves production never sets the
+    /// seam: an unassigned internal auto-property, an internal property over an <c>AsyncLocal</c> that only
+    /// its own setter writes, or a public auto-property of an internal type. A seam production assigns, a
+    /// seam whose <c>AsyncLocal</c> is also written outside the property, and a public seam of a public
+    /// type keep the seam's stream, so the cleanup stays unresolved.
+    /// </summary>
+    [Theory]
+    [InlineData("SeamHost.DormantForTests", false)]
+    [InlineData("SeamHost.AmbientForTests", false)]
+    [InlineData("SeamHost.InternalTypePublicForTests", false)]
+    [InlineData("SeamHost.AssignedForTests", true)]
+    [InlineData("SeamHost.LeakedForTests", true)]
+    [InlineData("OpenSeamHost.OpenForTests", true)]
+    public void AbsentTestSeamProducesNoCleanupValue(string seam, bool unresolved)
+    {
+        const string helper = """
+            internal static class SeamHost
+            {
+                private static readonly System.Threading.AsyncLocal<System.Func<string, System.IO.FileStream>?> AmbientOverride = new();
+
+                private static readonly System.Threading.AsyncLocal<System.Func<string, System.IO.FileStream>?> LeakedOverride = new();
+
+                internal static System.Func<string, System.IO.FileStream>? DormantForTests { get; set; }
+
+                internal static System.Func<string, System.IO.FileStream>? AmbientForTests
+                {
+                    get => AmbientOverride.Value;
+
+                    set => AmbientOverride.Value = value;
+                }
+
+                internal static System.Func<string, System.IO.FileStream>? LeakedForTests
+                {
+                    get => LeakedOverride.Value;
+
+                    set => LeakedOverride.Value = value;
+                }
+
+                public static System.Func<string, System.IO.FileStream>? InternalTypePublicForTests { get; set; }
+
+                internal static System.Func<string, System.IO.FileStream>? AssignedForTests { get; set; }
+
+                internal static void Leak(System.Func<string, System.IO.FileStream> factory) => LeakedOverride.Value = factory;
+
+                internal static void Install(System.Func<string, System.IO.FileStream> factory) => AssignedForTests = factory;
+            }
+
+            public static class OpenSeamHost
+            {
+                public static System.Func<string, System.IO.FileStream>? OpenForTests { get; set; }
+            }
+
+            internal static class SeamFiles
+            {
+                internal static System.IO.FileStream Open(string path)
+                {
+                    if (SEAM is { } create)
+                    {
+                        return create(path);
+                    }
+
+                    return new System.IO.FileStream(path, System.IO.FileMode.Create);
+                }
+            }
+            """;
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(R2Source(
+            R2Admission + "await using System.IO.FileStream stream = SeamFiles.Open(\"path\"); ",
+            helper.Replace("SEAM", seam, StringComparison.Ordinal)));
+
+        Assert.Equal(
+            unresolved,
+            result.Diagnostics.Any(static diagnostic => diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED"));
+    }
+
+    /// <summary>
     /// A delete seam whose <c>AsyncLocal</c> storage is also written outside the property's own accessors
     /// is not proven absent, because production can set that storage without assigning the property, so
     /// invoking the seam is an unproven callback. Storage written only by the property's setter still
@@ -23496,6 +23573,71 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
         Assert.Contains(result.Items, static site =>
             site.Kind == HostedProducerSiteKind.FileSystemRead
             && site.Callee == "System.IO.FileStream.DisposeAsync");
+    }
+
+    /// <summary>
+    /// The Windows owner-only temp create opens its stream with the framework's
+    /// <c>FileSystemAclExtensions.Create</c>, which returns a new <see cref="FileStream"/> over the handle it
+    /// created and leaves it to the caller, so that stream's compiler cleanup resolves exactly as it does
+    /// after <c>File.OpenRead</c>.
+    /// </summary>
+    [Fact]
+    public void AclFileCreateIsATrustedCleanupFactory()
+    {
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(R2Source(
+            R2Admission
+                + "await using System.IO.FileStream acl = System.IO.FileSystemAclExtensions.Create(new System.IO.FileInfo(\"path\"), System.IO.FileMode.Create, System.Security.AccessControl.FileSystemRights.Modify, System.IO.FileShare.None, 4096, System.IO.FileOptions.Asynchronous, new System.Security.AccessControl.FileSecurity()); "));
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED");
+    }
+
+    /// <summary>
+    /// The ACL file-create factory is trusted on its framework assembly identity, not its name: a
+    /// same-named <c>FileSystemAclExtensions.Create</c> with the same seven parameters from another
+    /// assembly leaves the stream's cleanup unresolved.
+    /// </summary>
+    [Fact]
+    public void AclFileCreateLookAlikeFromAnotherAssemblyStaysUnresolved()
+    {
+        CSharpCompilation foreign = Compile(
+                "[assembly: global::System.Reflection.AssemblyVersionAttribute(\"99.0.0.0\")] "
+                    + "namespace System.IO { public static class FileSystemAclExtensions { public static global::System.IO.FileStream Create(this global::System.IO.FileInfo fileInfo, global::System.IO.FileMode mode, global::System.Security.AccessControl.FileSystemRights rights, global::System.IO.FileShare share, int bufferSize, global::System.IO.FileOptions options, global::System.Security.AccessControl.FileSecurity? fileSecurity) => null!; } } ")
+            .WithAssemblyName("Acl.LookAlike");
+
+        using MemoryStream image = new();
+
+        Assert.True(foreign.Emit(image).Success);
+
+        MetadataReference reference = MetadataReference.CreateFromImage(
+            image.ToArray(),
+            MetadataReferenceProperties.Assembly.WithAliases(
+                ImmutableArray.Create("foreign")));
+
+        string body =
+            "await using System.IO.FileStream lookAlike = foreign::System.IO.FileSystemAclExtensions.Create(new System.IO.FileInfo(\"path\"), System.IO.FileMode.Create, System.Security.AccessControl.FileSystemRights.Modify, System.IO.FileShare.None, 4096, System.IO.FileOptions.Asynchronous, null); ";
+
+        CSharpCompilation consumer = Compile(
+                "extern alias foreign; "
+                    + R2Source(R2Admission + body))
+            .AddReferences(reference)
+            .WithAssemblyName("Acl.LookAlike.Consumer");
+
+        Assert.Empty(consumer.GetDiagnostics().Where(static diagnostic =>
+            diagnostic.Severity == DiagnosticSeverity.Error));
+
+        HostedProducerDiscovery<HostedProducerSite> result =
+            HostedGrimoireProducerInventory.DiscoverProducerSites(
+                [consumer],
+                new(["Worker"], []),
+                [new("Worker", [OrdinaryRoot()])],
+                []);
+
+        Assert.Contains(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED"
+            && diagnostic.Detail.StartsWith(
+                "System.IO.FileStream.DisposeAsync;",
+                StringComparison.Ordinal));
     }
 
     [Fact]
