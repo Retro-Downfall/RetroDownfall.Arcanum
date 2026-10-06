@@ -141,7 +141,7 @@ internal sealed partial class CampaignPathMarkerLifecycle
         ImmutableArray<CampaignPathRestoreCleanupSeed> seeds,
         List<CampaignPathMarkerRootAuthority> retained)
     {
-        List<IAsyncDisposable> unretained = [];
+        List<CampaignPathMarkerRootAuthority> unretained = [];
 
         foreach (CampaignPathRestoreCleanupSeed seed in seeds)
         {
@@ -417,7 +417,7 @@ internal sealed partial class CampaignPathMarkerLifecycle
 
     public async ValueTask ReleaseRetainedRootsAsync(Guid ownerOperationId)
     {
-        List<IAsyncDisposable> removedRoots;
+        List<CampaignPathMarkerRootAuthority> removedRoots;
 
         lock (_retainedRootsGate)
         {
@@ -430,7 +430,7 @@ internal sealed partial class CampaignPathMarkerLifecycle
 
     public async ValueTask DisposeAsync()
     {
-        List<IAsyncDisposable> removedRoots;
+        List<CampaignPathMarkerRootAuthority> removedRoots;
 
         lock (_retainedRootsGate)
         {
@@ -497,9 +497,9 @@ internal sealed partial class CampaignPathMarkerLifecycle
         }
     }
 
-    private List<IAsyncDisposable> DetachRetainedRoots(Guid? ownerOperationId)
+    private List<CampaignPathMarkerRootAuthority> DetachRetainedRoots(Guid? ownerOperationId)
     {
-        List<IAsyncDisposable> removedRoots = [];
+        List<CampaignPathMarkerRootAuthority> removedRoots = [];
 
         foreach (KeyValuePair<Guid, RetainedRoot> entry in _retainedRoots)
         {
@@ -1034,14 +1034,35 @@ internal sealed partial class CampaignPathMarkerLifecycle
 
 internal static class CampaignPathRetainedRootRelease
 {
-    internal static async ValueTask DisposeAllAsync(
-        IEnumerable<IAsyncDisposable> retainedRoots)
+    /// <summary>
+    /// Releases roots through the sealed authority type that every production caller holds.
+    /// </summary>
+    /// <remarks>
+    /// The sealed element type is what lets the hosted-producer analysis resolve each release to the one
+    /// <see cref="CampaignPathMarkerRootAuthority.DisposeAsync"/> it runs. Enumerated as
+    /// <see cref="IAsyncDisposable"/>, the same roots name only an interface slot whose target the analysis
+    /// cannot prove.
+    /// </remarks>
+    internal static ValueTask DisposeAllAsync(
+        IEnumerable<CampaignPathMarkerRootAuthority> retainedRoots) =>
+        DisposeAllAsync(retainedRoots, static root => root.DisposeAsync());
+
+    /// <summary>
+    /// Releases roots known only through <see cref="IAsyncDisposable"/>.
+    /// </summary>
+    internal static ValueTask DisposeAllAsync(
+        IEnumerable<IAsyncDisposable> retainedRoots) =>
+        DisposeAllAsync(retainedRoots, static root => root.DisposeAsync());
+
+    private static async ValueTask DisposeAllAsync<TRoot>(
+        IEnumerable<TRoot> retainedRoots,
+        Func<TRoot, ValueTask> dispose)
     {
-        foreach (IAsyncDisposable retainedRoot in retainedRoots)
+        foreach (TRoot retainedRoot in retainedRoots)
         {
             try
             {
-                await retainedRoot.DisposeAsync().ConfigureAwait(false);
+                await dispose(retainedRoot).ConfigureAwait(false);
             }
             catch (Exception exception)
             {
