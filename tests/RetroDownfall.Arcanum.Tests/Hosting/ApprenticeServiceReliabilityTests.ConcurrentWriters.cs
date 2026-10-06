@@ -239,16 +239,18 @@ public sealed partial class ApprenticeServiceReliabilityTests
 
     /// <summary>
     /// The run's own pause record, written after its execution was cancelled, must never turn an operator's
-    /// <c>Cancelled</c> into <c>Paused</c> — even when the Cancel lands right after the run looked at the row.
+    /// <c>Cancelled</c> into <c>Paused</c> — even when the Cancel lands just before the run's write reaches the
+    /// row. Only a write conditional on the status the row holds when it lands keeps the Cancel: an unconditional
+    /// status write, or a read-and-check followed by a whole-row write, records <c>Paused</c> over it.
     /// </summary>
     [Fact]
-    public async Task PersistPausedIfCurrent_OperatorCancelLandingAfterTheRunReadsTheRow_KeepsCancelled()
+    public async Task PersistPausedIfCurrent_OperatorCancelLandingJustBeforeTheRunsWrite_KeepsCancelled()
     {
         Guid apprenticeId = Guid.NewGuid();
 
-        AfterFirstReadRepository repo = new(RunningApprenticeWithOneStep(apprenticeId))
+        BeforeFirstWriteRepository repo = new(RunningApprenticeWithOneStep(apprenticeId))
         {
-            AfterFirstRead = row => row.Status = ApprenticeStatus.Cancelled.ToString(),
+            BeforeFirstWrite = row => row.Status = ApprenticeStatus.Cancelled.ToString(),
         };
 
         using ApprenticeService service = CreateService(
@@ -525,6 +527,81 @@ public sealed partial class ApprenticeServiceReliabilityTests
             }
 
             return snapshot;
+        }
+    }
+
+    /// <summary>
+    /// Changes the stored row once, as the first write of any kind arrives and before that write looks at the
+    /// row: the shape of a write from the other side landing just before the code under test's own write. A
+    /// conditional write then sees the change; an unconditional one, or a whole-row write built from an earlier
+    /// read, overwrites it.
+    /// </summary>
+    private sealed class BeforeFirstWriteRepository(params Apprentice[] apprentices)
+        : InMemoryApprenticeRepository(apprentices)
+    {
+        private int _writes;
+
+        internal Action<Apprentice>? BeforeFirstWrite { get; init; }
+
+        public override Task<Apprentice> UpdateAsync(
+            Apprentice apprentice,
+            CancellationToken cancellationToken = default)
+        {
+            ApplyBeforeFirstWrite(apprentice.Id);
+
+            return base.UpdateAsync(apprentice, cancellationToken);
+        }
+
+        public override Task<bool> UpdateProgressAsync(
+            Apprentice apprentice,
+            string expectedPlan,
+            int expectedCurrentStep,
+            CancellationToken cancellationToken = default)
+        {
+            ApplyBeforeFirstWrite(apprentice.Id);
+
+            return base.UpdateProgressAsync(apprentice, expectedPlan, expectedCurrentStep, cancellationToken);
+        }
+
+        public override Task<bool> BindSessionAsync(
+            Guid id,
+            Guid sessionId,
+            CancellationToken cancellationToken = default)
+        {
+            ApplyBeforeFirstWrite(id);
+
+            return base.BindSessionAsync(id, sessionId, cancellationToken);
+        }
+
+        public override Task<bool> TryUpdateAsync(
+            Apprentice apprentice,
+            IReadOnlyCollection<string> expectedStatuses,
+            int expectedCurrentStep,
+            CancellationToken cancellationToken = default)
+        {
+            ApplyBeforeFirstWrite(apprentice.Id);
+
+            return base.TryUpdateAsync(apprentice, expectedStatuses, expectedCurrentStep, cancellationToken);
+        }
+
+        public override Task<bool> TryUpdateStatusAsync(
+            Guid id,
+            string status,
+            IReadOnlyCollection<string> expectedStatuses,
+            CancellationToken cancellationToken = default)
+        {
+            ApplyBeforeFirstWrite(id);
+
+            return base.TryUpdateStatusAsync(id, status, expectedStatuses, cancellationToken);
+        }
+
+        // The conditional writes route their accepted write through UpdateAsync, so only the first entry fires.
+        private void ApplyBeforeFirstWrite(Guid id)
+        {
+            if (BeforeFirstWrite is { } change && Interlocked.Increment(ref _writes) == 1)
+            {
+                Mutate(id, change);
+            }
         }
     }
 }

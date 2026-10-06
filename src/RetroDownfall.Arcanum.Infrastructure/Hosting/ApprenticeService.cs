@@ -1712,9 +1712,11 @@ internal sealed class ApprenticeService(
 
             apprentice.Plan = ApprenticeRepository.SerializePlan(plan);
 
-            // The plan response is paid for, so it commits on CancellationToken.None: a Pause landing now
-            // keeps it, and Resume continues from it instead of buying another. Only the plan is written, and
-            // only over the empty plan this unit read, so a plan an operator re-wove meanwhile stands.
+            // The plan response has arrived and is paid for, so it commits on CancellationToken.None: a Pause
+            // landing from here on keeps it, and Resume continues from it instead of buying another. (A Pause
+            // the provider honoured mid-call aborted the call above, so there is no plan to keep.) Only the plan
+            // is written, and only over the empty plan this unit read, so a plan an operator re-wove meanwhile
+            // stands.
             if (!await repo
                     .UpdateProgressAsync(
                         apprentice,
@@ -1730,9 +1732,9 @@ internal sealed class ApprenticeService(
                 return ApprenticeUnitDisposition.Continue;
             }
 
-            // Running only from Planning: a Pause that landed during the plan call keeps the row Paused, now
-            // with its plan, and a crash before this write leaves a Planning row whose plan crash recovery
-            // continues from.
+            // Running only from Planning: a Pause that landed after the plan response arrived keeps the row
+            // Paused, now with its plan, and a crash before this write leaves a Planning row whose plan crash
+            // recovery continues from.
             _ = await repo
                 .TryUpdateStatusAsync(
                     apprenticeId,

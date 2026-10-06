@@ -180,6 +180,73 @@ public sealed partial class ApprenticeServiceReliabilityTests
     }
 
     /// <summary>
+    /// The plan call runs on the cancellable execution token, so a Pause the provider honours while the call is
+    /// still in flight abandons it: no plan response arrives and there is none to keep. Whether the provider
+    /// surfaces the cancellation by throwing or as a failed result, the row ends <c>Paused</c> with no plan, and
+    /// Resume generates the plan again.
+    /// </summary>
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Pause_the_provider_honours_during_the_plan_call_leaves_no_plan_and_resume_generates_one(
+        bool providerThrows)
+    {
+        Guid apprenticeId = Guid.NewGuid();
+
+        Apprentice apprentice = RunningApprenticeWithOneStep(apprenticeId);
+
+        apprentice.Status = ApprenticeStatus.Idle.ToString();
+
+        apprentice.Plan = "[]";
+
+        CancellationSensitiveRepository repo = new(apprentice);
+
+        ApprenticeService? service = null;
+
+        PlanThenPauseIntelligence intelligence = new(afterPlan: () => CancelExecutionLease(service!, apprenticeId))
+        {
+            HonoursCancellation = true,
+            ReportsCancellationAsFailure = !providerThrows,
+        };
+
+        using ApprenticeService created = CreateService(
+            repo,
+            CreateCapacitySettings(),
+            new CapturingLogger<ApprenticeService>(),
+            intelligence);
+
+        service = created;
+
+        Result<string> started = await service.StartAsync(apprenticeId, CancellationToken.None);
+
+        Assert.True(started.IsSuccess, started.IsFailure ? started.Error.Message : null);
+
+        await WaitUntilAsync(() => !GetActiveTasks(service).ContainsKey(apprenticeId));
+
+        Apprentice paused = repo.Get(apprenticeId);
+
+        Assert.Equal(ApprenticeStatus.Paused.ToString(), paused.Status);
+
+        Assert.Empty(ApprenticeRepository.DeserializePlan(paused.Plan));
+
+        Assert.Equal(0, intelligence.StreamCalls);
+
+        intelligence.AfterPlan = null;
+
+        Result<string> resumed = await service.ResumeAsync(apprenticeId, CancellationToken.None);
+
+        Assert.True(resumed.IsSuccess, resumed.IsFailure ? resumed.Error.Message : null);
+
+        await WaitUntilAsync(() => !GetActiveTasks(service).ContainsKey(apprenticeId));
+
+        Assert.Equal(2, intelligence.PlanCalls);
+
+        Assert.Equal(1, intelligence.StreamCalls);
+
+        Assert.Equal(ApprenticeStatus.Completed.ToString(), repo.Get(apprenticeId).Status);
+    }
+
+    /// <summary>
     /// One Simulacrum branch finished while its sibling failed and an operator paused the Apprentice. The failure
     /// cannot be recorded over the operator's Paused, but the finished branch's effects have run, so its
     /// completion is committed anyway — and the group's next run executes only the branch that did not finish.
@@ -886,6 +953,15 @@ public sealed partial class ApprenticeServiceReliabilityTests
 
         internal Action? AfterPlan { get; set; } = afterPlan;
 
+        /// <summary>
+        /// When set, a cancellation observed once <see cref="AfterPlan"/> has run aborts the plan call before its
+        /// response is returned, the way a real provider honours the token mid-call.
+        /// </summary>
+        internal bool HonoursCancellation { get; init; }
+
+        /// <summary>With <see cref="HonoursCancellation"/>, the abort is a failed result instead of a throw.</summary>
+        internal bool ReportsCancellationAsFailure { get; init; }
+
         internal int PlanCalls => Volatile.Read(ref _planCalls);
 
         internal int StreamCalls => Volatile.Read(ref _streamCalls);
@@ -904,6 +980,14 @@ public sealed partial class ApprenticeServiceReliabilityTests
             _ = Interlocked.Increment(ref _planCalls);
 
             AfterPlan?.Invoke();
+
+            if (HonoursCancellation && cancellationToken.IsCancellationRequested)
+            {
+                return ReportsCancellationAsFailure
+                    ? Task.FromResult(Result<PromptTurnResult>.Failure(
+                        new Error("Hub.Error", "The plan request was cancelled.")))
+                    : Task.FromCanceled<Result<PromptTurnResult>>(cancellationToken);
+            }
 
             return Task.FromResult<Result<PromptTurnResult>>(
                 new PromptTurnResult(
