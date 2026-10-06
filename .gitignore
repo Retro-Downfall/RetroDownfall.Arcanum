@@ -27,7 +27,6 @@ mcp.db-wal
 *.db-shm
 *.db-wal
 
-
 # Per-developer Claude Code settings. Local by definition: an allowlist one developer
 # chose is not one every checkout should inherit.
 .claude/settings.local.json
