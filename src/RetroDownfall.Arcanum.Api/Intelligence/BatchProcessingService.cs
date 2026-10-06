@@ -448,12 +448,14 @@ internal sealed class BatchProcessingService(
 
                 await using (pageGroup!)
                 {
-                    IReadOnlyList<PreparedBatchRequestLine>? page = null;
+                    IReadOnlyList<PreparedBatchRequestLine>? attemptedPage = null;
 
                     try
                     {
-                        page = await ReadRequestPageAsync(reader, batch.Endpoint, customIds, stoppingToken)
+                        IReadOnlyList<PreparedBatchRequestLine> page = await ReadRequestPageAsync(reader, batch.Endpoint, customIds, stoppingToken)
                             .ConfigureAwait(false);
+
+                        attemptedPage = page;
 
                         await ProcessRequestPageAsync(batch.Id, page, state, scope.ServiceProvider,
                             batches, settings, stoppingToken).ConfigureAwait(false);
@@ -468,7 +470,7 @@ internal sealed class BatchProcessingService(
                         // even that cannot be recorded, the original failure propagates and
                         // startup reconciliation recovers the batch as before.
                         if (!await TryStopAfterUnexpectedFailureAsync(
-                                batch.Id, page, lastFinishedLine, batches, exception).ConfigureAwait(false))
+                                batch.Id, attemptedPage, lastFinishedLine, batches, exception).ConfigureAwait(false))
                         {
                             throw;
                         }
@@ -855,17 +857,19 @@ internal sealed class BatchProcessingService(
                 $"Arcanum stopped processing this batch after an unexpected host error (exception type {exceptionType}) once this request was durably marked for dispatch. Arcanum did not replay it because the provider may have completed and charged the request; submit this line again explicitly if another attempt is desired.")
                 .ConfigureAwait(false);
 
-            if (page is { Count: > 0 })
+            PreparedBatchRequestLine[] lines = page is null ? [] : page.ToArray();
+
+            if (lines.Length > 0)
             {
                 IReadOnlyList<BatchLineCheckpoint> checkpoints = await batches.ListLineCheckpointsAsync(
                     batchId,
-                    page[0].Line,
-                    page[^1].Line,
+                    lines[0].Line,
+                    lines[^1].Line,
                     CancellationToken.None).ConfigureAwait(false);
 
                 HashSet<long> started = [.. checkpoints.Select(static checkpoint => checkpoint.LineNumber)];
 
-                PreparedBatchRequestLine? firstUnstarted = page.FirstOrDefault(line => !started.Contains(line.Line));
+                PreparedBatchRequestLine? firstUnstarted = lines.FirstOrDefault(line => !started.Contains(line.Line));
 
                 if (firstUnstarted is not null)
                 {
