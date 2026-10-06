@@ -54,14 +54,6 @@ public sealed class InferenceExecuteWriterTests
     }
 
     /// <summary>
-    /// A stream that is waiting on the provider is not silent: a blank NDJSON line goes out on a timer, so an
-    /// idle connection survives the proxies and clients that drop one that says nothing.
-    /// </summary>
-    /// <remarks>
-    /// A blank line is the NDJSON keep-alive: the format is one JSON document per non-blank line, so every
-    /// reader skips it. It is written between frames only, never inside one.
-    /// </remarks>
-    /// <summary>
     /// A token stream does not pay for a heartbeat timer per token: the idle clock is one timer that is
     /// replaced only when it fires, not one started (and cancelled) for every provider event.
     /// </summary>
@@ -150,6 +142,14 @@ public sealed class InferenceExecuteWriterTests
         }
     }
 
+    /// <summary>
+    /// A stream that is waiting on the provider is not silent: a blank NDJSON line goes out on a timer, so an
+    /// idle connection survives the proxies and clients that drop one that says nothing.
+    /// </summary>
+    /// <remarks>
+    /// A blank line is the NDJSON keep-alive: the format is one JSON document per non-blank line, so every
+    /// reader skips it. It is written between frames only, never inside one.
+    /// </remarks>
     [Fact]
     public async Task Idle_stream_emits_heartbeat_newline_within_interval()
     {

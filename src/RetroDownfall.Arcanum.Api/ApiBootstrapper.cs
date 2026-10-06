@@ -313,7 +313,11 @@ public static class ApiBootstrapper
 
         IOptions<HostFilteringOptions> hostFiltering = app.Services.GetRequiredService<IOptions<HostFilteringOptions>>();
 
-        StringSegment[] callbackPattern = [new(callbackHost)];
+        // Both spellings of the name. The host-filtering middleware puts its list through IDNA before
+        // comparing, so an internationalised name configured in Unicode is answered in the ASCII spelling a
+        // client sends, and MatchesAny converts neither side: a pattern in the configured spelling alone
+        // would never match the request the allow-list let in, which would then reach every route.
+        StringSegment[] callbackPattern = [new(callbackHost), new(new HostString(callbackHost).ToUriComponent())];
 
         app.Use(async (context, next) =>
         {
@@ -369,7 +373,8 @@ public static class ApiBootstrapper
         }
 
         // Host, not IdnHost: an IPv6 literal stays bracketed, the form the middleware compares it in, and the
-        // middleware puts a Unicode name through IDNA itself.
+        // middleware puts a Unicode name through IDNA itself. Anything else that compares a Host header with
+        // this value has to do the same (UseArcanumCallbackAuthorityScope does).
         return baseUrl.Host;
     }
 

@@ -35,9 +35,9 @@ internal sealed class SessionEntrySseStreamWriter(HttpContext httpContext)
     private Utf8JsonWriter? _jsonWriter;
 
     /// <summary>
-    /// The capacity of the buffer this connection holds between frames.
+    /// The buffer this connection holds between frames.
     /// </summary>
-    internal int RetainedBufferCapacity => _buffer.Capacity;
+    internal ArrayBufferWriter<byte> RetainedBuffer => _buffer;
 
     public async Task WriteEntryAsync(Entry entry, CancellationToken cancellationToken)
     {
@@ -72,8 +72,13 @@ internal sealed class SessionEntrySseStreamWriter(HttpContext httpContext)
         {
             if (_buffer.Capacity > MaxRetainedBufferBytes)
             {
-                // The JSON writer is re-pointed at whichever buffer the next frame uses before it writes.
                 _buffer = new ArrayBufferWriter<byte>(InitialBufferBytes);
+
+                // A Utf8JsonWriter keeps the buffer it writes to after Flush and lets go of it only on Reset or
+                // Dispose. Waiting for the next frame's Reset would leave the large buffer reachable for as long
+                // as the session stays idle, and keep-alives do not come through this writer, so it is
+                // re-pointed now.
+                _jsonWriter?.Reset(_buffer);
             }
         }
     }

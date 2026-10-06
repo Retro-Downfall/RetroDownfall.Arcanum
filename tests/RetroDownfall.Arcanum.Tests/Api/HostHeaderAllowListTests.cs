@@ -206,24 +206,32 @@ public sealed class HostHeaderAllowListTests(ArcanumWebApplicationFactory factor
         /// to post, not a name the rest of the API is reached by, so a same-host proxy or tunnel relaying it
         /// reaches nothing else.
         /// </summary>
-        [SkippableFact]
-        public async Task The_host_of_the_callback_base_url_reaches_no_route_but_the_callback()
+        /// <remarks>
+        /// An internationalised name is configured in its Unicode spelling but arrives in its ASCII (IDNA)
+        /// one, the spelling a client puts in the <c>Host</c> header and the one the host-filtering middleware
+        /// converts its list to before comparing; it is confined in that spelling too, not only in the one it
+        /// was configured in.
+        /// </remarks>
+        [SkippableTheory]
+        [InlineData("https://arcanum.example.com:8443", "arcanum.example.com")]
+        [InlineData("https://bücher.example:8443", "xn--bcher-kva.example")]
+        public async Task The_host_of_the_callback_base_url_reaches_no_route_but_the_callback(string callbackBaseUrl, string addressedHost)
         {
             Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
-            await using ArcanumWebApplicationFactory configured = CreateFactory(pushNotifications: true, "https://arcanum.example.com:8443");
+            await using ArcanumWebApplicationFactory configured = CreateFactory(pushNotifications: true, callbackBaseUrl);
 
             using HttpClient client = configured.CreateAuthenticatedClient();
 
-            using HttpResponseMessage health = await client.GetAsync("http://arcanum.example.com/api/health");
+            using HttpResponseMessage health = await client.GetAsync($"http://{addressedHost}/api/health");
 
             Assert.Equal(HttpStatusCode.BadRequest, health.StatusCode);
 
-            using HttpResponseMessage meta = await client.GetAsync("http://arcanum.example.com:8443/api/meta");
+            using HttpResponseMessage meta = await client.GetAsync($"http://{addressedHost}:8443/api/meta");
 
             Assert.Equal(HttpStatusCode.BadRequest, meta.StatusCode);
 
-            using HttpResponseMessage callback = await client.PostAsync($"http://arcanum.example.com{CallbackRoute}", content: null);
+            using HttpResponseMessage callback = await client.PostAsync($"http://{addressedHost}{CallbackRoute}", content: null);
 
             Assert.Equal(HttpStatusCode.NotFound, callback.StatusCode);
 
