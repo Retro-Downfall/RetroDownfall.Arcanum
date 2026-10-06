@@ -46,24 +46,40 @@ internal static class InferenceExecuteWriter
 
     /// <summary>
     /// Yields <paramref name="source"/>'s events, and <see langword="null"/> each time a whole
-    /// <paramref name="interval"/> passes with none (never when the interval is zero).
+    /// <paramref name="interval"/> passes with nothing yielded (never when the interval is zero).
     /// </summary>
     /// <remarks>
-    /// One <c>MoveNextAsync</c> is outstanding at a time, as an async enumerator requires, and a heartbeat
-    /// races that same task rather than starting a second. If the consumer stops while one is outstanding,
-    /// the source's token is cancelled and the move awaited before the source is disposed, because an
-    /// iterator cannot be disposed mid-move.
+    /// <para>One <c>MoveNextAsync</c> is outstanding at a time, as an async enumerator requires, and the idle
+    /// timer races that same task rather than starting a second. If the consumer stops while one is
+    /// outstanding, the source's token is cancelled and the move awaited before the source is disposed,
+    /// because an iterator cannot be disposed mid-move.</para>
+    /// <para>The idle clock is a timestamp, not a timer per event. A timer is started only when a move is
+    /// actually waiting, for whatever is left of the interval since the last thing yielded, and it is kept
+    /// across events until it fires; when it fires the clock is read again, so an event that arrived in the
+    /// meantime restarts the wait rather than earning a heartbeat. A token stream therefore starts at most one
+    /// timer per interval instead of a timer and a linked cancellation source per token.</para>
     /// </remarks>
-    private static async IAsyncEnumerable<IntelligenceEvent?> WithHeartbeats(
+    /// <param name="delay">The timer; <see cref="Task.Delay(TimeSpan, CancellationToken)"/> unless a test counts it.</param>
+    internal static async IAsyncEnumerable<IntelligenceEvent?> WithHeartbeats(
         IAsyncEnumerable<IntelligenceEvent> source,
         TimeSpan interval,
-        [EnumeratorCancellation] CancellationToken cancellationToken)
+        [EnumeratorCancellation] CancellationToken cancellationToken,
+        Func<TimeSpan, CancellationToken, Task>? delay = null)
     {
+        Func<TimeSpan, CancellationToken, Task> startTimer = delay ?? Task.Delay;
+
         using CancellationTokenSource sourceCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+
+        // The timer's own source, cancelled when the stream ends so an outstanding timer does not outlive it.
+        using CancellationTokenSource timerCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
 
         await using IAsyncEnumerator<IntelligenceEvent> events = source.GetAsyncEnumerator(sourceCts.Token);
 
         Task<bool>? pendingMove = null;
+
+        Task? timer = null;
+
+        long lastYielded = Stopwatch.GetTimestamp();
 
         try
         {
@@ -71,23 +87,33 @@ internal static class InferenceExecuteWriter
             {
                 pendingMove ??= events.MoveNextAsync().AsTask();
 
-                if (interval > TimeSpan.Zero)
+                if (interval > TimeSpan.Zero && !pendingMove.IsCompleted)
                 {
-                    using CancellationTokenSource delayCts =
-                        CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                    TimeSpan idle = Stopwatch.GetElapsedTime(lastYielded);
 
-                    Task delay = Task.Delay(interval, delayCts.Token);
-
-                    if (await Task.WhenAny(pendingMove, delay).ConfigureAwait(false) == delay)
+                    if (idle >= interval)
                     {
                         cancellationToken.ThrowIfCancellationRequested();
+
+                        lastYielded = Stopwatch.GetTimestamp();
 
                         yield return null;
 
                         continue;
                     }
 
-                    await delayCts.CancelAsync().ConfigureAwait(false);
+                    timer ??= startTimer(interval - idle, timerCts.Token);
+
+                    if (await Task.WhenAny(pendingMove, timer).ConfigureAwait(false) == timer)
+                    {
+                        // Fired: read the clock again. An event that arrived since the timer started has
+                        // already moved it, and then this is not yet a whole idle interval.
+                        timer = null;
+
+                        cancellationToken.ThrowIfCancellationRequested();
+
+                        continue;
+                    }
                 }
 
                 bool hasNext = await pendingMove.ConfigureAwait(false);
@@ -99,11 +125,15 @@ internal static class InferenceExecuteWriter
                     yield break;
                 }
 
+                lastYielded = Stopwatch.GetTimestamp();
+
                 yield return events.Current;
             }
         }
         finally
         {
+            await timerCts.CancelAsync().ConfigureAwait(false);
+
             if (pendingMove is not null)
             {
                 await sourceCts.CancelAsync().ConfigureAwait(false);

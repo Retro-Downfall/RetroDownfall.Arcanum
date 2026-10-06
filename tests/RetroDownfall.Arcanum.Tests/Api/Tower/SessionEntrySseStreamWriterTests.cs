@@ -55,6 +55,41 @@ public sealed class SessionEntrySseStreamWriterTests
         }
     }
 
+    /// <summary>
+    /// One unusually large entry does not leave its buffer behind for the rest of an hours-long connection.
+    /// </summary>
+    [Fact]
+    public async Task A_large_entry_does_not_pin_its_buffer_for_the_life_of_the_connection()
+    {
+        DefaultHttpContext context = new();
+
+        MemoryStream body = new();
+
+        context.Response.Body = body;
+
+        SessionEntrySseStreamWriter writer = new(context);
+
+        await writer.WriteEntryAsync(CreateEntry(new string('x', 4 * 1024 * 1024), 1), CancellationToken.None);
+
+        Assert.True(
+            writer.RetainedBufferCapacity <= SessionEntrySseStreamWriter.MaxRetainedBufferBytes,
+            $"The writer kept a {writer.RetainedBufferCapacity}-byte buffer after a large entry.");
+
+        Entry small = CreateEntry("small", 2);
+
+        await writer.WriteEntryAsync(small, CancellationToken.None);
+
+        string[] frames = Encoding.UTF8.GetString(body.ToArray()).Split("\n\n", StringSplitOptions.RemoveEmptyEntries);
+
+        Assert.Equal(2, frames.Length);
+
+        Assert.Equal(
+            JsonSerializer.Serialize(SessionMapping.ToEntryDto(small), ArcanumJsonContext.Default.EntryDto),
+            frames[1]["data: ".Length..]);
+
+        Assert.True(writer.RetainedBufferCapacity <= SessionEntrySseStreamWriter.MaxRetainedBufferBytes);
+    }
+
     private static Entry CreateEntry(string content, int sequence) =>
         new()
         {

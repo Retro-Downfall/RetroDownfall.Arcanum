@@ -61,6 +61,95 @@ public sealed class InferenceExecuteWriterTests
     /// A blank line is the NDJSON keep-alive: the format is one JSON document per non-blank line, so every
     /// reader skips it. It is written between frames only, never inside one.
     /// </remarks>
+    /// <summary>
+    /// A token stream does not pay for a heartbeat timer per token: the idle clock is one timer that is
+    /// replaced only when it fires, not one started (and cancelled) for every provider event.
+    /// </summary>
+    [Fact]
+    public async Task A_busy_stream_starts_no_heartbeat_timer_per_event()
+    {
+        const int events = 500;
+
+        int timersStarted = 0;
+
+        Task CountingDelay(TimeSpan interval, CancellationToken cancellationToken)
+        {
+            _ = Interlocked.Increment(ref timersStarted);
+
+            return Task.Delay(interval, cancellationToken);
+        }
+
+        int yielded = 0;
+
+        await foreach (IntelligenceEvent? tick in InferenceExecuteWriter.WithHeartbeats(
+            ManyTokensAsync(events),
+            TimeSpan.FromHours(1),
+            CancellationToken.None,
+            CountingDelay))
+        {
+            Assert.NotNull(tick);
+
+            yielded++;
+        }
+
+        Assert.Equal(events, yielded);
+
+        Assert.True(timersStarted <= 1, $"{timersStarted} heartbeat timers were started for {events} events.");
+    }
+
+    /// <summary>
+    /// The idle clock restarts at each event: a heartbeat follows a whole interval with nothing sent, and
+    /// is not owed just because the interval elapsed since an earlier one.
+    /// </summary>
+    [Fact]
+    public async Task A_heartbeat_follows_a_whole_idle_interval_after_the_last_event()
+    {
+        TaskCompletionSource release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        async IAsyncEnumerable<IntelligenceEvent> OneThenWaitAsync()
+        {
+            yield return new IntelligenceEvent(IntelligenceEventType.Token, "first");
+
+            await release.Task;
+
+            yield return new IntelligenceEvent(IntelligenceEventType.Token, "second");
+        }
+
+        List<string> seen = [];
+
+        await foreach (IntelligenceEvent? tick in InferenceExecuteWriter.WithHeartbeats(
+            OneThenWaitAsync(),
+            TimeSpan.FromMilliseconds(50),
+            CancellationToken.None))
+        {
+            seen.Add(tick?.Message ?? "heartbeat");
+
+            if (tick is null)
+            {
+                release.TrySetResult();
+            }
+        }
+
+        Assert.Equal("first", seen[0]);
+
+        Assert.Equal("heartbeat", seen[1]);
+
+        Assert.Equal("second", seen[^1]);
+    }
+
+    private static async IAsyncEnumerable<IntelligenceEvent> ManyTokensAsync(int count)
+    {
+        for (int index = 0; index < count; index++)
+        {
+            yield return new IntelligenceEvent(IntelligenceEventType.Token, index.ToString(System.Globalization.CultureInfo.InvariantCulture));
+
+            if (index % 50 == 0)
+            {
+                await Task.Yield();
+            }
+        }
+    }
+
     [Fact]
     public async Task Idle_stream_emits_heartbeat_newline_within_interval()
     {

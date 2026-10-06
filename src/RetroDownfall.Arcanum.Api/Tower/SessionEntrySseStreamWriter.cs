@@ -1,5 +1,4 @@
 using System.Buffers;
-using System.Diagnostics.CodeAnalysis;
 using System.Text.Json;
 using Microsoft.AspNetCore.Http;
 using RetroDownfall.Arcanum.Api.Serialization;
@@ -16,16 +15,29 @@ namespace RetroDownfall.Arcanum.Api.Tower;
 /// a busy session is an allocation per frame on a connection that lives for hours. A connection writes its
 /// frames one at a time, so one of each is enough, as on the Chronicle stream.
 /// </remarks>
-[ExcludeFromCodeCoverage] // Reason: HTTP SSE streaming glue; exercised via the session stream integration routes.
 internal sealed class SessionEntrySseStreamWriter(HttpContext httpContext)
 {
+    private const int InitialBufferBytes = 1024;
+
+    /// <summary>
+    /// The most buffer a connection keeps between frames. A buffer grows to fit the largest frame it has
+    /// written, so one large entry would otherwise stay allocated for the rest of a connection that can live
+    /// for hours; a frame past this size gets its buffer and is then let go.
+    /// </summary>
+    internal const int MaxRetainedBufferBytes = 64 * 1024;
+
     private static readonly byte[] SseDataPrefix = "data: "u8.ToArray();
 
     private static readonly byte[] SseLineBreak = "\n\n"u8.ToArray();
 
-    private readonly ArrayBufferWriter<byte> _buffer = new(1024);
+    private ArrayBufferWriter<byte> _buffer = new(InitialBufferBytes);
 
     private Utf8JsonWriter? _jsonWriter;
+
+    /// <summary>
+    /// The capacity of the buffer this connection holds between frames.
+    /// </summary>
+    internal int RetainedBufferCapacity => _buffer.Capacity;
 
     public async Task WriteEntryAsync(Entry entry, CancellationToken cancellationToken)
     {
@@ -50,8 +62,19 @@ internal sealed class SessionEntrySseStreamWriter(HttpContext httpContext)
 
         _buffer.Write(SseLineBreak);
 
-        await httpContext.Response.Body.WriteAsync(_buffer.WrittenMemory, cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await httpContext.Response.Body.WriteAsync(_buffer.WrittenMemory, cancellationToken).ConfigureAwait(false);
 
-        await httpContext.Response.Body.FlushAsync(cancellationToken).ConfigureAwait(false);
+            await httpContext.Response.Body.FlushAsync(cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            if (_buffer.Capacity > MaxRetainedBufferBytes)
+            {
+                // The JSON writer is re-pointed at whichever buffer the next frame uses before it writes.
+                _buffer = new ArrayBufferWriter<byte>(InitialBufferBytes);
+            }
+        }
     }
 }
