@@ -13,11 +13,14 @@ namespace RetroDownfall.Arcanum.Infrastructure.Covenant;
 /// How a pre-readiness schema-repair pass left the installation.
 /// </summary>
 /// <remarks>
-/// <see cref="KeptClosed"/> is not a failure code. It is startup's verdict that the journal is still
-/// active and readiness must not be published, which is the only safe state when a repair's durable
-/// outcome cannot be established. Admission is shut in every case but one: when only the one-shot
-/// post-disposition finalizer failed after the gate had already reopened, the gate is open in this
-/// process, which stops at this verdict and never serves it, and the next start resumes the journal.
+/// <see cref="KeptClosed"/> is not a failure code. It is the verdict that the journal is still active,
+/// which is the only safe state when a repair's durable outcome cannot be established. Startup does not
+/// stop on it: the bootstrapper logs one warning and goes on to publish readiness, so the process serves
+/// with Covenant admission shut behind the recovery owner this pass adopted, and the next start resumes
+/// the journal. (A restore's kept-closed verdict is the one that stops startup.) Admission is shut in
+/// every case but one: when only the one-shot post-disposition finalizer failed after the gate had
+/// already applied a reopening disposition, the gate is open in this process and serves, and the journal
+/// stays at <c>ReopenPending</c> for the next start to finish.
 /// </remarks>
 internal enum CovenantSchemaRepairStartupRecoveryOutcome : byte
 {
@@ -72,7 +75,7 @@ internal interface ICovenantSchemaRepairStartupRecovery
 /// that disposition succeeds. A changed catalog digest, a changed effect identity, a failed health
 /// publication, or any uncertainty about what the interrupted repair actually wrote returns
 /// <see cref="CovenantSchemaRepairStartupRecoveryOutcome.KeptClosed"/>, leaves the journal active, and
-/// blocks bootstrap (§10.17).</para>
+/// keeps the adopted owner's Covenant admission shut for the process (§10.17).</para>
 /// </remarks>
 internal sealed class CovenantSchemaRepairStartupRecovery(
     CovenantOperationGate gate,
@@ -298,7 +301,7 @@ internal sealed class CovenantSchemaRepairStartupRecovery(
 
         // A failed completion is either the gate refusing the disposition or, after the gate had already
         // acted, the finalizer failing; the lease reports either as the same failure and names only the
-        // exception type, so the code is the one record of why startup stops here.
+        // exception type, so the code is the one record of why this verdict is KeptClosed.
         if (closed.IsFailure)
         {
             return Kept("complete", closed.Error);
@@ -394,7 +397,7 @@ internal sealed class CovenantSchemaRepairStartupRecovery(
     private static Result<CovenantSchemaRepairStartupRecoveryOutcome> Kept(string stage, Error? error = null)
     {
         Log.Warning(
-            "An interrupted Covenant schema repair did not finish at {Stage}, so startup stays closed: {ErrorCode}",
+            "An interrupted Covenant schema repair did not finish at {Stage}, so its journal stays active for the next start: {ErrorCode}",
             stage,
             error?.Code ?? "none");
 

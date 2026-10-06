@@ -25,10 +25,11 @@ namespace RetroDownfall.Arcanum.Infrastructure.Covenant;
 /// registered callbacks synchronously on the calling thread, and a consumer callback that reached
 /// back into the gate would deadlock against a lock the canceller still held. A callback that
 /// <em>throws</em> makes <c>Cancel()</c> throw too, so the gate contains it: the lease is revoked
-/// either way, the fault is logged by count only, and the close it belonged to carries on.</para>
+/// either way, the fault is logged by a fixed message that says only that a callback faulted, and the
+/// close it belonged to carries on.</para>
 ///
-/// <para>The one thing the gate logs is that count. It never names a Campaign or any Covenant
-/// content.</para>
+/// <para>That message is the one thing the gate logs. It carries no count, no exception, and never
+/// names a Campaign or any Covenant content.</para>
 /// </remarks>
 internal sealed class CovenantOperationGate : ICovenantOperationGate
 {

@@ -632,12 +632,13 @@ public sealed class CovenantSchemaRepairTests
 
     /// <summary>
     /// A finalizer that fails after the gate has already applied its disposition is reported as the same
-    /// failed completion as the gate refusing it, so startup stops at <c>KeptClosed</c>. That verdict used to
-    /// carry no trace of why: every closed exit returned it silently, and the lease names only the exception
-    /// type. It now says the stage and the error code, and nothing a driver message could carry.
+    /// failed completion as the gate refusing it, so the pass answers <c>KeptClosed</c> (the bootstrapper
+    /// logs that and serves on; only a restore's verdict stops startup). That verdict used to carry no
+    /// trace of why: every closed exit returned it silently, and the lease names only the exception type.
+    /// It now says the stage and the error code, and nothing a driver message could carry.
     /// </summary>
     [Fact]
-    public async Task A_finalizer_that_fails_after_the_gate_acted_keeps_startup_closed_and_says_why()
+    public async Task A_finalizer_that_fails_after_the_gate_acted_is_kept_closed_and_says_why()
     {
         await using RepairFixture fixture = await RepairFixture.CreateAsync();
 

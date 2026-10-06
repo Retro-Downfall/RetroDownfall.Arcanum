@@ -10882,6 +10882,50 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
         Assert.Contains(Discover(FixtureSource("new System.IO.FileInfo(\"path\").LastWriteTimeUtc = DateTime.UtcNow;")).Diagnostics, static d => d.Code == "HOSTED_SITE_UNCLASSIFIED" && d.Detail.Contains("LastWriteTimeUtc", StringComparison.Ordinal));
     }
 
+    /// <summary>
+    /// The Covenant gate contains a throwing revocation callback and logs one fixed message, with no read
+    /// of the aggregate's inner-exception count, so its catch is not an unclassified site.
+    /// </summary>
+    /// <remarks>
+    /// The count read was the one <c>HOSTED_SITE_UNCLASSIFIED</c> the gate reported against the
+    /// production graph (<see cref="ReadingTheInnerExceptionCountOfAnAggregateIsAnUnclassifiedSite"/> is the
+    /// shape that read). This is the shape that replaced it, so the production claim does not rest on a
+    /// production-graph run alone.
+    /// </remarks>
+    [Fact]
+    public void ARevocationFaultLoggedAsOneFixedMessageIsNotAnUnclassifiedSite()
+    {
+        HostedProducerDiscovery<HostedProducerSite> result = Discover(FixtureSource(
+            "Microsoft.Extensions.Logging.ILogger logger = null!; System.Threading.CancellationTokenSource revocation = new(); try { revocation.Cancel(); } catch (System.ObjectDisposedException) { } catch (System.AggregateException) { Microsoft.Extensions.Logging.LoggerExtensions.LogWarning(logger, \"A Covenant revocation callback faulted; the lease is revoked regardless.\"); }"));
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED");
+    }
+
+    [Fact]
+    public void ReadingTheInnerExceptionCountOfAnAggregateIsAnUnclassifiedSite()
+    {
+        HostedProducerDiscovery<HostedProducerSite> result = Discover(FixtureSource(
+            "Microsoft.Extensions.Logging.ILogger logger = null!; System.Threading.CancellationTokenSource revocation = new(); try { revocation.Cancel(); } catch (System.AggregateException exception) { Microsoft.Extensions.Logging.LoggerExtensions.LogWarning(logger, \"{Count} faulted\", exception.InnerExceptions.Count); }"));
+
+        Assert.Contains(
+            result.Diagnostics,
+            static diagnostic => diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED"
+                && diagnostic.Detail.Contains("ReadOnlyCollection`1.Count", StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// A static Serilog warning that names its stage and error code as properties is a neutral logging
+    /// site, which is how a startup recovery says why it stopped without the host's logger.
+    /// </summary>
+    [Fact]
+    public void AStaticSerilogWarningNamingAStageAndAnErrorCodeIsNotAnUnclassifiedSite()
+    {
+        HostedProducerDiscovery<HostedProducerSite> result = Discover(FixtureSource(
+            "string stage = \"resume\"; string? code = null; Serilog.Log.Warning(\"A repair did not finish at {Stage}: {ErrorCode}\", stage, code ?? \"none\");"));
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED");
+    }
+
     [Theory]
     [InlineData("SqliteErrorCode")]
     [InlineData("SqliteExtendedErrorCode")]
