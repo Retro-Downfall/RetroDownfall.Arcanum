@@ -27204,6 +27204,7 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
     [InlineData("System.IO.FileInfo.Length", 4)]
     [InlineData("System.IO.FileInfo.LastWriteTimeUtc", 4)]
     [InlineData("RetroDownfall.Arcanum.Infrastructure.Security.FileHandleIdentityInterop.GetFileInformationByHandle", 4)]
+    [InlineData("RetroDownfall.Arcanum.Infrastructure.Security.FileHandleIdentityInterop.GetFileInformationByHandleEx", 4)]
     [InlineData("RetroDownfall.Arcanum.Infrastructure.Security.FileHandleIdentityInterop.NtOpenFile", 4)]
     [InlineData("RetroDownfall.Arcanum.Infrastructure.Security.FileHandleIdentityInterop.OpenAtUnix", 4)]
     [InlineData("RetroDownfall.Arcanum.Infrastructure.Security.FileHandleIdentityInterop.OpenUnix", 4)]

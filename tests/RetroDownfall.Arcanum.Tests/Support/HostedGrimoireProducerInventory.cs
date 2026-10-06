@@ -770,6 +770,7 @@ internal static class HostedGrimoireProducerInventory
         ["System.IO.FileInfo.LastWriteTimeUtc"] = (HostedProducerSiteKind)4,
         ["RetroDownfall.Arcanum.Infrastructure.Security.FileHandleIdentityInterop.CreateFile"] = HostedProducerSiteKind.FileSystemRead,
         ["RetroDownfall.Arcanum.Infrastructure.Security.FileHandleIdentityInterop.GetFileInformationByHandle"] = HostedProducerSiteKind.FileSystemRead,
+        ["RetroDownfall.Arcanum.Infrastructure.Security.FileHandleIdentityInterop.GetFileInformationByHandleEx"] = HostedProducerSiteKind.FileSystemRead,
         ["RetroDownfall.Arcanum.Infrastructure.Security.FileHandleIdentityInterop.NtOpenFile"] = HostedProducerSiteKind.FileSystemRead,
         ["RetroDownfall.Arcanum.Infrastructure.Security.FileHandleIdentityInterop.OpenAtUnix"] = HostedProducerSiteKind.FileSystemRead,
         ["RetroDownfall.Arcanum.Infrastructure.Security.FileHandleIdentityInterop.OpenUnix"] = HostedProducerSiteKind.FileSystemRead,
