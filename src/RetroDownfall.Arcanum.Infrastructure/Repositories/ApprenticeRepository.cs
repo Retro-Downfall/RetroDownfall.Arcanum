@@ -215,9 +215,15 @@ public sealed class ApprenticeRepository : IApprenticeRepository
         return apprentice;
     }
 
-    public async Task<bool> UpdateProgressAsync(Apprentice apprentice, CancellationToken cancellationToken = default)
+    public async Task<bool> UpdateProgressAsync(
+        Apprentice apprentice,
+        string expectedPlan,
+        int expectedCurrentStep,
+        CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(apprentice);
+
+        ArgumentNullException.ThrowIfNull(expectedPlan);
 
         apprentice.UpdatedAt = DateTimeOffset.UtcNow;
 
@@ -226,12 +232,46 @@ public sealed class ApprenticeRepository : IApprenticeRepository
             UPDATE "Apprentices"
             SET "Plan" = $plan,
                 "CurrentStep" = $currentStep,
-                "SessionId" = $sessionId,
                 "CheckpointData" = $checkpointData,
                 "UpdatedAt" = $updatedAt
-            WHERE "Id" = $id;
+            WHERE "Id" = $id
+              AND "Plan" = $expectedPlan
+              AND "CurrentStep" = $expectedCurrentStep;
             """,
-            command => BindProgress(command, apprentice),
+            command =>
+            {
+                GrimoireEntitySql.AddParameter(command, "$id", GrimoireEntitySql.Format(apprentice.Id));
+                GrimoireEntitySql.AddParameter(command, "$plan", apprentice.Plan);
+                GrimoireEntitySql.AddParameter(command, "$currentStep", apprentice.CurrentStep);
+                GrimoireEntitySql.AddParameter(command, "$checkpointData", apprentice.CheckpointData);
+                GrimoireEntitySql.AddParameter(command, "$updatedAt", GrimoireEntitySql.Format(apprentice.UpdatedAt));
+                GrimoireEntitySql.AddParameter(command, "$expectedPlan", expectedPlan);
+                GrimoireEntitySql.AddParameter(command, "$expectedCurrentStep", expectedCurrentStep);
+            },
+            cancellationToken).ConfigureAwait(false);
+
+        return updated > 0;
+    }
+
+    public async Task<bool> BindSessionAsync(
+        Guid id,
+        Guid sessionId,
+        CancellationToken cancellationToken = default)
+    {
+        int updated = await ExecuteWriteAsync(
+            """
+            UPDATE "Apprentices"
+            SET "SessionId" = $sessionId,
+                "UpdatedAt" = $updatedAt
+            WHERE "Id" = $id
+              AND "SessionId" IS NULL;
+            """,
+            command =>
+            {
+                GrimoireEntitySql.AddParameter(command, "$id", GrimoireEntitySql.Format(id));
+                GrimoireEntitySql.AddParameter(command, "$sessionId", GrimoireEntitySql.Format(sessionId));
+                GrimoireEntitySql.AddParameter(command, "$updatedAt", GrimoireEntitySql.Format(DateTimeOffset.UtcNow));
+            },
             cancellationToken).ConfigureAwait(false);
 
         return updated > 0;
@@ -354,8 +394,9 @@ public sealed class ApprenticeRepository : IApprenticeRepository
         string idle = ApprenticeStatus.Idle.ToString();
 
         // Planning is resumable whatever its plan: an empty plan re-runs plan generation, and a plan that
-        // already exists is a queued (re)start that StartAsync parked as Planning before it could run its
-        // first step, because plan generation writes the plan together with Running.
+        // already exists is either a queued (re)start that StartAsync parked as Planning before it could run
+        // its first step, or a generation that committed its paid plan before a crash stopped its move to
+        // Running. Either way the run continues from that plan.
         List<Apprentice> candidates = await ReadManyAsync(
             $"""
             SELECT {GrimoireEntitySql.ApprenticeColumns}

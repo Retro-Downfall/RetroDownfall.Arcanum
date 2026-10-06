@@ -50,10 +50,6 @@ public sealed record LongRunningOperationRecoveryDescriptor(
 /// </summary>
 public static class LongRunningOperationRecoveryRegistry
 {
-    private const string InspectGuidance =
-        "Run 'arcanum operation show <id>' for the recorded phase, then 'arcanum operation retry <id>' "
-        + "once the underlying cause is resolved.";
-
     private static readonly IReadOnlyDictionary<string, LongRunningOperationRecoveryDescriptor> Matrix =
         new[]
         {

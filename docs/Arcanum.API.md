@@ -206,9 +206,9 @@ The established §8 contract numbers are retained in this extracted reference so
 | POST | `/api/apprentices` | Create Apprentice (`ApiResponse<ApprenticeDetailDto>`; **201** + `Location`; DESIGN §19.6). |
 | DELETE | `/api/apprentices/{id}` | Delete terminal Apprentice (**204**; **409** `Apprentice.Running`; DESIGN §19.6). |
 | POST | `/api/apprentices/{id}/start` | Start plan generation and execution (**202**; **409** `Apprentice.AlreadyRunning`; DESIGN §5.7). |
-| POST | `/api/apprentices/{id}/pause` | Pause at step boundary (**202**; DESIGN §5.7). |
+| POST | `/api/apprentices/{id}/pause` | Pause at step boundary (**202**, also when the run already recorded the pause itself; **409** `Apprentice.Running` when the Apprentice is not running or planning, including when it reaches another status before the pause lands; DESIGN §5.7). |
 | POST | `/api/apprentices/{id}/resume` | Resume from checkpoint (**202**; **409** `Apprentice.NotPaused`; DESIGN §5.7). |
-| POST | `/api/apprentices/{id}/cancel` | Cancel execution (**202**; DESIGN §5.7). |
+| POST | `/api/apprentices/{id}/cancel` | Cancel execution or a queued start (**202**; **409** `Apprentice.NotPaused` when the Apprentice is not in a cancellable state, including when it ends before the cancel lands; DESIGN §5.7). |
 | POST | `/api/apprentices/{id}/reweave` | Replace pending plan steps (`ApiResponse<ApprenticeDetailDto>`; **400** `Apprentice.InvalidPlan`; **409** `Apprentice.CannotReweave`, also when a step commits while the plan is being re-woven; DESIGN §5.7). |
 | POST | `/api/apprentices/{id}/intervene` | Resolve **Escalated** Apprentice with DM guidance (**202**; **409** `Apprentice.NotEscalated`, also when the Apprentice leaves **Escalated** while the guidance is being applied; DESIGN §5.7). |
 | POST | `/api/apprentices/{id}/cast` | **The Conclave** cross-Apprentice delegation: mint a child Apprentice from a parent (`ApiResponse<ApprenticeDetailDto>`; **201**; gated by `Arcanum:Features:Conclave`. No fixed depth/breadth ceiling — loops are caught by cycle detection, DESIGN §5.7.1). |

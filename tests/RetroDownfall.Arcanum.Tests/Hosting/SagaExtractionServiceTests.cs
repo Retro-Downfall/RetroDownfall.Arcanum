@@ -4115,7 +4115,8 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
     /// availability check stays true, so the outage shows up only as every eligible conclusion failing to
     /// embed; that is the embedding provider's answer rather than a malformed extraction response, so it never
     /// counts toward abandonment. The interval keeps its own policy on the capped schedule, and its ordinary
-    /// conclusion is stored once the embedding provider recovers.
+    /// conclusion is stored once the embedding provider recovers. The extraction response was paid for once and
+    /// is still valid, so every retry reuses it: however long the outage lasts, it buys no second response.
     /// </summary>
     [SkippableFact]
     public async Task ExecuteAsync_EmbeddingOutageBeyondLadder_StillExtractsOrdinaryMemoryOnRecovery()
@@ -4174,7 +4175,7 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
 
             Assert.Equal(7, weave.EmbedCallCount);
 
-            Assert.Equal(7, intelligence.CallCount);
+            Assert.Equal(1, intelligence.CallCount);
 
             SagaMemoryDto memory = Assert.Single(
                 await CreateStore().ListAsync(
@@ -4190,6 +4191,162 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
             Assert.Equal(throughSequence, (await GetExtractionCursorAsync(sessionId))!.EntrySequence);
 
             Assert.Equal(0, service.RetryAttemptForTests(sessionId));
+        }
+        finally
+        {
+            await hosted.StopAsync(CancellationToken.None);
+        }
+    }
+
+    /// <summary>
+    /// An embedding endpoint that stops answering makes the transport give up with a cancellation the host never
+    /// asked for. That is the same embedding outage as a refused connection, not a model-shape failure, so it
+    /// never abandons the interval: the conclusion is stored once the endpoint answers again, from the one
+    /// extraction response the page paid for.
+    /// </summary>
+    [SkippableFact]
+    public async Task ExecuteAsync_EmbeddingTimeoutBeyondLadder_IsAnOutageAndExtractsOnRecovery()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = await CreateSessionAsync();
+
+        _ = await CreateEntryAsync(sessionId, "The operator prefers tabs over spaces in every repository.");
+
+        long throughSequence = _seededSequence;
+
+        FakeWeaveService weave = new()
+        {
+            OnEmbedAsync = callCount => callCount <= 6
+                ? throw new TaskCanceledException("The request was canceled due to the configured HttpClient.Timeout.")
+                : Task.CompletedTask,
+        };
+
+        FakeIntelligenceProvider intelligence = new()
+        {
+            NextText = """{ "memories": [{ "content": "The operator prefers tabs over spaces.", "attachmentId": null }] }""",
+        };
+
+        (IServiceScopeFactory scopeFactory, _, ArcanumSettings settings) = BuildScope(weave, intelligence);
+
+        SagaExtractionService service = new(
+            scopeFactory,
+            new TestOptionsMonitor<ArcanumSettings>(settings),
+            _admissionGate,
+            NullLogger<SagaExtractionService>.Instance)
+        {
+            RetryBaseDelayForTests = TimeSpan.FromMilliseconds(5),
+        };
+
+        IHostedService hosted = service;
+
+        await hosted.StartAsync(CancellationToken.None);
+
+        try
+        {
+            service.EnqueueExtraction(
+                new SagaExtractionRequest(
+                    sessionId,
+                    [],
+                    HadUnprovenancedAttachmentContent: false,
+                    AfterEntrySequenceExclusive: 0,
+                    ThroughEntrySequence: throughSequence));
+
+            using CancellationTokenSource completionTimeout = new(TimeSpan.FromSeconds(10));
+
+            while (service.PendingRequestsForTests.Count != 0)
+            {
+                await Task.Delay(
+                    TimeSpan.FromMilliseconds(10),
+                    completionTimeout.Token);
+            }
+
+            Assert.Equal(7, weave.EmbedCallCount);
+
+            Assert.Equal(1, intelligence.CallCount);
+
+            SagaMemoryDto memory = Assert.Single(
+                await CreateStore().ListAsync(
+                    null,
+                    sessionId,
+                    MemoryScope.Installation,
+                    10,
+                    0,
+                    CancellationToken.None));
+
+            Assert.Equal("The operator prefers tabs over spaces.", memory.Content);
+
+            Assert.Equal(throughSequence, (await GetExtractionCursorAsync(sessionId))!.EntrySequence);
+
+            Assert.Empty(service.AbandonedSegmentsForTests(sessionId));
+        }
+        finally
+        {
+            await hosted.StopAsync(CancellationToken.None);
+        }
+    }
+
+    /// <summary>
+    /// A guardrail that rejects the extraction model's answer reaches the same verdict on every retry, and each
+    /// retry pays for that answer again. It is a deterministic failure, not an outage, so it counts toward
+    /// abandonment and ends the billable ladder after the bounded attempts instead of retrying for as long as
+    /// the process lives.
+    /// </summary>
+    [SkippableFact]
+    public async Task ExecuteAsync_GuardrailRejectingEveryAnswer_AbandonsAfterBoundedAttempts()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = await CreateSessionAsync();
+
+        _ = await CreateEntryAsync(sessionId, "The operator's card number is on file.");
+
+        FakeWeaveService weave = new();
+
+        FakeIntelligenceProvider intelligence = new()
+        {
+            NextFailure = new Error(ErrorCodes.Guardrails.Blocked, "The answer was rejected by a guardrail."),
+        };
+
+        (IServiceScopeFactory scopeFactory, _, ArcanumSettings settings) = BuildScope(weave, intelligence);
+
+        SagaExtractionService service = new(
+            scopeFactory,
+            new TestOptionsMonitor<ArcanumSettings>(settings),
+            _admissionGate,
+            NullLogger<SagaExtractionService>.Instance)
+        {
+            RetryBaseDelayForTests = TimeSpan.FromMilliseconds(5),
+        };
+
+        IHostedService hosted = service;
+
+        await hosted.StartAsync(CancellationToken.None);
+
+        try
+        {
+            service.EnqueueExtraction(
+                new SagaExtractionRequest(
+                    sessionId,
+                    [],
+                    HadUnprovenancedAttachmentContent: false,
+                    AfterEntrySequenceExclusive: 0,
+                    ThroughEntrySequence: _seededSequence));
+
+            using CancellationTokenSource ladderTimeout = new(TimeSpan.FromSeconds(10));
+
+            while (service.PendingRequestsForTests.Count != 0)
+            {
+                await Task.Delay(
+                    TimeSpan.FromMilliseconds(10),
+                    ladderTimeout.Token);
+            }
+
+            Assert.Equal(5, intelligence.CallCount);
+
+            Assert.Single(service.AbandonedSegmentsForTests(sessionId));
+
+            Assert.Equal(0, weave.EmbedCallCount);
         }
         finally
         {
