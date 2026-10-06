@@ -13,11 +13,19 @@ internal sealed partial class WorkspaceIndexingService
 
     private int _watcherCreations;
 
+    private IntakeExtensions? _intakeExtensions;
+
     private TaskCompletionSource? _watcherCreationDrain;
 
     private Task? _stopTask;
 
     private int _disposed;
+
+    /// <summary>
+    /// Queues every watcher event whatever its path, so a test can prove the incremental drain applies the
+    /// eligibility rule on its own: with the intake filter in place no ineligible path ever reaches it.
+    /// </summary>
+    internal bool BypassWatcherIntakeFilterForTests { get; set; }
 
     internal int ActiveWatcherCount
     {
@@ -382,12 +390,13 @@ internal sealed partial class WorkspaceIndexingService
         // A path the shared eligibility rule rejects (an ignored directory, a dot-prefixed or hidden
         // segment) never enters Pending: queued, it would cost a delete statement per event and count
         // toward the 4,096-path cap that forces a full re-walk, so a build writing thousands of files
-        // under obj/ would trigger one. Judged before the scheduler gate is taken.
+        // under obj/ would trigger one. Neither does an event that names nothing the indexer would read.
+        // Judged before the scheduler gate is taken.
         bool queueOldPath = change.Kind == WorkspaceFileChangeKind.Renamed
             && change.OldFullPath is not null
-            && IsIndexablePath(entry.Path, change.OldFullPath);
+            && (BypassWatcherIntakeFilterForTests || IsIndexablePath(entry.Path, change.OldFullPath, change.Kind, isRenamedAwayPath: true));
 
-        bool queuePath = IsIndexablePath(entry.Path, change.FullPath);
+        bool queuePath = BypassWatcherIntakeFilterForTests || IsIndexablePath(entry.Path, change.FullPath, change.Kind, isRenamedAwayPath: false);
 
         lock (_schedulerGate)
         {
@@ -429,21 +438,71 @@ internal sealed partial class WorkspaceIndexingService
     }
 
     /// <summary>
-    /// Whether a watcher event's path may be queued: its relative segments pass the lexical half of
+    /// Whether a watcher event's path may be queued. Its relative segments must pass the lexical half of
     /// <see cref="WorkspaceIndexEligibility"/> (the workspace root itself does, so a directory event
-    /// for it still requests reconciliation). A path that cannot be made relative is dropped.
+    /// for it still requests reconciliation); a path that cannot be made relative is dropped.
     /// </summary>
-    private static bool IsIndexablePath(string workspacePath, string fullPath)
+    /// <remarks>
+    /// A path whose extension is not configured names nothing the indexer would read, so beyond the
+    /// lexical rule it is queued only when it may be a directory that appeared: a Created or Renamed
+    /// event for a path that is one, because a new subtree can hold files written before the watcher
+    /// covered it. A Changed event for a directory says nothing was added or removed (Windows raises one
+    /// for the parent of every written file), and a Deleted one names a directory whose files were
+    /// reported on their own. The path a rename moved away from is always kept, because it may have been
+    /// a directory whose stored chunks have to go.
+    /// </remarks>
+    private bool IsIndexablePath(string workspacePath, string fullPath, WorkspaceFileChangeKind kind, bool isRenamedAwayPath)
     {
+        string relativePath;
+
         try
         {
-            return WorkspaceIndexEligibility.HasEligibleSegments(Path.GetRelativePath(workspacePath, fullPath));
+            relativePath = Path.GetRelativePath(workspacePath, fullPath);
         }
         catch (ArgumentException)
         {
             return false;
         }
+
+        if (!WorkspaceIndexEligibility.HasEligibleSegments(relativePath))
+        {
+            return false;
+        }
+
+        if (isRenamedAwayPath || CurrentIntakeExtensions().Contains(Path.GetExtension(relativePath)))
+        {
+            return true;
+        }
+
+        return kind is WorkspaceFileChangeKind.Created or WorkspaceFileChangeKind.Renamed
+            && Directory.Exists(fullPath);
     }
+
+    /// <summary>
+    /// The configured file extensions as a lookup set, rebuilt only when the settings object changes: the
+    /// intake runs once per watcher event, and resolving the embedding settings allocates a whole tree.
+    /// </summary>
+    private HashSet<string> CurrentIntakeExtensions()
+    {
+        ArcanumSettings settings = optionsMonitor.CurrentValue;
+
+        IntakeExtensions? cached = Volatile.Read(ref _intakeExtensions);
+
+        if (cached is not null && ReferenceEquals(cached.Settings, settings))
+        {
+            return cached.Extensions;
+        }
+
+        IntakeExtensions rebuilt = new(
+            settings,
+            new HashSet<string>(settings.ResolveEmbeddings().Codebase.FileExtensions, StringComparer.OrdinalIgnoreCase));
+
+        Volatile.Write(ref _intakeExtensions, rebuilt);
+
+        return rebuilt.Extensions;
+    }
+
+    private sealed record IntakeExtensions(ArcanumSettings Settings, HashSet<string> Extensions);
 
     private void HandleWatcherError(WorkspaceEntry entry, WatcherRegistration registration, Exception exception)
     {

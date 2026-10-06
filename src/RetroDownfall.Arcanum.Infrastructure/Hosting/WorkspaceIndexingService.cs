@@ -126,10 +126,10 @@ internal sealed partial class WorkspaceIndexingService(
                 string relativePath = Path.GetRelativePath(workspacePath, normalizedPath);
 
                 // The shared rule, lexical half: a dot-prefixed or ignored segment is never indexed and
-                // anything already stored for it is removed.
+                // anything already stored for it, or under it when it is a directory, is removed.
                 if (!WorkspaceIndexEligibility.HasEligibleSegments(relativePath))
                 {
-                    await DeleteExistingChunksAsync(db, workspacePath, relativePath, cancellationToken).ConfigureAwait(false);
+                    await DeleteExistingChunksAsync(db, workspacePath, relativePath, cancellationToken, includeDescendants: true).ConfigureAwait(false);
 
                     continue;
                 }
@@ -143,7 +143,9 @@ internal sealed partial class WorkspaceIndexingService(
 
                     if (!File.Exists(normalizedPath))
                     {
-                        await DeleteExistingChunksAsync(db, workspacePath, relativePath, cancellationToken).ConfigureAwait(false);
+                        // Gone, or renamed away: it may have been a directory, whose files a watcher does
+                        // not report one by one.
+                        await DeleteExistingChunksAsync(db, workspacePath, relativePath, cancellationToken, includeDescendants: true).ConfigureAwait(false);
 
                         continue;
                     }
@@ -194,7 +196,7 @@ internal sealed partial class WorkspaceIndexingService(
 
                 await using IGrimoireExternalEffectGroup effect = admittedEffect!;
 
-                bool indexed = await IndexFileAsync(
+                FileIndexOutcome indexed = await IndexFileAsync(
                     db,
                     workspacePath,
                     relativePath,
@@ -204,14 +206,25 @@ internal sealed partial class WorkspaceIndexingService(
                     info.Length,
                     cancellationToken).ConfigureAwait(false);
 
-                if (!indexed)
+                if (indexed == FileIndexOutcome.Failed)
                 {
                     return WorkspaceUnitOutcome.Failed;
                 }
 
-                filesIndexed++;
+                if (indexed == FileIndexOutcome.Ineligible)
+                {
+                    // What the file really is, behind its name, is excluded: nothing stays stored for it.
+                    await DeleteExistingChunksAsync(db, workspacePath, relativePath, cancellationToken).ConfigureAwait(false);
 
-                demand.FilesIndexed = filesIndexed;
+                    continue;
+                }
+
+                if (indexed == FileIndexOutcome.Indexed)
+                {
+                    filesIndexed++;
+
+                    demand.FilesIndexed = filesIndexed;
+                }
             }
             finally
             {
@@ -375,7 +388,7 @@ internal sealed partial class WorkspaceIndexingService(
 
                 await using IGrimoireExternalEffectGroup effect = admittedEffect!;
 
-                bool indexed = await IndexFileAsync(
+                FileIndexOutcome indexed = await IndexFileAsync(
                     db,
                     workspacePath,
                     relativePath,
@@ -385,17 +398,37 @@ internal sealed partial class WorkspaceIndexingService(
                     fileLength,
                     cancellationToken).ConfigureAwait(false);
 
-                if (indexed)
+                switch (indexed)
                 {
-                    filesIndexed++;
+                    case FileIndexOutcome.Indexed:
+                        filesIndexed++;
 
-                    demand.FilesIndexed = filesIndexed;
+                        demand.FilesIndexed = filesIndexed;
 
-                    demand.MarkFileCompleted(fullPath);
-                }
-                else
-                {
-                    failed = true;
+                        demand.MarkFileCompleted(fullPath);
+
+                        break;
+
+                    case FileIndexOutcome.NothingToIndex:
+                        // No chunk row exists to carry its signature, so it is met again by every walk;
+                        // it is complete, but it is not work the budget was set to bound.
+                        demand.MarkFileCompleted(fullPath);
+
+                        break;
+
+                    case FileIndexOutcome.Ineligible:
+                        // Behind a visible name the file is a hidden or ignored one (a link to it): it is
+                        // excluded like the file itself, and anything stored under this name goes.
+                        await DeleteExistingChunksAsync(db, workspacePath, relativePath, cancellationToken).ConfigureAwait(false);
+
+                        demand.MarkFileCompleted(fullPath);
+
+                        break;
+
+                    default:
+                        failed = true;
+
+                        break;
                 }
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -643,11 +676,13 @@ internal sealed partial class WorkspaceIndexingService(
     }
 
     /// <summary>
-    /// Chunks, embeds, and persists a single changed/new file. Returns <c>false</c> (without throwing)
-    /// when the file is empty or embedding fails — all graceful-degradation
-    /// outcomes that simply do not consume the per-tick file budget.
+    /// Chunks, embeds, and persists a single changed/new file and says how that ended, without throwing for
+    /// the graceful-degradation cases: <see cref="FileIndexOutcome.Failed"/> when the read, the identity
+    /// re-check or the embedding failed, <see cref="FileIndexOutcome.Ineligible"/> when the opened file is
+    /// excluded by where it really lives, and <see cref="FileIndexOutcome.NothingToIndex"/> when it held no
+    /// text to embed. Only <see cref="FileIndexOutcome.Indexed"/> is work the per-tick file budget bounds.
     /// </summary>
-    private async Task<bool> IndexFileAsync(
+    private async Task<FileIndexOutcome> IndexFileAsync(
         ArcanumDbContext db,
         string workspacePath,
         string relativePath,
@@ -682,13 +717,26 @@ internal sealed partial class WorkspaceIndexingService(
             // containment — must be re-verified before any content is read.
             if (!FileHandleIdentityInterop.TryGetHandleIdentity(stream.SafeFileHandle, out FileHandleIdentity actualIdentity)
                 || !FileHandleIdentity.IdentitiesMatch(expectedIdentity, actualIdentity)
-                || !WorkspacePathPolicy.IsOpenedHandleUnderWorkspace(workspacePath, stream.SafeFileHandle))
+                || !WorkspacePathPolicy.TryGetOpenedHandleRelativePath(workspacePath, stream.SafeFileHandle, out string? canonicalRelativePath))
             {
                 logger.LogWarning(
                     "Workspace indexing rejected {FullPath}: file identity changed between the containment check and open (possible symlink swap); skipping.",
                     fullPath);
 
-                return false;
+                return FileIndexOutcome.Failed;
+            }
+
+            // Where the opened file really lives, as the kernel reports it, not what the walk or the
+            // event called it: a visibly named link to a dot-prefixed, hidden or ignored target is that
+            // target, and its content must not reach the provider under the link's name. The same rule
+            // also settles an alias the spelled path does not show, such as a short name on Windows.
+            if (!WorkspaceIndexEligibility.HasEligibleSegments(canonicalRelativePath))
+            {
+                logger.LogDebug(
+                    "Workspace indexing skipped {FullPath}: the opened file lives at an excluded location inside the workspace.",
+                    fullPath);
+
+                return FileIndexOutcome.Ineligible;
             }
 
             using StreamReader reader = new(stream);
@@ -803,7 +851,7 @@ internal sealed partial class WorkspaceIndexingService(
 
                             await DeleteInsertedChunksAsync(db, insertedIds).ConfigureAwait(false);
 
-                            return false;
+                            return FileIndexOutcome.Failed;
                         }
 
                         generated = embedResult.Value;
@@ -893,7 +941,9 @@ internal sealed partial class WorkspaceIndexingService(
                     cancellationToken).ConfigureAwait(false);
             }
 
-            return true;
+            // A file that held no text left no chunk row behind (and took its stale ones with it), so
+            // nothing was spent that the per-checkpoint budget exists to bound.
+            return metadata.Count == 0 ? FileIndexOutcome.NothingToIndex : FileIndexOutcome.Indexed;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -907,7 +957,7 @@ internal sealed partial class WorkspaceIndexingService(
 
             logger.LogWarning(ex, "Workspace indexing could not read {FullPath}; skipping.", fullPath);
 
-            return false;
+            return FileIndexOutcome.Failed;
         }
         catch
         {
@@ -1144,12 +1194,37 @@ internal sealed partial class WorkspaceIndexingService(
             cancellationToken);
     }
 
+    /// <summary>
+    /// Removes the chunks stored for <paramref name="relativePath"/>, and with
+    /// <paramref name="includeDescendants"/> those stored under it as a directory as well. A path that is
+    /// gone (deleted, or renamed to somewhere the indexer ignores) may have been a directory, and a
+    /// watcher reports it once without naming the files inside.
+    /// </summary>
     private Task DeleteExistingChunksAsync(
         ArcanumDbContext db,
         string workspacePath,
         string relativePath,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool includeDescendants = false)
     {
+        // The descendants of "dir" are exactly the paths from "dir/" up to, not including, "dir0": the
+        // separator's successor is the first character that cannot continue the prefix, and the stored
+        // column compares bytewise. Without descendants the range is empty.
+        (string floor, string ceiling) = includeDescendants
+            ? DescendantRange(relativePath)
+            : (relativePath, relativePath);
+
+        void AddScope(DbCommand command)
+        {
+            AddParameter(command, "@workspacePath", workspacePath);
+
+            AddParameter(command, "@relativePath", relativePath);
+
+            AddParameter(command, "@descendantFloor", floor);
+
+            AddParameter(command, "@descendantCeiling", ceiling);
+        }
+
         return SqliteBusyRetry.ExecuteAsync(
             async () =>
             {
@@ -1164,13 +1239,13 @@ internal sealed partial class WorkspaceIndexingService(
                         DELETE FROM "workspace_file_embeddings_vec"
                         WHERE "ChunkId" IN (
                             SELECT "ChunkId" FROM "workspace_file_chunks"
-                            WHERE "WorkspacePath" = @workspacePath AND "RelativePath" = @relativePath
+                            WHERE "WorkspacePath" = @workspacePath
+                                AND ("RelativePath" = @relativePath
+                                    OR ("RelativePath" >= @descendantFloor AND "RelativePath" < @descendantCeiling))
                         )
                         """;
 
-                    AddParameter(deleteVecCmd, "@workspacePath", workspacePath);
-
-                    AddParameter(deleteVecCmd, "@relativePath", relativePath);
+                    AddScope(deleteVecCmd);
 
                     _ = await deleteVecCmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
                 }
@@ -1182,13 +1257,13 @@ internal sealed partial class WorkspaceIndexingService(
                     DELETE FROM "workspace_file_embeddings"
                     WHERE "ChunkId" IN (
                         SELECT "ChunkId" FROM "workspace_file_chunks"
-                        WHERE "WorkspacePath" = @workspacePath AND "RelativePath" = @relativePath
+                        WHERE "WorkspacePath" = @workspacePath
+                            AND ("RelativePath" = @relativePath
+                                OR ("RelativePath" >= @descendantFloor AND "RelativePath" < @descendantCeiling))
                     )
                     """;
 
-                AddParameter(deleteBlobCmd, "@workspacePath", workspacePath);
-
-                AddParameter(deleteBlobCmd, "@relativePath", relativePath);
+                AddScope(deleteBlobCmd);
 
                 _ = await deleteBlobCmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 
@@ -1197,16 +1272,29 @@ internal sealed partial class WorkspaceIndexingService(
                 deleteChunksCmd.CommandText =
                     """
                     DELETE FROM "workspace_file_chunks"
-                    WHERE "WorkspacePath" = @workspacePath AND "RelativePath" = @relativePath
+                    WHERE "WorkspacePath" = @workspacePath
+                        AND ("RelativePath" = @relativePath
+                            OR ("RelativePath" >= @descendantFloor AND "RelativePath" < @descendantCeiling))
                     """;
 
-                AddParameter(deleteChunksCmd, "@workspacePath", workspacePath);
-
-                AddParameter(deleteChunksCmd, "@relativePath", relativePath);
+                AddScope(deleteChunksCmd);
 
                 _ = await deleteChunksCmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
             },
             cancellationToken);
+    }
+
+    /// <summary>
+    /// The half-open range of stored relative paths that lie under <paramref name="relativeDirectory"/>:
+    /// from the path plus a directory separator up to the path plus the next character after it.
+    /// </summary>
+    private static (string Floor, string Ceiling) DescendantRange(string relativeDirectory)
+    {
+        char separator = Path.DirectorySeparatorChar;
+
+        string trimmed = relativeDirectory.TrimEnd(separator);
+
+        return (trimmed + separator, trimmed + (char)(separator + 1));
     }
 
     private Task InsertChunkAsync(
@@ -1390,6 +1478,22 @@ internal sealed partial class WorkspaceIndexingService(
     {
         Upsert,
         Delete,
+    }
+
+    /// <summary>How indexing one file ended; see <see cref="IndexFileAsync"/>.</summary>
+    private enum FileIndexOutcome
+    {
+        /// <summary>The file's chunks were embedded and persisted.</summary>
+        Indexed,
+
+        /// <summary>The file held no text to embed: nothing was persisted and nothing is stale.</summary>
+        NothingToIndex,
+
+        /// <summary>The opened file lives at an excluded location: it is not indexed and nothing stays stored for it.</summary>
+        Ineligible,
+
+        /// <summary>The file could not be read, verified or embedded.</summary>
+        Failed,
     }
 
     private sealed class RuntimeStatusState

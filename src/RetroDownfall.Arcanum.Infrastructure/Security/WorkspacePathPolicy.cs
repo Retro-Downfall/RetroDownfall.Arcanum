@@ -297,8 +297,29 @@ internal static class WorkspacePathPolicy
     /// handle was opened with, so a link swapped in after validation, or an object moved out of the
     /// workspace while open, is caught. Fails closed when either kernel path is unavailable.
     /// </summary>
-    internal static bool IsOpenedHandleUnderWorkspace(string workspaceRootFull, SafeFileHandle handle)
+    internal static bool IsOpenedHandleUnderWorkspace(string workspaceRootFull, SafeFileHandle handle) =>
+        TryGetOpenedHandleRelativePath(workspaceRootFull, handle, out _);
+
+    /// <summary>
+    /// <see cref="IsOpenedHandleUnderWorkspace"/> that also says where under the workspace the kernel
+    /// places the opened file: the path relative to the kernel's own spelling of the canonical root, which
+    /// is the file's real location whatever name it was opened by. A caller that judges a path by its
+    /// segments (the workspace indexer's eligibility rule) judges this one, so a link or an alias cannot
+    /// present an excluded file under an acceptable name.
+    /// </summary>
+    /// <param name="workspaceRootFull">The workspace root, as the caller spells it.</param>
+    /// <param name="handle">The opened file.</param>
+    /// <param name="relativePath">
+    /// The real location relative to the workspace root, or <see langword="null"/> when the handle is not
+    /// under it or either kernel path is unavailable.
+    /// </param>
+    internal static bool TryGetOpenedHandleRelativePath(
+        string workspaceRootFull,
+        SafeFileHandle handle,
+        [NotNullWhen(true)] out string? relativePath)
     {
+        relativePath = null;
+
         if (!FileHandleIdentityInterop.TryGetHandleKernelPath(handle, out string? handlePath))
         {
             return false;
@@ -327,12 +348,15 @@ internal static class WorkspacePathPolicy
 
         using (rootHandle)
         {
-            if (!FileHandleIdentityInterop.TryGetHandleKernelPath(rootHandle, out string? kernelRoot))
+            if (!FileHandleIdentityInterop.TryGetHandleKernelPath(rootHandle, out string? kernelRoot)
+                || !IsPathUnderWorkspace(kernelRoot, handlePath))
             {
                 return false;
             }
 
-            return IsPathUnderWorkspace(kernelRoot, handlePath);
+            relativePath = Path.GetRelativePath(kernelRoot, handlePath);
+
+            return true;
         }
     }
 

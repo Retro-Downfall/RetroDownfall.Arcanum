@@ -315,11 +315,12 @@ public sealed partial class WorkspaceIndexingServiceTests
     }
 
     /// <summary>
-    /// A directory event still requests reconciliation, including one for the workspace root, which the
-    /// eligibility rule must not mistake for a hidden path.
+    /// The creation of a directory still requests reconciliation, including one named for the workspace
+    /// root, which the eligibility rule must not mistake for a hidden path, and a directory renamed in.
+    /// A new subtree's files can be written before the watcher covers it, so only a re-read finds them.
     /// </summary>
     [SkippableFact]
-    public async Task Watcher_event_for_the_workspace_root_still_requests_a_reconciliation()
+    public async Task Watcher_event_for_a_created_directory_still_requests_a_reconciliation()
     {
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
@@ -333,7 +334,7 @@ public sealed partial class WorkspaceIndexingServiceTests
 
         service.RegisterWorkspace(_workspace.Root);
 
-        watchers.Single.TriggerChanged(_workspace.Root);
+        watchers.Single.TriggerCreated(_workspace.Root);
 
         await ProcessPendingWatcherEventsAsync(service, _workspace.Root, CancellationToken.None);
 
@@ -341,6 +342,191 @@ public sealed partial class WorkspaceIndexingServiceTests
         Assert.Equal(2, scopes.ScopeCount);
 
         Assert.Equal(["one.cs"], await GetIndexedRelativePathsAsync());
+
+        _workspace.WriteFile("fresh/two.cs", "class Two {}");
+
+        watchers.Single.TriggerCreated(Path.Combine(_workspace.Root, "fresh"));
+
+        await ProcessPendingWatcherEventsAsync(service, _workspace.Root, CancellationToken.None);
+
+        Assert.Equal(4, scopes.ScopeCount);
+
+        Assert.Contains("fresh/two.cs".Replace('/', Path.DirectorySeparatorChar), await GetIndexedRelativePathsAsync());
+
+        _workspace.WriteFile("moved/three.cs", "class Three {}");
+
+        watchers.Single.TriggerRenamed(Path.Combine(_workspace.Root, "was-here"), Path.Combine(_workspace.Root, "moved"));
+
+        await ProcessPendingWatcherEventsAsync(service, _workspace.Root, CancellationToken.None);
+
+        Assert.Equal(6, scopes.ScopeCount);
+
+        Assert.Contains("moved/three.cs".Replace('/', Path.DirectorySeparatorChar), await GetIndexedRelativePathsAsync());
+
+        await service.DisposeAsync();
+    }
+
+    /// <summary>
+    /// Windows reports a Changed event for a directory whenever something inside it is written, and no
+    /// platform's Changed event for a directory says anything was added or removed. Treated as a
+    /// directory event it forced a re-read of the whole workspace after every single edit.
+    /// </summary>
+    [SkippableFact]
+    public async Task Watcher_changed_event_for_a_directory_requests_no_reconciliation()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        _workspace.WriteFile("src/one.cs", "class One {}");
+
+        FakeWorkspaceFileWatcherFactory watchers = new();
+
+        ObservingScopeFactory scopes = new(BuildScopeFactory());
+
+        FakeWeaveService weave = new();
+
+        WorkspaceIndexingService service = CreateService(weave, out _, watcherFactory: watchers, scopeFactory: scopes);
+
+        service.RegisterWorkspace(_workspace.Root);
+
+        watchers.Single.TriggerChanged(_workspace.Root);
+
+        watchers.Single.TriggerChanged(Path.Combine(_workspace.Root, "src"));
+
+        await ProcessPendingWatcherEventsAsync(service, _workspace.Root, CancellationToken.None);
+
+        // Nothing was queued, so no handle ran: no scope, no walk, no embedding.
+        Assert.Equal(0, scopes.ScopeCount);
+
+        Assert.Equal(0, weave.EmbedBatchCallCount);
+
+        // The same watcher still delivers the edit that matters, in the directory the events named.
+        watchers.Single.TriggerChanged(Path.Combine(_workspace.Root, "src", "one.cs"));
+
+        await ProcessPendingWatcherEventsAsync(service, _workspace.Root, CancellationToken.None);
+
+        Assert.Equal(1, scopes.ScopeCount);
+
+        Assert.Equal(["src/one.cs".Replace('/', Path.DirectorySeparatorChar)], await GetIndexedRelativePathsAsync());
+
+        await service.DisposeAsync();
+    }
+
+    /// <summary>
+    /// A build or a clean rewriting thousands of files whose extension is not indexed (objects, logs,
+    /// images, bytecode) outside every ignored directory must not fill the 4,096-path coalescer either: the
+    /// events name nothing the indexer would ever read.
+    /// </summary>
+    [SkippableFact]
+    public async Task WatcherEvents_ForUnconfiguredExtensions_NeverEnterPendingDemand()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        FakeWorkspaceFileWatcherFactory watchers = new();
+
+        ObservingScopeFactory scopes = new(BuildScopeFactory());
+
+        FakeWeaveService weave = new();
+
+        WorkspaceIndexingService service = CreateService(weave, out _, watcherFactory: watchers, scopeFactory: scopes);
+
+        service.RegisterWorkspace(_workspace.Root);
+
+        FakeWorkspaceFileWatcher watcher = watchers.Single;
+
+        string output = Path.Combine(_workspace.Root, "out");
+
+        for (int index = 0; index < 5_000; index++)
+        {
+            watcher.TriggerCreated(Path.Combine(output, $"object-{index}.o"));
+        }
+
+        for (int index = 0; index < 5_000; index++)
+        {
+            watcher.TriggerDeleted(Path.Combine(output, $"object-{index}.o"));
+        }
+
+        watcher.TriggerChanged(Path.Combine(output, "build.log"));
+
+        watcher.TriggerChanged(Path.Combine(_workspace.Root, "logo.PNG"));
+
+        WorkspaceIndexRuntimeStatus afterEvents = service.GetRuntimeStatus(_workspace.Root);
+
+        Assert.NotNull(afterEvents.LastEventAt);
+
+        Assert.False(afterEvents.Overflowed);
+
+        Assert.False(afterEvents.Degraded);
+
+        await ProcessPendingWatcherEventsAsync(service, _workspace.Root, CancellationToken.None);
+
+        Assert.Equal(0, scopes.ScopeCount);
+
+        Assert.Equal(0, weave.EmbedBatchCallCount);
+
+        // An extension that is configured still reaches the indexer, so the rule is not vacuous.
+        string indexable = _workspace.WriteFile("out/notes.MD", "kept");
+
+        watcher.TriggerCreated(indexable);
+
+        await ProcessPendingWatcherEventsAsync(service, _workspace.Root, CancellationToken.None);
+
+        Assert.Equal(["out/notes.MD".Replace('/', Path.DirectorySeparatorChar)], await GetIndexedRelativePathsAsync());
+
+        await service.DisposeAsync();
+    }
+
+    /// <summary>
+    /// The drain repeats the lexical half of the eligibility rule even though the intake already applied it,
+    /// so a path that reaches it by any other route is still never indexed and never mistaken for a
+    /// directory event that needs a reconciliation. The intake is bypassed here, because with it in place
+    /// no event for such a path ever gets as far as the drain.
+    /// </summary>
+    [SkippableFact]
+    public async Task Drain_rejects_ineligible_paths_even_when_the_intake_did_not_filter_them()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        const string secret = "never-embedded-credential";
+
+        _workspace.WriteFile(".cache/data.json", $$"""{"cached":"{{secret}}"}""");
+
+        string hiddenLeaf = _workspace.WriteFile(".env.json", $$"""{"key":"{{secret}}"}""");
+
+        string ignoredFile = _workspace.WriteFile("node_modules/pkg/index.js", $"console.log('{secret}');");
+
+        FakeWorkspaceFileWatcherFactory watchers = new();
+
+        ObservingScopeFactory scopes = new(BuildScopeFactory());
+
+        FakeWeaveService weave = new();
+
+        WorkspaceIndexingService service = CreateService(weave, out _, watcherFactory: watchers, scopeFactory: scopes);
+
+        service.BypassWatcherIntakeFilterForTests = true;
+
+        service.RegisterWorkspace(_workspace.Root);
+
+        FakeWorkspaceFileWatcher watcher = watchers.Single;
+
+        watcher.TriggerCreated(Path.Combine(_workspace.Root, ".cache"));
+
+        watcher.TriggerCreated(Path.Combine(_workspace.Root, ".cache", "data.json"));
+
+        watcher.TriggerCreated(hiddenLeaf);
+
+        watcher.TriggerCreated(ignoredFile);
+
+        watcher.TriggerDeleted(Path.Combine(_workspace.Root, ".git", "index"));
+
+        await ProcessPendingWatcherEventsAsync(service, _workspace.Root, CancellationToken.None);
+
+        // One incremental unit took every path: a directory under a dot-prefixed segment is not a directory
+        // event that forces the full reconciliation.
+        Assert.Equal(1, scopes.ScopeCount);
+
+        Assert.Empty(await GetIndexedRelativePathsAsync());
+
+        Assert.DoesNotContain(weave.EmbeddedTexts, static text => text.Contains(secret, StringComparison.Ordinal));
 
         await service.DisposeAsync();
     }

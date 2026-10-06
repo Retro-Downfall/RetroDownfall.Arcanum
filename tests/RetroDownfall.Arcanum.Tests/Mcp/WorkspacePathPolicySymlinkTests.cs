@@ -850,6 +850,80 @@ public sealed class WorkspacePathPolicySymlinkTests : IDisposable
     }
 
     /// <summary>
+    /// The relative path of an opened handle is where the kernel says the file lives under the kernel's own
+    /// spelling of the workspace root: a link opened under its own name reports its target's location, and a
+    /// file inside a linked directory reports the directory's real name.
+    /// </summary>
+    [SkippableFact]
+    public void TryGetOpenedHandleRelativePath_ReportsTheRealLocationBehindALinkedName()
+    {
+        Skip.If(
+            !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux(),
+            "Symlinks are created without elevation on Unix hosts only.");
+
+        string workspace = Path.Combine(_root, "opened-" + Guid.NewGuid().ToString("N"));
+
+        Directory.CreateDirectory(Path.Combine(workspace, ".secrets"));
+
+        Directory.CreateDirectory(Path.Combine(workspace, "src"));
+
+        File.WriteAllText(Path.Combine(workspace, ".env.json"), "{}");
+
+        File.WriteAllText(Path.Combine(workspace, ".secrets", "token.json"), "{}");
+
+        File.WriteAllText(Path.Combine(workspace, "src", "plain.json"), "{}");
+
+        File.CreateSymbolicLink(Path.Combine(workspace, "linked.json"), Path.Combine(workspace, ".env.json"));
+
+        File.CreateSymbolicLink(Path.Combine(workspace, "shared"), Path.Combine(workspace, ".secrets"));
+
+        Assert.Equal(
+            Path.Combine("src", "plain.json"),
+            OpenedRelativePath(workspace, Path.Combine(workspace, "src", "plain.json")));
+
+        Assert.Equal(".env.json", OpenedRelativePath(workspace, Path.Combine(workspace, "linked.json")));
+
+        Assert.Equal(
+            Path.Combine(".secrets", "token.json"),
+            OpenedRelativePath(workspace, Path.Combine(workspace, "shared", "token.json")));
+    }
+
+    [SkippableFact]
+    public void TryGetOpenedHandleRelativePath_FailsClosedForAFileOutsideTheWorkspace()
+    {
+        Skip.If(
+            !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux() && !OperatingSystem.IsWindows(),
+            "The kernel path query is implemented for macOS, Linux and Windows.");
+
+        string workspace = Path.Combine(_root, "inside-" + Guid.NewGuid().ToString("N"));
+
+        Directory.CreateDirectory(workspace);
+
+        string outside = Path.Combine(_root, "outside-" + Guid.NewGuid().ToString("N") + ".json");
+
+        File.WriteAllText(outside, "{}");
+
+        using Microsoft.Win32.SafeHandles.SafeFileHandle handle = File.OpenHandle(outside);
+
+        Assert.False(WorkspacePathPolicy.TryGetOpenedHandleRelativePath(workspace, handle, out string? relativePath));
+
+        Assert.Null(relativePath);
+
+        Assert.False(WorkspacePathPolicy.IsOpenedHandleUnderWorkspace(workspace, handle));
+    }
+
+    private static string? OpenedRelativePath(string workspace, string file)
+    {
+        using Microsoft.Win32.SafeHandles.SafeFileHandle handle = File.OpenHandle(file);
+
+        Assert.True(WorkspacePathPolicy.IsOpenedHandleUnderWorkspace(workspace, handle));
+
+        return WorkspacePathPolicy.TryGetOpenedHandleRelativePath(workspace, handle, out string? relativePath)
+            ? relativePath
+            : null;
+    }
+
+    /// <summary>
     /// Builds <c>outside/sub/file</c> (real) and <c>ws/b -> ../outside</c> under this test's temp root and
     /// returns the workspace path.
     /// </summary>

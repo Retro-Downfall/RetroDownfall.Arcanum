@@ -19,8 +19,13 @@ internal static class WorkspaceIndexEligibility
 
     private static readonly char[] DirectorySeparators = [Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar];
 
-    private static readonly HashSet<string> IgnoredDirectorySegments = new(StringComparer.OrdinalIgnoreCase)
-    {
+    /// <summary>
+    /// The directory names that are never indexed, compared case-insensitively. A short fixed list matched
+    /// segment by segment as a span: a set lookup would need an alternate-lookup comparer over the span,
+    /// which the hosted-producer analysis does not recognise as in-memory work.
+    /// </summary>
+    private static readonly string[] IgnoredDirectoryNames =
+    [
         "bin",
         "obj",
         ".git",
@@ -30,7 +35,7 @@ internal static class WorkspaceIndexEligibility
         "packages",
         "dist",
         "build",
-    };
+    ];
 
     /// <summary>
     /// The eligibility of one entry whose own attributes are already known.
@@ -101,9 +106,6 @@ internal static class WorkspaceIndexEligibility
     /// </summary>
     internal static bool HasEligibleSegments(string relativePath)
     {
-        HashSet<string>.AlternateLookup<ReadOnlySpan<char>> ignored =
-            IgnoredDirectorySegments.GetAlternateLookup<ReadOnlySpan<char>>();
-
         int start = 0;
 
         while (start < relativePath.Length)
@@ -121,7 +123,7 @@ internal static class WorkspaceIndexEligibility
                 // dot-prefixed segment, ".." included, is hidden or outside the workspace.
                 bool isRoot = segment.Length == 1 && segment[0] == '.';
 
-                if ((segment[0] == '.' && !isRoot) || ignored.Contains(segment))
+                if ((segment[0] == '.' && !isRoot) || IsIgnoredDirectoryName(segment))
                 {
                     return false;
                 }
@@ -131,5 +133,18 @@ internal static class WorkspaceIndexEligibility
         }
 
         return true;
+    }
+
+    private static bool IsIgnoredDirectoryName(ReadOnlySpan<char> segment)
+    {
+        foreach (string ignored in IgnoredDirectoryNames)
+        {
+            if (MemoryExtensions.Equals(segment, ignored, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 }
