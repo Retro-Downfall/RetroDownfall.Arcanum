@@ -196,6 +196,33 @@ public sealed class LongRunningOperationStartupHostedServiceTests
     }
 
     [Fact]
+    public async Task A_second_StopAsync_returns_the_first_calls_task()
+    {
+        FakeTimeProvider time = new();
+        List<string> order = [];
+        RecoveryAdmissionGate gate = new(order);
+        FakeLongRunningOperationStore store = new(time);
+        RecoveryScopeFactory scopes = new(
+            store,
+            Reconciler(store, time),
+            order,
+            () => gate.ActiveLeases > 0);
+        LongRunningOperationStartupHostedService host = Host(scopes, time, gate);
+
+        SetBackgroundTask(host, Task.CompletedTask);
+
+        // The stop is cached, not re-run or re-wrapped per call: every caller observes the one stop's own task,
+        // so a later caller can neither start a second stop nor see an outcome the first stop did not have.
+        Task first = host.StopAsync(CancellationToken.None);
+
+        Task second = host.StopAsync(CancellationToken.None);
+
+        Assert.Same(first, second);
+
+        await first.WaitAsync(TimeSpan.FromSeconds(10));
+    }
+
+    [Fact]
     public async Task A_detached_owner_that_later_faults_is_logged_not_silently_dropped()
     {
         FakeTimeProvider time = new();

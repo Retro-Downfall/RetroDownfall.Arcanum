@@ -104,7 +104,14 @@ internal sealed class LongRunningOperationStartupHostedService(
     {
         lock (_stopGate)
         {
-            return _stopTask ??= StopCoreAsync(cancellationToken);
+            if (_stopTask is not null)
+            {
+                return _stopTask;
+            }
+
+            _stopTask = StopCoreAsync(cancellationToken);
+
+            return _stopTask;
         }
     }
 
