@@ -512,8 +512,11 @@ public sealed class LexiconCurationArchitectureTests
 
     private static string SqlText(MethodDeclarationSyntax method, bool legacy = false)
     {
+        // The named SQL constants a method's command text is built from. ReceiptLookupSql is a whole statement
+        // lifted to a constant so a query-plan test can run exactly what the service runs; it is resolved here
+        // like the column lists, so the method that executes it still owns its projection and its reader.
         Dictionary<string, string> constants = LexiconTrees().SelectMany(tree => tree.DescendantNodes().OfType<VariableDeclaratorSyntax>())
-            .Where(variable => variable.Identifier.ValueText is "SelectColumns" or "LegacySelectColumns" or "VersionColumns")
+            .Where(variable => variable.Identifier.ValueText is "SelectColumns" or "LegacySelectColumns" or "VersionColumns" or "ReceiptLookupSql")
             .ToDictionary(variable => variable.Identifier.ValueText, variable => ((LiteralExpressionSyntax)variable.Initializer!.Value).Token.ValueText);
 
         string Expand(SyntaxNode node)
