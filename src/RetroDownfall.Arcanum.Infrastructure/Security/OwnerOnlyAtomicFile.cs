@@ -95,7 +95,17 @@ internal static class OwnerOnlyAtomicFile
 
         try
         {
-            (TempFileDeleteForTests ?? File.Delete)(tempPath);
+            // The seam is invoked through its own property, not coalesced with File.Delete into one
+            // delegate: the hosted-producer analysis proves a test seam absent only by its property,
+            // and a coalesced delegate leaves the delete with no exact target.
+            if (TempFileDeleteForTests is not null)
+            {
+                TempFileDeleteForTests.Invoke(tempPath);
+            }
+            else
+            {
+                File.Delete(tempPath);
+            }
         }
         catch (Exception cleanupFailure)
             when (cleanupFailure is IOException or UnauthorizedAccessException)

@@ -10936,6 +10936,99 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
         Assert.DoesNotContain(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED");
     }
 
+    /// <summary>
+    /// The strict owner-only gates and the KDF sidecar's refused open fail by constructing an
+    /// <see cref="UnauthorizedAccessException"/>. Constructing an exception has no producer effect, like the
+    /// reviewed <see cref="IOException"/> family, so it is not an unclassified external site.
+    /// </summary>
+    [Fact]
+    public void ConstructingAnUnauthorizedAccessExceptionIsNotAnUnclassifiedSite()
+    {
+        HostedProducerDiscovery<HostedProducerSite> result = Discover(FixtureSource(
+            "if (token.IsCancellationRequested) { throw new System.UnauthorizedAccessException(\"The directory could not be restricted to the current user.\"); }"));
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED");
+    }
+
+    /// <summary>
+    /// A flow-local delete seam invoked through its own property, with the real delete on the other branch,
+    /// is a proven-absent test callable, so the delete stays one exact site. Coalescing the seam with the
+    /// delete method group hands the invocation a callback target the analysis cannot resolve, which is the
+    /// shape <c>OwnerOnlyAtomicFile</c>'s temp cleanup used to have.
+    /// </summary>
+    [Theory]
+    [InlineData("Branched", false)]
+    [InlineData("Coalesced", true)]
+    public void ADeleteTestSeamIsExactOnlyWhenInvokedThroughItsProperty(string shape, bool unproven)
+    {
+        const string helper = "static class TempCleanup { private static readonly AsyncLocal<Action<string>?> DeleteOverride = new(); internal static Action<string>? DeleteForTests { get => DeleteOverride.Value; set => DeleteOverride.Value = value; } public static void Branched(string path) { if (DeleteForTests is not null) { DeleteForTests.Invoke(path); } else { System.IO.File.Delete(path); } } public static void Coalesced(string path) { (DeleteForTests ?? System.IO.File.Delete)(path); } }";
+
+        HostedProducerDiscovery<HostedProducerSite> result = Discover(FixtureSource("TempCleanup." + shape + "(\"path.tmp\");", helper));
+
+        Assert.Equal(
+            unproven,
+            result.Diagnostics.Any(static diagnostic => diagnostic.Code == "HOSTED_CALLBACK_OWNERSHIP_UNPROVEN"
+                && diagnostic.Detail.StartsWith("System.Action`1.Invoke;", StringComparison.Ordinal)));
+
+        if (!unproven)
+        {
+            Assert.Contains(result.Items, static site => site.Callee == "System.IO.File.Delete");
+        }
+    }
+
+    /// <summary>
+    /// R-048's bounded OS credential reads hand exactly one <c>IOsCredentialStore.TryGet</c> to
+    /// <c>Task.Run</c> and wait for it only up to a timeout, so a parked platform prompt is abandoned rather
+    /// than allowed to wedge startup. The two reviewed owners may let that read outlive them because it
+    /// reaches no producer site; the store that decorates its own interface leaves the evidence only
+    /// inconclusive. A producer site inside the read, an unreviewed owner, a read that is not exactly one
+    /// <c>TryGet</c>, or a read no timed wait bounds still fails ownership.
+    /// </summary>
+    [Theory]
+    [InlineData("MirroredOsCredential", "ReadOsAsync", false, "() => osStore.TryGet(\"service\", \"account\")", true, false)]
+    [InlineData("ArcanumMasterKeyBootstrapper", "ProbeOsKeyStorageAsync", false, "() => osStore.TryGet(\"service\", \"account\")", true, false)]
+    [InlineData("MirroredOsCredential", "ReadOsAsync", true, "() => osStore.TryGet(\"service\", \"account\")", true, true)]
+    [InlineData("CredentialReader", "ReadOsAsync", false, "() => osStore.TryGet(\"service\", \"account\")", true, true)]
+    [InlineData("MirroredOsCredential", "ReadOsAsync", false, "() => { string service = \"service\"; return osStore.TryGet(service, \"account\"); }", true, true)]
+    [InlineData("MirroredOsCredential", "ReadOsAsync", false, "() => osStore.TryGet(\"service\", \"account\")", false, true)]
+    public void ABoundedOsCredentialReadMayOutliveOnlyItsReviewedOwner(
+        string owner,
+        string member,
+        bool storeDeletesAFile,
+        string readCallback,
+        bool bounded,
+        bool unproven)
+    {
+        string wait = bounded
+            ? "read.WaitAsync(remaining)"
+            : "Task.FromResult<string?>(null)";
+
+        string storeEffect = storeDeletesAFile
+            ? "System.IO.File.Delete(service); "
+            : string.Empty;
+
+        string helper = "namespace RetroDownfall.Arcanum.Secrets.Security { public interface IOsCredentialStore { string? TryGet(string service, string account); } "
+            + "public sealed class OsCredentialStore : IOsCredentialStore { private readonly IOsCredentialStore _inner; public OsCredentialStore() { _inner = new PlatformStore(); } public OsCredentialStore(IOsCredentialStore inner) { _inner = inner; } public string? TryGet(string service, string account) { " + storeEffect + "return _inner.TryGet(service, account); } "
+            + "private sealed class PlatformStore : IOsCredentialStore { public string? TryGet(string service, string account) => null; } } } "
+            + "namespace RetroDownfall.Arcanum.Infrastructure.Security { internal sealed class " + owner + "(RetroDownfall.Arcanum.Secrets.Security.IOsCredentialStore osStore) { private readonly System.Threading.Lock _osReadSync = new(); private Task<string?>? _osRead; private long _osReadStartedAt; "
+            + "internal async Task<string?> " + member + "() { Task<string?> read; long startedAt; lock (_osReadSync) { if (_osRead is null || _osRead.IsCompleted) { _osReadStartedAt = System.Diagnostics.Stopwatch.GetTimestamp(); _osRead = Task.Run(" + readCallback + ", CancellationToken.None); } read = _osRead; startedAt = _osReadStartedAt; } "
+            + "TimeSpan remaining = TimeSpan.FromSeconds(15) - System.Diagnostics.Stopwatch.GetElapsedTime(startedAt); if (remaining > TimeSpan.Zero) { try { return await " + wait + ".ConfigureAwait(false); } catch (TimeoutException) { } } return null; } } }";
+
+        string body = "await new RetroDownfall.Arcanum.Infrastructure.Security." + owner + "(new RetroDownfall.Arcanum.Secrets.Security.OsCredentialStore())." + member + "();";
+
+        string source = R2Source(body, helper).Replace(
+            "services.AddHostedService<Worker>();",
+            "services.AddHostedService<Worker>(); services.AddSingleton<RetroDownfall.Arcanum.Secrets.Security.IOsCredentialStore, RetroDownfall.Arcanum.Secrets.Security.OsCredentialStore>();",
+            StringComparison.Ordinal);
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(source);
+
+        Assert.Equal(
+            unproven,
+            result.Diagnostics.Any(static diagnostic => diagnostic.Code == "HOSTED_CALLBACK_OWNERSHIP_UNPROVEN"
+                && diagnostic.Detail.StartsWith("System.Threading.Tasks.Task.Run;", StringComparison.Ordinal)));
+    }
+
     [Fact]
     public void WrongNamespaceWrapperIsRejected()
     {

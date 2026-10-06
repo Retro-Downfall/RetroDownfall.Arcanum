@@ -93,7 +93,9 @@ internal static partial class SecureFileReader
     /// <summary>
     /// Deterministic test seam invoked after the validated handle is open and before the first
     /// bounded read, for the current async flow only: every secret mirror read passes through here, so
-    /// a process-global hook would fire inside unrelated tests running in parallel.
+    /// a process-global hook would fire inside unrelated tests running in parallel. A flow that started
+    /// before the seam was set does not see it: the in-process MCP server handles each call on the flow
+    /// its read loop captured at start, so a test arms the seam before it starts the server.
     /// </summary>
     internal static Action<string>? AfterOpenForTests
     {

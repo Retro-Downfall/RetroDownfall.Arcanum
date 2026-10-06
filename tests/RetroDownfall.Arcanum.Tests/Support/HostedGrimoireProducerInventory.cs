@@ -987,6 +987,7 @@ internal static class HostedGrimoireProducerInventory
         "System.TimeSpan",
         "System.UInt32",
         "System.UInt64",
+        "System.UnauthorizedAccessException",
         "System.Uri",
         "System.Version",
     };
@@ -19230,7 +19231,12 @@ internal static class HostedGrimoireProducerInventory
                                     && !IsEffectFreeExternalCallable(callback, member)
                                     && (bodies.Length == 0
                                         || callbackEvidence != TraversalEvidence.NoEvidence
-                                        || bodies.Any(HasAdmissionSeed)))
+                                        || bodies.Any(HasAdmissionSeed))
+                                    && !IsReviewedBoundedOsCredentialRead(
+                                        member,
+                                        callbackCall,
+                                        callbackEvidence,
+                                        bodies))
                                 {
                                     string reason = completion is null
                                         ? "no exact completion observation"
@@ -20395,6 +20401,72 @@ internal static class HostedGrimoireProducerInventory
                 && HasReviewedTrackedTaskStopJoin(
                     member.Symbol.ContainingType,
                     "_activeJobTasks");
+        }
+
+        /// <summary>
+        /// R-048's two bounded OS credential reads: <c>MirroredOsCredential.ReadOsAsync</c>, whose one
+        /// outstanding read every caller joins, and the master-key bootstrapper's direct probe of a store
+        /// that is not the shipping one. Each hands exactly one <c>IOsCredentialStore.TryGet</c> to
+        /// <c>Task.Run</c> and waits for it only through a timed <c>WaitAsync</c>, so a parked platform
+        /// prompt is abandoned rather than allowed to wedge startup, and the abandoned read finishes after
+        /// its caller. That is reviewed only because the read reaches no producer site: the shipping store
+        /// decorates its own interface, which leaves the callback's evidence inconclusive, never evidence.
+        /// A site reached inside the read, an admission seed, any other owner, a callback that is not
+        /// exactly that one call, or a read no timed wait bounds is not this proof.
+        /// </summary>
+        private bool IsReviewedBoundedOsCredentialRead(
+            AuthoredMember caller,
+            InvocationExpressionSyntax dispatch,
+            TraversalEvidence callbackEvidence,
+            AuthoredMember[] bodies)
+        {
+            if (callbackEvidence == TraversalEvidence.Evidence
+                || bodies.Length == 0
+                || bodies.Any(HasAdmissionSeed)
+                || caller.Model.GetSymbolInfo(dispatch).Symbol is not IMethodSymbol taskRun
+                || Normalize(taskRun) != "System.Threading.Tasks.Task.Run"
+                || dispatch.ArgumentList.Arguments is not
+                [
+                    {
+                        Expression: ParenthesizedLambdaExpressionSyntax
+                        {
+                            ParameterList.Parameters.Count: 0,
+                            Block: null,
+                            ExpressionBody: InvocationExpressionSyntax read,
+                        },
+                    },
+                    {
+                        Expression: MemberAccessExpressionSyntax cancellation,
+                    },
+                ]
+                || caller.Model.GetSymbolInfo(read).Symbol is not IMethodSymbol readMethod
+                || Normalize(readMethod) != "RetroDownfall.Arcanum.Secrets.Security.IOsCredentialStore.TryGet"
+                || read.ArgumentList.Arguments.Any(argument =>
+                    argument.RefKindKeyword.IsKind(SyntaxKind.OutKeyword)
+                    || IsDelegateExpression(caller.Model, argument.Expression))
+                || caller.Model.GetSymbolInfo(cancellation).Symbol
+                    is not IPropertySymbol { Name: "None" } none
+                || TypeKey(none.ContainingType) != "System.Threading.CancellationToken")
+            {
+                return false;
+            }
+
+            string type = TypeKey(caller.Symbol.ContainingType);
+
+            bool reviewedOwner = type == "RetroDownfall.Arcanum.Infrastructure.Security.MirroredOsCredential"
+                    && caller.Symbol.Name == "ReadOsAsync"
+                || type == "RetroDownfall.Arcanum.Infrastructure.Security.ArcanumMasterKeyBootstrapper"
+                    && caller.Symbol.Name == "ProbeOsKeyStorageAsync";
+
+            return reviewedOwner
+                && caller.Syntax.DescendantNodes()
+                    .OfType<InvocationExpressionSyntax>()
+                    .Any(call => caller.Model.GetSymbolInfo(call).Symbol
+                            is IMethodSymbol wait
+                        && Normalize(wait) is "System.Threading.Tasks.Task.WaitAsync"
+                            or "System.Threading.Tasks.Task`1.WaitAsync"
+                        && wait.Parameters.Any(static parameter =>
+                            TypeKey(parameter.Type) == "System.TimeSpan"));
         }
 
         private bool IsReviewedTrackedTaskHandoff(

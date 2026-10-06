@@ -1678,17 +1678,13 @@ public sealed partial class ArcanumInternalToolServerTests : IAsyncLifetime
 
         _workspace.WriteFile(relativePath, new string('x', 1024));
 
+        Func<bool> afterOpenRan = ArmFirstSecureFileOpenForServer(
+            static path => File.AppendAllText(path, "y"));
+
         await using TestMcpSession session = await CreateSessionAsync(
             maxFileReadSizeBytes: 1024);
 
         using IDisposable persistedTurn = BeginPersistedTurn();
-
-        SecureFileReader.AfterOpenForTests = path =>
-        {
-            SecureFileReader.AfterOpenForTests = null;
-
-            File.AppendAllText(path, "y");
-        };
 
         JsonElement arguments = JsonSerializer.SerializeToElement(
             new ReplaceTextBlockParams
@@ -1702,6 +1698,8 @@ public sealed partial class ArcanumInternalToolServerTests : IAsyncLifetime
         McpToolsCallResultWire result = await session.CallToolAsync(
             "replace_text_block",
             arguments);
+
+        Assert.True(afterOpenRan());
 
         Assert.True(result.IsError);
 
@@ -1724,18 +1722,17 @@ public sealed partial class ArcanumInternalToolServerTests : IAsyncLifetime
             relativePath,
             "replace this original");
 
+        Func<bool> afterOpenRan = ArmFirstSecureFileOpenForServer(
+            static openedPath =>
+            {
+                File.Delete(openedPath);
+
+                File.WriteAllText(openedPath, "external replacement");
+            });
+
         await using TestMcpSession session = await CreateSessionAsync();
 
         using IDisposable persistedTurn = BeginPersistedTurn();
-
-        SecureFileReader.AfterOpenForTests = openedPath =>
-        {
-            SecureFileReader.AfterOpenForTests = null;
-
-            File.Delete(openedPath);
-
-            File.WriteAllText(openedPath, "external replacement");
-        };
 
         JsonElement arguments = JsonSerializer.SerializeToElement(
             new ReplaceTextBlockParams
@@ -1749,6 +1746,8 @@ public sealed partial class ArcanumInternalToolServerTests : IAsyncLifetime
         McpToolsCallResultWire result = await session.CallToolAsync(
             "replace_text_block",
             arguments);
+
+        Assert.True(afterOpenRan());
 
         Assert.True(result.IsError);
 
@@ -5297,6 +5296,28 @@ public sealed partial class ArcanumInternalToolServerTests : IAsyncLifetime
 
         public Task<WorkspaceContext?> GetLatestWorkspaceContextAsync(string workspacePath, CancellationToken cancellationToken = default) =>
             throw new NotImplementedException();
+    }
+
+    /// <summary>
+    /// Arms <see cref="SecureFileReader.AfterOpenForTests"/> so <paramref name="afterOpen"/> runs at the
+    /// first secure open only, and returns whether it ran. The seam is flow-local and the in-process
+    /// server handles every <c>tools/call</c> on the flow its read loop captured when the session
+    /// started, so a test arms it before <see cref="CreateSessionAsync"/>. Clearing the seam from inside
+    /// the handler would not reach that loop's flow, so a flag, not the clear, keeps it one-shot.
+    /// </summary>
+    private static Func<bool> ArmFirstSecureFileOpenForServer(Action<string> afterOpen)
+    {
+        int ran = 0;
+
+        SecureFileReader.AfterOpenForTests = path =>
+        {
+            if (Interlocked.Exchange(ref ran, 1) == 0)
+            {
+                afterOpen(path);
+            }
+        };
+
+        return () => Volatile.Read(ref ran) == 1;
     }
 
     private static IDisposable BeginPersistedTurn() =>
