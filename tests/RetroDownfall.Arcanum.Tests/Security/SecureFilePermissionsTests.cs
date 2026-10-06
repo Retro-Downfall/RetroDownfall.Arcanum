@@ -211,6 +211,41 @@ public sealed class SecureFilePermissionsTests : IAsyncLifetime
         Assert.False(Directory.Exists(path));
     }
 
+    /// <summary>
+    /// The Windows directory-create seam is flow-local, like every other seam in this type: a
+    /// replacement installed by one test must not reach a directory create running in another flow, or
+    /// a parallel test's owner-only directory would be "created" by someone else's fake.
+    /// </summary>
+    [Fact]
+    public async Task The_windows_directory_create_seam_does_not_reach_another_flow()
+    {
+        string path = Path.Combine(_temp.Root, "other-flow-directory");
+
+        bool invoked = false;
+
+        SecureFilePermissions.WindowsOwnerOnlyDirectoryCreateForTests = (_, _, _, _, _) => invoked = true;
+
+        try
+        {
+            Task otherFlow;
+
+            using (ExecutionContext.SuppressFlow())
+            {
+                otherFlow = Task.Run(() => SecureFilePermissions.CreateOwnerOnlyDirectoryAtPath(path));
+            }
+
+            await otherFlow;
+        }
+        finally
+        {
+            SecureFilePermissions.WindowsOwnerOnlyDirectoryCreateForTests = null;
+        }
+
+        Assert.False(invoked);
+
+        Assert.True(Directory.Exists(path));
+    }
+
     [Fact]
     public void ApplyOwnerOnlyFile_restricts_new_file()
     {

@@ -153,7 +153,11 @@ public static partial class GrimoireKdfSidecarFile
 
     /// <summary>
     /// Promotes a pending salt to the committed sidecar with an atomic rename, so the sidecar is
-    /// either the old one or the new one and never a partial file.
+    /// either the old one or the new one and never a partial file. The sidecar is secret-bearing, so
+    /// the staged file's owner-only posture is required before the rename (DESIGN §11.13.1): a
+    /// promotion that cannot establish it fails with <see cref="UnauthorizedAccessException"/> and
+    /// leaves the pending salt for the next start to promote, rather than publishing a sidecar nobody
+    /// verified.
     /// </summary>
     public static void PromotePending(string databasePath)
     {
@@ -161,9 +165,9 @@ public static partial class GrimoireKdfSidecarFile
 
         string sidecarPath = GetSidecarPath(databasePath);
 
-        File.Move(pendingPath, sidecarPath, overwrite: true);
+        SecureFilePermissions.RequireOwnerOnlyFile(pendingPath);
 
-        SecureFilePermissions.ApplyOwnerOnlyFile(sidecarPath);
+        File.Move(pendingPath, sidecarPath, overwrite: true);
     }
 
     private static void WriteFile(string sidecarPath, GrimoireKdfSidecar sidecar)

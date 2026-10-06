@@ -249,6 +249,59 @@ public sealed class DataProtectionSecretStoreTests : IDisposable
         }
     }
 
+    /// <summary>
+    /// A save whose file posture cannot be verified must fail before it publishes anything: verifying
+    /// the replaced file after the rename reported a failed save whose new bytes were already live, and
+    /// the caller then skipped the bookkeeping that follows a successful one (here, the digest
+    /// invalidation). The staged file is verified before it replaces the target.
+    /// </summary>
+    [Fact]
+    public async Task A_save_whose_file_posture_cannot_be_verified_leaves_the_previous_value_in_place()
+    {
+        using DataProtectionSecretStore store = CreateStore();
+
+        await store.SaveApiKeyAsync("previous-key");
+
+        SecureFilePermissions.StrictOwnerOnlyVerificationForTests = static (_, isDirectory) =>
+            isDirectory ? null : false;
+
+        try
+        {
+            _ = await Assert.ThrowsAsync<UnauthorizedAccessException>(
+                () => store.SaveApiKeyAsync("must-not-be-published"));
+        }
+        finally
+        {
+            SecureFilePermissions.StrictOwnerOnlyVerificationForTests = null;
+        }
+
+        Assert.Equal("previous-key", (await store.GetApiKeyReadResultAsync()).Value);
+
+        string directory = Path.GetDirectoryName(Path.GetFullPath(ArcanumPaths.ApiKeyStoreFile))!;
+
+        Assert.Empty(Directory.EnumerateFiles(directory, Path.GetFileName(ArcanumPaths.ApiKeyStoreFile) + ".tmp.*"));
+    }
+
+    /// <summary>
+    /// Windows lane for the strict posture gate on every secret save (DESIGN §11.13.1): the secret store
+    /// directory and the mirror a save publishes carry a protected ACL owned by, and granting only, the
+    /// current user. The macOS lane covers the same gate through the verification seam; this is the
+    /// one assertion against a real Windows descriptor.
+    /// </summary>
+    [SkippableFact]
+    public async Task Windows_secret_save_leaves_the_directory_and_mirror_owner_only()
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), "Asserts a real Windows access-control list.");
+
+        using DataProtectionSecretStore store = CreateStore();
+
+        await store.SaveApiKeyAsync("windows-owner-only-key");
+
+        Assert.True(SecureFilePermissions.HasOwnerOnlyPosture(ArcanumPaths.SecretStoreDirectory, isDirectory: true));
+
+        Assert.True(SecureFilePermissions.HasOwnerOnlyPosture(ArcanumPaths.ApiKeyStoreFile, isDirectory: false));
+    }
+
     private static bool CanOpenForRead(string path)
     {
         try

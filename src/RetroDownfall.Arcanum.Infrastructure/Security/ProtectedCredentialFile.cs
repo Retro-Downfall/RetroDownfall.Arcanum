@@ -66,6 +66,14 @@ internal static class ProtectedCredentialFile
                 CryptographicOperations.ZeroMemory(plain);
             }
         }
+        catch (CryptographicException exception) when (KeyRingCouldNotBeRead(exception))
+        {
+            // Data Protection reports a key ring it could not open — a directory whose owner-only
+            // posture cannot be established, a key file it may not read — as a failed decryption. The
+            // mirror's content is unknown, not known bad, so it gets retry guidance, never the
+            // corrupt-file recovery text that tells an operator to delete it.
+            return SecretStoreReadResult.Unreadable(KeyRingUnreadableMessage(path));
+        }
         catch (CryptographicException)
         {
             return SecretStoreReadResult.Corrupted(corruptMessage);
@@ -95,6 +103,32 @@ internal static class ProtectedCredentialFile
             + "owner-only permissions, then retry. No replacement is generated while it is unreadable.";
     }
 
+    /// <summary>
+    /// True when Data Protection failed because the key ring itself could not be opened or read, which
+    /// it reports as a <see cref="CryptographicException"/> wrapping the I/O or access failure.
+    /// </summary>
+    private static bool KeyRingCouldNotBeRead(CryptographicException exception) =>
+        KeyRingAccessFailure(exception) is not null;
+
+    private static Exception? KeyRingAccessFailure(CryptographicException exception)
+    {
+        for (Exception? inner = exception.InnerException; inner is not null; inner = inner.InnerException)
+        {
+            if (inner is UnauthorizedAccessException or IOException)
+            {
+                return inner;
+            }
+        }
+
+        return null;
+    }
+
+    private static string KeyRingUnreadableMessage(string path) =>
+        $"{Path.GetFileName(path)} could not be decrypted because the Data Protection key ring could not "
+        + "be read (its directory could not be restricted to the current user, or a key file could not "
+        + "be opened). It was left unchanged and is not treated as corrupt: make the key ring an "
+        + "owner-only directory of the current user, then retry. No replacement is generated meanwhile.";
+
     internal static async Task WriteAsync(
         string path,
         string plainText,
@@ -113,6 +147,14 @@ internal static class ProtectedCredentialFile
         try
         {
             cipher = protector.Protect(plain);
+        }
+        catch (CryptographicException exception) when (KeyRingCouldNotBeRead(exception))
+        {
+            // Rethrow what actually failed (for a key ring whose posture cannot be established, the
+            // UnauthorizedAccessException that names it) rather than Data Protection's generic wrapper.
+            System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw(KeyRingAccessFailure(exception)!);
+
+            throw;
         }
         finally
         {

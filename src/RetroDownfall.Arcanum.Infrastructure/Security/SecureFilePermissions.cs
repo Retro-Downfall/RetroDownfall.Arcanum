@@ -46,9 +46,21 @@ public static partial class SecureFilePermissions
         set => StrictOwnerOnlyVerificationOverride.Value = value;
     }
 
-    internal static Action<string, bool, bool, bool, bool>?
-        WindowsOwnerOnlyDirectoryCreateForTests
-    { get; set; }
+    private static readonly AsyncLocal<Action<string, bool, bool, bool, bool>?> WindowsOwnerOnlyDirectoryCreateOverride = new();
+
+    /// <summary>
+    /// Test seam that replaces the Windows owner-only directory create, for the current async flow
+    /// only, and receives what that create is asked for: the path, whether the descriptor is protected
+    /// from inheritance, whether it grants full control, and whether that grant is inherited by child
+    /// directories and files. A process-global override would hand a parallel test's directory create
+    /// to someone else's fake.
+    /// </summary>
+    internal static Action<string, bool, bool, bool, bool>? WindowsOwnerOnlyDirectoryCreateForTests
+    {
+        get => WindowsOwnerOnlyDirectoryCreateOverride.Value;
+
+        set => WindowsOwnerOnlyDirectoryCreateOverride.Value = value;
+    }
 
     private static readonly AsyncLocal<Func<string, bool, bool, FileStream>?> WindowsOwnerOnlyTempFileCreateOverride = new();
 
