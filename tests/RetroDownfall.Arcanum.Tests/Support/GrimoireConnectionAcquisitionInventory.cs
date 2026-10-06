@@ -1587,7 +1587,7 @@ internal static class GrimoireConnectionAcquisitionScanner
             null),
 
         new(
-            new("src/RetroDownfall.Arcanum.Infrastructure/Hosting/WorkspaceIndexingService.cs", "WorkspaceIndexingService", "DeleteExistingChunksAsync(4)", AcquisitionConstructKind.ProviderOpen, "OpenConnectionAsync", 2, "OpenConnectionAsync(db,cancellationToken)"),
+            new("src/RetroDownfall.Arcanum.Infrastructure/Hosting/WorkspaceIndexingService.cs", "WorkspaceIndexingService", "DeleteExistingChunksAsync(5)", AcquisitionConstructKind.ProviderOpen, "OpenConnectionAsync", 2, "OpenConnectionAsync(db,cancellationToken)"),
             GrimoirePathAuthority.LiveGrimoire,
             GrimoireAcquisitionKind.ServingRawOrdinary,
             GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
