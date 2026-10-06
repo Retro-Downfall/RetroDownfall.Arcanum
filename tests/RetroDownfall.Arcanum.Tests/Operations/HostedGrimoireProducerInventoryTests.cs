@@ -20,6 +20,8 @@ using RetroDownfall.Arcanum.Infrastructure.Data;
 
 using System.Collections.Immutable;
 
+using System.Runtime.CompilerServices;
+
 using Xunit.Abstractions;
 
 namespace RetroDownfall.Arcanum.Tests.Operations;
@@ -24933,6 +24935,125 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
         Assert.Equal(0, exhausted.ProvenanceStableHits);
 
         Assert.Equal(0, exhausted.ValueFlowStableHits);
+    }
+
+    [Fact]
+    public void CleanupValueFlowAtItsWorkBudgetDepthRunsOnTheAnalysisStackNotTheCallers()
+    {
+        const int chainLength = 300;
+
+        string chain = string.Join(
+            " ",
+            Enumerable.Range(0, chainLength).Select(index =>
+                index == chainLength - 1
+                    ? $"internal static BudgetCleanup Step{index}() => new();"
+                    : $"internal static BudgetCleanup Step{index}() => Step{index + 1}();"));
+
+        string helper =
+            "internal sealed class BudgetCleanup : System.IDisposable { "
+            + "private readonly System.IO.Stream _stream = new System.IO.MemoryStream(); "
+            + "public void Dispose() { _stream.Dispose(); System.IO.File.Delete(\"caller-stack-cleanup\"); } } "
+            + "internal static class CleanupCacheTarget { "
+            + chain
+            + " internal static void Run() { using (Step0()) { } } }";
+
+        string fingerprint = HostedGrimoireProducerInventory.Fingerprint(
+            SyntaxFactory.ParseExpression("CleanupCacheTarget.Run()"));
+
+        HostedProducerOperationEntry root = OrdinaryRoot(
+            "Worker.StartAsync::call:CleanupCacheTarget.Run#0~" + fingerprint) with
+        {
+            Authority = HostedProducerAuthorityKind.PreReadinessStartup,
+            WorkKind = null,
+            Proof = "Worker.StartAsync: caller stack cleanup fixture",
+        };
+
+        CSharpCompilation compilation = Compile(R2Source("CleanupCacheTarget.Run();", helper));
+
+        Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic =>
+            diagnostic.Severity == DiagnosticSeverity.Error));
+
+        HostedProducerDiscovery<HostedProducerSite>? result = null;
+
+        Exception? failure = null;
+
+        // The 300-step chain drives the cleanup value-flow walk to its work budget, several frames per
+        // step. A quarter-megabyte caller cannot hold that bounded recursion, so discovery must run it on
+        // its own analysis stack and still end it at the budget rather than at the caller's stack limit.
+        Thread caller = new(
+            () =>
+            {
+                try
+                {
+                    result = HostedGrimoireProducerInventory.DiscoverProducerSites(
+                        [compilation],
+                        new(["Worker"], []),
+                        [new("Worker", [root])],
+                        [],
+                        traversalMaximumDepth: 64);
+                }
+                catch (Exception error)
+                {
+                    failure = error;
+                }
+            },
+            256 * 1024);
+
+        caller.Start();
+
+        caller.Join();
+
+        Assert.Null(failure);
+
+        HostedProducerDiscovery<HostedProducerSite> discovery = Assert.IsType<HostedProducerDiscovery<HostedProducerSite>>(result);
+
+        Assert.DoesNotContain(discovery.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED");
+
+        Assert.Contains(discovery.Items, static site =>
+            site.EnclosingType == "BudgetCleanup"
+            && site.Member == "Dispose"
+            && site.Callee == "System.IO.File.Delete");
+
+        Assert.Contains(
+            Assert.IsType<HostedProducerAnalysisMetrics>(discovery.AnalysisMetrics).CleanupCaches,
+            static candidate => candidate.Member.StartsWith(
+                    "M:CleanupCacheTarget.Step",
+                    StringComparison.Ordinal)
+                && candidate.ValueFlowRequests == 1
+                && candidate.ValueFlowBuilds == 0);
+    }
+
+    [Fact]
+    public void RootWorkersRunEachFamilyOnTheAnalysisStack()
+    {
+        const int frames = 8 * 1024;
+
+        int[] consumed = new int[2];
+
+        int[] owners = HostedProducerRootWorkers.Run(2, [[0], [1]], 2, (_, family) =>
+        {
+            consumed[family[0]] = ConsumeAnalysisStack(frames);
+
+            return family;
+        });
+
+        Assert.Equal(2, owners.Length);
+
+        Assert.All(consumed, static count => Assert.Equal(frames + 1, count));
+    }
+
+    // Each frame holds a kilobyte, so the recursion needs several megabytes whatever the JIT tier.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static int ConsumeAnalysisStack(int remaining)
+    {
+        Span<byte> frame = stackalloc byte[1024];
+
+        frame[^1] = 1;
+
+        return remaining == 0
+            ? frame[^1]
+            : ConsumeAnalysisStack(remaining - 1) + frame[^1];
     }
 
     [Theory]
