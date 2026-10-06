@@ -486,9 +486,9 @@ internal sealed partial class WorkspaceIndexingService
         // Judged before the scheduler gate is taken.
         bool queueOldPath = change.Kind == WorkspaceFileChangeKind.Renamed
             && change.OldFullPath is not null
-            && (BypassWatcherIntakeFilterForTests || IsIndexablePath(entry.Path, change.OldFullPath, change.Kind, isRenamedAwayPath: true));
+            && (BypassWatcherIntakeFilterForTests || IsIndexablePath(entry.Path, change.OldFullPath, change.Kind, isDirectory: change.IsDirectory, isRenamedAwayPath: true));
 
-        bool queuePath = BypassWatcherIntakeFilterForTests || IsIndexablePath(entry.Path, change.FullPath, change.Kind, isRenamedAwayPath: false);
+        bool queuePath = BypassWatcherIntakeFilterForTests || IsIndexablePath(entry.Path, change.FullPath, change.Kind, isDirectory: change.IsDirectory, isRenamedAwayPath: false);
 
         lock (_schedulerGate)
         {
@@ -542,13 +542,14 @@ internal sealed partial class WorkspaceIndexingService
     /// <remarks>
     /// A path whose extension is not configured names nothing the indexer would read, so beyond the
     /// lexical rule it is queued only when it may be a directory that appeared: a Created or Renamed
-    /// event for a path that is one, because a new subtree can hold files written before the watcher
-    /// covered it. A Changed event for a directory says nothing was added or removed (Windows raises one
-    /// for the parent of every written file), and a Deleted one names a directory whose files were
-    /// reported on their own. The path a rename moved away from is always kept, because it may have been
-    /// a directory whose stored chunks have to go.
+    /// event raised by the workspace's directory-name watcher, because a new subtree can hold files
+    /// written before the watcher covered it. The event carries <see cref="WorkspaceFileChange.IsDirectory"/>,
+    /// and the intake never probes the disk on a watcher thread. A Changed event for a directory says
+    /// nothing was added or removed (Windows raises one for the parent of every written file), and a
+    /// Deleted one names a directory whose files were reported on their own. The path a rename moved
+    /// away from is always kept, because it may have been a directory whose stored chunks have to go.
     /// </remarks>
-    private bool IsIndexablePath(string workspacePath, string fullPath, WorkspaceFileChangeKind kind, bool isRenamedAwayPath)
+    private bool IsIndexablePath(string workspacePath, string fullPath, WorkspaceFileChangeKind kind, bool isDirectory, bool isRenamedAwayPath)
     {
         string relativePath;
 
@@ -571,8 +572,7 @@ internal sealed partial class WorkspaceIndexingService
             return true;
         }
 
-        return kind is WorkspaceFileChangeKind.Created or WorkspaceFileChangeKind.Renamed
-            && Directory.Exists(fullPath);
+        return kind is WorkspaceFileChangeKind.Created or WorkspaceFileChangeKind.Renamed && isDirectory;
     }
 
     /// <summary>
