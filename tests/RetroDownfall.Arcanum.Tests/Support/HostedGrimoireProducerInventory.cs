@@ -24547,6 +24547,21 @@ internal static class HostedGrimoireProducerInventory
 
                 if (symbol is IPropertySymbol property)
                 {
+                    if (PositionalRecordConstructorParameter(property) is
+                        {
+                            ContainingSymbol: IMethodSymbol primaryConstructor,
+                        } positional)
+                    {
+                        return HasAuthoredCallableMutation(property)
+                            ? default
+                            : ResolveParameter(positional, primaryConstructor, path);
+                    }
+
+                    if (!PropertyStorageIsOnlyWrittenThroughItself(property))
+                    {
+                        return default;
+                    }
+
                     bool initialized = property.DeclaringSyntaxReferences.Any(reference => reference.GetSyntax() is PropertyDeclarationSyntax { Initializer: not null });
 
                     return initialized || HasAuthoredCallableMutation(property) ? default : new(true, null, true, false);
@@ -24829,10 +24844,20 @@ internal static class HostedGrimoireProducerInventory
 
             authoredCallableMutationCorpusScans++;
 
-            bool mutated = AuthoredMembers.Any(member => member.Syntax.DescendantNodesAndSelf().Any(node => node switch
+            // Every authored tree is scanned, not only member bodies: a field or property initializer can write a
+            // seam through an object initializer or a with-expression. A deconstruction writes each element of
+            // its tuple target.
+            bool Writes(SemanticModel model, ExpressionSyntax target) => target switch
             {
-                AssignmentExpressionSyntax assignment => SymbolEqualityComparer.Default.Equals(member.Model.GetSymbolInfo(assignment.Left).Symbol, symbol),
-                ArgumentSyntax argument when argument.RefKindKeyword.Kind() is SyntaxKind.RefKeyword or SyntaxKind.OutKeyword => SymbolEqualityComparer.Default.Equals(member.Model.GetSymbolInfo(argument.Expression).Symbol, symbol),
+                TupleExpressionSyntax tuple => tuple.Arguments.Any(element => Writes(model, element.Expression)),
+                ParenthesizedExpressionSyntax parenthesized => Writes(model, parenthesized.Expression),
+                _ => SymbolEqualityComparer.Default.Equals(model.GetSymbolInfo(target).Symbol, symbol),
+            };
+
+            bool mutated = semanticModels.Any(pair => pair.Key.GetRoot().DescendantNodes().Any(node => node switch
+            {
+                AssignmentExpressionSyntax assignment => Writes(pair.Value, assignment.Left),
+                ArgumentSyntax argument when argument.RefKindKeyword.Kind() is SyntaxKind.RefKeyword or SyntaxKind.OutKeyword => SymbolEqualityComparer.Default.Equals(pair.Value.GetSymbolInfo(argument.Expression).Symbol, symbol),
                 _ => false,
             }));
 
@@ -24896,7 +24921,8 @@ internal static class HostedGrimoireProducerInventory
                 && callableType?.TypeKind == TypeKind.Delegate
                 && callableType.NullableAnnotation == NullableAnnotation.Annotated
                 && !initialized
-                && !HasAuthoredCallableMutation(symbol);
+                && !HasAuthoredCallableMutation(symbol)
+                && (symbol is not IPropertySymbol property || PropertyStorageIsOnlyWrittenThroughItself(property));
 
             if (absent)
             {
@@ -24915,6 +24941,146 @@ internal static class HostedGrimoireProducerInventory
             absentTestCallables[symbol] = absent;
 
             return absent;
+        }
+
+        // A delegate property no authored code assigns is proven never set only when assignments to it are the
+        // only writes that can change what it returns: an auto-property, or a getter that is exactly the Value
+        // of a private readonly framework AsyncLocal field of the declaring type that nothing outside the
+        // property names. An overridable or partial property is neither: the getter that runs is another
+        // declaration's.
+        private bool PropertyStorageIsOnlyWrittenThroughItself(IPropertySymbol property)
+        {
+            if (property.IsAbstract
+                || property.IsVirtual
+                || property.IsOverride
+                || property.IsExtern
+                || property.DeclaringSyntaxReferences is not [SyntaxReference reference]
+                || reference.GetSyntax() is not PropertyDeclarationSyntax declaration
+                || declaration.Modifiers.Any(SyntaxKind.PartialKeyword))
+            {
+                return false;
+            }
+
+            if (declaration.ExpressionBody is null
+                && declaration.AccessorList is { } accessors
+                && accessors.Accessors.All(static accessor =>
+                    accessor.Body is null
+                    && accessor.ExpressionBody is null))
+            {
+                return true;
+            }
+
+            ExpressionSyntax? getter = declaration.ExpressionBody?.Expression
+                ?? (declaration.AccessorList?.Accessors
+                        .Where(static accessor => accessor.IsKind(SyntaxKind.GetAccessorDeclaration))
+                        .ToArray() is [{ ExpressionBody.Expression: { } accessorGetter }]
+                    ? accessorGetter
+                    : null);
+
+            if (getter is not MemberAccessExpressionSyntax
+                {
+                    Expression: IdentifierNameSyntax storage,
+                    Name: IdentifierNameSyntax { Identifier.ValueText: "Value" },
+                } access
+                || !access.IsKind(SyntaxKind.SimpleMemberAccessExpression)
+                || !semanticModels.TryGetValue(declaration.SyntaxTree, out SemanticModel? model)
+                || model.GetSymbolInfo(storage).Symbol is not IFieldSymbol
+                {
+                    DeclaredAccessibility: Accessibility.Private,
+                    IsReadOnly: true,
+                } field
+                || !SymbolEqualityComparer.Default.Equals(field.ContainingType, property.ContainingType)
+                || !IsExactFrameworkType(
+                    field.Type,
+                    "System.Threading.AsyncLocal`1",
+                    typeof(AsyncLocal<>).Assembly.GetName())
+                || model.GetSymbolInfo(access).Symbol is not IPropertySymbol { Name: "Value" } valueProperty
+                || !SymbolEqualityComparer.Default.Equals(
+                    valueProperty.ContainingType.OriginalDefinition,
+                    field.Type.OriginalDefinition)
+                || field.DeclaringSyntaxReferences is not [SyntaxReference fieldReference]
+                || fieldReference.GetSyntax() is not VariableDeclaratorSyntax fieldDeclarator
+                || fieldDeclarator.Initializer?.Value is { } initializer
+                    && (initializer is not ImplicitObjectCreationExpressionSyntax
+                        {
+                            ArgumentList.Arguments.Count: 0,
+                            Initializer: null,
+                        }
+                        and not ObjectCreationExpressionSyntax
+                        {
+                            ArgumentList: null or { Arguments.Count: 0 },
+                            Initializer: null,
+                        }
+                        || !semanticModels.TryGetValue(initializer.SyntaxTree, out SemanticModel? initializerModel)
+                        || !SymbolEqualityComparer.Default.Equals(initializerModel.GetTypeInfo(initializer).Type, field.Type)))
+            {
+                return false;
+            }
+
+            foreach (SyntaxReference part in property.ContainingType.DeclaringSyntaxReferences)
+            {
+                foreach (IdentifierNameSyntax name in part.GetSyntax().DescendantNodes().OfType<IdentifierNameSyntax>())
+                {
+                    if (name.Identifier.ValueText != field.Name
+                        || name.SyntaxTree == declaration.SyntaxTree && declaration.Span.Contains(name.Span))
+                    {
+                        continue;
+                    }
+
+                    if (!semanticModels.TryGetValue(name.SyntaxTree, out SemanticModel? partModel))
+                    {
+                        return false;
+                    }
+
+                    SymbolInfo bound = partModel.GetSymbolInfo(name);
+
+                    if (SymbolEqualityComparer.Default.Equals(bound.Symbol, field)
+                        || bound.CandidateSymbols.Contains(field, SymbolEqualityComparer.Default))
+                    {
+                        return false;
+                    }
+                }
+            }
+
+            return true;
+        }
+
+        // A positional property of a sealed record class is declared by its primary-constructor parameter, and
+        // only that constructor, an initializer or a with-expression can set it; HasAuthoredCallableMutation sees
+        // the last two. Its value is therefore the primary-constructor argument at each authored construction. A
+        // record struct is excluded because its default value runs no constructor, and an unsealed record because
+        // a derived record constructs it through its own base clause, which no construction list here records.
+        private IParameterSymbol? PositionalRecordConstructorParameter(IPropertySymbol property)
+        {
+            if (property.IsStatic
+                || property.ContainingType is not
+                {
+                    TypeKind: TypeKind.Class,
+                    IsRecord: true,
+                    IsSealed: true,
+                }
+                || property.DeclaringSyntaxReferences is not [SyntaxReference reference]
+                || reference.GetSyntax() is not ParameterSyntax
+                {
+                    Parent: ParameterListSyntax
+                    {
+                        Parent: RecordDeclarationSyntax,
+                    },
+                } parameter
+                || !semanticModels.TryGetValue(parameter.SyntaxTree, out SemanticModel? model)
+                || model.GetDeclaredSymbol(parameter) is not IParameterSymbol
+                {
+                    ContainingSymbol: IMethodSymbol
+                    {
+                        MethodKind: MethodKind.Constructor,
+                    },
+                } constructorParameter
+                || !SymbolEqualityComparer.Default.Equals(constructorParameter.Type, property.Type))
+            {
+                return null;
+            }
+
+            return constructorParameter;
         }
 
         private bool ContainsPotentialProducerSite(AuthoredMember member) => ContainsPotentialProducerSite(member, []);

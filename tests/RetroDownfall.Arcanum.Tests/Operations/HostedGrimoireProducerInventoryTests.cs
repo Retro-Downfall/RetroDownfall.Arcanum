@@ -11166,6 +11166,147 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
     }
 
     /// <summary>
+    /// A delete seam whose <c>AsyncLocal</c> storage is also written outside the property's own accessors
+    /// is not proven absent, because production can set that storage without assigning the property, so
+    /// invoking the seam is an unproven callback. Storage written only by the property's setter still
+    /// proves absence, as the branched case above shows.
+    /// </summary>
+    [Fact]
+    public void AnAmbientTestSeamWrittenOutsideItsSetterIsNotProvenAbsent()
+    {
+        const string helper = "static class TempCleanup { private static readonly AsyncLocal<Action<string>?> DeleteOverride = new(); internal static Action<string>? DeleteForTests { get => DeleteOverride.Value; set => DeleteOverride.Value = value; } internal static void Install(Action<string> delete) => DeleteOverride.Value = delete; public static void Branched(string path) { if (DeleteForTests is not null) { DeleteForTests.Invoke(path); } else { System.IO.File.Delete(path); } } public static void Coalesced(string path) { (DeleteForTests ?? System.IO.File.Delete)(path); } }";
+
+        HostedProducerDiscovery<HostedProducerSite> result = Discover(FixtureSource("TempCleanup.Branched(\"path.tmp\");", helper));
+
+        Assert.Contains(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_CALLBACK_OWNERSHIP_UNPROVEN"
+            && diagnostic.Detail.StartsWith("System.Action`1.Invoke;", StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// An overridable seam is not an auto-property, whatever its own declaration looks like: the override
+    /// that runs returns a delegate no assignment to the seam made, so invoking an abstract seam nobody
+    /// assigns is still an unproven callback.
+    /// </summary>
+    [Fact]
+    public void AnOverridableTestSeamIsNotProvenAbsent()
+    {
+        const string helper = "abstract class DeleteSeams { internal abstract Action<string>? DeleteForTests { get; } } sealed class OverridingDeleteSeams : DeleteSeams { internal override Action<string>? DeleteForTests => static path => System.IO.File.Delete(path); } static class TempCleanup { private static readonly DeleteSeams Seams = new OverridingDeleteSeams(); public static void Branched(string path) { if (Seams.DeleteForTests is not null) { Seams.DeleteForTests.Invoke(path); } else { System.IO.File.Delete(path); } } }";
+
+        HostedProducerDiscovery<HostedProducerSite> result = Discover(FixtureSource("TempCleanup.Branched(\"path.tmp\");", helper));
+
+        Assert.Contains(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_CALLBACK_OWNERSHIP_UNPROVEN"
+            && diagnostic.Detail.StartsWith("System.Action`1.Invoke;", StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// The ambient-seam proof trusts the framework's <c>AsyncLocal&lt;T&gt;</c> only. A same-named type
+    /// authored in source can return storage that production writes elsewhere, so a seam over it is not
+    /// proven absent.
+    /// </summary>
+    [Fact]
+    public void AnAmbientTestSeamOverAnAuthoredAsyncLocalIsNotProvenAbsent()
+    {
+        const string helper = "namespace System.Threading { internal sealed class AsyncLocal<T> { public T Value { get => AmbientStore<T>.Current; set { } } } internal static class AmbientStore<T> { internal static T Current = default!; } } static class TempCleanup { private static readonly System.Threading.AsyncLocal<Action<string>?> DeleteOverride = new(); internal static Action<string>? DeleteForTests { get => DeleteOverride.Value; set => DeleteOverride.Value = value; } internal static void Install(Action<string> delete) => System.Threading.AmbientStore<Action<string>?>.Current = delete; public static void Branched(string path) { if (DeleteForTests is not null) { DeleteForTests.Invoke(path); } else { System.IO.File.Delete(path); } } }";
+
+        string source = FixtureSource("TempCleanup.Branched(\"path.tmp\");", helper);
+
+        Assert.Empty(Compile(source).GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        HostedProducerDiscovery<HostedProducerSite> result = Discover(source);
+
+        Assert.Contains(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_CALLBACK_OWNERSHIP_UNPROVEN"
+            && diagnostic.Detail.StartsWith("System.Action`1.Invoke;", StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// A partial seam is not an auto-property even though its defining declaration has no accessor bodies:
+    /// the implementing declaration's getter returns storage that production writes elsewhere, so invoking
+    /// the seam is still an unproven callback.
+    /// </summary>
+    [Fact]
+    public void APartialTestSeamIsNotProvenAbsent()
+    {
+        const string helper = "static partial class TempCleanup { private static Action<string>? store; internal static partial Action<string>? DeleteForTests { get; set; } internal static partial Action<string>? DeleteForTests { get => store; set { } } internal static void Install(Action<string> delete) => store = delete; public static void Branched(string path) { if (DeleteForTests is not null) { DeleteForTests.Invoke(path); } else { System.IO.File.Delete(path); } } }";
+
+        string source = FixtureSource("TempCleanup.Branched(\"path.tmp\");", helper);
+
+        Assert.Empty(Compile(source).GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        HostedProducerDiscovery<HostedProducerSite> result = Discover(source);
+
+        Assert.Contains(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_CALLBACK_OWNERSHIP_UNPROVEN"
+            && diagnostic.Detail.StartsWith("System.Action`1.Invoke;", StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// A positional record's delegate property holds exactly what its primary constructor was given. The
+    /// directory barrier keeps its two native calls in such a record and hands them to the decision as
+    /// parameters, so the traversal must enter the constructor argument rather than read the property as an
+    /// unassigned seam and skip the call: a file probe inside the bound lambda is a discovered site.
+    /// </summary>
+    [Fact]
+    public void APositionalRecordDelegatePropertyIsTheConstructorArgumentItWasGiven()
+    {
+        const string helper = "internal static class Barrier { internal static BarrierCalls Production { get; } = new(static path => System.IO.File.Exists(path)); internal static bool Check(string path) => Check(path, Production.Probe); internal static bool Check(string path, Func<string, bool> probe) => probe(path); } internal sealed record BarrierCalls(Func<string, bool> Probe);";
+
+        string source = FixtureSource("_ = Barrier.Check(\"path\");", helper);
+
+        Assert.Empty(Compile(source).GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        HostedProducerDiscovery<HostedProducerSite> result = Discover(source);
+
+        Assert.Contains(result.Items, static site => site.Callee == "System.IO.File.Exists");
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_CALLBACK_OWNERSHIP_UNPROVEN");
+    }
+
+    /// <summary>
+    /// The positional model covers only what the primary constructor alone decides. A <c>with</c> or
+    /// initializer write, a record struct (whose default value runs no constructor), an unsealed record
+    /// (which a derived record constructs through its own base clause), and a constructor argument the
+    /// analysis cannot close each leave the property's value unknown, so invoking it is an unproven
+    /// callback rather than a skipped call.
+    /// </summary>
+    [Theory]
+    [InlineData("internal static BarrierCalls Production { get; } = new BarrierCalls(static path => System.IO.File.Exists(path)) with { Probe = static path => path.Length > 0 }; internal static bool Check(string path) => Production.Probe(path);", "internal sealed record BarrierCalls(Func<string, bool> Probe);")]
+    [InlineData("internal static BarrierCalls Production { get; } = new(static path => System.IO.File.Exists(path)); internal static bool Check(string path) => Production.Probe(path);", "internal readonly record struct BarrierCalls(Func<string, bool> Probe);")]
+    [InlineData("internal static BarrierCalls Production { get; } = new(static path => System.IO.File.Exists(path)); internal static bool Check(string path) => Production.Probe(path);", "internal record BarrierCalls(Func<string, bool> Probe);")]
+    [InlineData("internal static BarrierCalls Production { get; } = new(Pick()); internal static Func<string, bool> Pick() => static path => System.IO.File.Exists(path); internal static bool Check(string path) => Production.Probe(path);", "internal sealed record BarrierCalls(Func<string, bool> Probe);")]
+    public void APositionalRecordDelegatePropertyOutsideTheConstructorModelIsNotProvenAbsent(string barrier, string record)
+    {
+        string helper = "internal static class Barrier { " + barrier + " } " + record;
+
+        string source = FixtureSource("_ = Barrier.Check(\"path\");", helper);
+
+        Assert.Empty(Compile(source).GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        HostedProducerDiscovery<HostedProducerSite> result = Discover(source);
+
+        Assert.Contains(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_CALLBACK_OWNERSHIP_UNPROVEN"
+            && diagnostic.Detail.StartsWith("System.Func`2.Invoke;", StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// A seam is proven never set only when no authored code writes it, wherever that write is: an object
+    /// initializer inside a field initializer and a deconstruction both assign the seam without a plain
+    /// assignment in a member body, so invoking it stays an unproven callback.
+    /// </summary>
+    [Theory]
+    [InlineData("sealed class DeleteSeams { internal Action<string>? DeleteForTests { get; set; } } static class TempCleanup { private static readonly DeleteSeams Seams = new() { DeleteForTests = static path => System.IO.File.Delete(path) }; public static void Branched(string path) { if (Seams.DeleteForTests is not null) { Seams.DeleteForTests.Invoke(path); } else { System.IO.File.Delete(path); } } }")]
+    [InlineData("static class TempCleanup { internal static Action<string>? DeleteForTests { get; set; } internal static void Install(Action<string> delete) => (DeleteForTests, _) = (delete, 0); public static void Branched(string path) { if (DeleteForTests is not null) { DeleteForTests.Invoke(path); } else { System.IO.File.Delete(path); } } }")]
+    public void ATestSeamWrittenOutsideAPlainMemberAssignmentIsNotProvenAbsent(string helper)
+    {
+        string source = FixtureSource("TempCleanup.Branched(\"path.tmp\");", helper);
+
+        Assert.Empty(Compile(source).GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        HostedProducerDiscovery<HostedProducerSite> result = Discover(source);
+
+        Assert.Contains(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_CALLBACK_OWNERSHIP_UNPROVEN"
+            && diagnostic.Detail.StartsWith("System.Action`1.Invoke;", StringComparison.Ordinal));
+    }
+
+    /// <summary>
     /// R-048's bounded OS credential reads hand exactly one <c>IOsCredentialStore.TryGet</c> to
     /// <c>Task.Run</c> and wait for it only up to a timeout, so a parked platform prompt is abandoned rather
     /// than allowed to wedge startup. The two reviewed owners may let that read outlive them because it
