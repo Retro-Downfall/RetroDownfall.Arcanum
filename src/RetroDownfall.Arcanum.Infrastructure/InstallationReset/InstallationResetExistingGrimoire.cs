@@ -4,6 +4,8 @@ using Microsoft.Data.Sqlite;
 
 using Microsoft.EntityFrameworkCore;
 
+using Microsoft.Extensions.DependencyInjection;
+
 using Microsoft.Extensions.Logging;
 
 using Microsoft.Extensions.Options;
@@ -31,13 +33,14 @@ using RetroDownfall.Arcanum.Infrastructure.Security;
 
 namespace RetroDownfall.Arcanum.Infrastructure.InstallationReset;
 
-/// <param name="secretStore">
-/// Lazy on purpose. Creating the secret store creates the Data Protection key ring, and the planning
-/// and lockless-refusal paths have to work on an installation that has no Grimoire without leaving
-/// a directory behind; the store is only needed once an existing database is about to be opened.
+/// <param name="secretStoreProvider">
+/// Resolved at first use on purpose. Creating the secret store creates the Data Protection key
+/// ring, and the planning and lockless-refusal paths have to work on an installation that has no
+/// Grimoire without leaving a directory behind; the store is resolved only once an existing
+/// database is about to be opened.
 /// </param>
 internal sealed class InstallationResetExistingGrimoire(
-    Lazy<DataProtectionSecretStore> secretStore,
+    IServiceProvider secretStoreProvider,
     ArcanumSettings settings,
     TimeProvider timeProvider,
     ILoggerFactory loggerFactory,
@@ -347,7 +350,8 @@ internal sealed class InstallationResetExistingGrimoire(
             GrimoireKdfSidecar sidecar = GrimoireKdfSidecarFile.Read(
                 databasePath);
 
-            SecretStoreReadResult secret = await secretStore.Value
+            SecretStoreReadResult secret = await secretStoreProvider
+                .GetRequiredService<DataProtectionSecretStore>()
                 .GetGrimoireEncryptionSecretReadResultAsync()
                 .ConfigureAwait(false);
 
@@ -396,7 +400,7 @@ internal sealed class InstallationResetExistingGrimoire(
 
             await using ArcanumDbContext context = new(
                 options,
-                secretStore.Value,
+                secretStoreProvider.GetRequiredService<DataProtectionSecretStore>(),
                 passphraseSource);
 
             LongRunningOperationStore operations = new(
