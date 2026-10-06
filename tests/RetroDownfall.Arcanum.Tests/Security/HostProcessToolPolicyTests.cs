@@ -11,7 +11,6 @@ namespace RetroDownfall.Arcanum.Tests.Security;
 [Collection("ProcessEnvironment")]
 public sealed class HostProcessToolPolicyTests
 {
-
     [Fact]
     public void IsHostProcessTool_RecognizesExecuteCommandAndRunSpellScript()
     {
@@ -360,5 +359,4 @@ public sealed class HostProcessToolPolicyTests
             _ = HostProcessToolsEscapeHatchScope.Gate.Release();
         }
     }
-
 }

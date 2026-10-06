@@ -15,16 +15,13 @@ namespace RetroDownfall.Arcanum.Tests.Mcp;
 
 public sealed class DiagnosticMcpInvocationServiceTests
 {
-
     [Fact]
     public async Task Master_pipeline_only_names_are_blocked_from_direct_diagnostic_invocation()
     {
-
         DiagnosticMcpInvocationService service = CreateService();
 
         foreach (string blocked in DiagnosticMcpInvocationService.BlockedToolNames)
         {
-
             Result<DiagnosticMcpInvocationOutcome> result = await service
                 .InvokeAsync(blocked, default, null, null, CancellationToken.None);
 
@@ -35,9 +32,7 @@ public sealed class DiagnosticMcpInvocationServiceTests
             Assert.Equal(
                 "This internal tool requires the Master tool execution pipeline.",
                 result.Error.Message);
-
         }
-
     }
 
     [Theory]
@@ -48,7 +43,6 @@ public sealed class DiagnosticMcpInvocationServiceTests
     public async Task CodingToolNameCollision_IsBlockedBeforeExternalLookup(
         string toolName)
     {
-
         FakeMcpConnectionManager manager = new();
         manager.AddServer("external-srv", "running", [toolName]);
         manager.AddTool("external-srv", toolName, """{"invoked":true}""");
@@ -65,13 +59,11 @@ public sealed class DiagnosticMcpInvocationServiceTests
         Assert.True(result.IsFailure);
         Assert.Equal(ErrorCodes.Mcp.DiagnosticBlocked, result.Error.Code);
         Assert.Equal(0, manager.GetToolCallCount("external-srv", toolName));
-
     }
 
     [Fact]
     public async Task EmptyToolName_ReturnsInvalidBody()
     {
-
         DiagnosticMcpInvocationService service = CreateService();
 
         Result<DiagnosticMcpInvocationOutcome> result = await service
@@ -79,13 +71,11 @@ public sealed class DiagnosticMcpInvocationServiceTests
 
         Assert.True(result.IsFailure);
         Assert.Equal(ErrorCodes.Validation.InvalidBody, result.Error.Code);
-
     }
 
     [Fact]
     public async Task ServerNotRunning_ReturnsServerNotRunning()
     {
-
         FakeMcpConnectionManager manager = new();
         manager.AddServer("stopped-srv", "stopped", ["echo"]);
         DiagnosticMcpInvocationService service = CreateService(manager);
@@ -95,13 +85,11 @@ public sealed class DiagnosticMcpInvocationServiceTests
 
         Assert.True(result.IsFailure);
         Assert.Equal(ErrorCodes.Mcp.ServerNotRunning, result.Error.Code);
-
     }
 
     [Fact]
     public async Task InternalServer_IsFilteredOut_EvenWhenNamed()
     {
-
         FakeMcpConnectionManager manager = new();
         manager.AddServer(DiagnosticMcpInvocationService.InternalServerName, "running", ["execute_command"]);
         DiagnosticMcpInvocationService service = CreateService(manager);
@@ -112,13 +100,11 @@ public sealed class DiagnosticMcpInvocationServiceTests
         // execute_command is an internal Master-pipeline tool, so lookup never reaches the server.
         Assert.True(result.IsFailure);
         Assert.Equal(ErrorCodes.Mcp.DiagnosticBlocked, result.Error.Code);
-
     }
 
     [Fact]
     public async Task UntrustedWorkspace_HidesWorkspaceServer_TreatedAsServerNotFound()
     {
-
         // GetServerStatusesAsync simulates the real manager: untrusted workspace-local servers are
         // hidden, so an explicit serverName that is not visible resolves to ServerNotFound.
         FakeMcpConnectionManager manager = new();
@@ -131,13 +117,11 @@ public sealed class DiagnosticMcpInvocationServiceTests
 
         Assert.True(result.IsFailure);
         Assert.Equal(ErrorCodes.Mcp.ServerNotFound, result.Error.Code);
-
     }
 
     [Fact]
     public async Task AmbiguousTool_WithoutServerName_ReturnsAmbiguousTool()
     {
-
         FakeMcpConnectionManager manager = new();
         manager.AddServer("srv-a", "running", ["echo"]);
         manager.AddServer("srv-b", "running", ["echo"]);
@@ -150,13 +134,11 @@ public sealed class DiagnosticMcpInvocationServiceTests
         Assert.Equal(ErrorCodes.Mcp.AmbiguousTool, result.Error.Code);
         Assert.Contains("srv-a", result.Error.Message);
         Assert.Contains("srv-b", result.Error.Message);
-
     }
 
     [Fact]
     public async Task ToolNotFound_WhenNoVisibleServerExposesIt()
     {
-
         FakeMcpConnectionManager manager = new();
         manager.AddServer("srv-a", "running", ["other"]);
         DiagnosticMcpInvocationService service = CreateService(manager);
@@ -166,13 +148,11 @@ public sealed class DiagnosticMcpInvocationServiceTests
 
         Assert.True(result.IsFailure);
         Assert.Equal(ErrorCodes.Mcp.ToolNotFound, result.Error.Code);
-
     }
 
     [Fact]
     public async Task NamedServerMissingTool_ReturnsToolNotFound()
     {
-
         FakeMcpConnectionManager manager = new();
         manager.AddServer("srv-a", "running", ["other"]);
         DiagnosticMcpInvocationService service = CreateService(manager);
@@ -182,13 +162,11 @@ public sealed class DiagnosticMcpInvocationServiceTests
 
         Assert.True(result.IsFailure);
         Assert.Equal(ErrorCodes.Mcp.ToolNotFound, result.Error.Code);
-
     }
 
     [Fact]
     public async Task HappyPath_InvokesExternalTool_AndReturnsResult()
     {
-
         FakeMcpConnectionManager manager = new();
         manager.AddServer("srv-a", "running", ["echo"]);
         manager.AddTool(name: "echo", output: "{\"ok\":true}");
@@ -204,13 +182,11 @@ public sealed class DiagnosticMcpInvocationServiceTests
         Assert.False(result.Value.Truncated);
         Assert.Equal(JsonValueKind.Object, result.Value.Result.ValueKind);
         Assert.True(result.Value.Result.GetProperty("ok").GetBoolean());
-
     }
 
     [Fact]
     public async Task TruncationMarker_SetsTruncatedFlag()
     {
-
         FakeMcpConnectionManager manager = new();
         manager.AddServer("srv-a", "running", ["echo"]);
         manager.AddTool(name: "echo", output: "partial output [truncated: exceeded 1048576 bytes]");
@@ -221,13 +197,11 @@ public sealed class DiagnosticMcpInvocationServiceTests
 
         Assert.True(result.IsSuccess);
         Assert.True(result.Value.Truncated);
-
     }
 
     [Fact]
     public async Task ToolError_ReturnsToolErrorCode()
     {
-
         FakeMcpConnectionManager manager = new();
         manager.AddServer("srv-a", "running", ["boom"]);
         manager.AddTool("boom", throws: new InvalidOperationException("the tool reported isError: true"));
@@ -238,13 +212,11 @@ public sealed class DiagnosticMcpInvocationServiceTests
 
         Assert.True(result.IsFailure);
         Assert.Equal(ErrorCodes.Mcp.ToolError, result.Error.Code);
-
     }
 
     [Fact]
     public async Task NonJsonOutput_IsWrappedAsString()
     {
-
         FakeMcpConnectionManager manager = new();
         manager.AddServer("srv-a", "running", ["echo"]);
         manager.AddTool(name: "echo", output: "plain text not json");
@@ -256,13 +228,11 @@ public sealed class DiagnosticMcpInvocationServiceTests
         Assert.True(result.IsSuccess);
         Assert.Equal(JsonValueKind.String, result.Value.Result.ValueKind);
         Assert.Equal("plain text not json", result.Value.Result.GetString());
-
     }
 
     [Fact]
     public async Task InternalNameCollision_WithoutServerName_InvokesExternalOnly_NotAmbiguous()
     {
-
         FakeMcpConnectionManager manager = new();
         manager.AddServer(DiagnosticMcpInvocationService.InternalServerName, "running", ["shared"]);
         manager.AddServer("external-srv", "running", ["shared"]);
@@ -278,13 +248,11 @@ public sealed class DiagnosticMcpInvocationServiceTests
         Assert.Equal("external", result.Value.Result.GetProperty("from").GetString());
         Assert.Equal(1, manager.GetToolCallCount("external-srv", "shared"));
         Assert.Equal(0, manager.GetToolCallCount(DiagnosticMcpInvocationService.InternalServerName, "shared"));
-
     }
 
     [Fact]
     public async Task InternalOnlyTool_WithoutServerName_ReturnsToolNotFound()
     {
-
         FakeMcpConnectionManager manager = new();
         manager.AddServer(DiagnosticMcpInvocationService.InternalServerName, "running", ["ask_human"]);
         manager.AddTool(DiagnosticMcpInvocationService.InternalServerName, "ask_human", "{\"from\":\"internal\"}");
@@ -296,13 +264,11 @@ public sealed class DiagnosticMcpInvocationServiceTests
         Assert.True(result.IsFailure);
         Assert.Equal(ErrorCodes.Mcp.ToolNotFound, result.Error.Code);
         Assert.Equal(0, manager.GetToolCallCount(DiagnosticMcpInvocationService.InternalServerName, "ask_human"));
-
     }
 
     [Fact]
     public async Task MixedCaseInternalServerName_IsStillExcludedFromDiagnosticLookup()
     {
-
         const string mixedCaseInternal = "ArCaNuM-InTeRnAl";
         FakeMcpConnectionManager manager = new();
         manager.AddServer(
@@ -333,13 +299,11 @@ public sealed class DiagnosticMcpInvocationServiceTests
             manager.GetToolCallCount(
                 mixedCaseInternal,
                 "shared"));
-
     }
 
     [Fact]
     public async Task ExplicitServerName_DoesNotFallBackToAnotherServer()
     {
-
         FakeMcpConnectionManager manager = new();
         manager.AddServer("srv-a", "running", ["echo"]);
         manager.AddServer("srv-b", "running", ["echo"]);
@@ -352,13 +316,11 @@ public sealed class DiagnosticMcpInvocationServiceTests
         Assert.True(result.IsFailure);
         Assert.Equal(ErrorCodes.Mcp.ToolNotFound, result.Error.Code);
         Assert.Equal(0, manager.GetToolCallCount("srv-b", "echo"));
-
     }
 
     [Fact]
     public async Task ExplicitWrongServer_DoesNotInvokeToolOnOtherServer()
     {
-
         FakeMcpConnectionManager manager = new();
         manager.AddServer("srv-a", "running", ["other"]);
         manager.AddServer("srv-b", "running", ["echo"]);
@@ -371,7 +333,6 @@ public sealed class DiagnosticMcpInvocationServiceTests
         Assert.True(result.IsFailure);
         Assert.Equal(ErrorCodes.Mcp.ToolNotFound, result.Error.Code);
         Assert.Equal(0, manager.GetToolCallCount("srv-b", "echo"));
-
     }
 
     private static DiagnosticMcpInvocationService CreateService(FakeMcpConnectionManager? manager = null, ArcanumSettings? settings = null) =>
@@ -382,7 +343,6 @@ public sealed class DiagnosticMcpInvocationServiceTests
 
     private sealed class FakeMcpConnectionManager : IMcpConnectionManager
     {
-
         private readonly Dictionary<string, (string Status, List<string> Tools)> _servers = new(StringComparer.Ordinal);
 
         private readonly Dictionary<(string Server, string Tool), FakeAIFunction> _tools = new();
@@ -399,19 +359,13 @@ public sealed class DiagnosticMcpInvocationServiceTests
         /// <summary>Legacy helper: binds the tool to every server that lists it (single-server tests).</summary>
         public void AddTool(string name, string? output = null, Exception? throws = null, TimeSpan delay = default)
         {
-
             foreach (KeyValuePair<string, (string Status, List<string> Tools)> server in _servers)
             {
-
                 if (server.Value.Tools.Contains(name, StringComparer.Ordinal))
                 {
-
                     AddTool(server.Key, name, output, throws, delay);
-
                 }
-
             }
-
         }
 
         public int GetToolCallCount(string serverName, string toolName) =>
@@ -438,20 +392,16 @@ public sealed class DiagnosticMcpInvocationServiceTests
 
         public Task<IReadOnlyList<AITool>> GetAvailableToolsAsync(string? workingDirectory, CancellationToken cancellationToken = default)
         {
-
             // Simulate merge preference: internal tools win when names collide (must not be used by diagnostic).
             Dictionary<string, AITool> byName = new(StringComparer.Ordinal);
 
             foreach (KeyValuePair<(string Server, string Tool), FakeAIFunction> kv in _tools
                          .OrderBy(static t => string.Equals(t.Key.Server, DiagnosticMcpInvocationService.InternalServerName, StringComparison.Ordinal) ? 0 : 1))
             {
-
                 byName.TryAdd(kv.Key.Tool, kv.Value);
-
             }
 
             return Task.FromResult<IReadOnlyList<AITool>>(byName.Values.ToList());
-
         }
 
         public Task<AIFunction?> GetToolAsync(
@@ -460,40 +410,31 @@ public sealed class DiagnosticMcpInvocationServiceTests
             string? workingDirectory,
             CancellationToken cancellationToken = default)
         {
-
             if (!_servers.TryGetValue(serverName, out (string Status, List<string> Tools) server)
                 || !string.Equals(server.Status, "running", StringComparison.OrdinalIgnoreCase)
                 || !server.Tools.Contains(toolName, StringComparer.Ordinal))
             {
-
                 return Task.FromResult<AIFunction?>(null);
-
             }
 
             if (!string.IsNullOrEmpty(workingDirectory)
                 && WorkspaceVisibleServers.Count > 0
                 && !WorkspaceVisibleServers.Contains(serverName))
             {
-
                 return Task.FromResult<AIFunction?>(null);
-
             }
 
             return Task.FromResult<AIFunction?>(
                 _tools.TryGetValue((serverName, toolName), out FakeAIFunction? fn) ? fn : null);
-
         }
 
         public Task<List<McpServerStatusDto>> GetServerStatusesAsync(string workingDirectory, CancellationToken cancellationToken = default)
         {
-
             IEnumerable<KeyValuePair<string, (string Status, List<string> Tools)>> visible = _servers;
 
             if (!string.IsNullOrEmpty(workingDirectory) && WorkspaceVisibleServers.Count > 0)
             {
-
                 visible = _servers.Where(kv => WorkspaceVisibleServers.Contains(kv.Key));
-
             }
 
             List<McpServerStatusDto> dtos = visible
@@ -501,19 +442,16 @@ public sealed class DiagnosticMcpInvocationServiceTests
                 .ToList();
 
             return Task.FromResult(dtos);
-
         }
 
         public Task ReloadAsync(string workingDirectory, CancellationToken cancellationToken = default) => Task.CompletedTask;
 
         public Task<Result> TrustWorkspaceAsync(string workingDirectory, string? expectedConfigDigest = null, CancellationToken cancellationToken = default) =>
             Task.FromResult(Result.Success());
-
     }
 
     private sealed class FakeAIFunction : AIFunction
     {
-
         private readonly string? _output;
 
         private readonly Exception? _throws;
@@ -522,7 +460,6 @@ public sealed class DiagnosticMcpInvocationServiceTests
 
         public FakeAIFunction(string name, string? output, Exception? throws, TimeSpan delay)
         {
-
             Name = name;
 
             _output = output;
@@ -530,7 +467,6 @@ public sealed class DiagnosticMcpInvocationServiceTests
             _throws = throws;
 
             _delay = delay;
-
         }
 
         public override string Name { get; }
@@ -541,27 +477,19 @@ public sealed class DiagnosticMcpInvocationServiceTests
 
         protected override async ValueTask<object?> InvokeCoreAsync(AIFunctionArguments arguments, CancellationToken cancellationToken)
         {
-
             InvokeCount++;
 
             if (_delay > TimeSpan.Zero)
             {
-
                 await Task.Delay(_delay, cancellationToken).ConfigureAwait(false);
-
             }
 
             if (_throws is not null)
             {
-
                 throw _throws;
-
             }
 
             return _output;
-
         }
-
     }
-
 }

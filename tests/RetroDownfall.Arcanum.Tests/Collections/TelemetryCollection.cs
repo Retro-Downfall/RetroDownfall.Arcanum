@@ -18,7 +18,5 @@ public sealed class TelemetryCollection : ICollectionFixture<object>
 
 internal static class TelemetryCollectionName
 {
-
     internal const string Value = "Telemetry";
-
 }
