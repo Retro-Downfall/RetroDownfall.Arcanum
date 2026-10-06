@@ -1,3 +1,4 @@
+using System.Runtime.ExceptionServices;
 using System.Security.Cryptography;
 using System.Text;
 
@@ -148,12 +149,13 @@ internal static class ProtectedCredentialFile
         {
             cipher = protector.Protect(plain);
         }
-        catch (CryptographicException exception) when (KeyRingCouldNotBeRead(exception))
+        catch (CryptographicException exception) when (KeyRingAccessFailure(exception) is { } keyRingFailure)
         {
             // Rethrow what actually failed (for a key ring whose posture cannot be established, the
             // UnauthorizedAccessException that names it) rather than Data Protection's generic wrapper.
-            System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw(KeyRingAccessFailure(exception)!);
+            ExceptionDispatchInfo.Capture(keyRingFailure).Throw();
 
+            // Unreachable; it only tells the compiler that cipher is never read unassigned.
             throw;
         }
         finally
