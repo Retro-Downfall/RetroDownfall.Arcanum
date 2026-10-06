@@ -1,12 +1,14 @@
 using System.Net;
 using System.Text;
 using System.Text.Json;
+using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Tower;
 using RetroDownfall.Arcanum.Core.Workspaces;
+using RetroDownfall.Arcanum.Infrastructure.Repositories;
 using RetroDownfall.Arcanum.Tests.Fixtures;
 
 namespace RetroDownfall.Arcanum.Tests.Api.Tower;
@@ -226,6 +228,64 @@ public sealed class CampaignEndpointTests
         Assert.Contains(after, p => p.Name == existing.Name && p.Version == existing.Version);
 
         Assert.Contains(after, p => p.Name == "added");
+    }
+
+    /// <summary>
+    /// The prompt swap commits on its own. A caller that disconnects right after it used to cancel the
+    /// settings write that follows, leaving the Campaign's prompts replaced and its settings not; once
+    /// the first write has committed, the rest of the import runs to completion.
+    /// </summary>
+    [SkippableFact]
+    public async Task ImportCampaign_replace_finishes_the_settings_write_when_the_caller_disconnects_after_the_prompt_swap()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        TaskCompletionSource<bool> settingsWritten = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        await using ArcanumWebApplicationFactory factory = new()
+        {
+            ServiceOverrides = services =>
+            {
+                services.AddHttpContextAccessor();
+
+                services.RemoveAll<IPromptRepository>();
+
+                services.AddScoped<IPromptRepository>(provider => new DisconnectingAfterSwapPromptRepository(
+                    ActivatorUtilities.CreateInstance<PromptRepository>(provider),
+                    provider.GetRequiredService<IHttpContextAccessor>()));
+
+                services.RemoveAll<ICampaignRepository>();
+
+                services.AddScoped<ICampaignRepository>(provider => new SettingsWriteRecordingCampaignRepository(
+                    ActivatorUtilities.CreateInstance<CampaignRepository>(provider),
+                    settingsWritten));
+            },
+        };
+
+        using HttpClient client = factory.CreateAuthenticatedClient();
+
+        CampaignDto campaign = await CreateCampaignWithOnePromptAsync(factory, client, "replace-disconnect");
+
+        string payload = ReplaceBundle(
+            campaign,
+            """{"name":"after-disconnect","version":"1.0.0","template":"Swapped","tags":[]}""");
+
+        try
+        {
+            using HttpResponseMessage _ = await client.PostAsync(
+                $"/api/campaigns/{campaign.Id}/import",
+                new StringContent(payload, Encoding.UTF8, "application/json"));
+        }
+        catch (Exception ex) when (ex is HttpRequestException or IOException or OperationCanceledException)
+        {
+            // The disconnect is the point of the test; what the caller saw of it is not.
+        }
+
+        Assert.True(await settingsWritten.Task.WaitAsync(TimeSpan.FromSeconds(30)));
+
+        PromptSummaryDto swapped = Assert.Single(await ListCampaignPromptsAsync(client, campaign.Id));
+
+        Assert.Equal("after-disconnect", swapped.Name);
     }
 
     [SkippableFact]
@@ -649,6 +709,105 @@ public sealed class CampaignEndpointTests
             IReadOnlyList<Prompt> prompts,
             CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
+    }
+
+    /// <summary>The real prompt store, with the caller disconnecting the moment the prompt swap has committed.</summary>
+    private sealed class DisconnectingAfterSwapPromptRepository(
+        PromptRepository inner,
+        IHttpContextAccessor accessor) : IPromptRepository
+    {
+        public Task<ListPageResult<Prompt>> ListAsync(
+            Guid? scopeCampaignId,
+            int? limit = null,
+            int offset = 0,
+            CancellationToken cancellationToken = default) =>
+            inner.ListAsync(scopeCampaignId, limit, offset, cancellationToken);
+
+        public Task<Prompt?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default) =>
+            inner.GetByIdAsync(id, cancellationToken);
+
+        public Task<Prompt?> GetByNameAndVersionAsync(
+            string name,
+            string version,
+            Guid? scopeCampaignId,
+            CancellationToken cancellationToken = default) =>
+            inner.GetByNameAndVersionAsync(name, version, scopeCampaignId, cancellationToken);
+
+        public Task<IReadOnlyList<Prompt>> ListVersionsAsync(
+            string name,
+            Guid? scopeCampaignId,
+            CancellationToken cancellationToken = default) =>
+            inner.ListVersionsAsync(name, scopeCampaignId, cancellationToken);
+
+        public Task<Result<Prompt>> AddAsync(Prompt prompt, CancellationToken cancellationToken = default) =>
+            inner.AddAsync(prompt, cancellationToken);
+
+        public Task<Result<Prompt>> UpdateAsync(Prompt prompt, CancellationToken cancellationToken = default) =>
+            inner.UpdateAsync(prompt, cancellationToken);
+
+        public Task<bool> DeleteAsync(Guid id, CancellationToken cancellationToken = default) =>
+            inner.DeleteAsync(id, cancellationToken);
+
+        public async Task<Result<int>> ReplaceCampaignPromptsAsync(
+            Guid campaignId,
+            IReadOnlyList<Prompt> prompts,
+            CancellationToken cancellationToken = default)
+        {
+            Result<int> replaced = await inner.ReplaceCampaignPromptsAsync(campaignId, prompts, cancellationToken);
+
+            accessor.HttpContext?.Abort();
+
+            return replaced;
+        }
+    }
+
+    /// <summary>The real Campaign store, reporting whether the import's settings write ran to completion.</summary>
+    private sealed class SettingsWriteRecordingCampaignRepository(
+        CampaignRepository inner,
+        TaskCompletionSource<bool> settingsWritten) : ICampaignRepository
+    {
+        public Task<Campaign?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default) =>
+            inner.GetByIdAsync(id, cancellationToken);
+
+        public Task<Campaign?> GetByPathAsync(string path, CancellationToken cancellationToken = default) =>
+            inner.GetByPathAsync(path, cancellationToken);
+
+        public Task<Campaign?> GetByNameAsync(string name, CancellationToken cancellationToken = default) =>
+            inner.GetByNameAsync(name, cancellationToken);
+
+        public Task<ListPageResult<Campaign>> ListAsync(
+            WorkspaceType? typeFilter,
+            int? limit = null,
+            int offset = 0,
+            CancellationToken cancellationToken = default) =>
+            inner.ListAsync(typeFilter, limit, offset, cancellationToken);
+
+        public Task<Result<Campaign>> AddAsync(Campaign campaign, CancellationToken cancellationToken = default) =>
+            inner.AddAsync(campaign, cancellationToken);
+
+        public async Task<Campaign> UpdateAsync(Campaign campaign, CancellationToken cancellationToken = default)
+        {
+            try
+            {
+                Campaign updated = await inner.UpdateAsync(campaign, cancellationToken);
+
+                settingsWritten.TrySetResult(true);
+
+                return updated;
+            }
+            catch (OperationCanceledException)
+            {
+                settingsWritten.TrySetResult(false);
+
+                throw;
+            }
+        }
+
+        public Task<bool> DeleteAsync(Guid id, CancellationToken cancellationToken = default) =>
+            inner.DeleteAsync(id, cancellationToken);
+
+        public Task<int> CountAsync(CancellationToken cancellationToken = default) =>
+            inner.CountAsync(cancellationToken);
     }
 
     private static string ReplaceBundle(CampaignDto campaign, params string[] promptJson) =>
