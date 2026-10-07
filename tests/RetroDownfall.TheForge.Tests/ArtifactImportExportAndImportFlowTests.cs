@@ -17,11 +17,9 @@ namespace RetroDownfall.TheForge.Tests;
 [Collection(TheForgeProcessEnvironmentCollection.Name)]
 public class ArtifactImportExportHelperTests
 {
-
     [Fact]
     public async Task WriteAndReadJson_RoundTripsCampaignExport()
     {
-
         CampaignDto campaign = new(
             Guid.NewGuid(),
             "RoundTrip",
@@ -38,7 +36,6 @@ public class ArtifactImportExportHelperTests
 
         try
         {
-
             await ArtifactImportExportHelper.WriteJsonAsync(
                 ImmediateTheForgeLocalMutationRunner.Instance,
                 path,
@@ -56,26 +53,19 @@ public class ArtifactImportExportHelperTests
             Assert.NotNull(roundTrip);
 
             Assert.Equal(campaign.Id, roundTrip!.Campaign.Id);
-
         }
         finally
         {
-
             if (File.Exists(path))
             {
-
                 File.Delete(path);
-
             }
-
         }
-
     }
 
     [Fact]
     public async Task PickSavePathOrNull_WhenCancelled_ReturnsNull()
     {
-
         ControllableFileDialog dialog = new(null);
 
         string? path = await ArtifactImportExportHelper.PickSavePathOrNullAsync(
@@ -84,13 +74,11 @@ public class ArtifactImportExportHelperTests
             CancellationToken.None);
 
         Assert.Null(path);
-
     }
 
     [Fact]
     public async Task WriteJsonAsync_SnapshotsTheValueAfterMutationAdmission()
     {
-
         CampaignDto campaign = new(
             Guid.NewGuid(),
             "Admission",
@@ -111,7 +99,6 @@ public class ArtifactImportExportHelperTests
 
         try
         {
-
             await ArtifactImportExportHelper.WriteJsonAsync(
                 new BeforeMutationRunner(
                     () => spells.Add(new CampaignExportSpellDto(
@@ -135,20 +122,14 @@ public class ArtifactImportExportHelperTests
             CampaignExportSpellDto written = Assert.Single(roundTrip!.Spells);
 
             Assert.Equal("admitted", written.Name);
-
         }
         finally
         {
-
             if (File.Exists(path))
             {
-
                 File.Delete(path);
-
             }
-
         }
-
     }
 
     [Theory]
@@ -158,7 +139,6 @@ public class ArtifactImportExportHelperTests
         bool unsafeDisposition,
         string expectedCode)
     {
-
         using TheForgeTestHomeScope home = new("forge-artifact-refusal");
 
         string managedRoot = ArcanumPaths.GrimoireDirectory;
@@ -195,12 +175,10 @@ public class ArtifactImportExportHelperTests
         Assert.False(File.Exists(path));
 
         Assert.False(Directory.Exists(managedRoot));
-
     }
 
     private sealed class ControllableFileDialog(string? path) : IArtifactFileDialogService
     {
-
         public Task<string?> PickSaveJsonPathAsync(string suggestedFileName, CancellationToken cancellationToken) =>
             Task.FromResult(path);
 
@@ -215,31 +193,25 @@ public class ArtifactImportExportHelperTests
 
         public Task<string?> PickSaveAnyPathAsync(string suggestedFileName, string? defaultExtension, CancellationToken cancellationToken) =>
             Task.FromResult(path);
-
     }
 
     private sealed class BeforeMutationRunner(Action beforeMutation) : ITheForgeLocalMutationRunner
     {
-
         public Task RunAsync(
             string path,
             Func<CancellationToken, Task> mutation,
             CancellationToken cancellationToken = default)
         {
-
             beforeMutation();
 
             return mutation(cancellationToken);
-
         }
-
     }
 
     private sealed class RecordingBoundary(
         Error error,
         bool unsafeDisposition) : IArcanumClientMutationBoundary
     {
-
         public int CallCount { get; private set; }
 
         public Task<ArcanumClientMutationResult<T>> RunAsync<T>(
@@ -251,7 +223,6 @@ public class ArtifactImportExportHelperTests
             Func<CancellationToken, Task<T>> mutation,
             CancellationToken cancellationToken = default)
         {
-
             CallCount++;
 
             ArcanumClientMutationResult<T> result = unsafeDisposition
@@ -259,20 +230,15 @@ public class ArtifactImportExportHelperTests
                 : ArcanumClientMutationResult<T>.Blocked(error);
 
             return Task.FromResult(result);
-
         }
-
     }
-
 }
 
 public class SpellPromptImportFlowTests
 {
-
     [Fact]
     public async Task SpellImport_WhenCancelled_IsNoOp()
     {
-
         FakeSpellImportDataSource dataSource = new();
 
         SpellEditorViewModel viewModel = new(
@@ -284,18 +250,17 @@ public class SpellPromptImportFlowTests
             new ControllableFileDialog(null),
             new AlwaysNullTextInput(),
             new FakeWhispersService(),
-            ImmediateTheForgeLocalMutationRunner.Instance);
+            ImmediateTheForgeLocalMutationRunner.Instance,
+            new InMemoryInferenceTraceStore());
 
         await viewModel.ImportAsync(CancellationToken.None);
 
         Assert.False(dataSource.ImportCalled);
-
     }
 
     [Fact]
     public async Task SpellImport_WhenNameCollision_SurfacesErrorCode()
     {
-
         string path = Path.Combine(Path.GetTempPath(), $"forge-spell-import-{Guid.NewGuid():N}.json");
 
         SpellExportDto payload = new(null, "# heal", []);
@@ -304,7 +269,6 @@ public class SpellPromptImportFlowTests
 
         try
         {
-
             FakeSpellImportDataSource dataSource = new()
             {
                 ImportResult = new DataSourceResult<RetroDownfall.Arcanum.Core.Intelligence.Spells.SpellSummary>(
@@ -325,7 +289,8 @@ public class SpellPromptImportFlowTests
                 new ControllableFileDialog(path),
                 new AlwaysNullTextInput(),
                 whispers,
-                ImmediateTheForgeLocalMutationRunner.Instance);
+                ImmediateTheForgeLocalMutationRunner.Instance,
+                new InMemoryInferenceTraceStore());
 
             await viewModel.ImportAsync(CancellationToken.None);
 
@@ -334,26 +299,19 @@ public class SpellPromptImportFlowTests
             Assert.Contains("Spell.NameCollision", viewModel.LastError, StringComparison.Ordinal);
 
             Assert.Contains(whispers.Calls, static c => c.Message.Contains("collision", StringComparison.OrdinalIgnoreCase));
-
         }
         finally
         {
-
             if (File.Exists(path))
             {
-
                 File.Delete(path);
-
             }
-
         }
-
     }
 
     [Fact]
     public async Task PromptImport_WhenDuplicateVersion_SurfacesErrorCode()
     {
-
         string path = Path.Combine(Path.GetTempPath(), $"forge-prompt-import-{Guid.NewGuid():N}.json");
 
         PromptExportDto payload = new(
@@ -375,7 +333,6 @@ public class SpellPromptImportFlowTests
 
         try
         {
-
             FakePromptImportDataSource dataSource = new()
             {
                 ImportResult = new DataSourceResult<PromptSummaryDto>(
@@ -396,7 +353,8 @@ public class SpellPromptImportFlowTests
                 new ControllableFileDialog(path),
                 new AlwaysNullTextInput(),
                 whispers,
-                ImmediateTheForgeLocalMutationRunner.Instance);
+                ImmediateTheForgeLocalMutationRunner.Instance,
+                new InMemoryInferenceTraceStore());
 
             await viewModel.ImportAsync(CancellationToken.None);
 
@@ -405,25 +363,18 @@ public class SpellPromptImportFlowTests
             Assert.Contains("Prompt.DuplicateVersion", viewModel.LastError, StringComparison.Ordinal);
 
             Assert.Contains(whispers.Calls, static c => c.Message.Contains("duplicate", StringComparison.OrdinalIgnoreCase));
-
         }
         finally
         {
-
             if (File.Exists(path))
             {
-
                 File.Delete(path);
-
             }
-
         }
-
     }
 
     private sealed class ControllableFileDialog(string? path) : IArtifactFileDialogService
     {
-
         public Task<string?> PickSaveJsonPathAsync(string suggestedFileName, CancellationToken cancellationToken) =>
             Task.FromResult(path);
 
@@ -438,32 +389,26 @@ public class SpellPromptImportFlowTests
 
         public Task<string?> PickSaveAnyPathAsync(string suggestedFileName, string? defaultExtension, CancellationToken cancellationToken) =>
             Task.FromResult(path);
-
     }
 
     private sealed class AlwaysCancelConfirmation : IConfirmationDialogService
     {
-
         public Task<bool> ConfirmAsync(
             string title,
             string message,
             CancellationToken cancellationToken,
             bool confirmIsDefault = true) =>
             Task.FromResult(false);
-
     }
 
     private sealed class AlwaysNullTextInput : ITextInputDialogService
     {
-
         public Task<string?> PromptAsync(string title, string label, string? defaultValue, CancellationToken cancellationToken) =>
             Task.FromResult<string?>(null);
-
     }
 
     private sealed class FakeSpellImportDataSource : ISpellEditorDataSource
     {
-
         public bool ImportCalled { get; private set; }
 
         public DataSourceResult<RetroDownfall.Arcanum.Core.Intelligence.Spells.SpellSummary> ImportResult { get; init; } =
@@ -498,11 +443,9 @@ public class SpellPromptImportFlowTests
             RetroDownfall.Arcanum.Core.Intelligence.Spells.SpellExecuteRequest request,
             [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
         {
-
             await Task.CompletedTask;
 
             yield break;
-
         }
 
         public Task<RetroDownfall.Arcanum.Core.Intelligence.Spells.SpellVersionDto?> ActivateVersionAsync(string name, string version, string? workspace, CancellationToken cancellationToken) =>
@@ -519,11 +462,9 @@ public class SpellPromptImportFlowTests
 
         public Task<DataSourceResult<RetroDownfall.Arcanum.Core.Intelligence.Spells.SpellSummary>> ImportAsync(SpellImportRequest request, CancellationToken cancellationToken)
         {
-
             ImportCalled = true;
 
             return Task.FromResult(ImportResult);
-
         }
 
         public Task<DeleteOutcome> DeleteAsync(string name, string workspace, CancellationToken cancellationToken) =>
@@ -534,12 +475,10 @@ public class SpellPromptImportFlowTests
 
         public Task<IReadOnlyList<string>> ListAvailableToolNamesAsync(string? workspace, CancellationToken cancellationToken) =>
             Task.FromResult<IReadOnlyList<string>>([]);
-
     }
 
     private sealed class FakePromptImportDataSource : IPromptEditorDataSource
     {
-
         public bool ImportCalled { get; private set; }
 
         public DataSourceResult<PromptSummaryDto> ImportResult { get; init; } =
@@ -562,11 +501,9 @@ public class SpellPromptImportFlowTests
             PromptExecuteRequest request,
             [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
         {
-
             await Task.CompletedTask;
 
             yield break;
-
         }
 
         public Task<IReadOnlyList<PromptVersionDto>> ListVersionsAsync(string name, Guid? campaignId, CancellationToken cancellationToken) =>
@@ -580,16 +517,12 @@ public class SpellPromptImportFlowTests
 
         public Task<DataSourceResult<PromptSummaryDto>> ImportAsync(PromptImportRequest request, CancellationToken cancellationToken)
         {
-
             ImportCalled = true;
 
             return Task.FromResult(ImportResult);
-
         }
 
         public Task<DeleteOutcome> DeleteAsync(Guid id, CancellationToken cancellationToken) =>
             Task.FromResult(DeleteOutcome.Fail("Http.404", "not used"));
-
     }
-
 }

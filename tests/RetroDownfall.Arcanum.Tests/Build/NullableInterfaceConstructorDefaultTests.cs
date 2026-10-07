@@ -303,12 +303,6 @@ public sealed class NullableInterfaceConstructorDefaultTests
 
         ["src/RetroDownfall.TheForge.Ux/ViewModels/MainViewModel.cs:MainViewModel:logger"] = "diagnostic sink; absence degrades logging, not a guard",
 
-        ["src/RetroDownfall.TheForge.Ux/ViewModels/Workbench/ComparisonWorkbenchViewModel.cs:ComparisonWorkbenchViewModel:traceStore"] = "IInferenceTraceStore is registered, and the owner is hand-constructed only by WorkbenchDocumentFactory (the Comparison branch of its document creation, container-activated), which always passes the registered store",
-
-        ["src/RetroDownfall.TheForge.Ux/ViewModels/Workbench/InferenceTraceViewModel.cs:InferenceTraceViewModel:fileDialog"] = "every use of the IArtifactFileDialogService is null-safe; absence disables an observation, not a refusal",
-
-        ["src/RetroDownfall.TheForge.Ux/ViewModels/Workbench/InferenceTraceViewModel.cs:InferenceTraceViewModel:store"] = "every use of the IInferenceTraceStore is null-safe; absence disables an observation, not a refusal",
-
         ["src/RetroDownfall.TheForge.Ux/ViewModels/Workbench/MarkdownDocumentViewModel.cs:MarkdownDocumentViewModel:contentStore"] = "every use of the IMarkdownDocumentContentStore is null-safe; absence disables an observation, not a refusal",
     };
 

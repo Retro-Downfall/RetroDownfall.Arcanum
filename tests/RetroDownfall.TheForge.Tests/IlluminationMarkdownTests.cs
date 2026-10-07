@@ -264,7 +264,8 @@ public class SpellEditorMarkdownViewModeTests
             new NullArtifactFileDialogService(),
             new NullTextInputDialogService(),
             new FakeWhispersService(),
-            ImmediateTheForgeLocalMutationRunner.Instance);
+            ImmediateTheForgeLocalMutationRunner.Instance,
+            new InMemoryInferenceTraceStore());
 
         Assert.Equal(MarkdownViewMode.Source, vm.ViewMode);
 
@@ -464,6 +465,89 @@ public class MarkdownImageSsrfPolicyTests
 
         Assert.True(socket.NoDelay);
     }
+
+    /// <summary>
+    /// A connect cancelled by its caller (a re-render superseding the load, or the loader's timeout)
+    /// disposes the socket it opened rather than leaving it for finalization.
+    /// </summary>
+    [Fact]
+    public async Task A_cancelled_connect_disposes_its_socket()
+    {
+        using CancellationTokenSource cancellation = new();
+
+        await cancellation.CancelAsync();
+
+        System.Net.Sockets.Socket? attempted = null;
+
+        _ = await Assert.ThrowsAnyAsync<OperationCanceledException>(async () =>
+            await MarkdownImageSsrfPolicy.ConnectToFirstReachableAsync(
+                "image.example",
+                443,
+                [IPAddress.Parse("8.8.8.8")],
+                TimeSpan.FromSeconds(3),
+                (socket, endPoint, token) =>
+                {
+                    attempted = socket;
+
+                    return socket.ConnectAsync(endPoint, token);
+                },
+                cancellation.Token));
+
+        Assert.NotNull(attempted);
+
+        Assert.True(attempted!.SafeHandle.IsClosed);
+    }
+
+    /// <summary>
+    /// One resolved address that never answers (a blackholed IPv6 route, say) gives up after the
+    /// per-address bound, so the next address is tried within the loader's own timeout.
+    /// </summary>
+    [Fact]
+    public async Task An_address_that_never_answers_falls_back_to_the_next_one()
+    {
+        System.Net.Sockets.TcpListener listener = new(IPAddress.Loopback, 0);
+
+        listener.Start();
+
+        try
+        {
+            int port = ((IPEndPoint)listener.LocalEndpoint).Port;
+
+            IPAddress silent = IPAddress.Parse("8.8.8.8");
+
+            List<System.Net.Sockets.Socket> attempted = [];
+
+            Task<Stream> connecting = MarkdownImageSsrfPolicy.ConnectToFirstReachableAsync(
+                "image.example",
+                port,
+                [silent, IPAddress.Loopback],
+                TimeSpan.FromMilliseconds(200),
+                async (socket, endPoint, token) =>
+                {
+                    attempted.Add(socket);
+
+                    if (endPoint.Address.Equals(silent))
+                    {
+                        await Task.Delay(Timeout.Infinite, token);
+                    }
+
+                    await socket.ConnectAsync(endPoint, token);
+                },
+                CancellationToken.None).AsTask();
+
+            await using Stream connected = await connecting.WaitAsync(TimeSpan.FromSeconds(15));
+
+            using System.Net.Sockets.Socket accepted = await listener.AcceptSocketAsync();
+
+            Assert.Equal(2, attempted.Count);
+
+            Assert.True(attempted[0].SafeHandle.IsClosed);
+        }
+        finally
+        {
+            listener.Stop();
+        }
+    }
 }
 
 public class MarkdownImageResolverTests
@@ -629,6 +713,46 @@ public class RemoteMarkdownImageLoaderTests
         Assert.NotNull(result.Bytes);
 
         Assert.Equal(png.Length, result.Bytes!.Length);
+    }
+
+    /// <summary>
+    /// A host that does not resolve is a name or network problem, not the SSRF policy at work, and the
+    /// placeholder says so rather than calling the host local/private/metadata.
+    /// </summary>
+    [Fact]
+    public async Task LoadAsync_UnresolvableHost_SaysItCouldNotBeResolved()
+    {
+        FakeHttpMessageHandler handler = new();
+
+        using RemoteMarkdownImageLoader loader = new(new HttpClient(handler), ownsClient: true);
+
+        MarkdownImageResolveResult result = await loader.LoadAsync(
+            new Uri("http://no-such-image-host.invalid/a.png"),
+            CancellationToken.None);
+
+        Assert.Equal(MarkdownImageResolveStatus.Failed, result.Status);
+
+        Assert.DoesNotContain("blocked", result.PlaceholderReason, StringComparison.OrdinalIgnoreCase);
+
+        Assert.Contains("could not be resolved", result.PlaceholderReason, StringComparison.OrdinalIgnoreCase);
+
+        Assert.Equal(0, handler.RequestCount);
+    }
+
+    /// <summary>
+    /// A proxy would resolve the image host itself, after the pinned connect had checked only the
+    /// proxy's address, so the loader's own handler never uses one (as the outbound guard's does not).
+    /// </summary>
+    [Fact]
+    public void Default_handler_pins_its_own_sockets_and_never_uses_a_proxy()
+    {
+        using SocketsHttpHandler handler = RemoteMarkdownImageLoader.CreateDefaultHandler();
+
+        Assert.False(handler.UseProxy);
+
+        Assert.False(handler.AllowAutoRedirect);
+
+        Assert.NotNull(handler.ConnectCallback);
     }
 
     [Fact]

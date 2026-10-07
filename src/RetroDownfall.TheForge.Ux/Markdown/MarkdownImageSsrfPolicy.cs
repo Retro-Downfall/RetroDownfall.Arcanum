@@ -19,6 +19,22 @@ public static class MarkdownImageSsrfPolicy
 {
     public const int MaxRedirectHops = 3;
 
+    /// <summary>
+    /// How long a connect to one resolved address may take while another address is still left to try.
+    /// The last address has the rest of the loader's own timeout.
+    /// </summary>
+    internal static readonly TimeSpan PerAddressConnectTimeout = TimeSpan.FromSeconds(3);
+
+    /// <summary>The outcome of <see cref="CheckResolvedAddressesAsync"/>.</summary>
+    public enum HostCheck
+    {
+        Allowed,
+
+        Blocked,
+
+        Unresolved,
+    }
+
     public static bool IsHostAllowed(string? host)
     {
         if (string.IsNullOrWhiteSpace(host))
@@ -67,18 +83,24 @@ public static class MarkdownImageSsrfPolicy
             || (bytes[0] == 203 && bytes[1] == 0 && bytes[2] == 113));
     }
 
-    public static async Task<bool> AreResolvedAddressesAllowedAsync(string host, CancellationToken cancellationToken)
+    /// <summary>
+    /// The pre-fetch check of a host: <see cref="HostCheck.Blocked"/> when the policy refuses the name or
+    /// any address it resolves to, and <see cref="HostCheck.Unresolved"/> when the name does not resolve
+    /// at all (no such host, no network, a DNS timeout), which is a name or network problem the policy
+    /// had no part in. Cancellation propagates to the caller.
+    /// </summary>
+    public static async Task<HostCheck> CheckResolvedAddressesAsync(string host, CancellationToken cancellationToken)
     {
         try
         {
             IReadOnlyList<IPAddress> addresses = await ResolvePublicAddressesAsync(host, cancellationToken)
                 .ConfigureAwait(false);
 
-            return addresses.Count > 0;
+            return addresses.Count > 0 ? HostCheck.Allowed : HostCheck.Blocked;
         }
-        catch
+        catch (Exception ex) when (ex is SocketException or ArgumentException)
         {
-            return false;
+            return HostCheck.Unresolved;
         }
     }
 
@@ -102,20 +124,56 @@ public static class MarkdownImageSsrfPolicy
             throw new HttpRequestException($"Remote host '{host}' is blocked (local/private/metadata).");
         }
 
-        List<Exception>? connectErrors = null;
-
         foreach (IPAddress address in addresses)
         {
             if (!IsPublicAddress(address))
             {
                 throw new HttpRequestException($"Remote host '{host}' is blocked (local/private/metadata).");
             }
+        }
+
+        return await ConnectToFirstReachableAsync(
+            host,
+            port,
+            addresses,
+            PerAddressConnectTimeout,
+            static (socket, endPoint, token) => socket.ConnectAsync(endPoint, token),
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Connects to the validated addresses in order and returns the first connection made. Every address
+    /// but the last gets at most <paramref name="attemptTimeout"/>, so one that never answers (a
+    /// blackholed IPv6 route, say) does not use up the loader's whole timeout before the next is tried;
+    /// the last has whatever the caller's token leaves. The <paramref name="connect"/> seam is the socket
+    /// connect itself, so a test can stand in a connect that never answers.
+    /// </summary>
+    internal static async ValueTask<Stream> ConnectToFirstReachableAsync(
+        string host,
+        int port,
+        IReadOnlyList<IPAddress> addresses,
+        TimeSpan attemptTimeout,
+        Func<Socket, IPEndPoint, CancellationToken, ValueTask> connect,
+        CancellationToken cancellationToken)
+    {
+        List<Exception>? connectErrors = null;
+
+        for (int index = 0; index < addresses.Count; index++)
+        {
+            IPAddress address = addresses[index];
+
+            using CancellationTokenSource? attemptScope = index < addresses.Count - 1
+                ? CancellationTokenSource.CreateLinkedTokenSource(cancellationToken)
+                : null;
+
+            attemptScope?.CancelAfter(attemptTimeout);
 
             Socket socket = CreatePinnedSocket(address.AddressFamily);
 
             try
             {
-                await socket.ConnectAsync(new IPEndPoint(address, port), cancellationToken).ConfigureAwait(false);
+                await connect(socket, new IPEndPoint(address, port), attemptScope?.Token ?? cancellationToken)
+                    .ConfigureAwait(false);
 
                 return new NetworkStream(socket, ownsSocket: true);
             }
@@ -126,6 +184,24 @@ public static class MarkdownImageSsrfPolicy
                 connectErrors.Add(ex);
 
                 socket.Dispose();
+            }
+            catch (OperationCanceledException ex) when (attemptScope is not null
+                && !cancellationToken.IsCancellationRequested)
+            {
+                // This address's bound elapsed, not the caller's cancellation: try the next one.
+                socket.Dispose();
+
+                connectErrors ??= [];
+
+                connectErrors.Add(ex);
+            }
+            catch
+            {
+                // The caller cancelled (a re-render superseded the load, or the loader timed out). Do not
+                // leave the unconnected socket for finalization.
+                socket.Dispose();
+
+                throw;
             }
         }
 

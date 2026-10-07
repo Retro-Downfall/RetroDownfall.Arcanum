@@ -26,7 +26,6 @@ namespace RetroDownfall.TheForge.Ux.ViewModels.Workbench;
 /// </summary>
 public sealed partial class SpellEditorViewModel : ViewModelBase, IDisposable
 {
-
     private readonly ISpellEditorDataSource _dataSource;
 
     private readonly INavigationService _navigation;
@@ -183,9 +182,9 @@ public sealed partial class SpellEditorViewModel : ViewModelBase, IDisposable
         ITextInputDialogService textInputDialog,
         IWhispersService whispers,
         ITheForgeLocalMutationRunner mutationRunner,
+        IInferenceTraceStore traceStore,
         string? workspace = null)
     {
-
         SpellName = spellName;
 
         Workspace = WorkspacePathHelper.ForApi(workspace);
@@ -212,8 +211,9 @@ public sealed partial class SpellEditorViewModel : ViewModelBase, IDisposable
 
         Trace = new InferenceTraceViewModel(
             mutationRunner,
+            traceStore,
+            fileDialog,
             openSpellCastPreview: () => StatusText = "Use Cast for assembled-context preview (no general dry-run API).");
-
     }
 
     public override DocumentKind? Kind => DocumentKind.Spell;
@@ -270,30 +270,23 @@ public sealed partial class SpellEditorViewModel : ViewModelBase, IDisposable
     [RelayCommand]
     private void AddDependency()
     {
-
         if (!CanEditMetadata)
         {
-
             return;
-
         }
 
         string value = NewDependencyText.Trim();
 
         if (string.IsNullOrWhiteSpace(value))
         {
-
             return;
-
         }
 
         if (Dependencies.Contains(value, StringComparer.OrdinalIgnoreCase))
         {
-
             NewDependencyText = string.Empty;
 
             return;
-
         }
 
         Dependencies.Add(value);
@@ -301,18 +294,14 @@ public sealed partial class SpellEditorViewModel : ViewModelBase, IDisposable
         NewDependencyText = string.Empty;
 
         OnDesignerChanged();
-
     }
 
     [RelayCommand]
     private void RemoveDependency()
     {
-
         if (!CanEditMetadata || SelectedDependency is null)
         {
-
             return;
-
         }
 
         Dependencies.Remove(SelectedDependency);
@@ -320,36 +309,28 @@ public sealed partial class SpellEditorViewModel : ViewModelBase, IDisposable
         SelectedDependency = null;
 
         OnDesignerChanged();
-
     }
 
     [RelayCommand]
     private void AddDeclaredTool()
     {
-
         if (!CanEditMetadata)
         {
-
             return;
-
         }
 
         string value = NewDeclaredToolText.Trim();
 
         if (string.IsNullOrWhiteSpace(value))
         {
-
             return;
-
         }
 
         if (DeclaredTools.Contains(value, StringComparer.OrdinalIgnoreCase))
         {
-
             NewDeclaredToolText = string.Empty;
 
             return;
-
         }
 
         DeclaredTools.Add(value);
@@ -357,18 +338,14 @@ public sealed partial class SpellEditorViewModel : ViewModelBase, IDisposable
         NewDeclaredToolText = string.Empty;
 
         OnDesignerChanged();
-
     }
 
     [RelayCommand]
     private void RemoveDeclaredTool()
     {
-
         if (!CanEditMetadata || SelectedDeclaredTool is null)
         {
-
             return;
-
         }
 
         DeclaredTools.Remove(SelectedDeclaredTool);
@@ -376,22 +353,17 @@ public sealed partial class SpellEditorViewModel : ViewModelBase, IDisposable
         SelectedDeclaredTool = null;
 
         OnDesignerChanged();
-
     }
 
     [RelayCommand]
     public async Task LoadAsync(CancellationToken cancellationToken)
     {
-
         if (!TryGuardUnsavedEdits("Reloading"))
         {
-
             return;
-
         }
 
         await LoadCoreAsync(cancellationToken).ConfigureAwait(true);
-
     }
 
     /// <summary>
@@ -400,12 +372,9 @@ public sealed partial class SpellEditorViewModel : ViewModelBase, IDisposable
     /// </summary>
     private bool TryGuardUnsavedEdits(string action)
     {
-
         if (!IsEditorDirty)
         {
-
             return true;
-
         }
 
         LastError = $"{action} would discard unsaved editor changes — save the spell or discard them first.";
@@ -415,12 +384,10 @@ public sealed partial class SpellEditorViewModel : ViewModelBase, IDisposable
         _whispers.Show(WhisperSeverity.Warning, "The spell editor has unsaved changes.");
 
         return false;
-
     }
 
     private async Task LoadCoreAsync(CancellationToken cancellationToken)
     {
-
         IsBusy = true;
 
         LastError = null;
@@ -429,7 +396,6 @@ public sealed partial class SpellEditorViewModel : ViewModelBase, IDisposable
 
         try
         {
-
             Spell = await _dataSource.LoadSpellAsync(SpellName, Workspace, cancellationToken).ConfigureAwait(true);
 
             string body = Spell?.Body ?? Spell?.SystemPrompt ?? string.Empty;
@@ -444,15 +410,11 @@ public sealed partial class SpellEditorViewModel : ViewModelBase, IDisposable
 
             if (Spell is not null)
             {
-
                 SetSpellJson(SpellJsonSync.SerializeKnownFields(Spell));
-
             }
             else
             {
-
                 SetSpellJson("{}");
-
             }
 
             _rawSpellJsonInvalid = false;
@@ -476,26 +438,19 @@ public sealed partial class SpellEditorViewModel : ViewModelBase, IDisposable
             OnPropertyChanged(nameof(CanEditMetadata));
 
             StatusText = Spell is null ? "Spell not found." : "Loaded.";
-
         }
         finally
         {
-
             IsBusy = false;
-
         }
-
     }
 
     [RelayCommand(CanExecute = nameof(CanSave))]
     public async Task SaveAsync(CancellationToken cancellationToken)
     {
-
         if (Spell is null || IsBuiltIn)
         {
-
             return;
-
         }
 
         SpellJsonSync.DesignerState designer = CaptureDesignerState();
@@ -509,7 +464,6 @@ public sealed partial class SpellEditorViewModel : ViewModelBase, IDisposable
                 out string[]? dependencies,
                 out string? schemaError))
         {
-
             MetadataValidationError = schemaError;
 
             LastError = schemaError;
@@ -517,7 +471,6 @@ public sealed partial class SpellEditorViewModel : ViewModelBase, IDisposable
             StatusText = "Save blocked — invalid SPELL.json metadata.";
 
             return;
-
         }
 
         string? rawError = null;
@@ -525,7 +478,6 @@ public sealed partial class SpellEditorViewModel : ViewModelBase, IDisposable
         if (_rawSpellJsonInvalid
             || !SpellJsonSync.TryParseRaw(SpellJson, out _, out rawError))
         {
-
             string message = rawError ?? MetadataValidationError ?? "SPELL.json is invalid.";
 
             MetadataValidationError = message;
@@ -539,7 +491,6 @@ public sealed partial class SpellEditorViewModel : ViewModelBase, IDisposable
             outputSchema?.Dispose();
 
             return;
-
         }
 
         IsBusy = true;
@@ -550,7 +501,6 @@ public sealed partial class SpellEditorViewModel : ViewModelBase, IDisposable
 
         try
         {
-
             UpdateSpellRequest request = new(
                 Spell.Description,
                 Spell.Tags,
@@ -568,7 +518,6 @@ public sealed partial class SpellEditorViewModel : ViewModelBase, IDisposable
 
             if (await _dataSource.SaveAsync(Spell.Name, request, Workspace, cancellationToken).ConfigureAwait(true))
             {
-
                 Spell = Spell with
                 {
                     SystemPrompt = MarkdownBody,
@@ -601,11 +550,9 @@ public sealed partial class SpellEditorViewModel : ViewModelBase, IDisposable
                 _foundryFloor.AppendLine($"Spell saved: {Spell.Name}.");
 
                 _whispers.Show(WhisperSeverity.Success, "Spell saved.");
-
             }
             else
             {
-
                 inputSchema?.Dispose();
 
                 outputSchema?.Dispose();
@@ -617,23 +564,17 @@ public sealed partial class SpellEditorViewModel : ViewModelBase, IDisposable
                 _foundryFloor.AppendLine($"Spell save failed: {Spell.Name}.");
 
                 _whispers.Show(WhisperSeverity.Error, "Spell save failed.");
-
             }
-
         }
         finally
         {
-
             IsBusy = false;
-
         }
-
     }
 
     [RelayCommand]
     public async Task ValidateAsync(CancellationToken cancellationToken)
     {
-
         IsBusy = true;
 
         LastError = null;
@@ -642,14 +583,12 @@ public sealed partial class SpellEditorViewModel : ViewModelBase, IDisposable
 
         try
         {
-
             SpellValidationResultDto? result = await _dataSource
                 .ValidateAsync(SpellName, Workspace, cancellationToken)
                 .ConfigureAwait(true);
 
             if (result is null)
             {
-
                 LastError = "Validation failed — the server rejected the request.";
 
                 StatusText = "Validation failed.";
@@ -659,7 +598,6 @@ public sealed partial class SpellEditorViewModel : ViewModelBase, IDisposable
                 _whispers.Show(WhisperSeverity.Error, "Spell validation failed.");
 
                 return;
-
             }
 
             ValidationSummary = BuildValidationSummary(result);
@@ -671,21 +609,16 @@ public sealed partial class SpellEditorViewModel : ViewModelBase, IDisposable
             _whispers.Show(
                 result.IsValid ? WhisperSeverity.Success : WhisperSeverity.Warning,
                 result.IsValid ? "Spell valid." : "Spell validation issues.");
-
         }
         finally
         {
-
             IsBusy = false;
-
         }
-
     }
 
     [RelayCommand]
     public async Task ExportAsync(CancellationToken cancellationToken)
     {
-
         string suggestedFileName = $"{SpellName}.json";
 
         string? path = await _fileDialog
@@ -694,9 +627,7 @@ public sealed partial class SpellEditorViewModel : ViewModelBase, IDisposable
 
         if (path is null)
         {
-
             return;
-
         }
 
         IsBusy = true;
@@ -705,7 +636,6 @@ public sealed partial class SpellEditorViewModel : ViewModelBase, IDisposable
 
         try
         {
-
             SpellExportDto? export = null;
 
             await _mutationRunner
@@ -713,7 +643,6 @@ public sealed partial class SpellEditorViewModel : ViewModelBase, IDisposable
                     path,
                     async admittedCancellationToken =>
                     {
-
                         export = await _dataSource
                             .ExportAsync(
                                 SpellName,
@@ -723,9 +652,7 @@ public sealed partial class SpellEditorViewModel : ViewModelBase, IDisposable
 
                         if (export is null)
                         {
-
                             return;
-
                         }
 
                         await ArtifactImportExportHelper
@@ -735,14 +662,12 @@ public sealed partial class SpellEditorViewModel : ViewModelBase, IDisposable
                                 TheForgeJsonContext.Default.SpellExportDto,
                                 admittedCancellationToken)
                             .ConfigureAwait(true);
-
                     },
                     cancellationToken)
                 .ConfigureAwait(true);
 
             if (export is null)
             {
-
                 LastError = "Export failed — the server rejected the request.";
 
                 StatusText = "Export failed.";
@@ -752,7 +677,6 @@ public sealed partial class SpellEditorViewModel : ViewModelBase, IDisposable
                 _whispers.Show(WhisperSeverity.Error, "Spell export failed.");
 
                 return;
-
             }
 
             StatusText = "Exported.";
@@ -760,40 +684,31 @@ public sealed partial class SpellEditorViewModel : ViewModelBase, IDisposable
             _foundryFloor.AppendLine($"Spell exported: {SpellName} → {path}.");
 
             _whispers.Show(WhisperSeverity.Success, "Spell exported.");
-
         }
         catch (Exception ex)
         {
-
             LastError = ex.Message;
 
             _foundryFloor.AppendLine($"Spell export error: {ex.Message}");
 
             _whispers.Show(WhisperSeverity.Error, "Spell export failed.");
-
         }
         finally
         {
-
             IsBusy = false;
-
         }
-
     }
 
     [RelayCommand]
     public async Task ImportAsync(CancellationToken cancellationToken)
     {
-
         string? path = await ArtifactImportExportHelper
             .PickOpenPathOrNullAsync(_fileDialog, cancellationToken)
             .ConfigureAwait(true);
 
         if (path is null)
         {
-
             return;
-
         }
 
         IsBusy = true;
@@ -802,14 +717,12 @@ public sealed partial class SpellEditorViewModel : ViewModelBase, IDisposable
 
         try
         {
-
             (SpellExportDto? payload, string? readError) = await ArtifactImportExportHelper
                 .ReadJsonAsync(path, TheForgeJsonContext.Default.SpellExportDto, cancellationToken)
                 .ConfigureAwait(true);
 
             if (payload is null)
             {
-
                 LastError = readError ?? "Failed to read spell export JSON.";
 
                 _foundryFloor.AppendLine($"Spell import read failed: {LastError}");
@@ -817,7 +730,6 @@ public sealed partial class SpellEditorViewModel : ViewModelBase, IDisposable
                 _whispers.Show(WhisperSeverity.Error, "Spell import failed.");
 
                 return;
-
             }
 
             SpellImportRequest request = new(payload, Workspace, null);
@@ -828,7 +740,6 @@ public sealed partial class SpellEditorViewModel : ViewModelBase, IDisposable
 
             if (!result.Success || result.Data is null)
             {
-
                 string detail = FormatImportError(result.ErrorCode, result.ErrorMessage, "Spell import failed.");
 
                 LastError = detail;
@@ -842,7 +753,6 @@ public sealed partial class SpellEditorViewModel : ViewModelBase, IDisposable
                 _whispers.Show(WhisperSeverity.Error, whisper);
 
                 return;
-
             }
 
             StatusText = $"Imported {result.Data.Name}.";
@@ -852,99 +762,76 @@ public sealed partial class SpellEditorViewModel : ViewModelBase, IDisposable
             _whispers.Show(WhisperSeverity.Success, "Spell imported.");
 
             _navigation.OpenDocument(DocumentKind.Spell, result.Data.Name, Workspace);
-
         }
         catch (Exception ex)
         {
-
             LastError = ex.Message;
 
             _foundryFloor.AppendLine($"Spell import error: {ex.Message}");
 
             _whispers.Show(WhisperSeverity.Error, "Spell import failed.");
-
         }
         finally
         {
-
             IsBusy = false;
-
         }
-
     }
 
     private static string FormatImportError(string? code, string? message, string fallback)
     {
-
         if (!string.IsNullOrWhiteSpace(code) && !string.IsNullOrWhiteSpace(message))
         {
-
             return $"{code}: {message}";
-
         }
 
         if (!string.IsNullOrWhiteSpace(code))
         {
-
             return code;
-
         }
 
         return message ?? fallback;
-
     }
 
     [RelayCommand]
     public async Task CloneAsync(CancellationToken cancellationToken)
     {
-
         string? newName = await _textInputDialog
             .PromptAsync("Clone spell", "New name", $"{SpellName}-copy", cancellationToken)
             .ConfigureAwait(true);
 
         if (newName is null)
         {
-
             return;
-
         }
 
         if (string.IsNullOrWhiteSpace(newName))
         {
-
             LastError = "A new name is required to clone.";
 
             return;
-
         }
 
         string? cloneWorkspace = Workspace;
 
         if (cloneWorkspace is null)
         {
-
             string? workspaceInput = await _textInputDialog
                 .PromptAsync("Clone spell", "Target workspace path", null, cancellationToken)
                 .ConfigureAwait(true);
 
             if (workspaceInput is null)
             {
-
                 return;
-
             }
 
             cloneWorkspace = WorkspacePathHelper.ForApi(workspaceInput);
 
             if (cloneWorkspace is null)
             {
-
                 LastError = "A target workspace path is required to clone a built-in spell.";
 
                 return;
-
             }
-
         }
 
         IsBusy = true;
@@ -953,7 +840,6 @@ public sealed partial class SpellEditorViewModel : ViewModelBase, IDisposable
 
         try
         {
-
             CloneSpellRequest request = new(newName.Trim(), cloneWorkspace);
 
             SpellSummary? cloned = await _dataSource
@@ -962,7 +848,6 @@ public sealed partial class SpellEditorViewModel : ViewModelBase, IDisposable
 
             if (cloned is null)
             {
-
                 LastError = "Clone failed — the server rejected the request.";
 
                 _foundryFloor.AppendLine($"Spell clone failed: {SpellName}.");
@@ -970,7 +855,6 @@ public sealed partial class SpellEditorViewModel : ViewModelBase, IDisposable
                 _whispers.Show(WhisperSeverity.Error, "Spell clone failed.");
 
                 return;
-
             }
 
             _navigation.OpenDocument(DocumentKind.Spell, cloned.Name, cloneWorkspace);
@@ -980,26 +864,19 @@ public sealed partial class SpellEditorViewModel : ViewModelBase, IDisposable
             _foundryFloor.AppendLine($"Spell cloned: {SpellName} → {cloned.Name} ({cloneWorkspace}).");
 
             _whispers.Show(WhisperSeverity.Success, "Spell cloned.");
-
         }
         finally
         {
-
             IsBusy = false;
-
         }
-
     }
 
     [RelayCommand(CanExecute = nameof(CanDelete))]
     public async Task DeleteAsync(CancellationToken cancellationToken)
     {
-
         if (IsBuiltIn || Workspace is null)
         {
-
             return;
-
         }
 
         bool confirmed = await _confirmationDialog
@@ -1011,9 +888,7 @@ public sealed partial class SpellEditorViewModel : ViewModelBase, IDisposable
 
         if (!confirmed)
         {
-
             return;
-
         }
 
         IsBusy = true;
@@ -1022,14 +897,12 @@ public sealed partial class SpellEditorViewModel : ViewModelBase, IDisposable
 
         try
         {
-
             DeleteOutcome outcome = await _dataSource
                 .DeleteAsync(SpellName, Workspace, cancellationToken)
                 .ConfigureAwait(true);
 
             if (!outcome.Success)
             {
-
                 LastError = outcome.ErrorMessage is { Length: > 0 } detail
                     ? $"Delete failed ({outcome.ErrorCode}): {detail}"
                     : "Delete failed — the server rejected the request.";
@@ -1039,7 +912,6 @@ public sealed partial class SpellEditorViewModel : ViewModelBase, IDisposable
                 _whispers.Show(WhisperSeverity.Error, "Spell delete failed.");
 
                 return;
-
             }
 
             _navigation.CloseDocument(DocumentKind.Spell, SpellName, Workspace);
@@ -1047,36 +919,28 @@ public sealed partial class SpellEditorViewModel : ViewModelBase, IDisposable
             _foundryFloor.AppendLine($"Spell deleted: {SpellName} ({Workspace}).");
 
             _whispers.Show(WhisperSeverity.Success, "Spell deleted.");
-
         }
         catch (OperationCanceledException)
         {
-
             // Closing the window mid-delete cancels the caller's token. That is an ordinary outcome,
             // not a crash: unhandled it escapes onto the dispatcher from a fire-and-forget command.
             StatusText = "Delete cancelled.";
-
         }
         finally
         {
-
             IsBusy = false;
-
         }
-
     }
 
     [RelayCommand]
     public async Task CastAsync(CancellationToken cancellationToken)
     {
-
         SpellCastRequest request = new(Workspace, SessionId: null, CampaignId: null);
 
         CastPreview = await _dataSource.CastAsync(SpellName, request, cancellationToken).ConfigureAwait(true);
 
         if (CastPreview is null)
         {
-
             LastError = "Cast failed — the server rejected the request.";
 
             StatusText = "Cast failed.";
@@ -1086,19 +950,16 @@ public sealed partial class SpellEditorViewModel : ViewModelBase, IDisposable
             _whispers.Show(WhisperSeverity.Error, "Spell cast failed.");
 
             return;
-
         }
 
         StatusText = "Cast preview ready.";
 
         _whispers.Show(WhisperSeverity.Success, "Spell cast ready.");
-
     }
 
     [RelayCommand]
     public async Task EstimateManaAsync(CancellationToken cancellationToken)
     {
-
         string prompt = string.IsNullOrWhiteSpace(MarkdownBody) ? Spell?.SystemPrompt ?? string.Empty : MarkdownBody;
 
         ManaCountResult? result = await _dataSource
@@ -1106,19 +967,16 @@ public sealed partial class SpellEditorViewModel : ViewModelBase, IDisposable
             .ConfigureAwait(true);
 
         ManaCount = result?.ManaCount;
-
     }
 
     [RelayCommand]
     private void CreateTrial()
     {
-
         _navigation.OpenOrFocusProvingGrounds(new ProvingGroundsPrefill(
             TrialTargetKind.Spell,
             SpellName,
             Workspace,
             Spell?.Model));
-
     }
 
     private bool CanExecuteSpell() => !IsExecuting;
@@ -1126,12 +984,9 @@ public sealed partial class SpellEditorViewModel : ViewModelBase, IDisposable
     [RelayCommand(CanExecute = nameof(CanExecuteSpell))]
     public async Task ExecuteAsync(CancellationToken cancellationToken)
     {
-
         if (IsExecuting)
         {
-
             return;
-
         }
 
         string prompt = string.IsNullOrWhiteSpace(ExecutionPrompt) ? MarkdownBody : ExecutionPrompt;
@@ -1161,63 +1016,48 @@ public sealed partial class SpellEditorViewModel : ViewModelBase, IDisposable
 
         try
         {
-
             await foreach (IntelligenceEvent ev in _dataSource.ExecuteStreamAsync(SpellName, request, runToken).ConfigureAwait(true))
             {
-
                 ExecutionEvents.Add(ev);
 
                 Trace.Capture(ev);
 
                 if (ev.Type == IntelligenceEventType.Error)
                 {
-
                     hadError = true;
 
                     LastError = ev.Message;
 
                     _foundryFloor.AppendLine($"Spell execute error: {ev.Message}");
-
                 }
 
                 if (ev.Type == IntelligenceEventType.SessionBound
                     && !_disposed
                     && Guid.TryParse(ev.Message, out Guid sessionId))
                 {
-
                     _navigation.OpenDocument(DocumentKind.Session, sessionId.ToString());
-
                 }
-
             }
 
             if (hadError)
             {
-
                 StatusText = "Execution failed.";
 
                 _whispers.Show(WhisperSeverity.Error, "Spell execution failed.");
-
             }
             else
             {
-
                 StatusText = "Executed.";
 
                 _whispers.Show(WhisperSeverity.Success, "Spell executed.");
-
             }
-
         }
         catch (OperationCanceledException) when (runToken.IsCancellationRequested)
         {
-
             StatusText = "Execution stopped.";
-
         }
         catch (Exception ex)
         {
-
             LastError = ex.Message;
 
             StatusText = "Execution failed.";
@@ -1225,23 +1065,17 @@ public sealed partial class SpellEditorViewModel : ViewModelBase, IDisposable
             _foundryFloor.AppendLine($"Spell execute error: {ex.Message}");
 
             _whispers.Show(WhisperSeverity.Error, "Spell execution failed.");
-
         }
         finally
         {
-
             IsExecuting = false;
-
         }
-
     }
 
     [RelayCommand]
     private void StopExecution()
     {
-
         _executeCts?.Cancel();
-
     }
 
     /// <summary>
@@ -1250,12 +1084,9 @@ public sealed partial class SpellEditorViewModel : ViewModelBase, IDisposable
     /// </summary>
     public void Dispose()
     {
-
         if (_disposed)
         {
-
             return;
-
         }
 
         _disposed = true;
@@ -1269,25 +1100,19 @@ public sealed partial class SpellEditorViewModel : ViewModelBase, IDisposable
         _executeCts?.Dispose();
 
         GC.SuppressFinalize(this);
-
     }
 
     [RelayCommand(CanExecute = nameof(CanActivateVersion))]
     public async Task ActivateVersionAsync(SpellVersionDto? version, CancellationToken cancellationToken)
     {
-
         if (version is null || !CanMutateVersions)
         {
-
             return;
-
         }
 
         if (!TryGuardUnsavedEdits("Activating a version"))
         {
-
             return;
-
         }
 
         // The dirty guard above only checks on entry. Without IsBusy the editor stays live across the
@@ -1300,14 +1125,12 @@ public sealed partial class SpellEditorViewModel : ViewModelBase, IDisposable
 
         try
         {
-
             SpellVersionDto? activated = await _dataSource
                 .ActivateVersionAsync(SpellName, version.Version, Workspace, cancellationToken)
                 .ConfigureAwait(true);
 
             if (activated is not null)
             {
-
                 ActivatePreviousVersionNote = activated.PreviousVersion is null
                     ? null
                     : $"Previous SPELL.md preserved as SPELL.v{activated.PreviousVersion}.md";
@@ -1318,15 +1141,12 @@ public sealed partial class SpellEditorViewModel : ViewModelBase, IDisposable
 
                 if (ActivatePreviousVersionNote is not null)
                 {
-
                     _foundryFloor.AppendLine($"Spell activate ({SpellName}): {ActivatePreviousVersionNote}");
-
                 }
 
                 _whispers.Show(WhisperSeverity.Success, "Version activated.");
 
                 return;
-
             }
 
             LastError = "Activate failed — the server rejected the request.";
@@ -1336,11 +1156,9 @@ public sealed partial class SpellEditorViewModel : ViewModelBase, IDisposable
             _foundryFloor.AppendLine($"Spell activate failed: {SpellName} v{version.Version}.");
 
             _whispers.Show(WhisperSeverity.Error, "Version activation failed.");
-
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-
             LastError = ex.Message;
 
             StatusText = "Activate failed.";
@@ -1348,26 +1166,19 @@ public sealed partial class SpellEditorViewModel : ViewModelBase, IDisposable
             _foundryFloor.AppendLine($"Spell activate error ({SpellName} v{version.Version}): {ex.Message}");
 
             _whispers.Show(WhisperSeverity.Error, "Version activation failed.");
-
         }
         finally
         {
-
             IsBusy = false;
-
         }
-
     }
 
     [RelayCommand(CanExecute = nameof(CanCreateVersion))]
     public async Task CreateVersionAsync(CancellationToken cancellationToken)
     {
-
         if (!CanMutateVersions)
         {
-
             return;
-
         }
 
         string? versionLabel = await _textInputDialog
@@ -1376,18 +1187,14 @@ public sealed partial class SpellEditorViewModel : ViewModelBase, IDisposable
 
         if (versionLabel is null)
         {
-
             return;
-
         }
 
         if (string.IsNullOrWhiteSpace(versionLabel))
         {
-
             LastError = "A version label is required.";
 
             return;
-
         }
 
         IsBusy = true;
@@ -1396,7 +1203,6 @@ public sealed partial class SpellEditorViewModel : ViewModelBase, IDisposable
 
         try
         {
-
             CreateSpellVersionRequest request = new(versionLabel.Trim(), MarkdownBody, Workspace);
 
             SpellVersionDto? created = await _dataSource
@@ -1405,7 +1211,6 @@ public sealed partial class SpellEditorViewModel : ViewModelBase, IDisposable
 
             if (created is null)
             {
-
                 LastError = "Create version failed — the server rejected the request.";
 
                 StatusText = "Create version failed.";
@@ -1415,7 +1220,6 @@ public sealed partial class SpellEditorViewModel : ViewModelBase, IDisposable
                 _whispers.Show(WhisperSeverity.Error, "Version create failed.");
 
                 return;
-
             }
 
             await LoadVersionsAsync(cancellationToken).ConfigureAwait(true);
@@ -1425,26 +1229,19 @@ public sealed partial class SpellEditorViewModel : ViewModelBase, IDisposable
             _foundryFloor.AppendLine($"Spell version created: {SpellName} v{created.Version}.");
 
             _whispers.Show(WhisperSeverity.Success, "Version created.");
-
         }
         finally
         {
-
             IsBusy = false;
-
         }
-
     }
 
     [RelayCommand(CanExecute = nameof(CanUpdateVersion))]
     public async Task UpdateSelectedVersionAsync(CancellationToken cancellationToken)
     {
-
         if (!CanMutateVersions || SelectedVersion is null)
         {
-
             return;
-
         }
 
         IsBusy = true;
@@ -1453,7 +1250,6 @@ public sealed partial class SpellEditorViewModel : ViewModelBase, IDisposable
 
         try
         {
-
             UpdateSpellVersionRequest request = new(MarkdownBody, Workspace);
 
             SpellVersionDto? updated = await _dataSource
@@ -1462,7 +1258,6 @@ public sealed partial class SpellEditorViewModel : ViewModelBase, IDisposable
 
             if (updated is null)
             {
-
                 LastError = "Update version failed — the server rejected the request.";
 
                 StatusText = "Update version failed.";
@@ -1472,7 +1267,6 @@ public sealed partial class SpellEditorViewModel : ViewModelBase, IDisposable
                 _whispers.Show(WhisperSeverity.Error, "Version update failed.");
 
                 return;
-
             }
 
             await LoadVersionsAsync(cancellationToken).ConfigureAwait(true);
@@ -1484,26 +1278,19 @@ public sealed partial class SpellEditorViewModel : ViewModelBase, IDisposable
             _foundryFloor.AppendLine($"Spell version updated: {SpellName} v{updated.Version}.");
 
             _whispers.Show(WhisperSeverity.Success, "Version updated.");
-
         }
         finally
         {
-
             IsBusy = false;
-
         }
-
     }
 
     [RelayCommand]
     public async Task RefreshMirrorDiffAsync(CancellationToken cancellationToken)
     {
-
         if (_disposed)
         {
-
             return;
-
         }
 
         int generation = ++_mirrorRefreshGeneration;
@@ -1514,16 +1301,13 @@ public sealed partial class SpellEditorViewModel : ViewModelBase, IDisposable
 
         if (version is null)
         {
-
             return;
-
         }
 
         SpellVersionDetailDto? detail;
 
         try
         {
-
             using CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(
                 cancellationToken,
                 _lifetimeCts.Token);
@@ -1531,27 +1315,21 @@ public sealed partial class SpellEditorViewModel : ViewModelBase, IDisposable
             detail = await _dataSource
                 .GetVersionDetailAsync(SpellName, version.Version, Workspace, linked.Token)
                 .ConfigureAwait(true);
-
         }
         catch (OperationCanceledException)
         {
-
             return;
-
         }
 
         if (_disposed || generation != _mirrorRefreshGeneration)
         {
-
             // A newer selection (or a closed document) already owns the mirror surface.
 
             return;
-
         }
 
         if (detail is null)
         {
-
             LastError = "Version detail unavailable — the server rejected the request.";
 
             StatusText = "Version detail unavailable.";
@@ -1559,7 +1337,6 @@ public sealed partial class SpellEditorViewModel : ViewModelBase, IDisposable
             _foundryFloor.AppendLine($"Spell version detail failed: {SpellName} v{version.Version}.");
 
             return;
-
         }
 
         // LCS over two large bodies is bounded but still CPU-bound, and every caller is on the UI
@@ -1574,67 +1351,49 @@ public sealed partial class SpellEditorViewModel : ViewModelBase, IDisposable
 
         if (_disposed || generation != _mirrorRefreshGeneration)
         {
-
             return;
-
         }
 
         DiffLines.ResetTo(lines);
-
     }
 
     private async Task LoadVersionsAsync(CancellationToken cancellationToken)
     {
-
         Versions.Clear();
 
         foreach (SpellVersionDto version in await _dataSource.ListVersionsAsync(SpellName, Workspace, cancellationToken).ConfigureAwait(true))
         {
-
             Versions.Add(version);
-
         }
-
     }
 
     private static string BuildValidationSummary(SpellValidationResultDto result)
     {
-
         List<string> parts = [];
 
         if (result.Errors.Length > 0)
         {
-
             parts.Add($"Errors: {string.Join("; ", result.Errors)}");
-
         }
 
         if (result.Warnings.Length > 0)
         {
-
             parts.Add($"Warnings: {string.Join("; ", result.Warnings)}");
-
         }
 
         if (result.IsValid && parts.Count == 0)
         {
-
             return "Valid.";
-
         }
 
         return string.Join(" | ", parts);
-
     }
 
     private static string BuildFrontmatter(SpellDetail? spell)
     {
-
         if (spell is null)
         {
-
             return string.Empty;
-
         }
 
         return string.Join(
@@ -1645,7 +1404,6 @@ public sealed partial class SpellEditorViewModel : ViewModelBase, IDisposable
             $"Model: {spell.Model ?? string.Empty}",
             $"Provider: {spell.Provider ?? string.Empty}",
             $"Tags: {string.Join(", ", spell.Tags)}");
-
     }
 
     private SpellJsonSync.DesignerState CaptureDesignerState() =>
@@ -1659,12 +1417,10 @@ public sealed partial class SpellEditorViewModel : ViewModelBase, IDisposable
 
     private void ApplyDesignerState(SpellJsonSync.DesignerState state)
     {
-
         _syncingMetadata = true;
 
         try
         {
-
             MetadataVersion = state.Version;
 
             MetadataActiveVersion = state.ActiveVersion;
@@ -1677,60 +1433,43 @@ public sealed partial class SpellEditorViewModel : ViewModelBase, IDisposable
 
             foreach (string dependency in state.Dependencies)
             {
-
                 Dependencies.Add(dependency);
-
             }
 
             DeclaredTools.Clear();
 
             foreach (string tool in state.DeclaredTools)
             {
-
                 DeclaredTools.Add(tool);
-
             }
-
         }
         finally
         {
-
             _syncingMetadata = false;
-
         }
-
     }
 
     private void SetSpellJson(string json)
     {
-
         _syncingMetadata = true;
 
         try
         {
-
             SpellJson = json;
-
         }
         finally
         {
-
             _syncingMetadata = false;
-
         }
-
     }
 
     private void OnDesignerChanged()
     {
-
         if (_syncingMetadata || !CanEditMetadata || Spell is null || _rawSpellJsonInvalid)
         {
-
             RefreshCatalogWarnings();
 
             return;
-
         }
 
         SetSpellJson(SpellJsonSync.SerializeKnownFields(Spell, CaptureDesignerState()));
@@ -1738,24 +1477,18 @@ public sealed partial class SpellEditorViewModel : ViewModelBase, IDisposable
         MetadataValidationError = null;
 
         RefreshCatalogWarnings();
-
     }
 
     private void RefreshCatalogWarnings()
     {
-
         List<string> dependencyWarnings = [];
 
         foreach (string dependency in Dependencies)
         {
-
             if (!_spellCatalog.Contains(dependency, StringComparer.OrdinalIgnoreCase))
             {
-
                 dependencyWarnings.Add($"Dependency \"{dependency}\" was not found in the spell catalog.");
-
             }
-
         }
 
         DependencyWarnings = dependencyWarnings.Count == 0
@@ -1766,84 +1499,60 @@ public sealed partial class SpellEditorViewModel : ViewModelBase, IDisposable
 
         foreach (string tool in DeclaredTools)
         {
-
             if (!_toolCatalog.Contains(tool, StringComparer.OrdinalIgnoreCase))
             {
-
                 toolWarnings.Add($"Declared tool \"{tool}\" was not found in the available tool catalog.");
-
             }
-
         }
 
         ToolWarnings = toolWarnings.Count == 0
             ? null
             : string.Join(Environment.NewLine, toolWarnings);
-
     }
 
     partial void OnMetadataVersionChanged(string value)
     {
-
         if (!_syncingMetadata)
         {
-
             OnDesignerChanged();
-
         }
-
     }
 
     partial void OnInputSchemaJsonChanged(string value)
     {
-
         if (!_syncingMetadata)
         {
-
             OnDesignerChanged();
-
         }
-
     }
 
     partial void OnOutputSchemaJsonChanged(string value)
     {
-
         if (!_syncingMetadata)
         {
-
             OnDesignerChanged();
-
         }
-
     }
 
     partial void OnSpellJsonChanged(string value)
     {
-
         if (_syncingMetadata || Spell is null)
         {
-
             return;
-
         }
 
         if (!CanEditMetadata)
         {
-
             return;
-
         }
 
         if (!SpellJsonSync.TryParseRaw(value, out SkillMetadata? metadata, out string? error))
         {
-
             _rawSpellJsonInvalid = true;
 
             MetadataValidationError = error;
 
             return;
-
         }
 
         _rawSpellJsonInvalid = false;
@@ -1859,22 +1568,16 @@ public sealed partial class SpellEditorViewModel : ViewModelBase, IDisposable
             OutputSchemaJson: SchemaDocumentToText(metadata.OutputSchema)));
 
         RefreshCatalogWarnings();
-
     }
 
     private static string SchemaDocumentToText(JsonDocument? schema)
     {
-
         if (schema is null
             || schema.RootElement.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined)
         {
-
             return "{}";
-
         }
 
         return schema.RootElement.GetRawText();
-
     }
-
 }

@@ -27,17 +27,30 @@ public sealed partial class InferenceTraceViewModel : ObservableObject
     public const string SensitiveHistoryWarning =
         "This history may contain prompts, model outputs, tool arguments, and file snippets. It is stored locally on this machine.";
 
-    private readonly IInferenceTraceStore? _store;
+    /// <summary>
+    /// Retention bound for <see cref="Entries"/>, matching <see cref="TomeViewModel.MaxMessages"/>: a
+    /// turn streams one frame per token, so the trace keeps the latest events rather than every one.
+    /// </summary>
+    public const int MaxEntries = 2000;
+
+    /// <summary>
+    /// The most characters of one event's data the trace keeps; a large tool result is cut here.
+    /// </summary>
+    public const int MaxEntryDataChars = 16 * 1024;
+
+    private readonly IInferenceTraceStore _store;
 
     private readonly ITheForgeLocalMutationRunner _mutationRunner;
 
-    private readonly IArtifactFileDialogService? _fileDialog;
+    private readonly IArtifactFileDialogService _fileDialog;
 
     private readonly Action? _openSpellCastPreview;
 
     private readonly Action? _openPromptTestPreview;
 
     private string? _openToolRoundId;
+
+    private int _droppedEntries;
 
     [ObservableProperty]
     private string? _sourceKind;
@@ -56,17 +69,19 @@ public sealed partial class InferenceTraceViewModel : ObservableObject
 
     public InferenceTraceViewModel(
         ITheForgeLocalMutationRunner mutationRunner,
-        IInferenceTraceStore? store = null,
-        IArtifactFileDialogService? fileDialog = null,
+        IInferenceTraceStore store,
+        IArtifactFileDialogService fileDialog,
         Action? openSpellCastPreview = null,
         Action? openPromptTestPreview = null)
     {
         _mutationRunner = mutationRunner
             ?? throw new ArgumentNullException(nameof(mutationRunner));
 
-        _store = store;
+        _store = store
+            ?? throw new ArgumentNullException(nameof(store));
 
-        _fileDialog = fileDialog;
+        _fileDialog = fileDialog
+            ?? throw new ArgumentNullException(nameof(fileDialog));
 
         _openSpellCastPreview = openSpellCastPreview;
 
@@ -126,10 +141,11 @@ public sealed partial class InferenceTraceViewModel : ObservableObject
         }
 
         bool redactReasoning = ev.Type == IntelligenceEventType.Reasoning;
+
         Entries.Add(new InferenceTraceEntryViewModel(
             ev.Type.ToString(),
             redactReasoning ? "[reasoning body redacted]" : ev.Message,
-            redactReasoning ? null : ev.Data,
+            redactReasoning ? null : CapData(ev.Data),
             ev.Usage?.PromptTokens,
             ev.Usage?.CompletionTokens,
             ev.Usage?.TotalTokens,
@@ -141,7 +157,24 @@ public sealed partial class InferenceTraceViewModel : ObservableObject
             ev.Timestamp ?? DateTimeOffset.UtcNow,
             ev.Reasoning?.Output.ToString(),
             ev.Usage is null ? null : ev.Usage.ReasoningTokens));
+
+        if (Entries.Count > MaxEntries)
+        {
+            _droppedEntries += Entries.Count - MaxEntries;
+
+            while (Entries.Count > MaxEntries)
+            {
+                Entries.RemoveAt(0);
+            }
+
+            StatusText = $"Capturing… the trace keeps the latest {MaxEntries} events; {_droppedEntries} older events were dropped.";
+        }
     }
+
+    private static string? CapData(string? data) =>
+        data is { Length: > MaxEntryDataChars }
+            ? string.Concat(data.AsSpan(0, MaxEntryDataChars), $"… [truncated {data.Length - MaxEntryDataChars} chars]")
+            : data;
 
     [RelayCommand]
     public void Clear()
@@ -155,6 +188,8 @@ public sealed partial class InferenceTraceViewModel : ObservableObject
         StatusText = null;
 
         _openToolRoundId = null;
+
+        _droppedEntries = 0;
     }
 
     public string BuildExportJson()
@@ -167,13 +202,6 @@ public sealed partial class InferenceTraceViewModel : ObservableObject
     [RelayCommand]
     public async Task ExportAsync(CancellationToken cancellationToken)
     {
-        if (_fileDialog is null)
-        {
-            LastError = "Export dialog unavailable.";
-
-            return;
-        }
-
         string? path = await _fileDialog
             .PickSaveJsonPathAsync($"inference-trace-{DateTimeOffset.UtcNow:yyyyMMddHHmmss}.json", cancellationToken)
             .ConfigureAwait(true);
@@ -215,13 +243,6 @@ public sealed partial class InferenceTraceViewModel : ObservableObject
     [RelayCommand]
     public async Task PersistAsync(CancellationToken cancellationToken)
     {
-        if (_store is null)
-        {
-            LastError = "Local trace store unavailable.";
-
-            return;
-        }
-
         LastError = null;
 
         try

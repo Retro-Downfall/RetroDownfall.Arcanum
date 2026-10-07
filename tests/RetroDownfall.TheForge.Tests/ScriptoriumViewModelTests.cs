@@ -14,11 +14,9 @@ namespace RetroDownfall.TheForge.Tests;
 
 public class ScriptoriumViewModelTests
 {
-
     [Fact]
     public async Task LoadAsync_PopulatesTemplateAndMetadata()
     {
-
         FakePromptEditorDataSource dataSource = new()
         {
             Prompt = NewPromptDetail(),
@@ -49,13 +47,11 @@ public class ScriptoriumViewModelTests
         Assert.Equal("{\"type\":\"object\"}", viewModel.ParameterSchemaJson);
 
         Assert.Equal("{\"name\":\"world\"}", viewModel.DefaultParametersJson);
-
     }
 
     [Fact]
     public async Task LoadAsync_WithUnsavedEdits_RefusesInsteadOfDiscardingThem()
     {
-
         FakePromptEditorDataSource dataSource = new()
         {
             Prompt = NewPromptDetail(),
@@ -76,13 +72,11 @@ public class ScriptoriumViewModelTests
         Assert.True(viewModel.IsEditorDirty);
 
         Assert.Contains(whispers.Calls, static call => call.Severity == WhisperSeverity.Warning);
-
     }
 
     [Fact]
     public async Task Save_SendsSamplingAndEmptyObjectJson()
     {
-
         FakePromptEditorDataSource dataSource = new()
         {
             Prompt = NewPromptDetail(),
@@ -127,13 +121,11 @@ public class ScriptoriumViewModelTests
         Assert.Equal(WhisperSeverity.Success, whisper.Severity);
 
         Assert.Equal("Prompt saved.", whisper.Message);
-
     }
 
     [Fact]
     public async Task SaveAsync_WhenRejected_ShowsShortErrorWhisper()
     {
-
         FakePromptEditorDataSource dataSource = new()
         {
             Prompt = NewPromptDetail(),
@@ -157,13 +149,11 @@ public class ScriptoriumViewModelTests
         Assert.Equal("Prompt save failed.", whisper.Message);
 
         Assert.DoesNotContain("rejected", whisper.Message, StringComparison.OrdinalIgnoreCase);
-
     }
 
     [Fact]
     public async Task Save_InvalidJson_BlocksWithoutApi()
     {
-
         FakePromptEditorDataSource dataSource = new()
         {
             Prompt = NewPromptDetail(),
@@ -182,13 +172,11 @@ public class ScriptoriumViewModelTests
         Assert.Null(dataSource.LastSaveRequest);
 
         Assert.Equal(0, dataSource.SaveCallCount);
-
     }
 
     [Fact]
     public async Task Execute_IncludesRunOverrides()
     {
-
         FakePromptEditorDataSource dataSource = new()
         {
             Prompt = NewPromptDetail(),
@@ -247,13 +235,11 @@ public class ScriptoriumViewModelTests
         Assert.Equal(0.1f, dataSource.LastExecuteRequest.PresencePenalty);
 
         Assert.Equal(0.2f, dataSource.LastExecuteRequest.FrequencyPenalty);
-
     }
 
     [Fact]
     public async Task SaveAsync_SendsEditedFieldsAndVersion()
     {
-
         FakePromptEditorDataSource dataSource = new()
         {
             Prompt = NewPromptDetail(),
@@ -278,13 +264,11 @@ public class ScriptoriumViewModelTests
         Assert.Equal("Warm greeting", dataSource.LastSaveRequest.Description);
 
         Assert.Null(viewModel.LastError);
-
     }
 
     [Fact]
     public async Task SaveAsync_ClearsTagsWhenTagsTextEmpty()
     {
-
         FakePromptEditorDataSource dataSource = new()
         {
             Prompt = NewPromptDetail(),
@@ -301,13 +285,11 @@ public class ScriptoriumViewModelTests
         Assert.NotNull(dataSource.LastSaveRequest);
 
         Assert.Empty(dataSource.LastSaveRequest!.Tags!);
-
     }
 
     [Fact]
     public async Task RenderAsync_ParsesParametersAndSurfacesRenderedText()
     {
-
         FakePromptEditorDataSource dataSource = new()
         {
             Prompt = NewPromptDetail(),
@@ -335,13 +317,11 @@ public class ScriptoriumViewModelTests
         Assert.Equal("Hello world", viewModel.RenderedText);
 
         Assert.Equal(7, viewModel.RenderTokenCount);
-
     }
 
     [Fact]
     public async Task RenderAsync_RejectsMalformedParameters()
     {
-
         FakePromptEditorDataSource dataSource = new()
         {
             Prompt = NewPromptDetail(),
@@ -361,13 +341,11 @@ public class ScriptoriumViewModelTests
         Assert.Null(dataSource.LastRenderRequest);
 
         Assert.Equal(0, dataSource.RenderCallCount);
-
     }
 
     [Fact]
     public async Task TestAsync_SurfacesAssembledTextAndCounts()
     {
-
         FakePromptEditorDataSource dataSource = new()
         {
             Prompt = NewPromptDetail(),
@@ -387,13 +365,11 @@ public class ScriptoriumViewModelTests
         Assert.Equal("greeting v1", viewModel.TestResolvedSpell);
 
         Assert.Equal(3, viewModel.TestMcpServerCount);
-
     }
 
     [Fact]
     public async Task ExecuteAsync_WithEmptyUserMessage_SetsLastErrorAndDoesNotCallService()
     {
-
         FakePromptEditorDataSource dataSource = new()
         {
             Prompt = NewPromptDetail(),
@@ -412,13 +388,11 @@ public class ScriptoriumViewModelTests
         Assert.Equal(0, dataSource.ExecuteCallCount);
 
         Assert.False(viewModel.IsRunning);
-
     }
 
     [Fact]
     public async Task ExecuteAsync_StreamsTokensAndOpensSessionWhenSessionBound()
     {
-
         NavigationService navigation = new();
 
         (DocumentKind Kind, string Id)? opened = null;
@@ -450,13 +424,11 @@ public class ScriptoriumViewModelTests
         Assert.Equal((DocumentKind.Session, "cccccccc-cccc-cccc-cccc-cccccccccccc"), opened);
 
         Assert.False(viewModel.IsRunning);
-
     }
 
     [Fact]
     public async Task StopExecution_CancelsInFlightRun()
     {
-
         FakePromptEditorDataSource dataSource = new()
         {
             Prompt = NewPromptDetail(),
@@ -480,13 +452,11 @@ public class ScriptoriumViewModelTests
         Assert.False(viewModel.IsRunning);
 
         Assert.Contains("Hel", viewModel.RunResultText);
-
     }
 
     [Fact]
     public async Task ExportAsync_ClientMutationRefusal_DoesNotFetchServerExport()
     {
-
         FakePromptEditorDataSource dataSource = new()
         {
             Prompt = NewPromptDetail(),
@@ -508,7 +478,6 @@ public class ScriptoriumViewModelTests
         Assert.Equal(0, dataSource.ExportCallCount);
 
         Assert.False(File.Exists(path));
-
     }
 
     private static ScriptoriumViewModel NewScriptorium(
@@ -526,11 +495,11 @@ public class ScriptoriumViewModelTests
             fileDialog ?? new NullArtifactFileDialogService(),
             new NullTextInputDialogService(),
             whispers ?? new FakeWhispersService(),
-            mutationRunner ?? ImmediateTheForgeLocalMutationRunner.Instance);
+            mutationRunner ?? ImmediateTheForgeLocalMutationRunner.Instance,
+            new InMemoryInferenceTraceStore());
 
     private sealed class ControllableArtifactFileDialog(string? path) : IArtifactFileDialogService
     {
-
         public Task<string?> PickSaveJsonPathAsync(
             string suggestedFileName,
             CancellationToken cancellationToken) =>
@@ -552,20 +521,16 @@ public class ScriptoriumViewModelTests
             string? defaultExtension,
             CancellationToken cancellationToken) =>
             Task.FromResult(path);
-
     }
 
     private sealed class NullConfirmationDialogService : IConfirmationDialogService
     {
-
         public Task<bool> ConfirmAsync(string title, string message, CancellationToken cancellationToken, bool confirmIsDefault = true) =>
             Task.FromResult(false);
-
     }
 
     private sealed class NullArtifactFileDialogService : IArtifactFileDialogService
     {
-
         public Task<string?> PickSaveJsonPathAsync(string suggestedFileName, CancellationToken cancellationToken) =>
             Task.FromResult<string?>(null);
 
@@ -579,16 +544,12 @@ public class ScriptoriumViewModelTests
 
         public Task<string?> PickSaveAnyPathAsync(string suggestedFileName, string? defaultExtension, CancellationToken cancellationToken) =>
             Task.FromResult<string?>(null);
-
-
     }
 
     private sealed class NullTextInputDialogService : ITextInputDialogService
     {
-
         public Task<string?> PromptAsync(string title, string label, string? defaultValue, CancellationToken cancellationToken) =>
             Task.FromResult<string?>(null);
-
     }
 
     private static PromptDetailDto NewPromptDetail() =>
@@ -612,7 +573,6 @@ public class ScriptoriumViewModelTests
 
     private sealed class FakePromptEditorDataSource : IPromptEditorDataSource
     {
-
         public PromptDetailDto? Prompt { get; init; }
 
         public bool SaveSucceeds { get; init; } = true;
@@ -644,24 +604,20 @@ public class ScriptoriumViewModelTests
 
         public Task<PromptDetailDto?> SaveAsync(Guid id, UpdatePromptRequest request, CancellationToken cancellationToken)
         {
-
             LastSaveRequest = request;
 
             SaveCallCount++;
 
             return Task.FromResult(SaveSucceeds ? Prompt : null);
-
         }
 
         public Task<PromptRenderResultDto?> RenderAsync(Guid id, PromptRenderRequest request, CancellationToken cancellationToken)
         {
-
             LastRenderRequest = request;
 
             RenderCallCount++;
 
             return Task.FromResult(RenderResult);
-
         }
 
         public Task<PromptTestResultDto?> TestAsync(Guid id, TestPromptRequest request, CancellationToken cancellationToken) =>
@@ -669,14 +625,12 @@ public class ScriptoriumViewModelTests
 
         public async IAsyncEnumerable<IntelligenceEvent> ExecuteStreamAsync(Guid id, PromptExecuteRequest request, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
         {
-
             LastExecuteRequest = request;
 
             ExecuteCallCount++;
 
             if (StallAfterFirstToken)
             {
-
                 yield return new IntelligenceEvent(IntelligenceEventType.Token, "", "Hel");
 
                 SignalYielded.TrySetResult();
@@ -684,18 +638,14 @@ public class ScriptoriumViewModelTests
                 await Task.Delay(Timeout.Infinite, cancellationToken).ConfigureAwait(true);
 
                 yield break;
-
             }
 
             foreach (IntelligenceEvent ev in ExecutionEvents)
             {
-
                 yield return ev;
 
                 await Task.Yield();
-
             }
-
         }
 
         public Task<IReadOnlyList<PromptVersionDto>> ListVersionsAsync(string name, Guid? campaignId, CancellationToken cancellationToken) =>
@@ -708,11 +658,9 @@ public class ScriptoriumViewModelTests
 
         public Task<PromptExportDto?> ExportAsync(Guid id, CancellationToken cancellationToken)
         {
-
             ExportCallCount++;
 
             return Task.FromResult<PromptExportDto?>(null);
-
         }
 
         public Task<DataSourceResult<PromptSummaryDto>> ImportAsync(PromptImportRequest request, CancellationToken cancellationToken) =>
@@ -720,7 +668,5 @@ public class ScriptoriumViewModelTests
 
         public Task<DeleteOutcome> DeleteAsync(Guid id, CancellationToken cancellationToken) =>
             Task.FromResult(DeleteOutcome.Fail("Http.404", "not used"));
-
     }
-
 }
