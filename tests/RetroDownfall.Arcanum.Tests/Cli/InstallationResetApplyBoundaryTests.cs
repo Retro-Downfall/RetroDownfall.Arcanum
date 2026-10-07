@@ -36,8 +36,6 @@ public sealed class InstallationResetApplyBoundaryTests
             new ImmediateTimeProvider(),
             (_, _, _, _) => throw new InvalidOperationException(
                 "Client coordination must not run."),
-            (_, _) => throw new InvalidOperationException(
-                "Host handoff must not be created."),
             _ => throw new InvalidOperationException(
                 "Ordinary pair evidence must not be read."));
 
@@ -80,8 +78,6 @@ public sealed class InstallationResetApplyBoundaryTests
             new ImmediateTimeProvider(),
             (_, _, _, _) => throw new InvalidOperationException(
                 "Client coordination must not run."),
-            (_, _) => throw new InvalidOperationException(
-                "Host handoff must not be created."),
             _ => throw new InvalidOperationException(
                 "Ordinary pair evidence must not be read."));
 
@@ -146,8 +142,6 @@ public sealed class InstallationResetApplyBoundaryTests
             new ImmediateTimeProvider(),
             (_, _, _, _) => throw new InvalidOperationException(
                 "Client coordination must not run."),
-            (_, _) => throw new InvalidOperationException(
-                "Host handoff must not be created."),
             _ => throw new InvalidOperationException(
                 "Ordinary pair evidence must not be read."));
 
@@ -199,8 +193,6 @@ public sealed class InstallationResetApplyBoundaryTests
                     Result<IInstallationResetClientCoordinationLease>.Success(
                         new RecordingClientCoordinationLease(events)));
             },
-            (_, _) => throw new InvalidOperationException(
-                "Fresh local apply must not create a host handoff."),
             _ => throw new InvalidOperationException(
                 "Fresh local apply must not read the pair before the lock."));
 
@@ -266,8 +258,6 @@ public sealed class InstallationResetApplyBoundaryTests
                     Result<IInstallationResetClientCoordinationLease>.Success(
                         new SilentClientCoordinationLease()));
             },
-            (_, _) => throw new InvalidOperationException(
-                "Fresh local apply must not create a host handoff."),
             _ =>
             {
                 pairCalls++;
@@ -326,8 +316,6 @@ public sealed class InstallationResetApplyBoundaryTests
                     Result<IInstallationResetClientCoordinationLease>.Success(
                         new RecordingClientCoordinationLease(events)));
             },
-            (_, _) => throw new InvalidOperationException(
-                "Fresh local apply must not create a host handoff."),
             _ => throw new InvalidOperationException(
                 "Fresh local apply must not read the pair before the lock."));
 
@@ -372,8 +360,6 @@ public sealed class InstallationResetApplyBoundaryTests
             (_, _, _, _) => Task.FromResult(
                 Result<IInstallationResetClientCoordinationLease>.Success(
                     new RecordingClientCoordinationLease(events))),
-            (_, _) => throw new InvalidOperationException(
-                "Fresh local apply must not create a host handoff."),
             _ => throw new InvalidOperationException(
                 "Fresh local apply must not read the pair before the lock."));
 
@@ -420,8 +406,6 @@ public sealed class InstallationResetApplyBoundaryTests
             (_, _, _, _) => Task.FromResult(
                 Result<IInstallationResetClientCoordinationLease>.Success(
                     new RecordingClientCoordinationLease(events))),
-            (_, _) => throw new InvalidOperationException(
-                "Fresh local apply must not create a host handoff."),
             _ => throw new InvalidOperationException(
                 "Fresh local apply must not read the pair before the lock."));
 
@@ -453,7 +437,7 @@ public sealed class InstallationResetApplyBoundaryTests
 
         InstallationResetHostHandoff handoff = CreateTestHostHandoff(
             request,
-            plan).Value;
+            plan);
 
         InstallationResetApplyBoundary boundary = new(
             _ =>
@@ -477,7 +461,6 @@ public sealed class InstallationResetApplyBoundaryTests
             (_, _, _, _) => Task.FromResult(
                 Result<IInstallationResetClientCoordinationLease>.Success(
                     new RecordingClientCoordinationLease(events))),
-            CreateTestHostHandoff,
             ReadCleanPairAsync);
 
         Result<InstallationResetResult> result = await boundary.ApplyAsync(
@@ -520,7 +503,7 @@ public sealed class InstallationResetApplyBoundaryTests
 
         InstallationResetHostHandoff handoff = CreateTestHostHandoff(
             request,
-            plan).Value;
+            plan);
 
         InstallationResetApplyBoundary boundary = new(
             _ => Task.FromResult(Result<bool>.Success(true)),
@@ -542,7 +525,6 @@ public sealed class InstallationResetApplyBoundaryTests
             (_, _, _, _) => Task.FromResult(
                 Result<IInstallationResetClientCoordinationLease>.Success(
                     new RecordingClientCoordinationLease(events))),
-            CreateTestHostHandoff,
             ReadCleanPairAsync);
 
         Result<InstallationResetResult> result = await boundary.ApplyAsync(
@@ -597,7 +579,6 @@ public sealed class InstallationResetApplyBoundaryTests
             },
             new ImmediateTimeProvider(),
             SilentClientCoordination,
-            CreateTestHostHandoff,
             ReadCleanPairAsync);
 
         Result<InstallationResetResult> result = await boundary.ApplyFreshAsync(
@@ -669,7 +650,6 @@ public sealed class InstallationResetApplyBoundaryTests
             },
             timeProvider,
             SilentClientCoordination,
-            CreateTestHostHandoff,
             ReadCleanPairAsync);
 
         Result<InstallationResetResult> result = await boundary.ApplyAsync(
@@ -722,7 +702,6 @@ public sealed class InstallationResetApplyBoundaryTests
             },
             new ImmediateTimeProvider(),
             SilentClientCoordination,
-            CreateTestHostHandoff,
             ReadCleanPairAsync);
 
         Result<InstallationResetResult> result = await boundary.ApplyAsync(
@@ -758,7 +737,6 @@ public sealed class InstallationResetApplyBoundaryTests
             _ => Acquired(lease),
             new ImmediateTimeProvider(),
             SilentClientCoordination,
-            CreateTestHostHandoff,
             ReadCleanPairAsync);
 
         Result<InstallationResetResult> result = await boundary.ApplyAsync(
@@ -797,7 +775,6 @@ public sealed class InstallationResetApplyBoundaryTests
             },
             new ImmediateTimeProvider(),
             SilentClientCoordination,
-            CreateTestHostHandoff,
             ReadCleanPairAsync);
 
         Result<InstallationResetResult> result = await boundary.ApplyAsync(
@@ -841,7 +818,6 @@ public sealed class InstallationResetApplyBoundaryTests
             },
             timeProvider,
             SilentClientCoordination,
-            CreateTestHostHandoff,
             ReadCleanPairAsync);
 
         Result<InstallationResetResult> result = await boundary.ApplyAsync(
@@ -884,7 +860,6 @@ public sealed class InstallationResetApplyBoundaryTests
             },
             timeProvider,
             SilentClientCoordination,
-            CreateTestHostHandoff,
             ReadCleanPairAsync);
 
         Result<InstallationResetResult> result = await boundary.ApplyAsync(
@@ -1006,7 +981,7 @@ public sealed class InstallationResetApplyBoundaryTests
                 CredentialAccounts: [],
                 DataPlanIds: ["data-plan-50"]));
 
-    private static Result<InstallationResetHostHandoff> CreateTestHostHandoff(
+    private static InstallationResetHostHandoff CreateTestHostHandoff(
         InstallationResetApplyRequest request,
         InstallationResetPlan plan) =>
         new InstallationResetHostHandoff(

@@ -100,18 +100,12 @@ internal sealed class InstallationResetApplyBoundary : IInstallationResetApplyBo
         _acquireClientCoordination;
 
     private readonly Func<
-        InstallationResetApplyRequest,
-        InstallationResetPlan,
-        Result<InstallationResetHostHandoff>> _createHostHandoff;
-
-    private readonly Func<
         CancellationToken,
         Task<Result<HostProcessToolsMarkerPairJoinResult>>> _readPair;
 
     public InstallationResetApplyBoundary(
         ArcanumApiClient apiClient,
         IInstallationResetLockedService resetService,
-        IInstallationResetOnlineDataHandoff onlineDataHandoff,
         TimeProvider timeProvider,
         InstallationMaintenanceCoordination maintenanceCoordination,
         IInstallationResetHostProcessToolsPairReader pairReader)
@@ -130,7 +124,6 @@ internal sealed class InstallationResetApplyBoundary : IInstallationResetApplyBo
                     planId,
                     operationId,
                     cancellationToken),
-            onlineDataHandoff.CreateHostHandoff,
             pairReader.ReadAsync)
     {
     }
@@ -145,10 +138,6 @@ internal sealed class InstallationResetApplyBoundary : IInstallationResetApplyBo
         Func<string, InstallationResetMaintenanceLockAttempt> acquireMaintenanceLock,
         TimeProvider timeProvider,
         AcquireInstallationResetClientCoordination acquireClientCoordination,
-        Func<
-            InstallationResetApplyRequest,
-            InstallationResetPlan,
-            Result<InstallationResetHostHandoff>> createHostHandoff,
         Func<
             CancellationToken,
             Task<Result<HostProcessToolsMarkerPairJoinResult>>> readPair)
@@ -165,9 +154,6 @@ internal sealed class InstallationResetApplyBoundary : IInstallationResetApplyBo
 
         _acquireClientCoordination = acquireClientCoordination
             ?? throw new ArgumentNullException(nameof(acquireClientCoordination));
-
-        _createHostHandoff = createHostHandoff
-            ?? throw new ArgumentNullException(nameof(createHostHandoff));
 
         _readPair = readPair
             ?? throw new ArgumentNullException(nameof(readPair));

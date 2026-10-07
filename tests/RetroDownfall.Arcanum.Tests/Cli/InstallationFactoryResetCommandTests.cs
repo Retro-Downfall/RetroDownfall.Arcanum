@@ -1581,12 +1581,6 @@ public sealed class InstallationFactoryResetCommandTests
                 ?? Result<InstallationResetPlan>.Success(localPlan);
         }
 
-        public Result<InstallationResetHostHandoff> CreateHostHandoff(
-            InstallationResetApplyRequest request,
-            InstallationResetPlan confirmedPlan) =>
-            throw new InvalidOperationException(
-                "The command must prepare through the apply boundary.");
-
         public Task<Result<InstallationResetHostHandoff?>> ReadAsync(
             InstallationResetApplyRequest request,
             CancellationToken cancellationToken = default) =>

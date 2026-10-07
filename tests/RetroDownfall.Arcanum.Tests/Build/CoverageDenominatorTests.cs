@@ -1,3 +1,5 @@
+using System.Text.RegularExpressions;
+
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
@@ -128,10 +130,11 @@ public sealed class CoverageDenominatorTests
     }
 
     /// <summary>
-    /// Four small types near a security boundary still carry a type-level exclusion: the startup check
+    /// Six small types near a security boundary still carry a type-level exclusion: the startup check
     /// that runs and logs the file-permission self-check, the manager that spawns external MCP server
-    /// subprocesses, and the two platform sandbox shims (the Windows AppContainer launcher and the
-    /// Linux Landlock ABI). The design used to say a type-level exclusion "never covers a security
+    /// subprocesses, the two platform sandbox shims (the Windows AppContainer launcher and the Linux
+    /// Landlock ABI), the sandbox re-exec entry that hands off to one of them, and the Windows job-object
+    /// kernel interop. The design used to say a type-level exclusion "never covers a security
     /// boundary", which the tree did not follow. While any of these attributes remains, the design has
     /// to name the type instead of claiming a rule the code breaks.
     /// </summary>
@@ -144,6 +147,10 @@ public sealed class CoverageDenominatorTests
     [InlineData("Process", "WindowsAppContainerLauncher")]
 
     [InlineData("Process", "LinuxLandlock")]
+
+    [InlineData("Process", "SandboxExecHelper")]
+
+    [InlineData("Platform", "WindowsJobObjectInterop")]
 
     public void The_design_names_each_security_adjacent_type_that_still_carries_a_type_level_exclusion(
         string folder,
@@ -186,6 +193,72 @@ public sealed class CoverageDenominatorTests
 
         Assert.DoesNotContain("never covers a security boundary", paragraph, StringComparison.Ordinal);
     }
+
+    /// <summary>
+    /// A coverage reviewer reads an exclusion's reason as the place the excluded behaviour is tested, so
+    /// every test class a type-level reason names has to exist in the test tree.
+    /// </summary>
+    [Fact]
+    public void Every_test_class_named_in_a_type_level_exclusion_reason_exists()
+    {
+        string repositoryRoot = TestRepositoryPaths.RepositoryRoot();
+
+        HashSet<string> testClasses = [];
+
+        foreach (string file in EnumerateSources(Path.Combine(repositoryRoot, "tests")))
+        {
+            testClasses.UnionWith(
+                CSharpSyntaxTree.ParseText(File.ReadAllText(file), new CSharpParseOptions(LanguageVersion.Preview))
+                    .GetRoot()
+                    .DescendantNodes()
+                    .OfType<ClassDeclarationSyntax>()
+                    .Select(static type => type.Identifier.Text));
+        }
+
+        List<string> missing = [];
+
+        int named = 0;
+
+        foreach (string file in EnumerateSources(Path.Combine(repositoryRoot, "src")))
+        {
+            SyntaxNode root = CSharpSyntaxTree.ParseText(File.ReadAllText(file), new CSharpParseOptions(LanguageVersion.Preview)).GetRoot();
+
+            foreach (BaseTypeDeclarationSyntax type in root.DescendantNodes().OfType<BaseTypeDeclarationSyntax>())
+            {
+                foreach (AttributeListSyntax list in type.AttributeLists.Where(static list => list.Attributes.Any(IsExclusion)))
+                {
+                    string reason = list.OpenBracketToken.LeadingTrivia.ToFullString()
+                        + list.ToString()
+                        + list.CloseBracketToken.TrailingTrivia.ToFullString();
+
+                    foreach (Match match in Regex.Matches(reason, @"\b[A-Z][A-Za-z0-9]*Tests\b", RegexOptions.None, TimeSpan.FromSeconds(5)))
+                    {
+                        named++;
+
+                        if (!testClasses.Contains(match.Value))
+                        {
+                            missing.Add($"{Path.GetRelativePath(repositoryRoot, file)} ({type.Identifier.Text}): {match.Value}");
+                        }
+                    }
+                }
+            }
+        }
+
+        Assert.True(named > 0, "No type-level exclusion reason names a test class.");
+
+        Assert.True(
+            missing.Count == 0,
+            "A type-level exclusion reason names a test class that does not exist:"
+            + global::System.Environment.NewLine
+            + string.Join(global::System.Environment.NewLine, missing));
+    }
+
+    private static IEnumerable<string> EnumerateSources(string directory) =>
+        Directory
+            .EnumerateFiles(directory, "*.cs", SearchOption.AllDirectories)
+            .Where(file => !Path.GetRelativePath(directory, file)
+                .Split(Path.DirectorySeparatorChar)
+                .Any(static part => part is "bin" or "obj"));
 
     private static bool HasTypeLevelExclusion(ClassDeclarationSyntax type) =>
         type.AttributeLists

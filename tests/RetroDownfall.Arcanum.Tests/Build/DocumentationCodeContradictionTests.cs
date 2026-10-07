@@ -1341,9 +1341,31 @@ public sealed class DocumentationCodeContradictionTests
             ("Arcanum.DESIGN.md", "Global/all first build the local inventory, ask the authenticated running host"),
             ("Arcanum.DESIGN.md", "After confirmation, `PrepareAsync` re-plans"),
             ("Arcanum.CHAT-LOOP.md", "apply first asks the running authenticated host to publish"),
+            ("Arcanum.OATH.md", "binds the authenticated host's exact current factory-plan identity"),
+            ("Arcanum.OATH.md", "After confirmation the CLI sends a typed handoff in memory"),
         ])
         {
             Assert.DoesNotContain(stale, ReadDocument(document), StringComparison.Ordinal);
+        }
+    }
+
+    /// <summary>
+    /// The design says the current CLI mints no new installation-reset host handoff and only rebuilds
+    /// one from an authenticated active record, so no contract or CLI source may keep a factory for a
+    /// fresh handoff that nothing calls.
+    /// </summary>
+    [Fact]
+    public void The_cli_keeps_no_factory_for_a_fresh_installation_reset_host_handoff()
+    {
+        Assert.Contains("the current CLI mints no new one", ReadDocument("Arcanum.DESIGN.md"), StringComparison.Ordinal);
+
+        foreach (string source in (string[])[
+            ReadSource("Core", "DataLifecycle", "InstallationResetContracts.cs"),
+            ReadSource("Cli", "Commands", "InstallationResetApplyBoundary.cs"),
+            ReadSource("Infrastructure", "InstallationReset", "InstallationResetService.cs"),
+        ])
+        {
+            Assert.DoesNotContain("CreateHostHandoff", source, StringComparison.Ordinal);
         }
     }
 
@@ -1377,6 +1399,12 @@ public sealed class DocumentationCodeContradictionTests
         Assert.DoesNotContain("without a client-only payload cap that the server could reach", api, StringComparison.Ordinal);
 
         Assert.Contains("An event over the limit is discarded", api, StringComparison.Ordinal);
+
+        string debugging = ReadDocument("Arcanum.DEBUGGING.Human.md");
+
+        Assert.DoesNotContain("reassembled without a client-only size cap", debugging, StringComparison.Ordinal);
+
+        Assert.Contains("runaway guard", debugging, StringComparison.Ordinal);
     }
 
     /// <summary>
@@ -1420,6 +1448,8 @@ public sealed class DocumentationCodeContradictionTests
             StringComparison.Ordinal);
 
         Assert.DoesNotContain("A dry, read-only pre-inference plan", ReadDocument("Arcanum.Design.Human.md"), StringComparison.Ordinal);
+
+        Assert.DoesNotContain("or read-only preview run", ReadDocument("Arcanum.DESIGN.md"), StringComparison.Ordinal);
 
         Assert.DoesNotContain(
             "the read-only context preview",
