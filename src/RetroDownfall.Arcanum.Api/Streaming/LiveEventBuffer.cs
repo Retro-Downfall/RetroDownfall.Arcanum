@@ -20,7 +20,8 @@ namespace RetroDownfall.Arcanum.Api.Streaming;
 /// puts the marker on the wire in front of that frame. A discard that happens while the reader is still
 /// writing the item it holds belongs to the item after it, not in front of the one being written. Moving
 /// the count also ends the episode, so a client that stays slow is reported once per gap rather than once
-/// per event.</para>
+/// per event. A count the reader has not taken by its next read is carried to that read, never overwritten,
+/// so a reader that skips an item without writing it still reports the gap in front of the next one.</para>
 /// <para>Every placement, discard and read, and the episode flag, change under one lock. Without it a read
 /// could free a slot between a failed write and its discard (throwing away an item that had room), and a
 /// count taken between a discard and its episode check reported an episode twice.</para>
@@ -102,7 +103,8 @@ internal sealed class LiveEventBuffer<T>
     }
 
     /// <summary>
-    /// Returns how many items were discarded immediately before the item last read, once.
+    /// Returns how many items were discarded immediately before the item last read (plus any count an earlier
+    /// read moved that was never taken), once.
     /// </summary>
     public long TakeDropped()
     {
@@ -135,14 +137,17 @@ internal sealed class LiveEventBuffer<T>
                 return false;
             }
 
-            _droppedBeforeLastRead = _droppedSinceLastRead;
-
-            _droppedSinceLastRead = 0;
-
-            if (_droppedBeforeLastRead > 0)
+            if (_droppedSinceLastRead > 0)
             {
                 _episodeReported = false;
             }
+
+            // Added, not assigned: a reader that skips an item without taking its count (the session
+            // stream's drain skips an Entry it already replayed) carries that gap to the next item rather
+            // than losing the only count of what the client missed.
+            _droppedBeforeLastRead += _droppedSinceLastRead;
+
+            _droppedSinceLastRead = 0;
 
             return true;
         }

@@ -82,6 +82,38 @@ public sealed class LiveEventBufferTests
     }
 
     /// <summary>
+    /// The session stream's buffered drain reads an Entry it already replayed and skips it without writing a
+    /// frame, so it never takes the count moved to that read. The next read must not overwrite the count
+    /// still waiting to be taken: the entries lost in that gap were never reported, and the Warning that
+    /// carries the count is the only place the operator learns how many a client missed.
+    /// </summary>
+    [Fact]
+    public void A_count_not_taken_before_the_next_read_is_carried_to_that_read_rather_than_lost()
+    {
+        LiveEventBuffer<int> buffer = new(capacity: 2);
+
+        _ = buffer.Write(1);
+        _ = buffer.Write(2);
+
+        Assert.True(buffer.Write(3));
+        Assert.False(buffer.Write(4));
+
+        // Items 1 and 2 were discarded in front of 3; the reader skips 3 without taking the count.
+        Assert.True(buffer.Reader.TryRead(out int skipped));
+        Assert.Equal(3, skipped);
+
+        Assert.True(buffer.Reader.TryRead(out int next));
+        Assert.Equal(4, next);
+        Assert.Equal(2, buffer.TakeDropped());
+        Assert.Equal(0, buffer.TakeDropped());
+
+        // Moving the count ended the episode at the first read, so the next discard is reported again.
+        _ = buffer.Write(5);
+        _ = buffer.Write(6);
+        Assert.True(buffer.Write(7));
+    }
+
+    /// <summary>
     /// Under a writer and a reader racing each other, every gap in what the reader sees is exactly the count
     /// handed to it with the item after the gap, nothing is lost without being counted, and an episode is
     /// reported once.

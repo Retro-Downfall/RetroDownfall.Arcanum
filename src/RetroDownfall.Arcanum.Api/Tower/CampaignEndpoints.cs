@@ -900,6 +900,10 @@ internal static class CampaignEndpoints
 
         var exportSpells = new List<CampaignExportSpellDto>();
 
+        // A spell the export lists but cannot carry is named rather than dropped silently, and each carried
+        // spell keeps the scripts its own export left out, so a partial bundle never reads as complete.
+        var omittedSpells = new List<string>();
+
         foreach (SpellSummary summary in summaries)
         {
             if (summary.Source == SpellSource.Builtin)
@@ -913,6 +917,8 @@ internal static class CampaignEndpoints
 
             if (exported is null)
             {
+                omittedSpells.Add(summary.Name);
+
                 continue;
             }
 
@@ -924,7 +930,8 @@ internal static class CampaignEndpoints
                 summary.Name,
                 spellJson,
                 exported.FullContent,
-                exported.Scripts.Select(s => new CampaignExportScriptDto(s.FileName, s.Base64Content)).ToList()));
+                exported.Scripts.Select(s => new CampaignExportScriptDto(s.FileName, s.Base64Content)).ToList(),
+                OmittedScripts: exported.OmittedScripts ?? []));
         }
 
         ListPageResult<Prompt> promptPage = await promptRepo
@@ -937,7 +944,8 @@ internal static class CampaignEndpoints
             CampaignPathPolicy.ToDto(campaign),
             exportSpells,
             promptExports,
-            exclusions));
+            exclusions,
+            omittedSpells));
     }
 
     private static IResult MapCampaignError(Error error, string traceId)

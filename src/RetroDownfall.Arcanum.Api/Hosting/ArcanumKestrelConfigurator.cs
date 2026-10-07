@@ -1,7 +1,10 @@
 using System.Globalization;
+using System.Security.Cryptography.X509Certificates;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 using Serilog;
@@ -23,13 +26,11 @@ namespace RetroDownfall.Arcanum.Api.Hosting;
 /// </summary>
 public static class ArcanumKestrelConfigurator
 {
-
     public const string ListenAnyRequiresHttpsMessage =
         "ListenAny / ARCANUM_HOST_ANY requires Arcanum:Host:Https:Enabled with a loadable certificate; plaintext any-IP HTTP is not permitted.";
 
     public static void Configure(KestrelServerOptions options, IConfiguration configuration, bool listenAny)
     {
-
         options.Limits.MaxRequestBodySize = ArcanumSettingClamps.MaxRequestBodyBytes(
             ArcanumRuntimeDefaults.HostMaxRequestBodyBytes);
 
@@ -37,11 +38,9 @@ public static class ArcanumKestrelConfigurator
 
         if (listenAny)
         {
-
             ConfigureListenAnyHttpsOnly(options, https);
 
             return;
-
         }
 
         int httpPort = ArcanumSettingClamps.HostPort(
@@ -50,52 +49,40 @@ public static class ArcanumKestrelConfigurator
         ConfigureHttp(options, httpPort);
 
         ConfigureHttpsIfEnabled(options, https, listenAny: false);
-
     }
 
     private static void ConfigureListenAnyHttpsOnly(KestrelServerOptions options, HttpsSettings https)
     {
-
         if (!https.Enabled)
         {
-
             Log.Error(
                 "{Timestamp:o} {Message}",
                 DateTimeOffset.UtcNow,
                 ListenAnyRequiresHttpsMessage);
 
             throw new InvalidOperationException(ListenAnyRequiresHttpsMessage);
-
         }
 
         BindHttps(options, https, listenAny: true);
-
     }
 
     private static void ConfigureHttp(KestrelServerOptions options, int port)
     {
-
         options.ListenLocalhost(port);
-
     }
 
     private static void ConfigureHttpsIfEnabled(KestrelServerOptions options, HttpsSettings https, bool listenAny)
     {
-
         if (!https.Enabled)
         {
-
             return;
-
         }
 
         BindHttps(options, https, listenAny);
-
     }
 
     private static void BindHttps(KestrelServerOptions options, HttpsSettings https, bool listenAny)
     {
-
         int httpsPort = ArcanumSettingClamps.HostHttpsPort(https.Port);
 
         // Kestrel is configured before the host's DI logging graph exists, so the loader's internal
@@ -110,7 +97,6 @@ public static class ArcanumKestrelConfigurator
 
         if (!result.IsSuccess || result.Certificate is null)
         {
-
             string reason = result.Error ?? "unknown error";
 
             Log.Error(
@@ -120,20 +106,19 @@ public static class ArcanumKestrelConfigurator
 
             throw new InvalidOperationException(
                 $"HTTPS is enabled but the certificate could not be loaded: {reason}");
-
         }
+
+        X509Certificate2 certificate = result.Certificate;
+
+        ReleaseCertificateWhenHostStops(options, certificate);
 
         if (listenAny)
         {
-
-            options.ListenAnyIP(httpsPort, listenOptions => listenOptions.UseHttps(result.Certificate));
-
+            options.ListenAnyIP(httpsPort, listenOptions => listenOptions.UseHttps(certificate));
         }
         else
         {
-
-            options.ListenLocalhost(httpsPort, listenOptions => listenOptions.UseHttps(result.Certificate));
-
+            options.ListenLocalhost(httpsPort, listenOptions => listenOptions.UseHttps(certificate));
         }
 
         Log.Information(
@@ -141,17 +126,35 @@ public static class ArcanumKestrelConfigurator
             DateTimeOffset.UtcNow,
             listenAny ? "0.0.0.0" : "localhost",
             httpsPort);
+    }
 
+    /// <summary>
+    /// The host owns the certificate it hands Kestrel. On Windows it lives in the default key set, whose
+    /// private-key container is deleted only by <see cref="X509Certificate2.Dispose()"/> (finalizers do
+    /// not run at process exit), so it is disposed once the server has stopped. Kestrel's options setup
+    /// supplies <see cref="KestrelServerOptions.ApplicationServices"/> before any configure callback runs;
+    /// only a bare options instance built outside a host has no lifetime to register with.
+    /// </summary>
+    internal static void ReleaseCertificateWhenHostStops(KestrelServerOptions options, X509Certificate2 certificate)
+    {
+        IHostApplicationLifetime? lifetime = options.ApplicationServices?.GetService<IHostApplicationLifetime>();
+
+        if (lifetime is null)
+        {
+            return;
+        }
+
+        _ = lifetime.ApplicationStopped.Register(
+            static state => ((X509Certificate2)state!).Dispose(),
+            certificate);
     }
 
     private static HttpsSettings ReadHttpsSettings(IConfiguration configuration)
     {
-
         HttpsSettings defaults = new();
 
         return new HttpsSettings
         {
-
             Enabled = ReadBool(configuration, "Arcanum:Host:Https:Enabled", defaults.Enabled),
 
             Port = ReadInt(configuration, "Arcanum:Host:Https:Port", defaults.Port),
@@ -162,43 +165,32 @@ public static class ArcanumKestrelConfigurator
 
             CertificatePasswordEnvironmentVariable =
                 configuration["Arcanum:Host:Https:CertificatePasswordEnvironmentVariable"],
-
         };
-
     }
 
     private static bool ReadBool(IConfiguration configuration, string key, bool fallback)
     {
-
         string? raw = configuration[key];
 
         if (string.IsNullOrWhiteSpace(raw))
         {
-
             return fallback;
-
         }
 
         return bool.TryParse(raw.Trim(), out bool parsed) ? parsed : fallback;
-
     }
 
     private static int ReadInt(IConfiguration configuration, string key, int fallback)
     {
-
         string? raw = configuration[key];
 
         if (string.IsNullOrWhiteSpace(raw))
         {
-
             return fallback;
-
         }
 
         return int.TryParse(raw.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out int parsed)
             ? parsed
             : fallback;
-
     }
-
 }

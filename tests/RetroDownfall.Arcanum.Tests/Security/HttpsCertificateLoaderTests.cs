@@ -1,7 +1,11 @@
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
+using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Hosting;
 using RetroDownfall.Arcanum.Api.Hosting;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Infrastructure.Security;
@@ -437,6 +441,81 @@ public sealed class HttpsCertificateLoaderTests : IDisposable
     }
 
     /// <summary>
+    /// A Windows PFX or PEM certificate loads into the default key set, whose private-key container is
+    /// deleted only when the certificate is disposed (finalizers do not run at process exit). The host
+    /// owns the certificate it hands Kestrel, so it must dispose it once the server has stopped.
+    /// </summary>
+    [Fact]
+    public void ReleaseCertificateWhenHostStops_DisposesCertificateOnApplicationStopped()
+    {
+        using RSA rsa = RSA.Create(2048);
+
+        CertificateRequest request = new(
+            "CN=localhost",
+            rsa,
+            HashAlgorithmName.SHA256,
+            RSASignaturePadding.Pkcs1);
+
+        X509Certificate2 certificate = request.CreateSelfSigned(
+            DateTimeOffset.UtcNow.AddDays(-1),
+            DateTimeOffset.UtcNow.AddDays(30));
+
+        RecordingLifetime lifetime = new();
+
+        using ServiceProvider services = new ServiceCollection()
+            .AddSingleton<IHostApplicationLifetime>(lifetime)
+            .BuildServiceProvider();
+
+        KestrelServerOptions options = new() { ApplicationServices = services };
+
+        ArcanumKestrelConfigurator.ReleaseCertificateWhenHostStops(options, certificate);
+
+        Assert.NotEqual(IntPtr.Zero, certificate.Handle);
+
+        lifetime.NotifyStopped();
+
+        Assert.Equal(IntPtr.Zero, certificate.Handle);
+    }
+
+    [Fact]
+    public void Configure_HttpsEnabled_RegistersCertificateReleaseOnApplicationStopped()
+    {
+        (string path, string password) = CreatePfx(password: "release");
+
+        System.Environment.SetEnvironmentVariable(PasswordVariable, password);
+
+        IConfiguration configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["Arcanum:Host:Https:Enabled"] = "true",
+                ["Arcanum:Host:Https:Port"] = "5443",
+                ["Arcanum:Host:Https:CertificatePath"] = path,
+                ["Arcanum:Host:Https:CertificatePasswordEnvironmentVariable"] = PasswordVariable,
+            })
+            .Build();
+
+        RecordingLifetime lifetime = new();
+
+        // UseHttps resolves Kestrel's HTTPS configuration services from ApplicationServices, so the
+        // provider carries the slim host's registrations with only the lifetime swapped for the recorder.
+        ServiceCollection hostServices = [.. WebApplication.CreateSlimBuilder().Services];
+
+        _ = hostServices.RemoveAll<IHostApplicationLifetime>();
+
+        _ = hostServices.AddSingleton<IHostApplicationLifetime>(lifetime);
+
+        using ServiceProvider services = hostServices.BuildServiceProvider();
+
+        KestrelServerOptions options = new() { ApplicationServices = services };
+
+        ArcanumKestrelConfigurator.Configure(options, configuration, listenAny: false);
+
+        Assert.Equal(1, lifetime.StoppedTokenReads);
+
+        lifetime.NotifyStopped();
+    }
+
+    /// <summary>
     /// The sanitized failure string names the file but not the cause, so the underlying
     /// <see cref="CryptographicException"/> is the only thing that tells an operator whether the PFX
     /// was locked by the wrong password, corrupt, or rejected by the platform key store. The Kestrel
@@ -565,6 +644,38 @@ public sealed class HttpsCertificateLoaderTests : IDisposable
         File.WriteAllText(keyPath, rsa.ExportRSAPrivateKeyPem());
 
         return (certPath, keyPath);
+    }
+
+    private sealed class RecordingLifetime : IHostApplicationLifetime
+    {
+        private readonly CancellationTokenSource _stopped = new();
+
+        private int _stoppedTokenReads;
+
+        public int StoppedTokenReads => Volatile.Read(ref _stoppedTokenReads);
+
+        public CancellationToken ApplicationStarted => CancellationToken.None;
+
+        public CancellationToken ApplicationStopping => CancellationToken.None;
+
+        public CancellationToken ApplicationStopped
+        {
+            get
+            {
+                _ = Interlocked.Increment(ref _stoppedTokenReads);
+
+                return _stopped.Token;
+            }
+        }
+
+        public void StopApplication()
+        {
+        }
+
+        public void NotifyStopped()
+        {
+            _stopped.Cancel();
+        }
     }
 
     private sealed class CapturingSink : ILogEventSink

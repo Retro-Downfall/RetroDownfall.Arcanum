@@ -217,6 +217,89 @@ public sealed class CovenantPlaintextExportTests
     }
 
     /// <summary>
+    /// A bundle can be partial for reasons that have nothing to do with Covenant: a spell whose
+    /// <c>SPELL.md</c> fails the regular-file read exports as nothing, and a spell's oversized or linked
+    /// script is left out of its export. Per-spell export already names the scripts it leaves out; the
+    /// Campaign bundle says the same, and names the spells it could not carry, so an import of a partial
+    /// bundle is never mistaken for a complete transfer.
+    /// </summary>
+    [Fact]
+    public async Task Campaign_export_names_the_spells_and_scripts_the_bundle_leaves_out()
+    {
+        await using ExportHost host = await ExportHost.CreateAsync(configureSpells: spells =>
+        {
+            spells.Summaries.Add(new SpellSummary("carried", null, SpellSource.Workspace, []));
+
+            spells.Summaries.Add(new SpellSummary("unreadable", null, SpellSource.Workspace, []));
+
+            spells.Exports["carried"] = new SpellExportDto(
+                Metadata: null,
+                FullContent: "# Carried",
+                Scripts: [new SpellExportScriptDto("ok.sh", "ZWNobyBvaw==")],
+                OmittedScripts: ["too-big.sh"]);
+
+            spells.Exports["unreadable"] = null;
+        });
+
+        HttpResponseMessage response = await host.Client.PostAsync(
+            $"/api/campaigns/{CampaignId:D}/export",
+            content: null);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        string json = await response.Content.ReadAsStringAsync();
+
+        Assert.Contains("\"omittedScripts\":[\"too-big.sh\"]", json, StringComparison.Ordinal);
+
+        Assert.Contains("\"omittedSpells\":[\"unreadable\"]", json, StringComparison.Ordinal);
+
+        ApiResponse<CampaignExportDto>? body = JsonSerializer.Deserialize(
+            json,
+            ArcanumJsonContext.Default.ApiResponseCampaignExportDto);
+
+        Assert.NotNull(body);
+
+        CampaignExportSpellDto carried = Assert.Single(body.Data!.Spells);
+
+        Assert.Equal("carried", carried.Name);
+
+        Assert.Equal(["too-big.sh"], carried.OmittedScripts);
+
+        Assert.Equal(["unreadable"], body.Data.OmittedSpells);
+    }
+
+    /// <summary>
+    /// A complete bundle says so: the omission lists are present and empty rather than absent, so a
+    /// caller can tell a complete transfer from a server that does not report omissions.
+    /// </summary>
+    [Fact]
+    public async Task Campaign_export_reports_empty_omission_lists_for_a_complete_bundle()
+    {
+        await using ExportHost host = await ExportHost.CreateAsync(configureSpells: spells =>
+        {
+            spells.Summaries.Add(new SpellSummary("carried", null, SpellSource.Workspace, []));
+
+            spells.Exports["carried"] = new SpellExportDto(
+                Metadata: null,
+                FullContent: "# Carried",
+                Scripts: [],
+                OmittedScripts: []);
+        });
+
+        HttpResponseMessage response = await host.Client.PostAsync(
+            $"/api/campaigns/{CampaignId:D}/export",
+            content: null);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        string json = await response.Content.ReadAsStringAsync();
+
+        Assert.Contains("\"omittedScripts\":[]", json, StringComparison.Ordinal);
+
+        Assert.Contains("\"omittedSpells\":[]", json, StringComparison.Ordinal);
+    }
+
+    /// <summary>
     /// The lease covers the whole response, not the handler. A reset that drained while the last
     /// kilobyte was still on the socket would otherwise report completion over content it had
     /// promised was gone.
@@ -491,11 +574,16 @@ public sealed class CovenantPlaintextExportTests
 
         internal StubCampaignRepository Campaigns { get; } = new();
 
+        internal StubSpellRepository Spells { get; } = new();
+
         internal static async Task<ExportHost> CreateAsync(
             Action<StubExportPolicy>? configure = null,
-            ICovenantExportPolicy? realPolicy = null)
+            ICovenantExportPolicy? realPolicy = null,
+            Action<StubSpellRepository>? configureSpells = null)
         {
             ExportHost host = new();
+
+            configureSpells?.Invoke(host.Spells);
 
             StubExportPolicy policy = new(host.Events);
 
@@ -513,7 +601,7 @@ public sealed class CovenantPlaintextExportTests
 
             builder.Services.AddSingleton<IPromptRepository>(new StubPromptRepository());
 
-            builder.Services.AddSingleton<ISpellRepository>(new StubSpellRepository());
+            builder.Services.AddSingleton<ISpellRepository>(host.Spells);
 
             // The stub by default; a test that is about the shipped policy composed with the shipped route
             // supplies that policy instead, and the stub is then unused.
@@ -889,8 +977,12 @@ public sealed class CovenantPlaintextExportTests
 
     private sealed class StubSpellRepository : ISpellRepository
     {
+        internal List<SpellSummary> Summaries { get; } = [];
+
+        internal Dictionary<string, SpellExportDto?> Exports { get; } = new(StringComparer.Ordinal);
+
         public Task<SpellSummary[]> ListAsync(string? workingDirectory, CancellationToken ct) =>
-            Task.FromResult(Array.Empty<SpellSummary>());
+            Task.FromResult(Summaries.ToArray());
 
         public Task<SpellDetail?> GetAsync(string name, string? workingDirectory, CancellationToken ct) =>
             throw new NotSupportedException();
@@ -916,7 +1008,7 @@ public sealed class CovenantPlaintextExportTests
             CancellationToken ct) => throw new NotSupportedException();
 
         public Task<SpellExportDto?> ExportAsync(string name, string? workingDirectory, CancellationToken ct) =>
-            throw new NotSupportedException();
+            Task.FromResult(Exports[name]);
 
         public Task<Result<SpellSummary>> ImportAsync(SpellImportRequest request, CancellationToken ct) =>
             throw new NotSupportedException();
