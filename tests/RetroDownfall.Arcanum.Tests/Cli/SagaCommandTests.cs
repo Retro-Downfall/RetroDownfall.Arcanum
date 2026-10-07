@@ -532,6 +532,28 @@ public sealed class SagaCommandTests
     private static byte[] ReadRequestBody(HttpRequestMessage request) =>
         request.Content!.ReadAsByteArrayAsync().GetAwaiter().GetResult();
 
+    /// <summary>
+    /// A Saga memory is written by extraction from model output, and Markup escaping does not remove the
+    /// control sequences a terminal acts on, so the table strips them.
+    /// </summary>
+    [Fact]
+    public void Saga_divine_strips_terminal_controls_from_memory_content()
+    {
+        SagaMemoryDto memory = new("mem-1", "ok\u001b]52;c;QUFBQQ==\u0007title\u001b[2J\u009b", DateTimeOffset.UtcNow, null, null, "extraction");
+
+        RecordingHandler handler = new(_ => CreateResponse(
+            new ApiResponse<SagaSearchResult>(new SagaSearchResult([memory], [0.5f]), true, null),
+            ArcanumJsonContext.Default.ApiResponseSagaSearchResult));
+
+        CliTestResult result = RunCommand(handler, ["saga", "divine", "hello"]);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Contains("oktitle", result.Output, StringComparison.Ordinal);
+        Assert.DoesNotContain('\u001b', result.Output);
+        Assert.DoesNotContain('\u0007', result.Output);
+        Assert.DoesNotContain('\u009b', result.Output);
+    }
+
     private static CliTestResult RunCommand(RecordingHandler handler, string[] args)
     {
         ServiceCollection services = new();

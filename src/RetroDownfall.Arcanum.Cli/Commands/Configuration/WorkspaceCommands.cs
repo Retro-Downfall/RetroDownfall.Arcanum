@@ -440,10 +440,10 @@ public sealed class WorkspaceCommands(
         foreach (WorkspaceSearchResult match in result.Value)
         {
             table.AddRow(
-                new Markup(themePalette.TextMarkup(Markup.Escape(match.RelativePath))),
+                new Markup(themePalette.TextMarkup(Markup.Escape(TerminalTextSanitizer.SanitizeLine(match.RelativePath)))),
                 new Markup(themePalette.MutedMarkup($"{match.ChunkIndex + 1}/{match.TotalChunks}")),
                 new Markup(themePalette.MutedMarkup(match.Similarity.ToString("0.000", CultureInfo.InvariantCulture))),
-                new Markup(themePalette.TextMarkup(Markup.Escape(match.ContentPreview))));
+                new Markup(themePalette.TextMarkup(Markup.Escape(TerminalTextSanitizer.SanitizeLine(match.ContentPreview)))));
         }
 
         AnsiConsole.Write(table);
@@ -579,10 +579,10 @@ public sealed class WorkspaceCommands(
         foreach (WorkspaceFileChunkDto chunk in result.Value.Chunks)
         {
             table.AddRow(
-                new Markup(themePalette.TextMarkup(Markup.Escape(chunk.RelativePath))),
+                new Markup(themePalette.TextMarkup(Markup.Escape(TerminalTextSanitizer.SanitizeLine(chunk.RelativePath)))),
                 new Markup(themePalette.MutedMarkup($"{chunk.ChunkIndex + 1}/{chunk.TotalChunksForFile}")),
                 new Markup(themePalette.MutedMarkup($"{chunk.StartLine}-{chunk.EndLine}")),
-                new Markup(themePalette.TextMarkup(Markup.Escape(chunk.ContentPreview))));
+                new Markup(themePalette.TextMarkup(Markup.Escape(TerminalTextSanitizer.SanitizeLine(chunk.ContentPreview)))));
         }
 
         AnsiConsole.Write(table);

@@ -631,6 +631,64 @@ public sealed class WorkspaceCommandTests
         Assert.Equal(1, calls);
     }
 
+    /// <summary>
+    /// A workspace path and a chunk preview are repository content, which the operator did not write and
+    /// which may carry the control sequences a terminal acts on; Markup escaping does not remove them, so
+    /// the search and chunk tables strip them.
+    /// </summary>
+    [Theory]
+    [InlineData("search")]
+    [InlineData("chunks")]
+    public void Workspace_search_and_chunks_strip_terminal_controls_from_paths_and_previews(string verb)
+    {
+        RecordingHandler handler = new(request =>
+        {
+            string path = request.RequestUri!.AbsolutePath;
+            if (path.EndsWith("/files/divine", StringComparison.Ordinal))
+            {
+                return CreateResponse(
+                    new ApiResponse<WorkspaceSearchResult[]>(
+                        [new WorkspaceSearchResult("ok\u001b]52;c;QUFBQQ==\u0007title\u001b[2J\u009b", 0, 1, 0.5f, "ok\u001b]52;c;QUFBQQ==\u0007title\u001b[2J\u009b")],
+                        true,
+                        null),
+                    ArcanumJsonContext.Default.ApiResponseWorkspaceSearchResultArray);
+            }
+
+            if (path.EndsWith("/files/chunks", StringComparison.Ordinal))
+            {
+                WorkspaceFileChunkDto chunk = new(
+                    "chunk-1",
+                    "ok\u001b]52;c;QUFBQQ==\u0007title\u001b[2J\u009b",
+                    0,
+                    1,
+                    "ok\u001b]52;c;QUFBQQ==\u0007title\u001b[2J\u009b",
+                    0,
+                    10,
+                    DateTimeOffset.UnixEpoch,
+                    DateTimeOffset.UnixEpoch);
+                return CreateResponse(
+                    new ApiResponse<WorkspaceFileChunkPage>(
+                        new WorkspaceFileChunkPage([chunk], 1, 50, 0, false, null),
+                        true,
+                        null),
+                    ArcanumJsonContext.Default.ApiResponseWorkspaceFileChunkPage);
+            }
+
+            return CreateWorkspaceApiResponse(request);
+        });
+        string[] args = verb == "search"
+            ? ["workspace", "search", "find entry", "--workspace", "ws-demo"]
+            : ["workspace", "chunks", "ws-demo"];
+
+        CliTestResult result = RunCommand(handler, args);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Contains("oktitle", result.Output, StringComparison.Ordinal);
+        Assert.DoesNotContain('\u001b', result.Output);
+        Assert.DoesNotContain('\u0007', result.Output);
+        Assert.DoesNotContain('\u009b', result.Output);
+    }
+
     private static void AssertRoute(
         string[] args,
         HttpMethod method,

@@ -662,12 +662,24 @@ public sealed class CampaignCommands(
             return CliFailureExit.ExitCode(noProgress);
         }
 
-        // The paging advice below is operator prose about how to ask for the next page, which a
-        // caller reading a document does not need: it already holds every summary, and the cursor it
-        // would page from is UpdatedAt on the last one.
+        // The empty no-cursor page is already refused above, so the last summary is here to page from
+        // whenever the host did not name a cursor of its own.
+        string? moreAvailableNotice = result.Value.HasMore
+            ? $"More results available \u2014 use --before-updated-at {result.Value.NextBeforeUpdatedAt ?? sessions[^1].UpdatedAt:O} to page"
+            : null;
+
+        // The document is this one host page. When the host holds more, a script must be told so, and
+        // where the next page starts (the host's own cursor can differ from the last summary's
+        // UpdatedAt), or a partial listing reads as a complete one. The notice goes to stderr so stdout
+        // stays one array document.
         if (CliInvocationContext.Current.Json)
         {
             dispatcher.WriteJson(sessions, ArcanumJsonContext.Default.SessionSummaryDtoArray);
+
+            if (moreAvailableNotice is not null)
+            {
+                CliErrorOutput.WriteMarkupLine(themePalette.MutedMarkup(Markup.Escape(moreAvailableNotice)));
+            }
 
             return 0;
         }
@@ -690,7 +702,7 @@ public sealed class CampaignCommands(
 
             table.AddRow(
                 new Markup(themePalette.TextMarkup(Markup.Escape(shortId))),
-                new Markup(themePalette.TextMarkup(Markup.Escape(string.IsNullOrWhiteSpace(session.Title) ? "(untitled)" : session.Title))),
+                new Markup(themePalette.TextMarkup(Markup.Escape(TerminalTextSanitizer.SanitizeLine(string.IsNullOrWhiteSpace(session.Title) ? "(untitled)" : session.Title)))),
                 new Markup(themePalette.TextMarkup(Markup.Escape(session.Status))),
                 new Markup(themePalette.MutedMarkup(Markup.Escape(session.EntryCount.ToString(System.Globalization.CultureInfo.InvariantCulture)))),
                 new Markup(themePalette.MutedMarkup(Markup.Escape(session.UpdatedAt.ToString("u")))));
@@ -703,15 +715,9 @@ public sealed class CampaignCommands(
             AnsiConsole.MarkupLine(themePalette.MutedMarkup(Markup.Escape("No sessions matched.")));
         }
 
-        if (result.Value.HasMore)
+        if (moreAvailableNotice is not null)
         {
-            // The empty no-cursor page is already refused above, so the last summary is here to page
-            // from whenever the host did not name a cursor of its own.
-            DateTimeOffset cursor = result.Value.NextBeforeUpdatedAt ?? sessions[^1].UpdatedAt;
-
-            AnsiConsole.MarkupLine(
-                themePalette.MutedMarkup(
-                    Markup.Escape($"More results available \u2014 use --before-updated-at {cursor:O} to page")));
+            AnsiConsole.MarkupLine(themePalette.MutedMarkup(Markup.Escape(moreAvailableNotice)));
         }
 
         return 0;

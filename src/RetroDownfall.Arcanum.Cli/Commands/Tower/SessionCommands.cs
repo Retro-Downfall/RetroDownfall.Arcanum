@@ -105,7 +105,7 @@ public sealed class SessionCommands(
         foreach (SessionSummaryDto session in page!.Items)
         {
             table.AddRow(
-                new Markup(themePalette.TextMarkup(Markup.Escape(session.Title ?? "(untitled)"))),
+                new Markup(themePalette.TextMarkup(Markup.Escape(TerminalTextSanitizer.SanitizeLine(session.Title ?? "(untitled)")))),
                 new Markup(themePalette.MutedMarkup(Markup.Escape(session.CampaignId?.ToString("D") ?? "-"))),
                 new Markup(themePalette.TextMarkup(Markup.Escape(session.Status))),
                 new Markup(themePalette.MutedMarkup(session.EntryCount.ToString(CultureInfo.InvariantCulture))),
@@ -625,11 +625,11 @@ public sealed class SessionCommands(
 
             table.AddRow(
                 Markup.Escape(hit.SessionId.ToString("D")[..8]),
-                Markup.Escape(string.IsNullOrWhiteSpace(hit.SessionTitle) ? "(untitled)" : hit.SessionTitle),
+                Markup.Escape(TerminalTextSanitizer.SanitizeLine(string.IsNullOrWhiteSpace(hit.SessionTitle) ? "(untitled)" : hit.SessionTitle)),
                 Markup.Escape(hit.EntryRole),
                 Markup.Escape(similarity),
                 Markup.Escape(hit.EntryCreatedAt.ToString("u", CultureInfo.InvariantCulture)),
-                Markup.Escape(hit.EntryContentPreview));
+                Markup.Escape(TerminalTextSanitizer.SanitizeLine(hit.EntryContentPreview)));
         }
 
         AnsiConsole.Write(table);

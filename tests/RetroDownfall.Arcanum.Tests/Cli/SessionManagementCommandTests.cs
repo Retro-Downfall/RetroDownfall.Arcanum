@@ -824,6 +824,30 @@ public sealed class SessionManagementCommandTests
         Assert.Contains("Only page", result.Output, StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// A Session title is model-authored, and Markup escaping does not remove the control sequences a
+    /// terminal acts on, so the listing strips them.
+    /// </summary>
+    [Fact]
+    public void SessionList_strips_terminal_controls_from_titles()
+    {
+        DateTimeOffset updated = new(2026, 7, 1, 12, 0, 0, TimeSpan.Zero);
+        SessionSummaryDto hostile = new(Guid.NewGuid(), null, "ok\u001b]52;c;QUFBQQ==\u0007title\u001b[2J\u009b", "active", 1, updated, updated);
+
+        RecordingHandler handler = new(_ => CreateResponse(
+            ApiResponse<SessionQueryResult>.FromResult(
+                Result<SessionQueryResult>.Success(new SessionQueryResult([hostile], null, false))),
+            ArcanumJsonContext.Default.ApiResponseSessionQueryResult));
+
+        CliTestResult result = RunCommand(handler, ["session", "list"]);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Contains("oktitle", result.Output, StringComparison.Ordinal);
+        Assert.DoesNotContain('\u001b', result.Output);
+        Assert.DoesNotContain('\u0007', result.Output);
+        Assert.DoesNotContain('\u009b', result.Output);
+    }
+
     private static CliTestResult RunCommand(
         RecordingHandler handler,
         string[] args,
