@@ -4,10 +4,11 @@ namespace RetroDownfall.Arcanum.Tests.Fixtures;
 
 /// <summary>The exact normalized Core version-14 tree before the file-identity indexes were added.</summary>
 /// <remarks>
-/// Version 15 appends three indexes to <c>Batches</c>, one to <c>InferenceRuns</c> and one to
-/// <c>tapestry_generations</c>, and adds the <c>tapestry_leaf_hashes</c> table with the nine triggers that keep it
-/// honest, and changes nothing else in the tree. Those three files are frozen here byte for byte and the ten new
-/// objects are removed, because the version-13 reconstruction, and through it the version-12 one and the raw
+/// Version 15 appends six indexes to <c>Batches</c> (three on the canonical file roles and three normalized ones
+/// the retention sweep compares), one to <c>InferenceRuns</c> and one to <c>tapestry_generations</c>, and adds the
+/// <c>tapestry_leaf_hashes</c> table with the nine triggers that keep it honest, and changes nothing else in the
+/// tree. Those three files are frozen here byte for byte and the ten new objects (the table and its nine triggers)
+/// are removed, because the version-13 reconstruction, and through it the version-12 one and the raw
 /// version-1 to version-5 fixtures, inherit every object they do not freeze through this one.
 /// </remarks>
 internal static class CoreSchemaVersionFourteenFixture
@@ -15,7 +16,8 @@ internal static class CoreSchemaVersionFourteenFixture
     internal const string PublishedFingerprint =
         "F699757C9C5F2EDA486ECBF0CD1017762936D5730B8C01557FB33E5338347372";
 
-    // Version 15 appends IX_Batches_InputFileId, IX_Batches_OutputFileId and IX_Batches_ErrorFileId.
+    // Version 15 appends IX_Batches_InputFileId, IX_Batches_OutputFileId and IX_Batches_ErrorFileId, and their
+    // normalized IX_Batches_InputFileId_Norm, IX_Batches_OutputFileId_Norm and IX_Batches_ErrorFileId_Norm.
     private const string BatchesSql =
         """
         CREATE TABLE IF NOT EXISTS "Batches" (

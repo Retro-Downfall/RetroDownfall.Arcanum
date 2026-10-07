@@ -2084,7 +2084,7 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
     /// <remarks>
     /// This runs while the host is serving — at startup Kestrel is already accepting requests, and
     /// <c>POST /api/operations/reconcile</c> can drive it at any time — so "unreferenced" has to be
-    /// evaluated against a moving target. Two guards make that safe without serialising every attachment
+    /// evaluated against a moving target. Three guards make that safe without serialising every attachment
     /// write behind the sweep. First, nothing modified at or after the moment the row snapshot was taken
     /// is touched: an attachment write lands its ciphertext before it inserts its row, so a file missing
     /// from the snapshot but newer than it belongs to a write still in flight, and that also spares
