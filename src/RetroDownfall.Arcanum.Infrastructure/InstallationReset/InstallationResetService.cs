@@ -626,38 +626,6 @@ internal sealed class InstallationResetService(
         return Result<InstallationResetPlan>.Success(rebound);
     }
 
-    public Result<InstallationResetHostHandoff> CreateHostHandoff(
-        InstallationResetApplyRequest request,
-        InstallationResetPlan confirmedPlan)
-    {
-        ArgumentNullException.ThrowIfNull(request);
-
-        ArgumentNullException.ThrowIfNull(confirmedPlan);
-
-        bool valid = request.Request.Scope is InstallationResetScope.Global
-                or InstallationResetScope.All
-            && confirmedPlan.Scope == request.Request.Scope
-            && string.Equals(
-                request.ExpectedPlanId,
-                confirmedPlan.PlanId,
-                StringComparison.Ordinal)
-            && confirmedPlan.CredentialInventoryAvailable
-            && confirmedPlan.Blockers.Length == 0
-            && confirmedPlan.AcceptedBinding.DataPlanIds is { Length: 1 }
-            && !string.IsNullOrWhiteSpace(
-                confirmedPlan.AcceptedBinding.DataPlanIds[0])
-            && _onlineDataPlans.ContainsKey(confirmedPlan.PlanId);
-
-        return valid
-            ? new InstallationResetHostHandoff(
-                Guid.NewGuid(),
-                confirmedPlan.PlanId,
-                confirmedPlan.Scope,
-                confirmedPlan.Workspace,
-                confirmedPlan.AcceptedBinding)
-            : PlanChanged<InstallationResetHostHandoff>();
-    }
-
     public async Task<Result<InstallationResetHostHandoff?>> ReadAsync(
         InstallationResetApplyRequest request,
         CancellationToken cancellationToken = default)

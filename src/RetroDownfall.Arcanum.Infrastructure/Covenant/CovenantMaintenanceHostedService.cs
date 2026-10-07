@@ -48,7 +48,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Covenant;
 /// scope disposal. Its maintenance-oriented name does not grant permission to race an exclusive
 /// backup, reset, restore, or schema migration.</para>
 /// </remarks>
-[ExcludeFromCodeCoverage]
+[ExcludeFromCodeCoverage] // Reason: IHostedService timer/lifetime shell; the sweep pass is covered by CovenantMaintenanceHostedServiceTests and CovenantMaintenanceWiringTests on directly constructed instances.
 internal sealed class CovenantMaintenanceHostedService(
     IServiceScopeFactory scopeFactory,
     IGrimoireConnectionAdmissionGate admissionGate,

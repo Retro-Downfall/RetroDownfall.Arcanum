@@ -210,10 +210,10 @@
       "action": "retain",
       "replacementOrContinuation": "Retry with the same key after the claim state advances or repair the durable claim store; Arcanum never invokes the protected endpoint while ownership remains ambiguous.",
       "tests": [
-        "IdempotencyEndpointFilterTests.LiveSameProcessLease_WithoutCoordinator_IsRetiredAndReacquired",
-        "IdempotencyEndpointFilterTests.LiveSameProcessLease_WhenRetirementDoesNotTransition_FailsSafeWithoutExecution",
-        "IdempotencyEndpointFilterTests.AcquireResult_WithDifferentOwner_FailsSafeWithoutExecution",
-        "IdempotencyEndpointFilterTests.AcquireResult_InClaimedState_FailsSafeWithoutExecution"
+        "IdempotencyEndpointFilterOwnershipTests.LiveSameProcessLease_WithoutCoordinator_IsRetiredAndReacquired",
+        "IdempotencyEndpointFilterOwnershipTests.LiveSameProcessLease_WhenRetirementDoesNotTransition_FailsSafeWithoutExecution",
+        "IdempotencyEndpointFilterOwnershipTests.AcquireResult_WithDifferentOwner_FailsSafeWithoutExecution",
+        "IdempotencyEndpointFilterOwnershipTests.AcquireResult_InClaimedState_FailsSafeWithoutExecution"
       ],
       "id": "boundary.idempotency-ownership-transition-recovery",
       "subsystem": "Idempotency"
@@ -5516,7 +5516,7 @@
         "PublicConfigurationReductionTests",
         "DataRetentionServiceTests",
         "ConstraintInventoryTests",
-        "DataRetentionDurabilityBoundaryTests"
+        "DataRetentionServiceTests.ReopenResumesSameOperationWithoutAttemptIncrement"
       ]
     },
     {
@@ -5549,7 +5549,7 @@
         "DataRetentionServiceTests.PlanAsync_Prune_DoesNotLetOldestBlockedRowStarveEligibleRow",
         "DataRetentionDaemonHistoryTests.Prune_ReportsAndDeletesAllOldTerminalDaemonExecutions",
         "ConstraintInventoryTests",
-        "DataRetentionDurabilityBoundaryTests"
+        "DataRetentionServiceTests.PlanAsync_PruneAttachment_WithMaxOne_DoesNotLetBlockedOldestStarveEligible"
       ]
     },
     {

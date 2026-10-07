@@ -5970,8 +5970,9 @@ public sealed partial class WizardIntelligenceProvider(
     };
 
     /// <summary>
-    /// Projects retrieved Tapestry nodes for the read-only context preview, which has no turn ledger
-    /// to admit them through. Uses the same projection the ledger path produces so
+    /// Projects retrieved Tapestry nodes for the context preview, which publishes no turn ledger to admit them
+    /// through (its retrieval embeddings still write their own embedding run and ledger rows, DESIGN §22.2).
+    /// Uses the same projection the ledger path produces so
     /// <c>mana</c> / <c>context inspect</c> shows the operator exactly what a real turn would inject.
     /// </summary>
     private static TapestryContextNode[]? ProjectTapestryPreview(TapestryRetrievedNode[]? nodes) =>

@@ -242,10 +242,6 @@ public interface IInstallationResetOnlineDataHandoff
         InstallationResetPlan localPlan,
         DataRetentionPlan onlinePlan);
 
-    Result<InstallationResetHostHandoff> CreateHostHandoff(
-        InstallationResetApplyRequest request,
-        InstallationResetPlan confirmedPlan);
-
     Task<Result<InstallationResetHostHandoff?>> ReadAsync(
         InstallationResetApplyRequest request,
         CancellationToken cancellationToken = default);

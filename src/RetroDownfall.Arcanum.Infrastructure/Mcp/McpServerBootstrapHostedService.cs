@@ -13,7 +13,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
 /// <summary>
 /// Boots managed MCP servers on host start and stops them on shutdown.
 /// </summary>
-[ExcludeFromCodeCoverage]
+[ExcludeFromCodeCoverage] // Reason: IHostedService start/stop shell over IMcpGlobalInitializationCoordinator; covered by McpServerBootstrapHostedServiceTests.
 internal sealed class McpServerBootstrapHostedService : IHostedService
 {
     private readonly IMcpGlobalInitializationCoordinator _coordinator;
