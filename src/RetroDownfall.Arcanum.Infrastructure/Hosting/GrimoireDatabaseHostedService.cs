@@ -353,11 +353,15 @@ public sealed class GrimoireDatabaseHostedService(
                 // A resumption that reached a durable verdict has retired its journal and reopened
                 // ordinary admission, which is the state an ordinary start expects; anything else
                 // leaves the catalog mid-transformation and startup fails closed with the one
-                // content-free sentence every unfinished-maintenance refusal uses.
+                // content-free sentence every unfinished-maintenance refusal uses. An outage (the
+                // credential store locked or unreachable, the catalog busy) is the exception: nothing
+                // needs repairing, so the refusal names the remedy, which is to start again once it clears.
                 if (resumed.IsFailure)
                 {
                     throw new InvalidOperationException(
-                        "An offline Grimoire transition is active. Resume it before starting the host.");
+                        GrimoireOfflineTransitionTerminalSuffixFinisher.IsOutage(resumed.Error)
+                            ? "An offline Grimoire transition could not be resumed because the credential store or the database is temporarily unavailable. Unlock or reconnect the credential store, or wait for the database to be free, then start the host again."
+                            : "An offline Grimoire transition is active. Resume it before starting the host.");
                 }
 
                 restoreDisclosureWriterAfterAuthenticatedTransition =

@@ -83,6 +83,33 @@ public sealed class GrimoireDatabaseHostedServiceTransitionRecoveryTests : IAsyn
     }
 
     /// <summary>
+    /// An outage (a locked credential store, a busy catalog) is not a transition that needs repair: the
+    /// remedy is to make the store or catalog available and start again, and the refusal says so instead
+    /// of telling the operator to resume something there is no verb for.
+    /// </summary>
+    [Fact]
+    public async Task A_resumption_stopped_by_an_outage_says_to_retry_the_start_once_it_clears()
+    {
+        string root = _workspace.CreateSubdir("host-outage");
+
+        RecordingTransitionRecovery recovery = new(
+            Result<GrimoireOfflineTransitionStartupRecoveryOutcome>.Failure(
+                new Error(ErrorCodes.Covenant.Unavailable, "keychain locked")));
+
+        InvalidOperationException failure =
+            await Assert.ThrowsAsync<InvalidOperationException>(
+                () => Host(root, recovery).StartAsync(CancellationToken.None));
+
+        Assert.True(recovery.Called);
+
+        Assert.Contains("temporarily unavailable", failure.Message, StringComparison.Ordinal);
+
+        Assert.Contains("start the host again", failure.Message, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("Resume it", failure.Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>
     /// A composition with no resuming pass keeps the refusal it had before there was one.
     /// </summary>
     /// <remarks>
