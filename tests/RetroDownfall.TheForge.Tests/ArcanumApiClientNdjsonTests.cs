@@ -270,6 +270,79 @@ public sealed class ArcanumApiClientNdjsonTests
         await Assert.ThrowsAsync<HttpRequestException>(DrainAsync);
     }
 
+    /// <summary>
+    /// A server that sends one frame and then waits for the client (an <c>ask_human</c> prompt, a Ward,
+    /// the final result) has that frame delivered whatever its length. A <see cref="StreamReader"/>
+    /// went back to the stream whenever a read filled its byte buffer exactly, so a frame whose bytes
+    /// ended on that boundary was held until the server sent more.
+    /// </summary>
+    [Theory]
+    [InlineData(1024)]
+    [InlineData(2048)]
+    [InlineData(4096)]
+    [InlineData(8192)]
+    public async Task PostNdjsonStreamAsync_delivers_a_frame_that_ends_on_a_buffer_boundary_before_more_bytes_arrive(
+        int frameBytes)
+    {
+        const string prefix = "{\"type\":\"token\",\"message\":\"\",\"data\":\"";
+        const string suffix = "\"}\n";
+        string frame = prefix + new string('x', frameBytes - prefix.Length - suffix.Length) + suffix;
+        Assert.Equal(frameBytes, Encoding.UTF8.GetByteCount(frame));
+        using CancellationTokenSource cancellation = new();
+        ArcanumApiClient client = CreateClient(
+            new QuietAfterFrameHandler(Encoding.UTF8.GetBytes(frame), "application/x-ndjson"),
+            NullLogger<ArcanumApiClient>.Instance);
+
+        await using IAsyncEnumerator<IntelligenceEvent> events = client.PostNdjsonStreamAsync(
+                "/api/intelligence/ping-stream",
+                new PingRequest("hello"),
+                TheForgeJsonContext.Default.PingRequest,
+                TheForgeJsonContext.Default.IntelligenceEvent,
+                cancellation.Token)
+            .GetAsyncEnumerator(cancellation.Token);
+
+        try
+        {
+            Assert.True(await events.MoveNextAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(15)));
+            Assert.Equal(IntelligenceEventType.Token, events.Current.Type);
+        }
+        finally
+        {
+            await cancellation.CancelAsync();
+        }
+    }
+
+    [Theory]
+    [InlineData(1024)]
+    [InlineData(4096)]
+    [InlineData(8192)]
+    public async Task GetSseAsync_delivers_an_event_that_ends_on_a_buffer_boundary_before_more_bytes_arrive(
+        int frameBytes)
+    {
+        const string prefix = "data: ";
+        const string suffix = "\n\n";
+        string data = new('x', frameBytes - prefix.Length - suffix.Length);
+        string frame = prefix + data + suffix;
+        using CancellationTokenSource cancellation = new();
+        ArcanumApiClient client = CreateClient(
+            new QuietAfterFrameHandler(Encoding.UTF8.GetBytes(frame), "text/event-stream"),
+            NullLogger<ArcanumApiClient>.Instance);
+
+        await using IAsyncEnumerator<SseEvent> events = client
+            .GetSseAsync("/api/sessions/stream", cancellation.Token)
+            .GetAsyncEnumerator(cancellation.Token);
+
+        try
+        {
+            Assert.True(await events.MoveNextAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(15)));
+            Assert.Equal(data, events.Current.Data);
+        }
+        finally
+        {
+            await cancellation.CancelAsync();
+        }
+    }
+
     private static ArcanumApiClient CreateClient(
         string ndjson,
         ILogger<ArcanumApiClient> logger) =>
@@ -329,6 +402,76 @@ public sealed class ArcanumApiClientNdjsonTests
                 new System.Net.Http.Headers.MediaTypeHeaderValue("application/x-ndjson");
             return Task.FromResult(response);
         }
+    }
+
+    private sealed class QuietAfterFrameHandler(byte[] frame, string mediaType) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            HttpResponseMessage response = new(HttpStatusCode.OK)
+            {
+                Content = new StreamContent(new QuietAfterBytesStream(frame)),
+            };
+            response.Content.Headers.ContentType =
+                new System.Net.Http.Headers.MediaTypeHeaderValue(mediaType);
+            return Task.FromResult(response);
+        }
+    }
+
+    /// <summary>
+    /// Serves its bytes, then waits for the reader's cancellation as a server that has nothing more to
+    /// send does.
+    /// </summary>
+    internal sealed class QuietAfterBytesStream(byte[] content) : Stream
+    {
+        private int _position;
+
+        public override bool CanRead => true;
+
+        public override bool CanSeek => false;
+
+        public override bool CanWrite => false;
+
+        public override long Length => throw new NotSupportedException();
+
+        public override long Position
+        {
+            get => throw new NotSupportedException();
+            set => throw new NotSupportedException();
+        }
+
+        public override async ValueTask<int> ReadAsync(
+            Memory<byte> buffer,
+            CancellationToken cancellationToken = default)
+        {
+            if (_position < content.Length)
+            {
+                int count = Math.Min(buffer.Length, content.Length - _position);
+                content.AsMemory(_position, count).CopyTo(buffer);
+                _position += count;
+                return count;
+            }
+
+            await Task.Delay(Timeout.Infinite, cancellationToken);
+            return 0;
+        }
+
+        public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken) =>
+            ReadAsync(buffer.AsMemory(offset, count), cancellationToken).AsTask();
+
+        public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+
+        public override void Flush()
+        {
+        }
+
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+
+        public override void SetLength(long value) => throw new NotSupportedException();
+
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
     }
 
     private sealed class StatusCodeHandler(HttpStatusCode statusCode) : HttpMessageHandler

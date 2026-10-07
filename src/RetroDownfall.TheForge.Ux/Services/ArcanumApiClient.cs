@@ -21,7 +21,6 @@ namespace RetroDownfall.TheForge.Ux.Services;
 /// </summary>
 public sealed class ArcanumApiClient
 {
-
     public const string HttpClientName = "ArcanumApi";
 
     private const string ApiKeyHeaderName = "X-Arcanum-Key";
@@ -48,7 +47,6 @@ public sealed class ArcanumApiClient
         ITheForgeApiKeyProvider apiKeyProvider,
         ILogger<ArcanumApiClient> logger)
     {
-
         _httpClientFactory = httpClientFactory;
 
         _settingsMonitor = settingsMonitor;
@@ -56,7 +54,6 @@ public sealed class ArcanumApiClient
         _apiKeyProvider = apiKeyProvider;
 
         _logger = logger;
-
     }
 
     public Task<ApiResponse<TResponse>?> GetAsync<TResponse>(
@@ -79,10 +76,8 @@ public sealed class ArcanumApiClient
     /// </summary>
     public async Task<DeleteOutcome> DeleteNoContentAsync(string path, CancellationToken cancellationToken)
     {
-
         try
         {
-
             using HttpClient client = await CreateClientAsync(cancellationToken).ConfigureAwait(false);
 
             using HttpRequestMessage request = new(HttpMethod.Delete, path);
@@ -93,9 +88,7 @@ public sealed class ArcanumApiClient
 
             if (response.IsSuccessStatusCode)
             {
-
                 return DeleteOutcome.Ok();
-
             }
 
             _logger.LogWarning("DELETE {Path} returned {Status}.", path, (int)response.StatusCode);
@@ -103,44 +96,34 @@ public sealed class ArcanumApiClient
             return DeleteOutcome.Fail(
                 $"Http.{(int)response.StatusCode}",
                 response.ReasonPhrase ?? "The delete request failed.");
-
         }
         catch (HttpRequestException ex)
         {
-
             _logger.LogWarning(ex, "DELETE {Path} failed.", path);
 
             return DeleteOutcome.Fail("Connection.Failed", ex.Message);
-
         }
         catch (ArcanumClientConfigurationException ex)
         {
-
             _logger.LogError(ex, "DELETE {Path} aborted: {Code}.", path, ex.Code);
 
             return DeleteOutcome.Fail(ex.Code, ex.Message);
-
         }
         catch (InvalidOperationException ex)
         {
-
             _logger.LogWarning(ex, "DELETE {Path} aborted: missing API key.", path);
 
             return DeleteOutcome.Fail("Security.MissingApiKey", ex.Message);
-
         }
         catch (TaskCanceledException ex) when (!cancellationToken.IsCancellationRequested)
         {
-
             // A TaskCanceledException that did NOT originate from the caller's token is HttpClient's own
             // request-timeout signal, so report it as a failed delete rather than letting it escape as
             // if the caller had cancelled — see the matching clause in SendAsync.
             _logger.LogWarning(ex, "DELETE {Path} timed out.", path);
 
             return DeleteOutcome.Fail("Connection.Timeout", "The request to Arcanum timed out.");
-
         }
-
     }
 
     public Task<ApiResponse<TResponse>?> PostAsync<TResponse>(
@@ -189,35 +172,27 @@ public sealed class ArcanumApiClient
         JsonTypeInfo<TFrame> frameTypeInfo,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
-
         HttpClient client;
 
         try
         {
-
             client = await CreateClientAsync(cancellationToken).ConfigureAwait(false);
-
         }
         catch (ArcanumClientConfigurationException ex)
         {
-
             _logger.LogError(ex, "NDJSON stream POST {Path} aborted: {Code}.", path, ex.Code);
 
             throw new HttpRequestException(ex.Message, ex, statusCode: null);
-
         }
         catch (InvalidOperationException ex)
         {
-
             _logger.LogWarning(ex, "NDJSON stream POST {Path} aborted: missing API key.", path);
 
             throw new HttpRequestException(ex.Message, ex, statusCode: null);
-
         }
 
         using (client)
         {
-
             using HttpRequestMessage request = new(HttpMethod.Post, path)
             {
                 Content = SerializeBody(body, requestTypeInfo),
@@ -229,21 +204,19 @@ public sealed class ArcanumApiClient
 
             if (!response.IsSuccessStatusCode)
             {
-
                 _logger.LogWarning("NDJSON stream POST {Path} returned {StatusCode}.", path, (int)response.StatusCode);
 
                 throw new HttpRequestException(
                     $"NDJSON stream POST {path} returned {(int)response.StatusCode}.",
                     inner: null,
                     response.StatusCode);
-
             }
 
             await using Stream stream = await response.Content
                 .ReadAsStreamAsync(cancellationToken)
                 .ConfigureAwait(false);
 
-            using StreamReader reader = new(stream, Encoding.UTF8);
+            using StreamingTextReader reader = new(stream, Encoding.UTF8);
 
             BoundedTextLineReader lineReader = new(reader);
 
@@ -271,9 +244,7 @@ public sealed class ArcanumApiClient
 
                 if (string.IsNullOrWhiteSpace(line))
                 {
-
                     continue;
-
                 }
 
                 byte[]? utf8Line = null;
@@ -300,15 +271,10 @@ public sealed class ArcanumApiClient
 
                 if (frame is not null)
                 {
-
                     yield return frame;
-
                 }
-
             }
-
         }
-
     }
 
     /// <summary>
@@ -321,35 +287,27 @@ public sealed class ArcanumApiClient
         string path,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
-
         HttpClient client;
 
         try
         {
-
             client = await CreateClientAsync(cancellationToken).ConfigureAwait(false);
-
         }
         catch (ArcanumClientConfigurationException ex)
         {
-
             _logger.LogError(ex, "SSE GET {Path} aborted: {Code}.", path, ex.Code);
 
             throw new HttpRequestException(ex.Message, ex, statusCode: null);
-
         }
         catch (InvalidOperationException ex)
         {
-
             _logger.LogWarning(ex, "SSE GET {Path} aborted: missing API key.", path);
 
             throw new HttpRequestException(ex.Message, ex, statusCode: null);
-
         }
 
         using (client)
         {
-
             using HttpRequestMessage request = new(HttpMethod.Get, path);
 
             using HttpResponseMessage response = await client
@@ -358,47 +316,38 @@ public sealed class ArcanumApiClient
 
             if (!response.IsSuccessStatusCode)
             {
-
                 _logger.LogWarning("SSE GET {Path} returned {StatusCode}.", path, (int)response.StatusCode);
 
                 throw new HttpRequestException(
                     $"SSE GET {path} returned {(int)response.StatusCode}.",
                     inner: null,
                     response.StatusCode);
-
             }
 
             await using Stream stream = await response.Content
                 .ReadAsStreamAsync(cancellationToken)
                 .ConfigureAwait(false);
 
-            using StreamReader reader = new(stream, Encoding.UTF8);
+            using StreamingTextReader reader = new(stream, Encoding.UTF8);
 
             await foreach (SseEvent sseEvent in SseFrameParser.ParseAsync(reader, cancellationToken).ConfigureAwait(false))
             {
-
                 yield return sseEvent;
-
             }
-
         }
-
     }
 
     private async Task<HttpClient> CreateClientAsync(CancellationToken cancellationToken)
     {
-
         TheForgeSettings settings = _settingsMonitor.CurrentValue;
 
         string? apiKey = await _apiKeyProvider.GetApiKeyAsync(cancellationToken).ConfigureAwait(false);
 
         if (string.IsNullOrWhiteSpace(apiKey))
         {
-
             throw new InvalidOperationException(
                 "No master API key is available. Store one with `arcanum key set`, run `arcanum serve` once, "
                 + "or paste a key when prompted. Shared OS identity: arcanum/master-api-key.");
-
         }
 
         // the-forge.json is reload-on-change and hand-editable, and only the Setup Wizard validates the
@@ -407,22 +356,18 @@ public sealed class ArcanumApiClient
         if (!Uri.TryCreate(settings.BaseUrl, UriKind.Absolute, out Uri? baseAddress)
             || (baseAddress.Scheme != Uri.UriSchemeHttp && baseAddress.Scheme != Uri.UriSchemeHttps))
         {
-
             throw new ArcanumClientConfigurationException(
                 InvalidBaseUrlCode,
                 $"The Forge setting 'BaseUrl' is not an absolute http/https URL: '{settings.BaseUrl}'. "
                 + "Correct it in the-forge.json or re-run the setup wizard.");
-
         }
 
         if (apiKey.AsSpan().IndexOfAny('\r', '\n', '\0') >= 0)
         {
-
             throw new ArcanumClientConfigurationException(
                 InvalidApiKeyCode,
                 "The master API key contains a line break or NUL character and cannot be sent as an HTTP "
                 + "header. Re-enter the key on a single line.");
-
         }
 
         HttpClient client = _httpClientFactory.CreateClient(HttpClientName);
@@ -434,12 +379,10 @@ public sealed class ArcanumApiClient
         client.DefaultRequestHeaders.Add(ApiKeyHeaderName, apiKey);
 
         return client;
-
     }
 
     private static StringContent SerializeBody<TRequest>(TRequest body, JsonTypeInfo<TRequest> requestTypeInfo)
     {
-
         string json = JsonSerializer.Serialize(body, requestTypeInfo);
 
         StringContent content = new(json, Encoding.UTF8);
@@ -447,7 +390,6 @@ public sealed class ArcanumApiClient
         content.Headers.ContentType = JsonMediaType;
 
         return content;
-
     }
 
     private async Task<ApiResponse<TResponse>?> SendAsync<TResponse>(
@@ -457,10 +399,8 @@ public sealed class ArcanumApiClient
         JsonTypeInfo<ApiResponse<TResponse>> responseTypeInfo,
         CancellationToken cancellationToken)
     {
-
         try
         {
-
             using HttpClient client = await CreateClientAsync(cancellationToken).ConfigureAwait(false);
 
             using HttpRequestMessage request = new(method, path) { Content = requestContent };
@@ -475,73 +415,57 @@ public sealed class ArcanumApiClient
 
             if (body is null)
             {
-
                 return Failure(
                     responseTypeInfo,
                     "Api.ResponseTooLarge",
                     "The API response exceeded the maximum allowed size and was not read.");
-
             }
 
             if (body.Length == 0 || IsJsonWhitespace(body))
             {
-
                 return response.IsSuccessStatusCode
                     ? null
                     : Failure(responseTypeInfo, $"Http.{(int)response.StatusCode}", response.ReasonPhrase ?? "Request failed.");
-
             }
 
             ApiResponse<TResponse>? parsed = DeserializeOrLog(body, responseTypeInfo, path);
 
             if (parsed is not null)
             {
-
                 return parsed;
-
             }
 
             return response.IsSuccessStatusCode
                 ? null
                 : Failure(responseTypeInfo, $"Http.{(int)response.StatusCode}", response.ReasonPhrase ?? "Request failed.");
-
         }
         catch (ArcanumClientConfigurationException ex)
         {
-
             // Distinct from Security.MissingApiKey: the key is present, the-forge.json is malformed.
             _logger.LogError(ex, "{Method} {Path} aborted: {Code}.", method, path, ex.Code);
 
             return Failure(responseTypeInfo, ex.Code, ex.Message);
-
         }
         catch (InvalidOperationException ex)
         {
-
             _logger.LogWarning(ex, "{Method} {Path} aborted: missing API key.", method, path);
 
             return Failure(responseTypeInfo, "Security.MissingApiKey", ex.Message);
-
         }
         catch (HttpRequestException ex)
         {
-
             _logger.LogWarning(ex, "{Method} {Path} failed to reach Arcanum.", method, path);
 
             return Failure(responseTypeInfo, "Connection.Failed", ex.Message);
-
         }
         catch (IOException ex)
         {
-
             _logger.LogWarning(ex, "{Method} {Path} response could not be read.", method, path);
 
             return Failure(responseTypeInfo, "Connection.Failed", ex.Message);
-
         }
         catch (TaskCanceledException ex) when (!cancellationToken.IsCancellationRequested)
         {
-
             // A TaskCanceledException that did NOT originate from the caller's token is HttpClient's
             // own request-timeout signal, not a caller-requested cancellation — surface it as a
             // connection failure like any other transport fault, rather than letting it propagate as
@@ -549,9 +473,7 @@ public sealed class ArcanumApiClient
             _logger.LogWarning(ex, "{Method} {Path} timed out.", method, path);
 
             return Failure(responseTypeInfo, "Connection.Timeout", "The request to Arcanum timed out.");
-
         }
-
     }
 
     private static bool IsJsonWhitespace(ReadOnlySpan<byte> body)
@@ -572,31 +494,23 @@ public sealed class ArcanumApiClient
         string code,
         string message)
     {
-
         _ = responseTypeInfo; // Kept for call-site symmetry / future typed-error mapping.
 
         return new ApiResponse<TResponse>(default, false, new Error(code, message), null);
-
     }
 
     private T? DeserializeOrLog<T>(string json, JsonTypeInfo<T> typeInfo, string path)
     {
-
         try
         {
-
             return JsonSerializer.Deserialize(json, typeInfo);
-
         }
         catch (JsonException ex)
         {
-
             _logger.LogWarning(ex, "Failed to deserialize response from {Path}.", path);
 
             return default;
-
         }
-
     }
 
     private T? DeserializeOrLog<T>(ReadOnlySpan<byte> json, JsonTypeInfo<T> typeInfo, string path)
@@ -611,7 +525,6 @@ public sealed class ArcanumApiClient
             return default;
         }
     }
-
 }
 
 /// <summary>
@@ -622,15 +535,11 @@ public sealed class ArcanumApiClient
 /// </summary>
 internal sealed class ArcanumClientConfigurationException : InvalidOperationException
 {
-
     public ArcanumClientConfigurationException(string code, string message)
         : base(message)
     {
-
         Code = code;
-
     }
 
     public string Code { get; }
-
 }
