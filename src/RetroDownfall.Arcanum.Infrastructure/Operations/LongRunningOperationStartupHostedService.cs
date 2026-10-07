@@ -14,7 +14,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Operations;
 /// readiness pass never abandons unfinished recovery: the same checkpointed reconciliation keeps
 /// running periodically in the background until host shutdown.
 /// </summary>
-[ExcludeFromCodeCoverage]
+[ExcludeFromCodeCoverage] // Reason: IHostedService readiness/periodic-loop shell; the reconciliation it drives is covered by LongRunningOperationStartupHostedServiceTests and CovenantResetBootstrapBarrierTests.
 internal sealed class LongRunningOperationStartupHostedService(
     IServiceScopeFactory scopeFactory,
     TimeProvider timeProvider,

@@ -26,7 +26,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Covenant;
 /// middle of replacing. The journal makes a pass recoverable, but it remains ordinary live-catalog
 /// work and holds one admission lease through its final scope disposal.</para>
 /// </remarks>
-[ExcludeFromCodeCoverage]
+[ExcludeFromCodeCoverage] // Reason: IHostedService lifetime shell; the journal-gated pass is covered by GrimoireSchemaTransitionHostedServiceTests and GrimoireSchemaTransitionWiringTests.
 internal sealed class GrimoireSchemaTransitionHostedService(
     IServiceScopeFactory scopeFactory,
     IGrimoireConnectionAdmissionGate admissionGate,
