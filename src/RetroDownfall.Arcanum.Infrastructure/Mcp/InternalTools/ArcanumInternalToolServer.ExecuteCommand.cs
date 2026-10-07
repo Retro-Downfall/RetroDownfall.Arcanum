@@ -309,7 +309,10 @@ internal sealed partial class ArcanumInternalToolServer
 
         CommandOutputArtifactRegistration? completeOutput = null;
 
-        if (runResult.Stdout.Truncated || runResult.Stderr.Truncated)
+        // A pipe the drain gave up on (a descendant still held it after the command exited) has no
+        // complete output to retain; the stream that did finish is retained on its own.
+        if (runResult.Stdout is { Truncated: true, ReadAbandoned: false }
+            || runResult.Stderr is { Truncated: true, ReadAbandoned: false })
         {
             try
             {
@@ -342,7 +345,11 @@ internal sealed partial class ArcanumInternalToolServer
 
         text.Append(runResult.Stdout.Text).Append('\n');
 
-        if (runResult.Stdout.Truncated)
+        if (runResult.Stdout.ReadAbandoned)
+        {
+            text.Append(AbandonedStreamNotice("stdout")).Append('\n');
+        }
+        else if (runResult.Stdout.Truncated)
         {
             text.Append($"[preview ended after {perStreamCapBytes} bytes; complete stdout is available below]").Append('\n');
         }
@@ -351,7 +358,11 @@ internal sealed partial class ArcanumInternalToolServer
 
         text.Append(runResult.Stderr.Text).Append('\n');
 
-        if (runResult.Stderr.Truncated)
+        if (runResult.Stderr.ReadAbandoned)
+        {
+            text.Append(AbandonedStreamNotice("stderr")).Append('\n');
+        }
+        else if (runResult.Stderr.Truncated)
         {
             text.Append($"[preview ended after {perStreamCapBytes} bytes; complete stderr is available below]").Append('\n');
         }
@@ -385,6 +396,9 @@ internal sealed partial class ArcanumInternalToolServer
             IsError = false,
         };
     }
+
+    private static string AbandonedStreamNotice(string streamName) =>
+        $"[{streamName} not captured: the command exited but a process it left running still held the pipe open, so the output was abandoned]";
 
     private async Task<McpToolsCallResultWire> ExecuteReadCommandOutputAsync(
         JsonElement arguments,

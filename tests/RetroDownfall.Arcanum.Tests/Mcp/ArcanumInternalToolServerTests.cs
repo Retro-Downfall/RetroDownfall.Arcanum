@@ -2622,6 +2622,72 @@ public sealed partial class ArcanumInternalToolServerTests : IAsyncLifetime
             StringComparison.Ordinal);
     }
 
+    [SkippableFact]
+    public async Task ExecuteCommand_successful_run_whose_stderr_a_descendant_holds_reports_the_output_it_finished()
+    {
+        Skip.IfNot(
+            OperatingSystem.IsMacOS() && File.Exists("/usr/bin/ruby"),
+            "Needs a POSIX host with fork/setsid available to strand an inherited pipe.");
+
+        // The command succeeds and its stdout (over the preview cap) reaches EOF, but a daemonized
+        // descendant keeps the inherited stderr, so the runner abandons the post-exit drain. The model
+        // must still get the exit code and stdout's complete output, with stderr reported as not
+        // captured, rather than a retention error for a run that completed.
+        IntelligenceSettings settings = ArcanumRuntimeDefaults.Intelligence with
+        {
+            ToolOutputCapBytes = 65_536,
+        };
+
+        string pidFile = Path.Combine(
+            Path.GetFullPath(_workspace.Root),
+            "descendant-" + Guid.NewGuid().ToString("N") + ".pid");
+
+        try
+        {
+            await using TestMcpSession session = await CreateSessionAsync(
+                intelligenceSettings: settings);
+
+            JsonElement arguments = JsonSerializer.SerializeToElement(
+                new ExecuteCommandParams
+                {
+                    Command = "/usr/bin/ruby",
+                    ArgumentList =
+                    [
+                        "-e",
+                        "STDOUT.write('x' * 100000); STDOUT.flush; fork { fork { Process.setsid; STDOUT.reopen('/dev/null'); File.write('"
+                        + pidFile
+                        + "', Process.pid.to_s); sleep 30 }; exit! 0 }; sleep 0.5; exit 0",
+                    ],
+                },
+                McpJsonSerializerContext.Default.ExecuteCommandParams);
+
+            McpToolsCallResultWire result = await session.CallToolAsync(
+                "execute_command",
+                arguments);
+
+            string output = result.Content![0].Text!;
+
+            Assert.False(result.IsError, output);
+
+            Assert.Contains("--- exit code ---\n0", output, StringComparison.Ordinal);
+
+            Assert.Contains("[stderr not captured:", output, StringComparison.Ordinal);
+
+            string handle = ExtractCompleteOutputHandle(output);
+
+            string completeStdout = await ReadCompleteCommandOutputAsync(
+                session,
+                handle,
+                "stdout");
+
+            Assert.Equal(new string('x', 100_000), completeStdout);
+        }
+        finally
+        {
+            TestDescendantProcess.KillRecorded(pidFile);
+        }
+    }
+
     [Fact]
     public async Task ToolsCall_list_directory_recursive_lists_nested_entries()
     {

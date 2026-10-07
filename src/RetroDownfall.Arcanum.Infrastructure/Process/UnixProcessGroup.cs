@@ -18,6 +18,8 @@ internal static partial class UnixProcessGroup
 
     private const int SigTerm = 15;
 
+    private static readonly TimeSpan TerminationGrace = TimeSpan.FromMilliseconds(100);
+
     internal static void TryKill(int? processGroupId)
     {
         if (OperatingSystem.IsWindows()
@@ -30,7 +32,13 @@ internal static partial class UnixProcessGroup
         _ = Kill(-groupId, SigKill);
     }
 
-    internal static void TryTerminateAndKill(
+    /// <summary>
+    /// SIGTERM, a 100 ms grace, then SIGKILL. The grace is awaited rather than slept: this runs inside
+    /// cancellation callbacks, on the thread of whoever cancels the run (a request abort, the timeout timer),
+    /// and a sleep there would hold that thread and every callback queued behind it. The SIGTERM is sent
+    /// before the method first yields.
+    /// </summary>
+    internal static async Task TerminateAndKillAsync(
         int? processGroupId)
     {
         if (OperatingSystem.IsWindows()
@@ -41,7 +49,10 @@ internal static partial class UnixProcessGroup
         }
 
         _ = Kill(-groupId, SigTerm);
-        Thread.Sleep(100);
+
+        await Task.Delay(TerminationGrace)
+            .ConfigureAwait(false);
+
         _ = Kill(-groupId, SigKill);
     }
 

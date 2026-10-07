@@ -721,6 +721,86 @@ public sealed class CappedChildProcessRunnerTests
         }
     }
 
+    [SkippableFact]
+    public async Task RunAsync_abandoned_drain_keeps_the_spill_of_a_reader_that_finished_and_marks_the_held_one_abandoned()
+    {
+        Skip.IfNot(
+            OperatingSystem.IsMacOS() && File.Exists("/usr/bin/ruby"),
+            "Needs a POSIX host with fork/setsid available to strand an inherited pipe.");
+
+        // A command that succeeds but leaves a daemonized descendant holding stderr: stdout went over
+        // the preview cap and reached EOF, so its complete output is on disk. Giving up on stderr must
+        // not take stdout's complete output with it, and the held stderr must be told apart from a
+        // reader that crossed the cap (it has no complete output to offer), or execute_command turns
+        // the successful run into a retention error.
+        string pidDirectory = Path.Combine(
+            Path.GetTempPath(),
+            "arcanum-abandoned-spill-descendant-test-" + Guid.NewGuid().ToString("N"));
+
+        Directory.CreateDirectory(pidDirectory);
+
+        string spillDirectory = Path.Combine(pidDirectory, "spill");
+
+        Directory.CreateDirectory(spillDirectory);
+
+        string pidFile = Path.Combine(pidDirectory, "descendant.pid");
+
+        try
+        {
+            ProcessStartInfo psi = new()
+            {
+                FileName = "/usr/bin/ruby",
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+            };
+
+            psi.ArgumentList.Add("-e");
+            psi.ArgumentList.Add(
+                "STDOUT.write('x' * 100000); STDOUT.flush; fork { fork { Process.setsid; STDOUT.reopen('/dev/null'); File.write('"
+                + pidFile
+                + "', Process.pid.to_s); sleep 30 }; exit! 0 }; sleep 0.5; exit 0");
+
+            CappedChildProcessRunResult result = await CappedChildProcessRunner.RunAsync(
+                psi,
+                ChildProcessEnvironmentProfile.SpellScript,
+                totalOutputCapBytes: 65_536,
+                timeout: Timeout.InfiniteTimeSpan,
+                resourceLimits: null,
+                resourceLimiter: null,
+                CancellationToken.None,
+                outputSpillDirectory: spillDirectory);
+
+            Assert.Equal(CappedChildProcessOutcome.Completed, result.Outcome);
+
+            Assert.Equal(0, result.ExitCode);
+
+            Assert.True(result.Stdout.Truncated);
+
+            Assert.False(result.Stdout.ReadAbandoned);
+
+            string stdoutPath = Assert.IsType<string>(result.Stdout.CompleteOutputPath);
+
+            Assert.True(
+                File.Exists(stdoutPath),
+                "The abandoned drain deleted the complete output of the reader that had finished.");
+
+            Assert.Equal(100_000, File.ReadAllText(stdoutPath).Length);
+
+            Assert.True(result.Stderr.Truncated);
+
+            Assert.True(result.Stderr.ReadAbandoned);
+
+            Assert.Null(result.Stderr.CompleteOutputPath);
+        }
+        finally
+        {
+            TestDescendantProcess.KillRecorded(pidFile);
+
+            Directory.Delete(pidDirectory, recursive: true);
+        }
+    }
+
     /// <summary>
     /// The shared deadline, on a clock the test advances. Stdout reaches EOF four seconds in and stderr is
     /// held for good; the drain's one 5 s deadline lapses at five seconds on the clock. A drain that waited
