@@ -35,8 +35,9 @@ permissions:
 
 # One run per branch. Before this, a push that superseded another left both queued against the same
 # small pool of macOS runners, and the older run -- testing a commit nobody would act on -- took the
-# slot the newer one needed. Deliberately absent from the release workflows: a release must never be
-# cancelled by whatever is dispatched next.
+# slot the newer one needed. The release workflows never use cancel-in-progress: a release in
+# progress must never be cancelled by whatever is dispatched next (release.yml's own groups keep it
+# false, and only a run still waiting can be superseded).
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true

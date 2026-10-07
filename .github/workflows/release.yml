@@ -50,14 +50,17 @@ permissions:
 # Never cancel a run in progress. Two dispatches that both leave `version` blank would each compute
 # "highest existing beta + 1" and then interleave their per-file uploads into the same draft,
 # shipping a zip from one run beside a checksum file from the other. One group per requested
-# version serializes exactly the runs that could collide: an explicit version is its own group, and
-# every blank version shares `auto`. `cancel-in-progress` stays false because a release must never
-# be cancelled by whatever is dispatched next (the same reason ci.yml carries the opposite setting
-# and this file does not). GitHub keeps one pending run per group, so this is not a queue: a second
-# dispatch waits behind the running release, and a third supersedes (cancels) the one that was
-# waiting. Dispatch again after the running release finishes if a superseded run was wanted. This
-# is the only `concurrency:` in the file: the workflow is also `workflow_call`, and a group on a
-# called job would serialize against the caller's own.
+# version serializes runs that asked for the same thing: an explicit version is its own group, and
+# every blank version shares `auto`. The group is keyed on the input, not on the version prepare
+# resolves, so a blank dispatch that resolves to vX and an explicit vX dispatch still run side by
+# side; the publish job therefore carries a second group keyed on the resolved tag, and asks again
+# whether the release is still a draft immediately before it uploads. `cancel-in-progress` stays
+# false because a release must never be cancelled by whatever is dispatched next (the same reason
+# ci.yml carries the opposite setting and this file does not). GitHub keeps one pending run per
+# group, so this is not a queue: a second dispatch waits behind the running release, and a third
+# supersedes (cancels) the one that was waiting. Dispatch again after the running release finishes
+# if a superseded run was wanted. The publish job's group carries its own `release-publish-` prefix:
+# the workflow is also `workflow_call`, and a called job's group must never equal its caller's.
 concurrency:
   group: release-${{ inputs.version || 'auto' }}
   cancel-in-progress: false
@@ -302,6 +305,10 @@ jobs:
       - prepare
       - macos-arm64
       - windows
+    # One upload per resolved tag at a time, whichever input chose it (see the top-level group).
+    concurrency:
+      group: release-publish-${{ needs.prepare.outputs.tag }}
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -374,9 +381,22 @@ jobs:
           if [[ "$PRERELEASE" == "true" ]]; then
             PRE_ARGS+=(--prerelease)
           fi
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            echo "Release $TAG exists — uploading assets with --clobber"
+          # prepare refused a published release long before this upload, and another run could have
+          # published the tag since, so ask again here: only a draft may be clobbered, and an answer
+          # other than "release not found" fails closed. A reused draft also keeps the target of
+          # the run that created it, so it is moved to the commit these binaries were built from
+          # before anything is uploaded; publishing it then tags that commit.
+          if state="$(gh release view "$TAG" --json isDraft --jq .isDraft 2>&1)"; then
+            if [[ "$state" != "true" ]]; then
+              echo "error: release $TAG was published while this run was building; refusing to replace its assets." >&2
+              exit 1
+            fi
+            echo "Release $TAG exists as a draft — retargeting it to $GITHUB_SHA and uploading assets with --clobber"
+            gh release edit "$TAG" --target "$GITHUB_SHA"
             gh release upload "$TAG" "${ASSETS[@]}" --clobber
+          elif [[ "$state" != *"release not found"* ]]; then
+            echo "error: could not determine whether release $TAG is published: $state" >&2
+            exit 1
           else
             echo "Creating draft release $TAG"
             NOTES_FILE="$RUNNER_TEMP/release-notes.md"

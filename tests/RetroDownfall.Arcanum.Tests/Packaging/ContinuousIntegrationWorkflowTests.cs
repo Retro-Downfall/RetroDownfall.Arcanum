@@ -211,6 +211,37 @@ public sealed class ContinuousIntegrationWorkflowTests
             "Cli.ConfigCommandTests.Cancelling_the_edit_terminates_the_spawned_editor_on_Windows",
             "Data.GrimoireMaintenanceConnectionFactoryTests.OpenJournalCandidateReopenAsync_OpensAWindowsPathContainingSpacePercentHashAndDriveColon",
             "Fixtures.TestDirectoryCleanupTests.TryDelete_reports_a_tree_Windows_cannot_delete_because_a_file_is_still_open",
+            "Api.WorkspaceIndexAliasEndpointTests.Indexed_alias_is_visible_without_changing_persisted_identity_or_crossing_workspace_scope",
+            "Backup.BackupCreateRecoveryHandlerTests.Windows_a_planned_checkpoint_with_an_empty_directory_readable_by_everyone_is_preserved",
+            "Backup.BackupInventoryPlannerTests.Windows_treats_a_trailing_dot_name_as_the_same_destination",
+            "Cli.CommandCenter.CommandCenterTurnAttachmentBuilderTests.Windows_a_reparse_point_that_names_no_other_location_stages",
+            "Cli.CommandCenter.CommandCenterTurnAttachmentBuilderTests.Windows_a_symbolic_link_to_a_regular_file_stages",
+            "Cli.CommandCenter.CommandCenterTurnAttachmentBuilderTests.Windows_an_ordinary_file_stages_by_at_token_and_by_attach",
+            "Cli.CommandCenter.CommandCenterTurnAttachmentBuilderTests.Windows_the_open_reads_an_ordinary_file_and_refuses_a_directory",
+            "Cli.McpWorkspacePathTests.On_Windows_a_real_path_in_another_case_and_separator_is_the_same_location",
+            "Cli.RecentResourceStoreTests.CreateStagingFile_leaves_an_empty_staging_file_owner_only_on_windows",
+            "GrimoireTransitions.GrimoireOfflineTransitionJournalFileStoreTests.Windows_exchange_by_no_replace_renames_publishes_through_the_real_primitives",
+            "Hosting.DaemonManagerTests.Windows_real_runner_install_reports_a_missing_sc_exe_as_a_start_failure_not_an_elevation_problem",
+            "Hosting.DaemonManagerTests.Windows_real_runner_install_without_an_account_refuses_without_starting_sc_exe",
+            "Hosting.DaemonManagerTests.Windows_real_runner_reports_a_start_failure_for_a_missing_sc_exe_as_a_fatal_error",
+            "Hosting.DaemonManagerTests.Windows_real_sc_exe_answers_a_query_for_a_missing_service_with_1060",
+            "Hosting.DaemonProcessRunnerTests.Windows_HungChild_AndItsGrandchild_AreKilledAtTimeout",
+            "Hosting.PidFileOwnershipTests.Windows_look_up_answers_for_the_system_process_whether_or_not_it_can_be_opened",
+            "Hosting.PidFileServiceTests.Windows_a_claim_over_a_file_with_a_pending_delete_is_retried_not_thrown",
+            "Mcp.FileHandleIdentityTests.Windows_handle_identity_is_resolved_from_FileIdInfo",
+            "Mcp.WorkspacePathPolicySymlinkTests.IsPathUnderWorkspaceWithSymlinkCheck_OnWindows_RejectsLinkWhoseTextualInterpretationEscapes",
+            "Security.DataProtectionSecretStoreTests.Windows_secret_save_leaves_the_directory_and_mirror_owner_only",
+            "Security.FileEncryptionRuntimeCompositionTests.Windows_key_ring_directory_is_created_owner_only",
+            "Security.GrimoireKdfSidecarTests.Write_preserves_the_original_failure_when_windows_refuses_the_temp_cleanup",
+            "Security.HostProcessToolsMarkerNativeCapabilityContractTests.The_windows_arm_opens_compare_deletes_and_proves_the_real_fixed_slot_absent",
+            "Security.HttpsCertificateLoaderTests.LoadPem_OnWindows_ProducesSchannelBindableCertificate",
+            "Security.HttpsCertificateLoaderTests.LoadPfx_OnWindows_ProducesSchannelBindableCertificate",
+            "Security.SecureFilePermissionsTests.CreateOwnerOnlyTempFile_is_owner_only_from_the_create_on_windows",
+            "Storage.EncryptedBlobStoreTests.Windows_streaming_writer_replaces_destination_held_open_by_reader",
+            "Weave.WorkspaceIndexingServiceTests.Dot_prefixed_entries_that_Windows_does_not_hide_are_still_never_indexed",
+            "Workspaces.PhysicalFileSystemWriterTests.Windows_lane_alias_spellings_of_protected_metadata_are_refused_and_plant_nothing",
+            "Workspaces.WorkspaceProtectedPathsTests.Windows_lane_stream_suffix_and_numbered_short_name_aliases_are_protected_on_the_host_platform",
+            "Workspaces.WorkspaceProtectedPathsTests.Windows_lane_trailing_dot_git_alias_is_protected_on_the_host_platform",
         ];
 
         string expected = string.Join('|', classes.Select(static name => "FullyQualifiedName~RetroDownfall.Arcanum.Tests." + name)
@@ -397,6 +428,216 @@ public sealed class ContinuousIntegrationWorkflowTests
             + global::System.Environment.NewLine
             + string.Join(global::System.Environment.NewLine, offenders));
     }
+
+    /// <summary>
+    /// The converse of the two checks above. They prove every name the Windows lanes select still
+    /// resolves; nothing proved that a test which can only run on Windows is selected at all. A test
+    /// gated by <c>Skip.IfNot(OperatingSystem.IsWindows())</c> (or skipped for a case when the host
+    /// is not Windows) reports a green skip on macOS, so a Windows lane that does not select it means
+    /// no CI job ever executes it. Both Windows lanes must select every such test, by class or by
+    /// exact name.
+    /// </summary>
+    [Fact]
+    public void Every_windows_gated_test_is_selected_by_both_windows_lanes()
+    {
+        string repositoryRoot = FindRepositoryRoot();
+
+        IReadOnlyList<string> gated = WindowsGatedArcanumTestMethods(repositoryRoot);
+
+        Assert.NotEmpty(gated);
+
+        HashSet<string> known = ArcanumTestMethods()
+            .Select(static method => method.FullName)
+            .ToHashSet(StringComparer.Ordinal);
+
+        Assert.All(gated, name => Assert.Contains(name, known));
+
+        IReadOnlyList<WorkflowJob> jobs = ContinuousIntegrationJobs(repositoryRoot);
+
+        List<string> offenders = [];
+
+        foreach (string jobId in new[] { "windows-suite", "windows-arm64-suite" })
+        {
+            WorkflowJob lane = Assert.Single(jobs, job => job.Id == jobId);
+
+            string command = Assert.Single(lane.Body.Split('\n'), static line => line.Contains("Category!=HostedProducerAnalysis&(", StringComparison.Ordinal));
+
+            (string Operator, string Name)[] entries = TestFilterEntry.Matches(command)
+                .Select(static match => (match.Groups["operator"].Value, match.Groups["name"].Value))
+                .ToArray();
+
+            foreach (string name in gated)
+            {
+                bool selected = entries.Any(entry => entry.Operator == "="
+                    ? string.Equals(entry.Name, name, StringComparison.Ordinal)
+                    : name.Contains(entry.Name, StringComparison.Ordinal));
+
+                if (!selected)
+                {
+                    offenders.Add($"{jobId} does not select {name}");
+                }
+            }
+        }
+
+        Assert.True(
+            offenders.Count == 0,
+            "A test that only runs on Windows is selected by no Windows lane, so no CI job ever "
+            + "executes it. Add it to both Windows filters in ci.yml and to "
+            + nameof(Windows_runtime_selection_retains_native_security_and_operating_system_contracts)
+            + ":"
+            + global::System.Environment.NewLine
+            + string.Join(global::System.Environment.NewLine, offenders));
+    }
+
+    /// <summary>
+    /// The gate detector the test above relies on: it must see the single-line and the wrapped
+    /// <c>Skip.IfNot</c> forms and a per-case <c>Skip.If</c>, and must not mistake the opposite gate
+    /// (skip on Windows) or a mention inside a string for a Windows-only test.
+    /// </summary>
+    [Fact]
+    public void The_windows_gate_detector_recognises_only_windows_only_skips()
+    {
+        static bool Detects(string statement) =>
+            CSharpSyntaxTree.ParseText($"class C {{ void M() {{ {statement} }} }}")
+                .GetRoot()
+                .DescendantNodes()
+                .OfType<InvocationExpressionSyntax>()
+                .Any(IsWindowsOnlySkip);
+
+        Assert.True(Detects("Skip.IfNot(OperatingSystem.IsWindows(), \"reason\");"));
+
+        Assert.True(Detects("Skip.IfNot(\n    OperatingSystem.IsWindows(),\n    \"reason\");"));
+
+        Assert.True(Detects("Skip.IfNot(global::System.OperatingSystem.IsWindows());"));
+
+        Assert.True(Detects("Skip.If(alias == \"windows-case\" && !OperatingSystem.IsWindows(), \"reason\");"));
+
+        Assert.False(Detects("Skip.If(OperatingSystem.IsWindows(), \"POSIX only\");"));
+
+        Assert.False(Detects("Skip.If(\n    !OperatingSystem.IsMacOS()\n        && !OperatingSystem.IsLinux()\n        && !OperatingSystem.IsWindows(),\n    \"Unsupported operating system.\");"));
+
+        Assert.False(Detects("Skip.IfNot(OperatingSystem.IsMacOS(), \"macOS only\");"));
+
+        Assert.False(Detects("string text = \"Skip.IfNot(OperatingSystem.IsWindows())\";"));
+    }
+
+    /// <summary>
+    /// Every Arcanum test method whose body skips unless the host is Windows, named as
+    /// <c>dotnet test</c> names it (namespace, nested types joined by <c>+</c>, method).
+    /// </summary>
+    private static IReadOnlyList<string> WindowsGatedArcanumTestMethods(string repositoryRoot)
+    {
+        string directory = Path.Combine(repositoryRoot, "tests", "RetroDownfall.Arcanum.Tests");
+
+        Assert.True(Directory.Exists(directory), $"Missing Arcanum test project: {directory}");
+
+        string[] attributeNames = ["Fact", "SkippableFact", "Theory", "SkippableTheory"];
+
+        List<string> methods = [];
+
+        foreach (string file in Directory.EnumerateFiles(directory, "*.cs", SearchOption.AllDirectories))
+        {
+            if (file.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}", StringComparison.Ordinal)
+                || file.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            SyntaxNode root = CSharpSyntaxTree.ParseText(File.ReadAllText(file)).GetRoot();
+
+            foreach (MethodDeclarationSyntax method in root.DescendantNodes().OfType<MethodDeclarationSyntax>())
+            {
+                bool isTest = method.AttributeLists
+                    .SelectMany(static list => list.Attributes)
+                    .Any(attribute => attributeNames.Contains(attribute.Name.ToString().Replace("Attribute", string.Empty, StringComparison.Ordinal)));
+
+                if (!isTest || !method.DescendantNodes().OfType<InvocationExpressionSyntax>().Any(IsWindowsOnlySkip))
+                {
+                    continue;
+                }
+
+                string? declaredNamespace = method.Ancestors()
+                    .OfType<BaseNamespaceDeclarationSyntax>()
+                    .FirstOrDefault()
+                    ?.Name.ToString();
+
+                string[] types = method.Ancestors()
+                    .OfType<TypeDeclarationSyntax>()
+                    .Reverse()
+                    .Select(static type => type.Identifier.Text)
+                    .ToArray();
+
+                Assert.False(
+                    declaredNamespace is null || types.Length == 0,
+                    $"{file}: {method.Identifier.Text} is not declared in a namespace-qualified type.");
+
+                methods.Add($"{declaredNamespace}.{string.Join('+', types)}.{method.Identifier.Text}");
+            }
+        }
+
+        return methods;
+    }
+
+    /// <summary>
+    /// A <c>Skip.IfNot</c> whose condition is exactly <c>OperatingSystem.IsWindows()</c>, or a
+    /// <c>Skip.If</c> whose condition carries <c>!OperatingSystem.IsWindows()</c>.
+    /// </summary>
+    private static bool IsWindowsOnlySkip(InvocationExpressionSyntax invocation)
+    {
+        if (invocation.Expression is not MemberAccessExpressionSyntax { Expression: IdentifierNameSyntax { Identifier.Text: "Skip" } } access
+            || invocation.ArgumentList.Arguments.Count == 0)
+        {
+            return false;
+        }
+
+        ExpressionSyntax condition = invocation.ArgumentList.Arguments[0].Expression;
+
+        if (access.Name.Identifier.Text == "IfNot")
+        {
+            return string.Equals(OperatingSystemCheckText(condition), "OperatingSystem.IsWindows()", StringComparison.Ordinal);
+        }
+
+        if (access.Name.Identifier.Text != "If")
+        {
+            return false;
+        }
+
+        // Skip.If(a && b && ...) skips on every host where all conjuncts hold. With a conjunct of
+        // !OperatingSystem.IsWindows() and no other negated host check, only Windows can run it; a
+        // chain such as !IsMacOS() && !IsLinux() && !IsWindows() still runs on macOS.
+        List<string> conjuncts = [];
+
+        CollectConjuncts(condition, conjuncts);
+
+        string[] negatedHostChecks = conjuncts
+            .Where(static conjunct => conjunct.StartsWith("!OperatingSystem.Is", StringComparison.Ordinal))
+            .ToArray();
+
+        return negatedHostChecks is ["!OperatingSystem.IsWindows()"];
+    }
+
+    private static void CollectConjuncts(ExpressionSyntax expression, List<string> conjuncts)
+    {
+        while (expression is ParenthesizedExpressionSyntax parenthesized)
+        {
+            expression = parenthesized.Expression;
+        }
+
+        if (expression is BinaryExpressionSyntax binary && binary.IsKind(SyntaxKind.LogicalAndExpression))
+        {
+            CollectConjuncts(binary.Left, conjuncts);
+
+            CollectConjuncts(binary.Right, conjuncts);
+
+            return;
+        }
+
+        conjuncts.Add(OperatingSystemCheckText(expression));
+    }
+
+    private static string OperatingSystemCheckText(ExpressionSyntax expression) =>
+        string.Concat(expression.ToString().Where(static character => !char.IsWhiteSpace(character)))
+            .Replace("global::System.", string.Empty, StringComparison.Ordinal);
 
     private sealed record TestMethodIdentity(string FullName);
 
@@ -1034,7 +1275,9 @@ public sealed class ContinuousIntegrationWorkflowTests
     /// builds floated on <c>10.0.x</c>, so a release could be built by an SDK no gate had ever run.
     /// The repository's <c>global.json</c> is the single statement, and every <c>setup-dotnet</c>
     /// step reads it, so raising the pin (in lockstep with the macOS portable-pack SHA table in
-    /// <c>Directory.Build.targets</c>) is one edit.
+    /// <c>Directory.Build.targets</c>) is one edit. The pin is exact (<c>rollForward: disable</c>):
+    /// <c>latestPatch</c> made the version a minimum, and a runner image carrying a newer 10.0.4xx
+    /// beside the one <c>setup-dotnet</c> installed would silently build with that one instead.
     /// </summary>
     [Fact]
     public void Every_workflow_pins_the_same_dotnet_sdk_version()
@@ -1053,7 +1296,7 @@ public sealed class ContinuousIntegrationWorkflowTests
 
         Assert.Matches(@"^10\.0\.\d{3}$", version);
 
-        Assert.Contains(sdk.GetProperty("rollForward").GetString(), new[] { "disable", "latestPatch" });
+        Assert.Equal("disable", sdk.GetProperty("rollForward").GetString());
 
         List<string> offenders = [];
 
