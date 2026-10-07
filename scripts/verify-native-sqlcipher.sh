@@ -6,6 +6,8 @@
 #   --manifest-only   Provenance and shape only. No network, no binaries required.
 #   --rid <RID>       Everything above plus the checked-in binary for one RID.
 #   --all             Every shipping RID, including a twice-from-clean rebuild comparison.
+#   --strict          With --rid: a check this host cannot run (UNVERIFIED) fails the run. The job
+#                     whose purpose is that inspection passes it, so a missing tool cannot go green.
 #
 # --all never skips: a RID this host cannot build or inspect is a failure, because a skipped RID
 # reported as a pass is exactly the evidence gap this script exists to close.
@@ -24,6 +26,8 @@ MODE=""
 
 SELECTED_RID=""
 
+STRICT=0
+
 FAILURES=0
 
 UNVERIFIED=0
@@ -34,10 +38,11 @@ LF="
 usage() {
 
   cat <<'EOF'
-Usage: verify-native-sqlcipher.sh (--manifest-only | --rid <RID> | --all)
+Usage: verify-native-sqlcipher.sh (--manifest-only | --rid <RID> [--strict] | --all)
 
   --manifest-only  Validate provenance and manifest shape. Runs offline.
   --rid <RID>      Also validate the checked-in binary for one RID.
+  --strict         With --rid, fail on any check this host cannot run instead of reporting it UNVERIFIED.
   --all            Validate every shipping RID and prove the build reproduces byte for byte.
 EOF
 
@@ -590,10 +595,18 @@ verify_rid_symbols() {
 
       fi
 
-      # Rows read "ordinal hint RVA name", a forwarder reads "name = target", and an export by ordinal
-      # alone has no name. No allow-list by name can vouch for the last kind, so it is reported as a
-      # symbol outside the SQLite C API.
-      exported="$(printf '%s\n' "${dump}" | awk '$1 ~ /^[0-9]+$/ && $2 ~ /^[0-9A-Fa-f]+$/ && $3 ~ /^[0-9A-Fa-f]+$/ { if (NF >= 4) { print $4 } else { print "<ordinal " $1 ">" } }')"
+      # A named export reads "ordinal hint RVA name" and a forwarder "ordinal hint name (forwarded to
+      # target)". An export by ordinal alone has no hint, because hints index the name table, so it
+      # reads "ordinal RVA [NONAME]" (or "ordinal RVA"): its second field is the eight-digit RVA
+      # rather than a short hint. No allow-list by name can vouch for that kind, so it is reported
+      # as "<ordinal N>", a symbol outside the SQLite C API.
+      exported="$(printf '%s\n' "${dump}" | awk '
+        $1 ~ /^[0-9]+$/ && $2 ~ /^[0-9A-Fa-f]+$/ {
+          if (length($2) == 8) { name = $3 }
+          else if (length($2) <= 4 && NF >= 3) { name = (length($3) == 8 && $3 ~ /^[0-9A-Fa-f]+$/) ? $4 : $3 }
+          else { next }
+          if (name == "" || name == "[NONAME]") { print "<ordinal " $1 ">" } else { print name }
+        }')"
 
       if [ -z "${exported}" ]; then
 
@@ -932,6 +945,8 @@ while [ "$#" -gt 0 ]; do
 
     --rid) MODE="rid" ; SELECTED_RID="${2:-}" ; shift 2 ;;
 
+    --strict) STRICT=1 ; shift ;;
+
     --all) MODE="all" ; shift ;;
 
     -h | --help) usage ; exit 0 ;;
@@ -969,6 +984,12 @@ case "${MODE}" in
     fi
 
     verify_rid_binary "${SELECTED_RID}"
+
+    if [ "${STRICT}" -eq 1 ] && [ "${UNVERIFIED}" -ne 0 ]; then
+
+      fail "--strict found ${UNVERIFIED} unverified check(s) above; this run exists to perform them, so an unverified check is not a pass"
+
+    fi
 
     ;;
 

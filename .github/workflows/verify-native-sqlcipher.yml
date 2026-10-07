@@ -35,8 +35,9 @@ permissions:
 
 # One run per branch. Before this, a push that superseded another left both queued against the same
 # small pool of macOS runners, and the older run -- testing a commit nobody would act on -- took the
-# slot the newer one needed. Deliberately absent from the release workflows: a release must never be
-# cancelled by whatever is dispatched next.
+# slot the newer one needed. The release workflows never use cancel-in-progress: a release in
+# progress must never be cancelled by whatever is dispatched next (release.yml's own groups keep it
+# false, and only a run still waiting can be superseded).
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -150,12 +151,13 @@ jobs:
       # the MSVC toolchain is set up, so the script runs its dumpbin -exports and -dependents
       # checks (a non-sqlite3_ export, a missing sqlite3_open, or an import the manifest does not
       # declare, or declares and the binary lacks, fails the job). Provenance, hash, and compile
-      # options run first, exactly as on the macOS lane.
+      # options run first, exactly as on the macOS lane. --strict makes a dumpbin this bash step
+      # cannot resolve a failure rather than two UNVERIFIED lines on a green job.
       - name: Verify the checked-in asset
         shell: bash
         env:
           RID: ${{ matrix.rid }}
-        run: ./scripts/verify-native-sqlcipher.sh --rid "$RID"
+        run: ./scripts/verify-native-sqlcipher.sh --rid "$RID" --strict
 
       - name: Build the hermetic library
         shell: pwsh

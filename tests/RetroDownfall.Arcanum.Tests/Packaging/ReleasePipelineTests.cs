@@ -524,11 +524,28 @@ public sealed class ReleasePipelineTests
 
         Assert.DoesNotContain("cancel-in-progress: true", release, StringComparison.Ordinal);
 
-        // Never on a job: this workflow is also workflow_call, and a called job's group would
-        // serialize against the caller's.
+        // The top-level group is keyed on the requested input, so a blank dispatch that resolves to
+        // vX and an explicit vX dispatch fall in different groups. The upload itself is therefore
+        // also serialized per resolved tag, on the publish job. Its group name carries its own
+        // prefix, so it can never equal a caller's group when this workflow is called.
         Assert.Equal(
-            1,
+            2,
             release.Split('\n').Count(static line => line.TrimStart().StartsWith("concurrency:", StringComparison.Ordinal)));
+
+        int publishJob = release.IndexOf("\n  publish:\n", StringComparison.Ordinal);
+
+        Assert.True(publishJob > jobs, "release.yml lost its publish job.");
+
+        int publishSteps = release.IndexOf("\n    steps:\n", publishJob, StringComparison.Ordinal);
+
+        Assert.True(publishSteps > publishJob, "release.yml's publish job declares no steps.");
+
+        string publishHeader = release[publishJob..publishSteps];
+
+        Assert.Contains(
+            "\n    concurrency:\n      group: release-publish-${{ needs.prepare.outputs.tag }}\n      cancel-in-progress: false\n",
+            publishHeader,
+            StringComparison.Ordinal);
 
         string macOs = File
             .ReadAllText(Path.Combine(root, ".github", "workflows", "release-macos-arm64.yml"))
@@ -628,6 +645,63 @@ public sealed class ReleasePipelineTests
             offenders.Count == 0,
             "A gh release create does not pass --target \"$GITHUB_SHA\", so publishing the draft would "
             + "tag the default branch's head instead of the built commit:"
+            + global::System.Environment.NewLine
+            + string.Join(global::System.Environment.NewLine, offenders));
+    }
+
+    /// <summary>
+    /// The other branch of the same step: a release that already exists. The publish-refusal in
+    /// prepare ran long before this upload, so the branch asks again whether the release is still a
+    /// draft, and a published or unreadable answer stops the upload. A reused draft also keeps the
+    /// target of the run that created it, so publishing it would tag that older commit beside these
+    /// binaries; the branch moves the target to the commit this run built before it uploads.
+    /// </summary>
+    [Fact]
+    public void Every_gh_release_upload_rechecks_the_draft_and_retargets_it_first()
+    {
+        int uploads = 0;
+
+        List<string> offenders = [];
+
+        foreach (string workflow in WorkflowFiles())
+        {
+            string folded = string.Join(
+                '\n',
+                ShellScriptLines(File.ReadAllLines(workflow)).Select(static line => line.Text))
+                .Replace("\\\n", " ", StringComparison.Ordinal);
+
+            string[] commands = folded.Split('\n');
+
+            for (int index = 0; index < commands.Length; index++)
+            {
+                if (!commands[index].Contains("gh release upload", StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                uploads++;
+
+                string[] preceding = commands[Math.Max(0, index - 12)..index];
+
+                int check = Array.FindLastIndex(preceding, static line => line.Contains("gh release view \"$TAG\" --json isDraft", StringComparison.Ordinal));
+
+                int refusal = Array.FindLastIndex(preceding, static line => line.Contains("!= \"true\"", StringComparison.Ordinal));
+
+                int retarget = Array.FindLastIndex(preceding, static line => line.Contains("gh release edit \"$TAG\" --target \"$GITHUB_SHA\"", StringComparison.Ordinal));
+
+                if (check < 0 || refusal < check || retarget < refusal)
+                {
+                    offenders.Add($"{Path.GetFileName(workflow)}: {commands[index].Trim()}");
+                }
+            }
+        }
+
+        Assert.True(uploads >= 2, "Expected both release workflows to upload into an existing release.");
+
+        Assert.True(
+            offenders.Count == 0,
+            "A gh release upload is not preceded by a fresh isDraft check that refuses a published "
+            + "release and by gh release edit \"$TAG\" --target \"$GITHUB_SHA\":"
             + global::System.Environment.NewLine
             + string.Join(global::System.Environment.NewLine, offenders));
     }

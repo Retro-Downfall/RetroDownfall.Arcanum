@@ -351,9 +351,21 @@ jobs:
           if [[ "$PRERELEASE" == "true" ]]; then
             PRE_ARGS+=(--prerelease)
           fi
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            echo "Release $TAG exists — uploading assets with --clobber"
+          # The refusal before the build ran about two hours ago, and the release could have been
+          # published since, so ask again here: only a draft may be clobbered, and an answer other
+          # than "release not found" fails closed. A reused draft keeps the target of the run that
+          # created it, so it is moved to the commit these binaries were built from first.
+          if state="$(gh release view "$TAG" --json isDraft --jq .isDraft 2>&1)"; then
+            if [[ "$state" != "true" ]]; then
+              echo "error: release $TAG was published while this run was building; refusing to replace its assets." >&2
+              exit 1
+            fi
+            echo "Release $TAG exists as a draft — retargeting it to $GITHUB_SHA and uploading assets with --clobber"
+            gh release edit "$TAG" --target "$GITHUB_SHA"
             gh release upload "$TAG" "${ASSETS[@]}" --clobber
+          elif [[ "$state" != *"release not found"* ]]; then
+            echo "error: could not determine whether release $TAG is published: $state" >&2
+            exit 1
           else
             echo "Creating draft release $TAG"
             NOTES_FILE="$RUNNER_TEMP/release-notes.md"
