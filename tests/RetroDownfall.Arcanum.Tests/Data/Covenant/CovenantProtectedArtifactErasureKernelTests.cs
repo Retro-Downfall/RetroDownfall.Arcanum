@@ -284,6 +284,93 @@ public sealed class CovenantProtectedArtifactErasureKernelTests
         Assert.Equal(1, await fixture.CountAsync("SELECT COUNT(*) FROM artifact_sensitivity;"));
     }
 
+    /// <summary>
+    /// A statement the schema refuses inside the purge is durable state disagreeing with itself.
+    /// </summary>
+    /// <remarks>
+    /// A guard trigger's abort surfaces as <c>SQLITE_CONSTRAINT</c>, which is the database saying the
+    /// delete would break a rule it enforces. That is an integrity failure an operator has to look at,
+    /// and the whole transaction rolls back with the artifact and its label left in place.
+    /// </remarks>
+    [Fact]
+    public async Task A_constraint_refusal_inside_the_purge_is_an_integrity_failure_and_deletes_nothing()
+    {
+        await using ErasureFixture fixture = await ErasureFixture.CreateAsync();
+
+        Guid artifactId = Guid.NewGuid();
+
+        Guid labelId = await fixture.SeedLabelAsync(artifactId, SensitiveArtifactKind.Saga, SessionId);
+
+        await fixture.SeedSagaAsync(artifactId);
+
+        await fixture.ExecuteAsync(
+            """
+            CREATE TRIGGER saga_memories_refuse_delete BEFORE DELETE ON saga_memories
+            BEGIN
+                SELECT RAISE(ABORT, 'refused');
+            END;
+            """);
+
+        Result<CovenantArtifactErasureProgress> erased = await EraseUnderExclusiveAsync(
+            fixture,
+            fixture.Page(artifactId, labelId, SensitiveArtifactKind.Saga, SessionId));
+
+        Assert.True(erased.IsSuccess);
+
+        Assert.Equal(CovenantErasureBlocker.IntegrityFailure, erased.Value.Blocker);
+
+        Assert.Equal(0UL, erased.Value.ErasedCount);
+
+        Assert.Equal(1, await fixture.CountAsync("SELECT COUNT(*) FROM artifact_sensitivity;"));
+
+        Assert.Equal(1, await fixture.CountAsync("SELECT COUNT(*) FROM saga_memories;"));
+    }
+
+    /// <summary>
+    /// A storage error that says nothing about the artifact's data is not reported as corrupt data.
+    /// </summary>
+    /// <remarks>
+    /// A missing table (here the Tapestry tables an Entry purge reaches) is <c>SQLITE_ERROR</c>: a
+    /// schema the purge cannot run against, not durable state disagreeing with itself. Calling it an
+    /// integrity failure sends an operator looking for corruption that is not there. It is still a
+    /// blocker, never a success: the transaction rolls back, and the Entry and its label stay.
+    /// </remarks>
+    [Fact]
+    public async Task A_missing_table_inside_the_purge_is_storage_unavailable_and_deletes_nothing()
+    {
+        await using ErasureFixture fixture = await ErasureFixture.CreateAsync();
+
+        Guid artifactId = Guid.NewGuid();
+
+        Guid labelId = await fixture.SeedLabelAsync(
+            artifactId,
+            SensitiveArtifactKind.AssistantEntry,
+            SessionId);
+
+        await fixture.SeedCommittedAssistantEntryAsync(artifactId);
+
+        await fixture.ExecuteAsync(
+            """
+            DROP TABLE tapestry_node_embeddings;
+            DROP TABLE tapestry_nodes;
+            DROP TABLE tapestry_generations;
+            """);
+
+        Result<CovenantArtifactErasureProgress> erased = await EraseUnderExclusiveAsync(
+            fixture,
+            fixture.Page(artifactId, labelId, SensitiveArtifactKind.AssistantEntry, SessionId));
+
+        Assert.True(erased.IsSuccess);
+
+        Assert.Equal(CovenantErasureBlocker.StorageUnavailable, erased.Value.Blocker);
+
+        Assert.Equal(0UL, erased.Value.ErasedCount);
+
+        Assert.Equal(1, await fixture.CountAsync("SELECT COUNT(*) FROM artifact_sensitivity;"));
+
+        Assert.Equal(1, await fixture.CountAsync("SELECT COUNT(*) FROM \"Entries\";"));
+    }
+
     [Fact]
     public async Task An_artifact_whose_label_is_already_gone_is_counted_without_being_deleted_twice()
     {
@@ -457,6 +544,23 @@ public sealed class CovenantProtectedArtifactErasureKernelTests
         Assert.Equal(1, await fixture.CountAsync("SELECT COUNT(*) FROM tapestry_generations WHERE GenerationId = 'other-session-generation';"));
 
         Assert.Equal(1, await fixture.CountAsync("SELECT COUNT(*) FROM tapestry_node_embeddings_vec WHERE NodeId = 'other-session-generation-node';"));
+    }
+
+    private static async Task<Result<CovenantArtifactErasureProgress>> EraseUnderExclusiveAsync(
+        ErasureFixture fixture,
+        CovenantProtectedArtifactErasurePage page)
+    {
+        CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate();
+
+        await using CovenantExclusiveLease lease = (await gate.AcquireExclusiveAsync(
+            CovenantOperationGateFixture.Owner(CovenantExclusiveOperation.CovenantFamilyReinitialize),
+            Token)).Value;
+
+        CovenantArtifactErasureAuthority authority = CovenantArtifactErasureAuthority
+            .ForExclusive(lease, CovenantExclusiveOperation.CovenantFamilyReinitialize)
+            .Value;
+
+        return await fixture.Kernel.ErasePageAsync(page, authority, Token);
     }
 
     private static string Format(Guid value) => value.ToString("D").ToUpperInvariant();

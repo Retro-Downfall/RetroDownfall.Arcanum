@@ -206,6 +206,14 @@ internal sealed class CovenantProtectedArtifactErasureKernel(
     ICovenantSqliteConnectionInitializer initializer,
     TimeProvider timeProvider) : ICovenantProtectedArtifactErasureKernel
 {
+    private const int SqliteCorrupt = 11;
+
+    private const int SqliteConstraint = 19;
+
+    private const int SqliteMismatch = 20;
+
+    private const int SqliteNotADatabase = 26;
+
     private readonly ICovenantConnectionSource _connections =
         connections ?? throw new ArgumentNullException(nameof(connections));
 
@@ -345,11 +353,28 @@ internal sealed class CovenantProtectedArtifactErasureKernel(
                     rule.Value.AppendsErasureReceipt ? 1UL : 0UL,
                     CovenantErasureBlocker.None));
         }
-        catch (SqliteException)
+        catch (SqliteException exception)
         {
-            return Blocked(CovenantErasureBlocker.IntegrityFailure);
+            return Blocked(StorageBlocker(exception));
         }
     }
+
+    /// <summary>
+    /// Classifies a SQLite error raised inside an item's transaction onto the closed blocker vocabulary.
+    /// </summary>
+    /// <remarks>
+    /// Only the codes that are statements about the stored data are integrity failures: a constraint or
+    /// guard-trigger refusal, a datatype mismatch, and a file that is corrupt or not a database under
+    /// this key. Everything else — a missing table or column, a statement the schema cannot run, an I/O
+    /// error, a database still busy after its retries — says the engine could not carry out the purge,
+    /// not that durable state disagrees with itself, and reporting it as an integrity failure would send
+    /// an operator looking for corruption that is not there. Either way the transaction rolled back and
+    /// the item is blocked, never counted as erased.
+    /// </remarks>
+    private static CovenantErasureBlocker StorageBlocker(SqliteException exception) =>
+        exception.SqliteErrorCode is SqliteCorrupt or SqliteConstraint or SqliteMismatch or SqliteNotADatabase
+            ? CovenantErasureBlocker.IntegrityFailure
+            : CovenantErasureBlocker.StorageUnavailable;
 
     /// <summary>
     /// Deletes the current pointer when the rule repairs it and redacts the shadowed column, then the
