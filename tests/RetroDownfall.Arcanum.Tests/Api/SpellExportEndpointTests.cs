@@ -49,6 +49,8 @@ public sealed class SpellExportEndpointTests(ArcanumWebApplicationFactory factor
 
         Assert.Contains("\"omittedScripts\":[\"too-big.sh\"]", json, StringComparison.Ordinal);
 
+        Assert.Contains("\"omittedScriptCount\":1", json, StringComparison.Ordinal);
+
         ApiResponse<SpellExportDto>? envelope = JsonSerializer.Deserialize(json, ArcanumJsonContext.Default.ApiResponseSpellExportDto);
 
         Assert.NotNull(envelope);

@@ -92,15 +92,25 @@ public sealed class A2ACallbackEndpointTests
         _ = await Assert.ThrowsAsync<GrimoireMaintenanceUnavailableException>(() => SettleAsync(ledger, token));
     }
 
+    /// <summary>
+    /// A wrong token for a config id that exists is answered byte for byte as an unknown config id is, so an
+    /// anonymous caller cannot tell from the response which config ids exist.
+    /// </summary>
     [Fact]
-    public async Task SettleFromLedger_with_the_wrong_token_is_a_404_and_settles_nothing()
+    public async Task SettleFromLedger_with_the_wrong_token_is_the_404_an_unknown_config_gets_and_settles_nothing()
     {
         FakeLedger ledger = new(
             new A2AOutboundCallback("task-1", "https://peer.example", A2ACallbackToken.Hash(A2ACallbackToken.Mint()), Entry));
 
-        (IResult result, _) = await SettleAsync(ledger, A2ACallbackToken.Mint());
+        (IResult result, string body) = await SettleAsync(ledger, A2ACallbackToken.Mint());
+
+        (IResult unknown, string unknownBody) = await SettleAsync(new FakeLedger(callback: null), A2ACallbackToken.Mint());
 
         Assert.Equal(StatusCodes.Status404NotFound, StatusOf(result));
+
+        Assert.Equal(StatusOf(unknown), StatusOf(result));
+
+        Assert.Equal(unknownBody, body);
 
         Assert.Equal(0, ledger.Settled);
     }
