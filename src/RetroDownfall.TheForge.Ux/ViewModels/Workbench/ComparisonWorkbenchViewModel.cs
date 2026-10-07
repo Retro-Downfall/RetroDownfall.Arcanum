@@ -26,7 +26,6 @@ namespace RetroDownfall.TheForge.Ux.ViewModels.Workbench;
 /// </summary>
 public sealed partial class ComparisonWorkbenchViewModel : ViewModelBase, IDisposable
 {
-
     public const string SingletonDocumentId = "comparison-workbench";
 
     public const string SensitiveHistoryWarning =
@@ -87,9 +86,8 @@ public sealed partial class ComparisonWorkbenchViewModel : ViewModelBase, IDispo
         IArtifactFileDialogService fileDialog,
         INavigationService navigation,
         ITheForgeLocalMutationRunner mutationRunner,
-        IInferenceTraceStore? traceStore = null)
+        IInferenceTraceStore traceStore)
     {
-
         _dataSource = dataSource;
 
         _runStore = runStore;
@@ -118,7 +116,6 @@ public sealed partial class ComparisonWorkbenchViewModel : ViewModelBase, IDispo
         Variants.Add(new ComparisonVariantDraftViewModel { Label = "B", SourceKind = ComparisonSourceKind.FreePrompt });
 
         SelectedVariant = Variants[0];
-
     }
 
     public override DocumentKind? Kind => DocumentKind.Comparison;
@@ -147,7 +144,6 @@ public sealed partial class ComparisonWorkbenchViewModel : ViewModelBase, IDispo
     [RelayCommand]
     public void AddVariant()
     {
-
         string label = ((char)('A' + Variants.Count)).ToString();
 
         ComparisonVariantDraftViewModel draft = new() { Label = label, SourceKind = ComparisonSourceKind.FreePrompt };
@@ -155,49 +151,39 @@ public sealed partial class ComparisonWorkbenchViewModel : ViewModelBase, IDispo
         Variants.Add(draft);
 
         SelectedVariant = draft;
-
     }
 
     [RelayCommand]
     public void RemoveSelectedVariant()
     {
-
         if (SelectedVariant is null || Variants.Count <= 1)
         {
-
             return;
-
         }
 
         Variants.Remove(SelectedVariant);
 
         SelectedVariant = Variants[0];
-
     }
 
     [RelayCommand]
     public async Task LoadHistoryAsync(CancellationToken cancellationToken)
     {
-
         ComparisonStoreDocument document = await _runStore.LoadAsync(cancellationToken).ConfigureAwait(true);
 
         History.Clear();
 
         foreach (ComparisonRunRecord run in document.Runs)
         {
-
             History.Add(run);
-
         }
 
         StatusText = $"Loaded {History.Count} comparison run(s).";
-
     }
 
     [RelayCommand]
     public async Task ClearHistoryAsync(CancellationToken cancellationToken)
     {
-
         bool confirmed = await _confirmationDialog
             .ConfirmAsync(
                 "Clear comparison history?",
@@ -207,16 +193,13 @@ public sealed partial class ComparisonWorkbenchViewModel : ViewModelBase, IDispo
 
         if (!confirmed)
         {
-
             return;
-
         }
 
         DateTimeOffset now = DateTimeOffset.UtcNow;
 
         try
         {
-
             await _runStore
                 .UpdateAsync(
                     (document, _) => Task.FromResult(
@@ -227,11 +210,9 @@ public sealed partial class ComparisonWorkbenchViewModel : ViewModelBase, IDispo
                             [])),
                     cancellationToken)
                 .ConfigureAwait(true);
-
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-
             LastError = ex.Message;
 
             StatusText = "Comparison history was not cleared.";
@@ -241,42 +222,33 @@ public sealed partial class ComparisonWorkbenchViewModel : ViewModelBase, IDispo
             _whispers.Show(WhisperSeverity.Error, "Comparison history clear blocked.");
 
             return;
-
         }
 
         History.Clear();
 
         StatusText = "Comparison history cleared.";
-
     }
 
     [RelayCommand]
     public void Cancel()
     {
-
         _runCts?.Cancel();
-
     }
 
     [RelayCommand]
     public async Task RunAsync(CancellationToken cancellationToken)
     {
-
         if (IsBusy || Variants.Count == 0)
         {
-
             return;
-
         }
 
         if (string.IsNullOrWhiteSpace(SharedInput)
             && Variants.All(static v => v.SourceKind == ComparisonSourceKind.FreePrompt))
         {
-
             LastError = "Shared input is required for free-prompt variants.";
 
             return;
-
         }
 
         _runCts?.Cancel();
@@ -311,19 +283,16 @@ public sealed partial class ComparisonWorkbenchViewModel : ViewModelBase, IDispo
 
         try
         {
-
             await _runStore
                 .UpdateAsync(
                     async (document, admittedCancellationToken) =>
                     {
-
                         _pricing ??= await _dataSource
                             .GetPricingAsync(admittedCancellationToken)
                             .ConfigureAwait(true);
 
                         foreach (ComparisonVariantDraftViewModel variant in Variants.ToArray())
                         {
-
                             admittedCancellationToken.ThrowIfCancellationRequested();
 
                             ComparisonVariantResultViewModel result = await RunVariantAsync(
@@ -334,21 +303,16 @@ public sealed partial class ComparisonWorkbenchViewModel : ViewModelBase, IDispo
                             Results.Add(result);
 
                             persistedVariants.Add(result.ToRecord());
-
                         }
 
                         if (Results.Count > 0)
                         {
-
                             LeftResult = Results[0];
-
                         }
 
                         if (Results.Count > 1)
                         {
-
                             RightResult = Results[1];
-
                         }
 
                         await RefreshDiffAsync(admittedCancellationToken).ConfigureAwait(true);
@@ -371,7 +335,6 @@ public sealed partial class ComparisonWorkbenchViewModel : ViewModelBase, IDispo
                             document.CreatedAt,
                             DateTimeOffset.UtcNow,
                             runs);
-
                     },
                     runToken)
                 .ConfigureAwait(true);
@@ -385,19 +348,15 @@ public sealed partial class ComparisonWorkbenchViewModel : ViewModelBase, IDispo
             _foundryFloor.AppendLine($"Comparison Workbench finished {Results.Count} variant(s).");
 
             _whispers.Show(WhisperSeverity.Success, "Comparison complete.");
-
         }
         catch (OperationCanceledException)
         {
-
             StatusText = "Comparison cancelled.";
 
             _whispers.Show(WhisperSeverity.Info, "Comparison cancelled.");
-
         }
         catch (Exception ex)
         {
-
             LastError = ex.Message;
 
             StatusText = "Comparison failed.";
@@ -405,15 +364,11 @@ public sealed partial class ComparisonWorkbenchViewModel : ViewModelBase, IDispo
             _foundryFloor.AppendLine($"Comparison Workbench error: {ex.Message}");
 
             _whispers.Show(WhisperSeverity.Error, "Comparison failed.");
-
         }
         finally
         {
-
             IsBusy = false;
-
         }
-
     }
 
     partial void OnLeftResultChanged(ComparisonVariantResultViewModel? value) =>
@@ -431,7 +386,6 @@ public sealed partial class ComparisonWorkbenchViewModel : ViewModelBase, IDispo
     [RelayCommand]
     public async Task RefreshDiffAsync(CancellationToken cancellationToken)
     {
-
         int generation = ++_diffRefreshGeneration;
 
         string left = LeftResult?.Output ?? string.Empty;
@@ -446,42 +400,32 @@ public sealed partial class ComparisonWorkbenchViewModel : ViewModelBase, IDispo
 
         if (generation != _diffRefreshGeneration)
         {
-
             return;
-
         }
 
         DiffLines.ResetTo(lines);
-
     }
 
     [RelayCommand]
     public void PromoteLeftToEditor()
     {
-
         Promote(LeftResult);
-
     }
 
     [RelayCommand]
     public void PromoteRightToEditor()
     {
-
         Promote(RightResult);
-
     }
 
     [RelayCommand]
     public async Task ExportJsonAsync(CancellationToken cancellationToken)
     {
-
         if (SelectedHistoryRun is null && Results.Count == 0)
         {
-
             LastError = "Nothing to export.";
 
             return;
-
         }
 
         string? path = await _fileDialog
@@ -490,16 +434,13 @@ public sealed partial class ComparisonWorkbenchViewModel : ViewModelBase, IDispo
 
         if (string.IsNullOrWhiteSpace(path))
         {
-
             return;
-
         }
 
         if (!await TryWriteExportAsync(
                 path,
                 () =>
                 {
-
                     ComparisonRunRecord run = SelectedHistoryRun
                         ?? new ComparisonRunRecord(
                             Guid.NewGuid(),
@@ -513,34 +454,27 @@ public sealed partial class ComparisonWorkbenchViewModel : ViewModelBase, IDispo
                     return JsonSerializer.Serialize(
                         run,
                         TheForgeComparisonsJsonContext.Default.ComparisonRunRecord);
-
                 },
                 "JSON",
                 cancellationToken)
             .ConfigureAwait(true))
         {
-
             return;
-
         }
 
         StatusText = "Comparison exported (JSON).";
-
     }
 
     [RelayCommand]
     public async Task ExportMarkdownAsync(CancellationToken cancellationToken)
     {
-
         string? path = await _fileDialog
             .PickSaveJsonPathAsync($"comparison-{DateTimeOffset.UtcNow:yyyyMMddHHmmss}.md", cancellationToken)
             .ConfigureAwait(true);
 
         if (string.IsNullOrWhiteSpace(path))
         {
-
             return;
-
         }
 
         if (!await TryWriteExportAsync(
@@ -550,28 +484,22 @@ public sealed partial class ComparisonWorkbenchViewModel : ViewModelBase, IDispo
                 cancellationToken)
             .ConfigureAwait(true))
         {
-
             return;
-
         }
 
         StatusText = "Comparison exported (Markdown).";
-
     }
 
     [RelayCommand]
     public async Task ExportCsvAsync(CancellationToken cancellationToken)
     {
-
         string? path = await _fileDialog
             .PickSaveJsonPathAsync($"comparison-{DateTimeOffset.UtcNow:yyyyMMddHHmmss}.csv", cancellationToken)
             .ConfigureAwait(true);
 
         if (string.IsNullOrWhiteSpace(path))
         {
-
             return;
-
         }
 
         if (!await TryWriteExportAsync(
@@ -581,13 +509,10 @@ public sealed partial class ComparisonWorkbenchViewModel : ViewModelBase, IDispo
                 cancellationToken)
             .ConfigureAwait(true))
         {
-
             return;
-
         }
 
         StatusText = "Comparison exported (CSV).";
-
     }
 
     /// <summary>
@@ -612,10 +537,8 @@ public sealed partial class ComparisonWorkbenchViewModel : ViewModelBase, IDispo
         string format,
         CancellationToken cancellationToken)
     {
-
         try
         {
-
             await _mutationRunner
                 .RunAsync(
                     path,
@@ -628,19 +551,15 @@ public sealed partial class ComparisonWorkbenchViewModel : ViewModelBase, IDispo
                 .ConfigureAwait(true);
 
             return true;
-
         }
         catch (OperationCanceledException)
         {
-
             StatusText = "Comparison export cancelled.";
 
             return false;
-
         }
         catch (Exception ex)
         {
-
             LastError = ex.Message;
 
             StatusText = $"Comparison export failed ({format}).";
@@ -650,14 +569,11 @@ public sealed partial class ComparisonWorkbenchViewModel : ViewModelBase, IDispo
             _whispers.Show(WhisperSeverity.Error, "Comparison export failed.");
 
             return false;
-
         }
-
     }
 
     private string BuildMarkdownExport()
     {
-
         StringBuilder sb = new();
 
         sb.AppendLine("# Comparison Workbench");
@@ -670,7 +586,6 @@ public sealed partial class ComparisonWorkbenchViewModel : ViewModelBase, IDispo
 
         foreach (ComparisonVariantResultViewModel result in Results)
         {
-
             sb.AppendLine($"## {result.Label}");
 
             sb.AppendLine();
@@ -692,23 +607,19 @@ public sealed partial class ComparisonWorkbenchViewModel : ViewModelBase, IDispo
             sb.AppendLine(result.Output);
 
             sb.AppendLine();
-
         }
 
         return sb.ToString();
-
     }
 
     private string BuildCsvExport()
     {
-
         StringBuilder sb = new();
 
         sb.AppendLine("Label,Model,Provider,PromptTokens,CompletionTokens,TotalTokens,CachedTokens,LatencyMs,FinishReason,CostLabel,CostUsd,Error");
 
         foreach (ComparisonVariantResultViewModel result in Results)
         {
-
             sb.Append(Csv(result.Label)).Append(',')
                 .Append(Csv(result.Model)).Append(',')
                 .Append(Csv(result.Provider)).Append(',')
@@ -722,18 +633,15 @@ public sealed partial class ComparisonWorkbenchViewModel : ViewModelBase, IDispo
                 .Append(result.CostUsd?.ToString(CultureInfo.InvariantCulture) ?? "").Append(',')
                 .Append(Csv(result.Error))
                 .AppendLine();
-
         }
 
         return sb.ToString();
-
     }
 
     private async Task<ComparisonVariantResultViewModel> RunVariantAsync(
         ComparisonVariantDraftViewModel variant,
         CancellationToken cancellationToken)
     {
-
         Stopwatch sw = Stopwatch.StartNew();
 
         StringBuilder output = new();
@@ -752,63 +660,45 @@ public sealed partial class ComparisonWorkbenchViewModel : ViewModelBase, IDispo
 
         try
         {
-
             await foreach (IntelligenceEvent ev in CreateStream(variant, cancellationToken).ConfigureAwait(true))
             {
-
                 Trace.Capture(ev);
 
                 if (ev.Type == IntelligenceEventType.Token && !string.IsNullOrEmpty(ev.Data))
                 {
-
                     output.Append(ev.Data);
-
                 }
 
                 if (ev.Type == IntelligenceEventType.ToolCall && !string.IsNullOrWhiteSpace(ev.ToolCall?.Name))
                 {
-
                     toolNames.Add(ev.ToolCall!.Name);
-
                 }
 
                 if (ev.Type == IntelligenceEventType.Result)
                 {
-
                     usage = ev.Usage ?? usage;
 
                     finishReason = ev.FinishReason ?? finishReason;
 
                     if (!string.IsNullOrWhiteSpace(ev.Message) && output.Length == 0)
                     {
-
                         output.Append(ev.Message);
-
                     }
-
                 }
 
                 if (ev.Type == IntelligenceEventType.Error)
                 {
-
                     error = ev.Message;
-
                 }
-
             }
-
         }
         catch (OperationCanceledException)
         {
-
             throw;
-
         }
         catch (Exception ex)
         {
-
             error = ex.Message;
-
         }
 
         sw.Stop();
@@ -835,14 +725,12 @@ public sealed partial class ComparisonWorkbenchViewModel : ViewModelBase, IDispo
             ToolCallNames = toolNames,
             Error = error,
         };
-
     }
 
     private IAsyncEnumerable<IntelligenceEvent> CreateStream(
         ComparisonVariantDraftViewModel variant,
         CancellationToken cancellationToken)
     {
-
         float? temperature = ParseFloat(variant.TemperatureText);
 
         float? topP = ParseFloat(variant.TopPText);
@@ -883,35 +771,26 @@ public sealed partial class ComparisonWorkbenchViewModel : ViewModelBase, IDispo
                 maxOutputTokens,
                 cancellationToken),
         };
-
     }
 
     private void Promote(ComparisonVariantResultViewModel? result)
     {
-
         if (result is null)
         {
-
             return;
-
         }
 
         if (result.SourceKind == ComparisonSourceKind.Prompt && Guid.TryParse(result.SourceId, out Guid promptId))
         {
-
             _navigation.OpenDocument(DocumentKind.Prompt, promptId.ToString("D"));
 
             return;
-
         }
 
         if (result.SourceKind == ComparisonSourceKind.Spell && !string.IsNullOrWhiteSpace(result.SourceId))
         {
-
             _navigation.OpenDocument(DocumentKind.Spell, result.SourceId);
-
         }
-
     }
 
     private static string? ResolveSourceId(ComparisonVariantDraftViewModel variant) =>
@@ -936,28 +815,21 @@ public sealed partial class ComparisonWorkbenchViewModel : ViewModelBase, IDispo
 
     private static string Csv(string? value)
     {
-
         string raw = value ?? string.Empty;
 
         if (raw.Contains('"') || raw.Contains(',') || raw.Contains('\n'))
         {
-
             return "\"" + raw.Replace("\"", "\"\"") + "\"";
-
         }
 
         return raw;
-
     }
 
     public void Dispose()
     {
-
         if (_disposed)
         {
-
             return;
-
         }
 
         _disposed = true;
@@ -965,9 +837,7 @@ public sealed partial class ComparisonWorkbenchViewModel : ViewModelBase, IDispo
         _runCts?.Cancel();
 
         _runCts?.Dispose();
-
     }
-
 }
 
 public enum ComparisonSourceKind
@@ -979,7 +849,6 @@ public enum ComparisonSourceKind
 
 public sealed partial class ComparisonVariantDraftViewModel : ObservableObject
 {
-
     [ObservableProperty]
     private string _label = "A";
 
@@ -1009,12 +878,10 @@ public sealed partial class ComparisonVariantDraftViewModel : ObservableObject
 
     [ObservableProperty]
     private string _maxOutputTokensText = string.Empty;
-
 }
 
 public sealed partial class ComparisonVariantResultViewModel : ObservableObject
 {
-
     public Guid VariantId { get; init; }
 
     public string Label { get; init; } = string.Empty;
@@ -1070,5 +937,4 @@ public sealed partial class ComparisonVariantResultViewModel : ObservableObject
             CostUsd,
             ToolCallNames,
             Error);
-
 }

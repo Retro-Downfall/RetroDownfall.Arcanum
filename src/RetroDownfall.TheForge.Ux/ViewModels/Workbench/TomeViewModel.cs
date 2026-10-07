@@ -97,7 +97,9 @@ public sealed partial class TomeViewModel : ViewModelBase, IDisposable
         FoundryFloorViewModel foundryFloor,
         IClipboardService clipboard,
         IConfirmationDialogService confirmationDialog,
-        ITheForgeLocalMutationRunner mutationRunner)
+        ITheForgeLocalMutationRunner mutationRunner,
+        IInferenceTraceStore traceStore,
+        IArtifactFileDialogService fileDialog)
     {
         SessionId = sessionId;
 
@@ -113,7 +115,7 @@ public sealed partial class TomeViewModel : ViewModelBase, IDisposable
 
         Title = $"Tome: {sessionId:D}";
 
-        Trace = new InferenceTraceViewModel(mutationRunner);
+        Trace = new InferenceTraceViewModel(mutationRunner, traceStore, fileDialog);
     }
 
     public override DocumentKind? Kind => DocumentKind.Session;

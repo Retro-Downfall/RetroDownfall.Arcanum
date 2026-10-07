@@ -10,11 +10,9 @@ namespace RetroDownfall.TheForge.Tests;
 
 public class WorkbenchDocumentFactoryTests
 {
-
     [Fact]
     public void Create_PromptWithGuid_ReturnsScriptorium()
     {
-
         WorkbenchDocumentFactory factory = NewFactory();
 
         Guid promptId = Guid.NewGuid();
@@ -28,25 +26,21 @@ public class WorkbenchDocumentFactoryTests
         Assert.Equal($"Scriptorium: {promptId:D}", scriptorium.Title);
 
         scriptorium.Dispose();
-
     }
 
     [Fact]
     public void Create_PromptWithNonGuid_ReturnsPlaceholder()
     {
-
         WorkbenchDocumentFactory factory = NewFactory();
 
         ViewModelBase doc = factory.Create(DocumentKind.Prompt, "not-a-guid");
 
         Assert.IsType<WorkbenchDocumentPlaceholderViewModel>(doc);
-
     }
 
     [Fact]
     public void Create_Spell_ReturnsSpellEditor()
     {
-
         WorkbenchDocumentFactory factory = NewFactory();
 
         ViewModelBase doc = factory.Create(DocumentKind.Spell, "greater-heal");
@@ -56,13 +50,11 @@ public class WorkbenchDocumentFactoryTests
         Assert.Equal(DocumentKind.Spell, editor.Kind);
 
         Assert.Equal("Spell: greater-heal", editor.Title);
-
     }
 
     [Fact]
     public void Create_SessionWithGuid_ReturnsTome()
     {
-
         WorkbenchDocumentFactory factory = NewFactory();
 
         Guid sessionId = Guid.NewGuid();
@@ -74,13 +66,11 @@ public class WorkbenchDocumentFactoryTests
         Assert.Equal(DocumentKind.Session, tome.Kind);
 
         tome.Dispose();
-
     }
 
     [Fact]
     public void Create_CodexWithCampaignGuid_ReturnsCodexViewModel()
     {
-
         WorkbenchDocumentFactory factory = NewFactory();
 
         Guid campaignId = Guid.NewGuid();
@@ -92,13 +82,11 @@ public class WorkbenchDocumentFactoryTests
         Assert.Equal(DocumentKind.Codex, codex.Kind);
 
         Assert.Equal(campaignId, codex.CampaignId);
-
     }
 
     [Fact]
     public void Create_CodexGlobal_ReturnsGlobalCodexViewModel()
     {
-
         WorkbenchDocumentFactory factory = NewFactory();
 
         ViewModelBase doc = factory.Create(DocumentKind.Codex, "global");
@@ -110,25 +98,21 @@ public class WorkbenchDocumentFactoryTests
         Assert.Null(codex.CampaignId);
 
         Assert.True(codex.IsGlobal);
-
     }
 
     [Fact]
     public void Create_CodexWithInvalidId_ReturnsPlaceholder()
     {
-
         WorkbenchDocumentFactory factory = NewFactory();
 
         ViewModelBase doc = factory.Create(DocumentKind.Codex, "not-a-guid");
 
         Assert.IsType<WorkbenchDocumentPlaceholderViewModel>(doc);
-
     }
 
     [Fact]
     public void Create_MarkdownWithPayload_ReturnsMarkdownDocument()
     {
-
         MarkdownDocumentContentStore store = new();
 
         store.Put("ws:1:readme.md", "readme.md", "# Hello");
@@ -148,13 +132,11 @@ public class WorkbenchDocumentFactoryTests
         Assert.Equal(MarkdownViewMode.Preview, markdown.ViewMode);
 
         markdown.Dispose();
-
     }
 
     [Fact]
     public void Create_MarkdownWithoutPayload_ReturnsPlaceholder()
     {
-
         WorkbenchDocumentFactory factory = NewFactory();
 
         ViewModelBase doc = factory.Create(DocumentKind.Markdown, "ws:missing");
@@ -162,13 +144,11 @@ public class WorkbenchDocumentFactoryTests
         WorkbenchDocumentPlaceholderViewModel placeholder = Assert.IsType<WorkbenchDocumentPlaceholderViewModel>(doc);
 
         Assert.Contains("no longer available", placeholder.EmptyState, StringComparison.OrdinalIgnoreCase);
-
     }
 
     [Fact]
     public void Create_Trial_ReturnsProvingGroundsViewModel()
     {
-
         WorkbenchDocumentFactory factory = NewFactory();
 
         ViewModelBase doc = factory.Create(DocumentKind.Trial, ProvingGroundsViewModel.SingletonDocumentId);
@@ -180,13 +160,11 @@ public class WorkbenchDocumentFactoryTests
         Assert.Equal("Proving Grounds", provingGrounds.Title);
 
         provingGrounds.Dispose();
-
     }
 
     [Fact]
     public void Create_Comparison_ReturnsComparisonWorkbench()
     {
-
         WorkbenchDocumentFactory factory = NewFactory();
 
         ViewModelBase doc = factory.Create(DocumentKind.Comparison, ComparisonWorkbenchViewModel.SingletonDocumentId);
@@ -198,12 +176,61 @@ public class WorkbenchDocumentFactoryTests
         Assert.Equal("Comparison Workbench", comparison.Title);
 
         comparison.Dispose();
-
     }
 
-    private static WorkbenchDocumentFactory NewFactory(IMarkdownDocumentContentStore? store = null)
+    /// <summary>
+    /// Every document that embeds the inference trace panel shows its Export JSON and Save local
+    /// buttons, so each one is built with the registered trace store and file dialog behind them.
+    /// </summary>
+    [Theory]
+    [InlineData(DocumentKind.Session)]
+    [InlineData(DocumentKind.Spell)]
+    [InlineData(DocumentKind.Prompt)]
+    [InlineData(DocumentKind.Comparison)]
+    public async Task Every_trace_panel_saves_to_the_registered_store_and_exports_through_the_dialog(
+        DocumentKind kind)
     {
+        InMemoryInferenceTraceStore traceStore = new();
 
+        WorkbenchDocumentFactory factory = NewFactory(traceStore: traceStore);
+
+        string id = kind switch
+        {
+            DocumentKind.Spell => "greater-heal",
+            DocumentKind.Comparison => ComparisonWorkbenchViewModel.SingletonDocumentId,
+            _ => Guid.NewGuid().ToString("D"),
+        };
+
+        ViewModelBase doc = factory.Create(kind, id);
+
+        InferenceTraceViewModel trace = doc switch
+        {
+            TomeViewModel tome => tome.Trace,
+            SpellEditorViewModel spell => spell.Trace,
+            ScriptoriumViewModel scriptorium => scriptorium.Trace,
+            ComparisonWorkbenchViewModel comparison => comparison.Trace,
+            _ => throw new InvalidOperationException($"No trace panel on {doc.GetType().Name}."),
+        };
+
+        trace.BeginCapture("test", id);
+
+        await trace.PersistAsync(CancellationToken.None);
+
+        Assert.Null(trace.LastError);
+
+        Assert.Single((await traceStore.LoadAsync()).Traces);
+
+        await trace.ExportAsync(CancellationToken.None);
+
+        Assert.Null(trace.LastError);
+
+        (doc as IDisposable)?.Dispose();
+    }
+
+    private static WorkbenchDocumentFactory NewFactory(
+        IMarkdownDocumentContentStore? store = null,
+        InMemoryInferenceTraceStore? traceStore = null)
+    {
         FoundryFloorViewModel foundryFloor = new(new NullLogService());
 
         NavigationService navigation = new();
@@ -217,7 +244,7 @@ public class WorkbenchDocumentFactoryTests
             new InMemoryTrialSuiteStore(),
             new InMemoryComparisonRunStore(),
             new NullComparisonWorkbenchDataSource(),
-            new InMemoryInferenceTraceStore(),
+            traceStore ?? new InMemoryInferenceTraceStore(),
             store ?? new MarkdownDocumentContentStore(),
             navigation,
             foundryFloor,
@@ -227,14 +254,11 @@ public class WorkbenchDocumentFactoryTests
             new FakeClipboardService(),
             new FakeWhispersService(),
             ImmediateTheForgeLocalMutationRunner.Instance);
-
     }
-
 }
 
 internal sealed class NullTrialDataSource : ITrialDataSource
 {
-
     public Task<DataSourceResult<RetroDownfall.Arcanum.Core.ProvingGrounds.TrialResult>> RunAsync(
         RetroDownfall.Arcanum.Core.ProvingGrounds.Trial trial,
         CancellationToken cancellationToken) =>
@@ -248,12 +272,10 @@ internal sealed class NullTrialDataSource : ITrialDataSource
     public Task<DataSourceResult<IReadOnlyList<RetroDownfall.Arcanum.Core.Tower.PromptSummaryDto>>> ListPromptsAsync(
         CancellationToken cancellationToken) =>
         Task.FromResult(new DataSourceResult<IReadOnlyList<RetroDownfall.Arcanum.Core.Tower.PromptSummaryDto>>([], true, null, null));
-
 }
 
 internal sealed class NullArtifactFileDialogService : IArtifactFileDialogService
 {
-
     public Task<string?> PickSaveJsonPathAsync(string suggestedFileName, CancellationToken cancellationToken) =>
         Task.FromResult<string?>(null);
 
@@ -267,21 +289,16 @@ internal sealed class NullArtifactFileDialogService : IArtifactFileDialogService
 
     public Task<string?> PickSaveAnyPathAsync(string suggestedFileName, string? defaultExtension, CancellationToken cancellationToken) =>
         Task.FromResult<string?>(null);
-
-
 }
 
 internal sealed class NullTextInputDialogService : ITextInputDialogService
 {
-
     public Task<string?> PromptAsync(string title, string label, string? defaultValue, CancellationToken cancellationToken) =>
         Task.FromResult<string?>(null);
-
 }
 
 internal sealed class NullCodexDataSource : ICodexDataSource
 {
-
     public Task<DataSourceResult<RetroDownfall.Arcanum.Core.Tower.CodexContentDto>> GetCampaignCodexAsync(Guid campaignId, CancellationToken cancellationToken) =>
         Task.FromResult(new DataSourceResult<RetroDownfall.Arcanum.Core.Tower.CodexContentDto>(null, true, null, null));
 
@@ -299,5 +316,4 @@ internal sealed class NullCodexDataSource : ICodexDataSource
 
     public Task<DataSourceResult<bool>> DeleteGlobalCodexAsync(CancellationToken cancellationToken) =>
         Task.FromResult(new DataSourceResult<bool>(true, true, null, null));
-
 }

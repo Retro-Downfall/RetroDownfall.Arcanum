@@ -17,11 +17,9 @@ namespace RetroDownfall.TheForge.Tests;
 
 public class SpellEditorViewModelTests
 {
-
     [Fact]
     public async Task LoadAsync_PopulatesSpellBodyAndMetadata()
     {
-
         FakeSpellEditorDataSource dataSource = new()
         {
             Spell = NewSpellDetail("mend-armor"),
@@ -41,13 +39,11 @@ public class SpellEditorViewModelTests
         Assert.Contains("repair", viewModel.SpellJson);
 
         Assert.Single(viewModel.Versions);
-
     }
 
     [Fact]
     public async Task SaveAsync_SendsUpdateRequestFromEditedState()
     {
-
         FakeSpellEditorDataSource dataSource = new()
         {
             Spell = NewSpellDetail("mend-armor"),
@@ -76,13 +72,11 @@ public class SpellEditorViewModelTests
         Assert.Equal(WhisperSeverity.Success, whisper.Severity);
 
         Assert.Equal("Spell saved.", whisper.Message);
-
     }
 
     [Fact]
     public async Task SaveAsync_WhenRejected_ShowsShortErrorWhisper()
     {
-
         FakeSpellEditorDataSource dataSource = new()
         {
             Spell = NewSpellDetail("mend-armor"),
@@ -106,13 +100,11 @@ public class SpellEditorViewModelTests
         Assert.Equal("Spell save failed.", whisper.Message);
 
         Assert.DoesNotContain("rejected", whisper.Message, StringComparison.OrdinalIgnoreCase);
-
     }
 
     [Fact]
     public async Task CastAsync_StoresDryRunPreview()
     {
-
         FakeSpellEditorDataSource dataSource = new()
         {
             Spell = NewSpellDetail("mend-armor"),
@@ -128,13 +120,11 @@ public class SpellEditorViewModelTests
         Assert.NotNull(viewModel.CastPreview);
 
         Assert.Equal("system prompt", viewModel.CastPreview.SystemPrompt);
-
     }
 
     [Fact]
     public async Task EstimateManaAsync_StoresManaCount()
     {
-
         FakeSpellEditorDataSource dataSource = new()
         {
             Spell = NewSpellDetail("mend-armor"),
@@ -148,13 +138,11 @@ public class SpellEditorViewModelTests
         await viewModel.EstimateManaAsync(CancellationToken.None);
 
         Assert.Equal(42, viewModel.ManaCount);
-
     }
 
     [Fact]
     public async Task ExecuteAsync_StreamsEventsAndOpensSessionWhenSessionBound()
     {
-
         NavigationService navigation = new();
 
         (DocumentKind Kind, string Id)? opened = null;
@@ -186,13 +174,11 @@ public class SpellEditorViewModelTests
         Assert.NotNull(dataSource.LastExecuteRequest);
 
         Assert.Equal("repair this", dataSource.LastExecuteRequest.Prompt);
-
     }
 
     [Fact]
     public async Task ActivateVersionAsync_SendsVersionAndReloads()
     {
-
         FakeSpellEditorDataSource dataSource = new()
         {
             Spell = NewSpellDetail("mend-armor"),
@@ -211,13 +197,11 @@ public class SpellEditorViewModelTests
         Assert.Equal(2, dataSource.LoadCallCount);
 
         Assert.Contains("v1", viewModel.ActivatePreviousVersionNote ?? string.Empty);
-
     }
 
     [Fact]
     public async Task DeleteAsync_WhenTheCallerCancels_EndsQuietlyInsteadOfEscaping()
     {
-
         FakeSpellEditorDataSource dataSource = new()
         {
             Spell = NewSpellDetail("mend-armor"),
@@ -238,13 +222,11 @@ public class SpellEditorViewModelTests
         Assert.False(viewModel.IsBusy);
 
         Assert.Equal("Delete cancelled.", viewModel.StatusText);
-
     }
 
     [Fact]
     public async Task DeleteAsync_WhenTheServerRefuses_ReportsTheActualReason()
     {
-
         FakeSpellEditorDataSource dataSource = new()
         {
             Spell = NewSpellDetail("mend-armor"),
@@ -264,13 +246,11 @@ public class SpellEditorViewModelTests
         Assert.Contains("Http.403", viewModel.LastError ?? string.Empty, StringComparison.Ordinal);
 
         Assert.Contains("Forbidden", viewModel.LastError ?? string.Empty, StringComparison.Ordinal);
-
     }
 
     [Fact]
     public async Task ActivateVersionAsync_WhenTheTransportFails_ReportsInsteadOfEscaping()
     {
-
         FakeSpellEditorDataSource dataSource = new()
         {
             Spell = NewSpellDetail("mend-armor"),
@@ -287,13 +267,11 @@ public class SpellEditorViewModelTests
         Assert.Contains("connection refused", viewModel.LastError ?? string.Empty, StringComparison.Ordinal);
 
         Assert.False(viewModel.IsBusy);
-
     }
 
     [Fact]
     public async Task ActivateVersionAsync_KeepsTheEditorBusyAcrossTheRoundTrip()
     {
-
         TaskCompletionSource gate = new();
 
         FakeSpellEditorDataSource dataSource = new()
@@ -317,13 +295,11 @@ public class SpellEditorViewModelTests
         await activate;
 
         Assert.False(viewModel.IsBusy);
-
     }
 
     [Fact]
     public async Task ActivateVersionAsync_WithUnsavedEdits_RefusesInsteadOfDiscardingThem()
     {
-
         FakeSpellEditorDataSource dataSource = new()
         {
             Spell = NewSpellDetail("mend-armor"),
@@ -350,13 +326,11 @@ public class SpellEditorViewModelTests
         Assert.Equal(1, dataSource.LoadCallCount);
 
         Assert.Contains(whispers.Calls, static call => call.Severity == WhisperSeverity.Warning);
-
     }
 
     [Fact]
     public async Task LoadAsync_WithUnsavedEdits_RefusesInsteadOfDiscardingThem()
     {
-
         FakeSpellEditorDataSource dataSource = new()
         {
             Spell = NewSpellDetail("mend-armor"),
@@ -377,13 +351,11 @@ public class SpellEditorViewModelTests
         Assert.Equal(1, dataSource.LoadCallCount);
 
         Assert.Contains(whispers.Calls, static call => call.Severity == WhisperSeverity.Warning);
-
     }
 
     [Fact]
     public async Task Dispose_WhileExecuting_StopsTheStreamAndSkipsSessionNavigation()
     {
-
         NavigationService navigation = new();
 
         (DocumentKind Kind, string Id)? opened = null;
@@ -424,13 +396,11 @@ public class SpellEditorViewModelTests
         Assert.Single(viewModel.ExecutionEvents);
 
         disposable.Dispose();
-
     }
 
     [Fact]
     public async Task Mirror_RapidVersionSelection_KeepsOnlyTheLastSelectionsDiff()
     {
-
         TaskCompletionSource alphaGate = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         TaskCompletionSource betaGate = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -481,13 +451,11 @@ public class SpellEditorViewModelTests
         Assert.DoesNotContain(viewModel.DiffLines, static line => line.Text.Contains("AAA-unique-alpha", StringComparison.Ordinal));
 
         viewModel.Dispose();
-
     }
 
     [Fact]
     public async Task Mirror_PublishesTheWholeDiffInOneCollectionNotification()
     {
-
         // 400 differing lines: item-by-item Add would raise 400+ CollectionChanged events into a bound
         // ListBox on the UI thread, which is the freeze the bulk reset exists to prevent.
         string left = string.Join("\n", Enumerable.Range(0, 400).Select(i => $"left-{i}"));
@@ -523,13 +491,11 @@ public class SpellEditorViewModelTests
         Assert.True(actions.Count <= 2, $"Expected at most a clear plus one bulk reset, saw {actions.Count} notifications.");
 
         viewModel.Dispose();
-
     }
 
     [Fact]
     public async Task Mirror_SelectingVersion_ComparesAgainstPersistedActiveBody_NotDirtyEditor()
     {
-
         FakeSpellEditorDataSource dataSource = new()
         {
             Spell = NewSpellDetail("mend-armor"),
@@ -565,13 +531,11 @@ public class SpellEditorViewModelTests
         Assert.Contains(viewModel.DiffLines, static line => line.Kind == LineDiffKind.Removed && line.Text == "# Mend Armor");
 
         Assert.True(viewModel.ShowDirtyComparisonWarning);
-
     }
 
     [Fact]
     public async Task Mirror_DirtyWarning_DoesNotBlockVersionSelection()
     {
-
         FakeSpellEditorDataSource dataSource = new()
         {
             Spell = NewSpellDetail("mend-armor"),
@@ -606,13 +570,11 @@ public class SpellEditorViewModelTests
         Assert.Equal("v2", viewModel.SelectedVersion?.Version);
 
         Assert.True(viewModel.ShowDirtyComparisonWarning);
-
     }
 
     [Fact]
     public async Task Mirror_CreateVersion_SendsMarkdownBodyOnly()
     {
-
         FakeSpellEditorDataSource dataSource = new()
         {
             Spell = NewSpellDetail("mend-armor"),
@@ -649,13 +611,11 @@ public class SpellEditorViewModelTests
         Assert.Equal(WhisperSeverity.Success, whisper.Severity);
 
         Assert.Equal("Version created.", whisper.Message);
-
     }
 
     [Fact]
     public async Task Mirror_UpdateVersion_SendsMarkdownBodyOnly()
     {
-
         FakeSpellEditorDataSource dataSource = new()
         {
             Spell = NewSpellDetail("mend-armor"),
@@ -692,13 +652,11 @@ public class SpellEditorViewModelTests
         Assert.Equal(WhisperSeverity.Success, whisper.Severity);
 
         Assert.Equal("Version updated.", whisper.Message);
-
     }
 
     [Fact]
     public async Task Mirror_Builtin_DisablesMutation_AllowsCompare()
     {
-
         FakeSpellEditorDataSource dataSource = new()
         {
             Spell = NewSpellDetail("heal") with { Source = SpellSource.Builtin },
@@ -740,13 +698,11 @@ public class SpellEditorViewModelTests
         await viewModel.ActivateVersionAsync(viewModel.Versions.Single(), CancellationToken.None);
 
         Assert.Null(dataSource.ActivatedVersion);
-
     }
 
     [Fact]
     public async Task BuiltInSpell_DisablesSaveAndDelete_AllowsCloneAndExport()
     {
-
         FakeSpellEditorDataSource dataSource = new()
         {
             Spell = NewSpellDetail("heal") with { Source = SpellSource.Builtin },
@@ -779,13 +735,11 @@ public class SpellEditorViewModelTests
         await viewModel.CloneAsync(CancellationToken.None);
 
         Assert.NotNull(dataSource.LastCloneRequest);
-
     }
 
     [Fact]
     public async Task ExportAsync_WhenFileDialogCancelled_IsNoOp()
     {
-
         FakeSpellEditorDataSource dataSource = new()
         {
             Spell = NewSpellDetail("mend-armor"),
@@ -802,13 +756,11 @@ public class SpellEditorViewModelTests
         Assert.Equal(0, dataSource.ExportCallCount);
 
         Assert.Null(viewModel.LastError);
-
     }
 
     [Fact]
     public async Task ExportAsync_ClientMutationRefusal_DoesNotFetchServerExport()
     {
-
         FakeSpellEditorDataSource dataSource = new()
         {
             Spell = NewSpellDetail("mend-armor"),
@@ -832,13 +784,11 @@ public class SpellEditorViewModelTests
         Assert.Equal(0, dataSource.ExportCallCount);
 
         Assert.False(File.Exists(path));
-
     }
 
     [Fact]
     public async Task DeleteAsync_WhenConfirmationCancelled_IsNoOp()
     {
-
         FakeSpellEditorDataSource dataSource = new()
         {
             Spell = NewSpellDetail("mend-armor"),
@@ -859,13 +809,11 @@ public class SpellEditorViewModelTests
         Assert.Equal(0, dataSource.DeleteCallCount);
 
         Assert.Null(viewModel.LastError);
-
     }
 
     [Fact]
     public async Task LoadAsync_PopulatesSpellMetadataDesigner()
     {
-
         FakeSpellEditorDataSource dataSource = new()
         {
             Spell = NewSpellDetail(
@@ -899,13 +847,11 @@ public class SpellEditorViewModelTests
         Assert.Null(viewModel.DependencyWarnings);
 
         Assert.Null(viewModel.ToolWarnings);
-
     }
 
     [Fact]
     public async Task SaveAsync_SendsDesignerMetadataFields()
     {
-
         FakeSpellEditorDataSource dataSource = new()
         {
             Spell = NewSpellDetail("mend-armor", version: "1.0.0"),
@@ -942,13 +888,11 @@ public class SpellEditorViewModelTests
         Assert.Equal(["forge-tool"], dataSource.LastUpdateRequest.DeclaredTools);
 
         Assert.NotNull(dataSource.LastUpdateRequest.InputSchema);
-
     }
 
     [Fact]
     public async Task SaveAsync_InvalidSchema_BlocksSave()
     {
-
         FakeSpellEditorDataSource dataSource = new()
         {
             Spell = NewSpellDetail("mend-armor"),
@@ -967,13 +911,11 @@ public class SpellEditorViewModelTests
         Assert.False(string.IsNullOrWhiteSpace(viewModel.MetadataValidationError));
 
         Assert.Contains("Save blocked", viewModel.StatusText);
-
     }
 
     [Fact]
     public async Task AddAndRemoveDependencyAndDeclaredTool_UpdateCollections()
     {
-
         FakeSpellEditorDataSource dataSource = new()
         {
             Spell = NewSpellDetail("mend-armor"),
@@ -1006,13 +948,11 @@ public class SpellEditorViewModelTests
         Assert.Empty(viewModel.Dependencies);
 
         Assert.Empty(viewModel.DeclaredTools);
-
     }
 
     [Fact]
     public async Task BuiltInSpell_MetadataIsReadOnly()
     {
-
         FakeSpellEditorDataSource dataSource = new()
         {
             Spell = NewSpellDetail("builtin-spell", source: SpellSource.Builtin),
@@ -1031,13 +971,11 @@ public class SpellEditorViewModelTests
         viewModel.AddDependencyCommand.Execute(null);
 
         Assert.Empty(viewModel.Dependencies);
-
     }
 
     [Fact]
     public async Task LoadAsync_WarnsWhenCatalogLacksDependencyOrTool()
     {
-
         FakeSpellEditorDataSource dataSource = new()
         {
             Spell = NewSpellDetail(
@@ -1055,15 +993,12 @@ public class SpellEditorViewModelTests
         Assert.Contains("missing-spell", viewModel.DependencyWarnings);
 
         Assert.Contains("missing-tool", viewModel.ToolWarnings);
-
     }
 
     private sealed class AlwaysConfirmDialogService : IConfirmationDialogService
     {
-
         public Task<bool> ConfirmAsync(string title, string message, CancellationToken cancellationToken, bool confirmIsDefault = true) =>
             Task.FromResult(true);
-
     }
 
     private static SpellEditorViewModel NewViewModel(
@@ -1086,6 +1021,7 @@ public class SpellEditorViewModelTests
             textInput ?? new NullTextInputDialogService(),
             whispers ?? new FakeWhispersService(),
             mutationRunner ?? ImmediateTheForgeLocalMutationRunner.Instance,
+            new InMemoryInferenceTraceStore(),
             workspace);
 
     private static SpellDetail NewSpellDetail(
@@ -1117,7 +1053,6 @@ public class SpellEditorViewModelTests
 
     private sealed class ControllableFileDialog(string? path) : IArtifactFileDialogService
     {
-
         public Task<string?> PickSaveJsonPathAsync(string suggestedFileName, CancellationToken cancellationToken) =>
             Task.FromResult(path);
 
@@ -1132,38 +1067,30 @@ public class SpellEditorViewModelTests
 
         public Task<string?> PickSaveAnyPathAsync(string suggestedFileName, string? defaultExtension, CancellationToken cancellationToken) =>
             Task.FromResult(path);
-
     }
 
     private sealed class ControllableTextInput(IReadOnlyList<string?> answers) : ITextInputDialogService
     {
-
         private int _index;
 
         public Task<string?> PromptAsync(string title, string label, string? defaultValue, CancellationToken cancellationToken)
         {
-
             string? answer = _index < answers.Count ? answers[_index] : null;
 
             _index++;
 
             return Task.FromResult(answer);
-
         }
-
     }
 
     private sealed class ControllableConfirmation(bool accept) : IConfirmationDialogService
     {
-
         public Task<bool> ConfirmAsync(string title, string message, CancellationToken cancellationToken, bool confirmIsDefault = true) =>
             Task.FromResult(accept);
-
     }
 
     private sealed class FakeSpellEditorDataSource : ISpellEditorDataSource
     {
-
         public SpellDetail? Spell { get; init; }
 
         public IReadOnlyList<SpellVersionDto> Versions { get; init; } = [];
@@ -1234,11 +1161,9 @@ public class SpellEditorViewModelTests
 
         public Task<SpellDetail?> LoadSpellAsync(string name, string? workspace, CancellationToken cancellationToken)
         {
-
             LoadCallCount++;
 
             return Task.FromResult(Spell);
-
         }
 
         public Task<IReadOnlyList<SpellVersionDto>> ListVersionsAsync(string name, string? workspace, CancellationToken cancellationToken) =>
@@ -1246,49 +1171,39 @@ public class SpellEditorViewModelTests
 
         public async Task<SpellVersionDetailDto?> GetVersionDetailAsync(string name, string version, string? workspace, CancellationToken cancellationToken)
         {
-
             GetVersionDetailCallCount++;
 
             if (VersionDetailGates.TryGetValue(version, out Task? gate))
             {
-
                 await gate.ConfigureAwait(false);
-
             }
 
             VersionDetails.TryGetValue(version, out SpellVersionDetailDto? detail);
 
             return detail;
-
         }
 
         public Task<SpellVersionDto?> CreateVersionAsync(string name, CreateSpellVersionRequest request, CancellationToken cancellationToken)
         {
-
             LastCreateVersionRequest = request;
 
             return Task.FromResult(CreateVersionResult);
-
         }
 
         public Task<SpellVersionDto?> UpdateVersionAsync(string name, string version, UpdateSpellVersionRequest request, CancellationToken cancellationToken)
         {
-
             LastUpdatedVersion = version;
 
             LastUpdateVersionRequest = request;
 
             return Task.FromResult(UpdateVersionResult);
-
         }
 
         public Task<bool> SaveAsync(string name, UpdateSpellRequest request, string? workspace, CancellationToken cancellationToken)
         {
-
             LastUpdateRequest = request;
 
             return Task.FromResult(SaveSucceeds);
-
         }
 
         public Task<SpellValidationResultDto?> ValidateAsync(string name, string? workspace, CancellationToken cancellationToken) =>
@@ -1296,20 +1211,16 @@ public class SpellEditorViewModelTests
 
         public Task<SpellExportDto?> ExportAsync(string name, string? workspace, CancellationToken cancellationToken)
         {
-
             ExportCallCount++;
 
             return Task.FromResult(ExportResult);
-
         }
 
         public Task<SpellSummary?> CloneAsync(string name, CloneSpellRequest request, CancellationToken cancellationToken)
         {
-
             LastCloneRequest = request;
 
             return Task.FromResult(CloneResult);
-
         }
 
         public Task<DataSourceResult<SpellSummary>> ImportAsync(SpellImportRequest request, CancellationToken cancellationToken) =>
@@ -1317,18 +1228,14 @@ public class SpellEditorViewModelTests
 
         public Task<DeleteOutcome> DeleteAsync(string name, string workspace, CancellationToken cancellationToken)
         {
-
             DeleteCallCount++;
 
             if (DeleteFailure is { } failure)
             {
-
                 return Task.FromException<DeleteOutcome>(failure);
-
             }
 
             return Task.FromResult(DeleteResult ?? DeleteOutcome.Ok());
-
         }
 
         public Task<SpellCastResult?> CastAsync(string name, SpellCastRequest request, CancellationToken cancellationToken) =>
@@ -1339,58 +1246,44 @@ public class SpellEditorViewModelTests
 
         public async IAsyncEnumerable<IntelligenceEvent> ExecuteStreamAsync(string name, SpellExecuteRequest request, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
         {
-
             LastExecuteRequest = request;
 
             foreach (IntelligenceEvent ev in ExecutionEvents)
             {
-
                 cancellationToken.ThrowIfCancellationRequested();
 
                 yield return ev;
 
                 if (ExecutionGate is not null)
                 {
-
                     Task gate = ExecutionGate;
 
                     ExecutionGate = null;
 
                     await gate.ConfigureAwait(false);
-
                 }
                 else
                 {
-
                     await Task.Yield();
-
                 }
-
             }
-
         }
 
         public async Task<SpellVersionDto?> ActivateVersionAsync(string name, string version, string? workspace, CancellationToken cancellationToken)
         {
-
             ActivatedVersion = version;
 
             if (ActivateGate is { } gate)
             {
-
                 await gate.ConfigureAwait(false);
-
             }
 
             if (ActivateFailure is { } failure)
             {
-
                 throw failure;
-
             }
 
             return ActivateResult ?? new SpellVersionDto(version, true, DateTimeOffset.UtcNow, null);
-
         }
 
         public Task<IReadOnlyList<string>> ListSpellNamesAsync(string? workspace, CancellationToken cancellationToken) =>
@@ -1398,7 +1291,5 @@ public class SpellEditorViewModelTests
 
         public Task<IReadOnlyList<string>> ListAvailableToolNamesAsync(string? workspace, CancellationToken cancellationToken) =>
             Task.FromResult(AvailableToolNames);
-
     }
-
 }
