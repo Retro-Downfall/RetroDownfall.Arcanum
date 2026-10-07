@@ -131,14 +131,18 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
             return new Error(ErrorCodes.Workspace.FileNotFound, FileNotFoundMessage);
         }
 
+        long maxWriteBytes = GetMaxFileWriteSizeBytes();
+
         long newStringBytes = Encoding.UTF8.GetByteCount(newString);
 
-        if (newStringBytes > GetMaxFileWriteSizeBytes())
+        if (newStringBytes > maxWriteBytes)
         {
             return new Error(ErrorCodes.Workspace.FileTooLarge, FileTooLargeMessage);
         }
 
-        long combinedBytes = Encoding.UTF8.GetByteCount(oldString) + newStringBytes;
+        long oldStringBytes = Encoding.UTF8.GetByteCount(oldString);
+
+        long combinedBytes = oldStringBytes + newStringBytes;
 
         if (combinedBytes > GetMaxReplaceTextBlockBytes())
         {
@@ -155,6 +159,8 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
         string text;
 
         bool hadBom;
+
+        long readByteCount;
 
         FileContentBaseline readBaseline = default;
 
@@ -175,6 +181,8 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
                 }
 
                 ReadOnlySpan<byte> bytes = readResult.Bytes.Span;
+
+                readByteCount = bytes.Length;
 
                 // The exact bytes the edit is computed from, taken from this read (BOM included); the
                 // replace aborts if the destination is no longer byte-for-byte this.
@@ -229,11 +237,25 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
             return new Error(ErrorCodes.Workspace.ReplacementAmbiguous, ReplacementAmbiguousMessage);
         }
 
+        // The block limits bound oldString and newString, not what they make together: a short oldString
+        // that occurs many times and a long newString can project a result far past the write limit, or past
+        // what a string can hold at all. The size is checked from the projection before anything is built
+        // (the read bytes already include any BOM), and once more on the encoded bytes.
+        if (readByteCount + (occurrences * (newStringBytes - oldStringBytes)) > maxWriteBytes)
+        {
+            return new Error(ErrorCodes.Workspace.FileTooLarge, FileTooLargeMessage);
+        }
+
         string replacedText = text.Replace(oldString, newString, StringComparison.Ordinal);
 
         byte[] replacedTextBytes = Encoding.UTF8.GetBytes(replacedText);
 
         byte[] outputBytes = hadBom ? [.. Utf8Bom, .. replacedTextBytes] : replacedTextBytes;
+
+        if (outputBytes.LongLength > maxWriteBytes)
+        {
+            return new Error(ErrorCodes.Workspace.FileTooLarge, FileTooLargeMessage);
+        }
 
         AfterReplaceTextBlockReadForTests?.Invoke(resolvedPath);
 

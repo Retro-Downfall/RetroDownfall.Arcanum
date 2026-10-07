@@ -756,6 +756,56 @@ public sealed class PhysicalFileSystemWriterTests : IAsyncLifetime
             workspace, "target.txt", "missing", "replacement", null, CancellationToken.None);
 
         Assert.True(result.IsFailure);
+    /// <summary>
+    /// The block limits bound oldString and newString, not what they make together: a short oldString that
+    /// occurs many times and a long newString can build a result many times MaxFileWriteSizeBytes. The
+    /// projected size is checked before the replacement is built, and nothing is written.
+    /// </summary>
+    [Fact]
+    public async Task ReplaceTextBlockAsync_refuses_a_result_larger_than_MaxFileWriteSizeBytes_and_leaves_the_file_untouched()
+    {
+        long maxWriteBytes = ArcanumSettingClamps.MaxFileWriteSizeBytes(
+            ArcanumRuntimeDefaults.WorkspaceMaxFileWriteSizeBytes);
+
+        string newString = new('y', 200 * 1024);
+
+        int occurrences = checked((int)(maxWriteBytes / newString.Length) + 2);
+
+        string original = string.Concat(Enumerable.Repeat("x\n", occurrences));
+
+        string path = _workspace.WriteFile("target.txt", original);
+
+        Result<TextBlockReplaceResult> result = await CreateWriter().ReplaceTextBlockAsync(
+            MakeWorkspace(), "target.txt", "x", newString, occurrences, CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal("Workspace.FileTooLarge", result.Error.Code);
+
+        Assert.Equal(original, await File.ReadAllTextAsync(path));
+    }
+
+    /// <summary>
+    /// A result far past what a string can hold made string.Replace throw OutOfMemoryException out of the
+    /// writer as an unhandled failure; the size is now refused before anything is allocated.
+    /// </summary>
+    [Fact]
+    public async Task ReplaceTextBlockAsync_refuses_a_result_no_string_could_hold_as_FileTooLarge()
+    {
+        const int Occurrences = 600_000;
+
+        string path = _workspace.WriteFile("target.txt", new string('x', Occurrences));
+
+        Result<TextBlockReplaceResult> result = await CreateWriter().ReplaceTextBlockAsync(
+            MakeWorkspace(), "target.txt", "x", new string('y', 400 * 1024), Occurrences, CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal("Workspace.FileTooLarge", result.Error.Code);
+
+        Assert.Equal(Occurrences, new FileInfo(path).Length);
+    }
+
 
         Assert.Equal("Workspace.ReplacementNotFound", result.Error.Code);
     }
