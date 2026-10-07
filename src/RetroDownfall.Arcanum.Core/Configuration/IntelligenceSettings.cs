@@ -41,8 +41,6 @@ public sealed record IntelligenceSettings
 
     public bool EnableContextCompression { get; set; } = true;
 
-    public bool EnableTokenTracking { get; set; } = true;
-
     /// <summary>
     /// Hard cap (bytes) on captured <c>stdout</c> and <c>stderr</c> for in-process MCP
     /// <c>execute_command</c> and the <c>run_spell_script</c> hub tool. Output beyond this is
