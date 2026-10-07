@@ -3,7 +3,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.ProcessExecution;
 /// <summary>Filesystem jail posture for tool children (<c>execute_command</c> / <c>run_spell_script</c>).</summary>
 public enum ToolChildFilesystemJailMode
 {
-
     /// <summary>OS filesystem jail is applied (e.g. macOS Seatbelt via <c>/usr/bin/sandbox-exec</c>).</summary>
     Active,
 
@@ -15,27 +14,22 @@ public enum ToolChildFilesystemJailMode
 
     /// <summary>No FS jail is available on this platform.</summary>
     NotAvailable,
-
 }
 
 /// <summary>OS resource-limit posture for tool children (rlimits / cgroups / Job Objects).</summary>
 public enum ToolChildResourceLimitsMode
 {
-
     Active,
 
     Partial,
 
     NotAvailable,
-
 }
 
 /// <summary>Network isolation for tool children — not provided in this beta.</summary>
 public enum ToolChildNetworkIsolationMode
 {
-
     NotProvided,
-
 }
 
 /// <summary>
@@ -44,7 +38,6 @@ public enum ToolChildNetworkIsolationMode
 /// </summary>
 public sealed class ToolChildSandboxStatus
 {
-
     public required string Platform { get; init; }
 
     public required ToolChildFilesystemJailMode FilesystemJailMode { get; init; }
@@ -66,5 +59,4 @@ public sealed class ToolChildSandboxStatus
     /// Degraded for Windows no-FS-jail, Linux inactive fail-closed, escape hatch, or missing macOS sandbox-exec.
     /// </summary>
     public required bool IsHealthDegraded { get; init; }
-
 }

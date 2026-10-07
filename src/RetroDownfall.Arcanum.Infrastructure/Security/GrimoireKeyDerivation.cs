@@ -5,7 +5,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.Security;
 
 public static class GrimoireKeyDerivation
 {
-
     private static readonly UTF8Encoding Utf8NoBom = new(false);
 
     private static readonly byte[] LegacySalt = Utf8NoBom.GetBytes("Arcanum.Grimoire.SQLCipher.salt.v1");
@@ -24,40 +23,29 @@ public static class GrimoireKeyDerivation
 
     public static string DerivePassphraseFromApiKeyLegacy(string apiKey)
     {
-
         return DerivePassphrase(apiKey, LegacyInfo);
-
     }
 
     public static string DerivePassphraseFromEncryptionSecretLegacy(string encryptionSecret)
     {
-
         return DerivePassphrase(encryptionSecret, DedicatedInfo);
-
     }
 
     public static string DerivePassphraseFromApiKey(string apiKey, ReadOnlySpan<byte> salt)
     {
-
         return DerivePbkdf2Passphrase(apiKey, salt);
-
     }
 
     public static string DerivePassphraseFromEncryptionSecret(string encryptionSecret, ReadOnlySpan<byte> salt)
     {
-
         return DerivePbkdf2Passphrase(encryptionSecret, salt);
-
     }
 
     private static string DerivePassphrase(string keyMaterial, byte[] info)
     {
-
         if (string.IsNullOrEmpty(keyMaterial))
         {
-
             throw new ArgumentException("Key material is required to derive the Grimoire passphrase.", nameof(keyMaterial));
-
         }
 
         byte[] ikm = Utf8NoBom.GetBytes(keyMaterial);
@@ -71,24 +59,18 @@ public static class GrimoireKeyDerivation
         CryptographicOperations.ZeroMemory(okm);
 
         return passphrase;
-
     }
 
     private static string DerivePbkdf2Passphrase(string keyMaterial, ReadOnlySpan<byte> salt)
     {
-
         if (string.IsNullOrEmpty(keyMaterial))
         {
-
             throw new ArgumentException("Key material is required to derive the Grimoire passphrase.", nameof(keyMaterial));
-
         }
 
         if (salt.Length != SaltLengthBytes)
         {
-
             throw new ArgumentException($"Salt must be {SaltLengthBytes} bytes.", nameof(salt));
-
         }
 
         byte[] ikm = Utf8NoBom.GetBytes(keyMaterial);
@@ -107,7 +89,5 @@ public static class GrimoireKeyDerivation
         CryptographicOperations.ZeroMemory(okm);
 
         return passphrase;
-
     }
-
 }

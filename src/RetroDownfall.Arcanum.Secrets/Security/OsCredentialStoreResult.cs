@@ -2,7 +2,6 @@ namespace RetroDownfall.Arcanum.Secrets.Security;
 
 public enum OsCredentialStoreStatus
 {
-
     Ok = 0,
 
     NotFound = 1,
@@ -10,12 +9,10 @@ public enum OsCredentialStoreStatus
     Unavailable = 2,
 
     Failed = 3,
-
 }
 
 public readonly record struct OsCredentialStoreResult(OsCredentialStoreStatus Status, string? Value, string? Message)
 {
-
     public static OsCredentialStoreResult Ok(string value) => new(OsCredentialStoreStatus.Ok, value, null);
 
     public static OsCredentialStoreResult NotFound() => new(OsCredentialStoreStatus.NotFound, null, null);
@@ -25,5 +22,4 @@ public readonly record struct OsCredentialStoreResult(OsCredentialStoreStatus St
 
     public static OsCredentialStoreResult Failed(string message) =>
         new(OsCredentialStoreStatus.Failed, null, message);
-
 }

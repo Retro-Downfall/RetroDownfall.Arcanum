@@ -13,7 +13,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.ProcessExecution;
 [ExcludeFromCodeCoverage] // Reason: Linux-only Landlock + execv helper; covered by integration tests on Linux CI.
 internal static class SandboxExecHelper
 {
-
     private static Assembly? _declaredHostEntryPoint;
 
     /// <summary>
@@ -33,10 +32,8 @@ internal static class SandboxExecHelper
     /// </summary>
     internal static bool DeclarationBindsToThisProcess(Assembly? declaredHostEntryPoint)
     {
-
         return declaredHostEntryPoint is not null
             && ReferenceEquals(declaredHostEntryPoint, Assembly.GetEntryAssembly());
-
     }
 
     /// <summary>
@@ -47,7 +44,6 @@ internal static class SandboxExecHelper
     /// </summary>
     internal static bool TryHandle(string[] args, Type hostEntryPoint)
     {
-
         ArgumentNullException.ThrowIfNull(hostEntryPoint);
 
         // Record who declared rather than that someone did. An embedding host reaches this line while
@@ -58,9 +54,7 @@ internal static class SandboxExecHelper
         if (args.Length < 1
             || !string.Equals(args[0], ChildProcessFilesystemJail.HelperArg, StringComparison.Ordinal))
         {
-
             return false;
-
         }
 
         // Not advertised in help; intentional silent fail-closed for malformed helper argv.
@@ -68,13 +62,11 @@ internal static class SandboxExecHelper
             || !string.Equals(args[1], "--config", StringComparison.Ordinal)
             || string.IsNullOrWhiteSpace(args[2]))
         {
-
             Console.Error.WriteLine("sandbox-exec: malformed arguments.");
 
             Environment.Exit(64);
 
             return true;
-
         }
 
         string configPath = args[2];
@@ -83,33 +75,27 @@ internal static class SandboxExecHelper
 
         try
         {
-
             string json = File.ReadAllText(configPath);
 
             payload = JsonSerializer.Deserialize(json, SandboxExecJsonContext.Default.SandboxExecHelperPayload);
-
         }
         catch (Exception ex)
         {
-
             Console.Error.WriteLine($"sandbox-exec: failed to read config: {ex.GetType().Name}");
 
             Environment.Exit(65);
 
             return true;
-
         }
 
         if (payload is null
             || string.IsNullOrWhiteSpace(payload.Target))
         {
-
             Console.Error.WriteLine("sandbox-exec: invalid config payload.");
 
             Environment.Exit(65);
 
             return true;
-
         }
 
         if (OperatingSystem.IsWindows())
@@ -120,13 +106,11 @@ internal static class SandboxExecHelper
 
         if (!OperatingSystem.IsLinux())
         {
-
             Console.Error.WriteLine("sandbox-exec: Landlock helper is Linux-only.");
 
             Environment.Exit(66);
 
             return true;
-
         }
 
         if (!LinuxLandlock.TryRestrict(
@@ -134,35 +118,27 @@ internal static class SandboxExecHelper
                 payload.ReadExecuteRoots ?? [],
                 out string? landlockError))
         {
-
             Console.Error.WriteLine($"sandbox-exec: Landlock failed: {landlockError}");
 
             Environment.Exit(67);
 
             return true;
-
         }
 
         if (!string.IsNullOrWhiteSpace(payload.WorkingDirectory))
         {
-
             try
             {
-
                 Directory.SetCurrentDirectory(payload.WorkingDirectory);
-
             }
             catch (Exception)
             {
-
                 Console.Error.WriteLine("sandbox-exec: failed to set working directory.");
 
                 Environment.Exit(68);
 
                 return true;
-
             }
-
         }
 
         string[] argv = new string[(payload.Arguments?.Length ?? 0) + 1];
@@ -171,24 +147,19 @@ internal static class SandboxExecHelper
 
         if (payload.Arguments is { Length: > 0 })
         {
-
             Array.Copy(payload.Arguments, 0, argv, 1, payload.Arguments.Length);
-
         }
 
         LinuxLandlock.ExecvOrExit(payload.Target, argv);
 
         return true;
-
     }
-
 }
 
 /// <summary>Minimal Landlock ABI via <c>syscall(2)</c> for filesystem path-beneath rules.</summary>
 [ExcludeFromCodeCoverage]
 internal static partial class LinuxLandlock
 {
-
     // asm-generic unistd numbers (x86_64 and aarch64).
     private const long SysLandlockCreateRuleset = 444;
 
@@ -285,7 +256,6 @@ internal static partial class LinuxLandlock
         IReadOnlyList<string> readExecuteRoots,
         out string? error)
     {
-
         error = null;
 
         LandlockRulesetAttr attr = new() { HandledAccessFs = HandledAccessFs };
@@ -294,7 +264,6 @@ internal static partial class LinuxLandlock
 
         try
         {
-
             Marshal.StructureToPtr(attr, attrPtr, fDeleteOld: false);
 
             long rulesetFd = syscall3(
@@ -305,95 +274,69 @@ internal static partial class LinuxLandlock
 
             if (rulesetFd < 0)
             {
-
                 error =
                     $"landlock_create_ruleset failed (errno={Marshal.GetLastPInvokeError()}). Kernel may lack Landlock.";
 
                 return false;
-
             }
 
             using SafeFileHandle ruleset = new((nint)rulesetFd, ownsHandle: true);
 
             foreach (string root in DefaultSystemReadExecuteRoots)
             {
-
                 if (!TryAddPathRule(ruleset, root, ReadExecuteAccess, out error))
                 {
-
                     return false;
-
                 }
-
             }
 
             foreach (string root in readExecuteRoots)
             {
-
                 if (!TryAddPathRule(ruleset, root, ReadExecuteAccess, out error))
                 {
-
                     return false;
-
                 }
-
             }
 
             foreach (string root in readWriteRoots)
             {
-
                 if (!TryAddPathRule(ruleset, root, ReadWriteAccess, out error))
                 {
-
                     return false;
-
                 }
-
             }
 
             if (prctl(PrSetNoNewPrivs, 1, 0, 0, 0) != 0)
             {
-
                 error = $"prctl(PR_SET_NO_NEW_PRIVS) failed (errno={Marshal.GetLastPInvokeError()}).";
 
                 return false;
-
             }
 
             if (syscall2(SysLandlockRestrictSelf, (nint)rulesetFd, 0) != 0)
             {
-
                 error = $"landlock_restrict_self failed (errno={Marshal.GetLastPInvokeError()}).";
 
                 return false;
-
             }
 
             return true;
-
         }
         finally
         {
-
             Marshal.FreeHGlobal(attrPtr);
-
         }
-
     }
 
     internal static void ExecvOrExit(string path, string[] argv)
     {
-
         nint[] argvPtrs = new nint[argv.Length + 1];
 
         try
         {
-
             for (int i = 0; i < argv.Length; i++)
             {
-
                 argvPtrs[i] = Marshal.StringToCoTaskMemUTF8(argv[i]);
-
             }
 
             argvPtrs[argv.Length] = nint.Zero;
@@ -404,52 +347,37 @@ internal static partial class LinuxLandlock
             Console.Error.WriteLine($"sandbox-exec: execv failed (errno={Marshal.GetLastPInvokeError()}).");
 
             Environment.Exit(69);
-
         }
         finally
         {
-
             for (int i = 0; i < argv.Length; i++)
             {
-
                 if (argvPtrs[i] != nint.Zero)
                 {
-
                     Marshal.FreeCoTaskMem(argvPtrs[i]);
-
                 }
-
             }
-
         }
-
     }
 
     private static bool TryAddPathRule(SafeFileHandle ruleset, string path, ulong access, out string? error)
     {
-
         error = null;
 
         if (string.IsNullOrWhiteSpace(path))
         {
-
             return true;
-
         }
 
         string full;
 
         try
         {
-
             full = Path.GetFullPath(path.Trim());
-
         }
         catch (Exception)
         {
-
             return true;
-
         }
 
         const int OPath = 0x200000;
@@ -460,16 +388,13 @@ internal static partial class LinuxLandlock
 
         if (fd < 0)
         {
-
             return true;
-
         }
 
         nint rulePtr = Marshal.AllocHGlobal(Marshal.SizeOf<LandlockPathBeneathAttr>());
 
         try
         {
-
             LandlockPathBeneathAttr rule = new()
             {
                 AllowedAccess = access,
@@ -488,43 +413,33 @@ internal static partial class LinuxLandlock
 
             if (result != 0)
             {
-
                 error = $"landlock_add_rule failed for '{full}' (errno={Marshal.GetLastPInvokeError()}).";
 
                 return false;
-
             }
 
             return true;
-
         }
         finally
         {
-
             Marshal.FreeHGlobal(rulePtr);
 
             close(fd);
-
         }
-
     }
 
     [StructLayout(LayoutKind.Sequential)]
     private struct LandlockRulesetAttr
     {
-
         public ulong HandledAccessFs;
-
     }
 
     [StructLayout(LayoutKind.Sequential)]
     private struct LandlockPathBeneathAttr
     {
-
         public ulong AllowedAccess;
 
         public int ParentFd;
-
     }
 
     [LibraryImport("libc", EntryPoint = "syscall", SetLastError = true)]
@@ -547,5 +462,4 @@ internal static partial class LinuxLandlock
 
     [LibraryImport("libc", EntryPoint = "execv", SetLastError = true, StringMarshalling = StringMarshalling.Utf8)]
     private static partial int execv(string pathname, nint[] argv);
-
 }

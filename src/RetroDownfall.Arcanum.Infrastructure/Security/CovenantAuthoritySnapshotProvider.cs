@@ -13,10 +13,8 @@ namespace RetroDownfall.Arcanum.Infrastructure.Security;
 internal sealed class CovenantAuthoritySnapshotProvider(
     CovenantRuntimeGenerationProvider runtime) : ICovenantAuthoritySnapshotProvider
 {
-
     private readonly CovenantRuntimeGenerationProvider _runtime =
         runtime ?? throw new ArgumentNullException(nameof(runtime));
 
     public CovenantAuthoritySnapshot? Current => _runtime.Current.ActiveAuthority;
-
 }

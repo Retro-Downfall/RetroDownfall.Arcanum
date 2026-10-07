@@ -7,17 +7,13 @@ namespace RetroDownfall.Arcanum.Infrastructure.Security;
 /// </summary>
 internal static class HostProcessToolsTaintVersionStorage
 {
-
     private const int EncodedLength = 8;
 
     internal static byte[] Encode(ulong value)
     {
-
         if (value == 0)
         {
-
             throw new ArgumentOutOfRangeException(nameof(value));
-
         }
 
         byte[] encoded = new byte[EncodedLength];
@@ -25,15 +21,12 @@ internal static class HostProcessToolsTaintVersionStorage
         BinaryPrimitives.WriteUInt64BigEndian(encoded, value);
 
         return encoded;
-
     }
 
     internal static bool TryDecode(object value, out ulong? decoded)
     {
-
         switch (value)
         {
-
             case DBNull:
 
                 decoded = null;
@@ -52,21 +45,16 @@ internal static class HostProcessToolsTaintVersionStorage
 
                 if (version > 0)
                 {
-
                     decoded = version;
 
                     return true;
-
                 }
 
                 break;
-
         }
 
         decoded = null;
 
         return false;
-
     }
-
 }
