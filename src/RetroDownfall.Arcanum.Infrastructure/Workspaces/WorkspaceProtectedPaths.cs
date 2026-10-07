@@ -124,10 +124,10 @@ internal static class WorkspaceProtectedPaths
     }
 
     private static bool IsHfsIgnorableCodePoint(char character) =>
-        character is (>= '‌' and <= '‏')
-            or (>= '‪' and <= '‮')
-            or (>= '⁪' and <= '⁯')
-            or '﻿';
+        character is (>= '\u200C' and <= '\u200F')
+            or (>= '\u202A' and <= '\u202E')
+            or (>= '\u206A' and <= '\u206F')
+            or '\uFEFF';
 
     /// <summary>
     /// Whether <paramref name="alias"/> (already upper-cased with trailing dots and spaces trimmed) is

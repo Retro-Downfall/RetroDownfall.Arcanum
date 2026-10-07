@@ -253,8 +253,11 @@ public sealed class PhysicalFileSystemWriterTests : IAsyncLifetime
     /// <summary>
     /// On a Windows host the NTFS stream suffix and the 8.3 short name reach <c>.git</c> through the real
     /// filesystem. The platform-seam theories in <c>WorkspaceProtectedPathsTests</c> pin the matching logic
-    /// on every host; this lane exercises it end to end where the aliases actually resolve, and it is not
-    /// run on macOS or Linux. Whatever code the request is refused with, nothing may be planted.
+    /// on every host; this lane exercises it end to end, and it is not run on macOS or Linux. NTFS gives a
+    /// short name only to an entry that exists, so the fixture creates <c>.git/hooks</c> and <c>.arcanum</c>
+    /// first (on a volume with 8.3 generation enabled, <c>GIT~1</c> and <c>ARCANU~1</c> then name them).
+    /// Whatever code the request is refused with, nothing may be planted: neither inside the protected
+    /// directories nor as a literal short-name entry beside them.
     /// </summary>
     [SkippableTheory]
     [InlineData(".git::$INDEX_ALLOCATION/hooks/pre-commit")]
@@ -267,6 +270,10 @@ public sealed class PhysicalFileSystemWriterTests : IAsyncLifetime
             OperatingSystem.IsWindows(),
             "NTFS stream suffixes and 8.3 short names are Windows filesystem behaviours.");
 
+        string hooks = _workspace.CreateSubdir(Path.Combine(".git", "hooks"));
+
+        string arcanum = _workspace.CreateSubdir(".arcanum");
+
         Result<FileWriteResult> result = await CreateWriter().WriteFileAsync(
             MakeWorkspace(),
             relativePath,
@@ -275,9 +282,15 @@ public sealed class PhysicalFileSystemWriterTests : IAsyncLifetime
 
         Assert.True(result.IsFailure);
 
-        Assert.False(Directory.Exists(Path.Combine(_workspace.Root, ".git")));
+        Assert.False(File.Exists(Path.Combine(hooks, "pre-commit")));
 
-        Assert.False(Directory.Exists(Path.Combine(_workspace.Root, ".arcanum")));
+        Assert.False(File.Exists(Path.Combine(arcanum, "campaign.json")));
+
+        // Enumeration returns long names, so a literal short-name entry shows up here, where
+        // Directory.Exists("GIT~1") would resolve the alias to .git and say nothing about it.
+        Assert.DoesNotContain(
+            Directory.EnumerateFileSystemEntries(_workspace.Root).Select(Path.GetFileName),
+            static name => name is "GIT~1" or "ARCANU~1");
     }
 
     /// <summary>
@@ -743,19 +756,6 @@ public sealed class PhysicalFileSystemWriterTests : IAsyncLifetime
         Assert.Equal("bar bar bar", await File.ReadAllTextAsync(Path.Combine(_workspace.Root, "target.txt")));
     }
 
-    [Fact]
-    public async Task ReplaceTextBlockAsync_returns_ReplacementNotFound_when_oldString_absent()
-    {
-        _workspace.WriteFile("target.txt", "hello world");
-
-        PhysicalFileSystemWriter writer = CreateWriter();
-
-        WorkspaceInfo workspace = MakeWorkspace();
-
-        Result<TextBlockReplaceResult> result = await writer.ReplaceTextBlockAsync(
-            workspace, "target.txt", "missing", "replacement", null, CancellationToken.None);
-
-        Assert.True(result.IsFailure);
     /// <summary>
     /// The block limits bound oldString and newString, not what they make together: a short oldString that
     /// occurs many times and a long newString can build a result many times MaxFileWriteSizeBytes. The
@@ -806,6 +806,19 @@ public sealed class PhysicalFileSystemWriterTests : IAsyncLifetime
         Assert.Equal(Occurrences, new FileInfo(path).Length);
     }
 
+    [Fact]
+    public async Task ReplaceTextBlockAsync_returns_ReplacementNotFound_when_oldString_absent()
+    {
+        _workspace.WriteFile("target.txt", "hello world");
+
+        PhysicalFileSystemWriter writer = CreateWriter();
+
+        WorkspaceInfo workspace = MakeWorkspace();
+
+        Result<TextBlockReplaceResult> result = await writer.ReplaceTextBlockAsync(
+            workspace, "target.txt", "missing", "replacement", null, CancellationToken.None);
+
+        Assert.True(result.IsFailure);
 
         Assert.Equal("Workspace.ReplacementNotFound", result.Error.Code);
     }

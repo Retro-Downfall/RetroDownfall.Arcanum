@@ -120,7 +120,7 @@ internal sealed class StreamingTextReader : TextReader
             {
                 _atStart = false;
 
-                skipped = _chars[0] == '﻿'
+                skipped = _chars[0] == '\uFEFF'
                     ? 1
                     : 0;
             }
