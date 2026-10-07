@@ -327,16 +327,17 @@ public sealed class CovenantProtectedArtifactErasureKernelTests
     }
 
     /// <summary>
-    /// A storage error that says nothing about the artifact's data is not reported as corrupt data.
+    /// A table the plan declares, missing from the installed schema, is an integrity failure.
     /// </summary>
     /// <remarks>
-    /// A missing table (here the Tapestry tables an Entry purge reaches) is <c>SQLITE_ERROR</c>: a
-    /// schema the purge cannot run against, not durable state disagreeing with itself. Calling it an
-    /// integrity failure sends an operator looking for corruption that is not there. It is still a
-    /// blocker, never a success: the transaction rolls back, and the Entry and its label stay.
+    /// A missing table (here the Tapestry tables an Entry purge reaches) is <c>SQLITE_ERROR</c>. The plan
+    /// runner never skips a declared target, so the schema the purge was written against and the schema
+    /// on disk disagree: that is the integrity failure an operator has to see, not a transient condition
+    /// a retry clears. It is still a blocker, never a success: the transaction rolls back, and the Entry
+    /// and its label stay.
     /// </remarks>
     [Fact]
-    public async Task A_missing_table_inside_the_purge_is_storage_unavailable_and_deletes_nothing()
+    public async Task A_missing_declared_table_inside_the_purge_is_an_integrity_failure_and_deletes_nothing()
     {
         await using ErasureFixture fixture = await ErasureFixture.CreateAsync();
 
@@ -362,13 +363,53 @@ public sealed class CovenantProtectedArtifactErasureKernelTests
 
         Assert.True(erased.IsSuccess);
 
-        Assert.Equal(CovenantErasureBlocker.StorageUnavailable, erased.Value.Blocker);
+        Assert.Equal(CovenantErasureBlocker.IntegrityFailure, erased.Value.Blocker);
 
         Assert.Equal(0UL, erased.Value.ErasedCount);
 
         Assert.Equal(1, await fixture.CountAsync("SELECT COUNT(*) FROM artifact_sensitivity;"));
 
         Assert.Equal(1, await fixture.CountAsync("SELECT COUNT(*) FROM \"Entries\";"));
+    }
+
+    /// <summary>
+    /// An environmental storage condition that says nothing about the artifact's data is not reported
+    /// as corrupt data.
+    /// </summary>
+    /// <remarks>
+    /// A database that refuses writes answers the purge's <c>BEGIN IMMEDIATE</c> with
+    /// <c>SQLITE_READONLY</c>: the engine could not carry out the purge, and durable state does not
+    /// disagree with itself. It is the storage-unavailable blocker, still never a success, and the
+    /// artifact and its label stay.
+    /// </remarks>
+    [Fact]
+    public async Task A_read_only_database_inside_the_purge_is_storage_unavailable_and_deletes_nothing()
+    {
+        await using ErasureFixture fixture = await ErasureFixture.CreateAsync();
+
+        Guid artifactId = Guid.NewGuid();
+
+        Guid labelId = await fixture.SeedLabelAsync(artifactId, SensitiveArtifactKind.Saga, SessionId);
+
+        await fixture.SeedSagaAsync(artifactId);
+
+        await fixture.ExecuteAsync("PRAGMA query_only = ON;");
+
+        Result<CovenantArtifactErasureProgress> erased = await EraseUnderExclusiveAsync(
+            fixture,
+            fixture.Page(artifactId, labelId, SensitiveArtifactKind.Saga, SessionId));
+
+        await fixture.ExecuteAsync("PRAGMA query_only = OFF;");
+
+        Assert.True(erased.IsSuccess);
+
+        Assert.Equal(CovenantErasureBlocker.StorageUnavailable, erased.Value.Blocker);
+
+        Assert.Equal(0UL, erased.Value.ErasedCount);
+
+        Assert.Equal(1, await fixture.CountAsync("SELECT COUNT(*) FROM artifact_sensitivity;"));
+
+        Assert.Equal(1, await fixture.CountAsync("SELECT COUNT(*) FROM saga_memories;"));
     }
 
     [Fact]
