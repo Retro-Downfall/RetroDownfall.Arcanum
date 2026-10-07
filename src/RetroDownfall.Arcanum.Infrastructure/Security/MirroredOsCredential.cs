@@ -51,7 +51,8 @@ internal sealed record MirroredCredentialPolicy(
 /// stops waiting after <c>osReadTimeout</c> and treats the read as failed. The abandoned call stays
 /// the one outstanding read: later readers join it rather than raise a second prompt (and fail at
 /// once when it is already older than the timeout), and a write waits for it to return before
-/// touching the OS store.</para>
+/// touching the OS store — outside the gate, so the readers that arrive meanwhile still reach that join
+/// instead of queueing behind the write.</para>
 /// </remarks>
 internal sealed class MirroredOsCredential(
     IOsCredentialStore osStore,
@@ -281,12 +282,10 @@ internal sealed class MirroredOsCredential(
     {
         ArgumentNullException.ThrowIfNull(value);
 
-        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        await EnterGateForWriteAsync(cancellationToken).ConfigureAwait(false);
 
         try
         {
-            await WaitForOutstandingOsReadAsync(cancellationToken).ConfigureAwait(false);
-
             OsCredentialStoreResult os = osStore.Set(ArcanumCredentialIdentity.Service, account, value);
 
             if (os.Status == OsCredentialStoreStatus.Ok)
@@ -348,12 +347,10 @@ internal sealed class MirroredOsCredential(
     /// <summary>Deletes the OS copy and the mirror file.</summary>
     internal async Task DeleteAsync(CancellationToken cancellationToken)
     {
-        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        await EnterGateForWriteAsync(cancellationToken).ConfigureAwait(false);
 
         try
         {
-            await WaitForOutstandingOsReadAsync(cancellationToken).ConfigureAwait(false);
-
             OsCredentialStoreResult os = osStore.Delete(ArcanumCredentialIdentity.Service, account);
 
             string path = mirror.Path;
@@ -438,19 +435,46 @@ internal sealed class MirroredOsCredential(
     }
 
     /// <summary>
-    /// A write must not run alongside a parked read: each would raise its own OS prompt. Waits for the
-    /// outstanding read to return; its outcome was already reported to the readers that joined it.
+    /// Takes the gate for a write once no OS read is outstanding. A write must not run alongside a parked
+    /// read (each would raise its own OS prompt), but it waits for that read outside the gate: holding the
+    /// gate through an unanswered dialog would queue every later reader behind it, where they would never
+    /// reach the join that fails them at the read timeout. A read started by a reader that took the gate
+    /// first is waited out the same way.
+    /// </summary>
+    private async Task EnterGateForWriteAsync(CancellationToken cancellationToken)
+    {
+        while (true)
+        {
+            await WaitForOutstandingOsReadAsync(cancellationToken).ConfigureAwait(false);
+
+            await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+
+            if (OutstandingOsRead() is null)
+            {
+                return;
+            }
+
+            _ = _gate.Release();
+        }
+    }
+
+    private Task<OsCredentialStoreResult>? OutstandingOsRead()
+    {
+        lock (_osReadSync)
+        {
+            return _osRead is { IsCompleted: false } read ? read : null;
+        }
+    }
+
+    /// <summary>
+    /// Waits for the outstanding read to return; its outcome was already reported to the readers that
+    /// joined it.
     /// </summary>
     private async Task WaitForOutstandingOsReadAsync(CancellationToken cancellationToken)
     {
-        Task<OsCredentialStoreResult>? read;
+        Task<OsCredentialStoreResult>? read = OutstandingOsRead();
 
-        lock (_osReadSync)
-        {
-            read = _osRead;
-        }
-
-        if (read is null || read.IsCompleted)
+        if (read is null)
         {
             return;
         }
