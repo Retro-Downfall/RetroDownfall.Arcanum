@@ -66,6 +66,23 @@ public sealed class SettingDescriptorCoverageTests
         Assert.Contains("Empty refuses them all", descriptor.Description, StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// The list does not govern where AI tools may write files (workspace containment and
+    /// <c>workspaces.enableFileWrite</c> do), so its label must not say it does: an operator who reads
+    /// "Folders AI can modify" lists one folder and believes AI file writes are confined to it.
+    /// </summary>
+    [Fact]
+    public void Spell_workspace_roots_label_names_spells_and_prompts_not_ai_file_writes()
+    {
+        SettingDescriptor descriptor = Assert.Single(
+            SettingDescriptors.All,
+            static item => item.Key == "security.spellWorkspaceRoots");
+
+        Assert.Equal("Spell and prompt workspace folders", descriptor.Label);
+
+        Assert.DoesNotContain("modify", descriptor.Label, StringComparison.OrdinalIgnoreCase);
+    }
+
     [Fact]
     public void Complete_configuration_reference_names_every_descriptor_exactly_once()
     {
