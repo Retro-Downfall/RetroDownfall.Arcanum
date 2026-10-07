@@ -206,6 +206,24 @@ internal sealed class CovenantProtectedArtifactErasureKernel(
     ICovenantSqliteConnectionInitializer initializer,
     TimeProvider timeProvider) : ICovenantProtectedArtifactErasureKernel
 {
+    private const int SqliteBusy = 5;
+
+    private const int SqliteLocked = 6;
+
+    private const int SqliteNoMemory = 7;
+
+    private const int SqliteReadOnly = 8;
+
+    private const int SqliteInterrupt = 9;
+
+    private const int SqliteIoError = 10;
+
+    private const int SqliteFull = 13;
+
+    private const int SqliteCannotOpen = 14;
+
+    private const int SqlitePrimaryCodeMask = 0xFF;
+
     private readonly ICovenantConnectionSource _connections =
         connections ?? throw new ArgumentNullException(nameof(connections));
 
@@ -345,11 +363,36 @@ internal sealed class CovenantProtectedArtifactErasureKernel(
                     rule.Value.AppendsErasureReceipt ? 1UL : 0UL,
                     CovenantErasureBlocker.None));
         }
-        catch (SqliteException)
+        catch (SqliteException exception)
         {
-            return Blocked(CovenantErasureBlocker.IntegrityFailure);
+            return Blocked(StorageBlocker(exception));
         }
     }
+
+    /// <summary>
+    /// Classifies a SQLite error raised inside an item's transaction onto the closed blocker vocabulary.
+    /// </summary>
+    /// <remarks>
+    /// Only the environmental codes are storage-unavailable: a database still busy or locked after its
+    /// retries, memory exhausted, a database that refuses writes, an interrupted statement, an I/O error,
+    /// a full disk, and a file that cannot be opened. Each says the engine could not carry out the purge
+    /// right now, says nothing about the stored data, and can clear on its own. Every other code stays an
+    /// integrity failure, and that includes <c>SQLITE_ERROR</c> for a missing table or column: the plan
+    /// runner never skips a declared target, so a plan-declared table absent from the installed schema
+    /// means the schema and the plan disagree, which an operator has to see rather than retry. Either way
+    /// the transaction rolled back and the item is blocked, never counted as erased.
+    /// </remarks>
+    private static CovenantErasureBlocker StorageBlocker(SqliteException exception) =>
+        (exception.SqliteErrorCode & SqlitePrimaryCodeMask) is SqliteBusy
+            or SqliteLocked
+            or SqliteNoMemory
+            or SqliteReadOnly
+            or SqliteInterrupt
+            or SqliteIoError
+            or SqliteFull
+            or SqliteCannotOpen
+            ? CovenantErasureBlocker.StorageUnavailable
+            : CovenantErasureBlocker.IntegrityFailure;
 
     /// <summary>
     /// Deletes the current pointer when the rule repairs it and redacts the shadowed column, then the
