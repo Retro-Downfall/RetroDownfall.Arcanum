@@ -156,6 +156,52 @@ public sealed class BatchRecoveryServiceTests : IAsyncLifetime
     }
 
     /// <summary>
+    /// A stranded batch whose input file and batch row still hold the pre-version-15 lowercase spelling is
+    /// requeued, not failed for a missing input.
+    /// </summary>
+    /// <remarks>
+    /// Startup reconciliation runs before the host serves, which on an upgrade across an earlier step's backfill
+    /// sweep is before version 15 has rewritten the file identities. A not-found there would fail the batch for
+    /// good and clear its artifacts, though the file is intact.
+    /// </remarks>
+    [SkippableFact]
+    public async Task ReconcileStrandedAsync_with_a_pre_version_15_input_spelling_resets_to_validating()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid inputFileId = await SeedInputFileAsync("{}");
+
+        Guid batchId = Guid.NewGuid();
+
+        await _batches!.CreateAsync(
+            new BatchRecord(batchId, inputFileId, "/v1/chat/completions", BatchStatuses.InProgress, DateTimeOffset.UtcNow, null, null, null),
+            CancellationToken.None);
+
+        System.Data.Common.DbConnection connection = _db!.Database.GetDbConnection();
+
+        await using (System.Data.Common.DbCommand legacy = connection.CreateCommand())
+        {
+            legacy.CommandText =
+                $"""
+                UPDATE "UploadedFiles" SET "Id" = lower("Id") WHERE "Id" = '{GrimoireEntitySql.Format(inputFileId)}';
+                UPDATE "Batches" SET "InputFileId" = lower("InputFileId") WHERE "Id" = '{batchId:N}';
+                """;
+
+            Assert.Equal(2, await legacy.ExecuteNonQueryAsync(CancellationToken.None));
+        }
+
+        BatchRecoveryService recovery = CreateRecoveryService();
+
+        await recovery.ReconcileStrandedAsync(CancellationToken.None);
+
+        BatchRecord? loaded = await _batches.GetByIdAsync(batchId, CancellationToken.None);
+
+        Assert.NotNull(loaded);
+
+        Assert.Equal(BatchStatuses.Validating, loaded!.Status);
+    }
+
+    /// <summary>
     /// A batch this process is still dispatching is InProgress by design, not stranded. Reconciling it
     /// would seal its live lines and re-queue it under the running worker.
     /// </summary>

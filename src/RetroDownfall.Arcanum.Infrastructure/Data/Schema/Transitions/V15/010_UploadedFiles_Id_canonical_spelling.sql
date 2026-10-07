@@ -12,7 +12,9 @@
 --
 -- OR IGNORE: should two rows ever differ only by case, renaming the second would collide with the first on
 -- the primary key and abort the whole transition. The first keeps its spelling, the second keeps the
--- non-canonical one, and the lookups that still normalize both sides keep finding either.
+-- non-canonical one. UploadedFileRepository still finds a lowercase dashed or lowercase dash-free leftover,
+-- because it looks a file up by those spellings as well as the canonical one, and its delete removes both rows
+-- together; a mixed-case leftover is reachable only by the retention sweep, which normalizes both sides.
 UPDATE OR IGNORE "UploadedFiles"
 SET "Id" = upper(
         CASE

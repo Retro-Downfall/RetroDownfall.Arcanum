@@ -186,6 +186,58 @@ public sealed class BatchRepositoryTests : IAsyncLifetime
             await ReadFileRolesAsync(batchId));
     }
 
+    /// <summary>
+    /// A new batch may name an input file still held in a pre-version-15 spelling, which the files endpoint has
+    /// already found by its Guid; the batch stores the canonical text.
+    /// </summary>
+    /// <remarks>
+    /// While an earlier step's backfill sweep drains, version 15 has not yet rewritten the files uploaded before
+    /// the upgrade, which the earlier writer stored lowercase dashed.
+    /// </remarks>
+    [SkippableFact]
+    public async Task CreateAsync_accepts_an_input_file_still_held_in_a_pre_version_15_spelling()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid inputFileId = Guid.NewGuid();
+
+        System.Data.Common.DbConnection connection = _db!.Database.GetDbConnection();
+
+        if (connection.State != System.Data.ConnectionState.Open)
+        {
+            await connection.OpenAsync(CancellationToken.None);
+        }
+
+        await using (System.Data.Common.DbCommand insert = connection.CreateCommand())
+        {
+            insert.CommandText =
+                $"""
+                INSERT INTO "UploadedFiles" ("Id", "Filename", "Bytes", "Purpose", "MimeType", "CreatedAt")
+                VALUES ('{inputFileId:D}', 'legacy.jsonl', 1, 'batch', 'application/jsonl', '{UtcInstantText.Format(DateTimeOffset.UtcNow)}');
+                """;
+
+            _ = await insert.ExecuteNonQueryAsync(CancellationToken.None);
+        }
+
+        Guid batchId = Guid.NewGuid();
+
+        await _repo!.CreateAsync(
+            new BatchRecord(
+                batchId,
+                inputFileId,
+                "/v1/chat/completions",
+                BatchStatuses.Validating,
+                DateTimeOffset.UtcNow,
+                null,
+                null,
+                null),
+            CancellationToken.None);
+
+        Assert.Equal(
+            [GrimoireEntitySql.Format(inputFileId), "<null>", "<null>"],
+            await ReadFileRolesAsync(batchId));
+    }
+
     [SkippableTheory]
 
     [InlineData("input")]
