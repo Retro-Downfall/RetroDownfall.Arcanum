@@ -625,4 +625,62 @@ public sealed class JsonSchemaHelperTests
 
         Assert.Contains("'integer'", error, StringComparison.Ordinal);
     }
+
+    /// <summary>
+    /// A union member the validator does not recognize used to match every value, so one unknown
+    /// member turned the whole union into "accept anything" on the structured-output and client-tool
+    /// paths. An unknown name matches nothing; the recognized members still decide.
+    /// </summary>
+    [Fact]
+    public void Validate_TypeUnionWithAnUnknownMember_DoesNotAcceptEveryValue()
+    {
+        using JsonDocument schema = JsonDocument.Parse("""{"type":["string","strng"]}""");
+
+        JsonSchemaDefinition definition = JsonSchemaHelper.Parse(schema).Value;
+
+        Assert.True(JsonSchemaHelper.Validate("\"text\"", definition).IsValid);
+
+        Assert.False(JsonSchemaHelper.Validate("{}", definition).IsValid);
+
+        Assert.False(JsonSchemaHelper.Validate("5", definition).IsValid);
+    }
+
+    [Fact]
+    public void Validate_UnknownSingleType_MatchesNoValue()
+    {
+        using JsonDocument schema = JsonDocument.Parse("""{"type":"strng"}""");
+
+        JsonSchemaDefinition definition = JsonSchemaHelper.Parse(schema).Value;
+
+        ValidationResult result = JsonSchemaHelper.Validate("\"text\"", definition);
+
+        Assert.False(result.IsValid);
+
+        Assert.Contains("'strng'", Assert.Single(result.Errors), StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// A malformed <c>type</c> declaration used to be rewritten rather than refused: a non-string
+    /// union member was dropped and a number, object, boolean, null or empty-array <c>type</c> became
+    /// <c>object</c>, so no caller ever saw the declaration the author actually wrote.
+    /// </summary>
+    [Theory]
+    [InlineData("""{"type":["string",5]}""")]
+    [InlineData("""{"type":["string",null]}""")]
+    [InlineData("""{"type":7}""")]
+    [InlineData("""{"type":[]}""")]
+    [InlineData("""{"type":{}}""")]
+    [InlineData("""{"type":true}""")]
+    [InlineData("""{"type":null}""")]
+    [InlineData("""{"type":"object","properties":{"a":{"type":[1]}}}""")]
+    public void Parse_MalformedTypeDeclaration_IsRejectedAsInvalidSchema(string schemaJson)
+    {
+        using JsonDocument schema = JsonDocument.Parse(schemaJson);
+
+        Result<JsonSchemaDefinition> result = JsonSchemaHelper.Parse(schema);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.StructuredOutput.SchemaInvalid, result.Error.Code);
+    }
 }

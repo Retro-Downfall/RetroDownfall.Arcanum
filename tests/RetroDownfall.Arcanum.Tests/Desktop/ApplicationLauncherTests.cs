@@ -626,12 +626,16 @@ public sealed class ApplicationLauncherTests
 
         string projectPath = Path.Combine(repositoryRoot, CompendiumLauncher.ProjectRelativePath);
 
+        string marker = Path.Combine(repositoryRoot, "RetroDownfall.Arcanum.slnx");
+
         CompendiumLauncher launcher = new(
             () => baseDirectory,
-            path => string.Equals(path, projectPath, StringComparison.Ordinal),
+            path => string.Equals(path, projectPath, StringComparison.Ordinal)
+                || string.Equals(path, marker, StringComparison.Ordinal),
             _ => throw new UnauthorizedAccessException("denied /private/path"),
             CompendiumLaunchPlatform.MacOS,
-            Architecture.X64);
+            Architecture.X64,
+            allowDevelopmentProject: true);
 
         CompendiumLaunchResult result = launcher.TryLaunch();
 
@@ -656,15 +660,19 @@ public sealed class ApplicationLauncherTests
 
         string projectPath = Path.Combine(repositoryRoot, CompendiumLauncher.ProjectRelativePath);
 
+        string marker = Path.Combine(repositoryRoot, "RetroDownfall.Arcanum.slnx");
+
         CompendiumLauncher launcher = new(
             () => baseDirectory,
             path => string.Equals(path, executable, StringComparison.Ordinal)
-                || string.Equals(path, projectPath, StringComparison.Ordinal),
+                || string.Equals(path, projectPath, StringComparison.Ordinal)
+                || string.Equals(path, marker, StringComparison.Ordinal),
             startInfo => startInfo.FileName == executable
                 ? throw new InvalidOperationException("executable refused")
                 : false,
             CompendiumLaunchPlatform.MacOS,
-            Architecture.X64);
+            Architecture.X64,
+            allowDevelopmentProject: true);
 
         CompendiumLaunchResult result = launcher.TryLaunch();
 
@@ -768,9 +776,12 @@ public sealed class ApplicationLauncherTests
 
         ProcessStartInfo? started = null;
 
+        string marker = Path.Combine(repositoryRoot, "RetroDownfall.Arcanum.slnx");
+
         CompendiumLauncher launcher = new(
             () => baseDirectory,
-            path => string.Equals(path, projectPath, StringComparison.Ordinal),
+            path => string.Equals(path, projectPath, StringComparison.Ordinal)
+                || string.Equals(path, marker, StringComparison.Ordinal),
             startInfo =>
             {
                 started = startInfo;
@@ -790,6 +801,47 @@ public sealed class ApplicationLauncherTests
         Assert.NotNull(started);
 
         Assert.Equal("dotnet", started!.FileName);
+    }
+
+    /// <summary>
+    /// The project walk accepted the first ancestor holding the Compendium project path, with no
+    /// repository marker, so any writable ancestor of the install directory (for example a folder
+    /// another account created at a drive root) could supply the project that <c>dotnet run</c>
+    /// executes. It now accepts only an ancestor that also holds the solution marker, as the
+    /// <c>arcanum open</c> discovery does.
+    /// </summary>
+    [Fact]
+
+    public void Legacy_compendium_launcher_ignores_a_project_path_without_the_repository_marker_beside_it()
+    {
+        string plantedRoot = Path.Combine(Path.GetTempPath(), "compendium-planted-root");
+
+        string baseDirectory = Path.Combine(plantedRoot, "Downloads", "the-forge");
+
+        string projectPath = Path.Combine(plantedRoot, CompendiumLauncher.ProjectRelativePath);
+
+        List<ProcessStartInfo> started = [];
+
+        CompendiumLauncher launcher = new(
+            () => baseDirectory,
+            path => string.Equals(path, projectPath, StringComparison.Ordinal),
+            startInfo =>
+            {
+                started.Add(startInfo);
+
+                return true;
+            },
+            CompendiumLaunchPlatform.MacOS,
+            Architecture.X64,
+            allowDevelopmentProject: true);
+
+        CompendiumLaunchResult result = launcher.TryLaunch();
+
+        Assert.Empty(started);
+
+        Assert.False(result.Launched);
+
+        Assert.Null(result.ExecutablePath);
     }
 
     private static ApplicationDeepLink CreateSessionDeepLink() =>

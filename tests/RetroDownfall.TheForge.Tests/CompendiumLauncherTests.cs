@@ -10,11 +10,9 @@ namespace RetroDownfall.TheForge.Tests;
 
 public class CompendiumLauncherTests
 {
-
     [Fact]
     public void TryLaunch_WhenExecutableExists_StartsProcess()
     {
-
         string fileName = OperatingSystem.IsWindows()
             ? "RetroDownfall.Compendium.Ux.exe"
             : "RetroDownfall.Compendium.Ux";
@@ -41,14 +39,12 @@ public class CompendiumLauncherTests
         Assert.Equal(exe, started!.FileName);
 
         Assert.Contains("arcanum.json", result.ConfigPath, StringComparison.Ordinal);
-
     }
 
     [Fact]
 
     public void TryLaunch_WhenExecutableExists_SendsSettingsDeepLinkAsOneArgument()
     {
-
         string fileName = OperatingSystem.IsWindows()
             ? "RetroDownfall.Compendium.Ux.exe"
             : "RetroDownfall.Compendium.Ux";
@@ -62,11 +58,9 @@ public class CompendiumLauncherTests
             path => string.Equals(path, executable, StringComparison.Ordinal),
             startInfo =>
             {
-
                 started = startInfo;
 
                 return true;
-
             });
 
         CompendiumLaunchResult result = launcher.TryLaunch();
@@ -100,14 +94,12 @@ public class CompendiumLauncherTests
             "apiKey",
             started.ArgumentList[1],
             StringComparison.OrdinalIgnoreCase);
-
     }
 
     [Fact]
 
     public void TryLaunch_WhenExecutableStartFails_ContinuesToDevelopmentProject()
     {
-
         string repositoryRoot = Path.Combine(
             Path.GetTempPath(),
             "arcanum-compendium-continuation");
@@ -127,24 +119,26 @@ public class CompendiumLauncherTests
             repositoryRoot,
             CompendiumLauncher.ProjectRelativePath);
 
+        string marker = Path.Combine(repositoryRoot, "RetroDownfall.Arcanum.slnx");
+
         List<ProcessStartInfo> starts = [];
 
         CompendiumLauncher launcher = new(
             () => baseDirectory,
             path =>
                 string.Equals(path, executable, StringComparison.Ordinal)
-                || string.Equals(path, projectPath, StringComparison.Ordinal),
+                || string.Equals(path, projectPath, StringComparison.Ordinal)
+                || string.Equals(path, marker, StringComparison.Ordinal),
             startInfo =>
             {
-
                 starts.Add(startInfo);
 
                 return string.Equals(
                     startInfo.FileName,
                     "dotnet",
                     StringComparison.Ordinal);
-
-            });
+            },
+            allowDevelopmentProject: true);
 
         CompendiumLaunchResult result = launcher.TryLaunch();
 
@@ -170,14 +164,12 @@ public class CompendiumLauncherTests
                 ApplicationDeepLinkCodec.Encode(CreateSettingsDeepLink()),
             ],
             starts[1].ArgumentList.ToArray());
-
     }
 
     [Fact]
 
     public void TryLaunch_FindsDevelopmentProjectBeyondEightParentDirectories()
     {
-
         string repositoryRoot = Path.Combine(
             Path.GetTempPath(),
             "arcanum-compendium-deep-root");
@@ -186,28 +178,28 @@ public class CompendiumLauncherTests
 
         for (int index = 0; index < 16; index++)
         {
-
             baseDirectory = Path.Combine(baseDirectory, $"nested-{index}");
-
         }
 
         string projectPath = Path.Combine(
             repositoryRoot,
             CompendiumLauncher.ProjectRelativePath);
 
+        string marker = Path.Combine(repositoryRoot, "RetroDownfall.Arcanum.slnx");
+
         ProcessStartInfo? started = null;
 
         CompendiumLauncher launcher = new(
             () => baseDirectory,
-            path => string.Equals(path, projectPath, StringComparison.Ordinal),
+            path => string.Equals(path, projectPath, StringComparison.Ordinal)
+                || string.Equals(path, marker, StringComparison.Ordinal),
             startInfo =>
             {
-
                 started = startInfo;
 
                 return true;
-
-            });
+            },
+            allowDevelopmentProject: true);
 
         CompendiumLaunchResult result = launcher.TryLaunch();
 
@@ -218,14 +210,12 @@ public class CompendiumLauncherTests
         Assert.NotNull(started);
 
         Assert.Equal("dotnet", started!.FileName);
-
     }
 
     [Fact]
 
     public void TryLaunch_WhenDevelopmentStartFails_UsesRepositoryRelativeGuidance()
     {
-
         string repositoryRoot = Path.Combine(
             Path.GetTempPath(),
             "arcanum-compendium-relative-guidance");
@@ -236,10 +226,14 @@ public class CompendiumLauncherTests
             repositoryRoot,
             CompendiumLauncher.ProjectRelativePath);
 
+        string marker = Path.Combine(repositoryRoot, "RetroDownfall.Arcanum.slnx");
+
         CompendiumLauncher launcher = new(
             () => baseDirectory,
-            path => string.Equals(path, projectPath, StringComparison.Ordinal),
-            _ => false);
+            path => string.Equals(path, projectPath, StringComparison.Ordinal)
+                || string.Equals(path, marker, StringComparison.Ordinal),
+            _ => false,
+            allowDevelopmentProject: true);
 
         CompendiumLaunchResult result = launcher.TryLaunch();
 
@@ -266,13 +260,11 @@ public class CompendiumLauncherTests
             $"{ApplicationDeepLinkCodec.ArgumentName} {CommandDisplayFormatter.QuoteArgumentForCurrentPlatform(deepLinkPayload)}",
             result.Message,
             StringComparison.Ordinal);
-
     }
 
     [Fact]
     public void TryLaunch_WhenMissing_ReturnsConfigPathInstructions()
     {
-
         string baseDirectory = Path.GetTempPath();
 
         CompendiumLauncher launcher = new(
@@ -306,26 +298,22 @@ public class CompendiumLauncherTests
             $"DevelopmentProject: {CompendiumLauncher.ProjectRelativePath}",
             result.Message,
             StringComparison.Ordinal);
-
     }
 
     [Fact]
     public void TryLaunch_DoesNotPersistApiKeys()
     {
-
         CompendiumLaunchResult result = new FakeCompendiumLauncher().TryLaunch();
 
         Assert.DoesNotContain("secret", result.Message, StringComparison.OrdinalIgnoreCase);
 
         Assert.DoesNotContain("apiKey", result.ConfigPath, StringComparison.OrdinalIgnoreCase);
-
     }
 
     [Fact]
 
     public void Mac_settings_action_launches_compendium()
     {
-
         FakeCompendiumLauncher launcher = new();
 
         CompendiumLaunchResult result = App.OpenSettings(launcher);
@@ -333,7 +321,6 @@ public class CompendiumLauncherTests
         Assert.True(result.Launched);
 
         Assert.Equal(1, launcher.LaunchCount);
-
     }
 
     private static ApplicationDeepLink CreateSettingsDeepLink() =>
@@ -342,5 +329,4 @@ public class CompendiumLauncherTests
             DesktopApplication.Compendium,
             ApplicationResourceKind.Configuration,
             InitialView: ApplicationInitialView.Settings);
-
 }

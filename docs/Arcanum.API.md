@@ -680,7 +680,7 @@ This route family maps `Data.InvalidRequest` and `Data.ConfirmationRequired` to 
 
 ### 8.21 The Proving Grounds (`POST /api/proving-grounds/trials/run`)
 
-Ephemeral Trial + Inquisitors (`regex` / `jsonSchema` / `semantic` FastModel judge). `jsonSchema` delegates to the shared `JsonSchemaHelper` and enforces exactly these keywords: `type` (a string, or an array of types of which any one satisfies the schema, `null` included; an unrecognized type anywhere in it fails the verdict), `properties`, `required`, `items`, `enum`, and `additionalProperties` (boolean). Every other keyword (for example `minimum`, `pattern`, `oneOf`, `$ref`) is ignored, and an unreadable schema is a failed verdict. Targets: spell / prompt / apprenticeGoal. Terminology strict — industry LLM-test jargon prohibited. Errors §8.23.
+Ephemeral Trial + Inquisitors (`regex` / `jsonSchema` / `semantic` FastModel judge). `jsonSchema` delegates to the shared `JsonSchemaHelper` and enforces exactly these keywords: `type` (a string, or a non-empty array of type strings of which any one satisfies the schema, `null` included; an unrecognized type anywhere in it fails the verdict, and a `type` of any other shape is an unreadable schema), `properties`, `required`, `items`, `enum`, and `additionalProperties` (boolean). Every other keyword (for example `minimum`, `pattern`, `oneOf`, `$ref`) is ignored, and an unreadable schema is a failed verdict. Targets: spell / prompt / apprenticeGoal. Terminology strict — industry LLM-test jargon prohibited. Errors §8.23.
 
 ### 8.22 Metrics endpoint (`GET /metrics`)
 

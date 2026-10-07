@@ -186,48 +186,48 @@ public static class JsonSchemaHelper
             return (value, false, []);
         }
 
-        if (typeElement.ValueKind == JsonValueKind.Array)
+        // A malformed declaration is refused rather than rewritten: dropping a non-string union
+        // member or reading a number, object, boolean, null or empty array as "object" would validate
+        // against a schema the author never wrote, and no caller could see what was declared.
+        if (typeElement.ValueKind != JsonValueKind.Array)
         {
-            bool hasNull = false;
+            throw new SchemaException("schema 'type' must be a string or an array of strings");
+        }
 
-            List<string> nonNullTypes = [];
+        bool hasNull = false;
 
-            foreach (JsonElement type in typeElement.EnumerateArray())
+        List<string> nonNullTypes = [];
+
+        foreach (JsonElement type in typeElement.EnumerateArray())
+        {
+            if (type.ValueKind != JsonValueKind.String)
             {
-                if (type.ValueKind != JsonValueKind.String)
-                {
-                    continue;
-                }
-
-                string? value = type.GetString()?.ToLowerInvariant();
-
-                if (value is null)
-                {
-                    continue;
-                }
-
-                if (value == "null")
-                {
-                    hasNull = true;
-                }
-                else if (!nonNullTypes.Contains(value))
-                {
-                    nonNullTypes.Add(value);
-                }
+                throw new SchemaException("schema 'type' array members must be strings");
             }
 
-            if (nonNullTypes.Count > 0)
-            {
-                return (nonNullTypes[0], hasNull, nonNullTypes.GetRange(1, nonNullTypes.Count - 1));
-            }
+            string value = type.GetString()!.ToLowerInvariant();
 
-            if (hasNull)
+            if (value == "null")
             {
-                return ("null", false, []);
+                hasNull = true;
+            }
+            else if (!nonNullTypes.Contains(value))
+            {
+                nonNullTypes.Add(value);
             }
         }
 
-        return ("object", false, []);
+        if (nonNullTypes.Count > 0)
+        {
+            return (nonNullTypes[0], hasNull, nonNullTypes.GetRange(1, nonNullTypes.Count - 1));
+        }
+
+        if (hasNull)
+        {
+            return ("null", false, []);
+        }
+
+        throw new SchemaException("schema 'type' array must not be empty");
     }
 
     private static void ValidateElement(
@@ -366,6 +366,8 @@ public static class JsonSchemaHelper
 
     private static bool IsTypeMatch(JsonElement element, string expectedType)
     {
+        // An unrecognized name matches nothing. Matching everything turned a union carrying one
+        // unknown member into "accept any value", since a union passes when any member matches.
         return expectedType.ToLowerInvariant() switch
         {
             "object" => element.ValueKind == JsonValueKind.Object,
@@ -375,7 +377,7 @@ public static class JsonSchemaHelper
             "integer" => element.ValueKind == JsonValueKind.Number && element.TryGetInt64(out _),
             "boolean" => element.ValueKind is JsonValueKind.True or JsonValueKind.False,
             "null" => element.ValueKind == JsonValueKind.Null,
-            _ => true
+            _ => false
         };
     }
 

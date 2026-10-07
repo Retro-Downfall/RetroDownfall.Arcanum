@@ -56,26 +56,26 @@ public sealed class ApplicationDiscoveryEnvironmentTests
         }
     }
 
+    /// <summary>
+    /// The opt-in is the only gate. A JIT runtime is not a development build: The Forge ships as a
+    /// self-contained JIT image, so treating JIT as "development" left the gate permanently open there
+    /// and let a planted project above its install directory run through <c>dotnet run</c>.
+    /// </summary>
     [Theory]
 
-    [InlineData(true, null, true)]
+    [InlineData(null, false)]
 
-    [InlineData(true, "0", true)]
+    [InlineData("", false)]
 
-    [InlineData(false, null, false)]
+    [InlineData("0", false)]
 
-    [InlineData(false, "", false)]
+    [InlineData("true", false)]
 
-    [InlineData(false, "0", false)]
+    [InlineData(" 1", false)]
 
-    [InlineData(false, "true", false)]
+    [InlineData("1", true)]
 
-    [InlineData(false, " 1", false)]
-
-    [InlineData(false, "1", true)]
-
-    public void The_development_project_is_offered_to_a_jit_build_or_an_image_opted_in_with_exactly_1(
-        bool isDynamicCodeSupported,
+    public void The_development_project_is_offered_only_to_a_process_opted_in_with_exactly_1_whatever_its_runtime(
         string? optIn,
         bool expected)
     {
@@ -85,7 +85,7 @@ public sealed class ApplicationDiscoveryEnvironmentTests
 
         Assert.Equal(
             expected,
-            ApplicationDiscoveryEnvironment.DevelopmentProjectLaunchAllowed(isDynamicCodeSupported, Read));
+            ApplicationDiscoveryEnvironment.DevelopmentProjectLaunchAllowed(Read));
     }
 
     [Fact]
