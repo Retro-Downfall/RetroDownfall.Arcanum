@@ -36,11 +36,11 @@ internal static class ApprenticeCommandSupport
 
         table.AddRow(themePalette.MutedMarkup(Markup.Escape("Id:")), themePalette.TextMarkup(Markup.Escape(apprentice.Id.ToString("D"))));
 
-        table.AddRow(themePalette.MutedMarkup(Markup.Escape("Name:")), themePalette.HighlightMarkup(Markup.Escape(apprentice.Name)));
+        table.AddRow(themePalette.MutedMarkup(Markup.Escape("Name:")), themePalette.HighlightMarkup(Markup.Escape(TerminalTextSanitizer.SanitizeLine(apprentice.Name))));
 
-        table.AddRow(themePalette.MutedMarkup(Markup.Escape("Goal:")), themePalette.TextMarkup(Markup.Escape(apprentice.Goal)));
+        table.AddRow(themePalette.MutedMarkup(Markup.Escape("Goal:")), themePalette.TextMarkup(Markup.Escape(TerminalTextSanitizer.SanitizeLine(apprentice.Goal))));
 
-        table.AddRow(themePalette.MutedMarkup(Markup.Escape("Status:")), themePalette.TextMarkup(Markup.Escape(apprentice.Status)));
+        table.AddRow(themePalette.MutedMarkup(Markup.Escape("Status:")), themePalette.TextMarkup(Markup.Escape(TerminalTextSanitizer.SanitizeLine(apprentice.Status))));
 
         table.AddRow(
             themePalette.MutedMarkup(Markup.Escape("Current step:")),
@@ -52,18 +52,18 @@ internal static class ApprenticeCommandSupport
 
         table.AddRow(
             themePalette.MutedMarkup(Markup.Escape("Workspace:")),
-            themePalette.TextMarkup(Markup.Escape(apprentice.WorkspacePath)));
+            themePalette.TextMarkup(Markup.Escape(TerminalTextSanitizer.SanitizeLine(apprentice.WorkspacePath))));
 
         if (!string.IsNullOrWhiteSpace(apprentice.ErrorMessage))
         {
             table.AddRow(
                 themePalette.MutedMarkup(Markup.Escape("Error:")),
-                themePalette.ErrorMarkup(Markup.Escape(apprentice.ErrorMessage)));
+                themePalette.ErrorMarkup(Markup.Escape(TerminalTextSanitizer.SanitizeLine(apprentice.ErrorMessage))));
         }
 
         Panel panel = new(table)
         {
-            Header = new PanelHeader(themePalette.HeadingBoldMarkup(Markup.Escape($"Apprentice: {apprentice.Name}"))),
+            Header = new PanelHeader(themePalette.HeadingBoldMarkup(Markup.Escape($"Apprentice: {TerminalTextSanitizer.SanitizeLine(apprentice.Name)}"))),
             Border = BoxBorder.Rounded,
             BorderStyle = themePalette.HighlightStyle(),
         };
@@ -87,8 +87,8 @@ internal static class ApprenticeCommandSupport
         {
             planTable.AddRow(
                 new Markup(themePalette.TextMarkup(Markup.Escape(step.Index.ToString(System.Globalization.CultureInfo.InvariantCulture)))),
-                new Markup(themePalette.TextMarkup(Markup.Escape(step.Description))),
-                new Markup(themePalette.MutedMarkup(Markup.Escape(step.Status))));
+                new Markup(themePalette.TextMarkup(Markup.Escape(TerminalTextSanitizer.SanitizeLine(step.Description)))),
+                new Markup(themePalette.MutedMarkup(Markup.Escape(TerminalTextSanitizer.SanitizeLine(step.Status)))));
         }
 
         AnsiConsole.Write(planTable);

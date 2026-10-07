@@ -23,7 +23,6 @@ public sealed class LoreCommands(
     IConfirmationPrompt confirmationPrompt,
     IOptions<ArcanumSettings> settings)
 {
-
     private void WriteError(Error error) =>
         CliErrorOutput.WriteMarkupLine(
             themePalette.ErrorMarkup(CliFailureExit.Annotate(error, settings.Value.Host)));
@@ -52,14 +51,16 @@ public sealed class LoreCommands(
 
         foreach (LoreDto row in result.Value)
         {
-            string? value = row.Value;
+            // A lore value can be scribed by the model. It is stripped before the cut, so the cut cannot
+            // leave the tail of an escape sequence behind as text.
+            string value = TerminalTextSanitizer.SanitizeLine(row.Value);
 
-            string snippet = string.IsNullOrEmpty(value) || value.Length <= SnippetMaxLength
-                ? value ?? string.Empty
-                : string.Concat(value.AsSpan(0, SnippetMaxLength), "...");
+            string snippet = value.Length <= SnippetMaxLength
+                ? value
+                : string.Concat(value.AsSpan(0, Utf8Truncation.SafeCharSliceLength(value, SnippetMaxLength)), "...");
 
             table.AddRow(
-                Markup.Escape(row.Key),
+                Markup.Escape(TerminalTextSanitizer.SanitizeLine(row.Key)),
                 Markup.Escape(row.UpdatedAtUtc.ToString("u", CultureInfo.InvariantCulture)),
                 Markup.Escape(snippet));
         }
@@ -75,16 +76,13 @@ public sealed class LoreCommands(
     /// <param name="key">The lore key.</param>
     public async Task<int> Get(string key, CancellationToken cancellationToken)
     {
-
         Result<LoreDto> result = await apiClient.GetLoreAsync(key, cancellationToken).ConfigureAwait(false);
 
         if (result.IsFailure)
         {
-
             WriteError(result.Error);
 
             return CliFailureExit.ExitCode(result.Error);
-
         }
 
         // A structured document, not raw bytes, because the legacy --json text wrapper reaches
@@ -94,11 +92,9 @@ public sealed class LoreCommands(
         // Same hazard and same answer as `workspace read`.
         if (invocationContext.Options.Json)
         {
-
             console.WriteJson(BuildLoreDocument(key, result.Value.Value));
 
             return 0;
-
         }
 
         // The key on the diagnostic stream, the value verbatim on the payload stream. A Spectre
@@ -110,7 +106,6 @@ public sealed class LoreCommands(
         await Console.Out.WriteLineAsync(result.Value.Value).ConfigureAwait(false);
 
         return 0;
-
     }
 
     /// <summary>
@@ -121,12 +116,10 @@ public sealed class LoreCommands(
     /// </summary>
     private static JsonElement BuildLoreDocument(string key, string value)
     {
-
         ArrayBufferWriter<byte> buffer = new();
 
         using (Utf8JsonWriter writer = new(buffer))
         {
-
             writer.WriteStartObject();
 
             writer.WriteString("key", key);
@@ -134,13 +127,11 @@ public sealed class LoreCommands(
             writer.WriteString("value", value);
 
             writer.WriteEndObject();
-
         }
 
         using JsonDocument document = JsonDocument.Parse(buffer.WrittenMemory);
 
         return document.RootElement.Clone();
-
     }
 
     /// <summary>
@@ -150,24 +141,20 @@ public sealed class LoreCommands(
     /// <param name="value">The lore value.</param>
     public async Task<int> Set(string key, string value, CancellationToken cancellationToken)
     {
-
         Result<LoreDto> result =
             await apiClient.UpsertLoreAsync(key, value, cancellationToken).ConfigureAwait(false);
 
         if (result.IsFailure)
         {
-
             WriteError(result.Error);
 
             return CliFailureExit.ExitCode(result.Error);
-
         }
 
         AnsiConsole.MarkupLine(
             themePalette.HighlightMarkup(Markup.Escape($"Successfully scribed lore for '{key}'.")));
 
         return 0;
-
     }
 
     /// <summary>
@@ -176,33 +163,26 @@ public sealed class LoreCommands(
     /// <param name="key">The lore key.</param>
     public async Task<int> Delete(string key, CancellationToken cancellationToken)
     {
-
         if (!await confirmationPrompt
                 .PromptForConfirmationAsync($"Delete lore key '{key}'?", cancellationToken)
                 .ConfigureAwait(false))
         {
-
             console.WriteDiagnostic("Lore deletion cancelled.");
 
             return 0;
-
         }
 
         Result<bool> result = await apiClient.DeleteLoreAsync(key, cancellationToken).ConfigureAwait(false);
 
         if (result.IsFailure)
         {
-
             WriteError(result.Error);
 
             return CliFailureExit.ExitCode(result.Error);
-
         }
 
         AnsiConsole.MarkupLine(themePalette.MutedMarkup(Markup.Escape($"Deleted lore for '{key}'.")));
 
         return 0;
-
     }
-
 }

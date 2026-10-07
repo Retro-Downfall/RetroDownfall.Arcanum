@@ -841,6 +841,7 @@ internal sealed class ShellCommandDispatcher(
             try
             {
                 await using FileStream stream = AttachableFile.OpenForRead(candidate, PinHashBufferBytes);
+
                 version = Convert.ToHexString(
                     await System.Security.Cryptography.SHA256
                         .HashDataAsync(stream, cancellationToken)

@@ -8,13 +8,13 @@ namespace RetroDownfall.Arcanum.Cli.Commands.Tower;
 /// <summary>
 /// Shared rendering for spell/prompt `execute` commands: writes the assistant response text to
 /// stdout, and (when present) a themed tool-call summary to stderr so piping stdout stays clean.
+/// The response text on stdout is payload and stays byte-exact; the tool-call summary is a terminal
+/// sink for model-authored names and arguments, so both are control-stripped before markup.
 /// </summary>
 internal static class ExecuteResultRendering
 {
-
     public static async Task WriteExecuteResultAsync(PromptResponseDto response, IThemePalette themePalette)
     {
-
         await Console.Out.WriteLineAsync(response.Text).ConfigureAwait(false);
 
         if (response.ToolCalls is not { Count: > 0 } toolCalls)
@@ -34,21 +34,21 @@ internal static class ExecuteResultRendering
 
         foreach (PromptToolCall call in toolCalls)
         {
-
             const int maxArgsPreviewChars = 200;
 
-            string argsPreview = call.ArgumentsJson.Length > maxArgsPreviewChars
-                ? call.ArgumentsJson[..Utf8Truncation.SafeCharSliceLength(call.ArgumentsJson, maxArgsPreviewChars)] + "\u2026"
-                : call.ArgumentsJson;
+            // Stripped before the cut, so the cut can neither leave the tail of a sequence behind as
+            // text nor count characters the terminal never shows.
+            string arguments = TerminalTextSanitizer.SanitizeLine(call.ArgumentsJson);
+
+            string argsPreview = arguments.Length > maxArgsPreviewChars
+                ? arguments[..Utf8Truncation.SafeCharSliceLength(arguments, maxArgsPreviewChars)] + "\u2026"
+                : arguments;
 
             table.AddRow(
-                new Markup(themePalette.TextMarkup(Markup.Escape(call.Name))),
+                new Markup(themePalette.TextMarkup(Markup.Escape(TerminalTextSanitizer.SanitizeLine(call.Name)))),
                 new Markup(themePalette.MutedMarkup(Markup.Escape(argsPreview))));
-
         }
 
         stderrConsole.Write(table);
-
     }
-
 }

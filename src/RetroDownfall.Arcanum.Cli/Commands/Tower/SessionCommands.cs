@@ -188,9 +188,9 @@ public sealed class SessionCommands(
 
         table.AddRow("Id:", Markup.Escape(payload.Id.ToString("D")));
 
-        table.AddRow("Title:", Markup.Escape(payload.Title ?? "(untitled)"));
+        table.AddRow("Title:", Markup.Escape(TerminalTextSanitizer.SanitizeLine(payload.Title ?? "(untitled)")));
 
-        table.AddRow("Status:", Markup.Escape(payload.Status));
+        table.AddRow("Status:", Markup.Escape(TerminalTextSanitizer.SanitizeLine(payload.Status)));
 
         table.AddRow("Campaign:", Markup.Escape(payload.CampaignId?.ToString("D") ?? "-"));
 
@@ -778,7 +778,7 @@ public sealed class SessionCommands(
                 Markup.Escape(entry.Role),
                 entry.IsPinned ? "yes" : "no",
                 Markup.Escape(entry.CreatedAt.ToString("u", CultureInfo.InvariantCulture)),
-                Markup.Escape(entry.Content.ReplaceLineEndings(" ")));
+                Markup.Escape(TerminalTextSanitizer.SanitizeLine(entry.Content.ReplaceLineEndings(" "))));
         }
 
         AnsiConsole.Write(table);
