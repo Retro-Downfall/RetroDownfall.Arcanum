@@ -185,12 +185,18 @@ public sealed class CliOutputFileTests : IDisposable
 
         Directory.CreateDirectory(destination);
 
+        List<string> removed = [];
+
         Exception failure = await Assert.ThrowsAnyAsync<Exception>(
             () => CliOutputFile.WriteAllTextAsync(
                 destination,
                 "content",
                 Encoding.UTF8,
-                static _ => throw new IOException("the-removal-failure-marker"),
+                path =>
+                {
+                    removed.Add(path);
+                    throw new IOException("the-removal-failure-marker");
+                },
                 CancellationToken.None));
 
         Assert.True(
@@ -198,6 +204,11 @@ public sealed class CliOutputFileTests : IDisposable
             $"Unexpected failure type {failure.GetType()}.");
 
         Assert.DoesNotContain("the-removal-failure-marker", failure.Message, StringComparison.Ordinal);
+
+        // The cleanup this is about must actually have run, against the write's own temporary sibling.
+        string attempted = Assert.Single(removed);
+        Assert.Equal(Path.GetFileName(_directory), Path.GetFileName(Path.GetDirectoryName(attempted)));
+        Assert.Matches(@"^\.is-a-directory\.[0-9a-f]{32}\.tmp$", Path.GetFileName(attempted));
     }
 
     /// <summary>

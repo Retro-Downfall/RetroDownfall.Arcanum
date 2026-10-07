@@ -533,11 +533,17 @@ public sealed class ConfigCommandTests
 
     public async Task An_editor_that_already_exited_is_not_killed()
     {
+        // TerminateAsync absorbs the exceptions a kill can raise, so a throwing sentinel would pass
+        // whether or not the kill was attempted: record the call instead.
+        bool killAttempted = false;
+
         await ConfigEditor.TerminateAsync(
             hasExited: () => true,
-            killTree: () => throw new InvalidOperationException("The kill must not be attempted."),
+            killTree: () => killAttempted = true,
             waitForExit: static _ => Task.CompletedTask,
             grace: TimeSpan.FromSeconds(5));
+
+        Assert.False(killAttempted, "An editor that already exited must not be killed.");
     }
 
     [Fact]
