@@ -26,6 +26,68 @@ public sealed class SecureFileReaderTests : IAsyncLifetime
         await _workspace.DisposeAsync();
     }
 
+    /// <summary>
+    /// The open-count seam is flow-local like <see cref="SecureFileReader.AfterOpenForTests"/>: every
+    /// secure open in the process passes through it, so a hook one test installs must not fire inside a
+    /// test running in parallel, and that test's own install or reset must not replace it.
+    /// </summary>
+    [Fact]
+    public async Task The_regular_file_opened_seam_does_not_reach_another_flow()
+    {
+        string path = _workspace.WriteFile("other-flow.txt", "other flow");
+
+        int opens = 0;
+
+        SecureFileReader.AfterRegularFileOpenedForTests = openedPath =>
+        {
+            if (string.Equals(openedPath, path, StringComparison.Ordinal))
+            {
+                _ = Interlocked.Increment(ref opens);
+            }
+        };
+
+        try
+        {
+            Task otherFlow;
+
+            using (ExecutionContext.SuppressFlow())
+            {
+                otherFlow = Task.Run(() =>
+                {
+                    SecureFileOpenStatus status = SecureFileReader.TryOpenRegularFile(
+                        path,
+                        expectedIdentity: null,
+                        out FileStream? stream,
+                        out _);
+
+                    stream?.Dispose();
+
+                    Assert.Equal(SecureFileOpenStatus.Success, status);
+                });
+            }
+
+            await otherFlow;
+
+            Assert.Equal(0, Volatile.Read(ref opens));
+
+            SecureFileOpenStatus ownStatus = SecureFileReader.TryOpenRegularFile(
+                path,
+                expectedIdentity: null,
+                out FileStream? ownStream,
+                out _);
+
+            ownStream?.Dispose();
+
+            Assert.Equal(SecureFileOpenStatus.Success, ownStatus);
+
+            Assert.Equal(1, Volatile.Read(ref opens));
+        }
+        finally
+        {
+            SecureFileReader.AfterRegularFileOpenedForTests = null;
+        }
+    }
+
     [Fact]
     public void TryOpenRegularFile_returns_handle_bound_regular_file()
     {
@@ -473,5 +535,4 @@ public sealed class SecureFileReaderTests : IAsyncLifetime
     private const int LinuxOpenNonBlocking = 0x00000800;
 
     private const int MacOsOpenNonBlocking = 0x00000004;
-
 }

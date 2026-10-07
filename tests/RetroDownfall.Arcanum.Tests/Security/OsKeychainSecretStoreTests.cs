@@ -718,6 +718,71 @@ public sealed class OsKeychainSecretStoreTests : IDisposable
         }
     }
 
+    /// <summary>
+    /// A save queued behind a parked OS read waits for that read to return before it touches the OS store,
+    /// but it must not hold the gate while it waits: a later ordinary read joins the parked read and fails
+    /// at once because it is already older than the timeout, instead of queueing behind the save until
+    /// somebody answers the dialog.
+    /// </summary>
+    [Fact]
+    public async Task Get_after_a_save_queued_behind_a_parked_read_fails_within_the_timeout()
+    {
+        using BlockingReadStore os = new();
+
+        TimeSpan readTimeout = TimeSpan.FromMilliseconds(250);
+
+        using OsKeychainSecretStore store = new(
+            os,
+            CreateDataProtectionStore(),
+            new ApiKeyDigestCache(new FakeTimeProvider()),
+            NullLogger<OsKeychainSecretStore>.Instance,
+            readTimeout);
+
+        try
+        {
+            SecretStoreReadResult first = await store
+                .GetApiKeyReadResultAsync()
+                .WaitAsync(TimeSpan.FromSeconds(30));
+
+            Assert.True(os.Entered.IsSet);
+
+            Assert.NotEqual(SecretStoreReadStatus.Ok, first.Status);
+
+            Task save = Task.Run(() => store.SaveApiKeyAsync("saved-while-parked"));
+
+            // Give the save time to queue behind the parked read before the next reader arrives.
+            await Task.Delay(TimeSpan.FromMilliseconds(250));
+
+            Assert.False(save.IsCompleted);
+
+            System.Diagnostics.Stopwatch elapsed = System.Diagnostics.Stopwatch.StartNew();
+
+            Task<SecretStoreReadResult> second = store.GetApiKeyReadResultAsync();
+
+            Task finished = await Task.WhenAny(
+                second,
+                Task.Delay(TimeSpan.FromSeconds(10)));
+
+            Assert.True(
+                ReferenceEquals(finished, second),
+                "An ordinary read queued behind a save that holds the gate while it waits for the parked OS read.");
+
+            Assert.True(elapsed.Elapsed < readTimeout + TimeSpan.FromSeconds(5), elapsed.Elapsed.ToString());
+
+            Assert.NotEqual(SecretStoreReadStatus.Ok, (await second).Status);
+
+            Assert.Equal(1, os.TryGetCallCount);
+
+            os.Release();
+
+            await save.WaitAsync(TimeSpan.FromSeconds(30));
+        }
+        finally
+        {
+            os.Release();
+        }
+    }
+
     [Fact]
     public async Task PeekApiKey_NotFoundOsCredential_ReturnsMirrorWithoutMigratingOrChangingFiles()
     {

@@ -70,11 +70,17 @@ internal enum CappedChildProcessOutcome
     PreStartValidationFailed,
 }
 
+/// <param name="ReadAbandoned">
+/// The run completed but this pipe was still held open (by a descendant the command left running) when
+/// the post-exit drain gave up on it: <see cref="Text"/> is empty, nothing was preserved, and the stream
+/// is reported as truncated without a <see cref="CompleteOutputPath"/>.
+/// </param>
 internal readonly record struct CappedStreamOutput(
     string Text,
     bool Truncated,
     string? CompleteOutputPath = null,
-    long TotalBytes = 0L);
+    long TotalBytes = 0L,
+    bool ReadAbandoned = false);
 
 internal sealed class ChildProcessOutputPreservationException(
     Exception innerException) : IOException(
@@ -545,7 +551,8 @@ internal static class CappedChildProcessRunner
                     (Process child, int? groupId, MacOsDescendantSupervisor? supervisor) =
                         ((Process Child, int? GroupId, MacOsDescendantSupervisor? Supervisor))state!;
                     supervisor?.KillTracked();
-                    UnixProcessGroup.TryTerminateAndKill(
+                    // Not awaited: the grace must not hold the thread that is cancelling the run.
+                    _ = UnixProcessGroup.TerminateAndKillAsync(
                         groupId);
                     ProcessTreeKiller.TryKillEntireTree(
                         child,
@@ -719,19 +726,18 @@ internal static class CappedChildProcessRunner
 
                     descendantSupervisor?.KillTracked();
 
-                    UnixProcessGroup.TryTerminateAndKill(unixProcessGroupId);
+                    await UnixProcessGroup.TerminateAndKillAsync(unixProcessGroupId)
+                        .ConfigureAwait(false);
 
+                    // A reader that finished keeps its spill: its complete output is what
+                    // execute_command hands back. Only an abandoned reader's spill is reclaimed.
                     (CappedStreamOutput abandonedStdout, CappedStreamOutput abandonedStderr) =
                         await DrainAbandonedStreamReadTasksAsync(
                                 stdoutTask,
-                                stderrTask)
+                                stdoutSpillPath,
+                                stderrTask,
+                                stderrSpillPath)
                             .ConfigureAwait(false);
-
-                    DeleteOutputSpillsWhenReadersComplete(
-                        stdoutTask,
-                        stdoutSpillPath,
-                        stderrTask,
-                        stderrSpillPath);
 
                     int abandonedExitCode = process.ExitCode;
 
@@ -1346,15 +1352,18 @@ internal static class CappedChildProcessRunner
 
     /// <summary>
     /// Last look at both output readers once the post-exit drain has already been given up on.
-    /// A reader that still cannot finish is abandoned — its spill file is reclaimed separately by
-    /// <see cref="DeleteOutputSpillWhenReaderCompletes"/> whenever it eventually completes — and
-    /// what it never delivered is reported as truncation rather than handed to the model as the
+    /// A reader that finished keeps its output and its spill file. A reader that still cannot finish
+    /// is abandoned — its spill file is reclaimed by <see cref="DeleteOutputSpillWhenReaderCompletes"/>
+    /// now and again whenever it eventually completes — and what it never delivered is reported as
+    /// <see cref="CappedStreamOutput.ReadAbandoned"/> truncation rather than handed to the model as the
     /// command's complete output.
     /// </summary>
     private static async Task<(CappedStreamOutput Stdout, CappedStreamOutput Stderr)>
         DrainAbandonedStreamReadTasksAsync(
         Task<CappedStreamOutput> stdoutTask,
-        Task<CappedStreamOutput> stderrTask)
+        string? stdoutSpillPath,
+        Task<CappedStreamOutput> stderrTask,
+        string? stderrSpillPath)
     {
         try
         {
@@ -1369,21 +1378,34 @@ internal static class CappedChildProcessRunner
         }
 
         return (
-            AbandonedReaderOutput(stdoutTask),
-            AbandonedReaderOutput(stderrTask));
+            AbandonedReaderOutput(stdoutTask, stdoutSpillPath),
+            AbandonedReaderOutput(stderrTask, stderrSpillPath));
     }
 
     /// <summary>
     /// What a reader that has been given up on can still hand back: its output when it completed, and
-    /// otherwise — timed out, faulted or canceled — nothing, with the gap reported as truncation because
-    /// the run itself still completed.
+    /// otherwise — timed out, faulted or canceled — nothing, with the gap reported as abandoned truncation
+    /// because the run itself still completed. The reader's state is read once, so the spill is deleted
+    /// exactly when the output returned does not point at it.
     /// </summary>
-    private static CappedStreamOutput AbandonedReaderOutput(Task<CappedStreamOutput> readerTask) =>
-        readerTask.IsCompletedSuccessfully
-            ? readerTask.Result
-            : new CappedStreamOutput(
-                string.Empty,
-                Truncated: true);
+    private static CappedStreamOutput AbandonedReaderOutput(
+        Task<CappedStreamOutput> readerTask,
+        string? spillPath)
+    {
+        if (readerTask.IsCompletedSuccessfully)
+        {
+            return readerTask.Result;
+        }
+
+        DeleteOutputSpillWhenReaderCompletes(
+            readerTask,
+            spillPath);
+
+        return new CappedStreamOutput(
+            string.Empty,
+            Truncated: true,
+            ReadAbandoned: true);
+    }
 
     /// <summary>
     /// Waits for both output readers to reach EOF within one shared <paramref name="grace"/>. A reader that

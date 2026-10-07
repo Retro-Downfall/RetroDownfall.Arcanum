@@ -9,7 +9,6 @@ namespace RetroDownfall.Arcanum.Secrets.Security;
 /// </remarks>
 internal sealed class FullInstallationResetRemediationTrustRootProvider
 {
-
     internal const string Issuer = "RetroDownfall.Remediation.v1";
 
     private const string SubjectPublicKeyInfoBase64 =
@@ -17,20 +16,15 @@ internal sealed class FullInstallationResetRemediationTrustRootProvider
 
     internal bool TryResolve(string issuer, out byte[] subjectPublicKeyInfo)
     {
-
         if (!string.Equals(issuer, Issuer, StringComparison.Ordinal))
         {
-
             subjectPublicKeyInfo = [];
 
             return false;
-
         }
 
         subjectPublicKeyInfo = Convert.FromBase64String(SubjectPublicKeyInfoBase64);
 
         return true;
-
     }
-
 }

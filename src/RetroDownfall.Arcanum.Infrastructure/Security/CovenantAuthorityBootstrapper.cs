@@ -30,7 +30,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.Security;
 /// </remarks>
 internal sealed class CovenantAuthorityBootstrapper
 {
-
     /// <summary>The generation a fresh installation starts at. Zero is excluded by the schema.</summary>
     private const long FreshAuthorityEpoch = 1;
 
@@ -63,7 +62,6 @@ internal sealed class CovenantAuthorityBootstrapper
         string masterApiKey,
         DateTimeOffset installedAtUtc)
     {
-
         ArgumentNullException.ThrowIfNull(heldInstallationLock);
 
         ArgumentException.ThrowIfNullOrWhiteSpace(guardedDirectory);
@@ -74,7 +72,6 @@ internal sealed class CovenantAuthorityBootstrapper
         heldInstallationLock.AssertHeldFor(guardedDirectory);
 
         return Prepare(masterApiKey, installedAtUtc);
-
     }
 
     /// <summary>
@@ -90,11 +87,9 @@ internal sealed class CovenantAuthorityBootstrapper
         string masterApiKey,
         DateTimeOffset installedAtUtc)
     {
-
         ArgumentException.ThrowIfNullOrEmpty(masterApiKey);
 
         return Prepare(masterApiKey, installedAtUtc);
-
     }
 
     /// <summary>
@@ -108,14 +103,12 @@ internal sealed class CovenantAuthorityBootstrapper
     /// </remarks>
     public static byte[] ComputeMasterKeyFingerprint(string masterApiKey)
     {
-
         ArgumentException.ThrowIfNullOrEmpty(masterApiKey);
 
         byte[] keyBytes = Encoding.UTF8.GetBytes(masterApiKey);
 
         try
         {
-
             using IncrementalHash hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
 
             hash.AppendData(FingerprintDomainLabel);
@@ -123,15 +116,11 @@ internal sealed class CovenantAuthorityBootstrapper
             hash.AppendData(keyBytes);
 
             return hash.GetHashAndReset();
-
         }
         finally
         {
-
             CryptographicOperations.ZeroMemory(keyBytes);
-
         }
-
     }
 
     /// <summary>
@@ -165,5 +154,4 @@ internal sealed class CovenantAuthorityBootstrapper
             ComputeMasterKeyFingerprint(masterApiKey),
             FreshRecoveryEnvelopeEpoch,
             installedAtUtc);
-
 }

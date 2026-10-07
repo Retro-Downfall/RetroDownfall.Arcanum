@@ -15,7 +15,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.Security;
 /// </remarks>
 internal sealed class HostProcessToolsMarkerMutationGate
 {
-
     private readonly SemaphoreSlim _gate = new(1, 1);
 
     /// <summary>
@@ -30,32 +29,23 @@ internal sealed class HostProcessToolsMarkerMutationGate
     internal async ValueTask<IAsyncDisposable> AcquireExclusiveAsync(
         CancellationToken cancellationToken = default)
     {
-
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
 
         return new Lease(_gate);
-
     }
 
     private sealed class Lease(SemaphoreSlim gate) : IAsyncDisposable
     {
-
         private int _released;
 
         public ValueTask DisposeAsync()
         {
-
             if (Interlocked.Exchange(ref _released, 1) == 0)
             {
-
                 _ = gate.Release();
-
             }
 
             return ValueTask.CompletedTask;
-
         }
-
     }
-
 }

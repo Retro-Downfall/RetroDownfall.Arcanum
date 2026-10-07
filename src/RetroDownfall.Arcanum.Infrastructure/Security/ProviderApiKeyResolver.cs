@@ -11,7 +11,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.Security;
 public sealed class ProviderApiKeyResolver(
     IProviderCredentialStore credentialStore) : IProviderApiKeyResolver
 {
-
     public async Task<string?> ResolveAsync(
         ProviderSettings provider,
         CancellationToken cancellationToken = default)
@@ -27,21 +26,16 @@ public sealed class ProviderApiKeyResolver(
         bool peek,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(provider);
 
         if (EnvironmentCredentialResolver.ResolveProviderApiKey(provider) is { } fromEnvironment)
         {
-
             return fromEnvironment;
-
         }
 
         if (string.IsNullOrWhiteSpace(provider.Name))
         {
-
             return null;
-
         }
 
         SecretStoreReadResult stored = peek
@@ -56,7 +50,5 @@ public sealed class ProviderApiKeyResolver(
             && !string.IsNullOrWhiteSpace(stored.Value)
                 ? stored.Value
                 : null;
-
     }
-
 }

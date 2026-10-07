@@ -2,7 +2,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.Security;
 
 public sealed class MasterApiKeyUnavailableException : InvalidOperationException
 {
-
     public MasterApiKeyUnavailableException()
         : base(
             "The master API key store is unavailable while an existing Grimoire database is present. "
@@ -19,5 +18,4 @@ public sealed class MasterApiKeyUnavailableException : InvalidOperationException
         : base(message)
     {
     }
-
 }

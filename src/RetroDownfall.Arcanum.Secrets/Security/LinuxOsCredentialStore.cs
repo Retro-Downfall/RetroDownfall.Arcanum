@@ -7,7 +7,6 @@ namespace RetroDownfall.Arcanum.Secrets.Security;
 [SupportedOSPlatform("linux")]
 internal static partial class LinuxOsCredentialStore
 {
-
     private const int SecretServiceNone = 0;
 
     private static readonly object SchemaGate = new();
@@ -36,12 +35,9 @@ internal static partial class LinuxOsCredentialStore
     /// </remarks>
     internal static bool ProbeReachable()
     {
-
         if (!ProbeAvailable())
         {
-
             return false;
-
         }
 
         nint errorPtr = nint.Zero;
@@ -50,73 +46,53 @@ internal static partial class LinuxOsCredentialStore
 
         try
         {
-
             service = secret_service_get_sync(SecretServiceNone, nint.Zero, ref errorPtr);
-
         }
         catch (Exception exception) when (exception is DllNotFoundException or EntryPointNotFoundException)
         {
-
             return false;
-
         }
 
         bool reachable = errorPtr == nint.Zero && service != nint.Zero;
 
         if (errorPtr != nint.Zero)
         {
-
             g_error_free(errorPtr);
-
         }
 
         if (service != nint.Zero)
         {
-
             Unref(service);
-
         }
 
         return reachable;
-
     }
 
     internal static bool ProbeAvailable()
     {
-
         try
         {
-
             return EnsureSchema() != nint.Zero;
-
         }
         catch (DllNotFoundException)
         {
-
             _libMissing = true;
 
             return false;
-
         }
         catch (EntryPointNotFoundException)
         {
-
             _libMissing = true;
 
             return false;
-
         }
-
     }
 
     internal static OsCredentialStoreResult TryGet(string service, string account)
     {
-
         if (!TryEnsureSchema(out nint schema, out OsCredentialStoreResult unavailable))
         {
-
             return unavailable;
-
         }
 
         nint errorPtr = nint.Zero;
@@ -133,49 +109,37 @@ internal static partial class LinuxOsCredentialStore
 
         if (errorPtr != nint.Zero)
         {
-
             string message = ReadGError(errorPtr);
 
             g_error_free(errorPtr);
 
             return OsCredentialStoreResult.Failed(message);
-
         }
 
         if (passwordPtr == nint.Zero)
         {
-
             return OsCredentialStoreResult.NotFound();
-
         }
 
         try
         {
-
             string? secret = Marshal.PtrToStringUTF8(passwordPtr);
 
             return string.IsNullOrEmpty(secret)
                 ? OsCredentialStoreResult.NotFound()
                 : OsCredentialStoreResult.Ok(secret);
-
         }
         finally
         {
-
             secret_password_free(passwordPtr);
-
         }
-
     }
 
     internal static OsCredentialStoreResult Set(string service, string account, string secret)
     {
-
         if (!TryEnsureSchema(out nint schema, out OsCredentialStoreResult unavailable))
         {
-
             return unavailable;
-
         }
 
         nint errorPtr = nint.Zero;
@@ -195,29 +159,23 @@ internal static partial class LinuxOsCredentialStore
 
         if (errorPtr != nint.Zero)
         {
-
             string message = ReadGError(errorPtr);
 
             g_error_free(errorPtr);
 
             return OsCredentialStoreResult.Failed(message);
-
         }
 
         return ok != 0
             ? OsCredentialStoreResult.Ok(secret)
             : OsCredentialStoreResult.Failed("secret_password_store_sync returned false.");
-
     }
 
     internal static OsCredentialStoreResult Delete(string service, string account)
     {
-
         if (!TryEnsureSchema(out nint schema, out OsCredentialStoreResult unavailable))
         {
-
             return unavailable;
-
         }
 
         nint errorPtr = nint.Zero;
@@ -234,83 +192,64 @@ internal static partial class LinuxOsCredentialStore
 
         if (errorPtr != nint.Zero)
         {
-
             string message = ReadGError(errorPtr);
 
             g_error_free(errorPtr);
 
             return OsCredentialStoreResult.Failed(message);
-
         }
 
         return OsCredentialStoreResult.Ok(string.Empty);
-
     }
 
     private static bool TryEnsureSchema(out nint schema, out OsCredentialStoreResult unavailable)
     {
-
         unavailable = default;
 
         try
         {
-
             schema = EnsureSchema();
-
         }
         catch (DllNotFoundException)
         {
-
             schema = nint.Zero;
 
             unavailable = OsCredentialStoreResult.Unavailable(
                 "libsecret-1 is not installed. Install libsecret and ensure a Secret Service (e.g. gnome-keyring) is running.");
 
             return false;
-
         }
         catch (EntryPointNotFoundException ex)
         {
-
             schema = nint.Zero;
 
             unavailable = OsCredentialStoreResult.Unavailable($"libsecret entry point missing: {ex.Message}");
 
             return false;
-
         }
 
         if (schema == nint.Zero)
         {
-
             unavailable = OsCredentialStoreResult.Unavailable("libsecret schema could not be created.");
 
             return false;
-
         }
 
         return true;
-
     }
 
     private static nint EnsureSchema()
     {
-
         lock (SchemaGate)
         {
-
             if (_libMissing)
             {
-
                 return nint.Zero;
-
             }
 
             if (_schema != nint.Zero)
             {
-
                 return _schema;
-
             }
 
             // SECRET_SCHEMA_ATTRIBUTE_STRING = 0
@@ -324,9 +263,7 @@ internal static partial class LinuxOsCredentialStore
                 nint.Zero);
 
             return _schema;
-
         }
-
     }
 
     /// <summary>
@@ -340,30 +277,22 @@ internal static partial class LinuxOsCredentialStore
     /// </remarks>
     private static void Unref(nint instance)
     {
-
         try
         {
-
             g_object_unref(instance);
-
         }
         catch (Exception exception) when (exception is DllNotFoundException or EntryPointNotFoundException)
         {
-
             // Deliberately ignored; see the remarks above.
-
         }
-
     }
 
     private static string ReadGError(nint errorPtr)
     {
-
         // GError: domain (uint32), code (int32), message (char*) — message at offset 8 on LP64.
         nint messagePtr = Marshal.ReadIntPtr(errorPtr, 8);
 
         return Marshal.PtrToStringUTF8(messagePtr) ?? "libsecret error";
-
     }
 
     [LibraryImport("libsecret-1.so.0", StringMarshalling = StringMarshalling.Utf8)]
@@ -423,5 +352,4 @@ internal static partial class LinuxOsCredentialStore
 
     [LibraryImport("libgobject-2.0.so.0")]
     private static partial void g_object_unref(nint instance);
-
 }

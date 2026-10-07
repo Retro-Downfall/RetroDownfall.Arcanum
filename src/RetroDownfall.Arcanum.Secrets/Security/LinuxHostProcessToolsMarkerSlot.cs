@@ -26,11 +26,9 @@ namespace RetroDownfall.Arcanum.Secrets.Security;
 internal sealed class LinuxHostProcessToolsMarkerSlot
     : IHostProcessToolsMarkerCredentialCapabilitySource
 {
-
     public HostProcessToolsMarkerCredentialOpenResult OpenFixedSlot() =>
         HostProcessToolsMarkerCredentialOpenResult.Unavailable();
 
     public HostProcessToolsMarkerCredentialAbsenceResult ProveFixedSlotDurablyAbsent() =>
         HostProcessToolsMarkerCredentialAbsenceResult.Unavailable();
-
 }

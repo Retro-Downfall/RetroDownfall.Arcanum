@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Runtime.InteropServices;
+using RetroDownfall.Arcanum.Infrastructure.ProcessExecution;
 using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Process;
@@ -64,6 +65,62 @@ public sealed class UnixProcessGroupTests
             Assert.Equal(-1, result);
 
             Assert.Equal(AccessDenied, errno);
+        }
+        finally
+        {
+            if (!child.HasExited)
+            {
+                child.Kill(entireProcessTree: true);
+            }
+        }
+    }
+
+    /// <summary>
+    /// The SIGTERM grace runs inside cancellation callbacks: whoever cancels a run (a request abort, the
+    /// timeout timer) runs the callback on its own thread. The grace must not hold that thread, and it must
+    /// still end in SIGKILL for a group that ignores SIGTERM.
+    /// </summary>
+    [SkippableFact]
+    public async Task TerminateAndKillAsync_does_not_block_the_caller_through_the_grace_and_still_kills_the_group()
+    {
+        Skip.IfNot(
+            OperatingSystem.IsMacOS() && File.Exists("/usr/bin/ruby"),
+            "Needs a POSIX host with setsid available to give the child its own group.");
+
+        using System.Diagnostics.Process child = new();
+
+        child.StartInfo = new ProcessStartInfo("/usr/bin/ruby")
+        {
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+        };
+
+        child.StartInfo.ArgumentList.Add("-e");
+        child.StartInfo.ArgumentList.Add(
+            "Process.setsid; trap('TERM') {}; STDOUT.puts 'ready'; STDOUT.flush; sleep 30");
+
+        _ = child.Start();
+
+        try
+        {
+            Assert.Equal(
+                "ready",
+                await child.StandardOutput.ReadLineAsync().WaitAsync(TimeSpan.FromSeconds(10)));
+
+            Task termination = UnixProcessGroup.TerminateAndKillAsync(child.Id);
+
+            Assert.False(
+                termination.IsCompleted,
+                "The SIGTERM grace held the calling thread instead of being awaited.");
+
+            await termination.WaitAsync(TimeSpan.FromSeconds(10));
+
+            Assert.True(
+                child.WaitForExit(10_000),
+                "The group that ignores SIGTERM was never sent SIGKILL.");
+
+            Assert.Equal(128 + 9, child.ExitCode);
         }
         finally
         {

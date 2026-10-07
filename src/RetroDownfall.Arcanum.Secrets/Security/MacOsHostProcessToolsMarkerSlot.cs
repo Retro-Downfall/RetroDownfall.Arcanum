@@ -19,14 +19,12 @@ namespace RetroDownfall.Arcanum.Secrets.Security;
 internal sealed partial class MacOsHostProcessToolsMarkerSlot
     : IHostProcessToolsMarkerCredentialCapabilitySource
 {
-
     private const int ErrSecSuccess = 0;
 
     private const int ErrSecItemNotFound = -25300;
 
     public HostProcessToolsMarkerCredentialOpenResult OpenFixedSlot()
     {
-
         byte[] serviceBytes = Encoding.UTF8.GetBytes(HostProcessToolsMarkerSlotIdentity.Service);
 
         byte[] accountBytes = Encoding.UTF8.GetBytes(HostProcessToolsMarkerSlotIdentity.Account);
@@ -43,20 +41,16 @@ internal sealed partial class MacOsHostProcessToolsMarkerSlot
 
         if (status == ErrSecItemNotFound)
         {
-
             Release(itemRef, passwordData);
 
             return HostProcessToolsMarkerCredentialOpenResult.Absent();
-
         }
 
         if (status != ErrSecSuccess)
         {
-
             Release(itemRef, passwordData);
 
             return HostProcessToolsMarkerCredentialOpenResult.Unavailable();
-
         }
 
         // A found item with no data is a slot somebody created without a payload: definitely there,
@@ -67,63 +61,47 @@ internal sealed partial class MacOsHostProcessToolsMarkerSlot
                 checked((int)passwordLength),
                 out byte[] opened))
         {
-
             Release(itemRef, passwordData);
 
             return HostProcessToolsMarkerCredentialOpenResult.PresentInvalid();
-
         }
 
         if (passwordData != nint.Zero)
         {
-
             _ = SecKeychainItemFreeContent(nint.Zero, passwordData);
-
         }
 
         try
         {
-
             return HostProcessToolsMarkerCredentialOpenResult.Opened(
                 HostProcessToolsMarkerCredentialCapability.CreateOwned(
                     opened,
                     new MacOsRetainedItem(itemRef)));
-
         }
         catch (ArgumentOutOfRangeException)
         {
-
             CFRelease(itemRef);
 
             return HostProcessToolsMarkerCredentialOpenResult.PresentInvalid();
-
         }
         finally
         {
-
             CryptographicOperations.ZeroMemory(opened);
-
         }
-
     }
 
     public HostProcessToolsMarkerCredentialAbsenceResult ProveFixedSlotDurablyAbsent()
     {
-
         SlotObservation first = Observe();
 
         if (first is SlotObservation.Unavailable)
         {
-
             return HostProcessToolsMarkerCredentialAbsenceResult.Unavailable();
-
         }
 
         if (first is SlotObservation.Present)
         {
-
             return HostProcessToolsMarkerCredentialAbsenceResult.Present();
-
         }
 
         Barrier();
@@ -132,15 +110,12 @@ internal sealed partial class MacOsHostProcessToolsMarkerSlot
 
         return second switch
         {
-
             SlotObservation.NotFound => HostProcessToolsMarkerCredentialAbsenceResult.Absent(),
 
             SlotObservation.Present => HostProcessToolsMarkerCredentialAbsenceResult.Present(),
 
             _ => HostProcessToolsMarkerCredentialAbsenceResult.Unavailable(),
-
         };
-
     }
 
     /// <summary>
@@ -157,7 +132,6 @@ internal sealed partial class MacOsHostProcessToolsMarkerSlot
 
     private static SlotObservation Observe()
     {
-
         byte[] serviceBytes = Encoding.UTF8.GetBytes(HostProcessToolsMarkerSlotIdentity.Service);
 
         byte[] accountBytes = Encoding.UTF8.GetBytes(HostProcessToolsMarkerSlotIdentity.Account);
@@ -176,46 +150,35 @@ internal sealed partial class MacOsHostProcessToolsMarkerSlot
 
         return status switch
         {
-
             ErrSecItemNotFound => SlotObservation.NotFound,
 
             // An item that answers at all is present, whatever its data turned out to be.
             ErrSecSuccess => SlotObservation.Present,
 
             _ => SlotObservation.Unavailable,
-
         };
-
     }
 
     private static void Release(nint itemRef, nint passwordData)
     {
-
         if (passwordData != nint.Zero)
         {
-
             _ = SecKeychainItemFreeContent(nint.Zero, passwordData);
-
         }
 
         if (itemRef != nint.Zero)
         {
-
             CFRelease(itemRef);
-
         }
-
     }
 
     private enum SlotObservation : byte
     {
-
         NotFound = 1,
 
         Present = 2,
 
         Unavailable = 3,
-
     }
 
     /// <summary>
@@ -227,18 +190,14 @@ internal sealed partial class MacOsHostProcessToolsMarkerSlot
     /// </remarks>
     private sealed class MacOsRetainedItem(nint itemRef) : IHostProcessToolsMarkerNativeRecordCapability
     {
-
         private nint _itemRef = itemRef;
 
         public HostProcessToolsMarkerCredentialDeleteStatus CompareDeleteExact(
             ReadOnlySpan<byte> expectedEncodedSecretUtf8)
         {
-
             if (_itemRef == nint.Zero)
             {
-
                 return HostProcessToolsMarkerCredentialDeleteStatus.Unavailable;
-
             }
 
             // The reread goes through the retained reference, not the slot name. An item replaced
@@ -254,16 +213,12 @@ internal sealed partial class MacOsHostProcessToolsMarkerSlot
 
             if (status == ErrSecItemNotFound)
             {
-
                 return HostProcessToolsMarkerCredentialDeleteStatus.Mismatch;
-
             }
 
             if (status != ErrSecSuccess)
             {
-
                 return HostProcessToolsMarkerCredentialDeleteStatus.Unavailable;
-
             }
 
             byte[] current = [];
@@ -272,49 +227,38 @@ internal sealed partial class MacOsHostProcessToolsMarkerSlot
 
             try
             {
-
                 equal = HostProcessToolsMarkerSlotIdentity.TryCopyNative(
                         data,
                         checked((int)length),
                         out current)
                     && CryptographicOperations.FixedTimeEquals(expectedEncodedSecretUtf8, current);
-
             }
             finally
             {
-
                 if (data != nint.Zero)
                 {
-
                     _ = SecKeychainItemFreeAttributesAndData(nint.Zero, data);
-
                 }
 
                 CryptographicOperations.ZeroMemory(current);
-
             }
 
             if (!equal)
             {
-
                 return HostProcessToolsMarkerCredentialDeleteStatus.Mismatch;
-
             }
 
             int deleted = SecKeychainItemDelete(_itemRef);
 
             if (deleted != ErrSecSuccess && deleted != ErrSecItemNotFound)
             {
-
                 return HostProcessToolsMarkerCredentialDeleteStatus.Unavailable;
-
             }
 
             Barrier();
 
             return Observe() switch
             {
-
                 SlotObservation.NotFound => HostProcessToolsMarkerCredentialDeleteStatus.Deleted,
 
                 // Something answers the slot again already. The delete may well have succeeded, but
@@ -322,27 +266,20 @@ internal sealed partial class MacOsHostProcessToolsMarkerSlot
                 SlotObservation.Present => HostProcessToolsMarkerCredentialDeleteStatus.Mismatch,
 
                 _ => HostProcessToolsMarkerCredentialDeleteStatus.Unavailable,
-
             };
-
         }
 
         public void Dispose()
         {
-
             nint held = _itemRef;
 
             _itemRef = nint.Zero;
 
             if (held != nint.Zero)
             {
-
                 CFRelease(held);
-
             }
-
         }
-
     }
 
     [LibraryImport("/System/Library/Frameworks/Security.framework/Security")]
@@ -376,5 +313,4 @@ internal sealed partial class MacOsHostProcessToolsMarkerSlot
 
     [LibraryImport("/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation")]
     private static partial void CFRelease(nint cf);
-
 }
