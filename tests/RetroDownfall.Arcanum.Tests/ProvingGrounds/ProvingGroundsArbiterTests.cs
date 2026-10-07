@@ -192,6 +192,31 @@ public sealed class ProvingGroundsArbiterTests
         Assert.False(verdicts[0].Passed);
     }
 
+    /// <summary>
+    /// A malformed type declaration fails the verdict instead of being rewritten: a dropped
+    /// non-string union member let a matching string pass, and a numeric or empty-array type was read
+    /// as "object" so an object output passed against a schema the author never wrote.
+    /// </summary>
+    [Theory]
+    [InlineData("""{"type":["string",5]}""", "\"text\"")]
+    [InlineData("""{"type":7}""", "{}")]
+    [InlineData("""{"type":[]}""", "{}")]
+    public async Task JsonSchemaInquisitor_MalformedTypeDeclaration_FailsClosed(string schemaJson, string output)
+    {
+        ProvingGroundsArbiter arbiter = CreateArbiter(new FakeIntelligenceProvider());
+
+        JsonElement schema = JsonDocument.Parse(schemaJson).RootElement;
+
+        IReadOnlyList<InquisitorVerdict> verdicts = await arbiter.AdjudicateAsync(
+            output,
+            [new JsonSchemaInquisitor(schema)],
+            judgeModel: null);
+
+        Assert.False(verdicts[0].Passed);
+
+        Assert.Contains("Schema is not valid", verdicts[0].Detail, StringComparison.Ordinal);
+    }
+
     [Fact]
     public async Task JsonSchemaInquisitor_EnumViolation_Fails()
     {
