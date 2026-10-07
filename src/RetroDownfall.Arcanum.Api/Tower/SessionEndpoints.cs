@@ -1633,6 +1633,8 @@ internal static class SessionEndpoints
                         && liveBuffer.Reader.TryRead(out Entry? buffered)
                         && buffered is not null)
                     {
+                        // A skipped replay duplicate never takes the drop count moved to its read; the
+                        // buffer carries that count to the next Entry this route writes instead of losing it.
                         if (!replayIds.Contains(buffered.Id))
                         {
                             await WriteLiveEntryAsync(buffered, httpContext.RequestAborted).ConfigureAwait(false);
