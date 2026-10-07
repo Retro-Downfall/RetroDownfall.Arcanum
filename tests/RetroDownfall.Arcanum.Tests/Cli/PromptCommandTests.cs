@@ -252,6 +252,34 @@ public sealed class PromptCommandTests
             "The tool-call argument preview emitted an unpaired surrogate.");
     }
 
+    /// <summary>
+    /// A tool call's name and arguments are model-authored, and the summary on stderr is a terminal
+    /// sink, so both are stripped before markup is built around them.
+    /// </summary>
+    [Fact]
+    public void Prompt_execute_strips_terminal_controls_from_the_tool_call_summary()
+    {
+        PromptResponseDto response = new(
+            "done",
+            null,
+            [new PromptToolCall("call-1", "read\u001b]0;pwned\u0007_file", "{\"p\":\"a\u001b]52;c;QUFBQQ==\u0007b\u009b\"}")]);
+
+        RecordingHandler handler = new(_ => CreateResponse(
+            new ApiResponse<PromptResponseDto>(response, true, null),
+            ArcanumJsonContext.Default.ApiResponsePromptResponseDto));
+
+        CliTestResult result = RunCommand(
+            handler,
+            ["prompt", "execute", SampleId.ToString(), "--input", "hello"]);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Contains("read_file", result.Error, StringComparison.Ordinal);
+        Assert.Contains("\"p\":\"ab\"", result.Error, StringComparison.Ordinal);
+        Assert.DoesNotContain('\u001b', result.Error);
+        Assert.DoesNotContain('\u0007', result.Error);
+        Assert.DoesNotContain('\u009b', result.Error);
+    }
+
     [Fact]
     public void List_follows_hasMore_until_exhausted()
     {

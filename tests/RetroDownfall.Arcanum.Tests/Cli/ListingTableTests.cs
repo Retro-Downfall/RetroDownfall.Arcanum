@@ -46,6 +46,24 @@ public sealed class ListingTableTests
         return console.Output;
     }
 
+    /// <summary>
+    /// Listing cells carry text the operator did not write (a goal, a memory, a title), and Markup escaping
+    /// does not remove the control sequences a terminal acts on, so every cell is stripped.
+    /// </summary>
+    [Fact]
+    public void Cells_are_stripped_of_terminal_controls()
+    {
+        Row hostile = new(Id, "ok\u001b]52;c;QUFBQQ==\u0007title\u001b[2J\u009b", "Running", Campaign, "2026-07-02 12:00:00Z");
+
+        ListingTableResult built = ListingTable.Build(Palette(), Columns, [hostile], 200);
+        string output = Render(built, 200);
+
+        Assert.Contains("oktitle", output, StringComparison.Ordinal);
+        Assert.DoesNotContain("]52;", output, StringComparison.Ordinal);
+        Assert.DoesNotContain('\u0007', output);
+        Assert.DoesNotContain('\u009b', output);
+    }
+
     [Theory]
     [InlineData(80, new[] { "Campaign", "Updated" })]
     [InlineData(100, new[] { "Campaign" })]

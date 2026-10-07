@@ -274,7 +274,8 @@ internal sealed class CommandCenterHost(
                 Task pump = Task.Run(
                     () => CommandCenterUiUpdatePump.RunAsync(
                         uiChannel.Reader,
-                        kind => app.Invoke(() => window.ApplyState(state, kind: kind)),
+                        work => app.Invoke(work),
+                        kind => window.ApplyState(state, kind: kind),
                         logger,
                         runToken),
                     runToken);

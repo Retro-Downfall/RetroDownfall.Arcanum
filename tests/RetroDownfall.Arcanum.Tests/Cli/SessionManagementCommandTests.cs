@@ -824,6 +824,98 @@ public sealed class SessionManagementCommandTests
         Assert.Contains("Only page", result.Output, StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// A Session title is model-authored, and Markup escaping does not remove the control sequences a
+    /// terminal acts on, so the listing strips them.
+    /// </summary>
+    [Fact]
+    public void SessionList_strips_terminal_controls_from_titles()
+    {
+        DateTimeOffset updated = new(2026, 7, 1, 12, 0, 0, TimeSpan.Zero);
+        SessionSummaryDto hostile = new(Guid.NewGuid(), null, "ok\u001b]52;c;QUFBQQ==\u0007title\u001b[2J\u009b", "active", 1, updated, updated);
+
+        RecordingHandler handler = new(_ => CreateResponse(
+            ApiResponse<SessionQueryResult>.FromResult(
+                Result<SessionQueryResult>.Success(new SessionQueryResult([hostile], null, false))),
+            ArcanumJsonContext.Default.ApiResponseSessionQueryResult));
+
+        CliTestResult result = RunCommand(handler, ["session", "list"]);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Contains("oktitle", result.Output, StringComparison.Ordinal);
+        Assert.DoesNotContain('\u001b', result.Output);
+        Assert.DoesNotContain('\u0007', result.Output);
+        Assert.DoesNotContain('\u009b', result.Output);
+    }
+
+    /// <summary>
+    /// <c>session entries</c> prints the transcript itself, assistant and tool text included, and
+    /// flattening line endings leaves ESC and the C0/C1 controls in place, so each Content cell is
+    /// stripped before markup is built around it.
+    /// </summary>
+    [Fact]
+    public void SessionEntries_strips_terminal_controls_from_entry_content()
+    {
+        Guid sessionId = Guid.NewGuid();
+
+        EntryDto hostile = new(
+            Guid.NewGuid(),
+            sessionId,
+            "assistant",
+            "ok\u001b]52;c;QUFBQQ==\u0007reply\u001b[2J\u009b\nnext",
+            null,
+            null,
+            new DateTimeOffset(2026, 7, 1, 12, 0, 0, TimeSpan.Zero));
+
+        RecordingHandler handler = new(_ => CreateResponse(
+            ApiResponse<EntryDto[]>.FromResult(Result<EntryDto[]>.Success([hostile])),
+            ArcanumJsonContext.Default.ApiResponseEntryDtoArray));
+
+        CliTestResult result = RunCommand(handler, ["session", "entries", sessionId.ToString("D")]);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Contains("okreply", result.Output, StringComparison.Ordinal);
+        Assert.DoesNotContain('\u001b', result.Output);
+        Assert.DoesNotContain('\u0007', result.Output);
+        Assert.DoesNotContain('\u009b', result.Output);
+    }
+
+    /// <summary>
+    /// A Session title is model-authored, so <c>session show</c> strips it as the listing does.
+    /// </summary>
+    [Fact]
+    public void SessionShow_strips_terminal_controls_from_the_title()
+    {
+        Guid sessionId = Guid.NewGuid();
+
+        SessionDetailDto detail = new(
+            sessionId,
+            null,
+            "ok\u001b]52;c;QUFBQQ==\u0007title\u001b[2J\u009b",
+            "active",
+            1,
+            DateTimeOffset.UtcNow,
+            DateTimeOffset.UtcNow,
+            null,
+            0);
+
+        RecordingHandler handler = new(request => request.RequestUri!.AbsolutePath.EndsWith("/attachments", StringComparison.Ordinal)
+            ? CreateResponse(
+                ApiResponse<SessionAttachmentDto[]>.FromResult(Result<SessionAttachmentDto[]>.Success([])),
+                ArcanumJsonContext.Default.ApiResponseSessionAttachmentDtoArray)
+            : CreateResponse(
+                ApiResponse<SessionDetailDto>.FromResult(Result<SessionDetailDto>.Success(detail)),
+                ArcanumJsonContext.Default.ApiResponseSessionDetailDto));
+
+        CliTestResult result = RunCommand(handler, ["session", "show", sessionId.ToString("D")]);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Contains("oktitle", result.Output, StringComparison.Ordinal);
+        Assert.DoesNotContain('\u001b', result.Output);
+        Assert.DoesNotContain('\u0007', result.Output);
+        Assert.DoesNotContain('\u009b', result.Output);
+    }
+
     private static CliTestResult RunCommand(
         RecordingHandler handler,
         string[] args,

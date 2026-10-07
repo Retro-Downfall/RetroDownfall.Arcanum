@@ -541,6 +541,102 @@ public sealed class CampaignCommandTests
         Assert.Equal(session.Id, Assert.Single(emitted).Id);
     }
 
+    /// <summary>
+    /// A Session title is model-authored, and Markup escaping does not remove the control sequences a
+    /// terminal acts on, so the table strips them.
+    /// </summary>
+    [Fact]
+    public void Campaign_sessions_strips_terminal_controls_from_titles()
+    {
+        SessionSummaryDto session = new(
+            SampleId,
+            SampleId,
+            "ok\u001b]52;c;QUFBQQ==\u0007title\u001b[2J\u009b",
+            "active",
+            3,
+            DateTimeOffset.UnixEpoch,
+            DateTimeOffset.UnixEpoch);
+
+        RecordingHandler handler = new(_ => CreateResponse(
+            new ApiResponse<SessionQueryResult>(
+                new SessionQueryResult([session], null, false),
+                true,
+                null),
+            ArcanumJsonContext.Default.ApiResponseSessionQueryResult));
+
+        CliTestResult result = RunCommand(handler, ["campaign", "sessions", SampleId.ToString()]);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Contains("oktitle", result.Output, StringComparison.Ordinal);
+        Assert.DoesNotContain('\u001b', result.Output);
+        Assert.DoesNotContain('\u0007', result.Output);
+    }
+
+    /// <summary>
+    /// <c>--json</c> writes one host page as a bare array. When the host holds more, a script must be told
+    /// so, and told where the next page starts: otherwise a partial listing reads as a complete one. The
+    /// notice goes to stderr so the stdout document stays one array.
+    /// </summary>
+    [Fact]
+    public void Campaign_sessions_under_json_says_on_stderr_when_more_sessions_remain()
+    {
+        DateTimeOffset cursor = new(2026, 9, 1, 12, 0, 0, TimeSpan.Zero);
+        SessionSummaryDto session = new(
+            SampleId,
+            SampleId,
+            "Session title",
+            "active",
+            3,
+            DateTimeOffset.UnixEpoch,
+            cursor.AddMinutes(5));
+
+        RecordingHandler handler = new(_ => CreateResponse(
+            new ApiResponse<SessionQueryResult>(
+                new SessionQueryResult([session], cursor, true),
+                true,
+                null),
+            ArcanumJsonContext.Default.ApiResponseSessionQueryResult));
+
+        CliTestResult result = RunCommand(handler, ["--json", "campaign", "sessions", SampleId.ToString()]);
+
+        Assert.Equal(0, result.ExitCode);
+        SessionSummaryDto[]? emitted = JsonSerializer.Deserialize(
+            result.Output,
+            ArcanumJsonContext.Default.SessionSummaryDtoArray);
+        Assert.NotNull(emitted);
+        Assert.Single(emitted);
+        Assert.Contains("--before-updated-at", result.Error, StringComparison.Ordinal);
+        Assert.Contains(cursor.ToString("O"), result.Error, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// A complete listing under <c>--json</c> says nothing on stderr.
+    /// </summary>
+    [Fact]
+    public void Campaign_sessions_under_json_is_silent_on_stderr_when_the_page_is_complete()
+    {
+        SessionSummaryDto session = new(
+            SampleId,
+            SampleId,
+            "Session title",
+            "active",
+            3,
+            DateTimeOffset.UnixEpoch,
+            DateTimeOffset.UnixEpoch);
+
+        RecordingHandler handler = new(_ => CreateResponse(
+            new ApiResponse<SessionQueryResult>(
+                new SessionQueryResult([session], null, false),
+                true,
+                null),
+            ArcanumJsonContext.Default.ApiResponseSessionQueryResult));
+
+        CliTestResult result = RunCommand(handler, ["--json", "campaign", "sessions", SampleId.ToString()]);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.DoesNotContain("--before-updated-at", result.Error, StringComparison.Ordinal);
+    }
+
     [Fact]
     public void Campaign_prompts_under_json_emits_one_document_rather_than_a_table()
     {

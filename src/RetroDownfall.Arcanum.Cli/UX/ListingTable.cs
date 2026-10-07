@@ -84,7 +84,15 @@ internal static class ListingTable
 
         ArgumentNullException.ThrowIfNull(rows);
 
-        string[][] cells = [.. rows.Select(row => columns.Select(column => column.Text(row)).ToArray())];
+        // Cell text is listed data the operator did not write (a goal, a memory, a title), and Markup
+        // escaping leaves the control sequences a terminal acts on in place, so every cell is stripped
+        // before it is measured or drawn.
+        string[][] cells =
+        [
+            .. rows.Select(row => columns
+                .Select(column => TerminalTextSanitizer.SanitizeLine(column.Text(row)))
+                .ToArray()),
+        ];
 
         List<int> visible = [.. Enumerable.Range(0, columns.Count)];
 

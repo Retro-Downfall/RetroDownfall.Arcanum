@@ -119,6 +119,36 @@ public sealed class SessionDivinationCommandTests
         Assert.Equal(1, result.ExitCode);
     }
 
+    /// <summary>
+    /// A Session title and an entry preview are model-authored, and a terminal acts on the control
+    /// sequences in them (OSC 52 writes the clipboard, CSI redraws the screen). Markup escaping does not
+    /// remove them, so the table must strip them before it reaches the terminal.
+    /// </summary>
+    [Fact]
+    public void Session_divine_strips_terminal_controls_from_titles_and_previews()
+    {
+        SemanticSessionSearchResult hit = new(
+            Guid.NewGuid(),
+            "ok\u001b]52;c;QUFBQQ==\u0007title\u001b[2J\u009b",
+            Guid.NewGuid(),
+            "assistant",
+            "ok\u001b]52;c;QUFBQQ==\u0007title\u001b[2J\u009b",
+            0.5f,
+            DateTimeOffset.UtcNow);
+
+        RecordingHandler handler = new(_ => CreateResponse(
+            new ApiResponse<SemanticSearchResult>(new SemanticSearchResult([hit], false, null), true, null),
+            ArcanumJsonContext.Default.ApiResponseSemanticSearchResult));
+
+        CliTestResult result = RunCommand(handler, ["session", "divine", "hello"]);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Contains("oktitle", result.Output, StringComparison.Ordinal);
+        Assert.DoesNotContain('\u001b', result.Output);
+        Assert.DoesNotContain('\u0007', result.Output);
+        Assert.DoesNotContain('\u009b', result.Output);
+    }
+
     private static byte[] ReadRequestBody(HttpRequestMessage request) =>
         request.Content!.ReadAsByteArrayAsync().GetAwaiter().GetResult();
 

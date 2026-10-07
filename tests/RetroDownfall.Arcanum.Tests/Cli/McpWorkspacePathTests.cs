@@ -42,6 +42,29 @@ public sealed class McpWorkspacePathTests
     public void A_windows_spelled_path_is_canonicalised_on_any_host(string path, string currentDirectory, string expected) =>
         Assert.Equal(expected, McpWorkspacePath.Canonicalise(path, currentDirectory, windowsHost: false));
 
+    /// <summary>
+    /// A root spelled shorter than its canonical form (a bare drive, a drive-relative path, a UNC share with
+    /// no trailing separator, doubled separators inside a UNC prefix) must neither throw nor lose a
+    /// character: the host stores a server's working directory as configured, and every <c>mcp</c>
+    /// listing filtered by <c>--workspace</c> canonicalises it.
+    /// </summary>
+    [Theory]
+    [InlineData(@"C:", @"C:\")]
+    [InlineData(@"D:proj", @"D:\proj")]
+    [InlineData(@"D:proj\sub", @"D:\proj\sub")]
+    [InlineData(@"\\server", @"\\server\")]
+    [InlineData(@"\\server\share", @"\\server\share\")]
+    [InlineData(@"\\server\\share\proj", @"\\server\share\proj")]
+    [InlineData(@"\\\server\share\proj", @"\\server\share\proj")]
+    public void A_root_spelled_shorter_than_its_canonical_form_is_canonicalised_without_losing_a_character(
+        string path,
+        string expected)
+    {
+        Assert.Equal(expected, McpWorkspacePath.Canonicalise(path, "/work", windowsHost: false));
+
+        Assert.True(McpWorkspacePath.Same(path, expected, "/work", windowsHost: false));
+    }
+
     [Theory]
     [InlineData(@"C:\Srv\Proj", "c:/srv/proj/")]
     [InlineData(@"c:\srv\proj", @"C:\SRV\PROJ\")]

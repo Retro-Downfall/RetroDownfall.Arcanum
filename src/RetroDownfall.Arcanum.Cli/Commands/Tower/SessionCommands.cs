@@ -105,7 +105,7 @@ public sealed class SessionCommands(
         foreach (SessionSummaryDto session in page!.Items)
         {
             table.AddRow(
-                new Markup(themePalette.TextMarkup(Markup.Escape(session.Title ?? "(untitled)"))),
+                new Markup(themePalette.TextMarkup(Markup.Escape(TerminalTextSanitizer.SanitizeLine(session.Title ?? "(untitled)")))),
                 new Markup(themePalette.MutedMarkup(Markup.Escape(session.CampaignId?.ToString("D") ?? "-"))),
                 new Markup(themePalette.TextMarkup(Markup.Escape(session.Status))),
                 new Markup(themePalette.MutedMarkup(session.EntryCount.ToString(CultureInfo.InvariantCulture))),
@@ -188,9 +188,9 @@ public sealed class SessionCommands(
 
         table.AddRow("Id:", Markup.Escape(payload.Id.ToString("D")));
 
-        table.AddRow("Title:", Markup.Escape(payload.Title ?? "(untitled)"));
+        table.AddRow("Title:", Markup.Escape(TerminalTextSanitizer.SanitizeLine(payload.Title ?? "(untitled)")));
 
-        table.AddRow("Status:", Markup.Escape(payload.Status));
+        table.AddRow("Status:", Markup.Escape(TerminalTextSanitizer.SanitizeLine(payload.Status)));
 
         table.AddRow("Campaign:", Markup.Escape(payload.CampaignId?.ToString("D") ?? "-"));
 
@@ -625,11 +625,11 @@ public sealed class SessionCommands(
 
             table.AddRow(
                 Markup.Escape(hit.SessionId.ToString("D")[..8]),
-                Markup.Escape(string.IsNullOrWhiteSpace(hit.SessionTitle) ? "(untitled)" : hit.SessionTitle),
+                Markup.Escape(TerminalTextSanitizer.SanitizeLine(string.IsNullOrWhiteSpace(hit.SessionTitle) ? "(untitled)" : hit.SessionTitle)),
                 Markup.Escape(hit.EntryRole),
                 Markup.Escape(similarity),
                 Markup.Escape(hit.EntryCreatedAt.ToString("u", CultureInfo.InvariantCulture)),
-                Markup.Escape(hit.EntryContentPreview));
+                Markup.Escape(TerminalTextSanitizer.SanitizeLine(hit.EntryContentPreview)));
         }
 
         AnsiConsole.Write(table);
@@ -778,7 +778,7 @@ public sealed class SessionCommands(
                 Markup.Escape(entry.Role),
                 entry.IsPinned ? "yes" : "no",
                 Markup.Escape(entry.CreatedAt.ToString("u", CultureInfo.InvariantCulture)),
-                Markup.Escape(entry.Content.ReplaceLineEndings(" ")));
+                Markup.Escape(TerminalTextSanitizer.SanitizeLine(entry.Content.ReplaceLineEndings(" "))));
         }
 
         AnsiConsole.Write(table);

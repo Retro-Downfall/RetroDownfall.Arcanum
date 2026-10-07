@@ -12,7 +12,6 @@ namespace RetroDownfall.Arcanum.Tests.Cli.CommandCenter;
 /// </summary>
 public sealed class CommandCenterModelPickerTests
 {
-
     private static readonly ModelInfoDto[] Models =
     [
         new("gpt-4o", "compat", "OpenAICompatible", "***", 128_000),
@@ -23,19 +22,16 @@ public sealed class CommandCenterModelPickerTests
     [Fact]
     public void Every_provider_kind_appears_in_one_list()
     {
-
         IReadOnlyList<ModelPickerItem> items = CommandCenterModelPicker.Build(Models);
 
         Assert.Equal(
             ["gpt-4o", "gpt-4o-mini", "claude-sonnet"],
             items.Select(static item => item.Model));
-
     }
 
     [Fact]
     public void Models_are_grouped_by_provider_in_configured_order()
     {
-
         ModelInfoDto[] interleaved =
         [
             new("gpt-4o", "compat", "OpenAICompatible", "***", 128_000),
@@ -48,7 +44,6 @@ public sealed class CommandCenterModelPickerTests
         Assert.Equal(
             ["gpt-4o", "gpt-4o-mini", "claude-sonnet"],
             items.Select(static item => item.Model));
-
     }
 
     /// <summary>
@@ -58,7 +53,6 @@ public sealed class CommandCenterModelPickerTests
     [Fact]
     public void The_same_model_on_two_providers_is_offered_twice()
     {
-
         ModelInfoDto[] duplicated =
         [
             new("shared", "one", "OpenAICompatible", "***", 8_192),
@@ -68,13 +62,35 @@ public sealed class CommandCenterModelPickerTests
         IReadOnlyList<ModelPickerItem> items = CommandCenterModelPicker.Build(duplicated);
 
         Assert.Equal(["one", "two"], items.Select(static item => item.ProviderName));
+    }
 
+    /// <summary>
+    /// Model ids come from a provider's <c>/models</c> answer, which the operator did not write. The picker
+    /// fills the overlay itself rather than through <c>ShowOverlay</c>, so its rows and the header label
+    /// must be stripped of the control sequences a terminal acts on before they are drawn.
+    /// </summary>
+    [Fact]
+    public void Rows_and_the_selector_are_stripped_of_terminal_controls()
+    {
+        ModelInfoDto[] hostile = [new("ok\u001b]52;c;QUFBQQ==\u0007title\u001b[2J\u009b", "ok\u001b]52;c;QUFBQQ==\u0007title\u001b[2J\u009b", "OpenAICompatible", "***", 8_192)];
+
+        IReadOnlyList<string> lines = CommandCenterModelPicker.Render(
+            CommandCenterModelPicker.Build(hostile),
+            activeModel: null);
+        string selector = CommandCenterModelPicker.RenderSelector("ok\u001b]52;c;QUFBQQ==\u0007title\u001b[2J\u009b", focused: true);
+
+        foreach (string text in lines.Append(selector))
+        {
+            Assert.Contains("oktitle", text, StringComparison.Ordinal);
+            Assert.DoesNotContain('\u001b', text);
+            Assert.DoesNotContain('\u0007', text);
+            Assert.DoesNotContain('\u009b', text);
+        }
     }
 
     [Fact]
     public void The_active_model_is_marked()
     {
-
         IReadOnlyList<string> lines = CommandCenterModelPicker.Render(
             CommandCenterModelPicker.Build(Models),
             activeModel: "claude-sonnet");
@@ -90,19 +106,16 @@ public sealed class CommandCenterModelPickerTests
             static line =>
                 line.StartsWith(CommandCenterModelPicker.ActiveMarker, StringComparison.Ordinal)
                 && line.Contains("gpt-4o-mini", StringComparison.Ordinal));
-
     }
 
     [Fact]
     public void Every_row_names_the_provider_the_model_comes_from()
     {
-
         IReadOnlyList<string> lines = CommandCenterModelPicker.Render(
             CommandCenterModelPicker.Build(Models),
             activeModel: null);
 
         Assert.All(lines, static line => Assert.Contains('(', line));
-
     }
 
     [Theory]
@@ -112,13 +125,11 @@ public sealed class CommandCenterModelPickerTests
     [InlineData("", new[] { "gpt-4o", "gpt-4o-mini", "claude-sonnet" })]
     public void Type_ahead_narrows_by_model_name(string filter, string[] expected)
     {
-
         IReadOnlyList<ModelPickerItem> filtered = CommandCenterModelPicker.Filter(
             CommandCenterModelPicker.Build(Models),
             filter);
 
         Assert.Equal(expected, filtered.Select(static item => item.Model));
-
     }
 
     /// <summary>
@@ -128,35 +139,29 @@ public sealed class CommandCenterModelPickerTests
     [Fact]
     public void Type_ahead_also_narrows_by_provider_name()
     {
-
         IReadOnlyList<ModelPickerItem> filtered = CommandCenterModelPicker.Filter(
             CommandCenterModelPicker.Build(Models),
             "ClaudeCode");
 
         Assert.Equal(["claude-sonnet"], filtered.Select(static item => item.Model));
-
     }
 
     [Fact]
     public void A_selected_row_resolves_to_its_model_id()
     {
-
         IReadOnlyList<ModelPickerItem> items = CommandCenterModelPicker.Build(Models);
 
         Assert.Equal("gpt-4o-mini", CommandCenterModelPicker.Resolve(items, 1));
-
     }
 
     [Fact]
     public void An_out_of_range_selection_resolves_to_nothing_rather_than_a_wrong_model()
     {
-
         IReadOnlyList<ModelPickerItem> items = CommandCenterModelPicker.Build(Models);
 
         Assert.Null(CommandCenterModelPicker.Resolve(items, 99));
 
         Assert.Null(CommandCenterModelPicker.Resolve(items, -1));
-
     }
 
     /// <summary>
@@ -166,21 +171,17 @@ public sealed class CommandCenterModelPickerTests
     [Fact]
     public void An_empty_list_renders_a_row_pointing_at_the_slash_command()
     {
-
         IReadOnlyList<string> lines = CommandCenterModelPicker.Render([], activeModel: null);
 
         string only = Assert.Single(lines);
 
         Assert.Contains("/model", only, StringComparison.Ordinal);
-
     }
 
     [Fact]
     public void An_empty_list_resolves_to_nothing()
     {
-
         Assert.Null(CommandCenterModelPicker.Resolve([], 0));
-
     }
 
     [Theory]
@@ -189,24 +190,19 @@ public sealed class CommandCenterModelPickerTests
     [InlineData("claude-sonnet", "claude-sonnet")]
     public void The_header_control_names_the_current_model(string? model, string expected)
     {
-
         Assert.Contains(
             expected,
             CommandCenterModelPicker.RenderSelector(model, focused: false),
             StringComparison.Ordinal);
-
     }
 
     [Fact]
     public void The_header_control_shows_that_it_has_focus()
     {
-
         Assert.NotEqual(
             CommandCenterModelPicker.RenderSelector("claude-sonnet", focused: false),
             CommandCenterModelPicker.RenderSelector("claude-sonnet", focused: true));
-
     }
-
 }
 
 /// <summary>
@@ -215,14 +211,12 @@ public sealed class CommandCenterModelPickerTests
 /// </summary>
 public sealed class CommandCenterModelPickerKeymapTests
 {
-
     [Theory]
     [InlineData(true, false, false)]
     [InlineData(false, true, false)]
     [InlineData(false, false, true)]
     internal void Enter_space_or_down_opens_the_drop_down(bool enter, bool space, bool down)
     {
-
         CommandCenterAction action = CommandCenterKeymap.Map(
             CommandCenterFocusRegion.Model,
             isStreaming: false,
@@ -231,7 +225,6 @@ public sealed class CommandCenterModelPickerKeymapTests
             new KeyChord(IsEnter: enter, IsSpace: space, IsDown: down));
 
         Assert.Equal(CommandCenterAction.OpenModelPicker, action);
-
     }
 
     /// <summary>
@@ -241,7 +234,6 @@ public sealed class CommandCenterModelPickerKeymapTests
     [Fact]
     internal void An_unrelated_key_on_the_selector_does_nothing()
     {
-
         CommandCenterAction action = CommandCenterKeymap.Map(
             CommandCenterFocusRegion.Model,
             isStreaming: false,
@@ -250,7 +242,6 @@ public sealed class CommandCenterModelPickerKeymapTests
             new KeyChord(IsBareLetter: true));
 
         Assert.Equal(CommandCenterAction.None, action);
-
     }
 
     [Theory]
@@ -261,7 +252,6 @@ public sealed class CommandCenterModelPickerKeymapTests
         bool down,
         CommandCenterAction expected)
     {
-
         CommandCenterAction action = CommandCenterKeymap.Map(
             CommandCenterFocusRegion.Overlay,
             isStreaming: false,
@@ -271,13 +261,11 @@ public sealed class CommandCenterModelPickerKeymapTests
             CommandCenterOverlayKind.ModelPicker);
 
         Assert.Equal(expected, action);
-
     }
 
     [Fact]
     internal void The_sessions_picker_keeps_its_own_selection_movement()
     {
-
         CommandCenterAction action = CommandCenterKeymap.Map(
             CommandCenterFocusRegion.Overlay,
             isStreaming: false,
@@ -287,24 +275,20 @@ public sealed class CommandCenterModelPickerKeymapTests
             CommandCenterOverlayKind.SessionPicker);
 
         Assert.Equal(CommandCenterAction.SessionSelectDown, action);
-
     }
 
     [Fact]
     internal void Enter_in_the_model_overlay_selects_the_model()
     {
-
         Assert.Equal(
             CommandCenterAction.SelectModel,
             CommandCenterKeymap.MapOverlayEnter(CommandCenterOverlayKind.ModelPicker));
-
     }
 
     /// <summary>Esc cancels back to the composer, the same way it leaves every other overlay.</summary>
     [Fact]
     internal void Esc_cancels_the_drop_down_back_to_the_composer()
     {
-
         CommandCenterAction action = CommandCenterKeymap.Map(
             CommandCenterFocusRegion.Overlay,
             isStreaming: false,
@@ -314,14 +298,12 @@ public sealed class CommandCenterModelPickerKeymapTests
             CommandCenterOverlayKind.ModelPicker);
 
         Assert.Equal(CommandCenterAction.CloseOverlayOrFocusComposer, action);
-
     }
 
     /// <summary>Tab must not cycle panes out from under a modal overlay.</summary>
     [Fact]
     internal void Tab_is_inert_while_the_drop_down_is_open()
     {
-
         CommandCenterAction action = CommandCenterKeymap.Map(
             CommandCenterFocusRegion.Overlay,
             isStreaming: false,
@@ -331,7 +313,5 @@ public sealed class CommandCenterModelPickerKeymapTests
             CommandCenterOverlayKind.ModelPicker);
 
         Assert.Equal(CommandCenterAction.NoOp, action);
-
     }
-
 }

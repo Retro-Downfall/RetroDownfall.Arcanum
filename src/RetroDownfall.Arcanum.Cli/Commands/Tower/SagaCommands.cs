@@ -194,7 +194,7 @@ public sealed class SagaCommands(ArcanumApiClient apiClient, IThemePalette theme
             string sessionText = memory.SessionId is { } sid ? sid.ToString("D")[..8] : "-";
 
             table.AddRow(
-                new Markup(themePalette.TextMarkup(Markup.Escape(memory.Content))),
+                new Markup(themePalette.TextMarkup(Markup.Escape(TerminalTextSanitizer.SanitizeLine(memory.Content)))),
                 new Markup(themePalette.HighlightMarkup(Markup.Escape(similarityPercent))),
                 new Markup(themePalette.MutedMarkup(Markup.Escape(memory.CreatedAt.ToString("u", CultureInfo.InvariantCulture)))),
                 new Markup(themePalette.MutedMarkup(Markup.Escape(sessionText))),

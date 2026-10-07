@@ -50,26 +50,29 @@ internal static class McpWorkspacePath
 
         string spelled = windows ? trimmed.Replace('/', '\\') : trimmed;
 
-        string root = RootOf(spelled, windows);
+        string root = RootOf(spelled, windows, out int rootSpelledLength);
 
         if (root.Length == 0 && !string.IsNullOrWhiteSpace(currentDirectory))
         {
             string baseDirectory = currentDirectory.Trim();
 
-            string baseRoot = RootOf(windows ? baseDirectory.Replace('/', '\\') : baseDirectory, windows);
+            string baseRoot = RootOf(windows ? baseDirectory.Replace('/', '\\') : baseDirectory, windows, out _);
 
             if (baseRoot.Length > 0)
             {
                 spelled = (windows ? baseDirectory.Replace('/', '\\') : baseDirectory).TrimEnd(separator) + separator + spelled;
 
-                root = RootOf(spelled, windows);
+                root = RootOf(spelled, windows, out rootSpelledLength);
             }
         }
 
         // A UNC root already carries its server and share, which a ".." must never climb out of.
         List<string> segments = [];
 
-        foreach (string segment in spelled[root.Length..].Split(separator, StringSplitOptions.RemoveEmptyEntries))
+        // The rest starts where the spelled root ends, which is not the canonical root's length: "C:" and
+        // "C:proj" spell no separator after the drive, and a UNC prefix can be spelled with doubled or no
+        // trailing separators.
+        foreach (string segment in spelled[rootSpelledLength..].Split(separator, StringSplitOptions.RemoveEmptyEntries))
         {
             if (segment == ".")
             {
@@ -131,26 +134,62 @@ internal static class McpWorkspacePath
     /// The root of a path whose separators are already the platform's: <c>/</c>, a drive such as
     /// <c>C:\</c>, a UNC share such as <c>\\server\share\</c>, or a bare <c>\</c>; empty for a relative path.
     /// </summary>
-    private static string RootOf(string path, bool windows)
+    /// <param name="path">The path.</param>
+    /// <param name="windows">Whether the path is read in Windows terms.</param>
+    /// <param name="spelledLength">
+    /// How many characters of <paramref name="path"/> the root takes up as spelled, which is where the rest of
+    /// the path starts. It differs from the canonical root's length for a drive with no separator after it
+    /// (<c>C:</c>, <c>C:proj</c>) and for a UNC prefix spelled with doubled or no trailing separators.
+    /// </param>
+    private static string RootOf(string path, bool windows, out int spelledLength)
     {
         if (!windows)
         {
+            spelledLength = path.StartsWith('/') ? 1 : 0;
+
             return path.StartsWith('/') ? "/" : string.Empty;
         }
 
         if (HasDriveLetter(path))
         {
+            spelledLength = path.Length > 2 && path[2] == '\\' ? 3 : 2;
+
             return string.Concat(path.AsSpan(0, 2), "\\");
         }
 
         if (path.StartsWith(@"\\", StringComparison.Ordinal))
         {
-            string[] parts = path[2..].Split('\\', StringSplitOptions.RemoveEmptyEntries);
+            // The server and the share are the first two non-empty segments; the root ends where the share's
+            // name does, and the separators after it belong to the rest.
+            List<string> parts = [];
+            int position = 2;
+            while (parts.Count < 2 && position < path.Length)
+            {
+                while (position < path.Length && path[position] == '\\')
+                {
+                    position++;
+                }
 
-            return parts.Length >= 2
+                int start = position;
+                while (position < path.Length && path[position] != '\\')
+                {
+                    position++;
+                }
+
+                if (position > start)
+                {
+                    parts.Add(path[start..position]);
+                }
+            }
+
+            spelledLength = position;
+
+            return parts.Count >= 2
                 ? $@"\\{parts[0]}\{parts[1]}\"
-                : @"\\" + string.Join('\\', parts) + (parts.Length > 0 ? "\\" : string.Empty);
+                : @"\\" + string.Join('\\', parts) + (parts.Count > 0 ? "\\" : string.Empty);
         }
+
+        spelledLength = path.StartsWith('\\') ? 1 : 0;
 
         return path.StartsWith('\\') ? "\\" : string.Empty;
     }

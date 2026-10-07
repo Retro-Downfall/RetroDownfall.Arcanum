@@ -393,6 +393,32 @@ public sealed class ApprenticeCommandTests
         Assert.Contains("Not shown at 80 columns: Campaign, Updated.", result.Error, StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// Plan steps are planned by the model and an apprentice's error message can carry tool or
+    /// provider text, so <c>apprentice show</c> strips them before markup is built around them.
+    /// </summary>
+    [Fact]
+    public void Show_strips_terminal_controls_from_plan_steps_and_the_error()
+    {
+        PlanStep step = new() { Index = 1, Description = "read\u001b]52;c;QUFBQQ==\u0007step\u001b[2J\u009b", Status = "pending" };
+
+        ApprenticeDetailDto detail = new(
+            SampleId, null, null, "Task", "Do the thing", [step], 0, "Failed", null, "/tmp/ws", null, "boom\u001b]0;pwned\u0007 failed", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow);
+
+        RecordingHandler handler = new(_ => CreateResponse(
+            new ApiResponse<ApprenticeDetailDto>(detail, true, null),
+            ArcanumJsonContext.Default.ApiResponseApprenticeDetailDto));
+
+        CliTestResult result = RunCommand(handler, ["apprentice", "show", SampleId.ToString("D")]);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Contains("readstep", result.Output, StringComparison.Ordinal);
+        Assert.Contains("boom failed", result.Output, StringComparison.Ordinal);
+        Assert.DoesNotContain('\u001b', result.Output);
+        Assert.DoesNotContain('\u0007', result.Output);
+        Assert.DoesNotContain('\u009b', result.Output);
+    }
+
     private static CliTestResult RunCommand(
         RecordingHandler handler,
         string[] args,
