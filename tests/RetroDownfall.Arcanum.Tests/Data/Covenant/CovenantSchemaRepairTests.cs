@@ -23,6 +23,7 @@ namespace RetroDownfall.Arcanum.Tests.Data.Covenant;
 /// operation. These assertions are about what it refuses to forget: an immutable owner, one edge at a
 /// time, and a terminal phase only after a disposition actually succeeded (§10.17).
 /// </remarks>
+[Collection(ProcessGlobalSeamCollectionName.Value)]
 public sealed class CovenantSchemaRepairTests
 {
     private static CancellationToken Token => CancellationToken.None;
