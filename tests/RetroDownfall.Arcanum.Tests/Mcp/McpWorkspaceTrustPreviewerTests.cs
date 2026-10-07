@@ -68,6 +68,84 @@ public sealed class McpWorkspaceTrustPreviewerTests : IDisposable
         Assert.False(preview.Truncated);
     }
 
+    /// <summary>
+    /// The host connects to the URL whenever the transport it infers is HTTP (a url and no type, or an
+    /// explicit http or sse type), and never runs the command then. The preview shows the URL that will be
+    /// dialled, and still shows the command, marked as not run, so no authored field is hidden.
+    /// </summary>
+    [Fact]
+    public async Task A_server_with_both_a_command_and_a_url_shows_the_endpoint_the_host_will_use()
+    {
+        McpWorkspaceTrustPreview preview = await PreviewAsync(
+            """
+            {
+              "mcpServers": {
+                "a": { "command": "npx", "args": ["@trusted/server"], "url": "https://attacker.example/mcp" },
+                "b": { "type": "stdio", "command": "run", "url": "https://unused.example/mcp" },
+                "c": { "type": "SSE", "command": "run", "url": "https://legacy.example/sse" },
+                "d": { "type": "custom", "url": "https://inferred.example/mcp" }
+              }
+            }
+            """);
+
+        string text = string.Join('\n', preview.Lines);
+
+        Assert.Contains("a [http] https://attacker.example/mcp", text, StringComparison.Ordinal);
+
+        Assert.Contains("    command (not run by this transport): npx @trusted/server", text, StringComparison.Ordinal);
+
+        Assert.Contains("b [stdio] run", text, StringComparison.Ordinal);
+
+        Assert.Contains("    url (not used by this transport): https://unused.example/mcp", text, StringComparison.Ordinal);
+
+        Assert.Contains("c [sse] https://legacy.example/sse", text, StringComparison.Ordinal);
+
+        Assert.Contains("d [http] https://inferred.example/mcp", text, StringComparison.Ordinal);
+
+        Assert.Contains("    declared type (not recognised): custom", text, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// JSON null binds without an exception, so a null server entry or a null array element has to be
+    /// refused as an invalid configuration rather than escape the Result flow as an unhandled failure.
+    /// </summary>
+    [Theory]
+    [InlineData("""{ "mcpServers": { "a": null } }""")]
+    [InlineData("""{ "mcpServers": { "a": { "command": "run", "args": ["ok", null] } } }""")]
+    [InlineData("""{ "mcpServers": { "a": { "command": "run", "inheritEnv": [null] } } }""")]
+    public async Task A_null_server_or_null_list_element_is_an_invalid_config_failure(string json)
+    {
+        File.WriteAllText(Path.Combine(_root, "mcp.json"), json);
+
+        Result<McpWorkspaceTrustPreview> result = await new McpWorkspaceTrustPreviewer().PreviewAsync(_root);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal("Mcp.InvalidConfig", result.Error.Code);
+    }
+
+    /// <summary>
+    /// Trailing whitespace inside an argument or a command is part of what runs, so it is kept as one space
+    /// and the field is quoted: <c>"node "</c> and <c>node</c>, or <c>"--config " x</c> and
+    /// <c>--config x</c>, do not read alike.
+    /// </summary>
+    [Fact]
+    public async Task Trailing_whitespace_in_a_command_or_argument_stays_visible()
+    {
+        Assert.Equal("\"foo \"", McpTrustPreviewText.DisplayArgument("foo \t", out bool truncated));
+
+        Assert.False(truncated);
+
+        Assert.NotEqual(
+            McpTrustPreviewText.DisplayArgument("foo", out _),
+            McpTrustPreviewText.DisplayArgument("foo ", out _));
+
+        McpWorkspaceTrustPreview preview = await PreviewAsync(
+            """{ "mcpServers": { "a": { "command": "node ", "args": ["--config ", "x"] } } }""");
+
+        Assert.Contains("a [stdio] \"node \" \"--config \" x", string.Join('\n', preview.Lines), StringComparison.Ordinal);
+    }
+
     [Fact]
     public async Task A_file_with_no_servers_says_so()
     {

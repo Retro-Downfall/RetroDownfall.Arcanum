@@ -11,8 +11,10 @@ namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
 /// </summary>
 /// <remarks>
 /// <para>Trust is a grant to launch whatever commands the file names, so the preview lists each server with
-/// its transport and command line or URL. Environment values are never printed, only their names, because a
-/// value is frequently a credential. The read uses the same secure, size-capped reader the trust store
+/// the transport the host will actually use (<see cref="McpConnectionManager.InferTransport"/>) and the command
+/// line or URL that transport runs or dials. An authored field the transport ignores (a command beside a URL
+/// the host connects to, or the reverse) is still shown, marked as not used, so the preview hides nothing.
+/// Environment values are never printed, only their names, because a value is frequently a credential. The read uses the same secure, size-capped reader the trust store
 /// digests through, and the preview carries that digest, so a later trust request that names it is refused
 /// by the store if the file is not still those bytes. Authored text is made safe to print by
 /// <see cref="McpTrustPreviewText"/>.</para>
@@ -106,7 +108,20 @@ public sealed class McpWorkspaceTrustPreviewer : IMcpWorkspaceTrustPreviewer
                     $"The workspace mcp.json is not valid JSON, so its servers cannot be previewed: {reason}");
             }
 
-            return Describe(normalized, config?.McpServers ?? [], digest);
+            Dictionary<string, McpServerConfig> servers = config?.McpServers ?? [];
+
+            // JSON null binds without an exception: a null entry or list element is a file the host cannot
+            // describe, and is refused as one rather than escaping the Result flow.
+            if (servers.Values.Any(static server => server is null
+                || server.Args?.Any(static argument => argument is null) == true
+                || server.InheritEnv?.Any(static name => name is null) == true))
+            {
+                return new Error(
+                    "Mcp.InvalidConfig",
+                    "The workspace mcp.json has a null server entry or a null args or inheritEnv element, so its servers cannot be previewed.");
+            }
+
+            return Describe(normalized, servers, digest);
         }
     }
 
@@ -128,7 +143,28 @@ public sealed class McpWorkspaceTrustPreviewer : IMcpWorkspaceTrustPreviewer
 
         foreach ((string name, McpServerConfig server) in servers.OrderBy(static pair => pair.Key, StringComparer.Ordinal))
         {
-            lines.Add($"  {fields.Show(name)} [{Transport(server, fields)}] {Launches(server, fields)}");
+            McpServerTransport transport = McpConnectionManager.InferTransport(server);
+
+            bool dialsUrl = transport is not McpServerTransport.Stdio;
+
+            lines.Add(
+                $"  {fields.Show(name)} [{TransportLabel(transport)}] "
+                + (dialsUrl ? Endpoint(server, fields) : CommandLine(server, fields)));
+
+            if (!string.IsNullOrWhiteSpace(server.Type) && !IsRecognisedType(server.Type))
+            {
+                lines.Add($"    declared type (not recognised): {fields.Show(server.Type)}");
+            }
+
+            if (dialsUrl && !string.IsNullOrWhiteSpace(server.Command))
+            {
+                lines.Add($"    command (not run by this transport): {CommandLine(server, fields)}");
+            }
+
+            if (!dialsUrl && !string.IsNullOrWhiteSpace(server.Url))
+            {
+                lines.Add($"    url (not used by this transport): {fields.Show(server.Url)}");
+            }
 
             if (!string.IsNullOrWhiteSpace(server.Cwd))
             {
@@ -152,23 +188,27 @@ public sealed class McpWorkspaceTrustPreviewer : IMcpWorkspaceTrustPreviewer
         return new McpWorkspaceTrustPreview(workspace, [.. lines], fields.Truncated, digest);
     }
 
-    private static string Transport(
+    private static string TransportLabel(McpServerTransport transport) => transport switch
+    {
+        McpServerTransport.Http => "http",
+        McpServerTransport.Sse => "sse",
+        _ => "stdio",
+    };
+
+    private static bool IsRecognisedType(string type) =>
+        string.Equals(type, "stdio", StringComparison.OrdinalIgnoreCase)
+        || string.Equals(type, "http", StringComparison.OrdinalIgnoreCase)
+        || string.Equals(type, "sse", StringComparison.OrdinalIgnoreCase);
+
+    private static string Endpoint(
         McpServerConfig server,
         FieldWriter fields) =>
-        string.IsNullOrWhiteSpace(server.Type)
-            ? string.IsNullOrWhiteSpace(server.Url) ? "stdio" : "http"
-            : fields.Show(server.Type);
+        string.IsNullOrWhiteSpace(server.Url) ? "(no url)" : fields.Show(server.Url);
 
-    private static string Launches(
+    private static string CommandLine(
         McpServerConfig server,
         FieldWriter fields)
     {
-        if (!string.IsNullOrWhiteSpace(server.Url)
-            && string.IsNullOrWhiteSpace(server.Command))
-        {
-            return fields.Show(server.Url);
-        }
-
         string command = string.IsNullOrWhiteSpace(server.Command)
             ? "(no command)"
             : fields.ShowArgument(server.Command);

@@ -18,7 +18,8 @@ namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
 /// <see cref="MaxDisplayChars"/> is cut with a count of what was left out, and the result says so, because
 /// a preview that leaves text out cannot be the basis for approving it.</para>
 /// <para>An argument that is empty, or contains a space or a double quote, is shown in double quotes (with
-/// the quote escaped), so <c>-c "a b"</c> and <c>-c a b</c> do not read alike.</para>
+/// the quote escaped), so <c>-c "a b"</c> and <c>-c a b</c> do not read alike. Whitespace at the end of an
+/// argument is kept as one space inside those quotes, so <c>"node "</c> and <c>node</c> differ too.</para>
 /// </remarks>
 internal static class McpTrustPreviewText
 {
@@ -134,6 +135,14 @@ internal static class McpTrustPreviewText
         if (shown.Length == 0)
         {
             return "\" \"";
+        }
+
+        // Display drops whitespace at the end of a field, which is harmless for a name but not for an
+        // argument: "--config " and "--config" are different arguments, so the trailing run stays as one
+        // space and the quoting below then shows it. A cut field already ends with its hidden count.
+        if (!truncated && char.IsWhiteSpace(value[^1]))
+        {
+            shown += " ";
         }
 
         return shown.Contains(' ', StringComparison.Ordinal) || shown.Contains('"', StringComparison.Ordinal)
