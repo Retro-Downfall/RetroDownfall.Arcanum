@@ -203,6 +203,36 @@ public class InferenceTraceViewModelTests
         Assert.Contains("truncated", entry.Data, StringComparison.OrdinalIgnoreCase);
     }
 
+    [Fact]
+    public void Capture_never_cuts_an_astral_character_in_half_so_the_trace_still_serializes()
+    {
+        InferenceTraceViewModel trace = new(
+            ImmediateTheForgeLocalMutationRunner.Instance,
+            new InMemoryInferenceTraceStore(),
+            new NullArtifactFileDialogService());
+
+        trace.BeginCapture("session", Guid.NewGuid().ToString("D"));
+
+        // The emoji's surrogate pair straddles the cap: its high surrogate is the last kept char.
+        string data = new string('x', InferenceTraceViewModel.MaxEntryDataChars - 1) + "\U0001F600" + new string('y', 32);
+
+        trace.Capture(new IntelligenceEvent(IntelligenceEventType.ToolResult, "ok", data));
+
+        InferenceTraceEntryViewModel entry = Assert.Single(trace.Entries);
+
+        Assert.NotNull(entry.Data);
+
+        int marker = entry.Data!.IndexOf('\u2026', StringComparison.Ordinal);
+
+        Assert.True(marker > 0);
+
+        Assert.False(char.IsHighSurrogate(entry.Data[marker - 1]));
+
+        string json = trace.BuildExportJson();
+
+        Assert.Contains("truncated", json, StringComparison.OrdinalIgnoreCase);
+    }
+
     private sealed class ThrowingInferenceTraceStore : RetroDownfall.TheForge.Core.Services.IInferenceTraceStore
     {
         public string StorePath { get; } = Path.Combine(Path.GetTempPath(), "forge-throwing-traces.json");

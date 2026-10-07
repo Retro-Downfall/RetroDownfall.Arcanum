@@ -171,10 +171,18 @@ public sealed partial class InferenceTraceViewModel : ObservableObject
         }
     }
 
-    private static string? CapData(string? data) =>
-        data is { Length: > MaxEntryDataChars }
-            ? string.Concat(data.AsSpan(0, MaxEntryDataChars), $"… [truncated {data.Length - MaxEntryDataChars} chars]")
-            : data;
+    private static string? CapData(string? data)
+    {
+        if (data is not { Length: > MaxEntryDataChars })
+        {
+            return data;
+        }
+
+        // Never keep half of a surrogate pair: a lone high surrogate makes the trace unserializable.
+        int kept = char.IsHighSurrogate(data[MaxEntryDataChars - 1]) ? MaxEntryDataChars - 1 : MaxEntryDataChars;
+
+        return string.Concat(data.AsSpan(0, kept), $"… [truncated {data.Length - kept} chars]");
+    }
 
     [RelayCommand]
     public void Clear()
