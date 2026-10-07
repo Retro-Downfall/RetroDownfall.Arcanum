@@ -18,42 +18,61 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data;
 internal sealed class UploadedFileRepository : IUploadedFileRepository
 {
     /// <summary>
+    /// The spellings one file identity can be stored in, as an <c>IN</c> list over <c>@id</c>, the canonical text
+    /// (<see cref="GrimoireEntitySql.Format(Guid)"/>): the canonical text itself, the lowercase dashed text the
+    /// writers stored before Core version 15, and the dash-free text version 15 also repairs.
+    /// </summary>
+    /// <remarks>
+    /// Version 15 rewrites every stored file identity to the canonical text, but an installation upgrading across an
+    /// earlier step that declares a sweep keeps serving while that sweep drains and runs version 15 only after it.
+    /// Until then the files uploaded before the upgrade, and the batch roles naming them, are still held in the older
+    /// spellings, and a lookup by the canonical text alone would answer not-found for them: startup batch recovery
+    /// would fail a stranded batch for a missing input, and a delete would miss a batch that still names the file.
+    /// Each candidate is a constant for the statement, so the primary key and the three <c>Batches</c> file indexes
+    /// answer the list as one search per spelling, never a scan.
+    /// </remarks>
+    internal const string IdSpellings = "(@id, lower(@id), lower(replace(@id, '-', '')))";
+
+    /// <summary>
     /// The statement that classifies a delete: no row, referenced by a batch, or deletable. Internal so a test can
     /// explain the exact text the repository runs.
     /// </summary>
     /// <remarks>
-    /// <c>@id</c> is the canonical identity text (<see cref="GrimoireEntitySql.Format(Guid)"/>), which is what every
-    /// <c>UploadedFiles.Id</c> and every batch file role holds since Core version 15, so each comparison is an exact
-    /// equality the primary key and the three <c>Batches</c> file indexes answer.
+    /// <c>@id</c> is the canonical identity text, and every comparison is against <see cref="IdSpellings"/>, which
+    /// the primary key and the three <c>Batches</c> file indexes answer.
     /// </remarks>
     internal const string ClassifyDeleteSql =
-        """
+        $"""
         SELECT CASE
             WHEN EXISTS (
                 SELECT 1
                 FROM "Batches"
-                WHERE "InputFileId" = @id
-                   OR "OutputFileId" = @id
-                   OR "ErrorFileId" = @id
+                WHERE "InputFileId" IN {IdSpellings}
+                   OR "OutputFileId" IN {IdSpellings}
+                   OR "ErrorFileId" IN {IdSpellings}
             ) THEN 1
             ELSE 0
         END
         FROM "UploadedFiles"
-        WHERE "Id" = @id
+        WHERE "Id" IN {IdSpellings}
         LIMIT 1
         """;
 
-    /// <summary>The conditional metadata delete that runs inside the same immediate transaction as the classification.</summary>
+    /// <summary>
+    /// The conditional metadata delete that runs inside the same immediate transaction as the classification. It
+    /// removes every row the identity names, so a lowercase row version 15 left beside the canonical row of the same
+    /// Guid (its rewrite would have collided on the primary key) goes with it.
+    /// </summary>
     internal const string DeleteUnreferencedMetadataSql =
-        """
+        $"""
         DELETE FROM "UploadedFiles"
-        WHERE "Id" = @id
+        WHERE "Id" IN {IdSpellings}
           AND NOT EXISTS (
               SELECT 1
               FROM "Batches"
-              WHERE "InputFileId" = @id
-                 OR "OutputFileId" = @id
-                 OR "ErrorFileId" = @id
+              WHERE "InputFileId" IN {IdSpellings}
+                 OR "OutputFileId" IN {IdSpellings}
+                 OR "ErrorFileId" IN {IdSpellings}
           )
         """;
 
@@ -185,11 +204,11 @@ internal sealed class UploadedFileRepository : IUploadedFileRepository
                 await using DbCommand cmd = connection.CreateCommand();
 
                 cmd.CommandText =
-                    """
+                    $"""
                     SELECT "Id", "Filename", "Bytes", "Purpose", "MimeType", "CreatedAt",
                            "EncryptionVersion", "EncryptionKeyId", "PlaintextSha256"
                     FROM "UploadedFiles"
-                    WHERE "Id" = @id
+                    WHERE "Id" IN {IdSpellings}
                     LIMIT 1
                     """;
 
@@ -264,9 +283,9 @@ internal sealed class UploadedFileRepository : IUploadedFileRepository
                 await using DbCommand cmd = connection.CreateCommand();
 
                 cmd.CommandText =
-                    """
+                    $"""
                     DELETE FROM "UploadedFiles"
-                    WHERE "Id" = @id
+                    WHERE "Id" IN {IdSpellings}
                     """;
 
                 AddParameter(cmd, "@id", GrimoireEntitySql.Format(id));
@@ -373,7 +392,7 @@ internal sealed class UploadedFileRepository : IUploadedFileRepository
                     cancellationToken)
                 .ConfigureAwait(false);
 
-            if (deleted != 1)
+            if (deleted < 1)
             {
                 await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
 

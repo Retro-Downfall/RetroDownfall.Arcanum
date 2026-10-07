@@ -15,6 +15,18 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data;
 /// </summary>
 internal sealed class BatchRepository(ArcanumDbContext db) : IBatchRepository
 {
+    /// <summary>
+    /// The spellings a new batch's input file can still be stored in (and, in the two constants below, its output
+    /// and error files), as <see cref="UploadedFileRepository.IdSpellings"/> spells them, so a file uploaded before
+    /// Core version 15 rewrote the file identities can still be named while an earlier step's sweep holds that
+    /// rewrite back. The batch itself always stores the canonical text.
+    /// </summary>
+    private const string InputFileSpellings = "(@inputFileId, lower(@inputFileId), lower(replace(@inputFileId, '-', '')))";
+
+    private const string OutputFileSpellings = "(@outputFileId, lower(@outputFileId), lower(replace(@outputFileId, '-', '')))";
+
+    private const string ErrorFileSpellings = "(@errorFileId, lower(@errorFileId), lower(replace(@errorFileId, '-', '')))";
+
     public Task CreateAsync(BatchRecord record, CancellationToken cancellationToken = default)
     {
         return SqliteBusyRetry.ExecuteAsync(
@@ -25,7 +37,7 @@ internal sealed class BatchRepository(ArcanumDbContext db) : IBatchRepository
                 await using DbCommand cmd = connection.CreateCommand();
 
                 cmd.CommandText =
-                    """
+                    $"""
                     INSERT INTO "Batches" (
                         "Id", "InputFileId", "Endpoint", "Status", "CreatedAt", "CompletedAt",
                         "OutputFileId", "ErrorFileId", "TotalRequestCount", "CompletedRequestCount", "FailedRequestCount")
@@ -34,14 +46,14 @@ internal sealed class BatchRepository(ArcanumDbContext db) : IBatchRepository
                     WHERE EXISTS (
                         SELECT 1
                         FROM "UploadedFiles"
-                        WHERE "Id" = @inputFileId
+                        WHERE "Id" IN {InputFileSpellings}
                     )
                       AND (
                           @outputFileId IS NULL
                           OR EXISTS (
                               SELECT 1
                               FROM "UploadedFiles"
-                              WHERE "Id" = @outputFileId
+                              WHERE "Id" IN {OutputFileSpellings}
                           )
                       )
                       AND (
@@ -49,7 +61,7 @@ internal sealed class BatchRepository(ArcanumDbContext db) : IBatchRepository
                           OR EXISTS (
                               SELECT 1
                               FROM "UploadedFiles"
-                              WHERE "Id" = @errorFileId
+                              WHERE "Id" IN {ErrorFileSpellings}
                           )
                       )
                     """;

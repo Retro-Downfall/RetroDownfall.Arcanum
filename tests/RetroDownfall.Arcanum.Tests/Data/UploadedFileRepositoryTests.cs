@@ -387,49 +387,114 @@ public sealed class UploadedFileRepositoryTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// A file still held in a pre-version-15 spelling is not found by the exact-equality repository, and that miss
-    /// never deletes it or the batch that names it.
+    /// A file still held in a pre-version-15 spelling is found by its Guid, so a stranded batch that names it is
+    /// requeued rather than failed for a missing input.
     /// </summary>
     /// <remarks>
     /// An installation upgrading across an earlier step that declares a sweep keeps serving while that sweep
-    /// drains, and the version-15 rewrite runs only after it. Until then a legacy lowercase row answers not-found,
-    /// which is a refusal: the delete's classification and its conditional delete both compare the canonical text,
-    /// so neither can touch the row, and the batch still naming it is left exactly as it was.
+    /// drains, and the version-15 rewrite runs only after it. Until then the files uploaded before the upgrade are
+    /// held lowercase dashed (what the earlier writer stored) or dash-free, and startup batch recovery reads a
+    /// not-found here as a missing input and fails the batch for good.
     /// </remarks>
-    [SkippableFact]
-    public async Task TryDeleteUnreferencedAsync_leaves_a_legacy_spelling_row_and_the_batch_naming_it_untouched()
+    [SkippableTheory]
+    [InlineData("D")]
+    [InlineData("N")]
+    public async Task GetByIdAsync_finds_a_file_still_held_in_a_pre_version_15_spelling(string format)
     {
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid id = Guid.NewGuid();
 
-        string legacy = id.ToString("D").ToLowerInvariant();
+        await InsertLegacyFileAsync(id.ToString(format));
 
-        string createdAt = UtcInstantText.Format(DateTimeOffset.UtcNow);
+        UploadedFileRecord? loaded = await _repo!.GetByIdAsync(id, CancellationToken.None);
 
-        await ExecuteSqlAsync(
-            $"""
-            INSERT INTO "UploadedFiles" ("Id", "Filename", "Bytes", "Purpose", "MimeType", "CreatedAt")
-            VALUES ('{legacy}', 'legacy.jsonl', 5, 'batch', 'application/jsonl', '{createdAt}');
-            """);
+        Assert.NotNull(loaded);
+
+        Assert.Equal(id, loaded!.Id);
+
+        Assert.Equal("legacy.jsonl", loaded.Filename);
+    }
+
+    /// <summary>
+    /// A legacy-spelling file that a legacy-spelling batch still names is refused as referenced, and neither row
+    /// is touched.
+    /// </summary>
+    [SkippableFact]
+    public async Task TryDeleteUnreferencedAsync_blocks_a_legacy_spelling_row_a_legacy_spelling_batch_names()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid id = Guid.NewGuid();
+
+        string legacy = id.ToString("D");
+
+        await InsertLegacyFileAsync(legacy);
 
         await ExecuteSqlAsync(
             $"""
             INSERT INTO "Batches" ("Id", "InputFileId", "Endpoint", "Status", "CreatedAt")
-            VALUES ('legacy-batch', '{legacy}', '/v1/chat/completions', 'completed', '{createdAt}');
+            VALUES ('legacy-batch', '{legacy}', '/v1/chat/completions', 'completed', '{UtcInstantText.Format(DateTimeOffset.UtcNow)}');
             """);
 
-        Assert.Null(await _repo!.GetByIdAsync(id, CancellationToken.None));
-
         Assert.Equal(
-            UploadedFileDeleteStatus.NotFound,
-            await _repo.TryDeleteUnreferencedAsync(id, CancellationToken.None));
-
-        await _repo.DeleteAsync(id, CancellationToken.None);
+            UploadedFileDeleteStatus.ReferencedByBatch,
+            await _repo!.TryDeleteUnreferencedAsync(id, CancellationToken.None));
 
         Assert.Equal(1L, await ScalarAsync($"SELECT COUNT(*) FROM \"UploadedFiles\" WHERE \"Id\" = '{legacy}'"));
 
         Assert.Equal(1L, await ScalarAsync($"SELECT COUNT(*) FROM \"Batches\" WHERE \"InputFileId\" = '{legacy}'"));
+    }
+
+    /// <summary>
+    /// An unreferenced legacy-spelling file is deleted by both the conditional delete and the plain delete.
+    /// </summary>
+    [SkippableFact]
+    public async Task Deletes_reach_an_unreferenced_legacy_spelling_row()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid conditional = Guid.NewGuid();
+
+        Guid plain = Guid.NewGuid();
+
+        await InsertLegacyFileAsync(conditional.ToString("D"));
+
+        await InsertLegacyFileAsync(plain.ToString("N"));
+
+        Assert.Equal(
+            UploadedFileDeleteStatus.Deleted,
+            await _repo!.TryDeleteUnreferencedAsync(conditional, CancellationToken.None));
+
+        await _repo.DeleteAsync(plain, CancellationToken.None);
+
+        Assert.Equal(0L, await CountFileRowsAsync(conditional));
+
+        Assert.Equal(0L, await CountFileRowsAsync(plain));
+    }
+
+    /// <summary>
+    /// When version 15 left a lowercase row beside the canonical row of the same Guid (its rewrite would have
+    /// collided on the primary key), deleting the file removes both, since both describe the one owned file.
+    /// </summary>
+    [SkippableFact]
+    public async Task TryDeleteUnreferencedAsync_removes_both_rows_of_a_case_only_collision()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid id = Guid.NewGuid();
+
+        await _repo!.CreateAsync(
+            new UploadedFileRecord(id, "canonical.jsonl", 5, "batch", "application/jsonl", DateTimeOffset.UtcNow),
+            CancellationToken.None);
+
+        await InsertLegacyFileAsync(id.ToString("D"));
+
+        Assert.Equal(
+            UploadedFileDeleteStatus.Deleted,
+            await _repo.TryDeleteUnreferencedAsync(id, CancellationToken.None));
+
+        Assert.Equal(0L, await CountFileRowsAsync(id));
     }
 
     [SkippableFact]
@@ -705,6 +770,16 @@ public sealed class UploadedFileRepositoryTests : IAsyncLifetime
             await command.ExecuteScalarAsync(CancellationToken.None),
             System.Globalization.CultureInfo.InvariantCulture);
     }
+
+    private Task InsertLegacyFileAsync(string legacyId) =>
+        ExecuteSqlAsync(
+            $"""
+            INSERT INTO "UploadedFiles" ("Id", "Filename", "Bytes", "Purpose", "MimeType", "CreatedAt")
+            VALUES ('{legacyId}', 'legacy.jsonl', 5, 'batch', 'application/jsonl', '{UtcInstantText.Format(DateTimeOffset.UtcNow)}');
+            """);
+
+    private Task<long> CountFileRowsAsync(Guid id) =>
+        ScalarAsync($"SELECT COUNT(*) FROM \"UploadedFiles\" WHERE lower(replace(\"Id\", '-', '')) = '{id:N}'");
 
     private async Task ExecuteSqlAsync(string sql)
     {
