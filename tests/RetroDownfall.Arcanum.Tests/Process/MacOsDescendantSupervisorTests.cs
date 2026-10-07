@@ -23,7 +23,7 @@ public sealed class MacOsDescendantSupervisorTests
 
         MacOsDescendantSupervisor? supervisor = MacOsDescendantSupervisor.TryStart(child.Id);
 
-        Skip.If(supervisor is null, "The supervisor could not attach to the child on this host.");
+        Assert.NotNull(supervisor);
 
         try
         {
@@ -100,7 +100,7 @@ public sealed class MacOsDescendantSupervisorTests
             child.Id,
             idleScanEveryTicks: int.MaxValue);
 
-        Skip.If(supervisor is null, "The supervisor could not attach to the child on this host.");
+        Assert.NotNull(supervisor);
 
         try
         {
@@ -169,7 +169,7 @@ public sealed class MacOsDescendantSupervisorTests
             child.Id,
             () => throw new InvalidOperationException("injected monitor fault"));
 
-        Skip.If(supervisor is null, "The supervisor could not attach to the child on this host.");
+        Assert.NotNull(supervisor);
 
         try
         {
@@ -207,7 +207,7 @@ public sealed class MacOsDescendantSupervisorTests
             () => throw new InvalidOperationException("injected monitor fault"),
             memoryLimitBytes: 64L * 1024 * 1024 * 1024);
 
-        Skip.If(supervisor is null, "The supervisor could not attach to the child on this host.");
+        Assert.NotNull(supervisor);
 
         try
         {
@@ -265,7 +265,7 @@ public sealed class MacOsDescendantSupervisorTests
                 }
             });
 
-        Skip.If(supervisor is null, "The supervisor could not attach to the child on this host.");
+        Assert.NotNull(supervisor);
 
         try
         {
@@ -353,7 +353,7 @@ public sealed class MacOsDescendantSupervisorTests
                 return null;
             });
 
-        Skip.If(supervisor is null, "The supervisor could not attach to the child on this host.");
+        Assert.NotNull(supervisor);
 
         try
         {
@@ -408,7 +408,7 @@ public sealed class MacOsDescendantSupervisorTests
             memoryLimitBytes: 64L * 1024 * 1024 * 1024,
             footprintReader: pid => pid == rootPid ? 1L : null);
 
-        Skip.If(supervisor is null, "The supervisor could not attach to the child on this host.");
+        Assert.NotNull(supervisor);
 
         try
         {
@@ -464,7 +464,7 @@ public sealed class MacOsDescendantSupervisorTests
                 return release.Task;
             });
 
-        Skip.If(supervisor is null, "The supervisor could not attach to the child on this host.");
+        Assert.NotNull(supervisor);
 
         Task? disposal = null;
 

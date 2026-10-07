@@ -90,6 +90,8 @@ internal static partial class SecureFileReader
 
     private static readonly AsyncLocal<Action<string>?> AfterOpenOverride = new();
 
+    private static readonly AsyncLocal<Action<string>?> AfterRegularFileOpenedOverride = new();
+
     /// <summary>
     /// Deterministic test seam invoked after the validated handle is open and before the first
     /// bounded read, for the current async flow only: every secret mirror read passes through here, so
@@ -107,9 +109,15 @@ internal static partial class SecureFileReader
     /// <summary>
     /// Deterministic test seam invoked with the requested path each time
     /// <see cref="TryOpenRegularFile"/> returns an open handle; it lets a test count how many times a
-    /// flow reads one file.
+    /// flow reads one file. Flow-local for the same reason as <see cref="AfterOpenForTests"/>: every
+    /// secure open in the process passes through it.
     /// </summary>
-    internal static Action<string>? AfterRegularFileOpenedForTests { get; set; }
+    internal static Action<string>? AfterRegularFileOpenedForTests
+    {
+        get => AfterRegularFileOpenedOverride.Value;
+
+        set => AfterRegularFileOpenedOverride.Value = value;
+    }
 
     internal static SecureFileOpenStatus TryOpenRegularFile(
         string path,

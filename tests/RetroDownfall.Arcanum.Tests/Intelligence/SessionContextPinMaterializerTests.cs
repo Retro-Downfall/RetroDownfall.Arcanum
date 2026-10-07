@@ -1467,7 +1467,7 @@ public sealed class SessionContextPinMaterializerTests(GrimoireFixture fixture) 
 
         SecureFileReader.AfterRegularFileOpenedForTests = openedPath =>
         {
-            // Only the pin's own open: other tests in this process open files through the same seam.
+            // Only the pin's own open: this flow may open other files through the same seam.
             if (moved || !string.Equals(openedPath, file, StringComparison.Ordinal))
             {
                 return;
