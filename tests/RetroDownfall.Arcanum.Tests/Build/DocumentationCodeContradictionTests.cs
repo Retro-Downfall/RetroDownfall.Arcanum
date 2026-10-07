@@ -1308,6 +1308,193 @@ public sealed class DocumentationCodeContradictionTests
         Assert.Contains("fixed message", gate, StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// An ordinary installation reset plans under the stopped-host maintenance lock and asks the host
+    /// for its plan only on the external-remediation arm, so no document may tell an operator that an
+    /// ordinary global or all reset must reach the running host and rebind its plan first.
+    /// </summary>
+    [Fact]
+    public void Ordinary_factory_reset_is_documented_as_planned_under_the_stopped_host_lock()
+    {
+        string command = ReadSource("Cli", "Commands", "InstallationFactoryResetCommand.cs");
+
+        Assert.Contains("PlanUnderStoppedHostLockAsync", command, StringComparison.Ordinal);
+
+        Assert.Matches(
+            @"if \(externalRemediation is not null\s+&& plan\.Scope is InstallationResetScope\.Global",
+            command);
+
+        string reference = ReadDocument("Arcanum.Command.Reference.md");
+
+        Assert.DoesNotContain("Global/all rebind the authenticated online plan", reference, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("Global/all first obtains the authenticated host plan", reference, StringComparison.Ordinal);
+
+        Assert.Contains("maintenance-lock contention", reference, StringComparison.Ordinal);
+
+        foreach ((string document, string stale) in (ValueTuple<string, string>[])[
+            ("Arcanum.Design.Human.md", "the command must reach the authenticated host"),
+            ("Arcanum.Design.Human.md", "After confirmation, global/all creates a typed handoff"),
+            ("Arcanum.Engineering.md", "the CLI must reach the authenticated host"),
+            ("Arcanum.Engineering.md", "global/all apply re-plans and creates a typed handoff"),
+            ("Arcanum.API.md", "A global/all installation reset obtains this authenticated online plan"),
+            ("Arcanum.DESIGN.md", "Global/all first build the local inventory, ask the authenticated running host"),
+            ("Arcanum.DESIGN.md", "After confirmation, `PrepareAsync` re-plans"),
+            ("Arcanum.CHAT-LOOP.md", "apply first asks the running authenticated host to publish"),
+        ])
+        {
+            Assert.DoesNotContain(stale, ReadDocument(document), StringComparison.Ordinal);
+        }
+    }
+
+    /// <summary>
+    /// A failed accounting settlement keeps a batch <c>in_progress</c> for durable recovery, so the API
+    /// contract has to name it among the failures that do not end the batch as <c>failed</c>.
+    /// </summary>
+    [Fact]
+    public void The_batch_status_row_names_a_failed_settlement_as_kept_for_recovery()
+    {
+        string service = ReadSource("Api", "Intelligence", "BatchProcessingService.cs");
+
+        Assert.Contains("!state.AccountingSettlementFailed", service, StringComparison.Ordinal);
+
+        string row = ReadDocument("Arcanum.API.md")
+            .Split('\n')
+            .Single(static line => line.StartsWith("| GET | `/v1/batches/{id}` |", StringComparison.Ordinal));
+
+        Assert.Contains("failed accounting settlement", row, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The SSE consumer discards an event over its runaway guard, which the server can reach, so the
+    /// paragraph must not open by promising a cap the server could never reach.
+    /// </summary>
+    [Fact]
+    public void The_sse_consumer_paragraph_does_not_promise_an_unreachable_cap()
+    {
+        string api = ReadDocument("Arcanum.API.md");
+
+        Assert.DoesNotContain("without a client-only payload cap that the server could reach", api, StringComparison.Ordinal);
+
+        Assert.Contains("An event over the limit is discarded", api, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// <c>config</c> and <c>completion</c> both call the host; they are outside the exit-code-3 rule
+    /// because they fall back locally, not because they never ask the host.
+    /// </summary>
+    [Fact]
+    public void The_exit_code_table_does_not_say_config_or_completion_never_ask_the_host()
+    {
+        Assert.Contains(
+            ".UpdateConfigurationAsync(settings, cancellationToken)",
+            ReadSource("Cli", "Services", "ConfigurationCommandService.cs"),
+            StringComparison.Ordinal);
+
+        Assert.Contains(
+            "apiClient.GetModelsAsync",
+            ReadSource("Cli", "Services", "CliCompletionResolver.cs"),
+            StringComparison.Ordinal);
+
+        string row = ReadDocument("Arcanum.Command.Reference.md")
+            .Split('\n')
+            .Single(static line => line.StartsWith("| `3` |", StringComparison.Ordinal));
+
+        Assert.DoesNotContain("`key`, `config` or `completion`", row, StringComparison.Ordinal);
+
+        Assert.Contains("`config`", row, StringComparison.Ordinal);
+
+        Assert.Contains("`completion`", row, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// With retrieval on, the context preview opens embedding runs and writes ledger rows, so neither
+    /// the human design summary nor the provider's own documentation may call it read-only.
+    /// </summary>
+    [Fact]
+    public void The_context_preview_is_not_called_read_only()
+    {
+        Assert.Contains(
+            "The preview therefore does write run rows and ledger rows",
+            ReadDocument("Arcanum.DESIGN.md"),
+            StringComparison.Ordinal);
+
+        Assert.DoesNotContain("A dry, read-only pre-inference plan", ReadDocument("Arcanum.Design.Human.md"), StringComparison.Ordinal);
+
+        Assert.DoesNotContain(
+            "the read-only context preview",
+            ReadSource("Api", "Intelligence", "WizardIntelligenceProvider.cs"),
+            StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The turn engine records three termination reasons; the design table may not name terminal
+    /// reasons the engine has no value for.
+    /// </summary>
+    [Fact]
+    public void The_terminal_reason_table_names_only_reasons_the_engine_records()
+    {
+        string enums = ReadSource("Api", "Intelligence", "TurnEngine", "TurnEnums.cs");
+
+        string declaration = DocumentSection(enums, "internal enum TurnTerminationReason", "}");
+
+        string[] members = [.. Regex
+            .Matches(declaration, @"^\s+(?<name>[A-Z][A-Za-z]+) = \d+,", RegexOptions.Multiline, TimeSpan.FromSeconds(5))
+            .Select(static match => match.Groups["name"].Value)];
+
+        Assert.Equal(new[] { "Completed", "ProviderFailure", "Cancelled" }, members);
+
+        string design = ReadDocument("Arcanum.DESIGN.md");
+
+        foreach (string removed in (string[])["`explicit_budget`", "`provider_or_context_boundary`", "`safety_or_integrity_boundary`", "`client_tool_forwarded`"])
+        {
+            Assert.DoesNotContain(removed, design, StringComparison.Ordinal);
+        }
+
+        string loop = DocumentSection(design, "There is no arbitrary model-call", "#### 10.7.4 Ward/Sanctum");
+
+        foreach (string member in members)
+        {
+            Assert.Contains($"`{member}`", loop, StringComparison.Ordinal);
+        }
+    }
+
+    /// <summary>
+    /// The turn execution facade has two methods since the OpenAI SSE projection was removed.
+    /// </summary>
+    [Fact]
+    public void The_design_counts_the_turn_execution_facade_methods_correctly()
+    {
+        string facade = ReadSource("Api", "Intelligence", "TurnEngine", "ITurnExecutionFacade.cs");
+
+        Assert.Equal(2, Regex.Matches(facade, @"\bExecute\w+Async\(", RegexOptions.None, TimeSpan.FromSeconds(5)).Count);
+
+        string design = ReadDocument("Arcanum.DESIGN.md");
+
+        Assert.DoesNotContain("all three `ITurnExecutionFacade` methods", design, StringComparison.Ordinal);
+
+        Assert.Contains("both `ITurnExecutionFacade` methods", design, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The Compendium launcher looks for the development project in the executable's directory and
+    /// every ancestor, so the configuration reference may not say it is only found beside the executable.
+    /// </summary>
+    [Fact]
+    public void The_development_launcher_is_documented_as_searching_ancestors()
+    {
+        Assert.Contains(
+            "Directory.GetParent(directory)",
+            ReadSource("Core", "Desktop", "CompendiumLauncher.cs"),
+            StringComparison.Ordinal);
+
+        string compendium = ReadDocument("Compendium.README.md");
+
+        Assert.DoesNotContain("found beside the executable", compendium, StringComparison.Ordinal);
+
+        Assert.Contains("each of its ancestors", compendium, StringComparison.Ordinal);
+    }
+
     private static string ReadDocument(string fileName) =>
         File
             .ReadAllText(Path.Combine(TestRepositoryPaths.RepositoryRoot(), "docs", fileName))
