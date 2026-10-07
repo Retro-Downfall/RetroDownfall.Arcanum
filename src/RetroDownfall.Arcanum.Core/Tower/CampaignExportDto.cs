@@ -7,16 +7,25 @@ namespace RetroDownfall.Arcanum.Core.Tower;
 /// </summary>
 /// <remarks>
 /// <see cref="Exclusions"/> is omitted entirely when this installation has no Covenant arm, so a
-/// bundle produced with <c>Arcanum:Features:Covenant</c> off is byte-for-byte what it always was. A
+/// bundle produced with <c>Arcanum:Features:Covenant</c> off carries no <c>exclusions</c> field at all. A
 /// zero report would be worse than an absent one: it reads as a measurement where the honest answer
 /// is that nothing was measured (§10.19.11).
+/// <para>
+/// <see cref="OmittedSpells"/> names the non-builtin spells the export listed but could not carry (a
+/// <c>SPELL.md</c> that failed the regular-file read), and each spell's
+/// <see cref="CampaignExportSpellDto.OmittedScripts"/> names the scripts its export left out. An export
+/// always answers both, <c>[]</c> when nothing was left out, so a caller can tell a partial bundle from a
+/// complete one; an import ignores them, and a bundle written before they existed imports as before.
+/// </para>
 /// </remarks>
 public sealed record CampaignExportDto(
     CampaignDto Campaign,
     IReadOnlyList<CampaignExportSpellDto> Spells,
     IReadOnlyList<PromptExportDto> Prompts,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    CampaignExportExclusionsDto? Exclusions = null);
+    CampaignExportExclusionsDto? Exclusions = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    IReadOnlyList<string>? OmittedSpells = null);
 
 /// <summary>
 /// The content-free counts of what a Campaign export did not carry.
@@ -42,14 +51,14 @@ public sealed record CampaignExportSpellDto(
     string FullContent,
     IReadOnlyList<CampaignExportScriptDto> Scripts,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    string? SkillJson = null)
+    string? SkillJson = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    IReadOnlyList<string>? OmittedScripts = null)
 {
-
     /// <summary>Canonical <see cref="SpellJson"/>, or legacy <see cref="SkillJson"/> when the former is absent.</summary>
     [JsonIgnore]
     public string? ResolvedSpellJson =>
         !string.IsNullOrWhiteSpace(SpellJson) ? SpellJson : SkillJson;
-
 }
 
 public sealed record CampaignExportScriptDto(
