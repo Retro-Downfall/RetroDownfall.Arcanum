@@ -2274,6 +2274,62 @@ public sealed partial class InstallationResetServiceTests
     }
 
     [Fact]
+    public async Task Completed_record_whose_credential_removal_fails_verification_reports_and_records_the_error_code()
+    {
+        // The final cleanup verifies, so the credential pass clears the earlier code; a credential that
+        // then cannot be verified absent has to put a code back, exactly as a failed cleanup does, or
+        // the result asks for recovery with no error class and the record carries none for the next run.
+        FakeActiveStore active = new();
+
+        FakeCredentialInventory credentials = new(
+            [
+                new InstallationResetCredentialSummary(
+                    "accepted-account",
+                    InstallationResetItemStatus.Pending),
+            ])
+        {
+            DeleteResults =
+            [
+                new InstallationResetCredentialResult(
+                    "accepted-account",
+                    InstallationResetItemStatus.Failed),
+            ],
+        };
+
+        InstallationResetService service = CreateService(
+            new FakeDataService(CreateDataPlan("global-data")),
+            credentials,
+            active,
+            new FakeOfflineCleanup());
+
+        InstallationResetPlanRequest request = new(
+            InstallationResetScope.Global,
+            "/invocation");
+
+        InstallationResetPlan plan = (await service.PlanAsync(
+            request,
+            CancellationToken.None)).Value;
+
+        active.Seed(CreateActive(plan, InstallationResetPhase.Completed));
+
+        Result<InstallationResetResult> result = await ApplyUnderTestLockAsync(service,
+            new InstallationResetApplyRequest(request, plan.PlanId),
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess, result.IsFailure ? result.Error.Message : null);
+
+        Assert.True(result.Value.ResumeRequired);
+
+        Assert.False(result.Value.Verification.Succeeded);
+
+        Assert.Equal(ErrorCodes.Data.ReconciliationFailed, result.Value.ErrorCode);
+
+        Assert.False(active.Retired);
+
+        Assert.Equal(ErrorCodes.Data.ReconciliationFailed, active.Record?.LastErrorCode);
+    }
+
+    [Fact]
     public async Task Cancellation_after_canonical_data_call_is_checkpointed_conservatively()
     {
         using CancellationTokenSource cancellation = new();

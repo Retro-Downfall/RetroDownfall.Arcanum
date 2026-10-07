@@ -18,10 +18,19 @@ namespace RetroDownfall.Arcanum.Infrastructure.InstallationReset;
 ///
 /// <para>Three independent checks, because the first alone proves nothing: an editor of the file can
 /// recompute a binding id over whatever they wrote. The binding id has to match its own contents;
-/// every selected root has to be one the current roots for that scope and workspace would select, so a
-/// widened record cannot point the sweep at a directory this installation never owned; and no account
+/// every selected root has to be one the current roots for that scope and the record's own workspace
+/// binding would select, so a widened record cannot add a global root this installation does not own
+/// or any workspace root but the <c>.arcanum</c> directory of the workspace it names; and no account
 /// may be restore, reset or transition evidence or the host-tools taint marker, which an ordinary
 /// reset retains by definition.</para>
+///
+/// <para>What this check cannot do is confirm the workspace binding itself, or the excluded roots the
+/// record carries, against the registered Campaigns: after the point of no return the Grimoire that
+/// registers them may already be gone, and this check runs on that path too. The workspace is bounded
+/// where the record is used instead (<c>InstallationResetService.ValidateResumeAsync</c>): an All
+/// resume requires the invocation directory to sit inside the record's workspace and outside the
+/// excluded roots it names, and a Workspace resume, or an All resume before the point of no return
+/// without a prepared online handoff, requires the Campaigns to resolve the same workspace.</para>
 ///
 /// <para>The binding id is accepted in either of its two historical forms. Records written before the
 /// injective preimage carry the joined-text form, and refusing them would refuse every record that

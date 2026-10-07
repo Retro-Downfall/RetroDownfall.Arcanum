@@ -2257,10 +2257,11 @@ internal sealed class InstallationResetService(
     /// recorded credential removal.
     ///
     /// <para>The error code a completed record carries was left by an earlier attempt that did not
-    /// finish - a final cleanup that failed verification, or the checkpoint written for a cancellation.
-    /// This call re-checks exactly what that code describes, so once the cleanup verifies it is stale and
-    /// is cleared; keeping it would make a record that now verifies clean report recovery required on
-    /// every run and never retire.</para>
+    /// finish - a final cleanup or credential removal that failed verification, or the checkpoint
+    /// written for a cancellation. This call re-checks exactly what that code describes, so once the
+    /// cleanup and the credentials verify it is stale and is cleared; keeping it would make a record that
+    /// now verifies clean report recovery required on every run and never retire. A credential that
+    /// still cannot be verified absent sets it again.</para>
     /// </remarks>
     private async Task<Result<InstallationResetResult>> ReturnCompletedAsync(
         IInstallationResetActiveWriter writer,
@@ -2316,16 +2317,25 @@ internal sealed class InstallationResetService(
             credentialService.DeleteAndVerify(
                 active.AcceptedBinding.CredentialAccounts);
 
+        InstallationResetCredentialResult[] mergedCredentials = MergeCredentialResults(
+            active.CredentialResults,
+            credentialResults,
+            active.AcceptedBinding.CredentialAccounts);
+
+        InstallationResetVerification verification = VerifyCredentials(mergedCredentials);
+
+        // The cleanup verified, so the earlier code is stale; a credential that cannot be verified
+        // absent puts the code back, as the credential phase and a failed cleanup both do, so the
+        // result and the record name the failure class rather than asking for recovery without one.
         active = active with
         {
             PointOfNoReturn = active.PointOfNoReturn
                 || credentialResults.Any(static result =>
                     result.Status is InstallationResetItemStatus.Deleted),
-            CredentialResults = MergeCredentialResults(
-                active.CredentialResults,
-                credentialResults,
-                active.AcceptedBinding.CredentialAccounts),
-            LastErrorCode = null,
+            CredentialResults = mergedCredentials,
+            LastErrorCode = verification.Succeeded
+                ? null
+                : ErrorCodes.Data.ReconciliationFailed,
         };
 
         progress.Active = active;
@@ -2333,10 +2343,13 @@ internal sealed class InstallationResetService(
         // What was just deleted is recorded before anything else is decided about it. The deletion is
         // not undoable, so the durable record has to say it happened before verification can refuse
         // and before retirement can remove the record, or a crash in between leaves credentials gone
-        // under a record that says they were never touched. It is written only when something changed,
-        // so a replay that finds nothing left to do does not spend an envelope revision, and on an
-        // uncancelled token because the effect it records is already done.
-        if (RecordsProgress(entered, active))
+        // under a record that says they were never touched. It is written only when something changed
+        // (a failure class it newly carries counts), so a replay that finds nothing left to do does
+        // not spend an envelope revision, and on an uncancelled token because the effect it records is
+        // already done.
+        if (RecordsProgress(entered, active)
+            || (!verification.Succeeded
+                && !string.Equals(entered.LastErrorCode, active.LastErrorCode, StringComparison.Ordinal)))
         {
             Result recorded = await writer.WriteAsync(
                 active,
@@ -2347,8 +2360,6 @@ internal sealed class InstallationResetService(
                 return Resumable(active, recorded.Error);
             }
         }
-
-        InstallationResetVerification verification = VerifyCredentials(active.CredentialResults);
 
         if (!verification.Succeeded)
         {
