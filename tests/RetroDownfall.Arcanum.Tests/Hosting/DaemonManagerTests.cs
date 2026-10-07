@@ -848,6 +848,65 @@ public sealed class DaemonManagerTests : IDisposable
     }
 
     [Fact]
+    public async Task MacOs_status_reads_the_pid_from_the_dictionary_launchctl_list_prints_for_a_label()
+    {
+        string plist = Path.Combine(_directory, "com.retrodownfall.arcanum.plist");
+
+        ScriptedDaemonProcessRunner runner = new(
+            static (_, _) => ScriptedDaemonProcessRunner.Exit(
+                0,
+                stdout: "{\n\t\"LimitLoadToSessionType\" = \"Aqua\";\n\t\"Label\" = \"com.retrodownfall.arcanum\";\n\t\"OnDemand\" = false;\n\t\"LastExitStatus\" = 0;\n\t\"PID\" = 1334;\n\t\"Program\" = \"/usr/local/bin/arcanum\";\n};\n"));
+
+        MacOsDaemonManager manager = new(runner, plist);
+
+        Result<string> result = await manager.GetStatusAsync(CancellationToken.None);
+
+        Assert.True(result.IsSuccess, result.IsFailure ? result.Error.Message : null);
+
+        Assert.Equal("Daemon is running (PID 1334).", result.Value);
+
+        Assert.Equal(["/bin/launchctl list com.retrodownfall.arcanum"], runner.Calls);
+    }
+
+    [Fact]
+    public async Task MacOs_status_reports_a_loaded_agent_without_a_pid_as_not_running()
+    {
+        string plist = Path.Combine(_directory, "com.retrodownfall.arcanum.plist");
+
+        ScriptedDaemonProcessRunner runner = new(
+            static (_, _) => ScriptedDaemonProcessRunner.Exit(
+                0,
+                stdout: "{\n\t\"Label\" = \"com.retrodownfall.arcanum\";\n\t\"LastExitStatus\" = 256;\n};\n"));
+
+        MacOsDaemonManager manager = new(runner, plist);
+
+        Result<string> result = await manager.GetStatusAsync(CancellationToken.None);
+
+        Assert.True(result.IsSuccess, result.IsFailure ? result.Error.Message : null);
+
+        Assert.Equal(MacOsDaemonManager.NotLoadedMessage, result.Value);
+    }
+
+    [Fact]
+    public async Task MacOs_status_refuses_a_dictionary_for_another_label()
+    {
+        string plist = Path.Combine(_directory, "com.retrodownfall.arcanum.plist");
+
+        ScriptedDaemonProcessRunner runner = new(
+            static (_, _) => ScriptedDaemonProcessRunner.Exit(
+                0,
+                stdout: "{\n\t\"Label\" = \"com.retrodownfall.arcanum.other\";\n\t\"PID\" = 77;\n};\n"));
+
+        MacOsDaemonManager manager = new(runner, plist);
+
+        Result<string> result = await manager.GetStatusAsync(CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal("DaemonStatusParse", result.Error.Code);
+    }
+
+    [Fact]
     public async Task Linux_install_refuses_a_service_account_without_writing_a_unit()
     {
         string unit = Path.Combine(_directory, "systemd", "user", "arcanum.service");

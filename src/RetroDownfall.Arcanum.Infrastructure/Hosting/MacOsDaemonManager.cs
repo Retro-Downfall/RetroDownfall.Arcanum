@@ -157,22 +157,47 @@ public sealed class MacOsDaemonManager : IDaemonManager
             return Result<string>.Success(NotLoadedMessage);
         }
 
-        string line = listOutcome.StdOut.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-            .FirstOrDefault(l => l.Contains(LaunchdLabel, StringComparison.Ordinal)) ?? string.Empty;
-        if (string.IsNullOrEmpty(line))
+        string[] lines = listOutcome.StdOut.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+        string? pidToken;
+
+        // Given a label, launchctl prints the job as a dictionary ("Label" = "...";, "PID" = 1334;),
+        // whose PID entry is absent while the loaded job is not running. Only the label-less listing
+        // prints the tab-separated PID, Status and Label table, which older releases also used here.
+        if (lines.Length > 0 && lines[0].StartsWith('{'))
         {
-            return Result<string>.Success(NotLoadedMessage);
+            if (!lines.Contains($"\"Label\" = \"{LaunchdLabel}\";", StringComparer.Ordinal))
+            {
+                return Result<string>.Failure(
+                    new Error("DaemonStatusParse", "Could not parse launchctl list output."));
+            }
+
+            const string PidEntryPrefix = "\"PID\" = ";
+
+            string? pidEntry = lines.FirstOrDefault(
+                static l => l.StartsWith(PidEntryPrefix, StringComparison.Ordinal) && l.EndsWith(';'));
+
+            pidToken = pidEntry?[PidEntryPrefix.Length..^1];
+        }
+        else
+        {
+            string line = lines.FirstOrDefault(l => l.Contains(LaunchdLabel, StringComparison.Ordinal)) ?? string.Empty;
+            if (string.IsNullOrEmpty(line))
+            {
+                return Result<string>.Success(NotLoadedMessage);
+            }
+
+            string[] parts = line.Split('\t', StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length < 3 || !string.Equals(parts[2].Trim(), LaunchdLabel, StringComparison.Ordinal))
+            {
+                return Result<string>.Failure(
+                    new Error("DaemonStatusParse", "Could not parse launchctl list output."));
+            }
+
+            pidToken = parts[0].Trim();
         }
 
-        string[] parts = line.Split('\t', StringSplitOptions.RemoveEmptyEntries);
-        if (parts.Length < 3 || !string.Equals(parts[2].Trim(), LaunchdLabel, StringComparison.Ordinal))
-        {
-            return Result<string>.Failure(
-                new Error("DaemonStatusParse", "Could not parse launchctl list output."));
-        }
-
-        string pidToken = parts[0].Trim();
-        if (pidToken == "-" || !int.TryParse(pidToken, NumberStyles.Integer, CultureInfo.InvariantCulture, out int pid) || pid <= 0)
+        if (pidToken is null || pidToken == "-" || !int.TryParse(pidToken, NumberStyles.Integer, CultureInfo.InvariantCulture, out int pid) || pid <= 0)
         {
             return Result<string>.Success(NotLoadedMessage);
         }
