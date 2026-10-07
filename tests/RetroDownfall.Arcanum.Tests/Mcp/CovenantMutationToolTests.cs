@@ -620,7 +620,8 @@ public sealed class CovenantMutationToolTests
                 a2aClientEnabled: false,
                 attachmentsToolEnabled: false,
                 maxJsonRpcLineBytes: 2_097_152,
-                logger: NullLogger<ArcanumInternalToolServer>.Instance);
+                logger: NullLogger<ArcanumInternalToolServer>.Instance,
+                allowHostProcessTools: true);
 
             CancellationTokenSource lifetime = new();
 

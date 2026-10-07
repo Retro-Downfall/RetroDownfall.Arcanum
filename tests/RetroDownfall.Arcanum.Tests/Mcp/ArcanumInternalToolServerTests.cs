@@ -5197,6 +5197,7 @@ public sealed partial class ArcanumInternalToolServerTests : IAsyncLifetime
             attachmentsToolEnabled: attachmentsToolEnabled,
             maxJsonRpcLineBytes: maxJsonRpcLineBytes,
             logger: NullLogger<ArcanumInternalToolServer>.Instance,
+            allowHostProcessTools: true,
             codingToolsSettings: codingToolsSettings,
             workspaceCheckRuntime: workspaceCheckRuntime);
 

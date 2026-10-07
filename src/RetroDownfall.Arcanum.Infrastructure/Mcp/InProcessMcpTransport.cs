@@ -130,7 +130,7 @@ internal sealed class InProcessMcpTransport : IMcpTransport
         int maxJsonRpcLineBytes,
         ILogger<ArcanumInternalToolServer>? logger = null,
         McpJsonSerializerContext? jsonContext = null,
-        bool allowHostProcessTools = true,
+        bool allowHostProcessTools = false,
         CodingToolsSettings? codingToolsSettings = null,
         IWorkspaceCheckRuntime? workspaceCheckRuntime = null)
     {
