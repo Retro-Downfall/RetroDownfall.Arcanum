@@ -541,13 +541,15 @@ internal sealed partial class WorkspaceIndexingService
     /// </summary>
     /// <remarks>
     /// A path whose extension is not configured names nothing the indexer would read, so beyond the
-    /// lexical rule it is queued only when it may be a directory that appeared: a Created or Renamed
-    /// event raised by the workspace's directory-name watcher, because a new subtree can hold files
-    /// written before the watcher covered it. The event carries <see cref="WorkspaceFileChange.IsDirectory"/>,
+    /// lexical rule it is queued only when the directory-name watcher raised it for a directory that
+    /// appeared or went away. A Created or Renamed directory can hold files written before the watcher
+    /// covered it. A Deleted one is often the only event for its whole subtree: a directory moved to the
+    /// Trash or out of the workspace raises no event for the files under it, so the drain removes its
+    /// stored descendants from this one path. The event carries <see cref="WorkspaceFileChange.IsDirectory"/>,
     /// and the intake never probes the disk on a watcher thread. A Changed event for a directory says
-    /// nothing was added or removed (Windows raises one for the parent of every written file), and a
-    /// Deleted one names a directory whose files were reported on their own. The path a rename moved
-    /// away from is always kept, because it may have been a directory whose stored chunks have to go.
+    /// nothing was added or removed (Windows raises one for the parent of every written file). The path a
+    /// rename moved away from is always kept, because it may have been a directory whose stored chunks
+    /// have to go.
     /// </remarks>
     private bool IsIndexablePath(string workspacePath, string fullPath, WorkspaceFileChangeKind kind, bool isDirectory, bool isRenamedAwayPath)
     {
@@ -572,7 +574,8 @@ internal sealed partial class WorkspaceIndexingService
             return true;
         }
 
-        return kind is WorkspaceFileChangeKind.Created or WorkspaceFileChangeKind.Renamed && isDirectory;
+        return kind is WorkspaceFileChangeKind.Created or WorkspaceFileChangeKind.Renamed or WorkspaceFileChangeKind.Deleted
+            && isDirectory;
     }
 
     /// <summary>
