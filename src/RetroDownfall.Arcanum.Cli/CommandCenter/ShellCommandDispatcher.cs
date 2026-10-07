@@ -27,6 +27,8 @@ internal sealed class ShellCommandDispatcher(
 {
     private const int TerminalListPageSize = 50;
 
+    private const int PinHashBufferBytes = 81920;
+
     /// <summary>
     /// The one canonical resume spelling every operator-facing hint below is built from, so a
     /// removed form cannot be taught back in a corner of the UI.
@@ -826,9 +828,30 @@ internal sealed class ShellCommandDispatcher(
                 return ShellDispatchResult.Continue;
             }
             target = Path.GetRelativePath(root, candidate);
-            version = Convert.ToHexString(
-                System.Security.Cryptography.SHA256.HashData(await File.ReadAllBytesAsync(candidate, cancellationToken)))
-                .ToLowerInvariant();
+
+            // This runs from the Terminal.Gui key handler with nothing awaited yet, and File.Exists says
+            // true for a FIFO, whose open waits for a writer. Only a regular file is hashed, it is opened
+            // without ever waiting on the path, and it is streamed rather than loaded whole.
+            if (!AttachableFile.TryConfirmRegularFile(candidate, out string? notRegularReason))
+            {
+                state.Log.Append(SessionLogEntryKind.Error, $"Cannot pin {target}: it is {notRegularReason}.");
+                return ShellDispatchResult.Continue;
+            }
+
+            try
+            {
+                await using FileStream stream = AttachableFile.OpenForRead(candidate, PinHashBufferBytes);
+                version = Convert.ToHexString(
+                    await System.Security.Cryptography.SHA256
+                        .HashDataAsync(stream, cancellationToken)
+                        .ConfigureAwait(false))
+                    .ToLowerInvariant();
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                state.Log.Append(SessionLogEntryKind.Error, $"Cannot pin {target}: {ex.Message}");
+                return ShellDispatchResult.Continue;
+            }
         }
 
         Result<SessionContextPinDto> result = await apiClient.CreateSessionContextPinAsync(

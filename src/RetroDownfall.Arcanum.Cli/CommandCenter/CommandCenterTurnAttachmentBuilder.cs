@@ -56,8 +56,12 @@ internal static partial class CommandCenterTurnAttachmentBuilder
         HashSet<string> stagedImages = new(StringComparer.Ordinal);
         List<string> status = [];
 
-        string workingPrompt = prompt;
-        MatchCollection atMatches = AtTokenRegex().Matches(workingPrompt);
+        // An accepted token is only a candidate: its file is read (and an image judged by its signature)
+        // later, and a staging that fails there must leave the token in the prompt. So each accepted
+        // token is remembered here and taken out only once its file has actually staged.
+        Dictionary<string, List<Match>> inlineTokens = new(StringComparer.Ordinal);
+        HashSet<string> staged = new(StringComparer.Ordinal);
+        MatchCollection atMatches = AtTokenRegex().Matches(prompt);
 
         for (int mi = atMatches.Count - 1; mi >= 0; mi--)
         {
@@ -101,9 +105,9 @@ internal static partial class CommandCenterTurnAttachmentBuilder
                 }
 
                 stagedImages.Add(fullPath);
+                AddInlineToken(inlineTokens, fullPath, match);
                 string sizeLabel = ScryingFocusStager.FormatByteCount(sizeCheck.FileSizeBytes ?? 0);
                 status.Add($"Scrying focus: {Path.GetFileName(fullPath)} ({sizeLabel})");
-                workingPrompt = workingPrompt.Remove(match.Index, match.Length);
                 continue;
             }
 
@@ -128,8 +132,8 @@ internal static partial class CommandCenterTurnAttachmentBuilder
             }
 
             stagedText.Add(fullPath);
+            AddInlineToken(inlineTokens, fullPath, match);
             status.Add($"Staged: {Path.GetFileName(fullPath)}");
-            workingPrompt = workingPrompt.Remove(match.Index, match.Length);
         }
 
         foreach (string pre in preStagedPaths)
@@ -187,27 +191,24 @@ internal static partial class CommandCenterTurnAttachmentBuilder
                     if (contents is null)
                     {
                         status.Add(
-                            $"Cannot stage {fileName}: File exceeds the configured limit ({maxAttach} bytes).");
+                            $"Cannot stage {fileName}: File exceeds the configured limit ({maxAttach} bytes){TokenKeptSuffix(inlineTokens, file)}.");
                         continue;
                     }
 
                     string relativePath = Path.GetRelativePath(workingDirectory, file);
                     attached.Add(new AttachedFileDto(relativePath, contents));
                     relativeFooter.Add(relativePath);
+                    staged.Add(file);
                 }
                 catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
                 {
-                    status.Add($"Cannot stage {fileName}: {ex.Message}");
+                    status.Add($"Cannot stage {fileName}: {ex.Message.TrimEnd('.')}{TokenKeptSuffix(inlineTokens, file)}.");
                 }
             }
 
             if (attached.Count == 0)
             {
                 attached = null;
-            }
-            else if (relativeFooter.Count > 0)
-            {
-                workingPrompt += $"\n\n[Attached Files: {string.Join(", ", relativeFooter)}]";
             }
         }
 
@@ -217,25 +218,32 @@ internal static partial class CommandCenterTurnAttachmentBuilder
             foci = [];
             foreach (string imagePath in stagedImages.OrderBy(static f => f, StringComparer.Ordinal))
             {
-                ScryingFocusStager.StagingResult staged = ScryingFocusStager.Stage(
+                ScryingFocusStager.StagingResult focus = ScryingFocusStager.Stage(
                     imagePath,
                     maxImage,
                     allowedMime,
                     cancellationToken);
-                if (!staged.IsSuccess || staged.Focus is null)
+                if (!focus.IsSuccess || focus.Focus is null)
                 {
                     status.Add(
-                        $"Cannot stage Scrying focus {Path.GetFileName(imagePath)}: {staged.Error ?? "unknown error"}");
+                        $"Cannot stage Scrying focus {Path.GetFileName(imagePath)}: {(focus.Error ?? "unknown error").TrimEnd('.')}{TokenKeptSuffix(inlineTokens, imagePath)}.");
                     continue;
                 }
 
-                foci.Add(staged.Focus);
+                foci.Add(focus.Focus);
+                staged.Add(imagePath);
             }
 
             if (foci.Count == 0)
             {
                 foci = null;
             }
+        }
+
+        string workingPrompt = RemoveStagedTokens(prompt, inlineTokens, staged);
+        if (relativeFooter.Count > 0)
+        {
+            workingPrompt += $"\n\n[Attached Files: {string.Join(", ", relativeFooter)}]";
         }
 
         bool clearPre = preStagedPaths.Count > 0;
@@ -245,6 +253,42 @@ internal static partial class CommandCenterTurnAttachmentBuilder
             foci,
             status,
             clearPre);
+    }
+
+    private static void AddInlineToken(Dictionary<string, List<Match>> inlineTokens, string fullPath, Match match)
+    {
+        if (!inlineTokens.TryGetValue(fullPath, out List<Match>? matches))
+        {
+            matches = [];
+            inlineTokens[fullPath] = matches;
+        }
+
+        matches.Add(match);
+    }
+
+    private static string TokenKeptSuffix(Dictionary<string, List<Match>> inlineTokens, string fullPath) =>
+        inlineTokens.ContainsKey(fullPath) ? "; literal token kept in the prompt" : string.Empty;
+
+    /// <summary>
+    /// Takes the token of every file that staged out of <paramref name="prompt"/>, last first so each
+    /// earlier match's index still holds. A token whose file did not stage stays, because it is the only
+    /// record of what the operator asked about.
+    /// </summary>
+    private static string RemoveStagedTokens(
+        string prompt,
+        Dictionary<string, List<Match>> inlineTokens,
+        HashSet<string> staged)
+    {
+        string result = prompt;
+        foreach (Match match in inlineTokens
+                     .Where(pair => staged.Contains(pair.Key))
+                     .SelectMany(static pair => pair.Value)
+                     .OrderByDescending(static match => match.Index))
+        {
+            result = result.Remove(match.Index, match.Length);
+        }
+
+        return result;
     }
 
     /// <summary>Resolves a path for <c>/attach</c> and reports a staging status line.</summary>

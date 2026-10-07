@@ -177,6 +177,61 @@ public sealed class CommandCenterTurnAttachmentBuilderTests : IDisposable
     }
 
     /// <summary>
+    /// An inline image passes the size check before its content is read, and the content is judged only
+    /// later, by its signature. A file named <c>.png</c> that is not an image (a large-file-storage pointer
+    /// is text) fails that later stage, and the token must still be there: otherwise the model receives a
+    /// question with neither the image nor any mention of it.
+    /// </summary>
+    [Fact]
+    public async Task An_inline_image_that_fails_to_stage_keeps_the_literal_token()
+    {
+        string path = Path.Combine(_root, "diagram.png");
+        File.WriteAllText(
+            path,
+            "version https://example.invalid/spec/v1\noid sha256:abc\nsize 12345\n",
+            Encoding.UTF8);
+
+        TurnAttachmentBuildResult result = await CommandCenterTurnAttachmentBuilder.BuildAsync(
+            "explain @diagram.png please",
+            workingDirectory: _root,
+            preStagedPaths: [],
+            settings: DefaultSettings(),
+            cancellationToken: CancellationToken.None);
+
+        Assert.Null(result.ScryingFoci);
+        Assert.Equal("explain @diagram.png please", result.Prompt);
+        Assert.Contains(
+            result.StatusLines,
+            static s => s.Contains("Cannot stage Scrying focus diagram.png", StringComparison.Ordinal)
+                && s.Contains("literal token kept in the prompt", StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// Only the tokens whose files actually staged are taken out of the prompt: an image and a text file
+    /// that staged lose their tokens, and an image that failed its later stage keeps its own.
+    /// </summary>
+    [Fact]
+    public async Task Only_the_tokens_of_files_that_staged_are_stripped()
+    {
+        File.WriteAllBytes(
+            Path.Combine(_root, "shot.png"),
+            [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
+        File.WriteAllText(Path.Combine(_root, "notes.txt"), "hello attach", Encoding.UTF8);
+        File.WriteAllText(Path.Combine(_root, "fake.png"), "not an image", Encoding.UTF8);
+
+        TurnAttachmentBuildResult result = await CommandCenterTurnAttachmentBuilder.BuildAsync(
+            "compare @shot.png with @fake.png using @notes.txt",
+            workingDirectory: _root,
+            preStagedPaths: [],
+            settings: DefaultSettings(),
+            cancellationToken: CancellationToken.None);
+
+        Assert.Single(result.ScryingFoci!);
+        Assert.Single(result.AttachedFiles!);
+        Assert.Equal("compare  with @fake.png using \n\n[Attached Files: notes.txt]", result.Prompt);
+    }
+
+    /// <summary>
     /// A FIFO reports a length of 0 and <c>File.Exists</c> says true, so only a type check keeps it out of
     /// the read: opening it for reading blocks until a writer appears.
     /// </summary>

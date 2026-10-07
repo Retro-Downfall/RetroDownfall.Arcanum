@@ -2,6 +2,8 @@ using System.Buffers;
 
 using System.Buffers.Binary;
 
+using RetroDownfall.Arcanum.Cli.Services;
+
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 
 namespace RetroDownfall.Arcanum.Cli.Commands;
@@ -95,13 +97,10 @@ public static class ScryingFocusStager
             maxImageBytes,
             allowedMimeTypes,
             static path => new FileInfo(path).Length,
-            static path => new FileStream(
-                path,
-                FileMode.Open,
-                FileAccess.Read,
-                FileShare.Read,
-                FileReadBufferBytes,
-                FileOptions.SequentialScan),
+            // The caller confirmed a regular file before this, but the path can change between that stat
+            // and this open: the open never waits on the path and judges the handle it got, so a path
+            // swapped for a FIFO is refused rather than blocking in open(2) where cancellation cannot reach.
+            static path => AttachableFile.OpenForRead(path, FileReadBufferBytes),
             cancellationToken);
 
     internal static StagingResult Stage(

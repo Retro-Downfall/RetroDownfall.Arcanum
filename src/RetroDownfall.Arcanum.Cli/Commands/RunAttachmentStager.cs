@@ -381,19 +381,18 @@ internal sealed class RunAttachmentStager(
         return null;
     }
 
-    private static async Task<TextSourceRead> ReadTextFileAsync(
+    /// <summary>
+    /// Reads a staged text source. The path was confirmed a regular file a moment earlier, but it can change
+    /// between that stat and this open, so the open never waits on the path and judges what it opened
+    /// (<see cref="AttachableFile.OpenForRead"/>): a path swapped for a FIFO is refused, not waited on.
+    /// </summary>
+    internal static async Task<TextSourceRead> ReadTextFileAsync(
         string fullPath,
         CancellationToken cancellationToken)
     {
         try
         {
-            await using FileStream stream = new(
-                fullPath,
-                FileMode.Open,
-                FileAccess.Read,
-                FileShare.Read,
-                FileReadBufferBytes,
-                FileOptions.Asynchronous | FileOptions.SequentialScan);
+            await using FileStream stream = AttachableFile.OpenForRead(fullPath, FileReadBufferBytes);
 
             if (stream.Length > MaxTextFileSourceBytes + Utf8BomBytes)
             {
@@ -552,7 +551,7 @@ internal sealed class RunAttachmentStager(
             [],
             error);
 
-    private sealed record TextSourceRead(
+    internal sealed record TextSourceRead(
         bool IsSuccess,
         string? Content,
         string? Error)

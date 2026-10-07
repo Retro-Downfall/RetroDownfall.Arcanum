@@ -400,6 +400,80 @@ public sealed class RunAttachmentStagerTests : IDisposable
         Assert.Contains($"@{name}".TrimStart('@'), result.Error, StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// The stat that refuses a FIFO and the open that reads the file are two steps, and the path can change
+    /// between them. The text read must therefore never wait for a writer itself: it opens without blocking
+    /// and judges what it opened, so a path swapped for a FIFO after the stat is refused instead of parking
+    /// the command in open(2), where cancellation cannot reach it.
+    /// </summary>
+    [SkippableFact]
+    public async Task Reading_a_text_path_that_became_a_fifo_after_the_stat_is_refused_without_waiting_for_a_writer()
+    {
+        Skip.If(OperatingSystem.IsWindows(), "mkfifo is POSIX-only.");
+
+        string fifo = Path.Combine(_workspace, "swapped.txt");
+
+        Skip.IfNot(PosixFifo.TryCreate(fifo), "mkfifo is unavailable on this host.");
+
+        Task<RunAttachmentStager.TextSourceRead> read = Task.Run(
+            () => RunAttachmentStager.ReadTextFileAsync(fifo, CancellationToken.None));
+
+        try
+        {
+            RunAttachmentStager.TextSourceRead result = await read.WaitAsync(TimeSpan.FromSeconds(30));
+
+            Assert.False(result.IsSuccess);
+
+            Assert.Contains("not a regular file", result.Error, StringComparison.Ordinal);
+        }
+        finally
+        {
+            ReleaseBlockedReader(read, fifo);
+        }
+    }
+
+    /// <summary>
+    /// The image read takes the same open, for <c>run --with</c> and the Command Center alike: a path that
+    /// became a FIFO after the stat is refused by its handle rather than waited on.
+    /// </summary>
+    [SkippableFact]
+    public async Task Staging_an_image_path_that_became_a_fifo_after_the_stat_is_refused_without_waiting_for_a_writer()
+    {
+        Skip.If(OperatingSystem.IsWindows(), "mkfifo is POSIX-only.");
+
+        string fifo = Path.Combine(_workspace, "swapped.png");
+
+        Skip.IfNot(PosixFifo.TryCreate(fifo), "mkfifo is unavailable on this host.");
+
+        Task<ScryingFocusStager.StagingResult> staging = Task.Run(
+            () => ScryingFocusStager.Stage(fifo, 1024 * 1024, ["image/png"], CancellationToken.None));
+
+        try
+        {
+            ScryingFocusStager.StagingResult result = await staging.WaitAsync(TimeSpan.FromSeconds(30));
+
+            Assert.False(result.IsSuccess);
+
+            Assert.Contains("not a regular file", result.Error, StringComparison.Ordinal);
+        }
+        finally
+        {
+            ReleaseBlockedReader(staging, fifo);
+        }
+    }
+
+    /// <summary>
+    /// A read parked in open(2) is the defect these pin. Pair a writer with it so the test host does not
+    /// keep a blocked thread for the rest of the run.
+    /// </summary>
+    private static void ReleaseBlockedReader(Task read, string fifo)
+    {
+        if (!read.IsCompleted)
+        {
+            using FileStream writer = new(fifo, FileMode.Open, FileAccess.Write);
+        }
+    }
+
     private static RunAttachmentStager CreateStager() =>
         new(Options.Create(new ArcanumSettings()));
 
