@@ -134,6 +134,11 @@ Expand-Archive .\arcanum-win-x64.zip -DestinationPath .
 .\arcanum-win-x64\arcanum.exe setup
 ```
 
+Windows also needs the **Microsoft Visual C++ Redistributable** (2015–2022) for its architecture,
+which many machines already have: [x64](https://aka.ms/vs/17/release/vc_redist.x64.exe) ·
+[arm64](https://aka.ms/vs/17/release/vc_redist.arm64.exe). Without it the encrypted store's
+library cannot load and `arcanum serve` cannot start.
+
 Verify any download against `SHA256SUMS.txt` from the same release. Run as a normal user —
 elevation is never required.
 

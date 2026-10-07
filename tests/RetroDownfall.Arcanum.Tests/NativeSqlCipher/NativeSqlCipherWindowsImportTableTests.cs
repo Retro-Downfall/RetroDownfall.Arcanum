@@ -72,6 +72,45 @@ public sealed class NativeSqlCipherWindowsImportTableTests
         Assert.DoesNotContain("sqlite3_load_extension", names);
     }
 
+    /// <summary>
+    /// The DLLs are compiled with <c>/MD</c>, so they import <c>VCRUNTIME140.dll</c>. The Native AOT
+    /// apphost links the C++ runtime statically and brings no copy, packaging ships none, and a clean
+    /// Windows install does not necessarily carry one: there the Grimoire library fails to load and
+    /// the host cannot start. While a shipped DLL imports it, the install instructions that travel in
+    /// every Windows zip must name the Visual C++ Redistributable as a prerequisite, with the
+    /// official download for each architecture.
+    /// </summary>
+    [Theory]
+
+    [InlineData("win-x64", "https://aka.ms/vs/17/release/vc_redist.x64.exe")]
+
+    [InlineData("win-arm64", "https://aka.ms/vs/17/release/vc_redist.arm64.exe")]
+
+    public void A_dll_importing_the_visual_cpp_runtime_has_its_prerequisite_in_the_install_instructions(string rid, string download)
+    {
+        using PEReader image = OpenAsset(rid);
+
+        if (!ImportedLibraries(image).Contains("VCRUNTIME140.dll", StringComparer.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        string readme = File.ReadAllText(Path.Combine(NativeSqlCipherTestPaths.RepositoryRoot(), "README.md"))
+            .Replace("\r\n", "\n", StringComparison.Ordinal);
+
+        int install = readme.IndexOf("\n## Install\n", StringComparison.Ordinal);
+
+        Assert.True(install >= 0, "README.md lost its Install section.");
+
+        int next = readme.IndexOf("\n## ", install + 1, StringComparison.Ordinal);
+
+        string section = readme[install..(next < 0 ? readme.Length : next)];
+
+        Assert.Contains("Visual C++ Redistributable", section, StringComparison.Ordinal);
+
+        Assert.Contains(download, section, StringComparison.Ordinal);
+    }
+
     private static PEReader OpenAsset(string rid)
     {
         string path = NativeSqlCipherTestPaths.AssetPath(rid);

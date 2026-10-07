@@ -151,12 +151,13 @@ jobs:
       # the MSVC toolchain is set up, so the script runs its dumpbin -exports and -dependents
       # checks (a non-sqlite3_ export, a missing sqlite3_open, or an import the manifest does not
       # declare, or declares and the binary lacks, fails the job). Provenance, hash, and compile
-      # options run first, exactly as on the macOS lane.
+      # options run first, exactly as on the macOS lane. --strict makes a dumpbin this bash step
+      # cannot resolve a failure rather than two UNVERIFIED lines on a green job.
       - name: Verify the checked-in asset
         shell: bash
         env:
           RID: ${{ matrix.rid }}
-        run: ./scripts/verify-native-sqlcipher.sh --rid "$RID"
+        run: ./scripts/verify-native-sqlcipher.sh --rid "$RID" --strict
 
       - name: Build the hermetic library
         shell: pwsh

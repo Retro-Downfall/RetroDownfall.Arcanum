@@ -117,6 +117,59 @@ public sealed class NativeSqlCipherVerifyScriptTests : IDisposable
     }
 
     /// <summary>
+    /// The Windows job exists to inspect the committed DLL, so a run there that could not find
+    /// <c>dumpbin</c> (a runner image or toolchain-action change that stops the VC tools reaching the
+    /// bash step) must fail rather than pass with two UNVERIFIED lines. <c>--strict</c> is that
+    /// contract.
+    /// </summary>
+    [SkippableFact]
+    public async Task Without_dumpbin_a_strict_run_fails_instead_of_reporting_unverified()
+    {
+        RequireScriptHost();
+
+        ScriptResult result = await RunAsync(withDumpbin: false, exports: [], dependents: [], strict: true);
+
+        Assert.True(result.ExitCode != 0, result.Output);
+
+        Assert.Contains("--strict found 2 unverified check(s)", result.Output, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("all checks passed", result.Output, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task With_dumpbin_a_strict_run_of_a_matching_asset_passes()
+    {
+        RequireScriptHost();
+
+        ScriptResult result = await RunAsync(withDumpbin: true, exports: SqliteExports(), dependents: ManifestDependents(), strict: true);
+
+        Assert.True(result.ExitCode == 0, result.Output);
+
+        Assert.DoesNotContain("UNVERIFIED", result.Output, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// <c>dumpbin</c> prints no hint for an export that has no name, because hints index the name
+    /// table, so such a row reads <c>ordinal RVA [NONAME]</c>. No allow-list by name can vouch for
+    /// it, so it must count as a symbol outside the SQLite C API rather than being skipped.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_win_asset_with_an_ordinal_only_export_fails()
+    {
+        RequireScriptHost();
+
+        ScriptResult result = await RunAsync(
+            withDumpbin: true,
+            exports: SqliteExports(),
+            dependents: ManifestDependents(),
+            rawExportRows: ["          9      00002000 [NONAME]"]);
+
+        Assert.NotEqual(0, result.ExitCode);
+
+        Assert.Contains("1 non-SQLite symbol(s) are exported", result.Output, StringComparison.Ordinal);
+    }
+
+    /// <summary>
     /// The bash a Windows runner ships has no <c>strings</c>, so the Windows job reads the compile
     /// options through the <c>grep</c> fallback. That is the only path the real job takes, and every
     /// other case here runs on a host that has <c>strings</c>.
@@ -160,6 +213,10 @@ public sealed class NativeSqlCipherVerifyScriptTests : IDisposable
             verify > toolchain,
             "The Windows job must run verify-native-sqlcipher.sh --rid after the MSVC toolchain is on the path, "
             + "or the exports and imports of the checked-in win-* asset are never inspected.");
+
+        string command = job[verify..job.IndexOf('\n', verify)];
+
+        Assert.Contains(" --strict", command, StringComparison.Ordinal);
     }
 
     private static void RequireScriptHost()
@@ -213,7 +270,7 @@ public sealed class NativeSqlCipherVerifyScriptTests : IDisposable
     /// Real dumpbin output ends lines with CRLF and puts a blank line before <c>Summary</c>; the stub
     /// reproduces both so the script's parsing is the thing under test.
     /// </summary>
-    private static string ExportsOutput(IEnumerable<string> exports)
+    private static string ExportsOutput(IEnumerable<string> exports, IEnumerable<string> rawRows)
     {
         StringBuilder text = new();
 
@@ -236,6 +293,11 @@ public sealed class NativeSqlCipherVerifyScriptTests : IDisposable
             text.Append(CultureFormat($"{ordinal,11} {ordinal - 1,4:X} {0x1000 + (ordinal * 16),8:X8} {export}\r\n"));
 
             ordinal++;
+        }
+
+        foreach (string row in rawRows)
+        {
+            text.Append(row).Append("\r\n");
         }
 
         text.Append("\r\n  Summary\r\n\r\n        1000 .data\r\n");
@@ -268,7 +330,13 @@ public sealed class NativeSqlCipherVerifyScriptTests : IDisposable
     private static string CultureFormat(FormattableString value) =>
         value.ToString(System.Globalization.CultureInfo.InvariantCulture);
 
-    private async Task<ScriptResult> RunAsync(bool withDumpbin, IReadOnlyList<string> exports, IReadOnlyList<string> dependents, bool withStrings = true)
+    private async Task<ScriptResult> RunAsync(
+        bool withDumpbin,
+        IReadOnlyList<string> exports,
+        IReadOnlyList<string> dependents,
+        bool withStrings = true,
+        bool strict = false,
+        IReadOnlyList<string>? rawExportRows = null)
     {
         string stubBin = Directory.CreateDirectory(Path.Combine(_root, "bin")).FullName;
 
@@ -278,7 +346,7 @@ public sealed class NativeSqlCipherVerifyScriptTests : IDisposable
 
             string dependentsFile = Path.Combine(_root, "dependents.txt");
 
-            await File.WriteAllTextAsync(exportsFile, ExportsOutput(exports));
+            await File.WriteAllTextAsync(exportsFile, ExportsOutput(exports, rawExportRows ?? []));
 
             await File.WriteAllTextAsync(dependentsFile, DependentsOutput(dependents));
 
@@ -313,6 +381,11 @@ public sealed class NativeSqlCipherVerifyScriptTests : IDisposable
         start.ArgumentList.Add("--rid");
 
         start.ArgumentList.Add(Rid);
+
+        if (strict)
+        {
+            start.ArgumentList.Add("--strict");
+        }
 
         start.Environment["PATH"] = stubBin + Path.PathSeparator
             + (withStrings ? global::System.Environment.GetEnvironmentVariable("PATH") : BuildToolbeltWithoutStrings());
