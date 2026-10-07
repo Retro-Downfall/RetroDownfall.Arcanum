@@ -1292,6 +1292,52 @@ public sealed partial class WorkspaceIndexingServiceTests : IAsyncLifetime
         await service.DisposeAsync();
     }
 
+    /// <summary>
+    /// A directory moved out of the workspace (to the Trash, or by a rename whose destination no watcher
+    /// covers) produces one Deleted event for the directory and none for the files under it, so the
+    /// intake has to keep that event for the drain to remove the stored subtree.
+    /// </summary>
+    [SkippableFact]
+    public async Task WatcherDelete_of_a_directory_removes_its_stored_subtree()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        _workspace.WriteFile("src/old/a.md", "alpha");
+
+        _workspace.WriteFile("src/old/deep/b.md", "beta");
+
+        _workspace.WriteFile("src/older/c.md", "gamma");
+
+        FakeWorkspaceFileWatcherFactory watchers = new();
+
+        ObservingScopeFactory scopes = new(BuildScopeFactory());
+
+        WorkspaceIndexingService service = CreateService(new FakeWeaveService(), out EmbeddingSettings embeddings, watcherFactory: watchers, scopeFactory: scopes);
+
+        Assert.True(await service.IndexWorkspaceAsync(_workspace.Root, embeddings, CancellationToken.None));
+
+        Assert.Equal(3, (await GetIndexedRelativePathsAsync()).Count);
+
+        string oldDirectory = Path.Combine(_workspace.Root, "src", "old");
+
+        Directory.Delete(oldDirectory, recursive: true);
+
+        service.RegisterWorkspace(_workspace.Root);
+
+        watchers.Single.TriggerDirectoryDeleted(oldDirectory);
+
+        await ProcessPendingWatcherEventsAsync(service, _workspace.Root, CancellationToken.None);
+
+        // Only the incremental unit ran: the stale rows went with the event, not with a reconciliation.
+        Assert.Equal(2, scopes.ScopeCount);
+
+        Assert.Equal(
+            ["src/older/c.md".Replace('/', Path.DirectorySeparatorChar)],
+            await GetIndexedRelativePathsAsync());
+
+        await service.DisposeAsync();
+    }
+
     [SkippableFact]
     public async Task WatcherEvents_IgnoreExcludedFoldersAndIndexLargeFiles()
     {
@@ -2092,6 +2138,10 @@ public sealed partial class WorkspaceIndexingServiceTests : IAsyncLifetime
 
         public void TriggerDeleted(string path) =>
             onChange(new WorkspaceFileChange(workspacePath, WorkspaceFileChangeKind.Deleted, path));
+
+        // The directory-name watcher's Deleted event: the disk no longer says what the path was.
+        public void TriggerDirectoryDeleted(string path) =>
+            onChange(new WorkspaceFileChange(workspacePath, WorkspaceFileChangeKind.Deleted, path, IsDirectory: true));
 
         public void TriggerRenamed(string oldPath, string path) =>
             onChange(new WorkspaceFileChange(workspacePath, WorkspaceFileChangeKind.Renamed, path, oldPath, IsDirectory: Directory.Exists(path)));

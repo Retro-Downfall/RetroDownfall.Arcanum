@@ -437,9 +437,25 @@ internal sealed partial class ArcanumInternalToolServer
                 $"replace_text_block: the exact search text matches {occurrences} occurrences in '{args.RelativePath}', and nothing was changed. Include enough surrounding text to match exactly one block, or set replaceAll to true to replace every occurrence.");
         }
 
-        string updated = content.Replace(args.ExactSearchText, args.ReplacementText, StringComparison.Ordinal);
+        // replaceAll multiplies the replacement by the occurrence count, so the result can be far past the
+        // write limit, or past what a string can hold. It is refused from the projected size before the
+        // replacement is built, never after the host has allocated it.
+        long projectedBytes = Encoding.UTF8.GetByteCount(content)
+            + (occurrences * (Encoding.UTF8.GetByteCount(args.ReplacementText) - (long)Encoding.UTF8.GetByteCount(args.ExactSearchText)));
 
         McpToolsCallResultWire? writeLimitError = TryRejectIfWriteExceedsLimit(
+            projectedBytes,
+            resourceLimits.MaxFileWriteMb,
+            "replace_text_block");
+
+        if (writeLimitError is not null)
+        {
+            return writeLimitError;
+        }
+
+        string updated = content.Replace(args.ExactSearchText, args.ReplacementText, StringComparison.Ordinal);
+
+        writeLimitError = TryRejectIfWriteExceedsLimit(
             updated,
             resourceLimits.MaxFileWriteMb,
             "replace_text_block");

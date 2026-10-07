@@ -626,6 +626,51 @@ public sealed class McpToolMergerTests
         Assert.Same(internalRow.Tool, merged[0]);
     }
 
+    /// <summary>
+    /// The host-process escape hatch is opt-in on every factory: a caller of the public
+    /// <see cref="InProcessMcpTransport.CreatePair"/> that does not ask for host-process tools does not get
+    /// them, matching <see cref="InProcessMcpTransport.CreateServerChannelPair"/> and the startup gate.
+    /// </summary>
+    [Fact]
+    public async Task CreatePair_without_the_host_process_flag_advertises_no_host_process_tools()
+    {
+        TempWorkspace workspace = new();
+
+        await workspace.InitializeAsync();
+
+        try
+        {
+            IServiceScopeFactory scopeFactory = new ServiceCollection()
+                .BuildServiceProvider()
+                .GetRequiredService<IServiceScopeFactory>();
+
+            (InProcessMcpTransport transport, ArcanumInternalToolServer server) = InProcessMcpTransport.CreatePair(
+                new HumanPromptRegistry(),
+                scopeFactory,
+                new InertPacer(),
+                workspaceRootNormalizedOrNull: workspace.Root,
+                listDirectoryMaxPaths: 16,
+                intelligenceSettings: ArcanumRuntimeDefaults.Intelligence,
+                maxFileReadSizeBytes: 1024,
+                conclaveEnabled: false,
+                sagaEnabled: false,
+                a2aClientEnabled: false,
+                attachmentsToolEnabled: false,
+                maxJsonRpcLineBytes: 1_048_576,
+                logger: NullLogger<ArcanumInternalToolServer>.Instance);
+
+            string[] advertised = await ListAdvertisedToolNamesAsync(transport, server);
+
+            Assert.Contains("read_file_chunk", advertised);
+
+            Assert.DoesNotContain("execute_command", advertised);
+        }
+        finally
+        {
+            await workspace.DisposeAsync();
+        }
+    }
+
     private static async Task<string[]> AdvertisedToolNamesAsync(
         string? workspaceRoot,
         bool allowHostProcessTools = true)
@@ -650,6 +695,13 @@ public sealed class McpToolMergerTests
             logger: NullLogger<ArcanumInternalToolServer>.Instance,
             allowHostProcessTools: allowHostProcessTools);
 
+        return await ListAdvertisedToolNamesAsync(transport, server);
+    }
+
+    private static async Task<string[]> ListAdvertisedToolNamesAsync(
+        InProcessMcpTransport transport,
+        ArcanumInternalToolServer server)
+    {
         using CancellationTokenSource lifetime = new();
 
         Task serverTask = server.RunAsync(lifetime.Token);

@@ -253,8 +253,11 @@ public sealed class PhysicalFileSystemWriterTests : IAsyncLifetime
     /// <summary>
     /// On a Windows host the NTFS stream suffix and the 8.3 short name reach <c>.git</c> through the real
     /// filesystem. The platform-seam theories in <c>WorkspaceProtectedPathsTests</c> pin the matching logic
-    /// on every host; this lane exercises it end to end where the aliases actually resolve, and it is not
-    /// run on macOS or Linux. Whatever code the request is refused with, nothing may be planted.
+    /// on every host; this lane exercises it end to end, and it is not run on macOS or Linux. NTFS gives a
+    /// short name only to an entry that exists, so the fixture creates <c>.git/hooks</c> and <c>.arcanum</c>
+    /// first (on a volume with 8.3 generation enabled, <c>GIT~1</c> and <c>ARCANU~1</c> then name them).
+    /// Whatever code the request is refused with, nothing may be planted: neither inside the protected
+    /// directories nor as a literal short-name entry beside them.
     /// </summary>
     [SkippableTheory]
     [InlineData(".git::$INDEX_ALLOCATION/hooks/pre-commit")]
@@ -267,6 +270,10 @@ public sealed class PhysicalFileSystemWriterTests : IAsyncLifetime
             OperatingSystem.IsWindows(),
             "NTFS stream suffixes and 8.3 short names are Windows filesystem behaviours.");
 
+        string hooks = _workspace.CreateSubdir(Path.Combine(".git", "hooks"));
+
+        string arcanum = _workspace.CreateSubdir(".arcanum");
+
         Result<FileWriteResult> result = await CreateWriter().WriteFileAsync(
             MakeWorkspace(),
             relativePath,
@@ -275,9 +282,15 @@ public sealed class PhysicalFileSystemWriterTests : IAsyncLifetime
 
         Assert.True(result.IsFailure);
 
-        Assert.False(Directory.Exists(Path.Combine(_workspace.Root, ".git")));
+        Assert.False(File.Exists(Path.Combine(hooks, "pre-commit")));
 
-        Assert.False(Directory.Exists(Path.Combine(_workspace.Root, ".arcanum")));
+        Assert.False(File.Exists(Path.Combine(arcanum, "campaign.json")));
+
+        // Enumeration returns long names, so a literal short-name entry shows up here, where
+        // Directory.Exists("GIT~1") would resolve the alias to .git and say nothing about it.
+        Assert.DoesNotContain(
+            Directory.EnumerateFileSystemEntries(_workspace.Root).Select(Path.GetFileName),
+            static name => name is "GIT~1" or "ARCANU~1");
     }
 
     /// <summary>
@@ -741,6 +754,56 @@ public sealed class PhysicalFileSystemWriterTests : IAsyncLifetime
         Assert.Equal(3, result.Value!.Replacements);
 
         Assert.Equal("bar bar bar", await File.ReadAllTextAsync(Path.Combine(_workspace.Root, "target.txt")));
+    }
+
+    /// <summary>
+    /// The block limits bound oldString and newString, not what they make together: a short oldString that
+    /// occurs many times and a long newString can build a result many times MaxFileWriteSizeBytes. The
+    /// projected size is checked before the replacement is built, and nothing is written.
+    /// </summary>
+    [Fact]
+    public async Task ReplaceTextBlockAsync_refuses_a_result_larger_than_MaxFileWriteSizeBytes_and_leaves_the_file_untouched()
+    {
+        long maxWriteBytes = ArcanumSettingClamps.MaxFileWriteSizeBytes(
+            ArcanumRuntimeDefaults.WorkspaceMaxFileWriteSizeBytes);
+
+        string newString = new('y', 200 * 1024);
+
+        int occurrences = checked((int)(maxWriteBytes / newString.Length) + 2);
+
+        string original = string.Concat(Enumerable.Repeat("x\n", occurrences));
+
+        string path = _workspace.WriteFile("target.txt", original);
+
+        Result<TextBlockReplaceResult> result = await CreateWriter().ReplaceTextBlockAsync(
+            MakeWorkspace(), "target.txt", "x", newString, occurrences, CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal("Workspace.FileTooLarge", result.Error.Code);
+
+        Assert.Equal(original, await File.ReadAllTextAsync(path));
+    }
+
+    /// <summary>
+    /// A result far past what a string can hold made string.Replace throw OutOfMemoryException out of the
+    /// writer as an unhandled failure; the size is now refused before anything is allocated.
+    /// </summary>
+    [Fact]
+    public async Task ReplaceTextBlockAsync_refuses_a_result_no_string_could_hold_as_FileTooLarge()
+    {
+        const int Occurrences = 600_000;
+
+        string path = _workspace.WriteFile("target.txt", new string('x', Occurrences));
+
+        Result<TextBlockReplaceResult> result = await CreateWriter().ReplaceTextBlockAsync(
+            MakeWorkspace(), "target.txt", "x", new string('y', 400 * 1024), Occurrences, CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal("Workspace.FileTooLarge", result.Error.Code);
+
+        Assert.Equal(Occurrences, new FileInfo(path).Length);
     }
 
     [Fact]

@@ -67,7 +67,6 @@ namespace RetroDownfall.Arcanum.Tests.Intelligence;
 [Trait("Category", "Integration")]
 public sealed class CovenantProposalPublicationTests : IAsyncLifetime
 {
-
     private const string ModelName = "covenant-publication-test-model";
 
     private const string ProposedKey = "tests.reply.style";
@@ -109,40 +108,31 @@ public sealed class CovenantProposalPublicationTests : IAsyncLifetime
 
     public Task InitializeAsync()
     {
-
         _dbPath = _fixture.CopyDatabase();
 
         _db = _fixture.CreateContext(_dbPath);
 
         return Task.CompletedTask;
-
     }
 
     public async Task DisposeAsync()
     {
-
         _erasureKeys.Dispose();
 
         if (_db is not null)
         {
-
             await _db.DisposeAsync();
-
         }
 
         if (File.Exists(_dbPath))
         {
-
             File.Delete(_dbPath);
-
         }
-
     }
 
     [SkippableFact]
     public async Task An_interrupted_turn_publishes_neither_its_partial_answer_nor_its_staged_proposal()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         await SeedCampaignAsync();
@@ -177,13 +167,11 @@ public sealed class CovenantProposalPublicationTests : IAsyncLifetime
         // The rendered bytes a later, independent turn is handed. A published head that rendered into
         // nothing would satisfy a head-count assertion and still be a leak.
         Assert.DoesNotContain(ProposedContent, await LaterProposedSectionAsync(), StringComparison.Ordinal);
-
     }
 
     [SkippableFact]
     public async Task A_turn_whose_batch_cannot_publish_atomically_refuses_rather_than_saving_the_answer_alone()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         await SeedCampaignAsync();
@@ -211,7 +199,6 @@ public sealed class CovenantProposalPublicationTests : IAsyncLifetime
         Assert.Null(await ReadLastAssistantContentAsync(sessionId));
 
         Assert.DoesNotContain(ProposedContent, await LaterProposedSectionAsync(), StringComparison.Ordinal);
-
     }
 
     /// <summary>
@@ -226,7 +213,6 @@ public sealed class CovenantProposalPublicationTests : IAsyncLifetime
     [SkippableFact]
     public async Task A_turn_publishes_an_unrelated_proposal_while_another_key_is_fingerprinted()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         await SeedCampaignAsync();
@@ -253,7 +239,6 @@ public sealed class CovenantProposalPublicationTests : IAsyncLifetime
         Assert.Equal(AssistantAnswer, await ReadLastAssistantContentAsync(sessionId));
 
         Assert.Contains(ProposedContent, await LaterProposedSectionAsync(), StringComparison.Ordinal);
-
     }
 
     /// <summary>
@@ -269,7 +254,6 @@ public sealed class CovenantProposalPublicationTests : IAsyncLifetime
     [SkippableFact]
     public async Task A_key_fingerprinted_after_staging_refuses_the_whole_turn_at_publication()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         await SeedCampaignAsync();
@@ -304,19 +288,16 @@ public sealed class CovenantProposalPublicationTests : IAsyncLifetime
         Assert.Null(await ReadLastAssistantContentAsync(sessionId));
 
         Assert.DoesNotContain(ProposedContent, await LaterProposedSectionAsync(), StringComparison.Ordinal);
-
     }
 
     /// <summary>Opens the erasure key the way erase prepare does, publishing Present into the latch.</summary>
     private MemoryErasureKey OpenErasureKey()
     {
-
         MemoryErasureKeyOpenResult opened = _erasureKeys.OpenOrCreate(evidenceRowsExist: false);
 
         Assert.Equal(MemoryErasureKeyState.Present, opened.State);
 
         return opened.Key!;
-
     }
 
     /// <summary>
@@ -325,7 +306,6 @@ public sealed class CovenantProposalPublicationTests : IAsyncLifetime
     /// </summary>
     private async Task SeedFingerprintAsync(string key, CancellationToken cancellationToken)
     {
-
         using MemoryErasureKey erasureKey = OpenErasureKey();
 
         await using ArcanumDbContext sibling = _fixture.CreateContext(_dbPath);
@@ -334,9 +314,7 @@ public sealed class CovenantProposalPublicationTests : IAsyncLifetime
 
         if (connection.State != System.Data.ConnectionState.Open)
         {
-
             await connection.OpenAsync(cancellationToken);
-
         }
 
         await MemoryErasureTestKeys.SeedFingerprintAsync(
@@ -344,7 +322,6 @@ public sealed class CovenantProposalPublicationTests : IAsyncLifetime
             erasureKey,
             MemoryErasureIdentity.ForCovenant(CovenantScope.Campaign, CampaignId, key),
             cancellationToken);
-
     }
 
     /// <summary>
@@ -356,7 +333,6 @@ public sealed class CovenantProposalPublicationTests : IAsyncLifetime
     /// </remarks>
     private async Task<string> LaterProposedSectionAsync()
     {
-
         await using CovenantTurnScope later = await Gate().BeginTurnAsync(
             Invocation(),
             Guid.NewGuid(),
@@ -366,7 +342,6 @@ public sealed class CovenantProposalPublicationTests : IAsyncLifetime
         Assert.True(later.HasPlan);
 
         return later.PlanContent.CampaignProposed;
-
     }
 
     private static PingRequest Ping(Guid sessionId) =>
@@ -384,7 +359,6 @@ public sealed class CovenantProposalPublicationTests : IAsyncLifetime
         CovenantToolCapabilityRegistry registry,
         bool withCommitter)
     {
-
         ProviderSettings provider = new()
         {
             Name = "provider-covenant-publication",
@@ -403,7 +377,6 @@ public sealed class CovenantProposalPublicationTests : IAsyncLifetime
             repository,
             withCommitter ? repository : null,
             provider);
-
     }
 
     /// <summary>
@@ -429,12 +402,9 @@ public sealed class CovenantProposalPublicationTests : IAsyncLifetime
 
     private CovenantOperationGate OperationGate()
     {
-
         if (_operationGate is not null)
         {
-
             return _operationGate;
-
         }
 
         _campaigns.Set(CampaignId, CovenantCampaignScopeState.Live);
@@ -442,7 +412,6 @@ public sealed class CovenantProposalPublicationTests : IAsyncLifetime
         _operationGate = CovenantOperationGateFixture.CreateGate(_availability, _authority, _campaigns);
 
         return _operationGate;
-
     }
 
     /// <summary>
@@ -456,7 +425,6 @@ public sealed class CovenantProposalPublicationTests : IAsyncLifetime
     /// </remarks>
     private ArcanumInvocationContext Invocation()
     {
-
         _ = OperationGate();
 
         CovenantAuthoritySnapshot authority = _authority.Current!;
@@ -471,7 +439,6 @@ public sealed class CovenantProposalPublicationTests : IAsyncLifetime
                 Guid.Parse(authority.InstallationIdentity),
                 authority.RuntimeAuthorityGeneration,
                 authority.AuthorityEpoch)).Value;
-
     }
 
     private GrimoireRepository Repository() =>
@@ -487,27 +454,21 @@ public sealed class CovenantProposalPublicationTests : IAsyncLifetime
 
     private SqliteConnection Connection()
     {
-
         if (_connection is not null)
         {
-
             return _connection;
-
         }
 
         SqliteConnection connection = (SqliteConnection)_db!.Database.GetDbConnection();
 
         if (connection.State != System.Data.ConnectionState.Open)
         {
-
             connection.Open();
-
         }
 
         _connection = connection;
 
         return connection;
-
     }
 
     /// <summary>
@@ -521,7 +482,6 @@ public sealed class CovenantProposalPublicationTests : IAsyncLifetime
     /// </remarks>
     private async Task SeedCampaignAsync()
     {
-
         DateTimeOffset now = DateTimeOffset.UtcNow;
 
         _ = _db!.Campaigns.Add(new Campaign
@@ -536,7 +496,6 @@ public sealed class CovenantProposalPublicationTests : IAsyncLifetime
         });
 
         _ = await _db.SaveChangesAsync(CancellationToken.None);
-
     }
 
     /// <summary>
@@ -552,7 +511,6 @@ public sealed class CovenantProposalPublicationTests : IAsyncLifetime
     /// </remarks>
     private async Task<Guid> SeedUntaintedSessionAsync()
     {
-
         Guid sessionId = Guid.NewGuid();
 
         DateTimeOffset now = DateTimeOffset.UtcNow;
@@ -574,7 +532,6 @@ public sealed class CovenantProposalPublicationTests : IAsyncLifetime
 
         try
         {
-
             using CovenantSqliteAuthorizationScope authorized = CovenantSqliteConnectionInitializer.Instance.Authorize(
                 Connection(),
                 CovenantSqliteAuthorizationKind.SessionBindingWrite);
@@ -606,33 +563,26 @@ public sealed class CovenantProposalPublicationTests : IAsyncLifetime
                 now.ToString("o", System.Globalization.CultureInfo.InvariantCulture));
 
             _ = await command.ExecuteNonQueryAsync(CancellationToken.None);
-
         }
         finally
         {
-
             await SetForeignKeyEnforcementAsync(enabled: true);
-
         }
 
         return sessionId;
-
     }
 
     private async Task SetForeignKeyEnforcementAsync(bool enabled)
     {
-
         await using SqliteCommand pragma = Connection().CreateCommand();
 
         pragma.CommandText = enabled ? "PRAGMA foreign_keys = ON;" : "PRAGMA foreign_keys = OFF;";
 
         _ = await pragma.ExecuteNonQueryAsync(CancellationToken.None);
-
     }
 
     private async Task<bool> ReadTaintAsync(Guid sessionId)
     {
-
         Result<SessionSensitivityProjection> projection = await new ArtifactSensitivityLedger(
             new FixedCovenantConnectionSource(Connection()))
             .ReadSessionProjectionAsync(sessionId, CancellationToken.None);
@@ -640,7 +590,6 @@ public sealed class CovenantProposalPublicationTests : IAsyncLifetime
         Assert.True(projection.IsSuccess, projection.IsFailure ? projection.Error.Message : null);
 
         return projection.Value.IsTainted;
-
     }
 
     private async Task<string?> ReadLastAssistantContentAsync(Guid sessionId) =>
@@ -672,7 +621,6 @@ public sealed class CovenantProposalPublicationTests : IAsyncLifetime
         bool failAfterStaging,
         Func<CancellationToken, Task>? afterStaging = null) : IChatClient
     {
-
         public bool SawStagingCapability { get; private set; }
 
         public CovenantMutationFailureResultWire? ToolFailure { get; private set; }
@@ -690,39 +638,31 @@ public sealed class CovenantProposalPublicationTests : IAsyncLifetime
             ChatOptions? options = null,
             CancellationToken cancellationToken = default)
         {
-
             SawStagingCapability = CovenantToolStagingAmbient.Current is not null;
 
             McpToolsCallResultWire result = await toolCall.ProposeAsync(key, content).ConfigureAwait(false);
 
             if (result.IsError)
             {
-
                 ToolFailure = JsonSerializer.Deserialize(
                     result.StructuredContent!.Value,
                     McpJsonSerializerContext.Default.CovenantMutationFailureResultWire);
-
             }
             else
             {
-
                 Staged = JsonSerializer.Deserialize(
                     result.StructuredContent!.Value,
                     McpJsonSerializerContext.Default.CovenantMutationStagedResultWire);
-
             }
 
             if (afterStaging is not null)
             {
-
                 await afterStaging(cancellationToken).ConfigureAwait(false);
-
             }
 
             return failAfterStaging
                 ? throw new InvalidOperationException("The provider connection dropped mid-turn.")
                 : new ChatResponse(new MeAiChatMessage(ChatRole.Assistant, answer));
-
         }
 
         public IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(
@@ -730,7 +670,6 @@ public sealed class CovenantProposalPublicationTests : IAsyncLifetime
             ChatOptions? options = null,
             CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
-
     }
 
     /// <summary>
@@ -744,7 +683,6 @@ public sealed class CovenantProposalPublicationTests : IAsyncLifetime
     /// </remarks>
     private sealed class CovenantToolCall : IAsyncDisposable
     {
-
         private readonly InProcessMcpTransport _transport;
 
         private readonly Task _serverTask;
@@ -761,7 +699,6 @@ public sealed class CovenantProposalPublicationTests : IAsyncLifetime
             CancellationTokenSource lifetime,
             string connectionKey)
         {
-
             _transport = transport;
 
             _serverTask = serverTask;
@@ -769,14 +706,12 @@ public sealed class CovenantProposalPublicationTests : IAsyncLifetime
             _lifetime = lifetime;
 
             _connectionKey = connectionKey;
-
         }
 
         public static async Task<CovenantToolCall> CreateAsync(
             CovenantToolCapabilityRegistry registry,
             ICovenantAvailability availability)
         {
-
             ServiceCollection services = [];
 
             services.AddSingleton<ICovenantCompiler, CovenantCompiler>();
@@ -813,7 +748,8 @@ public sealed class CovenantProposalPublicationTests : IAsyncLifetime
                 a2aClientEnabled: false,
                 attachmentsToolEnabled: false,
                 maxJsonRpcLineBytes: 2_097_152,
-                logger: NullLogger<ArcanumInternalToolServer>.Instance);
+                logger: NullLogger<ArcanumInternalToolServer>.Instance,
+                allowHostProcessTools: true);
 
             CancellationTokenSource lifetime = new();
 
@@ -822,12 +758,10 @@ public sealed class CovenantProposalPublicationTests : IAsyncLifetime
             await transport.StartAsync();
 
             return new CovenantToolCall(transport, serverTask, lifetime, server.AmbientConnectionKey);
-
         }
 
         public async Task<McpToolsCallResultWire> ProposeAsync(string key, string content)
         {
-
             int id = Interlocked.Increment(ref _nextId);
 
             JsonElement arguments = JsonSerializer.SerializeToElement(
@@ -860,19 +794,15 @@ public sealed class CovenantProposalPublicationTests : IAsyncLifetime
             return JsonSerializer.Deserialize(
                 envelope.Response!.Result!.Value,
                 McpJsonSerializerContext.Default.McpToolsCallResultWire)!;
-
         }
 
         public async ValueTask DisposeAsync()
         {
-
             await _lifetime.CancelAsync();
 
             try
             {
-
                 await _serverTask.ConfigureAwait(false);
-
             }
             catch (OperationCanceledException)
             {
@@ -881,9 +811,7 @@ public sealed class CovenantProposalPublicationTests : IAsyncLifetime
             await _transport.DisposeAsync().ConfigureAwait(false);
 
             _lifetime.Dispose();
-
         }
-
     }
 
     private sealed class SingleLeaseChatClientFactory(
@@ -891,7 +819,6 @@ public sealed class CovenantProposalPublicationTests : IAsyncLifetime
         ProviderSettings provider,
         string model) : IChatClientFactory
     {
-
         public Task<ChatClientLease> ResolveClientAsync(string? targetModel, CancellationToken cancellationToken) =>
             Task.FromResult(new ChatClientLease(client, provider, model, ownedHttpClient: null));
 
@@ -900,12 +827,10 @@ public sealed class CovenantProposalPublicationTests : IAsyncLifetime
             string resolvedModel,
             CancellationToken cancellationToken) =>
             ResolveClientAsync(resolvedModel, cancellationToken);
-
     }
 
     private sealed class AcceptingJournal : ICovenantDisclosureJournal
     {
-
         private ulong _sequence;
 
         public ValueTask<Result<CovenantDisclosureReceipt>> AcknowledgeAsync(
@@ -915,12 +840,10 @@ public sealed class CovenantProposalPublicationTests : IAsyncLifetime
             CancellationToken cancellationToken) =>
             ValueTask.FromResult(Result<CovenantDisclosureReceipt>.Success(
                 new CovenantDisclosureReceipt(draft, ++_sequence)));
-
     }
 
     private sealed class SilentEventBus : IEventBus
     {
-
         public void Publish<T>(T @event) where T : notnull
         {
         }
@@ -929,13 +852,9 @@ public sealed class CovenantProposalPublicationTests : IAsyncLifetime
             [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
             where T : notnull
         {
-
             await Task.CompletedTask;
 
             yield break;
-
         }
-
     }
-
 }

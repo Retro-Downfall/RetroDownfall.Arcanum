@@ -29,11 +29,9 @@ namespace RetroDownfall.Arcanum.Tests.Mcp;
 /// </summary>
 public sealed class ReadSagaToolTests
 {
-
     [Fact]
     public async Task ToolsList_DoesNotAdvertiseReadSaga_WhenDisabled()
     {
-
         await using TestMcpSession session = await CreateSessionAsync(sagaEnabled: false);
 
         JsonRpcResponse response = await session.SendRequestAsync("tools/list", null);
@@ -43,13 +41,11 @@ public sealed class ReadSagaToolTests
             McpJsonSerializerContext.Default.McpToolsListResultWire)!;
 
         Assert.DoesNotContain(tools.Tools, static t => t.Name == "read_saga");
-
     }
 
     [Fact]
     public async Task ToolsList_AdvertisesReadSaga_WhenEnabled()
     {
-
         await using TestMcpSession session = await CreateSessionAsync(sagaEnabled: true);
 
         JsonRpcResponse response = await session.SendRequestAsync("tools/list", null);
@@ -59,13 +55,11 @@ public sealed class ReadSagaToolTests
             McpJsonSerializerContext.Default.McpToolsListResultWire)!;
 
         Assert.Contains(tools.Tools, static t => t.Name == "read_saga");
-
     }
 
     [Fact]
     public async Task ToolsCall_ReadSaga_WhenDisabled_ReturnsError()
     {
-
         await using TestMcpSession session = await CreateSessionAsync(sagaEnabled: false);
 
         JsonElement arguments = JsonSerializer.SerializeToElement(
@@ -77,13 +71,11 @@ public sealed class ReadSagaToolTests
         Assert.True(result.IsError);
 
         Assert.Contains("Saga is disabled", result.Content![0].Text!, StringComparison.OrdinalIgnoreCase);
-
     }
 
     [Fact]
     public async Task ToolsCall_ReadSaga_HappyPath_ReturnsMemoriesWithSimilarity()
     {
-
         FakeWeaveService weave = new();
 
         FakeSagaMemoryStore store = new();
@@ -116,13 +108,11 @@ public sealed class ReadSagaToolTests
         Assert.Contains("The operator prefers dark mode.", text, StringComparison.Ordinal);
 
         Assert.Contains("0.87", text, StringComparison.Ordinal);
-
     }
 
     [Fact]
     public async Task ToolsCall_ReadSaga_EmptyResults_ReturnsFriendlyMessage()
     {
-
         FakeWeaveService weave = new();
 
         FakeSagaMemoryStore store = new();
@@ -140,13 +130,11 @@ public sealed class ReadSagaToolTests
         Assert.False(result.IsError);
 
         Assert.Contains("No Saga memories matched", result.Content![0].Text!, StringComparison.Ordinal);
-
     }
 
     [Fact]
     public async Task ToolsCall_ReadSaga_EmbeddingFailure_ReturnsErrorGracefully()
     {
-
         FakeWeaveService weave = new() { FailEmbed = true };
 
         await using TestMcpSession session = await CreateSessionAsync(sagaEnabled: true, weave: weave);
@@ -160,13 +148,11 @@ public sealed class ReadSagaToolTests
         Assert.True(result.IsError);
 
         Assert.Contains("Failed to embed", result.Content![0].Text!, StringComparison.OrdinalIgnoreCase);
-
     }
 
     [Fact]
     public async Task ToolsCall_ReadSaga_ProviderUnavailable_ReturnsErrorGracefully()
     {
-
         FakeWeaveService weave = new() { Available = false };
 
         await using TestMcpSession session = await CreateSessionAsync(sagaEnabled: true, weave: weave);
@@ -180,7 +166,6 @@ public sealed class ReadSagaToolTests
         Assert.True(result.IsError);
 
         Assert.Contains("embedding provider is unavailable", result.Content![0].Text!, StringComparison.OrdinalIgnoreCase);
-
     }
 
     /// <summary>
@@ -195,7 +180,6 @@ public sealed class ReadSagaToolTests
     [Fact]
     public async Task ToolsCall_ReadSaga_WhenScopingIsOn_SearchesTheAmbientSessionsCampaign()
     {
-
         Guid campaign = new("5E2A9C11-7B34-4D80-9F16-2C7E0A3B4D59");
 
         Guid session = new("11111111-2222-4333-8444-555555555555");
@@ -231,7 +215,6 @@ public sealed class ReadSagaToolTests
 
         try
         {
-
             SessionAttachmentToolAmbient.CurrentSessionId = session;
 
             McpToolsCallResultWire result = await mcp.CallToolAsync(
@@ -241,13 +224,10 @@ public sealed class ReadSagaToolTests
                     McpJsonSerializerContext.Default.ReadSagaParams));
 
             Assert.False(result.IsError);
-
         }
         finally
         {
-
             SessionAttachmentToolAmbient.CurrentSessionId = previousSession;
-
         }
 
         Assert.NotNull(divination.LastCampaignScope);
@@ -255,7 +235,6 @@ public sealed class ReadSagaToolTests
         Assert.Equal(campaign, divination.LastCampaignScope!.CampaignId);
 
         Assert.Equal(session, scopeResolver.LastSessionId);
-
     }
 
     /// <summary>
@@ -264,7 +243,6 @@ public sealed class ReadSagaToolTests
     [Fact]
     public async Task ToolsCall_ReadSaga_WhenScopingIsOff_UsesTheUnscopedSearch()
     {
-
         FakeWeaveService weave = new() { Available = true };
 
         FakeSagaMemoryStore store = new();
@@ -297,7 +275,6 @@ public sealed class ReadSagaToolTests
         Assert.False(result.IsError);
 
         Assert.Null(divination.LastCampaignScope);
-
     }
 
     private static readonly IReadOnlyDictionary<string, string> EmptyMetadata = new Dictionary<string, string>(0);
@@ -309,7 +286,6 @@ public sealed class ReadSagaToolTests
         FakeSagaMemoryStore? store = null,
         FakeMemoryScopeResolver? scopeResolver = null)
     {
-
         ServiceCollection services = new();
 
         services.AddSingleton<IMemoryScopeResolver>(scopeResolver ?? new FakeMemoryScopeResolver());
@@ -359,7 +335,8 @@ public sealed class ReadSagaToolTests
             a2aClientEnabled: false,
             attachmentsToolEnabled: false,
             maxJsonRpcLineBytes: 2_097_152,
-            logger: NullLogger<ArcanumInternalToolServer>.Instance);
+            logger: NullLogger<ArcanumInternalToolServer>.Instance,
+            allowHostProcessTools: true);
 
         CancellationTokenSource cts = new();
 
@@ -368,30 +345,24 @@ public sealed class ReadSagaToolTests
         await transport.StartAsync();
 
         return new TestMcpSession(transport, serverTask, cts);
-
     }
 
     private sealed class FakeEventBus : IEventBus
     {
-
         public void Publish<T>(T @event) where T : notnull
         {
         }
 
         public async IAsyncEnumerable<T> Subscribe<T>([System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken) where T : notnull
         {
-
             await Task.CompletedTask;
 
             yield break;
-
         }
-
     }
 
     private sealed class FakeWeaveService : IWeaveService
     {
-
         public bool Available { get; set; } = true;
 
         public bool FailEmbed { get; set; }
@@ -402,17 +373,13 @@ public sealed class ReadSagaToolTests
 
         public Task<Result<Embedding<float>>> EmbedAsync(string text, CancellationToken cancellationToken)
         {
-
             if (FailEmbed)
             {
-
                 return Task.FromResult(Result<Embedding<float>>.Failure(
                     new Error(ErrorCodes.Embeddings.ProviderUnavailable, "Simulated embedding failure.")));
-
             }
 
             return Task.FromResult(Result<Embedding<float>>.Success(new Embedding<float>(QueryVector)));
-
         }
 
         public Task<Result<Embedding<float>[]>> EmbedBatchAsync(IReadOnlyList<string> texts, CancellationToken cancellationToken) =>
@@ -420,12 +387,10 @@ public sealed class ReadSagaToolTests
 
         public Task<Result<(string Chunk, int Offset)[]>> ChunkAsync(string text, CancellationToken cancellationToken) =>
             throw new NotSupportedException("Not used by read_saga.");
-
     }
 
     private sealed class FakeDivinationService : IDivinationService
     {
-
         public DivinationResult[] Results { get; set; } = [];
 
         public bool Fail { get; set; }
@@ -439,17 +404,13 @@ public sealed class ReadSagaToolTests
             float similarityThreshold,
             CancellationToken cancellationToken)
         {
-
             if (Fail)
             {
-
                 return Task.FromResult(Result<DivinationResult[]>.Failure(
                     new Error(ErrorCodes.Embeddings.ProviderUnavailable, "Simulated search failure.")));
-
             }
 
             return Task.FromResult(Result<DivinationResult[]>.Success(Results));
-
         }
 
         public Task<Result<DivinationResult[]>> SearchScopedAsync(
@@ -479,18 +440,14 @@ public sealed class ReadSagaToolTests
             float similarityThreshold,
             CancellationToken cancellationToken)
         {
-
             LastCampaignScope = scope;
 
             return SearchAsync(tableName, primaryKeyColumn, embeddingColumn, queryEmbedding, maxResults, similarityThreshold, cancellationToken);
-
         }
-
     }
 
     private sealed class FakeSagaMemoryStore : ISagaMemoryStore
     {
-
         public Dictionary<string, SagaMemoryDto> Memories { get; } = new(StringComparer.Ordinal);
 
         public Task<SagaMemoryWriteOutcome> InsertAsync(
@@ -520,23 +477,17 @@ public sealed class ReadSagaToolTests
 
         public Task<IReadOnlyDictionary<string, SagaMemoryDto>> GetByIdsAsync(IReadOnlyList<string> ids, CancellationToken cancellationToken)
         {
-
             Dictionary<string, SagaMemoryDto> result = new(StringComparer.Ordinal);
 
             foreach (string id in ids)
             {
-
                 if (Memories.TryGetValue(id, out SagaMemoryDto? memory))
                 {
-
                     result[id] = memory;
-
                 }
-
             }
 
             return Task.FromResult((IReadOnlyDictionary<string, SagaMemoryDto>)result);
-
         }
 
         public Task<SagaMemoryCurationRow?> ReadCurationRowAsync(string id, CancellationToken cancellationToken) =>
@@ -581,7 +532,6 @@ public sealed class ReadSagaToolTests
 
         public Task SetWatermarkAsync(Guid sessionId, DateTimeOffset lastExtractedEntryCreatedAt, CancellationToken cancellationToken) =>
             throw new NotSupportedException("Not used by read_saga.");
-
     }
 
     private sealed class TestMcpSession(
@@ -589,19 +539,15 @@ public sealed class ReadSagaToolTests
         Task serverTask,
         CancellationTokenSource lifetime) : IAsyncDisposable
     {
-
         private int _nextId;
 
         public async ValueTask DisposeAsync()
         {
-
             lifetime.Cancel();
 
             try
             {
-
                 await serverTask.ConfigureAwait(false);
-
             }
             catch (OperationCanceledException)
             {
@@ -610,12 +556,10 @@ public sealed class ReadSagaToolTests
             await transport.DisposeAsync().ConfigureAwait(false);
 
             lifetime.Dispose();
-
         }
 
         public async Task<JsonRpcResponse> SendRequestAsync(string method, JsonElement? parameters)
         {
-
             int id = Interlocked.Increment(ref _nextId);
 
             JsonRpcRequest request = new()
@@ -632,12 +576,10 @@ public sealed class ReadSagaToolTests
             Assert.Equal(McpInboundKind.Response, envelope.Kind);
 
             return envelope.Response!;
-
         }
 
         public async Task<McpToolsCallResultWire> CallToolAsync(string name, JsonElement arguments)
         {
-
             McpToolsCallParams callParams = new() { Name = name, Arguments = arguments };
 
             JsonElement paramsElement = JsonSerializer.SerializeToElement(callParams, McpJsonSerializerContext.Default.McpToolsCallParams);
@@ -645,9 +587,6 @@ public sealed class ReadSagaToolTests
             JsonRpcResponse response = await SendRequestAsync("tools/call", paramsElement).ConfigureAwait(false);
 
             return JsonSerializer.Deserialize(response.Result!.Value, McpJsonSerializerContext.Default.McpToolsCallResultWire)!;
-
         }
-
     }
-
 }

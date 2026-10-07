@@ -133,7 +133,8 @@ public sealed class InternalToolServerFailureLoggingTests
                 a2aClientEnabled: false,
                 attachmentsToolEnabled: false,
                 maxJsonRpcLineBytes: 1_048_576,
-                logger: loggers.CreateLogger<ArcanumInternalToolServer>());
+                logger: loggers.CreateLogger<ArcanumInternalToolServer>(),
+                allowHostProcessTools: true);
 
             CancellationTokenSource lifetime = new();
 

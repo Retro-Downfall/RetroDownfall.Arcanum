@@ -1587,6 +1587,43 @@ public sealed partial class ArcanumInternalToolServerTests : IAsyncLifetime
         Assert.Equal("DONE first\nkeep\nDONE second\n", await File.ReadAllTextAsync(path));
     }
 
+    /// <summary>
+    /// replaceAll with a short search text that occurs many times and a long replacement can project a
+    /// result far past MaxFileWriteMb. The size is refused from the projection, before the replacement is
+    /// built, so the host never allocates it (here it is past what a string can hold at all).
+    /// </summary>
+    [Fact]
+    public async Task ReplaceTextBlock_with_replaceAll_refuses_a_projected_result_past_the_write_limit_before_building_it()
+    {
+        const string relativePath = "notes/amplified.txt";
+
+        const int Occurrences = 600_000;
+
+        string path = _workspace.WriteFile(relativePath, new string('x', Occurrences));
+
+        await using TestMcpSession session = await CreateSessionAsync();
+
+        using IDisposable persistedTurn = BeginPersistedTurn();
+
+        McpToolsCallResultWire result = await session.CallToolAsync(
+            "replace_text_block",
+            JsonSerializer.SerializeToElement(
+                new ReplaceTextBlockParams
+                {
+                    RelativePath = relativePath,
+                    ExactSearchText = "x",
+                    ReplacementText = new string('y', 300 * 1024),
+                    ReplaceAll = true,
+                },
+                McpJsonSerializerContext.Default.ReplaceTextBlockParams));
+
+        Assert.True(result.IsError);
+
+        Assert.Contains("MaxFileWriteMb", Assert.Single(result.Content!).Text!, StringComparison.Ordinal);
+
+        Assert.Equal(Occurrences, new FileInfo(path).Length);
+    }
+
     [Fact]
     public async Task ReplaceTextBlock_with_a_null_replacementText_is_rejected_without_writing()
     {
@@ -5160,6 +5197,7 @@ public sealed partial class ArcanumInternalToolServerTests : IAsyncLifetime
             attachmentsToolEnabled: attachmentsToolEnabled,
             maxJsonRpcLineBytes: maxJsonRpcLineBytes,
             logger: NullLogger<ArcanumInternalToolServer>.Instance,
+            allowHostProcessTools: true,
             codingToolsSettings: codingToolsSettings,
             workspaceCheckRuntime: workspaceCheckRuntime);
 
