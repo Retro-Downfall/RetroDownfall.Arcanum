@@ -1,7 +1,5 @@
 using System.Diagnostics;
 
-using System.Runtime.CompilerServices;
-
 using System.Runtime.InteropServices;
 
 namespace RetroDownfall.Arcanum.Core.Desktop;
@@ -114,29 +112,34 @@ public sealed record ApplicationDiscoveryEnvironment(
     }
 
     /// <summary>
-    /// Environment variable that opts a published image into running the repository project, for
-    /// both <see cref="ApplicationLauncher"/> and the legacy <see cref="CompendiumLauncher"/> behind
+    /// Environment variable that opts a process into running the repository project, for both
+    /// <see cref="ApplicationLauncher"/> and the legacy <see cref="CompendiumLauncher"/> behind
     /// <c>arcanum config open</c> and The Forge. The same variable also makes <c>arcanum serve</c>
     /// auto-start re-launch the host through <c>dotnet &lt;entry assembly&gt; serve</c>; both
     /// meanings are documented together in <c>docs/Compendium.README.md</c>.
     /// </summary>
     public const string DevelopmentProjectOptInVariable = "ARCANUM_DEV_LAUNCHER";
 
+    /// <summary>
+    /// Solution file whose presence marks a directory as the repository root. A repository project is
+    /// only ever taken from a directory that also holds this marker.
+    /// </summary>
+    internal const string RepositoryMarkerFileName = "RetroDownfall.Arcanum.slnx";
+
     internal static bool DevelopmentProjectLaunchAllowed() =>
         DevelopmentProjectLaunchAllowed(
-            RuntimeFeature.IsDynamicCodeSupported,
             static name => global::System.Environment.GetEnvironmentVariable(name));
 
     /// <summary>
-    /// A JIT build always offers the repository project; a Native AOT image offers it only when the
-    /// opt-in variable is exactly <c>1</c>. Separate from the process reads so both arms are
-    /// testable from a JIT test host.
+    /// The repository project is offered only when the opt-in variable is exactly <c>1</c>, whatever
+    /// the runtime. A JIT runtime is not evidence of a development build: The Forge and Compendium
+    /// ship as self-contained JIT images, so a JIT arm left the gate open on every installed copy of
+    /// them (R-009). Separate from the process read so it is testable without touching the process
+    /// environment.
     /// </summary>
     internal static bool DevelopmentProjectLaunchAllowed(
-        bool isDynamicCodeSupported,
         Func<string, string?> readEnvironmentVariable) =>
-        isDynamicCodeSupported
-        || string.Equals(
+        string.Equals(
             readEnvironmentVariable(DevelopmentProjectOptInVariable),
             "1",
             StringComparison.Ordinal);
@@ -148,7 +151,7 @@ public sealed record ApplicationDiscoveryEnvironment(
         while (directory is not null)
         {
             if (File.Exists(
-                Path.Combine(directory.FullName, "RetroDownfall.Arcanum.slnx")))
+                Path.Combine(directory.FullName, RepositoryMarkerFileName)))
             {
                 return directory.FullName;
             }

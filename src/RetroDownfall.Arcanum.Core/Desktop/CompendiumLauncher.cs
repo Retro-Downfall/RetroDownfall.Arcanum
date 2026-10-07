@@ -19,7 +19,8 @@ internal enum CompendiumLaunchPlatform
 /// Locates Compendium via an installed binary, sibling build output, or <c>dotnet run</c> on the
 /// solution project, then starts it with <see cref="ProcessStartInfo.ArgumentList"/> (no shell).
 /// The <c>dotnet run</c> arm obeys the same <c>ARCANUM_DEV_LAUNCHER</c> opt-in as
-/// <see cref="ApplicationLauncher"/> (see <see cref="ApplicationDiscoveryEnvironment"/>).
+/// <see cref="ApplicationLauncher"/> (see <see cref="ApplicationDiscoveryEnvironment"/>), and takes
+/// the project only from an ancestor that also holds the repository's solution marker.
 /// </summary>
 public sealed class CompendiumLauncher : ICompendiumLauncher
 {
@@ -56,6 +57,17 @@ public sealed class CompendiumLauncher : ICompendiumLauncher
         _fileExistsOverride = fileExists;
 
         _startOverride = startProcess;
+    }
+
+    /// <summary>Test seam for discovery and process start with an explicit development-project gate.</summary>
+    public CompendiumLauncher(
+        Func<string> baseDirectory,
+        Func<string, bool> fileExists,
+        Func<ProcessStartInfo, bool> startProcess,
+        bool allowDevelopmentProject)
+        : this(baseDirectory, fileExists, startProcess)
+    {
+        _developmentProjectAllowedOverride = allowDevelopmentProject;
     }
 
     internal CompendiumLauncher(
@@ -123,9 +135,9 @@ public sealed class CompendiumLauncher : ICompendiumLauncher
             executableFailureType = failureType ?? executableFailureType;
         }
 
-        // The repository project is only ever executed when this process is allowed to run it: a
-        // Native AOT image needs the ARCANUM_DEV_LAUNCHER opt-in (R-009), the same gate the
-        // `arcanum open` launcher applies. It stays in the printed discovery locations either way.
+        // The repository project is only ever executed when this process opted in with
+        // ARCANUM_DEV_LAUNCHER=1 (R-009), the same gate the `arcanum open` launcher applies, on JIT
+        // and Native AOT images alike. It stays in the printed discovery locations either way.
         if (DevelopmentProjectAllowed()
             && TryFindProject(out string? projectPath)
             && projectPath is not null)
@@ -253,7 +265,12 @@ public sealed class CompendiumLauncher : ICompendiumLauncher
         {
             string candidate = Path.Combine(directory, ProjectRelativePath);
 
-            if (FileExists(candidate))
+            // The project path alone is not a repository: an ancestor of the install directory that
+            // another account can write to (a folder at a drive root) could otherwise supply the
+            // project `dotnet run` executes. Require the solution marker beside it.
+            if (FileExists(candidate)
+                && FileExists(
+                    Path.Combine(directory, ApplicationDiscoveryEnvironment.RepositoryMarkerFileName)))
             {
                 path = candidate;
 
