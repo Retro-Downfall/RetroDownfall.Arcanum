@@ -662,6 +662,83 @@ public sealed class SpellRepositoryTests : IAsyncLifetime
         Assert.Equal(SpellSource.Workspace, imported!.Source);
     }
 
+    /// <summary>
+    /// An export's <c>fullContent</c> is the whole <c>SPELL.md</c>, frontmatter included, and a skipped or absent
+    /// sidecar leaves <c>metadata</c> null. Import must read the frontmatter back out of that text rather than
+    /// writing it as the new spell's body, or the round trip nests the old frontmatter inside the prompt and drops
+    /// the system prompt, template, tools and required MCP servers it declared.
+    /// </summary>
+    [SkippableFact]
+    public async Task ImportAsync_of_an_export_without_a_sidecar_keeps_the_frontmatter_out_of_the_body()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        string spellDir = Path.Combine(_workspaceRoot, "spells", "full-frontmatter");
+
+        Directory.CreateDirectory(spellDir);
+
+        await File.WriteAllTextAsync(
+            Path.Combine(spellDir, "SPELL.md"),
+            """
+            ---
+            name: full-frontmatter
+            description: every field
+            tags: alpha, beta
+            systemPrompt: You are terse.
+            template: Answer {{question}}
+            model: some-model
+            provider: some-provider
+            tools: read_file, list_directory
+            requiredMcpServers: arcanum
+            ---
+            The body text.
+            """);
+
+        SpellRepository repository = CreateRepository();
+
+        SpellExportDto? exported = await repository.ExportAsync("full-frontmatter", _workspaceRoot, CancellationToken.None);
+
+        Assert.NotNull(exported);
+
+        Assert.Null(exported!.Metadata);
+
+        string importWorkspace = Path.Combine(_workspaceRoot, "import-target");
+
+        Directory.CreateDirectory(importWorkspace);
+
+        Result<SpellSummary> importResult = await repository.ImportAsync(
+            new SpellImportRequest(exported, importWorkspace, null),
+            CancellationToken.None);
+
+        Assert.True(importResult.IsSuccess, importResult.IsFailure ? importResult.Error.Message : null);
+
+        SpellDetail? imported = await repository.GetAsync("full-frontmatter", importWorkspace, CancellationToken.None);
+
+        Assert.NotNull(imported);
+
+        Assert.Equal("every field", imported!.Description);
+
+        Assert.Equal(["alpha", "beta"], imported.Tags);
+
+        Assert.Equal("You are terse.", imported.SystemPrompt);
+
+        Assert.Equal("Answer {{question}}", imported.Template);
+
+        Assert.Equal("some-model", imported.Model);
+
+        Assert.Equal("some-provider", imported.Provider);
+
+        Assert.Equal(["read_file", "list_directory"], imported.Tools);
+
+        Assert.Equal(["arcanum"], imported.RequiredMcpServers);
+
+        Assert.Equal("The body text.", imported.Body?.Trim());
+
+        string written = await File.ReadAllTextAsync(Path.Combine(importWorkspace, "spells", "full-frontmatter", "SPELL.md"));
+
+        Assert.Equal(2, written.Split('\n').Count(static line => line.Trim() == "---"));
+    }
+
     [SkippableFact]
     public async Task SearchAsync_lists_spell_from_workspace_query()
     {
@@ -1005,6 +1082,44 @@ public sealed class SpellRepositoryTests : IAsyncLifetime
         Assert.Equal(expectedKept, exported!.Scripts.Select(static script => script.FileName).ToArray());
 
         Assert.Equal(expectedOmitted, exported.OmittedScripts);
+
+        Assert.Equal(expectedOmitted.Length, exported.OmittedScriptCount);
+    }
+
+    /// <summary>
+    /// <c>omittedScripts</c> lists at most 64 names, so a directory with more unusable files than that answers with
+    /// a truncated list. <c>omittedScriptCount</c> is the full count, which is how a caller tells a truncated list
+    /// from a complete one rather than concluding the unlisted scripts never existed.
+    /// </summary>
+    [SkippableFact]
+    public async Task ExportAsync_counts_every_omitted_script_when_the_omitted_list_is_truncated()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        string spellDir = await WriteExportableSpellAsync("crowded-scripts");
+
+        string scriptsDir = Path.Combine(spellDir, "scripts");
+
+        Directory.CreateDirectory(scriptsDir);
+
+        int omitted = SpellRepository.MaxSpellScriptCount + 6;
+
+        foreach (int index in Enumerable.Range(0, SpellRepository.MaxSpellScriptCount + omitted))
+        {
+            await File.WriteAllBytesAsync(Path.Combine(scriptsDir, $"tiny-{index:D3}.sh"), "x"u8.ToArray());
+        }
+
+        SpellRepository repository = CreateRepository();
+
+        SpellExportDto? exported = await repository.ExportAsync("crowded-scripts", _workspaceRoot, CancellationToken.None);
+
+        Assert.NotNull(exported);
+
+        Assert.Equal(SpellRepository.MaxSpellScriptCount, exported!.Scripts.Count);
+
+        Assert.Equal(SpellRepository.MaxSpellScriptCount, exported.OmittedScripts!.Count);
+
+        Assert.Equal(omitted, exported.OmittedScriptCount);
     }
 
     [SkippableFact]
@@ -1029,6 +1144,8 @@ public sealed class SpellRepositoryTests : IAsyncLifetime
         Assert.NotNull(exported.OmittedScripts);
 
         Assert.Empty(exported.OmittedScripts!);
+
+        Assert.Equal(0, exported.OmittedScriptCount);
     }
 
     /// <summary>

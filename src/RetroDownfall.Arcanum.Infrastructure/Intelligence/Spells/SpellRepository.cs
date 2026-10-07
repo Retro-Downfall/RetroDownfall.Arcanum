@@ -609,8 +609,11 @@ internal sealed partial class SpellRepository : ISpellRepository
 
         // The files a bundle leaves out are named, so a caller can tell a complete bundle from a partial one.
         // The list is bounded like the bundle itself; a spell with a directory full of unusable files still
-        // answers with a short list, not an unbounded one.
+        // answers with a short list, not an unbounded one, and the count of every omitted file says whether
+        // the list is the whole of it.
         var omittedScripts = new List<string>();
+
+        int omittedScriptCount = 0;
 
         string scriptsDir = Path.Combine(dir, "scripts");
 
@@ -719,9 +722,13 @@ internal sealed partial class SpellRepository : ISpellRepository
 
                 totalScriptBytes += scriptRead.Bytes.Length;
             }
+
+            // Every listed file is either carried or recorded as omitted, so the rest are the omitted ones,
+            // however many of them the bounded list names.
+            omittedScriptCount = paths.Length - scripts.Count;
         }
 
-        return new SpellExportDto(metadata, fullContent, scripts, omittedScripts);
+        return new SpellExportDto(metadata, fullContent, scripts, omittedScripts, omittedScriptCount);
     }
 
     private static void RecordOmittedScript(List<string> omittedScripts, string fileName)
@@ -758,26 +765,33 @@ internal sealed partial class SpellRepository : ISpellRepository
             return Result<SpellSummary>.Failure(bundle.Error);
         }
 
-        string name = request.Payload.Metadata?.Name
-            ?? SpellFileParser.Parse(request.Payload.FullContent, "imported").Name;
+        // FullContent is the whole SPELL.md an export read, frontmatter included, so it is parsed back into its
+        // fields and body here. Writing it as the new spell's body would nest the old frontmatter inside the
+        // prompt and drop the system prompt, template, tools and required MCP servers it declares. The sidecar,
+        // when the bundle carries one, still wins for the fields it holds.
+        SkillMetadata? metadata = request.Payload.Metadata;
+
+        SpellParseResult parsed = SpellFileParser.Parse(request.Payload.FullContent, "imported");
+
+        string name = metadata?.Name ?? parsed.Name;
 
         CreateSpellRequest create = new(
             name,
-            request.Payload.Metadata?.Description,
-            request.Payload.Metadata?.Tags.ToArray() ?? [],
-            null,
-            null,
-            request.Payload.Metadata?.Model,
-            request.Payload.Metadata?.Provider,
-            [],
-            [],
-            Body: request.Payload.FullContent,
-            Version: request.Payload.Metadata?.Version,
-            InputSchema: request.Payload.Metadata?.InputSchema,
-            OutputSchema: request.Payload.Metadata?.OutputSchema,
-            DeclaredTools: request.Payload.Metadata?.DeclaredTools.ToArray(),
-            Dependencies: request.Payload.Metadata?.Dependencies.ToArray(),
-            DefaultParameters: request.Payload.Metadata?.DefaultParameters);
+            metadata?.Description ?? (parsed.Description.Length == 0 ? null : parsed.Description),
+            metadata?.Tags is { Count: > 0 } metadataTags ? metadataTags.ToArray() : parsed.Tags,
+            parsed.SystemPrompt,
+            parsed.Template,
+            metadata?.Model ?? parsed.Model,
+            metadata?.Provider ?? parsed.Provider,
+            parsed.Tools,
+            parsed.RequiredMcpServers,
+            Body: parsed.Body,
+            Version: metadata?.Version,
+            InputSchema: metadata?.InputSchema,
+            OutputSchema: metadata?.OutputSchema,
+            DeclaredTools: metadata?.DeclaredTools.ToArray(),
+            Dependencies: metadata?.Dependencies.ToArray(),
+            DefaultParameters: metadata?.DefaultParameters);
 
         return await ImportCreateStagedAsync(workspace, create, bundle.Value, ct).ConfigureAwait(false);
     }
