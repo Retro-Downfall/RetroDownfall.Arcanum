@@ -27,8 +27,9 @@ CREATE INDEX IF NOT EXISTS "IX_Batches_CreatedAt_Id" ON "Batches" ("CreatedAt" D
 -- Each of the three file roles a batch names is looked up by the file, from the file's side: deleting an
 -- uploaded file, and the retention sweep's reference check, ask whether any batch still names it. Without
 -- an index per column each of those asks scans every batch the installation ever held. The value stored
--- here is the canonical uppercase dashed identity, so the lookup is an exact equality and these ordinary
--- column indexes answer it.
+-- here is the canonical uppercase dashed identity, so the lookup is a closed list of exact equalities (the
+-- canonical spelling plus the two pre-version-15 lowercase spellings) and these ordinary column indexes answer
+-- each one.
 CREATE INDEX IF NOT EXISTS "IX_Batches_InputFileId" ON "Batches" ("InputFileId");
 
 CREATE INDEX IF NOT EXISTS "IX_Batches_OutputFileId" ON "Batches" ("OutputFileId");
