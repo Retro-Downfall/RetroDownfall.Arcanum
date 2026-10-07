@@ -31,6 +31,7 @@ internal sealed class BackupSecretSnapshotReader(
             ArcanumCredentialIdentity.FileEncryptionKeyAccount,
             ArcanumPaths.FileEncryptionKeyStoreFile,
             "the file-encryption key ring",
+            OsKeychainSecretStore.FileEncryptionKeyRecoveryHint,
             dataProtectionStore.GetFileEncryptionSecretReadResultAsync);
 
     public Task<SecretStoreReadResult> ReadMasterApiKeyAsync() =>
@@ -38,13 +39,16 @@ internal sealed class BackupSecretSnapshotReader(
             ArcanumCredentialIdentity.MasterApiKeyAccount,
             ArcanumPaths.ApiKeyStoreFile,
             "the master API key",
+            OsKeychainSecretStore.MasterApiKeyRecoveryHint,
             dataProtectionStore.GetApiKeyReadResultAsync);
 
     /// <summary>
     /// Prefers the OS copy and otherwise answers from the mirror, repairing neither. The mirror is
     /// refused while it is marked stale (DESIGN §11.2 item 4): exporting it would archive a superseded,
     /// possibly revoked, master key or a key ring without its active key, and a restore would
-    /// reinstate it.
+    /// reinstate it. The refusal gives the remedy that applies, as the credential's own read does: while
+    /// OS key storage cannot answer, unlocking or repairing it; when it answers that it holds no copy,
+    /// storing the credential again, since nothing is there to re-synchronize the mirror from.
     /// </summary>
     /// <remarks>
     /// This reader holds no credential gate, and a save in another process can replace the mirror and
@@ -56,6 +60,7 @@ internal sealed class BackupSecretSnapshotReader(
         string account,
         string mirrorPath,
         string description,
+        string recoveryHint,
         Func<Task<SecretStoreReadResult>> readMirror)
     {
         OsCredentialStoreResult os = osStore.TryGet(
@@ -75,10 +80,15 @@ internal sealed class BackupSecretSnapshotReader(
         if (mirror.Status == SecretStoreReadStatus.Ok
             && (markedBeforeRead || MirroredOsCredential.IsMirrorMarkedStale(mirrorPath)))
         {
+            const string Stale = "may be older than the OS credential (a mirror write after a change failed)";
+
             return SecretStoreReadResult.Corrupted(
-                $"The encrypted mirror of {description} may be older than the OS credential (a mirror "
-                + "write after a change failed), so it is not backed up while OS key storage cannot "
-                + "answer. Unlock or repair OS key storage and retry the backup.");
+                os.Status == OsCredentialStoreStatus.Failed
+                    ? $"The encrypted mirror of {description} {Stale}, so it is not backed up while OS key "
+                        + "storage cannot answer. Unlock or repair OS key storage and retry the backup."
+                    : $"The encrypted mirror of {description} {Stale}, and OS key storage holds no copy to "
+                        + "confirm it, so it is not backed up. Store the credential again to replace it. "
+                        + recoveryHint);
         }
 
         if (mirror.Status != SecretStoreReadStatus.Missing)

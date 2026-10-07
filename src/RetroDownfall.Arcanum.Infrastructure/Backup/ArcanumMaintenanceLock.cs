@@ -131,9 +131,16 @@ internal sealed class ArcanumMaintenanceLock : IDisposable
         => AcquireDetailed(guardedDirectory).Lock;
 
     /// <summary>
-    /// Attempts one exclusive acquisition and preserves whether a verified sharing violation caused
+    /// Attempts an exclusive acquisition and preserves whether a verified sharing violation caused
     /// contention or whether topology, identity, permission, or other I/O evidence was unsafe.
     /// </summary>
+    /// <remarks>
+    /// A contended attempt is retried three times, after 5, 10 and 20 ms, before contention is
+    /// reported, so a doctor probe's instantaneous open cannot fail a real acquisition. The waits are
+    /// synchronous: a lock that is genuinely held reports contention only after about 35 ms, with the
+    /// calling thread blocked for that long, and a caller polling <see cref="TryAcquire(string)"/>
+    /// pays that on every attempt.
+    /// </remarks>
     internal static ArcanumMaintenanceLockAcquisitionResult AcquireDetailed(
         string guardedDirectory)
     {

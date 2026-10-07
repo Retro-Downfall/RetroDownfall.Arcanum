@@ -15,6 +15,19 @@ namespace RetroDownfall.Arcanum.Infrastructure.Security;
 /// </summary>
 public sealed class OsKeychainSecretStore : ISecretStore, IDisposable
 {
+    /// <summary>
+    /// The master API key's remedy when OS key storage cannot supply it, shared with the backup
+    /// snapshot's refusal of the same credential.
+    /// </summary>
+    internal const string MasterApiKeyRecoveryHint = "Restore the credential before retrying.";
+
+    /// <summary>
+    /// The file-encryption key's remedy when OS key storage cannot supply it, shared with the backup
+    /// snapshot's refusal of the same credential.
+    /// </summary>
+    internal const string FileEncryptionKeyRecoveryHint =
+        "Restore the OS credential and backup before retrying.";
+
     private readonly DataProtectionSecretStore _dataProtectionStore;
 
     private readonly IApiKeyDigestCache _apiKeyDigestCache;
@@ -62,7 +75,7 @@ public sealed class OsKeychainSecretStore : ISecretStore, IDisposable
                 dataProtectionStore.SaveApiKeyMirrorAsync),
             new MirroredCredentialPolicy(
                 "the master API key",
-                "Restore the credential before retrying.",
+                MasterApiKeyRecoveryHint,
                 OsReadFailureWithoutMirrorIsCorrupt: true),
             logger,
             osReadTimeout);
@@ -76,7 +89,7 @@ public sealed class OsKeychainSecretStore : ISecretStore, IDisposable
                 dataProtectionStore.SaveFileEncryptionSecretAsync),
             new MirroredCredentialPolicy(
                 "the file-encryption master key",
-                "Restore the OS credential and backup before retrying.",
+                FileEncryptionKeyRecoveryHint,
                 MirrorRestoreFailureIsCorrupt: true,
                 OsReadFailureWithoutMirrorIsCorrupt: true,
                 RequireOsWrite: true),

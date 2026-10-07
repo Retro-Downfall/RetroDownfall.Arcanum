@@ -324,6 +324,63 @@ public sealed class OsKeychainSecretStoreTests : IDisposable
         Assert.Equal(SecretStoreReadStatus.Corrupted, result.Status);
 
         Assert.Null(result.Value);
+
+        Assert.Contains("Unlock or repair OS key storage", result.Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// When OS key storage answers but holds no copy, unlocking it cannot help: nothing is there to
+    /// re-synchronize the stale mirror from. The refusal names the remedy that works, storing the
+    /// credential again, as the credential's own read does.
+    /// </summary>
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Backup_snapshot_refusal_of_a_stale_mirror_the_os_store_holds_no_copy_of_says_to_store_it_again(
+        bool masterApiKey)
+    {
+        SwitchableReadOsCredentialStore os = new();
+
+        WriteFailingProtectionProvider protection = new(
+            DataProtectionProvider.Create(new DirectoryInfo(_storeDir), _ => { }));
+
+        Func<OsKeychainSecretStore, string, Task> save = masterApiKey
+            ? static (store, value) => store.SaveApiKeyAsync(value)
+            : static (store, value) => store.SaveFileEncryptionSecretAsync(value);
+
+        using (OsKeychainSecretStore store = CreateStore(os, CreateDataProtectionStore(protection)))
+        {
+            await save(store, "superseded-secret");
+
+            protection.FailProtect = true;
+
+            await save(store, "current-secret");
+
+            protection.FailProtect = false;
+        }
+
+        // The keychain is healthy and unlocked, but the credential was removed from it out of band.
+        os.Delete(
+            ArcanumCredentialIdentity.Service,
+            masterApiKey
+                ? ArcanumCredentialIdentity.MasterApiKeyAccount
+                : ArcanumCredentialIdentity.FileEncryptionKeyAccount);
+
+        using DataProtectionSecretStore mirrors = CreateDataProtectionStore(protection);
+
+        BackupSecretSnapshotReader reader = new(os, mirrors);
+
+        SecretStoreReadResult result = masterApiKey
+            ? await reader.ReadMasterApiKeyAsync()
+            : await reader.ReadFileEncryptionKeysAsync();
+
+        Assert.Equal(SecretStoreReadStatus.Corrupted, result.Status);
+
+        Assert.Null(result.Value);
+
+        Assert.Contains("Store the credential again", result.Message, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("Unlock", result.Message, StringComparison.Ordinal);
     }
 
     /// <summary>
