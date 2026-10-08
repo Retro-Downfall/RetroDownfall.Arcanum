@@ -229,7 +229,7 @@ The Sessions pane keeps one 40-session page and the Transcript pane keeps one 20
 | New Session | Starts a fresh conversation, as `Ctrl+N` does. |
 | Choose Model | Opens the header's model drop-down (above), so a model can be chosen at any terminal width. |
 | Open Sessions | Opens the Sessions pane, or the session picker under 100 columns, as `Ctrl+O` does. |
-| Slash Commands | Opens the slash menu below, as typing `/` into an empty composer does. |
+| Slash Commands | Opens the slash menu below, as typing `/` into an empty composer does. Leaving the menu writes into the composer, so over a draft the footer asks you to send or clear it first. |
 | Refresh | Reloads the session list, as `Ctrl+R` does. |
 | Provider List | Runs `/provider list`. |
 | MCP Status | Runs `/mcp`. |

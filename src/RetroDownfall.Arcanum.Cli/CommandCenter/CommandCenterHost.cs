@@ -1788,7 +1788,7 @@ internal sealed class CommandCenterHost(
 
             case CommandPaletteTarget.BrowseSlashCommands:
                 // Nothing has been awaited on the way here, so this is still the Enter key's UI turn.
-                OpenPaletteNow(state, window, CommandPaletteMode.Slash, "/");
+                OpenSlashMenuFromPalette(state, window);
                 break;
 
             case CommandPaletteTarget.Refresh:
@@ -1934,6 +1934,29 @@ internal sealed class CommandCenterHost(
         OpenPaletteNow(state, window, CommandPaletteMode.Slash, "/");
 
         return true;
+    }
+
+    /// <summary>Why the palette's Slash Commands entry did not open the slash menu over a draft.</summary>
+    internal const string SlashMenuNeedsEmptyComposer =
+        "Slash Commands opens over an empty composer: send or clear the draft, then type /.";
+
+    /// <summary>
+    /// The palette's Slash Commands entry. Every way out of the slash menu writes its line into the
+    /// composer, so the menu opens only over a composer with nothing in it; over a draft the footer
+    /// says why rather than letting the first key that leaves the menu overwrite the draft.
+    /// </summary>
+    internal static void OpenSlashMenuFromPalette(CommandCenterState state, CommandCenterWindow window)
+    {
+        if (!window.ComposerHasText)
+        {
+            OpenPaletteNow(state, window, CommandPaletteMode.Slash, "/");
+
+            return;
+        }
+
+        state.FooterHint = SlashMenuNeedsEmptyComposer;
+
+        window.ApplyState(state, kind: CommandCenterUiUpdateKind.RefreshFooter);
     }
 
     /// <summary>

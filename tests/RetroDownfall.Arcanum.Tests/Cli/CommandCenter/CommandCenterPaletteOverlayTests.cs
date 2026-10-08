@@ -442,6 +442,42 @@ public sealed class CommandCenterPaletteOverlayTests
     }
 
     [Fact]
+    public void The_palette_s_Slash_Commands_entry_opens_the_slash_menu_over_an_empty_composer()
+    {
+        using CommandCenterWindow window = ComposerWindow(out CommandCenterState state);
+
+        CommandCenterHost.OpenSlashMenuFromPalette(state, window);
+
+        Assert.Equal(CommandCenterOverlayKind.CommandPalette, state.Overlay);
+
+        Assert.Equal(CommandPaletteMode.Slash, state.PaletteMode);
+
+        Assert.Equal("/", window.OverlayFilter.Text);
+    }
+
+    /// <summary>
+    /// Every way out of the slash menu writes its line into the composer, so opening it over a draft
+    /// would let the first key that leaves the menu overwrite the draft. It says why instead.
+    /// </summary>
+    [Fact]
+    public void The_palette_s_Slash_Commands_entry_never_opens_over_a_draft()
+    {
+        using CommandCenterWindow window = ComposerWindow(out CommandCenterState state);
+
+        window.SetComposerText("half a question");
+
+        CommandCenterHost.OpenSlashMenuFromPalette(state, window);
+
+        Assert.Equal(CommandCenterOverlayKind.None, state.Overlay);
+
+        Assert.False(window.OverlayPane.Visible);
+
+        Assert.Equal("half a question", window.GetComposerText());
+
+        Assert.Equal(CommandCenterHost.SlashMenuNeedsEmptyComposer, state.FooterHint);
+    }
+
+    [Fact]
     public void Closing_the_palette_hands_focus_back_to_the_composer_at_once()
     {
         using CommandCenterWindow window = ComposerWindow(out CommandCenterState state);
