@@ -534,6 +534,55 @@ public sealed class IdempotencyClaimStoreTests : IAsyncLifetime
         Assert.Null(await store.TryGetAsync(claimKey));
     }
 
+    [SkippableFact]
+    public async Task TryAcquireAsync_WhenUniqueViolationLeavesNoRowForTheKey_RethrowsUniqueViolation()
+    {
+        RequireSqlCipher();
+
+        const string storedKey = "unique-violation-no-winner";
+
+        const string requestKey = "UNIQUE-VIOLATION-NO-WINNER";
+
+        IdempotencyClaimStore store = new(_db!);
+
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+
+        IdempotencyClaim stored = await AcquireAsync(
+            store,
+            storedKey,
+            "fingerprint",
+            "owner-1",
+            now.AddMinutes(5),
+            now);
+
+        // A case-insensitive unique index makes the request's insert a genuine unique violation against a row whose
+        // key differs from the request's under the binary comparison the store reads back with, so the read-back
+        // finds no winner and the store must rethrow rather than invent a lost-race result.
+        await ExecuteNonQueryAsync(
+            """
+            DROP INDEX "IX_IdempotencyClaims_ClaimKeyHash";
+
+            CREATE UNIQUE INDEX "IX_IdempotencyClaims_ClaimKeyHash"
+                ON "IdempotencyClaims" ("ClaimKeyHash" COLLATE NOCASE);
+            """);
+
+        SqliteException exception = await Assert.ThrowsAsync<SqliteException>(
+            () => store.TryAcquireAsync(new IdempotencyClaimAcquireRequest(
+                requestKey,
+                "fingerprint",
+                "owner-2",
+                now.AddMinutes(5),
+                now)));
+
+        Assert.Equal(19, exception.SqliteErrorCode);
+
+        Assert.Equal(2067, exception.SqliteExtendedErrorCode);
+
+        Assert.Null(await store.TryGetAsync(requestKey));
+
+        Assert.Equal(stored, await store.TryGetAsync(storedKey));
+    }
+
     [SkippableTheory]
     [InlineData(false)]
     [InlineData(true)]
