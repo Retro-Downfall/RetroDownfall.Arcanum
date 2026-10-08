@@ -39,6 +39,12 @@ internal static partial class FileHandleIdentityInterop
     private const string WindowsExtendedUncPrefix = @"\\?\UNC\";
 
     /// <summary>
+    /// Test seam for kernel path resolution branches: the kernel path for a valid open handle, or
+    /// <see langword="null"/> for a handle the kernel cannot name.
+    /// </summary>
+    internal static Func<SafeFileHandle, string?>? TryGetHandleKernelPathForTests { get; set; }
+
+    /// <summary>
     /// Resolves the absolute path the kernel holds for <paramref name="handle"/>: <c>proc_pidfdinfo</c>
     /// (<c>PROC_PIDFDVNODEPATHINFO</c>, the same answer as <c>F_GETPATH</c>) on macOS,
     /// <c>/proc/self/fd</c> on Linux and <c>GetFinalPathNameByHandleW</c> on Windows. The answer has every
@@ -55,6 +61,13 @@ internal static partial class FileHandleIdentityInterop
         if (handle is null || handle.IsInvalid || handle.IsClosed)
         {
             return false;
+        }
+
+        if (TryGetHandleKernelPathForTests is not null)
+        {
+            path = TryGetHandleKernelPathForTests(handle);
+
+            return path is not null;
         }
 
         bool referenceAdded = false;
