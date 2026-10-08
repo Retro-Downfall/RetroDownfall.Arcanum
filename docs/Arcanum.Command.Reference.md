@@ -220,6 +220,35 @@ List offsets must be nonnegative integers. Campaign pages are fetched from the A
 
 The Sessions pane keeps one 40-session page and the Transcript pane keeps one 200-entry page; these are view allocations, not history totals. In Sessions, `Ctrl+PgDn` loads older sessions and `Ctrl+PgUp` returns toward recent sessions. In Transcript, `Ctrl+PgUp` loads older entries and `Ctrl+PgDn` returns toward the latest entries. Paging uses exact server cursors/offsets, refuses a repeated or missing checkpoint as no progress, honors cancellation, and rebuilds Incantations from the current transcript page.
 
+### Command palette and slash menu
+
+`Ctrl+K` opens the command palette: one row per action, its name on the left and what it does on the right. The filter field above the list has the keyboard, so typing narrows the list as you go — names that start with what you typed first, then names that contain it, then rows whose description mentions it. `↑`/`↓` move the highlight, `Enter` runs the highlighted row, and `Esc` closes the palette.
+
+| Palette entry | What it does |
+|---|---|
+| New Session | Starts a fresh conversation, as `Ctrl+N` does. |
+| Choose Model | Opens the header's model drop-down (above), so a model can be chosen at any terminal width. |
+| Open Sessions | Opens the Sessions pane, or the session picker under 100 columns, as `Ctrl+O` does. |
+| Slash Commands | Opens the slash menu below, as typing `/` into an empty composer does. |
+| Refresh | Reloads the session list, as `Ctrl+R` does. |
+| Provider List | Runs `/provider list`. |
+| MCP Status | Runs `/mcp`. |
+| Arsenal | Runs `/arsenal`. |
+| Campaign List | Runs `/campaign list`. |
+| Spell List | Runs `/spell list`. |
+| Ward List | Runs `/ward list`. |
+| Doctor | Runs `/doctor`. |
+| Context | Runs `/context`. |
+| Help | Shows the key and command help, as `F1` does. |
+| Quit | Leaves Command Center, as `Ctrl+Q` does. |
+
+Each slash-backed row shows its command's description from the slash registry, so the palette, the slash menu, and `/help` describe a command in the same words.
+
+Typing `/` into an empty composer opens the slash menu: every registered command, its usage on the left and its description on the right, narrowed as you type by the command name after the `/`.
+
+- `Enter` runs a command that takes no argument (`/help`, `/doctor`, `/provider list`). For any other command it fills the composer with the command's fixed part — `/model `, `/resume `, `/campaign list ` — so you add the argument and press `Enter` again. When nothing matches, `Enter` sends what you typed, so a misspelling gets the usual did-you-mean answer.
+- A space hands the line to the composer, so `/model gemma4:e4b` typed straight through works. Backspace past the `/`, or `Esc`, returns to the composer with what you typed. A paste that carries an argument, or a `/` deleted from the front of the line, hands the line over the same way.
+
 ## Turn entry points
 
 Arcanum has exactly two ways to start a turn, and neither is a second implementation of the other:

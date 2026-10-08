@@ -35,24 +35,6 @@ internal sealed class CommandCenterHost(
 {
     public const string NoCommandCenterEnvVar = "ARCANUM_NO_COMMAND_CENTER";
 
-    private static readonly string[] PaletteActions =
-    [
-        "New Session",
-        "Open Sessions",
-        "Refresh",
-        "Model List",
-        "Provider List",
-        "MCP Status",
-        "Arsenal",
-        "Campaign List",
-        "Spell List",
-        "Ward List",
-        "Doctor",
-        "Mana",
-        "Help",
-        "Quit",
-    ];
-
     /// <summary>
     /// Diagnostic for the viewport size gate. The recovery it names must be a spelling the CLI still
     /// parses, so it never points the operator at a removed command.
@@ -354,6 +336,11 @@ internal sealed class CommandCenterHost(
                         return;
                     }
 
+                    if (TryOpenSlashMenu(e, routeFocus, state, window))
+                    {
+                        return;
+                    }
+
                     if (TryMapAndHandle(
                             e,
                             routeFocus,
@@ -424,6 +411,14 @@ internal sealed class CommandCenterHost(
                         return;
                     }
 
+                    // Space, Backspace on a lone slash and Esc leave the slash menu. Decided here, before
+                    // the field inserts or deletes anything, and closed synchronously, so the next key
+                    // already reaches the composer.
+                    if (TryHandleSlashMenuKey(e, state, window))
+                    {
+                        return;
+                    }
+
                     if (e == Key.Esc)
                     {
                         e.Handled = true;
@@ -457,23 +452,14 @@ internal sealed class CommandCenterHost(
                         return;
                     }
 
-                    // Typing filters; refresh after KeyDown so Text is current — schedule refresh.
-                    app.Invoke(() =>
-                    {
-                        string typed = window.OverlayFilter.Text?.ToString() ?? string.Empty;
-
-                        if (modelPicker)
-                        {
-                            state.ModelFilter = typed;
-                            window.RefreshModelList(state);
-                        }
-                        else
-                        {
-                            state.SessionFilter = typed;
-                            window.ApplyState(state, kind: CommandCenterUiUpdateKind.RefreshSidebar);
-                        }
-                    });
+                    // Anything else is the field's own edit; the list follows it through TextChanged.
                 };
+
+                // TextField raises TextChanged as it inserts each key, so the list it filters is current
+                // before the next key is read: an Enter typed in the same burst as the filter runs the
+                // row the operator sees, not the row that was highlighted before the burst.
+                window.OverlayFilter.TextChanged += (_, _) =>
+                    ApplyOverlayFilterText(state, window, work => app.Invoke(work));
 
                 window.ModelSelector.KeyDown += (_, e) =>
                 {
@@ -581,6 +567,14 @@ internal sealed class CommandCenterHost(
                 app.Keyboard.KeyDown += (_, keyEvent) =>
                 {
                     KeyChord chord = ToChord(keyEvent);
+
+                    // Esc in the slash menu hands what was typed back to the composer instead of only
+                    // closing the overlay. This handler runs before any view sees the key, so it is the
+                    // only place Esc can be given that meaning.
+                    if (chord.IsEsc && TryHandleSlashMenuKey(keyEvent, state, window))
+                    {
+                        return;
+                    }
 
                     // Fallback Tab path when no focused child KeyDown ran (e.g. focus on Window).
                     if (chord.IsTab)
@@ -1111,17 +1105,34 @@ internal sealed class CommandCenterHost(
 
             case CommandCenterAction.ExecutePaletteItem:
             {
-                int idx = window.GetOverlaySelectedIndex();
-                CloseOverlayAndFocusInput(state, window, app);
-                if (idx >= 0 && idx < PaletteActions.Length)
+                // Reached from an Enter key handler with nothing awaited yet, so the window is read and
+                // the palette closed on the UI thread, before any gate is waited on.
+                if (state.PaletteMode == CommandPaletteMode.Slash)
+                {
+                    // The same path as typing the line and sending it, so drift refresh, alternative
+                    // prompts and parser errors behave exactly as they do from the composer.
+                    if (CommitSlashMenu(state, window))
+                    {
+                        submitFromInput();
+                    }
+
+                    break;
+                }
+
+                CommandPaletteEntry? entry = SelectedPaletteEntry(state, window);
+
+                ClosePaletteNow(state, window, composerText: null);
+
+                if (entry is not null)
                 {
                     await RunPaletteActionAsync(
-                            PaletteActions[idx],
+                            entry,
                             state,
                             ui,
                             app,
                             window,
-                            linked)
+                            linked,
+                            submitFromInput)
                         .ConfigureAwait(false);
                 }
 
@@ -1714,30 +1725,21 @@ internal sealed class CommandCenterHost(
 
     private void ShowPalette(CommandCenterState state, CommandCenterWindow window, IApplication app)
     {
-        state.Overlay = CommandCenterOverlayKind.CommandPalette;
-        state.FocusRegion = CommandCenterFocusRegion.Overlay;
-        app.Invoke(() =>
-        {
-            window.ShowOverlay(
-                CommandCenterOverlayKind.CommandPalette,
-                PaletteActions,
-                "Commands",
-                showFilter: false);
-            window.ApplyState(state, kind: CommandCenterUiUpdateKind.RefreshFooter);
-        });
+        OpenPaletteNow(state, window, CommandPaletteMode.Actions, string.Empty);
     }
 
     private async Task RunPaletteActionAsync(
-        string action,
+        CommandPaletteEntry entry,
         CommandCenterState state,
         ChannelWriter<CommandCenterUiUpdate> ui,
         IApplication app,
         CommandCenterWindow window,
-        CancellationTokenSource linked)
+        CancellationTokenSource linked,
+        Action submitFromInput)
     {
-        switch (action)
+        switch (entry.Target)
         {
-            case "New Session":
+            case CommandPaletteTarget.NewSession:
                 await RunGatedAsync(
                         state,
                         ui,
@@ -1746,7 +1748,21 @@ internal sealed class CommandCenterHost(
                         action: input => RequestNewSessionCoreAsync(state, window, app, ui, input, linked.Token))
                     .ConfigureAwait(false);
                 break;
-            case "Open Sessions":
+
+            case CommandPaletteTarget.ChooseModel:
+                // The header control's own drop-down, so it is gated exactly as the header control is.
+                await DispatchActionAsync(
+                        CommandCenterAction.OpenModelPicker,
+                        state,
+                        ui,
+                        app,
+                        window,
+                        linked,
+                        submitFromInput)
+                    .ConfigureAwait(false);
+                break;
+
+            case CommandPaletteTarget.OpenSessions:
                 await DispatchActionAsync(
                         CommandCenterAction.FocusSessions,
                         state,
@@ -1754,10 +1770,16 @@ internal sealed class CommandCenterHost(
                         app,
                         window,
                         linked,
-                        static () => { })
+                        submitFromInput)
                     .ConfigureAwait(false);
                 break;
-            case "Refresh":
+
+            case CommandPaletteTarget.BrowseSlashCommands:
+                // Nothing has been awaited on the way here, so this is still the Enter key's UI turn.
+                OpenPaletteNow(state, window, CommandPaletteMode.Slash, "/");
+                break;
+
+            case CommandPaletteTarget.Refresh:
                 await RunGatedAsync(
                         state,
                         ui,
@@ -1765,38 +1787,17 @@ internal sealed class CommandCenterHost(
                         () => RefreshSessionsCoreAsync(state, ui, linked.Token))
                     .ConfigureAwait(false);
                 break;
-            case "Quit":
-                RequestQuit(state, window, app);
-                break;
-            case "Help":
+
+            case CommandPaletteTarget.Help:
                 ShowHelpOverlay(state, window, app);
                 break;
-            case "Model List":
-                await DispatchSlashAsync("/model list", state, ui, app, window, linked).ConfigureAwait(false);
+
+            case CommandPaletteTarget.Quit:
+                RequestQuit(state, window, app);
                 break;
-            case "Provider List":
-                await DispatchSlashAsync("/provider list", state, ui, app, window, linked).ConfigureAwait(false);
-                break;
-            case "MCP Status":
-                await DispatchSlashAsync("/mcp", state, ui, app, window, linked).ConfigureAwait(false);
-                break;
-            case "Arsenal":
-                await DispatchSlashAsync("/arsenal", state, ui, app, window, linked).ConfigureAwait(false);
-                break;
-            case "Campaign List":
-                await DispatchSlashAsync("/campaign list", state, ui, app, window, linked).ConfigureAwait(false);
-                break;
-            case "Spell List":
-                await DispatchSlashAsync("/spell list", state, ui, app, window, linked).ConfigureAwait(false);
-                break;
-            case "Ward List":
-                await DispatchSlashAsync("/ward list", state, ui, app, window, linked).ConfigureAwait(false);
-                break;
-            case "Doctor":
-                await DispatchSlashAsync("/doctor", state, ui, app, window, linked).ConfigureAwait(false);
-                break;
-            case "Mana":
-                await DispatchSlashAsync("/mana", state, ui, app, window, linked).ConfigureAwait(false);
+
+            case CommandPaletteTarget.RunSlashText when entry.SlashText is { } slashText:
+                await DispatchSlashAsync(slashText, state, ui, app, window, linked).ConfigureAwait(false);
                 break;
         }
     }
@@ -1835,6 +1836,218 @@ internal sealed class CommandCenterHost(
                     }
                 })
             .ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Opens the palette, or the slash menu, from the key handler that asked for it. Every caller is a
+    /// key handler on the UI thread, and the open is deliberately not deferred through
+    /// <c>app.Invoke</c>: the keys typed straight after <c>Ctrl+K</c> or <c>/</c> must land in the
+    /// palette's filter, and a deferred open lets them reach the composer first.
+    /// </summary>
+    internal static void OpenPaletteNow(
+        CommandCenterState state,
+        CommandCenterWindow window,
+        CommandPaletteMode mode,
+        string filter)
+    {
+        state.Overlay = CommandCenterOverlayKind.CommandPalette;
+
+        state.FocusRegion = CommandCenterFocusRegion.Overlay;
+
+        state.PaletteMode = mode;
+
+        state.PaletteFilter = filter;
+
+        state.FooterHint = null;
+
+        window.ShowPaletteOverlay(state);
+
+        window.ApplyState(state, kind: CommandCenterUiUpdateKind.RefreshFooter);
+    }
+
+    /// <summary>
+    /// Closes the palette from the key handler that decided to, handing <paramref name="composerText"/>
+    /// to the composer when there is a line to hand back. Synchronous for the same reason as
+    /// <see cref="OpenPaletteNow"/>: the next key must reach the composer, not the closing palette.
+    /// </summary>
+    internal static void ClosePaletteNow(
+        CommandCenterState state,
+        CommandCenterWindow window,
+        string? composerText)
+    {
+        // The overlay is marked closed before the filter is cleared, so the TextChanged the clear raises
+        // is ignored rather than read as one more filter edit.
+        state.Overlay = CommandCenterOverlayKind.None;
+
+        state.PaletteFilter = string.Empty;
+
+        state.FocusRegion = CommandCenterFocusRegion.Composer;
+
+        state.FooterHint = null;
+
+        window.HideOverlayVisual();
+
+        if (composerText is not null)
+        {
+            window.SetComposerText(composerText);
+        }
+
+        window.FocusInput();
+
+        window.ApplyState(state, kind: CommandCenterUiUpdateKind.RefreshFooter);
+    }
+
+    /// <summary>
+    /// A <c>/</c> typed into a composer that is truly empty — not merely blank — opens the slash menu
+    /// with the slash already in its filter. Anywhere else the slash is ordinary text.
+    /// </summary>
+    internal static bool TryOpenSlashMenu(
+        Key key,
+        CommandCenterFocusRegion routeFocus,
+        CommandCenterState state,
+        CommandCenterWindow window)
+    {
+        if (routeFocus != CommandCenterFocusRegion.Composer
+            || state.Overlay != CommandCenterOverlayKind.None
+            || key.IsCtrl
+            || key.IsAlt
+            || TryGetChar(key) != '/'
+            || window.GetComposerText().Length != 0)
+        {
+            return false;
+        }
+
+        key.Handled = true;
+
+        OpenPaletteNow(state, window, CommandPaletteMode.Slash, "/");
+
+        return true;
+    }
+
+    /// <summary>
+    /// The slash menu's own keys: a space hands the typed line to the composer, Backspace on a lone
+    /// slash leaves the menu with nothing typed, and <c>Esc</c> leaves it with what was typed. Any
+    /// other key, or any key outside the slash menu, is left to the view that has it.
+    /// </summary>
+    internal static bool TryHandleSlashMenuKey(Key key, CommandCenterState state, CommandCenterWindow window)
+    {
+        if (state.Overlay != CommandCenterOverlayKind.CommandPalette
+            || state.PaletteMode != CommandPaletteMode.Slash)
+        {
+            return false;
+        }
+
+        SlashMenuKey? menuKey = key == Key.Space
+            ? SlashMenuKey.Space
+            : key == Key.Backspace
+                ? SlashMenuKey.Backspace
+                : key == Key.Esc
+                    ? SlashMenuKey.Escape
+                    : null;
+
+        if (menuKey is not { } slashKey
+            || CommandPaletteCatalog.DecideSlashKey(window.OverlayFilter.Text ?? string.Empty, slashKey, selected: null)
+                is not { } step)
+        {
+            return false;
+        }
+
+        key.Handled = true;
+
+        ClosePaletteNow(state, window, step.Text);
+
+        return true;
+    }
+
+    /// <summary>
+    /// Enter in the slash menu. A command that takes no argument, or a line nothing matches, is left
+    /// in the composer and <see langword="true"/> is returned: the caller then sends it exactly as if
+    /// it had been typed there. A command that takes an argument is completed in the composer instead.
+    /// </summary>
+    internal static bool CommitSlashMenu(CommandCenterState state, CommandCenterWindow window)
+    {
+        CommandPaletteEntry? selected = SelectedPaletteEntry(state, window);
+
+        if (CommandPaletteCatalog.DecideSlashKey(window.OverlayFilter.Text ?? string.Empty, SlashMenuKey.Enter, selected)
+            is not { } step)
+        {
+            return false;
+        }
+
+        ClosePaletteNow(state, window, step.Text);
+
+        return step.Kind == SlashMenuStepKind.Run;
+    }
+
+    /// <summary>The palette entry under the highlight, or <see langword="null"/> when nothing matched.</summary>
+    internal static CommandPaletteEntry? SelectedPaletteEntry(CommandCenterState state, CommandCenterWindow window)
+    {
+        IReadOnlyList<CommandPaletteEntry> entries = state.FilteredPaletteEntries;
+
+        int index = window.GetOverlaySelectedIndex();
+
+        return index >= 0 && index < entries.Count ? entries[index] : null;
+    }
+
+    /// <summary>
+    /// The overlay filter's text changed: narrow the list it filters at once. In the slash menu, an
+    /// edit that left more than a bare <c>/name</c> — a paste carrying an argument, or a slash deleted
+    /// from the front — hands the line to the composer through <paramref name="invokeLater"/>, once the
+    /// field has finished the edit it is raising this from.
+    /// </summary>
+    internal static void ApplyOverlayFilterText(
+        CommandCenterState state,
+        CommandCenterWindow window,
+        Action<Action> invokeLater)
+    {
+        string typed = window.OverlayFilter.Text ?? string.Empty;
+
+        switch (state.Overlay)
+        {
+            case CommandCenterOverlayKind.ModelPicker
+                when !string.Equals(typed, state.ModelFilter, StringComparison.Ordinal):
+                state.ModelFilter = typed;
+
+                window.RefreshModelList(state);
+
+                break;
+
+            case CommandCenterOverlayKind.CommandPalette
+                when !string.Equals(typed, state.PaletteFilter, StringComparison.Ordinal):
+                state.PaletteFilter = typed;
+
+                window.RefreshPaletteList(state);
+
+                if (state.PaletteMode == CommandPaletteMode.Slash
+                    && CommandPaletteCatalog.DecideSlashFilterEdit(typed) is not null)
+                {
+                    invokeLater(() => HandSlashFilterToComposer(state, window));
+                }
+
+                break;
+
+            case CommandCenterOverlayKind.SessionPicker
+                when !string.Equals(typed, state.SessionFilter, StringComparison.Ordinal):
+                state.SessionFilter = typed;
+
+                window.ApplyState(state, kind: CommandCenterUiUpdateKind.RefreshSidebar);
+
+                break;
+        }
+    }
+
+    /// <summary>
+    /// The deferred half of <see cref="ApplyOverlayFilterText"/>: re-reads the filter, because more keys
+    /// may have reached it since, and hands it to the composer if the slash menu still needs to close.
+    /// </summary>
+    private static void HandSlashFilterToComposer(CommandCenterState state, CommandCenterWindow window)
+    {
+        if (state.Overlay == CommandCenterOverlayKind.CommandPalette
+            && state.PaletteMode == CommandPaletteMode.Slash
+            && CommandPaletteCatalog.DecideSlashFilterEdit(window.OverlayFilter.Text ?? string.Empty) is { } step)
+        {
+            ClosePaletteNow(state, window, step.Text);
+        }
     }
 
     private static void CloseOverlay(CommandCenterState state, CommandCenterWindow window, IApplication app)
