@@ -459,6 +459,11 @@ internal sealed class CommandCenterWindow : Window, ICommandCenterSessionActionW
 
     public bool IsSessionsFocused => SessionsView.HasFocus || (OverlayPane.Visible && OverlayList.HasFocus);
 
+    /// <summary>
+    /// The region Terminal.Gui focus is actually in. The overlay's filter and list belong to the
+    /// Sessions region only while they are showing the session picker; under any other overlay —
+    /// the palette, the slash menu, the model drop-down — they are that overlay's own.
+    /// </summary>
     public CommandCenterFocusRegion? ResolveFocusedRegion()
     {
         if (Input.HasFocus)
@@ -466,14 +471,18 @@ internal sealed class CommandCenterWindow : Window, ICommandCenterSessionActionW
             return CommandCenterFocusRegion.Composer;
         }
 
+        bool overlayChildFocused = OverlayPane.Visible
+            && (OverlayFilter.HasFocus || OverlayList.HasFocus || OverlayBody.HasFocus || OverlayAnswer.HasFocus);
+
         if (SessionsView.HasFocus
-            || (OverlayPane.Visible && OverlayFilter.Visible && OverlayFilter.HasFocus)
-            || (OverlayPane.Visible && OverlayPane.Title is "Sessions" or "Sessions ●" && OverlayList.HasFocus))
+            || (OverlayPane.Visible
+                && _overlayKind == CommandCenterOverlayKind.SessionPicker
+                && (OverlayFilter.HasFocus || OverlayList.HasFocus)))
         {
             return CommandCenterFocusRegion.Sessions;
         }
 
-        if (OverlayPane.Visible && (OverlayList.HasFocus || OverlayBody.HasFocus || OverlayAnswer.HasFocus))
+        if (overlayChildFocused)
         {
             return CommandCenterFocusRegion.Overlay;
         }
@@ -1309,6 +1318,124 @@ internal sealed class CommandCenterWindow : Window, ICommandCenterSessionActionW
         }
         catch
         {
+        }
+    }
+
+    /// <summary>The narrowest palette row: an overlay frame of the shared 60-cell default width.</summary>
+    private const int MinimumPaletteRowWidth = OverlayLayout.DefaultMaxWidth - 2;
+
+    /// <summary>
+    /// The width every palette row is rendered at. The overlay frame is sized from its widest row,
+    /// so the frame comes out at exactly this plus its border and the two cannot drift apart.
+    /// </summary>
+    private int _paletteRowWidth = MinimumPaletteRowWidth;
+
+    /// <summary>
+    /// Opens the command palette — the curated actions or, in <see cref="CommandPaletteMode.Slash"/>,
+    /// every slash command — as a two-column list under a filter field that has the keyboard, the
+    /// same shape the model and session pickers use.
+    /// </summary>
+    public void ShowPaletteOverlay(CommandCenterState state)
+    {
+        ArgumentNullException.ThrowIfNull(state);
+
+        _overlayKind = CommandCenterOverlayKind.CommandPalette;
+
+        _overlayHumanPrompt = false;
+
+        OverlayAnswer.Visible = false;
+
+        try
+        {
+            OverlayAnswer.Text = string.Empty;
+        }
+        catch
+        {
+        }
+
+        OverlayPane.Title = state.PaletteMode == CommandPaletteMode.Slash
+            ? "Slash commands · type to filter"
+            : "Commands · type to filter";
+
+        OverlayPane.Visible = true;
+
+        _overlayShowFilter = true;
+
+        OverlayBody.Visible = false;
+
+        OverlayBody.Text = string.Empty;
+
+        OverlayFilter.Visible = true;
+
+        OverlayFilter.Text = state.PaletteFilter;
+
+        OverlayList.Visible = true;
+
+        OverlayList.Y = 1;
+
+        // The list already starts below the filter row; a fill margin on top of that would hide the
+        // last row of a list that exactly fills its frame.
+        OverlayList.Height = Dim.Fill();
+
+        _paletteRowWidth = Math.Clamp(
+            CommandPaletteCatalog.NaturalRowWidth(state.PaletteMode) + 1,
+            MinimumPaletteRowWidth,
+            Math.Max(MinimumPaletteRowWidth, Math.Min(_cols - 6, OverlayLayout.AbsoluteMaxWidth - 2)));
+
+        RefreshPaletteList(state);
+
+        ApplyAbsoluteLayout(_cols, _rows);
+
+        OverlayFilter.SetFocus();
+
+        OverlayFilter.MoveEnd();
+    }
+
+    /// <summary>
+    /// Refills the palette from the current filter and highlights the first row, which is the best
+    /// match for what has been typed. Every row comes from the palette catalog, never from the host
+    /// or a model, so nothing here needs stripping.
+    /// </summary>
+    public void RefreshPaletteList(CommandCenterState state)
+    {
+        ArgumentNullException.ThrowIfNull(state);
+
+        _overlayLines.Clear();
+
+        foreach (string row in CommandPaletteCatalog.Render(
+            state.FilteredPaletteEntries,
+            state.PaletteMode,
+            _paletteRowWidth))
+        {
+            _overlayLines.Add(row);
+        }
+
+        try
+        {
+            OverlayList.SelectedItem = 0;
+
+            OverlayList.EnsureSelectedItemVisible();
+        }
+        catch
+        {
+        }
+    }
+
+    /// <summary>
+    /// Replaces the composer text and leaves the caret at its end, so whatever is typed next
+    /// continues the line — how the slash menu hands a command back for its argument.
+    /// </summary>
+    public void SetComposerText(string text)
+    {
+        ArgumentNullException.ThrowIfNull(text);
+
+        Input.Text = text;
+
+        Input.MoveEnd();
+
+        if (!_layoutInProgress)
+        {
+            ApplyAbsoluteLayout(_cols, _rows);
         }
     }
 
