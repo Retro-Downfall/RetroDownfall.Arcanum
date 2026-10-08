@@ -54,7 +54,6 @@ namespace RetroDownfall.Arcanum.Api.Security;
 /// </summary>
 public static class IdempotencyEndpointFilters
 {
-
     private static readonly ConcurrentDictionary<string, LocalFlight> InFlight = new(StringComparer.Ordinal);
 
     private static readonly string ProcessInstanceId = Guid.NewGuid().ToString("N");
@@ -64,17 +63,13 @@ public static class IdempotencyEndpointFilters
         JsonTypeInfo<TRequest> requestTypeInfo)
         where TRequest : class
     {
-
         return (context, next) =>
         {
-
             if (!TryResolveIdempotencyKey(context.HttpContext, out string? key, out IResult? keyError))
             {
-
                 return keyError is not null
                     ? ValueTask.FromResult<object?>(keyError)
                     : next(context);
-
             }
 
             TRequest? request = context.GetArgument<TRequest?>(argumentIndex);
@@ -84,21 +79,16 @@ public static class IdempotencyEndpointFilters
                 : JsonSerializer.SerializeToUtf8Bytes(request, requestTypeInfo);
 
             return InvokeCoreAsync(context, next, key!, bodyBytes);
-
         };
-
     }
 
     public static async ValueTask<object?> ForRawBody(EndpointFilterInvocationContext context, EndpointFilterDelegate next)
     {
-
         if (!TryResolveIdempotencyKey(context.HttpContext, out string? key, out IResult? keyError))
         {
-
             return keyError is not null
                 ? keyError
                 : await next(context).ConfigureAwait(false);
-
         }
 
         HttpRequest request = context.HttpContext.Request;
@@ -117,43 +107,34 @@ public static class IdempotencyEndpointFilters
         request.Body.Position = 0;
 
         return await InvokeCoreAsync(context, next, key!, bodyDigest).ConfigureAwait(false);
-
     }
 
     private static async Task<byte[]> ComputeBodyDigestAsync(Stream body, CancellationToken cancellationToken)
     {
-
         using IncrementalHash hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
 
         byte[] rented = ArrayPool<byte>.Shared.Rent(81920);
 
         try
         {
-
             int read;
 
             while ((read = await body.ReadAsync(rented.AsMemory(0, rented.Length), cancellationToken)
                     .ConfigureAwait(false))
                 > 0)
             {
-
                 hash.AppendData(rented.AsSpan(0, read));
-
             }
-
         }
         finally
         {
-
             // clearArray: true — this buffer held up to 80 KiB of raw request body bytes; returning
             // it without clearing would leave that content readable by whatever the pool hands the
             // buffer to next.
             ArrayPool<byte>.Shared.Return(rented, clearArray: true);
-
         }
 
         return hash.GetHashAndReset();
-
     }
 
     private static async ValueTask<object?> InvokeCoreAsync(
@@ -162,10 +143,9 @@ public static class IdempotencyEndpointFilters
         string key,
         byte[] bodyBytes)
     {
-
         HttpContext httpContext = context.HttpContext;
 
-        TurnIdempotencyAmbient.Publish(true);
+        TurnIdempotencyAmbient.Publish();
 
         try
         {
@@ -175,7 +155,6 @@ public static class IdempotencyEndpointFilters
         {
             TurnIdempotencyAmbient.Clear();
         }
-
     }
 
     private static async ValueTask<object?> InvokeCoreWithAmbientAsync(
@@ -184,7 +163,6 @@ public static class IdempotencyEndpointFilters
         string key,
         byte[] bodyBytes)
     {
-
         HttpContext httpContext = context.HttpContext;
 
         IOptionsMonitor<ArcanumSettings> optionsMonitor =
@@ -200,7 +178,8 @@ public static class IdempotencyEndpointFilters
             bodyBytes,
             route,
             IdempotencyIdentity.NormalizeQuery(httpContext),
-            httpContext.Request.ContentType);
+            httpContext.Request.ContentType,
+            CovenantRequestFeatures.ContextPolicy(httpContext));
 
         IIdempotencyClaimStore claimStore =
             httpContext.RequestServices.GetRequiredService<IIdempotencyClaimStore>();
@@ -215,7 +194,6 @@ public static class IdempotencyEndpointFilters
 
         while (true)
         {
-
             httpContext.RequestAborted.ThrowIfCancellationRequested();
 
             LocalFlight candidate = new();
@@ -224,18 +202,15 @@ public static class IdempotencyEndpointFilters
 
             if (!ReferenceEquals(candidate, flight))
             {
-
                 await flight.Completion.Task.WaitAsync(httpContext.RequestAborted).ConfigureAwait(false);
 
                 continue;
-
             }
 
             bool releaseDeferred = false;
 
             try
             {
-
                 return await InvokeLocalLeaderAsync(
                         context,
                         next,
@@ -248,22 +223,15 @@ public static class IdempotencyEndpointFilters
                         flight,
                         () => releaseDeferred = true)
                     .ConfigureAwait(false);
-
             }
             finally
             {
-
                 if (!releaseDeferred)
                 {
-
                     ReleaseLocalFlight(claimKeyHash, flight);
-
                 }
-
             }
-
         }
-
     }
 
     private static async ValueTask<object?> InvokeLocalLeaderAsync(
@@ -278,26 +246,20 @@ public static class IdempotencyEndpointFilters
         LocalFlight flight,
         Action deferRelease)
     {
-
         HttpContext httpContext = context.HttpContext;
 
         IdempotencyClaim? existing;
 
         try
         {
-
             existing = await claimStore.TryGetAsync(claimKeyHash, httpContext.RequestAborted).ConfigureAwait(false);
-
         }
         catch (OperationCanceledException) when (httpContext.RequestAborted.IsCancellationRequested)
         {
-
             throw;
-
         }
         catch (Exception ex)
         {
-
             LogStoreFault(logger, "lookup", claimKeyHash, ex);
 
             return await ExecuteFreshAsync(
@@ -307,34 +269,25 @@ public static class IdempotencyEndpointFilters
                     flight,
                     deferRelease)
                 .ConfigureAwait(false);
-
         }
 
         if (existing is not null)
         {
-
             if (!string.Equals(existing.FingerprintHash, fingerprintHash, StringComparison.Ordinal))
             {
-
                 return BuildConflictResult(httpContext);
-
             }
 
             if (TryBuildReplay(existing, out IdempotencyReplayResult? replay))
             {
-
                 return replay;
-
             }
 
             if (IsLive(existing, timing.TimeProvider.GetUtcNow()))
             {
-
                 if (!IsSameProcessOwner(existing.OwnerId))
                 {
-
                     return BuildInProgressResult(httpContext);
-
                 }
 
                 if (!await TryRetireSameProcessOrphanAsync(
@@ -345,7 +298,6 @@ public static class IdempotencyEndpointFilters
                         httpContext.RequestAborted)
                     .ConfigureAwait(false))
                 {
-
                     return await ExecuteFreshAsync(
                             context,
                             next,
@@ -353,11 +305,8 @@ public static class IdempotencyEndpointFilters
                             flight,
                             deferRelease)
                         .ConfigureAwait(false);
-
                 }
-
             }
-
         }
 
         string ownerId = CreateOwnerId();
@@ -368,14 +317,12 @@ public static class IdempotencyEndpointFilters
 
         for (int attempt = 0; attempt < 2; attempt++)
         {
-
             DateTimeOffset now = timing.TimeProvider.GetUtcNow();
 
             IdempotencyClaimAcquireResult acquire;
 
             try
             {
-
                 acquire = await claimStore.TryAcquireAsync(
                         new IdempotencyClaimAcquireRequest(
                             claimKeyHash,
@@ -385,17 +332,13 @@ public static class IdempotencyEndpointFilters
                             now),
                         httpContext.RequestAborted)
                     .ConfigureAwait(false);
-
             }
             catch (OperationCanceledException) when (httpContext.RequestAborted.IsCancellationRequested)
             {
-
                 throw;
-
             }
             catch (Exception ex)
             {
-
                 LogStoreFault(logger, "acquire", claimKeyHash, ex);
 
                 return await ExecuteFreshAsync(
@@ -405,27 +348,21 @@ public static class IdempotencyEndpointFilters
                         flight,
                         deferRelease)
                     .ConfigureAwait(false);
-
             }
 
             if (acquire.Conflict
                 || !string.Equals(acquire.Claim.FingerprintHash, fingerprintHash, StringComparison.Ordinal))
             {
-
                 return BuildConflictResult(httpContext);
-
             }
 
             if (acquire.Acquired)
             {
-
                 if (!string.Equals(acquire.Claim.OwnerId, ownerId, StringComparison.Ordinal)
                     || acquire.Claim.State != IdempotencyClaimState.Running)
                 {
-
                     throw new InvalidOperationException(
                         "Idempotency store reported acquisition without matching claim ownership.");
-
                 }
 
                 return await ExecuteMissAsync(
@@ -442,32 +379,24 @@ public static class IdempotencyEndpointFilters
                         flight,
                         deferRelease)
                     .ConfigureAwait(false);
-
             }
 
             if (TryBuildReplay(acquire.Claim, out IdempotencyReplayResult? replay))
             {
-
                 return replay;
-
             }
 
             if (IsLive(acquire.Claim, timing.TimeProvider.GetUtcNow()))
             {
-
                 if (!IsSameProcessOwner(acquire.Claim.OwnerId))
                 {
-
                     return BuildInProgressResult(httpContext);
-
                 }
 
                 if (sameProcessRecoveryAttempted)
                 {
-
                     throw new InvalidOperationException(
                         "Idempotency ownership could not be established after local recovery.");
-
                 }
 
                 if (!await TryRetireSameProcessOrphanAsync(
@@ -478,7 +407,6 @@ public static class IdempotencyEndpointFilters
                         httpContext.RequestAborted)
                     .ConfigureAwait(false))
                 {
-
                     return await ExecuteFreshAsync(
                             context,
                             next,
@@ -486,29 +414,23 @@ public static class IdempotencyEndpointFilters
                             flight,
                             deferRelease)
                         .ConfigureAwait(false);
-
                 }
 
                 sameProcessRecoveryAttempted = true;
 
                 continue;
-
             }
 
             if (attempt == 0
                 && acquire.Claim.State is IdempotencyClaimState.Failed or IdempotencyClaimState.Abandoned)
             {
-
                 continue;
-
             }
 
             throw new InvalidOperationException("Idempotency ownership could not be established.");
-
         }
 
         throw new InvalidOperationException("Idempotency ownership transition limit exceeded.");
-
     }
 
     private static async ValueTask<object?> ExecuteFreshAsync(
@@ -518,39 +440,31 @@ public static class IdempotencyEndpointFilters
         LocalFlight flight,
         Action deferRelease)
     {
-
         HttpContext httpContext = context.HttpContext;
 
         httpContext.RequestAborted.ThrowIfCancellationRequested();
 
         httpContext.Response.OnCompleted(() =>
         {
-
             ReleaseLocalFlight(claimKeyHash, flight);
 
             return Task.CompletedTask;
-
         });
 
         deferRelease();
 
         try
         {
-
             httpContext.RequestAborted.ThrowIfCancellationRequested();
 
             return await next(context).ConfigureAwait(false);
-
         }
         catch
         {
-
             ReleaseLocalFlight(claimKeyHash, flight);
 
             throw;
-
         }
-
     }
 
     private static async Task<object?> ExecuteMissAsync(
@@ -567,7 +481,6 @@ public static class IdempotencyEndpointFilters
         LocalFlight flight,
         Action deferRelease)
     {
-
         int maxCacheBytes = ArcanumSettingClamps.SecurityIdempotencyMaxResponseBytes(
             ArcanumRuntimeDefaults.SecurityIdempotencyMaxResponseBytes);
 
@@ -595,26 +508,21 @@ public static class IdempotencyEndpointFilters
         deferRelease();
 
         owned.BindEndpointCancellation();
-        TurnIdempotencyAmbient.Publish(true, owned.OwnershipLostToken);
+        TurnIdempotencyAmbient.Publish(owned.OwnershipLostToken);
         owned.StartHeartbeat();
 
         try
         {
-
             httpContext.RequestAborted.ThrowIfCancellationRequested();
 
             return await next(context).ConfigureAwait(false);
-
         }
         catch
         {
-
             await owned.FailAsync().ConfigureAwait(false);
 
             throw;
-
         }
-
     }
 
     private static async Task PersistClaimAsync(
@@ -660,7 +568,17 @@ public static class IdempotencyEndpointFilters
             // NDJSON, or SSE — all guaranteed UTF-8 — so this cannot change behavior for a current
             // caller; it only stops a future non-text route from attaching the filter and getting a
             // silently corrupted replay. An empty body has nothing to corrupt, so it is exempt.
+            //
+            // And never for a response marked protected. The claim keeps the body in a generic cache table,
+            // and a replay is written by a later request that did not re-make the decision the protected
+            // header tuple follows from, so it would go out without them. Rather than store a flag beside the
+            // body and trust every replay path to honour it, the protected body is not stored at all: the
+            // claim is abandoned, a retry with the same key runs again and carries its own headers, and
+            // protected content never rests in the cache table.
+            bool protectedResponse = CovenantRequestFeatures.IsProtectedResponse(httpContext);
+
             bool terminalStreamValid = !neverCache
+                && !protectedResponse
                 && withinCap
                 && IsIdempotencyReplayableStatus(httpContext.Response.StatusCode)
                 && (buffered.Length == 0 || IsReplayableContentType(httpContext.Response.ContentType))
@@ -711,23 +629,19 @@ public static class IdempotencyEndpointFilters
         IdempotencyClaim claim,
         out IdempotencyReplayResult? replay)
     {
-
         if (claim.State == IdempotencyClaimState.Completed
             && claim.TerminalStreamComplete
             && claim.StatusCode is int status
             && claim.ResponseBody is not null)
         {
-
             replay = new IdempotencyReplayResult(status, claim.ContentType, claim.ResponseBody);
 
             return true;
-
         }
 
         replay = null;
 
         return false;
-
     }
 
     private static bool IsLive(IdempotencyClaim claim, DateTimeOffset now) =>
@@ -782,30 +696,22 @@ public static class IdempotencyEndpointFilters
         ILogger logger,
         CancellationToken cancellationToken)
     {
-
         try
         {
-
             await claimStore.MarkFailedAsync(claim.Id, claim.OwnerId, cancellationToken).ConfigureAwait(false);
 
             return true;
-
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-
             throw;
-
         }
         catch (Exception ex)
         {
-
             LogStoreFault(logger, "same-process recovery", claimKeyHash, ex);
 
             return false;
-
         }
-
     }
 
     private static void LogStoreFault(
@@ -814,29 +720,23 @@ public static class IdempotencyEndpointFilters
         string claimKeyHash,
         Exception exception)
     {
-
         logger.LogWarning(
             "Idempotency claim {Operation} failed for {ClaimKeyHash}; exception type {ExceptionType}; proceeding without durable replay.",
             operation,
             claimKeyHash,
             exception.GetType().Name);
-
     }
 
     private static void ReleaseLocalFlight(string claimKeyHash, LocalFlight flight)
     {
-
         if (!flight.TryRelease())
         {
-
             return;
-
         }
 
         _ = InFlight.TryRemove(new KeyValuePair<string, LocalFlight>(claimKeyHash, flight));
 
         _ = flight.Completion.TrySetResult();
-
     }
 
     private static IResult BuildInProgressResult(HttpContext httpContext) =>
@@ -886,7 +786,6 @@ public static class IdempotencyEndpointFilters
 
     private static bool TryResolveIdempotencyKey(HttpContext httpContext, out string? key, out IResult? error)
     {
-
         error = null;
 
         key = null;
@@ -894,51 +793,41 @@ public static class IdempotencyEndpointFilters
         if (!httpContext.Request.Headers.TryGetValue(ArcanumApiHeaders.IdempotencyKey, out StringValues values)
             || values.Count == 0)
         {
-
             return false;
-
         }
 
         if (values.Count > 1)
         {
-
             // Ambiguity is a loud client error, never a silent downgrade to unprotected execution:
             // falling through here would run the side-effecting handler with no claim and no fingerprint
             // while the caller still believes the header it sent is protecting it.
             error = BuildKeyRejectionError(httpContext, AmbiguousKeyMessage, ErrorCodes.Security.IdempotencyKeyAmbiguous);
 
             return false;
-
         }
 
         string? candidate = values[0];
 
         if (string.IsNullOrEmpty(candidate))
         {
-
             return false;
-
         }
 
         if (candidate.Length > ArcanumSettingClamps.SecurityIdempotencyKeyMaxChars)
         {
-
             error = BuildKeyRejectionError(httpContext, KeyTooLongMessage, ErrorCodes.Security.IdempotencyKeyTooLong);
 
             return false;
-
         }
 
         key = candidate;
 
         return true;
-
     }
 
     /// <summary>Legacy hash retained for test helpers; prefer <see cref="IdempotencyIdentity"/>.</summary>
     internal static string ComputeKeyHash(string key, byte[] bodyBytes)
     {
-
         byte[] keyBytes = Encoding.UTF8.GetBytes(key);
 
         byte[] combined = bodyBytes.Length == 0 ? keyBytes : [.. keyBytes, .. bodyBytes];
@@ -946,7 +835,6 @@ public static class IdempotencyEndpointFilters
         byte[] hash = SHA256.HashData(combined);
 
         return Convert.ToHexString(hash);
-
     }
 
     private const string KeyTooLongMessage =
@@ -957,10 +845,8 @@ public static class IdempotencyEndpointFilters
 
     private static IResult BuildKeyRejectionError(HttpContext httpContext, string message, string nativeCode)
     {
-
         if (httpContext.Request.Path.StartsWithSegments("/v1", StringComparison.OrdinalIgnoreCase))
         {
-
             OpenAiErrorResponse response = new(new OpenAiErrorDetail(
                 message,
                 "invalid_request_error",
@@ -968,7 +854,6 @@ public static class IdempotencyEndpointFilters
                 Code: "invalid_value"));
 
             return Results.Json(response, ArcanumJsonContext.Default.OpenAiErrorResponse, statusCode: StatusCodes.Status400BadRequest);
-
         }
 
         string traceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
@@ -978,19 +863,16 @@ public static class IdempotencyEndpointFilters
             traceId);
 
         return Results.Json(body, ArcanumJsonContext.Default.ApiResponseString, statusCode: StatusCodes.Status400BadRequest);
-
     }
 
     private sealed class LocalFlight
     {
-
         private int _released;
 
         public TaskCompletionSource Completion { get; } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public bool TryRelease() => Interlocked.Exchange(ref _released, 1) == 0;
-
     }
 
     private sealed class OwnedClaimExecution(
@@ -1004,7 +886,6 @@ public static class IdempotencyEndpointFilters
         IdempotencyLeaseTiming timing,
         Action release)
     {
-
         private readonly CancellationToken _originalRequestAborted = httpContext.RequestAborted;
 
         private readonly CancellationTokenSource _executionLifetime = new();
@@ -1021,17 +902,14 @@ public static class IdempotencyEndpointFilters
 
         public void BindEndpointCancellation()
         {
-
             _endpointCancellation = CancellationTokenSource.CreateLinkedTokenSource(
                 _originalRequestAborted,
                 _ownershipLost.Token);
             httpContext.RequestAborted = _endpointCancellation.Token;
-
         }
 
         public void StartHeartbeat()
         {
-
             _heartbeatTask = RunHeartbeatAsync(
                 claimStore,
                 claimId,
@@ -1041,7 +919,6 @@ public static class IdempotencyEndpointFilters
                 timing,
                 LoseOwnership,
                 _executionLifetime.Token);
-
         }
 
         public Task CompleteResponseAsync() => FinalizeAsync(responseCompleted: true);
@@ -1050,103 +927,76 @@ public static class IdempotencyEndpointFilters
 
         private async Task FinalizeAsync(bool responseCompleted)
         {
-
             if (Interlocked.Exchange(ref _finalized, 1) != 0)
             {
-
                 return;
-
             }
 
             try
             {
-
                 _executionLifetime.Cancel();
 
                 try
                 {
-
                     await _heartbeatTask.ConfigureAwait(false);
-
                 }
                 catch (OperationCanceledException) when (_executionLifetime.IsCancellationRequested)
                 {
                 }
                 catch (Exception ex)
                 {
-
                     logger.LogWarning(
                         "Idempotency heartbeat shutdown failed for {ClaimId}; exception type {ExceptionType}.",
                         claimId,
                         ex.GetType().Name);
-
                 }
 
                 if (responseCompleted)
                 {
-
                     await PersistClaimAsync(httpContext, claimStore, claimId, ownerId, teeStream, logger)
                         .ConfigureAwait(false);
-
                 }
                 else
                 {
-
                     try
                     {
-
                         await claimStore.MarkFailedAsync(claimId, ownerId, CancellationToken.None)
                             .ConfigureAwait(false);
-
                     }
                     catch (Exception ex)
                     {
-
                         logger.LogWarning(
                             "Failed to mark idempotency claim {ClaimId} after handler failure; exception type {ExceptionType}.",
                             claimId,
                             ex.GetType().Name);
-
                     }
-
                 }
-
             }
             finally
             {
-
                 httpContext.RequestAborted = _originalRequestAborted;
                 _endpointCancellation?.Dispose();
                 _ownershipLost.Dispose();
                 _executionLifetime.Dispose();
 
                 release();
-
             }
-
         }
 
         private void LoseOwnership()
         {
-
             try
             {
-
                 _ownershipLost.Cancel();
-
             }
             catch (Exception ex)
             {
-
                 logger.LogWarning(
                     "Idempotency ownership-loss cancellation failed for {ClaimId}; exception type {ExceptionType}.",
                     claimId,
                     ex.GetType().Name);
-
             }
-
         }
-
     }
 
     private static async Task RunHeartbeatAsync(
@@ -1159,7 +1009,6 @@ public static class IdempotencyEndpointFilters
         Action loseOwnership,
         CancellationToken cancellationToken)
     {
-
         DateTimeOffset startedAt = timing.TimeProvider.GetUtcNow();
 
         DateTimeOffset deadline = startedAt.Add(timing.MaximumLifetime);
@@ -1168,14 +1017,12 @@ public static class IdempotencyEndpointFilters
 
         while (true)
         {
-
             DateTimeOffset beforeDelay = timing.TimeProvider.GetUtcNow();
 
             TimeSpan lifetimeRemaining = deadline - beforeDelay;
 
             if (lifetimeRemaining <= TimeSpan.Zero)
             {
-
                 logger.LogWarning(
                     "Idempotency heartbeat lifetime expired for {ClaimId}; relinquishing ownership.",
                     claimId);
@@ -1183,14 +1030,12 @@ public static class IdempotencyEndpointFilters
                 loseOwnership();
 
                 return;
-
             }
 
             TimeSpan leaseRemaining = leaseExpiresAt - beforeDelay;
 
             if (leaseRemaining <= TimeSpan.Zero)
             {
-
                 logger.LogWarning(
                     "Idempotency lease expired for {ClaimId}; relinquishing ownership.",
                     claimId);
@@ -1198,7 +1043,6 @@ public static class IdempotencyEndpointFilters
                 loseOwnership();
 
                 return;
-
             }
 
             TimeSpan halfLeaseRemaining = TimeSpan.FromTicks(Math.Max(1, leaseRemaining.Ticks / 2));
@@ -1208,9 +1052,7 @@ public static class IdempotencyEndpointFilters
 
             if (lifetimeRemaining < delay)
             {
-
                 delay = lifetimeRemaining;
-
             }
 
             await Task.Delay(delay, timing.TimeProvider, cancellationToken).ConfigureAwait(false);
@@ -1219,7 +1061,6 @@ public static class IdempotencyEndpointFilters
 
             if (now >= deadline || now >= leaseExpiresAt)
             {
-
                 logger.LogWarning(
                     "Idempotency heartbeat lifetime or lease expired for {ClaimId}; relinquishing ownership.",
                     claimId);
@@ -1227,12 +1068,10 @@ public static class IdempotencyEndpointFilters
                 loseOwnership();
 
                 return;
-
             }
 
             try
             {
-
                 DateTimeOffset renewedLeaseExpiresAt = now.Add(timing.LeaseDuration);
 
                 Task<bool> heartbeat = claimStore.HeartbeatAsync(
@@ -1244,9 +1083,7 @@ public static class IdempotencyEndpointFilters
                 TimeSpan ownershipConfirmationTimeout = leaseExpiresAt - now;
                 if (timing.HeartbeatInterval < ownershipConfirmationTimeout)
                 {
-
                     ownershipConfirmationTimeout = timing.HeartbeatInterval;
-
                 }
 
                 bool renewed = await heartbeat
@@ -1255,27 +1092,21 @@ public static class IdempotencyEndpointFilters
 
                 if (!renewed)
                 {
-
                     logger.LogWarning(
                         "Idempotency heartbeat no longer owns {ClaimId}; cancelling owned execution.",
                         claimId);
                     loseOwnership();
                     return;
-
                 }
 
                 leaseExpiresAt = renewedLeaseExpiresAt;
-
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
-
                 return;
-
             }
             catch (TimeoutException)
             {
-
                 logger.LogWarning(
                     "Idempotency heartbeat timed out for {ClaimId}; relinquishing ownership.",
                     claimId);
@@ -1283,11 +1114,9 @@ public static class IdempotencyEndpointFilters
                 loseOwnership();
 
                 return;
-
             }
             catch (Exception ex)
             {
-
                 logger.LogWarning(
                     "Idempotency heartbeat failed for {ClaimId}; exception type {ExceptionType}.",
                     claimId,
@@ -1295,7 +1124,6 @@ public static class IdempotencyEndpointFilters
 
                 if (leaseExpiresAt - now <= timing.HeartbeatInterval)
                 {
-
                     logger.LogWarning(
                         "Idempotency lease can no longer be renewed safely for {ClaimId}; relinquishing ownership.",
                         claimId);
@@ -1303,15 +1131,10 @@ public static class IdempotencyEndpointFilters
                     loseOwnership();
 
                     return;
-
                 }
-
             }
-
         }
-
     }
-
 }
 
 internal sealed record IdempotencyLeaseTiming(
@@ -1320,13 +1143,11 @@ internal sealed record IdempotencyLeaseTiming(
     TimeSpan HeartbeatInterval,
     TimeSpan MaximumLifetime)
 {
-
     public static IdempotencyLeaseTiming Default { get; } = new(
         TimeProvider.System,
         TimeSpan.FromMinutes(5),
         TimeSpan.FromMinutes(1),
         TimeSpan.FromHours(24));
-
 }
 
 /// <summary>
@@ -1335,25 +1156,19 @@ internal sealed record IdempotencyLeaseTiming(
 /// </summary>
 internal sealed class IdempotencyReplayResult(int statusCode, string? contentType, string body) : IResult
 {
-
     public Task ExecuteAsync(HttpContext httpContext)
     {
-
         httpContext.Response.StatusCode = statusCode;
 
         if (!string.IsNullOrEmpty(contentType))
         {
-
             httpContext.Response.ContentType = contentType;
-
         }
 
         byte[] bytes = Encoding.UTF8.GetBytes(body);
 
         return httpContext.Response.Body.WriteAsync(bytes, httpContext.RequestAborted).AsTask();
-
     }
-
 }
 
 /// <summary>
@@ -1366,7 +1181,6 @@ internal sealed class IdempotencyReplayResult(int statusCode, string? contentTyp
 /// </summary>
 internal sealed class IdempotencyBufferingStream(Stream inner, int maxBytes) : Stream
 {
-
     private readonly MemoryStream _buffer = new();
 
     private bool _capExceeded;
@@ -1433,7 +1247,6 @@ internal sealed class IdempotencyBufferingStream(Stream inner, int maxBytes) : S
 
     public override void Write(byte[] buffer, int offset, int count)
     {
-
         TryBuffer(buffer.AsSpan(offset, count));
 
         if (_innerDead)
@@ -1449,12 +1262,10 @@ internal sealed class IdempotencyBufferingStream(Stream inner, int maxBytes) : S
         {
             _innerDead = true;
         }
-
     }
 
     public override async Task WriteAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
     {
-
         TryBuffer(buffer.AsSpan(offset, count));
 
         if (_innerDead)
@@ -1470,12 +1281,10 @@ internal sealed class IdempotencyBufferingStream(Stream inner, int maxBytes) : S
         {
             _innerDead = true;
         }
-
     }
 
     public override async ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken = default)
     {
-
         TryBuffer(buffer.Span);
 
         if (_innerDead)
@@ -1491,25 +1300,19 @@ internal sealed class IdempotencyBufferingStream(Stream inner, int maxBytes) : S
         {
             _innerDead = true;
         }
-
     }
 
     private void TryBuffer(ReadOnlySpan<byte> span)
     {
-
         if (_capExceeded)
         {
-
             return;
-
         }
 
         try
         {
-
             if (_buffer.Length + span.Length > maxBytes)
             {
-
                 _capExceeded = true;
 
                 _buffer.SetLength(0);
@@ -1517,34 +1320,24 @@ internal sealed class IdempotencyBufferingStream(Stream inner, int maxBytes) : S
                 _buffer.Capacity = 0;
 
                 return;
-
             }
 
             _buffer.Write(span);
-
         }
         catch (Exception ex) when (ex is OutOfMemoryException or ObjectDisposedException)
         {
-
             // Never let a buffering failure break the live response — just stop caching.
             _capExceeded = true;
-
         }
-
     }
 
     protected override void Dispose(bool disposing)
     {
-
         if (disposing)
         {
-
             _buffer.Dispose();
-
         }
 
         base.Dispose(disposing);
-
     }
-
 }

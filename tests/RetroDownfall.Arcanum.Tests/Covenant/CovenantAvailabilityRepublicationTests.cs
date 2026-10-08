@@ -349,9 +349,9 @@ public sealed class CovenantAvailabilityRepublicationTests
     }
 
     /// <summary>
-    /// A fresh installation records a full rebuild as owed, and nothing in a host clears that record.
-    /// Once one pass has synchronized search, the accelerator answers every query, so status asks the
-    /// operator for no rebuild.
+    /// A fresh installation records a full rebuild as owed because nothing has built its projection. Once
+    /// one pass has adopted the empty projection and synchronized search, the accelerator answers every
+    /// query, so status asks the operator for no rebuild and the recorded debt is cleared with it.
     /// </summary>
     [SkippableFact]
     public async Task A_fresh_installation_reports_no_rebuild_guidance_once_a_pass_has_synchronized_search()
@@ -374,9 +374,9 @@ public sealed class CovenantAvailabilityRepublicationTests
 
         Assert.Equal(CovenantSearchRebuildGuidance.None, search.Guidance);
 
-        // The persisted record is untouched; only what status asks of the operator changed.
+        // The pass that published a tuple equal to the canonical sequence cleared the debt it adopted.
         Assert.Equal(
-            (long)CovenantFtsRebuildState.FullRebuildRequired,
+            (long)CovenantFtsRebuildState.Idle,
             await ScalarAsync(host, "SELECT RebuildStateCode FROM covenant_state WHERE StateKey = 1;"));
     }
 
@@ -840,9 +840,9 @@ public sealed class CovenantAvailabilityRepublicationTests
 
     /// <summary>
     /// A projection that is merely pending, because a write landed after the last pass applied a published
-    /// tuple, is something to wait out. Both routes say so, though a fresh installation still carries the
-    /// full rebuild it recorded when it was created: that debt describes the empty projection the first pass
-    /// adopted, not the delta waiting behind it.
+    /// tuple, is something to wait out. Both routes say so, and they say so even when a full rebuild is
+    /// recorded as owed: the published tuple is what the outbox continues from, so the recorded debt, which
+    /// describes how the installation began and not the delta waiting behind its tuple, does not decide.
     /// </summary>
     [SkippableFact]
     public async Task A_projection_pending_behind_a_published_tuple_reports_wait_for_synchronization_on_both_routes()
@@ -858,6 +858,15 @@ public sealed class CovenantAvailabilityRepublicationTests
         _ = await driver.SetCovenantAsync(CovenantScope.Global, null, VaultKey, "Keep the vault key offline.");
 
         await PassAsync(host);
+
+        // The first pass adopted the empty projection and cleared the debt a fresh installation records.
+        Assert.Equal(
+            (long)CovenantFtsRebuildState.Idle,
+            await ScalarAsync(host, "SELECT RebuildStateCode FROM covenant_state WHERE StateKey = 1;"));
+
+        // Record it again beside the published tuple, so the published tuple winning over a recorded debt
+        // is checked end to end on both routes rather than only in the unit-level rule.
+        await ExecuteAsync(host, "UPDATE covenant_state SET RebuildStateCode = 2 WHERE StateKey = 1;");
 
         _ = await driver.SetCovenantAsync(CovenantScope.Global, null, HarborKey, "Moor at the east harbor.");
 
@@ -883,6 +892,11 @@ public sealed class CovenantAvailabilityRepublicationTests
         AssertAnswersFromTheIndex(await SearchAsync(client));
 
         AssertAnswersFromTheIndex((await QueryAsync(client, "harbor")).Search);
+
+        // Catching up to the canonical sequence is what clears the debt, in the pass that gets there.
+        Assert.Equal(
+            (long)CovenantFtsRebuildState.Idle,
+            await ScalarAsync(host, "SELECT RebuildStateCode FROM covenant_state WHERE StateKey = 1;"));
     }
 
     /// <summary>
@@ -1309,6 +1323,21 @@ public sealed class CovenantAvailabilityRepublicationTests
             CovenantHealthTransition.SchemaRepair);
 
         Assert.Equal(CovenantCapabilityState.Degraded, availability.Current.Accelerator);
+    }
+
+    private static async Task ExecuteAsync(ArcanumWebApplicationFactory host, string sql)
+    {
+        await using AsyncServiceScope scope = host.Services.CreateAsyncScope();
+
+        SqliteConnection connection = await scope.ServiceProvider
+            .GetRequiredService<ICovenantConnectionSource>()
+            .GetOpenConnectionAsync(Token);
+
+        await using SqliteCommand command = connection.CreateCommand();
+
+        command.CommandText = sql;
+
+        _ = await command.ExecuteNonQueryAsync(Token);
     }
 
     private static async Task<long> ScalarAsync(ArcanumWebApplicationFactory host, string sql)

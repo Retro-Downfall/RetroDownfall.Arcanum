@@ -170,6 +170,44 @@ public sealed class A2AStreamingSubscriptionTests
     }
 
     [Fact]
+    public async Task DispatchSendingAsync_SubscriptionFrameIsNotJson_DegradesToPolling()
+    {
+        using GateAgentHandler agentHandler = new();
+
+        using TestServer server = await CreateFakeRemoteAgentServerAsync(agentHandler, streaming: true);
+
+        using HttpMessageHandler serverHandler = server.CreateHandler();
+
+        // A frame the peer sent that is not JSON is the same lie as a stream it refused: the Sending is
+        // still running perfectly well on the far side, so it degrades to the poll instead of ending with
+        // an unreadable-response failure that leaves the remote task running.
+        using MethodRecordingHandler handler = new(
+            serverHandler,
+            intercept: static _ => new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("data: { this is not json\n\n", Encoding.UTF8, "text/event-stream"),
+            },
+            interceptMethod: "SubscribeToTask");
+
+        A2AClientService client = CreateClient(handler, EnabledSettings());
+
+        Task<Result<A2ADispatchResult>> dispatch = client.DispatchSendingAsync("do the thing", null, DiscoveryUrl);
+
+        Assert.True(
+            await handler.WaitForMethodAsync("GetTask", Patience),
+            "the client did not fall back to polling after a subscription frame it could not read. Methods: "
+            + handler.Describe());
+
+        agentHandler.Release("answered after the bad frame");
+
+        Result<A2ADispatchResult> result = await dispatch.WaitAsync(Patience);
+
+        Assert.True(result.IsSuccess, result.IsFailure ? $"{result.Error.Code}: {result.Error.Message}" : string.Empty);
+
+        Assert.Equal("answered after the bad frame", result.Value.ResponseText);
+    }
+
+    [Fact]
     public async Task DispatchSendingAsync_StreamingPath_LocalCancellationStillCancelsTheRemoteTask()
     {
         using GateAgentHandler agentHandler = new();
@@ -320,7 +358,7 @@ public sealed class A2AStreamingSubscriptionTests
             {
                 webHost.UseTestServer();
 
-                webHost.ConfigureServices(static services => services.AddRouting());
+                webHost.ConfigureServices(static services => services.AddRouting().AddAdHocHttpJson());
 
                 webHost.Configure(app =>
                 {

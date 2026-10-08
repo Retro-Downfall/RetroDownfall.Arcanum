@@ -8,14 +8,12 @@ namespace RetroDownfall.Arcanum.Tests.Workspaces;
 [Collection("SpellScanner")]
 public sealed class SpellScannerTests : IAsyncLifetime
 {
-
     private TempWorkspace _workspace = null!;
 
     private const long MaxFileSizeBytes = 1024 * 1024;
 
     public async Task InitializeAsync()
     {
-
         _workspace = new TempWorkspace();
 
         await _workspace.InitializeAsync();
@@ -37,20 +35,16 @@ public sealed class SpellScannerTests : IAsyncLifetime
         _workspace.WriteFile("spells/ignored/node_modules/hidden/SPELL.md", "---\nname: hidden\n---\n");
 
         _workspace.WriteFile("spells/heavy/SPELL.md", new string('x', (int)MaxFileSizeBytes + 1));
-
     }
 
     public async Task DisposeAsync()
     {
-
         await _workspace.DisposeAsync();
-
     }
 
     [Fact]
     public async Task ScanAsync_finds_workspace_spells_and_skips_heavy_dirs()
     {
-
         IReadOnlyList<ParsedSpell> spells = await SpellScanner.ScanAsync(_workspace.Root, CancellationToken.None, MaxFileSizeBytes);
 
         ParsedSpell fireball = Assert.Single(spells, s => s.Name == "fireball");
@@ -60,13 +54,11 @@ public sealed class SpellScannerTests : IAsyncLifetime
         Assert.Contains("read_file", fireball.Tools);
 
         Assert.DoesNotContain(spells, s => s.Name == "hidden");
-
     }
 
     [Fact]
     public async Task ScanMetadataAsync_returns_lightweight_metadata()
     {
-
         IReadOnlyList<SpellMetadata> metadata = await SpellScanner.ScanMetadataAsync(_workspace.Root, CancellationToken.None, MaxFileSizeBytes);
 
         SpellMetadata fireball = Assert.Single(metadata, m => m.Name == "fireball");
@@ -74,13 +66,11 @@ public sealed class SpellScannerTests : IAsyncLifetime
         Assert.Equal("A blazing spell", fireball.Description);
 
         Assert.Contains("combat", fireball.Tags!);
-
     }
 
     [Fact]
     public async Task LoadFullAsync_caches_parsed_spell_by_mtime()
     {
-
         string spellPath = Path.Combine(_workspace.Root, "spells", "fireball", "SPELL.md");
 
         ParsedSpell? first = await SpellScanner.LoadFullAsync(spellPath, CancellationToken.None, MaxFileSizeBytes);
@@ -90,29 +80,24 @@ public sealed class SpellScannerTests : IAsyncLifetime
         Assert.NotNull(first);
 
         Assert.Same(first, second);
-
     }
 
     [Fact]
     public async Task ScanSummariesAsync_maps_workspace_source()
     {
-
         IReadOnlyList<Core.Intelligence.Spells.SpellSummary> summaries =
             await SpellScanner.ScanSummariesAsync(_workspace.Root, CancellationToken.None, MaxFileSizeBytes);
 
         Core.Intelligence.Spells.SpellSummary fireball = Assert.Single(summaries, s => s.Name == "fireball");
 
         Assert.Equal(Core.Intelligence.Spells.SpellSource.Workspace, fireball.Source);
-
     }
 
     [Fact]
     public async Task ScanMetadataAsync_concurrent_misses_share_one_scan()
     {
-
         for (int i = 0; i < 24; i++)
         {
-
             _workspace.WriteFile(
                 $"spells/concurrent-{i:D2}/SPELL.md",
                 $"""
@@ -122,7 +107,6 @@ public sealed class SpellScannerTests : IAsyncLifetime
                 ---
                 body
                 """);
-
         }
 
         const int concurrency = 16;
@@ -132,7 +116,6 @@ public sealed class SpellScannerTests : IAsyncLifetime
         Task<IReadOnlyList<SpellMetadata>>[] tasks = Enumerable.Range(0, concurrency)
             .Select(_ => Task.Run(async () =>
             {
-
                 barrier.SignalAndWait();
 
                 return await SpellScanner.ScanMetadataAsync(
@@ -140,7 +123,6 @@ public sealed class SpellScannerTests : IAsyncLifetime
                     CancellationToken.None,
                     MaxFileSizeBytes,
                     metadataScanCacheTtlSeconds: 60);
-
             }))
             .ToArray();
 
@@ -150,8 +132,7 @@ public sealed class SpellScannerTests : IAsyncLifetime
         // concurrent-* spells, so the workspace has 25 spells total. Single-flight coalesces
         // the miss onto one scan; the stable invariant is content-equality across all callers
         // (a caller released after the leader may hit the LRU cache or, if evicted, start a
-        // fresh content-equal scan). The at-most-once scan invariant is proven directly by
-        // SingleFlightTests.
+        // fresh content-equal scan). Content-equality across callers is the invariant asserted here.
         string[] firstNames = results[0].Select(static m => m.Name).OrderBy(static n => n, StringComparer.Ordinal).ToArray();
 
         Assert.All(results, r =>
@@ -159,17 +140,14 @@ public sealed class SpellScannerTests : IAsyncLifetime
             string[] names = r.Select(static m => m.Name).OrderBy(static n => n, StringComparer.Ordinal).ToArray();
 
             Assert.Equal(firstNames, names);
-
         });
 
         Assert.Equal(25, firstNames.Length);
-
     }
 
     [Fact]
     public async Task LoadFullAsync_concurrent_misses_share_one_parse()
     {
-
         string spellDir = Path.Combine(_workspace.Root, "spells", "concurrent-full");
 
         Directory.CreateDirectory(Path.Combine(spellDir, "scripts"));
@@ -196,11 +174,9 @@ public sealed class SpellScannerTests : IAsyncLifetime
         Task<ParsedSpell?>[] tasks = Enumerable.Range(0, concurrency)
             .Select(_ => Task.Run(async () =>
             {
-
                 barrier.SignalAndWait();
 
                 return await SpellScanner.LoadFullAsync(spellPath, CancellationToken.None, MaxFileSizeBytes);
-
             }))
             .ToArray();
 
@@ -217,7 +193,6 @@ public sealed class SpellScannerTests : IAsyncLifetime
         // whose compiler-generated equality is reference equality, so a fresh parse of the same file
         // is never Equal to the leader's instance. Compare the content instead.
         Assert.All(results, r => AssertSameSpellContent(first, r));
-
     }
 
     /// <summary>
@@ -231,7 +206,6 @@ public sealed class SpellScannerTests : IAsyncLifetime
     /// </summary>
     private static void AssertSameSpellContent(ParsedSpell? expected, ParsedSpell? actual)
     {
-
         Assert.NotNull(expected);
 
         Assert.NotNull(actual);
@@ -265,7 +239,6 @@ public sealed class SpellScannerTests : IAsyncLifetime
         Assert.Equal(expected.RequiredMcpServers, actual.RequiredMcpServers);
 
         AssertSameSkillMetadata(expected.SkillMetadata, actual.SkillMetadata);
-
     }
 
     /// <summary>
@@ -277,16 +250,13 @@ public sealed class SpellScannerTests : IAsyncLifetime
     /// </summary>
     private static void AssertSameSkillMetadata(SkillMetadata? expected, SkillMetadata? actual)
     {
-
         if (expected is null || actual is null)
         {
-
             Assert.Null(expected);
 
             Assert.Null(actual);
 
             return;
-
         }
 
         Assert.Equal(expected.Name, actual.Name);
@@ -318,7 +288,6 @@ public sealed class SpellScannerTests : IAsyncLifetime
         Assert.Equal(expected.LastModified, actual.LastModified);
 
         Assert.Equal(expected.ActiveVersion, actual.ActiveVersion);
-
     }
 
     /// <summary>
@@ -337,7 +306,6 @@ public sealed class SpellScannerTests : IAsyncLifetime
     [Fact]
     public async Task LoadFullAsync_reparse_after_a_cache_miss_returns_a_content_equal_spell()
     {
-
         string spellDir = Path.Combine(_workspace.Root, "spells", "reparse-full");
 
         Directory.CreateDirectory(Path.Combine(spellDir, "scripts"));
@@ -373,7 +341,6 @@ public sealed class SpellScannerTests : IAsyncLifetime
         Assert.NotSame(first, second);
 
         AssertSameSpellContent(first, second);
-
     }
 
     /// <summary>
@@ -387,7 +354,6 @@ public sealed class SpellScannerTests : IAsyncLifetime
     [Fact]
     public async Task LoadFullAsync_reparse_of_a_spell_with_a_sidecar_returns_a_content_equal_spell()
     {
-
         _workspace.WriteFile(
             "spells/reparse-sidecar/SPELL.md",
             """
@@ -436,7 +402,6 @@ public sealed class SpellScannerTests : IAsyncLifetime
         Assert.NotSame(first.SkillMetadata, second!.SkillMetadata);
 
         AssertSameSpellContent(first, second);
-
     }
 
     /// <summary>
@@ -449,16 +414,13 @@ public sealed class SpellScannerTests : IAsyncLifetime
     [Fact]
     public async Task ScanMetadataAsync_does_not_cancel_a_joined_caller_when_the_leader_cancels()
     {
-
         const int spellCount = 3000;
 
         for (int i = 0; i < spellCount; i++)
         {
-
             _workspace.WriteFile(
                 $"spells/leader-cancel-{i:D4}/SPELL.md",
                 $"---\nname: leader-cancel-{i:D4}\ndescription: leader cancellation test {i}\n---\nbody");
-
         }
 
         using CancellationTokenSource leaderCts = new();
@@ -487,24 +449,18 @@ public sealed class SpellScannerTests : IAsyncLifetime
 
         try
         {
-
             _ = await leader;
-
         }
         catch (OperationCanceledException)
         {
-
             // Expected when the cancel lands before the scan finishes; the leader must observe its own
             // cancellation, and only its own.
-
         }
-
     }
 
     [Fact]
     public async Task ScanSummariesAsync_with_ttl_serves_stale_within_ttl_then_refreshes()
     {
-
         _workspace.WriteFile(
             "spells/ttl-spell/SPELL.md",
             """
@@ -562,13 +518,11 @@ public sealed class SpellScannerTests : IAsyncLifetime
         Core.Intelligence.Spells.SpellSummary thirdSummary = Assert.Single(third, s => s.Name == "ttl-spell");
 
         Assert.Equal("mutated", thirdSummary.Description);
-
     }
 
     [Fact]
     public async Task LoadFullAsync_loads_skill_json_and_scripts()
     {
-
         string spellDir = Path.Combine(_workspace.Root, "spells", "scripted");
 
         Directory.CreateDirectory(Path.Combine(spellDir, "scripts"));
@@ -609,38 +563,32 @@ public sealed class SpellScannerTests : IAsyncLifetime
         Assert.Contains("run.sh", loaded.AvailableScripts);
 
         Assert.NotNull(loaded.SkillMetadata);
-
     }
 
     [Fact]
     public async Task LoadFullAsync_returns_null_for_oversized_spell()
     {
-
         string spellPath = Path.Combine(_workspace.Root, "spells", "heavy", "SPELL.md");
 
         ParsedSpell? loaded = await SpellScanner.LoadFullAsync(spellPath, CancellationToken.None, MaxFileSizeBytes);
 
         Assert.Null(loaded);
-
     }
 
     [Fact]
     public async Task LoadFullAsync_returns_null_for_missing_path()
     {
-
         ParsedSpell? loaded = await SpellScanner.LoadFullAsync(
             Path.Combine(_workspace.Root, "missing", "SPELL.md"),
             CancellationToken.None,
             MaxFileSizeBytes);
 
         Assert.Null(loaded);
-
     }
 
     [Fact]
     public async Task ScanMetadataAsync_spell_without_frontmatter_uses_directory_name()
     {
-
         _workspace.WriteFile("spells/plain-dir/SPELL.md", "# No frontmatter\nJust body.");
 
         IReadOnlyList<SpellMetadata> metadata = await SpellScanner.ScanMetadataAsync(_workspace.Root, CancellationToken.None, MaxFileSizeBytes);
@@ -648,23 +596,19 @@ public sealed class SpellScannerTests : IAsyncLifetime
         SpellMetadata plain = Assert.Single(metadata, m => m.Name == "plain-dir");
 
         Assert.Equal(string.Empty, plain.Description);
-
     }
 
     [Fact]
     public async Task ScanAsync_null_workspace_returns_empty_or_global_only()
     {
-
         IReadOnlyList<ParsedSpell> spells = await SpellScanner.ScanAsync(null, CancellationToken.None, MaxFileSizeBytes);
 
         Assert.DoesNotContain(spells, s => s.Name == "fireball");
-
     }
 
     [Fact]
     public async Task ScanMetadataAsync_local_spell_overrides_global_name_collision()
     {
-
         string localDir = Path.Combine(_workspace.Root, "collision");
 
         Directory.CreateDirectory(localDir);
@@ -687,13 +631,11 @@ public sealed class SpellScannerTests : IAsyncLifetime
         {
             Assert.Contains("local override", collision.Description, StringComparison.Ordinal);
         }
-
     }
 
     [SkippableFact]
     public async Task ScanAsync_terminates_on_directory_symlink_cycle()
     {
-
         Skip.If(OperatingSystem.IsWindows(), "Directory symlink creation requires elevation on Windows.");
 
         _workspace.WriteFile(
@@ -717,13 +659,11 @@ public sealed class SpellScannerTests : IAsyncLifetime
         IReadOnlyList<ParsedSpell> spells = await SpellScanner.ScanAsync(_workspace.Root, cts.Token, MaxFileSizeBytes);
 
         Assert.Contains(spells, s => s.Name == "real-spell");
-
     }
 
     [SkippableFact]
     public async Task ScanAsync_rejects_spell_md_symlinked_outside_root()
     {
-
         Skip.If(OperatingSystem.IsWindows(), "Symlink creation requires elevation on Windows.");
 
         string outsideFile = Path.Combine(Path.GetTempPath(), "arcanum-outside-" + Guid.NewGuid().ToString("N") + ".md");
@@ -740,7 +680,6 @@ public sealed class SpellScannerTests : IAsyncLifetime
 
         try
         {
-
             string evilDir = Path.Combine(_workspace.Root, "spells", "evil");
 
             Directory.CreateDirectory(evilDir);
@@ -752,26 +691,19 @@ public sealed class SpellScannerTests : IAsyncLifetime
             IReadOnlyList<ParsedSpell> spells = await SpellScanner.ScanAsync(_workspace.Root, CancellationToken.None, MaxFileSizeBytes);
 
             Assert.DoesNotContain(spells, s => s.Name == "escaped-secret");
-
         }
         finally
         {
-
             if (File.Exists(outsideFile))
             {
-
                 File.Delete(outsideFile);
-
             }
-
         }
-
     }
 
     [Fact]
     public async Task ScanAsync_drops_skill_metadata_when_declared_tools_exceed_configured_bound()
     {
-
         _workspace.WriteFile(
             "spells/bounded/SPELL.md",
             """
@@ -808,13 +740,11 @@ public sealed class SpellScannerTests : IAsyncLifetime
         ParsedSpell belowSpell = Assert.Single(belowBound, s => s.Name == "bounded");
 
         Assert.Null(belowSpell.SkillMetadata);
-
     }
 
     [Fact]
     public async Task LoadFullAsync_accepts_dependencies_beyond_the_former_total_count_ceiling()
     {
-
         const int dependencyCount = 21;
 
         _workspace.WriteFile(
@@ -830,7 +760,7 @@ public sealed class SpellScannerTests : IAsyncLifetime
         string dependencies = System.Text.Json.JsonSerializer.Serialize(
             Enumerable.Range(0, dependencyCount)
                 .Select(static index => $"dependency-{index:D2}")
-                .ToArray());
+                .ToArray(), AdHocJson.Options);
 
         _workspace.WriteFile(
             "spells/many-dependencies/SKILL.json",
@@ -855,13 +785,11 @@ public sealed class SpellScannerTests : IAsyncLifetime
         Assert.NotNull(loaded!.SkillMetadata);
 
         Assert.Equal(dependencyCount, loaded.SkillMetadata!.Dependencies.Count);
-
     }
 
     [Fact]
     public async Task ScanAsync_reaches_beyond_the_former_total_depth_ceiling()
     {
-
         string relative = "spells";
 
         for (int i = 0; i < 80; i++)
@@ -882,13 +810,11 @@ public sealed class SpellScannerTests : IAsyncLifetime
         IReadOnlyList<ParsedSpell> spells = await SpellScanner.ScanAsync(_workspace.Root, CancellationToken.None, MaxFileSizeBytes);
 
         Assert.Contains(spells, s => s.Name == "too-deep");
-
     }
 
     [Fact]
     public async Task LoadFullAsync_reads_canonical_SPELL_json()
     {
-
         _workspace.WriteFile(
             "spells/canonical-meta/SPELL.md",
             """
@@ -923,13 +849,11 @@ public sealed class SpellScannerTests : IAsyncLifetime
         Assert.Equal("2.0.0", loaded.SkillMetadata!.Version);
 
         Assert.Contains("from-spell-json", loaded.Tags);
-
     }
 
     [Fact]
     public async Task LoadFullAsync_falls_back_to_legacy_SKILL_json()
     {
-
         _workspace.WriteFile(
             "spells/legacy-meta/SPELL.md",
             """
@@ -964,13 +888,11 @@ public sealed class SpellScannerTests : IAsyncLifetime
         Assert.Equal("1.5.0", loaded.SkillMetadata!.Version);
 
         Assert.Contains("from-skill-json", loaded.Tags);
-
     }
 
     [Fact]
     public async Task LoadFullAsync_prefers_SPELL_json_when_both_sidecars_exist()
     {
-
         _workspace.WriteFile(
             "spells/both-meta/SPELL.md",
             """
@@ -1020,20 +942,18 @@ public sealed class SpellScannerTests : IAsyncLifetime
         Assert.Contains("canonical-tag", loaded.Tags);
 
         Assert.DoesNotContain("legacy-tag", loaded.Tags);
-
     }
 
     /// <summary>
     /// A FIFO named SPELL.md is yielded by the walk (Directory.EnumerateFiles returns FIFOs and the lexical
     /// containment check passes because the path really is inside the root) and TryGetFileLength reports 0 for
     /// it, so the size gate let it through to a blocking open(2) that never returns until a writer appears.
-    /// ScanMetadataAsync coalesces through SingleFlight, so one planted FIFO wedged the spell catalog for every
+    /// ScanMetadataAsync coalesces through CoalesceWithCallerCancellationAsync, so one planted FIFO wedged the spell catalog for every
     /// concurrent caller of that workspace — permanently, because the shared task never completes.
     /// </summary>
     [SkippableFact]
     public async Task ScanMetadataAsync_skips_a_fifo_spell_file_instead_of_blocking_forever()
     {
-
         Skip.If(OperatingSystem.IsWindows(), "mkfifo is a POSIX primitive.");
 
         await CreateFifoAsync("spells/piped/SPELL.md");
@@ -1051,7 +971,6 @@ public sealed class SpellScannerTests : IAsyncLifetime
         Assert.Contains(metadata, m => m.Name == "fireball");
 
         Assert.DoesNotContain(metadata, m => m.Name == "piped");
-
     }
 
     /// <summary>
@@ -1062,7 +981,6 @@ public sealed class SpellScannerTests : IAsyncLifetime
     [SkippableFact]
     public async Task ScanAsync_skips_a_fifo_spell_file_instead_of_blocking_forever()
     {
-
         Skip.If(OperatingSystem.IsWindows(), "mkfifo is a POSIX primitive.");
 
         await CreateFifoAsync("spells/piped/SPELL.md");
@@ -1079,7 +997,6 @@ public sealed class SpellScannerTests : IAsyncLifetime
         Assert.Contains(spells, s => s.Name == "fireball");
 
         Assert.DoesNotContain(spells, s => s.Name == "piped");
-
     }
 
     /// <summary>
@@ -1091,7 +1008,6 @@ public sealed class SpellScannerTests : IAsyncLifetime
     [SkippableFact]
     public async Task LoadFullAsync_skips_a_fifo_sidecar_instead_of_blocking_forever()
     {
-
         Skip.If(OperatingSystem.IsWindows(), "mkfifo is a POSIX primitive.");
 
         _workspace.WriteFile(
@@ -1123,7 +1039,6 @@ public sealed class SpellScannerTests : IAsyncLifetime
         Assert.Equal("piped-sidecar", loaded!.Name);
 
         Assert.Null(loaded.SkillMetadata);
-
     }
 
     /// <summary>
@@ -1134,7 +1049,6 @@ public sealed class SpellScannerTests : IAsyncLifetime
     [SkippableFact]
     public async Task ScanAsync_skips_a_fifo_sidecar_instead_of_blocking_forever()
     {
-
         Skip.If(OperatingSystem.IsWindows(), "mkfifo is a POSIX primitive.");
 
         _workspace.WriteFile(
@@ -1163,7 +1077,6 @@ public sealed class SpellScannerTests : IAsyncLifetime
         ParsedSpell piped = Assert.Single(spells, s => s.Name == "piped-sidecar");
 
         Assert.Null(piped.SkillMetadata);
-
     }
 
     /// <summary>
@@ -1174,7 +1087,6 @@ public sealed class SpellScannerTests : IAsyncLifetime
     [SkippableFact]
     public async Task LoadFullAsync_rejects_a_sidecar_symlinked_outside_root()
     {
-
         Skip.If(OperatingSystem.IsWindows(), "Symlink creation requires elevation on Windows.");
 
         string outsideFile = Path.Combine(Path.GetTempPath(), "arcanum-outside-" + Guid.NewGuid().ToString("N") + ".json");
@@ -1194,7 +1106,6 @@ public sealed class SpellScannerTests : IAsyncLifetime
 
         try
         {
-
             _workspace.WriteFile(
                 "spells/escaped-sidecar/SPELL.md",
                 """
@@ -1218,25 +1129,18 @@ public sealed class SpellScannerTests : IAsyncLifetime
             Assert.Null(loaded!.SkillMetadata);
 
             Assert.DoesNotContain("from-outside-the-workspace", loaded.Tags);
-
         }
         finally
         {
-
             if (File.Exists(outsideFile))
             {
-
                 File.Delete(outsideFile);
-
             }
-
         }
-
     }
 
     private async Task CreateFifoAsync(string relativePath)
     {
-
         string fifoPath = Path.Combine(_workspace.Root, relativePath);
 
         Directory.CreateDirectory(Path.GetDirectoryName(fifoPath)!);
@@ -1250,7 +1154,5 @@ public sealed class SpellScannerTests : IAsyncLifetime
         Skip.If(mkfifo.ExitCode != 0, "mkfifo failed on this host.");
 
         Assert.True(File.Exists(fifoPath));
-
     }
-
 }

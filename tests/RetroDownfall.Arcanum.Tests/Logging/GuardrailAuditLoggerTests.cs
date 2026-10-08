@@ -18,63 +18,50 @@ namespace RetroDownfall.Arcanum.Tests.Logging;
 /// </summary>
 public sealed class GuardrailAuditLoggerTests : IDisposable
 {
-
     private readonly string _tempDirectory;
 
     public GuardrailAuditLoggerTests()
     {
-
         _tempDirectory = Path.Combine(Path.GetTempPath(), "arcanum-guardrails-audit-tests-" + Guid.NewGuid().ToString("N"));
 
         Directory.CreateDirectory(_tempDirectory);
-
     }
 
     public void Dispose()
     {
-
         try
         {
-
             Directory.Delete(_tempDirectory, recursive: true);
-
         }
         catch (IOException)
         {
-
             // Best-effort cleanup; harmless if a file handle briefly lingers on some platforms.
         }
-
     }
 
     [Fact]
     public async Task LogAsync_WhenDisabled_WritesNothing()
     {
-
         GuardrailAuditLogger logger = CreateLogger(enabled: false);
 
         await logger.LogAsync(MakeRecord("pii-email"), CancellationToken.None);
 
         Assert.Empty(Directory.EnumerateFiles(_tempDirectory));
-
     }
 
     [Fact]
     public async Task QueryAsync_WhenDisabled_ReturnsEmpty()
     {
-
         GuardrailAuditLogger logger = CreateLogger(enabled: false);
 
         IReadOnlyList<GuardrailAuditRecord> results = await logger.QueryAsync(null, null, null, null, null, 100, CancellationToken.None);
 
         Assert.Empty(results);
-
     }
 
     [Fact]
     public async Task LogAsync_ThenQueryAsync_RoundTripsRecord()
     {
-
         GuardrailAuditLogger logger = CreateLogger(enabled: true);
 
         GuardrailAuditRecord record = MakeRecord("pii-email", stage: "Input", sessionId: "sess-1", model: "mistral:latest");
@@ -94,23 +81,19 @@ public sealed class GuardrailAuditLoggerTests : IDisposable
         Assert.Equal("sess-1", found.SessionId);
 
         Assert.Equal("mistral:latest", found.Model);
-
     }
 
     [Fact]
 
     public async Task QueryAsync_WithoutFrom_ReturnsRecordsOlderThanFormerLookbackCeiling()
     {
-
         GuardrailAuditLogger logger = CreateLogger(enabled: true);
 
         DateTimeOffset oldTimestamp = DateTimeOffset.UtcNow.AddDays(-500);
 
         GuardrailAuditRecord record = MakeRecord("old", sessionId: "old-session") with
         {
-
             Timestamp = oldTimestamp.ToString("O"),
-
         };
 
         string oldFile = Path.Combine(_tempDirectory, $"guardrails-{oldTimestamp:yyyyMMdd}.jsonl");
@@ -125,13 +108,11 @@ public sealed class GuardrailAuditLoggerTests : IDisposable
         GuardrailAuditRecord found = Assert.Single(results);
 
         Assert.Equal("old-session", found.SessionId);
-
     }
 
     [Fact]
     public async Task QueryAsync_FiltersByStageAndViolationType()
     {
-
         GuardrailAuditLogger logger = CreateLogger(enabled: true);
 
         await logger.LogAsync(MakeRecord("pii-email", stage: "Input"), CancellationToken.None);
@@ -149,13 +130,11 @@ public sealed class GuardrailAuditLoggerTests : IDisposable
         Assert.Single(toxicityOnly);
 
         Assert.Equal("toxicity", toxicityOnly[0].ViolationType);
-
     }
 
     [Fact]
     public async Task QueryPageAsync_Cursor_preserves_snapshot_when_new_records_are_appended()
     {
-
         GuardrailAuditLogger logger = CreateLogger(enabled: true);
 
         GuardrailAuditRecord oldest = MakeRecord("oldest", sessionId: "oldest");
@@ -201,13 +180,11 @@ public sealed class GuardrailAuditLoggerTests : IDisposable
         Assert.Equal("oldest", result.SessionId);
 
         Assert.Null(second.Value.NextCursor);
-
     }
 
     [Fact]
     public async Task LogAsync_WhenUnifiedAutomaticSweepIsEnabled_DoesNotDeleteOldFiles()
     {
-
         GuardrailAuditLogger logger = CreateLogger(
             enabled: true,
             automaticSweepsEnabled: true,
@@ -225,7 +202,6 @@ public sealed class GuardrailAuditLoggerTests : IDisposable
         await logger.LogAsync(MakeRecord("pii-email"), CancellationToken.None);
 
         Assert.True(File.Exists(oldFile));
-
     }
 
     /// <summary>
@@ -238,7 +214,6 @@ public sealed class GuardrailAuditLoggerTests : IDisposable
     [Fact]
     public async Task QueryPageAsync_WhenADatedFileCannotBeRead_ReportsItAboveTheLogFloor()
     {
-
         TestCapturingLogger<GuardrailAuditLogger> diagnostics = new();
 
         GuardrailAuditLogger logger = CreateLogger(enabled: true, diagnostics: diagnostics);
@@ -259,7 +234,6 @@ public sealed class GuardrailAuditLoggerTests : IDisposable
         // | FileShare.Delete) fails exactly the way a mode/ACL change or a disk error makes it fail.
         await using (FileStream _ = new(yesterdayFile, FileMode.Open, FileAccess.Read, FileShare.None))
         {
-
             Result<AuditQueryPage<GuardrailAuditRecord>> page = await logger.QueryPageAsync(
                 null,
                 null,
@@ -273,7 +247,6 @@ public sealed class GuardrailAuditLoggerTests : IDisposable
             Assert.True(page.IsSuccess);
 
             Assert.Equal(["today"], page.Value.Records.Select(static record => record.ViolationType));
-
         }
 
         TestLogEntry warning = Assert.Single(
@@ -281,7 +254,53 @@ public sealed class GuardrailAuditLoggerTests : IDisposable
             static entry => entry.Level >= LogLevel.Warning);
 
         Assert.Contains(yesterdayFile, warning.Message, StringComparison.Ordinal);
+    }
 
+    /// <summary>
+    /// An operator can point <c>FilePath</c> at a directory the host does not own (a shared log directory).
+    /// Preparing the day must not chmod it; only the audit file the writer creates is made owner-only.
+    /// </summary>
+    [SkippableFact]
+    [System.Runtime.Versioning.UnsupportedOSPlatform("windows")]
+    public async Task PrepareForNewDate_ConfiguredSharedDirectory_DoesNotChangeItsMode()
+    {
+        Skip.If(OperatingSystem.IsWindows(), "Unix mode bits are not observable on Windows.");
+
+        const UnixFileMode sharedMode =
+            UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute
+            | UnixFileMode.GroupRead | UnixFileMode.GroupExecute
+            | UnixFileMode.OtherRead | UnixFileMode.OtherExecute;
+
+        string shared = Directory.CreateDirectory(Path.Combine(_tempDirectory, "shared")).FullName;
+
+        File.SetUnixFileMode(shared, sharedMode);
+
+        GuardrailAuditLogger logger = CreateLogger(enabled: true, directory: shared);
+
+        await logger.LogAsync(MakeRecord("pii-email"), CancellationToken.None);
+
+        Assert.Equal(sharedMode, File.GetUnixFileMode(shared));
+
+        string file = Assert.Single(Directory.EnumerateFiles(shared));
+
+        Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite, File.GetUnixFileMode(file));
+    }
+
+    [SkippableFact]
+    [System.Runtime.Versioning.UnsupportedOSPlatform("windows")]
+    public async Task LogAsync_CreatesAMissingAuditDirectoryOwnerOnly()
+    {
+        Skip.If(OperatingSystem.IsWindows(), "Unix mode bits are not observable on Windows.");
+
+        string owned = Path.Combine(_tempDirectory, "owned-audit");
+
+        GuardrailAuditLogger logger = CreateLogger(enabled: true, directory: owned);
+
+        await logger.LogAsync(MakeRecord("pii-email"), CancellationToken.None);
+
+        Assert.Equal(
+            UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute,
+            File.GetUnixFileMode(owned));
     }
 
     /// <summary>
@@ -292,7 +311,6 @@ public sealed class GuardrailAuditLoggerTests : IDisposable
     [Fact]
     public void GuardrailAuditLogger_DeclaresNoDatedLogFileDiscoveryOfItsOwn()
     {
-
         string[] declared = typeof(GuardrailAuditLogger)
             .GetMethods(
                 BindingFlags.Public
@@ -305,7 +323,6 @@ public sealed class GuardrailAuditLoggerTests : IDisposable
             .ToArray();
 
         Assert.Empty(declared);
-
     }
 
     private GuardrailAuditLogger CreateLogger(
@@ -313,9 +330,9 @@ public sealed class GuardrailAuditLoggerTests : IDisposable
         bool automaticSweepsEnabled = true,
         bool unifiedRetentionEnabled = true,
         int unifiedRetentionDays = 7,
-        ILogger<GuardrailAuditLogger>? diagnostics = null)
+        ILogger<GuardrailAuditLogger>? diagnostics = null,
+        string? directory = null)
     {
-
         ArcanumSettings settings = new()
         {
             Features = new FeatureSettings { Guardrails = true },
@@ -343,8 +360,7 @@ public sealed class GuardrailAuditLoggerTests : IDisposable
         return new GuardrailAuditLogger(
             new TestOptionsMonitor<ArcanumSettings>(settings),
             diagnostics ?? NullLogger<GuardrailAuditLogger>.Instance,
-            Path.Combine(_tempDirectory, "guardrails.jsonl"));
-
+            Path.Combine(directory ?? _tempDirectory, "guardrails.jsonl"));
     }
 
     private static GuardrailAuditRecord MakeRecord(
@@ -359,5 +375,4 @@ public sealed class GuardrailAuditLoggerTests : IDisposable
             ViolationType: violationType,
             MatchedTextRedacted: "***@***.***",
             Model: model);
-
 }

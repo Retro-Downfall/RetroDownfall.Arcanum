@@ -188,6 +188,39 @@ internal static partial class CliCommandTree
 
     private static RootCommand CreateRoot() => new("Arcanum CLI");
 
+    /// <summary>
+    /// Hands a command family its handler without constructing it. Every invocation builds the whole
+    /// tree, so a handler resolved while building would be created (with its dependency graph) for
+    /// every command the operator did not type. The first action that runs reads
+    /// <see cref="DeferredHandler{THandler}.Value"/>; the other families never construct theirs.
+    /// </summary>
+    /// <remarks>
+    /// Not <see cref="Lazy{T}"/>: its type parameter carries a trimming annotation that a generic
+    /// helper cannot satisfy, which would put an AOT warning into the publish closure.
+    /// </remarks>
+    private sealed class DeferredHandler<THandler>(IServiceProvider serviceProvider)
+        where THandler : class
+    {
+        private THandler? _handler;
+
+        public THandler Value
+        {
+            get
+            {
+                THandler? existing = Volatile.Read(ref _handler);
+
+                if (existing is not null)
+                {
+                    return existing;
+                }
+
+                THandler created = serviceProvider.GetRequiredService<THandler>();
+
+                return Interlocked.CompareExchange(ref _handler, created, null) ?? created;
+            }
+        }
+    }
+
     private static string? ActiveCampaign(
         IServiceProvider serviceProvider,
         string? explicitValue) =>
@@ -200,7 +233,6 @@ internal static partial class CliCommandTree
         IServiceProvider serviceProvider,
         string? explicitValue)
     {
-
         string? value = ActiveValue(
             serviceProvider,
             explicitValue,
@@ -210,16 +242,13 @@ internal static partial class CliCommandTree
             && value is not null
             && !CliContextService.IsWithin(Environment.CurrentDirectory, value))
         {
-
             serviceProvider
                 .GetRequiredService<IConsoleDispatcher>()
                 .WriteDiagnostic(
                     $"Warning: Current directory is outside the selected workspace {value}.");
-
         }
 
         return value;
-
     }
 
     private static string? ActiveModel(
@@ -243,13 +272,10 @@ internal static partial class CliCommandTree
         string? explicitValue,
         Func<CliContextDocument, string?> selector)
     {
-
         if (!string.IsNullOrWhiteSpace(explicitValue)
             || CliInvocationContext.Current.NoContext)
         {
-
             return explicitValue;
-
         }
 
         CliContextDocument document = serviceProvider
@@ -257,7 +283,6 @@ internal static partial class CliCommandTree
             .Load();
 
         return selector(document);
-
     }
 }
 

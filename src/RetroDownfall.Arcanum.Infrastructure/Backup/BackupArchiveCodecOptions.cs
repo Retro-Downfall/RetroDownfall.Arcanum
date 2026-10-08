@@ -1,5 +1,7 @@
 using RetroDownfall.Arcanum.Core.Backup;
 
+using RetroDownfall.Arcanum.Infrastructure.Security;
+
 namespace RetroDownfall.Arcanum.Infrastructure.Backup;
 
 /// <summary>
@@ -15,7 +17,6 @@ internal sealed record BackupArchiveExtraction(
     bool DatabaseReadable,
     BackupVerifyIssue[] Issues)
 {
-
     public static BackupArchiveExtraction Failed(
         int formatVersion,
         BackupVerifyIssue issue) =>
@@ -26,12 +27,10 @@ internal sealed record BackupArchiveExtraction(
             Bytes: 0,
             DatabaseReadable: false,
             [issue]);
-
 }
 
 public sealed class BackupArchiveCodecOptions
 {
-
     public const int DefaultChunkSize = 1024 * 1024;
 
     public const int DefaultKdfIterations = 600_000;
@@ -54,22 +53,25 @@ public sealed class BackupArchiveCodecOptions
     /// </summary>
     internal Action<string>? AfterExtractedEntryForTests { get; init; }
 
+    /// <summary>
+    /// Invoked with the destination path the instant after the staged archive has been moved onto it,
+    /// before anything re-checks it; replacing the path here simulates a swap in that window.
+    /// </summary>
+    internal Action<string>? AfterArchivePublishedForTests { get; init; }
+
     internal Action<int>? InspectPlaintextBufferSizeForTests { get; init; }
 
     internal Action<long>? InspectAuthenticatedPlaintextProgressForTests { get; init; }
-
 }
 
 public sealed class BackupArchiveSource
 {
-
     private readonly ReadOnlyMemory<byte> _memory;
 
     public BackupArchiveSource(
         string archivePath,
         string sourcePath)
     {
-
         ArgumentException.ThrowIfNullOrWhiteSpace(archivePath);
 
         ArgumentException.ThrowIfNullOrWhiteSpace(sourcePath);
@@ -77,25 +79,29 @@ public sealed class BackupArchiveSource
         ArchivePath = archivePath;
 
         SourcePath = sourcePath;
-
     }
 
     private BackupArchiveSource(
         string archivePath,
         ReadOnlyMemory<byte> memory)
     {
-
         ArgumentException.ThrowIfNullOrWhiteSpace(archivePath);
 
         ArchivePath = archivePath;
 
         _memory = memory;
-
     }
 
     public string ArchivePath { get; }
 
     public string? SourcePath { get; }
+
+    /// <summary>
+    /// The no-follow identity the inventory captured for <see cref="SourcePath"/>. When present, the
+    /// archive pass refuses a file that is no longer that object, so a replacement carrying the same
+    /// bytes is rejected as readily as a rewrite.
+    /// </summary>
+    internal FileHandleIdentity? ExpectedIdentity { get; init; }
 
     internal bool IsMemory => SourcePath is null;
 
@@ -109,5 +115,4 @@ public sealed class BackupArchiveSource
         string archivePath,
         ReadOnlyMemory<byte> memory) =>
         new(archivePath, memory);
-
 }

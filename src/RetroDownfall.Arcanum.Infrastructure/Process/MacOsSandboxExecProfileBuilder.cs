@@ -23,7 +23,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.ProcessExecution;
 /// </remarks>
 internal static class MacOsSandboxExecProfileBuilder
 {
-
     /// <summary>
     /// Builds a deny-default Seatbelt profile. Throws if any root is unsafe (control chars, whole-volume).
     /// </summary>
@@ -33,7 +32,6 @@ internal static class MacOsSandboxExecProfileBuilder
         string invocationTempDir,
         IReadOnlyList<string>? readOnlyRoots = null)
     {
-
         ArgumentException.ThrowIfNullOrWhiteSpace(invocationTempDir);
 
         readOnlyRoots ??= [];
@@ -54,7 +52,11 @@ internal static class MacOsSandboxExecProfileBuilder
 
         // Non-file runtime operations. File content and mutation remain explicitly rooted below.
         sb.AppendLine("(allow process*)");
-        sb.AppendLine("(allow signal)");
+        // Signals are scoped to the jail: a child may signal itself and the processes it shares this
+        // sandbox with (a build tool stopping its worker), never the operator's own processes outside it.
+        // The runner terminates the tree from outside the sandbox, which no sandbox rule governs.
+        sb.AppendLine("(allow signal (target self))");
+        sb.AppendLine("(allow signal (target same-sandbox))");
         sb.AppendLine("(allow sysctl*)");
         sb.AppendLine("(allow system-socket)");
         sb.AppendLine("(allow system-fsctl)");
@@ -127,7 +129,6 @@ internal static class MacOsSandboxExecProfileBuilder
         AssertNoLaunchBrokerFootguns(profile);
 
         return profile;
-
     }
 
     /// <summary>
@@ -135,27 +136,21 @@ internal static class MacOsSandboxExecProfileBuilder
     /// </summary>
     internal static void AssertNoWholeVolumeFootguns(string profile)
     {
-
         ArgumentNullException.ThrowIfNull(profile);
 
         if (profile.Contains("(subpath \"/\")", StringComparison.Ordinal)
             || profile.Contains("(literal \"/\")", StringComparison.Ordinal))
         {
-
             throw new InvalidOperationException(
                 "macOS Seatbelt profile must not grant whole-volume file access via (subpath \"/\") or (literal \"/\").");
-
         }
 
         // Broad system temp grants are forbidden; only per-invocation TMPDIR may be writable.
         if (ContainsBroadTempWriteGrant(profile))
         {
-
             throw new InvalidOperationException(
                 "macOS Seatbelt profile must not grant broad /tmp, /private/tmp, or /var/tmp write access.");
-
         }
-
     }
 
     /// <summary>
@@ -163,14 +158,12 @@ internal static class MacOsSandboxExecProfileBuilder
     /// </summary>
     internal static void AssertNoLaunchBrokerFootguns(string profile)
     {
-
         ArgumentNullException.ThrowIfNull(profile);
 
         if (profile.Contains("(allow mach*)", StringComparison.Ordinal)
             || profile.Contains("(allow ipc*)", StringComparison.Ordinal)
             || !profile.Contains("(deny appleevent-send)", StringComparison.Ordinal))
         {
-
             throw new InvalidOperationException(
                 "macOS Seatbelt profile must keep broad Mach, IPC, and AppleEvents access denied.");
         }
@@ -186,12 +179,10 @@ internal static class MacOsSandboxExecProfileBuilder
                     $"(literal \"{utility}\")",
                     StringComparison.Ordinal))
             {
-
                 throw new InvalidOperationException(
                     $"macOS Seatbelt profile must deny launch broker utility '{utility}'.");
             }
         }
-
     }
 
     private static string? ExtractForm(
@@ -234,29 +225,22 @@ internal static class MacOsSandboxExecProfileBuilder
     /// <summary>True when profile text looks like it grants RW on whole-volume or broad temp.</summary>
     internal static bool ContainsWholeVolumeOrBroadTempFootgun(string profile)
     {
-
         if (string.IsNullOrEmpty(profile))
         {
-
             return true;
-
         }
 
         if (profile.Contains("(subpath \"/\")", StringComparison.Ordinal)
             || profile.Contains("(literal \"/\")", StringComparison.Ordinal))
         {
-
             return true;
-
         }
 
         return ContainsBroadTempWriteGrant(profile);
-
     }
 
     private static bool ContainsBroadTempWriteGrant(string profile)
     {
-
         // Only flag when file-write* block includes these exact system temps (not a longer subpath).
         ReadOnlySpan<string> forbidden = ["(subpath \"/tmp\")", "(subpath \"/private/tmp\")", "(subpath \"/var/tmp\")", "(subpath \"/private/var/tmp\")"];
 
@@ -264,9 +248,7 @@ internal static class MacOsSandboxExecProfileBuilder
 
         if (writeIdx < 0)
         {
-
             return false;
-
         }
 
         string writeBlock = profile[writeIdx..];
@@ -278,45 +260,32 @@ internal static class MacOsSandboxExecProfileBuilder
 
         for (int i = 0; i < span.Length; i++)
         {
-
             if (span[i] == '(')
             {
-
                 depth++;
-
             }
             else if (span[i] == ')')
             {
-
                 depth--;
 
                 if (depth == 0)
                 {
-
                     writeBlock = writeBlock[..(i + 1)];
 
                     break;
-
                 }
-
             }
-
         }
 
         foreach (string needle in forbidden)
         {
-
             if (writeBlock.Contains(needle, StringComparison.Ordinal))
             {
-
                 return true;
-
             }
-
         }
 
         return false;
-
     }
 
     /// <summary>
@@ -357,29 +326,21 @@ internal static class MacOsSandboxExecProfileBuilder
 
     private static void RejectWholeVolumeRoots(IReadOnlyList<string> roots, string paramName)
     {
-
         foreach (string root in roots)
         {
-
             if (string.IsNullOrWhiteSpace(root))
             {
-
                 continue;
-
             }
 
             foreach (char c in root)
             {
-
                 if (char.IsControl(c))
                 {
-
                     throw new ArgumentException(
                         "Sandbox root paths must not contain control characters or newlines.",
                         paramName);
-
                 }
-
             }
 
             string trimmed = root.Trim();
@@ -387,85 +348,63 @@ internal static class MacOsSandboxExecProfileBuilder
             if (trimmed is "/" or "\\"
                 || string.Equals(trimmed, Path.DirectorySeparatorChar.ToString(), StringComparison.Ordinal))
             {
-
                 throw new ArgumentException(
                     "Sandbox roots must not grant whole-volume access (\"/\").",
                     paramName);
-
             }
-
         }
-
     }
 
     private static void AppendFileAllow(StringBuilder sb, string operation, IEnumerable<string> roots)
     {
-
         List<string> list = [];
 
         HashSet<string> seen = new(StringComparer.Ordinal);
 
         foreach (string root in roots)
         {
-
             if (string.IsNullOrWhiteSpace(root))
             {
-
                 continue;
-
             }
 
             string trimmed = root.Trim();
 
             if (trimmed is "/" or "\\")
             {
-
                 throw new InvalidOperationException(
                     "Refusing to emit whole-volume Seatbelt allow for \"/\".");
-
             }
 
             foreach (string variant in MacOsPathVariants(trimmed))
             {
-
                 if (variant is "/" or "\\")
                 {
-
                     continue;
-
                 }
 
                 if (seen.Add(variant))
                 {
-
                     list.Add(variant);
-
                 }
-
             }
-
         }
 
         if (list.Count == 0)
         {
-
             return;
-
         }
 
         sb.Append("(allow ").Append(operation);
 
         foreach (string root in list)
         {
-
             sb.AppendLine();
 
             sb.Append("  (subpath \"").Append(EscapeSeatbeltString(root)).Append("\")");
-
         }
 
         sb.AppendLine(")");
-
     }
 
     /// <summary>
@@ -474,7 +413,6 @@ internal static class MacOsSandboxExecProfileBuilder
     /// </summary>
     private static IEnumerable<string> MacOsPathVariants(string path)
     {
-
         yield return path;
 
         const string privatePrefix = "/private";
@@ -483,77 +421,53 @@ internal static class MacOsSandboxExecProfileBuilder
             || string.Equals(path, "/var", StringComparison.Ordinal)
             || path.StartsWith("/etc", StringComparison.Ordinal))
         {
-
             yield return privatePrefix + path;
-
         }
         else if (path.StartsWith(privatePrefix + "/", StringComparison.Ordinal))
         {
-
             string without = path[privatePrefix.Length..];
 
             if (without.StartsWith("/var/", StringComparison.Ordinal)
                 || without.StartsWith("/etc", StringComparison.Ordinal)
                 || string.Equals(without, "/var", StringComparison.Ordinal))
             {
-
                 yield return without;
-
             }
-
         }
-
     }
 
     private static IEnumerable<string> MergeUnique(params IEnumerable<string>[] groups)
     {
-
         HashSet<string> seen = new(StringComparer.Ordinal);
 
         foreach (IEnumerable<string> group in groups)
         {
-
             foreach (string root in group)
             {
-
                 if (string.IsNullOrWhiteSpace(root))
                 {
-
                     continue;
-
                 }
 
                 if (seen.Add(root))
                 {
-
                     yield return root;
-
                 }
-
             }
-
         }
-
     }
 
     private static string EscapeSeatbeltString(string value)
     {
-
         foreach (char c in value)
         {
-
             if (char.IsControl(c))
             {
-
                 throw new InvalidOperationException(
                     "Seatbelt profile paths must not contain control characters or newlines.");
-
             }
-
         }
 
         return value.Replace("\\", "\\\\", StringComparison.Ordinal).Replace("\"", "\\\"", StringComparison.Ordinal);
-
     }
-
 }

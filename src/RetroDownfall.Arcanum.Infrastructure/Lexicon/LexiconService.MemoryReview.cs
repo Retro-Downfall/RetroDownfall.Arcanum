@@ -15,6 +15,7 @@ using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Data.Annals;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
+using RetroDownfall.Arcanum.Infrastructure.Memory;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Lexicon;
 
@@ -461,7 +462,7 @@ internal sealed partial class LexiconService
 
         Require(prepared.IsFailure ? Result.Failure(prepared.Error) : Result.Success());
 
-        DateTimeOffset issued = _reviewTimeProvider.GetUtcNow();
+        DateTimeOffset issued = _timeProvider.GetUtcNow();
 
         return new(
             new(
@@ -1032,7 +1033,7 @@ internal sealed partial class LexiconService
             sequence,
             Guid.Parse(subject).ToString("D"),
             resultingVersion,
-            "auto-acknowledged",
+            MemoryReviewOutcomes.AutoAcknowledged,
             resultingVersion);
     }
 
@@ -1121,17 +1122,24 @@ internal sealed partial class LexiconService
                 throw new InspectionException(ReviewIntegrityFailure);
             }
 
-            MemoryReviewBulkItemResultDto item = new(
+            // The receipt's digest seals the spelling it was written with, so it is verified against that
+            // spelling; what the replay reports is the closed vocabulary's.
+            MemoryReviewBulkItemResultDto sealedItem = new(
                 originalEvent.Sequence,
                 originalEvent.SubjectId,
                 originalEvent.VersionId,
                 original.Envelope.Outcome,
                 original.Envelope.ResultingVersionId);
 
-            if (original.ResponseDigest != ResponseDigest(orderedDigest, original.Envelope, item))
+            if (original.ResponseDigest != ResponseDigest(orderedDigest, original.Envelope, sealedItem))
             {
                 throw new InspectionException(ReviewIntegrityFailure);
             }
+
+            MemoryReviewBulkItemResultDto item = sealedItem with
+            {
+                Outcome = MemoryReviewOutcomes.FromPersisted(sealedItem.Outcome)!,
+            };
 
             if (replacements.TryGetValue(index, out StoredReceipt? replacement))
             {
@@ -1142,7 +1150,11 @@ internal sealed partial class LexiconService
                     replacementEvent?.Sequence ?? -1,
                     replacementEvent?.SubjectId ?? string.Empty,
                     replacementEvent?.VersionId ?? string.Empty,
-                    "auto-acknowledged",
+                    // The generation that wrote the receipt is told by its outcome's spelling: a lowercase
+                    // one sealed the replacement with the lowercase acknowledgement.
+                    MemoryReviewOutcomes.IsKnown(original.Envelope.Outcome)
+                        ? MemoryReviewOutcomes.AutoAcknowledged
+                        : "auto-acknowledged",
                     replacementEvent?.VersionId);
 
                 if (request.Action != MemoryReviewAction.Correct
@@ -1186,6 +1198,14 @@ internal sealed partial class LexiconService
             originals.Values.Any(static receipt => receipt.Envelope.ProtectedContent));
     }
 
+    /// <summary>The one statement that finds every receipt of one request, as the service runs it.</summary>
+    internal const string ReceiptLookupSql = """
+        SELECT DecisionId, ReviewEventSequence, RequestIdempotencyDigest, ResponseReceiptDigest
+        FROM annal_review_decision_receipts
+        WHERE DecisionId >= @prefix AND DecisionId < @prefixUpper
+        ORDER BY DecisionId
+        """;
+
     private static async Task<List<StoredReceipt>> ReadStoredReceiptsAsync(
         DbConnection connection,
         Guid requestId,
@@ -1193,14 +1213,11 @@ internal sealed partial class LexiconService
     {
         await using DbCommand command = connection.CreateCommand();
 
-        command.CommandText = """
-            SELECT DecisionId, ReviewEventSequence, RequestIdempotencyDigest, ResponseReceiptDigest
-            FROM annal_review_decision_receipts
-            WHERE substr(DecisionId, 1, length(@prefix)) = @prefix
-            ORDER BY DecisionId
-            """;
+        command.CommandText = ReceiptLookupSql;
 
-        AddParameter(command, "@prefix", requestId.ToString("N") + ":");
+        AddParameter(command, "@prefix", MemoryReviewReceiptKeys.Prefix(requestId));
+
+        AddParameter(command, "@prefixUpper", MemoryReviewReceiptKeys.UpperBound(requestId));
 
         List<StoredReceipt> receipts = [];
 
@@ -1365,28 +1382,24 @@ internal sealed partial class LexiconService
         ErrorCodes.MemoryReview.RequestReuse,
         "The Lexicon review request identity was already used for different decisions.");
 
-    private static string AppliedOutcomeForAction(MemoryReviewAction action) => action switch
-    {
-        MemoryReviewAction.Confirm => "acknowledged",
-        MemoryReviewAction.Correct => "corrected",
-        MemoryReviewAction.Retire => "retired",
-        MemoryReviewAction.Pin => "pinned",
-        MemoryReviewAction.Unpin => "unpinned",
-        _ => throw new InvalidOperationException("Unrecognized memory-review action."),
-    };
+    private static string AppliedOutcomeForAction(MemoryReviewAction action) => MemoryReviewOutcomes.Applied(action);
 
-    private static string? NoOpOutcomeForAction(MemoryReviewAction action) => action switch
-    {
-        MemoryReviewAction.Correct => nameof(LexiconCurationOutcomeKind.Unchanged),
-        MemoryReviewAction.Retire => nameof(LexiconCurationOutcomeKind.AlreadyRetired),
-        MemoryReviewAction.Pin => nameof(LexiconCurationOutcomeKind.AlreadyPinned),
-        MemoryReviewAction.Unpin => nameof(LexiconCurationOutcomeKind.NotPinned),
-        _ => null,
-    };
+    // The one per-action table every store shares; a Confirm is always recorded, so it has none.
+    private static string? NoOpOutcomeForAction(MemoryReviewAction action) =>
+        action == MemoryReviewAction.Confirm ? null : MemoryReviewOutcomes.NoOp(action);
 
-    private static bool IsAllowedOutcome(MemoryReviewAction action, string outcome) =>
-        string.Equals(outcome, AppliedOutcomeForAction(action), StringComparison.Ordinal)
-        || string.Equals(outcome, NoOpOutcomeForAction(action), StringComparison.Ordinal);
+    /// <summary>
+    /// Whether a persisted receipt's outcome is one this action can produce, in the closed spelling or in
+    /// the lowercase spelling an earlier build persisted.
+    /// </summary>
+    private static bool IsAllowedOutcome(MemoryReviewAction action, string outcome)
+    {
+        string? closed = MemoryReviewOutcomes.FromPersisted(outcome);
+
+        return closed is not null
+            && (string.Equals(closed, AppliedOutcomeForAction(action), StringComparison.Ordinal)
+                || string.Equals(closed, NoOpOutcomeForAction(action), StringComparison.Ordinal));
+    }
 
     private async Task<ReviewActionResult> ApplyReviewActionAsync(
         DbConnection connection,
@@ -1407,9 +1420,7 @@ internal sealed partial class LexiconService
                 "The Lexicon curation generation is exhausted."));
         }
 
-        DateTimeOffset now = _reviewTimeProvider.GetUtcNow();
-
-        now = now > state.Row.Entry.UpdatedAt ? now : state.Row.Entry.UpdatedAt.AddTicks(1);
+        DateTimeOffset now = NextRecordedAt(state.Row.Entry.UpdatedAt, state.Head);
 
         if (action == MemoryReviewAction.Correct)
         {

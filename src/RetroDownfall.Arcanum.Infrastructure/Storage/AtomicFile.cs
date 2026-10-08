@@ -21,7 +21,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.Storage;
 /// </remarks>
 internal static class AtomicFile
 {
-
     /// <summary>
     /// The prefix every backup copy of a replaced destination carries.
     /// </summary>
@@ -55,6 +54,14 @@ internal static class AtomicFile
     /// <see cref="AtomicReplaceStatus.RolledBack"/> or
     /// <see cref="AtomicReplaceStatus.ReplacedButUnverified"/> rather than a generic pre-move failure.
     /// </param>
+    /// <param name="expectedDestinationContent">
+    /// Optional baseline for a read-modify-write caller: the length and SHA-256 of the bytes the new
+    /// content was computed from. The destination is copied to a backup before it is replaced, and that
+    /// copy is compared with the baseline; any difference (an in-place edit by someone else, including
+    /// one that kept the same inode and length) or a destination that no longer exists aborts the
+    /// replace, deletes the temp file and the backup, and returns <see cref="AtomicReplaceStatus.Aborted"/>
+    /// with the destination untouched. Identity revalidation alone cannot see such an edit.
+    /// </param>
     /// <param name="beforeMove">
     /// Optional final hook invoked after destination revalidation and immediately before the atomic
     /// rename. This exists for deterministic race testing; normal callers leave it unset.
@@ -62,6 +69,11 @@ internal static class AtomicFile
     /// <param name="afterMoveBeforeVerify">
     /// Optional hook invoked after the rename but before mandatory staged identity/content
     /// verification. This exists for deterministic race testing; normal callers leave it unset.
+    /// </param>
+    /// <param name="flushParentDirectory">
+    /// The directory barrier issued right after the rename, and again after a rollback that renamed the
+    /// destination aside or the backup back; <see cref="DurableDirectoryFlush.TryFlushParentOf"/> when
+    /// unset. This exists so tests can observe the barrier; normal callers leave it unset.
     /// </param>
     /// <returns>
     /// An <see cref="AtomicReplaceStatus"/> describing whether the destination was replaced and
@@ -75,8 +87,11 @@ internal static class AtomicFile
         Func<bool>? beforeReplace = null,
         Func<bool>? afterReplace = null,
         Action? beforeMove = null,
-        Action? afterMoveBeforeVerify = null)
+        Action? afterMoveBeforeVerify = null,
+        FileContentBaseline? expectedDestinationContent = null,
+        Func<string, bool>? flushParentDirectory = null)
     {
+        Func<string, bool> flushParent = flushParentDirectory ?? DurableDirectoryFlush.TryFlushParentOf;
 
         bool replaced = false;
 
@@ -106,28 +121,21 @@ internal static class AtomicFile
 
         try
         {
-
             destinationExisted = File.Exists(destinationPath);
 
             if (destinationExisted)
             {
-
                 if (!TryCaptureMutationMetadata(
                         destinationPath,
                         out expectedDestinationMetadata,
                         out expectedUnixMode))
                 {
-
                     return AtomicReplaceStatus.Aborted;
-
                 }
-
             }
             else if (Directory.Exists(destinationPath))
             {
-
                 return AtomicReplaceStatus.Aborted;
-
             }
 
             await using (FileStream stream = new(
@@ -138,7 +146,6 @@ internal static class AtomicFile
                 bufferSize: 4096,
                 FileOptions.Asynchronous | FileOptions.WriteThrough))
             {
-
                 if (!IdentityOwnedFileSystemCleanup.TryCaptureOpenFile(
                         tempPath,
                         stream.SafeFileHandle,
@@ -152,7 +159,6 @@ internal static class AtomicFile
                 await writeAsync(stream, cancellationToken).ConfigureAwait(false);
 
                 await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
-
             }
 
             if (!TryRevalidateMutationTarget(
@@ -166,9 +172,7 @@ internal static class AtomicFile
                 || stagedMetadata.HardLinkCount != 1
                 || stagedMetadata.Kind != FileSystemObjectKind.RegularFile)
             {
-
                 return AtomicReplaceStatus.Aborted;
-
             }
 
             stagedIdentity = stagedMetadata.Identity;
@@ -178,21 +182,16 @@ internal static class AtomicFile
                     stagedIdentity,
                     out stagedFingerprint))
             {
-
                 return AtomicReplaceStatus.Aborted;
-
             }
 
             if (beforeReplace is not null && !beforeReplace())
             {
-
                 return AtomicReplaceStatus.Aborted;
-
             }
 
             if (File.Exists(destinationPath))
             {
-
                 backupPath = Path.Combine(
                     Path.GetDirectoryName(destinationPath) ?? string.Empty,
                     $"{BackupPrefix}{Guid.NewGuid():N}");
@@ -284,7 +283,15 @@ internal static class AtomicFile
                 }
 
                 backupFingerprintCaptured = true;
+            }
 
+            if (expectedDestinationContent is { } expectedContent
+                && (!backupFingerprintCaptured
+                    || !expectedContent.Matches(
+                        backupFingerprint.Length,
+                        backupFingerprint.ContentSha256)))
+            {
+                return AtomicReplaceStatus.Aborted;
             }
 
             if (!TryRevalidateMutationTarget(
@@ -292,9 +299,7 @@ internal static class AtomicFile
                     destinationExisted,
                     expectedDestinationMetadata))
             {
-
                 return AtomicReplaceStatus.Aborted;
-
             }
 
             beforeMove?.Invoke();
@@ -306,13 +311,17 @@ internal static class AtomicFile
 
             replaced = true;
 
+            // The rename is durable only once its directory entry is: flush the parent through the
+            // shared barrier (F_FULLFSYNC on macOS). The move has already happened, so a refused
+            // barrier is logged rather than reported as a failed replace.
+            FlushParentOrWarn(flushParent, destinationPath, "its atomic replace");
+
             afterMoveBeforeVerify?.Invoke();
 
             if (!TryVerifyFileFingerprint(
                     destinationPath,
                     stagedFingerprint))
             {
-
                 if (TryRestoreOrQuarantine(
                         destinationPath,
                         backupPath,
@@ -320,24 +329,21 @@ internal static class AtomicFile
                         backupArtifact,
                         backupFingerprint,
                         backupFingerprintCaptured,
-                        retainQuarantine: true))
+                        retainQuarantine: true,
+                        flushParent))
                 {
-
                     backupPath = null;
 
                     return AtomicReplaceStatus.RolledBack;
-
                 }
 
                 backupPath = null;
 
                 return AtomicReplaceStatus.ReplacedButUnverified;
-
             }
 
             if (afterReplace is not null && !afterReplace())
             {
-
                 if (TryRestoreOrQuarantine(
                         destinationPath,
                         backupPath,
@@ -345,27 +351,24 @@ internal static class AtomicFile
                         backupArtifact,
                         backupFingerprint,
                         backupFingerprintCaptured,
-                        retainQuarantine: false))
+                        retainQuarantine: false,
+                        flushParent))
                 {
-
                     backupPath = null;
 
                     return AtomicReplaceStatus.RolledBack;
-
                 }
 
                 // Keep the backup file for operator recovery; do not delete it in finally.
                 backupPath = null;
 
                 return AtomicReplaceStatus.ReplacedButUnverified;
-
             }
 
             if (!TryVerifyFileFingerprint(
                     destinationPath,
                     stagedFingerprint))
             {
-
                 if (TryRestoreOrQuarantine(
                         destinationPath,
                         backupPath,
@@ -373,46 +376,36 @@ internal static class AtomicFile
                         backupArtifact,
                         backupFingerprint,
                         backupFingerprintCaptured,
-                        retainQuarantine: true))
+                        retainQuarantine: true,
+                        flushParent))
                 {
-
                     backupPath = null;
 
                     return AtomicReplaceStatus.RolledBack;
-
                 }
 
                 backupPath = null;
 
                 return AtomicReplaceStatus.ReplacedButUnverified;
-
             }
 
             return AtomicReplaceStatus.Succeeded;
-
         }
         finally
         {
-
             if (!replaced && tempArtifactCaptured)
             {
-
                 _ = IdentityOwnedFileSystemCleanup.TryDelete(
                     tempArtifact);
-
             }
 
             if (backupPath is not null
                 && backupArtifactCaptured)
             {
-
                 _ = IdentityOwnedFileSystemCleanup.TryDelete(
                     backupArtifact);
-
             }
-
         }
-
     }
 
     private static bool TryCaptureMutationMetadata(
@@ -420,7 +413,6 @@ internal static class AtomicFile
         out FileHandleMetadata metadata,
         out UnixFileMode? unixMode)
     {
-
         metadata = default;
 
         unixMode = null;
@@ -429,36 +421,27 @@ internal static class AtomicFile
             || metadata.HardLinkCount != 1
             || metadata.Kind != FileSystemObjectKind.RegularFile)
         {
-
             return false;
-
         }
 
         if (OperatingSystem.IsWindows())
         {
-
             return true;
-
         }
 
         try
         {
-
             unixMode = File.GetUnixFileMode(destinationPath);
 
             return true;
-
         }
         catch (Exception exception) when (
             exception is IOException
                 or UnauthorizedAccessException
                 or PlatformNotSupportedException)
         {
-
             return false;
-
         }
-
     }
 
     private static bool TryRevalidateMutationTarget(
@@ -466,13 +449,10 @@ internal static class AtomicFile
         bool destinationExisted,
         FileHandleMetadata expectedMetadata)
     {
-
         if (!destinationExisted)
         {
-
             return !File.Exists(destinationPath)
                 && !Directory.Exists(destinationPath);
-
         }
 
         return File.Exists(destinationPath)
@@ -483,39 +463,30 @@ internal static class AtomicFile
             && FileHandleIdentity.IdentitiesMatch(
                 expectedMetadata.Identity,
                 currentMetadata.Identity);
-
     }
 
     private static bool TryApplyPreservedUnixMode(
         string tempPath,
         UnixFileMode? unixMode)
     {
-
         if (OperatingSystem.IsWindows() || unixMode is null)
         {
-
             return true;
-
         }
 
         try
         {
-
             File.SetUnixFileMode(tempPath, unixMode.Value);
 
             return true;
-
         }
         catch (Exception exception) when (
             exception is IOException
                 or UnauthorizedAccessException
                 or PlatformNotSupportedException)
         {
-
             return false;
-
         }
-
     }
 
     /// <summary>
@@ -531,9 +502,44 @@ internal static class AtomicFile
         IdentityOwnedFileSystemArtifact backupArtifact,
         StagedFileFingerprint backupFingerprint,
         bool backupFingerprintCaptured,
-        bool retainQuarantine)
+        bool retainQuarantine,
+        Func<string, bool> flushParent)
     {
+        bool moved = false;
 
+        try
+        {
+            return TryRestoreOrQuarantineCore(
+                destinationPath,
+                backupPath,
+                stagedIdentity,
+                backupArtifact,
+                backupFingerprint,
+                backupFingerprintCaptured,
+                retainQuarantine,
+                ref moved);
+        }
+        finally
+        {
+            // Every rename the rollback landed changes the destination directory, and a rolled-back
+            // replace is only as durable as those entries, whether or not the rollback then completed.
+            if (moved)
+            {
+                FlushParentOrWarn(flushParent, destinationPath, "its rollback");
+            }
+        }
+    }
+
+    private static bool TryRestoreOrQuarantineCore(
+        string destinationPath,
+        string? backupPath,
+        FileHandleIdentity stagedIdentity,
+        IdentityOwnedFileSystemArtifact backupArtifact,
+        StagedFileFingerprint backupFingerprint,
+        bool backupFingerprintCaptured,
+        bool retainQuarantine,
+        ref bool moved)
+    {
         if (!FileHandleIdentityInterop.TryGetPathMetadata(
                 destinationPath,
                 out FileHandleMetadata destinationMetadata)
@@ -543,9 +549,7 @@ internal static class AtomicFile
                 stagedIdentity,
                 destinationMetadata.Identity))
         {
-
             return false;
-
         }
 
         string quarantinePath = Path.Combine(
@@ -554,8 +558,9 @@ internal static class AtomicFile
 
         try
         {
-
             File.Move(destinationPath, quarantinePath, overwrite: false);
+
+            moved = true;
 
             if (!FileHandleIdentityInterop.TryGetPathMetadata(
                     quarantinePath,
@@ -566,16 +571,12 @@ internal static class AtomicFile
                     stagedIdentity,
                     quarantinedMetadata.Identity))
             {
-
                 return false;
-
             }
 
             if (backupPath is null)
             {
-
                 return true;
-
             }
 
             if (!backupFingerprintCaptured
@@ -594,6 +595,8 @@ internal static class AtomicFile
 
             File.Move(backupPath, destinationPath, overwrite: false);
 
+            moved = true;
+
             if (!TryVerifyFileFingerprint(
                     destinationPath,
                     backupFingerprint))
@@ -603,24 +606,29 @@ internal static class AtomicFile
 
             if (!retainQuarantine)
             {
-
                 _ = IdentityOwnedFileSystemCleanup.TryDelete(
                     new IdentityOwnedFileSystemArtifact(
                         Path.GetFullPath(quarantinePath),
                         quarantinedMetadata));
-
             }
 
             return true;
-
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-
             return false;
-
         }
+    }
 
+    private static void FlushParentOrWarn(Func<string, bool> flushParent, string path, string after)
+    {
+        if (!flushParent(path))
+        {
+            Serilog.Log.Warning(
+                "The directory holding {Path} could not be flushed after {Step}.",
+                path,
+                after);
+        }
     }
 
     private static bool TryCaptureFileFingerprint(
@@ -628,12 +636,10 @@ internal static class AtomicFile
         FileHandleIdentity expectedIdentity,
         out StagedFileFingerprint fingerprint)
     {
-
         fingerprint = default;
 
         try
         {
-
             if (!FileHandleIdentityInterop.TryGetPathMetadata(
                     path,
                     out FileHandleMetadata pathMetadata)
@@ -643,9 +649,7 @@ internal static class AtomicFile
                     expectedIdentity,
                     pathMetadata.Identity))
             {
-
                 return false;
-
             }
 
             using FileStream stream = new(
@@ -665,9 +669,7 @@ internal static class AtomicFile
                     expectedIdentity,
                     openedMetadata.Identity))
             {
-
                 return false;
-
             }
 
             long length = stream.Length;
@@ -695,9 +697,7 @@ internal static class AtomicFile
                     expectedIdentity,
                     finalPathMetadata.Identity))
             {
-
                 return false;
-
             }
 
             fingerprint = new StagedFileFingerprint(
@@ -706,18 +706,14 @@ internal static class AtomicFile
                 contentSha256);
 
             return true;
-
         }
         catch (Exception exception) when (
             exception is IOException
                 or UnauthorizedAccessException
                 or PlatformNotSupportedException)
         {
-
             return false;
-
         }
-
     }
 
     private static bool TryVerifyFileFingerprint(
@@ -733,5 +729,4 @@ internal static class AtomicFile
         FileHandleIdentity Identity,
         long Length,
         string ContentSha256);
-
 }

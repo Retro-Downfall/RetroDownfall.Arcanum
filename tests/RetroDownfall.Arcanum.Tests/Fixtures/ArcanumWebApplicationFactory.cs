@@ -33,7 +33,6 @@ namespace RetroDownfall.Arcanum.Tests.Fixtures;
 
 public sealed class ArcanumWebApplicationFactory : WebApplicationFactory<Program>
 {
-
     public const string TestApiKey = GrimoireFixture.TestApiKey;
 
     private const string InMemoryCredentialOptInVariable =
@@ -58,39 +57,73 @@ public sealed class ArcanumWebApplicationFactory : WebApplicationFactory<Program
     public ArcanumWebApplicationFactory()
         : this(new RestartableArcanumProfileFixture(), ownsProfile: true)
     {
-
     }
 
     internal ArcanumWebApplicationFactory(RestartableArcanumProfileFixture profile)
         : this(profile, ownsProfile: false)
     {
-
     }
 
-    private ArcanumWebApplicationFactory(
+    internal ArcanumWebApplicationFactory(
         RestartableArcanumProfileFixture profile,
-        bool ownsProfile)
+        bool ownsProfile,
+        Action<string>? report = null)
     {
-
         _profile = profile;
 
         _ownsProfile = ownsProfile;
 
-        CaptureEnvironment();
+        try
+        {
+            CaptureEnvironment();
 
-        // Program.cs reads environment before WebApplicationFactory's UseEnvironment can apply.
-        // Set early so CreateSlimBuilder and master-key skip see Testing.
-        global::System.Environment.SetEnvironmentVariable("ASPNETCORE_ENVIRONMENT", "Testing");
+            // Program.cs reads environment before WebApplicationFactory's UseEnvironment can apply.
+            // Set early so CreateSlimBuilder and master-key skip see Testing.
+            global::System.Environment.SetEnvironmentVariable("ASPNETCORE_ENVIRONMENT", "Testing");
 
-        global::System.Environment.SetEnvironmentVariable("DOTNET_ENVIRONMENT", "Testing");
+            global::System.Environment.SetEnvironmentVariable("DOTNET_ENVIRONMENT", "Testing");
 
-        ApplyIsolatedUserProfile();
+            ApplyIsolatedUserProfile();
+        }
+        catch
+        {
+            // A constructor that throws is never disposed, so nothing else would put the process-global
+            // environment back or release a profile this factory owns. Each cleanup failure is reported
+            // rather than thrown, so it can never replace the failure that explains the bad constructor.
+            ReleaseAfterConstructorFailure(report ?? TestDiagnostics.Report);
 
+            throw;
+        }
+    }
+
+    private void ReleaseAfterConstructorFailure(Action<string> report)
+    {
+        try
+        {
+            RestoreEnvironment();
+        }
+        catch (Exception ex)
+        {
+            report($"The failed {nameof(ArcanumWebApplicationFactory)} could not restore the process environment ({ex.GetType().Name}): {ex.Message}");
+        }
+
+        if (!_ownsProfile)
+        {
+            return;
+        }
+
+        try
+        {
+            _profile.DisposeAsync().AsTask().GetAwaiter().GetResult();
+        }
+        catch (Exception ex)
+        {
+            report($"The failed {nameof(ArcanumWebApplicationFactory)} could not release its profile ({ex.GetType().Name}): {ex.Message}");
+        }
     }
 
     private void CaptureEnvironment()
     {
-
         _originalEnvironment["HOME"] = global::System.Environment.GetEnvironmentVariable("HOME");
         _originalEnvironment["APPDATA"] = global::System.Environment.GetEnvironmentVariable("APPDATA");
         _originalEnvironment["USERPROFILE"] = global::System.Environment.GetEnvironmentVariable("USERPROFILE");
@@ -101,19 +134,14 @@ public sealed class ArcanumWebApplicationFactory : WebApplicationFactory<Program
         _originalEnvironment["ARCANUM_SKIP_KEY_BOOTSTRAP"] = global::System.Environment.GetEnvironmentVariable("ARCANUM_SKIP_KEY_BOOTSTRAP");
         _originalEnvironment["ASPNETCORE_ENVIRONMENT"] = global::System.Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT");
         _originalEnvironment["DOTNET_ENVIRONMENT"] = global::System.Environment.GetEnvironmentVariable("DOTNET_ENVIRONMENT");
-
     }
 
     private void RestoreEnvironment()
     {
-
         foreach (KeyValuePair<string, string?> entry in _originalEnvironment)
         {
-
             global::System.Environment.SetEnvironmentVariable(entry.Key, entry.Value);
-
         }
-
     }
 
     public FakeIntelligenceProvider FakeIntelligence => _fakeIntelligence;
@@ -143,18 +171,15 @@ public sealed class ArcanumWebApplicationFactory : WebApplicationFactory<Program
 
     public HttpClient CreateAuthenticatedClient()
     {
-
         HttpClient client = CreateClient();
 
         client.DefaultRequestHeaders.Add(ArcanumApiHeaders.ApiKey, TestApiKey);
 
         return client;
-
     }
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
-
         builder.UseEnvironment("Testing");
 
         builder.ConfigureTestServices(services =>
@@ -243,7 +268,6 @@ public sealed class ArcanumWebApplicationFactory : WebApplicationFactory<Program
 
             services.AddSingleton<IOptionsMonitor<ArcanumSettings>>(sp =>
             {
-
                 ArcanumSettings built = sp.GetRequiredService<IOptionsFactory<ArcanumSettings>>().Create(Options.DefaultName);
 
                 ArcanumSettings patched = built with
@@ -291,7 +315,6 @@ public sealed class ArcanumWebApplicationFactory : WebApplicationFactory<Program
                 }
 
                 return new TestOptionsMonitor<ArcanumSettings>(patched);
-
             });
 
             services.AddSingleton<IOptions<ArcanumSettings>>(sp =>
@@ -307,9 +330,7 @@ public sealed class ArcanumWebApplicationFactory : WebApplicationFactory<Program
             {
                 services.AddSingleton<IStartupFilter>(new EndpointHookStartupFilter(BeforeEndpoint));
             }
-
         });
-
     }
 
     private sealed class EndpointHookStartupFilter(
@@ -353,14 +374,11 @@ public sealed class ArcanumWebApplicationFactory : WebApplicationFactory<Program
 
     protected override IHost CreateHost(IHostBuilder builder)
     {
-
         bool initialSeedClaimed = _profile.ClaimInitialSeed();
 
         if (initialSeedClaimed)
         {
-
             SeedGrimoireDatabaseIfAvailable();
-
         }
 
         global::System.Environment.SetEnvironmentVariable("ARCANUM_SKIP_KEY_BOOTSTRAP", "1");
@@ -371,18 +389,14 @@ public sealed class ArcanumWebApplicationFactory : WebApplicationFactory<Program
 
         if (initialSeedClaimed && _profile.Grimoire is not null)
         {
-
             SeedExternalInstallationIdentity(host);
-
         }
 
         return host;
-
     }
 
     private void SeedExternalInstallationIdentity(IHost host)
     {
-
         string grimoireDirectory = Path.Combine(
             _profile.TempHome,
             ".config",
@@ -407,10 +421,8 @@ public sealed class ArcanumWebApplicationFactory : WebApplicationFactory<Program
             || profileNamespace.IsFailure
             || heldInstallationLock.IsFailure)
         {
-
             throw new InvalidOperationException(
                 "The restartable test profile's external installation identity could not be prepared.");
-
         }
 
         Result<Guid> seeded = new BackupRestoreJournalInstallationIdentityProvider(
@@ -423,17 +435,13 @@ public sealed class ArcanumWebApplicationFactory : WebApplicationFactory<Program
 
         if (seeded.IsFailure)
         {
-
             throw new InvalidOperationException(
                 "The restartable test profile's external installation identity could not be prepared.");
-
         }
-
     }
 
     private void ApplyIsolatedUserProfile()
     {
-
         global::System.Environment.SetEnvironmentVariable("ARCANUM_TEST_HOME", _profile.TempHome);
 
         global::System.Environment.SetEnvironmentVariable(InMemoryCredentialOptInVariable, "1");
@@ -442,7 +450,6 @@ public sealed class ArcanumWebApplicationFactory : WebApplicationFactory<Program
 
         if (OperatingSystem.IsWindows())
         {
-
             string appData = Path.Combine(_profile.TempHome, "AppData", "Roaming");
 
             Directory.CreateDirectory(appData);
@@ -450,37 +457,28 @@ public sealed class ArcanumWebApplicationFactory : WebApplicationFactory<Program
             global::System.Environment.SetEnvironmentVariable("APPDATA", appData);
 
             global::System.Environment.SetEnvironmentVariable("USERPROFILE", _profile.TempHome);
-
         }
         else if (OperatingSystem.IsLinux())
         {
-
             string xdgData = Path.Combine(_profile.TempHome, ".local", "share");
 
             Directory.CreateDirectory(xdgData);
 
             global::System.Environment.SetEnvironmentVariable("XDG_DATA_HOME", xdgData);
-
         }
         else
         {
-
             Directory.CreateDirectory(Path.Combine(_profile.TempHome, "Library", "Application Support"));
-
         }
 
         Directory.CreateDirectory(Path.Combine(_profile.TempHome, ".config", "arcanum"));
-
     }
 
     private void SeedGrimoireDatabaseIfAvailable()
     {
-
         if (_profile.Grimoire is not { } grimoire)
         {
-
             return;
-
         }
 
         string databasePath = Path.Combine(
@@ -493,9 +491,7 @@ public sealed class ArcanumWebApplicationFactory : WebApplicationFactory<Program
 
         if (!string.IsNullOrEmpty(directory))
         {
-
             Directory.CreateDirectory(directory);
-
         }
 
         string templateDatabasePath = grimoire.CopyDatabase();
@@ -505,87 +501,68 @@ public sealed class ArcanumWebApplicationFactory : WebApplicationFactory<Program
         File.Copy(templateDatabasePath, databasePath, overwrite: true);
 
         File.Copy(templateSidecarPath, databasePath + ".kdf", overwrite: true);
-
     }
 
     public override async ValueTask DisposeAsync()
     {
-
         try
         {
-
             try
             {
-
                 await StopApplicationHostAsync();
-
             }
             finally
             {
-
                 await base.DisposeAsync();
-
             }
-
         }
         finally
         {
-
             DisposeIsolatedResources();
-
         }
-
     }
 
     private async ValueTask StopApplicationHostAsync()
     {
-
         IHost? host = _applicationHost;
 
         if (host is null || Interlocked.Exchange(ref _applicationHostStopped, 1) != 0)
         {
-
             return;
-
         }
 
         await host.StopAsync();
-
     }
 
     private void DisposeIsolatedResources()
     {
-
         if (Interlocked.Exchange(ref _isolatedResourcesDisposed, 1) != 0)
         {
-
             return;
-
         }
 
         try
         {
-
             // The application host uses the normal pooled SQLite connection string. Once the host
             // and Grimoire checkpoint have stopped, release those test-process pools before deleting
             // an owned profile's isolated database tree on Windows.
             SqliteConnection.ClearAllPools();
-
-            if (_ownsProfile)
-            {
-
-                _profile.DisposeAsync().AsTask().GetAwaiter().GetResult();
-
-            }
-
         }
         finally
         {
-
-            RestoreEnvironment();
-
+            // The environment goes back first: deleting an owned profile's tree can be slow or throw,
+            // and until it is restored every path in the process still resolves into that tree.
+            try
+            {
+                RestoreEnvironment();
+            }
+            finally
+            {
+                if (_ownsProfile)
+                {
+                    _profile.DisposeAsync().AsTask().GetAwaiter().GetResult();
+                }
+            }
         }
-
     }
-
 }

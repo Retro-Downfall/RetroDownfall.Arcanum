@@ -16,12 +16,10 @@ namespace RetroDownfall.Arcanum.Tests.Cli;
 
 public sealed class InstallationResetApplyBoundaryTests
 {
-
     [Fact]
 
     public async Task Full_apply_rejects_operation_mismatch_before_shutdown_lock_or_service()
     {
-
         FullInstallationResetRequest request = CreateFullRequest() with
         {
             OperationId = Guid.Parse("71717171-7171-4171-8171-717171717171"),
@@ -38,8 +36,6 @@ public sealed class InstallationResetApplyBoundaryTests
             new ImmediateTimeProvider(),
             (_, _, _, _) => throw new InvalidOperationException(
                 "Client coordination must not run."),
-            (_, _) => throw new InvalidOperationException(
-                "Host handoff must not be created."),
             _ => throw new InvalidOperationException(
                 "Ordinary pair evidence must not be read."));
 
@@ -52,14 +48,12 @@ public sealed class InstallationResetApplyBoundaryTests
         Assert.Equal(ErrorCodes.Data.ExternalRemediationInvalid, result.Error.Code);
 
         Assert.Equal(0, service.ApplyCount);
-
     }
 
     [Fact]
 
     public async Task Full_apply_rejects_a_non_all_scope_before_shutdown_lock_or_service()
     {
-
         FullInstallationResetRequest original = CreateFullRequest();
 
         FullInstallationResetRequest request = original with
@@ -84,8 +78,6 @@ public sealed class InstallationResetApplyBoundaryTests
             new ImmediateTimeProvider(),
             (_, _, _, _) => throw new InvalidOperationException(
                 "Client coordination must not run."),
-            (_, _) => throw new InvalidOperationException(
-                "Host handoff must not be created."),
             _ => throw new InvalidOperationException(
                 "Ordinary pair evidence must not be read."));
 
@@ -100,14 +92,12 @@ public sealed class InstallationResetApplyBoundaryTests
         Assert.Equal(0, service.ApplyCount);
 
         Assert.Equal(0, service.FullApplyCount);
-
     }
 
     [Fact]
 
     public async Task Full_apply_stops_the_host_and_calls_only_the_full_service_under_the_exact_lock()
     {
-
         List<string> events = [];
 
         FullInstallationResetRequest request = CreateFullRequest();
@@ -119,7 +109,6 @@ public sealed class InstallationResetApplyBoundaryTests
         {
             FullApply = (actual, heldInstallationLock, _) =>
             {
-
                 events.Add("full");
 
                 Assert.Equal(request, actual);
@@ -131,35 +120,28 @@ public sealed class InstallationResetApplyBoundaryTests
                 return Task.FromResult(
                     Result<InstallationResetResult>.Success(
                         CreateResult(actual.Apply)));
-
             },
         };
 
         InstallationResetApplyBoundary boundary = new(
             _ =>
             {
-
                 events.Add("quit");
 
                 return Task.FromResult(Result<bool>.Success(true));
-
             },
             (_, _) => throw new InvalidOperationException(
                 "The ordinary host reset must not run."),
             service,
             _ =>
             {
-
                 events.Add("lock");
 
                 return Acquired(lease);
-
             },
             new ImmediateTimeProvider(),
             (_, _, _, _) => throw new InvalidOperationException(
                 "Client coordination must not run."),
-            (_, _) => throw new InvalidOperationException(
-                "Host handoff must not be created."),
             _ => throw new InvalidOperationException(
                 "Ordinary pair evidence must not be read."));
 
@@ -174,35 +156,29 @@ public sealed class InstallationResetApplyBoundaryTests
         Assert.Equal(0, service.ApplyCount);
 
         Assert.Equal(1, service.FullApplyCount);
-
     }
 
     [Fact]
     public async Task Fresh_global_apply_skips_online_handoff_and_keeps_coordination_through_local_apply()
     {
-
         List<string> events = [];
 
         InstallationResetPlan plan = CreatePlan(InstallationResetScope.Global);
 
         RecordingResetService service = new((request, _) =>
         {
-
             events.Add("offline");
 
             return Task.FromResult(
                 Result<InstallationResetResult>.Success(CreateResult(request)));
-
         });
 
         InstallationResetApplyBoundary boundary = new(
             _ =>
             {
-
                 events.Add("quit");
 
                 return Task.FromResult(Result<bool>.Success(true));
-
             },
             (_, _) => throw new InvalidOperationException(
                 "Fresh local apply must not call the host factory route."),
@@ -211,16 +187,12 @@ public sealed class InstallationResetApplyBoundaryTests
             new ImmediateTimeProvider(),
             (scope, planId, operationId, _) =>
             {
-
                 events.Add(operationId is null ? "coordinate-online" : "coordinate-offline");
 
                 return Task.FromResult(
                     Result<IInstallationResetClientCoordinationLease>.Success(
                         new RecordingClientCoordinationLease(events)));
-
             },
-            (_, _) => throw new InvalidOperationException(
-                "Fresh local apply must not create a host handoff."),
             _ => throw new InvalidOperationException(
                 "Fresh local apply must not read the pair before the lock."));
 
@@ -242,13 +214,11 @@ public sealed class InstallationResetApplyBoundaryTests
                 "release-client-mutation",
             ],
             events);
-
     }
 
     [Fact]
     public async Task Fresh_global_apply_reads_no_pair_or_factory_seam_before_the_exact_lock()
     {
-
         int shutdownCalls = 0;
 
         int factoryCalls = 0;
@@ -264,46 +234,36 @@ public sealed class InstallationResetApplyBoundaryTests
         InstallationResetApplyBoundary boundary = new(
             _ =>
             {
-
                 shutdownCalls++;
 
                 return Task.FromResult(Result<bool>.Success(true));
-
             },
             (_, _) =>
             {
-
                 factoryCalls++;
 
                 return Task.FromResult(
                     Result<DataRetentionApplyResult>.Failure(new Error(
                         "Test.FactoryMustNotRun",
                         "The online factory effect must not run.")));
-
             },
             service,
             _ => Acquired(new RecordingLease()),
             new ImmediateTimeProvider(),
             (_, _, _, _) =>
             {
-
                 coordinationCalls++;
 
                 return Task.FromResult(
                     Result<IInstallationResetClientCoordinationLease>.Success(
                         new SilentClientCoordinationLease()));
-
             },
-            (_, _) => throw new InvalidOperationException(
-                "Fresh local apply must not create a host handoff."),
             _ =>
             {
-
                 pairCalls++;
 
                 throw new InvalidOperationException(
                     "Fresh local apply must not read the pair before the lock.");
-
             });
 
         Result<InstallationResetResult> result = await boundary.ApplyFreshAsync(
@@ -324,13 +284,11 @@ public sealed class InstallationResetApplyBoundaryTests
         Assert.Equal(0, pairCalls);
 
         Assert.Equal(1, service.FreshApplyCount);
-
     }
 
     [Fact]
     public async Task Fresh_global_plan_change_removes_the_client_blocker_without_offline_effect()
     {
-
         List<string> events = [];
 
         InstallationResetPlan plan = CreatePlan(InstallationResetScope.Global);
@@ -338,11 +296,9 @@ public sealed class InstallationResetApplyBoundaryTests
         InstallationResetApplyBoundary boundary = new(
             _ =>
             {
-
                 events.Add("quit");
 
                 return Task.FromResult(Result<bool>.Success(true));
-
             },
             (_, _) => throw new InvalidOperationException(
                 "Fresh local apply must not call the host factory route."),
@@ -354,16 +310,12 @@ public sealed class InstallationResetApplyBoundaryTests
             new ImmediateTimeProvider(),
             (_, _, _, _) =>
             {
-
                 events.Add("coordinate");
 
                 return Task.FromResult(
                     Result<IInstallationResetClientCoordinationLease>.Success(
                         new RecordingClientCoordinationLease(events)));
-
             },
-            (_, _) => throw new InvalidOperationException(
-                "Fresh local apply must not create a host handoff."),
             _ => throw new InvalidOperationException(
                 "Fresh local apply must not read the pair before the lock."));
 
@@ -386,13 +338,11 @@ public sealed class InstallationResetApplyBoundaryTests
                 "release-client-mutation",
             ],
             events);
-
     }
 
     [Fact]
     public async Task Fresh_global_failure_attempts_safe_client_blocker_removal()
     {
-
         List<string> events = [];
 
         InstallationResetPlan plan = CreatePlan(InstallationResetScope.Global);
@@ -410,8 +360,6 @@ public sealed class InstallationResetApplyBoundaryTests
             (_, _, _, _) => Task.FromResult(
                 Result<IInstallationResetClientCoordinationLease>.Success(
                     new RecordingClientCoordinationLease(events))),
-            (_, _) => throw new InvalidOperationException(
-                "Fresh local apply must not create a host handoff."),
             _ => throw new InvalidOperationException(
                 "Fresh local apply must not read the pair before the lock."));
 
@@ -429,13 +377,11 @@ public sealed class InstallationResetApplyBoundaryTests
         Assert.Equal(
             ["remove-client-blocker", "release-client-mutation"],
             events);
-
     }
 
     [Fact]
     public async Task Fresh_global_cancellation_attempts_safe_client_blocker_removal_uncancelled()
     {
-
         List<string> events = [];
 
         using CancellationTokenSource cancellation = new();
@@ -448,22 +394,18 @@ public sealed class InstallationResetApplyBoundaryTests
                 "Fresh local apply must not call the host factory route."),
             new RecordingResetService((_, cancellationToken) =>
             {
-
                 cancellation.Cancel();
 
                 cancellationToken.ThrowIfCancellationRequested();
 
                 throw new InvalidOperationException(
                     "The cancelled fresh apply must not continue.");
-
             }),
             _ => Acquired(new RecordingLease()),
             new ImmediateTimeProvider(),
             (_, _, _, _) => Task.FromResult(
                 Result<IInstallationResetClientCoordinationLease>.Success(
                     new RecordingClientCoordinationLease(events))),
-            (_, _) => throw new InvalidOperationException(
-                "Fresh local apply must not create a host handoff."),
             _ => throw new InvalidOperationException(
                 "Fresh local apply must not read the pair before the lock."));
 
@@ -478,13 +420,11 @@ public sealed class InstallationResetApplyBoundaryTests
         Assert.Equal(
             ["remove-client-blocker", "release-client-mutation"],
             events);
-
     }
 
     [Fact]
     public async Task Resumed_durable_completion_skips_host_replay_and_continues_under_the_exact_lock()
     {
-
         List<string> events = [];
 
         InstallationResetPlan plan = CreatePlan(InstallationResetScope.Global);
@@ -497,35 +437,30 @@ public sealed class InstallationResetApplyBoundaryTests
 
         InstallationResetHostHandoff handoff = CreateTestHostHandoff(
             request,
-            plan).Value;
+            plan);
 
         InstallationResetApplyBoundary boundary = new(
             _ =>
             {
-
                 events.Add("quit");
 
                 return Task.FromResult(Result<bool>.Success(true));
-
             },
             (_, _) => throw new InvalidOperationException(
                 "A durable host proof must not replay the online effect."),
             new RecordingResetService((_, _) =>
             {
-
                 events.Add("offline");
 
                 return Task.FromResult(
                     Result<InstallationResetResult>.Success(
                         CreateResult(request)));
-
             }),
             _ => Acquired(new RecordingLease()),
             new ImmediateTimeProvider(),
             (_, _, _, _) => Task.FromResult(
                 Result<IInstallationResetClientCoordinationLease>.Success(
                     new RecordingClientCoordinationLease(events))),
-            CreateTestHostHandoff,
             ReadCleanPairAsync);
 
         Result<InstallationResetResult> result = await boundary.ApplyAsync(
@@ -544,52 +479,106 @@ public sealed class InstallationResetApplyBoundaryTests
                 "release-client-mutation",
             ],
             events);
+    }
 
+    /// <summary>
+    /// R-326: once the offline reset has completed, retiring the client blocker is bookkeeping after the
+    /// point of no return. A cancellation that lands as the service returns must not skip it, so it
+    /// runs on <see cref="CancellationToken.None"/> for a resumed apply exactly as it does for a fresh one.
+    /// </summary>
+    [Fact]
+    public async Task Resumed_global_apply_removes_the_client_blocker_uncancelled_after_the_service_returns()
+    {
+        List<string> events = [];
+
+        using CancellationTokenSource cancellation = new();
+
+        InstallationResetPlan plan = CreatePlan(InstallationResetScope.Global);
+
+        InstallationResetApplyRequest request = new(
+            new InstallationResetPlanRequest(
+                InstallationResetScope.Global,
+                "/workspace"),
+            plan.PlanId);
+
+        InstallationResetHostHandoff handoff = CreateTestHostHandoff(
+            request,
+            plan);
+
+        InstallationResetApplyBoundary boundary = new(
+            _ => Task.FromResult(Result<bool>.Success(true)),
+            (_, _) => throw new InvalidOperationException(
+                "A durable host proof must not replay the online effect."),
+            new RecordingResetService((_, _) =>
+            {
+                events.Add("offline");
+
+                // The reset has already completed; the cancellation arrives as the service returns.
+                cancellation.Cancel();
+
+                return Task.FromResult(
+                    Result<InstallationResetResult>.Success(
+                        CreateResult(request)));
+            }),
+            _ => Acquired(new RecordingLease()),
+            new ImmediateTimeProvider(),
+            (_, _, _, _) => Task.FromResult(
+                Result<IInstallationResetClientCoordinationLease>.Success(
+                    new RecordingClientCoordinationLease(events))),
+            ReadCleanPairAsync);
+
+        Result<InstallationResetResult> result = await boundary.ApplyAsync(
+            request,
+            handoff,
+            onlineCompletionDurable: true,
+            cancellation.Token);
+
+        Assert.True(result.IsSuccess, result.Error.Message);
+
+        Assert.Equal(
+            [
+                "offline",
+                "remove-client-blocker",
+                "release-client-mutation",
+            ],
+            events);
     }
 
     [Fact]
     public async Task Fresh_workspace_keeps_the_existing_shutdown_lock_offline_sequence()
     {
-
         List<string> events = [];
 
         InstallationResetPlan plan = CreatePlan(InstallationResetScope.Workspace);
 
         RecordingResetService service = new((actual, _) =>
         {
-
             events.Add("offline-continuation");
 
             Assert.Equal(plan.PlanId, actual.ExpectedPlanId);
 
             return Task.FromResult(
                 Result<InstallationResetResult>.Success(CreateResult(actual)));
-
         });
 
         InstallationResetApplyBoundary boundary = new(
             _ =>
             {
-
                 events.Add("quit-host");
 
                 return Task.FromResult(Result<bool>.Success(true));
-
             },
             (_, _) => throw new InvalidOperationException(
                 "Workspace reset must not call the host factory route."),
             service,
             _ =>
             {
-
                 events.Add("acquire-maintenance-lock");
 
                 return Acquired(new RecordingLease());
-
             },
             new ImmediateTimeProvider(),
             SilentClientCoordination,
-            CreateTestHostHandoff,
             ReadCleanPairAsync);
 
         Result<InstallationResetResult> result = await boundary.ApplyFreshAsync(
@@ -604,13 +593,11 @@ public sealed class InstallationResetApplyBoundaryTests
         Assert.Equal(
             ["quit-host", "acquire-maintenance-lock", "offline-continuation"],
             events);
-
     }
 
     [Fact]
     public async Task Reachable_host_is_shut_down_before_retried_lock_and_apply()
     {
-
         List<string> events = [];
 
         ImmediateTimeProvider timeProvider = new();
@@ -623,7 +610,6 @@ public sealed class InstallationResetApplyBoundaryTests
 
         RecordingResetService service = new((actual, _) =>
         {
-
             events.Add("apply");
 
             Assert.False(lease.IsDisposed);
@@ -631,7 +617,6 @@ public sealed class InstallationResetApplyBoundaryTests
             Assert.Equal(request, actual);
 
             return Task.FromResult(Result<InstallationResetResult>.Success(expected));
-
         });
 
         string? guardedDirectory = null;
@@ -641,37 +626,30 @@ public sealed class InstallationResetApplyBoundaryTests
         InstallationResetApplyBoundary boundary = new(
             _ =>
             {
-
                 events.Add("quit");
 
                 return Task.FromResult(Result<bool>.Success(true));
-
             },
             (_, _) => throw new InvalidOperationException(
                 "Legacy offline continuation must not call the host factory route."),
             service,
             path =>
             {
-
                 guardedDirectory = path;
 
                 lockAttempts++;
 
                 if (lockAttempts < 3)
                 {
-
                     return InstallationResetMaintenanceLockAttempt.Contended();
-
                 }
 
                 events.Add("lock");
 
                 return Acquired(lease);
-
             },
             timeProvider,
             SilentClientCoordination,
-            CreateTestHostHandoff,
             ReadCleanPairAsync);
 
         Result<InstallationResetResult> result = await boundary.ApplyAsync(
@@ -695,13 +673,11 @@ public sealed class InstallationResetApplyBoundaryTests
         Assert.Equal(["quit", "lock", "apply"], events);
 
         Assert.True(lease.IsDisposed);
-
     }
 
     [Fact]
     public async Task Unreachable_host_continues_through_the_offline_lock()
     {
-
         RecordingLease lease = new();
 
         InstallationResetApplyRequest request = CreateRequest();
@@ -720,15 +696,12 @@ public sealed class InstallationResetApplyBoundaryTests
             service,
             _ =>
             {
-
                 lockAttempts++;
 
                 return Acquired(lease);
-
             },
             new ImmediateTimeProvider(),
             SilentClientCoordination,
-            CreateTestHostHandoff,
             ReadCleanPairAsync);
 
         Result<InstallationResetResult> result = await boundary.ApplyAsync(
@@ -742,13 +715,11 @@ public sealed class InstallationResetApplyBoundaryTests
         Assert.Equal(1, service.ApplyCount);
 
         Assert.True(lease.IsDisposed);
-
     }
 
     [Fact]
     public async Task Missing_api_key_after_credential_deletion_continues_through_the_offline_lock()
     {
-
         RecordingLease lease = new();
 
         InstallationResetApplyRequest request = CreateRequest();
@@ -766,7 +737,6 @@ public sealed class InstallationResetApplyBoundaryTests
             _ => Acquired(lease),
             new ImmediateTimeProvider(),
             SilentClientCoordination,
-            CreateTestHostHandoff,
             ReadCleanPairAsync);
 
         Result<InstallationResetResult> result = await boundary.ApplyAsync(
@@ -778,13 +748,11 @@ public sealed class InstallationResetApplyBoundaryTests
         Assert.Equal(1, service.ApplyCount);
 
         Assert.True(lease.IsDisposed);
-
     }
 
     [Fact]
     public async Task Shutdown_failure_stops_before_lock_acquisition_and_apply()
     {
-
         Error shutdownError = new(
             ErrorCodes.Auth.Unauthorized,
             "The local host rejected the API key.");
@@ -801,15 +769,12 @@ public sealed class InstallationResetApplyBoundaryTests
             service,
             _ =>
             {
-
                 lockAttempts++;
 
                 return Acquired(new RecordingLease());
-
             },
             new ImmediateTimeProvider(),
             SilentClientCoordination,
-            CreateTestHostHandoff,
             ReadCleanPairAsync);
 
         Result<InstallationResetResult> result = await boundary.ApplyAsync(
@@ -823,13 +788,11 @@ public sealed class InstallationResetApplyBoundaryTests
         Assert.Equal(0, lockAttempts);
 
         Assert.Equal(0, service.ApplyCount);
-
     }
 
     [Fact]
     public async Task Retry_budget_exhaustion_fails_before_apply()
     {
-
         ImmediateTimeProvider timeProvider = new();
 
         RecordingResetService service = new((_, _) =>
@@ -844,22 +807,17 @@ public sealed class InstallationResetApplyBoundaryTests
             service,
             _ =>
             {
-
                 lockAttempts++;
 
                 if (lockAttempts > 64)
                 {
-
                     throw new InvalidOperationException("Lock acquisition was not bounded.");
-
                 }
 
                 return InstallationResetMaintenanceLockAttempt.Contended();
-
             },
             timeProvider,
             SilentClientCoordination,
-            CreateTestHostHandoff,
             ReadCleanPairAsync);
 
         Result<InstallationResetResult> result = await boundary.ApplyAsync(
@@ -877,13 +835,11 @@ public sealed class InstallationResetApplyBoundaryTests
         Assert.Equal(lockAttempts - 1, timeProvider.Delays.Count);
 
         Assert.Equal(0, service.ApplyCount);
-
     }
 
     [Fact]
     public async Task Unsafe_lock_evidence_fails_once_without_retry_delay_or_offline_apply()
     {
-
         ImmediateTimeProvider timeProvider = new();
 
         RecordingResetService service = new((_, _) =>
@@ -898,15 +854,12 @@ public sealed class InstallationResetApplyBoundaryTests
             service,
             _ =>
             {
-
                 lockAttempts++;
 
                 return InstallationResetMaintenanceLockAttempt.Unsafe();
-
             },
             timeProvider,
             SilentClientCoordination,
-            CreateTestHostHandoff,
             ReadCleanPairAsync);
 
         Result<InstallationResetResult> result = await boundary.ApplyAsync(
@@ -922,7 +875,6 @@ public sealed class InstallationResetApplyBoundaryTests
         Assert.Empty(timeProvider.Delays);
 
         Assert.Equal(0, service.ApplyCount);
-
     }
 
     private static InstallationResetMaintenanceLockAttempt Acquired(
@@ -933,7 +885,6 @@ public sealed class InstallationResetApplyBoundaryTests
     private static Task<Result<HostProcessToolsMarkerPairJoinResult>>
         ReadCleanPairAsync(CancellationToken cancellationToken)
     {
-
         cancellationToken.ThrowIfCancellationRequested();
 
         return Task.FromResult(
@@ -941,7 +892,6 @@ public sealed class InstallationResetApplyBoundaryTests
                 new HostProcessToolsMarkerPairJoinResult(
                     HostProcessToolsMarkerPairDisposition.Clean,
                     MatchedPair: null)));
-
     }
 
     private static Task<Result<IInstallationResetClientCoordinationLease>>
@@ -951,58 +901,46 @@ public sealed class InstallationResetApplyBoundaryTests
             Guid? operationId,
             CancellationToken cancellationToken)
     {
-
         cancellationToken.ThrowIfCancellationRequested();
 
         return Task.FromResult(
             Result<IInstallationResetClientCoordinationLease>.Success(
                 new SilentClientCoordinationLease()));
-
     }
 
     private sealed class SilentClientCoordinationLease :
         IInstallationResetClientCoordinationLease
     {
-
         public Task<Result> RemoveBlockerIfSafeAsync(
             CancellationToken cancellationToken)
         {
-
             cancellationToken.ThrowIfCancellationRequested();
 
             return Task.FromResult(Result.Success());
-
         }
 
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
-
     }
 
     private sealed class RecordingClientCoordinationLease(List<string> events) :
         IInstallationResetClientCoordinationLease
     {
-
         public Task<Result> RemoveBlockerIfSafeAsync(
             CancellationToken cancellationToken)
         {
-
             cancellationToken.ThrowIfCancellationRequested();
 
             events.Add("remove-client-blocker");
 
             return Task.FromResult(Result.Success());
-
         }
 
         public ValueTask DisposeAsync()
         {
-
             events.Add("release-client-mutation");
 
             return ValueTask.CompletedTask;
-
         }
-
     }
 
     private static RecordingResetService SuccessfulService(
@@ -1010,14 +948,12 @@ public sealed class InstallationResetApplyBoundaryTests
         RecordingLease lease) =>
         new((actual, _) =>
         {
-
             Assert.Equal(expectedRequest, actual);
 
             Assert.False(lease.IsDisposed);
 
             return Task.FromResult(
                 Result<InstallationResetResult>.Success(CreateResult(actual)));
-
         });
 
     private static InstallationResetPlan CreatePlan(
@@ -1045,7 +981,7 @@ public sealed class InstallationResetApplyBoundaryTests
                 CredentialAccounts: [],
                 DataPlanIds: ["data-plan-50"]));
 
-    private static Result<InstallationResetHostHandoff> CreateTestHostHandoff(
+    private static InstallationResetHostHandoff CreateTestHostHandoff(
         InstallationResetApplyRequest request,
         InstallationResetPlan plan) =>
         new InstallationResetHostHandoff(
@@ -1092,7 +1028,6 @@ public sealed class InstallationResetApplyBoundaryTests
 
     private static FullInstallationResetRequest CreateFullRequest()
     {
-
         Guid operationId = Guid.Parse("70707070-7070-4070-8070-707070707070");
 
         FullInstallationResetExternalRemediationAttestation attestation = new(
@@ -1119,7 +1054,6 @@ public sealed class InstallationResetApplyBoundaryTests
                     "/workspace"),
                 "installation-plan-50"),
             attestation);
-
     }
 
     private static RetroDownfall.Arcanum.Core.Covenant.CovenantDigest Digest(
@@ -1152,7 +1086,6 @@ public sealed class InstallationResetApplyBoundaryTests
         IInstallationResetService,
         IInstallationResetLockedService
     {
-
         public int ApplyCount { get; private set; }
 
         public int FullApplyCount { get; private set; }
@@ -1190,13 +1123,11 @@ public sealed class InstallationResetApplyBoundaryTests
             ArcanumMaintenanceLock heldInstallationLock,
             CancellationToken cancellationToken = default)
         {
-
             ArgumentNullException.ThrowIfNull(heldInstallationLock);
 
             ApplyCount++;
 
             return apply(request, cancellationToken);
-
         }
 
         public Task<Result<InstallationResetResult>> ApplyFreshUnderMaintenanceLockAsync(
@@ -1205,7 +1136,6 @@ public sealed class InstallationResetApplyBoundaryTests
             ArcanumMaintenanceLock heldInstallationLock,
             CancellationToken cancellationToken = default)
         {
-
             ArgumentNullException.ThrowIfNull(heldInstallationLock);
 
             FreshApplyCount++;
@@ -1217,7 +1147,6 @@ public sealed class InstallationResetApplyBoundaryTests
                     request,
                     confirmedPlan.Plan.PlanId),
                 cancellationToken);
-
         }
 
         public Task<Result<InstallationResetResult>> ApplyFullUnderMaintenanceLockAsync(
@@ -1225,7 +1154,6 @@ public sealed class InstallationResetApplyBoundaryTests
             ArcanumMaintenanceLock heldInstallationLock,
             CancellationToken cancellationToken = default)
         {
-
             ArgumentNullException.ThrowIfNull(heldInstallationLock);
 
             FullApplyCount++;
@@ -1234,19 +1162,15 @@ public sealed class InstallationResetApplyBoundaryTests
                 ? throw new InvalidOperationException(
                     "No full installation-reset behavior was configured.")
                 : FullApply(request, heldInstallationLock, cancellationToken);
-
         }
-
     }
 
     private sealed class RecordingLease
     {
-
         private readonly string _guardedDirectory;
 
         public RecordingLease()
         {
-
             string parent = Path.Combine(
                 Path.GetTempPath(),
                 $"arcanum-reset-boundary-{Guid.NewGuid():N}");
@@ -1260,7 +1184,6 @@ public sealed class InstallationResetApplyBoundaryTests
                 ArcanumMaintenanceLock.AcquireDetailed(_guardedDirectory);
 
             MaintenanceLock = acquired.BorrowAcquiredLock();
-
         }
 
         public ArcanumMaintenanceLock MaintenanceLock { get; }
@@ -1269,31 +1192,22 @@ public sealed class InstallationResetApplyBoundaryTests
         {
             get
             {
-
                 try
                 {
-
                     MaintenanceLock.AssertHeldFor(_guardedDirectory);
 
                     return false;
-
                 }
                 catch (ObjectDisposedException)
                 {
-
                     return true;
-
                 }
-
             }
-
         }
-
     }
 
     private sealed class ImmediateTimeProvider : TimeProvider
     {
-
         private long _elapsedTicks;
 
         public List<TimeSpan> Delays { get; } = [];
@@ -1309,7 +1223,6 @@ public sealed class InstallationResetApplyBoundaryTests
             TimeSpan dueTime,
             TimeSpan period)
         {
-
             Delays.Add(dueTime);
 
             Interlocked.Add(ref _elapsedTicks, dueTime.Ticks);
@@ -1317,25 +1230,19 @@ public sealed class InstallationResetApplyBoundaryTests
             ThreadPool.QueueUserWorkItem(_ => callback(state));
 
             return NoopTimer.Instance;
-
         }
 
         private sealed class NoopTimer : ITimer
         {
-
             public static NoopTimer Instance { get; } = new();
 
             public bool Change(TimeSpan dueTime, TimeSpan period) => true;
 
             public void Dispose()
             {
-
             }
 
             public ValueTask DisposeAsync() => ValueTask.CompletedTask;
-
         }
-
     }
-
 }

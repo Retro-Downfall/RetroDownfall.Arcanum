@@ -881,13 +881,18 @@ public sealed partial class GrimoireConnectionAdmissionGateTests
     }
 
     /// <summary>
-    /// A cancelled stage-two close is a refusal, not a half-committed transition.
+    /// A stage-two close cancelled before its commitment is a refusal, not a half-committed transition.
     /// </summary>
     /// <remarks>
     /// The generation bump, the move to Closed and the refusal stamped on every unresolved open are
-    /// one commitment. A caller that is told its call was cancelled has been told nothing happened,
-    /// so nothing may have happened: the generation must be untouched, the gate must still be
-    /// Closing, and an open that was in flight must still be able to revalidate and complete.
+    /// one commitment. A caller that is told its call was cancelled has been told nothing
+    /// happened, so nothing may have happened: the generation must be untouched, the gate must still
+    /// be Closing, and an open that was in flight must still be able to revalidate and complete.
+    /// Cancellation observed after the commitment is a different outcome, pinned by
+    /// <c>Drain_cancellation_issues_no_closed_lease_and_keeps_admission_closed</c> and
+    /// <c>Cancellation_after_noncooperative_drain_success_keeps_owner_closed_and_allows_retry</c>: the
+    /// gate stays Closed on the burned generation with no lease issued, and the exact closing owner
+    /// is retained for retry.
     /// </remarks>
     [Fact]
     public async Task Precancelled_connection_close_leaves_the_transition_and_its_unresolved_open_intact()

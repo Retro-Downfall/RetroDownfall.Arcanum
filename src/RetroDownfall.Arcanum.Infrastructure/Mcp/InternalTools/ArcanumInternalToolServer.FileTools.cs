@@ -12,7 +12,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
 
 internal sealed partial class ArcanumInternalToolServer
 {
-
     /// <summary>
     /// Invoked once per entry for which the <c>list_directory</c> walk performs a full
     /// <see cref="WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck"/> component walk. Each of
@@ -131,7 +130,6 @@ internal sealed partial class ArcanumInternalToolServer
         int maxRangeBytes,
         CancellationToken cancellationToken)
     {
-
         if (!SandboxedFileIo.TryOpenForRead(_workspaceRoot!, absolutePath, out FileStream? stream, out McpToolsCallResultWire? openError))
         {
             return (null, openError);
@@ -139,12 +137,10 @@ internal sealed partial class ArcanumInternalToolServer
 
         using (stream)
         {
-
             char[] charBuffer = ArrayPool<char>.Shared.Rent(8192);
 
             try
             {
-
                 // Strips a leading UTF-8 BOM the same way the whole-file path does
                 // (SecureFileReader.DecodeUtf8), so a file saved with one numbers its lines identically
                 // through both read paths. detectEncodingFromByteOrderMarks is left off below because
@@ -178,72 +174,55 @@ internal sealed partial class ArcanumInternalToolServer
                 // terminator decision (CRLF, lone CR, LF) once the accumulated text reaches it below.
                 bool ScanChunkPastEndLine(int count)
                 {
-
                     for (int i = 0; i < count; i++)
                     {
-
                         char c = charBuffer[i];
 
                         if (pendingCr)
                         {
-
                             pendingCr = false;
 
                             if (c == '\n')
                             {
                                 continue;
                             }
-
                         }
 
                         if (c == '\r')
                         {
-
                             pendingCr = true;
 
                             lineNumber++;
-
                         }
                         else if (c == '\n')
                         {
-
                             lineNumber++;
-
                         }
                         else
                         {
-
                             continue;
-
                         }
 
                         if (lineNumber > endLine)
                         {
                             return true;
                         }
-
                     }
 
                     return false;
-
                 }
 
                 while (true)
                 {
-
                     int read;
 
                     try
                     {
-
                         read = await reader.ReadAsync(charBuffer, cancellationToken).ConfigureAwait(false);
-
                     }
                     catch (DecoderFallbackException)
                     {
-
                         return (null, ToolError("The file is not valid UTF-8 text."));
-
                     }
 
                     if (read == 0)
@@ -266,30 +245,22 @@ internal sealed partial class ArcanumInternalToolServer
                     }
 
                     cancellationToken.ThrowIfCancellationRequested();
-
                 }
 
                 return (
                     SliceLineRange(content.ToString(), startLine, endLine, cancellationToken),
                     null);
-
             }
             catch (Exception ex)
                 when (ex is IOException or UnauthorizedAccessException)
             {
-
                 return (null, ToolError("An I/O error occurred. See server logs."));
-
             }
             finally
             {
-
                 ArrayPool<char>.Shared.Return(charBuffer);
-
             }
-
         }
-
     }
 
     /// <summary>
@@ -416,6 +387,14 @@ internal sealed partial class ArcanumInternalToolServer
             return ToolError("replace_text_block: 'exactSearchText' must be non-empty.");
         }
 
+        // An explicit JSON null deserializes to null here despite the non-nullable declaration, and
+        // string.Replace treats a null replacement as "delete". Deleting has to be asked for with an
+        // empty string, not arrive by accident.
+        if (args.ReplacementText is null)
+        {
+            return ToolError("replace_text_block: 'replacementText' must be a string; use an empty string to delete the block.");
+        }
+
         if (!TryResolveSandboxedPath(args.RelativePath, out string? absolutePath, out McpToolsCallResultWire? resolveErr))
         {
             return resolveErr!;
@@ -432,17 +411,16 @@ internal sealed partial class ArcanumInternalToolServer
             ArcanumSettingClamps.MaxFileReadSizeBytes(
                 _maxFileReadSizeBytes));
 
-        (string? content, McpToolsCallResultWire? readError) = await SandboxedFileIo.TryReadAllTextAsync(
-            _workspaceRoot!,
-            absolutePath,
-            maxReadBytes,
-            cancellationToken).ConfigureAwait(false);
+        (string? content, McpToolsCallResultWire? readError, FileContentBaseline? readBaseline) =
+            await SandboxedFileIo.TryReadAllTextForEditAsync(
+                _workspaceRoot!,
+                absolutePath,
+                maxReadBytes,
+                cancellationToken).ConfigureAwait(false);
 
         if (content is null)
         {
-
             return PrefixToolError("replace_text_block", readError!);
-
         }
 
         if (!content.Contains(args.ExactSearchText, StringComparison.Ordinal))
@@ -453,9 +431,31 @@ internal sealed partial class ArcanumInternalToolServer
 
         int occurrences = CountOccurrences(content, args.ExactSearchText);
 
-        string updated = content.Replace(args.ExactSearchText, args.ReplacementText, StringComparison.Ordinal);
+        if (occurrences > 1 && args.ReplaceAll != true)
+        {
+            return ToolError(
+                $"replace_text_block: the exact search text matches {occurrences} occurrences in '{args.RelativePath}', and nothing was changed. Include enough surrounding text to match exactly one block, or set replaceAll to true to replace every occurrence.");
+        }
+
+        // replaceAll multiplies the replacement by the occurrence count, so the result can be far past the
+        // write limit, or past what a string can hold. It is refused from the projected size before the
+        // replacement is built, never after the host has allocated it.
+        long projectedBytes = Encoding.UTF8.GetByteCount(content)
+            + (occurrences * (Encoding.UTF8.GetByteCount(args.ReplacementText) - (long)Encoding.UTF8.GetByteCount(args.ExactSearchText)));
 
         McpToolsCallResultWire? writeLimitError = TryRejectIfWriteExceedsLimit(
+            projectedBytes,
+            resourceLimits.MaxFileWriteMb,
+            "replace_text_block");
+
+        if (writeLimitError is not null)
+        {
+            return writeLimitError;
+        }
+
+        string updated = content.Replace(args.ExactSearchText, args.ReplacementText, StringComparison.Ordinal);
+
+        writeLimitError = TryRejectIfWriteExceedsLimit(
             updated,
             resourceLimits.MaxFileWriteMb,
             "replace_text_block");
@@ -466,14 +466,18 @@ internal sealed partial class ArcanumInternalToolServer
         }
 
         (bool writeSuccess, McpToolsCallResultWire? writeError) = await SandboxedFileIo
-            .TryWriteAllTextAtomicallyAsync(_workspaceRoot!, absolutePath, updated, cancellationToken)
+            .TryWriteAllTextAtomicallyAsync(
+                _workspaceRoot!,
+                absolutePath,
+                updated,
+                cancellationToken,
+                readBaseline,
+                _allowProtectedPathWrites)
             .ConfigureAwait(false);
 
         if (!writeSuccess)
         {
-
             return PrefixToolError("replace_text_block", writeError!);
-
         }
 
         string text = occurrences == 1
@@ -552,14 +556,18 @@ internal sealed partial class ArcanumInternalToolServer
         }
 
         (bool writeSuccess, McpToolsCallResultWire? writeError) = await SandboxedFileIo
-            .TryWriteAllTextAtomicallyAsync(_workspaceRoot!, absolutePath, args.Content, cancellationToken)
+            .TryWriteAllTextAtomicallyAsync(
+                _workspaceRoot!,
+                absolutePath,
+                args.Content,
+                cancellationToken,
+                expectedExistingContent: null,
+                _allowProtectedPathWrites)
             .ConfigureAwait(false);
 
         if (!writeSuccess)
         {
-
             return PrefixToolError("write_file", writeError!);
-
         }
 
         return new McpToolsCallResultWire
@@ -641,10 +649,8 @@ internal sealed partial class ArcanumInternalToolServer
                     out string[] decodedOutOfScopeDescendedRelativePaths,
                     out string? continuationError))
             {
-
                 return ToolError(
                     "list_directory: " + continuationError);
-
             }
 
             List<string> lines = new(_listDirectoryPageSize + 1);
@@ -690,10 +696,8 @@ internal sealed partial class ArcanumInternalToolServer
                     out IEnumerable<string> walk,
                     out OutOfScopeDescentTracker outOfScopeTracker))
             {
-
                 return ToolError(
                     "list_directory: the opaque continuation entry no longer exists in this directory snapshot. No page was checkpointed; restart from the first page to observe the changed workspace safely.");
-
             }
 
             foreach (string entry in walk)
@@ -742,15 +746,12 @@ internal sealed partial class ArcanumInternalToolServer
             // never a false claim of completeness.
             foreach (string refused in outOfScopeTracker.RefusedEntryRelativePaths)
             {
-
                 lines.Add(
                     $"... [TRUNCATED: {refused} was not listed because its contents did not fit the continuation token's byte budget.]");
-
             }
 
             if (hasMore)
             {
-
                 string continuation = EncodeListDirectoryContinuation(
                     args,
                     lastPath!,
@@ -809,7 +810,6 @@ internal sealed partial class ArcanumInternalToolServer
         out string[] outOfScopeDescendedRelativePaths,
         out string? error)
     {
-
         afterPath = null;
 
         outOfScopeDescendedRelativePaths = [];
@@ -818,23 +818,18 @@ internal sealed partial class ArcanumInternalToolServer
 
         if (string.IsNullOrEmpty(args.Continuation))
         {
-
             return true;
-
         }
 
         if (Encoding.UTF8.GetByteCount(args.Continuation) > _maxJsonRpcLineBytes)
         {
-
             error = "protocol-owned continuation protection rejected a token larger than the JSON-RPC frame budget. No work was performed; restart from the first page.";
 
             return false;
-
         }
 
         try
         {
-
             byte[] bytes = Convert.FromBase64String(args.Continuation);
 
             string payload = new UTF8Encoding(
@@ -849,11 +844,9 @@ internal sealed partial class ArcanumInternalToolServer
                     ComputeListDirectoryScopeFingerprint(args),
                     StringComparison.Ordinal))
             {
-
                 error = "the opaque continuation token does not belong to the same relativePath and recursive arguments. No work was performed; reuse the original arguments or restart from the first page.";
 
                 return false;
-
             }
 
             string remainder = payload[(separator + 1)..];
@@ -876,40 +869,32 @@ internal sealed partial class ArcanumInternalToolServer
 
             if (afterPath.Length == 0)
             {
-
                 error = "the opaque continuation token contains no checkpoint path. No work was performed; restart from the first page.";
 
                 afterPath = null;
 
                 return false;
-
             }
 
             if (entriesSeparator >= 0)
             {
-
                 string entriesPortion = remainder[(entriesSeparator + 1)..];
 
                 outOfScopeDescendedRelativePaths = entriesPortion.Length == 0
                     ? []
                     : ParseLengthPrefixedEntries(entriesPortion);
-
             }
 
             return true;
-
         }
         catch (Exception exception)
             when (exception is FormatException
                   or System.Text.DecoderFallbackException)
         {
-
             error = "the opaque continuation token is malformed. No work was performed; use a token returned by list_directory or restart from the first page.";
 
             return false;
-
         }
-
     }
 
     private static string EncodeListDirectoryContinuation(
@@ -917,21 +902,17 @@ internal sealed partial class ArcanumInternalToolServer
         string lastPath,
         IReadOnlyCollection<string> outOfScopeDescendedRelativePaths)
     {
-
         string payload = ComputeListDirectoryScopeFingerprint(args)
             + "\n"
             + lastPath;
 
         if (outOfScopeDescendedRelativePaths.Count > 0)
         {
-
             payload += "\n" + string.Concat(
                 outOfScopeDescendedRelativePaths.Select(EncodeLengthPrefixedEntry));
-
         }
 
         return Convert.ToBase64String(Encoding.UTF8.GetBytes(payload));
-
     }
 
     // "{charCount}:{entry}", back to back with no join separator -- see the decode-side comment in
@@ -952,32 +933,26 @@ internal sealed partial class ArcanumInternalToolServer
     /// </summary>
     private static string[] ParseLengthPrefixedEntries(string entriesPortion)
     {
-
         List<string> entries = [];
 
         int i = 0;
 
         while (i < entriesPortion.Length)
         {
-
             int digitsStart = i;
 
             while (i < entriesPortion.Length
                    && entriesPortion[i] is >= '0' and <= '9')
             {
-
                 i++;
-
             }
 
             if (i == digitsStart
                 || i >= entriesPortion.Length
                 || entriesPortion[i] != ':')
             {
-
                 throw new FormatException(
                     "list_directory continuation: malformed length-prefixed out-of-scope entry.");
-
             }
 
             // long, not int, as defense in depth only -- not because int overflows here today. The
@@ -991,17 +966,13 @@ internal sealed partial class ArcanumInternalToolServer
 
             for (int digit = digitsStart; digit < i; digit++)
             {
-
                 length = (length * 10) + (entriesPortion[digit] - '0');
 
                 if (length > entriesPortion.Length)
                 {
-
                     throw new FormatException(
                         "list_directory continuation: out-of-scope entry length prefix out of range.");
-
                 }
-
             }
 
             int contentLength = (int)length;
@@ -1010,27 +981,22 @@ internal sealed partial class ArcanumInternalToolServer
 
             if (contentStart + contentLength > entriesPortion.Length)
             {
-
                 throw new FormatException(
                     "list_directory continuation: out-of-scope entry length prefix overruns the token.");
-
             }
 
             entries.Add(
                 entriesPortion.Substring(contentStart, contentLength));
 
             i = contentStart + contentLength;
-
         }
 
         return [.. entries];
-
     }
 
     private static string ComputeListDirectoryScopeFingerprint(
         ListDirectoryParams args)
     {
-
         string scope = args.RelativePath.Trim()
             .Replace('\\', '/')
             + "\n"
@@ -1040,7 +1006,6 @@ internal sealed partial class ArcanumInternalToolServer
             Encoding.UTF8.GetBytes(scope));
 
         return Convert.ToHexString(digest.AsSpan(0, 16));
-
     }
 
     /// <summary>
@@ -1068,7 +1033,6 @@ internal sealed partial class ArcanumInternalToolServer
     /// </remarks>
     private sealed class OutOfScopeDescentTracker
     {
-
         private readonly string _workspaceRoot;
 
         private readonly int _maxTokenBytes;
@@ -1092,7 +1056,6 @@ internal sealed partial class ArcanumInternalToolServer
             int maxTokenBytes,
             int reservedOverheadBytes)
         {
-
             _workspaceRoot = workspaceRoot;
 
             _maxTokenBytes = maxTokenBytes;
@@ -1103,20 +1066,15 @@ internal sealed partial class ArcanumInternalToolServer
 
             foreach (string relative in decodedRelativePaths)
             {
-
                 string canonical = Path.GetFullPath(
                     Path.Combine(workspaceRoot, relative));
 
                 if (CanonicalDirectories.Add(canonical))
                 {
-
                     _reservedEntryBytes += Encoding.UTF8.GetByteCount(relative)
                         + LengthPrefixOverheadBytes(relative);
-
                 }
-
             }
-
         }
 
         public HashSet<string> CanonicalDirectories { get; }
@@ -1151,12 +1109,9 @@ internal sealed partial class ArcanumInternalToolServer
         /// </summary>
         public bool TryRecord(string canonicalTarget, string aliasAbsolutePath)
         {
-
             if (CanonicalDirectories.Contains(canonicalTarget))
             {
-
                 return true;
-
             }
 
             string relative = Path.GetRelativePath(_workspaceRoot, canonicalTarget)
@@ -1170,14 +1125,12 @@ internal sealed partial class ArcanumInternalToolServer
 
             if (projectedTokenBytes > _maxTokenBytes)
             {
-
                 string aliasRelative = Path.GetRelativePath(_workspaceRoot, aliasAbsolutePath)
                     .Replace(Path.DirectorySeparatorChar, '/');
 
                 RefusedEntryRelativePaths.Add(aliasRelative);
 
                 return false;
-
             }
 
             _reservedEntryBytes += candidateBytes;
@@ -1185,9 +1138,7 @@ internal sealed partial class ArcanumInternalToolServer
             _ = CanonicalDirectories.Add(canonicalTarget);
 
             return true;
-
         }
-
     }
 
     private bool TrySeekListDirectoryEntries(
@@ -1199,7 +1150,6 @@ internal sealed partial class ArcanumInternalToolServer
         out IEnumerable<string> entries,
         out OutOfScopeDescentTracker outOfScopeTracker)
     {
-
         StringComparer pathComparer = OperatingSystem.IsWindows()
             ? StringComparer.OrdinalIgnoreCase
             : StringComparer.Ordinal;
@@ -1216,11 +1166,9 @@ internal sealed partial class ArcanumInternalToolServer
                 absolutePath,
                 out string? resolvedRoot))
         {
-
             entries = [];
 
             return true;
-
         }
 
         // The same resolution the containment check above just used for absolutePath itself, so a
@@ -1241,19 +1189,15 @@ internal sealed partial class ArcanumInternalToolServer
         // 1) already refuses to re-descend into it, with no separate comparison needed at that site.
         foreach (string canonical in outOfScopeTracker.CanonicalDirectories)
         {
-
             _ = visitedCanonicalDirectories.Add(canonical);
-
         }
 
         Stack<(string Directory, string[] Entries, int Index)> stack = new();
 
         if (afterPath is null)
         {
-
             stack.Push(
                 (absolutePath, SortedListDirectoryEntries(absolutePath), 0));
-
         }
         else if (!TrySeekToListDirectoryCheckpoint(
                      absolutePath,
@@ -1265,11 +1209,9 @@ internal sealed partial class ArcanumInternalToolServer
                      stack,
                      cancellationToken))
         {
-
             entries = [];
 
             return false;
-
         }
 
         entries = WalkListDirectoryEntries(
@@ -1281,7 +1223,6 @@ internal sealed partial class ArcanumInternalToolServer
             cancellationToken);
 
         return true;
-
     }
 
     private static string[] SortedListDirectoryEntries(string directory) =>
@@ -1309,7 +1250,6 @@ internal sealed partial class ArcanumInternalToolServer
         Stack<(string Directory, string[] Entries, int Index)> stack,
         CancellationToken cancellationToken)
     {
-
         string absoluteCheckpoint = Path.GetFullPath(
             Path.Combine(_workspaceRoot!, afterPath));
 
@@ -1319,30 +1259,26 @@ internal sealed partial class ArcanumInternalToolServer
 
         if (relativeFromScope.Length == 0
             || relativeFromScope == "."
-            || relativeFromScope.StartsWith("..", StringComparison.Ordinal)
             || Path.IsPathRooted(relativeFromScope))
         {
-
             return false;
-
         }
 
         string[] segments = relativeFromScope.Split(
             Path.DirectorySeparatorChar,
             StringSplitOptions.RemoveEmptyEntries);
 
-        if (segments.Length == 0)
+        // Only a whole ".." segment leaves the scope; an entry named "..foo" is an ordinary sibling.
+        if (segments.Length == 0
+            || segments[0] == "..")
         {
-
             return false;
-
         }
 
         string currentDirectory = scopeAbsolutePath;
 
         for (int level = 0; level < segments.Length; level++)
         {
-
             cancellationToken.ThrowIfCancellationRequested();
 
             string[] siblingEntries = SortedListDirectoryEntries(currentDirectory);
@@ -1351,7 +1287,6 @@ internal sealed partial class ArcanumInternalToolServer
 
             for (int i = 0; i < siblingEntries.Length; i++)
             {
-
                 if (string.Equals(
                         Path.GetFileName(siblingEntries[i]),
                         segments[level],
@@ -1359,20 +1294,15 @@ internal sealed partial class ArcanumInternalToolServer
                             ? StringComparison.OrdinalIgnoreCase
                             : StringComparison.Ordinal))
                 {
-
                     foundIndex = i;
 
                     break;
-
                 }
-
             }
 
             if (foundIndex < 0)
             {
-
                 return false;
-
             }
 
             string matchedEntry = siblingEntries[foundIndex];
@@ -1386,9 +1316,7 @@ internal sealed partial class ArcanumInternalToolServer
             if (matchedIsDirectory
                 && IsListDirectorySkipFolder(Path.GetFileName(matchedEntry)))
             {
-
                 return false;
-
             }
 
             bool isCheckpointItself = level == segments.Length - 1;
@@ -1401,12 +1329,9 @@ internal sealed partial class ArcanumInternalToolServer
 
             if (!isCheckpointItself)
             {
-
                 if (!matchedIsDirectory)
                 {
-
                     return false;
-
                 }
 
                 ListDirectoryEntryValidationObserverForTests?.Invoke(matchedEntry);
@@ -1416,9 +1341,7 @@ internal sealed partial class ArcanumInternalToolServer
                         matchedEntry,
                         out string? resolvedAncestor))
                 {
-
                     return false;
-
                 }
 
                 string canonicalAncestor = Path.GetFullPath(
@@ -1440,9 +1363,7 @@ internal sealed partial class ArcanumInternalToolServer
                 // not resolve to a real position.
                 if (ancestorIsAlias && ancestorIsInScope)
                 {
-
                     return false;
-
                 }
 
                 // An out-of-scope alias ancestor needs the same cross-page memory as any other
@@ -1457,20 +1378,16 @@ internal sealed partial class ArcanumInternalToolServer
                     && !ancestorIsInScope
                     && !outOfScopeTracker.TryRecord(canonicalAncestor, matchedEntry))
                 {
-
                     return false;
-
                 }
 
                 _ = visitedCanonicalDirectories.Add(
                     canonicalAncestor);
 
                 currentDirectory = matchedEntry;
-
             }
             else if (recursive && matchedIsDirectory)
             {
-
                 ListDirectoryEntryValidationObserverForTests?.Invoke(matchedEntry);
 
                 if (WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(
@@ -1478,7 +1395,6 @@ internal sealed partial class ArcanumInternalToolServer
                         matchedEntry,
                         out string? resolvedCheckpoint))
                 {
-
                     string canonicalCheckpoint = Path.GetFullPath(
                         resolvedCheckpoint ?? matchedEntry);
 
@@ -1511,20 +1427,14 @@ internal sealed partial class ArcanumInternalToolServer
                         && canRecord
                         && visitedCanonicalDirectories.Add(canonicalCheckpoint))
                     {
-
                         stack.Push(
                             (matchedEntry, SortedListDirectoryEntries(matchedEntry), 0));
-
                     }
-
                 }
-
             }
-
         }
 
         return true;
-
     }
 
     /// <summary>
@@ -1541,7 +1451,6 @@ internal sealed partial class ArcanumInternalToolServer
         bool recursive,
         CancellationToken cancellationToken)
     {
-
         while (stack.Count > 0)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -1580,7 +1489,6 @@ internal sealed partial class ArcanumInternalToolServer
 
             if (recursive && isDirectory)
             {
-
                 string canonicalDirectory = Path.GetFullPath(
                     resolvedEntry ?? entry);
 
@@ -1614,12 +1522,9 @@ internal sealed partial class ArcanumInternalToolServer
                     && visitedCanonicalDirectories.Add(
                         canonicalDirectory))
                 {
-
                     stack.Push(
                         (entry, SortedListDirectoryEntries(entry), 0));
-
                 }
-
             }
         }
     }

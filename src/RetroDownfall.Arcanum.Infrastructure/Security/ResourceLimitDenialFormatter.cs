@@ -1,5 +1,6 @@
 using RetroDownfall.Arcanum.Core.Platform;
 using RetroDownfall.Arcanum.Core.Sanctum;
+using RetroDownfall.Arcanum.Infrastructure.Platform;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Security;
 
@@ -16,7 +17,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.Security;
 /// </remarks>
 public static class ResourceLimitDenialFormatter
 {
-
     public static async Task<string> RecordAndDescribeAsync(
         ISanctumGuard sanctumGuard,
         string? workspaceRoot,
@@ -25,7 +25,6 @@ public static class ResourceLimitDenialFormatter
         ResourceLimitKind? exceededResource,
         CancellationToken cancellationToken)
     {
-
         ResourceLimitKind resource = exceededResource ?? ResourceLimitKind.Cpu;
 
         string limitValue = DescribeLimitValue(resource, limits);
@@ -41,7 +40,6 @@ public static class ResourceLimitDenialFormatter
         string resourceName = DescribeResourceName(resource);
 
         return $"Execution blocked: this tool exceeded the {resourceName} limit ({limitValue}). The invocation has been terminated and recorded as a breach.";
-
     }
 
     private static string DescribeResourceName(ResourceLimitKind resource) => resource switch
@@ -55,9 +53,8 @@ public static class ResourceLimitDenialFormatter
     private static string DescribeLimitValue(ResourceLimitKind resource, ResourceLimits limits) => resource switch
     {
         ResourceLimitKind.Cpu => $"{limits.MaxCpuSeconds}s",
-        ResourceLimitKind.Memory => $"{limits.MaxMemoryMb} MB",
+        ResourceLimitKind.Memory => $"{ProcessResourceLimiter.EffectiveMemoryLimitMb(limits)} MB",
         ResourceLimitKind.FileDescriptors => $"{limits.MaxFileDescriptors}",
         _ => "n/a",
     };
-
 }

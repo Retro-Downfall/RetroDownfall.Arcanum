@@ -2,7 +2,10 @@ using System.Net;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
+using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
+using RetroDownfall.Arcanum.Api;
 using RetroDownfall.Arcanum.Api.Intelligence.OpenAi;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Core.Storage;
@@ -20,20 +23,101 @@ namespace RetroDownfall.Arcanum.Tests.Api;
 [Collection("ApiHost")]
 public sealed class OpenAiV1BatchesEndpointTests
 {
-
     private readonly ArcanumWebApplicationFactory _factory;
 
     public OpenAiV1BatchesEndpointTests(ArcanumWebApplicationFactory factory)
     {
-
         _factory = factory;
+    }
 
+    /// <summary>
+    /// The two other <c>/v1</c> body readers answer a body past the ceiling with the OpenAI envelope and the
+    /// status Kestrel chose; this one used to leave the exception to whatever sat above it.
+    /// </summary>
+    [SkippableFact]
+    public async Task PostBatches_OversizedBody_Returns413OpenAiEnvelope()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using ArcanumWebApplicationFactory factory = new()
+        {
+            ServiceOverrides = services => services.AddSingleton<IStartupFilter>(
+                new ApiRequestJsonBodyFaultTests.BodyFaultFilter(
+                    "/v1/batches",
+                    new BadHttpRequestException("Request body too large", StatusCodes.Status413PayloadTooLarge))),
+        };
+
+        HttpClient client = factory.CreateAuthenticatedClient();
+
+        using HttpResponseMessage response = await client.PostAsync(
+            "/v1/batches",
+            new StringContent("""{"input_file_id":"file-x","endpoint":"/v1/chat/completions"}""", Encoding.UTF8, "application/json"));
+
+        Assert.Equal(HttpStatusCode.RequestEntityTooLarge, response.StatusCode);
+
+        OpenAiErrorResponse? body = JsonSerializer.Deserialize(
+            await response.Content.ReadAsStringAsync(),
+            ArcanumJsonContext.Default.OpenAiErrorResponse);
+
+        Assert.NotNull(body);
+
+        Assert.Equal("invalid_request_error", body.Error.Type);
+
+        Assert.Equal("payload_too_large", body.Error.Code);
+    }
+
+    /// <summary>
+    /// The route answers a body fault itself, with no exception handler above it: the end-to-end test above
+    /// passes either way, because the host's handler writes the same OpenAI 413 for an escaped exception.
+    /// </summary>
+    [Theory]
+    [InlineData(StatusCodes.Status413PayloadTooLarge, "payload_too_large")]
+    [InlineData(StatusCodes.Status400BadRequest, "invalid_request")]
+    public async Task HandleCreateBatchAsync_answers_a_body_read_fault_itself(int status, string code)
+    {
+        DefaultHttpContext httpContext = new()
+        {
+            RequestServices = new ServiceCollection().AddLogging().BuildServiceProvider(),
+        };
+
+        httpContext.Request.Method = HttpMethods.Post;
+
+        httpContext.Request.Path = "/v1/batches";
+
+        httpContext.Request.ContentType = "application/json";
+
+        httpContext.Request.Body = new ApiRequestJsonBodyFaultTests.FaultingBody(
+            Encoding.UTF8.GetBytes("{\"input_file_id\":\"fi"),
+            new BadHttpRequestException("framework wording", status));
+
+        MemoryStream responseBody = new();
+
+        httpContext.Response.Body = responseBody;
+
+        IResult result = await OpenAiV1Endpoints.HandleCreateBatchAsync(
+            httpContext,
+            batches: null!,
+            files: null!,
+            CancellationToken.None);
+
+        await result.ExecuteAsync(httpContext);
+
+        Assert.Equal(status, httpContext.Response.StatusCode);
+
+        OpenAiErrorResponse? body = JsonSerializer.Deserialize(
+            responseBody.ToArray(),
+            ArcanumJsonContext.Default.OpenAiErrorResponse);
+
+        Assert.NotNull(body);
+
+        Assert.Equal("invalid_request_error", body.Error.Type);
+
+        Assert.Equal(code, body.Error.Code);
     }
 
     [SkippableFact]
     public async Task PostBatches_ValidInputFile_CreatesValidatingBatch()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         HttpClient client = _factory.CreateAuthenticatedClient();
@@ -53,13 +137,11 @@ public sealed class OpenAiV1BatchesEndpointTests
         Assert.Null(batch.OutputFileId);
 
         Assert.Null(batch.ErrorFileId);
-
     }
 
     [SkippableFact]
     public async Task PostBatches_UnsupportedEndpoint_Returns400()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         HttpClient client = _factory.CreateAuthenticatedClient();
@@ -71,13 +153,11 @@ public sealed class OpenAiV1BatchesEndpointTests
             JsonContentOf(new OpenAiBatchRequest(inputFile.Id, "/v1/embeddings")));
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
-
     }
 
     [SkippableFact]
     public async Task PostBatches_UnknownInputFile_Returns404()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         HttpClient client = _factory.CreateAuthenticatedClient();
@@ -87,13 +167,11 @@ public sealed class OpenAiV1BatchesEndpointTests
             JsonContentOf(new OpenAiBatchRequest($"file-{Guid.NewGuid():N}", "/v1/chat/completions")));
 
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
-
     }
 
     [SkippableFact]
     public async Task PostBatches_MissingInputFileId_Returns400()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         HttpClient client = _factory.CreateAuthenticatedClient();
@@ -103,13 +181,11 @@ public sealed class OpenAiV1BatchesEndpointTests
             JsonContentOf(new OpenAiBatchRequest(null, "/v1/chat/completions")));
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
-
     }
 
     [SkippableFact]
     public async Task PostBatches_MalformedJson_ReturnsOpenAiInvalidJsonEnvelope()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         HttpClient client = _factory.CreateAuthenticatedClient();
@@ -129,13 +205,11 @@ public sealed class OpenAiV1BatchesEndpointTests
         Assert.Equal("invalid_request_error", body.Error.Type);
 
         Assert.Equal("invalid_json", body.Error.Code);
-
     }
 
     [SkippableFact]
     public async Task PostBatches_NonJsonContentType_Returns415()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         HttpClient client = _factory.CreateAuthenticatedClient();
@@ -145,13 +219,11 @@ public sealed class OpenAiV1BatchesEndpointTests
             new StringContent("input_file_id=1", Encoding.UTF8, "text/plain"));
 
         Assert.Equal(HttpStatusCode.UnsupportedMediaType, response.StatusCode);
-
     }
 
     [SkippableFact]
     public async Task GetBatch_AfterCreate_ReturnsSameBatch()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         HttpClient client = _factory.CreateAuthenticatedClient();
@@ -171,13 +243,11 @@ public sealed class OpenAiV1BatchesEndpointTests
         Assert.NotNull(fetched);
 
         Assert.Equal(created.Id, fetched.Id);
-
     }
 
     [SkippableFact]
     public async Task GetBatch_UnknownId_Returns404()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         HttpClient client = _factory.CreateAuthenticatedClient();
@@ -185,13 +255,11 @@ public sealed class OpenAiV1BatchesEndpointTests
         HttpResponseMessage response = await client.GetAsync($"/v1/batches/batch_{Guid.NewGuid():N}");
 
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
-
     }
 
     [SkippableFact]
     public async Task GetBatch_MalformedId_Returns404NotThrow()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         HttpClient client = _factory.CreateAuthenticatedClient();
@@ -199,13 +267,11 @@ public sealed class OpenAiV1BatchesEndpointTests
         HttpResponseMessage response = await client.GetAsync("/v1/batches/not-a-valid-id");
 
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
-
     }
 
     [SkippableFact]
     public async Task ListBatches_FiltersByStatus()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         HttpClient client = _factory.CreateAuthenticatedClient();
@@ -225,7 +291,6 @@ public sealed class OpenAiV1BatchesEndpointTests
         Assert.NotNull(list);
 
         Assert.Contains(list.Data, b => b.Id == created.Id);
-
     }
 
     [SkippableFact]
@@ -233,7 +298,6 @@ public sealed class OpenAiV1BatchesEndpointTests
     public async Task ListBatches_ReturnsOpaquePagesFromDurableCountsWithoutReadingArtifacts()
 
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         HttpClient client = _factory.CreateAuthenticatedClient();
@@ -249,7 +313,6 @@ public sealed class OpenAiV1BatchesEndpointTests
         using (IServiceScope scope = _factory.Services.CreateScope())
 
         {
-
             ArcanumDbContext db = scope.ServiceProvider.GetRequiredService<ArcanumDbContext>();
 
             IBatchRepository batches = new BatchRepository(db);
@@ -257,11 +320,8 @@ public sealed class OpenAiV1BatchesEndpointTests
             for (int index = 0; index < 3; index++)
 
             {
-
                 await batches.CreateAsync(
-
                     new BatchRecord(
-
                         Guid.NewGuid(),
 
                         inputFileId,
@@ -285,9 +345,7 @@ public sealed class OpenAiV1BatchesEndpointTests
                         FailedRequestCount: 4),
 
                     CancellationToken.None);
-
             }
-
         }
 
         File.Delete(UploadedFileStorage.ResolvePath(inputFileId));
@@ -295,15 +353,12 @@ public sealed class OpenAiV1BatchesEndpointTests
         string encodedStatus = Uri.EscapeDataString(uniqueStatus);
 
         HttpResponseMessage firstResponse = await client.GetAsync(
-
             $"/v1/batches?status={encodedStatus}&limit=2");
 
         Assert.Equal(HttpStatusCode.OK, firstResponse.StatusCode);
 
         OpenAiBatchListResponse first = Assert.IsType<OpenAiBatchListResponse>(
-
             JsonSerializer.Deserialize(
-
                 await firstResponse.Content.ReadAsStringAsync(),
 
                 ArcanumJsonContext.Default.OpenAiBatchListResponse));
@@ -315,21 +370,17 @@ public sealed class OpenAiV1BatchesEndpointTests
         Assert.False(string.IsNullOrWhiteSpace(first.NextCursor));
 
         Assert.All(
-
             first.Data,
 
             static batch => Assert.True(batch.RequestCounts.Total >= 11));
 
         HttpResponseMessage secondResponse = await client.GetAsync(
-
             $"/v1/batches?status={encodedStatus}&limit=2&after={Uri.EscapeDataString(first.NextCursor!)}");
 
         Assert.Equal(HttpStatusCode.OK, secondResponse.StatusCode);
 
         OpenAiBatchListResponse second = Assert.IsType<OpenAiBatchListResponse>(
-
             JsonSerializer.Deserialize(
-
                 await secondResponse.Content.ReadAsStringAsync(),
 
                 ArcanumJsonContext.Default.OpenAiBatchListResponse));
@@ -341,17 +392,14 @@ public sealed class OpenAiV1BatchesEndpointTests
         Assert.Null(second.NextCursor);
 
         Assert.Empty(first.Data.Select(static batch => batch.Id).Intersect(
-
             second.Data.Select(static batch => batch.Id),
 
             StringComparer.Ordinal));
 
         HttpResponseMessage mismatchedCursor = await client.GetAsync(
-
             $"/v1/batches?status=other&limit=2&after={Uri.EscapeDataString(first.NextCursor!)}");
 
         Assert.Equal(HttpStatusCode.BadRequest, mismatchedCursor.StatusCode);
-
     }
 
     [SkippableFact]
@@ -359,7 +407,6 @@ public sealed class OpenAiV1BatchesEndpointTests
     public async Task ListBatches_PageAllocationBoundary_IsActionable()
 
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         HttpClient client = _factory.CreateAuthenticatedClient();
@@ -375,13 +422,11 @@ public sealed class OpenAiV1BatchesEndpointTests
         Assert.Contains("next_cursor", json, StringComparison.Ordinal);
 
         Assert.Contains("no total batch-history limit", json, StringComparison.Ordinal);
-
     }
 
     [SkippableFact]
     public async Task CancelBatch_StillValidating_MarksCancelled()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         HttpClient client = _factory.CreateAuthenticatedClient();
@@ -401,13 +446,11 @@ public sealed class OpenAiV1BatchesEndpointTests
         Assert.NotNull(cancelled);
 
         Assert.Equal("cancelled", cancelled.Status);
-
     }
 
     [SkippableFact]
     public async Task CancelBatch_AlreadyCancelled_IsIdempotent()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         HttpClient client = _factory.CreateAuthenticatedClient();
@@ -429,13 +472,11 @@ public sealed class OpenAiV1BatchesEndpointTests
         Assert.NotNull(cancelled);
 
         Assert.Equal("cancelled", cancelled.Status);
-
     }
 
     [SkippableFact]
     public async Task PostBatches_WithoutApiKey_Returns401()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         HttpClient client = _factory.CreateClient();
@@ -445,13 +486,11 @@ public sealed class OpenAiV1BatchesEndpointTests
             JsonContentOf(new OpenAiBatchRequest("file-abc", "/v1/chat/completions")));
 
         Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
-
     }
 
     [SkippableFact]
     public async Task ResetBatch_StuckInProgressWithInputFileResetsToValidating()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         HttpClient client = _factory.CreateAuthenticatedClient();
@@ -481,13 +520,11 @@ public sealed class OpenAiV1BatchesEndpointTests
         Assert.NotNull(reset);
 
         Assert.Equal("validating", reset.Status);
-
     }
 
     [SkippableFact]
     public async Task ResetBatch_ValidatingBatch_Returns409()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         HttpClient client = _factory.CreateAuthenticatedClient();
@@ -499,13 +536,11 @@ public sealed class OpenAiV1BatchesEndpointTests
         HttpResponseMessage response = await client.PostAsync($"/v1/batches/{created.Id}/reset", content: null);
 
         Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
-
     }
 
     [SkippableFact]
     public async Task ResetBatch_UnknownId_Returns404()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         HttpClient client = _factory.CreateAuthenticatedClient();
@@ -513,7 +548,6 @@ public sealed class OpenAiV1BatchesEndpointTests
         HttpResponseMessage response = await client.PostAsync($"/v1/batches/batch_{Guid.NewGuid():N}/reset", content: null);
 
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
-
     }
 
     private static StringContent JsonContentOf(OpenAiBatchRequest request) =>
@@ -521,7 +555,6 @@ public sealed class OpenAiV1BatchesEndpointTests
 
     private static async Task<OpenAiBatchObject> CreateBatchAsync(HttpClient client, string inputFileId)
     {
-
         HttpResponseMessage response = await client.PostAsync(
             "/v1/batches",
             JsonContentOf(new OpenAiBatchRequest(inputFileId, "/v1/chat/completions")));
@@ -535,12 +568,10 @@ public sealed class OpenAiV1BatchesEndpointTests
         Assert.NotNull(body);
 
         return body;
-
     }
 
     private static async Task<OpenAiFileObject> UploadInputFileAsync(HttpClient client, string jsonlContent)
     {
-
         using MultipartFormDataContent form = new();
 
         ByteArrayContent fileContent = new(Encoding.UTF8.GetBytes(jsonlContent));
@@ -562,7 +593,5 @@ public sealed class OpenAiV1BatchesEndpointTests
         Assert.NotNull(body);
 
         return body;
-
     }
-
 }

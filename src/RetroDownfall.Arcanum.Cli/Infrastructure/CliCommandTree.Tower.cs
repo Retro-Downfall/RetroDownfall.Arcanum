@@ -6,10 +6,9 @@ namespace RetroDownfall.Arcanum.Cli.Infrastructure;
 
 internal static partial class CliCommandTree
 {
-
     private static Command BuildPrompt(IServiceProvider sp)
     {
-        PromptCommands handler = sp.GetRequiredService<PromptCommands>();
+        DeferredHandler<PromptCommands> handler = new(sp);
         Command prompt = new("prompt", "Prompt utilities (requires arcanum serve).");
 
         Command list = new("list", "List prompts.");
@@ -18,7 +17,7 @@ internal static partial class CliCommandTree
         Option<string?> listTag = new("--tag") { Description = "Filter by tag." };
         list.Add(listCampaignId); list.Add(listQuery); list.Add(listTag);
         list.SetAction(async (ParseResult pr, CancellationToken ct) =>
-            await handler.List(ActiveCampaign(sp, pr.GetValue(listCampaignId)), pr.GetValue(listQuery), pr.GetValue(listTag), ct).ConfigureAwait(false));
+            await handler.Value.List(ActiveCampaign(sp, pr.GetValue(listCampaignId)), pr.GetValue(listQuery), pr.GetValue(listTag), ct).ConfigureAwait(false));
         prompt.Add(list);
 
         Command show = new("show", "Show prompt detail.");
@@ -29,7 +28,7 @@ internal static partial class CliCommandTree
         };
         show.Add(showId);
         show.SetAction(async (ParseResult pr, CancellationToken ct) =>
-            await handler.Get(pr.GetValue(showId), ct).ConfigureAwait(false));
+            await handler.Value.Get(pr.GetValue(showId), ct).ConfigureAwait(false));
         prompt.Add(show);
 
         Command versions = new("versions", "List versions of a prompt by name.");
@@ -37,7 +36,7 @@ internal static partial class CliCommandTree
         Option<string?> versionsCampaignId = new("--campaign-id") { Description = "Filter by campaign GUID." };
         versions.Add(versionsName); versions.Add(versionsCampaignId);
         versions.SetAction(async (ParseResult pr, CancellationToken ct) =>
-            await handler.Versions(pr.GetValue(versionsName)!, ActiveCampaign(sp, pr.GetValue(versionsCampaignId)), ct).ConfigureAwait(false));
+            await handler.Value.Versions(pr.GetValue(versionsName)!, ActiveCampaign(sp, pr.GetValue(versionsCampaignId)), ct).ConfigureAwait(false));
         prompt.Add(versions);
 
         Command create = new("create", "Create a prompt.");
@@ -50,7 +49,7 @@ internal static partial class CliCommandTree
         create.Add(createName); create.Add(createVersion); create.Add(createTemplate);
         create.Add(createCampaignId); create.Add(createDescription); create.Add(createTag);
         create.SetAction(async (ParseResult pr, CancellationToken ct) =>
-            await handler.Create(
+            await handler.Value.Create(
                 pr.GetValue(createName),
                 pr.GetValue(createVersion),
                 pr.GetValue(createTemplate),
@@ -66,14 +65,14 @@ internal static partial class CliCommandTree
         Option<string[]> updateTag = new("--tag") { AllowMultipleArgumentsPerToken = true, Description = "Tag; pass multiple times for several tags." };
         update.Add(updateId); update.Add(updateTemplate); update.Add(updateTag);
         update.SetAction(async (ParseResult pr, CancellationToken ct) =>
-            await handler.Update(pr.GetValue(updateId), pr.GetValue(updateTemplate), pr.GetValue(updateTag), ct).ConfigureAwait(false));
+            await handler.Value.Update(pr.GetValue(updateId), pr.GetValue(updateTemplate), pr.GetValue(updateTag), ct).ConfigureAwait(false));
         prompt.Add(update);
 
         Command delete = new("delete", "Delete a prompt.");
         Argument<string?> deleteId = OptionalResourceArgument("id", "prompt GUID or name");
         delete.Add(deleteId);
         delete.SetAction(async (ParseResult pr, CancellationToken ct) =>
-            await handler.Delete(pr.GetValue(deleteId), ct).ConfigureAwait(false));
+            await handler.Value.Delete(pr.GetValue(deleteId), ct).ConfigureAwait(false));
         prompt.Add(delete);
 
         Command render = new("render", "Render a prompt template with parameters.");
@@ -81,14 +80,14 @@ internal static partial class CliCommandTree
         Option<string[]> renderParam = new("--param") { AllowMultipleArgumentsPerToken = true, Description = "Template parameter as key=value; pass multiple times for several parameters." };
         render.Add(renderId); render.Add(renderParam);
         render.SetAction(async (ParseResult pr, CancellationToken ct) =>
-            await handler.Render(pr.GetValue(renderId), pr.GetValue(renderParam), ct).ConfigureAwait(false));
+            await handler.Value.Render(pr.GetValue(renderId), pr.GetValue(renderParam), ct).ConfigureAwait(false));
         prompt.Add(render);
 
         Command test = new("test", "Assemble the system prompt without LLM cost.");
         Argument<string?> testId = OptionalResourceArgument("id", "prompt GUID or name");
         test.Add(testId);
         test.SetAction(async (ParseResult pr, CancellationToken ct) =>
-            await handler.Test(pr.GetValue(testId), ct).ConfigureAwait(false));
+            await handler.Value.Test(pr.GetValue(testId), ct).ConfigureAwait(false));
         prompt.Add(test);
 
         Command execute = new("execute", "Render and run session-backed inference.");
@@ -98,7 +97,7 @@ internal static partial class CliCommandTree
         Option<string?> executeSessionId = new("--session-id") { Description = "Session GUID to bind context from." };
         execute.Add(executeId); execute.Add(executeInput); execute.Add(executeParam); execute.Add(executeSessionId);
         execute.SetAction(async (ParseResult pr, CancellationToken ct) =>
-            await handler.Execute(
+            await handler.Value.Execute(
                 pr.GetValue(executeId),
                 pr.GetValue(executeInput),
                 pr.GetValue(executeParam),
@@ -113,7 +112,7 @@ internal static partial class CliCommandTree
         Option<string?> cloneCampaign = new("--campaign") { Description = "Campaign GUID to associate the clone with." };
         clone.Add(cloneId); clone.Add(cloneNewName); clone.Add(cloneNewVersion); clone.Add(cloneCampaign);
         clone.SetAction(async (ParseResult pr, CancellationToken ct) =>
-            await handler.Clone(
+            await handler.Value.Clone(
                 pr.GetValue(cloneId),
                 pr.GetValue(cloneNewName),
                 pr.GetValue(cloneNewVersion),
@@ -126,7 +125,7 @@ internal static partial class CliCommandTree
         Option<string?> exportOutput = new("--output") { Description = "Write exported JSON to this file instead of stdout." };
         export.Add(exportId); export.Add(exportOutput);
         export.SetAction(async (ParseResult pr, CancellationToken ct) =>
-            await handler.Export(pr.GetValue(exportId), pr.GetValue(exportOutput), ct).ConfigureAwait(false));
+            await handler.Value.Export(pr.GetValue(exportId), pr.GetValue(exportOutput), ct).ConfigureAwait(false));
         prompt.Add(export);
 
         Command import = new("import", "Import a prompt from portable JSON.");
@@ -134,10 +133,9 @@ internal static partial class CliCommandTree
         Option<string?> importCampaignId = new("--campaign-id") { Description = "Campaign GUID to associate the import with." };
         import.Add(importFile); import.Add(importCampaignId);
         import.SetAction(async (ParseResult pr, CancellationToken ct) =>
-            await handler.Import(pr.GetValue(importFile), ActiveCampaign(sp, pr.GetValue(importCampaignId)), ct).ConfigureAwait(false));
+            await handler.Value.Import(pr.GetValue(importFile), ActiveCampaign(sp, pr.GetValue(importCampaignId)), ct).ConfigureAwait(false));
         prompt.Add(import);
 
         return prompt;
     }
-
 }

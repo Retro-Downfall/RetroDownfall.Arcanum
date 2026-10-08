@@ -343,10 +343,12 @@ public sealed class GrimoireCliInitializationTests : IDisposable
 
         IServiceScopeFactory scopeFactory = provider.GetRequiredService<IServiceScopeFactory>();
 
-        await GrimoireDatabaseBootstrapper.EnsureInitializedAsync(
+        await GrimoireDatabaseBootstrapper.EnsureInitializedWithoutInstallationLockForTestsAsync(
             secretStore,
             passphraseSource,
             scopeFactory,
+            ArcanumPaths.GrimoireDatabaseFile,
+            ArcanumPaths.GrimoireDirectory,
             CancellationToken.None);
 
         CovenantExclusiveRecoveryOwner owner = await SeedCurrentErasureAsync(passphraseSource);
@@ -377,10 +379,12 @@ public sealed class GrimoireCliInitializationTests : IDisposable
 
         IServiceScopeFactory scopeFactory = provider.GetRequiredService<IServiceScopeFactory>();
 
-        await GrimoireDatabaseBootstrapper.EnsureInitializedAsync(
+        await GrimoireDatabaseBootstrapper.EnsureInitializedWithoutInstallationLockForTestsAsync(
             secretStore,
             passphraseSource,
             scopeFactory,
+            ArcanumPaths.GrimoireDatabaseFile,
+            ArcanumPaths.GrimoireDirectory,
             CancellationToken.None);
 
         CovenantExclusiveRecoveryOwner owner = await SeedCurrentFactoryErasureAsync(passphraseSource);

@@ -69,9 +69,7 @@ internal sealed class InProcessMcpTransport : IMcpTransport
 
         if (maxJsonRpcLineBytes < 1)
         {
-
             throw new ArgumentOutOfRangeException(nameof(maxJsonRpcLineBytes));
-
         }
 
         _toServer = toServer;
@@ -110,7 +108,6 @@ internal sealed class InProcessMcpTransport : IMcpTransport
         ObjectDisposedException.ThrowIf(_disposed, this);
 
         return _toServer.WriteAsync(line + "\n", cancellationToken).AsTask();
-
     }
 
     /// <summary>
@@ -133,7 +130,7 @@ internal sealed class InProcessMcpTransport : IMcpTransport
         int maxJsonRpcLineBytes,
         ILogger<ArcanumInternalToolServer>? logger = null,
         McpJsonSerializerContext? jsonContext = null,
-        bool allowHostProcessTools = true,
+        bool allowHostProcessTools = false,
         CodingToolsSettings? codingToolsSettings = null,
         IWorkspaceCheckRuntime? workspaceCheckRuntime = null)
     {
@@ -185,12 +182,14 @@ internal sealed class InProcessMcpTransport : IMcpTransport
         bool a2aClientEnabled,
         bool attachmentsToolEnabled,
         int maxJsonRpcLineBytes,
-        ILogger<ArcanumInternalToolServer>? logger = null,
+        ILogger<ArcanumInternalToolServer> logger,
         McpJsonSerializerContext? jsonContext = null,
         bool allowHostProcessTools = false,
         CodingToolsSettings? codingToolsSettings = null,
         IWorkspaceCheckRuntime? workspaceCheckRuntime = null)
     {
+        ArgumentNullException.ThrowIfNull(logger);
+
         (Channel<string> clientToServer, Channel<string> serverToClient, ArcanumInternalToolServer server) = BuildChannelsAndServer(
             humanPromptRegistry,
             scopeFactory,
@@ -322,18 +321,19 @@ internal sealed class InProcessMcpTransport : IMcpTransport
             await _writeLock.WaitAsync(cancellationToken).ConfigureAwait(false);
             lockTaken = true;
 
-            string json = JsonSerializer.Serialize(toSend, _json.JsonRpcRequest);
+            // The server measures the whole line it reads, delimiter included, so the cap is applied to the
+            // line as written: a payload of exactly the cap would reach it one byte over and be dropped.
+            string line = JsonSerializer.Serialize(toSend, _json.JsonRpcRequest) + "\n";
 
-            McpOutboundLineGuard.Enforce(json, _maxJsonRpcLineBytes);
+            McpOutboundLineGuard.Enforce(line, _maxJsonRpcLineBytes);
 
-            await _toServer.WriteAsync(json + "\n", cancellationToken).ConfigureAwait(false);
+            await _toServer.WriteAsync(line, cancellationToken).ConfigureAwait(false);
             SessionAttachmentAmbientSend.MarkToolsCallDispatched(
                 _ambientConnectionKey,
                 request);
         }
         catch
         {
-
             SessionAttachmentAmbientSend.UnbindFailedToolsCall(
                 _ambientConnectionKey,
                 request);
@@ -341,10 +341,8 @@ internal sealed class InProcessMcpTransport : IMcpTransport
         }
         finally
         {
-
             if (lockTaken)
             {
-
                 _writeLock.Release();
             }
         }
@@ -365,11 +363,11 @@ internal sealed class InProcessMcpTransport : IMcpTransport
 
         try
         {
-            string json = JsonSerializer.Serialize(toSend, _json.JsonRpcRequest);
+            string line = JsonSerializer.Serialize(toSend, _json.JsonRpcRequest) + "\n";
 
-            McpOutboundLineGuard.Enforce(json, _maxJsonRpcLineBytes);
+            McpOutboundLineGuard.Enforce(line, _maxJsonRpcLineBytes);
 
-            await _toServer.WriteAsync(json + "\n", cancellationToken).ConfigureAwait(false);
+            await _toServer.WriteAsync(line, cancellationToken).ConfigureAwait(false);
         }
         finally
         {
@@ -386,11 +384,11 @@ internal sealed class InProcessMcpTransport : IMcpTransport
 
         try
         {
-            string json = JsonSerializer.Serialize(notification, _json.JsonRpcNotification);
+            string line = JsonSerializer.Serialize(notification, _json.JsonRpcNotification) + "\n";
 
-            McpOutboundLineGuard.Enforce(json, _maxJsonRpcLineBytes);
+            McpOutboundLineGuard.Enforce(line, _maxJsonRpcLineBytes);
 
-            await _toServer.WriteAsync(json + "\n", cancellationToken).ConfigureAwait(false);
+            await _toServer.WriteAsync(line, cancellationToken).ConfigureAwait(false);
         }
         finally
         {

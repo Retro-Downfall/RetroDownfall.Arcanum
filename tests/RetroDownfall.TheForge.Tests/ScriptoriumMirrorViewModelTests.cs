@@ -11,11 +11,9 @@ namespace RetroDownfall.TheForge.Tests;
 
 public class ScriptoriumMirrorViewModelTests
 {
-
     [Fact]
     public async Task RefreshMirrorDiff_ComparesPersistedSnapshotToVersionBody()
     {
-
         Guid currentId = Guid.NewGuid();
 
         Guid otherId = Guid.NewGuid();
@@ -62,13 +60,11 @@ public class ScriptoriumMirrorViewModelTests
         Assert.Contains("no activate-prompt", vm.MirrorStatusText, StringComparison.OrdinalIgnoreCase);
 
         vm.Dispose();
-
     }
 
     [Fact]
     public async Task RefreshMirrorDiff_RapidVersionSelection_KeepsOnlyTheLastSelectionsDiff()
     {
-
         Guid currentId = Guid.NewGuid();
 
         Guid alphaId = Guid.NewGuid();
@@ -136,7 +132,6 @@ public class ScriptoriumMirrorViewModelTests
         Assert.DoesNotContain(vm.MirrorDiffLines, static l => l.Text.Contains("AAA-unique-alpha", StringComparison.Ordinal));
 
         vm.Dispose();
-
     }
 
     /// <summary>
@@ -147,23 +142,17 @@ public class ScriptoriumMirrorViewModelTests
     /// </summary>
     private static async Task WaitUntilAsync(Func<bool> settled, string description)
     {
-
         for (int attempt = 0; attempt < 500; attempt++)
         {
-
             if (settled())
             {
-
                 return;
-
             }
 
             await Task.Delay(10);
-
         }
 
         Assert.Fail($"Timed out after 5s waiting for {description}.");
-
     }
 
     private static ScriptoriumViewModel Create(Guid id, IPromptEditorDataSource dataSource) =>
@@ -176,7 +165,8 @@ public class ScriptoriumMirrorViewModelTests
             new NullArtifactFileDialogService(),
             new NullTextInputDialogService(),
             new FakeWhispersService(),
-            ImmediateTheForgeLocalMutationRunner.Instance);
+            ImmediateTheForgeLocalMutationRunner.Instance,
+            new InMemoryInferenceTraceStore());
 
     private static PromptDetailDto SamplePrompt(Guid id, string version, string template) =>
         new(
@@ -199,7 +189,6 @@ public class ScriptoriumMirrorViewModelTests
 
     private sealed class FakePromptEditorDataSource : IPromptEditorDataSource
     {
-
         public PromptDetailDto? Prompt { get; init; }
 
         public IReadOnlyList<PromptVersionDto> Versions { get; init; } = [];
@@ -211,16 +200,12 @@ public class ScriptoriumMirrorViewModelTests
 
         public async Task<PromptDetailDto?> LoadPromptAsync(Guid id, CancellationToken cancellationToken)
         {
-
             if (Gates.TryGetValue(id, out Task? gate))
             {
-
                 await gate.ConfigureAwait(false);
-
             }
 
             return PromptsById.TryGetValue(id, out PromptDetailDto? detail) ? detail : Prompt;
-
         }
 
         public Task<PromptDetailDto?> SaveAsync(Guid id, UpdatePromptRequest request, CancellationToken cancellationToken) =>
@@ -237,11 +222,9 @@ public class ScriptoriumMirrorViewModelTests
             PromptExecuteRequest request,
             [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
         {
-
             await Task.CompletedTask;
 
             yield break;
-
         }
 
         public Task<IReadOnlyList<PromptVersionDto>> ListVersionsAsync(string name, Guid? campaignId, CancellationToken cancellationToken) =>
@@ -258,7 +241,5 @@ public class ScriptoriumMirrorViewModelTests
 
         public Task<DeleteOutcome> DeleteAsync(Guid id, CancellationToken cancellationToken) =>
             Task.FromResult(DeleteOutcome.Fail("Http.404", "not used"));
-
     }
-
 }

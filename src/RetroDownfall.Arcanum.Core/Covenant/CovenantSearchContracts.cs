@@ -16,11 +16,9 @@ namespace RetroDownfall.Arcanum.Core.Covenant;
 [JsonConverter(typeof(StringOnlyJsonStringEnumConverter<CovenantSearchExecutionMode>))]
 public enum CovenantSearchExecutionMode : byte
 {
-
     Fts = 1,
 
     CanonicalFallback = 2,
-
 }
 
 /// <summary>
@@ -29,7 +27,6 @@ public enum CovenantSearchExecutionMode : byte
 [JsonConverter(typeof(StringOnlyJsonStringEnumConverter<CovenantSearchRebuildGuidance>))]
 public enum CovenantSearchRebuildGuidance : byte
 {
-
     None = 1,
 
     WaitForSynchronization = 2,
@@ -37,7 +34,6 @@ public enum CovenantSearchRebuildGuidance : byte
     RebuildRequired = 3,
 
     AcceleratorUnavailable = 4,
-
 }
 
 /// <summary>
@@ -45,13 +41,11 @@ public enum CovenantSearchRebuildGuidance : byte
 /// </summary>
 public enum CovenantSearchMatchClass : byte
 {
-
     ExactKey = 1,
 
     KeyPrefix = 2,
 
     Ranked = 3,
-
 }
 
 /// <summary>
@@ -62,18 +56,21 @@ public enum CovenantSearchMatchClass : byte
 /// built entirely from quoted literals joined by explicit <c>AND</c>: no <c>OR</c>, <c>NEAR</c>,
 /// column filter, unary operator, or caller-supplied wildcard can survive compilation, because the
 /// compiler emits the operators rather than passing the caller's through.
+///
+/// <para><see cref="LikePatterns"/> is the fallback's per-term prefilter and may admit every candidate,
+/// so it says nothing about whether a term begins a key. <see cref="KeyPrefixPattern"/> is the separate,
+/// exact starts-with pattern the key-prefix match class compares a key against.</para>
 /// </remarks>
 public sealed record CovenantCompiledSearchTerms(
     string MatchExpression,
     ImmutableArray<string> NormalizedTerms,
-    ImmutableArray<string> LikePatterns)
+    ImmutableArray<string> LikePatterns,
+    string KeyPrefixPattern)
 {
-
     /// <summary>
     /// The escape character the fallback's <c>LIKE ... ESCAPE</c> clause declares.
     /// </summary>
     public const char LikeEscape = '\\';
-
 }
 
 /// <summary>
@@ -90,20 +87,16 @@ public readonly record struct CovenantSearchKeyset(
     Guid EntryId,
     Guid VersionId)
 {
-
     /// <summary>
     /// Encodes a finite BM25 score, normalizing negative zero so two equal scores compare equal.
     /// </summary>
     public static Result<ulong> EncodeScore(double score)
     {
-
         if (double.IsNaN(score) || double.IsInfinity(score))
         {
-
             return new Error(
                 ErrorCodes.Covenant.InvalidCursor,
                 "A Covenant search score must be a finite IEEE-754 binary64 value.");
-
         }
 
         // Negative zero and positive zero are the same score. Leaving the sign bit set would make one
@@ -111,11 +104,9 @@ public readonly record struct CovenantSearchKeyset(
         double canonical = score == 0d ? 0d : score;
 
         return Result<ulong>.Success(BitConverter.DoubleToUInt64Bits(canonical));
-
     }
 
     public double Score => BitConverter.UInt64BitsToDouble(ScoreBits);
-
 }
 
 /// <summary>
@@ -134,7 +125,6 @@ public sealed record CovenantSearchSourceSnapshot(
     long? AppliedCampaignDeletionSequence,
     ulong AcceleratorEpoch)
 {
-
     /// <summary>
     /// Whether the accelerator is current enough to answer instead of the canonical fallback.
     /// </summary>
@@ -142,23 +132,36 @@ public sealed record CovenantSearchSourceSnapshot(
         AppliedDatasetGeneration == DatasetGeneration
         && AppliedSearchSequence == CanonicalSearchSequence
         && AppliedCampaignDeletionSequence == CoreCampaignDeletionSequence;
-
 }
 
 /// <summary>
-/// One current head that matched.
+/// One current head that matched, with its rank.
 /// </summary>
+/// <remarks>
+/// The head is read in the same snapshot as the ranking, so a caller never has to go back to storage
+/// to complete a hit and never observes a different dataset than the one the page was ranked from.
+/// </remarks>
 public sealed record CovenantSearchHit(
-    Guid EntryId,
-    Guid VersionId,
-    CovenantScope Scope,
-    Guid? CampaignId,
-    CovenantLane Lane,
-    CovenantLifecycle Lifecycle,
-    string NormalizedKey,
+    CovenantHeadItem Head,
     CovenantSearchMatchClass MatchClass,
-    double Score,
-    long SearchRowId);
+    double Score)
+{
+    public Guid EntryId => Head.EntryId;
+
+    public Guid VersionId => Head.VersionId;
+
+    public CovenantScope Scope => Head.Scope;
+
+    public Guid? CampaignId => Head.CampaignId;
+
+    public CovenantLane Lane => Head.Lane;
+
+    public CovenantLifecycle Lifecycle => Head.Lifecycle;
+
+    public string NormalizedKey => Head.NormalizedKey;
+
+    public long SearchRowId => Head.SearchRowId;
+}
 
 /// <summary>
 /// A bounded free-text inspection request over current heads.
@@ -184,9 +187,7 @@ public sealed record CovenantSearchQuery(
     CovenantSearchKeyset? After,
     CovenantCapabilityState Accelerator = CovenantCapabilityState.Healthy)
 {
-
     public int EffectivePageSize => CovenantManagementReadLimits.ClampPageSize(PageSize);
-
 }
 
 /// <summary>
@@ -257,13 +258,11 @@ public sealed record CovenantFallbackCursorBody(
 /// </remarks>
 public enum CovenantCursorRejection : byte
 {
-
     None = 1,
 
     Stale = 2,
 
     Invalid = 3,
-
 }
 
 /// <summary>
@@ -271,14 +270,12 @@ public enum CovenantCursorRejection : byte
 /// </summary>
 public static class CovenantCursorBodyValidator
 {
-
     public static CovenantCursorRejection Validate(
         CovenantListCursorBody body,
         CovenantDigest expectedFilterDigest,
         CovenantSearchSourceSnapshot sources,
         long envelopeKeyVersion)
     {
-
         ArgumentNullException.ThrowIfNull(body);
 
         ArgumentNullException.ThrowIfNull(sources);
@@ -287,9 +284,7 @@ public static class CovenantCursorBodyValidator
             || body.FilterDigest != expectedFilterDigest
             || body.EnvelopeKeyVersion != envelopeKeyVersion)
         {
-
             return CovenantCursorRejection.Invalid;
-
         }
 
         return body.DatasetGeneration != sources.DatasetGeneration
@@ -297,7 +292,6 @@ public static class CovenantCursorBodyValidator
             || body.CoreCampaignDeletionSequence != sources.CoreCampaignDeletionSequence
                 ? CovenantCursorRejection.Stale
                 : CovenantCursorRejection.None;
-
     }
 
     public static CovenantCursorRejection Validate(
@@ -306,16 +300,13 @@ public static class CovenantCursorBodyValidator
         CovenantSearchSourceSnapshot sources,
         long envelopeKeyVersion)
     {
-
         ArgumentNullException.ThrowIfNull(body);
 
         ArgumentNullException.ThrowIfNull(sources);
 
         if (body.FilterDigest != expectedFilterDigest || body.EnvelopeKeyVersion != envelopeKeyVersion)
         {
-
             return CovenantCursorRejection.Invalid;
-
         }
 
         // An FTS cursor binds the accelerator's position as well as canonical's, because a page
@@ -330,7 +321,6 @@ public static class CovenantCursorBodyValidator
             || body.AcceleratorEpoch != sources.AcceleratorEpoch
                 ? CovenantCursorRejection.Stale
                 : CovenantCursorRejection.None;
-
     }
 
     public static CovenantCursorRejection Validate(
@@ -339,16 +329,13 @@ public static class CovenantCursorBodyValidator
         CovenantSearchSourceSnapshot sources,
         long envelopeKeyVersion)
     {
-
         ArgumentNullException.ThrowIfNull(body);
 
         ArgumentNullException.ThrowIfNull(sources);
 
         if (body.FilterDigest != expectedFilterDigest || body.EnvelopeKeyVersion != envelopeKeyVersion)
         {
-
             return CovenantCursorRejection.Invalid;
-
         }
 
         return body.DatasetGeneration != sources.DatasetGeneration
@@ -356,7 +343,5 @@ public static class CovenantCursorBodyValidator
             || body.CoreCampaignDeletionSequence != sources.CoreCampaignDeletionSequence
                 ? CovenantCursorRejection.Stale
                 : CovenantCursorRejection.None;
-
     }
-
 }

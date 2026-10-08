@@ -24,6 +24,7 @@ public sealed class ArcanumHealthCheckerProviderTests : IDisposable
             System.Environment.GetEnvironmentVariable(CredentialVariable);
         System.Environment.SetEnvironmentVariable(CredentialVariable, null);
     }
+
     [Fact]
     public async Task BuildReportAsync_AllKnownProvidersUnhealthy_ProvidersUnhealthy_OverallDegraded()
     {
@@ -186,6 +187,11 @@ public sealed class ArcanumHealthCheckerProviderTests : IDisposable
             HealthChanged?.Invoke(new ProviderHealthStatus(providerName, true, DateTimeOffset.UtcNow, 0));
         }
 
+        public void Remove(string providerName)
+
+        {
+        }
+
         public IReadOnlyList<ProviderHealthStatus> GetAllStatuses() =>
             _unhealthy.Select(n => new ProviderHealthStatus(n, false, DateTimeOffset.UtcNow, 1)).ToArray();
     }
@@ -280,7 +286,7 @@ public sealed class ArcanumHealthCheckerProviderTests : IDisposable
         public Task ReloadAsync(string workingDirectory, CancellationToken cancellationToken = default) =>
             Task.CompletedTask;
 
-        public Task<Result> TrustWorkspaceAsync(string workingDirectory, CancellationToken cancellationToken = default) =>
+        public Task<Result> TrustWorkspaceAsync(string workingDirectory, string? expectedConfigDigest = null, CancellationToken cancellationToken = default) =>
             throw new NotImplementedException();
     }
 

@@ -20,6 +20,8 @@ using RetroDownfall.Arcanum.Infrastructure.Data;
 
 using System.Collections.Immutable;
 
+using System.Runtime.CompilerServices;
+
 using Xunit.Abstractions;
 
 namespace RetroDownfall.Arcanum.Tests.Operations;
@@ -10882,6 +10884,195 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
         Assert.Contains(Discover(FixtureSource("new System.IO.FileInfo(\"path\").LastWriteTimeUtc = DateTime.UtcNow;")).Diagnostics, static d => d.Code == "HOSTED_SITE_UNCLASSIFIED" && d.Detail.Contains("LastWriteTimeUtc", StringComparison.Ordinal));
     }
 
+    /// <summary>
+    /// The Covenant gate contains a throwing revocation callback and logs one fixed message, with no read
+    /// of the aggregate's inner-exception count, so its catch is not an unclassified site.
+    /// </summary>
+    /// <remarks>
+    /// The count read was the one <c>HOSTED_SITE_UNCLASSIFIED</c> the gate reported against the
+    /// production graph (<see cref="ReadingTheInnerExceptionCountOfAnAggregateIsAnUnclassifiedSite"/> is the
+    /// shape that read). This is the shape that replaced it, so the production claim does not rest on a
+    /// production-graph run alone.
+    /// </remarks>
+    [Fact]
+    public void ARevocationFaultLoggedAsOneFixedMessageIsNotAnUnclassifiedSite()
+    {
+        HostedProducerDiscovery<HostedProducerSite> result = Discover(FixtureSource(
+            "Microsoft.Extensions.Logging.ILogger logger = null!; System.Threading.CancellationTokenSource revocation = new(); try { revocation.Cancel(); } catch (System.ObjectDisposedException) { } catch (System.AggregateException) { Microsoft.Extensions.Logging.LoggerExtensions.LogWarning(logger, \"A Covenant revocation callback faulted; the lease is revoked regardless.\"); }"));
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED");
+    }
+
+    [Fact]
+    public void ReadingTheInnerExceptionCountOfAnAggregateIsAnUnclassifiedSite()
+    {
+        HostedProducerDiscovery<HostedProducerSite> result = Discover(FixtureSource(
+            "Microsoft.Extensions.Logging.ILogger logger = null!; System.Threading.CancellationTokenSource revocation = new(); try { revocation.Cancel(); } catch (System.AggregateException exception) { Microsoft.Extensions.Logging.LoggerExtensions.LogWarning(logger, \"{Count} faulted\", exception.InnerExceptions.Count); }"));
+
+        Assert.Contains(
+            result.Diagnostics,
+            static diagnostic => diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED"
+                && diagnostic.Detail.Contains("ReadOnlyCollection`1.Count", StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// A static Serilog warning that names its stage and error code as properties is a neutral logging
+    /// site, which is how a startup recovery says why it stopped without the host's logger.
+    /// </summary>
+    [Fact]
+    public void AStaticSerilogWarningNamingAStageAndAnErrorCodeIsNotAnUnclassifiedSite()
+    {
+        HostedProducerDiscovery<HostedProducerSite> result = Discover(FixtureSource(
+            "string stage = \"resume\"; string? code = null; Serilog.Log.Warning(\"A repair did not finish at {Stage}: {ErrorCode}\", stage, code ?? \"none\");"));
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED");
+    }
+
+    /// <summary>
+    /// The alternate-lookup shape the workspace eligibility predicate used to match a path segment against
+    /// its ignored-directory set is not a reviewed neutral member, so the production analysis reported it
+    /// as one <c>HOSTED_SITE_UNCLASSIFIED</c> in <c>WorkspaceIndexEligibility</c>. This is that shape, so the
+    /// replacement below is shown to be the mechanism and not luck.
+    /// </summary>
+    [Fact]
+    public void ASpanAlternateLookupOverAHashSetIsAnUnclassifiedSite()
+    {
+        HostedProducerDiscovery<HostedProducerSite> result = Discover(FixtureSource(
+            "System.Collections.Generic.HashSet<string> ignored = new(System.StringComparer.OrdinalIgnoreCase) { \"bin\" }; System.Collections.Generic.HashSet<string>.AlternateLookup<System.ReadOnlySpan<char>> lookup = ignored.GetAlternateLookup<System.ReadOnlySpan<char>>(); _ = lookup.Contains(\"BIN\".AsSpan());"));
+
+        Assert.Contains(
+            result.Diagnostics,
+            static diagnostic => diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED"
+                && diagnostic.Detail.Contains("AlternateLookup", StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// The framework members the remediation reaches are in-memory work with no producer effect: Unicode
+    /// scalar decoding, text-element measurement, a process reader's stream and encoding getters, a bounded
+    /// sleep, a type's name, a dictionary's alternate-key lookup, and an immutable-array predicate test.
+    /// None of them is an unclassified site.
+    /// </summary>
+    [Theory]
+    [InlineData("System.Text.Rune rune = new System.Text.Rune('a'); _ = rune.Value; _ = System.Text.Rune.GetUnicodeCategory(rune); _ = System.Text.Rune.DecodeFromUtf16(System.MemoryExtensions.AsSpan(\"a\"), out System.Text.Rune decoded, out int consumed); _ = System.Text.Rune.TryCreate('a', out System.Text.Rune created);", "System.Text.Rune")]
+    [InlineData("_ = System.Globalization.StringInfo.GetNextTextElementLength(\"a\");", "System.Globalization.StringInfo")]
+    [InlineData("System.IO.StreamReader reader = null!; _ = reader.BaseStream; _ = reader.CurrentEncoding;", "System.IO.StreamReader.")]
+    [InlineData("System.Threading.Thread.Sleep(1);", "System.Threading.Thread.Sleep")]
+    [InlineData("_ = typeof(string).FullName;", "System.Type.FullName")]
+    [InlineData("System.Collections.Generic.Dictionary<string, int> owners = new(System.StringComparer.Ordinal); System.Collections.Generic.Dictionary<string, int>.AlternateLookup<System.ReadOnlySpan<char>> lookup = owners.GetAlternateLookup<System.ReadOnlySpan<char>>(); _ = lookup.TryGetValue(System.MemoryExtensions.AsSpan(\"a\"), out int owner);", "AlternateLookup")]
+    [InlineData("System.Collections.Immutable.ImmutableArray<int> values = System.Collections.Immutable.ImmutableArray.Create(1); _ = System.Linq.ImmutableArrayExtensions.Any(values, static value => value > 0);", "System.Linq.ImmutableArrayExtensions.Any")]
+    public void ReviewedRemediationBclMembersAreNotUnclassifiedSites(string body, string detailFragment)
+    {
+        HostedProducerDiscovery<HostedProducerSite> result = Discover(FixtureSource(body));
+
+        Assert.DoesNotContain(result.Diagnostics, diagnostic =>
+            diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED"
+            && diagnostic.Detail.Contains(detailFragment, StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// <c>ImmutableArrayExtensions.Any</c> runs its predicate synchronously, so the predicate is traversed
+    /// like <c>Enumerable.Any</c>'s rather than exempted: a file probe inside it is a discovered site.
+    /// </summary>
+    [Fact]
+    public void ImmutableArrayAnyTraversesItsPredicate()
+    {
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(R2Source(
+            R2Admission
+                + "System.Collections.Immutable.ImmutableArray<string> paths = System.Collections.Immutable.ImmutableArray.Create(\"path\"); _ = System.Linq.ImmutableArrayExtensions.Any(paths, static path => System.IO.File.Exists(path)); "));
+
+        Assert.Contains(result.Items, static site => site.Callee == "System.IO.File.Exists");
+    }
+
+    /// <summary>
+    /// Only <c>Thread.Sleep</c> is a reviewed thread member: creating and starting a thread is still an
+    /// unclassified site.
+    /// </summary>
+    [Fact]
+    public void ThreadMembersOtherThanSleepRemainUnclassified()
+    {
+        HostedProducerDiscovery<HostedProducerSite> result = Discover(FixtureSource(
+            "new System.Threading.Thread(static () => { }).Start();"));
+
+        Assert.Contains(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED"
+            && diagnostic.Detail.StartsWith("System.Threading.Thread.", StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// Reviewing the alternate-key <c>TryGetValue</c> exempts the lookup only. The dictionary's comparer is
+    /// still proven where the dictionary is constructed, so an authored comparer whose equality probes the
+    /// file system is still reported.
+    /// </summary>
+    [Fact]
+    public void AlternateLookupOverAnAuthoredComparerStillReportsTheComparer()
+    {
+        const string helper = """
+            sealed class Folding : System.Collections.Generic.IEqualityComparer<string>, System.Collections.Generic.IAlternateEqualityComparer<System.ReadOnlySpan<char>, string>
+            {
+                public bool Equals(string? x, string? y) => System.IO.File.Exists(x) && string.Equals(x, y, System.StringComparison.Ordinal);
+
+                public int GetHashCode(string obj) => 0;
+
+                public bool Equals(System.ReadOnlySpan<char> alternate, string other) => System.IO.File.Exists(other) && System.MemoryExtensions.SequenceEqual(alternate, other);
+
+                public int GetHashCode(System.ReadOnlySpan<char> alternate) => 0;
+
+                public string Create(System.ReadOnlySpan<char> alternate) => alternate.ToString();
+            }
+            """;
+
+        HostedProducerDiscovery<HostedProducerSite> result = Discover(FixtureSource(
+            "System.Collections.Generic.Dictionary<string, int> owners = new(new Folding()); System.Collections.Generic.Dictionary<string, int>.AlternateLookup<System.ReadOnlySpan<char>> lookup = owners.GetAlternateLookup<System.ReadOnlySpan<char>>(); _ = lookup.TryGetValue(System.MemoryExtensions.AsSpan(\"a\"), out int owner);",
+            helper));
+
+        bool comparerReported = result.Items.Any(static site => site.EnclosingType == "Folding")
+            || result.Diagnostics.Any(static diagnostic => diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED"
+                && diagnostic.Detail == "System.Collections.Generic.Dictionary`2..ctor");
+
+        Assert.True(comparerReported, "The authored comparer must still be reported where the dictionary is constructed.");
+    }
+
+    /// <summary>
+    /// Closing a context's connection through the relational facade acts on the provider connection the
+    /// facade opens, so it is a database access site like <c>OpenConnectionAsync</c> beside it and
+    /// <c>DbConnection.CloseAsync</c> beneath it, never an unclassified framework call.
+    /// </summary>
+    [Fact]
+    public void RelationalFacadeConnectionCloseIsADatabaseAccessSite()
+    {
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(R2Source(
+            R2Admission
+                + "Microsoft.EntityFrameworkCore.DbContext db = null!; await Microsoft.EntityFrameworkCore.RelationalDatabaseFacadeExtensions.CloseConnectionAsync(db.Database); Microsoft.EntityFrameworkCore.RelationalDatabaseFacadeExtensions.CloseConnection(db.Database); "));
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED"
+            && diagnostic.Detail.StartsWith(
+                "Microsoft.EntityFrameworkCore.RelationalDatabaseFacadeExtensions.CloseConnection",
+                StringComparison.Ordinal));
+
+        Assert.Contains(result.Items, static site =>
+            site.Kind == HostedProducerSiteKind.DatabaseAccess
+            && site.Callee == "Microsoft.EntityFrameworkCore.RelationalDatabaseFacadeExtensions.CloseConnectionAsync");
+
+        Assert.Contains(result.Items, static site =>
+            site.Kind == HostedProducerSiteKind.DatabaseAccess
+            && site.Callee == "Microsoft.EntityFrameworkCore.RelationalDatabaseFacadeExtensions.CloseConnection");
+    }
+
+    /// <summary>
+    /// Matching a path segment against a fixed list of names with a case-insensitive span comparison is
+    /// pure in-memory work, so the predicate that decides whether a workspace path may be indexed adds no
+    /// unclassified site to the hosted workspace-indexing graph.
+    /// </summary>
+    [Fact]
+    public void ASpanSegmentComparedWithFixedNamesIsNotAnUnclassifiedSite()
+    {
+        HostedProducerDiscovery<HostedProducerSite> result = Discover(FixtureSource(
+            "string[] ignored = [\"bin\", \"obj\"]; char[] separators = [System.IO.Path.DirectorySeparatorChar]; string relativePath = \"src/BIN/a.cs\"; int start = 0; while (start < relativePath.Length) { int separator = relativePath.IndexOfAny(separators, start); int end = separator < 0 ? relativePath.Length : separator; System.ReadOnlySpan<char> segment = relativePath.AsSpan(start, end - start); foreach (string name in ignored) { if (System.MemoryExtensions.Equals(segment, name, System.StringComparison.OrdinalIgnoreCase)) { return Task.CompletedTask; } } start = end + 1; }"));
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED");
+    }
+
     [Theory]
     [InlineData("SqliteErrorCode")]
     [InlineData("SqliteExtendedErrorCode")]
@@ -10934,6 +11125,387 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
         Assert.Contains(result.Items, static site => site.Callee == "RetroDownfall.Arcanum.Infrastructure.Security.SecureFilePermissions.GetEffectiveUserIdNative" && site.Kind == HostedProducerSiteKind.FileSystemRead);
 
         Assert.DoesNotContain(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED");
+    }
+
+    /// <summary>
+    /// The strict owner-only gates and the KDF sidecar's refused open fail by constructing an
+    /// <see cref="UnauthorizedAccessException"/>. Constructing an exception has no producer effect, like the
+    /// reviewed <see cref="IOException"/> family, so it is not an unclassified external site.
+    /// </summary>
+    [Fact]
+    public void ConstructingAnUnauthorizedAccessExceptionIsNotAnUnclassifiedSite()
+    {
+        HostedProducerDiscovery<HostedProducerSite> result = Discover(FixtureSource(
+            "if (token.IsCancellationRequested) { throw new System.UnauthorizedAccessException(\"The directory could not be restricted to the current user.\"); }"));
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED");
+    }
+
+    /// <summary>
+    /// A flow-local delete seam invoked through its own property, with the real delete on the other branch,
+    /// is a proven-absent test callable, so the delete stays one exact site. Coalescing the seam with the
+    /// delete method group hands the invocation a callback target the analysis cannot resolve, which is the
+    /// shape <c>OwnerOnlyAtomicFile</c>'s temp cleanup used to have.
+    /// </summary>
+    [Theory]
+    [InlineData("Branched", false)]
+    [InlineData("Coalesced", true)]
+    public void ADeleteTestSeamIsExactOnlyWhenInvokedThroughItsProperty(string shape, bool unproven)
+    {
+        const string helper = "static class TempCleanup { private static readonly AsyncLocal<Action<string>?> DeleteOverride = new(); internal static Action<string>? DeleteForTests { get => DeleteOverride.Value; set => DeleteOverride.Value = value; } public static void Branched(string path) { if (DeleteForTests is not null) { DeleteForTests.Invoke(path); } else { System.IO.File.Delete(path); } } public static void Coalesced(string path) { (DeleteForTests ?? System.IO.File.Delete)(path); } }";
+
+        HostedProducerDiscovery<HostedProducerSite> result = Discover(FixtureSource("TempCleanup." + shape + "(\"path.tmp\");", helper));
+
+        Assert.Equal(
+            unproven,
+            result.Diagnostics.Any(static diagnostic => diagnostic.Code == "HOSTED_CALLBACK_OWNERSHIP_UNPROVEN"
+                && diagnostic.Detail.StartsWith("System.Action`1.Invoke;", StringComparison.Ordinal)));
+
+        if (!unproven)
+        {
+            Assert.Contains(result.Items, static site => site.Callee == "System.IO.File.Delete");
+        }
+    }
+
+    /// <summary>
+    /// A factory that returns a test seam's stream when the seam is set and an exact construction
+    /// otherwise keeps exact cleanup provenance only when the traversal proves production never sets the
+    /// seam: an unassigned internal auto-property, an internal property over an <c>AsyncLocal</c> that only
+    /// its own setter writes, or a public auto-property of an internal type. A seam production assigns, a
+    /// seam whose <c>AsyncLocal</c> is also written outside the property, and a public seam of a public
+    /// type keep the seam's stream, so the cleanup stays unresolved.
+    /// </summary>
+    [Theory]
+    [InlineData("SeamHost.DormantForTests", false)]
+    [InlineData("SeamHost.AmbientForTests", false)]
+    [InlineData("SeamHost.InternalTypePublicForTests", false)]
+    [InlineData("SeamHost.AssignedForTests", true)]
+    [InlineData("SeamHost.LeakedForTests", true)]
+    [InlineData("OpenSeamHost.OpenForTests", true)]
+    public void AbsentTestSeamProducesNoCleanupValue(string seam, bool unresolved)
+    {
+        const string helper = """
+            internal static class SeamHost
+            {
+                private static readonly System.Threading.AsyncLocal<System.Func<string, System.IO.FileStream>?> AmbientOverride = new();
+
+                private static readonly System.Threading.AsyncLocal<System.Func<string, System.IO.FileStream>?> LeakedOverride = new();
+
+                internal static System.Func<string, System.IO.FileStream>? DormantForTests { get; set; }
+
+                internal static System.Func<string, System.IO.FileStream>? AmbientForTests
+                {
+                    get => AmbientOverride.Value;
+
+                    set => AmbientOverride.Value = value;
+                }
+
+                internal static System.Func<string, System.IO.FileStream>? LeakedForTests
+                {
+                    get => LeakedOverride.Value;
+
+                    set => LeakedOverride.Value = value;
+                }
+
+                public static System.Func<string, System.IO.FileStream>? InternalTypePublicForTests { get; set; }
+
+                internal static System.Func<string, System.IO.FileStream>? AssignedForTests { get; set; }
+
+                internal static void Leak(System.Func<string, System.IO.FileStream> factory) => LeakedOverride.Value = factory;
+
+                internal static void Install(System.Func<string, System.IO.FileStream> factory) => AssignedForTests = factory;
+            }
+
+            public static class OpenSeamHost
+            {
+                public static System.Func<string, System.IO.FileStream>? OpenForTests { get; set; }
+            }
+
+            internal static class SeamFiles
+            {
+                internal static System.IO.FileStream Open(string path)
+                {
+                    if (SEAM is { } create)
+                    {
+                        return create(path);
+                    }
+
+                    return new System.IO.FileStream(path, System.IO.FileMode.Create);
+                }
+            }
+            """;
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(R2Source(
+            R2Admission + "await using System.IO.FileStream stream = SeamFiles.Open(\"path\"); ",
+            helper.Replace("SEAM", seam, StringComparison.Ordinal)));
+
+        Assert.Equal(
+            unresolved,
+            result.Diagnostics.Any(static diagnostic => diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED"));
+    }
+
+    /// <summary>
+    /// A delete seam whose <c>AsyncLocal</c> storage is also written outside the property's own accessors
+    /// is not proven absent, because production can set that storage without assigning the property, so
+    /// invoking the seam is an unproven callback. Storage written only by the property's setter still
+    /// proves absence, as the branched case above shows.
+    /// </summary>
+    [Fact]
+    public void AnAmbientTestSeamWrittenOutsideItsSetterIsNotProvenAbsent()
+    {
+        const string helper = "static class TempCleanup { private static readonly AsyncLocal<Action<string>?> DeleteOverride = new(); internal static Action<string>? DeleteForTests { get => DeleteOverride.Value; set => DeleteOverride.Value = value; } internal static void Install(Action<string> delete) => DeleteOverride.Value = delete; public static void Branched(string path) { if (DeleteForTests is not null) { DeleteForTests.Invoke(path); } else { System.IO.File.Delete(path); } } public static void Coalesced(string path) { (DeleteForTests ?? System.IO.File.Delete)(path); } }";
+
+        HostedProducerDiscovery<HostedProducerSite> result = Discover(FixtureSource("TempCleanup.Branched(\"path.tmp\");", helper));
+
+        Assert.Contains(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_CALLBACK_OWNERSHIP_UNPROVEN"
+            && diagnostic.Detail.StartsWith("System.Action`1.Invoke;", StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// An overridable seam is not an auto-property, whatever its own declaration looks like: the override
+    /// that runs returns a delegate no assignment to the seam made, so invoking an abstract seam nobody
+    /// assigns is still an unproven callback.
+    /// </summary>
+    [Fact]
+    public void AnOverridableTestSeamIsNotProvenAbsent()
+    {
+        const string helper = "abstract class DeleteSeams { internal abstract Action<string>? DeleteForTests { get; } } sealed class OverridingDeleteSeams : DeleteSeams { internal override Action<string>? DeleteForTests => static path => System.IO.File.Delete(path); } static class TempCleanup { private static readonly DeleteSeams Seams = new OverridingDeleteSeams(); public static void Branched(string path) { if (Seams.DeleteForTests is not null) { Seams.DeleteForTests.Invoke(path); } else { System.IO.File.Delete(path); } } }";
+
+        HostedProducerDiscovery<HostedProducerSite> result = Discover(FixtureSource("TempCleanup.Branched(\"path.tmp\");", helper));
+
+        Assert.Contains(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_CALLBACK_OWNERSHIP_UNPROVEN"
+            && diagnostic.Detail.StartsWith("System.Action`1.Invoke;", StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// The ambient-seam proof trusts the framework's <c>AsyncLocal&lt;T&gt;</c> only. A same-named type
+    /// authored in source can return storage that production writes elsewhere, so a seam over it is not
+    /// proven absent.
+    /// </summary>
+    [Fact]
+    public void AnAmbientTestSeamOverAnAuthoredAsyncLocalIsNotProvenAbsent()
+    {
+        const string helper = "namespace System.Threading { internal sealed class AsyncLocal<T> { public T Value { get => AmbientStore<T>.Current; set { } } } internal static class AmbientStore<T> { internal static T Current = default!; } } static class TempCleanup { private static readonly System.Threading.AsyncLocal<Action<string>?> DeleteOverride = new(); internal static Action<string>? DeleteForTests { get => DeleteOverride.Value; set => DeleteOverride.Value = value; } internal static void Install(Action<string> delete) => System.Threading.AmbientStore<Action<string>?>.Current = delete; public static void Branched(string path) { if (DeleteForTests is not null) { DeleteForTests.Invoke(path); } else { System.IO.File.Delete(path); } } }";
+
+        string source = FixtureSource("TempCleanup.Branched(\"path.tmp\");", helper);
+
+        Assert.Empty(Compile(source).GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        HostedProducerDiscovery<HostedProducerSite> result = Discover(source);
+
+        Assert.Contains(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_CALLBACK_OWNERSHIP_UNPROVEN"
+            && diagnostic.Detail.StartsWith("System.Action`1.Invoke;", StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// A partial seam is not an auto-property even though its defining declaration has no accessor bodies:
+    /// the implementing declaration's getter returns storage that production writes elsewhere, so invoking
+    /// the seam is still an unproven callback.
+    /// </summary>
+    [Fact]
+    public void APartialTestSeamIsNotProvenAbsent()
+    {
+        const string helper = "static partial class TempCleanup { private static Action<string>? store; internal static partial Action<string>? DeleteForTests { get; set; } internal static partial Action<string>? DeleteForTests { get => store; set { } } internal static void Install(Action<string> delete) => store = delete; public static void Branched(string path) { if (DeleteForTests is not null) { DeleteForTests.Invoke(path); } else { System.IO.File.Delete(path); } } }";
+
+        string source = FixtureSource("TempCleanup.Branched(\"path.tmp\");", helper);
+
+        Assert.Empty(Compile(source).GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        HostedProducerDiscovery<HostedProducerSite> result = Discover(source);
+
+        Assert.Contains(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_CALLBACK_OWNERSHIP_UNPROVEN"
+            && diagnostic.Detail.StartsWith("System.Action`1.Invoke;", StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// A positional record's delegate property holds exactly what its primary constructor was given. The
+    /// directory barrier keeps its two native calls in such a record and hands them to the decision as
+    /// parameters, so the traversal must enter the constructor argument rather than read the property as an
+    /// unassigned seam and skip the call: a file probe inside the bound lambda is a discovered site.
+    /// </summary>
+    [Fact]
+    public void APositionalRecordDelegatePropertyIsTheConstructorArgumentItWasGiven()
+    {
+        const string helper = "internal static class Barrier { internal static BarrierCalls Production { get; } = new(static path => System.IO.File.Exists(path)); internal static bool Check(string path) => Check(path, Production.Probe); internal static bool Check(string path, Func<string, bool> probe) => probe(path); } internal sealed record BarrierCalls(Func<string, bool> Probe);";
+
+        string source = FixtureSource("_ = Barrier.Check(\"path\");", helper);
+
+        Assert.Empty(Compile(source).GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        HostedProducerDiscovery<HostedProducerSite> result = Discover(source);
+
+        Assert.Contains(result.Items, static site => site.Callee == "System.IO.File.Exists");
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_CALLBACK_OWNERSHIP_UNPROVEN");
+    }
+
+    /// <summary>
+    /// The positional model covers only what the primary constructor alone decides. A <c>with</c> or
+    /// initializer write, a record struct (whose default value runs no constructor), an unsealed record
+    /// (which a derived record constructs through its own base clause), and a constructor argument the
+    /// analysis cannot close each leave the property's value unknown, so invoking it is an unproven
+    /// callback rather than a skipped call.
+    /// </summary>
+    [Theory]
+    [InlineData("internal static BarrierCalls Production { get; } = new BarrierCalls(static path => System.IO.File.Exists(path)) with { Probe = static path => path.Length > 0 }; internal static bool Check(string path) => Production.Probe(path);", "internal sealed record BarrierCalls(Func<string, bool> Probe);")]
+    [InlineData("internal static BarrierCalls Production { get; } = new(static path => System.IO.File.Exists(path)); internal static bool Check(string path) => Production.Probe(path);", "internal readonly record struct BarrierCalls(Func<string, bool> Probe);")]
+    [InlineData("internal static BarrierCalls Production { get; } = new(static path => System.IO.File.Exists(path)); internal static bool Check(string path) => Production.Probe(path);", "internal record BarrierCalls(Func<string, bool> Probe);")]
+    [InlineData("internal static BarrierCalls Production { get; } = new(Pick()); internal static Func<string, bool> Pick() => static path => System.IO.File.Exists(path); internal static bool Check(string path) => Production.Probe(path);", "internal sealed record BarrierCalls(Func<string, bool> Probe);")]
+    public void APositionalRecordDelegatePropertyOutsideTheConstructorModelIsNotProvenAbsent(string barrier, string record)
+    {
+        string helper = "internal static class Barrier { " + barrier + " } " + record;
+
+        string source = FixtureSource("_ = Barrier.Check(\"path\");", helper);
+
+        Assert.Empty(Compile(source).GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        HostedProducerDiscovery<HostedProducerSite> result = Discover(source);
+
+        Assert.Contains(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_CALLBACK_OWNERSHIP_UNPROVEN"
+            && diagnostic.Detail.StartsWith("System.Func`2.Invoke;", StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// A seam is proven never set only when no authored code writes it, wherever that write is: an object
+    /// initializer inside a field initializer and a deconstruction both assign the seam without a plain
+    /// assignment in a member body, so invoking it stays an unproven callback.
+    /// </summary>
+    [Theory]
+    [InlineData("sealed class DeleteSeams { internal Action<string>? DeleteForTests { get; set; } } static class TempCleanup { private static readonly DeleteSeams Seams = new() { DeleteForTests = static path => System.IO.File.Delete(path) }; public static void Branched(string path) { if (Seams.DeleteForTests is not null) { Seams.DeleteForTests.Invoke(path); } else { System.IO.File.Delete(path); } } }")]
+    [InlineData("static class TempCleanup { internal static Action<string>? DeleteForTests { get; set; } internal static void Install(Action<string> delete) => (DeleteForTests, _) = (delete, 0); public static void Branched(string path) { if (DeleteForTests is not null) { DeleteForTests.Invoke(path); } else { System.IO.File.Delete(path); } } }")]
+    public void ATestSeamWrittenOutsideAPlainMemberAssignmentIsNotProvenAbsent(string helper)
+    {
+        string source = FixtureSource("TempCleanup.Branched(\"path.tmp\");", helper);
+
+        Assert.Empty(Compile(source).GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        HostedProducerDiscovery<HostedProducerSite> result = Discover(source);
+
+        Assert.Contains(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_CALLBACK_OWNERSHIP_UNPROVEN"
+            && diagnostic.Detail.StartsWith("System.Action`1.Invoke;", StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// R-048's bounded OS credential reads hand exactly one <c>IOsCredentialStore.TryGet</c> to
+    /// <c>Task.Run</c> and wait for it only up to a timeout, so a parked platform prompt is abandoned rather
+    /// than allowed to wedge startup. The two reviewed owners may let that read outlive them because it
+    /// reaches no producer site; the store that decorates its own interface leaves the evidence only
+    /// inconclusive. A producer site inside the read, an unreviewed owner, a read that is not exactly one
+    /// <c>TryGet</c>, or a read no timed wait bounds still fails ownership.
+    /// </summary>
+    [Theory]
+    [InlineData("MirroredOsCredential", "ReadOsAsync", false, "() => osStore.TryGet(\"service\", \"account\")", true, false)]
+    [InlineData("ArcanumMasterKeyBootstrapper", "ProbeOsKeyStorageAsync", false, "() => osStore.TryGet(\"service\", \"account\")", true, false)]
+    [InlineData("MirroredOsCredential", "ReadOsAsync", true, "() => osStore.TryGet(\"service\", \"account\")", true, true)]
+    [InlineData("CredentialReader", "ReadOsAsync", false, "() => osStore.TryGet(\"service\", \"account\")", true, true)]
+    [InlineData("MirroredOsCredential", "ReadOsAsync", false, "() => { string service = \"service\"; return osStore.TryGet(service, \"account\"); }", true, true)]
+    [InlineData("MirroredOsCredential", "ReadOsAsync", false, "() => osStore.TryGet(\"service\", \"account\")", false, true)]
+    public void ABoundedOsCredentialReadMayOutliveOnlyItsReviewedOwner(
+        string owner,
+        string member,
+        bool storeDeletesAFile,
+        string readCallback,
+        bool bounded,
+        bool unproven)
+    {
+        string wait = bounded
+            ? "read.WaitAsync(remaining)"
+            : "Task.FromResult<string?>(null)";
+
+        string storeEffect = storeDeletesAFile
+            ? "System.IO.File.Delete(service); "
+            : string.Empty;
+
+        string helper = "namespace RetroDownfall.Arcanum.Secrets.Security { public interface IOsCredentialStore { string? TryGet(string service, string account); } "
+            + "public sealed class OsCredentialStore : IOsCredentialStore { private readonly IOsCredentialStore _inner; public OsCredentialStore() { _inner = new PlatformStore(); } public OsCredentialStore(IOsCredentialStore inner) { _inner = inner; } public string? TryGet(string service, string account) { " + storeEffect + "return _inner.TryGet(service, account); } "
+            + "private sealed class PlatformStore : IOsCredentialStore { public string? TryGet(string service, string account) => null; } } } "
+            + "namespace RetroDownfall.Arcanum.Infrastructure.Security { internal sealed class " + owner + "(RetroDownfall.Arcanum.Secrets.Security.IOsCredentialStore osStore) { private readonly System.Threading.Lock _osReadSync = new(); private Task<string?>? _osRead; private long _osReadStartedAt; "
+            + "internal async Task<string?> " + member + "() { Task<string?> read; long startedAt; lock (_osReadSync) { if (_osRead is null || _osRead.IsCompleted) { _osReadStartedAt = System.Diagnostics.Stopwatch.GetTimestamp(); _osRead = Task.Run(" + readCallback + ", CancellationToken.None); } read = _osRead; startedAt = _osReadStartedAt; } "
+            + "TimeSpan remaining = TimeSpan.FromSeconds(15) - System.Diagnostics.Stopwatch.GetElapsedTime(startedAt); if (remaining > TimeSpan.Zero) { try { return await " + wait + ".ConfigureAwait(false); } catch (TimeoutException) { } } return null; } } }";
+
+        string body = "await new RetroDownfall.Arcanum.Infrastructure.Security." + owner + "(new RetroDownfall.Arcanum.Secrets.Security.OsCredentialStore())." + member + "();";
+
+        string source = R2Source(body, helper).Replace(
+            "services.AddHostedService<Worker>();",
+            "services.AddHostedService<Worker>(); services.AddSingleton<RetroDownfall.Arcanum.Secrets.Security.IOsCredentialStore, RetroDownfall.Arcanum.Secrets.Security.OsCredentialStore>();",
+            StringComparison.Ordinal);
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(source);
+
+        Assert.Equal(
+            unproven,
+            result.Diagnostics.Any(static diagnostic => diagnostic.Code == "HOSTED_CALLBACK_OWNERSHIP_UNPROVEN"
+                && diagnostic.Detail.StartsWith("System.Threading.Tasks.Task.Run;", StringComparison.Ordinal)));
+    }
+
+    /// <summary>
+    /// A credential write waits out a parked OS read outside its gate and re-checks for one once it holds
+    /// the gate (F051). A helper that hands the outstanding read's task to both places is an awaitable
+    /// neither joins: the re-check only tests it for null, and the wait tests it before awaiting it. Asking
+    /// whether a read is outstanding, and snapshotting the field where the wait awaits it, leaves the
+    /// analysis no detached awaitable, which is the shape <c>MirroredOsCredential</c> keeps.
+    /// </summary>
+    [Theory]
+    [InlineData("task", true)]
+    [InlineData("flag", false)]
+    public void AParkedReadCheckThatHandsOutTheReadTaskIsADetachedAwaitable(string shape, bool detached)
+    {
+        string check = shape == "task"
+            ? "private Task<string>? OutstandingRead() { lock (_sync) { return _read is { IsCompleted: false } read ? read : null; } } "
+                + "private async Task WaitForReadAsync() { Task<string>? read = OutstandingRead(); if (read is null) { return; } _ = await read.WaitAsync(CancellationToken.None); } "
+            : "private bool HasOutstandingRead() { lock (_sync) { return _read is { IsCompleted: false }; } } "
+                + "private async Task WaitForReadAsync() { Task<string>? read; lock (_sync) { read = _read; } if (read is null || read.IsCompleted) { return; } _ = await read.WaitAsync(CancellationToken.None); } ";
+
+        string recheck = shape == "task"
+            ? "OutstandingRead() is null"
+            : "!HasOutstandingRead()";
+
+        string helper = "internal sealed class Credential { private readonly SemaphoreSlim _gate = new(1, 1); private readonly System.Threading.Lock _sync = new(); private Task<string>? _read; "
+            + "internal void Park(Task<string> read) { lock (_sync) { _read = read; } } "
+            + "internal async Task SaveAsync() { await EnterGateForWriteAsync(); _ = _gate.Release(); } "
+            + "private async Task EnterGateForWriteAsync() { while (true) { await WaitForReadAsync(); await _gate.WaitAsync(); if (" + recheck + ") { return; } _ = _gate.Release(); } } "
+            + check
+            + "}";
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(
+            "#nullable enable\n" + R2Source(R2Admission + "await new Credential().SaveAsync();", helper));
+
+        Assert.Equal(
+            detached,
+            result.Diagnostics.Any(static diagnostic => diagnostic.Code == "HOSTED_CALLBACK_OWNERSHIP_UNPROVEN"
+                && diagnostic.Detail.EndsWith(
+                    "An awaitable or lazy helper must complete within its caller's retained lifetime.",
+                    StringComparison.Ordinal)));
+    }
+
+    /// <summary>
+    /// A reset is a write. A flow-local link-target seam invoked through a pattern local, with the real
+    /// read on the other arm, is a proven-absent test callable only while no production code assigns it.
+    /// A reset method that assigns it <see langword="null"/>, which <c>WorkspacePathPolicy</c>'s
+    /// process-wide seam had, leaves the invocation an unproven callback whose target is not exact; either
+    /// way the real read stays a discovered site.
+    /// </summary>
+    [Theory]
+    [InlineData("", false)]
+    [InlineData("internal static void ResetTestSeams() { ReaderForTests = null; } ", true)]
+    public void AFlowLocalTestSeamIsProvenAbsentOnlyWhileProductionNeverAssignsIt(string reset, bool unproven)
+    {
+        string helper = "static class LinkReads { private static readonly AsyncLocal<Func<string, string?>?> ReaderOverride = new(); internal static Func<string, string?>? ReaderForTests { get => ReaderOverride.Value; set => ReaderOverride.Value = value; } "
+            + reset
+            + "internal static string? Read(string path, bool isDirectory) => ReaderForTests is { } reader ? reader(path) : isDirectory ? new System.IO.DirectoryInfo(path).LinkTarget : new System.IO.FileInfo(path).LinkTarget; }";
+
+        string source = "#nullable enable\n" + FixtureSource("_ = LinkReads.Read(\"path\", isDirectory: false);", helper);
+
+        Assert.Empty(Compile(source).GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        HostedProducerDiscovery<HostedProducerSite> result = Discover(source);
+
+        Assert.Equal(
+            unproven,
+            result.Diagnostics.Any(static diagnostic => diagnostic.Code == "HOSTED_CALLBACK_OWNERSHIP_UNPROVEN"
+                && diagnostic.Detail.StartsWith("System.Func`2.Invoke;", StringComparison.Ordinal)));
+
+        Assert.Contains(result.Items, static site => site.Callee.EndsWith(".LinkTarget", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -23075,6 +23647,71 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
             && site.Callee == "System.IO.FileStream.DisposeAsync");
     }
 
+    /// <summary>
+    /// The Windows owner-only temp create opens its stream with the framework's
+    /// <c>FileSystemAclExtensions.Create</c>, which returns a new <see cref="FileStream"/> over the handle it
+    /// created and leaves it to the caller, so that stream's compiler cleanup resolves exactly as it does
+    /// after <c>File.OpenRead</c>.
+    /// </summary>
+    [Fact]
+    public void AclFileCreateIsATrustedCleanupFactory()
+    {
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(R2Source(
+            R2Admission
+                + "await using System.IO.FileStream acl = System.IO.FileSystemAclExtensions.Create(new System.IO.FileInfo(\"path\"), System.IO.FileMode.Create, System.Security.AccessControl.FileSystemRights.Modify, System.IO.FileShare.None, 4096, System.IO.FileOptions.Asynchronous, new System.Security.AccessControl.FileSecurity()); "));
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED");
+    }
+
+    /// <summary>
+    /// The ACL file-create factory is trusted on its framework assembly identity, not its name: a
+    /// same-named <c>FileSystemAclExtensions.Create</c> with the same seven parameters from another
+    /// assembly leaves the stream's cleanup unresolved.
+    /// </summary>
+    [Fact]
+    public void AclFileCreateLookAlikeFromAnotherAssemblyStaysUnresolved()
+    {
+        CSharpCompilation foreign = Compile(
+                "[assembly: global::System.Reflection.AssemblyVersionAttribute(\"99.0.0.0\")] "
+                    + "namespace System.IO { public static class FileSystemAclExtensions { public static global::System.IO.FileStream Create(this global::System.IO.FileInfo fileInfo, global::System.IO.FileMode mode, global::System.Security.AccessControl.FileSystemRights rights, global::System.IO.FileShare share, int bufferSize, global::System.IO.FileOptions options, global::System.Security.AccessControl.FileSecurity? fileSecurity) => null!; } } ")
+            .WithAssemblyName("Acl.LookAlike");
+
+        using MemoryStream image = new();
+
+        Assert.True(foreign.Emit(image).Success);
+
+        MetadataReference reference = MetadataReference.CreateFromImage(
+            image.ToArray(),
+            MetadataReferenceProperties.Assembly.WithAliases(
+                ImmutableArray.Create("foreign")));
+
+        string body =
+            "await using System.IO.FileStream lookAlike = foreign::System.IO.FileSystemAclExtensions.Create(new System.IO.FileInfo(\"path\"), System.IO.FileMode.Create, System.Security.AccessControl.FileSystemRights.Modify, System.IO.FileShare.None, 4096, System.IO.FileOptions.Asynchronous, null); ";
+
+        CSharpCompilation consumer = Compile(
+                "extern alias foreign; "
+                    + R2Source(R2Admission + body))
+            .AddReferences(reference)
+            .WithAssemblyName("Acl.LookAlike.Consumer");
+
+        Assert.Empty(consumer.GetDiagnostics().Where(static diagnostic =>
+            diagnostic.Severity == DiagnosticSeverity.Error));
+
+        HostedProducerDiscovery<HostedProducerSite> result =
+            HostedGrimoireProducerInventory.DiscoverProducerSites(
+                [consumer],
+                new(["Worker"], []),
+                [new("Worker", [OrdinaryRoot()])],
+                []);
+
+        Assert.Contains(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED"
+            && diagnostic.Detail.StartsWith(
+                "System.IO.FileStream.DisposeAsync;",
+                StringComparison.Ordinal));
+    }
+
     [Fact]
     [Trait("Category", "HostedProducerProductionAnalysis")]
     public void ProductionReferencePackResolvesThreadingMechanicalCleanupIdentities()
@@ -24368,6 +25005,125 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
         Assert.Equal(0, exhausted.ProvenanceStableHits);
 
         Assert.Equal(0, exhausted.ValueFlowStableHits);
+    }
+
+    [Fact]
+    public void CleanupValueFlowAtItsWorkBudgetDepthRunsOnTheAnalysisStackNotTheCallers()
+    {
+        const int chainLength = 300;
+
+        string chain = string.Join(
+            " ",
+            Enumerable.Range(0, chainLength).Select(index =>
+                index == chainLength - 1
+                    ? $"internal static BudgetCleanup Step{index}() => new();"
+                    : $"internal static BudgetCleanup Step{index}() => Step{index + 1}();"));
+
+        string helper =
+            "internal sealed class BudgetCleanup : System.IDisposable { "
+            + "private readonly System.IO.Stream _stream = new System.IO.MemoryStream(); "
+            + "public void Dispose() { _stream.Dispose(); System.IO.File.Delete(\"caller-stack-cleanup\"); } } "
+            + "internal static class CleanupCacheTarget { "
+            + chain
+            + " internal static void Run() { using (Step0()) { } } }";
+
+        string fingerprint = HostedGrimoireProducerInventory.Fingerprint(
+            SyntaxFactory.ParseExpression("CleanupCacheTarget.Run()"));
+
+        HostedProducerOperationEntry root = OrdinaryRoot(
+            "Worker.StartAsync::call:CleanupCacheTarget.Run#0~" + fingerprint) with
+        {
+            Authority = HostedProducerAuthorityKind.PreReadinessStartup,
+            WorkKind = null,
+            Proof = "Worker.StartAsync: caller stack cleanup fixture",
+        };
+
+        CSharpCompilation compilation = Compile(R2Source("CleanupCacheTarget.Run();", helper));
+
+        Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic =>
+            diagnostic.Severity == DiagnosticSeverity.Error));
+
+        HostedProducerDiscovery<HostedProducerSite>? result = null;
+
+        Exception? failure = null;
+
+        // The 300-step chain drives the cleanup value-flow walk to its work budget, several frames per
+        // step. A quarter-megabyte caller cannot hold that bounded recursion, so discovery must run it on
+        // its own analysis stack and still end it at the budget rather than at the caller's stack limit.
+        Thread caller = new(
+            () =>
+            {
+                try
+                {
+                    result = HostedGrimoireProducerInventory.DiscoverProducerSites(
+                        [compilation],
+                        new(["Worker"], []),
+                        [new("Worker", [root])],
+                        [],
+                        traversalMaximumDepth: 64);
+                }
+                catch (Exception error)
+                {
+                    failure = error;
+                }
+            },
+            256 * 1024);
+
+        caller.Start();
+
+        caller.Join();
+
+        Assert.Null(failure);
+
+        HostedProducerDiscovery<HostedProducerSite> discovery = Assert.IsType<HostedProducerDiscovery<HostedProducerSite>>(result);
+
+        Assert.DoesNotContain(discovery.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED");
+
+        Assert.Contains(discovery.Items, static site =>
+            site.EnclosingType == "BudgetCleanup"
+            && site.Member == "Dispose"
+            && site.Callee == "System.IO.File.Delete");
+
+        Assert.Contains(
+            Assert.IsType<HostedProducerAnalysisMetrics>(discovery.AnalysisMetrics).CleanupCaches,
+            static candidate => candidate.Member.StartsWith(
+                    "M:CleanupCacheTarget.Step",
+                    StringComparison.Ordinal)
+                && candidate.ValueFlowRequests == 1
+                && candidate.ValueFlowBuilds == 0);
+    }
+
+    [Fact]
+    public void RootWorkersRunEachFamilyOnTheAnalysisStack()
+    {
+        const int frames = 8 * 1024;
+
+        int[] consumed = new int[2];
+
+        int[] owners = HostedProducerRootWorkers.Run(2, [[0], [1]], 2, (_, family) =>
+        {
+            consumed[family[0]] = ConsumeAnalysisStack(frames);
+
+            return family;
+        });
+
+        Assert.Equal(2, owners.Length);
+
+        Assert.All(consumed, static count => Assert.Equal(frames + 1, count));
+    }
+
+    // Each frame holds a kilobyte, so the recursion needs several megabytes whatever the JIT tier.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static int ConsumeAnalysisStack(int remaining)
+    {
+        Span<byte> frame = stackalloc byte[1024];
+
+        frame[^1] = 1;
+
+        return remaining == 0
+            ? frame[^1]
+            : ConsumeAnalysisStack(remaining - 1) + frame[^1];
     }
 
     [Theory]
@@ -25674,7 +26430,6 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
             Assert.Contains(result.Items, static site =>
                 site.EnclosingType == "KnownPropertyCleanup"
                 && site.Callee == "System.IO.File.Delete");
-
         }
     }
 
@@ -27036,6 +27791,7 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
     [InlineData("System.IO.FileInfo.Length", 4)]
     [InlineData("System.IO.FileInfo.LastWriteTimeUtc", 4)]
     [InlineData("RetroDownfall.Arcanum.Infrastructure.Security.FileHandleIdentityInterop.GetFileInformationByHandle", 4)]
+    [InlineData("RetroDownfall.Arcanum.Infrastructure.Security.FileHandleIdentityInterop.GetFileInformationByHandleEx", 4)]
     [InlineData("RetroDownfall.Arcanum.Infrastructure.Security.FileHandleIdentityInterop.NtOpenFile", 4)]
     [InlineData("RetroDownfall.Arcanum.Infrastructure.Security.FileHandleIdentityInterop.OpenAtUnix", 4)]
     [InlineData("RetroDownfall.Arcanum.Infrastructure.Security.FileHandleIdentityInterop.OpenUnix", 4)]
@@ -27044,6 +27800,8 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
     [InlineData("RetroDownfall.Arcanum.Infrastructure.Security.FileHandleIdentityInterop.fstat", 4)]
     [InlineData("RetroDownfall.Arcanum.Infrastructure.Security.FileHandleIdentityInterop.lstat", 4)]
     [InlineData("RetroDownfall.Arcanum.Infrastructure.Security.FileHandleIdentityInterop.stat", 4)]
+    [InlineData("RetroDownfall.Arcanum.Infrastructure.Security.FileHandleIdentityInterop.ProcPidFdInfo", 4)]
+    [InlineData("RetroDownfall.Arcanum.Infrastructure.Security.FileHandleIdentityInterop.GetFinalPathNameByHandle", 4)]
     [InlineData("RetroDownfall.Arcanum.Core.Storage.IEncryptedBlobStore.WriteAsync", 5)]
     [InlineData("RetroDownfall.Arcanum.Core.Storage.IEncryptedBlobStore.CreateWriterAsync", 5)]
     [InlineData("RetroDownfall.Arcanum.Core.Storage.EncryptedBlobWriter.CompleteAsync", 5)]
@@ -27081,7 +27839,6 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
     [InlineData("RetroDownfall.Arcanum.Infrastructure.Security.SecureFilePermissions.TryEnsureOwnerOnlyDirectoryExistsStrict", 5)]
     [InlineData("RetroDownfall.Arcanum.Infrastructure.Security.SecureFilePermissions.TryApplyOwnerOnlyFileStrict", 5)]
     [InlineData("RetroDownfall.Arcanum.Infrastructure.Security.SecureFilePermissions.CreateOwnerOnlyTempFile", 5)]
-    [InlineData("RetroDownfall.Arcanum.Infrastructure.Security.SecureFilePermissions.ApplyOwnerOnlyToSensitivePaths", 5)]
     [InlineData("RetroDownfall.Arcanum.Infrastructure.Security.SecureFilePermissions.TryApplyUnixFileMode", 5)]
     public void EveryClosedVocabularyMemberIsDiscovered(string symbol, int kind)
     {
@@ -30021,6 +30778,8 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
     [InlineData("callback-unknown-writer", false)]
     [InlineData("exact-result-wrapper", true)]
     [InlineData("unknown-result-wrapper", false)]
+    [InlineData("dormant-seam-carrier", false)]
+    [InlineData("dormant-seam-generation", true)]
     public void InternalCarrierOnPublicPartialOwnerRequiresExactAssemblyConfinement(
         string shape,
         bool resolved)
@@ -30034,6 +30793,18 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
             "registry-escape" => "UnknownCarrierInput.Accept(_registry);",
             "unknown-writer" => "entry.Cleanup = UnknownCarrierInput.Cleanup();",
             "callback-unknown-writer" => "System.Action poison = () => entry.Cleanup = UnknownCarrierInput.Cleanup(); poison();",
+            "dormant-seam-carrier" => "if (CarrierFactoryForTests is { } carrierFactory) { carrierFactory(entry); }",
+            "dormant-seam-generation" => "if (GenerationFactoryForTests is { } generationFactory) { generationFactory(entry.Id); }",
+            _ => string.Empty,
+        };
+
+        // A test seam no production code assigns is never invoked, yet handing it the carrier is still an
+        // escape: the analysis does not see into the delegate, so it cannot confine what the delegate keeps.
+        // Handing it only a value of the carrier keeps the carrier confined.
+        string seam = shape switch
+        {
+            "dormant-seam-carrier" => "internal System.Action<InternalEntry>? CarrierFactoryForTests { get; set; } ",
+            "dormant-seam-generation" => "internal System.Action<int>? GenerationFactoryForTests { get; set; } ",
             _ => string.Empty,
         };
 
@@ -30072,6 +30843,7 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
                 + "InternalEntry current = GetManagedEntryForTests(1)!; if (visited.Contains(current)) { ICarrierCleanup? cleanup = current.Cleanup; current.Cleanup = null; cleanup?.Dispose(); } } "
                 + wrapper
                 + publicEscape
+                + seam
                 + "} public sealed partial class PublicCarrierOwner { private static void Publish(InternalEntry entry) { entry.Cleanup = new CarrierCleanup(); } } "
                 + unknownWrapper
                 + authoredResult

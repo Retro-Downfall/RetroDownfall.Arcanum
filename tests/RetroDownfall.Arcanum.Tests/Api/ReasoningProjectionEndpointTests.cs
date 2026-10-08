@@ -3,8 +3,6 @@ using System.Reflection;
 using System.Text;
 using System.Text.Json;
 using RetroDownfall.Arcanum.Api.Intelligence.OpenAi;
-using RetroDownfall.Arcanum.Api.Intelligence.TurnEngine;
-using RetroDownfall.Arcanum.Api.Intelligence.TurnEngine.Projections;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
@@ -272,32 +270,6 @@ public sealed class ReasoningProjectionEndpointTests
                 || delta.ReasoningSummary is not null));
         Assert.Contains("\"reasoning_summary\":\"summary\"", sse, StringComparison.Ordinal);
         Assert.Contains("\"reasoning_content\":\"full\"", sse, StringComparison.Ordinal);
-
-        System.Threading.Channels.Channel<OpenAiChatChunk> channel =
-            System.Threading.Channels.Channel.CreateUnbounded<OpenAiChatChunk>();
-        OpenAiSseProjection semanticProjection = new(
-            channel.Writer,
-            "chatcmpl-parity",
-            "reasoner",
-            createdUnixSeconds: 1);
-        TurnEventEmitter emitter = new(Guid.NewGuid());
-        List<OpenAiChatChunk> semanticChunks =
-        [
-            .. semanticProjection.Map(new ReasoningDelta(
-                emitter.NextCorrelation(),
-                new ReasoningContentSegment("summary", ReasoningOutputMode.Summary))),
-            .. semanticProjection.Map(new TextDelta(emitter.NextCorrelation(), "answer ")),
-            .. semanticProjection.Map(new ReasoningDelta(
-                emitter.NextCorrelation(),
-                new ReasoningContentSegment("full", ReasoningOutputMode.Full))),
-            .. semanticProjection.Map(new TextDelta(emitter.NextCorrelation(), "only")),
-        ];
-        List<OpenAiDelta> semanticDeltas = semanticChunks
-            .SelectMany(static chunk => chunk.Choices)
-            .Select(static choice => choice.Delta)
-            .ToList();
-
-        Assert.Equal(semanticDeltas, projected);
     }
 
     [SkippableTheory]
@@ -353,7 +325,7 @@ public sealed class ReasoningProjectionEndpointTests
         ErrorCodes.Validation.UnsupportedReasoningControl,
         "invalid_request_error",
         "unsupported_reasoning_control")]
-    public async Task OpenAiSse_EndpointAndSemanticProjectionUseSameTypedErrorChunk(
+    public async Task OpenAiSse_EndpointUsesTheSharedTypedErrorMapping(
         string internalCode,
         string expectedOpenAiType,
         string expectedOpenAiCode)
@@ -387,24 +359,7 @@ public sealed class ReasoningProjectionEndpointTests
             ParseSseChunks(sse),
             static chunk => chunk.Error is not null);
 
-        System.Threading.Channels.Channel<OpenAiChatChunk> channel =
-            System.Threading.Channels.Channel.CreateUnbounded<OpenAiChatChunk>();
-        OpenAiSseProjection projection = new(
-            channel.Writer,
-            endpointChunk.Id,
-            endpointChunk.Model,
-            endpointChunk.Created);
-        TurnEventEmitter emitter = new(Guid.NewGuid());
-        OpenAiChatChunk semanticChunk = Assert.Single(projection.Map(new RunFailed(
-            emitter.NextCorrelation(),
-            failure,
-            TurnTerminationReason.ProviderFailure,
-            Usage: null,
-            Warnings: [],
-            Interrupted: false,
-            PartialText: null)));
-
-        Assert.Equal(semanticChunk.Error, endpointChunk.Error);
+        Assert.Equal(OpenAiStreamErrorMapper.Map(failure), endpointChunk.Error);
         Assert.Equal(expectedOpenAiType, endpointChunk.Error?.Type);
         Assert.Equal(expectedOpenAiCode, endpointChunk.Error?.Code);
         Assert.Equal("error", Assert.Single(endpointChunk.Choices).FinishReason);

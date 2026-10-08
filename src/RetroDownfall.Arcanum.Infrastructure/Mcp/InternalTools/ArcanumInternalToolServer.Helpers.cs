@@ -15,10 +15,8 @@ namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
 
 internal sealed partial class ArcanumInternalToolServer
 {
-
     private McpToolsCallResultWire CapToolTextResult(string text, string toolName)
     {
-
         long effectiveCap = ArcanumSettingClamps.EffectiveInProcessToolOutputCapBytes(
             _settings.ToolOutputCapBytes,
             _maxJsonRpcLineBytes);
@@ -27,10 +25,8 @@ internal sealed partial class ArcanumInternalToolServer
 
         if (byteCount > effectiveCap)
         {
-
             return ToolError(
                 $"{toolName}: output too large ({byteCount} UTF-8 bytes; limit {effectiveCap}). Narrow the range and retry.");
-
         }
 
         return new McpToolsCallResultWire
@@ -41,7 +37,6 @@ internal sealed partial class ArcanumInternalToolServer
             ],
             IsError = false,
         };
-
     }
 
     private async Task<ResourceLimits> ResolveResourceLimitsAsync(CancellationToken cancellationToken)
@@ -58,11 +53,15 @@ internal sealed partial class ArcanumInternalToolServer
     private static McpToolsCallResultWire? TryRejectIfWriteExceedsLimit(
         string content,
         int maxFileWriteMb,
+        string toolName) =>
+        TryRejectIfWriteExceedsLimit(Encoding.UTF8.GetByteCount(content), maxFileWriteMb, toolName);
+
+    private static McpToolsCallResultWire? TryRejectIfWriteExceedsLimit(
+        long byteCount,
+        int maxFileWriteMb,
         string toolName)
     {
         long maxBytes = (long)maxFileWriteMb * 1024L * 1024L;
-
-        long byteCount = Encoding.UTF8.GetByteCount(content);
 
         if (byteCount <= maxBytes)
         {
@@ -167,13 +166,11 @@ internal sealed partial class ArcanumInternalToolServer
 
     private static McpToolsCallResultWire PrefixToolError(string toolName, McpToolsCallResultWire error)
     {
-
         string text = error.Content is { Length: > 0 } content && !string.IsNullOrEmpty(content[0].Text)
             ? $"{toolName}: {content[0].Text}"
             : $"{toolName}: operation failed.";
 
         return ToolError(text);
-
     }
 
     private static McpToolsCallResultWire ToolError(string text)

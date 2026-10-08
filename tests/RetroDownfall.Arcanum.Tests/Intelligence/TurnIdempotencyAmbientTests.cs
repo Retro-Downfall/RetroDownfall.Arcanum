@@ -1,17 +1,14 @@
 using System.Text.Json;
 using RetroDownfall.Arcanum.Api.Intelligence;
-using RetroDownfall.Arcanum.Api.Intelligence.TurnEngine;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Core.Intelligence;
-using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Intelligence;
 
 public sealed class TurnIdempotencyAmbientTests
 {
-
     [Fact]
-    public void HasIdempotencyKey_CannotBeSetFromForgedPingRequestBody()
+    public void IdempotencyOwnership_CannotBeSetFromForgedPingRequestBody()
     {
         const string forgedJson = """
             {
@@ -29,36 +26,28 @@ public sealed class TurnIdempotencyAmbientTests
 
         Assert.Equal("hello", request.Prompt);
 
-        // Ambient is the source of truth — forged body properties are ignored by the contract.
-        Assert.False(TurnIdempotencyAmbient.Current);
+        // The ambient is the only carrier: forged body properties are ignored by the contract.
+        Assert.Null(typeof(PingRequest).GetProperty("HasIdempotencyKey"));
 
-        TurnExecutionRequest turnRequest = new(
-            request,
-            InvocationContexts.AttendedSession(),
-            TurnResponseMode.Buffered,
-            TurnPurpose.Interactive,
-            HumanInteractionAvailable: false,
-            HasIdempotencyKey: TurnIdempotencyAmbient.Current,
-            AccountingHandle: null);
-
-        Assert.False(turnRequest.HasIdempotencyKey);
+        Assert.False(TurnIdempotencyAmbient.OwnershipLostToken.CanBeCanceled);
     }
 
     [Fact]
-    public void TurnIdempotencyAmbient_PublishAndClear_RoundTrips()
+    public void TurnIdempotencyAmbient_PublishAndClear_RoundTripsTheOwnershipToken()
     {
+        using CancellationTokenSource ownershipLost = new();
+
         try
         {
-            TurnIdempotencyAmbient.Publish(true);
+            TurnIdempotencyAmbient.Publish(ownershipLost.Token);
 
-            Assert.True(TurnIdempotencyAmbient.Current);
+            Assert.Equal(ownershipLost.Token, TurnIdempotencyAmbient.OwnershipLostToken);
         }
         finally
         {
             TurnIdempotencyAmbient.Clear();
         }
 
-        Assert.False(TurnIdempotencyAmbient.Current);
+        Assert.Equal(CancellationToken.None, TurnIdempotencyAmbient.OwnershipLostToken);
     }
-
 }

@@ -26,7 +26,6 @@ internal sealed class CovenantIndexRebuildCoordinator(
     CovenantIndexRebuilder rebuilder,
     TimeProvider timeProvider)
 {
-
     /// <summary>How long one batch owns its ledger lease before another worker may claim it.</summary>
     internal static readonly TimeSpan LeaseDuration = TimeSpan.FromMinutes(5);
 
@@ -51,7 +50,6 @@ internal sealed class CovenantIndexRebuildCoordinator(
         string ownerId,
         CancellationToken cancellationToken)
     {
-
         ArgumentException.ThrowIfNullOrWhiteSpace(ownerId);
 
         LongRunningOperationCreateRequest request = new(
@@ -65,7 +63,6 @@ internal sealed class CovenantIndexRebuildCoordinator(
             .ConfigureAwait(false);
 
         return Result<LongRunningOperation>.Success(started.Operation);
-
     }
 
     /// <summary>
@@ -73,17 +70,22 @@ internal sealed class CovenantIndexRebuildCoordinator(
     /// </summary>
     /// <remarks>
     /// The checkpoint is written before the accelerator lease is released and after the batch's own
-    /// transaction commits, so a crash between them resumes from a cursor the database already agrees
-    /// with. A <c>RestartRequired</c> phase terminalizes this operation with a content-free code and
+    /// transaction commits, so a crash between the two leaves the database one batch ahead of the
+    /// durable cursor. The resume then re-selects heads that are already projected; the rebuilder's
+    /// base scan advances over them by position rather than by what it inserted, so the stale cursor
+    /// costs one repeated batch and never ends the scan early. Because the batch is already committed,
+    /// the checkpoint and the terminal bookkeeping it triggers run on <see cref="CancellationToken.None"/>:
+    /// a caller that cancels after the commit must not leave the cursor behind for no reason.
+    ///
+    /// <para>A <c>RestartRequired</c> phase terminalizes this operation with a content-free code and
     /// starts a new one rather than rewriting this operation's identity: the stale identity is the
-    /// evidence of what was being rebuilt when the ground moved.
+    /// evidence of what was being rebuilt when the ground moved.</para>
     /// </remarks>
     internal async Task<Result<CovenantIndexRebuildProgress>> AdvanceAsync(
         LongRunningOperation operation,
         string ownerId,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(operation);
 
         ArgumentException.ThrowIfNullOrWhiteSpace(ownerId);
@@ -92,9 +94,7 @@ internal sealed class CovenantIndexRebuildCoordinator(
 
         if (decoded.IsFailure)
         {
-
             return Result<CovenantIndexRebuildProgress>.Failure(decoded.Error);
-
         }
 
         Result<CovenantAcceleratorLease> lease = await _gate
@@ -103,9 +103,7 @@ internal sealed class CovenantIndexRebuildCoordinator(
 
         if (lease.IsFailure)
         {
-
             return Result<CovenantIndexRebuildProgress>.Failure(lease.Error);
-
         }
 
         await using CovenantAcceleratorLease accelerator = lease.Value;
@@ -116,18 +114,15 @@ internal sealed class CovenantIndexRebuildCoordinator(
 
         if (advanced.IsFailure)
         {
-
             return advanced;
-
         }
 
-        Result saved = await SaveCheckpointAsync(operation, ownerId, advanced.Value, cancellationToken)
+        Result saved = await SaveCheckpointAsync(operation, ownerId, advanced.Value, CancellationToken.None)
             .ConfigureAwait(false);
 
         return saved.IsFailure
             ? Result<CovenantIndexRebuildProgress>.Failure(saved.Error)
             : advanced;
-
     }
 
     /// <summary>
@@ -135,14 +130,11 @@ internal sealed class CovenantIndexRebuildCoordinator(
     /// </summary>
     internal static Result<CovenantIndexRebuildProgress?> DecodeCheckpoint(LongRunningOperation operation)
     {
-
         ArgumentNullException.ThrowIfNull(operation);
 
         if (operation.CheckpointPayload is not { } payload)
         {
-
             return Result<CovenantIndexRebuildProgress?>.Success(null);
-
         }
 
         Result<CovenantIndexRebuildCheckpointV1> checkpoint =
@@ -150,9 +142,7 @@ internal sealed class CovenantIndexRebuildCoordinator(
 
         if (checkpoint.IsFailure)
         {
-
             return Result<CovenantIndexRebuildProgress?>.Failure(checkpoint.Error);
-
         }
 
         // Copied field for field. A projection that renamed or reinterpreted anything would become a
@@ -169,12 +159,10 @@ internal sealed class CovenantIndexRebuildCoordinator(
                 checkpoint.Value.BaseHeadsProcessed,
                 checkpoint.Value.BaseHeadsTotal,
                 checkpoint.Value.DeltaRowsProcessed));
-
     }
 
     internal static CovenantIndexRebuildCheckpointV1 ToCheckpoint(CovenantIndexRebuildProgress progress)
     {
-
         ArgumentNullException.ThrowIfNull(progress);
 
         return new CovenantIndexRebuildCheckpointV1(
@@ -189,7 +177,6 @@ internal sealed class CovenantIndexRebuildCoordinator(
             progress.BaseHeadsProcessed,
             progress.BaseHeadsTotal,
             progress.DeltaRowsProcessed);
-
     }
 
     private async Task<Result> SaveCheckpointAsync(
@@ -198,7 +185,6 @@ internal sealed class CovenantIndexRebuildCoordinator(
         CovenantIndexRebuildProgress progress,
         CancellationToken cancellationToken)
     {
-
         bool saved = await _operations.CheckpointAsync(
             operation.Id,
             ownerId,
@@ -211,17 +197,14 @@ internal sealed class CovenantIndexRebuildCoordinator(
 
         if (!saved)
         {
-
             return Result.Failure(
                 new Error(
                     ErrorCodes.Covenant.RevisionConflict,
                     "The Covenant index rebuild checkpoint was written by another owner."));
-
         }
 
         return progress.Phase switch
         {
-
             CovenantIndexRebuildPhase.Completed => await FinishAsync(operation, ownerId, cancellationToken)
                 .ConfigureAwait(false),
 
@@ -229,9 +212,7 @@ internal sealed class CovenantIndexRebuildCoordinator(
                 .ConfigureAwait(false),
 
             _ => Result.Success(),
-
         };
-
     }
 
     private async Task<Result> FinishAsync(
@@ -239,14 +220,11 @@ internal sealed class CovenantIndexRebuildCoordinator(
         string ownerId,
         CancellationToken cancellationToken)
     {
-
         LongRunningOperation? current = await _store.GetAsync(operation.Id, cancellationToken).ConfigureAwait(false);
 
         if (current is null)
         {
-
             return Result.Success();
-
         }
 
         _ = await _operations
@@ -254,7 +232,6 @@ internal sealed class CovenantIndexRebuildCoordinator(
             .ConfigureAwait(false);
 
         return Result.Success();
-
     }
 
     private async Task<Result> AbandonStaleAsync(
@@ -262,12 +239,10 @@ internal sealed class CovenantIndexRebuildCoordinator(
         string ownerId,
         CancellationToken cancellationToken)
     {
-
         LongRunningOperation? current = await _store.GetAsync(operation.Id, cancellationToken).ConfigureAwait(false);
 
         if (current is not null)
         {
-
             _ = await _store.TryTransitionAsync(
                 operation.Id,
                 current.Revision,
@@ -276,20 +251,17 @@ internal sealed class CovenantIndexRebuildCoordinator(
                 _time.GetUtcNow(),
                 CovenantIndexRebuildRestartCode,
                 cancellationToken).ConfigureAwait(false);
-
         }
 
         _ = await StartAsync(ownerId, cancellationToken).ConfigureAwait(false);
 
         return Result.Success();
-
     }
 
     /// <summary>
     /// The content-free terminal code a stale rebuild closes under.
     /// </summary>
     internal const string CovenantIndexRebuildRestartCode = "covenant.index_rebuild_identity_changed";
-
 }
 
 /// <summary>
@@ -303,7 +275,6 @@ internal sealed class CovenantIndexRebuildCoordinator(
 /// </remarks>
 internal sealed class CovenantIndexRebuildRecoveryHandler : ILongRunningOperationRecoveryHandler
 {
-
     public string Kind => LongRunningOperationKinds.CovenantIndexRebuild;
 
     public int SupportedCheckpointVersion => CovenantIndexRebuildCheckpointV1.CurrentVersion;
@@ -312,17 +283,14 @@ internal sealed class CovenantIndexRebuildRecoveryHandler : ILongRunningOperatio
         LongRunningOperation operation,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(operation);
 
         Result<CovenantIndexRebuildProgress?> decoded = CovenantIndexRebuildCoordinator.DecodeCheckpoint(operation);
 
         if (decoded.IsFailure)
         {
-
             return Task.FromResult(
                 LongRunningOperationRecoveryResult.Abandoned(LongRunningOperationErrorCodes.CorruptCheckpoint));
-
         }
 
         // A crashed rebuild with no checkpoint never committed a batch, and one whose captured identity
@@ -333,7 +301,5 @@ internal sealed class CovenantIndexRebuildRecoveryHandler : ILongRunningOperatio
                 ? LongRunningOperationRecoveryResult.Completed()
                 : LongRunningOperationRecoveryResult.Abandoned(
                     CovenantIndexRebuildCoordinator.CovenantIndexRebuildRestartCode));
-
     }
-
 }

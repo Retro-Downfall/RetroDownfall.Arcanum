@@ -23,7 +23,6 @@ namespace RetroDownfall.Arcanum.Tests.Data.Covenant;
 /// </remarks>
 public sealed class CovenantProtectedArtifactErasureKernelTests
 {
-
     private static readonly Guid SessionId = Guid.Parse("0A1B2C3D-4E5F-4A6B-8C9D-0E1F2A3B4C5D");
 
     private static CancellationToken Token => CancellationToken.None;
@@ -31,7 +30,6 @@ public sealed class CovenantProtectedArtifactErasureKernelTests
     [Fact]
     public async Task An_exclusive_authority_erases_the_artifact_its_projections_and_its_label_atomically()
     {
-
         await using ErasureFixture fixture = await ErasureFixture.CreateAsync();
 
         Guid artifactId = Guid.NewGuid();
@@ -66,7 +64,6 @@ public sealed class CovenantProtectedArtifactErasureKernelTests
         Assert.Equal(0, await fixture.CountAsync("SELECT COUNT(*) FROM saga_memories;"));
 
         Assert.Equal(0, await fixture.CountAsync("SELECT COUNT(*) FROM saga_memory_embeddings;"));
-
     }
 
     [Theory]
@@ -75,7 +72,6 @@ public sealed class CovenantProtectedArtifactErasureKernelTests
     [InlineData("malformed")]
     public async Task An_ordinary_purge_authority_requires_committed_schema_metadata_and_erases_under_the_retention_purge_scope(string metadata)
     {
-
         await using ErasureFixture fixture = await ErasureFixture.CreateAsync();
 
         Guid artifactId = Guid.NewGuid();
@@ -165,13 +161,11 @@ public sealed class CovenantProtectedArtifactErasureKernelTests
         Assert.Equal(1, await fixture.CountAsync("SELECT COUNT(*) FROM saga_memories;"));
 
         await AnnalsOrphanAssertions.AssertNoOrphanClaimsAsync(fixture.Connection);
-
     }
 
     [Fact]
     public async Task An_owner_outside_the_lease_scope_is_rejected_before_any_row_is_touched()
     {
-
         await using ErasureFixture fixture = await ErasureFixture.CreateAsync();
 
         Guid artifactId = Guid.NewGuid();
@@ -212,13 +206,11 @@ public sealed class CovenantProtectedArtifactErasureKernelTests
         Assert.Equal(0UL, erased.Value.ErasedCount);
 
         Assert.Equal(1, await fixture.CountAsync("SELECT COUNT(*) FROM artifact_sensitivity;"));
-
     }
 
     [Fact]
     public async Task A_revoked_operator_authority_stops_the_page_before_its_first_transaction()
     {
-
         await using ErasureFixture fixture = await ErasureFixture.CreateAsync();
 
         Guid artifactId = Guid.NewGuid();
@@ -252,13 +244,11 @@ public sealed class CovenantProtectedArtifactErasureKernelTests
         Assert.Equal(0UL, erased.Value.ExaminedCount);
 
         Assert.Equal(1, await fixture.CountAsync("SELECT COUNT(*) FROM artifact_sensitivity;"));
-
     }
 
     [Fact]
     public async Task A_page_computed_against_a_replaced_dataset_generation_is_refused()
     {
-
         await using ErasureFixture fixture = await ErasureFixture.CreateAsync();
 
         Guid artifactId = Guid.NewGuid();
@@ -292,13 +282,139 @@ public sealed class CovenantProtectedArtifactErasureKernelTests
         Assert.Equal(CovenantErasureBlocker.IntegrityFailure, erased.Value.Blocker);
 
         Assert.Equal(1, await fixture.CountAsync("SELECT COUNT(*) FROM artifact_sensitivity;"));
+    }
 
+    /// <summary>
+    /// A statement the schema refuses inside the purge is durable state disagreeing with itself.
+    /// </summary>
+    /// <remarks>
+    /// A guard trigger's abort surfaces as <c>SQLITE_CONSTRAINT</c>, which is the database saying the
+    /// delete would break a rule it enforces. That is an integrity failure an operator has to look at,
+    /// and the whole transaction rolls back with the artifact and its label left in place.
+    /// </remarks>
+    [Fact]
+    public async Task A_constraint_refusal_inside_the_purge_is_an_integrity_failure_and_deletes_nothing()
+    {
+        await using ErasureFixture fixture = await ErasureFixture.CreateAsync();
+
+        Guid artifactId = Guid.NewGuid();
+
+        Guid labelId = await fixture.SeedLabelAsync(artifactId, SensitiveArtifactKind.Saga, SessionId);
+
+        await fixture.SeedSagaAsync(artifactId);
+
+        await fixture.ExecuteAsync(
+            """
+            CREATE TRIGGER saga_memories_refuse_delete BEFORE DELETE ON saga_memories
+            BEGIN
+                SELECT RAISE(ABORT, 'refused');
+            END;
+            """);
+
+        Result<CovenantArtifactErasureProgress> erased = await EraseUnderExclusiveAsync(
+            fixture,
+            fixture.Page(artifactId, labelId, SensitiveArtifactKind.Saga, SessionId));
+
+        Assert.True(erased.IsSuccess);
+
+        Assert.Equal(CovenantErasureBlocker.IntegrityFailure, erased.Value.Blocker);
+
+        Assert.Equal(0UL, erased.Value.ErasedCount);
+
+        Assert.Equal(1, await fixture.CountAsync("SELECT COUNT(*) FROM artifact_sensitivity;"));
+
+        Assert.Equal(1, await fixture.CountAsync("SELECT COUNT(*) FROM saga_memories;"));
+    }
+
+    /// <summary>
+    /// A table the plan declares, missing from the installed schema, is an integrity failure.
+    /// </summary>
+    /// <remarks>
+    /// A missing table (here the Tapestry tables an Entry purge reaches) is <c>SQLITE_ERROR</c>. The plan
+    /// runner never skips a declared target, so the schema the purge was written against and the schema
+    /// on disk disagree: that is the integrity failure an operator has to see, not a transient condition
+    /// a retry clears. It is still a blocker, never a success: the transaction rolls back, and the Entry
+    /// and its label stay.
+    /// </remarks>
+    [Fact]
+    public async Task A_missing_declared_table_inside_the_purge_is_an_integrity_failure_and_deletes_nothing()
+    {
+        await using ErasureFixture fixture = await ErasureFixture.CreateAsync();
+
+        Guid artifactId = Guid.NewGuid();
+
+        Guid labelId = await fixture.SeedLabelAsync(
+            artifactId,
+            SensitiveArtifactKind.AssistantEntry,
+            SessionId);
+
+        await fixture.SeedCommittedAssistantEntryAsync(artifactId);
+
+        await fixture.ExecuteAsync(
+            """
+            DROP TABLE tapestry_node_embeddings;
+            DROP TABLE tapestry_nodes;
+            DROP TABLE tapestry_generations;
+            """);
+
+        Result<CovenantArtifactErasureProgress> erased = await EraseUnderExclusiveAsync(
+            fixture,
+            fixture.Page(artifactId, labelId, SensitiveArtifactKind.AssistantEntry, SessionId));
+
+        Assert.True(erased.IsSuccess);
+
+        Assert.Equal(CovenantErasureBlocker.IntegrityFailure, erased.Value.Blocker);
+
+        Assert.Equal(0UL, erased.Value.ErasedCount);
+
+        Assert.Equal(1, await fixture.CountAsync("SELECT COUNT(*) FROM artifact_sensitivity;"));
+
+        Assert.Equal(1, await fixture.CountAsync("SELECT COUNT(*) FROM \"Entries\";"));
+    }
+
+    /// <summary>
+    /// An environmental storage condition that says nothing about the artifact's data is not reported
+    /// as corrupt data.
+    /// </summary>
+    /// <remarks>
+    /// A database that refuses writes answers the purge's <c>BEGIN IMMEDIATE</c> with
+    /// <c>SQLITE_READONLY</c>: the engine could not carry out the purge, and durable state does not
+    /// disagree with itself. It is the storage-unavailable blocker, still never a success, and the
+    /// artifact and its label stay.
+    /// </remarks>
+    [Fact]
+    public async Task A_read_only_database_inside_the_purge_is_storage_unavailable_and_deletes_nothing()
+    {
+        await using ErasureFixture fixture = await ErasureFixture.CreateAsync();
+
+        Guid artifactId = Guid.NewGuid();
+
+        Guid labelId = await fixture.SeedLabelAsync(artifactId, SensitiveArtifactKind.Saga, SessionId);
+
+        await fixture.SeedSagaAsync(artifactId);
+
+        await fixture.ExecuteAsync("PRAGMA query_only = ON;");
+
+        Result<CovenantArtifactErasureProgress> erased = await EraseUnderExclusiveAsync(
+            fixture,
+            fixture.Page(artifactId, labelId, SensitiveArtifactKind.Saga, SessionId));
+
+        await fixture.ExecuteAsync("PRAGMA query_only = OFF;");
+
+        Assert.True(erased.IsSuccess);
+
+        Assert.Equal(CovenantErasureBlocker.StorageUnavailable, erased.Value.Blocker);
+
+        Assert.Equal(0UL, erased.Value.ErasedCount);
+
+        Assert.Equal(1, await fixture.CountAsync("SELECT COUNT(*) FROM artifact_sensitivity;"));
+
+        Assert.Equal(1, await fixture.CountAsync("SELECT COUNT(*) FROM saga_memories;"));
     }
 
     [Fact]
     public async Task An_artifact_whose_label_is_already_gone_is_counted_without_being_deleted_twice()
     {
-
         await using ErasureFixture fixture = await ErasureFixture.CreateAsync();
 
         Guid artifactId = Guid.NewGuid();
@@ -327,7 +443,6 @@ public sealed class CovenantProtectedArtifactErasureKernelTests
         Assert.Equal(0UL, erased.Value.ErasedCount);
 
         Assert.Equal(CovenantErasureBlocker.None, erased.Value.Blocker);
-
     }
 
     /// <summary>
@@ -365,7 +480,6 @@ public sealed class CovenantProtectedArtifactErasureKernelTests
     [Fact]
     public async Task Erasing_a_committed_assistant_entry_writes_the_receipt_its_guard_is_bound_to()
     {
-
         await using ErasureFixture fixture = await ErasureFixture.CreateAsync();
 
         Guid artifactId = Guid.NewGuid();
@@ -401,26 +515,109 @@ public sealed class CovenantProtectedArtifactErasureKernelTests
         // The receipt names the guard it replaces content for, so a receipt carrying some other turn's
         // digest would authorize a refusal for a turn that never finalized.
         Assert.Equal(ErasureFixture.RequestDigest, await fixture.ReceiptGuardDigestAsync());
+    }
 
+    /// <summary>
+    /// Erasing a Covenant entry takes the Session's hierarchical summary of it with it.
+    /// </summary>
+    /// <remarks>
+    /// A Session tree summarizes every non-empty entry of its Session, so a model-written summary of the
+    /// erased entry's words stays retrievable after the purge reported success unless the purge reaches
+    /// it. The tree is derived data the next sweep rebuilds from what is left, so the purge removes the
+    /// whole Session-kind tree of the owning Session, nodes, embeddings and the vector mirror included,
+    /// in the transaction that deletes the entry. Another Session's tree and the same Session's
+    /// attachment tree are not derived from its entries and stay.
+    /// </remarks>
+    [Fact]
+    public async Task Entry_purge_stops_the_owning_session_tapestry_generation_being_retrievable()
+    {
+        await using ErasureFixture fixture = await ErasureFixture.CreateAsync();
+
+        Guid artifactId = Guid.NewGuid();
+
+        Guid otherSessionId = Guid.Parse("1B2C3D4E-5F6A-4B7C-9D0E-1F2A3B4C5D6E");
+
+        Guid labelId = await fixture.SeedLabelAsync(
+            artifactId,
+            SensitiveArtifactKind.AssistantEntry,
+            SessionId);
+
+        await fixture.SeedCommittedAssistantEntryAsync(artifactId);
+
+        await fixture.SeedTapestryAsync("Session", Format(SessionId), "session-generation");
+
+        await fixture.SeedTapestryAsync("SessionAttachment", SessionId.ToString("D"), "attachment-generation");
+
+        await fixture.SeedTapestryAsync("Session", Format(otherSessionId), "other-session-generation");
+
+        CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate();
+
+        await using CovenantExclusiveLease lease = (await gate.AcquireExclusiveAsync(
+            CovenantOperationGateFixture.Owner(CovenantExclusiveOperation.CovenantFamilyReinitialize),
+            Token)).Value;
+
+        CovenantArtifactErasureAuthority authority = CovenantArtifactErasureAuthority
+            .ForExclusive(lease, CovenantExclusiveOperation.CovenantFamilyReinitialize)
+            .Value;
+
+        Result<CovenantArtifactErasureProgress> erased = await fixture.Kernel.ErasePageAsync(
+            fixture.Page(artifactId, labelId, SensitiveArtifactKind.AssistantEntry, SessionId),
+            authority,
+            Token);
+
+        Assert.True(erased.IsSuccess, erased.IsFailure ? erased.Error.Message : string.Empty);
+
+        Assert.Equal(0, await fixture.CountAsync("SELECT COUNT(*) FROM \"Entries\";"));
+
+        Assert.Equal(
+            0,
+            await fixture.CountAsync(
+                $"SELECT COUNT(*) FROM tapestry_generations WHERE ScopeKind = 'Session' AND ScopeId = '{Format(SessionId)}';"));
+
+        Assert.Equal(0, await fixture.CountAsync("SELECT COUNT(*) FROM tapestry_nodes WHERE GenerationId = 'session-generation';"));
+
+        Assert.Equal(0, await fixture.CountAsync("SELECT COUNT(*) FROM tapestry_node_embeddings WHERE NodeId = 'session-generation-node';"));
+
+        Assert.Equal(0, await fixture.CountAsync("SELECT COUNT(*) FROM tapestry_node_embeddings_vec WHERE NodeId = 'session-generation-node';"));
+
+        Assert.Equal(1, await fixture.CountAsync("SELECT COUNT(*) FROM tapestry_generations WHERE GenerationId = 'attachment-generation';"));
+
+        Assert.Equal(1, await fixture.CountAsync("SELECT COUNT(*) FROM tapestry_generations WHERE GenerationId = 'other-session-generation';"));
+
+        Assert.Equal(1, await fixture.CountAsync("SELECT COUNT(*) FROM tapestry_node_embeddings_vec WHERE NodeId = 'other-session-generation-node';"));
+    }
+
+    private static async Task<Result<CovenantArtifactErasureProgress>> EraseUnderExclusiveAsync(
+        ErasureFixture fixture,
+        CovenantProtectedArtifactErasurePage page)
+    {
+        CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate();
+
+        await using CovenantExclusiveLease lease = (await gate.AcquireExclusiveAsync(
+            CovenantOperationGateFixture.Owner(CovenantExclusiveOperation.CovenantFamilyReinitialize),
+            Token)).Value;
+
+        CovenantArtifactErasureAuthority authority = CovenantArtifactErasureAuthority
+            .ForExclusive(lease, CovenantExclusiveOperation.CovenantFamilyReinitialize)
+            .Value;
+
+        return await fixture.Kernel.ErasePageAsync(page, authority, Token);
     }
 
     private static string Format(Guid value) => value.ToString("D").ToUpperInvariant();
 
     private sealed class ErasureFixture : IAsyncDisposable
     {
-
         private readonly CovenantSchemaScratchDatabase _database;
 
         private ErasureFixture(CovenantSchemaScratchDatabase database)
         {
-
             _database = database;
 
             Kernel = new CovenantProtectedArtifactErasureKernel(
                 new FixedCovenantConnectionSource(database.Connection),
                 CovenantSqliteConnectionInitializer.Instance,
                 TimeProvider.System);
-
         }
 
         internal CovenantProtectedArtifactErasureKernel Kernel { get; }
@@ -437,12 +634,10 @@ public sealed class CovenantProtectedArtifactErasureKernelTests
 
         internal static async Task<ErasureFixture> CreateAsync()
         {
-
             CovenantSchemaScratchDatabase database = await CovenantSchemaScratchDatabase.CreateAsync(Token);
 
             try
             {
-
                 await database.InstallCoreObjectsAsync(
                     [
                         "grimoire_feature_schemas",
@@ -464,6 +659,9 @@ public sealed class CovenantProtectedArtifactErasureKernelTests
                         "entry_embeddings",
                         "assistant_entry_finalizations",
                         "assistant_entry_erasure_receipts",
+                        "tapestry_generations",
+                        "tapestry_nodes",
+                        "tapestry_node_embeddings",
 
                         // The delete guard is the reason the kernel borrows an authorization at all:
                         // without it these tests would prove nothing about the scope a purge runs under.
@@ -484,17 +682,13 @@ public sealed class CovenantProtectedArtifactErasureKernelTests
                     Token);
 
                 return new ErasureFixture(database);
-
             }
             catch
             {
-
                 await database.DisposeAsync();
 
                 throw;
-
             }
-
         }
 
         internal CovenantProtectedArtifactErasurePage Page(
@@ -513,7 +707,6 @@ public sealed class CovenantProtectedArtifactErasureKernelTests
             Guid? sessionId,
             Guid? campaignId = null)
         {
-
             Guid labelId = Guid.NewGuid();
 
             ArtifactSensitivityLabel label = CovenantErasureAuthorityFixture.Label(
@@ -561,7 +754,6 @@ public sealed class CovenantProtectedArtifactErasureKernelTests
             _ = await command.ExecuteNonQueryAsync(Token);
 
             return labelId;
-
         }
 
         /// <summary>
@@ -581,7 +773,6 @@ public sealed class CovenantProtectedArtifactErasureKernelTests
         /// </remarks>
         internal async Task SeedCommittedAssistantEntryAsync(Guid artifactId)
         {
-
             await ExecuteAsync(
                 $"""
                  INSERT INTO "Entries" ("Id", "SessionId", "Role", "Content", "ModelUsed", "CreatedAt", "Sequence")
@@ -609,40 +800,60 @@ public sealed class CovenantProtectedArtifactErasureKernelTests
             _ = command.Parameters.AddWithValue("$request", RequestDigest);
 
             _ = await command.ExecuteNonQueryAsync(Token);
+        }
 
+        /// <summary>
+        /// One published Tapestry generation with a single node, its embedding row and its plain
+        /// vector-mirror row, keyed by the scope id the sweep would have written.
+        /// </summary>
+        internal async Task SeedTapestryAsync(string scopeKind, string scopeId, string generationId)
+        {
+            await ExecuteAsync(
+                $"""
+                 CREATE TABLE IF NOT EXISTS tapestry_node_embeddings_vec (NodeId TEXT PRIMARY KEY, Embedding BLOB NOT NULL);
+                 INSERT INTO tapestry_generations
+                     (GenerationId, ScopeKind, ScopeId, Status, AlgorithmVersion, SettingsFingerprint,
+                      SummaryRecipeVersion, EmbeddingDimension, CorpusFingerprint, LayerCount, NodeCount,
+                      RootNodeCount, TerminalReason, StartedAt, CompletedAt)
+                 VALUES ('{generationId}', '{scopeKind}', '{scopeId}', 'Complete', 'algorithm', 'settings',
+                         'recipe', 1, 'corpus', 1, 1, 1, 'LeafOnly',
+                         '2026-08-16T00:00:00.0000000Z', '2026-08-16T00:00:00.0000000Z');
+                 INSERT INTO tapestry_nodes
+                     (NodeId, GenerationId, ScopeKind, ScopeId, Layer, ParentScopeKey, NodeKind, SourceLabel,
+                      Content, ContentHash, EmbeddingDimension, CreatedAt)
+                 VALUES ('{generationId}-node', '{generationId}', '{scopeKind}', '{scopeId}', 1, '{generationId}#root',
+                         'Summary', 'summary', 'a summary of the erased words', 'hash', 1,
+                         '2026-08-16T00:00:00.0000000Z');
+                 INSERT INTO tapestry_node_embeddings (NodeId, Embedding, Dim) VALUES ('{generationId}-node', x'00', 1);
+                 INSERT INTO tapestry_node_embeddings_vec (NodeId, Embedding) VALUES ('{generationId}-node', x'00');
+                 """);
         }
 
         internal async Task<string?> ReceiptIdentityAsync()
         {
-
             await using SqliteCommand command = _database.Connection.CreateCommand();
 
             command.CommandText = "SELECT AssistantEntryId FROM assistant_entry_erasure_receipts;";
 
             return await command.ExecuteScalarAsync(Token) as string;
-
         }
 
         internal async Task<byte[]?> ReceiptGuardDigestAsync()
         {
-
             await using SqliteCommand command = _database.Connection.CreateCommand();
 
             command.CommandText = "SELECT FinalizationGuardDigest FROM assistant_entry_erasure_receipts;";
 
             return await command.ExecuteScalarAsync(Token) as byte[];
-
         }
 
         internal async Task SeedSagaAsync(Guid artifactId)
         {
-
             await ExecuteAsync(
                 $"""
                  INSERT INTO saga_memories (Id, Content, CreatedAt) VALUES ('{Format(artifactId)}', 'c', '2026-08-16T00:00:00Z');
                  INSERT INTO saga_memory_embeddings (MemoryId, Embedding, Dim) VALUES ('{Format(artifactId)}', x'00', 1);
                  """);
-
         }
 
         internal SqliteConnection Connection => _database.Connection;
@@ -653,7 +864,5 @@ public sealed class CovenantProtectedArtifactErasureKernelTests
             Convert.ToInt64(await _database.ScalarLongAsync(sql, Token), CultureInfo.InvariantCulture);
 
         public ValueTask DisposeAsync() => _database.DisposeAsync();
-
     }
-
 }

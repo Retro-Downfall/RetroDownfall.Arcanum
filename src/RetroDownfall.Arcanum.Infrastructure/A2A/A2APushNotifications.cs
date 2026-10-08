@@ -275,8 +275,11 @@ public sealed class A2APushNotificationDispatcher(
                 request.Headers.Authorization = new AuthenticationHeaderValue(auth.Scheme, auth.Credentials);
             }
 
+            // Only the status line is read. Headers-only completion means a callback that answers and then
+            // streams or stalls its body is neither buffered into memory nor waited on, and disposing the
+            // response below drops the connection's remaining body.
             using HttpResponseMessage response = await client
-                .SendAsync(request, deadline.Token)
+                .SendAsync(request, HttpCompletionOption.ResponseHeadersRead, deadline.Token)
                 .ConfigureAwait(false);
 
             if (!response.IsSuccessStatusCode)

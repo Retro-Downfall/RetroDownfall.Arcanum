@@ -1,7 +1,5 @@
 using System.Security.Cryptography;
 
-using Microsoft.Extensions.Options;
-
 using RetroDownfall.Arcanum.Core.Configuration;
 
 using RetroDownfall.Arcanum.Core.Intelligence.Spells;
@@ -16,16 +14,12 @@ namespace RetroDownfall.Arcanum.Infrastructure.Intelligence.Spells;
 
 internal interface ISpellCatalogProgressObserver
 {
-
     void OnCandidateScanned(int retainedCandidates);
-
 }
 
 internal sealed class SpellCatalogService(
-    IOptionsMonitor<ArcanumSettings> settingsMonitor,
     ISpellCatalogProgressObserver? progressObserver = null) : IArcanumSpellCatalog
 {
-
     internal const int PageSize = 50;
 
     private const int CandidateWindowSize = PageSize + 1;
@@ -35,19 +29,16 @@ internal sealed class SpellCatalogService(
         SpellCatalogQuery query,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(query);
 
         cancellationToken.ThrowIfCancellationRequested();
 
         if (query.Source == SpellSource.Campaign)
         {
-
             return Result<SpellCatalogPage>.Failure(
                 new Error(
                     ErrorCodes.Spell.InvalidWorkspace,
                     "The Arcanum spell catalog does not include Forge campaign sources."));
-
         }
 
         string? workspaceRoot = ResolveWorkspaceRoot(workingDirectory);
@@ -55,12 +46,10 @@ internal sealed class SpellCatalogService(
         if (!string.IsNullOrWhiteSpace(workingDirectory)
             && workspaceRoot is null)
         {
-
             return Result<SpellCatalogPage>.Failure(
                 new Error(
                     ErrorCodes.Spell.InvalidWorkspace,
                     "The workspace spell-catalog root is invalid or unavailable."));
-
         }
 
         byte[] queryFingerprint =
@@ -76,7 +65,6 @@ internal sealed class SpellCatalogService(
 
         if (cursorResult != SpellCatalogCursorDecodeResult.Success)
         {
-
             return Result<SpellCatalogPage>.Failure(
                 new Error(
                     cursorResult == SpellCatalogCursorDecodeResult.QueryMismatch
@@ -85,7 +73,6 @@ internal sealed class SpellCatalogService(
                     cursorResult == SpellCatalogCursorDecodeResult.QueryMismatch
                         ? "The opaque spell-catalog cursor belongs to different search arguments. Restart with cursor omitted."
                         : "The opaque spell-catalog cursor is invalid. Restart with cursor omitted."));
-
         }
 
         SortedSet<CatalogCandidate> retained = new(
@@ -104,14 +91,12 @@ internal sealed class SpellCatalogService(
         string? tool = NormalizeFilter(query.Tool);
 
         long maxFileSizeBytes =
-            ArcanumSettingClamps.EffectiveSpellMaxFileSizeBytes(
-                settingsMonitor.CurrentValue);
+            ArcanumSettingClamps.EffectiveSpellMaxFileSizeBytes();
 
         async Task ScanRootAsync(
             string root,
             SpellSource source)
         {
-
             await foreach (SpellMetadata metadata in SpellScanner
                                .StreamMetadataTreeAsync(
                                    root,
@@ -119,7 +104,6 @@ internal sealed class SpellCatalogService(
                                    cancellationToken)
                                .ConfigureAwait(false))
             {
-
                 cancellationToken.ThrowIfCancellationRequested();
 
                 SpellSummary summary = CreateSummary(
@@ -132,7 +116,6 @@ internal sealed class SpellCatalogService(
                         tag,
                         tool))
                 {
-
                     CatalogCandidate candidate = CreateCandidate(
                         metadata,
                         summary,
@@ -146,9 +129,7 @@ internal sealed class SpellCatalogService(
                         && (anchor is null
                             || IsPreferred(candidate, anchor)))
                     {
-
                         anchor = candidate;
-
                     }
 
                     if (checkpoint is null
@@ -156,47 +137,36 @@ internal sealed class SpellCatalogService(
                             candidate.Summary.Name,
                             checkpoint.Name) > 0)
                     {
-
                         RetainCandidate(
                             candidate,
                             retained,
                             retainedByName);
-
                     }
-
                 }
 
                 progressObserver?.OnCandidateScanned(retained.Count);
 
                 cancellationToken.ThrowIfCancellationRequested();
-
             }
-
         }
 
         if (query.Source is null or SpellSource.Builtin)
         {
-
             string globalRoot = Path.GetFullPath(
                 ArcanumPaths.GlobalSpellsDirectory);
 
             if (Directory.Exists(globalRoot))
             {
-
                 await ScanRootAsync(globalRoot, SpellSource.Builtin)
                     .ConfigureAwait(false);
-
             }
-
         }
 
         if (workspaceRoot is not null
             && (query.Source is null or SpellSource.Workspace))
         {
-
             await ScanRootAsync(workspaceRoot, SpellSource.Workspace)
                 .ConfigureAwait(false);
-
         }
 
         if (checkpoint is not null
@@ -206,12 +176,10 @@ internal sealed class SpellCatalogService(
                     anchor.IdentityHash,
                     checkpoint.IdentityHash)))
         {
-
             return Result<SpellCatalogPage>.Failure(
                 new Error(
                     ErrorCodes.Spell.ContinuationCheckpointMissing,
                     "The spell catalog changed and the continuation checkpoint no longer exists. Restart with cursor omitted."));
-
         }
 
         CatalogCandidate[] ordered = retained.ToArray();
@@ -228,7 +196,6 @@ internal sealed class SpellCatalogService(
 
         if (hasMore)
         {
-
             CatalogCandidate last = pageCandidates[^1];
 
             if (!SpellCatalogContinuationCursor.TryEncode(
@@ -239,17 +206,14 @@ internal sealed class SpellCatalogService(
                     out nextCursor,
                     out int nameByteCount))
             {
-
                 return Result<SpellCatalogPage>.Failure(
                     new Error(
                         ErrorCodes.Spell.ContinuationFrameTooLarge,
                         $"Physical spell-catalog continuation-frame boundary: the catalog-owned UTF-8 spell name requires {nameByteCount:N0} bytes; the limit is {SpellCatalogContinuationCursor.MaximumNameBytes:N0} bytes. Server state was not changed. Rename that spell or narrow q/tag/tool/source, then restart with cursor omitted."));
-
             }
 
             continuationAction =
                 "Request the same spell catalog search again with cursor set to nextCursor.";
-
         }
 
         return Result<SpellCatalogPage>.Success(
@@ -260,46 +224,36 @@ internal sealed class SpellCatalogService(
                 hasMore,
                 nextCursor,
                 continuationAction));
-
     }
 
     private static string? ResolveWorkspaceRoot(string? workingDirectory)
     {
-
         if (string.IsNullOrWhiteSpace(workingDirectory))
         {
-
             return null;
-
         }
 
         try
         {
-
             string root = Path.GetFullPath(workingDirectory.Trim());
 
             return Directory.Exists(root)
                 ? root
                 : null;
-
         }
         catch (Exception exception) when (
             exception is IOException
                 or UnauthorizedAccessException
                 or ArgumentException)
         {
-
             return null;
-
         }
-
     }
 
     private static SpellSummary CreateSummary(
         SpellMetadata metadata,
         SpellSource source)
     {
-
         return new SpellSummary(
             metadata.Name,
             string.IsNullOrEmpty(metadata.Description)
@@ -310,7 +264,6 @@ internal sealed class SpellCatalogService(
             DeclaredTools: metadata.Tools is { Length: > 0 }
                 ? metadata.Tools
                 : null);
-
     }
 
     private static CatalogCandidate CreateCandidate(
@@ -318,7 +271,6 @@ internal sealed class SpellCatalogService(
         SpellSummary summary,
         SpellSource source)
     {
-
         return new CatalogCandidate(
             summary,
             metadata.FilePath,
@@ -326,7 +278,6 @@ internal sealed class SpellCatalogService(
                 source,
                 metadata.Name,
                 metadata.FilePath));
-
     }
 
     private static bool Matches(
@@ -335,7 +286,6 @@ internal sealed class SpellCatalogService(
         string? tag,
         string? tool)
     {
-
         if (sanitizedQuery.Length > 0
             && !summary.Name.Contains(
                 sanitizedQuery,
@@ -348,9 +298,7 @@ internal sealed class SpellCatalogService(
                     sanitizedQuery,
                     StringComparison.OrdinalIgnoreCase)))
         {
-
             return false;
-
         }
 
         if (tag is not null
@@ -360,9 +308,7 @@ internal sealed class SpellCatalogService(
                     tag,
                     StringComparison.OrdinalIgnoreCase)))
         {
-
             return false;
-
         }
 
         if (tool is not null
@@ -372,13 +318,10 @@ internal sealed class SpellCatalogService(
                     tool,
                     StringComparison.OrdinalIgnoreCase)) ?? false))
         {
-
             return false;
-
         }
 
         return true;
-
     }
 
     private static string? NormalizeFilter(string? value) =>
@@ -391,23 +334,18 @@ internal sealed class SpellCatalogService(
         SortedSet<CatalogCandidate> retained,
         Dictionary<string, CatalogCandidate> retainedByName)
     {
-
         if (retainedByName.TryGetValue(
                 candidate.Summary.Name,
                 out CatalogCandidate? existing))
         {
-
             if (!IsPreferred(candidate, existing))
             {
-
                 return;
-
             }
 
             _ = retained.Remove(existing);
 
             _ = retainedByName.Remove(existing.Summary.Name);
-
         }
 
         if (retained.Count >= CandidateWindowSize
@@ -415,9 +353,7 @@ internal sealed class SpellCatalogService(
                 candidate,
                 retained.Max!) >= 0)
         {
-
             return;
-
         }
 
         _ = retained.Add(candidate);
@@ -426,9 +362,7 @@ internal sealed class SpellCatalogService(
 
         if (retained.Count <= CandidateWindowSize)
         {
-
             return;
-
         }
 
         CatalogCandidate removed = retained.Max!;
@@ -436,31 +370,25 @@ internal sealed class SpellCatalogService(
         _ = retained.Remove(removed);
 
         _ = retainedByName.Remove(removed.Summary.Name);
-
     }
 
     private static bool IsPreferred(
         CatalogCandidate candidate,
         CatalogCandidate existing)
     {
-
         if (candidate.Summary.Source != existing.Summary.Source)
         {
-
             return candidate.Summary.Source == SpellSource.Workspace;
-
         }
 
         return string.Compare(
             candidate.Path,
             existing.Path,
             StringComparison.Ordinal) < 0;
-
     }
 
     private static int CompareNames(string left, string right)
     {
-
         int insensitive = StringComparer.OrdinalIgnoreCase.Compare(
             left,
             right);
@@ -468,7 +396,6 @@ internal sealed class SpellCatalogService(
         return insensitive != 0
             ? insensitive
             : StringComparer.Ordinal.Compare(left, right);
-
     }
 
     private sealed record CatalogCandidate(
@@ -478,33 +405,25 @@ internal sealed class SpellCatalogService(
 
     private sealed class CatalogCandidateComparer : IComparer<CatalogCandidate>
     {
-
         internal static CatalogCandidateComparer Instance { get; } = new();
 
         public int Compare(
             CatalogCandidate? left,
             CatalogCandidate? right)
         {
-
             if (ReferenceEquals(left, right))
             {
-
                 return 0;
-
             }
 
             if (left is null)
             {
-
                 return -1;
-
             }
 
             if (right is null)
             {
-
                 return 1;
-
             }
 
             int name = CompareNames(
@@ -513,9 +432,7 @@ internal sealed class SpellCatalogService(
 
             if (name != 0)
             {
-
                 return name;
-
             }
 
             int source = left.Summary.Source.CompareTo(
@@ -524,9 +441,6 @@ internal sealed class SpellCatalogService(
             return source != 0
                 ? source
                 : StringComparer.Ordinal.Compare(left.Path, right.Path);
-
         }
-
     }
-
 }

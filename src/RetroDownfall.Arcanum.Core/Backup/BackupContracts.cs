@@ -6,17 +6,14 @@ namespace RetroDownfall.Arcanum.Core.Backup;
 
 public static class BackupArchiveFormat
 {
-
     public const int CurrentVersion = 1;
 
     public const string Extension = ".arcbackup";
-
 }
 
 [JsonConverter(typeof(StringOnlyJsonStringEnumConverter<BackupScope>))]
 public enum BackupScope
 {
-
     Full = 0,
 
     ConfigurationAndAuthoredAssets = 1,
@@ -26,13 +23,11 @@ public enum BackupScope
     SpecificSession = 3,
 
     MetadataOnly = 4,
-
 }
 
 [JsonConverter(typeof(StringOnlyJsonStringEnumConverter<BackupComponent>))]
 public enum BackupComponent
 {
-
     GrimoireDatabase = 0,
 
     GrimoireKdfMetadata = 1,
@@ -68,13 +63,11 @@ public enum BackupComponent
     GuardrailLogs = 16,
 
     MasterApiKey = 17,
-
 }
 
 [JsonConverter(typeof(StringOnlyJsonStringEnumConverter<BackupComponentStatus>))]
 public enum BackupComponentStatus
 {
-
     Complete = 0,
 
     OmittedByPolicy = 1,
@@ -82,17 +75,14 @@ public enum BackupComponentStatus
     Unavailable = 2,
 
     Failed = 3,
-
 }
 
 [JsonConverter(typeof(StringOnlyJsonStringEnumConverter<BackupCreateStatus>))]
 public enum BackupCreateStatus
 {
-
     Complete = 0,
 
     Incomplete = 1,
-
 }
 
 public sealed record BackupPlanRequest(
@@ -101,6 +91,13 @@ public sealed record BackupPlanRequest(
     BackupComponent[] Include,
     BackupComponent[] Exclude);
 
+/// <remarks>
+/// Every request made through <see cref="IBackupService.CreateAsync"/> is held to
+/// <see cref="BackupPassphrasePolicy"/>. The one caller that legitimately writes an archive under a
+/// passphrase it did not choose, the safety backup a restore takes under the passphrase of the archive
+/// it is restoring, does not do it through this contract: the exemption lives on an assembly-internal
+/// path of the physical service, so nothing that can build this request can switch the floor off.
+/// </remarks>
 public sealed record BackupCreateRequest(
     BackupPlanRequest Plan,
     string? OutputPath,
@@ -211,7 +208,6 @@ public sealed record BackupListItem(
 
 public interface IBackupService
 {
-
     Task<BackupPlan> PlanAsync(
         BackupPlanRequest request,
         CancellationToken cancellationToken = default);
@@ -234,5 +230,4 @@ public interface IBackupService
     Task<IReadOnlyList<BackupListItem>> ListAsync(
         string? directory,
         CancellationToken cancellationToken = default);
-
 }

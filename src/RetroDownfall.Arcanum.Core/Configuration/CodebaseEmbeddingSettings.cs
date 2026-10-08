@@ -7,9 +7,10 @@ namespace RetroDownfall.Arcanum.Core.Configuration;
 /// </summary>
 public sealed record CodebaseEmbeddingSettings
 {
-
     /// <summary>
-    /// Maximum files to embed per workspace during a single indexing tick. Default <c>500</c>; clamped
+    /// Maximum files to embed per workspace in one indexing checkpoint (one full reconciliation unit).
+    /// A reconciliation that stops on this budget with changed files left is continued by the scheduler
+    /// in a follow-up unit, not by the next reconciliation interval. Default <c>500</c>; clamped
     /// 1–10,000 at runtime.
     /// </summary>
     public int MaxFilesToIndex { get; set; } = 500;
@@ -63,5 +64,4 @@ public sealed record CodebaseEmbeddingSettings
     /// <c>5</c>; clamped 1–50 at runtime.
     /// </summary>
     public int MaxRetrievedChunks { get; set; } = 5;
-
 }

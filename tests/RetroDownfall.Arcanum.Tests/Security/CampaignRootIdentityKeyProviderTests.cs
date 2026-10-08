@@ -18,14 +18,12 @@ namespace RetroDownfall.Arcanum.Tests.Security;
 /// </summary>
 public sealed class CampaignRootIdentityKeyProviderTests
 {
-
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
     public void Recovery_existing_key_read_returns_the_cached_or_stored_key_without_Set(
         bool primeOrdinaryCache)
     {
-
         byte[] expected = Enumerable.Range(0, 32).Select(static value => (byte)value).ToArray();
 
         CountingOsCredentialStore credentials = new(
@@ -35,9 +33,7 @@ public sealed class CampaignRootIdentityKeyProviderTests
 
         if (primeOrdinaryCache)
         {
-
             Assert.True(provider.TryCopyRootIdentityKey(new byte[32]));
-
         }
 
         byte[] destination = new byte[32];
@@ -46,13 +42,11 @@ public sealed class CampaignRootIdentityKeyProviderTests
         Assert.Equal(expected, destination);
         Assert.Equal(1, credentials.GetCount);
         Assert.Equal(0, credentials.SetCount);
-
     }
 
     [Fact]
     public void Recovery_missing_malformed_or_unavailable_key_never_calls_Set()
     {
-
         OsCredentialStoreResult[] refusedReads =
         [
             OsCredentialStoreResult.NotFound(),
@@ -67,7 +61,6 @@ public sealed class CampaignRootIdentityKeyProviderTests
 
         foreach (OsCredentialStoreResult refusedRead in refusedReads)
         {
-
             CountingOsCredentialStore credentials = new(refusedRead);
 
             using CampaignRootIdentityKeyProvider provider = new(credentials);
@@ -80,7 +73,6 @@ public sealed class CampaignRootIdentityKeyProviderTests
             Assert.All(destination, static value => Assert.Equal(0xA5, value));
             Assert.Equal(2, credentials.GetCount);
             Assert.Equal(0, credentials.SetCount);
-
         }
 
         CountingOsCredentialStore wrongWidthCredentials = new(
@@ -98,13 +90,11 @@ public sealed class CampaignRootIdentityKeyProviderTests
         Assert.All(longDestination, static value => Assert.Equal(0xA5, value));
         Assert.Equal(0, wrongWidthCredentials.GetCount);
         Assert.Equal(0, wrongWidthCredentials.SetCount);
-
     }
 
     [Fact]
     public void Recovery_disposal_exception_and_cancellation_boundaries_are_fail_closed()
     {
-
         CountingOsCredentialStore disposedCredentials = new(
             OsCredentialStoreResult.Ok(Convert.ToBase64String(new byte[32])));
 
@@ -144,16 +134,12 @@ public sealed class CampaignRootIdentityKeyProviderTests
         Assert.All(canceledDestination, static value => Assert.Equal(0xA5, value));
         Assert.Equal(1, canceledCredentials.GetCount);
         Assert.Equal(0, canceledCredentials.SetCount);
-
     }
 
     [Fact]
-    public void Recovery_not_found_does_not_negative_cache_or_block_later_ordinary_first_registration()
+    public void Recovery_not_found_does_not_negative_cache_or_block_later_first_registration()
     {
-
-        SequencedOsCredentialStore credentials = new(
-            OsCredentialStoreResult.NotFound(),
-            OsCredentialStoreResult.NotFound());
+        InMemoryOsCredentialStore credentials = new();
 
         using CampaignRootIdentityKeyProvider provider = new(credentials);
 
@@ -161,41 +147,191 @@ public sealed class CampaignRootIdentityKeyProviderTests
         Assert.Equal(1, credentials.GetCount);
         Assert.Equal(0, credentials.SetCount);
 
+        Assert.Equal(
+            CampaignRootIdentityKeyState.Created,
+            provider.OpenOrCreateRootIdentityKey(registeredRootsExist: false));
+
+        // The probe, then the read-back of what was written.
+        Assert.Equal(3, credentials.GetCount);
+        Assert.Equal(1, credentials.SetCount);
+
         byte[] ordinary = new byte[32];
 
         Assert.True(provider.TryCopyRootIdentityKey(ordinary));
-        Assert.Equal(2, credentials.GetCount);
-        Assert.Equal(1, credentials.SetCount);
         Assert.Contains(ordinary, static value => value != 0);
+    }
 
+    /// <summary>
+    /// A key that is missing while a root is registered is a lost key, and a new one would orphan every
+    /// registered root while the installation kept looking healthy.
+    /// </summary>
+    [Fact]
+    public void A_lost_key_is_not_replaced_while_roots_are_registered()
+    {
+        InMemoryOsCredentialStore credentials = new();
+
+        using CampaignRootIdentityKeyProvider provider = new(credentials);
+
+        Assert.Equal(
+            CampaignRootIdentityKeyState.Lost,
+            provider.OpenOrCreateRootIdentityKey(registeredRootsExist: true));
+
+        Assert.Equal(0, credentials.SetCount);
+
+        // Nothing else can mint it either: an ordinary read of the absent account stays a refusal, and
+        // so does a recovery read.
+        byte[] destination = Enumerable.Repeat((byte)0xA5, 32).ToArray();
+
+        Assert.False(provider.TryCopyRootIdentityKey(destination));
+        Assert.False(provider.TryCopyExistingRootIdentityKey(destination));
+        Assert.All(destination, static value => Assert.Equal(0xA5, value));
+        Assert.Equal(0, credentials.SetCount);
+
+        // The same call with nothing registered is a first registration and does create it.
+        Assert.Equal(
+            CampaignRootIdentityKeyState.Created,
+            provider.OpenOrCreateRootIdentityKey(registeredRootsExist: false));
+
+        Assert.Equal(1, credentials.SetCount);
+    }
+
+    /// <summary>
+    /// Resolution runs before every session-backed turn, so a reader that minted the key on first use
+    /// would mint it on an installation whose key had merely been lost.
+    /// </summary>
+    [Fact]
+    public void An_ordinary_read_never_creates_the_key_and_probes_the_absent_account_once()
+    {
+        InMemoryOsCredentialStore credentials = new();
+
+        using CampaignRootIdentityKeyProvider provider = new(credentials);
+
+        byte[] destination = new byte[32];
+
+        for (int turn = 0; turn < 5; turn++)
+        {
+            Assert.False(provider.TryCopyRootIdentityKey(destination));
+        }
+
+        Assert.Equal(1, credentials.GetCount);
+        Assert.Equal(0, credentials.SetCount);
+        Assert.All(destination, static value => Assert.Equal(0, value));
     }
 
     [Fact]
-    public void Ordinary_first_registration_still_creates_the_key_on_NotFound()
+    public void First_registration_creates_the_key_once_and_every_port_shares_it()
     {
-
-        CountingOsCredentialStore credentials = new(OsCredentialStoreResult.NotFound());
+        InMemoryOsCredentialStore credentials = new();
 
         using CampaignRootIdentityKeyProvider provider = new(credentials);
+
+        // A turn that ran before any registration found the account absent and latched that...
+        Assert.False(provider.TryCopyRootIdentityKey(new byte[32]));
+
+        // ...which must not stop the registration that follows from creating the key.
+        Assert.Equal(
+            CampaignRootIdentityKeyState.Created,
+            provider.OpenOrCreateRootIdentityKey(registeredRootsExist: false));
+
+        Assert.Equal(
+            CampaignRootIdentityKeyState.Present,
+            provider.OpenOrCreateRootIdentityKey(registeredRootsExist: true));
 
         byte[] first = new byte[32];
 
         byte[] cached = new byte[32];
 
-        Assert.True(provider.TryCopyRootIdentityKey(first));
-        Assert.True(provider.TryCopyRootIdentityKey(cached));
-        Assert.Equal(first, cached);
-        Assert.Contains(first, static value => value != 0);
-        Assert.Equal(1, credentials.GetCount);
-        Assert.Equal(1, credentials.SetCount);
-
         byte[] recovery = new byte[32];
 
+        Assert.True(provider.TryCopyRootIdentityKey(first));
+        Assert.True(provider.TryCopyRootIdentityKey(cached));
         Assert.True(provider.TryCopyExistingRootIdentityKey(recovery));
+        Assert.Equal(first, cached);
         Assert.Equal(first, recovery);
-        Assert.Equal(1, credentials.GetCount);
+        Assert.Contains(first, static value => value != 0);
+        Assert.Equal(1, credentials.SetCount);
+        Assert.Equal(first, Convert.FromBase64String(credentials.StoredValue!));
+    }
+
+    /// <summary>
+    /// An echo of what was handed in is not proof of persistence, so the key is read back before it is
+    /// published.
+    /// </summary>
+    [Fact]
+    public void A_creation_that_cannot_be_read_back_is_not_published()
+    {
+        InMemoryOsCredentialStore credentials = new() { DropWrites = true };
+
+        using CampaignRootIdentityKeyProvider provider = new(credentials);
+
+        Assert.Equal(
+            CampaignRootIdentityKeyState.Unavailable,
+            provider.OpenOrCreateRootIdentityKey(registeredRootsExist: false));
+
         Assert.Equal(1, credentials.SetCount);
 
+        byte[] destination = new byte[32];
+
+        Assert.False(provider.TryCopyRootIdentityKey(destination));
+        Assert.All(destination, static value => Assert.Equal(0, value));
+    }
+
+    [Fact]
+    public void A_failed_creation_write_is_unavailable_and_publishes_no_key()
+    {
+        InMemoryOsCredentialStore credentials = new()
+        {
+            WriteResult = OsCredentialStoreResult.Failed("test write failure"),
+        };
+
+        using CampaignRootIdentityKeyProvider provider = new(credentials);
+
+        Assert.Equal(
+            CampaignRootIdentityKeyState.Unavailable,
+            provider.OpenOrCreateRootIdentityKey(registeredRootsExist: false));
+
+        Assert.False(provider.TryCopyRootIdentityKey(new byte[32]));
+        Assert.Equal(1, credentials.SetCount);
+    }
+
+    /// <summary>
+    /// A stored value that is present but not a key is damage, not absence, so it is never overwritten.
+    /// </summary>
+    [Theory]
+    [InlineData("not-base64")]
+    [InlineData("AAAA")]
+    public void A_present_but_malformed_key_is_never_overwritten(string stored)
+    {
+        InMemoryOsCredentialStore credentials = new() { StoredValue = stored };
+
+        using CampaignRootIdentityKeyProvider provider = new(credentials);
+
+        Assert.Equal(
+            CampaignRootIdentityKeyState.Unavailable,
+            provider.OpenOrCreateRootIdentityKey(registeredRootsExist: false));
+
+        Assert.Equal(0, credentials.SetCount);
+        Assert.Equal(stored, credentials.StoredValue);
+    }
+
+    [Fact]
+    public void An_existing_key_is_adopted_not_replaced()
+    {
+        byte[] existing = Enumerable.Range(1, 32).Select(static value => (byte)value).ToArray();
+
+        InMemoryOsCredentialStore credentials = new() { StoredValue = Convert.ToBase64String(existing) };
+
+        using CampaignRootIdentityKeyProvider provider = new(credentials);
+
+        Assert.Equal(
+            CampaignRootIdentityKeyState.Present,
+            provider.OpenOrCreateRootIdentityKey(registeredRootsExist: true));
+
+        byte[] destination = new byte[32];
+
+        Assert.True(provider.TryCopyRootIdentityKey(destination));
+        Assert.Equal(existing, destination);
+        Assert.Equal(0, credentials.SetCount);
     }
 
     /// <summary>
@@ -214,7 +350,6 @@ public sealed class CampaignRootIdentityKeyProviderTests
     [Fact]
     public async Task Infrastructure_graph_shares_one_root_identity_provider_between_ordinary_and_recovery_ports()
     {
-
         ServiceCollection services = [];
 
         services.AddSingleton<IOsCredentialStore>(
@@ -241,6 +376,10 @@ public sealed class CampaignRootIdentityKeyProviderTests
 
         Assert.Same(ordinary, recovery);
 
+        Assert.Same(
+            ordinary,
+            scope.ServiceProvider.GetRequiredService<ICampaignRootIdentityKeyCreator>());
+
         CampaignPathMarkerLifecycle concrete = Assert.IsType<CampaignPathMarkerLifecycle>(lifecycle);
 
         // Pinned rather than incidental: adding IDisposable would let a synchronous scope release the
@@ -248,13 +387,11 @@ public sealed class CampaignRootIdentityKeyProviderTests
         Assert.IsAssignableFrom<IAsyncDisposable>(concrete);
 
         Assert.IsNotAssignableFrom<IDisposable>(concrete);
-
     }
 
     [Fact]
     public void Successful_read_is_cached_for_the_process()
     {
-
         CountingOsCredentialStore credentials = new(
             OsCredentialStoreResult.Ok(Convert.ToBase64String(new byte[32])));
 
@@ -264,13 +401,10 @@ public sealed class CampaignRootIdentityKeyProviderTests
 
         for (int turn = 0; turn < 5; turn++)
         {
-
             Assert.True(provider.TryCopyRootIdentityKey(destination));
-
         }
 
         Assert.Equal(1, credentials.GetCount);
-
     }
 
     [Theory]
@@ -278,7 +412,6 @@ public sealed class CampaignRootIdentityKeyProviderTests
     [InlineData(OsCredentialStoreStatus.Unavailable)]
     public void Unreadable_store_is_probed_once_per_process(OsCredentialStoreStatus status)
     {
-
         CountingOsCredentialStore credentials = new(
             new OsCredentialStoreResult(status, null, "test read failure"));
 
@@ -288,19 +421,15 @@ public sealed class CampaignRootIdentityKeyProviderTests
 
         for (int turn = 0; turn < 5; turn++)
         {
-
             Assert.False(provider.TryCopyRootIdentityKey(destination));
-
         }
 
         Assert.Equal(1, credentials.GetCount);
-
     }
 
     [Fact]
     public void Malformed_stored_value_is_decoded_once_per_process()
     {
-
         CountingOsCredentialStore credentials = new(OsCredentialStoreResult.Ok("bm90LWEta2V5"));
 
         using CampaignRootIdentityKeyProvider provider = new(credentials);
@@ -309,45 +438,68 @@ public sealed class CampaignRootIdentityKeyProviderTests
 
         for (int turn = 0; turn < 5; turn++)
         {
-
             Assert.False(provider.TryCopyRootIdentityKey(destination));
-
         }
 
         Assert.Equal(1, credentials.GetCount);
-
     }
 
-    [Fact]
-    public void Failed_creation_is_attempted_once_per_process()
+    /// <summary>
+    /// A store that remembers what was written, so a creation can be read back.
+    /// </summary>
+    private sealed class InMemoryOsCredentialStore : IOsCredentialStore
     {
+        public int GetCount { get; private set; }
 
-        CountingOsCredentialStore credentials = new(
-            OsCredentialStoreResult.NotFound(),
-            OsCredentialStoreResult.Failed("test write failure"));
+        public int SetCount { get; private set; }
 
-        using CampaignRootIdentityKeyProvider provider = new(credentials);
+        public string? StoredValue { get; set; }
 
-        byte[] destination = new byte[32];
+        /// <summary>Answers a write as successful without keeping it.</summary>
+        public bool DropWrites { get; init; }
 
-        for (int turn = 0; turn < 5; turn++)
+        public OsCredentialStoreResult? WriteResult { get; init; }
+
+        public bool IsAvailable => true;
+
+        public OsCredentialStoreResult TryGet(string service, string account)
         {
+            GetCount++;
 
-            Assert.False(provider.TryCopyRootIdentityKey(destination));
-
+            return StoredValue is null
+                ? OsCredentialStoreResult.NotFound()
+                : OsCredentialStoreResult.Ok(StoredValue);
         }
 
-        Assert.Equal(1, credentials.GetCount);
+        public OsCredentialStoreResult Set(string service, string account, string secret)
+        {
+            SetCount++;
 
-        Assert.Equal(1, credentials.SetCount);
+            if (WriteResult is { } refused)
+            {
+                return refused;
+            }
 
+            if (!DropWrites)
+            {
+                StoredValue = secret;
+            }
+
+            return OsCredentialStoreResult.Ok(secret);
+        }
+
+        public OsCredentialStoreResult Delete(string service, string account)
+        {
+            StoredValue = null;
+
+            return OsCredentialStoreResult.Ok(string.Empty);
+        }
     }
 
     private sealed class CountingOsCredentialStore(
         OsCredentialStoreResult readResult,
         OsCredentialStoreResult? writeResult = null) : IOsCredentialStore
     {
-
         public int GetCount { get; private set; }
 
         public int SetCount { get; private set; }
@@ -356,69 +508,24 @@ public sealed class CampaignRootIdentityKeyProviderTests
 
         public OsCredentialStoreResult TryGet(string service, string account)
         {
-
             GetCount++;
 
             return readResult;
-
         }
 
         public OsCredentialStoreResult Set(string service, string account, string secret)
         {
-
             SetCount++;
 
             return writeResult ?? OsCredentialStoreResult.Ok(secret);
-
         }
 
         public OsCredentialStoreResult Delete(string service, string account) =>
             OsCredentialStoreResult.Ok(string.Empty);
-
-    }
-
-    private sealed class SequencedOsCredentialStore(
-        params OsCredentialStoreResult[] readResults) : IOsCredentialStore
-    {
-
-        private int _readIndex;
-
-        public int GetCount { get; private set; }
-
-        public int SetCount { get; private set; }
-
-        public bool IsAvailable => true;
-
-        public OsCredentialStoreResult TryGet(string service, string account)
-        {
-
-            GetCount++;
-
-            int index = Math.Min(_readIndex, readResults.Length - 1);
-
-            _readIndex++;
-
-            return readResults[index];
-
-        }
-
-        public OsCredentialStoreResult Set(string service, string account, string secret)
-        {
-
-            SetCount++;
-
-            return OsCredentialStoreResult.Ok(secret);
-
-        }
-
-        public OsCredentialStoreResult Delete(string service, string account) =>
-            OsCredentialStoreResult.Ok(string.Empty);
-
     }
 
     private sealed class ThrowingOsCredentialStore(Exception exception) : IOsCredentialStore
     {
-
         public int GetCount { get; private set; }
 
         public int SetCount { get; private set; }
@@ -427,25 +534,19 @@ public sealed class CampaignRootIdentityKeyProviderTests
 
         public OsCredentialStoreResult TryGet(string service, string account)
         {
-
             GetCount++;
 
             throw exception;
-
         }
 
         public OsCredentialStoreResult Set(string service, string account, string secret)
         {
-
             SetCount++;
 
             return OsCredentialStoreResult.Ok(secret);
-
         }
 
         public OsCredentialStoreResult Delete(string service, string account) =>
             OsCredentialStoreResult.Ok(string.Empty);
-
     }
-
 }

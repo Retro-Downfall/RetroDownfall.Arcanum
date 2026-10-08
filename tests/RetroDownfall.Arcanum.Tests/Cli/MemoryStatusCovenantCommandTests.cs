@@ -46,6 +46,7 @@ namespace RetroDownfall.Arcanum.Tests.Cli;
 /// host: the host redirects standard input and never closes it, which hangs the run rather than
 /// failing it.
 /// </remarks>
+[Collection("GlobalConsole")]
 public sealed class MemoryStatusCovenantCommandTests : IDisposable
 {
     private readonly IAnsiConsole _priorConsole = AnsiConsole.Console;
@@ -200,7 +201,8 @@ public sealed class MemoryStatusCovenantCommandTests : IDisposable
             provider.GetRequiredService<IThemePalette>(),
             dispatcher,
             new RefusingConfirmation(),
-            provider.GetRequiredService<IOptions<ArcanumSettings>>());
+            provider.GetRequiredService<IOptions<ArcanumSettings>>(),
+            provider.GetRequiredService<ICliResourceCatalog>());
 
         Assert.Equal(0, await commands.Status(sessionIdentifier: null, Token));
 

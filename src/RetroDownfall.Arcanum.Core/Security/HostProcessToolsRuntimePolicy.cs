@@ -12,7 +12,6 @@ namespace RetroDownfall.Arcanum.Core.Security;
 /// </remarks>
 public enum HostProcessToolsStartupBlocker : byte
 {
-
     None = 0,
 
     /// <summary>Clean durable state, but this host was started with the escape hatch armed.</summary>
@@ -27,6 +26,11 @@ public enum HostProcessToolsStartupBlocker : byte
     /// <summary>The durable authority row could not be read or validated.</summary>
     AuthorityUnreadable = 4,
 
+    /// <summary>
+    /// The operating-system marker could not be read at all (credential store unavailable, or a payload
+    /// that does not parse). Not a mismatch: no evidence disagrees, the evidence is simply out of reach.
+    /// </summary>
+    MarkerUnreadable = 5,
 }
 
 /// <summary>What the startup marker join decided this process may do.</summary>
@@ -47,7 +51,6 @@ public sealed record HostProcessToolsStartupDecision(
 /// </remarks>
 public interface IHostProcessToolsRuntimePolicy
 {
-
     bool IsPublished { get; }
 
     bool CovenantPermitted { get; }
@@ -58,7 +61,6 @@ public interface IHostProcessToolsRuntimePolicy
 
     /// <summary>Why Covenant was refused, when it was.</summary>
     HostProcessToolsStartupBlocker Blocker { get; }
-
 }
 
 /// <inheritdoc cref="IHostProcessToolsRuntimePolicy"/>
@@ -69,120 +71,93 @@ public interface IHostProcessToolsRuntimePolicy
 /// </remarks>
 public sealed class HostProcessToolsRuntimePolicy : IHostProcessToolsRuntimePolicy
 {
-
     private readonly Lock _gate = new();
 
     private HostProcessToolsStartupDecision? _decision;
 
     public bool IsPublished
     {
-
         get
         {
-
             lock (_gate)
             {
-
                 return _decision is not null;
-
             }
-
         }
-
     }
 
     public bool CovenantPermitted
     {
-
         get
         {
-
             lock (_gate)
             {
-
                 return _decision?.CovenantPermitted ?? false;
-
             }
-
         }
-
     }
 
     public bool HostProcessToolsPermitted
     {
-
         get
         {
-
             lock (_gate)
             {
-
                 return _decision?.HostProcessToolsPermitted ?? false;
-
             }
-
         }
-
     }
 
     public HostProcessToolsMarkerPairDisposition? Disposition
     {
-
         get
         {
-
             lock (_gate)
             {
-
                 return _decision?.Disposition;
-
             }
-
         }
-
     }
 
     public HostProcessToolsStartupBlocker Blocker
     {
-
         get
         {
-
             lock (_gate)
             {
-
                 return _decision?.Blocker ?? HostProcessToolsStartupBlocker.None;
-
             }
-
         }
-
     }
 
-    /// <summary>Publishes the gate's decision, refusing any attempt to restore Covenant.</summary>
+    /// <summary>Publishes the gate's decision, refusing any attempt to restore Covenant or relax a block.</summary>
     public Result Publish(HostProcessToolsStartupDecision decision)
     {
-
         ArgumentNullException.ThrowIfNull(decision);
 
         lock (_gate)
         {
-
             if (_decision is { CovenantPermitted: false } && decision.CovenantPermitted)
             {
-
                 return new Error(
                     ErrorCodes.Covenant.OperatorAuthorityUnavailable,
                     "A process told that this installation is host-process-tools tainted cannot re-open Covenant.");
+            }
 
+            // A published block is the gate's veto and stays one for the life of the process: a later
+            // decision that clears the blocker or permits the tools would be the same relaxation
+            // Covenant already refuses, reached through the other door.
+            if (_decision is { Blocker: not HostProcessToolsStartupBlocker.None }
+                && (decision.Blocker is HostProcessToolsStartupBlocker.None || decision.HostProcessToolsPermitted))
+            {
+                return new Error(
+                    ErrorCodes.Covenant.OperatorAuthorityUnavailable,
+                    "A process told that host process tools are blocked cannot relax that block.");
             }
 
             _decision = decision;
 
             return Result.Success();
-
         }
-
     }
-
 }

@@ -1,7 +1,5 @@
-using System.Threading.Channels;
 using System.Text.Json;
 
-using RetroDownfall.Arcanum.Api.Intelligence.OpenAi;
 using RetroDownfall.Arcanum.Api.Intelligence.TurnEngine;
 using RetroDownfall.Arcanum.Api.Intelligence.TurnEngine.Projections;
 using RetroDownfall.Arcanum.Api.Serialization;
@@ -49,7 +47,7 @@ public sealed class TurnProjectionSemanticTests
                 new RunAbandoned(
                     Correlation(1),
                     Error: null,
-                    TurnTerminationReason.ClientDisconnected,
+                    TurnTerminationReason.Cancelled,
                     Usage: null,
                     Warnings: [],
                     Interrupted: true,
@@ -177,7 +175,7 @@ public sealed class TurnProjectionSemanticTests
     }
 
     [Fact]
-    public void AttachmentRefreshed_ProjectsToNativeNdjson_AndOpenAiIgnoresIt()
+    public void AttachmentRefreshed_ProjectsToNativeNdjson()
     {
         AttachmentRefreshEvent detail = new(
             Guid.NewGuid(),
@@ -194,10 +192,6 @@ public sealed class TurnProjectionSemanticTests
         IntelligenceEvent native = Assert.Single(IntelligenceEventProjection.Map(refreshed));
         Assert.Equal(IntelligenceEventType.AttachmentRefreshed, native.Type);
         Assert.Equal(detail, native.AttachmentRefresh);
-
-        Channel<OpenAiChatChunk> channel = Channel.CreateUnbounded<OpenAiChatChunk>();
-        OpenAiSseProjection openAi = new(channel.Writer, "chatcmpl-refresh", "model", 1);
-        Assert.Empty(openAi.Map(refreshed));
     }
 
     /// <summary>
@@ -217,9 +211,9 @@ public sealed class TurnProjectionSemanticTests
         IntelligenceEvent frame = Assert.Single(IntelligenceEventProjection.Map(approval));
         Assert.Equal(IntelligenceEventType.Warded, frame.Type);
         Assert.Equal("ward-7", frame.WardId);
-        Assert.Equal("execute_command", frame.WardToolName);
+        Assert.Equal("execute_command", frame.ToolName);
 
-        JsonElement arguments = Assert.IsType<JsonElement>(frame.WardArguments);
+        JsonElement arguments = Assert.IsType<JsonElement>(frame.Arguments);
         Assert.Equal("rm -rf build", arguments.GetProperty("command").GetString());
         Assert.Equal(
             "Runs a shell command.",
@@ -237,7 +231,7 @@ public sealed class TurnProjectionSemanticTests
                 new ApprovalRequested(Correlation(1), "ward-8", "workspace_check", argumentsJson)));
 
         Assert.Equal(IntelligenceEventType.Warded, frame.Type);
-        Assert.Null(frame.WardArguments);
+        Assert.Null(frame.Arguments);
     }
 
     [Fact]
@@ -267,112 +261,9 @@ public sealed class TurnProjectionSemanticTests
     }
 
     [Fact]
-    public void OpenAiSseProjection_NonOpenAiSemanticEvents_AreFiltered()
-    {
-        Channel<OpenAiChatChunk> channel = Channel.CreateUnbounded<OpenAiChatChunk>();
-        OpenAiSseProjection projection = new(
-            channel.Writer,
-            "chatcmpl-filter",
-            "model",
-            createdUnixSeconds: 1);
-        Error error = new(ErrorCodes.Hub.Error, "detail");
-        TurnEvent[] filtered =
-        [
-            new RunStarted(Correlation(1)),
-            new TurnStatusChanged(Correlation(2), "working"),
-            new SessionBound(Correlation(3), Guid.NewGuid()),
-            new ContextCompressed(Correlation(4), "compressed"),
-            new ContextAccounted(Correlation(4), Breakdown()),
-            new ProviderAttemptStarted(Correlation(5), "provider", "model"),
-            new ProviderSelected(Correlation(6), "provider", "model"),
-            new ProviderAttemptCommitted(Correlation(7)),
-            new ProviderAttemptCompleted(Correlation(8)),
-            new ProviderAttemptFailed(Correlation(9), error, IsConnectivityFailure: true),
-            new ModelCallStarted(Correlation(10), ModelCallPurpose.MainInference),
-            new ModelCallCompleted(Correlation(11), Usage: null),
-            new ModelCallFailed(Correlation(12), error, IsConnectivityFailure: false),
-            new ApprovalRequested(Correlation(13), "ward", "tool", "{}"),
-            new ApprovalResolved(Correlation(14), "ward", "tool", Allowed: false, Reason: "no"),
-            new HumanInputRequested(Correlation(15), "call-human", "choose"),
-            new HumanInputReceived(Correlation(16), "call-human", "yes"),
-            new ToolInvocationStarted(Correlation(17), "call-tool", "tool"),
-            new ToolInvocationCompleted(
-                Correlation(18),
-                "call-tool",
-                "tool",
-                "{}",
-                "result",
-                Failed: false,
-                Denied: false,
-                ToleratedFailure: false,
-                PublicErrorText: null,
-                Duration: TimeSpan.Zero,
-                AttachmentPostProcessed: false),
-            new OutputValidated(Correlation(19), Passed: true, Warnings: []),
-        ];
-
-        foreach (TurnEvent evt in filtered)
-        {
-            Assert.Empty(projection.Map(evt));
-        }
-    }
-
-    [Fact]
-    public async Task OpenAiSseProjection_ApplyAsync_FiltersNonTerminalAndCompletesOnFailure()
-    {
-        Channel<OpenAiChatChunk> channel = Channel.CreateUnbounded<OpenAiChatChunk>();
-        OpenAiSseProjection projection = new(
-            channel.Writer,
-            "chatcmpl-apply",
-            "model",
-            createdUnixSeconds: 1);
-
-        await projection.ApplyAsync(new TurnStatusChanged(Correlation(1), "working"));
-
-        Assert.False(channel.Reader.TryRead(out _));
-        Assert.False(channel.Reader.Completion.IsCompleted);
-
-        await projection.ApplyAsync(
-            new RunFailed(
-                Correlation(2),
-                new Error(ErrorCodes.Hub.Error, "failed"),
-                TurnTerminationReason.ProviderFailure,
-                Usage: null,
-                Warnings: [],
-                Interrupted: false,
-                PartialText: null));
-
-        OpenAiChatChunk chunk = await channel.Reader.ReadAsync();
-        Assert.Equal("error", Assert.Single(chunk.Choices).FinishReason);
-        Assert.Equal("inference_failed", chunk.Error?.Code);
-        await channel.Reader.Completion;
-    }
-
-    [Fact]
     public void ProjectionConstructors_RejectNullWriters()
     {
         Assert.Throws<ArgumentNullException>(() => new IntelligenceEventProjection(null!));
-        Assert.Throws<ArgumentNullException>(
-            () => new OpenAiSseProjection(null!, "chatcmpl-test", "model"));
-    }
-
-    [Fact]
-    public void OpenAiSseProjection_DefaultMetadata_IsGeneratedForMissingInputs()
-    {
-        Channel<OpenAiChatChunk> channel = Channel.CreateUnbounded<OpenAiChatChunk>();
-        long before = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-        OpenAiSseProjection projection = new(
-            channel.Writer,
-            completionId: " ",
-            model: null!,
-            createdUnixSeconds: null);
-
-        OpenAiChatChunk chunk = Assert.Single(
-            projection.Map(new TextDelta(Correlation(1), "text")));
-
-        Assert.StartsWith("chatcmpl-", chunk.Id, StringComparison.Ordinal);
-        Assert.Equal(string.Empty, chunk.Model);
-        Assert.InRange(chunk.Created, before, DateTimeOffset.UtcNow.ToUnixTimeSeconds());
     }
 
     private static TurnEventCorrelation Correlation(long sequence) =>

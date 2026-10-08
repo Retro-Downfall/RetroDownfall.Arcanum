@@ -34,7 +34,9 @@ internal static class ArcanumErrorMapper
 
             ErrorCodes.Lexicon.CurationIntegrityFailed
                 or ErrorCodes.Lexicon.WriteFailed
-                or ErrorCodes.Lexicon.SearchFailed =>
+                or ErrorCodes.Lexicon.SearchFailed
+                or ErrorCodes.Saga.WriteFailed
+                or ErrorCodes.Covenant.WriteFailed =>
                 StatusCodes.Status500InternalServerError,
 
             ErrorCodes.MemoryReview.InvalidToken
@@ -113,6 +115,12 @@ internal static class ArcanumErrorMapper
             // thing still open is the durable operation row and asking again is safe. Reporting it
             // as a server fault told a client to stop when it should have retried.
             ErrorCodes.Data.OperationNotFinalized =>
+                StatusCodes.Status409Conflict,
+
+            // The stored vectors are of another width than the query's, so nothing could be compared. Not the
+            // caller's request and not a provider outage: the installation's embeddings have to be reset and
+            // re-indexed before the same call can succeed, which is a state conflict the operator resolves.
+            ErrorCodes.Embeddings.DimensionMismatch =>
                 StatusCodes.Status409Conflict,
 
             // 500 and deliberately not retryable: the mutation committed and quarantined bytes are
@@ -200,7 +208,7 @@ internal static class ArcanumErrorMapper
             ErrorCodes.Hub.Model =>
                 StatusCodes.Status404NotFound,
 
-            ErrorCodes.Spell.NotFound or ErrorCodes.Prompt.NotFound or ErrorCodes.Campaign.NotFound or ErrorCodes.Session.NotFound or ErrorCodes.Session.EntryNotFound or ErrorCodes.Grimoire.LoreNotFound or ErrorCodes.Lexicon.NotFound or ErrorCodes.Apprentice.NotFound or ErrorCodes.Workspace.NotFound or ErrorCodes.Mcp.ServerNotFound or ErrorCodes.Mcp.ToolNotFound or ErrorCodes.Daemon.NotFound or ErrorCodes.Intelligence.HumanPromptNotFound or ErrorCodes.ProvingGrounds.SpellNotFound or ErrorCodes.ProvingGrounds.PromptNotFound or ErrorCodes.Workspace.FileNotFound or ErrorCodes.Workspace.ReplacementNotFound or ErrorCodes.Saga.NotFound or ErrorCodes.Files.NotFound or ErrorCodes.Batches.NotFound or ErrorCodes.Batches.InputFileNotFound =>
+            ErrorCodes.Spell.NotFound or ErrorCodes.Prompt.NotFound or ErrorCodes.Campaign.NotFound or ErrorCodes.Session.NotFound or ErrorCodes.Session.EntryNotFound or ErrorCodes.Session.PinNotFound or ErrorCodes.Grimoire.LoreNotFound or ErrorCodes.Lexicon.NotFound or ErrorCodes.Apprentice.NotFound or ErrorCodes.Workspace.NotFound or ErrorCodes.Mcp.ServerNotFound or ErrorCodes.Mcp.ToolNotFound or ErrorCodes.Daemon.NotFound or ErrorCodes.Intelligence.HumanPromptNotFound or ErrorCodes.ProvingGrounds.SpellNotFound or ErrorCodes.ProvingGrounds.PromptNotFound or ErrorCodes.Workspace.FileNotFound or ErrorCodes.Workspace.ReplacementNotFound or ErrorCodes.Saga.NotFound or ErrorCodes.Files.NotFound or ErrorCodes.Batches.NotFound or ErrorCodes.Batches.InputFileNotFound =>
                 StatusCodes.Status404NotFound,
 
             ErrorCodes.Provider.NotFound =>
@@ -254,6 +262,11 @@ internal static class ArcanumErrorMapper
                 StatusCodes.Status403Forbidden,
 
             ErrorCodes.Apprentice.AlreadyRunning or ErrorCodes.Apprentice.Running or ErrorCodes.Apprentice.NotPaused or ErrorCodes.Apprentice.CannotReweave or ErrorCodes.Apprentice.NotEscalated or ErrorCodes.Apprentice.MaxReached or ErrorCodes.Apprentice.ConclaveDisabled or ErrorCodes.Session.ForkDepthExceeded or ErrorCodes.Session.TooManyPinned or ErrorCodes.Security.IdempotencyConflict or ErrorCodes.Security.IdempotencyInProgress =>
+                StatusCodes.Status409Conflict,
+
+            // A read-modify-write PATCH whose target changed after the read. The caller re-reads and
+            // retries, so it is a conflict; Workspace.WriteFailed (500) would present it as a server fault.
+            ErrorCodes.Workspace.FileChanged =>
                 StatusCodes.Status409Conflict,
 
             ErrorCodes.Attachment.LimitExceeded =>
@@ -329,6 +342,9 @@ internal static class ArcanumErrorMapper
             or ErrorCodes.Workspace.DeleteFailed
             or ErrorCodes.Spell.WriteFailed
             or ErrorCodes.Saga.SearchFailed
+            or ErrorCodes.Saga.WriteFailed
+            or ErrorCodes.Lexicon.WriteFailed
+            or ErrorCodes.Covenant.WriteFailed
             or ErrorCodes.MemoryErasure.ErasureIncomplete
             or ErrorCodes.Hub.Error)
         {

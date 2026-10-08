@@ -8,27 +8,22 @@ namespace RetroDownfall.Arcanum.Infrastructure.Backup;
 
 internal enum ArcanumMaintenanceLockAcquisitionDisposition : byte
 {
-
     Unsafe,
 
     Contended,
 
     Acquired,
-
 }
 
 internal readonly record struct ArcanumMaintenanceLockAcquisitionResult
 {
-
     private ArcanumMaintenanceLockAcquisitionResult(
         ArcanumMaintenanceLockAcquisitionDisposition disposition,
         ArcanumMaintenanceLock? maintenanceLock)
     {
-
         Disposition = disposition;
 
         Lock = maintenanceLock;
-
     }
 
     internal ArcanumMaintenanceLockAcquisitionDisposition Disposition { get; }
@@ -57,7 +52,6 @@ internal readonly record struct ArcanumMaintenanceLockAcquisitionResult
             ? acquired
             : throw new InvalidOperationException(
                 "This maintenance-lock outcome does not carry an acquired handle.");
-
 }
 
 /// <summary>
@@ -74,6 +68,25 @@ internal readonly record struct ArcanumMaintenanceLockAcquisitionResult
 /// </remarks>
 internal sealed class ArcanumMaintenanceLock : IDisposable
 {
+    private static readonly TimeSpan[] ContentionRetryDelays =
+    [
+        TimeSpan.FromMilliseconds(5),
+        TimeSpan.FromMilliseconds(10),
+        TimeSpan.FromMilliseconds(20),
+    ];
+
+    private static readonly AsyncLocal<Action<int>?> ContentionRetryObserverOverride = new();
+
+    /// <summary>
+    /// Test seam invoked with the retry number each time a contended acquisition is about to be retried,
+    /// for the current async flow only.
+    /// </summary>
+    internal static Action<int>? ContentionRetryObserverForTests
+    {
+        get => ContentionRetryObserverOverride.Value;
+
+        set => ContentionRetryObserverOverride.Value = value;
+    }
 
     private RetainedExclusiveFileLock? _lock;
 
@@ -81,11 +94,9 @@ internal sealed class ArcanumMaintenanceLock : IDisposable
         string path,
         RetainedExclusiveFileLock maintenanceLock)
     {
-
         Path = path;
 
         _lock = maintenanceLock;
-
     }
 
     public string Path { get; }
@@ -97,7 +108,6 @@ internal sealed class ArcanumMaintenanceLock : IDisposable
     /// </summary>
     public static string LockPathFor(string guardedDirectory)
     {
-
         ArgumentException.ThrowIfNullOrWhiteSpace(guardedDirectory);
 
         string full = System.IO.Path.TrimEndingDirectorySeparator(
@@ -110,7 +120,6 @@ internal sealed class ArcanumMaintenanceLock : IDisposable
         return string.IsNullOrEmpty(parent) || string.IsNullOrEmpty(name)
             ? System.IO.Path.Combine(full, ".arcanum-maintenance.lock")
             : System.IO.Path.Combine(parent, $".arcanum-maintenance-{name}.lock");
-
     }
 
     /// <summary>
@@ -122,19 +131,40 @@ internal sealed class ArcanumMaintenanceLock : IDisposable
         => AcquireDetailed(guardedDirectory).Lock;
 
     /// <summary>
-    /// Attempts one exclusive acquisition and preserves whether a verified sharing violation caused
+    /// Attempts an exclusive acquisition and preserves whether a verified sharing violation caused
     /// contention or whether topology, identity, permission, or other I/O evidence was unsafe.
     /// </summary>
+    /// <remarks>
+    /// A contended attempt is retried three times, after 5, 10 and 20 ms, before contention is
+    /// reported, so a doctor probe's instantaneous open cannot fail a real acquisition. The waits are
+    /// synchronous: a lock that is genuinely held reports contention only after about 35 ms, with the
+    /// calling thread blocked for that long, and a caller polling <see cref="TryAcquire(string)"/>
+    /// pays that on every attempt.
+    /// </remarks>
     internal static ArcanumMaintenanceLockAcquisitionResult AcquireDetailed(
         string guardedDirectory)
     {
-
         ArgumentException.ThrowIfNullOrWhiteSpace(guardedDirectory);
 
         string path = LockPathFor(guardedDirectory);
 
         RetainedExclusiveFileLockAcquisitionResult acquired =
             RetainedExclusiveFileLock.Acquire(path);
+
+        // A verified sharing violation is usually a real holder, but the doctor's read-only probe opens
+        // the same file for an instant and can collide with an acquisition. A few short retries make
+        // that collision invisible while a genuine holder still reports contention after ~35 ms.
+        for (int retry = 0;
+            retry < ContentionRetryDelays.Length
+                && acquired.Disposition is RetainedExclusiveFileLockAcquisitionDisposition.Contended;
+            retry++)
+        {
+            ContentionRetryObserverForTests?.Invoke(retry + 1);
+
+            Thread.Sleep(ContentionRetryDelays[retry]);
+
+            acquired = RetainedExclusiveFileLock.Acquire(path);
+        }
 
         return acquired.Disposition switch
         {
@@ -146,7 +176,6 @@ internal sealed class ArcanumMaintenanceLock : IDisposable
                 ArcanumMaintenanceLockAcquisitionResult.Contended(),
             _ => ArcanumMaintenanceLockAcquisitionResult.Unsafe(),
         };
-
     }
 
     internal static bool IsVerifiedSharingViolation(IOException exception)
@@ -172,7 +201,6 @@ internal sealed class ArcanumMaintenanceLock : IDisposable
     /// </remarks>
     public void AssertHeldFor(string guardedDirectory)
     {
-
         ArgumentException.ThrowIfNullOrWhiteSpace(guardedDirectory);
 
         RetainedExclusiveFileLock? held = _lock;
@@ -180,7 +208,6 @@ internal sealed class ArcanumMaintenanceLock : IDisposable
         ObjectDisposedException.ThrowIf(held is null, this);
 
         held.AssertHeldAt(LockPathFor(guardedDirectory), this);
-
     }
 
     /// <summary>
@@ -189,7 +216,6 @@ internal sealed class ArcanumMaintenanceLock : IDisposable
     /// </summary>
     public static bool CannotAcquireSafely(string guardedDirectory)
     {
-
         ArcanumMaintenanceLockAcquisitionResult acquired =
             AcquireDetailed(guardedDirectory);
 
@@ -197,21 +223,17 @@ internal sealed class ArcanumMaintenanceLock : IDisposable
 
         return acquired.Disposition
             is not ArcanumMaintenanceLockAcquisitionDisposition.Acquired;
-
     }
 
     public void Dispose()
     {
-
         RetainedExclusiveFileLock? held = _lock;
 
         _lock = null;
 
         if (held is null)
         {
-
             return;
-
         }
 
         // Closing the handle is the whole of the release, and the lock file is deliberately left
@@ -223,7 +245,5 @@ internal sealed class ArcanumMaintenanceLock : IDisposable
         // why leaving it costs nothing and why no unlink can be made safe (there is no portable
         // compare-inode-and-unlink to close the window with).
         held.Dispose();
-
     }
-
 }

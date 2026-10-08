@@ -35,7 +35,6 @@ namespace RetroDownfall.Arcanum.Core.Weave;
 [JsonConverter(typeof(StringOnlyJsonStringEnumConverter<SagaRetrievalEligibility>))]
 public enum SagaRetrievalEligibility
 {
-
     /// <summary>Retrievable now.</summary>
     Eligible = 1,
 
@@ -51,7 +50,6 @@ public enum SagaRetrievalEligibility
 
     /// <summary>The row survives but its embedding does not, so no similarity search can reach it.</summary>
     EmbeddingMissing = 4,
-
 }
 
 /// <summary>One memory's curation timestamps: when it was retired, and when it was pinned.</summary>
@@ -77,7 +75,6 @@ public sealed record SagaMemoryCurationRow(SagaMemoryDto Memory, SagaMemoryLifec
 /// </remarks>
 public static class SagaRetrievalEligibilityClassifier
 {
-
     /// <summary>
     /// Retired first, then ownership, then whether an embedding survives, then eligible — in that
     /// order because a retired memory has no embedding by construction, and reporting that as
@@ -94,14 +91,11 @@ public static class SagaRetrievalEligibilityClassifier
     /// </param>
     public static SagaRetrievalEligibility Classify(SagaMemoryCurationRow row, bool campaignScopingEnforced)
     {
-
         ArgumentNullException.ThrowIfNull(row);
 
         if (row.Lifecycle.RetiredAtUtc is not null)
         {
-
             return SagaRetrievalEligibility.Retired;
-
         }
 
         // Unclassified (an upgrade has not reached this row yet) and LegacyUnresolved (the owning
@@ -113,22 +107,16 @@ public static class SagaRetrievalEligibilityClassifier
         if (campaignScopingEnforced
             && row.Memory.ScopeKind is SagaMemoryScopeKind.Unclassified or SagaMemoryScopeKind.LegacyUnresolved)
         {
-
             return SagaRetrievalEligibility.OwnershipUnresolved;
-
         }
 
         if (!row.HasEmbedding)
         {
-
             return SagaRetrievalEligibility.EmbeddingMissing;
-
         }
 
         return SagaRetrievalEligibility.Eligible;
-
     }
-
 }
 
 /// <summary>
@@ -155,7 +143,6 @@ public sealed record SagaMemoryDetail(
 /// <summary>The result of attempting one curation verb (correct, retire, reinstate, pin) against one memory.</summary>
 public enum SagaCurationOutcomeKind
 {
-
     /// <summary>The verb changed the row as asked.</summary>
     Applied = 1,
 
@@ -180,7 +167,6 @@ public enum SagaCurationOutcomeKind
 
     /// <summary>The verb would not have changed anything, so nothing was written.</summary>
     Unchanged = 6,
-
 }
 
 /// <summary>One curation verb's outcome, and the lifecycle that resulted when it applied.</summary>
@@ -227,7 +213,6 @@ public sealed record SagaCurationResult(
 /// <summary>Whether a write actually landed, or was refused because the operator retired or erased it.</summary>
 public enum SagaMemoryWriteOutcome
 {
-
     /// <summary>The row was written.</summary>
     Written = 1,
 
@@ -237,4 +222,9 @@ public enum SagaMemoryWriteOutcome
     /// </summary>
     Suppressed = 2,
 
+    /// <summary>
+    /// The same Session already holds this exact conclusion in this scope, so nothing new was stored.
+    /// A retried extraction page lands here for every candidate an earlier attempt already committed.
+    /// </summary>
+    AlreadyPresent = 3,
 }

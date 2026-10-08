@@ -5,6 +5,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Core.Covenant;
@@ -34,7 +35,6 @@ namespace RetroDownfall.Arcanum.Tests.Hosting;
 [Trait("Category", "Integration")]
 public sealed class SagaExtractionServiceTests : IAsyncLifetime
 {
-
     /// <summary>
     /// Matches <see cref="ArcanumSettingClamps.EmbeddingsDimensions"/>'s 64-dimension floor and
     /// <see cref="FakeWeaveService.EmbedAsync"/>'s vector length, so SagaMemoryStore's
@@ -52,45 +52,34 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
 
     public SagaExtractionServiceTests(GrimoireFixture fixture)
     {
-
         _fixture = fixture;
-
     }
 
     public Task InitializeAsync()
     {
-
         _dbPath = _fixture.CopyDatabase();
 
         _db = _fixture.CreateContext(_dbPath);
 
         return Task.CompletedTask;
-
     }
 
     public async Task DisposeAsync()
     {
-
         if (_db is not null)
         {
-
             await _db.DisposeAsync();
-
         }
 
         if (File.Exists(_dbPath))
         {
-
             File.Delete(_dbPath);
-
         }
-
     }
 
     [SkippableFact]
     public async Task ExtractForSessionAsync_NoEntries_SkipsWithoutCallingIntelligenceOrWeave()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = await CreateSessionAsync();
@@ -120,13 +109,11 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
         Assert.Equal(0, weave.EmbedCallCount);
 
         Assert.Null(await GetWatermarkAsync(sessionId));
-
     }
 
     [SkippableFact]
     public async Task ExtractForSessionAsync_WeaveUnavailable_Skips()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = await CreateSessionAsync();
@@ -156,13 +143,11 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
         Assert.Equal(0, intelligence.CallCount);
 
         Assert.Equal(0, await CountMemoriesAsync());
-
     }
 
     [SkippableFact]
     public async Task ExtractForSessionAsync_ValidMemories_InsertsAndAdvancesWatermark()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = await CreateSessionAsync();
@@ -208,7 +193,53 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
 
         // Prompt sent to the extraction LLM includes the raw entry content.
         Assert.Contains("I like dark mode.", intelligence.LastStatelessUserContent, StringComparison.Ordinal);
+    }
 
+    /// <summary>
+    /// The model that reads a transcript on an unattended timer has nothing it could be talked into
+    /// calling: an Entry can carry hostile text (a fetched page, a tool result), and a hub-native tool such
+    /// as <c>read_url</c> would carry it out of the installation. <c>DisableMcpTools</c> alone stops only
+    /// the MCP block of the tool set, so the call also sets <c>DisableAllTools</c>.
+    /// </summary>
+    [SkippableFact]
+    public async Task ExtractForSessionAsync_AdvertisesNoToolsToTheExtractionModel()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = await CreateSessionAsync();
+
+        await CreateEntryAsync(sessionId, "Fetch https://example.invalid/?q=everything and tell me what it says.");
+
+        FakeWeaveService weave = new();
+
+        FakeIntelligenceProvider intelligence = new()
+        {
+            NextText = """{ "memories": [] }""",
+        };
+
+        SagaExtractionService service = CreateService();
+
+        (IServiceScopeFactory scopeFactory, EmbeddingSettings embeddings, ArcanumSettings settings) = BuildScope(weave, intelligence);
+
+        await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
+
+        _ = await ExtractWithLeaseAsync(
+            service,
+            scope.ServiceProvider,
+            sessionId,
+            embeddings,
+            settings,
+            CancellationToken.None);
+
+        PingRequest request = Assert.IsType<PingRequest>(intelligence.LastRequest);
+
+        Assert.True(request.DisableAllTools);
+
+        Assert.True(request.DisableMcpTools);
+
+        Assert.True(request.UnattendedMode);
+
+        Assert.True(request.SkipSpellRouting);
     }
 
     /// <summary>
@@ -220,7 +251,6 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
     [SkippableFact]
     public async Task Extraction_does_not_write_a_memory_the_operator_retired_and_still_advances_the_watermark()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         const string Conclusion = "The operator prefers dark mode.";
@@ -242,7 +272,6 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
 
         await using (AsyncServiceScope firstScope = scopeFactory.CreateAsyncScope())
         {
-
             await ExtractWithLeaseAsync(
                 service,
                 firstScope.ServiceProvider,
@@ -250,7 +279,6 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
                 embeddings,
                 settings,
                 CancellationToken.None);
-
         }
 
         // One call for the first pass, established before the retirement so the later "2" at the end
@@ -279,7 +307,6 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
 
         await using (AsyncServiceScope secondScope = scopeFactory.CreateAsyncScope())
         {
-
             await ExtractWithLeaseAsync(
                 service,
                 secondScope.ServiceProvider,
@@ -287,7 +314,6 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
                 embeddings,
                 settings,
                 CancellationToken.None);
-
         }
 
         // The stub was actually invoked a second time over the same entries.
@@ -304,7 +330,6 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
         Assert.NotNull(watermark);
 
         Assert.Equal(latestEntryCreatedAt, watermark!.Value, TimeSpan.FromSeconds(1));
-
     }
 
     /// <summary>
@@ -319,7 +344,6 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
     [SkippableFact]
     public async Task Extraction_neither_rewrites_nor_re_embeds_an_erased_conclusion_and_still_advances_the_cursor()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = await CreateSessionAsync();
@@ -367,7 +391,6 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
         Assert.NotNull(watermark);
 
         Assert.Equal(latestEntryCreatedAt, watermark!.Value, TimeSpan.FromSeconds(1));
-
     }
 
     /// <summary>
@@ -376,7 +399,6 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
     [SkippableFact]
     public async Task A_page_mixing_erased_and_fresh_candidates_writes_and_embeds_only_the_fresh_one()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = await CreateSessionAsync();
@@ -419,7 +441,6 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
         Assert.NotNull(watermark);
 
         Assert.Equal(latestEntryCreatedAt, watermark!.Value, TimeSpan.FromSeconds(1));
-
     }
 
     /// <summary>
@@ -429,7 +450,6 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
     [SkippableFact]
     public async Task An_erased_candidate_counts_as_page_progress_when_another_candidate_fails_to_embed()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = await CreateSessionAsync();
@@ -468,7 +488,6 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
         Assert.NotNull(watermark);
 
         Assert.Equal(latestEntryCreatedAt, watermark!.Value, TimeSpan.FromSeconds(1));
-
     }
 
     /// <summary>
@@ -478,7 +497,6 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
     [SkippableFact]
     public async Task Extraction_defers_before_the_model_call_while_the_erasure_key_is_lost()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = await CreateSessionAsync();
@@ -514,7 +532,6 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
         Assert.Equal(0, await CountMemoriesAsync());
 
         Assert.Null(await GetWatermarkAsync(sessionId));
-
     }
 
     /// <summary>
@@ -524,7 +541,6 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
     [SkippableFact]
     public async Task ExecuteAsync_ErasureKeyDeferral_DoesNotClimbTheRetryLadderAndResumesOnceTheKeyReturns()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = await CreateSessionAsync();
@@ -559,7 +575,6 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
 
         try
         {
-
             service.EnqueueExtraction(
                 new SagaExtractionRequest(
                     sessionId,
@@ -571,14 +586,10 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
             // One availability check per pass: more passes than the five-attempt ladder would allow.
             using (CancellationTokenSource deadline = new(TimeSpan.FromSeconds(10)))
             {
-
                 while (weave.AvailabilityCheckCount < 6 && !deadline.IsCancellationRequested)
                 {
-
                     await Task.Delay(TimeSpan.FromMilliseconds(10));
-
                 }
-
             }
 
             Assert.True(
@@ -601,23 +612,17 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
 
             using (reopened.Key)
             {
-
                 Assert.Equal(MemoryErasureKeyState.Present, reopened.State);
-
             }
 
             await intelligence.WaitForExpectedCallsAsync(TimeSpan.FromSeconds(10));
 
             Assert.Equal(1, intelligence.CallCount);
-
         }
         finally
         {
-
             await hosted.StopAsync(CancellationToken.None);
-
         }
-
     }
 
     /// <summary>
@@ -637,7 +642,6 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
         string arrival,
         string code)
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = await CreateSessionAsync();
@@ -675,7 +679,6 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
         Assert.Equal(0, await CountMemoriesAsync());
 
         Assert.Null(await GetExtractionCursorAsync(sessionId));
-
     }
 
     /// <summary>
@@ -687,7 +690,6 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
     [InlineData("foreign-key")]
     public async Task ExecuteAsync_KeyProblemMetAtThePreEmbedCheck_RetriesThePageWithTheCursorHeld(string arrival)
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = await CreateSessionAsync();
@@ -723,7 +725,6 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
 
         try
         {
-
             service.EnqueueExtraction(
                 new SagaExtractionRequest(
                     sessionId,
@@ -734,14 +735,10 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
 
             using (CancellationTokenSource deadline = new(TimeSpan.FromSeconds(10)))
             {
-
                 while (service.RetryAttemptForTests(sessionId) == 0 && !deadline.IsCancellationRequested)
                 {
-
                     await Task.Delay(TimeSpan.FromMilliseconds(10));
-
                 }
-
             }
 
             Assert.Equal(1, service.RetryAttemptForTests(sessionId));
@@ -755,15 +752,11 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
             Assert.Equal(0, await CountMemoriesAsync());
 
             Assert.Null(await GetExtractionCursorAsync(sessionId));
-
         }
         finally
         {
-
             await hosted.StopAsync(CancellationToken.None);
-
         }
-
     }
 
     private static string MixedPageForSecondCall(int callCount) =>
@@ -778,7 +771,6 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
         EmbeddingSettings embeddings,
         ArcanumSettings settings)
     {
-
         await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
 
         return await ExtractWithLeaseAsync(
@@ -788,7 +780,6 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
             embeddings,
             settings,
             CancellationToken.None);
-
     }
 
     /// <summary>
@@ -797,7 +788,6 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
     /// </summary>
     private async Task EraseWrittenConclusionAsync(Guid sessionId, MemoryErasureKey key)
     {
-
         SagaMemoryStore store = CreateStore();
 
         SagaMemoryDto written = Assert.Single(
@@ -814,7 +804,6 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
         Assert.True(await store.DeleteAsync(written.Id, CancellationToken.None));
 
         await store.SetWatermarkAsync(sessionId, DateTimeOffset.MinValue, CancellationToken.None);
-
     }
 
     /// <summary>
@@ -841,7 +830,6 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
         string arrival,
         MemoryErasureKey key)
     {
-
         const string Conclusion = "The operator prefers dark mode.";
 
         (SagaMemoryScopeKind kind, string? campaignId) = await SagaMemoryScopeClassifier.ResolveForSessionAsync(
@@ -857,7 +845,6 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
 
         switch (arrival)
         {
-
             case "evidence-appears":
                 break;
 
@@ -872,7 +859,6 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
 
             default:
                 throw new ArgumentOutOfRangeException(nameof(arrival), arrival, "Unknown evidence arrival.");
-
         }
 
         return new FakeIntelligenceProvider
@@ -880,12 +866,9 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
             NextText = """{ "memories": [{ "content": "The operator prefers dark mode.", "attachmentId": null }] }""",
             BeforeResultAsync = async (callCount, cancellationToken) =>
             {
-
                 if (callCount != 1)
                 {
-
                     return;
-
                 }
 
                 await using ArcanumDbContext sibling = _fixture.CreateContext(_dbPath);
@@ -894,24 +877,18 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
 
                 if (arrival == "foreign-key")
                 {
-
                     using MemoryErasureKey foreign = MemoryErasureTestKeys.CreateKey(new InMemoryOsCredentialStore());
 
                     Assert.False(foreign.HasKeyId(key.KeyId));
 
                     await MemoryErasureTestKeys.SeedFingerprintAsync(connection, foreign, identity, cancellationToken);
-
                 }
                 else
                 {
-
                     await MemoryErasureTestKeys.SeedFingerprintAsync(connection, key, identity, cancellationToken);
-
                 }
-
             },
         };
-
     }
 
     /// <summary>
@@ -920,16 +897,13 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
     /// </summary>
     private async Task<string> SeedLostKeyEvidenceAsync(InMemoryOsCredentialStore credentials)
     {
-
         using (MemoryErasureKey key = MemoryErasureTestKeys.CreateKey(credentials))
         {
-
             await MemoryErasureTestKeys.SeedFingerprintAsync(
                 (SqliteConnection)_db!.Database.GetDbConnection(),
                 key,
                 MemoryErasureIdentity.ForSaga(SagaMemoryScopeKind.Global, null, "Something the operator erased."),
                 CancellationToken.None);
-
         }
 
         string saved = credentials
@@ -939,14 +913,12 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
         _ = credentials.Delete(ArcanumCredentialIdentity.Service, ArcanumCredentialIdentity.MemoryErasureFingerprintKeyAccount);
 
         return saved;
-
     }
 
     [SkippableFact]
 
     public async Task ExtractForSessionAsync_MoreThanFormerTailWindow_ProcessesEveryEntryOldestFirst()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = await CreateSessionAsync();
@@ -957,12 +929,10 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
 
         for (int index = 0; index < 25; index++)
         {
-
             latestTimestamp = await CreateEntryAsync(
                 sessionId,
                 $"history-{index:D2}",
                 firstTimestamp.AddSeconds(index));
-
         }
 
         FakeWeaveService weave = new();
@@ -996,14 +966,12 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
         Assert.Contains("history-24", intelligence.StatelessUserContents[^1], StringComparison.Ordinal);
 
         Assert.Equal(latestTimestamp, await GetWatermarkAsync(sessionId));
-
     }
 
     [SkippableFact]
 
     public async Task ExtractForSessionAsync_PageBoundary_KeepsToolCallAndResultTogether()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = await CreateSessionAsync();
@@ -1012,12 +980,10 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
 
         for (int index = 0; index < 9; index++)
         {
-
             _ = await CreateEntryAsync(
                 sessionId,
                 $"history-{index:D2}",
                 firstTimestamp.AddSeconds(index));
-
         }
 
         GrimoireRepository repository = CreateRepository(new ArcanumSettings());
@@ -1054,14 +1020,12 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
         Assert.Contains("[ToolCall: inspect({})]", intelligence.StatelessUserContents[0], StringComparison.Ordinal);
 
         Assert.Contains("[ToolResult: paired-result]", intelligence.StatelessUserContents[0], StringComparison.Ordinal);
-
     }
 
     [SkippableFact]
 
     public async Task ExtractForSessionAsync_RejectsAttachmentClaimThatWasNotMaterializedInSourceTurn()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = await CreateSessionAsync();
@@ -1101,14 +1065,12 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
         Assert.Equal(0, weave.EmbedCallCount);
 
         Assert.NotNull(await GetWatermarkAsync(sessionId));
-
     }
 
     [SkippableFact]
 
     public async Task ExtractForSessionAsync_MalformedNonNullAttachmentClaim_RetriesWithoutAdvancingCursor()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = await CreateSessionAsync();
@@ -1148,14 +1110,12 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
         Assert.Equal(0, weave.EmbedCallCount);
 
         Assert.Null(await GetExtractionCursorAsync(sessionId));
-
     }
 
     [SkippableFact]
 
     public async Task ExtractForSessionAsync_MaterializedAttachmentConclusion_PersistsTypedProvenance()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = await CreateSessionAsync();
@@ -1216,13 +1176,11 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
         Assert.Contains("design-notes", intelligence.LastStatelessUserContent, StringComparison.Ordinal);
 
         Assert.DoesNotContain("attachment-hash", intelligence.LastStatelessUserContent, StringComparison.Ordinal);
-
     }
 
     [SkippableFact]
     public async Task ExtractForSessionAsync_MalformedJsonResponse_DoesNotAdvanceWatermark_RetriesNextTick()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = await CreateSessionAsync();
@@ -1255,7 +1213,6 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
         // "{ memories: [] }" response — the watermark must not advance; the next enqueue retries the
         // same entry window (see ExtractForSessionAsync_LlmFailure_DoesNotAdvanceWatermark_RetriesNextTick).
         Assert.Null(await GetWatermarkAsync(sessionId));
-
     }
 
     [SkippableTheory]
@@ -1269,7 +1226,6 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
     public async Task ExtractForSessionAsync_SchemaInvalidResponse_DoesNotAdvanceCursor(
         string responseText)
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = await CreateSessionAsync();
@@ -1301,13 +1257,80 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
         Assert.Equal(0, await CountMemoriesAsync());
 
         Assert.Null(await GetExtractionCursorAsync(sessionId));
+    }
 
+    /// <summary>
+    /// Per-candidate inserts commit before the page cursor, so an in-process fault on a later candidate
+    /// leaves the earlier conclusion durable with the cursor unmoved. The retry re-reviews the same page
+    /// and must recognise that conclusion rather than store it a second time.
+    /// </summary>
+    [SkippableFact]
+    public async Task ExtractForSessionAsync_SecondInsertThrows_RetryDoesNotDuplicateFirstMemory()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = await CreateSessionAsync();
+
+        await CreateEntryAsync(sessionId, "Two durable facts are stated in this turn.");
+
+        // The second embedding of the first attempt has the wrong width, so the store refuses the second
+        // insert by throwing after the first insert has already committed.
+        FakeWeaveService weave = new()
+        {
+            VectorForCall = callCount => callCount == 2 ? new float[TestDimensions + 1] : Vec(1f),
+        };
+
+        FakeIntelligenceProvider intelligence = new()
+        {
+            NextText = """{ "memories": [{ "content": "First durable fact.", "attachmentId": null }, { "content": "Second durable fact.", "attachmentId": null }] }""",
+        };
+
+        SagaExtractionService service = CreateService();
+
+        (IServiceScopeFactory scopeFactory, EmbeddingSettings embeddings, ArcanumSettings settings) = BuildScope(weave, intelligence);
+
+        await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
+
+        _ = await Assert.ThrowsAsync<InvalidOperationException>(() => ExtractWithLeaseAsync(
+            service,
+            scope.ServiceProvider,
+            sessionId,
+            embeddings,
+            settings,
+            CancellationToken.None));
+
+        Assert.Equal(1, await CountMemoriesAsync());
+
+        Assert.Null(await GetExtractionCursorAsync(sessionId));
+
+        SagaExtractionOutcome retried = await ExtractWithLeaseAsync(
+            service,
+            scope.ServiceProvider,
+            sessionId,
+            embeddings,
+            settings,
+            CancellationToken.None);
+
+        Assert.Equal(SagaExtractionOutcome.Completed, retried);
+
+        SagaMemoryDto[] memories = await CreateStore().ListAsync(
+            null,
+            sessionId,
+            MemoryScope.Installation,
+            10,
+            0,
+            CancellationToken.None);
+
+        Assert.Equal(
+            ["First durable fact.", "Second durable fact."],
+            memories.Select(static memory => memory.Content).Order(StringComparer.Ordinal));
+
+        Assert.NotNull(await GetExtractionCursorAsync(sessionId));
     }
 
     [SkippableFact]
     public async Task ExtractForSessionAsync_EmptyMemoriesArray_NoInserts_StillAdvancesWatermark()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = await CreateSessionAsync();
@@ -1337,13 +1360,11 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
         Assert.Equal(0, await CountMemoriesAsync());
 
         Assert.NotNull(await GetWatermarkAsync(sessionId));
-
     }
 
     [SkippableFact]
     public async Task ExtractForSessionAsync_AllEmbedsFail_DoesNotAdvanceWatermark_RetriesNextTick()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = await CreateSessionAsync();
@@ -1376,13 +1397,11 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
         // provider outage) — like a parse failure, nothing was actually persisted, so the watermark
         // must not advance and the next enqueue retries the same entry window.
         Assert.Null(await GetWatermarkAsync(sessionId));
-
     }
 
     [SkippableFact]
     public async Task ExtractForSessionAsync_NoNewEntriesBeyondWatermark_Skips()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = await CreateSessionAsync();
@@ -1416,13 +1435,11 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
         Assert.Equal(0, intelligence.CallCount);
 
         Assert.Equal(0, await CountMemoriesAsync());
-
     }
 
     [SkippableFact]
     public async Task ExtractForSessionAsync_LlmFailure_DoesNotAdvanceWatermark_RetriesNextTick()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = await CreateSessionAsync();
@@ -1433,12 +1450,10 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
 
         for (int index = 0; index < 25; index++)
         {
-
             latestTimestamp = await CreateEntryAsync(
                 sessionId,
                 $"retry-history-{index:D2}",
                 firstTimestamp.AddSeconds(index));
-
         }
 
         FakeWeaveService weave = new();
@@ -1485,20 +1500,19 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
 
         Assert.Equal(SagaExtractionOutcome.Completed, resumedOutcome);
 
-        Assert.Equal(3, await CountMemoriesAsync());
+        // All three pages return the same conclusion, which the Session stores once.
+        Assert.Equal(1, await CountMemoriesAsync());
 
         Assert.Equal(latestTimestamp, await GetWatermarkAsync(sessionId));
 
         Assert.Equal(4, intelligence.CallCount);
 
         Assert.Contains("retry-history-00", intelligence.StatelessUserContents[1], StringComparison.Ordinal);
-
     }
 
     [SkippableFact]
     public async Task ExtractForSessionAsync_HostCancellation_PropagatesInsteadOfReturningRetry()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = await CreateSessionAsync();
@@ -1544,13 +1558,11 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
         Assert.Equal(0, weave.EmbedCallCount);
 
         Assert.Null(await GetWatermarkAsync(sessionId));
-
     }
 
     [SkippableFact]
     public async Task ExtractForSessionAsync_BeyondFormerGlobalAndPerSessionCaps_StillPersistsMemory()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = await CreateSessionAsync();
@@ -1605,22 +1617,99 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
         SagaMemoryStore store = CreateStore();
 
         Assert.Equal(10_001, await store.CountBySessionAsync(sessionId, CancellationToken.None));
-
     }
 
+    /// <summary>
+    /// Abandonment removes the pending work and retains its segment as one step under the policy lock. A test
+    /// that polls the pending snapshot until it is empty and then reads the abandoned segments (a couple of
+    /// dozen of them do) must therefore see both sides of that step or neither: the snapshot waits for the
+    /// lock instead of reading in the gap between the two writes. Holding the lock here is the one
+    /// deterministic way to observe that; the reader is blocked when its thread reports a wait state.
+    /// </summary>
+    [SkippableFact]
+    public void PendingRequestsForTests_waits_for_an_abandonment_in_flight_instead_of_reading_between_its_two_writes()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        (IServiceScopeFactory scopeFactory, _, ArcanumSettings settings) =
+            BuildScope(new FakeWeaveService(), new FakeIntelligenceProvider());
+
+        SagaExtractionService service = new(
+            scopeFactory,
+            new TestOptionsMonitor<ArcanumSettings>(settings),
+            _admissionGate,
+            NullLogger<SagaExtractionService>.Instance);
+
+        object policyLock = typeof(SagaExtractionService)
+            .GetField("_pendingPolicySync", global::System.Reflection.BindingFlags.NonPublic | global::System.Reflection.BindingFlags.Instance)?
+            .GetValue(service)
+            ?? throw new InvalidOperationException("The saga service's policy lock was not found.");
+
+        Thread reader = new(() => _ = service.PendingRequestsForTests) { IsBackground = true };
+
+        Monitor.Enter(policyLock);
+
+        try
+        {
+            reader.Start();
+
+            _ = SpinWait.SpinUntil(
+                () => !reader.IsAlive || reader.ThreadState.HasFlag(ThreadState.WaitSleepJoin),
+                TimeSpan.FromSeconds(5));
+
+            Assert.True(
+                reader.IsAlive,
+                "The pending snapshot finished while the policy lock was held, so it can read between abandonment's two writes.");
+
+            Assert.True(reader.ThreadState.HasFlag(ThreadState.WaitSleepJoin));
+        }
+        finally
+        {
+            Monitor.Exit(policyLock);
+        }
+
+        Assert.True(reader.Join(TimeSpan.FromSeconds(5)), "The pending snapshot did not finish once the policy lock was released.");
+    }
+
+    /// <summary>
+    /// The single channel reader is FIFO, so the ineligible item's disabled-policy decision is observed
+    /// (the skip log precedes the <c>continue</c> that bypasses extraction), then the policy is enabled and
+    /// an eligible second item is enqueued. The second item's provider call is the barrier: by the time it
+    /// lands the reader has fully handled the first item, so a zero call count for the first session is
+    /// proven rather than merely not yet observed.
+    /// </summary>
     [SkippableFact]
     public async Task ExecuteAsync_IdlesWhenDisabled_NeverCallsIntelligence()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
-        Guid sessionId = await CreateSessionAsync();
+        const string ineligibleContent = "should not be extracted while disabled";
 
-        await CreateEntryAsync(sessionId, "should not be extracted while disabled");
+        const string eligibleContent = "extracted once the retained policy is enabled";
+
+        Guid ineligibleSessionId = await CreateSessionAsync();
+
+        _ = await CreateEntryAsync(ineligibleSessionId, ineligibleContent);
+
+        long ineligibleThroughSequence = _seededSequence;
+
+        Guid eligibleSessionId = await CreateSessionAsync();
+
+        _ = await CreateEntryAsync(eligibleSessionId, eligibleContent);
+
+        long eligibleThroughSequence = _seededSequence;
 
         FakeWeaveService weave = new();
 
-        FakeIntelligenceProvider intelligence = new() { NextText = """{ "memories": [{ "content": "nope", "attachmentId": null }] }""" };
+        FakeIntelligenceProvider intelligence = new()
+        {
+            ExpectedCallCount = 1,
+            Entered = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously),
+            NextText = """{ "memories": [{ "content": "nope", "attachmentId": null }] }""",
+        };
+
+        (IServiceScopeFactory scopeFactory, _, ArcanumSettings enabledSettings) =
+            BuildScope(weave, intelligence);
 
         ArcanumSettings disabledSettings = new()
         {
@@ -1634,68 +1723,70 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
             },
         };
 
-        ServiceCollection services = new();
+        SwitchableOptionsMonitor options = new(disabledSettings);
 
-        services.AddSingleton(_db!);
-
-        services.AddSingleton<IWeaveService>(weave);
-
-        services.AddSingleton<IArcanumIntelligenceProvider>(intelligence);
-
-        services.AddSingleton<ISagaMemoryStore, SagaMemoryStore>();
-
-        services.AddSingleton<IMemoryErasureKeyProvider>(MemoryErasureTestKeys.Isolated());
-
-        services.AddScoped<SagaErasureWriteGate>();
-
-        services.AddSingleton<IOptionsMonitor<ArcanumSettings>>(new TestOptionsMonitor<ArcanumSettings>(disabledSettings));
-
-        services.AddSingleton(new WeaveIndexAvailability());
-
-        services.AddScoped<IGrimoireRepository>(sp => new GrimoireRepository(
-            sp.GetRequiredService<ArcanumDbContext>(),
-            new NoOpSessionAttachmentStore(),
-            NullLogger<GrimoireRepository>.Instance,
-            new TestOptionsSnapshot<ArcanumSettings>(disabledSettings),
-            covenantKernel: null,
-            availabilityRepublisher: null,
-            FixtureOrdinaryConnectionFactory.For(sp.GetRequiredService<ArcanumDbContext>()),
-            FixtureLabeledArtifactGuard.For(sp.GetRequiredService<ArcanumDbContext>())));
-
-        IServiceScopeFactory scopeFactory = services.BuildServiceProvider().GetRequiredService<IServiceScopeFactory>();
+        SkipSignalLogger logger = new(ineligibleSessionId);
 
         SagaExtractionService service = new(
             scopeFactory,
-            new TestOptionsMonitor<ArcanumSettings>(disabledSettings),
+            options,
             _admissionGate,
-            NullLogger<SagaExtractionService>.Instance);
+            logger);
 
         IHostedService hosted = service;
 
         await hosted.StartAsync(CancellationToken.None);
 
-        service.EnqueueExtraction(
-            new SagaExtractionRequest(
-                sessionId,
-                [],
-                HadUnprovenancedAttachmentContent: false,
-                AfterEntrySequenceExclusive: 0,
-                ThroughEntrySequence: _seededSequence));
+        try
+        {
+            service.EnqueueExtraction(
+                new SagaExtractionRequest(
+                    ineligibleSessionId,
+                    [],
+                    HadUnprovenancedAttachmentContent: false,
+                    AfterEntrySequenceExclusive: 0,
+                    ThroughEntrySequence: ineligibleThroughSequence));
 
-        await Task.Delay(TimeSpan.FromMilliseconds(300));
+            // Either the guard's skip log or a provider call proves the reader has decided on the first
+            // item; a missing guard then fails the zero-call assertion instead of timing out.
+            _ = await Task.WhenAny(logger.Skipped, intelligence.Entered.Task).WaitAsync(TimeSpan.FromSeconds(5));
 
-        await hosted.StopAsync(CancellationToken.None);
+            Assert.Equal(0, intelligence.CallCount);
 
-        Assert.Equal(0, intelligence.CallCount);
+            options.Current = enabledSettings;
 
-        Assert.Equal(0, await CountMemoriesAsync());
+            service.EnqueueExtraction(
+                new SagaExtractionRequest(
+                    eligibleSessionId,
+                    [],
+                    HadUnprovenancedAttachmentContent: false,
+                    AfterEntrySequenceExclusive: 0,
+                    ThroughEntrySequence: eligibleThroughSequence));
 
+            await intelligence.WaitForExpectedCallsAsync(TimeSpan.FromSeconds(5));
+        }
+        finally
+        {
+            await hosted.StopAsync(CancellationToken.None);
+        }
+
+        Assert.Equal(1, intelligence.CallCount);
+
+        string onlyCall = Assert.Single(intelligence.StatelessUserContents);
+
+        Assert.Contains(eligibleContent, onlyCall, StringComparison.Ordinal);
+
+        Assert.DoesNotContain(ineligibleContent, onlyCall, StringComparison.Ordinal);
+
+        // The provider call count proves nothing was asked of the model for the ineligible session; this
+        // proves nothing was stored for it either (the eligible session's own write races the stop, so only
+        // the ineligible session has a deterministic count).
+        Assert.Equal(0, await CreateStore().CountBySessionAsync(ineligibleSessionId, CancellationToken.None));
     }
 
     [SkippableFact]
     public async Task ExecuteAsync_RefusedWorkLease_PreservesExactRequestAndResumesAfterReopen()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = await CreateSessionAsync();
@@ -1748,7 +1839,6 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
 
         try
         {
-
             service.EnqueueExtraction(request);
 
             await gate.NextOpenWaitStarted.WaitAsync(TimeSpan.FromSeconds(5));
@@ -1799,7 +1889,6 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
                 service.PendingSegmentsForTests(sessionId),
                 first =>
                 {
-
                     Assert.Equal(0, first.AfterEntrySequenceExclusive);
 
                     Assert.Equal(firstThroughSequence, first.ThroughEntrySequence);
@@ -1807,11 +1896,9 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
                     Assert.Equal(attachmentId, Assert.Single(first.MaterializedAttachments).AttachmentId);
 
                     Assert.True(first.HadUnprovenancedAttachmentContent);
-
                 },
                 second =>
                 {
-
                     Assert.Equal(firstThroughSequence, second.AfterEntrySequenceExclusive);
 
                     Assert.Equal(laterThroughSequence, second.ThroughEntrySequence);
@@ -1819,7 +1906,6 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
                     Assert.Equal(laterAttachmentId, Assert.Single(second.MaterializedAttachments).AttachmentId);
 
                     Assert.False(second.HadUnprovenancedAttachmentContent);
-
                 });
 
             closed = await CloseAsync(innerGate, closing);
@@ -1864,30 +1950,23 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
             Assert.Equal(2, gate.WorkLeaseAttempts);
 
             Assert.Equal(2, intelligence.CallCount);
-
         }
         finally
         {
-
             using CancellationTokenSource stopTimeout = new(TimeSpan.FromSeconds(5));
 
             await hosted.StopAsync(stopTimeout.Token);
 
             if (!reopened && closed is not null)
             {
-
                 await ReopenAsync(closed);
-
             }
-
         }
-
     }
 
     [SkippableFact]
     public async Task ExecuteAsync_RevocationBeforeFirstPageEffect_DefersWithoutProviderWork()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = await CreateSessionAsync();
@@ -1923,11 +2002,9 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
             OnScopeCreated = () => closing ??= BeginClosing(innerGate, 82),
             OnScopeDisposed = () =>
             {
-
                 scopeDisposed.TrySetResult();
 
                 return ValueTask.CompletedTask;
-
             },
         };
 
@@ -1943,7 +2020,6 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
 
         try
         {
-
             service.EnqueueExtraction(request);
 
             await scopeDisposed.Task.WaitAsync(TimeSpan.FromSeconds(5));
@@ -1967,30 +2043,23 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
             Assert.Null(await GetWatermarkAsync(sessionId));
 
             Assert.Same(request, Assert.Single(service.PendingRequestsForTests));
-
         }
         finally
         {
-
             using CancellationTokenSource stopTimeout = new(TimeSpan.FromSeconds(5));
 
             await hosted.StopAsync(stopTimeout.Token);
 
             if (closing is not null)
             {
-
                 await closing.DisposeAsync();
-
             }
-
         }
-
     }
 
     [SkippableFact]
     public async Task ExecuteAsync_PageEffectWins_DrainWaitsThroughProviderWritesWatermarkAndScopeDisposal()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = await CreateSessionAsync();
@@ -2023,11 +2092,9 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
         {
             OnEmbedAsync = _ =>
             {
-
                 drainWaitedDuringEveryEmbedding &= drainTask is { IsCompleted: false };
 
                 return Task.CompletedTask;
-
             },
         };
 
@@ -2037,7 +2104,6 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
             ExpectedCallCount = 1,
             OnCall = _ =>
             {
-
                 closing = BeginClosing(innerGate, 84);
 
                 drainTask = innerGate.DrainRequestAndWorkAsync(
@@ -2045,7 +2111,6 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
                     CancellationToken.None).AsTask();
 
                 drainWaitedDuringProvider = !drainTask.IsCompleted;
-
             },
         };
 
@@ -2060,12 +2125,10 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
         {
             OnEffectGroupDisposing = async () =>
             {
-
                 writesWereDurableBeforeEffectDisposal = await CountMemoriesAsync() == 2;
 
                 watermarkWasDurableBeforeEffectDisposal =
                     await GetWatermarkAsync(sessionId) == pageWatermark;
-
             },
         };
 
@@ -2073,7 +2136,6 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
         {
             OnScopeDisposed = () =>
             {
-
                 scopeDisposedWhileLeaseHeld = gate.WorkLeaseIsHeld;
 
                 drainWaitedThroughScopeDisposal = drainTask is { IsCompleted: false };
@@ -2081,7 +2143,6 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
                 scopeDisposed.TrySetResult();
 
                 return ValueTask.CompletedTask;
-
             },
         };
 
@@ -2101,7 +2162,6 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
 
         try
         {
-
             service.EnqueueExtraction(
                 new SagaExtractionRequest(
                     sessionId,
@@ -2155,37 +2215,28 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
             await ReopenAsync(closed);
 
             reopened = true;
-
         }
         finally
         {
-
             using CancellationTokenSource stopTimeout = new(TimeSpan.FromSeconds(5));
 
             await hosted.StopAsync(stopTimeout.Token);
 
             if (!reopened && closed is not null)
             {
-
                 await ReopenAsync(closed);
-
             }
 
             if (closed is null && closing is not null)
             {
-
                 await closing.DisposeAsync();
-
             }
-
         }
-
     }
 
     [SkippableFact]
     public async Task ExecuteAsync_CloseBetweenPages_ResumesFirstUncommittedPageWithoutRebillingCommittedPage()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = await CreateSessionAsync();
@@ -2198,7 +2249,6 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
 
         for (int index = 1; index <= 11; index++)
         {
-
             DateTimeOffset createdAt = firstCreatedAt.AddSeconds(index);
 
             DateTimeOffset stored = await CreateEntryAsync(
@@ -2208,13 +2258,10 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
 
             if (index == 10)
             {
-
                 pageOneWatermark = stored;
-
             }
 
             finalWatermark = stored;
-
         }
 
         GrimoireConnectionAdmissionGate innerGate = OpenGate();
@@ -2233,12 +2280,9 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
                 : """{ "memories": [{ "content": "memory from resumed page two", "attachmentId": null }] }""",
             OnCall = callCount =>
             {
-
                 if (callCount != 1)
                 {
-
                     return;
-
                 }
 
                 closing = BeginClosing(innerGate, 85);
@@ -2246,7 +2290,6 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
                 drainTask = innerGate.DrainRequestAndWorkAsync(
                     closing,
                     CancellationToken.None).AsTask();
-
             },
         };
 
@@ -2272,7 +2315,6 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
 
         try
         {
-
             service.EnqueueExtraction(
                 new SagaExtractionRequest(
                     sessionId,
@@ -2321,11 +2363,9 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
 
             while (service.PendingRequestsForTests.Count != 0)
             {
-
                 await Task.Delay(
                     TimeSpan.FromMilliseconds(10),
                     completionTimeout.Token);
-
             }
 
             Assert.Equal(finalWatermark, await GetWatermarkAsync(sessionId));
@@ -2351,37 +2391,28 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
             Assert.Equal(2, gate.EffectGroupsAdmitted);
 
             Assert.Equal(1, gate.NextOpenWaitCalls);
-
         }
         finally
         {
-
             using CancellationTokenSource stopTimeout = new(TimeSpan.FromSeconds(5));
 
             await hosted.StopAsync(stopTimeout.Token);
 
             if (!reopened && closed is not null)
             {
-
                 await ReopenAsync(closed);
-
             }
 
             if (closed is null && closing is not null)
             {
-
                 await closing.DisposeAsync();
-
             }
-
         }
-
     }
 
     [SkippableFact]
     public async Task ExecuteAsync_RetryDueDuringMaintenance_PreservesPendingRequestAndRetryStateWithoutSpinning()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = await CreateSessionAsync();
@@ -2409,13 +2440,11 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
             ExpectedCallCount = 1,
             OnCall = _ =>
             {
-
                 closing = BeginClosing(innerGate, 86);
 
                 drainTask = innerGate.DrainRequestAndWorkAsync(
                     closing,
                     CancellationToken.None).AsTask();
-
             },
         };
 
@@ -2440,7 +2469,6 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
 
         try
         {
-
             service.EnqueueExtraction(request);
 
             await gate.NextOpenWaitStarted.WaitAsync(TimeSpan.FromSeconds(5));
@@ -2470,30 +2498,23 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
             Assert.Equal(1, service.RetryAttemptForTests(sessionId));
 
             Assert.Same(request, Assert.Single(service.PendingRequestsForTests));
-
         }
         finally
         {
-
             using CancellationTokenSource stopTimeout = new(TimeSpan.FromSeconds(5));
 
             await hosted.StopAsync(stopTimeout.Token);
 
             if (closing is not null)
             {
-
                 await closing.DisposeAsync();
-
             }
-
         }
-
     }
 
     [SkippableFact]
     public async Task ExecuteAsync_RetryRetainsFailedPrefixAheadOfLaterTurnWithoutRebillingCommittedPage()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = await CreateSessionAsync();
@@ -2502,12 +2523,10 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
 
         for (int index = 1; index <= 11; index++)
         {
-
             _ = await CreateEntryAsync(
                 sessionId,
                 $"first-turn-entry-{index:D2}",
                 createdAt.AddSeconds(index));
-
         }
 
         long firstThroughSequence = _seededSequence;
@@ -2546,7 +2565,6 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
 
         try
         {
-
             service.EnqueueExtraction(
                 new SagaExtractionRequest(
                     sessionId,
@@ -2559,11 +2577,9 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
 
             while (intelligence.CallCount < 2 || service.ScheduledRetryCountForTests == 0)
             {
-
                 await Task.Delay(
                     TimeSpan.FromMilliseconds(10),
                     retryScheduledTimeout.Token);
-
             }
 
             DateTimeOffset laterCreatedAt = await CreateEntryAsync(
@@ -2597,11 +2613,9 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
 
             while (service.PendingRequestsForTests.Count != 0)
             {
-
                 await Task.Delay(
                     TimeSpan.FromMilliseconds(10),
                     completionTimeout.Token);
-
             }
 
             Assert.Equal(4, intelligence.CallCount);
@@ -2653,21 +2667,20 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
             Assert.Equal(laterAttachmentId, attachmentMemory.AttachmentProvenance!.AttachmentId);
 
             Assert.Equal(laterThroughSequence, (await GetExtractionCursorAsync(sessionId))!.EntrySequence);
-
         }
         finally
         {
-
             await hosted.StopAsync(CancellationToken.None);
-
         }
-
     }
 
+    /// <summary>
+    /// Models a restart: the earlier turn's process-local interval policy is gone and only the later
+    /// interval was enqueued, so the gap is the one case still reviewed under deny-all provenance.
+    /// </summary>
     [SkippableFact]
     public async Task ExecuteAsync_LaterIntervalAlone_ProcessesUnpaidGapWithNoProvenanceAuthority()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = await CreateSessionAsync();
@@ -2711,7 +2724,6 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
 
         try
         {
-
             service.EnqueueExtraction(
                 new SagaExtractionRequest(
                     sessionId,
@@ -2726,11 +2738,9 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
 
             while (service.PendingRequestsForTests.Count != 0)
             {
-
                 await Task.Delay(
                     TimeSpan.FromMilliseconds(10),
                     completionTimeout.Token);
-
             }
 
             Assert.Equal(2, intelligence.CallCount);
@@ -2755,30 +2765,23 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
             Assert.Contains("later turn entry", intelligence.StatelessUserContents[1], StringComparison.Ordinal);
 
             Assert.DoesNotContain("unpaid older-turn entry", intelligence.StatelessUserContents[1], StringComparison.Ordinal);
-
         }
         finally
         {
-
             await hosted.StopAsync(CancellationToken.None);
-
         }
-
     }
 
     [SkippableFact]
     public async Task ExecuteAsync_LaterIntervalMergedDuringFirstPage_DoesNotAuthorizeEarlierRemainder()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = await CreateSessionAsync();
 
         for (int index = 1; index <= 11; index++)
         {
-
             _ = await CreateEntryAsync(sessionId, $"older-entry-{index:D2}");
-
         }
 
         long firstThroughSequence = _seededSequence;
@@ -2813,7 +2816,6 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
 
         try
         {
-
             service.EnqueueExtraction(
                 new SagaExtractionRequest(
                     sessionId,
@@ -2856,11 +2858,9 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
 
             while (service.PendingRequestsForTests.Count != 0)
             {
-
                 await Task.Delay(
                     TimeSpan.FromMilliseconds(10),
                     completionTimeout.Token);
-
             }
 
             Assert.Equal(3, intelligence.CallCount);
@@ -2883,23 +2883,18 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
             Assert.DoesNotContain("later-entry-with-attachment", intelligence.StatelessUserContents[1], StringComparison.Ordinal);
 
             Assert.Contains("later-entry-with-attachment", intelligence.StatelessUserContents[2], StringComparison.Ordinal);
-
         }
         finally
         {
-
             intelligence.Gate!.TrySetResult(true);
 
             await hosted.StopAsync(CancellationToken.None);
-
         }
-
     }
 
     [SkippableFact]
     public async Task ExecuteAsync_StricterDuplicateArrivingDuringProviderCall_RevokesPersistenceAuthority()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = await CreateSessionAsync();
@@ -2932,7 +2927,6 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
 
         try
         {
-
             SagaExtractionRequest original = new(
                 sessionId,
                 [],
@@ -2958,23 +2952,18 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
             Assert.Equal(0, await CountMemoriesAsync());
 
             Assert.Equal(_seededSequence, (await GetExtractionCursorAsync(sessionId))!.EntrySequence);
-
         }
         finally
         {
-
             intelligence.Gate!.TrySetResult(true);
 
             await hosted.StopAsync(CancellationToken.None);
-
         }
-
     }
 
     [SkippableFact]
     public async Task ExecuteAsync_StricterDuplicateArrivingDuringEmbedding_RevokesPersistenceAuthority()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = await CreateSessionAsync();
@@ -2991,11 +2980,9 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
         {
             OnEmbedAsync = async _ =>
             {
-
                 embeddingEntered.TrySetResult(true);
 
                 await releaseEmbedding.Task.ConfigureAwait(false);
-
             },
         };
 
@@ -3021,7 +3008,6 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
 
         try
         {
-
             SagaExtractionRequest original = new(
                 sessionId,
                 [],
@@ -3047,23 +3033,18 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
             Assert.Equal(0, await CountMemoriesAsync());
 
             Assert.Equal(_seededSequence, (await GetExtractionCursorAsync(sessionId))!.EntrySequence);
-
         }
         finally
         {
-
             releaseEmbedding.TrySetResult(true);
 
             await hosted.StopAsync(CancellationToken.None);
-
         }
-
     }
 
     [SkippableFact]
     public async Task ExecuteAsync_StricterDuplicateDuringFirstEmbedding_PreventsLaterCandidateEmbedding()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = await CreateSessionAsync();
@@ -3080,18 +3061,14 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
         {
             OnEmbedAsync = async callCount =>
             {
-
                 if (callCount != 1)
                 {
-
                     return;
-
                 }
 
                 firstEmbeddingEntered.TrySetResult(true);
 
                 await releaseFirstEmbedding.Task.ConfigureAwait(false);
-
             },
         };
 
@@ -3117,7 +3094,6 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
 
         try
         {
-
             SagaExtractionRequest original = new(
                 sessionId,
                 [],
@@ -3143,23 +3119,18 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
             Assert.Equal(0, await CountMemoriesAsync());
 
             Assert.Equal(_seededSequence, (await GetExtractionCursorAsync(sessionId))!.EntrySequence);
-
         }
         finally
         {
-
             releaseFirstEmbedding.TrySetResult(true);
 
             await hosted.StopAsync(CancellationToken.None);
-
         }
-
     }
 
     [SkippableFact]
     public async Task ExecuteAsync_DurablePageProgress_ResetsRetryLadderForNextPage()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = await CreateSessionAsync();
@@ -3168,12 +3139,10 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
 
         for (int index = 1; index <= 11; index++)
         {
-
             _ = await CreateEntryAsync(
                 sessionId,
                 $"retry-reset-entry-{index:D2}",
                 createdAt.AddSeconds(index));
-
         }
 
         long throughEntrySequence = _seededSequence;
@@ -3211,7 +3180,6 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
 
         try
         {
-
             service.EnqueueExtraction(
                 new SagaExtractionRequest(
                     sessionId,
@@ -3226,11 +3194,9 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
 
             while (service.PendingRequestsForTests.Count != 0)
             {
-
                 await Task.Delay(
                     TimeSpan.FromMilliseconds(10),
                     completionTimeout.Token);
-
             }
 
             Assert.Equal(7, intelligence.CallCount);
@@ -3246,21 +3212,16 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
             Assert.Contains("retry-reset-entry-11", intelligence.StatelessUserContents[6], StringComparison.Ordinal);
 
             Assert.Equal(throughEntrySequence, (await GetExtractionCursorAsync(sessionId))!.EntrySequence);
-
         }
         finally
         {
-
             await hosted.StopAsync(CancellationToken.None);
-
         }
-
     }
 
     [SkippableFact]
     public async Task ExecuteAsync_UnexpectedFailureOnLaterInterval_UsesThatIntervalsRetryLadder()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = await CreateSessionAsync();
@@ -3305,7 +3266,6 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
 
         try
         {
-
             service.EnqueueExtraction(
                 new SagaExtractionRequest(
                     sessionId,
@@ -3328,11 +3288,9 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
 
             while (service.PendingRequestsForTests.Count != 0)
             {
-
                 await Task.Delay(
                     TimeSpan.FromMilliseconds(10),
                     completionTimeout.Token);
-
             }
 
             Assert.Equal(6, intelligence.CallCount);
@@ -3340,21 +3298,16 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
             Assert.Equal(0, service.RetryAttemptForTests(sessionId));
 
             Assert.Equal(firstThroughSequence, (await GetExtractionCursorAsync(sessionId))!.EntrySequence);
-
         }
         finally
         {
-
             await hosted.StopAsync(CancellationToken.None);
-
         }
-
     }
 
     [SkippableFact]
     public async Task ExecuteAsync_EarlyUnavailableRetry_PreservesLaterIntervalsFailureOwnership()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = await CreateSessionAsync();
@@ -3372,9 +3325,12 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
             AvailabilityForCheck = checkCount => checkCount % 2 == 1,
         };
 
+        // Unavailability bills nothing and so never counts toward abandonment; only the five schema-invalid
+        // responses after the first committed page do, so the second interval is abandoned on its fifth
+        // counted failure, on the ninth availability check.
         FakeIntelligenceProvider intelligence = new()
         {
-            ExpectedCallCount = 4,
+            ExpectedCallCount = 6,
             TextForCall = callCount => callCount == 1
                 ? """{ "memories": [] }"""
                 : "not valid json",
@@ -3399,7 +3355,6 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
 
         try
         {
-
             service.EnqueueExtraction(
                 new SagaExtractionRequest(
                     sessionId,
@@ -3422,35 +3377,28 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
 
             while (service.PendingRequestsForTests.Count != 0)
             {
-
                 await Task.Delay(
                     TimeSpan.FromMilliseconds(10),
                     completionTimeout.Token);
-
             }
 
-            Assert.Equal(4, intelligence.CallCount);
+            Assert.Equal(6, intelligence.CallCount);
 
-            Assert.Equal(5, weave.AvailabilityCheckCount);
+            Assert.Equal(9, weave.AvailabilityCheckCount);
 
             Assert.Equal(0, service.RetryAttemptForTests(sessionId));
 
             Assert.Equal(firstThroughSequence, (await GetExtractionCursorAsync(sessionId))!.EntrySequence);
-
         }
         finally
         {
-
             await hosted.StopAsync(CancellationToken.None);
-
         }
-
     }
 
     [SkippableFact]
     public async Task ExecuteAsync_CursorCatchesUpBeforeFinalUnavailableRetry_PreservesLaterMerge()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = await CreateSessionAsync();
@@ -3473,19 +3421,14 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
         {
             AvailabilityForCheck = checkCount =>
             {
-
                 if (checkCount <= 4)
                 {
-
                     return false;
-
                 }
 
                 if (Volatile.Read(ref laterTurnEnqueued) != 0)
                 {
-
                     return true;
-
                 }
 
                 fifthAvailabilityCheckEntered.TrySetResult(true);
@@ -3493,7 +3436,6 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
                 releaseFifthAvailabilityCheck.Task.GetAwaiter().GetResult();
 
                 return false;
-
             },
         };
 
@@ -3521,7 +3463,6 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
 
         try
         {
-
             service.EnqueueExtraction(
                 new SagaExtractionRequest(
                     sessionId,
@@ -3535,11 +3476,9 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
             while (service.RetryAttemptForTests(sessionId) != 4
                 || service.ScheduledRetryCountForTests == 0)
             {
-
                 await Task.Delay(
                     TimeSpan.FromMilliseconds(10),
                     fourthRetryTimeout.Token);
-
             }
 
             await CreateStore().SetExtractionCursorAsync(
@@ -3552,11 +3491,9 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
             while (!fifthAvailabilityCheckEntered.Task.IsCompleted
                 && service.PendingRequestsForTests.Count != 0)
             {
-
                 await Task.Delay(
                     TimeSpan.FromMilliseconds(10),
                     raceTimeout.Token);
-
             }
 
             _ = await CreateEntryAsync(sessionId, "later turn survives the caught-up retry race");
@@ -3581,11 +3518,9 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
 
             while (service.PendingRequestsForTests.Count != 0)
             {
-
                 await Task.Delay(
                     TimeSpan.FromMilliseconds(10),
                     completionTimeout.Token);
-
             }
 
             Assert.Equal(1, intelligence.CallCount);
@@ -3600,23 +3535,23 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
                 StringComparison.Ordinal);
 
             Assert.Equal(laterThroughSequence, (await GetExtractionCursorAsync(sessionId))!.EntrySequence);
-
         }
         finally
         {
-
             releaseFifthAvailabilityCheck.TrySetResult(true);
 
             await hosted.StopAsync(CancellationToken.None);
-
         }
-
     }
 
+    /// <summary>
+    /// A failure before cursor selection bought no extraction response, so it never counts toward
+    /// abandonment: past the former five-attempt ladder both independently queued frontiers are still
+    /// pending with their own provenance, and the oldest one owns the retry ladder.
+    /// </summary>
     [Fact]
-    public async Task ExecuteAsync_PreCursorFailure_AbandonsOnePendingFrontierAtATime()
+    public async Task ExecuteAsync_PreCursorFailure_KeepsEveryFrontierPendingBeyondTheFormerLadder()
     {
-
         Guid sessionId = Guid.NewGuid();
 
         FakeWeaveService weave = new();
@@ -3666,36 +3601,33 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
 
         try
         {
+            using CancellationTokenSource ladderTimeout = new(TimeSpan.FromSeconds(10));
 
-            using CancellationTokenSource completionTimeout = new(TimeSpan.FromSeconds(5));
-
-            while (service.PendingRequestsForTests.Count != 0)
+            while (service.RetryAttemptForTests(sessionId) <= 6)
             {
-
                 await Task.Delay(
                     TimeSpan.FromMilliseconds(10),
-                    completionTimeout.Token);
-
+                    ladderTimeout.Token);
             }
 
-            Assert.Equal(10, gate.WorkLeaseAttempts);
+            Assert.Collection(
+                service.PendingSegmentsForTests(sessionId),
+                first => Assert.Equal(1, first.ThroughEntrySequence),
+                second => Assert.Equal(2, second.ThroughEntrySequence));
 
-            Assert.Equal(0, service.RetryAttemptForTests(sessionId));
+            Assert.True(gate.WorkLeaseAttempts > 6);
 
+            Assert.Equal(0, intelligence.CallCount);
         }
         finally
         {
-
             await hosted.StopAsync(CancellationToken.None);
-
         }
-
     }
 
     [SkippableFact]
     public async Task ExecuteAsync_LaterTurnMergedDuringFinalFailure_StartsFreshLadderInsteadOfBeingDropped()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = await CreateSessionAsync();
@@ -3720,18 +3652,14 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
                 : """{ "memories": [] }""",
             BeforeResultAsync = async (callCount, cancellationToken) =>
             {
-
                 if (callCount != 5)
                 {
-
                     return;
-
                 }
 
                 fifthCallEntered.TrySetResult(true);
 
                 await releaseFifthCall.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
-
             },
         };
 
@@ -3754,7 +3682,6 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
 
         try
         {
-
             service.EnqueueExtraction(
                 new SagaExtractionRequest(
                     sessionId,
@@ -3785,11 +3712,9 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
 
             while (service.PendingRequestsForTests.Count != 0)
             {
-
                 await Task.Delay(
                     TimeSpan.FromMilliseconds(10),
                     completionTimeout.Token);
-
             }
 
             Assert.Equal(7, intelligence.CallCount);
@@ -3803,23 +3728,18 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
             Assert.Contains("later turn must survive abandonment", intelligence.StatelessUserContents[6], StringComparison.Ordinal);
 
             Assert.Equal(laterThroughSequence, (await GetExtractionCursorAsync(sessionId))!.EntrySequence);
-
         }
         finally
         {
-
             releaseFifthCall.TrySetResult(true);
 
             await hosted.StopAsync(CancellationToken.None);
-
         }
-
     }
 
     [SkippableFact]
     public async Task ExecuteAsync_LaterTurnMergedBeforeFinalRetry_StartsFreshLadderInsteadOfBeingDropped()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = await CreateSessionAsync();
@@ -3841,14 +3761,10 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
                 : """{ "memories": [] }""",
             OnCall = callCount =>
             {
-
                 if (callCount == 4)
                 {
-
                     fourthCallEntered.TrySetResult(true);
-
                 }
-
             },
         };
 
@@ -3871,7 +3787,6 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
 
         try
         {
-
             service.EnqueueExtraction(
                 new SagaExtractionRequest(
                     sessionId,
@@ -3887,11 +3802,9 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
             while (service.RetryAttemptForTests(sessionId) != 4
                 || service.ScheduledRetryCountForTests == 0)
             {
-
                 await Task.Delay(
                     TimeSpan.FromMilliseconds(10),
                     backoffTimeout.Token);
-
             }
 
             _ = await CreateEntryAsync(sessionId, "later turn must survive the final retry backoff");
@@ -3912,11 +3825,9 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
 
             while (service.PendingRequestsForTests.Count != 0)
             {
-
                 await Task.Delay(
                     TimeSpan.FromMilliseconds(10),
                     completionTimeout.Token);
-
             }
 
             Assert.Equal(7, intelligence.CallCount);
@@ -3930,21 +3841,16 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
             Assert.Contains("later turn must survive the final retry backoff", intelligence.StatelessUserContents[6], StringComparison.Ordinal);
 
             Assert.Equal(laterThroughSequence, (await GetExtractionCursorAsync(sessionId))!.EntrySequence);
-
         }
         finally
         {
-
             await hosted.StopAsync(CancellationToken.None);
-
         }
-
     }
 
     [SkippableFact]
     public async Task StopAsync_WhileDeferredGateStaysClosed_CancelsWaitAndClearsPendingState()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = await CreateSessionAsync();
@@ -3979,7 +3885,6 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
 
         try
         {
-
             service.EnqueueExtraction(
                 new SagaExtractionRequest(
                     sessionId,
@@ -4019,28 +3924,21 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
             await Task.Delay(TimeSpan.FromMilliseconds(100));
 
             Assert.Equal(0, intelligence.CallCount);
-
         }
         finally
         {
-
             if (!stopped)
             {
-
                 using CancellationTokenSource stopTimeout = new(TimeSpan.FromSeconds(5));
 
                 await hosted.StopAsync(stopTimeout.Token);
-
             }
-
         }
-
     }
 
     [SkippableFact]
     public async Task StopAsync_ObservesAndCancelsScheduledRetryBeforeReturning()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = await CreateSessionAsync();
@@ -4065,9 +3963,7 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
             _admissionGate,
             NullLogger<SagaExtractionService>.Instance)
         {
-
             RetryBaseDelayForTests = TimeSpan.FromMinutes(10),
-
         };
 
         IHostedService hosted = service;
@@ -4078,7 +3974,6 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
 
         try
         {
-
             service.EnqueueExtraction(
                 new SagaExtractionRequest(
                     sessionId,
@@ -4093,11 +3988,9 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
 
             while (service.ScheduledRetryCountForTests == 0)
             {
-
                 await Task.Delay(
                     TimeSpan.FromMilliseconds(10),
                     retryScheduledTimeout.Token);
-
             }
 
             Assert.Equal(1, service.ScheduledRetryCountForTests);
@@ -4121,28 +4014,592 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
                     ThroughEntrySequence: _seededSequence));
 
             Assert.Empty(service.PendingRequestsForTests);
-
         }
         finally
         {
-
             if (!stopped)
             {
-
                 using CancellationTokenSource stopTimeout = new(TimeSpan.FromSeconds(5));
 
                 await hosted.StopAsync(stopTimeout.Token);
+            }
+        }
+    }
 
+    /// <summary>
+    /// An extraction-provider outage outlasting the five-rung ladder is not a deterministic failure: no
+    /// extraction response was ever paid for, so the interval keeps its own policy and retries on the capped
+    /// schedule until the provider recovers, rather than being abandoned. The embedding-provider outage has
+    /// its own test below.
+    /// </summary>
+    [SkippableFact]
+    public async Task ExecuteAsync_ProviderOutageBeyondLadder_StillExtractsOrdinaryMemoryOnRecovery()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = await CreateSessionAsync();
+
+        _ = await CreateEntryAsync(sessionId, "The operator prefers tabs over spaces in every repository.");
+
+        long throughSequence = _seededSequence;
+
+        FakeWeaveService weave = new();
+
+        FakeIntelligenceProvider intelligence = new()
+        {
+            FailureForCall = callCount => callCount <= 5
+                ? new Error(ErrorCodes.Hub.Error, "Simulated extraction provider outage.")
+                : null,
+            NextText = """{ "memories": [{ "content": "The operator prefers tabs over spaces.", "attachmentId": null }] }""",
+        };
+
+        (IServiceScopeFactory scopeFactory, _, ArcanumSettings settings) = BuildScope(weave, intelligence);
+
+        SagaExtractionService service = new(
+            scopeFactory,
+            new TestOptionsMonitor<ArcanumSettings>(settings),
+            _admissionGate,
+            NullLogger<SagaExtractionService>.Instance)
+        {
+            RetryBaseDelayForTests = TimeSpan.FromMilliseconds(5),
+        };
+
+        IHostedService hosted = service;
+
+        await hosted.StartAsync(CancellationToken.None);
+
+        try
+        {
+            service.EnqueueExtraction(
+                new SagaExtractionRequest(
+                    sessionId,
+                    [],
+                    HadUnprovenancedAttachmentContent: false,
+                    AfterEntrySequenceExclusive: 0,
+                    ThroughEntrySequence: throughSequence));
+
+            using CancellationTokenSource completionTimeout = new(TimeSpan.FromSeconds(10));
+
+            while (service.PendingRequestsForTests.Count != 0)
+            {
+                await Task.Delay(
+                    TimeSpan.FromMilliseconds(10),
+                    completionTimeout.Token);
             }
 
-        }
+            Assert.Equal(6, intelligence.CallCount);
 
+            SagaMemoryDto memory = Assert.Single(
+                await CreateStore().ListAsync(
+                    null,
+                    sessionId,
+                    MemoryScope.Installation,
+                    10,
+                    0,
+                    CancellationToken.None));
+
+            Assert.Equal("The operator prefers tabs over spaces.", memory.Content);
+
+            Assert.Equal(throughSequence, (await GetExtractionCursorAsync(sessionId))!.EntrySequence);
+
+            Assert.Equal(0, service.RetryAttemptForTests(sessionId));
+        }
+        finally
+        {
+            await hosted.StopAsync(CancellationToken.None);
+        }
+    }
+
+    /// <summary>
+    /// An embedding outage outlasting the five-rung ladder is not a model-shape failure. The configuration-only
+    /// availability check stays true, so the outage shows up only as every eligible conclusion failing to
+    /// embed; that is the embedding provider's answer rather than a malformed extraction response, so it never
+    /// counts toward abandonment. The interval keeps its own policy on the capped schedule, and its ordinary
+    /// conclusion is stored once the embedding provider recovers. The extraction response was paid for once and
+    /// is still valid, so every retry reuses it: however long the outage lasts, it buys no second response.
+    /// </summary>
+    [SkippableFact]
+    public async Task ExecuteAsync_EmbeddingOutageBeyondLadder_StillExtractsOrdinaryMemoryOnRecovery()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = await CreateSessionAsync();
+
+        _ = await CreateEntryAsync(sessionId, "The operator prefers tabs over spaces in every repository.");
+
+        long throughSequence = _seededSequence;
+
+        FakeWeaveService weave = new()
+        {
+            EmbedFailsForCall = callCount => callCount <= 6,
+        };
+
+        FakeIntelligenceProvider intelligence = new()
+        {
+            NextText = """{ "memories": [{ "content": "The operator prefers tabs over spaces.", "attachmentId": null }] }""",
+        };
+
+        (IServiceScopeFactory scopeFactory, _, ArcanumSettings settings) = BuildScope(weave, intelligence);
+
+        SagaExtractionService service = new(
+            scopeFactory,
+            new TestOptionsMonitor<ArcanumSettings>(settings),
+            _admissionGate,
+            NullLogger<SagaExtractionService>.Instance)
+        {
+            RetryBaseDelayForTests = TimeSpan.FromMilliseconds(5),
+        };
+
+        IHostedService hosted = service;
+
+        await hosted.StartAsync(CancellationToken.None);
+
+        try
+        {
+            service.EnqueueExtraction(
+                new SagaExtractionRequest(
+                    sessionId,
+                    [],
+                    HadUnprovenancedAttachmentContent: false,
+                    AfterEntrySequenceExclusive: 0,
+                    ThroughEntrySequence: throughSequence));
+
+            using CancellationTokenSource completionTimeout = new(TimeSpan.FromSeconds(10));
+
+            while (service.PendingRequestsForTests.Count != 0)
+            {
+                await Task.Delay(
+                    TimeSpan.FromMilliseconds(10),
+                    completionTimeout.Token);
+            }
+
+            Assert.Equal(7, weave.EmbedCallCount);
+
+            Assert.Equal(1, intelligence.CallCount);
+
+            SagaMemoryDto memory = Assert.Single(
+                await CreateStore().ListAsync(
+                    null,
+                    sessionId,
+                    MemoryScope.Installation,
+                    10,
+                    0,
+                    CancellationToken.None));
+
+            Assert.Equal("The operator prefers tabs over spaces.", memory.Content);
+
+            Assert.Equal(throughSequence, (await GetExtractionCursorAsync(sessionId))!.EntrySequence);
+
+            Assert.Equal(0, service.RetryAttemptForTests(sessionId));
+        }
+        finally
+        {
+            await hosted.StopAsync(CancellationToken.None);
+        }
+    }
+
+    /// <summary>
+    /// An embedding endpoint that stops answering makes the transport give up with a cancellation the host never
+    /// asked for. That is the same embedding outage as a refused connection, not a model-shape failure, so it
+    /// never abandons the interval: the conclusion is stored once the endpoint answers again, from the one
+    /// extraction response the page paid for.
+    /// </summary>
+    [SkippableFact]
+    public async Task ExecuteAsync_EmbeddingTimeoutBeyondLadder_IsAnOutageAndExtractsOnRecovery()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = await CreateSessionAsync();
+
+        _ = await CreateEntryAsync(sessionId, "The operator prefers tabs over spaces in every repository.");
+
+        long throughSequence = _seededSequence;
+
+        FakeWeaveService weave = new()
+        {
+            OnEmbedAsync = callCount => callCount <= 6
+                ? throw new TaskCanceledException("The request was canceled due to the configured HttpClient.Timeout.")
+                : Task.CompletedTask,
+        };
+
+        FakeIntelligenceProvider intelligence = new()
+        {
+            NextText = """{ "memories": [{ "content": "The operator prefers tabs over spaces.", "attachmentId": null }] }""",
+        };
+
+        (IServiceScopeFactory scopeFactory, _, ArcanumSettings settings) = BuildScope(weave, intelligence);
+
+        SagaExtractionService service = new(
+            scopeFactory,
+            new TestOptionsMonitor<ArcanumSettings>(settings),
+            _admissionGate,
+            NullLogger<SagaExtractionService>.Instance)
+        {
+            RetryBaseDelayForTests = TimeSpan.FromMilliseconds(5),
+        };
+
+        IHostedService hosted = service;
+
+        await hosted.StartAsync(CancellationToken.None);
+
+        try
+        {
+            service.EnqueueExtraction(
+                new SagaExtractionRequest(
+                    sessionId,
+                    [],
+                    HadUnprovenancedAttachmentContent: false,
+                    AfterEntrySequenceExclusive: 0,
+                    ThroughEntrySequence: throughSequence));
+
+            using CancellationTokenSource completionTimeout = new(TimeSpan.FromSeconds(10));
+
+            while (service.PendingRequestsForTests.Count != 0)
+            {
+                await Task.Delay(
+                    TimeSpan.FromMilliseconds(10),
+                    completionTimeout.Token);
+            }
+
+            Assert.Equal(7, weave.EmbedCallCount);
+
+            Assert.Equal(1, intelligence.CallCount);
+
+            SagaMemoryDto memory = Assert.Single(
+                await CreateStore().ListAsync(
+                    null,
+                    sessionId,
+                    MemoryScope.Installation,
+                    10,
+                    0,
+                    CancellationToken.None));
+
+            Assert.Equal("The operator prefers tabs over spaces.", memory.Content);
+
+            Assert.Equal(throughSequence, (await GetExtractionCursorAsync(sessionId))!.EntrySequence);
+
+            Assert.Empty(service.AbandonedSegmentsForTests(sessionId));
+        }
+        finally
+        {
+            await hosted.StopAsync(CancellationToken.None);
+        }
+    }
+
+    /// <summary>
+    /// A guardrail that rejects the extraction model's answer reaches the same verdict on every retry, and each
+    /// retry pays for that answer again. It is a deterministic failure, not an outage, so it counts toward
+    /// abandonment and ends the billable ladder after the bounded attempts instead of retrying for as long as
+    /// the process lives.
+    /// </summary>
+    [SkippableFact]
+    public async Task ExecuteAsync_GuardrailRejectingEveryAnswer_AbandonsAfterBoundedAttempts()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = await CreateSessionAsync();
+
+        _ = await CreateEntryAsync(sessionId, "The operator's card number is on file.");
+
+        FakeWeaveService weave = new();
+
+        FakeIntelligenceProvider intelligence = new()
+        {
+            NextFailure = new Error(ErrorCodes.Guardrails.Blocked, "The answer was rejected by a guardrail."),
+        };
+
+        (IServiceScopeFactory scopeFactory, _, ArcanumSettings settings) = BuildScope(weave, intelligence);
+
+        SagaExtractionService service = new(
+            scopeFactory,
+            new TestOptionsMonitor<ArcanumSettings>(settings),
+            _admissionGate,
+            NullLogger<SagaExtractionService>.Instance)
+        {
+            RetryBaseDelayForTests = TimeSpan.FromMilliseconds(5),
+        };
+
+        IHostedService hosted = service;
+
+        await hosted.StartAsync(CancellationToken.None);
+
+        try
+        {
+            service.EnqueueExtraction(
+                new SagaExtractionRequest(
+                    sessionId,
+                    [],
+                    HadUnprovenancedAttachmentContent: false,
+                    AfterEntrySequenceExclusive: 0,
+                    ThroughEntrySequence: _seededSequence));
+
+            using CancellationTokenSource ladderTimeout = new(TimeSpan.FromSeconds(10));
+
+            while (service.PendingRequestsForTests.Count != 0)
+            {
+                await Task.Delay(
+                    TimeSpan.FromMilliseconds(10),
+                    ladderTimeout.Token);
+            }
+
+            Assert.Equal(5, intelligence.CallCount);
+
+            Assert.Single(service.AbandonedSegmentsForTests(sessionId));
+
+            Assert.Equal(0, weave.EmbedCallCount);
+        }
+        finally
+        {
+            await hosted.StopAsync(CancellationToken.None);
+        }
+    }
+
+    /// <summary>
+    /// Five schema-invalid responses abandon the interval, which stops the billable ladder, but abandonment
+    /// in a live process does not lose the interval's provenance. The next turn's gap review uses the
+    /// abandoned interval's own policy, so its ordinary and attachment-backed conclusions are stored rather
+    /// than discarded under deny-all, which stays reserved for a policy a restart actually lost.
+    /// </summary>
+    [SkippableFact]
+    public async Task ExecuteAsync_AbandonedIntervalReviewedByNextTurn_KeepsItsOwnProvenancePolicy()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = await CreateSessionAsync();
+
+        _ = await CreateEntryAsync(sessionId, "first turn consulted the design notes");
+
+        long firstThroughSequence = _seededSequence;
+
+        Guid attachmentId = Guid.NewGuid();
+
+        FakeWeaveService weave = new();
+
+        FakeIntelligenceProvider intelligence = new()
+        {
+            TextForCall = callCount => callCount switch
+            {
+                <= 5 => "not valid json",
+                6 => $$"""{ "memories": [{ "content": "first interval ordinary conclusion", "attachmentId": null }, { "content": "first interval attachment conclusion", "attachmentId": "{{attachmentId}}" }] }""",
+                _ => """{ "memories": [] }""",
+            },
+        };
+
+        (IServiceScopeFactory scopeFactory, _, ArcanumSettings settings) = BuildScope(weave, intelligence);
+
+        SagaExtractionService service = new(
+            scopeFactory,
+            new TestOptionsMonitor<ArcanumSettings>(settings),
+            _admissionGate,
+            NullLogger<SagaExtractionService>.Instance)
+        {
+            RetryBaseDelayForTests = TimeSpan.FromMilliseconds(5),
+        };
+
+        IHostedService hosted = service;
+
+        await hosted.StartAsync(CancellationToken.None);
+
+        try
+        {
+            service.EnqueueExtraction(
+                new SagaExtractionRequest(
+                    sessionId,
+                    [CreateProvenance(sessionId, attachmentId)],
+                    HadUnprovenancedAttachmentContent: false,
+                    AfterEntrySequenceExclusive: 0,
+                    ThroughEntrySequence: firstThroughSequence));
+
+            using CancellationTokenSource abandonmentTimeout = new(TimeSpan.FromSeconds(5));
+
+            while (service.PendingRequestsForTests.Count != 0)
+            {
+                await Task.Delay(
+                    TimeSpan.FromMilliseconds(10),
+                    abandonmentTimeout.Token);
+            }
+
+            Assert.Equal(5, intelligence.CallCount);
+
+            Assert.Null(await GetExtractionCursorAsync(sessionId));
+
+            Assert.Equal(
+                firstThroughSequence,
+                Assert.Single(service.AbandonedSegmentsForTests(sessionId)).ThroughEntrySequence);
+
+            _ = await CreateEntryAsync(sessionId, "later turn entry");
+
+            long laterThroughSequence = _seededSequence;
+
+            service.EnqueueExtraction(
+                new SagaExtractionRequest(
+                    sessionId,
+                    [],
+                    HadUnprovenancedAttachmentContent: false,
+                    AfterEntrySequenceExclusive: firstThroughSequence,
+                    ThroughEntrySequence: laterThroughSequence));
+
+            using CancellationTokenSource completionTimeout = new(TimeSpan.FromSeconds(5));
+
+            while (service.PendingRequestsForTests.Count != 0
+                || intelligence.CallCount < 7)
+            {
+                await Task.Delay(
+                    TimeSpan.FromMilliseconds(10),
+                    completionTimeout.Token);
+            }
+
+            Assert.Equal(7, intelligence.CallCount);
+
+            Assert.Contains("first turn consulted the design notes", intelligence.StatelessUserContents[5], StringComparison.Ordinal);
+
+            Assert.DoesNotContain("without durable provenance", intelligence.StatelessUserContents[5], StringComparison.Ordinal);
+
+            Assert.DoesNotContain("later turn entry", intelligence.StatelessUserContents[5], StringComparison.Ordinal);
+
+            Assert.Contains("later turn entry", intelligence.StatelessUserContents[6], StringComparison.Ordinal);
+
+            IReadOnlyList<SagaMemoryDto> memories = await CreateStore().ListAsync(
+                null,
+                sessionId,
+                MemoryScope.Installation,
+                10,
+                0,
+                CancellationToken.None);
+
+            SagaMemoryDto ordinary = Assert.Single(
+                memories,
+                memory => memory.Content == "first interval ordinary conclusion");
+
+            Assert.Null(ordinary.AttachmentProvenance);
+
+            SagaMemoryDto attachmentBacked = Assert.Single(
+                memories,
+                memory => memory.Content == "first interval attachment conclusion");
+
+            Assert.Equal(attachmentId, attachmentBacked.AttachmentProvenance?.AttachmentId);
+
+            Assert.Equal(laterThroughSequence, (await GetExtractionCursorAsync(sessionId))!.EntrySequence);
+
+            Assert.Equal(0, service.RetryAttemptForTests(sessionId));
+
+            Assert.Empty(service.AbandonedSegmentsForTests(sessionId));
+        }
+        finally
+        {
+            await hosted.StopAsync(CancellationToken.None);
+        }
+    }
+
+    /// <summary>
+    /// A duplicate request for an abandoned interval reopens it with a fresh ladder, and the retained policy
+    /// merges with the duplicate exactly as two pending duplicates would: the unprovenanced-content guard the
+    /// abandoned request carried still applies, so the duplicate cannot grant the interval new authority.
+    /// </summary>
+    [SkippableFact]
+    public async Task ExecuteAsync_DuplicateOfAbandonedInterval_MergesWithItsRetainedPolicy()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = await CreateSessionAsync();
+
+        _ = await CreateEntryAsync(sessionId, "turn that materialized ephemeral attachment content");
+
+        long throughSequence = _seededSequence;
+
+        FakeWeaveService weave = new();
+
+        FakeIntelligenceProvider intelligence = new()
+        {
+            TextForCall = callCount => callCount <= 5
+                ? "not valid json"
+                : """{ "memories": [{ "content": "conclusion the guard must still discard", "attachmentId": null }] }""",
+        };
+
+        (IServiceScopeFactory scopeFactory, _, ArcanumSettings settings) = BuildScope(weave, intelligence);
+
+        SagaExtractionService service = new(
+            scopeFactory,
+            new TestOptionsMonitor<ArcanumSettings>(settings),
+            _admissionGate,
+            NullLogger<SagaExtractionService>.Instance)
+        {
+            RetryBaseDelayForTests = TimeSpan.FromMilliseconds(5),
+        };
+
+        IHostedService hosted = service;
+
+        await hosted.StartAsync(CancellationToken.None);
+
+        try
+        {
+            service.EnqueueExtraction(
+                new SagaExtractionRequest(
+                    sessionId,
+                    [],
+                    HadUnprovenancedAttachmentContent: true,
+                    AfterEntrySequenceExclusive: 0,
+                    ThroughEntrySequence: throughSequence));
+
+            using CancellationTokenSource abandonmentTimeout = new(TimeSpan.FromSeconds(5));
+
+            while (service.PendingRequestsForTests.Count != 0)
+            {
+                await Task.Delay(
+                    TimeSpan.FromMilliseconds(10),
+                    abandonmentTimeout.Token);
+            }
+
+            Assert.Equal(5, intelligence.CallCount);
+
+            Assert.Single(service.AbandonedSegmentsForTests(sessionId));
+
+            service.EnqueueExtraction(
+                new SagaExtractionRequest(
+                    sessionId,
+                    [],
+                    HadUnprovenancedAttachmentContent: false,
+                    AfterEntrySequenceExclusive: 0,
+                    ThroughEntrySequence: throughSequence));
+
+            Assert.Empty(service.AbandonedSegmentsForTests(sessionId));
+
+            using CancellationTokenSource completionTimeout = new(TimeSpan.FromSeconds(5));
+
+            while (service.PendingRequestsForTests.Count != 0
+                || intelligence.CallCount < 6)
+            {
+                await Task.Delay(
+                    TimeSpan.FromMilliseconds(10),
+                    completionTimeout.Token);
+            }
+
+            Assert.Equal(6, intelligence.CallCount);
+
+            Assert.Contains("without durable provenance", intelligence.StatelessUserContents[5], StringComparison.Ordinal);
+
+            Assert.Equal(0, weave.EmbedCallCount);
+
+            Assert.Empty(
+                await CreateStore().ListAsync(
+                    null,
+                    sessionId,
+                    MemoryScope.Installation,
+                    10,
+                    0,
+                    CancellationToken.None));
+
+            Assert.Equal(throughSequence, (await GetExtractionCursorAsync(sessionId))!.EntrySequence);
+        }
+        finally
+        {
+            await hosted.StopAsync(CancellationToken.None);
+        }
     }
 
     [SkippableFact]
     public async Task ExecuteAsync_PermanentlyFailingExtraction_StopsRetryingAfterBoundedAttempts()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = await CreateSessionAsync();
@@ -4162,9 +4619,7 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
             _admissionGate,
             NullLogger<SagaExtractionService>.Instance)
         {
-
             RetryBaseDelayForTests = TimeSpan.FromMilliseconds(5),
-
         };
 
         IHostedService hosted = service;
@@ -4173,7 +4628,6 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
 
         try
         {
-
             service.EnqueueExtraction(
                 new SagaExtractionRequest(
                     sessionId,
@@ -4186,11 +4640,9 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
 
             while (service.PendingRequestsForTests.Count != 0)
             {
-
                 await Task.Delay(
                     TimeSpan.FromMilliseconds(10),
                     firstLadderTimeout.Token);
-
             }
 
             // A permanent failure must not become an endless ladder of billable LLM round-trips.
@@ -4212,31 +4664,28 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
 
             while (service.PendingRequestsForTests.Count != 0)
             {
-
                 await Task.Delay(
                     TimeSpan.FromMilliseconds(10),
                     secondLadderTimeout.Token);
-
             }
 
             Assert.Equal(10, intelligence.CallCount);
 
             Assert.Equal(0, service.RetryAttemptForTests(sessionId));
 
+            // The duplicate reclaimed the abandoned interval for its fresh ladder, and the second
+            // abandonment retains that one interval again rather than a second copy of it.
+            Assert.Single(service.AbandonedSegmentsForTests(sessionId));
         }
         finally
         {
-
             await hosted.StopAsync(CancellationToken.None);
-
         }
-
     }
 
     [SkippableFact]
     public async Task ExecuteAsync_RetryBackoffForOneSession_DoesNotBlockAnotherSessionsFirstAttempt()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid firstSessionId = await CreateSessionAsync();
@@ -4272,12 +4721,10 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
             _admissionGate,
             NullLogger<SagaExtractionService>.Instance)
         {
-
             // Clamps to MaximumAutomaticRetryDelay (5 minutes) - comfortably longer than the wait
             // below, so the first session's own retry cannot possibly fire during this test and a
             // second call is unambiguously the second session's first attempt.
             RetryBaseDelayForTests = TimeSpan.FromMinutes(10),
-
         };
 
         IHostedService hosted = service;
@@ -4286,7 +4733,6 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
 
         try
         {
-
             service.EnqueueExtraction(
                 new SagaExtractionRequest(
                     firstSessionId,
@@ -4310,21 +4756,16 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
             await intelligence.WaitForExpectedCallsAsync(TimeSpan.FromSeconds(5));
 
             Assert.Equal(2, intelligence.CallCount);
-
         }
         finally
         {
-
             await hosted.StopAsync(CancellationToken.None);
-
         }
-
     }
 
     [SkippableFact]
     public async Task EnqueueExtraction_ConflictingDuplicateInterval_IntersectsAuthorityWithoutDuplicating()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = await CreateSessionAsync();
@@ -4353,7 +4794,6 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
 
         try
         {
-
             Guid firstAttachmentId = Guid.NewGuid();
 
             Guid secondAttachmentId = Guid.NewGuid();
@@ -4409,11 +4849,9 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
             Assert.Equal(0, pending.AfterEntrySequenceExclusive);
 
             Assert.Equal(_seededSequence, pending.ThroughEntrySequence);
-
         }
         finally
         {
-
             // Unconditionally, even if an assertion above threw: the fake is parked on Gate with no
             // cancellation wiring of its own, and StopAsync(CancellationToken.None) waits for
             // ExecuteAsync to finish, so a still-held gate would hang the test forever instead of
@@ -4421,15 +4859,12 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
             intelligence.Gate!.TrySetResult(true);
 
             await hosted.StopAsync(CancellationToken.None);
-
         }
-
     }
 
     [SkippableFact]
     public async Task ExecuteAsync_SharedTimestampAcrossFrontiers_ProcessesEachEntryExactlyOnce()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = await CreateSessionAsync();
@@ -4478,7 +4913,6 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
 
         try
         {
-
             AttachmentMemoryProvenance firstProvenance = CreateProvenance(
                 sessionId,
                 firstAttachmentId);
@@ -4495,11 +4929,9 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
 
             while (service.PendingRequestsForTests.Count != 0)
             {
-
                 await Task.Delay(
                     TimeSpan.FromMilliseconds(10),
                     firstCompletionTimeout.Token);
-
             }
 
             Assert.Equal(1, intelligence.CallCount);
@@ -4530,11 +4962,9 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
 
             while (service.PendingRequestsForTests.Count != 0)
             {
-
                 await Task.Delay(
                     TimeSpan.FromMilliseconds(10),
                     secondCompletionTimeout.Token);
-
             }
 
             Assert.Equal(2, intelligence.CallCount);
@@ -4551,7 +4981,6 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
                 intelligence.StatelessUserContents,
                 firstPrompt =>
                 {
-
                     Assert.Contains("first-turn-user", firstPrompt, StringComparison.Ordinal);
 
                     Assert.Contains("first-turn-assistant", firstPrompt, StringComparison.Ordinal);
@@ -4559,11 +4988,9 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
                     Assert.DoesNotContain("second-turn-user", firstPrompt, StringComparison.Ordinal);
 
                     Assert.DoesNotContain("second-turn-assistant", firstPrompt, StringComparison.Ordinal);
-
                 },
                 secondPrompt =>
                 {
-
                     Assert.DoesNotContain("first-turn-user", secondPrompt, StringComparison.Ordinal);
 
                     Assert.DoesNotContain("first-turn-assistant", secondPrompt, StringComparison.Ordinal);
@@ -4571,7 +4998,6 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
                     Assert.Contains("second-turn-user", secondPrompt, StringComparison.Ordinal);
 
                     Assert.Contains("second-turn-assistant", secondPrompt, StringComparison.Ordinal);
-
                 });
 
             HashSet<Guid> storedAttachmentIds =
@@ -4589,23 +5015,18 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
             Assert.Equal(
                 new HashSet<Guid> { firstAttachmentId, secondAttachmentId },
                 storedAttachmentIds);
-
         }
         finally
         {
-
             using CancellationTokenSource stopTimeout = new(TimeSpan.FromSeconds(5));
 
             await hosted.StopAsync(stopTimeout.Token);
-
         }
-
     }
 
     [SkippableFact]
     public async Task ExecuteAsync_PreStartMergedFrontiers_KeepEachTurnsProvenanceIsolated()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = await CreateSessionAsync();
@@ -4614,12 +5035,10 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
 
         for (int index = 1; index <= 10; index++)
         {
-
             _ = await CreateEntryAsync(
                 sessionId,
                 $"older-turn-entry-{index:D2}",
                 firstCreatedAt.AddSeconds(index));
-
         }
 
         long firstThroughSequence = _seededSequence;
@@ -4682,19 +5101,15 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
             service.PendingSegmentsForTests(sessionId),
             first =>
             {
-
                 Assert.Equal(firstThroughSequence, first.ThroughEntrySequence);
 
                 Assert.Empty(first.MaterializedAttachments);
-
             },
             second =>
             {
-
                 Assert.Equal(secondThroughSequence, second.ThroughEntrySequence);
 
                 Assert.Equal(laterAttachmentId, Assert.Single(second.MaterializedAttachments).AttachmentId);
-
             });
 
         IHostedService hosted = service;
@@ -4703,18 +5118,15 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
 
         try
         {
-
             await intelligence.WaitForExpectedCallsAsync(TimeSpan.FromSeconds(5));
 
             using CancellationTokenSource completionTimeout = new(TimeSpan.FromSeconds(5));
 
             while (service.PendingRequestsForTests.Count != 0)
             {
-
                 await Task.Delay(
                     TimeSpan.FromMilliseconds(10),
                     completionTimeout.Token);
-
             }
 
             Assert.Equal(2, intelligence.CallCount);
@@ -4725,23 +5137,19 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
                 intelligence.StatelessUserContents,
                 firstPrompt =>
                 {
-
                     Assert.Contains("older-turn-entry-01", firstPrompt, StringComparison.Ordinal);
 
                     Assert.DoesNotContain("later-turn-entry-with-attachment", firstPrompt, StringComparison.Ordinal);
 
                     Assert.DoesNotContain(laterAttachmentId.ToString(), firstPrompt, StringComparison.OrdinalIgnoreCase);
-
                 },
                 secondPrompt =>
                 {
-
                     Assert.DoesNotContain("older-turn-entry-01", secondPrompt, StringComparison.Ordinal);
 
                     Assert.Contains("later-turn-entry-with-attachment", secondPrompt, StringComparison.Ordinal);
 
                     Assert.Contains(laterAttachmentId.ToString(), secondPrompt, StringComparison.OrdinalIgnoreCase);
-
                 });
 
             SagaMemoryDto memory = Assert.Single(
@@ -4756,23 +5164,18 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
             Assert.Equal(laterAttachmentId, memory.AttachmentProvenance?.AttachmentId);
 
             Assert.Equal(secondThroughSequence, (await GetExtractionCursorAsync(sessionId))!.EntrySequence);
-
         }
         finally
         {
-
             using CancellationTokenSource stopTimeout = new(TimeSpan.FromSeconds(5));
 
             await hosted.StopAsync(stopTimeout.Token);
-
         }
-
     }
 
     [SkippableFact]
     public async Task ExecuteAsync_EntryCommittedBeforeLaterEnqueue_WaitsForItsProvenanceFrontier()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = await CreateSessionAsync();
@@ -4783,12 +5186,10 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
 
         for (int index = 1; index <= 10; index++)
         {
-
             initialPageWatermark = await CreateEntryAsync(
                 sessionId,
                 $"initial-page-entry-{index:D2}",
                 firstCreatedAt.AddSeconds(index));
-
         }
 
         long initialThroughSequence = _seededSequence;
@@ -4825,7 +5226,6 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
 
         try
         {
-
             service.EnqueueExtraction(
                 new SagaExtractionRequest(
                     sessionId,
@@ -4851,11 +5251,9 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
 
             while (service.PendingRequestsForTests.Count != 0)
             {
-
                 await Task.Delay(
                     TimeSpan.FromMilliseconds(10),
                     initialCompletionTimeout.Token);
-
             }
 
             Assert.Equal(1, intelligence.CallCount);
@@ -4888,11 +5286,9 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
 
             while (service.PendingRequestsForTests.Count != 0)
             {
-
                 await Task.Delay(
                     TimeSpan.FromMilliseconds(10),
                     finalCompletionTimeout.Token);
-
             }
 
             Assert.Equal(2, intelligence.CallCount);
@@ -4920,19 +5316,15 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
             Assert.Equal(
                 laterAttachmentId,
                 memory.AttachmentProvenance.AttachmentId);
-
         }
         finally
         {
-
             intelligence.Gate!.TrySetResult(true);
 
             using CancellationTokenSource stopTimeout = new(TimeSpan.FromSeconds(5));
 
             await hosted.StopAsync(stopTimeout.Token);
-
         }
-
     }
 
     /// <summary>
@@ -4944,7 +5336,6 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
     [SkippableFact]
     public async Task StopAsync_duringAnInFlightAttempt_releasesTheDedupKey()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = await CreateSessionAsync();
@@ -4988,13 +5379,11 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
         await hosted.StopAsync(CancellationToken.None);
 
         Assert.Empty(service.PendingRequestsForTests);
-
     }
 
     [SkippableFact]
     public async Task EnqueueExtraction_BeyondFormerQueueCapacity_EventuallyProcessesEverySession()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid[] sessionIds = await CreateSessionsWithEntriesAsync(101);
@@ -5003,9 +5392,7 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
 
         FakeIntelligenceProvider intelligence = new()
         {
-
             ExpectedCallCount = sessionIds.Length,
-
         };
 
         (IServiceScopeFactory scopeFactory, _, ArcanumSettings settings) = BuildScope(
@@ -5020,7 +5407,6 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
 
         foreach (Guid sessionId in sessionIds)
         {
-
             service.EnqueueExtraction(
                 new SagaExtractionRequest(
                     sessionId,
@@ -5028,7 +5414,6 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
                     HadUnprovenancedAttachmentContent: false,
                     AfterEntrySequenceExclusive: 0,
                     ThroughEntrySequence: 1));
-
         }
 
         IHostedService hosted = service;
@@ -5037,17 +5422,13 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
 
         try
         {
-
             await intelligence.WaitForExpectedCallsAsync(TimeSpan.FromSeconds(15));
 
             await WaitForWatermarkAsync(sessionIds[^1], TimeSpan.FromSeconds(15));
-
         }
         finally
         {
-
             await hosted.StopAsync(CancellationToken.None);
-
         }
 
         Assert.Equal(sessionIds.Length, intelligence.CallCount);
@@ -5055,13 +5436,11 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
         Assert.NotNull(await GetWatermarkAsync(sessionIds[0]));
 
         Assert.NotNull(await GetWatermarkAsync(sessionIds[^1]));
-
     }
 
     [Fact]
     public void EnqueueExtraction_DuplicateIntervalWithConflictingAttachmentIdentity_FailsClosed()
     {
-
         SagaExtractionService service = CreateService();
 
         Guid sessionId = Guid.NewGuid();
@@ -5096,14 +5475,12 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
         Assert.Equal(2, pending.AfterEntrySequenceExclusive);
 
         Assert.Equal(4, pending.ThroughEntrySequence);
-
     }
 
     [Fact]
 
     public void EnqueueExtraction_DeduplicatesPendingSessionAndKeepsIntervalProvenanceSeparate()
     {
-
         SagaExtractionService service = CreateService();
 
         Guid sessionId = Guid.NewGuid();
@@ -5136,7 +5513,6 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
             service.PendingSegmentsForTests(sessionId),
             first =>
             {
-
                 Assert.Equal(0, first.AfterEntrySequenceExclusive);
 
                 Assert.Equal(4, first.ThroughEntrySequence);
@@ -5146,11 +5522,9 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
                 Assert.Equal(firstAttachment, first.MaterializedAttachments[0].AttachmentId);
 
                 Assert.False(first.HadUnprovenancedAttachmentContent);
-
             },
             second =>
             {
-
                 Assert.Equal(4, second.AfterEntrySequenceExclusive);
 
                 Assert.Equal(8, second.ThroughEntrySequence);
@@ -5160,9 +5534,7 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
                 Assert.Equal(secondAttachment, second.MaterializedAttachments[0].AttachmentId);
 
                 Assert.True(second.HadUnprovenancedAttachmentContent);
-
             });
-
     }
 
     private SagaExtractionService CreateService() =>
@@ -5180,7 +5552,6 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
         ArcanumSettings settings,
         CancellationToken cancellationToken)
     {
-
         Assert.True(_admissionGate.TryAcquireWorkLease(
             GrimoireWorkKind.SagaExtraction,
             out IGrimoireWorkLease? workLease));
@@ -5205,7 +5576,6 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
             embeddings,
             settings,
             cancellationToken);
-
     }
 
     private async Task<SagaExtractionOutcome> ExtractWithLeaseAsync(
@@ -5216,7 +5586,6 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
         ArcanumSettings settings,
         CancellationToken cancellationToken)
     {
-
         Assert.True(_admissionGate.TryAcquireWorkLease(
             GrimoireWorkKind.SagaExtraction,
             out IGrimoireWorkLease? workLease));
@@ -5230,7 +5599,6 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
             embeddings,
             settings,
             cancellationToken);
-
     }
 
     private SagaMemoryStore CreateStore() =>
@@ -5277,13 +5645,11 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
     /// <summary>Builds a <see cref="TestDimensions"/>-length vector with <paramref name="leading"/> in its first slots and zeros elsewhere.</summary>
     private static float[] Vec(params float[] leading)
     {
-
         float[] result = new float[TestDimensions];
 
         leading.AsSpan().CopyTo(result);
 
         return result;
-
     }
 
     private (IServiceScopeFactory ScopeFactory, EmbeddingSettings Embeddings, ArcanumSettings Settings) BuildScope(
@@ -5291,7 +5657,6 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
         FakeIntelligenceProvider intelligence,
         IMemoryErasureKeyProvider? erasureKeys = null)
     {
-
         EmbeddingSettings embeddings = ArcanumRuntimeDefaults.Embeddings with
         {
             Enabled = true,
@@ -5349,12 +5714,10 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
         IServiceScopeFactory scopeFactory = services.BuildServiceProvider().GetRequiredService<IServiceScopeFactory>();
 
         return (scopeFactory, embeddings, settings);
-
     }
 
     private async Task<Guid> CreateSessionAsync()
     {
-
         Session session = new()
         {
             Id = Guid.NewGuid(),
@@ -5368,19 +5731,16 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
         await _db.SaveChangesAsync();
 
         return session.Id;
-
     }
 
     private async Task<Guid[]> CreateSessionsWithEntriesAsync(int count)
     {
-
         DateTimeOffset createdAt = DateTimeOffset.UtcNow.AddHours(-1);
 
         Guid[] sessionIds = new Guid[count];
 
         for (int index = 0; index < count; index++)
         {
-
             Guid sessionId = Guid.NewGuid();
 
             sessionIds[index] = sessionId;
@@ -5402,13 +5762,11 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
                 CreatedAt = createdAt.AddSeconds(index),
                 Sequence = 1,
             });
-
         }
 
         await _db!.SaveChangesAsync();
 
         return sessionIds;
-
     }
 
     /// <summary>
@@ -5422,7 +5780,6 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
         string content,
         DateTimeOffset? createdAt = null)
     {
-
         Entry entry = new()
         {
             Id = Guid.NewGuid(),
@@ -5438,48 +5795,37 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
         await _db.SaveChangesAsync();
 
         return entry.CreatedAt;
-
     }
 
     private async Task<int> CountMemoriesAsync()
     {
-
         SagaMemoryStore store = CreateStore();
 
         return await store.CountAsync(CancellationToken.None);
-
     }
 
     private async Task<DateTimeOffset?> GetWatermarkAsync(Guid sessionId)
     {
-
         SagaMemoryStore store = CreateStore();
 
         return await store.GetWatermarkAsync(sessionId, CancellationToken.None);
-
     }
 
     private async Task<SagaExtractionCursor?> GetExtractionCursorAsync(Guid sessionId)
     {
-
         SagaMemoryStore store = CreateStore();
 
         return await store.GetExtractionCursorAsync(sessionId, CancellationToken.None);
-
     }
 
     private async Task WaitForWatermarkAsync(Guid sessionId, TimeSpan timeout)
     {
-
         using CancellationTokenSource timeoutCancellation = new(timeout);
 
         while (await GetWatermarkAsync(sessionId) is null)
         {
-
             await Task.Delay(TimeSpan.FromMilliseconds(10), timeoutCancellation.Token);
-
         }
-
     }
 
     private static GrimoireConnectionAdmissionGate OpenGate() => new(TimeProvider.System);
@@ -5494,20 +5840,17 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
         GrimoireConnectionAdmissionGate gate,
         byte seed)
     {
-
         Result<IGrimoireClosingOwner> begun = gate.BeginOrResumeExclusive(Owner(seed));
 
         Assert.True(begun.IsSuccess, begun.IsFailure ? begun.Error.Message : null);
 
         return begun.Value;
-
     }
 
     private static async Task<IGrimoireExclusiveClosedLease> CloseAsync(
         GrimoireConnectionAdmissionGate gate,
         IGrimoireClosingOwner closing)
     {
-
         Result drained = await gate.DrainRequestAndWorkAsync(closing, CancellationToken.None);
 
         Assert.True(drained.IsSuccess, drained.IsFailure ? drained.Error.Message : null);
@@ -5519,12 +5862,10 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
         Assert.True(closed.IsSuccess, closed.IsFailure ? closed.Error.Message : null);
 
         return closed.Value;
-
     }
 
     private static async Task ReopenAsync(IGrimoireExclusiveClosedLease closed)
     {
-
         Result completed = await closed.CompleteAsync(
             CovenantExclusiveLeaseDisposition.RollbackAndReopen,
             CancellationToken.None);
@@ -5532,12 +5873,10 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
         Assert.True(completed.IsSuccess, completed.IsFailure ? completed.Error.Message : null);
 
         await closed.DisposeAsync();
-
     }
 
     private sealed class CountingScopeFactory(IServiceScopeFactory inner) : IServiceScopeFactory
     {
-
         private int _scopesCreated;
 
         internal int ScopesCreated => Volatile.Read(ref _scopesCreated);
@@ -5548,7 +5887,6 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
 
         public IServiceScope CreateScope()
         {
-
             _ = Interlocked.Increment(ref _scopesCreated);
 
             IServiceScope scope = inner.CreateScope();
@@ -5556,51 +5894,38 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
             OnScopeCreated?.Invoke();
 
             return new ObservingScope(scope, OnScopeDisposed);
-
         }
-
     }
 
     private sealed class ObservingScope(
         IServiceScope inner,
         Func<ValueTask>? onDisposed) : IServiceScope, IAsyncDisposable
     {
-
         public IServiceProvider ServiceProvider => inner.ServiceProvider;
 
         public void Dispose() => inner.Dispose();
 
         public async ValueTask DisposeAsync()
         {
-
             if (inner is IAsyncDisposable asyncInner)
             {
-
                 await asyncInner.DisposeAsync();
-
             }
             else
             {
-
                 inner.Dispose();
-
             }
 
             if (onDisposed is not null)
             {
-
                 await onDisposed();
-
             }
-
         }
-
     }
 
     private sealed class RecordingAdmissionGate(
         IGrimoireConnectionAdmissionGate inner) : IGrimoireConnectionAdmissionGate
     {
-
         private readonly TaskCompletionSource _nextOpenWaitStarted = new(
             TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -5641,18 +5966,15 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
             GrimoireWorkKind kind,
             out IGrimoireWorkLease? lease)
         {
-
             _ = Interlocked.Increment(ref _workLeaseAttempts);
 
             RequestedWorkKinds.Add(kind);
 
             if (!inner.TryAcquireWorkLease(kind, out IGrimoireWorkLease? admitted))
             {
-
                 lease = null;
 
                 return false;
-
             }
 
             _workLease = new RecordingWorkLease(
@@ -5664,7 +5986,6 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
             lease = _workLease;
 
             return true;
-
         }
 
         public IGrimoireConnectionOpenTicket AcquireOrdinaryOpen(DbConnection connection) =>
@@ -5699,7 +6020,6 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
             long observedGeneration,
             CancellationToken cancellationToken)
         {
-
             _ = Interlocked.Increment(ref _nextOpenWaitCalls);
 
             _nextOpenWaitStarted.TrySetResult();
@@ -5707,7 +6027,6 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
             return inner.WaitForNextOpenGenerationAsync(
                 observedGeneration,
                 cancellationToken);
-
         }
 
         public ValueTask<Result<IGrimoireExpiredLeaseAdoptionInterlock>>
@@ -5720,7 +6039,6 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
                 candidateOwner,
                 revalidateDurableOwnerAsync,
                 cancellationToken);
-
     }
 
     private sealed class RecordingWorkLease(
@@ -5729,7 +6047,6 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
         Action onEffectGroupAdmitted,
         Func<ValueTask> onEffectGroupDisposing) : IGrimoireWorkLease
     {
-
         private int _disposed;
 
         internal bool IsHeld => Volatile.Read(ref _disposed) == 0;
@@ -5743,16 +6060,13 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
         public bool TryBeginExternalEffectGroup(
             out IGrimoireExternalEffectGroup? effectGroup)
         {
-
             onEffectGroupAttempt();
 
             if (!inner.TryBeginExternalEffectGroup(out IGrimoireExternalEffectGroup? admitted))
             {
-
                 effectGroup = null;
 
                 return false;
-
             }
 
             onEffectGroupAdmitted();
@@ -5762,48 +6076,35 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
                 onEffectGroupDisposing);
 
             return true;
-
         }
 
         public async ValueTask DisposeAsync()
         {
-
             await inner.DisposeAsync();
 
             _ = Interlocked.Exchange(ref _disposed, 1);
-
         }
-
     }
 
     private sealed class ObservingExternalEffectGroup(
         IGrimoireExternalEffectGroup inner,
         Func<ValueTask> onDisposing) : IGrimoireExternalEffectGroup
     {
-
         public async ValueTask DisposeAsync()
         {
-
             try
             {
-
                 await onDisposing();
-
             }
             finally
             {
-
                 await inner.DisposeAsync();
-
             }
-
         }
-
     }
 
     private sealed class FakeWeaveService : IWeaveService
     {
-
         private int _embedCallCount;
 
         private int _availabilityCheckCount;
@@ -5811,6 +6112,9 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
         public bool Available { get; set; } = true;
 
         public bool EmbedShouldFail { get; set; }
+
+        /// <summary>When set, decides per 1-based call number whether the embedding fails, ahead of <see cref="EmbedShouldFail"/>.</summary>
+        internal Func<int, bool>? EmbedFailsForCall { get; init; }
 
         public int EmbedCallCount => Volatile.Read(ref _embedCallCount);
 
@@ -5820,41 +6124,35 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
 
         internal Func<int, bool>? AvailabilityForCheck { get; init; }
 
+        /// <summary>When set, supplies the vector for each embedding call by its 1-based call number.</summary>
+        internal Func<int, float[]>? VectorForCall { get; init; }
+
         public bool IsAvailable
         {
-
             get
             {
-
                 int checkCount = Interlocked.Increment(ref _availabilityCheckCount);
 
                 return AvailabilityForCheck?.Invoke(checkCount) ?? Available;
-
             }
-
         }
 
         public async Task<Result<Embedding<float>>> EmbedAsync(string text, CancellationToken cancellationToken)
         {
-
             int callCount = Interlocked.Increment(ref _embedCallCount);
 
             if (OnEmbedAsync is not null)
             {
-
                 await OnEmbedAsync(callCount);
-
             }
 
-            if (EmbedShouldFail)
+            if (EmbedFailsForCall?.Invoke(callCount) ?? EmbedShouldFail)
             {
-
                 return Result<Embedding<float>>.Failure(new Error(ErrorCodes.Embeddings.ProviderUnavailable, "Simulated embedding failure."));
-
             }
 
-            return Result<Embedding<float>>.Success(new Embedding<float>(Vec(1f)));
-
+            return Result<Embedding<float>>.Success(
+                new Embedding<float>(VectorForCall?.Invoke(callCount) ?? Vec(1f)));
         }
 
         public Task<Result<Embedding<float>[]>> EmbedBatchAsync(IReadOnlyList<string> texts, CancellationToken cancellationToken) =>
@@ -5862,12 +6160,57 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
 
         public Task<Result<(string Chunk, int Offset)[]>> ChunkAsync(string text, CancellationToken cancellationToken) =>
             throw new NotSupportedException("Not used by SagaExtractionService.");
+    }
 
+    private sealed class SwitchableOptionsMonitor(ArcanumSettings initial) : IOptionsMonitor<ArcanumSettings>
+    {
+        private ArcanumSettings _current = initial;
+
+        public ArcanumSettings Current
+        {
+            get => Volatile.Read(ref _current);
+            set => Volatile.Write(ref _current, value);
+        }
+
+        public ArcanumSettings CurrentValue => Current;
+
+        public ArcanumSettings Get(string? name) => Current;
+
+        public IDisposable? OnChange(Action<ArcanumSettings, string?> listener) => null;
+    }
+
+    /// <summary>Completes <see cref="Skipped"/> when the service logs that it skipped the named session under a disabled policy.</summary>
+    private sealed class SkipSignalLogger(Guid sessionId) : ILogger<SagaExtractionService>
+    {
+        private readonly TaskCompletionSource _skipped = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public Task Skipped => _skipped.Task;
+
+        public IDisposable? BeginScope<TState>(TState state)
+            where TState : notnull =>
+            null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(
+            LogLevel logLevel,
+            EventId eventId,
+            TState state,
+            Exception? exception,
+            Func<TState, Exception?, string> formatter)
+        {
+            string message = formatter(state, exception);
+
+            if (message.Contains("skipped for session", StringComparison.Ordinal)
+                && message.Contains(sessionId.ToString(), StringComparison.Ordinal))
+            {
+                _skipped.TrySetResult();
+            }
+        }
     }
 
     private sealed class FakeIntelligenceProvider : IArcanumIntelligenceProvider
     {
-
         private readonly TaskCompletionSource<bool> _expectedCallsReached =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -5879,11 +6222,17 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
 
         public Error? NextFailure { get; set; }
 
+        /// <summary>When set, decides per call whether the provider fails, ahead of <see cref="NextFailure"/>.</summary>
+        internal Func<int, Error?>? FailureForCall { get; init; }
+
         public int ExpectedCallCount { get; init; }
 
         public int CallCount => Volatile.Read(ref _callCount);
 
         public string LastStatelessUserContent { get; private set; } = string.Empty;
+
+        /// <summary>The request the most recent call carried, so a test can read the flags the extraction set.</summary>
+        public PingRequest? LastRequest { get; private set; }
 
         public List<string> StatelessUserContents { get; } = [];
 
@@ -5899,8 +6248,9 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
 
         public async Task<Result<PromptTurnResult>> ExecutePromptAsync(PingRequest request, ArcanumInvocationContext invocationContext, CancellationToken cancellationToken, InferenceAuditContext? auditContext = null)
         {
-
             int callCount = Interlocked.Increment(ref _callCount);
+
+            LastRequest = request;
 
             LastStatelessUserContent = request.StatelessMessages?
                 .LastOrDefault(static m => string.Equals(m.Role, "user", StringComparison.OrdinalIgnoreCase))?
@@ -5912,41 +6262,32 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
 
             if (ExpectedCallCount > 0 && callCount >= ExpectedCallCount)
             {
-
                 _expectedCallsReached.TrySetResult(true);
-
             }
 
             Entered?.TrySetResult(true);
 
             if (Gate is { } gate)
             {
-
                 // Honors the caller's token: a test can hold a call open and prove that cancelling
                 // stoppingToken (e.g. via StopAsync) unblocks it with OperationCanceledException,
                 // rather than needing to release Gate itself.
                 await gate.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
-
             }
 
             if (BeforeResultAsync is not null)
             {
-
                 await BeforeResultAsync(callCount, cancellationToken).ConfigureAwait(false);
-
             }
 
-            if (NextFailure is { } failure)
+            if ((FailureForCall?.Invoke(callCount) ?? NextFailure) is { } failure)
             {
-
                 return Result<PromptTurnResult>.Failure(failure);
-
             }
 
             string text = TextForCall?.Invoke(callCount) ?? NextText;
 
             return Result<PromptTurnResult>.Success(new PromptTurnResult(text, null));
-
         }
 
         public IAsyncEnumerable<IntelligenceEvent> StreamPromptAsync(PingRequest request, ArcanumInvocationContext invocationContext, CancellationToken cancellationToken, InferenceAuditContext? auditContext = null) =>
@@ -5954,7 +6295,5 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
 
         public Task WaitForExpectedCallsAsync(TimeSpan timeout) =>
             _expectedCallsReached.Task.WaitAsync(timeout);
-
     }
-
 }

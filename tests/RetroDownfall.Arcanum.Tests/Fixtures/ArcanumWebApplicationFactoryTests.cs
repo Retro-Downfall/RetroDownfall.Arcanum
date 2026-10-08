@@ -16,24 +16,22 @@ using RetroDownfall.Arcanum.Infrastructure.Security;
 using RetroDownfall.Arcanum.Infrastructure.Mcp;
 using RetroDownfall.Arcanum.Secrets.Security;
 using RetroDownfall.Arcanum.Tests.Performance;
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Fixtures;
 
 [Collection("ApiHost")]
 public sealed class ArcanumWebApplicationFactoryTests
 {
-
     [SkippableFact]
     public async Task Restartable_profile_preserves_catalog_files_and_credentials_across_hosts()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         string tempHome;
 
         await using (RestartableArcanumProfileFixture profile = new())
         {
-
             tempHome = profile.TempHome;
 
             string databasePath = Path.Combine(tempHome, ".config", "arcanum", "arcanum.db");
@@ -50,10 +48,8 @@ public sealed class ArcanumWebApplicationFactoryTests
 
             try
             {
-
                 await using (ArcanumWebApplicationFactory firstFactory = profile.CreateFactory())
                 {
-
                     using IServiceScope firstScope = firstFactory.Services.CreateScope();
 
                     Assert.Same(
@@ -125,7 +121,6 @@ public sealed class ArcanumWebApplicationFactoryTests
                     installationIdentity = default;
 
                     installationIdentityValue = string.Empty;
-
                 }
 
                 AssertInstallationIdentityMatches(
@@ -149,7 +144,6 @@ public sealed class ArcanumWebApplicationFactoryTests
 
                 await using (ArcanumWebApplicationFactory secondFactory = profile.CreateFactory())
                 {
-
                     Assert.Equal(catalogBytes, await File.ReadAllBytesAsync(databasePath));
 
                     Assert.Equal(sidecarBytes, await File.ReadAllBytesAsync(sidecarPath));
@@ -203,7 +197,6 @@ public sealed class ArcanumWebApplicationFactoryTests
                         profile.CredentialStore.Delete(
                             "arcanum-tests",
                             "issue-257-restart").Status);
-
                 }
 
                 Assert.True(Directory.Exists(tempHome));
@@ -211,18 +204,14 @@ public sealed class ArcanumWebApplicationFactoryTests
                 Assert.NotEmpty(await File.ReadAllBytesAsync(databasePath));
 
                 Assert.Equal(sidecarBytes, await File.ReadAllBytesAsync(sidecarPath));
-
             }
             finally
             {
-
                 CryptographicOperations.ZeroMemory(installationIdentityBytes);
-
             }
         }
 
         Assert.False(Directory.Exists(tempHome));
-
     }
 
     private static void AssertInstallationIdentityMatches(
@@ -230,7 +219,6 @@ public sealed class ArcanumWebApplicationFactoryTests
         string account,
         ReadOnlySpan<byte> expected)
     {
-
         OsCredentialStoreResult current = credentialStore.TryGet(
             ArcanumCredentialIdentity.Service,
             account);
@@ -245,25 +233,210 @@ public sealed class ArcanumWebApplicationFactoryTests
 
         try
         {
-
             Assert.True(
                 CryptographicOperations.FixedTimeEquals(expected, actual),
                 "The external installation-identity credential bytes changed.");
-
         }
         finally
         {
-
             CryptographicOperations.ZeroMemory(actual);
+        }
+    }
 
+    /// <summary>
+    /// The constructor repoints process-global HOME and the Testing environment names before it builds
+    /// the isolated profile, so a failure part-way through left every later test in the process running
+    /// against a deleted or half-built home, with nothing left holding the captured originals to put
+    /// them back.
+    /// </summary>
+    [Fact]
+    public async Task Constructor_failure_restores_the_environment()
+    {
+        string[] names =
+        [
+            "HOME",
+            "APPDATA",
+            "USERPROFILE",
+            "XDG_DATA_HOME",
+            "ARCANUM_TEST_HOME",
+            "ARCANUM_TEST_IN_MEMORY_CREDENTIALS",
+            "ARCANUM_SKIP_KEY_BOOTSTRAP",
+            "ASPNETCORE_ENVIRONMENT",
+            "DOTNET_ENVIRONMENT",
+        ];
+
+        Dictionary<string, string?> before = names.ToDictionary(
+            static name => name,
+            static name => global::System.Environment.GetEnvironmentVariable(name));
+
+        int profileDisposals = 0;
+
+        RestartableArcanumProfileFixture profile = new(
+            clearPools: static () => { },
+            disposeGrimoire: () => profileDisposals++);
+
+        string tempHome = profile.TempHome;
+
+        // A file squatting the profile root lets the constructor redirect the environment and then fail
+        // while it creates the profile's directories.
+        Directory.Delete(tempHome, recursive: true);
+
+        File.WriteAllText(tempHome, "A file squats the isolated profile root.");
+
+        try
+        {
+            _ = Assert.ThrowsAny<IOException>(
+                () => new ArcanumWebApplicationFactory(profile, ownsProfile: true));
+
+            foreach (string name in names)
+            {
+                Assert.Equal(before[name], global::System.Environment.GetEnvironmentVariable(name));
+            }
+
+            Assert.Equal(1, profileDisposals);
+        }
+        finally
+        {
+            foreach (KeyValuePair<string, string?> entry in before)
+            {
+                global::System.Environment.SetEnvironmentVariable(entry.Key, entry.Value);
+            }
+
+            File.Delete(tempHome);
+
+            await profile.DisposeAsync();
+        }
+    }
+
+    /// <summary>
+    /// The environment goes back before an owned profile is released, so that until the release (which
+    /// can be slow or throw) has finished no path in the process still resolves into the profile's tree.
+    /// </summary>
+    [Fact]
+    public async Task Constructor_failure_restores_the_environment_before_it_releases_an_owned_profile()
+    {
+        string? before = global::System.Environment.GetEnvironmentVariable("ARCANUM_TEST_HOME");
+
+        string? testHomeWhenReleased = "never released";
+
+        RestartableArcanumProfileFixture profile = new(
+            clearPools: static () => { },
+            disposeGrimoire: () => testHomeWhenReleased =
+                global::System.Environment.GetEnvironmentVariable("ARCANUM_TEST_HOME"));
+
+        string tempHome = profile.TempHome;
+
+        Directory.Delete(tempHome, recursive: true);
+
+        File.WriteAllText(tempHome, "A file squats the isolated profile root.");
+
+        try
+        {
+            _ = Assert.ThrowsAny<IOException>(
+                () => new ArcanumWebApplicationFactory(profile, ownsProfile: true));
+
+            Assert.NotEqual("never released", testHomeWhenReleased);
+
+            Assert.Equal(before, testHomeWhenReleased);
+        }
+        finally
+        {
+            global::System.Environment.SetEnvironmentVariable("ARCANUM_TEST_HOME", before);
+
+            File.Delete(tempHome);
+
+            await profile.DisposeAsync();
+        }
+    }
+
+    /// <summary>
+    /// A cleanup that fails while the constructor is already failing must not replace the failure that
+    /// explains why the factory could not be built; it is reported instead.
+    /// </summary>
+    [Fact]
+    public async Task Constructor_failure_is_not_replaced_by_a_failure_to_release_the_owned_profile()
+    {
+        string? before = global::System.Environment.GetEnvironmentVariable("ARCANUM_TEST_HOME");
+
+        RestartableArcanumProfileFixture profile = new(
+            clearPools: static () => { },
+            disposeGrimoire: static () => throw new InvalidOperationException("the profile could not be released"));
+
+        string tempHome = profile.TempHome;
+
+        Directory.Delete(tempHome, recursive: true);
+
+        File.WriteAllText(tempHome, "A file squats the isolated profile root.");
+
+        List<string> reports = [];
+
+        try
+        {
+            _ = Assert.ThrowsAny<IOException>(
+                () => new ArcanumWebApplicationFactory(profile, ownsProfile: true, reports.Add));
+
+            string report = Assert.Single(reports);
+
+            Assert.Contains("the profile could not be released", report, StringComparison.Ordinal);
+
+            Assert.Equal(before, global::System.Environment.GetEnvironmentVariable("ARCANUM_TEST_HOME"));
+        }
+        finally
+        {
+            global::System.Environment.SetEnvironmentVariable("ARCANUM_TEST_HOME", before);
+
+            File.Delete(tempHome);
+
+            await profile.DisposeAsync();
+        }
+    }
+
+    /// <summary>
+    /// Disposal restores the environment before it deletes an owned profile's root: a slow or failing
+    /// delete can then never leave the process resolving paths into a half-deleted tree.
+    /// </summary>
+    [Fact]
+    public async Task Disposal_restores_the_environment_before_it_deletes_an_owned_profile()
+    {
+        string? before = global::System.Environment.GetEnvironmentVariable("ARCANUM_TEST_HOME");
+
+        string? testHomeWhenDeleted = "never deleted";
+
+        RestartableArcanumProfileFixture profile = new(
+            clearPools: static () => { },
+            disposeGrimoire: static () => { },
+            deleteTempHome: path =>
+            {
+                testHomeWhenDeleted = global::System.Environment.GetEnvironmentVariable("ARCANUM_TEST_HOME");
+
+                TestDirectoryCleanup.DeleteTree(path);
+            });
+
+        string tempHome = profile.TempHome;
+
+        ArcanumWebApplicationFactory factory = new(profile, ownsProfile: true);
+
+        try
+        {
+            Assert.Equal(tempHome, global::System.Environment.GetEnvironmentVariable("ARCANUM_TEST_HOME"));
+        }
+        finally
+        {
+            await factory.DisposeAsync();
+
+            global::System.Environment.SetEnvironmentVariable("ARCANUM_TEST_HOME", before);
         }
 
+        Assert.NotEqual("never deleted", testHomeWhenDeleted);
+
+        Assert.Equal(before, testHomeWhenDeleted);
+
+        Assert.False(Directory.Exists(tempHome));
     }
 
     [Fact]
     public async Task Constructor_redirects_persistent_paths_to_temp_home()
     {
-
         await using ArcanumWebApplicationFactory factory = new();
 
         string expected = Path.Combine(factory.TempHome, ".config", "arcanum");
@@ -271,7 +444,6 @@ public sealed class ArcanumWebApplicationFactoryTests
         Assert.Equal(expected, ArcanumPaths.GrimoireDirectory);
 
         Assert.Equal(expected, ArcanumPaths.SecretStoreDirectory);
-
     }
 
     [Fact]
@@ -288,7 +460,6 @@ public sealed class ArcanumWebApplicationFactoryTests
     [SkippableFact]
     public async Task Started_test_host_does_not_create_pid_file()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         await using ArcanumWebApplicationFactory factory = new();
@@ -298,7 +469,6 @@ public sealed class ArcanumWebApplicationFactoryTests
         string pidPath = Path.Combine(factory.TempHome, ".config", "arcanum", "arcanum.pid");
 
         Assert.False(File.Exists(pidPath));
-
     }
 
     [SkippableFact]
@@ -346,7 +516,6 @@ public sealed class ArcanumWebApplicationFactoryTests
     [SkippableFact]
     public async Task Bootstrap_loads_only_testing_isolated_global_mcp_config()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         await using ArcanumWebApplicationFactory factory = new();
@@ -382,7 +551,5 @@ public sealed class ArcanumWebApplicationFactoryTests
         Assert.Equal(isolatedServerName, status.Name);
 
         Assert.Equal(McpServerState.Stopped, status.State);
-
     }
-
 }

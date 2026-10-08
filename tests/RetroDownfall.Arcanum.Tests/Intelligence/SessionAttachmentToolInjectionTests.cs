@@ -11,6 +11,7 @@ using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Sanctum;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.Storage;
+using RetroDownfall.Arcanum.Tests.Fixtures;
 using RetroDownfall.Arcanum.Tests.Support;
 using MeAiChatMessage = Microsoft.Extensions.AI.ChatMessage;
 
@@ -18,17 +19,14 @@ namespace RetroDownfall.Arcanum.Tests.Intelligence;
 
 public sealed class SessionAttachmentToolInjectionTests
 {
-
     [Fact]
 
     public async Task Binary_attachment_is_never_read_or_injected_as_text()
 
     {
-
         Guid sessionId = Guid.NewGuid();
 
         SessionAttachmentRecord record = new(
-
             Guid.NewGuid(),
 
             sessionId,
@@ -64,7 +62,6 @@ public sealed class SessionAttachmentToolInjectionTests
         ArcanumSettings settings = new();
 
         IReadOnlyList<AIContent>? attached = await SessionAttachmentToolInjection.TryBuildContentsAsync(
-
             store,
 
             sessionId,
@@ -78,7 +75,6 @@ public sealed class SessionAttachmentToolInjectionTests
             requestModel: null);
 
         IReadOnlyList<AIContent>? refreshed = await SessionAttachmentToolInjection.TryBuildRefreshedContentsAsync(
-
             store,
 
             record,
@@ -90,13 +86,111 @@ public sealed class SessionAttachmentToolInjectionTests
         Assert.Null(attached);
 
         Assert.Null(refreshed);
+    }
 
+    [Fact]
+    public async Task Attachment_relative_path_refuses_a_parent_segment_but_not_dots_inside_a_name()
+    {
+        Guid sessionId = Guid.NewGuid();
+
+        SessionAttachmentRecord Make(string relativePath) =>
+            new(
+                Guid.NewGuid(),
+                sessionId,
+                EntryId: null,
+                PendingTurnId: null,
+                SessionAttachmentState.Bound,
+                LogicalKey: "notes",
+                OriginalFileName: "notes..v2.txt",
+                Version: 1,
+                RelativePath: relativePath,
+                ContentSha256: "abc",
+                MimeType: "text/plain",
+                ByteLength: 5,
+                SessionAttachmentKind.Text,
+                DateTimeOffset.UtcNow);
+
+        int reads = 0;
+
+        NoOpSessionAttachmentStore StoreFor(SessionAttachmentRecord record) =>
+            new(
+                record,
+                readBytes: (_, _) =>
+                {
+                    reads++;
+
+                    return Task.FromResult<ReadOnlyMemory<byte>>(Encoding.UTF8.GetBytes("hello"));
+                });
+
+        ArcanumSettings settings = new();
+
+        // A name that merely contains or starts with two dots is an ordinary child.
+        foreach (string ordinary in new[]
+        {
+            "session/notes/v1/notes..v2.txt",
+            "session/..notes/v1/a.txt",
+            "session/notes../v1/a.txt",
+        })
+        {
+            SessionAttachmentRecord record = Make(ordinary);
+
+            NoOpSessionAttachmentStore store = StoreFor(record);
+
+            Assert.NotNull(
+                await SessionAttachmentToolInjection.TryBuildContentsAsync(
+                    store,
+                    sessionId,
+                    "notes",
+                    version: null,
+                    settings,
+                    requestModel: null));
+
+            Assert.NotNull(
+                await SessionAttachmentToolInjection.TryBuildRefreshedContentsAsync(
+                    store,
+                    record,
+                    settings,
+                    requestModel: null));
+        }
+
+        int readsForOrdinaryPaths = reads;
+
+        // Only a whole ".." segment leaves the attachment root.
+        foreach (string escaping in new[]
+        {
+            "../secret.txt",
+            "session/../secret.txt",
+            "session/notes/v1/..",
+            @"session\..\secret.txt",
+        })
+        {
+            SessionAttachmentRecord record = Make(escaping);
+
+            NoOpSessionAttachmentStore store = StoreFor(record);
+
+            Assert.Null(
+                await SessionAttachmentToolInjection.TryBuildContentsAsync(
+                    store,
+                    sessionId,
+                    "notes",
+                    version: null,
+                    settings,
+                    requestModel: null));
+
+            Assert.Null(
+                await SessionAttachmentToolInjection.TryBuildRefreshedContentsAsync(
+                    store,
+                    record,
+                    settings,
+                    requestModel: null));
+        }
+
+        Assert.Equal(readsForOrdinaryPaths, reads);
     }
 
     [Fact]
     public async Task ProcessSingleToolCall_AttachSessionFile_InjectsTextContent()
     {
-
         Guid sessionId = Guid.NewGuid();
 
         FakeSessionAttachmentStore store = new();
@@ -193,13 +287,11 @@ public sealed class SessionAttachmentToolInjectionTests
         {
             SessionAttachmentToolAmbient.CurrentSessionId = null;
         }
-
     }
 
     [Fact]
     public async Task ProcessSingleToolCall_AttachSessionFile_InjectsDataContentForImage()
     {
-
         Guid sessionId = Guid.NewGuid();
 
         byte[] pngBytes = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
@@ -288,13 +380,11 @@ public sealed class SessionAttachmentToolInjectionTests
         {
             SessionAttachmentToolAmbient.CurrentSessionId = null;
         }
-
     }
 
     [Fact]
     public async Task ProcessSingleToolCall_AttachSessionFile_WithoutAmbient_SkipsInjection()
     {
-
         FakeSessionAttachmentStore store = new();
 
         ToolExecutionPipeline pipeline = CreatePipeline(new ArcanumSettings(), store);
@@ -328,13 +418,11 @@ public sealed class SessionAttachmentToolInjectionTests
                 cancellationToken: CancellationToken.None);
 
         Assert.Null(processed.AdditionalContextContents);
-
     }
 
     [Fact]
     public async Task TryBuildContentsAsync_FailedImageValidation_DoesNotMarkInjectOnce()
     {
-
         Guid sessionId = Guid.NewGuid();
 
         FakeSessionAttachmentStore store = new();
@@ -420,13 +508,11 @@ public sealed class SessionAttachmentToolInjectionTests
         {
             SessionAttachmentTurnBudget.EndTurn();
         }
-
     }
 
     [Fact]
     public async Task ProcessSingleToolCall_AttachPostProcessThrows_Tolerate_SynthesizesFailureWithoutInject()
     {
-
         Guid sessionId = Guid.NewGuid();
 
         ThrowingSessionAttachmentStore store = new();
@@ -495,13 +581,11 @@ public sealed class SessionAttachmentToolInjectionTests
         {
             SessionAttachmentToolAmbient.CurrentSessionId = null;
         }
-
     }
 
     [Fact]
     public async Task ProcessSingleToolCall_AttachPostProcessThrows_WithoutTolerate_Rethrows()
     {
-
         Guid sessionId = Guid.NewGuid();
 
         ThrowingSessionAttachmentStore store = new();
@@ -564,13 +648,11 @@ public sealed class SessionAttachmentToolInjectionTests
         {
             SessionAttachmentToolAmbient.CurrentSessionId = null;
         }
-
     }
 
     [Fact]
     public void AppendToolExchanges_ThenUserExtras_KeepsExtrasAfterAllToolResults()
     {
-
         List<MeAiChatMessage> messages =
         [
             new MeAiChatMessage(ChatRole.User, "prompt"),
@@ -593,7 +675,6 @@ public sealed class SessionAttachmentToolInjectionTests
         Assert.Equal(ChatRole.User, messages[^1].Role);
 
         Assert.Equal("framed-notes", Assert.IsType<TextContent>(Assert.Single(messages[^1].Contents)).Text);
-
     }
 
     [Fact]
@@ -1121,7 +1202,6 @@ public sealed class SessionAttachmentToolInjectionTests
 
     private sealed class FakeWard : IWard
     {
-
         public Task<WardResolution> WardAsync(
             string wardId,
             string toolName,
@@ -1141,12 +1221,10 @@ public sealed class SessionAttachmentToolInjectionTests
             new(allowed, reason, DateTimeOffset.UtcNow, origin);
 
         public IReadOnlyList<ActiveWard> GetActiveWards() => [];
-
     }
 
     private sealed class AllowAllSanctumGuard : ISanctumGuard
     {
-
         public Task<SanctumResult> ValidatePathAsync(
             string campaignId,
             string requestedPath,
@@ -1183,22 +1261,18 @@ public sealed class SessionAttachmentToolInjectionTests
             string? actualValue,
             CancellationToken ct = default) =>
             Task.CompletedTask;
-
     }
 
     private sealed class ThrowingSessionAttachmentStore : FakeSessionAttachmentStore
     {
-
         public override Task<ReadOnlyMemory<byte>> ReadBytesAsync(
             SessionAttachmentRecord record,
             CancellationToken cancellationToken = default) =>
             throw new InvalidOperationException("simulated attachment read failure");
-
     }
 
     private class FakeSessionAttachmentStore : ISessionAttachmentStore
     {
-
         public List<SessionAttachmentRecord> Records { get; } = [];
 
         public Dictionary<string, byte[]> BytesByLogical { get; } = new(StringComparer.OrdinalIgnoreCase);
@@ -1212,6 +1286,23 @@ public sealed class SessionAttachmentToolInjectionTests
             ReadOnlyMemory<byte> bytes,
             string mimeType,
             SessionAttachmentKind kind,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<SessionAttachmentPersistence> PersistNewWithOutcomeAsync(
+            Guid? sessionId,
+            string? pendingTurnId,
+            Guid? entryId,
+            string logicalNameHint,
+            string originalFileName,
+            ReadOnlyMemory<byte> bytes,
+            string mimeType,
+            SessionAttachmentKind kind,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<bool> DeleteCreatedAttachmentAsync(
+            SessionAttachmentRecord created,
             CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
 
@@ -1279,7 +1370,6 @@ public sealed class SessionAttachmentToolInjectionTests
             int? version,
             CancellationToken cancellationToken = default)
         {
-
             IEnumerable<SessionAttachmentRecord> matches = Records.Where(r =>
                 r.SessionId == sessionId
                 && string.Equals(r.LogicalKey, logicalKey, StringComparison.OrdinalIgnoreCase)
@@ -1291,7 +1381,6 @@ public sealed class SessionAttachmentToolInjectionTests
             }
 
             return Task.FromResult(matches.OrderByDescending(r => r.Version).FirstOrDefault());
-
         }
 
         public Task<IReadOnlyList<SessionAttachmentRecord>> ListBoundAsync(
@@ -1310,14 +1399,12 @@ public sealed class SessionAttachmentToolInjectionTests
             SessionAttachmentRecord record,
             CancellationToken cancellationToken = default)
         {
-
             if (BytesByLogical.TryGetValue(record.LogicalKey, out byte[]? bytes))
             {
                 return Task.FromResult<ReadOnlyMemory<byte>>(bytes);
             }
 
             return Task.FromResult(ReadOnlyMemory<byte>.Empty);
-
         }
 
         public Task DeleteStalePendingAsync(TimeSpan olderThan, CancellationToken cancellationToken = default) =>
@@ -1348,7 +1435,6 @@ public sealed class SessionAttachmentToolInjectionTests
             IReadOnlySet<Guid>? copiedSourceEntryIds,
             CancellationToken cancellationToken = default)
         {
-
             IEnumerable<SessionAttachmentRecord> bound = Records.Where(r =>
                 r.SessionId == sourceSessionId && r.State == SessionAttachmentState.Bound);
 
@@ -1358,7 +1444,6 @@ public sealed class SessionAttachmentToolInjectionTests
             }
 
             return Task.FromResult<IReadOnlyList<SessionAttachmentRecord>>(bound.ToList());
-
         }
 
         public Task CopyBytesForForkAsync(
@@ -1375,15 +1460,12 @@ public sealed class SessionAttachmentToolInjectionTests
 
         private sealed class EmptyDisposable : IDisposable
         {
-
             public static readonly EmptyDisposable Instance = new();
 
             public void Dispose()
             {
             }
-
         }
-
     }
 
     private sealed class FakeAttachmentSourceResolver : IAttachmentSourceResolver
@@ -1442,5 +1524,4 @@ public sealed class SessionAttachmentToolInjectionTests
             CancellationToken cancellationToken = default) =>
             throw new InvalidOperationException("source resolver should not have been invoked");
     }
-
 }

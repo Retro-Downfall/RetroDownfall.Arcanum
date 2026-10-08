@@ -13,8 +13,13 @@ namespace RetroDownfall.Arcanum.Cli.Commands.Tower;
 /// </summary>
 public sealed class SagaCommands(ArcanumApiClient apiClient, IThemePalette themePalette, IConfirmationPrompt confirmationPrompt)
 {
-
     private const int ContentPreviewChars = 80;
+
+    /// <summary>The page size a listing that follows the host to its end reads, which is the host's own default.</summary>
+    private const int FollowPageRows = 100;
+
+    /// <summary>The most rows <c>GET /api/saga</c> returns; it clamps a larger limit down to this.</summary>
+    private const int HostMaxListLimit = 10_000;
 
     /// <summary>
     /// Paginated listing of Saga memories (GET /api/saga).
@@ -30,91 +35,89 @@ public sealed class SagaCommands(ArcanumApiClient apiClient, IThemePalette theme
         int? offset = null,
         CancellationToken cancellationToken = default)
     {
-
         Guid? sessionId = null;
 
         if (!string.IsNullOrWhiteSpace(session))
         {
-
             if (!CliArgReader.TryParseGuid(session, out Guid parsedSessionId))
             {
-
                 CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--session must be a valid GUID.")));
 
                 return (int)CliExitCode.ConfigurationError;
-
             }
 
             sessionId = parsedSessionId;
-
         }
 
-        Result<SagaMemoryDto[]> result = await apiClient
-            .SagaListAsync(query, sessionId, limit, offset, cancellationToken)
+        int firstRow = Math.Max(0, offset ?? 0);
+
+        // The host answers with a bare array and no page marker. Without --limit the listing follows it to
+        // its end, as every other list does; with --limit it is exactly that one page, and "more exist" is
+        // a row the host actually returned (one past the page, or one past the host's own ceiling), never a
+        // guess from a full page.
+        Result<HostListing<SagaMemoryDto>> listing = await HostPageWalker
+            .ReadRowsAsync(
+                "Saga memory list",
+                firstRow,
+                limit,
+                HostMaxListLimit,
+                FollowPageRows,
+                (rows, start, token) => apiClient.SagaListAsync(query, sessionId, rows, start, token),
+                static memory => memory.Id,
+                cancellationToken)
             .ConfigureAwait(false);
 
-        if (result.IsFailure)
+        if (listing.IsFailure)
         {
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(listing.Error));
 
-            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
-
-            return 1;
-
+            return CliFailureExit.ExitCode(listing.Error);
         }
 
-        SagaMemoryDto[] memories = result.Value;
+        bool moreAvailable = listing.Value.MoreAvailable;
 
-        Table table = new();
+        SagaMemoryDto[] memories = listing.Value.Items;
 
-        table.AddColumn(themePalette.HeadingTableColumn(Markup.Escape("Id")));
+        // The whole identifier, never wrapped: the listing is where an operator reads what to hand to
+        // `saga delete`, and a fragment of it is not something any verb accepts. The State cell is never
+        // wrapped either: "retired, pinned" split across two lines reads as two rows' states. What gives way
+        // on a narrow terminal is the columns beside them, least useful first, and the operator is told which.
+        IReadOnlyList<ListingColumn<SagaMemoryDto>> columns =
+        [
+            new("Id", static memory => memory.Id, ListingColumnRole.Fixed, Muted: true),
+            new("Content", static memory => ContentPreview(memory), ListingColumnRole.Flexible),
+            new("Session", static memory => memory.SessionId is { } sid ? sid.ToString("D")[..8] : "-", ListingColumnRole.Optional, Muted: true, DropOrder: 3),
+            new("Source", static memory => memory.Source ?? "-", ListingColumnRole.Optional, Muted: true, DropOrder: 4),
+            new("Created", static memory => memory.CreatedAt.ToString("u", CultureInfo.InvariantCulture), ListingColumnRole.Optional, Muted: true, DropOrder: 2),
+            new("Scope", static memory => DescribeScope(memory), ListingColumnRole.Optional, Muted: true, DropOrder: 1),
+            new("State", static memory => DescribeState(memory), ListingColumnRole.Fixed, Muted: true),
+        ];
 
-        table.AddColumn(themePalette.HeadingTableColumn(Markup.Escape("Content")));
+        int width = AnsiConsole.Profile.Width;
 
-        table.AddColumn(themePalette.HeadingTableColumn(Markup.Escape("Session")));
+        ListingTableResult rendered = ListingTable.Build(themePalette, columns, memories, width);
 
-        table.AddColumn(themePalette.HeadingTableColumn(Markup.Escape("Source")));
+        AnsiConsole.Write(rendered.Table);
 
-        table.AddColumn(themePalette.HeadingTableColumn(Markup.Escape("Created")));
-
-        table.AddColumn(themePalette.HeadingTableColumn(Markup.Escape("Scope")));
-
-        // Never wrapped: "retired, pinned" split across two lines reads as two rows' states, and the
-        // content column is the one that can afford to give up width.
-        table.AddColumn(new TableColumn(themePalette.HeadingTableColumn(Markup.Escape("State"))).NoWrap());
-
-        foreach (SagaMemoryDto memory in memories)
+        if (ListingTable.HiddenColumnsNotice(rendered, width) is { } hiddenNotice)
         {
-
-            string shortId = memory.Id.Length > 8 ? memory.Id[..8] : memory.Id;
-
-            string preview = memory.Content.Length > ContentPreviewChars
-                ? string.Concat(memory.Content.AsSpan(0, Utf8Truncation.SafeCharSliceLength(memory.Content, ContentPreviewChars)), "...")
-                : memory.Content;
-
-            string sessionText = memory.SessionId is { } sid ? sid.ToString("D")[..8] : "-";
-
-            table.AddRow(
-                new Markup(themePalette.MutedMarkup(Markup.Escape(shortId))),
-                new Markup(themePalette.TextMarkup(Markup.Escape(preview))),
-                new Markup(themePalette.MutedMarkup(Markup.Escape(sessionText))),
-                new Markup(themePalette.MutedMarkup(Markup.Escape(memory.Source ?? "-"))),
-                new Markup(themePalette.MutedMarkup(Markup.Escape(memory.CreatedAt.ToString("u", CultureInfo.InvariantCulture)))),
-                new Markup(themePalette.MutedMarkup(Markup.Escape(DescribeScope(memory)))),
-                new Markup(themePalette.MutedMarkup(Markup.Escape(DescribeState(memory)))));
-
+            CliErrorOutput.WriteMarkupLine(themePalette.MutedMarkup(Markup.Escape(hiddenNotice)));
         }
-
-        AnsiConsole.Write(table);
 
         if (memories.Length == 0)
         {
-
             AnsiConsole.MarkupLine(themePalette.MutedMarkup(Markup.Escape("No Saga memories found.")));
+        }
 
+        if (moreAvailable)
+        {
+            CliErrorOutput.WriteMarkupLine(
+                themePalette.MutedMarkup(
+                    Markup.Escape(
+                        $"More Saga memories are available; continue with --offset {firstRow + memories.Length}.")));
         }
 
         return 0;
-
     }
 
     /// <summary>
@@ -132,32 +135,25 @@ public sealed class SagaCommands(ArcanumApiClient apiClient, IThemePalette theme
         string? session = null,
         CancellationToken cancellationToken = default)
     {
-
         if (string.IsNullOrWhiteSpace(query))
         {
-
             CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("<QUERY> is required.")));
 
             return (int)CliExitCode.ConfigurationError;
-
         }
 
         Guid? sessionId = null;
 
         if (!string.IsNullOrWhiteSpace(session))
         {
-
             if (!Guid.TryParse(session, out Guid parsedSessionId))
             {
-
                 CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--session must be a GUID.")));
 
                 return (int)CliExitCode.ConfigurationError;
-
             }
 
             sessionId = parsedSessionId;
-
         }
 
         SagaSearchRequest request = new(query.Trim(), limit, sessionId);
@@ -166,11 +162,9 @@ public sealed class SagaCommands(ArcanumApiClient apiClient, IThemePalette theme
 
         if (result.IsFailure)
         {
-
             CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
 
-            return 1;
-
+            return CliFailureExit.ExitCode(result.Error);
         }
 
         SagaMemoryDto[] memories = result.Value.Memories;
@@ -191,7 +185,6 @@ public sealed class SagaCommands(ArcanumApiClient apiClient, IThemePalette theme
 
         for (int i = 0; i < memories.Length; i++)
         {
-
             SagaMemoryDto memory = memories[i];
 
             float similarity = i < similarities.Length ? similarities[i] : 0f;
@@ -201,25 +194,21 @@ public sealed class SagaCommands(ArcanumApiClient apiClient, IThemePalette theme
             string sessionText = memory.SessionId is { } sid ? sid.ToString("D")[..8] : "-";
 
             table.AddRow(
-                new Markup(themePalette.TextMarkup(Markup.Escape(memory.Content))),
+                new Markup(themePalette.TextMarkup(Markup.Escape(TerminalTextSanitizer.SanitizeLine(memory.Content)))),
                 new Markup(themePalette.HighlightMarkup(Markup.Escape(similarityPercent))),
                 new Markup(themePalette.MutedMarkup(Markup.Escape(memory.CreatedAt.ToString("u", CultureInfo.InvariantCulture)))),
                 new Markup(themePalette.MutedMarkup(Markup.Escape(sessionText))),
                 new Markup(themePalette.MutedMarkup(Markup.Escape(DescribeScope(memory)))));
-
         }
 
         AnsiConsole.Write(table);
 
         if (memories.Length == 0)
         {
-
             AnsiConsole.MarkupLine(themePalette.MutedMarkup(Markup.Escape("No Saga memories matched.")));
-
         }
 
         return 0;
-
     }
 
     /// <summary>
@@ -228,27 +217,22 @@ public sealed class SagaCommands(ArcanumApiClient apiClient, IThemePalette theme
     /// <param name="id">Saga memory ID.</param>
     public async Task<int> Delete(string id, CancellationToken cancellationToken)
     {
-
         if (!await confirmationPrompt
                 .PromptForConfirmationAsync($"Delete Saga memory '{id}'?", cancellationToken)
                 .ConfigureAwait(false))
         {
-
             CliErrorOutput.WriteMarkupLine(themePalette.MutedMarkup(Markup.Escape("Saga memory deletion cancelled.")));
 
             return 0;
-
         }
 
         Result result = await apiClient.SagaDeleteAsync(id, cancellationToken).ConfigureAwait(false);
 
         if (result.IsFailure)
         {
-
             CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
 
-            return 1;
-
+            return CliFailureExit.ExitCode(result.Error);
         }
 
         AnsiConsole.MarkupLine(
@@ -258,7 +242,6 @@ public sealed class SagaCommands(ArcanumApiClient apiClient, IThemePalette theme
                     + "can add identical content again; use 'arcanum memory saga erase' to erase and suppress.")));
 
         return 0;
-
     }
 
     /// <summary>
@@ -266,16 +249,13 @@ public sealed class SagaCommands(ArcanumApiClient apiClient, IThemePalette theme
     /// </summary>
     public async Task<int> Stats(CancellationToken cancellationToken)
     {
-
         Result<SagaStats> result = await apiClient.SagaStatsAsync(cancellationToken).ConfigureAwait(false);
 
         if (result.IsFailure)
         {
-
             CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
 
-            return 1;
-
+            return CliFailureExit.ExitCode(result.Error);
         }
 
         SagaStats stats = result.Value;
@@ -314,7 +294,6 @@ public sealed class SagaCommands(ArcanumApiClient apiClient, IThemePalette theme
         });
 
         return 0;
-
     }
 
     /// <summary>
@@ -325,10 +304,14 @@ public sealed class SagaCommands(ArcanumApiClient apiClient, IThemePalette theme
     /// Session binding needs resolving before that memory can be recalled anywhere, and a blank cell
     /// would read as "installation-scoped" - the one thing it is not.
     /// </remarks>
+    private static string ContentPreview(SagaMemoryDto memory) =>
+        memory.Content.Length > ContentPreviewChars
+            ? string.Concat(memory.Content.AsSpan(0, Utf8Truncation.SafeCharSliceLength(memory.Content, ContentPreviewChars)), "...")
+            : memory.Content;
+
     private static string DescribeScope(SagaMemoryDto memory) =>
         memory.ScopeKind switch
         {
-
             SagaMemoryScopeKind.Campaign =>
                 memory.ScopeCampaignId is { } campaignId ? campaignId.ToString("D")[..8] : "campaign",
 
@@ -337,7 +320,6 @@ public sealed class SagaCommands(ArcanumApiClient apiClient, IThemePalette theme
             SagaMemoryScopeKind.LegacyUnresolved => "unresolved",
 
             _ => "unclassified",
-
         };
 
     /// <summary>
@@ -352,7 +334,6 @@ public sealed class SagaCommands(ArcanumApiClient apiClient, IThemePalette theme
     internal static string DescribeState(SagaMemoryDto memory) =>
         (memory.RetiredAtUtc, memory.PinnedAtUtc) switch
         {
-
             (null, null) => "active",
 
             (not null, null) => "retired",
@@ -360,7 +341,5 @@ public sealed class SagaCommands(ArcanumApiClient apiClient, IThemePalette theme
             (null, not null) => "pinned",
 
             _ => "retired, pinned",
-
         };
-
 }

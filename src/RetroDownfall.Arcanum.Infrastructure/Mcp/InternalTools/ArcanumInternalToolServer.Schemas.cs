@@ -8,7 +8,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
 
 internal sealed partial class ArcanumInternalToolServer
 {
-
     private static JsonElement BuildReadFileChunkSchema()
     {
         return BuildSchema(static w =>
@@ -57,7 +56,12 @@ internal sealed partial class ArcanumInternalToolServer
 
             WriteStringProperty(w, "exactSearchText", "Verbatim block of text to locate in the file, including whitespace and newlines.");
 
-            WriteStringProperty(w, "replacementText", "Replacement block of text. May be empty to delete the matched block.");
+            WriteStringProperty(w, "replacementText", "Replacement block of text. Required; an empty string deletes the matched block, and null is rejected.");
+
+            WriteBooleanProperty(
+                w,
+                "replaceAll",
+                "Optional. When true, every occurrence of exactSearchText is replaced. When omitted or false, a block that occurs more than once is rejected without changing the file, so include enough surrounding text to match exactly one block.");
 
             w.WriteEndObject();
 
@@ -224,7 +228,6 @@ internal sealed partial class ArcanumInternalToolServer
         WorkspaceCheckProfileCatalog profiles,
         WorkspaceCheckSettings settings)
     {
-
         return BuildSchema(w =>
         {
             w.WriteString("type", "object");
@@ -306,7 +309,6 @@ internal sealed partial class ArcanumInternalToolServer
     private static JsonElement BuildApplyPatchSchema(
         WorkspacePatchSettings settings)
     {
-
         return BuildSchema(w =>
         {
             w.WriteString("type", "object");
@@ -335,7 +337,6 @@ internal sealed partial class ArcanumInternalToolServer
 
             w.WriteBoolean("additionalProperties", false);
         });
-
     }
 
     private static JsonElement BuildExecuteCommandSchema()
@@ -390,10 +391,8 @@ internal sealed partial class ArcanumInternalToolServer
     private static JsonElement BuildReadCommandOutputSchema(
         int maxPageBytes)
     {
-
         return BuildSchema(w =>
         {
-
             w.WriteString("type", "object");
 
             w.WriteStartObject("properties");
@@ -458,9 +457,7 @@ internal sealed partial class ArcanumInternalToolServer
             w.WriteEndArray();
 
             w.WriteBoolean("additionalProperties", false);
-
         });
-
     }
 
     private static JsonElement BuildAskHumanSchema()
@@ -720,7 +717,6 @@ internal sealed partial class ArcanumInternalToolServer
 
     private static JsonElement BuildSendCommLinkAlertSchema()
     {
-
         return BuildSchema(static w =>
         {
             w.WriteString("type", "object");
@@ -760,14 +756,11 @@ internal sealed partial class ArcanumInternalToolServer
             w.WriteEndArray();
 
             w.WriteBoolean("additionalProperties", false);
-
         });
-
     }
 
     private static JsonElement BuildPetitionDungeonMasterSchema()
     {
-
         return BuildSchema(static w =>
         {
             w.WriteString("type", "object");
@@ -793,9 +786,7 @@ internal sealed partial class ArcanumInternalToolServer
             w.WriteEndArray();
 
             w.WriteBoolean("additionalProperties", false);
-
         });
-
     }
 
     private static JsonElement BuildCastSendingSchema()

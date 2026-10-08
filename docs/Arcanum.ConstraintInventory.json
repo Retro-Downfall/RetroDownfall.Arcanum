@@ -210,10 +210,10 @@
       "action": "retain",
       "replacementOrContinuation": "Retry with the same key after the claim state advances or repair the durable claim store; Arcanum never invokes the protected endpoint while ownership remains ambiguous.",
       "tests": [
-        "IdempotencyEndpointFilterTests.LiveSameProcessLease_WithoutCoordinator_IsRetiredAndReacquired",
-        "IdempotencyEndpointFilterTests.LiveSameProcessLease_WhenRetirementDoesNotTransition_FailsSafeWithoutExecution",
-        "IdempotencyEndpointFilterTests.AcquireResult_WithDifferentOwner_FailsSafeWithoutExecution",
-        "IdempotencyEndpointFilterTests.AcquireResult_InClaimedState_FailsSafeWithoutExecution"
+        "IdempotencyEndpointFilterOwnershipTests.LiveSameProcessLease_WithoutCoordinator_IsRetiredAndReacquired",
+        "IdempotencyEndpointFilterOwnershipTests.LiveSameProcessLease_WhenRetirementDoesNotTransition_FailsSafeWithoutExecution",
+        "IdempotencyEndpointFilterOwnershipTests.AcquireResult_WithDifferentOwner_FailsSafeWithoutExecution",
+        "IdempotencyEndpointFilterOwnershipTests.AcquireResult_InClaimedState_FailsSafeWithoutExecution"
       ],
       "id": "boundary.idempotency-ownership-transition-recovery",
       "subsystem": "Idempotency"
@@ -3318,12 +3318,13 @@
       "threatOrFailureModel": "One provider request needs a bounded context slice, but durable extraction must checkpoint and continue every slice.",
       "classification": "Arbitrary product restriction",
       "action": "replace with adaptive behavior",
-      "replacementOrContinuation": "Process oldest-first timestamp-group-safe checkpoint pages inside one ordered provenance interval at a time, review any cursor-to-interval gap under deny-all provenance, advance the exact sequence cursor only after successful persistence, and continue until caught up or cancelled.",
+      "replacementOrContinuation": "Process oldest-first timestamp-group-safe checkpoint pages inside one ordered provenance interval at a time, review a cursor-to-interval gap under an abandoned interval's own retained policy while the process lives and under deny-all provenance only when that policy was lost, advance the exact sequence cursor only after successful persistence, and continue until caught up or cancelled.",
       "tests": [
         "SagaExtractionServiceTests.ExtractForSessionAsync_MoreThanFormerTailWindow_ProcessesEveryEntryOldestFirst",
         "SagaExtractionServiceTests.ExtractForSessionAsync_PageBoundary_KeepsToolCallAndResultTogether",
         "SagaExtractionServiceTests.ExecuteAsync_LaterIntervalMergedDuringFirstPage_DoesNotAuthorizeEarlierRemainder",
         "SagaExtractionServiceTests.ExecuteAsync_LaterIntervalAlone_ProcessesUnpaidGapWithNoProvenanceAuthority",
+        "SagaExtractionServiceTests.ExecuteAsync_AbandonedIntervalReviewedByNextTurn_KeepsItsOwnProvenancePolicy",
         "SagaExtractionServiceTests.ExecuteAsync_SharedTimestampAcrossFrontiers_ProcessesEachEntryExactlyOnce",
         "ConstraintInventoryTests",
         "UnrestrictedHarnessContractTests"
@@ -5515,7 +5516,7 @@
         "PublicConfigurationReductionTests",
         "DataRetentionServiceTests",
         "ConstraintInventoryTests",
-        "DataRetentionDurabilityBoundaryTests"
+        "DataRetentionServiceTests.ReopenResumesSameOperationWithoutAttemptIncrement"
       ]
     },
     {
@@ -5548,7 +5549,7 @@
         "DataRetentionServiceTests.PlanAsync_Prune_DoesNotLetOldestBlockedRowStarveEligibleRow",
         "DataRetentionDaemonHistoryTests.Prune_ReportsAndDeletesAllOldTerminalDaemonExecutions",
         "ConstraintInventoryTests",
-        "DataRetentionDurabilityBoundaryTests"
+        "DataRetentionServiceTests.PlanAsync_PruneAttachment_WithMaxOne_DoesNotLetBlockedOldestStarveEligible"
       ]
     },
     {

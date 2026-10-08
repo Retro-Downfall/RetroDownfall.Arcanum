@@ -15,6 +15,42 @@ public sealed class InternalCodingToolSettingsFingerprintTests
     }
 
     [Fact]
+    public void Protected_path_opt_out_is_off_by_default_and_follows_the_workspace_setting()
+    {
+        Assert.False(ArcanumRuntimeDefaults.CodingTools.AllowProtectedPathWrites);
+
+        Assert.False(new ArcanumSettings().ResolveCodingTools().AllowProtectedPathWrites);
+
+        Assert.False(
+            new ArcanumSettings { Workspaces = null! }
+                .ResolveCodingTools()
+                .AllowProtectedPathWrites);
+
+        Assert.True(
+            new ArcanumSettings
+                {
+                    Workspaces = new WorkspaceSettings { AllowProtectedPathWrites = true },
+                }
+                .ResolveCodingTools()
+                .AllowProtectedPathWrites);
+    }
+
+    [Fact]
+    public void Fingerprint_tracks_the_protected_path_opt_out_so_a_change_retires_cached_tool_servers()
+    {
+        CodingToolsSettings guarded = new ArcanumSettings().ResolveCodingTools();
+
+        CodingToolsSettings allowed = new ArcanumSettings
+        {
+            Workspaces = new WorkspaceSettings { AllowProtectedPathWrites = true },
+        }.ResolveCodingTools();
+
+        Assert.NotEqual(
+            InternalCodingToolSettingsFingerprint.Build(guarded),
+            InternalCodingToolSettingsFingerprint.Build(allowed));
+    }
+
+    [Fact]
     public void Fingerprint_uses_normalized_workspace_patch_recovery_timeout()
     {
         CodingToolsSettings first = new()

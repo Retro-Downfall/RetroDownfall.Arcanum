@@ -16,58 +16,42 @@ namespace RetroDownfall.Arcanum.Tests.Configuration;
 
 public sealed class ConfigurationBootstrapperTests : IAsyncLifetime
 {
-
     private TempWorkspace _workspace = null!;
 
-    private string? _originalTestHome;
+    private ArcanumTestHomeScope _home = null!;
 
     public async Task InitializeAsync()
     {
-
         _workspace = new TempWorkspace();
 
         await _workspace.InitializeAsync();
 
-        _originalTestHome = global::System.Environment.GetEnvironmentVariable(
-            "ARCANUM_TEST_HOME");
-
-        global::System.Environment.SetEnvironmentVariable(
-            "ARCANUM_TEST_HOME",
-            _workspace.Root);
-
+        _home = new ArcanumTestHomeScope("arcanum-configuration-bootstrapper-tests");
     }
 
     public async Task DisposeAsync()
     {
-
-        global::System.Environment.SetEnvironmentVariable(
-            "ARCANUM_TEST_HOME",
-            _originalTestHome);
+        _home.Dispose();
 
         await _workspace.DisposeAsync();
-
     }
 
     [Fact]
     public void ValidateArcanumConfigurationFile_missing_file_does_not_throw()
     {
-
         string path = Path.Combine(_workspace.Root, "missing-arcanum.json");
 
         ConfigurationBootstrapper.ValidateArcanumConfigurationFile(path);
-
     }
 
     [Fact]
     public void ValidateArcanumConfigurationFile_valid_json_does_not_throw()
     {
-
         string path = Path.Combine(_workspace.Root, "valid-arcanum.json");
 
         File.WriteAllText(path, """{"Arcanum":{"providers":[]}}""");
 
         ConfigurationBootstrapper.ValidateArcanumConfigurationFile(path);
-
     }
 
     [Theory]
@@ -171,7 +155,6 @@ public sealed class ConfigurationBootstrapperTests : IAsyncLifetime
         string json,
         bool expected)
     {
-
         string path = Path.Combine(_workspace.Root, "annals-policy-arcanum.json");
 
         File.WriteAllText(path, json);
@@ -180,7 +163,6 @@ public sealed class ConfigurationBootstrapperTests : IAsyncLifetime
             ConfigurationBootstrapper.LoadArcanumSettingsFile(path);
 
         Assert.Equal(expected, settings.Features.Annals);
-
     }
 
     [Theory]
@@ -205,7 +187,6 @@ public sealed class ConfigurationBootstrapperTests : IAsyncLifetime
         string json,
         string removedPath)
     {
-
         string path = Path.Combine(_workspace.Root, "removed-ward-arcanum.json");
 
         File.WriteAllText(path, json);
@@ -216,7 +197,6 @@ public sealed class ConfigurationBootstrapperTests : IAsyncLifetime
         Assert.Contains(removedPath, exception.Message, StringComparison.Ordinal);
 
         Assert.Contains("remove", exception.Message, StringComparison.OrdinalIgnoreCase);
-
     }
 
     [Fact]
@@ -282,7 +262,6 @@ public sealed class ConfigurationBootstrapperTests : IAsyncLifetime
 
     public void LoadArcanumSettingsFile_applies_documented_general_environment_overrides()
     {
-
         const string variable = "ARCANUM_Arcanum__Host__Port";
 
         string? original = global::System.Environment.GetEnvironmentVariable(variable);
@@ -295,22 +274,17 @@ public sealed class ConfigurationBootstrapperTests : IAsyncLifetime
 
         try
         {
-
             global::System.Environment.SetEnvironmentVariable(variable, "6124");
 
             ArcanumSettings settings =
                 ConfigurationBootstrapper.LoadArcanumSettingsFile(path);
 
             Assert.Equal(6124, settings.Host.Port);
-
         }
         finally
         {
-
             global::System.Environment.SetEnvironmentVariable(variable, original);
-
         }
-
     }
 
     [Theory]
@@ -335,7 +309,6 @@ public sealed class ConfigurationBootstrapperTests : IAsyncLifetime
         string variable,
         string removedPath)
     {
-
         string? original = global::System.Environment.GetEnvironmentVariable(variable);
 
         string path = Path.Combine(_workspace.Root, "environment-removed-ward-arcanum.json");
@@ -344,7 +317,6 @@ public sealed class ConfigurationBootstrapperTests : IAsyncLifetime
 
         try
         {
-
             global::System.Environment.SetEnvironmentVariable(variable, "true");
 
             InvalidOperationException exception = Assert.Throws<InvalidOperationException>(
@@ -353,22 +325,17 @@ public sealed class ConfigurationBootstrapperTests : IAsyncLifetime
             Assert.Contains(removedPath, exception.Message, StringComparison.Ordinal);
 
             Assert.Contains("remove", exception.Message, StringComparison.OrdinalIgnoreCase);
-
         }
         finally
         {
-
             global::System.Environment.SetEnvironmentVariable(variable, original);
-
         }
-
     }
 
     [Fact]
 
     public void AddArcanumConfiguration_projects_general_overrides_for_listener_configuration()
     {
-
         const string variable = "ARCANUM_Arcanum__Host__Port";
 
         string? original = global::System.Environment.GetEnvironmentVariable(variable);
@@ -381,7 +348,6 @@ public sealed class ConfigurationBootstrapperTests : IAsyncLifetime
 
         try
         {
-
             global::System.Environment.SetEnvironmentVariable(variable, "6124");
 
             ConfigurationManager configuration = new();
@@ -391,15 +357,11 @@ public sealed class ConfigurationBootstrapperTests : IAsyncLifetime
             Assert.Equal("6124", configuration["Arcanum:Host:Port"]);
 
             Assert.Equal(6124, ServeCommand.ReadConfiguredHostPort(configuration));
-
         }
         finally
         {
-
             global::System.Environment.SetEnvironmentVariable(variable, original);
-
         }
-
     }
 
     [Theory]
@@ -407,7 +369,6 @@ public sealed class ConfigurationBootstrapperTests : IAsyncLifetime
     [InlineData("https://ui.internal")]
     public void AddArcanumConfiguration_projects_array_overrides_as_indexed_children(string rawValue)
     {
-
         const string variable = "ARCANUM_Arcanum__Host__CorsAllowedOrigins";
 
         string? original = global::System.Environment.GetEnvironmentVariable(variable);
@@ -420,7 +381,6 @@ public sealed class ConfigurationBootstrapperTests : IAsyncLifetime
 
         try
         {
-
             global::System.Environment.SetEnvironmentVariable(variable, rawValue);
 
             ConfigurationManager configuration = new();
@@ -439,21 +399,120 @@ public sealed class ConfigurationBootstrapperTests : IAsyncLifetime
                 .ToArray();
 
             Assert.Equal(["https://ui.internal"], origins);
-
         }
         finally
         {
-
             global::System.Environment.SetEnvironmentVariable(variable, original);
-
         }
+    }
 
+    [Fact]
+    public void AddArcanumConfiguration_reads_the_file_once()
+    {
+        Directory.CreateDirectory(ArcanumPaths.GrimoireDirectory);
+
+        File.WriteAllText(
+            ArcanumPaths.ConfigurationFile,
+            """{"Arcanum":{"host":{"port":5001}}}""");
+
+        int reads = 0;
+
+        ConfigurationBootstrapper.PersistedFileReadObserver = _ => reads++;
+
+        try
+        {
+            ConfigurationBuilder builder = new();
+
+            builder.AddArcanumConfiguration();
+
+            // Rewritten before the provider runs: a provider that went back to the file would see this.
+            File.WriteAllText(
+                ArcanumPaths.ConfigurationFile,
+                """{"Arcanum":{"host":{"port":7777}}}""");
+
+            IConfigurationRoot root = builder.Build();
+
+            Assert.Equal(1, reads);
+
+            Assert.Equal("5001", root["Arcanum:Host:Port"]);
+        }
+        finally
+        {
+            ConfigurationBootstrapper.PersistedFileReadObserver = null;
+        }
+    }
+
+    /// <summary>
+    /// The old file provider could be reloaded; a snapshot provider that threw on a second load
+    /// would turn any future <c>IConfigurationRoot.Reload()</c> caller into a startup crash.
+    /// </summary>
+    [Fact]
+    public void AddArcanumConfiguration_snapshot_survives_a_reload_and_keeps_serving_the_validated_bytes()
+    {
+        Directory.CreateDirectory(ArcanumPaths.GrimoireDirectory);
+
+        File.WriteAllText(
+            ArcanumPaths.ConfigurationFile,
+            """{"Arcanum":{"host":{"port":5001}}}""");
+
+        ConfigurationBuilder builder = new();
+
+        builder.AddArcanumConfiguration();
+
+        IConfigurationRoot root = builder.Build();
+
+        File.WriteAllText(
+            ArcanumPaths.ConfigurationFile,
+            """{"Arcanum":{"host":{"port":7777}}}""");
+
+        root.Reload();
+
+        Assert.Equal("5001", root["Arcanum:Host:Port"]);
+    }
+
+    /// <summary>
+    /// The read observer is a test seam, so it must not be visible to a thread that did not set it:
+    /// another test class loading the configuration in parallel would otherwise inflate the count.
+    /// </summary>
+    [Fact]
+    public async Task PersistedFileReadObserver_is_scoped_to_the_execution_context_that_set_it()
+    {
+        Directory.CreateDirectory(ArcanumPaths.GrimoireDirectory);
+
+        File.WriteAllText(
+            ArcanumPaths.ConfigurationFile,
+            """{"Arcanum":{"host":{"port":5001}}}""");
+
+        int reads = 0;
+
+        ConfigurationBootstrapper.PersistedFileReadObserver = _ => Interlocked.Increment(ref reads);
+
+        try
+        {
+            Task unrelated;
+
+            using (ExecutionContext.SuppressFlow())
+            {
+                unrelated = Task.Run(() => ConfigurationBootstrapper.LoadPersistedArcanumSettings());
+            }
+
+            await unrelated;
+
+            Assert.Equal(0, Volatile.Read(ref reads));
+
+            _ = ConfigurationBootstrapper.LoadPersistedArcanumSettings();
+
+            Assert.Equal(1, Volatile.Read(ref reads));
+        }
+        finally
+        {
+            ConfigurationBootstrapper.PersistedFileReadObserver = null;
+        }
     }
 
     [Fact]
     public void AddArcanumConfiguration_projects_array_overrides_when_file_omits_the_key()
     {
-
         const string variable = "ARCANUM_Arcanum__Host__CorsAllowedOrigins";
 
         string? original = global::System.Environment.GetEnvironmentVariable(variable);
@@ -466,7 +525,6 @@ public sealed class ConfigurationBootstrapperTests : IAsyncLifetime
 
         try
         {
-
             global::System.Environment.SetEnvironmentVariable(
                 variable,
                 """["https://ui.internal","https://ops.internal"]""");
@@ -487,21 +545,16 @@ public sealed class ConfigurationBootstrapperTests : IAsyncLifetime
                 .ToArray();
 
             Assert.Equal(["https://ui.internal", "https://ops.internal"], origins);
-
         }
         finally
         {
-
             global::System.Environment.SetEnvironmentVariable(variable, original);
-
         }
-
     }
 
     [Fact]
     public void ValidateArcanumConfigurationFile_invalid_json_throws()
     {
-
         string path = Path.Combine(_workspace.Root, "invalid-arcanum.json");
 
         File.WriteAllText(path, "{not-json");
@@ -510,13 +563,11 @@ public sealed class ConfigurationBootstrapperTests : IAsyncLifetime
             () => ConfigurationBootstrapper.ValidateArcanumConfigurationFile(path));
 
         Assert.Contains("arcanum.json is invalid", ex.Message, StringComparison.Ordinal);
-
     }
 
     [Fact]
     public void ValidateArcanumConfigurationFile_null_root_throws()
     {
-
         string path = Path.Combine(_workspace.Root, "null-root-arcanum.json");
 
         File.WriteAllText(path, "null");
@@ -525,27 +576,21 @@ public sealed class ConfigurationBootstrapperTests : IAsyncLifetime
             () => ConfigurationBootstrapper.ValidateArcanumConfigurationFile(path));
 
         Assert.Contains("arcanum.json is invalid", ex.Message, StringComparison.Ordinal);
-
     }
 
     [Fact]
     public void ValidateArcanumConfigurationFile_oversized_file_fails_before_parsing()
     {
-
         string path = Path.Combine(_workspace.Root, "oversized-arcanum.json");
 
         using (FileStream stream = new(path, FileMode.CreateNew, FileAccess.Write, FileShare.None))
         {
-
             stream.SetLength(ConfigurationBootstrapper.MaxConfigurationBytes + 1L);
-
         }
 
         InvalidOperationException exception = Assert.Throws<InvalidOperationException>(
             () => ConfigurationBootstrapper.ValidateArcanumConfigurationFile(path));
 
         Assert.Contains("configuration exceeds", exception.Message, StringComparison.OrdinalIgnoreCase);
-
     }
-
 }

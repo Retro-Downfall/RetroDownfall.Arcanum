@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Runtime.CompilerServices;
 
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
@@ -60,6 +61,7 @@ internal sealed class TapestryAdmissionHarness : IAsyncDisposable
             Persistence,
             new Embeddings(this),
             new Summarizer(this),
+            new TapestryBuildBackoff(),
             TimeProvider.System,
             NullLogger<TapestryWeaver>.Instance));
 
@@ -85,6 +87,17 @@ internal sealed class TapestryAdmissionHarness : IAsyncDisposable
 
     internal async Task<IReadOnlyList<TapestryWeaveOutcome>> SweepAsync(CancellationToken token = default) =>
         (await Service.RunSweepAsync(Settings(), token)).Outcomes;
+
+    /// <summary>Polls until <paramref name="condition"/> holds, failing the test after ten seconds.</summary>
+    internal static async Task WaitUntilAsync(Func<bool> condition)
+    {
+        using CancellationTokenSource deadline = new(TimeSpan.FromSeconds(10));
+
+        while (!condition())
+        {
+            await Task.Delay(TimeSpan.FromMilliseconds(10), deadline.Token);
+        }
+    }
 
     internal async Task StepAsync(string step, CancellationToken token)
     {
@@ -163,11 +176,18 @@ internal sealed class TapestryAdmissionHarness : IAsyncDisposable
             return Scopes;
         }
 
-        public async Task<IReadOnlyList<TapestryLeafSource>> EnumerateLeafSourcesAsync(TapestryScope scope, int expectedDimensions, bool includeEmbeddings, CancellationToken cancellationToken)
+        public async Task<TapestryCorpusIdentity> GetCorpusIdentityAsync(TapestryScope scope, int maxLeaves, CancellationToken cancellationToken)
         {
             await harness.StepAsync("leaves:" + scope.Id, cancellationToken);
 
-            return [new("a", "a.cs", Corpus + " alpha", "hash-a-" + Corpus, null), new("b", "b.cs", Corpus + " beta", "hash-b-" + Corpus, null)];
+            return new(2, TapestryHash.OfCorpus([("a", "hash-a-" + Corpus), ("b", "hash-b-" + Corpus)]), ExceedsCeiling: false);
+        }
+
+        public async IAsyncEnumerable<IReadOnlyList<TapestryLeafSource>> EnumerateLeafPagesAsync(TapestryScope scope, int expectedDimensions, [EnumeratorCancellation] CancellationToken cancellationToken)
+        {
+            await harness.StepAsync("leaves:" + scope.Id, cancellationToken);
+
+            yield return [new("a", "a.cs", Corpus + " alpha", "hash-a-" + Corpus, null), new("b", "b.cs", Corpus + " beta", "hash-b-" + Corpus, null)];
         }
 
         public Task<TapestryGeneration?> GetCurrentGenerationAsync(TapestryScope scope, CancellationToken cancellationToken) =>

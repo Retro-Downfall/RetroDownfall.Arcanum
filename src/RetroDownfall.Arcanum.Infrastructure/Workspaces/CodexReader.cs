@@ -1,4 +1,3 @@
-using System.Collections.Concurrent;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 
@@ -6,10 +5,12 @@ namespace RetroDownfall.Arcanum.Infrastructure.Workspaces;
 
 internal static class CodexReader
 {
+    /// <summary>Most codex bodies kept at once; the least recently used is evicted beyond this.</summary>
+    internal const int CacheCapacity = 64;
 
-    private sealed record CodexCacheEntry(long MtimeUtcTicks, string Content);
+    private static readonly CodexReadCache Cache = new(CacheCapacity);
 
-    private static readonly ConcurrentDictionary<string, CodexCacheEntry> Cache = new(StringComparer.Ordinal);
+    internal static int CachedEntryCountForTests => Cache.Count;
 
     internal static async Task<string?> ReadCodexAsync(string? workingDirectory, long maxSizeBytes, CancellationToken ct)
     {
@@ -51,34 +52,48 @@ internal static class CodexReader
 
     private static async Task<string?> TryReadCachedAsync(string path, long maxSizeBytes, CancellationToken ct)
     {
-        long mtimeTicks;
+        CodexCacheKey key = new(path, maxSizeBytes);
 
-        try
-        {
-            mtimeTicks = File.GetLastWriteTimeUtc(path).Ticks;
-        }
-        catch (IOException)
-        {
-            return null;
-        }
-        catch (UnauthorizedAccessException)
+        CodexFileStamp? stamp = TryCaptureStamp(path);
+
+        if (stamp is null)
         {
             return null;
         }
 
-        if (Cache.TryGetValue(path, out CodexCacheEntry? entry) && entry.MtimeUtcTicks == mtimeTicks)
+        if (Cache.TryGet(key, stamp.Value) is { } cached)
         {
-            return entry.Content;
+            return cached;
         }
 
         string? content = await TryReadAsync(path, maxSizeBytes, ct).ConfigureAwait(false);
 
         if (content is not null)
         {
-            Cache[path] = new CodexCacheEntry(mtimeTicks, content);
+            Cache.Store(key, stamp.Value, content);
         }
 
         return content;
+    }
+
+    private static CodexFileStamp? TryCaptureStamp(string path)
+    {
+        try
+        {
+            FileInfo info = new(path);
+
+            if (!info.Exists
+                || !FileHandleIdentityInterop.TryGetPathIdentity(path, out FileHandleIdentity identity))
+            {
+                return null;
+            }
+
+            return new CodexFileStamp(identity, info.Length, info.LastWriteTimeUtc.Ticks);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
+        {
+            return null;
+        }
     }
 
     /// <summary>
@@ -109,5 +124,4 @@ internal static class CodexReader
 
         return readResult.Text;
     }
-
 }

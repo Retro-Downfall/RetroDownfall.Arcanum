@@ -379,6 +379,9 @@ public sealed class LexiconProtectedInspectionTests
                 return db;
             });
 
+            // Whatever else the memory family's routes take is only declared, never resolved here.
+            RouteGraphHost.RegisterServiceContracts(services);
+
             host._app = builder.Build();
 
             _ = host._app.MapGroup("/api").MapMemoryEndpoints();
@@ -495,6 +498,8 @@ public sealed class LexiconProtectedInspectionTests
         }
 
         public Task<Result<CovenantSessionExportSensitivity>> InspectSessionAsync(Guid sessionId, ICovenantSnapshotReadLease readLease, CancellationToken cancellationToken) => throw new NotSupportedException();
+
+        public Task<Result<CovenantSessionExportSensitivity>> InspectSessionWithoutLeaseAsync(Guid sessionId, CancellationToken cancellationToken) => throw new NotSupportedException();
 
         public Task<Result<CovenantCampaignExportExclusions>> InventoryCampaignExclusionsAsync(Guid campaignId, ICovenantSnapshotReadLease readLease, CancellationToken cancellationToken) => throw new NotSupportedException();
     }

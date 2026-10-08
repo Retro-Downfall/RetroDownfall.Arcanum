@@ -27,6 +27,8 @@ using RetroDownfall.Arcanum.Core.Lexicon;
 
 using RetroDownfall.Arcanum.Core.Weave;
 
+using RetroDownfall.Arcanum.Core.Weave.Tapestry;
+
 using RetroDownfall.Arcanum.Core.Memory;
 
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -419,16 +421,13 @@ public sealed class MemoryEndpointTests
 
     public MemoryEndpointTests(ArcanumWebApplicationFactory factory)
     {
-
         _factory = factory;
-
     }
 
     [SkippableFact]
 
     public async Task Status_retains_read_only_admission_through_all_count_commands()
     {
-
         Skip.IfNot(
             GrimoireFixture.SqlCipherAvailable,
             GrimoireFixture.SqlCipherUnavailableReason);
@@ -439,11 +438,9 @@ public sealed class MemoryEndpointTests
         {
             ServiceOverrides = services =>
             {
-
                 // Appended rather than substituted: the last registration is what
                 // GetRequiredService returns, so the production descriptor stays composed.
                 services.AddSingleton<IGrimoireOrdinaryConnectionFactory>(connections);
-
             },
         };
 
@@ -455,7 +452,6 @@ public sealed class MemoryEndpointTests
 
         try
         {
-
             await pause.WaitUntilEnteredAsync();
 
             Assert.Equal(GrimoireScopedConsumerFinalUseKind.ScalarConverted, pause.FinalUse.Kind);
@@ -463,15 +459,12 @@ public sealed class MemoryEndpointTests
             Assert.Equal(0, pause.FinalUse.Observation);
 
             Assert.Equal(1, connections.LiveLeaseCountFor(CovenantSqliteConnectionMode.ReadOnly));
-
         }
         finally
         {
-
             pause.Release();
 
             _ = await loading.WaitAsync(TimeSpan.FromSeconds(10));
-
         }
 
         HttpResponseMessage response = await loading;
@@ -481,14 +474,12 @@ public sealed class MemoryEndpointTests
         Assert.Equal(CovenantSqliteConnectionMode.ReadOnly, connections.Modes[^1]);
 
         Assert.Equal(0, connections.LiveLeaseCountFor(CovenantSqliteConnectionMode.ReadOnly));
-
     }
 
     [SkippableFact]
 
     public async Task Search_retains_read_only_admission_while_its_result_reader_is_open()
     {
-
         Skip.IfNot(
             GrimoireFixture.SqlCipherAvailable,
             GrimoireFixture.SqlCipherUnavailableReason);
@@ -499,11 +490,9 @@ public sealed class MemoryEndpointTests
         {
             ServiceOverrides = services =>
             {
-
                 // Appended rather than substituted: the last registration is what
                 // GetRequiredService returns, so the production descriptor stays composed.
                 services.AddSingleton<IGrimoireOrdinaryConnectionFactory>(connections);
-
             },
         };
 
@@ -518,7 +507,6 @@ public sealed class MemoryEndpointTests
 
         try
         {
-
             await pause.WaitUntilEnteredAsync();
 
             Assert.Equal(GrimoireScopedConsumerFinalUseKind.ReaderMaterialized, pause.FinalUse.Kind);
@@ -526,15 +514,12 @@ public sealed class MemoryEndpointTests
             Assert.Equal(0, pause.FinalUse.Observation);
 
             Assert.Equal(1, connections.LiveLeaseCountFor(CovenantSqliteConnectionMode.ReadOnly));
-
         }
         finally
         {
-
             pause.Release();
 
             _ = await searching.WaitAsync(TimeSpan.FromSeconds(10));
-
         }
 
         HttpResponseMessage response = await searching;
@@ -542,14 +527,12 @@ public sealed class MemoryEndpointTests
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
 
         Assert.Equal(0, connections.LiveLeaseCountFor(CovenantSqliteConnectionMode.ReadOnly));
-
     }
 
     [SkippableFact]
 
     public async Task Status_reports_every_distinct_store_and_retention_without_requiring_features()
     {
-
         Skip.IfNot(
             GrimoireFixture.SqlCipherAvailable,
             GrimoireFixture.SqlCipherUnavailableReason);
@@ -585,7 +568,6 @@ public sealed class MemoryEndpointTests
         Assert.Contains("Workspace Index", names);
 
         Assert.All(envelope.Data.Stores, static store => Assert.False(string.IsNullOrWhiteSpace(store.Retention)));
-
     }
 
     /// <summary>
@@ -668,7 +650,6 @@ public sealed class MemoryEndpointTests
 
     public async Task A_session_status_counts_the_attachment_its_store_actually_wrote()
     {
-
         Skip.IfNot(
             GrimoireFixture.SqlCipherAvailable,
             GrimoireFixture.SqlCipherUnavailableReason);
@@ -677,12 +658,10 @@ public sealed class MemoryEndpointTests
 
         await using (AsyncServiceScope scope = _factory.Services.CreateAsyncScope())
         {
-
             ArcanumDbContext db = scope.ServiceProvider.GetRequiredService<ArcanumDbContext>();
 
             Session session = new()
             {
-
                 Id = Guid.NewGuid(),
 
                 Status = "active",
@@ -692,7 +671,6 @@ public sealed class MemoryEndpointTests
                 UpdatedAt = DateTimeOffset.UtcNow,
 
                 Summary = "campaign summary text",
-
             };
 
             db.Sessions.Add(session);
@@ -701,7 +679,6 @@ public sealed class MemoryEndpointTests
 
             db.Entries.Add(new Entry
             {
-
                 Id = Guid.NewGuid(),
 
                 SessionId = sessionId,
@@ -717,7 +694,6 @@ public sealed class MemoryEndpointTests
                 Sequence = 1,
 
                 IsPinned = true,
-
             });
 
             _ = await db.SaveChangesAsync();
@@ -734,7 +710,6 @@ public sealed class MemoryEndpointTests
                 System.Text.Encoding.UTF8.GetBytes("counted content"),
                 "text/plain",
                 SessionAttachmentKind.Text);
-
         }
 
         HttpClient client = _factory.CreateAuthenticatedClient();
@@ -790,7 +765,123 @@ public sealed class MemoryEndpointTests
         Assert.True(EligibleSource(explainEnvelope.Data, "Pinned Entries"));
 
         Assert.True(EligibleSource(explainEnvelope.Data, "Campaign Summary"));
+    }
 
+    /// <summary>
+    /// A Session's Tapestry count includes the published nodes of both of its scope kinds, each under
+    /// the spelling its own writer keyed it by.
+    /// </summary>
+    /// <remarks>
+    /// <c>tapestry_generations.ScopeId</c> is filled from the corpus the sweep read, and the two Session
+    /// corpora spell one Session differently: <c>Entries.SessionId</c> is uppercase dashed and
+    /// <c>session_attachment_chunks.SessionId</c> is lowercase. One bound parameter can match only one of
+    /// them, so the count reported the other kind's nodes as absent. The generations are published
+    /// through the store, keyed by the spelling each corpus carries, and the status route is asked for
+    /// the Session by its ordinary lowercase identity.
+    /// </remarks>
+    [SkippableFact]
+    public async Task A_session_status_counts_the_published_tapestry_nodes_of_both_scope_kinds()
+    {
+        Skip.IfNot(
+            GrimoireFixture.SqlCipherAvailable,
+            GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = Guid.NewGuid();
+
+        await using (AsyncServiceScope scope = _factory.Services.CreateAsyncScope())
+        {
+            ArcanumDbContext db = scope.ServiceProvider.GetRequiredService<ArcanumDbContext>();
+
+            db.Sessions.Add(new Session
+            {
+                Id = sessionId,
+                Status = "active",
+                CreatedAt = DateTimeOffset.UtcNow,
+                UpdatedAt = DateTimeOffset.UtcNow,
+            });
+
+            _ = await db.SaveChangesAsync();
+
+            ITapestryStore store = scope.ServiceProvider.GetRequiredService<ITapestryStore>();
+
+            await PublishOneNodeAsync(
+                store,
+                new TapestryScope(TapestryScopeKind.Session, sessionId.ToString("D").ToUpperInvariant()));
+
+            await PublishOneNodeAsync(
+                store,
+                new TapestryScope(TapestryScopeKind.SessionAttachment, sessionId.ToString("D")));
+        }
+
+        HttpClient client = _factory.CreateAuthenticatedClient();
+
+        HttpResponseMessage response = await client.GetAsync(
+            "/api/memory/status/" + sessionId.ToString("D"));
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        ApiResponse<MemoryStatusDto>? envelope = await ReadAsync(
+            response,
+            ArcanumJsonContext.Default.ApiResponseMemoryStatusDto);
+
+        Assert.NotNull(envelope?.Data);
+
+        MemoryStoreStatusDto tapestry = Assert.Single(
+            envelope.Data.Stores,
+            static store => string.Equals(store.Name, "Tapestry", StringComparison.Ordinal));
+
+        Assert.Equal(2, tapestry.Count);
+    }
+
+    private static async Task PublishOneNodeAsync(ITapestryStore store, TapestryScope scope)
+    {
+        string generationId = await store.BeginGenerationAsync(
+            scope,
+            SphericalKMeans.AlgorithmVersion,
+            "settings",
+            "model",
+            TapestryHash.SummaryRecipeVersion,
+            8,
+            "corpus",
+            DateTimeOffset.UtcNow,
+            CancellationToken.None);
+
+        await store.AppendNodesAsync(
+            [
+                new TapestryNodeWrite(
+                    new TapestryNode(
+                        $"node-{scope.Kind}-{generationId}",
+                        generationId,
+                        scope.Kind,
+                        scope.Id,
+                        0,
+                        TapestryNodeKind.Leaf,
+                        null,
+                        scope.Kind == TapestryScopeKind.Session
+                            ? TapestryLeafSourceKind.Entry
+                            : TapestryLeafSourceKind.SessionAttachmentChunk,
+                        "source",
+                        "label",
+                        null,
+                        TapestryHash.OfContent("body"),
+                        null,
+                        1,
+                        0,
+                        TapestryPartitionReason.None,
+                        8,
+                        DateTimeOffset.UtcNow),
+                    new float[8]),
+            ],
+            CancellationToken.None);
+
+        await store.PublishGenerationAsync(
+            generationId,
+            1,
+            1,
+            1,
+            TapestryTerminalReason.LeafOnly,
+            DateTimeOffset.UtcNow,
+            CancellationToken.None);
     }
 
     private static bool EligibleSource(MemoryExplainDto explain, string name) =>
@@ -812,7 +903,6 @@ public sealed class MemoryEndpointTests
 
     public async Task Search_session_scope_binds_the_canonical_session_id()
     {
-
         Skip.IfNot(
             GrimoireFixture.SqlCipherAvailable,
             GrimoireFixture.SqlCipherUnavailableReason);
@@ -821,12 +911,10 @@ public sealed class MemoryEndpointTests
 
         await using (AsyncServiceScope scope = _factory.Services.CreateAsyncScope())
         {
-
             ArcanumDbContext db = scope.ServiceProvider.GetRequiredService<ArcanumDbContext>();
 
             Session session = new()
             {
-
                 Id = Guid.NewGuid(),
 
                 Status = "active",
@@ -836,7 +924,6 @@ public sealed class MemoryEndpointTests
                 UpdatedAt = DateTimeOffset.UtcNow,
 
                 Summary = "gryphon roost morale notes",
-
             };
 
             db.Sessions.Add(session);
@@ -845,7 +932,6 @@ public sealed class MemoryEndpointTests
 
             db.Entries.Add(new Entry
             {
-
                 Id = Guid.NewGuid(),
 
                 SessionId = sessionId,
@@ -859,11 +945,9 @@ public sealed class MemoryEndpointTests
                 CreatedAt = DateTimeOffset.UtcNow,
 
                 Sequence = 1,
-
             });
 
             _ = await db.SaveChangesAsync();
-
         }
 
         HttpClient client = _factory.CreateAuthenticatedClient();
@@ -903,14 +987,105 @@ public sealed class MemoryEndpointTests
         Assert.Equal("Campaign Summary", summaryMatch.Title);
 
         Assert.Contains("morale notes", summaryMatch.Content, StringComparison.Ordinal);
+    }
 
+    /// <summary>
+    /// A search that matches many large entries answers within an aggregate byte budget, not just a row count.
+    /// </summary>
+    /// <remarks>
+    /// Ten thousand rows of full text is the row bound; with entries of a megabyte each it is ten gigabytes
+    /// held in one list and written as one response. The byte budget stops reading once the content already
+    /// returned reaches it, and says so with <c>hasMore</c> both on the scope and on the response.
+    /// </remarks>
+    [SkippableFact]
+    public async Task Search_response_is_bounded_in_bytes_with_many_large_entries()
+    {
+        Skip.IfNot(
+            GrimoireFixture.SqlCipherAvailable,
+            GrimoireFixture.SqlCipherUnavailableReason);
+
+        const int entryCount = 14;
+
+        const int entryBytes = 1024 * 1024;
+
+        Guid sessionId;
+
+        await using (AsyncServiceScope scope = _factory.Services.CreateAsyncScope())
+        {
+            ArcanumDbContext db = scope.ServiceProvider.GetRequiredService<ArcanumDbContext>();
+
+            Session session = new()
+            {
+                Id = Guid.NewGuid(),
+
+                Status = "active",
+
+                CreatedAt = DateTimeOffset.UtcNow,
+
+                UpdatedAt = DateTimeOffset.UtcNow,
+            };
+
+            db.Sessions.Add(session);
+
+            sessionId = session.Id;
+
+            for (int i = 0; i < entryCount; i++)
+            {
+                db.Entries.Add(new Entry
+                {
+                    Id = Guid.NewGuid(),
+
+                    SessionId = sessionId,
+
+                    Role = MessageRole.User,
+
+                    Content = "bulkbudgetword " + new string('a', entryBytes),
+
+                    ModelUsed = "gpt-oracle",
+
+                    CreatedAt = DateTimeOffset.UtcNow.AddSeconds(i),
+
+                    Sequence = i + 1,
+                });
+            }
+
+            _ = await db.SaveChangesAsync();
+        }
+
+        HttpClient client = _factory.CreateAuthenticatedClient();
+
+        HttpResponseMessage response = await client.PostAsJsonAsync(
+            "/api/memory/search",
+            new MemorySearchRequest("bulkbudgetword", MemorySearchScope.Session, sessionId),
+            ArcanumJsonContext.Default.MemorySearchRequest);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        ApiResponse<MemorySearchResponse>? envelope = await ReadAsync(
+            response,
+            ArcanumJsonContext.Default.ApiResponseMemorySearchResponse);
+
+        MemorySearchResponse data = envelope!.Data!;
+
+        long returnedBytes = data.Results.Sum(static hit => (long)System.Text.Encoding.UTF8.GetByteCount(hit.Content));
+
+        // The budget is checked after each row, so the answer may overshoot it by at most the one row that
+        // crossed it.
+        Assert.True(returnedBytes <= MemoryEndpoints.SearchResultByteBudget + entryBytes + 64);
+
+        Assert.True(data.Results.Length < entryCount);
+
+        Assert.True(data.Results.Length > 0);
+
+        Assert.True(data.HasMore);
+
+        Assert.True(Assert.Single(data.Scopes!).HasMore);
     }
 
     [SkippableFact]
 
     public async Task Search_requires_query_but_not_an_embedding_feature_gate()
     {
-
         Skip.IfNot(
             GrimoireFixture.SqlCipherAvailable,
             GrimoireFixture.SqlCipherUnavailableReason);
@@ -945,14 +1120,12 @@ public sealed class MemoryEndpointTests
         Assert.NotNull(envelope?.Data);
 
         Assert.Equal(MemorySearchScope.All, envelope.Data.Scope);
-
     }
 
     [SkippableFact]
 
     public async Task Lexicon_endpoints_list_show_search_and_delete_only_the_named_entity()
     {
-
         Skip.IfNot(
             GrimoireFixture.SqlCipherAvailable,
             GrimoireFixture.SqlCipherUnavailableReason);
@@ -977,13 +1150,11 @@ public sealed class MemoryEndpointTests
         {
             ServiceOverrides = services =>
             {
-
                 services.RemoveAll<ILexiconService>();
 
                 services.AddSingleton<ILexiconService>(lexicon);
 
                 services.AddSingleton<ILexiconCurationService>(lexicon);
-
             },
         };
 
@@ -1047,7 +1218,6 @@ public sealed class MemoryEndpointTests
         Assert.Null(remainingOperator.Value);
 
         Assert.NotNull(remainingArcanum.Value);
-
     }
 
     [SkippableTheory]
@@ -1104,7 +1274,6 @@ public sealed class MemoryEndpointTests
 
     public async Task Search_bounds_the_saga_page_it_requests_and_caps_the_response()
     {
-
         Skip.IfNot(
             GrimoireFixture.SqlCipherAvailable,
             GrimoireFixture.SqlCipherUnavailableReason);
@@ -1117,11 +1286,9 @@ public sealed class MemoryEndpointTests
         {
             ServiceOverrides = services =>
             {
-
                 services.RemoveAll<ISagaMemoryStore>();
 
                 services.AddSingleton<ISagaMemoryStore>(saga);
-
             },
         };
 
@@ -1157,14 +1324,12 @@ public sealed class MemoryEndpointTests
             });
 
         Assert.True(envelope.Data.HasMore);
-
     }
 
     [SkippableFact]
 
     public async Task Search_shares_one_budget_across_scopes_rather_than_one_per_scope()
     {
-
         Skip.IfNot(
             GrimoireFixture.SqlCipherAvailable,
             GrimoireFixture.SqlCipherUnavailableReason);
@@ -1184,7 +1349,6 @@ public sealed class MemoryEndpointTests
         {
             ServiceOverrides = services =>
             {
-
                 services.RemoveAll<ISagaMemoryStore>();
 
                 services.AddSingleton<ISagaMemoryStore>(saga);
@@ -1194,7 +1358,6 @@ public sealed class MemoryEndpointTests
                 services.AddSingleton<ILexiconService>(lexicon);
 
                 services.AddSingleton<ILexiconCurationService>(lexicon);
-
             },
         };
 
@@ -1216,7 +1379,6 @@ public sealed class MemoryEndpointTests
         Assert.True(
             envelope.Data.Results.Length <= MemoryEndpoints.SearchResultLimit,
             $"scope=all returned {envelope.Data.Results.Length} results, above the {MemoryEndpoints.SearchResultLimit} budget.");
-
     }
 
     /// <summary>
@@ -1227,7 +1389,6 @@ public sealed class MemoryEndpointTests
 
     public async Task Search_honours_a_caller_supplied_limit_and_reports_which_scopes_had_more()
     {
-
         Skip.IfNot(
             GrimoireFixture.SqlCipherAvailable,
             GrimoireFixture.SqlCipherUnavailableReason);
@@ -1236,27 +1397,23 @@ public sealed class MemoryEndpointTests
 
         for (int index = 0; index < 5; index++)
         {
-
             _ = await lexicon.UpsertAsync(
                 $"Moonlit-{index}",
                 "Person",
                 ["Works by moonlight."],
                 LexiconScope.Global,
                 CancellationToken.None);
-
         }
 
         await using ArcanumWebApplicationFactory factory = new()
         {
             ServiceOverrides = services =>
             {
-
                 services.RemoveAll<ILexiconService>();
 
                 services.AddSingleton<ILexiconService>(lexicon);
 
                 services.AddSingleton<ILexiconCurationService>(lexicon);
-
             },
         };
 
@@ -1303,7 +1460,6 @@ public sealed class MemoryEndpointTests
         Assert.False(complete.Data.HasMore);
 
         Assert.False(Assert.Single(complete.Data.Scopes!).HasMore);
-
     }
 
     /// <summary>
@@ -1317,7 +1473,6 @@ public sealed class MemoryEndpointTests
 
     public async Task Search_refuses_a_limit_outside_the_server_budget(int limit)
     {
-
         Skip.IfNot(
             GrimoireFixture.SqlCipherAvailable,
             GrimoireFixture.SqlCipherUnavailableReason);
@@ -1336,7 +1491,6 @@ public sealed class MemoryEndpointTests
             ArcanumJsonContext.Default.ApiResponseMemorySearchResponse);
 
         Assert.Equal(ErrorCodes.Validation.InvalidBody, envelope?.Error?.Code);
-
     }
 
     /// <summary>
@@ -1352,7 +1506,6 @@ public sealed class MemoryEndpointTests
 
     public async Task Status_carries_the_covenant_census_the_installation_actually_holds()
     {
-
         Skip.IfNot(
             GrimoireFixture.SqlCipherAvailable,
             GrimoireFixture.SqlCipherUnavailableReason);
@@ -1373,11 +1526,9 @@ public sealed class MemoryEndpointTests
         {
             ServiceOverrides = services =>
             {
-
                 services.RemoveAll<ICovenantManagementService>();
 
                 services.AddSingleton(Management(covenant));
-
             },
         };
 
@@ -1398,7 +1549,6 @@ public sealed class MemoryEndpointTests
         Assert.True(status.GlobalConfirmedRenderedBytes > 0);
 
         Assert.Equal(CovenantLimits.MaxGlobalConfirmedRenderedBytes, status.RenderedByteCeilingPerSection);
-
     }
 
     /// <summary>
@@ -1413,18 +1563,24 @@ public sealed class MemoryEndpointTests
 
     public async Task Status_omits_the_covenant_block_entirely_when_nothing_can_answer_for_it()
     {
-
         Skip.IfNot(
             GrimoireFixture.SqlCipherAvailable,
             GrimoireFixture.SqlCipherUnavailableReason);
 
         await using ArcanumWebApplicationFactory factory = new()
         {
-            ServiceOverrides = static services => services.RemoveAll<ICovenantManagementService>(),
+            ServiceOverrides = static services =>
+            {
+                services.RemoveAll<ICovenantManagementService>();
+
+                // Nothing can answer for the Covenant, which the route sees as a service that resolves to
+                // nothing. Leaving the type unregistered would make endpoint building take the optional
+                // parameter for a request body, which a host with reflection off cannot build metadata for.
+                services.AddScoped<ICovenantManagementService>(static _ => null!);
+            },
         };
 
         Assert.Null(await CovenantStatusAsync(factory));
-
     }
 
     /// <summary>
@@ -1470,7 +1626,6 @@ public sealed class MemoryEndpointTests
 
     private static async Task<CovenantStatusDto?> CovenantStatusAsync(ArcanumWebApplicationFactory factory)
     {
-
         HttpClient client = factory.CreateAuthenticatedClient();
 
         HttpResponseMessage response = await client.GetAsync("/api/memory/status");
@@ -1484,7 +1639,6 @@ public sealed class MemoryEndpointTests
         Assert.NotNull(envelope?.Data);
 
         return envelope.Data.Covenant;
-
     }
 
     private static ICovenantManagementService Management(CovenantCanonicalFixture fixture) =>
@@ -1499,7 +1653,6 @@ public sealed class MemoryEndpointTests
     /// <summary>A codec that fails loudly, because a status read issues and accepts no envelope.</summary>
     private sealed class UnusedEnvelopeCodec : ICovenantEnvelopeCodec
     {
-
         public CovenantEnvelopeKeySnapshot KeySnapshot =>
             throw new NotSupportedException("A status read touches no envelope.");
 
@@ -1512,29 +1665,24 @@ public sealed class MemoryEndpointTests
 
         public Result<CovenantEnvelopeBody> Decode(CovenantEnvelopePurpose expectedPurpose, string? token) =>
             throw new NotSupportedException("A status read accepts no envelope.");
-
     }
 
     /// <summary>A reader that fails loudly, because a status read resolves no evaluation Campaign.</summary>
     private sealed class UnusedCampaignAvailabilityReader : ICampaignAvailabilityReader
     {
-
         public ValueTask<Result<long?>> FindAvailabilityGenerationAsync(
             Guid campaignId,
             CancellationToken cancellationToken) =>
             throw new NotSupportedException("A status read resolves no Campaign.");
-
     }
 
     private static async Task<T?> ReadAsync<T>(
         HttpResponseMessage response,
         System.Text.Json.Serialization.Metadata.JsonTypeInfo<T> typeInfo)
     {
-
         byte[] json = await response.Content.ReadAsByteArrayAsync();
 
         return JsonSerializer.Deserialize(json, typeInfo);
-
     }
 
     /// <summary>Matches ArcanumSettingClamps.EmbeddingsDimensions' 64-dimension floor.</summary>
@@ -1564,11 +1712,9 @@ public sealed class MemoryEndpointTests
             },
             ServiceOverrides = static services =>
             {
-
                 services.RemoveAll<IWeaveService>();
 
                 services.AddSingleton<IWeaveService>(new FixedVectorWeaveService());
-
             },
         };
 
@@ -1579,7 +1725,6 @@ public sealed class MemoryEndpointTests
         string content,
         Guid? sessionId)
     {
-
         using IServiceScope scope = factory.Services.CreateScope();
 
         ISagaMemoryStore store = scope.ServiceProvider.GetRequiredService<ISagaMemoryStore>();
@@ -1595,13 +1740,11 @@ public sealed class MemoryEndpointTests
             CancellationToken.None);
 
         Assert.Equal(SagaMemoryWriteOutcome.Written, outcome);
-
     }
 
     /// <summary>Retires a memory through the mapped routes, quoting the digest the detail route publishes.</summary>
     private static async Task RetireSagaMemoryAsync(HttpClient client, string id)
     {
-
         using HttpResponseMessage shown = await client.GetAsync($"/api/memory/saga/{id}");
 
         ApiResponse<SagaMemoryDetail>? detail = await ReadAsync(shown, ArcanumJsonContext.Default.ApiResponseSagaMemoryDetail);
@@ -1616,12 +1759,10 @@ public sealed class MemoryEndpointTests
         using HttpResponseMessage retired = await client.PostAsync($"/api/memory/saga/{id}/retire", request);
 
         Assert.Equal(HttpStatusCode.OK, retired.StatusCode);
-
     }
 
     private static async Task<MemorySearchResultDto[]> SearchSagaAsync(HttpClient client, string query)
     {
-
         using HttpResponseMessage response = await client.PostAsJsonAsync(
             "/api/memory/search",
             new MemorySearchRequest(query, MemorySearchScope.Saga),
@@ -1634,7 +1775,6 @@ public sealed class MemoryEndpointTests
             ArcanumJsonContext.Default.ApiResponseMemorySearchResponse);
 
         return envelope!.Data!.Results;
-
     }
 
     /// <summary>
@@ -1643,7 +1783,6 @@ public sealed class MemoryEndpointTests
     /// </summary>
     private static async Task DropSagaEmbeddingsTakenUnderAnotherWidthAsync(ArcanumWebApplicationFactory factory)
     {
-
         using IServiceScope scope = factory.Services.CreateScope();
 
         ArcanumDbContext db = scope.ServiceProvider.GetRequiredService<ArcanumDbContext>();
@@ -1652,9 +1791,7 @@ public sealed class MemoryEndpointTests
 
         if (connection.State != System.Data.ConnectionState.Open)
         {
-
             await db.Database.OpenConnectionAsync(CancellationToken.None);
-
         }
 
         long removed = await RetroDownfall.Arcanum.Infrastructure.Backup.BackupRestoreDatabaseWorker.DropMismatchedEmbeddingsAsync(
@@ -1665,7 +1802,6 @@ public sealed class MemoryEndpointTests
         // The seeded memory's vector and nothing else; an arrangement that removed nothing would leave
         // every assertion after it describing a memory that never lost its embedding.
         Assert.Equal(1L, removed);
-
     }
 
     /// <summary>
@@ -1674,7 +1810,6 @@ public sealed class MemoryEndpointTests
     /// </summary>
     private static async Task<Guid> SeedUnboundSessionAsync(ArcanumWebApplicationFactory factory)
     {
-
         Guid sessionId = Guid.NewGuid();
 
         using IServiceScope scope = factory.Services.CreateScope();
@@ -1685,9 +1820,7 @@ public sealed class MemoryEndpointTests
 
         if (connection.State != System.Data.ConnectionState.Open)
         {
-
             await db.Database.OpenConnectionAsync(CancellationToken.None);
-
         }
 
         await ExecuteAsync(
@@ -1701,12 +1834,10 @@ public sealed class MemoryEndpointTests
                 .ToString("o", System.Globalization.CultureInfo.InvariantCulture)));
 
         return sessionId;
-
     }
 
     private static async Task<bool> SagaExplainEligibleAsync(HttpClient client, Guid? sessionId)
     {
-
         using HttpResponseMessage response = await client.GetAsync(
             sessionId is { } id ? $"/api/memory/explain/{id:D}" : "/api/memory/explain");
 
@@ -1715,7 +1846,6 @@ public sealed class MemoryEndpointTests
         ApiResponse<MemoryExplainDto>? explain = await ReadAsync(response, ArcanumJsonContext.Default.ApiResponseMemoryExplainDto);
 
         return EligibleSource(explain!.Data!, "Saga");
-
     }
 
     /// <summary>
@@ -1726,7 +1856,6 @@ public sealed class MemoryEndpointTests
         ArcanumWebApplicationFactory factory,
         Guid campaignId)
     {
-
         Guid sessionId = Guid.NewGuid();
 
         string now = new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero)
@@ -1740,9 +1869,7 @@ public sealed class MemoryEndpointTests
 
         if (connection.State != System.Data.ConnectionState.Open)
         {
-
             await db.Database.OpenConnectionAsync(CancellationToken.None);
-
         }
 
         string canonicalCampaign = campaignId.ToString("D").ToUpperInvariant();
@@ -1785,7 +1912,6 @@ public sealed class MemoryEndpointTests
             ("$now", now));
 
         return sessionId;
-
     }
 
     private static async Task ExecuteAsync(
@@ -1793,37 +1919,30 @@ public sealed class MemoryEndpointTests
         string sql,
         params (string Name, object Value)[] parameters)
     {
-
         await using SqliteCommand command = connection.CreateCommand();
 
         command.CommandText = sql;
 
         foreach ((string name, object value) in parameters)
         {
-
             _ = command.Parameters.AddWithValue(name, value);
-
         }
 
         _ = await command.ExecuteNonQueryAsync(CancellationToken.None);
-
     }
 
     /// <summary>Answers one fixed vector for every text, so similarity is not what a case here is about.</summary>
     private sealed class FixedVectorWeaveService : IWeaveService
     {
-
         public bool IsAvailable => true;
 
         public static float[] Vector()
         {
-
             float[] vector = new float[SagaTestDimensions];
 
             vector[0] = 1f;
 
             return vector;
-
         }
 
         public Task<Result<Embedding<float>>> EmbedAsync(string text, CancellationToken cancellationToken) =>
@@ -1834,7 +1953,6 @@ public sealed class MemoryEndpointTests
 
         public Task<Result<(string Chunk, int Offset)[]>> ChunkAsync(string text, CancellationToken cancellationToken) =>
             throw new NotSupportedException("Not used by the memory inspection routes.");
-
     }
 
     /// <summary>
@@ -1844,7 +1962,6 @@ public sealed class MemoryEndpointTests
     /// </summary>
     private sealed class SaturatingSagaMemoryStore(int available) : ISagaMemoryStore
     {
-
         public int RequestedLimit { get; private set; }
 
         public Task<SagaMemoryDto[]> ListAsync(
@@ -1854,7 +1971,6 @@ public sealed class MemoryEndpointTests
             int offset,
             CancellationToken cancellationToken)
         {
-
             RequestedLimit = limit;
 
             int count = Math.Min(available, limit);
@@ -1863,7 +1979,6 @@ public sealed class MemoryEndpointTests
 
             for (int i = 0; i < count; i++)
             {
-
                 memories[i] = new SagaMemoryDto(
                     $"saga-{i}",
                     "e",
@@ -1871,11 +1986,9 @@ public sealed class MemoryEndpointTests
                     null,
                     null,
                     null);
-
             }
 
             return Task.FromResult(memories);
-
         }
 
         public async Task<SagaMemoryCurationRow[]> ListCurationRowsAsync(
@@ -1886,7 +1999,6 @@ public sealed class MemoryEndpointTests
             int offset,
             CancellationToken cancellationToken)
         {
-
             SagaMemoryDto[] memories = await ListAsync(query, sessionId, scope, limit, offset, cancellationToken);
 
             return
@@ -1896,7 +2008,6 @@ public sealed class MemoryEndpointTests
                     new SagaMemoryLifecycle(memory.RetiredAtUtc, memory.PinnedAtUtc),
                     HasEmbedding: true)),
             ];
-
         }
 
         public Task<bool> AnyRetrievableAsync(MemoryScope scope, CancellationToken cancellationToken) =>
@@ -1968,7 +2079,5 @@ public sealed class MemoryEndpointTests
             DateTimeOffset lastExtractedEntryCreatedAt,
             CancellationToken cancellationToken) =>
             throw new NotSupportedException();
-
     }
-
 }

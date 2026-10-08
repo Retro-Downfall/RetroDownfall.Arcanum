@@ -3,7 +3,6 @@ namespace RetroDownfall.Arcanum.Core.Weave.Tapestry;
 /// <summary>Why a usable-vector check rejected a node from a Tapestry layer.</summary>
 public enum SphericalKMeansRejection
 {
-
     /// <summary>At least one component was <c>NaN</c> or infinite.</summary>
     NonFiniteComponent,
 
@@ -12,13 +11,11 @@ public enum SphericalKMeansRejection
 
     /// <summary>The vector's length differed from the layer's single validated dimension.</summary>
     DimensionMismatch,
-
 }
 
 /// <summary>Which stopping condition ended a clustering run. Recorded with every generation.</summary>
 public enum SphericalKMeansTermination
 {
-
     /// <summary>
     /// No point changed cluster between two consecutive assignment passes. Empty-cluster repair runs
     /// after the assignment pass, so the published memberships are always repaired even when the
@@ -31,7 +28,6 @@ public enum SphericalKMeansTermination
 
     /// <summary>The code-owned iteration cap was reached first.</summary>
     IterationCap,
-
 }
 
 /// <summary>One clustering input: a stable opaque identity plus its raw (un-normalized) vector.</summary>
@@ -80,7 +76,6 @@ public sealed record SphericalKMeansResult(
 /// </summary>
 public static class SphericalKMeans
 {
-
     /// <summary>
     /// The versioned clustering-algorithm identity. Persisted with every generation; changing it
     /// invalidates derived generations and forces an explicit rebuild.
@@ -112,12 +107,9 @@ public static class SphericalKMeans
         int maxClustersPerLayer,
         int distinctVectorCount)
     {
-
         if (nodeCount <= 0 || distinctVectorCount <= 0)
         {
-
             return 0;
-
         }
 
         int target = Math.Max(1, targetChildrenPerSummary);
@@ -131,7 +123,6 @@ public static class SphericalKMeans
         return upperBound <= 1
             ? 1
             : Math.Clamp(ceiling, 2, upperBound);
-
     }
 
     /// <summary>
@@ -157,13 +148,11 @@ public static class SphericalKMeans
         int maxIterations = MaxIterations,
         CancellationToken cancellationToken = default)
     {
-
         ArgumentNullException.ThrowIfNull(points);
 
         Prepared prepared = Prepare(points, expectedDimensions);
 
         return ClusterPrepared(prepared, k, seed, maxIterations, cancellationToken);
-
     }
 
     /// <summary>
@@ -181,7 +170,6 @@ public static class SphericalKMeans
         int maxIterations = MaxIterations,
         CancellationToken cancellationToken = default)
     {
-
         ArgumentNullException.ThrowIfNull(points);
 
         Prepared prepared = Prepare(points, expectedDimensions);
@@ -193,7 +181,6 @@ public static class SphericalKMeans
             prepared.DistinctVectors);
 
         return ClusterPrepared(prepared, k, seed, maxIterations, cancellationToken);
-
     }
 
     private sealed record Prepared(
@@ -206,7 +193,6 @@ public static class SphericalKMeans
         IReadOnlyList<SphericalKMeansPoint> points,
         int? expectedDimensions)
     {
-
         // Stable input order first: every downstream decision (dimension inference, K-Means++
         // selection, assignment tie-breaks, centroid accumulation order) is defined relative to this
         // ordering, so the caller's enumeration order can never change the outcome.
@@ -222,31 +208,25 @@ public static class SphericalKMeans
 
         foreach (SphericalKMeansPoint point in ordered)
         {
-
             if (point.Vector is not { Length: > 0 } vector || vector.Length != dimensions)
             {
-
                 rejected.Add(new SphericalKMeansRejectedPoint(
                     point.StableId,
                     SphericalKMeansRejection.DimensionMismatch));
 
                 continue;
-
             }
 
             if (!TryNormalize(vector, out float[] normalized, out SphericalKMeansRejection reason))
             {
-
                 rejected.Add(new SphericalKMeansRejectedPoint(point.StableId, reason));
 
                 continue;
-
             }
 
             usableIds.Add(point.StableId);
 
             usableVectors.Add(normalized);
-
         }
 
         return new Prepared(
@@ -254,7 +234,6 @@ public static class SphericalKMeans
             usableVectors,
             rejected,
             CountDistinctVectors(usableVectors));
-
     }
 
     private static SphericalKMeansResult ClusterPrepared(
@@ -264,7 +243,6 @@ public static class SphericalKMeans
         int maxIterations,
         CancellationToken cancellationToken)
     {
-
         List<string> usableIds = prepared.Ids;
 
         List<float[]> usableVectors = prepared.Vectors;
@@ -273,13 +251,11 @@ public static class SphericalKMeans
 
         if (usableIds.Count == 0)
         {
-
             return new SphericalKMeansResult(
                 [],
                 0,
                 SphericalKMeansTermination.AssignmentsStable,
                 rejected);
-
         }
 
         int clusterCount = Math.Clamp(k, 1, Math.Min(usableIds.Count, prepared.DistinctVectors));
@@ -303,7 +279,6 @@ public static class SphericalKMeans
 
         for (; iterations < cap;)
         {
-
             cancellationToken.ThrowIfCancellationRequested();
 
             iterations++;
@@ -316,22 +291,17 @@ public static class SphericalKMeans
 
             if (!changed)
             {
-
                 termination = SphericalKMeansTermination.AssignmentsStable;
 
                 break;
-
             }
 
             if (shift < ConvergenceTolerance)
             {
-
                 termination = SphericalKMeansTermination.ToleranceReached;
 
                 break;
-
             }
-
         }
 
         return new SphericalKMeansResult(
@@ -339,27 +309,20 @@ public static class SphericalKMeans
             iterations,
             termination,
             rejected);
-
     }
 
     private static int InferDimensions(IReadOnlyList<SphericalKMeansPoint> ordered)
     {
-
         foreach (SphericalKMeansPoint point in ordered)
         {
-
             if (point.Vector is { Length: > 0 } vector
                 && TryNormalize(vector, out _, out _))
             {
-
                 return vector.Length;
-
             }
-
         }
 
         return ordered.Count > 0 ? Math.Max(1, ordered[0].Vector?.Length ?? 1) : 1;
-
     }
 
     private static bool TryNormalize(
@@ -367,53 +330,43 @@ public static class SphericalKMeans
         out float[] normalized,
         out SphericalKMeansRejection reason)
     {
-
         double sumOfSquares = 0;
 
         foreach (float component in vector)
         {
-
             if (!float.IsFinite(component))
             {
-
                 normalized = [];
 
                 reason = SphericalKMeansRejection.NonFiniteComponent;
 
                 return false;
-
             }
 
             sumOfSquares += (double)component * component;
-
         }
 
         double norm = Math.Sqrt(sumOfSquares);
 
         if (norm <= 0 || !double.IsFinite(norm))
         {
-
             normalized = [];
 
             reason = SphericalKMeansRejection.ZeroNorm;
 
             return false;
-
         }
 
         normalized = new float[vector.Length];
 
         for (int index = 0; index < vector.Length; index++)
         {
-
             normalized[index] = (float)(vector[index] / norm);
-
         }
 
         reason = default;
 
         return true;
-
     }
 
     /// <summary>
@@ -429,18 +382,14 @@ public static class SphericalKMeans
     /// </summary>
     private static int CountDistinctVectors(IReadOnlyList<float[]> vectors)
     {
-
         HashSet<VectorKey> distinct = [];
 
         foreach (float[] vector in vectors)
         {
-
             _ = distinct.Add(new VectorKey(vector));
-
         }
 
         return distinct.Count;
-
     }
 
     private static bool AreEquivalent(float[] left, float[] right) =>
@@ -452,7 +401,6 @@ public static class SphericalKMeans
     /// </summary>
     private readonly struct VectorKey(float[] vector) : IEquatable<VectorKey>
     {
-
         private readonly float[] _vector = vector;
 
         public bool Equals(VectorKey other) => _vector.AsSpan().SequenceEqual(other._vector);
@@ -461,15 +409,12 @@ public static class SphericalKMeans
 
         public override int GetHashCode()
         {
-
             HashCode hash = new();
 
             hash.AddBytes(System.Runtime.InteropServices.MemoryMarshal.AsBytes(_vector.AsSpan()));
 
             return hash.ToHashCode();
-
         }
-
     }
 
     /// <summary>
@@ -491,7 +436,6 @@ public static class SphericalKMeans
         ulong seed,
         CancellationToken cancellationToken)
     {
-
         TapestryDeterministicRandom random = new(seed);
 
         float[][] centroids = new float[clusterCount][];
@@ -508,7 +452,6 @@ public static class SphericalKMeans
 
         for (int chosen = 1; chosen < clusterCount; chosen++)
         {
-
             cancellationToken.ThrowIfCancellationRequested();
 
             // Only the centroid picked by the previous round is new, so folding it into the running
@@ -519,28 +462,22 @@ public static class SphericalKMeans
 
             for (int index = 0; index < vectors.Count; index++)
             {
-
                 double distance = Math.Max(0, 2.0 - (2.0 * Dot(vectors[index], newest)));
 
                 if (distance < squaredDistances[index])
                 {
-
                     squaredDistances[index] = distance;
-
                 }
 
                 total += squaredDistances[index];
-
             }
 
             centroids[chosen] = total <= 0
                 ? FirstUnusedVector(vectors, centroids, chosen)
                 : SelectWeighted(vectors, squaredDistances, total, random.NextDouble());
-
         }
 
         return centroids;
-
     }
 
     private static float[] SelectWeighted(
@@ -549,41 +486,31 @@ public static class SphericalKMeans
         double total,
         double sample)
     {
-
         double target = sample * total;
 
         double cumulative = 0;
 
         for (int index = 0; index < vectors.Count; index++)
         {
-
             cumulative += weights[index];
 
             if (cumulative > target)
             {
-
                 return vectors[index];
-
             }
-
         }
 
         // Floating-point accumulation can leave `cumulative` a hair below `target`; falling back to
         // the last positive-weight candidate keeps the choice deterministic instead of throwing.
         for (int index = vectors.Count - 1; index >= 0; index--)
         {
-
             if (weights[index] > 0)
             {
-
                 return vectors[index];
-
             }
-
         }
 
         return vectors[0];
-
     }
 
     private static float[] FirstUnusedVector(
@@ -591,37 +518,27 @@ public static class SphericalKMeans
         float[][] centroids,
         int chosen)
     {
-
         foreach (float[] vector in vectors)
         {
-
             bool duplicate = false;
 
             for (int index = 0; index < chosen; index++)
             {
-
                 if (AreEquivalent(centroids[index], vector))
                 {
-
                     duplicate = true;
 
                     break;
-
                 }
-
             }
 
             if (!duplicate)
             {
-
                 return vector;
-
             }
-
         }
 
         return vectors[0];
-
     }
 
     /// <summary>
@@ -637,47 +554,37 @@ public static class SphericalKMeans
         int[] assignments,
         double[] assignedSimilarity)
     {
-
         bool changed = false;
 
         for (int index = 0; index < vectors.Count; index++)
         {
-
             int best = 0;
 
             double bestSimilarity = double.NegativeInfinity;
 
             for (int centroid = 0; centroid < centroids.Length; centroid++)
             {
-
                 double similarity = Dot(vectors[index], centroids[centroid]);
 
                 if (similarity > bestSimilarity)
                 {
-
                     bestSimilarity = similarity;
 
                     best = centroid;
-
                 }
-
             }
 
             assignedSimilarity[index] = bestSimilarity;
 
             if (assignments[index] != best)
             {
-
                 assignments[index] = best;
 
                 changed = true;
-
             }
-
         }
 
         return changed;
-
     }
 
     /// <summary>
@@ -701,24 +608,18 @@ public static class SphericalKMeans
         int[] assignments,
         double[] assignedSimilarity)
     {
-
         int[] sizes = new int[centroids.Length];
 
         foreach (int assignment in assignments)
         {
-
             sizes[assignment]++;
-
         }
 
         for (int centroid = 0; centroid < centroids.Length; centroid++)
         {
-
             if (sizes[centroid] > 0)
             {
-
                 continue;
-
             }
 
             int donor = -1;
@@ -727,32 +628,24 @@ public static class SphericalKMeans
 
             for (int index = 0; index < vectors.Count; index++)
             {
-
                 if (sizes[assignments[index]] <= 1)
                 {
-
                     continue;
-
                 }
 
                 double similarity = assignedSimilarity[index];
 
                 if (similarity < worstSimilarity)
                 {
-
                     worstSimilarity = similarity;
 
                     donor = index;
-
                 }
-
             }
 
             if (donor < 0)
             {
-
                 continue;
-
             }
 
             sizes[assignments[donor]]--;
@@ -762,9 +655,7 @@ public static class SphericalKMeans
             sizes[centroid]++;
 
             centroids[centroid] = vectors[donor];
-
         }
-
     }
 
     /// <summary>
@@ -778,90 +669,70 @@ public static class SphericalKMeans
         int[] assignments,
         float[][] centroids)
     {
-
         int dimensions = centroids[0].Length;
 
         double maximumShift = 0;
 
         for (int centroid = 0; centroid < centroids.Length; centroid++)
         {
-
             double[] accumulator = new double[dimensions];
 
             int members = 0;
 
             for (int index = 0; index < vectors.Count; index++)
             {
-
                 if (assignments[index] != centroid)
                 {
-
                     continue;
-
                 }
 
                 float[] vector = vectors[index];
 
                 for (int component = 0; component < dimensions; component++)
                 {
-
                     accumulator[component] += vector[component];
-
                 }
 
                 members++;
-
             }
 
             if (members == 0)
             {
-
                 continue;
-
             }
 
             double norm = 0;
 
             foreach (double component in accumulator)
             {
-
                 norm += component * component;
-
             }
 
             norm = Math.Sqrt(norm);
 
             if (norm <= 0 || !double.IsFinite(norm))
             {
-
                 continue;
-
             }
 
             float[] updated = new float[dimensions];
 
             for (int component = 0; component < dimensions; component++)
             {
-
                 updated[component] = (float)(accumulator[component] / norm);
-
             }
 
             double shift = Math.Max(0, 1.0 - Dot(centroids[centroid], updated));
 
             if (shift > maximumShift)
             {
-
                 maximumShift = shift;
-
             }
 
             centroids[centroid] = updated;
-
         }
 
         return maximumShift;
-
     }
 
     /// <summary>
@@ -873,39 +744,30 @@ public static class SphericalKMeans
         int[] assignments,
         float[][] centroids)
     {
-
         List<string>[] members = new List<string>[centroids.Length];
 
         for (int index = 0; index < members.Length; index++)
         {
-
             members[index] = [];
-
         }
 
         for (int index = 0; index < ids.Count; index++)
         {
-
             members[assignments[index]].Add(ids[index]);
-
         }
 
         List<SphericalKMeansCluster> clusters = [];
 
         for (int index = 0; index < members.Length; index++)
         {
-
             if (members[index].Count == 0)
             {
-
                 continue;
-
             }
 
             members[index].Sort(StringComparer.Ordinal);
 
             clusters.Add(new SphericalKMeansCluster(0, members[index], centroids[index]));
-
         }
 
         clusters.Sort(static (left, right) =>
@@ -915,31 +777,55 @@ public static class SphericalKMeans
 
         for (int index = 0; index < clusters.Count; index++)
         {
-
             result[index] = clusters[index] with { Ordinal = index };
-
         }
 
         return result;
+    }
 
+    /// <summary>
+    /// The unit vector pointing the way <paramref name="vector"/> does, normalized with the same
+    /// double-accumulated scalar arithmetic clustering uses, or an empty array when the vector is not
+    /// finite or has no length.
+    /// </summary>
+    public static float[] NormalizedDirection(float[] vector)
+    {
+        ArgumentNullException.ThrowIfNull(vector);
+
+        return TryNormalize(vector, out float[] normalized, out _) ? normalized : [];
+    }
+
+    /// <summary>
+    /// The cosine of two unit vectors from <see cref="NormalizedDirection"/>: the scalar,
+    /// double-accumulated dot product that clustering assigns by.
+    /// </summary>
+    /// <remarks>
+    /// Anything the Tapestry compares to decide a tree's shape goes through this rather than through a
+    /// lane-width routine such as <c>EmbeddingBlobCodec.CosineSimilarity</c>, whose low bits depend on the
+    /// vector width the machine reports. The reproducibility contract above promises the same
+    /// memberships for the same persisted vectors, which is only true if no step of the plan reads a
+    /// hardware-dependent value.
+    /// </remarks>
+    public static double DirectionCosine(float[] left, float[] right)
+    {
+        ArgumentNullException.ThrowIfNull(left);
+
+        ArgumentNullException.ThrowIfNull(right);
+
+        return Dot(left, right);
     }
 
     private static double Dot(float[] left, float[] right)
     {
-
         double sum = 0;
 
         int length = Math.Min(left.Length, right.Length);
 
         for (int index = 0; index < length; index++)
         {
-
             sum += (double)left[index] * right[index];
-
         }
 
         return sum;
-
     }
-
 }

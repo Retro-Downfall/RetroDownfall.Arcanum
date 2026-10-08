@@ -13,7 +13,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 /// </remarks>
 internal static class CovenantSearchSql
 {
-
     private const int CampaignOwnerKindCode = 1;
 
     /// <summary>
@@ -83,13 +82,20 @@ internal static class CovenantSearchSql
         int termCount,
         bool continued)
     {
-
+        // Each term is the same prefix of a token the full-text index matches. LIKE is the cheap in-place
+        // prefilter that finds a substring; the token-start function then refuses an occurrence in the
+        // middle of a word, so only rows the prefilter passed are marshalled out of SQLite to be checked.
+        // LIKE folds ASCII case only, so a term with any other scalar arrives as a pattern that passes
+        // every row and the function alone decides (see CovenantSearchQueryCompiler).
         string matches = string.Join(
             "\n              AND ",
             Enumerable.Range(0, termCount).Select(static index => $"""
-                (NormalizedKey LIKE $like{index} ESCAPE '\'
-                   OR COALESCE(AuthoredContent, '') LIKE $like{index} ESCAPE '\'
-                   OR COALESCE(CompiledContent, '') LIKE $like{index} ESCAPE '\')
+                ((NormalizedKey LIKE $like{index} ESCAPE '\'
+                    AND {CovenantTokenStartMatcher.FunctionName}(NormalizedKey, $term{index}))
+                   OR (COALESCE(AuthoredContent, '') LIKE $like{index} ESCAPE '\'
+                    AND {CovenantTokenStartMatcher.FunctionName}(AuthoredContent, $term{index}))
+                   OR (COALESCE(CompiledContent, '') LIKE $like{index} ESCAPE '\'
+                    AND {CovenantTokenStartMatcher.FunctionName}(CompiledContent, $term{index})))
                 """));
 
         return $"""
@@ -128,7 +134,6 @@ internal static class CovenantSearchSql
             ORDER BY MatchClass, EntryId, VersionId
             LIMIT $limit;
             """;
-
     }
 
     /// <summary>
@@ -162,5 +167,4 @@ internal static class CovenantSearchSql
 
             _ => "1 = 1",
         };
-
 }

@@ -184,6 +184,13 @@ public sealed record ReplaceTextBlockParams
 
     [JsonPropertyName("replacementText")]
     public required string ReplacementText { get; init; }
+
+    /// <summary>
+    /// When <see langword="true"/>, every occurrence of <see cref="ExactSearchText"/> is replaced. Left
+    /// unset, a block that occurs more than once is refused so a look-alike is never rewritten by accident.
+    /// </summary>
+    [JsonPropertyName("replaceAll")]
+    public bool? ReplaceAll { get; init; }
 }
 
 /// <summary>
@@ -251,7 +258,6 @@ public sealed record ApplyPatchParams(
 /// </summary>
 public sealed record WorkspaceCheckParams
 {
-
     [JsonPropertyName("profile")]
     public required string Profile { get; init; }
 
@@ -288,7 +294,6 @@ public sealed record ExecuteCommandParams
 /// </summary>
 public sealed record ReadCommandOutputParams
 {
-
     [JsonPropertyName("handle")]
     public required string Handle { get; init; }
 
@@ -300,12 +305,10 @@ public sealed record ReadCommandOutputParams
 
     [JsonPropertyName("maxBytes")]
     public int? MaxBytes { get; init; }
-
 }
 
 public sealed record CommandOutputPageResultWire
 {
-
     [JsonPropertyName("handle")]
     public required string Handle { get; init; }
 
@@ -326,7 +329,6 @@ public sealed record CommandOutputPageResultWire
 
     [JsonPropertyName("complete")]
     public bool Complete { get; init; }
-
 }
 
 /// <summary>
@@ -452,7 +454,6 @@ public sealed record RefreshSessionFileResultWire(
 /// </summary>
 public sealed record AdjustInitiativeArgs
 {
-
     [JsonPropertyName("job_name")]
     public required string JobName { get; init; }
 
@@ -465,7 +466,6 @@ public sealed record AdjustInitiativeArgs
 /// </summary>
 public sealed record SendCommLinkAlertParams
 {
-
     [JsonPropertyName("title")]
     public required string Title { get; init; }
 
@@ -484,7 +484,6 @@ public sealed record SendCommLinkAlertParams
 /// </summary>
 public sealed record PetitionDungeonMasterParams
 {
-
     [JsonPropertyName("reason")]
     public required string Reason { get; init; }
 
@@ -499,13 +498,11 @@ public sealed record PetitionDungeonMasterParams
 /// </summary>
 public sealed record PetitionDungeonMasterResultWire
 {
-
     [JsonPropertyName("escalationRequested")]
     public required bool EscalationRequested { get; init; }
 
     [JsonPropertyName("notificationStatus")]
     public required string NotificationStatus { get; init; }
-
 }
 
 /// <summary>
@@ -513,13 +510,11 @@ public sealed record PetitionDungeonMasterResultWire
 /// </summary>
 public sealed record CastSendingParams
 {
-
     [JsonPropertyName("goal")]
     public required string Goal { get; init; }
 
     [JsonPropertyName("name")]
     public string? Name { get; init; }
-
 }
 
 /// <summary>
@@ -527,10 +522,8 @@ public sealed record CastSendingParams
 /// </summary>
 public sealed record CastSendingResultWire
 {
-
     [JsonPropertyName("childApprenticeId")]
     public required Guid ChildApprenticeId { get; init; }
-
 }
 
 /// <summary>
@@ -538,7 +531,6 @@ public sealed record CastSendingResultWire
 /// </summary>
 public sealed record DispatchSendingParams
 {
-
     [JsonPropertyName("goal")]
     public required string Goal { get; init; }
 
@@ -575,7 +567,6 @@ public sealed record DispatchSendingParams
     /// </summary>
     [JsonPropertyName("accepted_output_modes")]
     public string[]? AcceptedOutputModes { get; init; }
-
 }
 
 /// <summary>
@@ -584,7 +575,6 @@ public sealed record DispatchSendingParams
 /// </summary>
 public sealed record ContinueSendingParams
 {
-
     [JsonPropertyName("task_id")]
     public required string TaskId { get; init; }
 
@@ -604,7 +594,6 @@ public sealed record ContinueSendingParams
     /// <inheritdoc cref="DispatchSendingParams.AcceptedOutputModes"/>
     [JsonPropertyName("accepted_output_modes")]
     public string[]? AcceptedOutputModes { get; init; }
-
 }
 
 /// <summary>
@@ -615,7 +604,6 @@ public sealed record ContinueSendingParams
 /// </summary>
 public sealed record DispatchSendingResultWire
 {
-
     [JsonPropertyName("agentUrl")]
     public required string AgentUrl { get; init; }
 
@@ -663,5 +651,4 @@ public sealed record DispatchSendingResultWire
 
     [JsonPropertyName("continuationNeed")]
     public string? ContinuationNeed { get; init; }
-
 }

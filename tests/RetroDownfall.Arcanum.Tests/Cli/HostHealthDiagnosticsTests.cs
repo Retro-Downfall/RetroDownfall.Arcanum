@@ -1,12 +1,17 @@
 using System.Net;
 
+using System.Text.Json;
+
 using Microsoft.Extensions.Options;
 
+using RetroDownfall.Arcanum.Api.Models;
 using RetroDownfall.Arcanum.Api.Security;
+using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Cli.Diagnostics;
 using RetroDownfall.Arcanum.Cli.Services;
 using RetroDownfall.Arcanum.Core.Cli;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Tests.Support;
 
@@ -81,6 +86,86 @@ public sealed class HostHealthDiagnosticsTests
         Assert.Contains(
             DoctorRemedyCommands.Serve,
             (finding.Remedies ?? []).Select(static remedy => remedy.Command));
+    }
+
+    /// <summary>
+    /// R-069: overall Unhealthy is exactly when the endpoint answers 503, and that response still
+    /// carries the full per-component report. The probe used to read components only from a 2xx
+    /// answer, so the doctor said "HTTP 503" and dropped the host's own verdicts at the moment they
+    /// mattered most.
+    /// </summary>
+    [Fact]
+    public async Task A_503_with_components_names_the_failing_components()
+    {
+        string body = JsonSerializer.Serialize(
+            new ApiResponse<HealthReportDto>(
+                new HealthReportDto(
+                    HealthStatus.Unhealthy,
+                    [
+                        new HealthComponentDto("Providers", HealthStatus.Healthy, null),
+                        new HealthComponentDto("Grimoire", HealthStatus.Unhealthy, "migration pending"),
+                    ]),
+                true,
+                null),
+            ArcanumJsonContext.Default.ApiResponseHealthReportDto);
+
+        StatusHandler handler = new(HttpStatusCode.ServiceUnavailable, body);
+
+        using ArcanumApiCredentialLease lease =
+            ArcanumApiCredentialLeaseTestFactory.Create("health-test-key");
+
+        HostHealthComponentsCheck check = new(
+            Options.Create(new ArcanumSettings()),
+            new StubHttpClientFactory(handler),
+            lease);
+
+        DoctorFinding finding = await check.InspectAsync(CancellationToken.None);
+
+        Assert.Equal(DoctorOutcome.Unhealthy, finding.Outcome);
+
+        Assert.Contains("Grimoire=unhealthy", finding.Detail, StringComparison.Ordinal);
+
+        Assert.Contains("migration pending", finding.Detail, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("Providers", finding.Detail, StringComparison.Ordinal);
+
+        Assert.Contains("503", finding.Detail, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task A_503_with_a_foreign_body_keeps_the_status_only_finding()
+    {
+        StatusHandler handler = new(HttpStatusCode.ServiceUnavailable, "<html>try later</html>");
+
+        using ArcanumApiCredentialLease lease =
+            ArcanumApiCredentialLeaseTestFactory.Create("health-test-key");
+
+        HostHealthComponentsCheck check = new(
+            Options.Create(new ArcanumSettings()),
+            new StubHttpClientFactory(handler),
+            lease);
+
+        DoctorFinding finding = await check.InspectAsync(CancellationToken.None);
+
+        Assert.Equal(DoctorOutcome.Unhealthy, finding.Outcome);
+
+        Assert.Contains("HTTP 503", finding.Detail, StringComparison.Ordinal);
+
+        Assert.Contains(
+            DoctorRemedyCommands.Lore,
+            (finding.Remedies ?? []).Select(static remedy => remedy.Command));
+    }
+
+    private sealed class StatusHandler(HttpStatusCode status, string body) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken) =>
+            Task.FromResult(
+                new HttpResponseMessage(status)
+                {
+                    Content = new StringContent(body, System.Text.Encoding.UTF8, "application/json"),
+                });
     }
 
     private sealed class StubHttpClientFactory(HttpMessageHandler handler) : IHttpClientFactory

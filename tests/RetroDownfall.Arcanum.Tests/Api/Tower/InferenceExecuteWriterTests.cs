@@ -19,7 +19,6 @@ namespace RetroDownfall.Arcanum.Tests.Api.Tower;
 [Collection("ProcessGlobalSeam")]
 public sealed class InferenceExecuteWriterTests
 {
-
     [Fact]
     public async Task WriteStreamAsync_StreamExceptionDuringErrorFrameWrite_DoesNotPropagate()
     {
@@ -52,6 +51,171 @@ public sealed class InferenceExecuteWriterTests
         await InferenceExecuteWriter.WriteStreamAsync(httpContext, intelligence, request, cts.Token);
 
         Assert.True(body.WritesAttempted > 0);
+    }
+
+    /// <summary>
+    /// A token stream does not pay for a heartbeat timer per token: the idle clock is one timer that is
+    /// replaced only when it fires, not one started (and cancelled) for every provider event.
+    /// </summary>
+    [Fact]
+    public async Task A_busy_stream_starts_no_heartbeat_timer_per_event()
+    {
+        const int events = 500;
+
+        int timersStarted = 0;
+
+        Task CountingDelay(TimeSpan interval, CancellationToken cancellationToken)
+        {
+            _ = Interlocked.Increment(ref timersStarted);
+
+            return Task.Delay(interval, cancellationToken);
+        }
+
+        int yielded = 0;
+
+        await foreach (IntelligenceEvent? tick in InferenceExecuteWriter.WithHeartbeats(
+            ManyTokensAsync(events),
+            TimeSpan.FromHours(1),
+            CancellationToken.None,
+            CountingDelay))
+        {
+            Assert.NotNull(tick);
+
+            yielded++;
+        }
+
+        Assert.Equal(events, yielded);
+
+        Assert.True(timersStarted <= 1, $"{timersStarted} heartbeat timers were started for {events} events.");
+    }
+
+    /// <summary>
+    /// The idle clock restarts at each event: a heartbeat follows a whole interval with nothing sent, and
+    /// is not owed just because the interval elapsed since an earlier one.
+    /// </summary>
+    [Fact]
+    public async Task A_heartbeat_follows_a_whole_idle_interval_after_the_last_event()
+    {
+        TaskCompletionSource release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        async IAsyncEnumerable<IntelligenceEvent> OneThenWaitAsync()
+        {
+            yield return new IntelligenceEvent(IntelligenceEventType.Token, "first");
+
+            await release.Task;
+
+            yield return new IntelligenceEvent(IntelligenceEventType.Token, "second");
+        }
+
+        List<string> seen = [];
+
+        await foreach (IntelligenceEvent? tick in InferenceExecuteWriter.WithHeartbeats(
+            OneThenWaitAsync(),
+            TimeSpan.FromMilliseconds(50),
+            CancellationToken.None))
+        {
+            seen.Add(tick?.Message ?? "heartbeat");
+
+            if (tick is null)
+            {
+                release.TrySetResult();
+            }
+        }
+
+        Assert.Equal("first", seen[0]);
+
+        Assert.Equal("heartbeat", seen[1]);
+
+        Assert.Equal("second", seen[^1]);
+    }
+
+    private static async IAsyncEnumerable<IntelligenceEvent> ManyTokensAsync(int count)
+    {
+        for (int index = 0; index < count; index++)
+        {
+            yield return new IntelligenceEvent(IntelligenceEventType.Token, index.ToString(System.Globalization.CultureInfo.InvariantCulture));
+
+            if (index % 50 == 0)
+            {
+                await Task.Yield();
+            }
+        }
+    }
+
+    /// <summary>
+    /// A stream that is waiting on the provider is not silent: a blank NDJSON line goes out on a timer, so an
+    /// idle connection survives the proxies and clients that drop one that says nothing.
+    /// </summary>
+    /// <remarks>
+    /// A blank line is the NDJSON keep-alive: the format is one JSON document per non-blank line, so every
+    /// reader skips it. It is written between frames only, never inside one.
+    /// </remarks>
+    [Fact]
+    public async Task Idle_stream_emits_heartbeat_newline_within_interval()
+    {
+        ServiceCollection services = new();
+
+        services.AddLogging();
+
+        ServiceProvider provider = services.BuildServiceProvider();
+
+        MemoryStream body = new();
+
+        DefaultHttpContext httpContext = new();
+
+        httpContext.RequestServices = provider;
+
+        httpContext.Response.Body = body;
+
+        using CancellationTokenSource cts = new();
+
+        httpContext.RequestAborted = cts.Token;
+
+        FakeIntelligenceProvider intelligence = new()
+        {
+            NextText = "after-the-wait",
+            StreamGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously),
+        };
+
+        PingRequest request = new(Prompt: string.Empty, WorkingDirectory: string.Empty);
+
+        Task writing = InferenceExecuteWriter.WriteStreamAsync(
+            httpContext,
+            intelligence,
+            request,
+            cts.Token,
+            heartbeatInterval: TimeSpan.FromMilliseconds(50));
+
+        DateTimeOffset deadline = DateTimeOffset.UtcNow.AddSeconds(10);
+
+        while (body.Length < 2 && DateTimeOffset.UtcNow < deadline)
+        {
+            await Task.Delay(20);
+        }
+
+        // Still waiting on the provider: nothing but heartbeats has been written.
+        string idleOutput = Encoding.UTF8.GetString(body.ToArray());
+
+        Assert.False(writing.IsCompleted);
+
+        Assert.True(idleOutput.Length >= 2, "No heartbeat was written while the stream sat idle.");
+
+        Assert.All(idleOutput, static character => Assert.Equal('\n', character));
+
+        intelligence.StreamGate.SetResult();
+
+        await writing;
+
+        string output = Encoding.UTF8.GetString(body.ToArray());
+
+        string[] documents = output.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+
+        Assert.NotEmpty(documents);
+
+        Assert.Contains(documents, static line => line.Contains("after-the-wait", StringComparison.Ordinal));
+
+        // Every non-blank line is a whole JSON document, so a heartbeat never lands inside a frame.
+        Assert.All(documents, static line => JsonDocument.Parse(line).Dispose());
     }
 
     [Fact]
@@ -146,7 +310,7 @@ public sealed class InferenceExecuteWriterTests
 
         try
         {
-            TurnIdempotencyAmbient.Publish(true, ownershipLost.Token);
+            TurnIdempotencyAmbient.Publish(ownershipLost.Token);
 
             Task write = InferenceExecuteWriter.WriteStreamAsync(
                 httpContext,
@@ -402,7 +566,6 @@ public sealed class InferenceExecuteWriterTests
     [Fact]
     public async Task WriteStreamAsync_ClientDisconnectMidStream_CancelsInferenceAndDoesNotWriteErrorFrame()
     {
-
         ServiceCollection services = new();
 
         services.AddLogging();
@@ -434,7 +597,6 @@ public sealed class InferenceExecuteWriterTests
         Assert.True(body.WritesAttempted > 0);
 
         Assert.Empty(body.CapturedWrittenText);
-
     }
 
     // Mid-stream exceptions must still emit a terminal Error frame when the client is writable
@@ -442,7 +604,6 @@ public sealed class InferenceExecuteWriterTests
     [Fact]
     public async Task WriteStreamAsync_LateStreamExceptionAfterStart_WritesTerminalErrorFrame()
     {
-
         ServiceCollection services = new();
 
         services.AddLogging();
@@ -474,7 +635,6 @@ public sealed class InferenceExecuteWriterTests
         Assert.Contains("error", output, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("late boom", output, StringComparison.Ordinal);
         Assert.Contains(InferenceExecuteWriter.PublicStreamFailureMessage, output, StringComparison.Ordinal);
-
     }
 
     private sealed class BlockingStreamIntelligenceProvider : IArcanumIntelligenceProvider
@@ -515,7 +675,6 @@ public sealed class InferenceExecuteWriterTests
 
     private sealed class ThrowingStream : Stream
     {
-
         // One-shot: the next write throws IOException, then the flag auto-resets so any
         // subsequent write (e.g. an error frame written by the general catch) is captured
         // into CapturedWrittenText. This lets a disconnect test distinguish "the disconnect
@@ -551,42 +710,33 @@ public sealed class InferenceExecuteWriterTests
 
         public override void Write(byte[] buffer, int offset, int count)
         {
-
             WritesAttempted++;
 
             if (ThrowOnNextWrite)
             {
-
                 ThrowOnNextWrite = false;
 
                 throw new IOException("write failed");
-
             }
 
             CapturedWrittenText.Add(System.Text.Encoding.UTF8.GetString(buffer, offset, count));
-
         }
 
         public override ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken = default)
         {
-
             WritesAttempted++;
 
             if (ThrowOnNextWrite)
             {
-
                 ThrowOnNextWrite = false;
 
                 return new ValueTask(Task.FromException(new IOException("write failed")));
-
             }
 
             CapturedWrittenText.Add(System.Text.Encoding.UTF8.GetString(buffer.Span));
 
             return default;
-
         }
-
     }
 
     private sealed class RecordingLoggerProvider : ILoggerProvider
@@ -624,7 +774,6 @@ public sealed class InferenceExecuteWriterTests
 
         public void Emit(LogEvent logEvent) => Events.Add(logEvent);
     }
-
 }
 
 /// <summary>
@@ -635,20 +784,16 @@ public sealed class InferenceExecuteWriterTests
 [Collection("ApiHost")]
 public sealed class InferenceExecuteWriterBufferedRouteTests
 {
-
     private readonly ArcanumWebApplicationFactory _factory;
 
     public InferenceExecuteWriterBufferedRouteTests(ArcanumWebApplicationFactory factory)
     {
-
         _factory = factory;
-
     }
 
     [SkippableFact]
     public async Task PostPing_ProviderFails_ReturnsMappedFailureStatusAndEnvelope()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         HttpClient client = _factory.CreateAuthenticatedClient();
@@ -674,13 +819,11 @@ public sealed class InferenceExecuteWriterBufferedRouteTests
         Assert.False(doc.RootElement.GetProperty("isSuccess").GetBoolean());
 
         _factory.FakeIntelligence.NextFailure = null;
-
     }
 
     [SkippableFact]
     public async Task PostPing_ProviderSucceeds_ReturnsOkWithHandlerOutput()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         HttpClient client = _factory.CreateAuthenticatedClient();
@@ -702,7 +845,5 @@ public sealed class InferenceExecuteWriterBufferedRouteTests
         string body = await response.Content.ReadAsStringAsync();
 
         Assert.Contains("buffered-success-probe-output", body, StringComparison.Ordinal);
-
     }
-
 }

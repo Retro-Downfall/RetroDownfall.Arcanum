@@ -23,7 +23,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.Backup;
 
 public sealed class BackupArchiveCodec
 {
-
     private const int FixedHeaderLength = 68;
 
     private const int SaltLength = 16;
@@ -58,27 +57,21 @@ public sealed class BackupArchiveCodec
 
     public BackupArchiveCodec(BackupArchiveCodecOptions? options = null)
     {
-
         _options = options ?? new BackupArchiveCodecOptions();
 
         if (_options.ChunkSize is < 16 or > MaximumAcceptedChunkSize)
         {
-
             throw new ArgumentOutOfRangeException(
                 nameof(options),
                 $"Backup chunks must be between 16 and {MaximumAcceptedChunkSize} bytes.");
-
         }
 
         if (_options.KdfIterations is < 1 or > MaximumAcceptedKdfIterations)
         {
-
             throw new ArgumentOutOfRangeException(
                 nameof(options),
                 $"Backup KDF iterations must be between 1 and {MaximumAcceptedKdfIterations}.");
-
         }
-
     }
 
     public Task<BackupManifest> WriteAsync(
@@ -89,7 +82,6 @@ public sealed class BackupArchiveCodec
         bool overwrite,
         CancellationToken cancellationToken)
     {
-
         return WriteCoreAsync(
             destinationPath,
             manifest,
@@ -98,7 +90,6 @@ public sealed class BackupArchiveCodec
             overwrite,
             protectedScratchRoot: null,
             cancellationToken);
-
     }
 
     internal Task<BackupManifest> WriteAsync(
@@ -110,7 +101,6 @@ public sealed class BackupArchiveCodec
         string protectedScratchRoot,
         CancellationToken cancellationToken)
     {
-
         ArgumentException.ThrowIfNullOrWhiteSpace(protectedScratchRoot);
 
         return WriteCoreAsync(
@@ -121,7 +111,6 @@ public sealed class BackupArchiveCodec
             overwrite,
             protectedScratchRoot,
             cancellationToken);
-
     }
 
     private async Task<BackupManifest> WriteCoreAsync(
@@ -133,7 +122,6 @@ public sealed class BackupArchiveCodec
         string? protectedScratchRoot,
         CancellationToken cancellationToken)
     {
-
         ArgumentException.ThrowIfNullOrWhiteSpace(destinationPath);
 
         ArgumentNullException.ThrowIfNull(manifest);
@@ -153,26 +141,20 @@ public sealed class BackupArchiveCodec
 
         if (protectedScratchRoot is null)
         {
-
             Directory.CreateDirectory(directory);
 
             temporaryDirectory = directory;
-
         }
         else
         {
-
             temporaryDirectory = ValidateProtectedScratchRoot(
                 protectedScratchRoot,
                 directory);
-
         }
 
         if (!overwrite && File.Exists(fullDestinationPath))
         {
-
             throw new IOException($"Backup destination already exists: {fullDestinationPath}");
-
         }
 
         ValidateManifestSources(manifest, sources);
@@ -194,11 +176,9 @@ public sealed class BackupArchiveCodec
 
         BackupManifest effectiveManifest = manifest with
         {
-
             FormatVersion = BackupArchiveFormat.CurrentVersion,
 
             Envelope = envelope,
-
         };
 
         byte[] manifestBytes = JsonSerializer.SerializeToUtf8Bytes(
@@ -207,10 +187,8 @@ public sealed class BackupArchiveCodec
 
         if (manifestBytes.Length > MaximumManifestBytes)
         {
-
             throw new InvalidDataException(
                 $"Backup manifest exceeds {MaximumManifestBytes} bytes.");
-
         }
 
         long plaintextLength = CalculatePayloadLength(sources, manifestBytes.LongLength);
@@ -233,14 +211,12 @@ public sealed class BackupArchiveCodec
 
         try
         {
-
             temporaryArchive = OwnedTemporaryFile.Create(
                 tempPath,
                 out FileStream outputStream);
 
             await using (FileStream output = outputStream)
             {
-
                 await output.WriteAsync(header, cancellationToken).ConfigureAwait(false);
 
                 await using ChunkEncryptingWriter writer = new(
@@ -253,7 +229,6 @@ public sealed class BackupArchiveCodec
 
                 for (int index = 0; index < sources.Count; index++)
                 {
-
                     cancellationToken.ThrowIfCancellationRequested();
 
                     await WriteSourceRecordAsync(
@@ -261,7 +236,6 @@ public sealed class BackupArchiveCodec
                         sources[index],
                         effectiveManifest.Entries[index],
                         cancellationToken).ConfigureAwait(false);
-
                 }
 
                 await WriteRecordHeaderAsync(
@@ -277,7 +251,6 @@ public sealed class BackupArchiveCodec
                 await output.FlushAsync(cancellationToken).ConfigureAwait(false);
 
                 output.Flush(flushToDisk: true);
-
             }
 
             BackupVerifyResult stagedVerification = await VerifyAsync(
@@ -287,42 +260,62 @@ public sealed class BackupArchiveCodec
 
             if (!stagedVerification.IsValid)
             {
-
                 throw new InvalidDataException(
                     "The staged backup archive did not pass authentication and checksum verification.");
-
             }
 
             cancellationToken.ThrowIfCancellationRequested();
 
             if (!temporaryArchive.MatchesPathIdentity())
             {
-
                 throw new IOException(
                     "The staged backup archive path changed before publication.");
+            }
 
+            // The one owner-only check that may refuse the archive, and it runs here, on the staged
+            // temp, while the destination is still whatever it was. After the move the previous
+            // archive is gone when overwrite replaced one, so nothing that fails afterwards may delete
+            // the destination: that would destroy the new archive and the one it replaced together.
+            if (!SecureFilePermissions.TryApplyOwnerOnlyFileStrict(tempPath))
+            {
+                throw new IOException(
+                    "The staged backup archive could not be verified with owner-only permissions before publication.");
             }
 
             File.Move(tempPath, fullDestinationPath, overwrite);
 
-            if (!temporaryArchive.MatchesPathIdentity(fullDestinationPath)
-                || !SecureFilePermissions.TryApplyOwnerOnlyFileStrict(fullDestinationPath)
-                || !temporaryArchive.MatchesPathIdentity(fullDestinationPath))
+            _options.AfterArchivePublishedForTests?.Invoke(fullDestinationPath);
+
+            // A move keeps the file's mode and ACL, so re-applying them is belt and braces and a
+            // failure to do so is a warning, not grounds to remove what has been published. What does
+            // still refuse is a destination that is no longer the staged file, which is reported as
+            // that, without deleting anything; it is checked before the re-apply so permissions are
+            // never applied to a file that is not ours, and again after it.
+            if (!temporaryArchive.MatchesPathIdentity(fullDestinationPath))
             {
-
-                _ = temporaryArchive.TryDeleteAtPath(fullDestinationPath);
-
                 throw new IOException(
-                    "The published backup archive could not be verified with owner-only permissions.");
+                    "The published backup archive path changed immediately after publication, so its permissions were not re-applied and nothing was removed.");
+            }
 
+            // The permission helper logs when the apply itself throws, but is silent when the apply
+            // succeeds and the verification that follows it does not, so that case is logged here.
+            if (!SecureFilePermissions.TryApplyOwnerOnlyFileStrict(fullDestinationPath))
+            {
+                Serilog.Log.Warning(
+                    "The published backup archive {Path} could not be verified with owner-only permissions after publication; it was left in place.",
+                    fullDestinationPath);
+            }
+
+            if (!temporaryArchive.MatchesPathIdentity(fullDestinationPath))
+            {
+                throw new IOException(
+                    "The published backup archive path changed while its permissions were being re-applied; it was left as found.");
             }
 
             return effectiveManifest;
-
         }
         finally
         {
-
             CryptographicOperations.ZeroMemory(key);
 
             CryptographicOperations.ZeroMemory(manifestBytes);
@@ -332,23 +325,18 @@ public sealed class BackupArchiveCodec
             CryptographicOperations.ZeroMemory(noncePrefix);
 
             _ = temporaryArchive?.TryDelete();
-
         }
-
     }
 
     private static string ValidateProtectedScratchRoot(
         string protectedScratchRoot,
         string destinationDirectory)
     {
-
         if (!Path.IsPathFullyQualified(protectedScratchRoot))
         {
-
             throw new ArgumentException(
                 "The protected scratch root must be a fully qualified path.",
                 nameof(protectedScratchRoot));
-
         }
 
         string fullScratchRoot = Path.TrimEndingDirectorySeparator(
@@ -356,10 +344,8 @@ public sealed class BackupArchiveCodec
 
         if (!Directory.Exists(fullScratchRoot))
         {
-
             throw new DirectoryNotFoundException(
                 $"The protected scratch root does not exist: {fullScratchRoot}");
-
         }
 
         string? scratchParent = Path.GetDirectoryName(fullScratchRoot);
@@ -374,15 +360,12 @@ public sealed class BackupArchiveCodec
                 Path.TrimEndingDirectorySeparator(Path.GetFullPath(destinationDirectory)),
                 comparison))
         {
-
             throw new ArgumentException(
                 "The protected scratch root must be a direct child of the backup destination directory.",
                 nameof(protectedScratchRoot));
-
         }
 
         return fullScratchRoot;
-
     }
 
     public async Task<BackupInspectResult> InspectAsync(
@@ -390,7 +373,6 @@ public sealed class BackupArchiveCodec
         ReadOnlyMemory<char>? passphrase,
         CancellationToken cancellationToken)
     {
-
         string fullPath = Path.GetFullPath(archivePath);
 
         ParsedHeader parsed = await ReadHeaderAsync(fullPath, cancellationToken).ConfigureAwait(false);
@@ -399,7 +381,6 @@ public sealed class BackupArchiveCodec
 
         if (passphrase.HasValue)
         {
-
             ValidatePassphrase(passphrase.Value.Span);
 
             manifest = await ReadManifestFromAuthenticatedArchiveAsync(
@@ -414,7 +395,6 @@ public sealed class BackupArchiveCodec
                 manifest,
                 parsed.Header,
                 parsed.Raw.AsSpan(44, SaltLength));
-
         }
 
         FileInfo info = new(fullPath);
@@ -425,7 +405,6 @@ public sealed class BackupArchiveCodec
             parsed.Header,
             parsed.Header.FormatVersion,
             manifest);
-
     }
 
     public Task<BackupVerifyResult> VerifyAsync(
@@ -452,7 +431,6 @@ public sealed class BackupArchiveCodec
         string? protectedScratchRoot,
         CancellationToken cancellationToken)
     {
-
         string fullPath = Path.GetFullPath(archivePath);
 
         int formatVersion = 0;
@@ -463,27 +441,22 @@ public sealed class BackupArchiveCodec
 
         try
         {
-
             ValidatePassphrase(passphrase.Span);
 
             string scratchDirectory;
 
             if (string.IsNullOrWhiteSpace(protectedScratchRoot))
             {
-
                 scratchDirectory = Path.GetDirectoryName(fullPath)!;
-
             }
             else
             {
-
                 // Only a root this codec was handed is a root it may create or tighten. The fallback
                 // is a directory the operator chose for something else — an archive output parent
                 // whose existing permissions a create is required to leave exactly as it found them.
                 scratchDirectory = Path.GetFullPath(protectedScratchRoot);
 
                 SecureFilePermissions.EnsureOwnerOnlyDirectoryExists(scratchDirectory);
-
             }
 
             ParsedHeader parsed = await ReadHeaderAsync(fullPath, cancellationToken).ConfigureAwait(false);
@@ -519,7 +492,6 @@ public sealed class BackupArchiveCodec
                 && extracted.Manifest.Entries.Any(
                     static entry => entry.Component == BackupComponent.GrimoireDatabase))
             {
-
                 BackupVerifyIssue? databaseIssue = await VerifyDatabaseAsync(
                     extraction.Path,
                     extracted.Manifest,
@@ -527,17 +499,12 @@ public sealed class BackupArchiveCodec
 
                 if (databaseIssue is null)
                 {
-
                     databaseReadable = true;
-
                 }
                 else
                 {
-
                     issues = [databaseIssue];
-
                 }
-
             }
 
             return new BackupVerifyResult(
@@ -549,23 +516,18 @@ public sealed class BackupArchiveCodec
                 databaseReadable,
                 issues,
                 extracted.Manifest);
-
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-
             throw;
-
         }
         catch (CryptographicException)
         {
-
             return InvalidResult(
                 fullPath,
                 formatVersion,
                 "backup.authentication_failed",
                 "The backup passphrase is wrong or authenticated archive bytes were changed.");
-
         }
         catch (Exception ex) when (
             ex is InvalidDataException
@@ -575,39 +537,30 @@ public sealed class BackupArchiveCodec
                 or IOException
                 or UnauthorizedAccessException)
         {
-
             return InvalidResult(
                 fullPath,
                 formatVersion,
                 "backup.invalid_archive",
                 "The backup archive is malformed, incomplete, unsupported, or unreadable.");
-
         }
         finally
         {
-
             if (payload is not null)
             {
-
                 _options.BeforeTemporaryPayloadCleanupForTests?.Invoke(
                     payload.Path);
 
                 _ = payload.TryDelete();
-
             }
 
             if (extraction is not null)
             {
-
                 _options.BeforeTemporaryExtractionCleanupForTests?.Invoke(
                     extraction.Path);
 
                 _ = extraction.TryDelete();
-
             }
-
         }
-
     }
 
     /// <summary>
@@ -624,7 +577,6 @@ public sealed class BackupArchiveCodec
         string scratchRoot,
         CancellationToken cancellationToken)
     {
-
         ArgumentException.ThrowIfNullOrWhiteSpace(archivePath);
 
         string fullPath = Path.GetFullPath(archivePath);
@@ -646,16 +598,13 @@ public sealed class BackupArchiveCodec
 
         try
         {
-
             ValidatePassphrase(passphrase.Span);
 
             formatVersion = await PeekFormatVersionAsync(fullPath, cancellationToken).ConfigureAwait(false);
 
             if (BackupRestoreFormatCatalog.Classify(formatVersion) is BackupVerifyIssue unsupported)
             {
-
                 return BackupArchiveExtraction.Failed(formatVersion, unsupported);
-
             }
 
             ParsedHeader parsed = await ReadHeaderAsync(fullPath, cancellationToken).ConfigureAwait(false);
@@ -689,7 +638,6 @@ public sealed class BackupArchiveCodec
                 && contents.Manifest.Entries.Any(
                     static entry => entry.Component == BackupComponent.GrimoireDatabase))
             {
-
                 BackupVerifyIssue? databaseIssue = await VerifyDatabaseAsync(
                     fullDestination,
                     contents.Manifest,
@@ -697,22 +645,16 @@ public sealed class BackupArchiveCodec
 
                 if (databaseIssue is null)
                 {
-
                     databaseReadable = true;
-
                 }
                 else
                 {
-
                     issues = [databaseIssue];
-
                 }
-
             }
 
             if (issues.Length > 0)
             {
-
                 return new BackupArchiveExtraction(
                     Manifest: null,
                     formatVersion,
@@ -720,7 +662,6 @@ public sealed class BackupArchiveCodec
                     Bytes: 0,
                     DatabaseReadable: false,
                     issues);
-
             }
 
             materialized = true;
@@ -732,17 +673,14 @@ public sealed class BackupArchiveCodec
                 contents.Entries.Values.Sum(static entry => entry.Size),
                 databaseReadable,
                 Issues: []);
-
         }
         catch (CryptographicException)
         {
-
             return BackupArchiveExtraction.Failed(
                 formatVersion,
                 new BackupVerifyIssue(
                     "backup.authentication_failed",
                     "The backup passphrase is wrong or authenticated archive bytes were changed."));
-
         }
         catch (Exception ex) when (
             ex is InvalidDataException
@@ -752,38 +690,29 @@ public sealed class BackupArchiveCodec
                 or IOException
                 or UnauthorizedAccessException)
         {
-
             return BackupArchiveExtraction.Failed(
                 formatVersion,
                 new BackupVerifyIssue(
                     "backup.invalid_archive",
                     "The backup archive is malformed, incomplete, unsupported, or unreadable."));
-
         }
         finally
         {
-
             // The destination cleanup used to be duplicated across the enumerated catches, so it held
             // for a list of exception types rather than for every exit - and what an unenumerated exit
             // left behind was decrypted plaintext under a root the caller had been told was empty.
             if (extracted && !materialized)
             {
-
                 ClearDirectoryContents(fullDestination);
-
             }
 
             if (payload is not null)
             {
-
                 _options.BeforeTemporaryPayloadCleanupForTests?.Invoke(payload.Path);
 
                 _ = payload.TryDelete();
-
             }
-
         }
-
     }
 
     /// <summary>
@@ -792,12 +721,14 @@ public sealed class BackupArchiveCodec
     /// <remarks>
     /// The entry dictionary is keyed ordinally, because the protocol's identity for an entry is its
     /// exact bytes and the manifest is compared under that identity. This is the second question,
-    /// which the ordinal key cannot answer: two entry paths that differ only in case are two entries
-    /// in the manifest and one file on a case-insensitive volume, where the second write truncates the
-    /// first. Nothing downstream would notice — the manifest comparison verifies against hashes taken
-    /// from the decrypted stream rather than from the files on disk, and staging tests only that each
-    /// referenced path exists — so the restore would report completed with one entry silently carrying
-    /// the other's bytes.
+    /// which the ordinal key cannot answer: two entry paths that differ only in case, or only in the
+    /// trailing dots and spaces Windows drops from a name, are two entries in the manifest and one
+    /// file on such a volume, where the second write truncates the first. So is an entry named like
+    /// another entry's directory, which no volume can lay down as both a file and a directory.
+    /// Nothing downstream would notice — the manifest comparison verifies against hashes taken from
+    /// the decrypted stream rather than from the files on disk, and staging tests only that each
+    /// referenced path exists — so the restore would report completed with one entry silently
+    /// carrying the other's bytes.
     ///
     /// <para>Refused on every platform rather than only where the volume folds the two together.
     /// Whether the collision materialises is a property of the machine the archive lands on, and this
@@ -809,29 +740,18 @@ public sealed class BackupArchiveCodec
     /// </remarks>
     private static void RefuseCaseCollidingEntries(IEnumerable<string> archivePaths)
     {
-
         // Already normalized to form C: a record whose path is not its own canonical rendering is
-        // refused as it is read.
-        HashSet<string> folded = new(StringComparer.OrdinalIgnoreCase);
-
-        foreach (string archivePath in archivePaths)
+        // refused as it is read. The fold is the planner's, so an archive this build writes is one
+        // this build accepts.
+        if (BackupArchivePathFolding.FindCollidingIndexes([.. archivePaths]).Count > 0)
         {
-
-            if (!folded.Add(archivePath))
-            {
-
-                throw new InvalidDataException(
-                    "Backup archive entry paths collide when compared without case.");
-
-            }
-
+            throw new InvalidDataException(
+                "Backup archive entry paths cannot all become files on one destination: two collide when compared without case or trailing dots and spaces, or one is named like another's directory.");
         }
-
     }
 
     private static string RequireExistingDirectory(string path, string parameterName)
     {
-
         ArgumentException.ThrowIfNullOrWhiteSpace(path, parameterName);
 
         string full = Path.TrimEndingDirectorySeparator(Path.GetFullPath(path));
@@ -840,7 +760,6 @@ public sealed class BackupArchiveCodec
             ? full
             : throw new DirectoryNotFoundException(
                 $"The protected backup extraction root does not exist: {full}");
-
     }
 
     /// <summary>
@@ -852,12 +771,10 @@ public sealed class BackupArchiveCodec
         string path,
         CancellationToken cancellationToken)
     {
-
         await using FileStream input = new(
             path,
             new FileStreamOptions
             {
-
                 Mode = FileMode.Open,
 
                 Access = FileAccess.Read,
@@ -865,7 +782,6 @@ public sealed class BackupArchiveCodec
                 Share = FileShare.Read,
 
                 Options = FileOptions.Asynchronous | FileOptions.SequentialScan,
-
             });
 
         byte[] prefix = new byte[Magic.Length + sizeof(int)];
@@ -875,42 +791,30 @@ public sealed class BackupArchiveCodec
         return CryptographicOperations.FixedTimeEquals(prefix.AsSpan(0, Magic.Length), Magic)
             ? BinaryPrimitives.ReadInt32BigEndian(prefix.AsSpan(Magic.Length))
             : throw new InvalidDataException("Backup archive magic is invalid.");
-
     }
 
     private static void ClearDirectoryContents(string root)
     {
-
         try
         {
-
             foreach (string entry in Directory.EnumerateFileSystemEntries(root))
             {
-
                 if (Directory.Exists(entry) && !IsSymbolicLink(entry))
                 {
-
                     Directory.Delete(entry, recursive: true);
-
                 }
                 else
                 {
-
                     File.Delete(entry);
-
                 }
-
             }
-
         }
         catch (Exception ex) when (
             ex is IOException
                 or UnauthorizedAccessException
                 or DirectoryNotFoundException)
         {
-
         }
-
     }
 
     private static bool IsSymbolicLink(string path) =>
@@ -937,26 +841,20 @@ public sealed class BackupArchiveCodec
         BackupManifestEntry expected,
         CancellationToken cancellationToken)
     {
-
         string archivePath = NormalizeArchivePath(source.ArchivePath);
 
         if (!string.Equals(archivePath, expected.Path, StringComparison.Ordinal))
         {
-
             throw new InvalidDataException("Backup source order does not match the manifest.");
-
         }
 
         if (source.IsMemory)
         {
-
             ReadOnlyMemory<byte> content = source.Memory;
 
             if (content.Length != expected.Size)
             {
-
                 throw new IOException("An in-memory backup source changed before capture.");
-
             }
 
             string memoryHash = Convert.ToHexString(
@@ -964,9 +862,7 @@ public sealed class BackupArchiveCodec
 
             if (!string.Equals(memoryHash, expected.Sha256, StringComparison.Ordinal))
             {
-
                 throw new IOException("An in-memory backup source failed checksum verification.");
-
             }
 
             await WriteRecordHeaderAsync(
@@ -978,22 +874,19 @@ public sealed class BackupArchiveCodec
             await writer.WriteAsync(content, cancellationToken).ConfigureAwait(false);
 
             return;
-
         }
 
         string fullSourcePath = Path.GetFullPath(source.SourcePath!);
 
         SecureFileOpenStatus openStatus = SecureFileReader.TryOpenRegularFile(
             fullSourcePath,
-            expectedIdentity: null,
+            source.ExpectedIdentity,
             out FileStream? opened,
             out FileHandleMetadata openedMetadata);
 
         if (openStatus != SecureFileOpenStatus.Success || opened is null)
         {
-
             throw new IOException($"Backup source is missing or is not a regular file: {fullSourcePath}");
-
         }
 
         await using FileStream input = opened;
@@ -1002,9 +895,7 @@ public sealed class BackupArchiveCodec
 
         if (openedLength != expected.Size)
         {
-
             throw new IOException($"Backup source size changed before capture: {fullSourcePath}");
-
         }
 
         await WriteRecordHeaderAsync(
@@ -1023,26 +914,20 @@ public sealed class BackupArchiveCodec
 
         try
         {
-
             while (true)
             {
-
                 int read = await input.ReadAsync(buffer, cancellationToken).ConfigureAwait(false);
 
                 if (read == 0)
                 {
-
                     break;
-
                 }
 
                 copied = checked(copied + read);
 
                 if (copied > expected.Size)
                 {
-
                     throw new IOException($"Backup source grew during capture: {fullSourcePath}");
-
                 }
 
                 hash.AppendData(buffer.AsSpan(0, read));
@@ -1050,17 +935,13 @@ public sealed class BackupArchiveCodec
                 await writer.WriteAsync(
                     buffer.AsMemory(0, read),
                     cancellationToken).ConfigureAwait(false);
-
             }
-
         }
         finally
         {
-
             CryptographicOperations.ZeroMemory(buffer);
 
             ArrayPool<byte>.Shared.Return(buffer);
-
         }
 
         string actualHash = Convert.ToHexString(hash.GetHashAndReset()).ToLowerInvariant();
@@ -1081,11 +962,8 @@ public sealed class BackupArchiveCodec
                 finalPathMetadata.Identity)
             || !string.Equals(actualHash, expected.Sha256, StringComparison.Ordinal))
         {
-
             throw new IOException($"Backup source changed or failed checksum verification: {fullSourcePath}");
-
         }
-
     }
 
     private static async Task WriteRecordHeaderAsync(
@@ -1094,16 +972,13 @@ public sealed class BackupArchiveCodec
         long length,
         CancellationToken cancellationToken)
     {
-
         string canonical = NormalizeArchivePath(path);
 
         byte[] pathBytes = Encoding.UTF8.GetBytes(canonical);
 
         if (pathBytes.Length > MaximumPathBytes)
         {
-
             throw new InvalidDataException("Backup archive path metadata is too large.");
-
         }
 
         byte[] header = new byte[sizeof(int) + pathBytes.Length + sizeof(long)];
@@ -1115,62 +990,49 @@ public sealed class BackupArchiveCodec
         BinaryPrimitives.WriteInt64BigEndian(header.AsSpan(sizeof(int) + pathBytes.Length), length);
 
         await writer.WriteAsync(header, cancellationToken).ConfigureAwait(false);
-
     }
 
     private static long CalculatePayloadLength(
         IReadOnlyList<BackupArchiveSource> sources,
         long manifestLength)
     {
-
         long length = RecordLength(BackupArchivePaths.Manifest, manifestLength);
 
         foreach (BackupArchiveSource source in sources)
         {
-
             length = checked(length + RecordLength(
                 source.ArchivePath,
                 source.Length));
-
         }
 
         return length;
-
     }
 
     private static long RecordLength(string path, long contentLength)
     {
-
         int pathLength = Encoding.UTF8.GetByteCount(NormalizeArchivePath(path));
 
         return checked(sizeof(int) + pathLength + sizeof(long) + contentLength);
-
     }
 
     private static void ValidateManifestSources(
         BackupManifest manifest,
         IReadOnlyList<BackupArchiveSource> sources)
     {
-
         if (manifest.Entries.Length != sources.Count)
         {
-
             throw new InvalidDataException("Backup manifest and source counts differ.");
-
         }
 
         if (sources.Count > MaximumEntryCount)
         {
-
             throw new InvalidDataException("Backup manifest contains too many entry metadata records.");
-
         }
 
         HashSet<string> paths = new(StringComparer.Ordinal);
 
         for (int index = 0; index < sources.Count; index++)
         {
-
             string sourcePath = NormalizeArchivePath(sources[index].ArchivePath);
 
             string manifestPath = NormalizeArchivePath(manifest.Entries[index].Path);
@@ -1179,21 +1041,15 @@ public sealed class BackupArchiveCodec
                 || !paths.Add(sourcePath)
                 || string.Equals(sourcePath, BackupArchivePaths.Manifest, StringComparison.Ordinal))
             {
-
                 throw new InvalidDataException("Backup archive paths are duplicate, reserved, or non-canonical.");
-
             }
 
             if (manifest.Entries[index].Size < 0
                 || manifest.Entries[index].Sha256.Length != 64)
             {
-
                 throw new InvalidDataException("Backup manifest entry metadata is invalid.");
-
             }
-
         }
-
     }
 
     internal static void ValidateManifest(
@@ -1201,7 +1057,6 @@ public sealed class BackupArchiveCodec
         BackupArchiveHeader header,
         ReadOnlySpan<byte> salt)
     {
-
         ArgumentNullException.ThrowIfNull(manifest);
 
         ArgumentNullException.ThrowIfNull(header);
@@ -1211,9 +1066,7 @@ public sealed class BackupArchiveCodec
         if (manifest.FormatVersion != header.FormatVersion
             || manifest.FormatVersion != BackupArchiveFormat.CurrentVersion)
         {
-
             throw new NotSupportedException("Backup manifest format version is unsupported.");
-
         }
 
         if (envelope is null
@@ -1234,10 +1087,8 @@ public sealed class BackupArchiveCodec
             || envelope.TagBytes != TagLength
             || envelope.ChunkSize != header.ChunkSize)
         {
-
             throw new InvalidDataException(
                 "Backup manifest envelope does not match the authenticated archive header.");
-
         }
 
         if (manifest.RequestedIncludes is null
@@ -1264,30 +1115,24 @@ public sealed class BackupArchiveCodec
                 || item.Sha256 is null
                 || !Enum.IsDefined(item.Component)))
         {
-
             throw new InvalidDataException(
                 "Backup manifest contains invalid top-level or typed metadata.");
-
         }
 
         if (!IsCanonicalComponentSequence(manifest.RequestedIncludes)
             || !IsCanonicalComponentSequence(manifest.RequestedExcludes)
             || manifest.Entries.Length > MaximumEntryCount)
         {
-
             throw new InvalidDataException(
                 "Backup manifest selections or entry count are not canonical.");
-
         }
 
         BackupComponent[] catalog = Enum.GetValues<BackupComponent>();
 
         if (manifest.Components.Length != catalog.Length)
         {
-
             throw new InvalidDataException(
                 "Backup manifest must contain exactly one status for every component.");
-
         }
 
         Dictionary<BackupComponent, int> componentIndexes = new(catalog.Length);
@@ -1298,7 +1143,6 @@ public sealed class BackupArchiveCodec
 
         for (int index = 0; index < catalog.Length; index++)
         {
-
             BackupManifestComponent component = manifest.Components[index];
 
             if (component.Component != catalog[index]
@@ -1308,21 +1152,17 @@ public sealed class BackupArchiveCodec
                 || (component.Status != BackupComponentStatus.Complete
                     && (component.Files != 0 || component.Bytes != 0)))
             {
-
                 throw new InvalidDataException(
                     "Backup manifest component status metadata is inconsistent.");
-
             }
 
             componentIndexes.Add(component.Component, index);
-
         }
 
         string? previousPath = null;
 
         foreach (BackupManifestEntry entry in manifest.Entries)
         {
-
             string canonical = NormalizeArchivePath(entry.Path);
 
             if (!string.Equals(canonical, entry.Path, StringComparison.Ordinal)
@@ -1332,9 +1172,7 @@ public sealed class BackupArchiveCodec
                 || entry.Size < 0
                 || !IsLowerHexSha256(entry.Sha256))
             {
-
                 throw new InvalidDataException("Backup manifest entry metadata is invalid.");
-
             }
 
             previousPath = canonical;
@@ -1346,128 +1184,95 @@ public sealed class BackupArchiveCodec
                 || entryFiles[componentIndex] == long.MaxValue
                 || entryBytes[componentIndex] > long.MaxValue - entry.Size)
             {
-
                 throw new InvalidDataException(
                     "Backup manifest entry ownership or size accounting is invalid.");
-
             }
 
             entryFiles[componentIndex]++;
 
             entryBytes[componentIndex] += entry.Size;
-
         }
 
         for (int index = 0; index < manifest.Components.Length; index++)
         {
-
             BackupManifestComponent component = manifest.Components[index];
 
             if (component.Files != entryFiles[index]
                 || component.Bytes != entryBytes[index])
             {
-
                 throw new InvalidDataException(
                     "Backup manifest component totals do not match their entries.");
-
             }
-
         }
-
     }
 
     private static bool IsCanonicalComponentSequence(
         IReadOnlyList<BackupComponent> components)
     {
-
         int previous = -1;
 
         foreach (BackupComponent component in components)
         {
-
             int current = (int)component;
 
             if (!Enum.IsDefined(component) || current <= previous)
             {
-
                 return false;
-
             }
 
             previous = current;
-
         }
 
         return true;
-
     }
 
     private static bool IsCanonicalManifestIdentity(string? value)
     {
-
         if (string.IsNullOrWhiteSpace(value)
             || Encoding.UTF8.GetByteCount(value) > MaximumManifestIdentityBytes
             || !string.Equals(value, value.Trim(), StringComparison.Ordinal))
         {
-
             return false;
-
         }
 
         try
         {
-
             return value.IsNormalized(NormalizationForm.FormC);
-
         }
         catch (ArgumentException)
         {
-
             return false;
-
         }
-
     }
 
     private static bool IsLowerHexSha256(string value)
     {
-
         if (value.Length != 64)
         {
-
             return false;
-
         }
 
         foreach (char character in value)
         {
-
             if (character is not (>= '0' and <= '9')
                 and not (>= 'a' and <= 'f'))
             {
-
                 return false;
-
             }
-
         }
 
         return true;
-
     }
 
     private static string NormalizeArchivePath(string path)
     {
-
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
 
         if (path.IndexOf('\0') >= 0
             || path.Contains('\\', StringComparison.Ordinal)
             || Path.IsPathRooted(path))
         {
-
             throw new InvalidDataException("Backup archive path is not canonical.");
-
         }
 
         string normalized = path.Normalize(NormalizationForm.FormC);
@@ -1477,13 +1282,10 @@ public sealed class BackupArchiveCodec
         if (segments.Any(static segment =>
             segment.Length == 0 || segment is "." or ".."))
         {
-
             throw new InvalidDataException("Backup archive path is not canonical.");
-
         }
 
         return string.Join('/', segments);
-
     }
 
     private static byte[] BuildHeader(
@@ -1494,7 +1296,6 @@ public sealed class BackupArchiveCodec
         ReadOnlySpan<byte> salt,
         ReadOnlySpan<byte> noncePrefix)
     {
-
         byte[] header = new byte[FixedHeaderLength];
 
         Magic.CopyTo(header);
@@ -1520,19 +1321,16 @@ public sealed class BackupArchiveCodec
         noncePrefix.CopyTo(header.AsSpan(60, NoncePrefixLength));
 
         return header;
-
     }
 
     private static async Task<ParsedHeader> ReadHeaderAsync(
         string path,
         CancellationToken cancellationToken)
     {
-
         await using FileStream input = new(
             path,
             new FileStreamOptions
             {
-
                 Mode = FileMode.Open,
 
                 Access = FileAccess.Read,
@@ -1540,7 +1338,6 @@ public sealed class BackupArchiveCodec
                 Share = FileShare.Read,
 
                 Options = FileOptions.Asynchronous | FileOptions.SequentialScan,
-
             });
 
         byte[] raw = new byte[FixedHeaderLength];
@@ -1549,9 +1346,7 @@ public sealed class BackupArchiveCodec
 
         if (!CryptographicOperations.FixedTimeEquals(raw.AsSpan(0, Magic.Length), Magic))
         {
-
             throw new InvalidDataException("Backup archive magic is invalid.");
-
         }
 
         int version = BinaryPrimitives.ReadInt32BigEndian(raw.AsSpan(8));
@@ -1574,33 +1369,25 @@ public sealed class BackupArchiveCodec
             || chunkSize is < 16 or > MaximumAcceptedChunkSize
             || plaintextLength < 0)
         {
-
             throw new NotSupportedException("Backup archive header is unsupported or invalid.");
-
         }
 
         long expectedLength = CalculateEnvelopeLength(plaintextLength, chunkSize);
 
         if (input.Length != expectedLength)
         {
-
             throw new InvalidDataException("Backup archive is truncated or contains trailing data.");
-
         }
 
         DateTimeOffset createdAt;
 
         try
         {
-
             createdAt = DateTimeOffset.FromUnixTimeMilliseconds(createdMilliseconds);
-
         }
         catch (ArgumentOutOfRangeException ex)
         {
-
             throw new InvalidDataException("Backup creation timestamp is invalid.", ex);
-
         }
 
         byte[] salt = raw.AsSpan(44, SaltLength).ToArray();
@@ -1617,34 +1404,27 @@ public sealed class BackupArchiveCodec
             plaintextLength);
 
         return new ParsedHeader(raw, header, plaintextLength, salt, noncePrefix);
-
     }
 
     private static long CalculateEnvelopeLength(long plaintextLength, int chunkSize)
     {
-
         long chunks = plaintextLength == 0
             ? 0
             : ((plaintextLength - 1) / chunkSize) + 1;
 
         try
         {
-
             return checked(
                 FixedHeaderLength
                 + plaintextLength
                 + chunks * (sizeof(int) + TagLength));
-
         }
         catch (OverflowException ex)
         {
-
             throw new InvalidDataException(
                 "Backup archive length metadata is invalid.",
                 ex);
-
         }
-
     }
 
     private static Task<OwnedTemporaryFile> DecryptToProtectedTemporaryAsync(
@@ -1666,7 +1446,6 @@ public sealed class BackupArchiveCodec
         string scratchDirectory,
         CancellationToken cancellationToken)
     {
-
         byte[] key = DeriveKey(passphrase.Span, parsed.Salt, parsed.Header.KdfIterations);
 
         string payloadPath = Path.Combine(
@@ -1677,12 +1456,10 @@ public sealed class BackupArchiveCodec
 
         try
         {
-
             await using FileStream input = new(
                 archivePath,
                 new FileStreamOptions
                 {
-
                     Mode = FileMode.Open,
 
                     Access = FileAccess.Read,
@@ -1690,7 +1467,6 @@ public sealed class BackupArchiveCodec
                     Share = FileShare.Read,
 
                     Options = FileOptions.Asynchronous | FileOptions.SequentialScan,
-
                 });
 
             input.Position = FixedHeaderLength;
@@ -1723,10 +1499,8 @@ public sealed class BackupArchiveCodec
 
             try
             {
-
                 while (remaining > 0)
                 {
-
                     cancellationToken.ThrowIfCancellationRequested();
 
                     byte[] lengthBytes = new byte[sizeof(int)];
@@ -1739,9 +1513,7 @@ public sealed class BackupArchiveCodec
 
                     if (length != expected)
                     {
-
                         throw new InvalidDataException("Backup encrypted chunk length is invalid.");
-
                     }
 
                     await input.ReadExactlyAsync(
@@ -1772,17 +1544,14 @@ public sealed class BackupArchiveCodec
                     remaining -= length;
 
                     chunkIndex = checked(chunkIndex + 1);
-
                 }
 
                 await output.FlushAsync(cancellationToken).ConfigureAwait(false);
 
                 output.Flush(flushToDisk: true);
-
             }
             finally
             {
-
                 CryptographicOperations.ZeroMemory(cipher);
 
                 CryptographicOperations.ZeroMemory(plain);
@@ -1792,31 +1561,24 @@ public sealed class BackupArchiveCodec
                 CryptographicOperations.ZeroMemory(nonce);
 
                 CryptographicOperations.ZeroMemory(associatedData);
-
             }
 
             return payload;
-
         }
         catch
         {
-
             _ = payload?.TryDelete();
 
             throw;
-
         }
         finally
         {
-
             CryptographicOperations.ZeroMemory(key);
 
             CryptographicOperations.ZeroMemory(parsed.Salt);
 
             CryptographicOperations.ZeroMemory(parsed.NoncePrefix);
-
         }
-
     }
 
     private static async Task<BackupManifest> ReadManifestFromAuthenticatedArchiveAsync(
@@ -1827,7 +1589,6 @@ public sealed class BackupArchiveCodec
         Action<long>? observeAuthenticatedPlaintextProgress,
         CancellationToken cancellationToken)
     {
-
         await using AuthenticatedPayloadReader input =
             AuthenticatedPayloadReader.Create(
                 archivePath,
@@ -1844,7 +1605,6 @@ public sealed class BackupArchiveCodec
 
         while (input.Remaining > 0)
         {
-
             PayloadRecord record = await ReadStreamingRecordAsync(
                 input,
                 observePlaintextBuffer,
@@ -1852,65 +1612,49 @@ public sealed class BackupArchiveCodec
 
             if (!paths.Add(record.Path) || ++count > MaximumEntryCount + 1)
             {
-
                 throw new InvalidDataException("Backup payload contains duplicate or excessive entries.");
-
             }
 
             if (string.Equals(record.Path, BackupArchivePaths.Manifest, StringComparison.Ordinal))
             {
-
                 if (record.Length > MaximumManifestBytes
                     || record.Length != input.Remaining)
                 {
-
                     throw new InvalidDataException("Backup manifest must be the final bounded entry.");
-
                 }
 
                 byte[] bytes = new byte[checked((int)record.Length)];
 
                 if (bytes.Length > 0)
                 {
-
                     observePlaintextBuffer?.Invoke(bytes.Length);
-
                 }
 
                 await input.ReadExactlyAsync(bytes, cancellationToken).ConfigureAwait(false);
 
                 try
                 {
-
                     manifest = JsonSerializer.Deserialize(
                         bytes,
                         BackupJsonContext.Default.BackupManifest)
                         ?? throw new InvalidDataException("Backup manifest is empty.");
-
                 }
                 finally
                 {
-
                     CryptographicOperations.ZeroMemory(bytes);
-
                 }
-
             }
             else
             {
-
                 await input.SkipExactlyAsync(
                     record.Length,
                     cancellationToken).ConfigureAwait(false);
-
             }
-
         }
 
         input.EnsureFullyConsumed();
 
         return manifest ?? throw new InvalidDataException("Backup manifest is missing.");
-
     }
 
     private static async Task<PayloadRecord> ReadStreamingRecordAsync(
@@ -1918,7 +1662,6 @@ public sealed class BackupArchiveCodec
         Action<int>? observePlaintextBuffer,
         CancellationToken cancellationToken)
     {
-
         byte[] pathLengthBytes = new byte[sizeof(int)];
 
         observePlaintextBuffer?.Invoke(pathLengthBytes.Length);
@@ -1927,29 +1670,23 @@ public sealed class BackupArchiveCodec
 
         try
         {
-
             await input.ReadExactlyAsync(
                 pathLengthBytes,
                 cancellationToken).ConfigureAwait(false);
 
             pathLength = BinaryPrimitives.ReadInt32BigEndian(
                 pathLengthBytes);
-
         }
         finally
         {
-
             CryptographicOperations.ZeroMemory(pathLengthBytes);
-
         }
 
         if (pathLength is < 1 or > MaximumPathBytes
             || pathLength > input.Remaining)
         {
-
             throw new InvalidDataException(
                 "Backup payload path length is invalid.");
-
         }
 
         byte[] pathBytes = new byte[pathLength];
@@ -1960,29 +1697,23 @@ public sealed class BackupArchiveCodec
 
         try
         {
-
             await input.ReadExactlyAsync(
                 pathBytes,
                 cancellationToken).ConfigureAwait(false);
 
             path = new UTF8Encoding(false, true).GetString(pathBytes);
-
         }
         finally
         {
-
             CryptographicOperations.ZeroMemory(pathBytes);
-
         }
 
         string canonical = NormalizeArchivePath(path);
 
         if (!string.Equals(path, canonical, StringComparison.Ordinal))
         {
-
             throw new InvalidDataException(
                 "Backup payload path is not canonical.");
-
         }
 
         byte[] lengthBytes = new byte[sizeof(long)];
@@ -1993,31 +1724,24 @@ public sealed class BackupArchiveCodec
 
         try
         {
-
             await input.ReadExactlyAsync(
                 lengthBytes,
                 cancellationToken).ConfigureAwait(false);
 
             length = BinaryPrimitives.ReadInt64BigEndian(lengthBytes);
-
         }
         finally
         {
-
             CryptographicOperations.ZeroMemory(lengthBytes);
-
         }
 
         if (length < 0 || length > input.Remaining)
         {
-
             throw new InvalidDataException(
                 "Backup payload entry length is invalid.");
-
         }
 
         return new PayloadRecord(path, length);
-
     }
 
     private async Task<ExtractedPayload> ExtractPayloadAsync(
@@ -2025,7 +1749,6 @@ public sealed class BackupArchiveCodec
         string extractionRoot,
         CancellationToken cancellationToken)
     {
-
         await using FileStream input = new(
             payloadPath,
             FileMode.Open,
@@ -2044,30 +1767,23 @@ public sealed class BackupArchiveCodec
 
         try
         {
-
             while (input.Position < input.Length)
             {
-
                 PayloadRecord record = await ReadRecordAsync(input, cancellationToken).ConfigureAwait(false);
 
                 if (++count > MaximumEntryCount + 1
                     || entries.ContainsKey(record.Path)
                     || (manifest is not null))
                 {
-
                     throw new InvalidDataException("Backup payload entry topology is invalid.");
-
                 }
 
                 if (string.Equals(record.Path, BackupArchivePaths.Manifest, StringComparison.Ordinal))
                 {
-
                     if (record.Length > MaximumManifestBytes
                         || input.Position + record.Length != input.Length)
                     {
-
                         throw new InvalidDataException("Backup manifest must be the final bounded entry.");
-
                     }
 
                     byte[] bytes = new byte[record.Length];
@@ -2076,22 +1792,17 @@ public sealed class BackupArchiveCodec
 
                     try
                     {
-
                         manifest = JsonSerializer.Deserialize(
                             bytes,
                             BackupJsonContext.Default.BackupManifest)
                             ?? throw new InvalidDataException("Backup manifest is empty.");
-
                     }
                     finally
                     {
-
                         CryptographicOperations.ZeroMemory(bytes);
-
                     }
 
                     continue;
-
                 }
 
                 string destination = ResolveExtractionPath(extractionRoot, record.Path);
@@ -2100,9 +1811,7 @@ public sealed class BackupArchiveCodec
 
                 if (destinationDirectory is not null)
                 {
-
                     SecureFilePermissions.EnsureOwnerOnlyDirectoryExists(destinationDirectory);
-
                 }
 
                 using IncrementalHash hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
@@ -2113,7 +1822,6 @@ public sealed class BackupArchiveCodec
 
                 while (remaining > 0)
                 {
-
                     int wanted = (int)Math.Min(buffer.Length, remaining);
 
                     int read = await input.ReadAsync(
@@ -2122,9 +1830,7 @@ public sealed class BackupArchiveCodec
 
                     if (read == 0)
                     {
-
                         throw new EndOfStreamException();
-
                     }
 
                     hash.AppendData(buffer.AsSpan(0, read));
@@ -2134,7 +1840,6 @@ public sealed class BackupArchiveCodec
                         cancellationToken).ConfigureAwait(false);
 
                     remaining -= read;
-
                 }
 
                 await output.FlushAsync(cancellationToken).ConfigureAwait(false);
@@ -2148,30 +1853,24 @@ public sealed class BackupArchiveCodec
                         Convert.ToHexString(hash.GetHashAndReset()).ToLowerInvariant()));
 
                 _options.AfterExtractedEntryForTests?.Invoke(record.Path);
-
             }
-
         }
         finally
         {
-
             CryptographicOperations.ZeroMemory(buffer);
 
             ArrayPool<byte>.Shared.Return(buffer);
-
         }
 
         return new ExtractedPayload(
             manifest ?? throw new InvalidDataException("Backup manifest is missing."),
             entries);
-
     }
 
     private static async Task<PayloadRecord> ReadRecordAsync(
         FileStream input,
         CancellationToken cancellationToken)
     {
-
         byte[] pathLengthBytes = new byte[sizeof(int)];
 
         await input.ReadExactlyAsync(pathLengthBytes, cancellationToken).ConfigureAwait(false);
@@ -2181,9 +1880,7 @@ public sealed class BackupArchiveCodec
         if (pathLength is < 1 or > MaximumPathBytes
             || pathLength > input.Length - input.Position)
         {
-
             throw new InvalidDataException("Backup payload path length is invalid.");
-
         }
 
         byte[] pathBytes = new byte[pathLength];
@@ -2196,9 +1893,7 @@ public sealed class BackupArchiveCodec
 
         if (!string.Equals(path, canonical, StringComparison.Ordinal))
         {
-
             throw new InvalidDataException("Backup payload path is not canonical.");
-
         }
 
         byte[] lengthBytes = new byte[sizeof(long)];
@@ -2209,20 +1904,16 @@ public sealed class BackupArchiveCodec
 
         if (length < 0 || length > input.Length - input.Position)
         {
-
             throw new InvalidDataException("Backup payload entry length is invalid.");
-
         }
 
         return new PayloadRecord(path, length);
-
     }
 
     private static BackupVerifyIssue[] CompareManifest(
         BackupManifest manifest,
         IReadOnlyDictionary<string, ObservedEntry> observed)
     {
-
         List<BackupVerifyIssue> issues = [];
 
         Dictionary<BackupComponent, int> componentIndexes = manifest.Components
@@ -2235,37 +1926,30 @@ public sealed class BackupArchiveCodec
 
         if (manifest.Entries.Length != observed.Count)
         {
-
             issues.Add(new BackupVerifyIssue(
                 "backup.entry_set_mismatch",
                 "The encrypted payload and manifest contain different entry sets."));
-
         }
 
         foreach (BackupManifestEntry expected in manifest.Entries)
         {
-
             if (!observed.TryGetValue(expected.Path, out ObservedEntry? actual))
             {
-
                 issues.Add(new BackupVerifyIssue(
                     "backup.entry_missing",
                     "A manifest-listed entry is missing from the encrypted payload.",
                     expected.Path));
 
                 continue;
-
             }
 
             if (actual.Size != expected.Size
                 || !string.Equals(actual.Sha256, expected.Sha256, StringComparison.Ordinal))
             {
-
                 issues.Add(new BackupVerifyIssue(
                     "backup.checksum_mismatch",
                     "A manifest-listed entry failed size or SHA-256 verification.",
                     expected.Path));
-
             }
 
             int componentIndex = componentIndexes[expected.Component];
@@ -2274,28 +1958,22 @@ public sealed class BackupArchiveCodec
 
             observedBytes[componentIndex] = checked(
                 observedBytes[componentIndex] + actual.Size);
-
         }
 
         for (int index = 0; index < manifest.Components.Length; index++)
         {
-
             BackupManifestComponent component = manifest.Components[index];
 
             if (component.Files != observedFiles[index]
                 || component.Bytes != observedBytes[index])
             {
-
                 issues.Add(new BackupVerifyIssue(
                     "backup.component_summary_mismatch",
                     "A component summary does not match its authenticated payload entries."));
-
             }
-
         }
 
         return [.. issues];
-
     }
 
     private static async Task<BackupVerifyIssue?> VerifyDatabaseAsync(
@@ -2303,7 +1981,6 @@ public sealed class BackupArchiveCodec
         BackupManifest manifest,
         CancellationToken cancellationToken)
     {
-
         string databasePath = ResolveExtractionPath(
             extractionRoot,
             BackupArchivePaths.GrimoireDatabase);
@@ -2314,11 +1991,9 @@ public sealed class BackupArchiveCodec
 
         if (!File.Exists(databasePath) || !File.Exists(recoveryPath))
         {
-
             return new BackupVerifyIssue(
                 "backup.database_recovery_missing",
                 "The database or its portable recovery material is missing.");
-
         }
 
         byte[] recoveryBytes = await File.ReadAllBytesAsync(
@@ -2331,18 +2006,15 @@ public sealed class BackupArchiveCodec
 
         try
         {
-
             recovery = JsonSerializer.Deserialize(
                 recoveryBytes,
                 BackupJsonContext.Default.PortableBackupRecoveryMaterial);
 
             if (recovery is null || recovery.Version != 1)
             {
-
                 return new BackupVerifyIssue(
                     "backup.recovery_material_invalid",
                     "Portable recovery material is missing or unsupported.");
-
             }
 
             GrimoireKdfSidecar sidecar = GrimoireKdfSidecarFile.Read(databasePath);
@@ -2353,24 +2025,19 @@ public sealed class BackupArchiveCodec
 
             try
             {
-
                 passphrase = GrimoireKeyDerivation.DerivePassphraseFromEncryptionSecret(
                     secret,
                     salt);
-
             }
             finally
             {
-
                 CryptographicOperations.ZeroMemory(salt);
-
             }
 
             SqliteNativeRuntime.Instance.Initialize();
 
             string connectionString = new SqliteConnectionStringBuilder
             {
-
                 DataSource = databasePath,
 
                 Password = passphrase,
@@ -2378,7 +2045,6 @@ public sealed class BackupArchiveCodec
                 Mode = SqliteOpenMode.ReadOnly,
 
                 Pooling = false,
-
             }.ToString();
 
             await using SqliteConnection connection = new(connectionString);
@@ -2393,11 +2059,9 @@ public sealed class BackupArchiveCodec
 
             if (!string.Equals(result as string, "ok", StringComparison.OrdinalIgnoreCase))
             {
-
                 return new BackupVerifyIssue(
                     "backup.database_integrity_failed",
                     "The decrypted Grimoire snapshot failed SQLite quick_check.");
-
             }
 
             string actualSchema = await GrimoireSchemaIdentity
@@ -2409,15 +2073,12 @@ public sealed class BackupArchiveCodec
                     manifest.DatabaseSchemaVersion,
                     StringComparison.Ordinal))
             {
-
                 return new BackupVerifyIssue(
                     "backup.database_schema_mismatch",
                     "The Grimoire schema version does not match the authenticated manifest.");
-
             }
 
             return null;
-
         }
         catch (Exception ex) when (
             ex is SqliteException
@@ -2426,33 +2087,25 @@ public sealed class BackupArchiveCodec
                 or CryptographicException
                 or FormatException)
         {
-
             return new BackupVerifyIssue(
                 "backup.database_unreadable",
                 "The Grimoire snapshot could not be opened and validated with portable recovery material.");
-
         }
         finally
         {
-
             if (passphrase is not null)
             {
-
                 passphrase = null;
-
             }
 
             recovery?.Dispose();
 
             CryptographicOperations.ZeroMemory(recoveryBytes);
-
         }
-
     }
 
     private static string ResolveExtractionPath(string root, string archivePath)
     {
-
         string canonical = NormalizeArchivePath(archivePath);
 
         string destination = Path.GetFullPath(
@@ -2466,24 +2119,19 @@ public sealed class BackupArchiveCodec
 
         if (!destination.StartsWith(prefix, StringComparison.Ordinal))
         {
-
             throw new InvalidDataException("Backup extraction path escapes the protected root.");
-
         }
 
         return destination;
-
     }
 
     private static OwnedTemporaryDirectory CreateProtectedTemporaryDirectory(
         string parent,
         string prefix)
     {
-
         string path = Path.Combine(parent, prefix + Guid.NewGuid().ToString("N"));
 
         return OwnedTemporaryDirectory.Create(path);
-
     }
 
     private static byte[] DeriveKey(
@@ -2491,7 +2139,6 @@ public sealed class BackupArchiveCodec
         ReadOnlySpan<byte> salt,
         int iterations)
     {
-
         int length = Encoding.UTF8.GetByteCount(passphrase);
 
         byte[] utf8 = new byte[length];
@@ -2500,50 +2147,37 @@ public sealed class BackupArchiveCodec
 
         try
         {
-
             return Rfc2898DeriveBytes.Pbkdf2(
                 utf8,
                 salt,
                 iterations,
                 HashAlgorithmName.SHA256,
                 KeyLength);
-
         }
         finally
         {
-
             CryptographicOperations.ZeroMemory(utf8);
-
         }
-
     }
 
     private static void ValidatePassphrase(ReadOnlySpan<char> passphrase)
     {
-
         if (passphrase.IsEmpty)
         {
-
             throw new ArgumentException("A non-empty backup recovery passphrase is required.");
-
         }
-
     }
 
     private static byte[] CreateRandomBytes(Func<byte[]>? factory, int length)
     {
-
         byte[] bytes = factory?.Invoke() ?? RandomNumberGenerator.GetBytes(length);
 
         if (bytes.Length != length)
         {
-
             throw new InvalidOperationException($"Backup random value must contain {length} bytes.");
-
         }
 
         return bytes;
-
     }
 
     private sealed record ParsedHeader(
@@ -2567,7 +2201,6 @@ public sealed class BackupArchiveCodec
 
     private sealed class AuthenticatedPayloadReader : IAsyncDisposable
     {
-
         private readonly FileStream _input;
 
         private readonly AesGcm _aes;
@@ -2614,7 +2247,6 @@ public sealed class BackupArchiveCodec
             long plaintextLength,
             Action<long>? observeAuthenticatedPlaintextProgress)
         {
-
             _input = input;
 
             _aes = aes;
@@ -2639,7 +2271,6 @@ public sealed class BackupArchiveCodec
                 observeAuthenticatedPlaintextProgress;
 
             Remaining = plaintextLength;
-
         }
 
         public long Remaining { get; private set; }
@@ -2651,7 +2282,6 @@ public sealed class BackupArchiveCodec
             Action<int>? observePlaintextBuffer,
             Action<long>? observeAuthenticatedPlaintextProgress)
         {
-
             byte[] key = DeriveKey(
                 passphrase.Span,
                 parsed.Salt,
@@ -2675,12 +2305,10 @@ public sealed class BackupArchiveCodec
 
             try
             {
-
                 input = new FileStream(
                     archivePath,
                     new FileStreamOptions
                     {
-
                         Mode = FileMode.Open,
 
                         Access = FileAccess.Read,
@@ -2689,7 +2317,6 @@ public sealed class BackupArchiveCodec
 
                         Options = FileOptions.Asynchronous
                             | FileOptions.SequentialScan,
-
                     });
 
                 long expectedLength = CalculateEnvelopeLength(
@@ -2698,10 +2325,8 @@ public sealed class BackupArchiveCodec
 
                 if (input.Length != expectedLength)
                 {
-
                     throw new InvalidDataException(
                         "Backup archive changed before authenticated inspection.");
-
                 }
 
                 input.Position = FixedHeaderLength;
@@ -2759,11 +2384,9 @@ public sealed class BackupArchiveCodec
                 lengthBytes = [];
 
                 return result;
-
             }
             finally
             {
-
                 input?.Dispose();
 
                 aes?.Dispose();
@@ -2785,38 +2408,30 @@ public sealed class BackupArchiveCodec
                 CryptographicOperations.ZeroMemory(parsed.Salt);
 
                 CryptographicOperations.ZeroMemory(parsed.NoncePrefix);
-
             }
-
         }
 
         public async ValueTask ReadExactlyAsync(
             Memory<byte> destination,
             CancellationToken cancellationToken)
         {
-
             ThrowIfDisposed();
 
             if (destination.Length > Remaining)
             {
-
                 throw new EndOfStreamException();
-
             }
 
             int written = 0;
 
             while (written < destination.Length)
             {
-
                 cancellationToken.ThrowIfCancellationRequested();
 
                 if (_plainOffset == _plainLength)
                 {
-
                     await DecryptNextChunkAsync(
                         cancellationToken).ConfigureAwait(false);
-
                 }
 
                 int count = Math.Min(
@@ -2834,39 +2449,31 @@ public sealed class BackupArchiveCodec
                 written += count;
 
                 Remaining -= count;
-
             }
-
         }
 
         public async ValueTask SkipExactlyAsync(
             long length,
             CancellationToken cancellationToken)
         {
-
             ThrowIfDisposed();
 
             if (length < 0 || length > Remaining)
             {
-
                 throw new InvalidDataException(
                     "Backup payload entry length is invalid.");
-
             }
 
             long skipped = 0;
 
             while (skipped < length)
             {
-
                 cancellationToken.ThrowIfCancellationRequested();
 
                 if (_plainOffset == _plainLength)
                 {
-
                     await DecryptNextChunkAsync(
                         cancellationToken).ConfigureAwait(false);
-
                 }
 
                 int count = (int)Math.Min(
@@ -2881,58 +2488,43 @@ public sealed class BackupArchiveCodec
                 skipped += count;
 
                 Remaining -= count;
-
             }
-
         }
 
         public void EnsureFullyConsumed()
         {
-
             ThrowIfDisposed();
 
             if (Remaining != 0
                 || _plainOffset != _plainLength
                 || _input.Position != _input.Length)
             {
-
                 throw new InvalidDataException(
                     "Backup payload authentication did not consume the complete archive.");
-
             }
-
         }
 
         public async ValueTask DisposeAsync()
         {
-
             if (_disposed)
             {
-
                 return;
-
             }
 
             _disposed = true;
 
             try
             {
-
                 _aes.Dispose();
-
             }
             finally
             {
-
                 try
                 {
-
                     await _input.DisposeAsync().ConfigureAwait(false);
-
                 }
                 finally
                 {
-
                     CryptographicOperations.ZeroMemory(_key);
 
                     CryptographicOperations.ZeroMemory(_cipher);
@@ -2946,22 +2538,16 @@ public sealed class BackupArchiveCodec
                     CryptographicOperations.ZeroMemory(_associatedData);
 
                     CryptographicOperations.ZeroMemory(_lengthBytes);
-
                 }
-
             }
-
         }
 
         private async ValueTask DecryptNextChunkAsync(
             CancellationToken cancellationToken)
         {
-
             if (Remaining <= 0)
             {
-
                 throw new EndOfStreamException();
-
             }
 
             await _input.ReadExactlyAsync(
@@ -2975,10 +2561,8 @@ public sealed class BackupArchiveCodec
 
             if (length != expected)
             {
-
                 throw new InvalidDataException(
                     "Backup encrypted chunk length is invalid.");
-
             }
 
             await _input.ReadExactlyAsync(
@@ -3016,23 +2600,18 @@ public sealed class BackupArchiveCodec
                 _authenticatedPlaintext);
 
             _chunkIndex = checked(_chunkIndex + 1);
-
         }
 
         private void ThrowIfDisposed()
         {
-
             ObjectDisposedException.ThrowIf(
                 _disposed,
                 this);
-
         }
-
     }
 
     private sealed class ChunkEncryptingWriter : IAsyncDisposable
     {
-
         private readonly Stream _output;
 
         private readonly byte[] _header;
@@ -3061,7 +2640,6 @@ public sealed class BackupArchiveCodec
             int chunkSize,
             long expectedPlaintextLength)
         {
-
             _output = output;
 
             _header = header;
@@ -3073,26 +2651,21 @@ public sealed class BackupArchiveCodec
             _buffer = new byte[chunkSize];
 
             _expectedPlaintextLength = expectedPlaintextLength;
-
         }
 
         public async ValueTask WriteAsync(
             ReadOnlyMemory<byte> bytes,
             CancellationToken cancellationToken)
         {
-
             if (_completed)
             {
-
                 throw new InvalidOperationException("Backup encryption writer is already complete.");
-
             }
 
             int offset = 0;
 
             while (offset < bytes.Length)
             {
-
                 int count = Math.Min(_buffer.Length - _buffered, bytes.Length - offset);
 
                 bytes.Span.Slice(offset, count).CopyTo(_buffer.AsSpan(_buffered));
@@ -3105,62 +2678,45 @@ public sealed class BackupArchiveCodec
 
                 if (_written > _expectedPlaintextLength)
                 {
-
                     throw new InvalidDataException("Backup payload exceeded its authenticated length.");
-
                 }
 
                 if (_buffered == _buffer.Length)
                 {
-
                     await EncryptBufferedAsync(cancellationToken).ConfigureAwait(false);
-
                 }
-
             }
-
         }
 
         public async Task CompleteAsync(CancellationToken cancellationToken)
         {
-
             if (_completed)
             {
-
                 return;
-
             }
 
             if (_buffered > 0)
             {
-
                 await EncryptBufferedAsync(cancellationToken).ConfigureAwait(false);
-
             }
 
             if (_written != _expectedPlaintextLength)
             {
-
                 throw new InvalidDataException("Backup payload did not match its authenticated length.");
-
             }
 
             _completed = true;
-
         }
 
         public ValueTask DisposeAsync()
         {
-
             CryptographicOperations.ZeroMemory(_buffer);
 
             return ValueTask.CompletedTask;
-
         }
 
         private async Task EncryptBufferedAsync(CancellationToken cancellationToken)
         {
-
             byte[] cipher = new byte[_buffered];
 
             byte[] tag = new byte[TagLength];
@@ -3181,7 +2737,6 @@ public sealed class BackupArchiveCodec
 
             try
             {
-
                 using AesGcm aes = new(_key, TagLength);
 
                 aes.Encrypt(
@@ -3206,11 +2761,9 @@ public sealed class BackupArchiveCodec
                 _buffered = 0;
 
                 _chunkIndex = checked(_chunkIndex + 1);
-
             }
             finally
             {
-
                 CryptographicOperations.ZeroMemory(cipher);
 
                 CryptographicOperations.ZeroMemory(tag);
@@ -3218,11 +2771,7 @@ public sealed class BackupArchiveCodec
                 CryptographicOperations.ZeroMemory(nonce);
 
                 CryptographicOperations.ZeroMemory(associatedData);
-
             }
-
         }
-
     }
-
 }

@@ -3,6 +3,7 @@ using System.Threading.Channels;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Cli.Services;
+using RetroDownfall.Arcanum.Cli.UX;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
@@ -23,6 +24,13 @@ internal sealed class CommandCenterChatRunner(
     CommandCenterHumanPromptCoordinator humanPromptCoordinator,
     ILogger<CommandCenterChatRunner> logger)
 {
+    /// <summary>
+    /// Builds the turn's attachments. A seam: production reads the files, and a test substitutes a build
+    /// that blocks the way a read stalled inside the operating system does.
+    /// </summary>
+    internal AttachmentBuildDelegate BuildAttachmentsAsync { get; set; } =
+        CommandCenterTurnAttachmentBuilder.BuildAsync;
+
     public async Task RunTurnAsync(
         string prompt,
         CommandCenterState state,
@@ -37,47 +45,18 @@ internal sealed class CommandCenterChatRunner(
         state.ThinkingActive = true;
         state.ThinkingTick = 0;
 
-        // Snapshot staging at turn start — clear only this snapshot after terminal Result.
-        string[] stagedPathSnapshot = state.StagedAttachmentPaths.ToArray();
-        Guid[] stagedRefSnapshot = state.StagedAttachmentReferences.ToArray();
-
-        // Off the caller's thread on purpose: submit reaches here straight from the Terminal.Gui key
-        // handler with nothing awaited in between, and the build reads every staged text file and
-        // base64-encodes every staged image. Doing that inline freezes the main loop — no redraw, no
-        // spinner, and Ctrl+C never pumped — for as long as the reads take, which on a FIFO or a
-        // stalled mount is forever. This await is the turn's first yield, so the loop keeps pumping.
-        string workingDirectory = state.WorkingDirectory;
-        ArcanumSettings settings = settingsMonitor.CurrentValue;
-        TurnAttachmentBuildResult attachments = await Task.Run(
-                () => CommandCenterTurnAttachmentBuilder.Build(
-                    prompt,
-                    workingDirectory,
-                    stagedPathSnapshot,
-                    settings),
-                cancellationToken)
-            .ConfigureAwait(false);
-
-        foreach (string line in attachments.StatusLines)
-        {
-            state.Log.Append(SessionLogEntryKind.Status, line);
-        }
-
-        List<Guid>? attachmentReferences = stagedRefSnapshot.Length == 0
-            ? null
-            : stagedRefSnapshot.ToList();
-
-        state.Log.Append(SessionLogEntryKind.User, attachments.Prompt);
-        SessionLogEntry assistantEntry = state.Log.Append(SessionLogEntryKind.Assistant, string.Empty, streaming: true);
-        await uiUpdates.WriteAsync(new CommandCenterUiUpdate(CommandCenterUiUpdateKind.RefreshAll), cancellationToken)
-            .ConfigureAwait(false);
-
+        // Everything the turn does from here on, including building the attachments, sits inside the
+        // try/finally below: the host's gate and Ctrl+C both rely on the finally to clear
+        // ThinkingActive and complete the entries, whatever the build or the stream throws.
+        StagedAttachmentSnapshot staged = new([], []);
+        SessionLogEntry? assistantEntry = null;
+        SessionLogEntry? reasoningEntry = null;
         BoundedStreamingTextBuffer assistant = new(
             state.Log.MaxAssistantChars,
             SessionLogBuffer.TruncationMarker);
         BoundedStreamingTextBuffer reasoning = new(
             state.Log.MaxReasoningChars,
             SessionLogBuffer.ReasoningTruncationMarker);
-        SessionLogEntry? reasoningEntry = null;
         bool cancelled = false;
         bool sawError = false;
         bool sawResult = false;
@@ -85,7 +64,11 @@ internal sealed class CommandCenterChatRunner(
         void SnapshotStreamingText()
         {
             state.StreamingAssistantText = assistant.Snapshot();
-            state.Log.UpdateStreaming(assistantEntry, state.StreamingAssistantText);
+            if (assistantEntry is not null)
+            {
+                state.Log.UpdateStreaming(assistantEntry, state.StreamingAssistantText);
+            }
+
             if (reasoningEntry is not null)
             {
                 state.Log.UpdateStreaming(reasoningEntry, reasoning.Snapshot());
@@ -98,6 +81,50 @@ internal sealed class CommandCenterChatRunner(
 
         try
         {
+            // Snapshot staging at turn start — clear only this snapshot after terminal Result.
+            staged = state.SnapshotStaged();
+
+            // Off the caller's thread on purpose: submit reaches here straight from the Terminal.Gui key
+            // handler with nothing awaited in between, and the build reads every staged text file and
+            // base64-encodes every staged image. Doing that inline freezes the main loop — no redraw, no
+            // spinner, and Ctrl+C never pumped — for as long as the reads take. This await is the turn's
+            // first yield, so the loop keeps pumping, and Ctrl+C walks away from a read that is stuck
+            // inside the operating system instead of waiting for it.
+            string workingDirectory = state.WorkingDirectory;
+            ArcanumSettings settings = settingsMonitor.CurrentValue;
+            string[] pathsToStage = staged.Paths;
+            AttachmentBuildDelegate buildAttachments = BuildAttachmentsAsync;
+            TurnAttachmentBuildResult attachments = await AbandonableBlockingWork
+                .RunAsync(
+                    () => buildAttachments(
+                        prompt,
+                        workingDirectory,
+                        pathsToStage,
+                        settings,
+                        cancellationToken),
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+            foreach (string line in attachments.StatusLines)
+            {
+                state.Log.Append(SessionLogEntryKind.Status, line);
+            }
+
+            List<Guid>? attachmentReferences = staged.References.Length == 0
+                ? null
+                : staged.References.ToList();
+
+            state.Log.Append(SessionLogEntryKind.User, attachments.Prompt);
+            SessionLogEntry assistantLine = state.Log.Append(
+                SessionLogEntryKind.Assistant,
+                string.Empty,
+                streaming: true);
+            assistantEntry = assistantLine;
+            await uiUpdates.WriteAsync(
+                    new CommandCenterUiUpdate(CommandCenterUiUpdateKind.RefreshAll),
+                    cancellationToken)
+                .ConfigureAwait(false);
+
             string? model = state.Model ?? settingsMonitor.CurrentValue.DefaultModel;
 
             PingRequest ping = new(
@@ -114,8 +141,13 @@ internal sealed class CommandCenterChatRunner(
                 ScryingFoci: attachments.ScryingFoci?.ToList(),
                 AttachmentReferences: attachmentReferences);
 
-            await foreach (IntelligenceEvent evt in apiClient
-                               .AskStreamAsync(ping, cancellationToken)
+            // The coalescer holds back a chunk that arrives inside its flush interval; wrapping the stream
+            // is what flushes that chunk when the model goes quiet instead of leaving it off the screen
+            // until the next event.
+            await foreach (IntelligenceEvent evt in coalescer
+                               .WithTrailingFlushAsync(
+                                   apiClient.AskStreamAsync(ping, cancellationToken),
+                                   cancellationToken)
                                .ConfigureAwait(false))
             {
                 cancellationToken.ThrowIfCancellationRequested();
@@ -130,13 +162,13 @@ internal sealed class CommandCenterChatRunner(
                                 cancellationToken)
                             .ConfigureAwait(false);
                         reasoningEntry ??= state.Log.InsertBefore(
-                            assistantEntry,
+                            assistantLine,
                             SessionLogEntryKind.Reasoning,
                             string.Empty,
                             streaming: true);
                         reasoning.Append(reasoningSegment.Text);
                         await coalescer
-                            .NoteTokenAsync(reasoningSegment.Text, cancellationToken)
+                            .NoteTokenAsync(cancellationToken)
                             .ConfigureAwait(false);
                         if (stoppedThinking)
                         {
@@ -157,7 +189,7 @@ internal sealed class CommandCenterChatRunner(
 
                         _ = await StopThinkingAsync(state, uiUpdates, cancellationToken).ConfigureAwait(false);
                         assistant.Append(chunk);
-                        await coalescer.NoteTokenAsync(chunk, cancellationToken).ConfigureAwait(false);
+                        await coalescer.NoteTokenAsync(cancellationToken).ConfigureAwait(false);
                         break;
 
                     case IntelligenceEventType.Context when evt.ContextBreakdown is { } breakdown:
@@ -231,7 +263,7 @@ internal sealed class CommandCenterChatRunner(
                     case IntelligenceEventType.WardResolved:
                         await coalescer.FlushBeforeBlockAsync(cancellationToken).ConfigureAwait(false);
                         _ = state.Incantations.AppendWardNote(
-                            NormalizeToolName(evt.WardToolName ?? evt.Message),
+                            NormalizeToolName(evt.ToolName ?? evt.Message),
                             ResolvedWardNote(evt),
                             evt.WardId);
                         await uiUpdates.WriteAsync(
@@ -247,7 +279,6 @@ internal sealed class CommandCenterChatRunner(
                         await coalescer.FlushBeforeBlockAsync(cancellationToken).ConfigureAwait(false);
 
                         state.Log.Append(
-
                             SessionLogEntryKind.Status,
 
                             $"[Live] Refreshed {refresh.LogicalKey} v{refresh.Version} "
@@ -259,7 +290,6 @@ internal sealed class CommandCenterChatRunner(
                         if (state.SessionId is { } refreshedSessionId)
 
                         {
-
                             Result<SessionAttachmentDto[]> current = await apiClient
 
                                 .GetSessionAttachmentsAsync(refreshedSessionId, cancellationToken)
@@ -269,19 +299,14 @@ internal sealed class CommandCenterChatRunner(
                             if (current.IsSuccess)
 
                             {
-
                                 _ = CommandCenterAttachmentDriftMonitor.ApplyBackendSnapshot(
-
                                     state,
 
                                     current.Value ?? []);
-
                             }
-
                         }
 
                         await uiUpdates.WriteAsync(
-
                                 new CommandCenterUiUpdate(CommandCenterUiUpdateKind.RefreshLog),
 
                                 cancellationToken)
@@ -340,11 +365,25 @@ internal sealed class CommandCenterChatRunner(
                 }
             }
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             cancelled = true;
             _ = humanPromptCoordinator.TryCloseActive(HumanPromptCloseReason.Cancelled);
-            await coalescer.FlushCancelledAsync(CancellationToken.None).ConfigureAwait(false);
+            await coalescer.FlushCancelledAsync().ConfigureAwait(false);
+        }
+        catch (OperationCanceledException ex)
+        {
+            // Not the operator: some component gave up on its own (a transport timeout surfaces as a
+            // cancellation). That is a failure to report, not a Ctrl+C to acknowledge.
+            logger.LogError(ex, "Command Center chat turn timed out.");
+            sawError = true;
+            _ = humanPromptCoordinator.TryCloseActive(
+                HumanPromptCloseReason.Expired,
+                "Turn timed out — human prompt closed.");
+            await coalescer.FlushBeforeBlockAsync(CancellationToken.None).ConfigureAwait(false);
+            state.Log.Append(
+                SessionLogEntryKind.Error,
+                $"{ArcanumApiClient.StreamTimeoutMessage} {ArcanumApiClient.StreamDoctorHint}");
         }
         catch (Exception ex)
         {
@@ -372,7 +411,17 @@ internal sealed class CommandCenterChatRunner(
                     : finalText + "\n… [cancelled]";
             }
 
-            state.Log.CompleteStreaming(assistantEntry, finalText);
+            if (assistantEntry is not null)
+            {
+                state.Log.CompleteStreaming(assistantEntry, finalText);
+            }
+            else if (cancelled)
+            {
+                // Cancelled while the attachments were still being built: nothing was sent, and the
+                // composer was already cleared, so say what happened rather than leave a blank turn.
+                state.Log.Append(SessionLogEntryKind.Status, "Cancelled before the message was sent.");
+            }
+
             if (reasoningEntry is not null)
             {
                 state.Log.CompleteStreaming(reasoningEntry, reasoning.Snapshot());
@@ -385,15 +434,7 @@ internal sealed class CommandCenterChatRunner(
 
             if (sawResult && !cancelled && !sawError)
             {
-                foreach (string path in stagedPathSnapshot)
-                {
-                    _ = state.StagedAttachmentPaths.Remove(path);
-                }
-
-                foreach (Guid id in stagedRefSnapshot)
-                {
-                    _ = state.StagedAttachmentReferences.Remove(id);
-                }
+                state.ClearStaged(staged);
             }
 
             try
@@ -417,12 +458,12 @@ internal sealed class CommandCenterChatRunner(
         CancellationToken cancellationToken)
     {
         string wardId = evt.WardId ?? string.Empty;
-        string toolName = NormalizeToolName(evt.WardToolName ?? evt.Message);
-        string argsPreview = FormatWardArgumentsPreview(evt.WardArguments);
+        string toolName = NormalizeToolName(evt.ToolName ?? evt.Message);
+        string argsPreview = FormatWardArgumentsPreview(evt.Arguments);
 
         _ = state.Incantations.AppendWardNote(
             toolName,
-            InformationalWardNote(evt.WardOrigin, toolName, argsPreview),
+            InformationalWardNote(evt.Origin, toolName, argsPreview),
             wardId);
 
         await uiUpdates.WriteAsync(
@@ -501,11 +542,9 @@ internal sealed class CommandCenterChatRunner(
     private static string ShortHash(string? value)
 
     {
-
         string hash = value?.Trim() ?? string.Empty;
 
         return hash.Length <= 8 ? hash : hash[..8];
-
     }
 
     private static void IngestToolCall(CommandCenterState state, IntelligenceEvent evt)
@@ -569,9 +608,9 @@ internal sealed class CommandCenterChatRunner(
 
     private static string ResolvedWardNote(IntelligenceEvent evt)
     {
-        string toolName = NormalizeToolName(evt.WardToolName ?? evt.Message);
-        string outcome = evt.WardAllowed == true ? "allowed" : "denied";
-        string headline = evt.WardOrigin switch
+        string toolName = NormalizeToolName(evt.ToolName ?? evt.Message);
+        string outcome = evt.Allowed == true ? "allowed" : "denied";
+        string headline = evt.Origin switch
         {
             WardResolutionOrigin.Ungated => $"Ward record resolved (ungated, {outcome}): {toolName}",
             WardResolutionOrigin.AutoApproved => $"Ward record resolved (host allowed): {toolName}",
@@ -581,9 +620,9 @@ internal sealed class CommandCenterChatRunner(
             _ => $"Ward record resolved ({outcome}): {toolName}",
         };
 
-        return string.IsNullOrWhiteSpace(evt.WardReason)
+        return string.IsNullOrWhiteSpace(evt.Reason)
             ? headline
-            : $"{headline} ({evt.WardReason})";
+            : $"{headline} ({evt.Reason})";
     }
 
     internal static string FormatWardArgumentsPreview(JsonElement? arguments, int maxChars = 480)

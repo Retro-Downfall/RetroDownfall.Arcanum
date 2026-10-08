@@ -11,7 +11,6 @@ namespace RetroDownfall.Arcanum.Tests.Security;
 [Collection("ProcessEnvironment")]
 public sealed class HostProcessToolPolicyTests
 {
-
     [Fact]
     public void IsHostProcessTool_RecognizesExecuteCommandAndRunSpellScript()
     {
@@ -77,6 +76,20 @@ public sealed class HostProcessToolPolicyTests
     }
 
     [Fact]
+    public void AreAllowed_is_false_when_no_startup_decision_is_bound_even_in_development_with_the_flag()
+    {
+        using HostProcessToolsEscapeHatchScope scope = new();
+
+        // The scope arms Development plus the escape-hatch variable; only the missing gate decision
+        // can be what refuses here.
+        HostProcessToolPolicy.SetStartupDecisionForTests(null);
+
+        Assert.False(HostProcessToolPolicy.AreAllowed(ArcanumEdition.Development));
+
+        Assert.False(HostProcessToolPolicy.Resolve(ArcanumEdition.Development).Allowed);
+    }
+
+    [Fact]
     public void AreAllowed_DevelopmentWithEnv_AllowedAndHealthDegraded()
     {
         HostProcessToolsEscapeHatchScope.Gate.Wait();
@@ -89,6 +102,8 @@ public sealed class HostProcessToolPolicyTests
             {
                 SysEnv.SetEnvironmentVariable(HostProcessToolPolicy.AllowHostProcessToolsEnvVar, "1");
 
+                HostProcessToolsEscapeHatchScope.BindPermittingDecision();
+
                 Assert.True(HostProcessToolPolicy.AreAllowed(ArcanumEdition.Development));
 
                 HostProcessToolPolicyStatus status = HostProcessToolPolicy.Resolve(ArcanumEdition.Development);
@@ -99,6 +114,8 @@ public sealed class HostProcessToolPolicyTests
             }
             finally
             {
+                HostProcessToolPolicy.SetStartupDecisionForTests(null);
+
                 SysEnv.SetEnvironmentVariable(HostProcessToolPolicy.AllowHostProcessToolsEnvVar, previousAllow);
             }
         }
@@ -292,6 +309,8 @@ public sealed class HostProcessToolPolicyTests
             {
                 SysEnv.SetEnvironmentVariable(HostProcessToolPolicy.AllowHostProcessToolsEnvVar, "1");
 
+                HostProcessToolsEscapeHatchScope.BindPermittingDecision();
+
                 HostProcessToolPolicyStatus status = HostProcessToolPolicy.Resolve(ArcanumEdition.Development);
 
                 Assert.True(status.Allowed);
@@ -300,6 +319,8 @@ public sealed class HostProcessToolPolicyTests
             }
             finally
             {
+                HostProcessToolPolicy.SetStartupDecisionForTests(null);
+
                 SysEnv.SetEnvironmentVariable(HostProcessToolPolicy.AllowHostProcessToolsEnvVar, previousAllow);
             }
         }
@@ -338,5 +359,4 @@ public sealed class HostProcessToolPolicyTests
             _ = HostProcessToolsEscapeHatchScope.Gate.Release();
         }
     }
-
 }

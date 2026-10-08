@@ -3,6 +3,7 @@ using System.Globalization;
 
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 
 using RetroDownfall.Arcanum.Core.Annals;
 using RetroDownfall.Arcanum.Core.Configuration;
@@ -34,7 +35,6 @@ namespace RetroDownfall.Arcanum.Tests.Fixtures;
 /// </remarks>
 public sealed class SagaStoreHarness : IAsyncDisposable
 {
-
     /// <summary>
     /// Matches <see cref="ArcanumSettingClamps.EmbeddingsDimensions"/>'s 64-dimension floor — the
     /// smallest configured value that is not itself clamped up, so <see cref="Store"/>'s
@@ -53,9 +53,9 @@ public sealed class SagaStoreHarness : IAsyncDisposable
         ArcanumDbContext db,
         SagaMemoryStore store,
         WeaveIndexAvailability vectorAccelerator,
-        IAnnalsStore annals)
+        IAnnalsStore annals,
+        IOptionsMonitor<ArcanumSettings> options)
     {
-
         _fixture = fixture;
 
         _db = db;
@@ -66,6 +66,7 @@ public sealed class SagaStoreHarness : IAsyncDisposable
 
         Annals = annals;
 
+        Options = options;
     }
 
     /// <summary>The open connection into the temporary Grimoire.</summary>
@@ -98,6 +99,12 @@ public sealed class SagaStoreHarness : IAsyncDisposable
     public IAnnalsStore Annals { get; }
 
     /// <summary>
+    /// The settings <see cref="Store"/> was built with, so a service that validates against the same
+    /// configured embedding width as the store can be handed the one monitor.
+    /// </summary>
+    internal IOptionsMonitor<ArcanumSettings> Options { get; }
+
+    /// <summary>
     /// Builds a fresh temporary Grimoire with <c>Arcanum:Features:Annals</c> off, skipping the calling
     /// test when SQLCipher is unavailable.
     /// </summary>
@@ -120,7 +127,6 @@ public sealed class SagaStoreHarness : IAsyncDisposable
         IMemoryErasureKeyProvider? erasureKeys = null,
         Func<ArcanumDbContext, ICovenantLabeledArtifactTransactionGuard>? labeledArtifactGuard = null)
     {
-
         // Must run before the fixture is constructed: GrimoireFixture's constructor silently no-ops
         // when SQLCipher is unavailable rather than throwing, so CopyDatabase() below would fail with a
         // FileNotFoundException instead of a clean skip if this check came after it.
@@ -132,26 +138,27 @@ public sealed class SagaStoreHarness : IAsyncDisposable
 
         WeaveIndexAvailability vectorAccelerator = new();
 
+        TestOptionsMonitor<ArcanumSettings> options = new(
+            new ArcanumSettings
+            {
+                Features = new FeatureSettings { Annals = annalsEnabled },
+                Integrations = new IntegrationSettings
+                {
+                    Embeddings = new EmbeddingIntegrationSettings
+                    {
+                        Dimensions = Dimensions,
+                    },
+                },
+            });
+
         SagaMemoryStore store = new(
             db,
             vectorAccelerator,
-            new TestOptionsMonitor<ArcanumSettings>(
-                new ArcanumSettings
-                {
-                    Features = new FeatureSettings { Annals = annalsEnabled },
-                    Integrations = new IntegrationSettings
-                    {
-                        Embeddings = new EmbeddingIntegrationSettings
-                        {
-                            Dimensions = Dimensions,
-                        },
-                    },
-                }),
+            options,
             erasureKeys ?? MemoryErasureTestKeys.Isolated(),
             labeledArtifactGuard?.Invoke(db));
 
-        return Task.FromResult(new SagaStoreHarness(fixture, db, store, vectorAccelerator, new AnnalsStore(db)));
-
+        return Task.FromResult(new SagaStoreHarness(fixture, db, store, vectorAccelerator, new AnnalsStore(db), options));
     }
 
     /// <summary>
@@ -198,26 +205,21 @@ public sealed class SagaStoreHarness : IAsyncDisposable
     /// <summary>A deterministic <see cref="Dimensions"/>-length vector, distinct per <paramref name="seed"/>.</summary>
     public float[] Embedding(int seed = 0)
     {
-
         Random random = new(seed);
 
         float[] vector = new float[Dimensions];
 
         for (int i = 0; i < vector.Length; i++)
         {
-
             vector[i] = (float)(random.NextDouble() * 2.0 - 1.0);
-
         }
 
         return vector;
-
     }
 
     /// <summary>Counts rows in one table matching a caller-supplied predicate.</summary>
     public async Task<int> CountAsync(string table, string predicate)
     {
-
         ArgumentException.ThrowIfNullOrEmpty(table);
 
         ArgumentException.ThrowIfNullOrEmpty(predicate);
@@ -229,13 +231,11 @@ public sealed class SagaStoreHarness : IAsyncDisposable
         object? result = await command.ExecuteScalarAsync().ConfigureAwait(false);
 
         return Convert.ToInt32(result, CultureInfo.InvariantCulture);
-
     }
 
     /// <summary>The raw <c>Embedding</c> BLOB stored for one memory, for before/after comparison.</summary>
     public async Task<byte[]> EmbeddingBytesAsync(string id)
     {
-
         ArgumentException.ThrowIfNullOrEmpty(id);
 
         await using DbCommand command = Connection.CreateCommand();
@@ -253,7 +253,6 @@ public sealed class SagaStoreHarness : IAsyncDisposable
         object? result = await command.ExecuteScalarAsync().ConfigureAwait(false);
 
         return (byte[])result!;
-
     }
 
     /// <summary>
@@ -264,7 +263,6 @@ public sealed class SagaStoreHarness : IAsyncDisposable
     /// </summary>
     public async Task LabelSensitiveAsync(Guid id)
     {
-
         SagaMemoryCurationRow row = (await Store.ReadCurationRowAsync(id.ToString(), CancellationToken.None)
             .ConfigureAwait(false))!;
 
@@ -287,11 +285,8 @@ public sealed class SagaStoreHarness : IAsyncDisposable
 
         if (receipt.IsFailure)
         {
-
             throw new InvalidOperationException(receipt.Error.Message);
-
         }
-
     }
 
     /// <summary>
@@ -301,7 +296,6 @@ public sealed class SagaStoreHarness : IAsyncDisposable
     /// </summary>
     public async Task<Guid> SessionBoundToNewCampaignAsync()
     {
-
         Guid campaignId = Guid.NewGuid();
 
         Guid sessionId = Guid.NewGuid();
@@ -360,7 +354,6 @@ public sealed class SagaStoreHarness : IAsyncDisposable
             ("$now", now)).ConfigureAwait(false);
 
         return sessionId;
-
     }
 
     /// <summary>
@@ -375,7 +368,6 @@ public sealed class SagaStoreHarness : IAsyncDisposable
     /// </remarks>
     public async Task<Guid> SessionWithUnresolvedBindingAsync()
     {
-
         Guid sessionId = Guid.NewGuid();
 
         string now = DateTimeOffset.UtcNow.ToString("o", CultureInfo.InvariantCulture);
@@ -389,7 +381,6 @@ public sealed class SagaStoreHarness : IAsyncDisposable
             ("$now", now)).ConfigureAwait(false);
 
         return sessionId;
-
     }
 
     /// <summary>
@@ -404,14 +395,12 @@ public sealed class SagaStoreHarness : IAsyncDisposable
 
     private async Task ExecuteAsync(string sql, params (string Name, object? Value)[] parameters)
     {
-
         await using DbCommand command = Connection.CreateCommand();
 
         command.CommandText = sql;
 
         foreach ((string name, object? value) in parameters)
         {
-
             DbParameter parameter = command.CreateParameter();
 
             parameter.ParameterName = name;
@@ -419,21 +408,16 @@ public sealed class SagaStoreHarness : IAsyncDisposable
             parameter.Value = value ?? DBNull.Value;
 
             command.Parameters.Add(parameter);
-
         }
 
         _ = await command.ExecuteNonQueryAsync().ConfigureAwait(false);
-
     }
 
     public async ValueTask DisposeAsync()
     {
-
         if (_disposed)
         {
-
             return;
-
         }
 
         _disposed = true;
@@ -442,7 +426,5 @@ public sealed class SagaStoreHarness : IAsyncDisposable
 
         // Deletes the one copy CreateAsync made, including its -wal/-shm/.kdf siblings.
         _fixture.Dispose();
-
     }
-
 }

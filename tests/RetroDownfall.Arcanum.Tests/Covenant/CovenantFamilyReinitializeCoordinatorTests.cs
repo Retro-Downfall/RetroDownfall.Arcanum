@@ -19,7 +19,6 @@ namespace RetroDownfall.Arcanum.Tests.Covenant;
 /// </remarks>
 public sealed class CovenantFamilyReinitializeCoordinatorTests
 {
-
     private static readonly Guid OperationId = Guid.Parse("66666666-6666-4666-8666-666666666666");
 
     private static CancellationToken Token => CancellationToken.None;
@@ -40,7 +39,6 @@ public sealed class CovenantFamilyReinitializeCoordinatorTests
     [Fact]
     public async Task A_clean_run_erases_every_protected_artifact_before_the_family_is_dropped()
     {
-
         CoordinatorHarness harness = new();
 
         Result<CovenantExclusiveLeaseDisposition> disposition = await harness.RunAsync(
@@ -70,13 +68,11 @@ public sealed class CovenantFamilyReinitializeCoordinatorTests
                 "reopen-writer",
             ],
             harness.Steps);
-
     }
 
     [Fact]
     public async Task Both_kernels_borrow_the_coordinators_own_lease_and_never_acquire_one()
     {
-
         CoordinatorHarness harness = new();
 
         _ = await harness.RunAsync(CovenantFamilyReinitializePhase.Planned);
@@ -92,13 +88,11 @@ public sealed class CovenantFamilyReinitializeCoordinatorTests
         Assert.Same(harness.Artifacts.LastAuthority, harness.ManagedFiles.LastAuthority);
 
         Assert.Equal(CovenantLeaseCoverage.Installation, harness.Artifacts.LastAuthority.Snapshot.Coverage);
-
     }
 
     [Fact]
     public async Task A_manual_file_blocker_keeps_admission_closed_and_leaves_the_family_intact()
     {
-
         CoordinatorHarness harness = new();
 
         harness.ManagedFiles.Blocker = CovenantErasureBlocker.ManualOwnershipMismatch;
@@ -111,13 +105,11 @@ public sealed class CovenantFamilyReinitializeCoordinatorTests
         Assert.Equal(CovenantExclusiveLeaseDisposition.KeepClosed, disposition.Value);
 
         Assert.DoesNotContain("drop-family", harness.Steps);
-
     }
 
     [Fact]
     public async Task A_failed_publication_keeps_admission_closed_after_a_durable_mutation()
     {
-
         CoordinatorHarness harness = new();
 
         harness.Transition.FailingStep = "publish";
@@ -132,13 +124,38 @@ public sealed class CovenantFamilyReinitializeCoordinatorTests
         Assert.Contains("drop-family", harness.Steps);
 
         Assert.DoesNotContain("reopen-writer", harness.Steps);
+    }
 
+    /// <summary>
+    /// Publication is the durable commit point: the new generation is live. A caller who cancels at that
+    /// instant must not leave the disclosure writer closed and admission shut behind a published
+    /// generation, so everything after publication runs to completion on its own token.
+    /// </summary>
+    [Fact]
+    public async Task A_cancellation_after_publication_still_reopens_the_writer_and_admission()
+    {
+        CoordinatorHarness harness = new();
+
+        using CancellationTokenSource caller = new();
+
+        harness.Transition.OnPublish = caller.Cancel;
+
+        Result<CovenantExclusiveLeaseDisposition> disposition = await harness.RunAsync(
+            CovenantFamilyReinitializePhase.Planned,
+            cancellationToken: caller.Token);
+
+        Assert.True(caller.IsCancellationRequested);
+
+        Assert.True(disposition.IsSuccess);
+
+        Assert.Equal(CovenantExclusiveLeaseDisposition.CommitAndReopen, disposition.Value);
+
+        Assert.Equal(["publish", "reopen-writer"], harness.Steps.TakeLast(2));
     }
 
     [Fact]
     public async Task A_failed_step_before_any_durable_mutation_still_keeps_admission_closed()
     {
-
         CoordinatorHarness harness = new();
 
         harness.Transition.FailingStep = "close-handles";
@@ -151,7 +168,6 @@ public sealed class CovenantFamilyReinitializeCoordinatorTests
         Assert.Equal(CovenantExclusiveLeaseDisposition.KeepClosed, disposition.Value);
 
         Assert.DoesNotContain("drop-family", harness.Steps);
-
     }
 
     [Theory]
@@ -163,7 +179,6 @@ public sealed class CovenantFamilyReinitializeCoordinatorTests
         CovenantFamilyReinitializePhase resumeFrom,
         string skippedStep)
     {
-
         CoordinatorHarness harness = new();
 
         // A phase already recorded is a step already committed, and every one of these effects is one
@@ -175,13 +190,11 @@ public sealed class CovenantFamilyReinitializeCoordinatorTests
         Assert.True(disposition.IsSuccess);
 
         Assert.DoesNotContain(skippedStep, harness.Steps);
-
     }
 
     [Fact]
     public async Task A_checkpoint_past_installation_without_its_generation_keeps_admission_closed()
     {
-
         CoordinatorHarness harness = new();
 
         await harness.CloseAndAdoptAsync();
@@ -196,12 +209,10 @@ public sealed class CovenantFamilyReinitializeCoordinatorTests
         Assert.Equal(CovenantExclusiveLeaseDisposition.KeepClosed, disposition.Value);
 
         Assert.DoesNotContain("publish", harness.Steps);
-
     }
 
     private sealed class CoordinatorHarness
     {
-
         private readonly CovenantOperationGate _gate = CovenantOperationGateFixture.CreateGate();
 
         private readonly FakeLongRunningOperationStore _store = new(TimeProvider.System);
@@ -220,13 +231,11 @@ public sealed class CovenantFamilyReinitializeCoordinatorTests
 
         internal CoordinatorHarness()
         {
-
             Artifacts = new RecordingErasureKernel(Steps);
 
             ManagedFiles = new RecordingManagedFileKernel(Steps);
 
             Transition = new RecordingTransition(Steps);
-
         }
 
         /// <summary>
@@ -235,21 +244,19 @@ public sealed class CovenantFamilyReinitializeCoordinatorTests
         /// </summary>
         internal async Task CloseAndAdoptAsync()
         {
-
             CovenantExclusiveLease lease = (await _gate.AcquireExclusiveAsync(Owner, Token)).Value;
 
             _ = await lease.CompleteAsync(CovenantExclusiveLeaseDisposition.KeepClosed, Token);
 
             await lease.DisposeAsync();
-
         }
 
         internal async Task<Result<CovenantExclusiveLeaseDisposition>> RunAsync(
             CovenantFamilyReinitializePhase phase,
             Guid? newDatasetGeneration = null,
-            bool useDefaultGeneration = true)
+            bool useDefaultGeneration = true,
+            CancellationToken? cancellationToken = null)
         {
-
             RecordingOperationCoordinator operations = new();
 
             CovenantFamilyReinitializeCoordinator coordinator = new(
@@ -269,8 +276,7 @@ public sealed class CovenantFamilyReinitializeCoordinatorTests
                     ? Checkpoint(phase)
                     : Checkpoint(phase) with { NewDatasetGeneration = newDatasetGeneration },
                 "owner",
-                Token);
-
+                cancellationToken ?? Token);
         }
 
         private static CovenantExclusiveRecoveryOwner Owner =>
@@ -332,13 +338,14 @@ public sealed class CovenantFamilyReinitializeCoordinatorTests
                 CompactedFileIdentityDigest: null,
                 RetryCount: 0,
                 LastDurableErrorCode: null);
-
     }
 
     private sealed class RecordingTransition(List<string> steps) : ICovenantFamilyReinitializeTransition
     {
-
         internal string? FailingStep { get; set; }
+
+        /// <summary>Runs once publication has been recorded, as a caller's Ctrl+C would land.</summary>
+        internal Action? OnPublish { get; set; }
 
         public Task<Result> CloseHandlesAsync(CancellationToken cancellationToken) => Step("close-handles");
 
@@ -346,24 +353,20 @@ public sealed class CovenantFamilyReinitializeCoordinatorTests
 
         public async Task<Result<CovenantDigest>> CompactAsync(CancellationToken cancellationToken)
         {
-
             Result stepped = await Step("compact");
 
             return stepped.IsFailure
                 ? Result<CovenantDigest>.Failure(stepped.Error)
                 : Result<CovenantDigest>.Success(CovenantOperationGateFixture.Digest(8));
-
         }
 
         public async Task<Result<Guid>> InstallTiersAsync(CancellationToken cancellationToken)
         {
-
             Result stepped = await Step("install-tiers");
 
             return stepped.IsFailure
                 ? Result<Guid>.Failure(stepped.Error)
                 : Result<Guid>.Success(Guid.Parse("88888888-8888-4888-8888-888888888888"));
-
         }
 
         public Task<Result> TruncateAndVerifySidecarsAsync(CancellationToken cancellationToken) =>
@@ -371,31 +374,39 @@ public sealed class CovenantFamilyReinitializeCoordinatorTests
 
         public Task<Result> VerifyReopenAsync(CancellationToken cancellationToken) => Step("verify-reopen");
 
-        public Task<Result> PublishCommittedAsync(
+        public async Task<Result> PublishCommittedAsync(
             ICovenantExclusiveOperationLease lease,
             Guid newDatasetGeneration,
-            CancellationToken cancellationToken) => Step("publish");
+            CancellationToken cancellationToken)
+        {
+            Result published = await Step("publish");
 
-        public Task<Result> ReopenDisclosureWriterAsync(CancellationToken cancellationToken) =>
-            Step("reopen-writer");
+            OnPublish?.Invoke();
+
+            return published;
+        }
+
+        public Task<Result> ReopenDisclosureWriterAsync(CancellationToken cancellationToken)
+        {
+            // A real writer reopen honours the token it is handed, so a caller token here would abandon it.
+            cancellationToken.ThrowIfCancellationRequested();
+
+            return Step("reopen-writer");
+        }
 
         private Task<Result> Step(string name)
         {
-
             steps.Add(name);
 
             return Task.FromResult(
                 string.Equals(FailingStep, name, StringComparison.Ordinal)
                     ? Result.Failure(new Error(ErrorCodes.Covenant.MaintenanceFailed, name))
                     : Result.Success());
-
         }
-
     }
 
     private sealed class RecordingErasureKernel(List<string> steps) : ICovenantProtectedArtifactErasureKernel
     {
-
         internal int Calls { get; private set; }
 
         internal CovenantArtifactErasureAuthority? LastAuthority { get; private set; }
@@ -407,7 +418,6 @@ public sealed class CovenantFamilyReinitializeCoordinatorTests
             CovenantArtifactErasureAuthority authority,
             CancellationToken cancellationToken = default)
         {
-
             Calls++;
 
             LastAuthority = authority;
@@ -417,14 +427,11 @@ public sealed class CovenantFamilyReinitializeCoordinatorTests
             return ValueTask.FromResult(
                 Result<CovenantArtifactErasureProgress>.Success(
                     new CovenantArtifactErasureProgress(1, 1, 0, Blocker)));
-
         }
-
     }
 
     private sealed class RecordingManagedFileKernel(List<string> steps) : ICovenantManagedFileErasureKernel
     {
-
         internal int Calls { get; private set; }
 
         internal CovenantArtifactErasureAuthority? LastAuthority { get; private set; }
@@ -436,7 +443,6 @@ public sealed class CovenantFamilyReinitializeCoordinatorTests
             CovenantArtifactErasureAuthority authority,
             CancellationToken cancellationToken = default)
         {
-
             Calls++;
 
             LastAuthority = authority;
@@ -446,14 +452,11 @@ public sealed class CovenantFamilyReinitializeCoordinatorTests
             return ValueTask.FromResult(
                 Result<CovenantArtifactErasureProgress>.Success(
                     new CovenantArtifactErasureProgress(1, 1, 0, Blocker)));
-
         }
-
     }
 
     private sealed class StubErasureSource : ICovenantReinitializeErasureSource
     {
-
         public Task<Result<CovenantReinitializeErasureWork>> EnumerateAsync(
             Guid operationId,
             Guid datasetGeneration,
@@ -475,12 +478,10 @@ public sealed class CovenantFamilyReinitializeCoordinatorTests
                                 Guid.NewGuid(),
                                 1),
                         ])));
-
     }
 
     private sealed class RecordingOperationCoordinator : ILongRunningOperationCoordinator
     {
-
         public Task<LongRunningOperationLeaseResult> StartAsync(
             LongRunningOperationCreateRequest request,
             string ownerId,
@@ -528,7 +529,5 @@ public sealed class CovenantFamilyReinitializeCoordinatorTests
             long expectedRevision,
             string errorCode,
             CancellationToken cancellationToken) => Task.FromResult(true);
-
     }
-
 }

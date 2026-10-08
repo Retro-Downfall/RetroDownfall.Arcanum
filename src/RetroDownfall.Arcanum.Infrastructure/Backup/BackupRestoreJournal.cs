@@ -25,6 +25,13 @@ namespace RetroDownfall.Arcanum.Infrastructure.Backup;
 /// replaces that database, so a durable record inside it would vanish exactly when it matters. The
 /// journal is a plain owner-only file beside the staging root it describes.
 /// </remarks>
+/// <param name="SecretReinstatementFailure">
+/// Set only on a journal a failed restore retained because its rollback could not reinstate every
+/// local secret it had overwritten: the message naming each one (never a value). A verified reversal
+/// leaves the same tree an interruption before the first rename does, so the filesystem cannot tell
+/// the two apart, and this is what keeps the startup sweep from reading the retained staging as a
+/// clean rollback and deleting it. Null in every journal written before the field existed.
+/// </param>
 internal sealed record BackupRestoreJournalRecord(
     int Version,
     Guid OperationId,
@@ -36,7 +43,8 @@ internal sealed record BackupRestoreJournalRecord(
     string? SafetyBackupPath,
     string ArchivePath,
     ulong StagingVolumeId,
-    ulong StagingFileId);
+    ulong StagingFileId,
+    string? SecretReinstatementFailure = null);
 
 /// <summary>What kind of filesystem object one journalled topology slot names.</summary>
 /// <remarks>
@@ -46,11 +54,9 @@ internal sealed record BackupRestoreJournalRecord(
 /// </remarks>
 internal enum BackupRestoreNodeKind : byte
 {
-
     Directory = 1,
 
     RegularFile = 2,
-
 }
 
 /// <summary>Whether a journalled node existed when the phase was frozen.</summary>
@@ -61,11 +67,9 @@ internal enum BackupRestoreNodeKind : byte
 /// </remarks>
 internal enum BackupRestoreNodePresence : byte
 {
-
     Absent = 1,
 
     Present = 2,
-
 }
 
 /// <summary>Whether a profile's restore anchor still governs a live operation.</summary>
@@ -76,11 +80,9 @@ internal enum BackupRestoreNodePresence : byte
 /// </remarks>
 internal enum BackupRestoreJournalAnchorState : byte
 {
-
     Active = 1,
 
     Closed = 2,
-
 }
 
 /// <summary>
@@ -127,7 +129,6 @@ internal sealed record BackupRestoreMarkerCleanupCheckpointV1(
     ulong IntentCount,
     CovenantDigest IntentVectorDigest)
 {
-
     /// <summary>Compares the children element by element.</summary>
     /// <remarks>
     /// Spelled out because <see cref="ImmutableArray{T}"/> compares by underlying-array reference. Left
@@ -150,7 +151,6 @@ internal sealed record BackupRestoreMarkerCleanupCheckpointV1(
     /// <inheritdoc />
     public override int GetHashCode()
     {
-
         HashCode hash = new();
 
         hash.Add(Version);
@@ -167,15 +167,11 @@ internal sealed record BackupRestoreMarkerCleanupCheckpointV1(
 
         foreach (Guid intentId in OrderedIntentIds.IsDefault ? [] : OrderedIntentIds)
         {
-
             hash.Add(intentId);
-
         }
 
         return hash.ToHashCode();
-
     }
-
 }
 
 /// <summary>
@@ -206,31 +202,25 @@ internal sealed record BackupRestoreJournalPayloadV2(
     BackupRestoreDurableNodeIdentityV1? SafetyBackup,
     BackupRestoreMarkerCleanupCheckpointV1? MarkerCleanup)
 {
-
     /// <summary>
     /// The complete exclusive owner, or a typed refusal when the recorded parts do not form one.
     /// </summary>
     internal Result<CovenantExclusiveRecoveryOwner> RecoveryOwner()
     {
-
         if (OwnerOperationId == Guid.Empty
             || OwnerOperation is not CovenantExclusiveOperation.BackupRestore
             || !OwnerEffectDigest.IsValid)
         {
-
             return new Error(
                 ErrorCodes.Covenant.ForbiddenAuthority,
                 "This restore journal does not name a complete backup-restore recovery owner.");
-
         }
 
         return new CovenantExclusiveRecoveryOwner(
             OwnerOperationId,
             OwnerOperation,
             OwnerEffectDigest);
-
     }
-
 }
 
 /// <summary>
@@ -277,7 +267,6 @@ internal sealed record BackupRestoreJournalAnchorV1(
 
 internal static class BackupRestoreJournal
 {
-
     internal const int CurrentVersion = 1;
 
     internal const string FileName = "restore-journal.json";
@@ -294,7 +283,6 @@ internal static class BackupRestoreJournal
         string stagingRoot,
         BackupRestoreJournalRecord record)
     {
-
         ArgumentException.ThrowIfNullOrWhiteSpace(stagingRoot);
 
         ArgumentNullException.ThrowIfNull(record);
@@ -309,11 +297,9 @@ internal static class BackupRestoreJournal
 
         using (FileStream stream = SecureFilePermissions.CreateOwnerOnlyTempFile(temporaryPath))
         {
-
             stream.Write(payload);
 
             stream.Flush(flushToDisk: true);
-
         }
 
         // The contents are forced above and the rename is forced here. Without the second half the
@@ -322,7 +308,6 @@ internal static class BackupRestoreJournal
         BackupRestoreDurablePublication.Publish(temporaryPath, path);
 
         return record;
-
     }
 
     public static BackupRestoreJournalRecord Advance(
@@ -333,19 +318,15 @@ internal static class BackupRestoreJournal
 
     public static BackupRestoreJournalRecord? TryRead(string stagingRoot)
     {
-
         ArgumentException.ThrowIfNullOrWhiteSpace(stagingRoot);
 
         string path = Path.Combine(Path.GetFullPath(stagingRoot), FileName);
 
         try
         {
-
             if (!File.Exists(path))
             {
-
                 return null;
-
             }
 
             BackupRestoreJournalRecord? record = JsonSerializer.Deserialize(
@@ -355,7 +336,6 @@ internal static class BackupRestoreJournal
             return record is null || record.Version != CurrentVersion
                 ? null
                 : record;
-
         }
         catch (Exception exception) when (
             exception is JsonException
@@ -363,11 +343,8 @@ internal static class BackupRestoreJournal
                 or IOException
                 or UnauthorizedAccessException)
         {
-
             return null;
-
         }
-
     }
 
     /// <summary>
@@ -378,7 +355,6 @@ internal static class BackupRestoreJournal
         string guardedRoot,
         BackupRestoreJournalRecord record)
     {
-
         ArgumentException.ThrowIfNullOrWhiteSpace(stagingRoot);
 
         ArgumentException.ThrowIfNullOrWhiteSpace(guardedRoot);
@@ -409,10 +385,8 @@ internal static class BackupRestoreJournal
             || archive.IsFailure
             || safety is { IsFailure: true })
         {
-
             return InvalidLegacyJournal(
                 "The legacy restore journal contains a noncanonical path.");
-
         }
 
         StringComparison comparison = OperatingSystem.IsWindows()
@@ -436,31 +410,24 @@ internal static class BackupRestoreJournal
                 Path.Combine(staging.Value, DisplacedDirectoryName),
                 comparison))
         {
-
             return InvalidLegacyJournal(
                 "The legacy restore journal has an invalid recovery identity or semantic shape.");
-
         }
 
         return Result.Success();
-
     }
 
     private static Result<string> ExactCanonicalPath(string path)
     {
-
         if (string.IsNullOrWhiteSpace(path) || !Path.IsPathFullyQualified(path))
         {
-
             return Result<string>.Failure(new Error(
                 ErrorCodes.Data.ControlPathUnavailable,
                 "A legacy restore journal path is not fully qualified."));
-
         }
 
         try
         {
-
             string trimmed = Path.TrimEndingDirectorySeparator(path);
 
             string canonical = Path.TrimEndingDirectorySeparator(
@@ -475,18 +442,14 @@ internal static class BackupRestoreJournal
                 : Result<string>.Failure(new Error(
                     ErrorCodes.Data.ControlPathUnavailable,
                     "A legacy restore journal path is not in exact canonical form."));
-
         }
         catch (Exception exception) when (
             exception is ArgumentException or NotSupportedException or PathTooLongException)
         {
-
             return Result<string>.Failure(new Error(
                 ErrorCodes.Data.ControlPathUnavailable,
                 "A legacy restore journal path could not be resolved safely."));
-
         }
-
     }
 
     private static Result InvalidLegacyJournal(string message) =>
@@ -499,22 +462,17 @@ internal static class BackupRestoreJournal
 
     public static void Delete(string stagingRoot)
     {
-
         string path = Path.Combine(Path.GetFullPath(stagingRoot), FileName);
 
         try
         {
-
             File.Delete(path);
-
         }
         catch (Exception exception) when (
             exception is IOException
                 or UnauthorizedAccessException)
         {
-
         }
-
     }
 
     /// <summary>
@@ -524,52 +482,40 @@ internal static class BackupRestoreJournal
     /// </summary>
     public static IReadOnlyList<string> Discover(string parent)
     {
-
         ArgumentException.ThrowIfNullOrWhiteSpace(parent);
 
         string fullParent = Path.GetFullPath(parent);
 
         if (!Directory.Exists(fullParent))
         {
-
             return [];
-
         }
 
         List<string> roots = [];
 
         try
         {
-
             foreach (string candidate in Directory.EnumerateDirectories(
                          fullParent,
                          StagingPrefix + "*",
                          SearchOption.TopDirectoryOnly))
             {
-
                 string full = Path.GetFullPath(candidate);
 
                 if (IsCanonicalStagingName(Path.GetFileName(full)) && Exists(full))
                 {
-
                     roots.Add(full);
-
                 }
-
             }
-
         }
         catch (Exception exception) when (
             exception is IOException
                 or UnauthorizedAccessException)
         {
-
             return [.. roots.Order(StringComparer.Ordinal)];
-
         }
 
         return [.. roots.Order(StringComparer.Ordinal)];
-
     }
 
     public static string CreateStagingName() =>
@@ -577,37 +523,26 @@ internal static class BackupRestoreJournal
 
     internal static bool IsCanonicalStagingName(string name)
     {
-
         if (!name.StartsWith(StagingPrefix, StringComparison.Ordinal))
         {
-
             return false;
-
         }
 
         string suffix = name[StagingPrefix.Length..];
 
         if (suffix.Length != 32)
         {
-
             return false;
-
         }
 
         foreach (char character in suffix)
         {
-
             if (character is not (>= '0' and <= '9') and not (>= 'a' and <= 'f'))
             {
-
                 return false;
-
             }
-
         }
 
         return true;
-
     }
-
 }

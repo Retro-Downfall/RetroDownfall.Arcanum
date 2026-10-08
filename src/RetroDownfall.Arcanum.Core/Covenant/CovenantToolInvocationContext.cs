@@ -24,7 +24,6 @@ namespace RetroDownfall.Arcanum.Core.Covenant;
 /// </remarks>
 public sealed class CovenantToolInvocationContext : IAsyncDisposable
 {
-
     private readonly Lock _gate = new();
 
     private readonly ICovenantMutationCollector _collector;
@@ -51,7 +50,6 @@ public sealed class CovenantToolInvocationContext : IAsyncDisposable
         CovenantRetirementPreflight? retirementPreflight,
         CancellationToken turnCancellation)
     {
-
         ArgumentNullException.ThrowIfNull(collector);
 
         ArgumentNullException.ThrowIfNull(producingAdmission);
@@ -64,53 +62,43 @@ public sealed class CovenantToolInvocationContext : IAsyncDisposable
 
         if (!CovenantToolNames.IsCovenantMutationTool(toolName))
         {
-
             throw new ArgumentException(
                 "A Covenant tool capability authorizes exactly one of the two Covenant mutation tools.",
                 nameof(toolName));
-
         }
 
         if (!nonce.IsValid)
         {
-
             throw new ArgumentException(
                 "A Covenant tool capability requires a minted capability nonce.",
                 nameof(nonce));
-
         }
 
         if (!campaign.IsCampaignBound)
         {
-
             // The Proposed lane is Campaign-only and retirement is Campaign-only, so a Global-only
             // turn has no scope an agent could ever write into.
             throw new ArgumentException(
                 "A Covenant tool capability requires a canonical Campaign binding.",
                 nameof(campaign));
-
         }
 
         if (producingAdmission.Plan.Digest != collector.BasePlanDigest)
         {
-
             throw new ArgumentException(
                 "A Covenant tool capability must bind the turn plan its admission was derived from.",
                 nameof(producingAdmission));
-
         }
 
         bool isRetirement = string.Equals(toolName, CovenantToolNames.RetireCovenant, StringComparison.Ordinal);
 
         if (isRetirement != (retirementPreflight is not null))
         {
-
             throw new ArgumentException(
                 isRetirement
                     ? "A retirement capability carries its resolved target preflight."
                     : "A proposal capability carries no retirement target.",
                 nameof(retirementPreflight));
-
         }
 
         _collector = collector;
@@ -140,7 +128,6 @@ public sealed class CovenantToolInvocationContext : IAsyncDisposable
         MutationId = Guid.CreateVersion7();
 
         _closing = CancellationTokenSource.CreateLinkedTokenSource(turnCancellation);
-
     }
 
     /// <summary>
@@ -185,18 +172,14 @@ public sealed class CovenantToolInvocationContext : IAsyncDisposable
     /// <summary>The turn's staging collector, reachable only while the capability is live.</summary>
     public Result<ICovenantMutationCollector> ResolveCollector(CovenantToolCapabilityNonce nonce)
     {
-
         lock (_gate)
         {
-
             Result usable = CheckUsable(nonce);
 
             return usable.IsFailure
                 ? Result<ICovenantMutationCollector>.Failure(usable.Error)
                 : Result<ICovenantMutationCollector>.Success(_collector);
-
         }
-
     }
 
     /// <summary>
@@ -214,7 +197,6 @@ public sealed class CovenantToolInvocationContext : IAsyncDisposable
         string normalizedKey,
         CancellationToken cancellationToken)
     {
-
         Result<IDisposable> lease = TryAcquireUse(nonce);
 
         if (lease.IsFailure)
@@ -231,10 +213,16 @@ public sealed class CovenantToolInvocationContext : IAsyncDisposable
             return Result<CovenantLaneHeadProbe>.Failure(usable.Error);
         }
 
-        return await _headProbe
-            .ProbeAsync(lane, normalizedKey, cancellationToken)
-            .ConfigureAwait(false);
+        // Linked with the capability's closing token: DisposeAsync cancels it and then waits for this
+        // use to drain, so a probe that only saw its caller's token would hold disposal (and the
+        // turn's teardown) for as long as that caller's token lives.
+        using CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(
+            cancellationToken,
+            _closing.Token);
 
+        return await _headProbe
+            .ProbeAsync(lane, normalizedKey, linked.Token)
+            .ConfigureAwait(false);
     }
 
     /// <summary>
@@ -253,7 +241,6 @@ public sealed class CovenantToolInvocationContext : IAsyncDisposable
         ImmutableArray<string> excludedKeys,
         CancellationToken cancellationToken)
     {
-
         Result<IDisposable> lease = TryAcquireUse(nonce);
 
         if (lease.IsFailure)
@@ -270,10 +257,16 @@ public sealed class CovenantToolInvocationContext : IAsyncDisposable
             return Result<CovenantSectionOccupancy>.Failure(usable.Error);
         }
 
-        return await _headProbe
-            .ProbeSectionAsync(lane, excludedKeys, cancellationToken)
-            .ConfigureAwait(false);
+        // Linked with the capability's closing token: DisposeAsync cancels it and then waits for this
+        // use to drain, so a probe that only saw its caller's token would hold disposal (and the
+        // turn's teardown) for as long as that caller's token lives.
+        using CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(
+            cancellationToken,
+            _closing.Token);
 
+        return await _headProbe
+            .ProbeSectionAsync(lane, excludedKeys, linked.Token)
+            .ConfigureAwait(false);
     }
 
     /// <summary>
@@ -288,7 +281,6 @@ public sealed class CovenantToolInvocationContext : IAsyncDisposable
         ImmutableArray<string> excludedKeys,
         CancellationToken cancellationToken)
     {
-
         Result<IDisposable> lease = TryAcquireUse(nonce);
 
         if (lease.IsFailure)
@@ -305,10 +297,16 @@ public sealed class CovenantToolInvocationContext : IAsyncDisposable
             return Result<CovenantQuotaSnapshot>.Failure(usable.Error);
         }
 
-        return await _headProbe
-            .ProbeScopeAsync(excludedKeys, cancellationToken)
-            .ConfigureAwait(false);
+        // Linked with the capability's closing token: DisposeAsync cancels it and then waits for this
+        // use to drain, so a probe that only saw its caller's token would hold disposal (and the
+        // turn's teardown) for as long as that caller's token lives.
+        using CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(
+            cancellationToken,
+            _closing.Token);
 
+        return await _headProbe
+            .ProbeScopeAsync(excludedKeys, linked.Token)
+            .ConfigureAwait(false);
     }
 
     /// <summary>
@@ -317,10 +315,8 @@ public sealed class CovenantToolInvocationContext : IAsyncDisposable
     /// </summary>
     public Result TryTake(CovenantToolCapabilityNonce nonce)
     {
-
         lock (_gate)
         {
-
             if (!_nonce.Equals(nonce))
             {
                 return Result.Failure(NonceError());
@@ -334,9 +330,7 @@ public sealed class CovenantToolInvocationContext : IAsyncDisposable
             State = CovenantToolCapabilityState.Taken;
 
             return Result.Success();
-
         }
-
     }
 
     /// <summary>
@@ -358,10 +352,8 @@ public sealed class CovenantToolInvocationContext : IAsyncDisposable
     /// </remarks>
     public bool TryReleaseUnsent()
     {
-
         lock (_gate)
         {
-
             if (State != CovenantToolCapabilityState.Registered)
             {
                 return false;
@@ -370,18 +362,14 @@ public sealed class CovenantToolInvocationContext : IAsyncDisposable
             Finish();
 
             return true;
-
         }
-
     }
 
     /// <summary>Takes the short atomic lease every capability operation runs under.</summary>
     public Result<IDisposable> TryAcquireUse(CovenantToolCapabilityNonce nonce)
     {
-
         lock (_gate)
         {
-
             Result usable = CheckUsable(nonce);
 
             if (usable.IsFailure)
@@ -392,9 +380,7 @@ public sealed class CovenantToolInvocationContext : IAsyncDisposable
             _outstandingUses++;
 
             return Result<IDisposable>.Success(new UseLease(this));
-
         }
-
     }
 
     /// <summary>
@@ -408,10 +394,8 @@ public sealed class CovenantToolInvocationContext : IAsyncDisposable
     /// </remarks>
     public Result RecheckBeforeIrreversibleEffect(CovenantToolCapabilityNonce nonce)
     {
-
         lock (_gate)
         {
-
             Result usable = CheckUsable(nonce);
 
             if (usable.IsFailure)
@@ -434,19 +418,15 @@ public sealed class CovenantToolInvocationContext : IAsyncDisposable
             }
 
             return Result.Success();
-
         }
-
     }
 
     public async ValueTask DisposeAsync()
     {
-
         Task drain;
 
         lock (_gate)
         {
-
             if (State == CovenantToolCapabilityState.Disposed)
             {
                 return;
@@ -467,7 +447,6 @@ public sealed class CovenantToolInvocationContext : IAsyncDisposable
             _drained ??= new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 
             drain = _drained.Task;
-
         }
 
         // Outside the lock: a suspended use resuming here has to be able to observe Closing.
@@ -477,28 +456,22 @@ public sealed class CovenantToolInvocationContext : IAsyncDisposable
 
         lock (_gate)
         {
-
             if (State != CovenantToolCapabilityState.Disposed)
             {
                 Finish();
             }
-
         }
-
     }
 
     private void Finish()
     {
-
         State = CovenantToolCapabilityState.Disposed;
 
         _closing.Dispose();
-
     }
 
     private Result CheckUsable(CovenantToolCapabilityNonce nonce)
     {
-
         if (!_nonce.Equals(nonce))
         {
             return Result.Failure(NonceError());
@@ -517,7 +490,6 @@ public sealed class CovenantToolInvocationContext : IAsyncDisposable
         }
 
         return Result.Success();
-
     }
 
     private static Error NonceError() =>
@@ -541,12 +513,10 @@ public sealed class CovenantToolInvocationContext : IAsyncDisposable
 
     private void ReleaseUse()
     {
-
         TaskCompletionSource? drained = null;
 
         lock (_gate)
         {
-
             if (_outstandingUses > 0)
             {
                 _outstandingUses--;
@@ -558,21 +528,17 @@ public sealed class CovenantToolInvocationContext : IAsyncDisposable
             {
                 drained = _drained;
             }
-
         }
 
         _ = drained?.TrySetResult();
-
     }
 
     private sealed class UseLease(CovenantToolInvocationContext owner) : IDisposable
     {
-
         private bool _released;
 
         public void Dispose()
         {
-
             if (_released)
             {
                 return;
@@ -581,9 +547,6 @@ public sealed class CovenantToolInvocationContext : IAsyncDisposable
             _released = true;
 
             owner.ReleaseUse();
-
         }
-
     }
-
 }

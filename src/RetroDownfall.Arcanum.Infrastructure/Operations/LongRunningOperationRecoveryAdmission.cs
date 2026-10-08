@@ -27,14 +27,7 @@ internal static class LongRunningOperationRecoveryAdmission
 
         LongRunningRecoveryAdmissionKind kind = (operation.Kind, operation.CheckpointVersion) switch
         {
-            (LongRunningOperationKinds.InferenceRun, 0) => LongRunningRecoveryAdmissionKind.OrdinaryDbOnly,
             (LongRunningOperationKinds.Subagent, 0) => LongRunningRecoveryAdmissionKind.OrdinaryDbOnly,
-            (LongRunningOperationKinds.BudgetReservation, 0) => LongRunningRecoveryAdmissionKind.OrdinaryDbOnly,
-            (LongRunningOperationKinds.Batch, 0) => LongRunningRecoveryAdmissionKind.OrdinaryExternalEffect,
-            (LongRunningOperationKinds.Apprentice, 0 or 1) => LongRunningRecoveryAdmissionKind.OrdinaryDbOnly,
-            (LongRunningOperationKinds.AttachmentPromotion, 0) => LongRunningRecoveryAdmissionKind.OrdinaryExternalEffect,
-            (LongRunningOperationKinds.WorkspaceIndex, 0) => LongRunningRecoveryAdmissionKind.OrdinaryDbOnly,
-            (LongRunningOperationKinds.IdempotencyClaim, 0) => LongRunningRecoveryAdmissionKind.OrdinaryDbOnly,
             (LongRunningOperationKinds.BlobEncryptionMigration, 0 or 1) => LongRunningRecoveryAdmissionKind.OrdinaryExternalEffect,
             (LongRunningOperationKinds.BlobEncryptionKeyRotation, 0 or 1) => LongRunningRecoveryAdmissionKind.OrdinaryExternalEffect,
             (LongRunningOperationKinds.BackupCreate, 0) => LongRunningRecoveryAdmissionKind.OrdinaryDbOnly,

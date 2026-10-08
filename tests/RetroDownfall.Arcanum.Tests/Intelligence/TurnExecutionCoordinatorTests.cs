@@ -1,6 +1,5 @@
 using System.Runtime.CompilerServices;
 
-using RetroDownfall.Arcanum.Api.Intelligence.OpenAi;
 using RetroDownfall.Arcanum.Api.Intelligence.TurnEngine;
 using RetroDownfall.Arcanum.Api.Intelligence.TurnEngine.Projections;
 using RetroDownfall.Arcanum.Core.Intelligence;
@@ -39,7 +38,6 @@ public sealed class TurnExecutionCoordinatorTests
         Result<PromptTurnResult> result = await coordinator.ExecuteBufferedAsync(
             new PingRequest("prompt"),
             InvocationContexts.AttendedSession(),
-            hasIdempotencyKey: true,
             CancellationToken.None);
 
         Assert.True(result.IsSuccess);
@@ -50,8 +48,6 @@ public sealed class TurnExecutionCoordinatorTests
         Assert.Equal(["warning"], result.Value.Warnings);
         Assert.NotNull(source.CapturedRequest);
         Assert.Equal(TurnResponseMode.Buffered, source.CapturedRequest.ResponseMode);
-        Assert.False(source.CapturedRequest.HumanInteractionAvailable);
-        Assert.True(source.CapturedRequest.HasIdempotencyKey);
     }
 
     [Fact]
@@ -61,7 +57,7 @@ public sealed class TurnExecutionCoordinatorTests
             new RunAbandoned(
                 Correlation(1),
                 Error: null,
-                TurnTerminationReason.ClientDisconnected,
+                TurnTerminationReason.Cancelled,
                 Usage: null,
                 Warnings: [],
                 Interrupted: true,
@@ -71,7 +67,6 @@ public sealed class TurnExecutionCoordinatorTests
         Result<PromptTurnResult> result = await coordinator.ExecuteBufferedAsync(
             new PingRequest("prompt"),
             InvocationContexts.AttendedSession(),
-            hasIdempotencyKey: false,
             CancellationToken.None);
 
         Assert.True(result.IsFailure);
@@ -88,7 +83,7 @@ public sealed class TurnExecutionCoordinatorTests
                 new RunAbandoned(
                     Correlation(1),
                     expected,
-                    TurnTerminationReason.GuardrailsBlocked,
+                    TurnTerminationReason.ProviderFailure,
                     Usage: null,
                     Warnings: [],
                     Interrupted: false,
@@ -97,7 +92,6 @@ public sealed class TurnExecutionCoordinatorTests
         Result<PromptTurnResult> result = await coordinator.ExecuteBufferedAsync(
             new PingRequest("prompt"),
             InvocationContexts.AttendedSession(),
-            hasIdempotencyKey: false,
             CancellationToken.None);
 
         Assert.True(result.IsFailure);
@@ -113,7 +107,6 @@ public sealed class TurnExecutionCoordinatorTests
         Result<PromptTurnResult> result = await coordinator.ExecuteBufferedAsync(
             new PingRequest("prompt"),
             InvocationContexts.AttendedSession(),
-            hasIdempotencyKey: false,
             CancellationToken.None);
 
         Assert.True(result.IsFailure);
@@ -132,7 +125,6 @@ public sealed class TurnExecutionCoordinatorTests
             coordinator.ExecuteBufferedAsync(
                 new PingRequest("prompt"),
                 InvocationContexts.AttendedSession(),
-                hasIdempotencyKey: false,
                 cancellation.Token));
     }
 
@@ -156,7 +148,6 @@ public sealed class TurnExecutionCoordinatorTests
             coordinator.ExecuteIntelligenceStreamAsync(
                 new PingRequest("prompt"),
                 InvocationContexts.AttendedSession(),
-                hasIdempotencyKey: true,
                 CancellationToken.None));
 
         Assert.Collection(
@@ -174,7 +165,6 @@ public sealed class TurnExecutionCoordinatorTests
             });
         Assert.NotNull(source.CapturedRequest);
         Assert.Equal(TurnResponseMode.Streaming, source.CapturedRequest.ResponseMode);
-        Assert.True(source.CapturedRequest.HumanInteractionAvailable);
     }
 
     [Fact]
@@ -189,7 +179,6 @@ public sealed class TurnExecutionCoordinatorTests
                 coordinator.ExecuteIntelligenceStreamAsync(
                     new PingRequest("prompt"),
                     InvocationContexts.AttendedSession(),
-                    hasIdempotencyKey: false,
                     timeout.Token))
             .WaitAsync(TimeSpan.FromSeconds(5));
 
@@ -216,7 +205,6 @@ public sealed class TurnExecutionCoordinatorTests
                     coordinator.ExecuteIntelligenceStreamAsync(
                         new PingRequest("prompt"),
                         InvocationContexts.AttendedSession(),
-                        hasIdempotencyKey: false,
                         timeout.Token))
                 .WaitAsync(TimeSpan.FromSeconds(5)));
 
@@ -241,7 +229,6 @@ public sealed class TurnExecutionCoordinatorTests
             .ExecuteIntelligenceStreamAsync(
                 new PingRequest("prompt"),
                 InvocationContexts.AttendedSession(),
-                hasIdempotencyKey: false,
                 CancellationToken.None)
             .WithCancellation(CancellationToken.None))
         {
@@ -265,7 +252,6 @@ public sealed class TurnExecutionCoordinatorTests
                 .ExecuteIntelligenceStreamAsync(
                     new PingRequest("prompt"),
                     InvocationContexts.AttendedSession(),
-                    hasIdempotencyKey: false,
                     cancellation.Token)
                 .WithCancellation(CancellationToken.None))
             {
@@ -274,123 +260,6 @@ public sealed class TurnExecutionCoordinatorTests
         }).WaitAsync(TimeSpan.FromSeconds(10));
 
         Assert.True(source.CleanupCompleted);
-    }
-
-    [Fact]
-    public async Task ExecuteOpenAiSseAsync_ConsumerBreaksEarly_JoinsProducerCleanup()
-    {
-        CleanupTrackingTurnEventSource source = new(new TextDelta(Correlation(1), "partial"));
-        TurnExecutionCoordinator coordinator = new(source);
-
-        await foreach (OpenAiChatChunk _ in coordinator
-            .ExecuteOpenAiSseAsync(
-                new PingRequest("prompt"),
-                InvocationContexts.AttendedSession(),
-                hasIdempotencyKey: false,
-                completionId: "chatcmpl-disconnect",
-                model: "test-model",
-                CancellationToken.None)
-            .WithCancellation(CancellationToken.None))
-        {
-            break;
-        }
-
-        Assert.True(source.CleanupCompleted);
-    }
-
-    [Fact]
-    public async Task ExecuteOpenAiSseAsync_CompletedTurn_StreamsReasoningTextAndTerminalUsage()
-    {
-        ReasoningContentSegment reasoning = new("summary", ReasoningOutputMode.Summary);
-        ChatCompletionUsage usage = new(7, 3, 10);
-        ScriptedTurnEventSource source = new(
-            new RunCompleted(
-                Correlation(1),
-                FinalText: "answer",
-                Usage: usage,
-                ToolCalls: null,
-                FinishReason: null,
-                Warnings: [],
-                SessionId: null,
-                StructuredOutputWarning: false)
-            {
-                Reasoning = [reasoning],
-            });
-        TurnExecutionCoordinator coordinator = new(source);
-
-        List<OpenAiChatChunk> chunks = await ReadAllAsync(
-            coordinator.ExecuteOpenAiSseAsync(
-                new PingRequest("prompt"),
-                InvocationContexts.AttendedSession(),
-                hasIdempotencyKey: false,
-                completionId: "chatcmpl-coordinator",
-                model: "test-model",
-                CancellationToken.None));
-
-        Assert.Collection(
-            chunks,
-            chunk =>
-            {
-                Assert.Equal("chatcmpl-coordinator", chunk.Id);
-                Assert.Equal("test-model", chunk.Model);
-                Assert.Equal("summary", Assert.Single(chunk.Choices).Delta.ReasoningSummary);
-            },
-            chunk =>
-            {
-                Assert.Equal(usage, chunk.Usage);
-                Assert.Equal("stop", Assert.Single(chunk.Choices).FinishReason);
-            });
-        Assert.NotNull(source.CapturedRequest);
-        Assert.Equal(TurnResponseMode.Streaming, source.CapturedRequest.ResponseMode);
-        Assert.True(source.CapturedRequest.HumanInteractionAvailable);
-    }
-
-    [Fact]
-    public async Task ExecuteOpenAiSseAsync_SourceEndsWithoutTerminal_CompletesReader()
-    {
-        TurnExecutionCoordinator coordinator = new(
-            new ScriptedTurnEventSource(new TextDelta(Correlation(1), "partial")));
-        using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(3));
-
-        List<OpenAiChatChunk> chunks = await ReadAllAsync(
-                coordinator.ExecuteOpenAiSseAsync(
-                    new PingRequest("prompt"),
-                    InvocationContexts.AttendedSession(),
-                    hasIdempotencyKey: false,
-                    completionId: "chatcmpl-no-terminal",
-                    model: "test-model",
-                    timeout.Token))
-            .WaitAsync(TimeSpan.FromSeconds(5));
-
-        OpenAiChatChunk chunk = Assert.Single(chunks);
-        Assert.Equal("partial", Assert.Single(chunk.Choices).Delta.Content);
-        Assert.False(timeout.IsCancellationRequested);
-    }
-
-    [Fact]
-    public async Task ExecuteOpenAiSseAsync_SourceThrows_CompletesReaderWithSourceError()
-    {
-        InvalidOperationException expected = new("source failed");
-        ScriptedTurnEventSource source = new(new TextDelta(Correlation(1), "partial"))
-        {
-            ExceptionAfterEvents = expected,
-        };
-        TurnExecutionCoordinator coordinator = new(source);
-        using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(3));
-
-        InvalidOperationException actual = await Assert.ThrowsAsync<InvalidOperationException>(
-            () => ReadAllAsync(
-                    coordinator.ExecuteOpenAiSseAsync(
-                        new PingRequest("prompt"),
-                        InvocationContexts.AttendedSession(),
-                        hasIdempotencyKey: false,
-                        completionId: "chatcmpl-source-error",
-                        model: "test-model",
-                        timeout.Token))
-                .WaitAsync(TimeSpan.FromSeconds(5)));
-
-        Assert.Same(expected, actual);
-        Assert.False(timeout.IsCancellationRequested);
     }
 
     [Fact]
@@ -423,24 +292,6 @@ public sealed class TurnExecutionCoordinatorTests
     }
 
     [Fact]
-    public async Task ExecuteOpenAiSseCoreAsync_BufferedRequest_RejectsModeMismatch()
-    {
-        TurnExecutionCoordinator coordinator = new(new ScriptedTurnEventSource());
-        await using IAsyncEnumerator<OpenAiChatChunk> enumerator = coordinator
-            .ExecuteOpenAiSseCoreAsync(
-                Request(TurnResponseMode.Buffered),
-                "chatcmpl-test",
-                "test-model",
-                CancellationToken.None)
-            .GetAsyncEnumerator();
-
-        ArgumentException error = await Assert.ThrowsAsync<ArgumentException>(
-            () => enumerator.MoveNextAsync().AsTask());
-
-        Assert.Equal("request", error.ParamName);
-    }
-
-    [Fact]
     public void BufferedTurnProjection_NullEvent_Throws()
     {
         BufferedTurnProjection projection = new();
@@ -452,11 +303,7 @@ public sealed class TurnExecutionCoordinatorTests
         new(
             new PingRequest("prompt"),
             InvocationContexts.AttendedSession(),
-            responseMode,
-            TurnPurpose.Interactive,
-            HumanInteractionAvailable: responseMode == TurnResponseMode.Streaming,
-            HasIdempotencyKey: false,
-            AccountingHandle: null);
+            responseMode);
 
     private static TurnEventCorrelation Correlation(long sequence) =>
         new(
@@ -530,7 +377,6 @@ public sealed class TurnExecutionCoordinatorTests
         _ = await coordinator.ExecuteBufferedAsync(
             new PingRequest("prompt"),
             expected,
-            hasIdempotencyKey: false,
             CancellationToken.None);
 
         Assert.Same(expected, source.CapturedRequest!.InvocationContext);
@@ -556,7 +402,6 @@ public sealed class TurnExecutionCoordinatorTests
         await foreach (IntelligenceEvent _ in coordinator.ExecuteIntelligenceStreamAsync(
             new PingRequest("prompt"),
             expected,
-            hasIdempotencyKey: false,
             CancellationToken.None))
         {
         }
@@ -574,7 +419,6 @@ public sealed class TurnExecutionCoordinatorTests
             () => coordinator.ExecuteBufferedAsync(
                 new PingRequest("prompt"),
                 null!,
-                hasIdempotencyKey: false,
                 CancellationToken.None));
     }
 

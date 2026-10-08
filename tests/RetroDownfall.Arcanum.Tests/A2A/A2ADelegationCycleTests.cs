@@ -222,7 +222,8 @@ public sealed class A2ADelegationCycleTests
             a2aClientEnabled: true,
             attachmentsToolEnabled: false,
             maxJsonRpcLineBytes: 2_097_152,
-            logger: NullLogger<ArcanumInternalToolServer>.Instance);
+            logger: NullLogger<ArcanumInternalToolServer>.Instance,
+            allowHostProcessTools: true);
 
         using CancellationTokenSource lifetime = new();
 
@@ -341,13 +342,34 @@ public sealed class A2ADelegationCycleTests
         public Task<Apprentice> UpdateAsync(Apprentice apprentice, CancellationToken cancellationToken = default) =>
             Task.FromResult(apprentice);
 
+        public Task<bool> UpdateProgressAsync(
+            Apprentice apprentice,
+            string expectedPlan,
+            int expectedCurrentStep,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(true);
+
+        public Task<bool> BindSessionAsync(Guid id, Guid sessionId, CancellationToken cancellationToken = default) =>
+            Task.FromResult(true);
+
+        public Task<bool> TryUpdateAsync(
+            Apprentice apprentice,
+            IReadOnlyCollection<string> expectedStatuses,
+            int expectedCurrentStep,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(true);
+
+        public Task<bool> TryUpdateStatusAsync(
+            Guid id,
+            string status,
+            IReadOnlyCollection<string> expectedStatuses,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(true);
+
         public Task<bool> DeleteAsync(Guid id, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
 
         public Task<IReadOnlyList<Apprentice>> GetResumableAsync(CancellationToken cancellationToken = default) =>
-            Task.FromResult<IReadOnlyList<Apprentice>>([]);
-
-        public Task<IReadOnlyList<Apprentice>> GetInterruptedPlanningAsync(CancellationToken cancellationToken = default) =>
             Task.FromResult<IReadOnlyList<Apprentice>>([]);
     }
 
@@ -427,7 +449,8 @@ public sealed class A2ADelegationCycleTests
 
         public Task<int> GetEntryCountAsync(Guid sessionId, CancellationToken ct) => Task.FromResult(0);
 
-        public Task UpdateSessionAsync(Session session, CancellationToken ct) => Task.CompletedTask;
+        public Task<Session?> PatchSessionAsync(Guid id, SessionHeaderPatch patch, CancellationToken ct) =>
+            Task.FromResult<Session?>(null);
 
         public Task ArchiveAsync(Guid id, CancellationToken ct) => Task.CompletedTask;
     }

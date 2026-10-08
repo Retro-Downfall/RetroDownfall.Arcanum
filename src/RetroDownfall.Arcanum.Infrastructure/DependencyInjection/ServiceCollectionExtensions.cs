@@ -9,6 +9,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Core.CommLink;
 using RetroDownfall.Arcanum.Core.Backup;
@@ -180,7 +181,7 @@ public static class ServiceCollectionExtensions
     {
         services.AddDataProtection()
             .SetApplicationName("ArcanumCore")
-            .PersistKeysToFileSystem(new DirectoryInfo(DataProtectionKeyPaths.Directory));
+            .PersistKeysToOwnerOnlyKeyRing();
 
         services.TryAddSingleton<IOsCredentialStore>(TestCredentialStorePolicy.Create);
 
@@ -222,7 +223,7 @@ public static class ServiceCollectionExtensions
     }
 
     /// <summary>
-    /// Registers <see cref="IDaemonManager"/> for Windows Service (<c>sc.exe</c>), macOS launchd, or Linux systemd user units (narrow registration; does not pull EF Core, Serilog file logging, or Grimoire).
+    /// Registers <see cref="IDaemonManager"/> for a Windows Service under an explicit user account (<c>sc.exe</c>), a macOS launchd user agent, or a Linux systemd user unit (narrow registration; does not pull EF Core, Serilog file logging, or Grimoire).
     /// </summary>
     public static IServiceCollection AddArcanumDaemonManagement(this IServiceCollection services)
     {
@@ -321,6 +322,12 @@ public static class ServiceCollectionExtensions
         // resolves repository services from the CLI container.
         services.TryAddSingleton<IHostWorkspaceContext, HostWorkspaceContext>();
 
+        // ...and a workspace registry, which it needs to prove a claimed workspace root against. Offline
+        // maintenance registers no workspace, so this one is empty and every claimed root is refused as
+        // unregistered; the host composition replaces it with the Campaign-backed registry (a later
+        // registration wins, and TryAdd leaves that one alone if it came first).
+        services.TryAddSingleton<IWorkspaceRegistry, InMemoryWorkspaceRegistry>();
+
         // An explicit factory rather than a type registration: the Covenant mutation kernel is
         // internal, so the composed constructor cannot be reached by a reflective activator.
         services.AddScoped<IGrimoireRepository>(
@@ -371,6 +378,10 @@ public static class ServiceCollectionExtensions
             sp.GetRequiredService<CovenantLaunchGapFactoryResetRecoveryHandler>());
         services.AddScoped<IAuthenticatedCovenantErasureRecoveryHandler>(static sp =>
             sp.GetRequiredService<CovenantLaunchGapFactoryResetRecoveryHandler>());
+        // Exact settlement only, on purpose: stopped-host bootstrap settles the one operation its
+        // authenticated journal names (SettleExactlyAsync, which needs neither port below). Without the
+        // discovery and classified-lease ports a generic pass from this container throws instead of
+        // scanning an installation the CLI does not own. The host registers the full reconciler below.
         services.AddScoped(static sp => new LongRunningOperationReconciler(
             sp.GetRequiredService<ILongRunningOperationStore>(),
             sp.GetServices<ILongRunningOperationRecoveryHandler>(),
@@ -416,11 +427,11 @@ public static class ServiceCollectionExtensions
 
         services.AddSingleton<DataProtectionSecretStore>();
 
-        services.AddSingleton<IWebResearchCredentialStore, WebResearchCredentialStore>();
+        services.TryAddSingleton<IWebResearchCredentialStore, WebResearchCredentialStore>();
 
-        services.AddSingleton<IProviderCredentialStore, ProviderCredentialStore>();
+        services.TryAddSingleton<IProviderCredentialStore, ProviderCredentialStore>();
 
-        services.AddSingleton<IProviderApiKeyResolver, ProviderApiKeyResolver>();
+        services.TryAddSingleton<IProviderApiKeyResolver, ProviderApiKeyResolver>();
 
         services.AddSingleton<ISecretStore>(static sp => new OsKeychainSecretStore(
             sp.GetRequiredService<IOsCredentialStore>(),
@@ -460,7 +471,7 @@ public static class ServiceCollectionExtensions
     {
         services.AddDataProtection()
             .SetApplicationName("ArcanumCore")
-            .PersistKeysToFileSystem(new DirectoryInfo(DataProtectionKeyPaths.Directory));
+            .PersistKeysToOwnerOnlyKeyRing();
 
         services.AddSingleton<IApiKeyDigestCache, ApiKeyDigestCache>();
 
@@ -481,7 +492,7 @@ public static class ServiceCollectionExtensions
 
         services.TryAddScoped<InstallationResetExistingGrimoire>(provider =>
             new InstallationResetExistingGrimoire(
-                provider.GetRequiredService<DataProtectionSecretStore>(),
+                provider,
                 settings,
                 provider.GetService<TimeProvider>() ?? TimeProvider.System,
                 provider.GetService<ILoggerFactory>()
@@ -591,6 +602,8 @@ public static class ServiceCollectionExtensions
                     IFullInstallationResetRemediationAttestationVerifier>(),
                 provider.GetRequiredService<ICampaignPathMarkerLifecycle>(),
                 provider.GetRequiredService<IHostToolsMarkerPairResetOsPort>(),
+                provider.GetRequiredService<ILoggerFactory>()
+                    .CreateLogger<HostToolsMarkerPairResetCoordinator>(),
                 provider.GetRequiredService<IFullInstallationResetManagedFileReconciler>(),
                 canonicalDatabasePath: ArcanumPaths.GrimoireDatabaseFile));
 
@@ -896,7 +909,7 @@ public static class ServiceCollectionExtensions
         services.Configure<ArcanumSettings>(settings =>
             ConfigurationBootstrapper.CopySettings(settingsSnapshot, settings));
 
-        services.AddSingleton<ConfigurationWriter>();
+        services.TryAddSingleton<ConfigurationWriter>();
 
         services.AddSingleton<IDataRetentionPolicyStore, DataRetentionPolicyStore>();
 
@@ -908,7 +921,7 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IWorkspaceCheckAdvertisementEligibility>(
             static sp => sp.GetRequiredService<WorkspaceCheckCapabilityReporter>());
 
-        services.AddSingleton<ConfigurationValidator>();
+        services.TryAddSingleton<ConfigurationValidator>();
 
         services.AddArcanumEyeOfTheWorld();
 
@@ -948,7 +961,7 @@ public static class ServiceCollectionExtensions
 
         services.AddDataProtection()
             .SetApplicationName("ArcanumCore")
-            .PersistKeysToFileSystem(new DirectoryInfo(DataProtectionKeyPaths.Directory));
+            .PersistKeysToOwnerOnlyKeyRing();
 
         services.AddSingleton<IApiKeyDigestCache, ApiKeyDigestCache>();
 
@@ -1090,11 +1103,11 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<SpellWeaveCache>();
         services.AddSingleton<LongRunningOperationReconciliationStatus>();
 
-        services.AddSingleton<InstallationResetMaintenanceLockAccessor>();
+        services.TryAddSingleton<InstallationResetMaintenanceLockAccessor>();
 
         services.AddSingleton<InstallationResetApiAdmission>();
 
-        services.AddSingleton<IInstallationResetMaintenanceLockAccessor>(
+        services.TryAddSingleton<IInstallationResetMaintenanceLockAccessor>(
             static sp => sp.GetRequiredService<InstallationResetMaintenanceLockAccessor>());
 
         services.TryAddScoped(
@@ -1104,6 +1117,11 @@ public static class ServiceCollectionExtensions
 
         services.AddScoped<IInstallationResetDatabaseIdentityReader,
             InstallationResetDatabaseIdentityReader>();
+
+        // The coordinator checks a legacy record against the roots this installation would plan, the
+        // same ones the CLI composition registers for the service.
+        services.TryAddScoped<IInstallationResetStateRoots>(static _ =>
+            InstallationResetStateRoots.Default);
 
         services.AddScoped<IInstallationResetHostHandoffCoordinator,
             InstallationResetHostHandoffCoordinator>();
@@ -1255,6 +1273,10 @@ public static class ServiceCollectionExtensions
         // unconditionally is free on the hot path. Registered after GrimoireDatabaseHostedService so
         // The Weave's schema is guaranteed ready before the first sweep.
         services.AddScoped<ITapestrySummarizer, TapestrySummarizer>();
+
+        // One record of failed builds for the whole process, because the weaver that consults it is
+        // created per sweep.
+        services.AddSingleton<TapestryBuildBackoff>();
         services.AddScoped<TapestryWeaver>();
         services.AddInstallationResetRecoveryAwareHostedService<TapestryWeavingService>();
 
@@ -1358,16 +1380,11 @@ public static class ServiceCollectionExtensions
             sp.GetRequiredService<ILongRunningOperationClassifiedRecoveryLeaseAcquisition>(),
             sp.GetRequiredService<IServiceScopeFactory>()));
         services.AddScoped<IDurableOperationDiagnostics, DurableOperationDiagnostics>();
-        services.AddScoped<ILongRunningOperationRecoveryHandler, BudgetReservationRecoveryHandler>();
 
         // Issue #40: every kind in LongRunningOperationRecoveryRegistry owns a handler, so a stranded
-        // operation reaches explicit recovery instead of falling through to "handler missing".
-        services.AddScoped<ILongRunningOperationRecoveryHandler, InferenceRunRecoveryHandler>();
+        // operation reaches explicit recovery instead of falling through to "handler missing". A kind is
+        // registered only together with the production code that creates its rows.
         services.AddScoped<ILongRunningOperationRecoveryHandler, SubagentRecoveryHandler>();
-        services.AddScoped<ILongRunningOperationRecoveryHandler, IdempotencyClaimRecoveryHandler>();
-        services.AddScoped<ILongRunningOperationRecoveryHandler, ApprenticeRecoveryHandler>();
-        services.AddScoped<ILongRunningOperationRecoveryHandler, AttachmentPromotionRecoveryHandler>();
-        services.AddScoped<ILongRunningOperationRecoveryHandler, WorkspaceIndexRecoveryHandler>();
 
         services.AddScoped<IBlobEncryptionMetadataStore, BlobEncryptionMetadataStore>();
         services.AddScoped<BlobEncryptionFileProcessor>();
@@ -1507,9 +1524,16 @@ public static class ServiceCollectionExtensions
         // A Sending blocks until the remote agent reaches a terminal state, and remote work can run far
         // longer than HttpClient's 100-second default. Per issue #55 the bound is on establishing the
         // connection, not on the operation as a whole; caller/host cancellation ends the work.
+        // Discovery has its own deadline (A2AClientService.DefaultDiscoveryTimeout), and every buffered
+        // response is capped: the peer is a model-named host, and HttpClient's default buffer is 2 GiB.
         services.AddHttpClient(
                 A2AClientService.OutboundHttpClientName,
-                static client => client.Timeout = Timeout.InfiniteTimeSpan)
+                static client =>
+                {
+                    client.Timeout = Timeout.InfiniteTimeSpan;
+
+                    client.MaxResponseContentBufferSize = A2AClientService.MaxRpcResponseBytes;
+                })
             // A peer's agent-card URL can carry a token in a path segment, and default
             // IHttpClientFactory logging writes that URI at Information. Only A2AClientService's
             // own host-only diagnostics are permitted for this named client.
@@ -1608,6 +1632,8 @@ public static class ServiceCollectionExtensions
 
         services.AddSingleton<ITrustedMcpWorkspaceStore, TrustedMcpWorkspaceStore>();
 
+        services.AddSingleton<IMcpWorkspaceTrustPreviewer, McpWorkspaceTrustPreviewer>();
+
         services.AddHttpClient(
             McpConnectionManager.McpHttpClientName,
             static client => client.Timeout = Timeout.InfiniteTimeSpan)
@@ -1615,6 +1641,11 @@ public static class ServiceCollectionExtensions
             // .NET's URI redaction does not strip. Default IHttpClientFactory logging would copy
             // that token into the rolling log and the ring buffer behind GET /api/logs.
             .RemoveAllLoggers()
+            // The SDK transport parses a response body or SSE event whole, so a hostile remote server
+            // could otherwise stream an unbounded message into memory; bound each one at the same
+            // frame cap the in-process transport enforces.
+            .AddHttpMessageHandler(static () => new McpHttpResponseBoundHandler(
+                McpSecurityLimits.MaxJsonRpcLineBytes))
             .ConfigurePrimaryHttpMessageHandler(sp =>
             {
                 IOptionsMonitor<ArcanumSettings> opts = sp.GetRequiredService<IOptionsMonitor<ArcanumSettings>>();
@@ -1640,7 +1671,8 @@ public static class ServiceCollectionExtensions
                 sp.GetRequiredService<IEventBus>(),
                 sp.GetRequiredService<ITrustedMcpWorkspaceStore>(),
                 sp.GetRequiredService<IHttpClientFactory>(),
-                sp.GetRequiredService<IOptionsMonitor<ArcanumSettings>>());
+                sp.GetRequiredService<IOptionsMonitor<ArcanumSettings>>(),
+                sp.GetRequiredService<ILoggerFactory>());
 
             manager.ConfigureGlobalAdmission(
                 sp.GetRequiredService<IGrimoireConnectionAdmissionGate>());
@@ -1844,6 +1876,11 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<ICampaignRootIdentityRecoveryKeyProvider>(
             static sp => sp.GetRequiredService<CampaignRootIdentityKeyProvider>());
 
+        // The only port that may create the key. It takes the caller's registered-roots evidence, so it
+        // is a separate registration from the read ports: nothing that merely reads can mint a key.
+        services.AddSingleton<ICampaignRootIdentityKeyCreator>(
+            static sp => sp.GetRequiredService<CampaignRootIdentityKeyProvider>());
+
         services.AddSingleton(
             static sp => new PhysicalCampaignRootOpener(
                 sp.GetRequiredService<ICampaignRootIdentityKeyProvider>()));
@@ -1985,7 +2022,18 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IGrimoireOrdinaryConnectionFactoryTestSeam>(static _ =>
             new NoOpGrimoireOrdinaryConnectionFactoryTestSeam());
 
-        services.AddSingleton<IGrimoireOrdinaryConnectionFactory, GrimoireOrdinaryConnectionFactory>();
+        // The logger comes from the factory when the host has logging and from the null factory when it has
+        // not, because a bare provider that only wants a connection must not need a logging stack to get one.
+        services.AddSingleton<IGrimoireOrdinaryConnectionFactory>(static sp =>
+            new GrimoireOrdinaryConnectionFactory(
+                sp.GetRequiredService<IGrimoireOrdinaryConnectionLifecycle>(),
+                sp.GetRequiredService<ICovenantConnectionDrain>(),
+                sp.GetRequiredService<IGrimoireDbPassphraseSource>(),
+                sp.GetRequiredService<ICovenantSqliteConnectionInitializer>(),
+                sp.GetRequiredService<ISqliteNativeRuntime>(),
+                sp.GetRequiredService<IGrimoireOrdinaryConnectionFactoryTestSeam>(),
+                (sp.GetService<ILoggerFactory>() ?? NullLoggerFactory.Instance)
+                    .CreateLogger<GrimoireOrdinaryConnectionFactory>()));
 
         services.AddSingleton<IGrimoireMaintenanceConnectionFactory>(static sp =>
             new GrimoireMaintenanceConnectionFactory(
@@ -1999,7 +2047,8 @@ public static class ServiceCollectionExtensions
         services.AddSingleton(
             static sp => new CovenantOperationGate(
                 sp.GetRequiredService<CovenantRuntimeGenerationProvider>(),
-                sp.GetRequiredService<ICovenantCampaignScopeProbe>()));
+                sp.GetRequiredService<ICovenantCampaignScopeProbe>(),
+                sp.GetRequiredService<ILogger<CovenantOperationGate>>()));
 
         services.AddSingleton<ICovenantOperationGate>(
             static sp => sp.GetRequiredService<CovenantOperationGate>());
@@ -2064,7 +2113,8 @@ public static class ServiceCollectionExtensions
             sp.GetRequiredService<CovenantMutationKernel>(),
             sp.GetRequiredService<CovenantCurationKernel>(),
             sp.GetRequiredService<TimeProvider>(),
-            sp.GetRequiredService<CovenantAvailabilityRepublisher>()));
+            sp.GetRequiredService<CovenantAvailabilityRepublisher>(),
+            sp.GetRequiredService<ILogger<CovenantMemoryReviewService>>()));
 
         services.AddScoped<ICovenantContextProvider>(
             static sp => new CovenantContextProvider(
@@ -2266,7 +2316,8 @@ public static class ServiceCollectionExtensions
                 sp.GetRequiredService<ICovenantAvailability>(),
                 sp.GetRequiredService<ICovenantProtectedArtifactErasureKernel>(),
                 sp.GetRequiredService<ICovenantManagedFileErasureKernel>(),
-                sp.GetRequiredService<CovenantSensitivePurgeAuthorityScope>()));
+                sp.GetRequiredService<CovenantSensitivePurgeAuthorityScope>(),
+                sp.GetRequiredService<ILogger<CovenantSensitiveRetentionPurgeCoordinator>>()));
 
         services.AddScoped<ICovenantProtectedArtifactErasureKernel>(
             static sp => new CovenantProtectedArtifactErasureKernel(

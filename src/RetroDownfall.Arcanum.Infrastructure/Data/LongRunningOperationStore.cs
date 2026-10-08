@@ -622,11 +622,13 @@ internal sealed class LongRunningOperationStore(
                     FROM "LongRunningOperations"
                     WHERE (@kind IS NULL OR "Kind" = @kind)
                       AND (@state IS NULL OR "State" = @state)
+                      AND (@reference IS NULL OR "CheckpointReference" = @reference)
                     ORDER BY "CreatedAt" DESC, "Id"
                     LIMIT @limit OFFSET @offset
                     """;
                 Add(cmd, "@kind", string.IsNullOrWhiteSpace(query.Kind) ? null : query.Kind);
                 Add(cmd, "@state", query.State is null ? null : (int)query.State.Value);
+                Add(cmd, "@reference", string.IsNullOrEmpty(query.CheckpointReference) ? null : query.CheckpointReference);
                 Add(cmd, "@limit", limit);
                 Add(cmd, "@offset", offset);
                 return await ReadAllAsync(cmd, cancellationToken).ConfigureAwait(false);

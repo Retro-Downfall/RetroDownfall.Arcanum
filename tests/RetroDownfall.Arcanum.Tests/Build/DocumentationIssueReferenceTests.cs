@@ -19,8 +19,7 @@ namespace RetroDownfall.Arcanum.Tests.Build;
 /// part of instead of what the value guarantees.</para>
 /// <para>The document set mirrors <see cref="RetiredServerNamespaceTests"/>: documents whose vocabulary
 /// is a contract, plus the two structured inventories that are read the same way. Dated review
-/// snapshots and the plan and specification archive under <c>docs/superpowers</c> are historical
-/// records of a single run and are deliberately left alone.</para>
+/// snapshots are historical records of a single run and are deliberately left alone.</para>
 /// <para>The pattern accepts the tracker spellings <c>issue #55</c>, <c>issue-55</c>, and
 /// <c>issue 55</c>, plus a bare <c>#55</c> token when whitespace, an opening bracket, or an opening
 /// parenthesis places it in prose, so <c>(#55)</c> and <c>[#55]</c> are caught. It deliberately
@@ -31,26 +30,6 @@ namespace RetroDownfall.Arcanum.Tests.Build;
 /// </remarks>
 public sealed class DocumentationIssueReferenceTests
 {
-    [Fact]
-    public void Parent_admission_design_records_the_current_delivery_boundary()
-    {
-        string root = NativeSqlCipherTestPaths.RepositoryRoot();
-
-        string path = Path.Combine(
-            root,
-            "docs",
-            "superpowers",
-            "specs",
-            "2026-08-31-issue-239-grimoire-admission-design.md");
-
-        string document = File.ReadAllText(path);
-
-        Assert.Contains(
-            "**Status:** Approved umbrella; #243/#244 integrated; #245–#256 delivered; #257 and parent #239 remain open.",
-            document,
-            StringComparison.Ordinal);
-    }
-
     /// <summary>Documents that must stand on their own, so neither exempt document appears here.</summary>
     private static readonly string[] GovernedDocuments =
     [

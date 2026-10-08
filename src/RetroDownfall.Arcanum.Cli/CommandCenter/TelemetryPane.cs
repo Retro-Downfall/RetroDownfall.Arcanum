@@ -1,11 +1,9 @@
 using RetroDownfall.Arcanum.Core.Intelligence;
-using RetroDownfall.Arcanum.Core.Telemetry;
 
 namespace RetroDownfall.Arcanum.Cli.CommandCenter;
 
 /// <summary>
-/// Non-focusable telemetry pane displaying real-time session aggregates
-/// from the TelemetryService / IModelCallExecutor event stream.
+/// Non-focusable telemetry pane displaying the latest provider-call context breakdown.
 /// </summary>
 public sealed class TelemetryPane
 {
@@ -18,13 +16,6 @@ public sealed class TelemetryPane
     public string Text { get; private set; } = "Context telemetry will appear after the first model call.";
 
     public TelemetryPane() { }
-
-    public void UpdateMetrics(TelemetrySnapshot snapshot)
-    {
-        ArgumentNullException.ThrowIfNull(snapshot);
-
-        // Debounced rendering handled by host
-    }
 
     /// <summary>
     /// Formats one immutable provider-call breakdown. Rendering is a single string replacement so

@@ -3,9 +3,9 @@ using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Mcp;
 
+[Collection("WorkspacePathPolicy")]
 public sealed class WorkspacePathPolicyTests : IAsyncLifetime
 {
-
     private readonly TempWorkspace _workspace = new();
 
     public Task InitializeAsync() => _workspace.InitializeAsync();
@@ -15,7 +15,6 @@ public sealed class WorkspacePathPolicyTests : IAsyncLifetime
     [Fact]
     public void TryNormalizeWorkspace_EmptyDirectory_ReturnsConfigurationError()
     {
-
         bool ok = WorkspacePathPolicy.TryNormalizeWorkspace("", out string? normalized, out string? error);
 
         Assert.False(ok);
@@ -23,13 +22,11 @@ public sealed class WorkspacePathPolicyTests : IAsyncLifetime
         Assert.Null(normalized);
 
         Assert.Contains("No workspace directory was provided", error, StringComparison.Ordinal);
-
     }
 
     [Fact]
     public void TryNormalizeWorkspace_ValidDirectory_ReturnsFullPath()
     {
-
         bool ok = WorkspacePathPolicy.TryNormalizeWorkspace(_workspace.Root, out string? normalized, out string? error);
 
         Assert.True(ok);
@@ -37,13 +34,31 @@ public sealed class WorkspacePathPolicyTests : IAsyncLifetime
         Assert.Equal(Path.GetFullPath(_workspace.Root), normalized);
 
         Assert.Null(error);
+    }
 
+    /// <summary>
+    /// R-147: a name that merely begins with <c>..</c> is an ordinary child, not a parent segment.
+    /// </summary>
+    [Fact]
+    public void IsPathUnderWorkspaceWithSymlinkCheck_FileNamedDotDotPrefix_Allows()
+    {
+        string candidate = Path.Combine(_workspace.Root, "..foo");
+
+        File.WriteAllText(candidate, "ok");
+
+        Assert.True(WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(
+            _workspace.Root,
+            candidate,
+            out string? resolved));
+
+        Assert.Equal(Path.GetFullPath(candidate), resolved);
+
+        Assert.True(WorkspacePathPolicy.RevalidatePathBeforeIo(_workspace.Root, candidate));
     }
 
     [Fact]
     public void TryNormalizeWorkspace_UnresolvablePath_ReturnsConfigurationError()
     {
-
         bool ok = WorkspacePathPolicy.TryNormalizeWorkspace("?\u0000invalid", out string? normalized, out string? error);
 
         if (ok)
@@ -54,13 +69,11 @@ public sealed class WorkspacePathPolicyTests : IAsyncLifetime
         Assert.Null(normalized);
 
         Assert.Contains("could not be resolved", error, StringComparison.OrdinalIgnoreCase);
-
     }
 
     [Fact]
     public void IsPathUnderWorkspace_AllowsRootAndChildDeniesOutside()
     {
-
         string root = Path.GetFullPath(_workspace.Root);
 
         string child = Path.Combine(root, "src", "App.cs");
@@ -70,13 +83,11 @@ public sealed class WorkspacePathPolicyTests : IAsyncLifetime
         Assert.True(WorkspacePathPolicy.IsPathUnderWorkspace(root, child));
 
         Assert.False(WorkspacePathPolicy.IsPathUnderWorkspace(root, Path.Combine(Path.GetTempPath(), "outside.txt")));
-
     }
 
     [Fact]
     public void IsPathUnderWorkspaceWithSymlinkCheck_NonExistentChildUnderRoot_Allows()
     {
-
         string target = Path.Combine(_workspace.Root, "new", "file.txt");
 
         bool allowed = WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(_workspace.Root, target, out string? resolved);
@@ -84,13 +95,11 @@ public sealed class WorkspacePathPolicyTests : IAsyncLifetime
         Assert.True(allowed);
 
         Assert.Null(resolved);
-
     }
 
     [Fact]
     public void IsPathUnderWorkspaceWithSymlinkCheck_ExistingNestedFile_ReturnsResolvedPath()
     {
-
         string file = _workspace.WriteFile("nested/readme.md", "content");
 
         bool allowed = WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(_workspace.Root, file, out string? resolved);
@@ -98,35 +107,29 @@ public sealed class WorkspacePathPolicyTests : IAsyncLifetime
         Assert.True(allowed);
 
         Assert.Equal(Path.GetFullPath(file), resolved);
-
     }
 
     [Fact]
     public void IsPathUnderWorkspaceWithSymlinkCheck_PathOutsideRoot_Rejects()
     {
-
         string outside = Path.Combine(Path.GetTempPath(), "arcanum-outside-" + Guid.NewGuid().ToString("N"));
 
         bool allowed = WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(_workspace.Root, outside, out _);
 
         Assert.False(allowed);
-
     }
 
     [Fact]
     public void RevalidatePathBeforeIo_MatchesSymlinkCheckForNestedPath()
     {
-
         string file = _workspace.WriteFile("src/Program.cs", "// code");
 
         Assert.True(WorkspacePathPolicy.RevalidatePathBeforeIo(_workspace.Root, file));
-
     }
 
     [Fact]
     public void IsPathUnderWorkspaceWithSymlinkCheck_LexicalChildWithDotDot_RejectsAfterNormalization()
     {
-
         string root = Path.GetFullPath(_workspace.Root);
 
         string lexicalEscape = Path.Combine(root, "..", Path.GetFileName(root) + "-sibling", "secret.txt");
@@ -134,13 +137,11 @@ public sealed class WorkspacePathPolicyTests : IAsyncLifetime
         bool allowed = WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(root, lexicalEscape, out _);
 
         Assert.False(allowed);
-
     }
 
     [Fact]
     public void TryNormalizeWorkspace_WhitespaceOnly_ReturnsConfigurationError()
     {
-
         bool ok = WorkspacePathPolicy.TryNormalizeWorkspace("   ", out string? normalized, out string? error);
 
         Assert.False(ok);
@@ -148,13 +149,11 @@ public sealed class WorkspacePathPolicyTests : IAsyncLifetime
         Assert.Null(normalized);
 
         Assert.Contains("No workspace directory was provided", error, StringComparison.Ordinal);
-
     }
 
     [SkippableFact]
     public void IsPathUnderWorkspaceWithSymlinkCheck_RejectsWriteThroughSymlinkedParent()
     {
-
         Skip.If(
             !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux(),
             "This asserts POSIX behaviour and runs on macOS and Linux only.");
@@ -179,13 +178,11 @@ public sealed class WorkspacePathPolicyTests : IAsyncLifetime
         {
             Directory.Delete(outside, recursive: true);
         }
-
     }
 
     [SkippableFact]
     public void IsPathUnderWorkspaceWithSymlinkCheck_AllowsSymlinkInsideWorkspace()
     {
-
         Skip.If(
             !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux(),
             "This asserts POSIX behaviour and runs on macOS and Linux only.");
@@ -201,7 +198,5 @@ public sealed class WorkspacePathPolicyTests : IAsyncLifetime
         bool allowed = WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(_workspace.Root, targetFile, out _);
 
         Assert.True(allowed);
-
     }
-
 }

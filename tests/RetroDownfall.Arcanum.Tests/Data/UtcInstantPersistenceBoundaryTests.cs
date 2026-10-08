@@ -580,7 +580,10 @@ public sealed class UtcInstantPersistenceBoundaryTests
         string[] expectedOwners =
         [
             "src/RetroDownfall.Arcanum.Infrastructure/Covenant/CovenantCampaignScopeProbe.cs",
+            "src/RetroDownfall.Arcanum.Infrastructure/Data/BatchRepository.cs",
             "src/RetroDownfall.Arcanum.Infrastructure/Data/SessionAttachmentStore.Lifecycle.cs",
+            "src/RetroDownfall.Arcanum.Infrastructure/Data/SessionAttachmentStore.cs",
+            "src/RetroDownfall.Arcanum.Infrastructure/Data/UploadedFileRepository.cs",
             "src/RetroDownfall.Arcanum.Infrastructure/Repositories/ApprenticeRepository.cs",
             "src/RetroDownfall.Arcanum.Infrastructure/Repositories/CampaignRepository.cs",
             "src/RetroDownfall.Arcanum.Infrastructure/Repositories/EntryTemporalQueries.cs",

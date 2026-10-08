@@ -8,12 +8,9 @@ namespace RetroDownfall.Arcanum.Cli.Infrastructure;
 
 internal static partial class CliCommandTree
 {
-
     private static Command BuildUse(IServiceProvider serviceProvider)
     {
-
-        ContextCommands handler =
-            serviceProvider.GetRequiredService<ContextCommands>();
+        DeferredHandler<ContextCommands> handler = new(serviceProvider);
 
         Command use = new(
             "use",
@@ -43,34 +40,27 @@ internal static partial class CliCommandTree
             ParseResult parseResult,
             CancellationToken cancellationToken) =>
         {
-
             if (!TryParseScope(
                     parseResult.GetValue(scope),
                     out CliContextScope parsedScope))
             {
-
-                return handler.InvalidClearScope(
+                return handler.Value.InvalidClearScope(
                     parseResult.GetValue(scope));
-
             }
 
-            return await handler
+            return await handler.Value
                 .Clear(parsedScope, cancellationToken)
                 .ConfigureAwait(false);
-
         });
 
         use.Add(clear);
 
         return use;
-
     }
 
     private static Command BuildContext(IServiceProvider serviceProvider)
     {
-
-        ContextCommands handler =
-            serviceProvider.GetRequiredService<ContextCommands>();
+        DeferredHandler<ContextCommands> handler = new(serviceProvider);
 
         Command context = new(
             "context",
@@ -82,7 +72,7 @@ internal static partial class CliCommandTree
 
         current.SetAction(
             async (ParseResult _, CancellationToken cancellationToken) =>
-                await handler.Current(cancellationToken).ConfigureAwait(false));
+                await handler.Value.Current(cancellationToken).ConfigureAwait(false));
 
         context.Add(current);
 
@@ -95,23 +85,19 @@ internal static partial class CliCommandTree
         context.Add(BuildContextPreview(serviceProvider, handler, "cost", ContextPreviewView.Cost));
 
         return context;
-
     }
 
     private static Command BuildContextPreview(
-
         IServiceProvider serviceProvider,
 
-        ContextCommands handler,
+        DeferredHandler<ContextCommands> handler,
 
         string name,
 
         ContextPreviewView view)
 
     {
-
         Command command = new(
-
             name,
 
             view == ContextPreviewView.Cost
@@ -123,59 +109,45 @@ internal static partial class CliCommandTree
         Argument<string[]> prompt = new("prompt")
 
         {
-
             Arity = ArgumentArity.ZeroOrMore,
 
             Description = "Optional prompt text used for routing and retrieval.",
-
         };
 
         Option<bool> showContent = new("--show-content")
 
         {
-
             Description = "Include model-visible content for explicit operator inspection.",
-
         };
 
         Option<bool> noRetrieval = new("--no-retrieval")
 
         {
-
             Description = "Skip embedding and RAG retrieval work.",
-
         };
 
         Option<string?> campaign = new("--campaign", "-C")
 
         {
-
             Description = "Campaign GUID or name; defaults to saved/detected context.",
-
         };
 
         Option<string?> workspace = new("--workspace", "-w")
 
         {
-
             Description = "Workspace ID or path; defaults to saved/detected context.",
-
         };
 
         Option<string?> model = new("--model", "-m")
 
         {
-
             Description = "Model name; defaults to saved/server context.",
-
         };
 
         Option<string?> session = new("--session", "-s")
 
         {
-
             Description = "Session GUID, title, or prefix; defaults to saved context.",
-
         };
 
         command.Add(prompt);
@@ -193,13 +165,11 @@ internal static partial class CliCommandTree
         command.Add(session);
 
         command.SetAction(
-
             async (ParseResult parseResult, CancellationToken cancellationToken) =>
 
                 RejectedPromptOption(serviceProvider, parseResult, prompt)
 
-                ?? await handler.Preview(
-
+                ?? await handler.Value.Preview(
                     view,
 
                     string.Join(' ', parseResult.GetValue(prompt) ?? []),
@@ -219,16 +189,14 @@ internal static partial class CliCommandTree
                     cancellationToken).ConfigureAwait(false));
 
         return command;
-
     }
 
     private static Command BuildUseResource(
-        ContextCommands handler,
+        DeferredHandler<ContextCommands> handler,
         string name,
         CliContextScope scope,
         string description)
     {
-
         Command command = new(name, $"Select an active {name}.");
 
         Argument<string> identifier = new("identifier")
@@ -240,39 +208,29 @@ internal static partial class CliCommandTree
 
         command.SetAction(
             async (ParseResult parseResult, CancellationToken cancellationToken) =>
-                await handler.Use(
+                await handler.Value.Use(
                     scope,
                     parseResult.GetValue(identifier)!,
                     cancellationToken).ConfigureAwait(false));
 
         return command;
-
     }
 
     internal static bool TryParseScope(
         string? value,
         out CliContextScope scope)
     {
-
         scope = CliContextScope.All;
 
         if (string.IsNullOrWhiteSpace(value))
         {
-
             return true;
-
         }
 
         // Letters only: Enum.TryParse otherwise accepts numeric ordinals ("1"), comma-separated
         // flag lists ("campaign,workspace") and undefined ordinals ("5"), each of which would clear
         // a scope the operator never named — and report success.
-        string normalized = value.Trim();
-
-        return normalized.All(char.IsLetter)
-            && Enum.TryParse(normalized, ignoreCase: true, out scope)
-            && Enum.IsDefined(scope)
+        return CliEnumInput.TryParseName(value, out scope)
             && scope != CliContextScope.All;
-
     }
-
 }

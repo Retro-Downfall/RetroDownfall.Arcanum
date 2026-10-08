@@ -4,6 +4,8 @@ using System.Text;
 
 using System.Text.Json;
 
+using Microsoft.AspNetCore.Diagnostics;
+
 using Microsoft.AspNetCore.Hosting;
 
 using Microsoft.AspNetCore.Builder;
@@ -14,7 +16,11 @@ using Microsoft.Extensions.DependencyInjection;
 
 using RetroDownfall.Arcanum.Api;
 
+using RetroDownfall.Arcanum.Api.Intelligence.OpenAi;
+
 using RetroDownfall.Arcanum.Api.Serialization;
+
+using RetroDownfall.Arcanum.Core.Configuration;
 
 using RetroDownfall.Arcanum.Core.Primitives;
 
@@ -46,7 +52,6 @@ namespace RetroDownfall.Arcanum.Tests.Api;
 [Collection("ApiHost")]
 public sealed class ApiRequestJsonBodyFaultTests
 {
-
     [SkippableTheory]
     [InlineData("/api/lore")]
     [InlineData("/api/memory/saga/m-1/retire")]
@@ -60,7 +65,6 @@ public sealed class ApiRequestJsonBodyFaultTests
     [InlineData("/api/config/validate")]
     public async Task A_body_that_ends_early_is_answered_with_the_envelope_and_not_a_server_error(string route)
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         using HttpResponseMessage response = await SendFaultingBodyAsync(
@@ -70,7 +74,6 @@ public sealed class ApiRequestJsonBodyFaultTests
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
 
         await AssertEnvelopeAsync(response, ErrorCodes.Validation.InvalidBody, ApiRequestJson.IncompleteBodyMessage);
-
     }
 
     [SkippableTheory]
@@ -86,7 +89,6 @@ public sealed class ApiRequestJsonBodyFaultTests
     [InlineData("/api/config/validate")]
     public async Task A_body_past_the_size_ceiling_keeps_the_status_kestrel_chose(string route)
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         using HttpResponseMessage response = await SendFaultingBodyAsync(
@@ -101,7 +103,6 @@ public sealed class ApiRequestJsonBodyFaultTests
         // distinct from its family's invalid-request code, and Validation.InvalidBody is pinned to 400
         // by the mapper and its tests — so reusing it here would have put one code on two statuses.
         await AssertEnvelopeAsync(response, ErrorCodes.Validation.BodyTooLarge, ApiRequestJson.BodyTooLargeMessage);
-
     }
 
     /// <summary>
@@ -125,7 +126,6 @@ public sealed class ApiRequestJsonBodyFaultTests
     [InlineData("/api/config/validate")]
     public async Task A_body_arriving_too_slowly_is_a_timeout_rather_than_a_bad_request(string route)
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         using HttpResponseMessage response = await SendFaultingBodyAsync(
@@ -140,7 +140,6 @@ public sealed class ApiRequestJsonBodyFaultTests
             response,
             ErrorCodes.Validation.BodyReadTimeout,
             ApiRequestJson.BodyReadTimeoutMessage);
-
     }
 
     /// <summary>
@@ -158,7 +157,6 @@ public sealed class ApiRequestJsonBodyFaultTests
     [InlineData("/api/config/validate")]
     public async Task Trailers_over_the_header_ceiling_are_named_as_such(string route)
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         using HttpResponseMessage response = await SendFaultingBodyAsync(
@@ -173,7 +171,165 @@ public sealed class ApiRequestJsonBodyFaultTests
             response,
             ErrorCodes.Validation.RequestHeadersTooLarge,
             ApiRequestJson.RequestHeadersTooLargeMessage);
+    }
 
+    /// <summary>
+    /// A route that binds its body as a handler parameter answers the faults Kestrel raises while the
+    /// framework's generated reader pulls the body with the same envelope as a route that reads it itself.
+    /// </summary>
+    /// <remarks>
+    /// The generated reader catches <see cref="BadHttpRequestException"/> around the read, records the
+    /// status on the response and returns, whatever <c>ThrowOnBadRequest</c> says: the exception never
+    /// reaches <c>ArcanumExceptionHandler</c>, so the response would leave empty with only the status.
+    /// The status-code hook behind the exception handler is what puts the envelope on it. A body that ends
+    /// early (400) is not here on purpose: it is indistinguishable from the bodyless 400 a route returns
+    /// deliberately (<c>GET /api/presence</c>), and the client that dropped the connection is no longer
+    /// there to read it.
+    /// </remarks>
+    [SkippableTheory]
+    [InlineData(StatusCodes.Status413PayloadTooLarge, ErrorCodes.Validation.BodyTooLarge, ApiRequestJson.BodyTooLargeMessage)]
+    [InlineData(StatusCodes.Status408RequestTimeout, ErrorCodes.Validation.BodyReadTimeout, ApiRequestJson.BodyReadTimeoutMessage)]
+    [InlineData(StatusCodes.Status431RequestHeaderFieldsTooLarge, ErrorCodes.Validation.RequestHeadersTooLarge, ApiRequestJson.RequestHeadersTooLargeMessage)]
+    public async Task A_bound_body_route_answers_a_body_fault_with_the_envelope(int status, string code, string message)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        using HttpResponseMessage response = await SendFaultingBodyAsync(
+            "/api/prompts",
+            new BadHttpRequestException("The framework's own wording", status));
+
+        Assert.Equal((HttpStatusCode)status, response.StatusCode);
+
+        await AssertEnvelopeAsync(response, code, message);
+    }
+
+    /// <summary>
+    /// The form-bound upload route is a generated reader too, and answers in the OpenAI envelope.
+    /// </summary>
+    [SkippableTheory]
+    [InlineData(StatusCodes.Status413PayloadTooLarge, "payload_too_large")]
+    [InlineData(StatusCodes.Status408RequestTimeout, "invalid_request")]
+    public async Task A_form_bound_v1_route_answers_a_body_fault_with_the_openai_envelope(int status, string code)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using ArcanumWebApplicationFactory factory = new()
+        {
+            ServiceOverrides = services => services.AddSingleton<IStartupFilter>(
+                new BodyFaultFilter("/v1/files", new BadHttpRequestException("The framework's own wording", status))),
+        };
+
+        HttpClient client = factory.CreateAuthenticatedClient();
+
+        using MultipartFormDataContent form = new();
+
+        form.Add(new StringContent("assistants"), "purpose");
+
+        form.Add(new ByteArrayContent(Encoding.UTF8.GetBytes("hello")), "file", "hello.txt");
+
+        using HttpResponseMessage response = await client.PostAsync("/v1/files", form);
+
+        Assert.Equal((HttpStatusCode)status, response.StatusCode);
+
+        OpenAiErrorResponse? body = JsonSerializer.Deserialize(
+            await response.Content.ReadAsStringAsync(),
+            ArcanumJsonContext.Default.OpenAiErrorResponse);
+
+        Assert.NotNull(body);
+
+        Assert.Equal("invalid_request_error", body!.Error.Type);
+
+        Assert.Equal(code, body.Error.Code);
+    }
+
+    /// <summary>
+    /// The hook leaves every other empty status exactly as it was: a bodyless 400 a route returns on
+    /// purpose (<c>GET /api/presence</c>) is not a body fault, and a 408, 413 or 431 with no matched
+    /// endpoint did not come from a route's body read.
+    /// </summary>
+    [Theory]
+    [InlineData(StatusCodes.Status400BadRequest, true, false)]
+    [InlineData(StatusCodes.Status401Unauthorized, true, false)]
+    [InlineData(StatusCodes.Status404NotFound, true, false)]
+    [InlineData(StatusCodes.Status500InternalServerError, true, false)]
+    [InlineData(StatusCodes.Status503ServiceUnavailable, true, false)]
+    [InlineData(StatusCodes.Status413PayloadTooLarge, false, false)]
+    [InlineData(StatusCodes.Status408RequestTimeout, false, false)]
+    [InlineData(StatusCodes.Status413PayloadTooLarge, true, true)]
+    [InlineData(StatusCodes.Status408RequestTimeout, true, true)]
+    [InlineData(StatusCodes.Status431RequestHeaderFieldsTooLarge, true, true)]
+    [InlineData(StatusCodes.Status415UnsupportedMediaType, true, true)]
+    [InlineData(StatusCodes.Status415UnsupportedMediaType, false, true)]
+    public async Task The_status_code_hook_writes_the_envelope_for_body_faults_only(
+        int status,
+        bool endpointMatched,
+        bool expectEnvelope)
+    {
+        DefaultHttpContext httpContext = new()
+        {
+            RequestServices = new ServiceCollection().AddLogging().BuildServiceProvider(),
+        };
+
+        httpContext.Request.Path = "/api/prompts";
+
+        httpContext.Response.StatusCode = status;
+
+        MemoryStream body = new();
+
+        httpContext.Response.Body = body;
+
+        if (endpointMatched)
+        {
+            httpContext.SetEndpoint(new Endpoint(static _ => Task.CompletedTask, new EndpointMetadataCollection(), "matched"));
+        }
+
+        await ApiBootstrapper.WriteBodyFaultEnvelopeAsync(
+            new StatusCodeContext(httpContext, new StatusCodePagesOptions(), static _ => Task.CompletedTask));
+
+        Assert.Equal(status, httpContext.Response.StatusCode);
+
+        Assert.Equal(expectEnvelope, body.Length > 0);
+    }
+
+    /// <summary>
+    /// The status-code hook is global, so it would wrap a bare 415 from any surface in the Arcanum envelope.
+    /// The one surface a third-party SDK owns is the A2A server's JSON-RPC route, and it never gives the hook
+    /// a 415 to wrap: it answers a body that is not JSON itself, in its own protocol.
+    /// </summary>
+    /// <remarks>
+    /// The A2A SDK can also map an HTTP binding that declares the media type it accepts, which routing would
+    /// refuse with a bare 415; Arcanum maps only the JSON-RPC route, and this pins what that route does.
+    /// </remarks>
+    [SkippableFact]
+    public async Task The_a2a_server_route_answers_a_non_json_body_itself_and_the_hook_leaves_it_alone()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using ArcanumWebApplicationFactory factory = new()
+        {
+            SettingsOverride = settings => settings with
+            {
+                Features = (settings.Features ?? new FeatureSettings()) with
+                {
+                    Conclave = true,
+                    A2AServer = true,
+                },
+            },
+        };
+
+        HttpClient client = factory.CreateAuthenticatedClient();
+
+        using HttpResponseMessage response = await client.PostAsync(
+            "/api/conclave/a2a",
+            new StringContent("{}", Encoding.UTF8, "text/plain"));
+
+        string body = await response.Content.ReadAsStringAsync();
+
+        Assert.NotEqual(HttpStatusCode.UnsupportedMediaType, response.StatusCode);
+
+        Assert.DoesNotContain(ErrorCodes.Validation.UnsupportedMediaType, body, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("\"isSuccess\"", body, StringComparison.Ordinal);
     }
 
     /// <summary>
@@ -197,7 +353,6 @@ public sealed class ApiRequestJsonBodyFaultTests
         string expectedCode,
         string expectedMessage)
     {
-
         ApiResponse<bool>? body = JsonSerializer.Deserialize(
             await response.Content.ReadAsStringAsync(),
             ArcanumJsonContext.Default.ApiResponseBoolean);
@@ -211,12 +366,10 @@ public sealed class ApiRequestJsonBodyFaultTests
         Assert.Equal(expectedMessage, body.Error?.Message);
 
         Assert.False(string.IsNullOrEmpty(body.TraceId));
-
     }
 
     private static async Task<HttpResponseMessage> SendFaultingBodyAsync(string route, Exception failure)
     {
-
         await using ArcanumWebApplicationFactory factory = new()
         {
             ServiceOverrides = services =>
@@ -228,7 +381,6 @@ public sealed class ApiRequestJsonBodyFaultTests
         return await client.PostAsync(
             route,
             new StringContent("{\"key\":\"k\"}", Encoding.UTF8, "application/json"));
-
     }
 
     /// <summary>Replaces the request body with one that fails the way Kestrel's does.</summary>
@@ -236,39 +388,30 @@ public sealed class ApiRequestJsonBodyFaultTests
     /// A startup filter rather than a test-only endpoint, so the fault is injected into the real
     /// pipeline ahead of the real route and every layer between them runs as it does in production.
     /// </remarks>
-    private sealed class BodyFaultFilter(string route, Exception failure) : IStartupFilter
+    internal sealed class BodyFaultFilter(string route, Exception failure) : IStartupFilter
     {
-
         public Action<IApplicationBuilder> Configure(Action<IApplicationBuilder> next) =>
             app =>
             {
-
                 app.Use(async (context, proceed) =>
                 {
-
                     if (context.Request.Path.StartsWithSegments(route, StringComparison.Ordinal))
                     {
-
                         context.Request.Body = new FaultingBody(
                             Encoding.UTF8.GetBytes("{\"key\":\"k"),
                             failure);
-
                     }
 
                     await proceed(context);
-
                 });
 
                 next(app);
-
             };
-
     }
 
     /// <summary>Yields a valid JSON prefix, then fails.</summary>
-    private sealed class FaultingBody(byte[] prefix, Exception failure) : Stream
+    internal sealed class FaultingBody(byte[] prefix, Exception failure) : Stream
     {
-
         private int _offset;
 
         public override bool CanRead => true;
@@ -283,17 +426,13 @@ public sealed class ApiRequestJsonBodyFaultTests
 
         public override void Flush()
         {
-
         }
 
         public override int Read(byte[] buffer, int offset, int count)
         {
-
             if (_offset >= prefix.Length)
             {
-
                 throw failure;
-
             }
 
             int take = Math.Min(count, prefix.Length - _offset);
@@ -303,17 +442,13 @@ public sealed class ApiRequestJsonBodyFaultTests
             _offset += take;
 
             return take;
-
         }
 
         public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken)
         {
-
             if (_offset >= prefix.Length)
             {
-
                 throw failure;
-
             }
 
             int take = Math.Min(buffer.Length, prefix.Length - _offset);
@@ -323,7 +458,6 @@ public sealed class ApiRequestJsonBodyFaultTests
             _offset += take;
 
             return ValueTask.FromResult(take);
-
         }
 
         public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
@@ -331,7 +465,5 @@ public sealed class ApiRequestJsonBodyFaultTests
         public override void SetLength(long value) => throw new NotSupportedException();
 
         public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
-
     }
-
 }

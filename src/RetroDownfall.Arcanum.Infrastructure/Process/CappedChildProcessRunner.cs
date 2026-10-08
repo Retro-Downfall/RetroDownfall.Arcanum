@@ -12,7 +12,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.ProcessExecution;
 
 internal enum CappedChildProcessOutcome
 {
-
     Completed,
 
     TimedOut,
@@ -42,6 +41,14 @@ internal enum CappedChildProcessOutcome
     /// <summary>OS-level resource limits could not be applied before start, or the child could not be assigned to a Windows Job Object after start; when assignment fails the process tree is killed so the child is never left running unbounded.</summary>
     ResourceLimitApplyFailed,
 
+    /// <summary>
+    /// The macOS memory monitor stopped on a fault while the child was running, so nothing enforced the
+    /// memory ceiling any more and the process tree was killed. Unlike
+    /// <see cref="ResourceLimitApplyFailed"/> the child did start and run — for as long as the monitor
+    /// lasted — so its work may be partly done and its output is incomplete.
+    /// </summary>
+    MemoryMonitorStopped,
+
     /// <summary>The process was killed by the kernel for exceeding an OS-enforced resource limit (CPU time or memory).</summary>
     ResourceLimitExceeded,
 
@@ -61,14 +68,19 @@ internal enum CappedChildProcessOutcome
     /// preparation and immediately before Process.Start; the child was never spawned.
     /// </summary>
     PreStartValidationFailed,
-
 }
 
+/// <param name="ReadAbandoned">
+/// The run completed but this pipe was still held open (by a descendant the command left running) when
+/// the post-exit drain gave up on it: <see cref="Text"/> is empty, nothing was preserved, and the stream
+/// is reported as truncated without a <see cref="CompleteOutputPath"/>.
+/// </param>
 internal readonly record struct CappedStreamOutput(
     string Text,
     bool Truncated,
     string? CompleteOutputPath = null,
-    long TotalBytes = 0L);
+    long TotalBytes = 0L,
+    bool ReadAbandoned = false);
 
 internal sealed class ChildProcessOutputPreservationException(
     Exception innerException) : IOException(
@@ -80,11 +92,9 @@ internal sealed class CommandOutputSpillLimitException(
     long limitBytes) : IOException(
         $"Physical resource protection: the command-output artifact reached {attemptedBytes} bytes, exceeding the explicit Sanctum MaxFileWriteMb policy of {limitBytes} bytes. The partial artifact was deleted; rerun with quieter output or explicitly raise Sanctum MaxFileWriteMb.")
 {
-
     internal long AttemptedBytes { get; } = attemptedBytes;
 
     internal long LimitBytes { get; } = limitBytes;
-
 }
 
 internal readonly record struct CappedChildProcessPreStartValidationResult(
@@ -101,7 +111,6 @@ internal enum ChildProcessSandboxDeniedRootKind
 
 internal sealed class CappedChildProcessRunResult
 {
-
     internal CappedChildProcessOutcome Outcome { get; init; }
 
     internal CappedStreamOutput Stdout { get; init; }
@@ -133,12 +142,10 @@ internal sealed class CappedChildProcessRunResult
 
     internal ChildProcessSandboxDeniedRootKind?
         SandboxDeniedRoot { get; init; }
-
 }
 
 internal static class CappedChildProcessRunner
 {
-
     /// <summary>
     /// How long the runner keeps draining stdout/stderr <em>after</em> the child itself has exited.
     /// Only a pipe still held open by a surviving descendant can outlast this: the kernel buffer a
@@ -156,6 +163,12 @@ internal static class CappedChildProcessRunner
     private static readonly TimeSpan AbandonedOutputDrainRegrace =
         TimeSpan.FromMilliseconds(500);
 
+    /// <summary>
+    /// Status the Unix resource-limit prelude exits with when it refuses to exec because a limit
+    /// could not be applied (see <see cref="ProcessResourceLimiterResult.PreExecFailureMarker"/>).
+    /// </summary>
+    private const int PreExecLimitFailureExitCode = 126;
+
     internal static async Task<CappedChildProcessRunResult> RunAsync(
         ProcessStartInfo startInfo,
         ChildProcessEnvironmentProfile environmentProfile,
@@ -169,9 +182,9 @@ internal static class CappedChildProcessRunner
         Func<CappedChildProcessPreStartValidationResult>? preStartValidation = null,
         Func<TimeSpan>? getCleanupTimeRemaining = null,
         string? outputSpillDirectory = null,
-        IReadOnlyCollection<string>? operatorDeclaredSecretEnvironmentVariables = null)
+        IReadOnlyCollection<string>? operatorDeclaredSecretEnvironmentVariables = null,
+        Func<int, long?, MacOsDescendantSupervisor?>? descendantSupervisorFactory = null)
     {
-
         ChildProcessEnvironmentScrubber.ApplyProfile(
             startInfo,
             environmentProfile,
@@ -190,9 +203,7 @@ internal static class CappedChildProcessRunner
 
         if (perStreamCapBytes < 1024L)
         {
-
             perStreamCapBytes = 1024L;
-
         }
 
         OutputSpillBudget? outputSpillBudget =
@@ -214,164 +225,121 @@ internal static class CappedChildProcessRunner
 
         if (limiterResult.Error is not null)
         {
-
             return new CappedChildProcessRunResult
             {
-
                 Outcome = CappedChildProcessOutcome.ResourceLimitApplyFailed,
 
                 PerStreamCapBytes = perStreamCapBytes,
 
                 ResourceLimitApplyError = limiterResult.Error.Message,
-
             };
-
         }
 
-        // FS jail wraps the post-rlimit StartInfo (macOS sandbox-exec around the ulimit prelude when
-        // present; Linux Landlock inactive for macOS-ARM beta). Order: env scrub → rlimits → FS jail → start → Job assign.
+        // Everything from here on — every sandbox refusal, every Start() failure, every cancellation —
+        // owes the limiter its cleanup (the cgroup scope directory exists from Apply onwards) and the
+        // sandbox its temp artifacts, so the whole remainder of the method sits inside this one
+        // try/finally instead of each early return remembering to clean up for itself.
         ChildProcessSandboxApplyResult? sandboxResult = null;
 
-        if (filesystemSandbox is not null)
-        {
-
-            sandboxResult = ChildProcessFilesystemJail.Apply(startInfo, filesystemSandbox, logger);
-
-            if (sandboxResult.Status == ChildProcessSandboxApplyStatus.Unavailable)
-            {
-
-                await CleanupSandboxTempPathsAsync(
-                        sandboxResult,
-                        getCleanupTimeRemaining,
-                        logger)
-                    .ConfigureAwait(false);
-
-                return new CappedChildProcessRunResult
-                {
-
-                    Outcome = CappedChildProcessOutcome.FilesystemSandboxUnavailable,
-
-                    PerStreamCapBytes = perStreamCapBytes,
-
-                    FilesystemSandboxDenialMessage = string.IsNullOrWhiteSpace(sandboxResult.Detail)
-                        ? ChildProcessSandboxMessages.SandboxUnavailable
-                        : sandboxResult.Detail + " " + ChildProcessSandboxMessages.NotNetworkIsolationNote,
-
-                };
-
-            }
-
-            if (sandboxResult.Status == ChildProcessSandboxApplyStatus.DeniedByWindowsSanctum)
-            {
-
-                await CleanupSandboxTempPathsAsync(
-                        sandboxResult,
-                        getCleanupTimeRemaining,
-                        logger)
-                    .ConfigureAwait(false);
-
-                return new CappedChildProcessRunResult
-                {
-
-                    Outcome = CappedChildProcessOutcome.FilesystemSandboxDeniedByWindowsSanctum,
-
-                    PerStreamCapBytes = perStreamCapBytes,
-
-                    FilesystemSandboxDenialMessage = ChildProcessSandboxMessages.WindowsSanctumPathBoundaryDenied,
-
-                };
-
-            }
-
-            if (filesystemSandbox.RequireAppliedFilesystemJail
-                && sandboxResult.Status != ChildProcessSandboxApplyStatus.Applied)
-            {
-
-                await CleanupSandboxTempPathsAsync(
-                        sandboxResult,
-                        getCleanupTimeRemaining,
-                        logger)
-                    .ConfigureAwait(false);
-
-                return new CappedChildProcessRunResult
-                {
-
-                    Outcome = CappedChildProcessOutcome.FilesystemSandboxUnavailable,
-
-                    PerStreamCapBytes = perStreamCapBytes,
-
-                    FilesystemSandboxDenialMessage =
-                        "workspace_check requires an active filesystem jail; the process was not started. "
-                        + ChildProcessSandboxMessages.NotNetworkIsolationNote,
-
-                };
-
-            }
-
-            // Applied OS jail and an explicitly accepted operator escape continue.
-
-        }
-
-        bool processGroupEstablishedByLauncher =
-            UnixProcessGroupSupervisor.Apply(startInfo);
-
-        using Process process = new();
-
-        process.StartInfo = startInfo;
-
-        using CancellationTokenSource timeoutCts = new(timeout);
-
-        using CancellationTokenSource outputFailureCts = new();
-
-        using CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(
-            cancellationToken,
-            timeoutCts.Token,
-            outputFailureCts.Token);
-
-        CancellationToken waitToken = linked.Token;
-
-        // The cgroup scope directory (if any) is created by resourceLimiter.Apply above, before
-        // Process.Start() is even attempted. Every exit path from this point on — including every
-        // Start() failure caught below — must still run limiterResult.CleanupAsync, so the whole
-        // remainder of the method is wrapped in this outer try/finally rather than relying on the
-        // inner try/finally (around the main run logic) alone, which a Start() failure would bypass
-        // entirely, leaking an empty, process-less cgroup directory.
         int startedPid = -1;
 
-        int? unixProcessGroupId = null;
         MacOsDescendantSupervisor? descendantSupervisor = null;
-        bool descendantContainmentVerified = true;
 
         try
         {
+            // FS jail wraps the post-rlimit StartInfo (macOS sandbox-exec around the ulimit prelude when
+            // present; Linux Landlock inactive for macOS-ARM beta). Order: env scrub → rlimits → FS jail → start → Job assign.
+            if (filesystemSandbox is not null)
+            {
+                sandboxResult = ChildProcessFilesystemJail.Apply(startInfo, filesystemSandbox, logger);
+
+                if (sandboxResult.Status == ChildProcessSandboxApplyStatus.Unavailable)
+                {
+                    return new CappedChildProcessRunResult
+                    {
+                        Outcome = CappedChildProcessOutcome.FilesystemSandboxUnavailable,
+
+                        PerStreamCapBytes = perStreamCapBytes,
+
+                        FilesystemSandboxDenialMessage = string.IsNullOrWhiteSpace(sandboxResult.Detail)
+                            ? ChildProcessSandboxMessages.SandboxUnavailable
+                            : sandboxResult.Detail + " " + ChildProcessSandboxMessages.NotNetworkIsolationNote,
+                    };
+                }
+
+                if (sandboxResult.Status == ChildProcessSandboxApplyStatus.DeniedByWindowsSanctum)
+                {
+                    return new CappedChildProcessRunResult
+                    {
+                        Outcome = CappedChildProcessOutcome.FilesystemSandboxDeniedByWindowsSanctum,
+
+                        PerStreamCapBytes = perStreamCapBytes,
+
+                        FilesystemSandboxDenialMessage = ChildProcessSandboxMessages.WindowsSanctumPathBoundaryDenied,
+                    };
+                }
+
+                if (filesystemSandbox.RequireAppliedFilesystemJail
+                    && sandboxResult.Status != ChildProcessSandboxApplyStatus.Applied)
+                {
+                    return new CappedChildProcessRunResult
+                    {
+                        Outcome = CappedChildProcessOutcome.FilesystemSandboxUnavailable,
+
+                        PerStreamCapBytes = perStreamCapBytes,
+
+                        FilesystemSandboxDenialMessage =
+                            "workspace_check requires an active filesystem jail; the process was not started. "
+                            + ChildProcessSandboxMessages.NotNetworkIsolationNote,
+                    };
+                }
+
+                // Applied OS jail and an explicitly accepted operator escape continue.
+            }
+
+            bool processGroupEstablishedByLauncher =
+                UnixProcessGroupSupervisor.Apply(startInfo);
+
+            using Process process = new();
+
+            process.StartInfo = startInfo;
+
+            using CancellationTokenSource timeoutCts = new(timeout);
+
+            using CancellationTokenSource outputFailureCts = new();
+
+            using CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(
+                cancellationToken,
+                timeoutCts.Token,
+                outputFailureCts.Token);
+
+            CancellationToken waitToken = linked.Token;
+
+            int? unixProcessGroupId = null;
+
+            bool descendantContainmentVerified = true;
 
             if (cancellationToken.IsCancellationRequested)
             {
-
                 return new CappedChildProcessRunResult
                 {
-
                     Outcome =
                         CappedChildProcessOutcome.CanceledBeforeStart,
 
                     PerStreamCapBytes = perStreamCapBytes,
-
                 };
             }
 
             if (preStartValidation is not null)
             {
-
                 CappedChildProcessPreStartValidationResult validation;
 
                 try
                 {
-
                     validation = preStartValidation();
                 }
                 catch (Exception)
                 {
-
                     validation = new CappedChildProcessPreStartValidationResult(
                         false,
                         "Trusted process identity validation failed.");
@@ -379,10 +347,8 @@ internal static class CappedChildProcessRunner
 
                 if (!validation.Success)
                 {
-
                     return new CappedChildProcessRunResult
                     {
-
                         Outcome =
                             CappedChildProcessOutcome.PreStartValidationFailed,
 
@@ -391,15 +357,12 @@ internal static class CappedChildProcessRunner
                         PreStartValidationError = validation.Error,
 
                         PreStartValidationCode = validation.Code,
-
                     };
                 }
-
             }
 
             if (cancellationToken.IsCancellationRequested)
             {
-
                 return new CappedChildProcessRunResult
                 {
                     Outcome =
@@ -412,91 +375,66 @@ internal static class CappedChildProcessRunner
             {
                 if (!process.Start())
                 {
-
                     return new CappedChildProcessRunResult
                     {
-
                         Outcome = CappedChildProcessOutcome.FailedToStart,
 
                         PerStreamCapBytes = perStreamCapBytes,
-
                     };
-
                 }
-
             }
             catch (IOException ex)
             {
-
                 return new CappedChildProcessRunResult
                 {
-
                     Outcome = CappedChildProcessOutcome.IoErrorOnStart,
 
                     PerStreamCapBytes = perStreamCapBytes,
 
                     FaultException = ex,
-
                 };
-
             }
             catch (UnauthorizedAccessException ex)
             {
-
                 return new CappedChildProcessRunResult
                 {
-
                     Outcome = CappedChildProcessOutcome.AccessDeniedOnStart,
 
                     PerStreamCapBytes = perStreamCapBytes,
 
                     FaultException = ex,
-
                 };
-
             }
             catch (OperationCanceledException)
             {
-
                 return new CappedChildProcessRunResult
                 {
-
                     Outcome = CappedChildProcessOutcome.CanceledBeforeStart,
 
                     PerStreamCapBytes = perStreamCapBytes,
-
                 };
-
             }
             catch (InvalidOperationException ex)
             {
-
                 return new CappedChildProcessRunResult
                 {
-
                     Outcome = CappedChildProcessOutcome.FailedToStart,
 
                     PerStreamCapBytes = perStreamCapBytes,
 
                     FaultException = ex,
-
                 };
-
             }
             catch (Win32Exception ex)
             {
-
                 return new CappedChildProcessRunResult
                 {
-
                     Outcome = CappedChildProcessOutcome.FailedToStart,
 
                     PerStreamCapBytes = perStreamCapBytes,
 
                     FaultException = ex,
-
                 };
-
             }
 
             // Captured immediately after a successful Start() so it is available to any later
@@ -507,11 +445,52 @@ internal static class CappedChildProcessRunner
 
             CloseChildStandardInput(process, logger);
 
+            // Only a launcher that put the child in its own group (Linux setsid) leaves the runner a group
+            // to kill. setpgid on an already-started child is refused once it has exec'd, which it always
+            // has by the time Process.Start returns, so there is no post-start fallback. On macOS a
+            // cancellation or timeout is therefore the tree kill (SIGKILL to every descendant still attached
+            // to the root, which never lets the launcher's EXIT trap run) plus the descendant supervisor's
+            // identity tracking; the launcher's trap only covers the child's own exit.
             unixProcessGroupId = processGroupEstablishedByLauncher
                 ? startedPid
-                : UnixProcessGroup.TryCreate(startedPid);
-            descendantSupervisor =
-                MacOsDescendantSupervisor.TryStart(startedPid);
+                : null;
+            descendantSupervisor = (descendantSupervisorFactory ?? DefaultDescendantSupervisorFactory)(
+                startedPid,
+                limiterResult.MonitoredMemoryLimitBytes);
+
+            // macOS has no kernel memory ceiling for a child (RLIMIT_AS is rejected), so the
+            // supervisor's footprint monitor is the ceiling. A child it could not attach to while
+            // still running would run unbounded: kill it and fail closed. A child that already
+            // exited cannot exceed anything, so there is nothing left to bound.
+            if (limiterResult.MonitoredMemoryLimitBytes is not null)
+            {
+                if (descendantSupervisor is null
+                    && !process.HasExited)
+                {
+                    UnixProcessGroup.TryKill(unixProcessGroupId);
+
+                    ProcessTreeKiller.TryKillEntireTree(
+                        process,
+                        context: "execute_command/run_spell_script (memory monitor could not attach)");
+
+                    return new CappedChildProcessRunResult
+                    {
+                        Outcome = CappedChildProcessOutcome.ResourceLimitApplyFailed,
+
+                        PerStreamCapBytes = perStreamCapBytes,
+
+                        ResourceLimitApplyError =
+                            "The child-process memory monitor could not attach to the started process; the process was killed.",
+                    };
+                }
+
+                MacOsDescendantSupervisor? memoryMonitor = descendantSupervisor;
+
+                limiterResult = limiterResult with
+                {
+                    WasOomKilledAsync = () => Task.FromResult(memoryMonitor?.MemoryLimitExceeded == true),
+                };
+            }
 
             if (OperatingSystem.IsMacOS()
                 && filesystemSandbox?.ToolName
@@ -528,50 +507,61 @@ internal static class CappedChildProcessRunner
             // kill the tree and surface ResourceLimitApplyFailed — never leave the child unbounded.
             if (limiterResult.AssignAfterStart is not null)
             {
-
                 ResourceLimitError? assignError = limiterResult.AssignAfterStart(process);
 
                 if (assignError is not null)
                 {
-
                     ProcessTreeKiller.TryKillEntireTree(
                         process,
                         context: "execute_command/run_spell_script (Job Object assign failed)");
 
                     return new CappedChildProcessRunResult
                     {
-
                         Outcome = CappedChildProcessOutcome.ResourceLimitApplyFailed,
 
                         PerStreamCapBytes = perStreamCapBytes,
 
                         ResourceLimitApplyError = assignError.Message,
-
                     };
-
                 }
 
+                // The Windows broker waits for this before creating the untrusted target: job
+                // membership alone cannot tell this run's job from one the host inherited.
+                if (!ChildProcessFilesystemJail.ConfirmWindowsJobAssignment(sandboxResult))
+                {
+                    ProcessTreeKiller.TryKillEntireTree(
+                        process,
+                        context: "execute_command/run_spell_script (Job Object confirmation failed)");
+
+                    return new CappedChildProcessRunResult
+                    {
+                        Outcome = CappedChildProcessOutcome.ResourceLimitApplyFailed,
+
+                        PerStreamCapBytes = perStreamCapBytes,
+
+                        ResourceLimitApplyError =
+                            "execute_command: the sandbox broker could not be told it was assigned to the Sanctum Job Object; the command was not started.",
+                    };
+                }
             }
 
             CancellationTokenRegistration killRegistration = waitToken.Register(
                 static state =>
                 {
-
                     (Process child, int? groupId, MacOsDescendantSupervisor? supervisor) =
                         ((Process Child, int? GroupId, MacOsDescendantSupervisor? Supervisor))state!;
                     supervisor?.KillTracked();
-                    UnixProcessGroup.TryTerminateAndKill(
+                    // Not awaited: the grace must not hold the thread that is cancelling the run.
+                    _ = UnixProcessGroup.TerminateAndKillAsync(
                         groupId);
                     ProcessTreeKiller.TryKillEntireTree(
                         child,
                         context: "execute_command/run_spell_script");
-
                 },
                 (process, unixProcessGroupId, descendantSupervisor));
 
             try
             {
-
                 string? stdoutSpillPath = BuildOutputSpillPath(
                     outputSpillDirectory,
                     "stdout");
@@ -604,23 +594,20 @@ internal static class CappedChildProcessRunner
 
                 try
                 {
-
                     await process.WaitForExitAsync(waitToken).ConfigureAwait(false);
-
                 }
                 catch (OperationCanceledException)
                 {
-
                     UnixProcessGroup.TryKill(unixProcessGroupId);
 
                     ProcessTreeKiller.TryKillEntireTree(process, context: "execute_command/run_spell_script");
                     if (descendantSupervisor is not null)
                     {
                         descendantContainmentVerified =
-                            await descendantSupervisor
-                            .StopKillAndVerifyAsync(
-                                TimeSpan.FromSeconds(2))
-                            .ConfigureAwait(false);
+                            await StopDescendantSupervisorAsync(
+                                    descendantSupervisor,
+                                    logger)
+                                .ConfigureAwait(false);
                     }
 
                     (CappedStreamOutput canceledStdout, CappedStreamOutput canceledStderr) =
@@ -642,10 +629,8 @@ internal static class CappedChildProcessRunner
 
                     if (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
                     {
-
                         return new CappedChildProcessRunResult
                         {
-
                             Outcome = CappedChildProcessOutcome.TimedOut,
 
                             Stdout = canceledStdout,
@@ -653,21 +638,17 @@ internal static class CappedChildProcessRunner
                             Stderr = canceledStderr,
 
                             PerStreamCapBytes = perStreamCapBytes,
-
                         };
-
                     }
 
                     if (outputFailureCts.IsCancellationRequested)
                     {
-
                         Exception? outputFault = GetOutputReadFault(
                             stdoutTask,
                             stderrTask);
 
                         return new CappedChildProcessRunResult
                         {
-
                             Outcome = outputFault switch
                             {
                                 ChildProcessOutputPreservationException =>
@@ -686,14 +667,11 @@ internal static class CappedChildProcessRunner
                             PerStreamCapBytes = perStreamCapBytes,
 
                             FaultException = outputFault,
-
                         };
-
                     }
 
                     return new CappedChildProcessRunResult
                     {
-
                         Outcome = CappedChildProcessOutcome.Canceled,
 
                         Stdout = canceledStdout,
@@ -701,9 +679,7 @@ internal static class CappedChildProcessRunner
                         Stderr = canceledStderr,
 
                         PerStreamCapBytes = perStreamCapBytes,
-
                     };
-
                 }
 
                 // A successful parent exit is not proof that descendants exited. The captured
@@ -712,10 +688,10 @@ internal static class CappedChildProcessRunner
                 if (descendantSupervisor is not null)
                 {
                     descendantContainmentVerified =
-                        await descendantSupervisor
-                        .StopKillAndVerifyAsync(
-                            TimeSpan.FromSeconds(2))
-                        .ConfigureAwait(false);
+                        await StopDescendantSupervisorAsync(
+                                descendantSupervisor,
+                                logger)
+                            .ConfigureAwait(false);
                 }
 
                 CappedStreamOutput stdout;
@@ -724,19 +700,17 @@ internal static class CappedChildProcessRunner
 
                 try
                 {
-
-                    stdout = await stdoutTask
-                        .WaitAsync(PostExitOutputDrainGrace)
+                    // One deadline for both pipes. Waiting for each in turn gave stderr a fresh grace once
+                    // stdout reached EOF, so the documented 5 s bound was really up to 10 s.
+                    (stdout, stderr) = await AwaitPostExitOutputAsync(
+                            stdoutTask,
+                            stderrTask,
+                            PostExitOutputDrainGrace,
+                            TimeProvider.System)
                         .ConfigureAwait(false);
-
-                    stderr = await stderrTask
-                        .WaitAsync(PostExitOutputDrainGrace)
-                        .ConfigureAwait(false);
-
                 }
                 catch (TimeoutException)
                 {
-
                     // The child is gone but something still holds the write end of its pipes, so
                     // the readers will never see EOF. Every containment sweep above is best-effort
                     // (DESIGN §11.15), and once WaitForExitAsync has returned neither the timeout
@@ -752,21 +726,31 @@ internal static class CappedChildProcessRunner
 
                     descendantSupervisor?.KillTracked();
 
-                    UnixProcessGroup.TryTerminateAndKill(unixProcessGroupId);
+                    await UnixProcessGroup.TerminateAndKillAsync(unixProcessGroupId)
+                        .ConfigureAwait(false);
 
+                    // A reader that finished keeps its spill: its complete output is what
+                    // execute_command hands back. Only an abandoned reader's spill is reclaimed.
                     (CappedStreamOutput abandonedStdout, CappedStreamOutput abandonedStderr) =
                         await DrainAbandonedStreamReadTasksAsync(
                                 stdoutTask,
-                                stderrTask)
+                                stdoutSpillPath,
+                                stderrTask,
+                                stderrSpillPath)
                             .ConfigureAwait(false);
 
-                    DeleteOutputSpillsWhenReadersComplete(
-                        stdoutTask,
-                        stdoutSpillPath,
-                        stderrTask,
-                        stderrSpillPath);
-
                     int abandonedExitCode = process.ExitCode;
+
+                    if (MemoryMonitorFaultResult(
+                            descendantSupervisor,
+                            limiterResult,
+                            perStreamCapBytes,
+                            abandonedStdout,
+                            abandonedStderr,
+                            abandonedExitCode) is { } abandonedMonitorFault)
+                    {
+                        return abandonedMonitorFault;
+                    }
 
                     ResourceLimitKind? abandonedExceededResource = await CheckSignalKillAsync(
                             abandonedExitCode,
@@ -776,7 +760,6 @@ internal static class CappedChildProcessRunner
 
                     return new CappedChildProcessRunResult
                     {
-
                         Outcome = abandonedExceededResource is not null
                             ? CappedChildProcessOutcome.ResourceLimitExceeded
                             : CappedChildProcessOutcome.Completed,
@@ -790,13 +773,10 @@ internal static class CappedChildProcessRunner
                         PerStreamCapBytes = perStreamCapBytes,
 
                         ExceededResource = abandonedExceededResource,
-
                     };
-
                 }
                 catch (ChildProcessOutputPreservationException ex)
                 {
-
                     DeleteOutputSpillsWhenReadersComplete(
                         stdoutTask,
                         stdoutSpillPath,
@@ -805,19 +785,15 @@ internal static class CappedChildProcessRunner
 
                     return new CappedChildProcessRunResult
                     {
-
                         Outcome = CappedChildProcessOutcome.OutputPreservationFailed,
 
                         PerStreamCapBytes = perStreamCapBytes,
 
                         FaultException = ex,
-
                     };
-
                 }
                 catch (IOException ex)
                 {
-
                     DeleteOutputSpillsWhenReadersComplete(
                         stdoutTask,
                         stdoutSpillPath,
@@ -826,19 +802,15 @@ internal static class CappedChildProcessRunner
 
                     return new CappedChildProcessRunResult
                     {
-
                         Outcome = CappedChildProcessOutcome.IoErrorReadingOutput,
 
                         PerStreamCapBytes = perStreamCapBytes,
 
                         FaultException = ex,
-
                     };
-
                 }
                 catch (UnauthorizedAccessException ex)
                 {
-
                     DeleteOutputSpillsWhenReadersComplete(
                         stdoutTask,
                         stdoutSpillPath,
@@ -847,19 +819,15 @@ internal static class CappedChildProcessRunner
 
                     return new CappedChildProcessRunResult
                     {
-
                         Outcome = CappedChildProcessOutcome.AccessDeniedReadingOutput,
 
                         PerStreamCapBytes = perStreamCapBytes,
 
                         FaultException = ex,
-
                     };
-
                 }
                 catch (OperationCanceledException)
                 {
-
                     DeleteOutputSpillsWhenReadersComplete(
                         stdoutTask,
                         stdoutSpillPath,
@@ -868,13 +836,10 @@ internal static class CappedChildProcessRunner
 
                     return new CappedChildProcessRunResult
                     {
-
                         Outcome = CappedChildProcessOutcome.CanceledWhileReadingOutput,
 
                         PerStreamCapBytes = perStreamCapBytes,
-
                     };
-
                 }
 
                 int exitCode = process.ExitCode;
@@ -885,12 +850,46 @@ internal static class CappedChildProcessRunner
                         "workspace_check descendant cleanup could not verify quiescence after process exit.");
                 }
 
+                if (MemoryMonitorFaultResult(
+                        descendantSupervisor,
+                        limiterResult,
+                        perStreamCapBytes,
+                        stdout,
+                        stderr,
+                        exitCode) is { } monitorFault)
+                {
+                    return monitorFault;
+                }
+
+                // The fail-closed prelude exits 126 before exec when a limit could not be applied and
+                // only then writes its per-run marker, so the target never ran: report the refusal,
+                // never the prelude's exit as the target's result.
+                if (exitCode == PreExecLimitFailureExitCode
+                    && limiterResult.PreExecFailureMarker is string preExecFailureMarker
+                    && stderr.Text.Contains(preExecFailureMarker, StringComparison.Ordinal))
+                {
+                    return new CappedChildProcessRunResult
+                    {
+                        Outcome = CappedChildProcessOutcome.ResourceLimitApplyFailed,
+
+                        Stdout = stdout,
+
+                        Stderr = stderr,
+
+                        ExitCode = exitCode,
+
+                        PerStreamCapBytes = perStreamCapBytes,
+
+                        ResourceLimitApplyError =
+                            "A configured child-process resource limit could not be applied before exec; the target was not run.",
+                    };
+                }
+
                 ResourceLimitKind? exceededResource = await CheckSignalKillAsync(exitCode, resourceLimits, limiterResult)
                     .ConfigureAwait(false);
 
                 return new CappedChildProcessRunResult
                 {
-
                     Outcome = exceededResource is not null
                         ? CappedChildProcessOutcome.ResourceLimitExceeded
                         : CappedChildProcessOutcome.Completed,
@@ -909,66 +908,235 @@ internal static class CappedChildProcessRunner
                         filesystemSandbox),
 
                     ExceededResource = exceededResource,
-
                 };
-
             }
             finally
             {
-
                 UnixProcessGroup.TryKill(unixProcessGroupId);
 
                 await killRegistration.DisposeAsync().ConfigureAwait(false);
-
             }
-
         }
         finally
         {
-            if (descendantSupervisor is not null)
+            await TearDownRunAsync(
+                    descendantSupervisor,
+                    sandboxResult,
+                    limiterResult,
+                    startedPid,
+                    getCleanupTimeRemaining,
+                    logger)
+                .ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
+    /// Releases everything a run acquired, one isolated step at a time. This runs in a <c>finally</c>: an
+    /// exception from any step would replace the run's own result and skip every step after it — leaving
+    /// the sandbox temp directory, the Windows undo-log replay or the limiter scope behind — so each step
+    /// is contained and logged instead.
+    /// </summary>
+    private static async Task TearDownRunAsync(
+        MacOsDescendantSupervisor? descendantSupervisor,
+        ChildProcessSandboxApplyResult? sandboxResult,
+        ProcessResourceLimiterResult limiterResult,
+        int startedPid,
+        Func<TimeSpan>? getCleanupTimeRemaining,
+        ILogger? logger)
+    {
+        if (descendantSupervisor is not null)
+        {
+            try
             {
                 await descendantSupervisor.DisposeAsync()
                     .ConfigureAwait(false);
             }
+            catch (Exception ex)
+            {
+                logger?.LogWarning(ex, "Disposing the descendant supervisor failed; the remaining teardown continues.");
+            }
 
-            // The child is gone by now, killed with TerminateProcess on every abnormal path, so the
-            // Windows broker's own restore never ran. Replay its undo log before the log itself is
-            // deleted below, or the granted AppContainer ACE outlives the run permanently.
+            LogMonitorFault(
+                descendantSupervisor,
+                limiterResult.MonitoredMemoryLimitBytes,
+                logger);
+
+            LogUnreadableFootprints(
+                descendantSupervisor,
+                logger);
+        }
+
+        // The child is gone by now, killed with TerminateProcess on every abnormal path, so the
+        // Windows broker's own restore never ran. Replay its undo log before the log itself is
+        // deleted below, or the granted AppContainer ACE outlives the run permanently.
+        try
+        {
             _ = ChildProcessFilesystemJail.RestoreWindowsAppContainerState(
                 sandboxResult,
                 logger);
+        }
+        catch (Exception ex)
+        {
+            logger?.LogWarning(ex, "Replaying the Windows AppContainer undo log failed; the remaining teardown continues.");
+        }
 
+        try
+        {
             await CleanupSandboxTempPathsAsync(
                     sandboxResult,
                     getCleanupTimeRemaining,
                     logger)
                 .ConfigureAwait(false);
-
-            if (limiterResult.CleanupAsync is not null)
-            {
-
-                try
-                {
-
-                    await limiterResult.CleanupAsync(startedPid)
-                        .WaitAsync(
-                            GetCleanupTimeRemaining(
-                                getCleanupTimeRemaining))
-                        .ConfigureAwait(false);
-
-                }
-                catch (TimeoutException)
-                {
-
-                    logger?.LogWarning(
-                        "Timed out cleaning the child-process resource limiter scope.");
-
-                }
-
-            }
-
+        }
+        catch (Exception ex)
+        {
+            logger?.LogWarning(ex, "Cleaning the child-process sandbox temporary artifacts failed; the remaining teardown continues.");
         }
 
+        if (limiterResult.CleanupAsync is not null)
+        {
+            try
+            {
+                await limiterResult.CleanupAsync(startedPid)
+                    .WaitAsync(
+                        GetCleanupTimeRemaining(
+                            getCleanupTimeRemaining))
+                    .ConfigureAwait(false);
+            }
+            catch (TimeoutException)
+            {
+                logger?.LogWarning(
+                    "Timed out cleaning the child-process resource limiter scope.");
+            }
+            catch (Exception ex)
+            {
+                logger?.LogWarning(ex, "Cleaning the child-process resource limiter scope failed.");
+            }
+        }
+    }
+
+    private static MacOsDescendantSupervisor? DefaultDescendantSupervisorFactory(
+        int rootPid,
+        long? memoryLimitBytes) =>
+        MacOsDescendantSupervisor.TryStart(
+            rootPid,
+            memoryLimitBytes: memoryLimitBytes);
+
+    /// <summary>
+    /// Stops the supervisor and verifies its tree is gone, containing any failure: a supervisor fault must
+    /// cost the verification, never the run's result or the teardown that follows it.
+    /// </summary>
+    private static async Task<bool> StopDescendantSupervisorAsync(
+        MacOsDescendantSupervisor supervisor,
+        ILogger? logger)
+    {
+        try
+        {
+            return await supervisor
+                .StopKillAndVerifyAsync(TimeSpan.FromSeconds(2))
+                .ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            logger?.LogWarning(ex, "Stopping the descendant supervisor failed; descendant containment is unverified.");
+
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Records a stopped monitor loop. The supervisor has no logger of its own and nothing else reads its
+    /// fault, so without this a faulted loop is invisible whenever the run ends in anything but the
+    /// memory-ceiling failure: the loop that tracks descendants before they reparent (the
+    /// workspace_check containment boundary) simply stops. Read after disposal, when the loop has
+    /// finished and the fault is final.
+    /// </summary>
+    private static void LogMonitorFault(
+        MacOsDescendantSupervisor supervisor,
+        long? memoryLimitBytes,
+        ILogger? logger)
+    {
+        if (!supervisor.MonitorFaulted)
+        {
+            return;
+        }
+
+        if (memoryLimitBytes is null)
+        {
+            logger?.LogError(
+                supervisor.MonitorFault,
+                "The descendant supervisor's monitor loop stopped on a fault; no memory ceiling was configured, so the process tree was not killed, but the loop no longer tracked descendants as they forked, so one that reparented before the teardown's own last scan can escape containment.");
+
+            return;
+        }
+
+        logger?.LogError(
+            supervisor.MonitorFault,
+            "The child-process memory monitor stopped on a fault; the process tree was killed.");
+    }
+
+    /// <summary>
+    /// Records the descendants the memory ceiling's sum had to leave out. That gap in the ceiling's
+    /// coverage exists however the run ended — the likeliest end for a tree the ceiling was not fully
+    /// covering is a timeout or a cancel, not a normal exit — so it is reported from the teardown, once,
+    /// after disposal, when the count is final.
+    /// </summary>
+    private static void LogUnreadableFootprints(
+        MacOsDescendantSupervisor supervisor,
+        ILogger? logger)
+    {
+        if (supervisor.UnreadableFootprintCount is > 0 and long unreadable)
+        {
+            logger?.LogWarning(
+                "The child-process memory monitor could not read the footprint of {Count} descendant process(es); they were left out of the memory ceiling's sum.",
+                unreadable);
+        }
+    }
+
+    /// <summary>
+    /// The result for a run whose macOS memory monitor stopped on a fault: nothing enforced the ceiling
+    /// from then on (the supervisor ends the tree when that happens), so the run is not a normal
+    /// completion whatever the child's exit status was. Logging the fault is not done here: it is owed on
+    /// every path, including the ones that end in a cancel or a timeout and the ones with no ceiling, so
+    /// <see cref="TearDownRunAsync"/> owns it.
+    /// </summary>
+    /// <remarks>
+    /// <c>null</c> when the monitor had already recorded a breach before it faulted. That record is the
+    /// real cause — the monitor killed the tree for exceeding the ceiling — and the caller's own
+    /// classification (<see cref="CheckSignalKillAsync"/> reads it) reports the breach instead of a fault
+    /// that only came after it. The outcome is <see cref="CappedChildProcessOutcome.MemoryMonitorStopped"/>,
+    /// not an apply failure: the child ran for as long as the monitor lasted, so it must not be described as
+    /// a command that never started.
+    /// </remarks>
+    private static CappedChildProcessRunResult? MemoryMonitorFaultResult(
+        MacOsDescendantSupervisor? supervisor,
+        ProcessResourceLimiterResult limiterResult,
+        long perStreamCapBytes,
+        CappedStreamOutput stdout,
+        CappedStreamOutput stderr,
+        int exitCode)
+    {
+        if (supervisor?.MonitorFaulted != true
+            || limiterResult.MonitoredMemoryLimitBytes is null
+            || supervisor.MemoryLimitExceeded)
+        {
+            return null;
+        }
+
+        return new CappedChildProcessRunResult
+        {
+            Outcome = CappedChildProcessOutcome.MemoryMonitorStopped,
+
+            Stdout = stdout,
+
+            Stderr = stderr,
+
+            ExitCode = exitCode,
+
+            PerStreamCapBytes = perStreamCapBytes,
+
+            FaultException = supervisor.MonitorFault,
+        };
     }
 
     /// <summary>
@@ -981,22 +1149,16 @@ internal static class CappedChildProcessRunner
         Process process,
         ILogger? logger)
     {
-
         try
         {
-
             process.StandardInput.Close();
-
         }
         catch (Exception ex)
         {
-
             logger?.LogDebug(
                 ex,
                 "Closing the child process stdin pipe raced the child's exit.");
-
         }
-
     }
 
     private static async Task CleanupSandboxTempPathsAsync(
@@ -1115,27 +1277,32 @@ internal static class CappedChildProcessRunner
     /// cgroups v2 scope), that evidence is required before attributing the kill to the configured
     /// limit: a bare exit code cannot otherwise distinguish a Sanctum-enforced OOM kill from an
     /// unrelated external <c>kill -9</c> or a system-wide OOM event outside this process's cgroup.
-    /// Falls back to the exit-code-only heuristic when no such evidence is available (macOS, Windows
-    /// Job Objects, or Linux without a usable cgroup).
+    /// On macOS the same delegate reports the runner's footprint monitor, which is also sufficient on
+    /// its own because the monitor performed the kill. Falls back to the exit-code-only heuristic
+    /// when no such evidence is available (Windows Job Objects, or Linux without a usable cgroup).
     /// </remarks>
     private static async Task<ResourceLimitKind?> CheckSignalKillAsync(
         int exitCode,
         ResourceLimits? resourceLimits,
         ProcessResourceLimiterResult limiterResult)
     {
-
         if (resourceLimits is null)
         {
-
             return null;
-
         }
 
         if (OperatingSystem.IsWindows())
         {
-
             return ClassifyWindowsJobExit(exitCode, resourceLimits);
+        }
 
+        // The macOS footprint monitor killed the tree itself, so its record is the attribution
+        // whatever status the killed root reported.
+        if (limiterResult.MonitoredMemoryLimitBytes is not null
+            && limiterResult.WasOomKilledAsync is not null
+            && await limiterResult.WasOomKilledAsync().ConfigureAwait(false))
+        {
+            return ResourceLimitKind.Memory;
         }
 
         int signal = exitCode switch
@@ -1147,95 +1314,159 @@ internal static class CappedChildProcessRunner
 
         if (signal == 24 && resourceLimits.MaxCpuSeconds > 0)
         {
-
             return ResourceLimitKind.Cpu;
-
         }
 
-        if (signal is 9 or 11 && resourceLimits.MaxMemoryMb > 0)
+        if (signal is 9 or 11 && ProcessResourceLimiter.EffectiveMemoryLimitMb(resourceLimits) > 0)
         {
-
             if (limiterResult.WasOomKilledAsync is not null)
             {
-
                 bool confirmedOomKill = await limiterResult.WasOomKilledAsync().ConfigureAwait(false);
 
                 return confirmedOomKill ? ResourceLimitKind.Memory : null;
-
             }
 
             return ResourceLimitKind.Memory;
-
         }
 
         return null;
-
     }
 
-    private static ResourceLimitKind? ClassifyWindowsJobExit(int exitCode, ResourceLimits resourceLimits)
+    /// <summary>
+    /// Attributes a Windows Job Object exit to the memory limit. Internal so the classification can be
+    /// pinned on every host: the only caller runs behind <see cref="OperatingSystem.IsWindows"/>.
+    /// </summary>
+    internal static ResourceLimitKind? ClassifyWindowsJobExit(int exitCode, ResourceLimits resourceLimits)
     {
-
         // Job Object process/job memory violations commonly surface as STATUS_QUOTA_EXCEEDED.
         // CPU-time kills do not have a stable, documented exit code we can trust across Windows
         // versions, so wall-clock timeout remains the reliable attribution path for CPU on Windows.
         if (exitCode == WindowsJobObjectInterop.StatusQuotaExceeded
-            && (resourceLimits.MaxMemoryMb > 0 || resourceLimits.MaxProcessMemoryMb > 0))
+            && ProcessResourceLimiter.EffectiveMemoryLimitMb(resourceLimits) > 0)
         {
-
             return ResourceLimitKind.Memory;
-
         }
 
         return null;
-
     }
 
     /// <summary>
     /// Last look at both output readers once the post-exit drain has already been given up on.
-    /// A reader that still cannot finish is abandoned — its spill file is reclaimed separately by
-    /// <see cref="DeleteOutputSpillWhenReaderCompletes"/> whenever it eventually completes — and
-    /// what it never delivered is reported as truncation rather than handed to the model as the
+    /// A reader that finished keeps its output and its spill file. A reader that still cannot finish
+    /// is abandoned — its spill file is reclaimed by <see cref="DeleteOutputSpillWhenReaderCompletes"/>
+    /// now and again whenever it eventually completes — and what it never delivered is reported as
+    /// <see cref="CappedStreamOutput.ReadAbandoned"/> truncation rather than handed to the model as the
     /// command's complete output.
     /// </summary>
     private static async Task<(CappedStreamOutput Stdout, CappedStreamOutput Stderr)>
         DrainAbandonedStreamReadTasksAsync(
         Task<CappedStreamOutput> stdoutTask,
-        Task<CappedStreamOutput> stderrTask)
+        string? stdoutSpillPath,
+        Task<CappedStreamOutput> stderrTask,
+        string? stderrSpillPath)
     {
-
-        CappedStreamOutput stdout = await DrainAbandonedStreamReadTaskAsync(stdoutTask)
-            .ConfigureAwait(false);
-
-        CappedStreamOutput stderr = await DrainAbandonedStreamReadTaskAsync(stderrTask)
-            .ConfigureAwait(false);
-
-        return (stdout, stderr);
-
-    }
-
-    private static async Task<CappedStreamOutput> DrainAbandonedStreamReadTaskAsync(
-        Task<CappedStreamOutput> readerTask)
-    {
-
         try
         {
-
-            return await readerTask
+            // One short window for both readers, like the drain it follows.
+            await Task.WhenAll(stdoutTask, stderrTask)
                 .WaitAsync(AbandonedOutputDrainRegrace)
                 .ConfigureAwait(false);
-
         }
         catch (Exception)
         {
-
-            // Timed out, faulted or canceled — either way this reader has no output to hand back,
-            // and the run itself still completed, so the gap is reported as truncation.
-            return new CappedStreamOutput(
-                string.Empty,
-                Truncated: true);
-
+            // Timed out, faulted or canceled: whichever reader did not deliver is reported below.
         }
 
+        return (
+            AbandonedReaderOutput(stdoutTask, stdoutSpillPath),
+            AbandonedReaderOutput(stderrTask, stderrSpillPath));
+    }
+
+    /// <summary>
+    /// What a reader that has been given up on can still hand back: its output when it completed, and
+    /// otherwise — timed out, faulted or canceled — nothing, with the gap reported as abandoned truncation
+    /// because the run itself still completed. The reader's state is read once, so the spill is deleted
+    /// exactly when the output returned does not point at it.
+    /// </summary>
+    private static CappedStreamOutput AbandonedReaderOutput(
+        Task<CappedStreamOutput> readerTask,
+        string? spillPath)
+    {
+        if (readerTask.IsCompletedSuccessfully)
+        {
+            return readerTask.Result;
+        }
+
+        DeleteOutputSpillWhenReaderCompletes(
+            readerTask,
+            spillPath);
+
+        return new CappedStreamOutput(
+            string.Empty,
+            Truncated: true,
+            ReadAbandoned: true);
+    }
+
+    /// <summary>
+    /// Waits for both output readers to reach EOF within one shared <paramref name="grace"/>. A reader that
+    /// fails surfaces its exception at once (stdout's first) rather than after the other reader's wait, and
+    /// <see cref="TimeoutException"/> reports that either is still held when the grace runs out.
+    /// </summary>
+    /// <param name="timeProvider">
+    /// The clock the grace is measured on. A test supplies one it advances itself, so "one deadline for both
+    /// pipes" is proved by when that deadline lapses rather than by how long a real run happened to take on a
+    /// loaded host.
+    /// </param>
+    internal static async Task<(CappedStreamOutput Stdout, CappedStreamOutput Stderr)>
+        AwaitPostExitOutputAsync(
+        Task<CappedStreamOutput> stdoutTask,
+        Task<CappedStreamOutput> stderrTask,
+        TimeSpan grace,
+        TimeProvider timeProvider)
+    {
+        Task both = Task.WhenAll(stdoutTask, stderrTask);
+
+        Task anyFailure = FirstFailureAsync(stdoutTask, stderrTask);
+
+        _ = await Task.WhenAny(both, anyFailure)
+            .WaitAsync(grace, timeProvider)
+            .ConfigureAwait(false);
+
+        if (stdoutTask.IsFaulted || stdoutTask.IsCanceled)
+        {
+            await stdoutTask.ConfigureAwait(false);
+        }
+
+        if (stderrTask.IsFaulted || stderrTask.IsCanceled)
+        {
+            await stderrTask.ConfigureAwait(false);
+        }
+
+        return (stdoutTask.Result, stderrTask.Result);
+    }
+
+    /// <summary>Completes as soon as any of <paramref name="tasks"/> faults or is canceled.</summary>
+    private static Task FirstFailureAsync(params Task[] tasks)
+    {
+        TaskCompletionSource failed = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        foreach (Task task in tasks)
+        {
+            _ = task.ContinueWith(
+                static (finished, state) =>
+                {
+                    if (finished.IsFaulted || finished.IsCanceled)
+                    {
+                        _ = ((TaskCompletionSource)state!).TrySetResult();
+                    }
+                },
+                failed,
+                CancellationToken.None,
+                TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
+        }
+
+        return failed.Task;
     }
 
     private static async Task<(CappedStreamOutput Stdout, CappedStreamOutput Stderr)>
@@ -1243,66 +1474,51 @@ internal static class CappedChildProcessRunner
         Task<CappedStreamOutput> stdoutTask,
         Task<CappedStreamOutput> stderrTask)
     {
-
         CappedStreamOutput stdout = default;
         CappedStreamOutput stderr = default;
 
         try
         {
-
             stdout = await stdoutTask
                 .WaitAsync(TimeSpan.FromSeconds(5))
                 .ConfigureAwait(false);
-
         }
         catch (IOException)
         {
-
         }
         catch (UnauthorizedAccessException)
         {
-
         }
         catch (OperationCanceledException)
         {
-
         }
         catch (TimeoutException)
         {
-
         }
         catch (Exception)
         {
-
         }
 
         try
         {
-
             stderr = await stderrTask
                 .WaitAsync(TimeSpan.FromSeconds(5))
                 .ConfigureAwait(false);
-
         }
         catch (IOException)
         {
-
         }
         catch (UnauthorizedAccessException)
         {
-
         }
         catch (OperationCanceledException)
         {
-
         }
         catch (TimeoutException)
         {
-
         }
         catch (Exception)
         {
-
         }
 
         return (stdout, stderr);
@@ -1315,7 +1531,6 @@ internal static class CappedChildProcessRunner
         string? completeOutputPath,
         OutputSpillBudget? outputSpillBudget)
     {
-
         StringBuilder builder = new();
 
         char[] buffer = new char[4096];
@@ -1330,10 +1545,8 @@ internal static class CappedChildProcessRunner
 
         try
         {
-
             while (true)
             {
-
                 int read = await reader.ReadAsync(
                         buffer.AsMemory(),
                         cancellationToken)
@@ -1341,9 +1554,7 @@ internal static class CappedChildProcessRunner
 
                 if (read <= 0)
                 {
-
                     break;
-
                 }
 
                 long encodedSize = Encoding.UTF8.GetByteCount(
@@ -1355,37 +1566,30 @@ internal static class CappedChildProcessRunner
 
                 if (truncated)
                 {
-
                     if (completeWriter is not null)
                     {
-
                         outputSpillBudget?.Reserve(encodedSize);
 
                         await completeWriter.WriteAsync(
                                 buffer.AsMemory(0, read),
                                 cancellationToken)
                             .ConfigureAwait(false);
-
                     }
 
                     continue;
-
                 }
 
                 if (approximateBytes + encodedSize <= maxBytes)
                 {
-
                     builder.Append(buffer, 0, read);
 
                     approximateBytes += encodedSize;
 
                     continue;
-
                 }
 
                 if (completeOutputPath is not null)
                 {
-
                     outputSpillBudget?.Reserve(
                         checked(approximateBytes + encodedSize));
 
@@ -1403,32 +1607,26 @@ internal static class CappedChildProcessRunner
                             buffer.AsMemory(0, read),
                             cancellationToken)
                         .ConfigureAwait(false);
-
                 }
 
                 long remaining = maxBytes - approximateBytes;
 
                 if (remaining > 0)
                 {
-
                     int safeChars = Utf8Truncation.ChooseSafeCharCount(
                         buffer.AsSpan(0, read),
                         remaining);
 
                     builder.Append(buffer, 0, safeChars);
-
                 }
 
                 truncated = true;
-
             }
 
             if (completeWriter is not null)
             {
-
                 await completeWriter.FlushAsync(cancellationToken)
                     .ConfigureAwait(false);
-
             }
 
             return new CappedStreamOutput(
@@ -1436,63 +1634,46 @@ internal static class CappedChildProcessRunner
                 truncated,
                 completeWriter is null ? null : completeOutputPath,
                 totalBytes);
-
         }
         catch (Exception ex)
         {
-
             if (completeOutputPath is not null)
             {
-
                 TryDeleteOutputSpill(completeOutputPath);
-
             }
 
             if (truncated
                 && ex is IOException or UnauthorizedAccessException
                 && ex is not ChildProcessOutputPreservationException)
             {
-
                 throw new ChildProcessOutputPreservationException(ex);
-
             }
 
             throw;
-
         }
         finally
         {
-
             if (completeWriter is not null)
             {
-
                 try
                 {
-
                     await completeWriter.DisposeAsync()
                         .ConfigureAwait(false);
-
                 }
                 catch (Exception ex)
                     when (ex is IOException
                           or UnauthorizedAccessException)
                 {
-
                     TryDeleteOutputSpill(completeOutputPath);
 
                     throw new ChildProcessOutputPreservationException(ex);
-
                 }
-
             }
-
         }
-
     }
 
     private static StreamWriter CreateCompleteOutputWriter(string path)
     {
-
         FileStream stream = new(
             path,
             FileMode.CreateNew,
@@ -1506,14 +1687,11 @@ internal static class CappedChildProcessRunner
 
         try
         {
-
             if (!OperatingSystem.IsWindows())
             {
-
                 File.SetUnixFileMode(
                     path,
                     UnixFileMode.UserRead | UnixFileMode.UserWrite);
-
             }
 
             return new StreamWriter(
@@ -1521,43 +1699,34 @@ internal static class CappedChildProcessRunner
                 new UTF8Encoding(encoderShouldEmitUTF8Identifier: false),
                 bufferSize: 4096,
                 leaveOpen: false);
-
         }
         catch
         {
-
             stream.Dispose();
 
             TryDeleteOutputSpill(path);
 
             throw;
-
         }
-
     }
 
     private sealed class OutputSpillBudget(long limitBytes)
     {
-
         private long _reservedBytes;
 
         internal void Reserve(long byteCount)
         {
-
             while (true)
             {
-
                 long current = Volatile.Read(ref _reservedBytes);
 
                 long attempted = checked(current + byteCount);
 
                 if (attempted > limitBytes)
                 {
-
                     throw new CommandOutputSpillLimitException(
                         attempted,
                         limitBytes);
-
                 }
 
                 if (Interlocked.CompareExchange(
@@ -1565,44 +1734,33 @@ internal static class CappedChildProcessRunner
                         attempted,
                         current) == current)
                 {
-
                     return;
-
                 }
-
             }
-
         }
-
     }
 
     private static string? BuildOutputSpillPath(
         string? outputSpillDirectory,
         string streamName)
     {
-
         if (string.IsNullOrWhiteSpace(outputSpillDirectory))
         {
-
             return null;
-
         }
 
         return Path.Combine(
             Path.GetFullPath(outputSpillDirectory),
             streamName + "-" + Guid.NewGuid().ToString("N") + ".utf8");
-
     }
 
     private static void CancelWaitWhenOutputReadFails(
         Task<CappedStreamOutput> outputTask,
         CancellationTokenSource outputFailureCts)
     {
-
         _ = outputTask.ContinueWith(
             static (completed, state) =>
             {
-
                 _ = completed.Exception;
 
                 CancellationTokenSource failure =
@@ -1610,22 +1768,17 @@ internal static class CappedChildProcessRunner
 
                 try
                 {
-
                     failure.Cancel();
-
                 }
                 catch (ObjectDisposedException)
                 {
-
                 }
-
             },
             outputFailureCts,
             CancellationToken.None,
             TaskContinuationOptions.OnlyOnFaulted
                 | TaskContinuationOptions.ExecuteSynchronously,
             TaskScheduler.Default);
-
     }
 
     private static Exception? GetOutputReadFault(
@@ -1640,7 +1793,6 @@ internal static class CappedChildProcessRunner
         Task<CappedStreamOutput> stderrTask,
         string? stderrSpillPath)
     {
-
         DeleteOutputSpillWhenReaderCompletes(
             stdoutTask,
             stdoutSpillPath);
@@ -1648,7 +1800,6 @@ internal static class CappedChildProcessRunner
         DeleteOutputSpillWhenReaderCompletes(
             stderrTask,
             stderrSpillPath);
-
     }
 
     /// <summary>
@@ -1663,64 +1814,47 @@ internal static class CappedChildProcessRunner
         Task<CappedStreamOutput> readerTask,
         string? spillPath)
     {
-
         if (spillPath is null)
         {
-
             return;
-
         }
 
         TryDeleteOutputSpill(spillPath);
 
         if (readerTask.IsCompleted)
         {
-
             return;
-
         }
 
         _ = readerTask.ContinueWith(
             static (completed, state) =>
             {
-
                 _ = completed.Exception;
 
                 TryDeleteOutputSpill((string)state!);
-
             },
             spillPath,
             CancellationToken.None,
             TaskContinuationOptions.None,
             TaskScheduler.Default);
-
     }
 
     private static void TryDeleteOutputSpill(string? path)
     {
-
         if (path is null)
         {
-
             return;
-
         }
 
         try
         {
-
             File.Delete(path);
-
         }
         catch (IOException)
         {
-
         }
         catch (UnauthorizedAccessException)
         {
-
         }
-
     }
-
 }

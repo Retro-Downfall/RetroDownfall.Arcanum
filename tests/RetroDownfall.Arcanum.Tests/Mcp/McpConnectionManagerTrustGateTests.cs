@@ -765,8 +765,12 @@ public sealed class McpConnectionManagerTrustGateTests : IAsyncLifetime
 
         client.AllowDispose.TrySetResult();
 
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(
-            () => stop);
+        // The caller left while the old client was disposing, but the stop itself ran to completion: the
+        // answer is the stop's own result, not a bare cancellation that would say nothing had happened.
+        Result stopped = await stop.WaitAsync(
+            TimeSpan.FromSeconds(5));
+
+        Assert.True(stopped.IsSuccess, stopped.IsFailure ? stopped.Error.Message : null);
 
         _ = await restart.WaitAsync(
             TimeSpan.FromSeconds(5));
@@ -838,8 +842,13 @@ public sealed class McpConnectionManagerTrustGateTests : IAsyncLifetime
 
         client.AllowDispose.TrySetResult();
 
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(
-            () => canceledRestart);
+        // The old client was stopped before the caller left, so the restart reports that state rather
+        // than throwing a cancellation that reads as "nothing happened".
+        Result canceled = await canceledRestart.WaitAsync(
+            TimeSpan.FromSeconds(5));
+
+        Assert.True(canceled.IsFailure);
+        Assert.Equal(ErrorCodes.Mcp.RestartCanceled, canceled.Error.Code);
 
         _ = await overlappingRestart.WaitAsync(
             TimeSpan.FromSeconds(5));
@@ -904,6 +913,147 @@ public sealed class McpConnectionManagerTrustGateTests : IAsyncLifetime
         Assert.Equal(ErrorCodes.Mcp.ServerNotFound, startResult.Error.Code);
 
         await refresh.WaitAsync(TimeSpan.FromSeconds(5));
+    }
+
+    [Fact]
+    public async Task Restart_cancelled_while_the_trust_snapshot_is_read_after_the_stop_reports_the_stopped_server_in_result()
+    {
+        const string serverName = "restart-cancelled-at-trust";
+
+        (McpConnectionManager manager, DigestTrustStore trust, ManagedMcpServerEntry entry) =
+            await RegisterWorkspaceServerAsync(serverName);
+
+        await using McpConnectionManager disposable = manager;
+
+        ScriptedMcpClient old = new(entry.TransportGeneration);
+
+        entry.Client = old;
+
+        entry.State = McpServerState.Running;
+
+        using CancellationTokenSource cancellation = new();
+
+        // The caller leaves while the manager re-reads the workspace approval, which is after the old
+        // client has been stopped and before any replacement exists. This is how a restart is most
+        // often cancelled: the approval read is the first awaited step once the stop completes.
+        trust.BeforeSnapshotReturn = async (_, token) =>
+        {
+            await cancellation.CancelAsync();
+
+            token.ThrowIfCancellationRequested();
+        };
+
+        Result result = await manager.RestartAsync(serverName, _workspace.Root, cancellation.Token);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Mcp.RestartCanceled, result.Error.Code);
+
+        Assert.Contains("stopped", result.Error.Message, StringComparison.OrdinalIgnoreCase);
+
+        Assert.Equal(McpServerState.Stopped, entry.State);
+
+        Assert.Null(entry.Client);
+
+        Assert.Equal(1, old.DisposeCount);
+    }
+
+    [Fact]
+    public async Task Restart_whose_caller_cancels_after_the_replacement_started_completes_instead_of_throwing()
+    {
+        const string serverName = "restart-cancelled-after-start";
+
+        (McpConnectionManager manager, DigestTrustStore trust, ManagedMcpServerEntry entry) =
+            await RegisterWorkspaceServerAsync(serverName);
+
+        await using McpConnectionManager disposable = manager;
+
+        ScriptedMcpClientFactory clients = new();
+
+        manager.ClientFactoryForTests = clients.Create;
+
+        ScriptedMcpClient old = new(entry.TransportGeneration);
+
+        entry.Client = old;
+
+        entry.State = McpServerState.Running;
+
+        using CancellationTokenSource cancellation = new();
+
+        // The first approval read (before the replacement starts) answers normally. The caller leaves
+        // during the second, which re-checks the approval after the replacement is already running.
+        // That is the tail of a restart that has already stopped one server and started another: the
+        // restart finishes it rather than abandoning a started client in the Starting state.
+        trust.BeforeSnapshotReturn = (_, _) =>
+        {
+            trust.BeforeSnapshotReturn = async (_, token) =>
+            {
+                await cancellation.CancelAsync();
+
+                token.ThrowIfCancellationRequested();
+            };
+
+            return Task.CompletedTask;
+        };
+
+        Result result = await manager.RestartAsync(serverName, _workspace.Root, cancellation.Token);
+
+        Assert.True(result.IsSuccess, result.IsFailure ? result.Error.Message : null);
+
+        Assert.Equal(McpServerState.Running, entry.State);
+
+        Assert.Equal(1, old.DisposeCount);
+
+        ScriptedMcpClient replacement = Assert.Single(clients.Created);
+
+        _ = Assert.IsType<McpClientGeneration>(entry.Client);
+
+        Assert.Equal(0, replacement.DisposeCount);
+    }
+
+    [Fact]
+    public async Task Start_whose_caller_cancels_after_the_server_started_completes_instead_of_stranding_the_client()
+    {
+        const string serverName = "start-cancelled-after-start";
+
+        (McpConnectionManager manager, DigestTrustStore trust, ManagedMcpServerEntry entry) =
+            await RegisterWorkspaceServerAsync(serverName);
+
+        await using McpConnectionManager disposable = manager;
+
+        ScriptedMcpClientFactory clients = new();
+
+        manager.ClientFactoryForTests = clients.Create;
+
+        using CancellationTokenSource cancellation = new();
+
+        // The first approval read (before the start) answers normally. The caller leaves during the
+        // second, which re-checks the approval after the client is already up. The start is committed by
+        // then: it must finish rather than leave a live client behind an entry stuck in Starting, which a
+        // later start would then report as already started.
+        trust.BeforeSnapshotReturn = (_, _) =>
+        {
+            trust.BeforeSnapshotReturn = async (_, token) =>
+            {
+                await cancellation.CancelAsync();
+
+                token.ThrowIfCancellationRequested();
+            };
+
+            return Task.CompletedTask;
+        };
+
+        Result result = await manager.StartAsync(serverName, _workspace.Root, cancellation.Token);
+
+        Assert.True(result.IsSuccess, result.IsFailure ? result.Error.Message : null);
+
+        Assert.Equal(McpServerState.Running, entry.State);
+
+        ScriptedMcpClient started = Assert.Single(clients.Created);
+
+        _ = Assert.IsType<McpClientGeneration>(entry.Client);
+
+        Assert.Equal(0, started.DisposeCount);
     }
 
     [Fact]
@@ -990,6 +1140,68 @@ public sealed class McpConnectionManagerTrustGateTests : IAsyncLifetime
         Assert.DoesNotContain(_workspace.Root, result.Error.Message, StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// R-336: the digest of the preview the operator approved reaches the store that reads the file, which is
+    /// the only place the comparison can be made against the bytes trust is bound to.
+    /// </summary>
+    [Fact]
+    public async Task TrustWorkspaceAsync_hands_the_expected_digest_to_the_store()
+    {
+        _workspace.WriteFile("mcp.json", """{"mcpServers":{}}""");
+
+        DigestCheckingTrustStore store = new(fileHasChanged: false);
+
+        await using McpConnectionManager manager = CreateManager(store);
+
+        Result result = await manager.TrustWorkspaceAsync(_workspace.Root, "ABC123");
+
+        Assert.True(result.IsSuccess);
+
+        Assert.Equal("ABC123", store.ExpectedDigest);
+    }
+
+    [Fact]
+    public async Task TrustWorkspaceAsync_without_an_expected_digest_trusts_whatever_is_read()
+    {
+        _workspace.WriteFile("mcp.json", """{"mcpServers":{}}""");
+
+        DigestCheckingTrustStore store = new(fileHasChanged: true);
+
+        await using McpConnectionManager manager = CreateManager(store);
+
+        Result result = await manager.TrustWorkspaceAsync(_workspace.Root);
+
+        Assert.True(result.IsSuccess);
+
+        Assert.Null(store.ExpectedDigest);
+    }
+
+    /// <summary>
+    /// R-336: a file that changed after it was previewed is refused with a typed, actionable error that tells
+    /// the operator to preview again, and nothing is reported as trusted.
+    /// </summary>
+    [Fact]
+    public async Task TrustWorkspaceAsync_maps_a_changed_file_to_the_config_changed_error()
+    {
+        _workspace.WriteFile("mcp.json", """{"mcpServers":{}}""");
+
+        DigestCheckingTrustStore store = new(fileHasChanged: true);
+
+        await using McpConnectionManager manager = CreateManager(store);
+
+        Result result = await manager.TrustWorkspaceAsync(_workspace.Root, "STALE");
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal("Mcp.ConfigChanged", result.Error.Code);
+
+        Assert.Contains("changed after it was previewed", result.Error.Message, StringComparison.Ordinal);
+
+        Assert.Contains("nothing was trusted", result.Error.Message, StringComparison.Ordinal);
+
+        Assert.DoesNotContain(_workspace.Root, result.Error.Message, StringComparison.Ordinal);
+    }
+
     [Fact]
     public async Task TrustWorkspaceAsync_preserves_cancellation()
     {
@@ -1000,7 +1212,40 @@ public sealed class McpConnectionManagerTrustGateTests : IAsyncLifetime
         canceled.Cancel();
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(
-            () => manager.TrustWorkspaceAsync(_workspace.Root, canceled.Token));
+            () => manager.TrustWorkspaceAsync(_workspace.Root, cancellationToken: canceled.Token));
+    }
+
+    /// <summary>
+    /// Registers one approved stdio workspace server (never auto-started) and returns the manager, the
+    /// trust store that approved it, and its registry entry, so a restart test can hand the entry a
+    /// scripted client and drive the real restart path.
+    /// </summary>
+    private async Task<(McpConnectionManager Manager, DigestTrustStore Trust, ManagedMcpServerEntry Entry)>
+        RegisterWorkspaceServerAsync(string serverName)
+    {
+        string path = _workspace.WriteFile(
+            "mcp.json",
+            $$"""
+            {
+              "mcpServers": {
+                "{{serverName}}": {
+                  "command": "arcanum-nonexistent-binary-zzz",
+                  "alwaysOn": false
+                }
+              }
+            }
+            """);
+
+        DigestTrustStore trust = new() { ApprovedDigest = await ComputeSha256HexAsync(path) };
+
+        McpConnectionManager manager = CreateManager(trust);
+
+        await manager.GetAvailableToolsAsync(_workspace.Root);
+
+        ManagedMcpServerEntry entry = Assert.IsType<ManagedMcpServerEntry>(
+            manager.GetManagedEntryForTests(serverName, _workspace.Root));
+
+        return (manager, trust, entry);
     }
 
     private McpConnectionManager CreateManager(ITrustedMcpWorkspaceStore trustStore)
@@ -1034,7 +1279,8 @@ public sealed class McpConnectionManagerTrustGateTests : IAsyncLifetime
             new FakeEventBus(),
             trustStore,
             new FakeHttpClientFactory(),
-            new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings()));
+            new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings()),
+            NullLoggerFactory.Instance);
 
         manager.ConfigureGlobalAdmission(
             new GrimoireConnectionAdmissionGate(TimeProvider.System));
@@ -1064,7 +1310,7 @@ public sealed class McpConnectionManagerTrustGateTests : IAsyncLifetime
             CancellationToken cancellationToken = default) =>
             Task.FromResult(default(TrustedMcpWorkspaceSnapshot));
 
-        public Task TrustAsync(string workspaceRootPath, CancellationToken cancellationToken = default) =>
+        public Task TrustAsync(string workspaceRootPath, string? expectedSourceDigest = null, CancellationToken cancellationToken = default) =>
             Task.CompletedTask;
     }
 
@@ -1100,7 +1346,7 @@ public sealed class McpConnectionManagerTrustGateTests : IAsyncLifetime
                 new TrustedMcpWorkspaceSnapshot(digest, Trusted));
         }
 
-        public Task TrustAsync(string workspaceRootPath, CancellationToken cancellationToken = default) =>
+        public Task TrustAsync(string workspaceRootPath, string? expectedSourceDigest = null, CancellationToken cancellationToken = default) =>
             Task.CompletedTask;
     }
 
@@ -1212,6 +1458,7 @@ public sealed class McpConnectionManagerTrustGateTests : IAsyncLifetime
 
         public Task TrustAsync(
             string workspaceRootPath,
+            string? expectedSourceDigest = null,
             CancellationToken cancellationToken = default)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -1248,6 +1495,7 @@ public sealed class McpConnectionManagerTrustGateTests : IAsyncLifetime
 
         public Task TrustAsync(
             string workspaceRootPath,
+            string? expectedSourceDigest = null,
             CancellationToken cancellationToken = default) =>
             throw new InvalidOperationException("Global entries must not query workspace trust.");
     }
@@ -1278,9 +1526,57 @@ public sealed class McpConnectionManagerTrustGateTests : IAsyncLifetime
 
         public Task TrustAsync(
             string workspaceRootPath,
+            string? expectedSourceDigest = null,
             CancellationToken cancellationToken = default) =>
             throw new TrustedMcpWorkspaceStoreException(
                 "The MCP approval store is corrupt. Remove it and retry.");
+    }
+
+    /// <summary>
+    /// Records the digest it was asked to bind trust to, and refuses as the real store does when that digest
+    /// is not the file's.
+    /// </summary>
+    private sealed class DigestCheckingTrustStore(bool fileHasChanged) : ITrustedMcpWorkspaceStore
+    {
+        public string? ExpectedDigest { get; private set; }
+
+        public int TrustCalls { get; private set; }
+
+        public Task<bool> IsTrustedAsync(
+            string workspaceRootPath,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(false);
+
+        public Task<bool> IsTrustedAsync(
+            string workspaceRootPath,
+            string sourceDigest,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(false);
+
+        public Task<bool> IsApprovedDigestAsync(
+            string workspaceRootPath,
+            string sourceDigest,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(false);
+
+        public Task<TrustedMcpWorkspaceSnapshot> GetSnapshotAsync(
+            string workspaceRootPath,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(default(TrustedMcpWorkspaceSnapshot));
+
+        public Task TrustAsync(
+            string workspaceRootPath,
+            string? expectedSourceDigest = null,
+            CancellationToken cancellationToken = default)
+        {
+            TrustCalls++;
+
+            ExpectedDigest = expectedSourceDigest;
+
+            return fileHasChanged && expectedSourceDigest is not null
+                ? throw new McpWorkspaceConfigChangedException()
+                : Task.CompletedTask;
+        }
     }
 
     private sealed class CancelingTrustStore : ITrustedMcpWorkspaceStore
@@ -1309,6 +1605,7 @@ public sealed class McpConnectionManagerTrustGateTests : IAsyncLifetime
 
         public Task TrustAsync(
             string workspaceRootPath,
+            string? expectedSourceDigest = null,
             CancellationToken cancellationToken = default) =>
             Task.FromCanceled(cancellationToken);
     }

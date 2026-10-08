@@ -213,18 +213,23 @@ public sealed class MemoryErasureExposureTests(GrimoireFixture fixture) : IAsync
     {
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
-        LexiconEntryDto entry = await ScribeAsync("Mill Warden", annals: false);
+        // The service's clock is the test's, so "later" is stated rather than waited for.
+        FakeTimeProvider time = new();
 
-        DateTimeOffset backupAt = DateTimeOffset.UtcNow;
+        time.SetUtcNow(T0);
+
+        LexiconEntryDto entry = await ScribeAsync("Mill Warden", annals: false, time);
+
+        DateTimeOffset backupAt = time.GetUtcNow();
 
         if (backedUp)
         {
             await BackupReceiptAsync(Connection, Guid.NewGuid(), 1, backupAt);
         }
 
-        await Task.Delay(TimeSpan.FromMilliseconds(50));
+        time.Advance(TimeSpan.FromMilliseconds(50));
 
-        await CorrectLexiconAsync(entry.Name);
+        await CorrectLexiconAsync(entry.Name, time);
 
         DateTimeOffset claimOpened = UtcInstantText.Parse(await TextAsync(
             Connection,
@@ -400,15 +405,16 @@ public sealed class MemoryErasureExposureTests(GrimoireFixture fixture) : IAsync
         return id;
     }
 
-    private LexiconService Lexicon(bool annals) => new(
+    private LexiconService Lexicon(bool annals, TimeProvider? time = null) => new(
         _db!,
         NullLogger<LexiconService>.Instance,
         new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings { Features = new FeatureSettings { Annals = annals } }),
-        MemoryErasureTestKeys.Isolated());
+        MemoryErasureTestKeys.Isolated(),
+        timeProvider: time);
 
-    private async Task<LexiconEntryDto> ScribeAsync(string name, bool annals)
+    private async Task<LexiconEntryDto> ScribeAsync(string name, bool annals, TimeProvider? time = null)
     {
-        Result<LexiconEntryDto> scribed = await Lexicon(annals).UpsertAsync(name, "person", ["Keeps the north gate."], LexiconScope.Global, Token);
+        Result<LexiconEntryDto> scribed = await Lexicon(annals, time).UpsertAsync(name, "person", ["Keeps the north gate."], LexiconScope.Global, Token);
 
         Assert.True(scribed.IsSuccess, scribed.IsFailure ? scribed.Error.Message : string.Empty);
 
@@ -452,9 +458,9 @@ public sealed class MemoryErasureExposureTests(GrimoireFixture fixture) : IAsync
     }
 
     /// <summary>Corrects an entry the way an operator does: show its exact target, then correct it.</summary>
-    private async Task CorrectLexiconAsync(string name)
+    private async Task CorrectLexiconAsync(string name, TimeProvider? time = null)
     {
-        LexiconService lexicon = Lexicon(annals: false);
+        LexiconService lexicon = Lexicon(annals: false, time);
 
         Result<LexiconInspectionResult<LexiconEntryDetail>> shown =
             await lexicon.ShowExactAsync(new LexiconCurationScope(LexiconScopeKind.Global, null), name, null, Token);

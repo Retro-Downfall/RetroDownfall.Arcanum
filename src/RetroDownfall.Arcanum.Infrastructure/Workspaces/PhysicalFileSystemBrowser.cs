@@ -12,7 +12,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.Workspaces;
 
 public sealed class PhysicalFileSystemBrowser : IFileSystemBrowser
 {
-
     private const int ListPageSize = 500;
 
     public PhysicalFileSystemBrowser(IOptionsMonitor<ArcanumSettings> optionsMonitor)
@@ -48,7 +47,6 @@ public sealed class PhysicalFileSystemBrowser : IFileSystemBrowser
         string? cursor,
         CancellationToken ct)
     {
-
         ct.ThrowIfCancellationRequested();
 
         return Task.Run(
@@ -64,7 +62,6 @@ public sealed class PhysicalFileSystemBrowser : IFileSystemBrowser
         string? cursor,
         CancellationToken ct)
     {
-
         ct.ThrowIfCancellationRequested();
 
         if (searchPattern is not null && (searchPattern.Contains('/') || searchPattern.Contains('\\')))
@@ -103,13 +100,11 @@ public sealed class PhysicalFileSystemBrowser : IFileSystemBrowser
 
         if (cursorResult != FileBrowserContinuationDecodeResult.Success)
         {
-
             string message = cursorResult == FileBrowserContinuationDecodeResult.QueryMismatch
                 ? "The continuation cursor belongs to different list arguments. Restart with cursor omitted."
                 : "The file-list continuation cursor is invalid. Restart with cursor omitted.";
 
             return new Error(ErrorCodes.Workspace.ContinuationInvalid, message);
-
         }
 
         SortedSet<FileEntry> candidates = new(
@@ -126,7 +121,6 @@ public sealed class PhysicalFileSystemBrowser : IFileSystemBrowser
 
         try
         {
-
             _ = visitedDirectories.Add(Path.GetFullPath(resolvedDir));
 
             // Validate the starting directory's whole ancestor chain exactly once. Containment is
@@ -142,32 +136,27 @@ public sealed class PhysicalFileSystemBrowser : IFileSystemBrowser
 
             if (startDirectoryContained)
             {
-
                 directoryEnumerators.Push(
                     Directory.EnumerateFileSystemEntries(
                             resolvedDir,
                             "*",
                             SearchOption.TopDirectoryOnly)
                         .GetEnumerator());
-
             }
 
             while (directoryEnumerators.Count > 0)
             {
-
                 ct.ThrowIfCancellationRequested();
 
                 IEnumerator<string> enumerator = directoryEnumerators.Peek();
 
                 if (!enumerator.MoveNext())
                 {
-
                     enumerator.Dispose();
 
                     _ = directoryEnumerators.Pop();
 
                     continue;
-
                 }
 
                 string fullPath = enumerator.Current;
@@ -185,30 +174,24 @@ public sealed class PhysicalFileSystemBrowser : IFileSystemBrowser
                         fullPath,
                         out resolvedPath))
                 {
-
                     continue;
-
                 }
 
                 FileEntry? entry = TryMapToFileEntry(workspaceRoot, fullPath);
 
                 if (entry is null)
                 {
-
                     continue;
-
                 }
 
                 bool traverseDirectory = false;
 
                 if (recursive && entry.Type == FileEntryType.Directory)
                 {
-
                     string directoryIdentity = Path.GetFullPath(
                         resolvedPath ?? fullPath);
 
                     traverseDirectory = visitedDirectories.Add(directoryIdentity);
-
                 }
 
                 bool matchesPattern = searchPattern is null
@@ -219,12 +202,9 @@ public sealed class PhysicalFileSystemBrowser : IFileSystemBrowser
 
                 if (matchesPattern)
                 {
-
                     if (continuationCheckpoint?.Matches(entry) == true)
                     {
-
                         continuationCheckpointFound = true;
-
                     }
 
                     string normalizedRelativePath =
@@ -238,28 +218,20 @@ public sealed class PhysicalFileSystemBrowser : IFileSystemBrowser
 
                     if (followsCursor)
                     {
-
                         _ = candidates.Add(entry);
 
                         if (candidates.Count > ListPageSize + 1)
                         {
-
                             _ = candidates.Remove(candidates.Max!);
-
                         }
-
                     }
-
                 }
 
                 if (traverseDirectory
                     && TryOpenDirectoryEnumerator(fullPath) is IEnumerator<string> childEnumerator)
                 {
-
                     directoryEnumerators.Push(childEnumerator);
-
                 }
-
             }
         }
         catch (DirectoryNotFoundException)
@@ -273,23 +245,17 @@ public sealed class PhysicalFileSystemBrowser : IFileSystemBrowser
         }
         finally
         {
-
             while (directoryEnumerators.Count > 0)
             {
-
                 directoryEnumerators.Pop().Dispose();
-
             }
-
         }
 
         if (!continuationCheckpointFound)
         {
-
             return new Error(
                 ErrorCodes.Workspace.ContinuationCheckpointMissing,
                 "The workspace changed and the continuation checkpoint no longer exists. Restart with cursor omitted.");
-
         }
 
         string? parentPath = ComputeParentRelativePath(workspaceRoot, resolvedDir);
@@ -323,25 +289,19 @@ public sealed class PhysicalFileSystemBrowser : IFileSystemBrowser
     /// </summary>
     private static bool IsSymbolicLinkEntry(string fullPath)
     {
-
         try
         {
-
             FileSystemInfo info = Directory.Exists(fullPath)
                 ? new DirectoryInfo(fullPath)
                 : new FileInfo(fullPath);
 
             return info.LinkTarget is not null;
-
         }
         catch (Exception ex) when (
             ex is IOException or UnauthorizedAccessException or SecurityException or ArgumentException)
         {
-
             return true;
-
         }
-
     }
 
     public async Task<Result<FileReadResult>> ReadAsync(
@@ -349,7 +309,6 @@ public sealed class PhysicalFileSystemBrowser : IFileSystemBrowser
         string relativePath,
         CancellationToken ct)
     {
-
         ct.ThrowIfCancellationRequested();
 
         Result<string> resolvedResult = WorkspacePathResolver.ResolveRelativePath(workspace, relativePath);
@@ -401,18 +360,50 @@ public sealed class PhysicalFileSystemBrowser : IFileSystemBrowser
 
         int maxBytes = checked((int)GetMaxFileReadSizeBytes());
 
-        SecureUtf8FileReadResult readResult =
-            await SecureFileReader.ReadUtf8TextAsync(
-                    resolvedPath,
+        SecureFileOpenStatus openStatus = SecureFileReader.TryOpenRegularFile(
+            resolvedPath,
+            expectedMetadata.Identity,
+            out FileStream? stream,
+            out _);
+
+        if (openStatus is not SecureFileOpenStatus.Success)
+        {
+            return MapSecureReadError(SecureFileReader.MapOpenStatus(openStatus));
+        }
+
+        SecureUtf8FileReadResult readResult;
+
+        await using (FileStream openedStream = stream!)
+        {
+            // The kernel's path for the open handle, before and after the read. The identity checks prove the
+            // handle is the file validated above; only this proves where that file was while it was read, so a
+            // parent swapped for an escaping link between the check and the open is refused even when the swap
+            // is undone before the path is re-walked below.
+            if (!WorkspacePathPolicy.IsOpenedHandleUnderWorkspace(workspaceRoot, openedStream.SafeFileHandle))
+            {
+                return new Error(
+                    ErrorCodes.Workspace.SymbolicLinkEscape,
+                    "The path could not be proven to remain inside the workspace.");
+            }
+
+            readResult = await SecureFileReader.ReadUtf8TextAsync(
+                    openedStream,
                     maxBytes,
-                    ct,
-                    expectedMetadata.Identity)
+                    ct)
                 .ConfigureAwait(false);
 
-        if (readResult.Status is not SecureFileReadStatus.Success
-            || readResult.Text is null)
-        {
-            return MapSecureReadError(readResult.Status);
+            if (readResult.Status is not SecureFileReadStatus.Success
+                || readResult.Text is null)
+            {
+                return MapSecureReadError(readResult.Status);
+            }
+
+            if (!WorkspacePathPolicy.IsOpenedHandleUnderWorkspace(workspaceRoot, openedStream.SafeFileHandle))
+            {
+                return new Error(
+                    ErrorCodes.Workspace.SymbolicLinkEscape,
+                    "The path could not be proven to remain inside the workspace.");
+            }
         }
 
         if (!WorkspacePathPolicy.RevalidatePathBeforeIo(
@@ -458,7 +449,6 @@ public sealed class PhysicalFileSystemBrowser : IFileSystemBrowser
         string? relativePath,
         CancellationToken ct)
     {
-
         ct.ThrowIfCancellationRequested();
 
         Result<string> resolvedResult = WorkspacePathResolver.ResolveRelativePath(workspace, relativePath);
@@ -499,7 +489,6 @@ public sealed class PhysicalFileSystemBrowser : IFileSystemBrowser
 
         try
         {
-
             FileEntry? entry = TryMapToFileEntry(workspaceRoot, resolvedPath);
 
             if (entry is null)
@@ -519,29 +508,21 @@ public sealed class PhysicalFileSystemBrowser : IFileSystemBrowser
 
     private sealed class FileEntryRelativePathComparer : IComparer<FileEntry>
     {
-
         public int Compare(FileEntry? left, FileEntry? right)
         {
-
             if (ReferenceEquals(left, right))
             {
-
                 return 0;
-
             }
 
             if (left is null)
             {
-
                 return -1;
-
             }
 
             if (right is null)
             {
-
                 return 1;
-
             }
 
             int pathComparison = FileBrowserContinuationCursor.PathComparer.Compare(
@@ -553,9 +534,7 @@ public sealed class PhysicalFileSystemBrowser : IFileSystemBrowser
             return pathComparison != 0
                 ? pathComparison
                 : left.Type.CompareTo(right.Type);
-
         }
-
     }
 
     private long GetMaxFileReadSizeBytes()
@@ -594,36 +573,27 @@ public sealed class PhysicalFileSystemBrowser : IFileSystemBrowser
     /// </summary>
     private static IEnumerator<string>? TryOpenDirectoryEnumerator(string directory)
     {
-
         try
         {
-
             return Directory.EnumerateFileSystemEntries(
                     directory,
                     "*",
                     SearchOption.TopDirectoryOnly)
                 .GetEnumerator();
-
         }
         catch (Exception ex) when (
             ex is IOException or UnauthorizedAccessException or SecurityException)
         {
-
             return null;
-
         }
-
     }
 
     private static FileEntry? TryMapToFileEntry(string workspaceRoot, string fullPath)
     {
-
         try
         {
-
             if (Directory.Exists(fullPath))
             {
-
                 DirectoryInfo dirInfo = new(fullPath);
 
                 string relativePath = NormalizeRelativePathSeparators(
@@ -640,7 +610,6 @@ public sealed class PhysicalFileSystemBrowser : IFileSystemBrowser
 
             if (File.Exists(fullPath))
             {
-
                 FileInfo fileInfo = new(fullPath);
 
                 string relativePath = NormalizeRelativePathSeparators(
@@ -669,7 +638,6 @@ public sealed class PhysicalFileSystemBrowser : IFileSystemBrowser
 
     private static string? ComputeParentRelativePath(string workspaceRoot, string resolvedDir)
     {
-
         if (WorkspaceRootPolicy.IsSamePath(workspaceRoot, resolvedDir))
         {
             return null;
@@ -700,5 +668,4 @@ public sealed class PhysicalFileSystemBrowser : IFileSystemBrowser
     /// </summary>
     private static string NormalizeRelativePathSeparators(string relativePath) =>
         relativePath.Replace(Path.DirectorySeparatorChar, '/');
-
 }

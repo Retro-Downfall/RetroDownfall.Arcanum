@@ -8,7 +8,6 @@ using RetroDownfall.Arcanum.Core.Intelligence;
 /// </summary>
 public enum ContextMaterializationSourceKind
 {
-
     CurrentTurnAttachment = 0,
 
     ExplicitAttachmentReference = 1,
@@ -32,32 +31,26 @@ public enum ContextMaterializationSourceKind
     /// last admitted when it overlaps something exact.
     /// </summary>
     TapestryMemory = 8,
-
 }
 
 public enum ContextMaterializationOrigin
 {
-
     Explicit,
 
     ModelRequested,
 
     Semantic,
-
 }
 
 public enum ContextMaterializationTrust
 {
-
     UntrustedData,
 
     TrustedSystem,
-
 }
 
 public enum ContextMaterializationRejection
 {
-
     None,
 
     MaterializationFailed,
@@ -79,16 +72,13 @@ public enum ContextMaterializationRejection
     RetrievedByteLimit,
 
     RetrievedTokenLimit,
-
 }
 
 public readonly record struct ContextMaterializationRange(int Start, int End)
 {
-
     public static ContextMaterializationRange Whole { get; } = new(-1, -1);
 
     public bool IsWhole => Start < 0 && End < 0;
-
 }
 
 public readonly record struct ContextMaterializationIdentity(
@@ -117,12 +107,10 @@ public sealed record ContextMaterializationCandidate(
     int MaterializedBytes,
     ContextMaterializationTrust Trust)
 {
-
     public AttachmentMemoryProvenance? AttachmentProvenance { get; init; }
 
     public ContextMaterializationIdentity Identity =>
         new(SourceKind, SourceId, VersionOrContentHash, Range);
-
 }
 
 public sealed record ContextMaterializationEntry(
@@ -141,7 +129,6 @@ public sealed record ContextMaterializationEntry(
     int? ProviderRound = null,
     int? VersionOrdinal = null)
 {
-
     public AttachmentMemoryProvenance? AttachmentProvenance { get; init; }
 
     internal static ContextMaterializationEntry FromCandidate(
@@ -164,7 +151,6 @@ public sealed record ContextMaterializationEntry(
         {
             AttachmentProvenance = candidate.AttachmentProvenance,
         };
-
 }
 
 /// <summary>
@@ -173,7 +159,6 @@ public sealed record ContextMaterializationEntry(
 /// </summary>
 public sealed class ContextMaterializationLedger
 {
-
     private readonly Guid? _sessionId;
 
     private readonly ContextMaterializationLimits _limits;
@@ -198,7 +183,6 @@ public sealed class ContextMaterializationLedger
         Guid? sessionId,
         ContextMaterializationLimits limits)
     {
-
         ArgumentNullException.ThrowIfNull(limits);
 
         _sessionId = sessionId;
@@ -208,12 +192,22 @@ public sealed class ContextMaterializationLedger
             Math.Max(0, limits.MaxRetrievedAttachments),
             Math.Max(0, limits.MaxRetrievedBytes),
             Math.Max(0, limits.MaxRetrievedTokens));
-
     }
 
     public IReadOnlyList<ContextMaterializationEntry> Entries => _entries;
 
     public Guid? SessionId => _sessionId;
+
+    /// <summary>
+    /// The turn's attachment promotion state, once <see cref="ContextMaterializationLedgerAmbient.Begin"/>
+    /// has opened it.
+    /// </summary>
+    /// <remarks>
+    /// Accepted attachment content registers here directly rather than through the ambient, because a
+    /// ledger the turn loop drives after one of its own <c>yield return</c>s would otherwise register
+    /// into nothing and leave the turn's provenance incomplete.
+    /// </remarks>
+    public AttachmentMemoryGateAmbient.TurnScope? AttachmentMemory { get; internal set; }
 
     public int DroppedAttachmentRagChunks => _droppedAttachmentRagChunks;
 
@@ -257,13 +251,11 @@ public sealed class ContextMaterializationLedger
     /// </remarks>
     public void RecordCovenantPressure(int droppedEntries, int droppedTokens)
     {
-
         _droppedCovenantProposed = droppedEntries;
 
         _droppedCovenantProposedTokens = droppedTokens;
 
         _covenantConfirmedNoFit = false;
-
     }
 
     /// <summary>
@@ -277,13 +269,11 @@ public sealed class ContextMaterializationLedger
     /// </remarks>
     public void RecordCovenantConfirmedNoFit()
     {
-
         _droppedCovenantProposed = 0;
 
         _droppedCovenantProposedTokens = 0;
 
         _covenantConfirmedNoFit = true;
-
     }
 
     private int _droppedCovenantProposed;
@@ -296,30 +286,23 @@ public sealed class ContextMaterializationLedger
         ContextMaterializationCandidate candidate,
         bool materialized)
     {
-
         ArgumentNullException.ThrowIfNull(candidate);
 
         if (!materialized)
         {
-
             return Reject(candidate, ContextMaterializationRejection.MaterializationFailed);
-
         }
 
         if (_sessionId is { } expectedSession
             && candidate.SessionId is { } candidateSession
             && candidateSession != expectedSession)
         {
-
             return Reject(candidate, ContextMaterializationRejection.SessionMismatch);
-
         }
 
         if (_entries.Any(entry => entry.Identity == candidate.Identity))
         {
-
             return Reject(candidate, ContextMaterializationRejection.DuplicateIdentity);
-
         }
 
         if (_entries.Any(
@@ -331,36 +314,28 @@ public sealed class ContextMaterializationLedger
                     && (entry.SourceKind != ContextMaterializationSourceKind.CurrentTurnAttachment
                         || candidate.SourceKind != ContextMaterializationSourceKind.CurrentTurnAttachment)))
         {
-
             return Reject(candidate, ContextMaterializationRejection.DuplicateContentRange);
-
         }
 
         if (IsStaleAttachmentVersion(candidate))
         {
-
             return Reject(candidate, ContextMaterializationRejection.StaleVersion);
-
         }
 
         if (candidate.SourceKind == ContextMaterializationSourceKind.AttachmentRag
             && _entries.Any(entry => ExplicitWholeSourceMatches(entry, candidate)))
         {
-
             return Reject(
                 candidate,
                 ContextMaterializationRejection.ExplicitSourceAlreadyMaterialized);
-
         }
 
         if (candidate.SourceKind == ContextMaterializationSourceKind.WorkspaceRag
             && IsExplicitWorkspaceSource(candidate.SourceId))
         {
-
             return Reject(
                 candidate,
                 ContextMaterializationRejection.ExplicitSourceAlreadyMaterialized);
-
         }
 
         // Source precedence: accepted explicit material > exact raw leaf > derived Tapestry node.
@@ -376,25 +351,19 @@ public sealed class ContextMaterializationLedger
                         candidate.ContentHash,
                         StringComparison.OrdinalIgnoreCase)))
         {
-
             return Reject(candidate, ContextMaterializationRejection.DuplicateContentRange);
-
         }
 
         if (candidate.Origin == ContextMaterializationOrigin.Semantic
             && TryGetSemanticLimitRejection(candidate, out ContextMaterializationRejection rejection))
         {
-
             return Reject(candidate, rejection);
-
         }
 
         if (candidate.Origin != ContextMaterializationOrigin.Semantic
             && candidate.Range.IsWhole)
         {
-
             RemoveSuppressedAttachmentSemantic(candidate);
-
         }
 
         ContextMaterializationEntry accepted = ContextMaterializationEntry.FromCandidate(
@@ -406,9 +375,14 @@ public sealed class ContextMaterializationLedger
 
         if (candidate.AttachmentProvenance is { } provenance)
         {
-
-            AttachmentMemoryGateAmbient.RegisterMaterialized(provenance);
-
+            if (AttachmentMemory is { } attachmentMemory)
+            {
+                attachmentMemory.RegisterMaterialized(provenance);
+            }
+            else
+            {
+                AttachmentMemoryGateAmbient.RegisterMaterialized(provenance);
+            }
         }
         else if (candidate.SourceKind is ContextMaterializationSourceKind.CurrentTurnAttachment
             or ContextMaterializationSourceKind.ExplicitAttachmentReference
@@ -416,27 +390,28 @@ public sealed class ContextMaterializationLedger
             or ContextMaterializationSourceKind.RefreshSessionFile
             or ContextMaterializationSourceKind.AttachmentRag)
         {
-
-            AttachmentMemoryGateAmbient.RegisterUnprovenancedMaterialization();
-
+            if (AttachmentMemory is { } attachmentMemory)
+            {
+                attachmentMemory.RegisterUnprovenancedMaterialization();
+            }
+            else
+            {
+                AttachmentMemoryGateAmbient.RegisterUnprovenancedMaterialization();
+            }
         }
 
         return accepted;
-
     }
 
     public bool TryMarkInjected(
         ContextMaterializationIdentity identity,
         int providerRound)
     {
-
         int index = _entries.FindIndex(entry => entry.Identity == identity);
 
         if (index < 0 || _entries[index].Injected)
         {
-
             return false;
-
         }
 
         _entries[index] = _entries[index] with
@@ -446,7 +421,6 @@ public sealed class ContextMaterializationLedger
         };
 
         return true;
-
     }
 
     public bool Contains(ContextMaterializationIdentity identity) =>
@@ -454,55 +428,42 @@ public sealed class ContextMaterializationLedger
 
     public void RegisterExplicitWorkspaceSource(string relativePath)
     {
-
         string normalized = NormalizeWorkspaceSource(relativePath);
 
         if (normalized.Length == 0 || !_explicitWorkspaceSources.Add(normalized))
         {
-
             return;
-
         }
 
         _entries.RemoveAll(
             entry => entry.SourceKind == ContextMaterializationSourceKind.WorkspaceRag
                 && IsExplicitWorkspaceSource(entry.Identity.SourceId));
-
     }
 
     public ContextMaterializationEntry? DropLowestPrioritySemantic()
     {
-
         int index = -1;
 
         for (int i = 0; i < _entries.Count; i++)
         {
-
             ContextMaterializationEntry entry = _entries[i];
 
             if (entry.Origin != ContextMaterializationOrigin.Semantic)
             {
-
                 continue;
-
             }
 
             if (index < 0
                 || entry.SourceKind > _entries[index].SourceKind
                 || entry.SourceKind == _entries[index].SourceKind && i > index)
             {
-
                 index = i;
-
             }
-
         }
 
         if (index < 0)
         {
-
             return null;
-
         }
 
         ContextMaterializationEntry removed = _entries[index];
@@ -512,7 +473,6 @@ public sealed class ContextMaterializationLedger
         RecordContextPressureDrop(removed);
 
         return removed;
-
     }
 
     /// <summary>
@@ -524,80 +484,64 @@ public sealed class ContextMaterializationLedger
     /// </summary>
     public void RescindContextPressureDrop(ContextMaterializationEntry removed)
     {
-
         ArgumentNullException.ThrowIfNull(removed);
 
         int tokens = Math.Max(0, removed.EstimatedTokens);
 
         if (removed.SourceKind == ContextMaterializationSourceKind.AttachmentRag)
         {
-
             _droppedAttachmentRagChunks = SaturatingDecrement(_droppedAttachmentRagChunks);
 
             _droppedAttachmentRagTokens = SaturatingSubtract(
                 _droppedAttachmentRagTokens,
                 tokens);
-
         }
         else if (removed.SourceKind == ContextMaterializationSourceKind.WorkspaceRag)
         {
-
             _droppedWorkspaceRagChunks = SaturatingDecrement(_droppedWorkspaceRagChunks);
 
             _droppedWorkspaceRagTokens = SaturatingSubtract(
                 _droppedWorkspaceRagTokens,
                 tokens);
-
         }
         else if (removed.SourceKind == ContextMaterializationSourceKind.TapestryMemory)
         {
-
             _droppedTapestryNodes = SaturatingDecrement(_droppedTapestryNodes);
 
             _droppedTapestryTokens = SaturatingSubtract(
                 _droppedTapestryTokens,
                 tokens);
-
         }
-
     }
 
     private void RecordContextPressureDrop(ContextMaterializationEntry removed)
     {
-
         int tokens = Math.Max(0, removed.EstimatedTokens);
 
         if (removed.SourceKind == ContextMaterializationSourceKind.AttachmentRag)
         {
-
             _droppedAttachmentRagChunks = SaturatingIncrement(_droppedAttachmentRagChunks);
 
             _droppedAttachmentRagTokens = SaturatingAdd(
                 _droppedAttachmentRagTokens,
                 tokens);
-
         }
         else if (removed.SourceKind == ContextMaterializationSourceKind.WorkspaceRag)
         {
-
             _droppedWorkspaceRagChunks = SaturatingIncrement(_droppedWorkspaceRagChunks);
 
             _droppedWorkspaceRagTokens = SaturatingAdd(
                 _droppedWorkspaceRagTokens,
                 tokens);
-
         }
         else if (removed.SourceKind == ContextMaterializationSourceKind.TapestryMemory)
         {
-
             _droppedTapestryNodes = SaturatingIncrement(_droppedTapestryNodes);
 
             _droppedTapestryTokens = SaturatingAdd(
                 _droppedTapestryTokens,
                 tokens);
-
         }
-
     }
 
     private static int SaturatingIncrement(int value) =>
@@ -614,13 +558,10 @@ public sealed class ContextMaterializationLedger
 
     private bool IsStaleAttachmentVersion(ContextMaterializationCandidate candidate)
     {
-
         if (candidate.SourceKind != ContextMaterializationSourceKind.AttachmentRag
             || candidate.VersionOrdinal is not { } candidateVersion)
         {
-
             return false;
-
         }
 
         return _entries.Any(
@@ -628,7 +569,6 @@ public sealed class ContextMaterializationLedger
                 && string.Equals(entry.Identity.SourceId, candidate.SourceId, StringComparison.Ordinal)
                 && entry.VersionOrdinal is { } currentVersion
                 && currentVersion > candidateVersion);
-
     }
 
     private static bool ExplicitWholeSourceMatches(
@@ -644,13 +584,11 @@ public sealed class ContextMaterializationLedger
 
     private bool IsExplicitWorkspaceSource(string sourceId)
     {
-
         int rangeSeparator = sourceId.IndexOf('\u001f', StringComparison.Ordinal);
 
         string path = rangeSeparator < 0 ? sourceId : sourceId[..rangeSeparator];
 
         return _explicitWorkspaceSources.Contains(NormalizeWorkspaceSource(path));
-
     }
 
     private static string NormalizeWorkspaceSource(string value) =>
@@ -658,12 +596,9 @@ public sealed class ContextMaterializationLedger
 
     private void RemoveSuppressedAttachmentSemantic(ContextMaterializationCandidate explicitSource)
     {
-
         if (explicitSource.VersionOrdinal is not { } currentVersion)
         {
-
             return;
-
         }
 
         _entries.RemoveAll(
@@ -674,21 +609,17 @@ public sealed class ContextMaterializationLedger
                 && (existingVersion == currentVersion
                     || explicitSource.SourceKind == ContextMaterializationSourceKind.RefreshSessionFile
                         && existingVersion < currentVersion));
-
     }
 
     private bool TryGetSemanticLimitRejection(
         ContextMaterializationCandidate candidate,
         out ContextMaterializationRejection rejection)
     {
-
         if (candidate.SourceKind != ContextMaterializationSourceKind.AttachmentRag)
         {
-
             rejection = ContextMaterializationRejection.None;
 
             return false;
-
         }
 
         ContextMaterializationEntry[] semantic = _entries
@@ -697,11 +628,9 @@ public sealed class ContextMaterializationLedger
 
         if (semantic.Length >= _limits.MaxRetrievedChunks)
         {
-
             rejection = ContextMaterializationRejection.RetrievedChunkLimit;
 
             return true;
-
         }
 
         int representedAttachments = semantic
@@ -714,11 +643,9 @@ public sealed class ContextMaterializationLedger
         if (candidate.SourceKind == ContextMaterializationSourceKind.AttachmentRag
             && representedAttachments > _limits.MaxRetrievedAttachments)
         {
-
             rejection = ContextMaterializationRejection.RetrievedAttachmentLimit;
 
             return true;
-
         }
 
         long bytes = semantic.Sum(static entry => (long)entry.MaterializedBytes)
@@ -726,11 +653,9 @@ public sealed class ContextMaterializationLedger
 
         if (bytes > _limits.MaxRetrievedBytes)
         {
-
             rejection = ContextMaterializationRejection.RetrievedByteLimit;
 
             return true;
-
         }
 
         long tokens = semantic.Sum(static entry => (long)entry.EstimatedTokens)
@@ -738,88 +663,110 @@ public sealed class ContextMaterializationLedger
 
         if (tokens > _limits.MaxRetrievedTokens)
         {
-
             rejection = ContextMaterializationRejection.RetrievedTokenLimit;
 
             return true;
-
         }
 
         rejection = ContextMaterializationRejection.None;
 
         return false;
-
     }
 
     private static ContextMaterializationEntry Reject(
         ContextMaterializationCandidate candidate,
         ContextMaterializationRejection rejection) =>
         ContextMaterializationEntry.FromCandidate(candidate, accepted: false, rejection);
-
 }
 
 /// <summary>
 /// Makes the owning turn ledger visible to post-tool attachment materialization without creating
 /// another tool loop or persisting turn-local content state.
 /// </summary>
+/// <remarks>
+/// <see cref="Begin"/> returns the turn's <see cref="Turn"/>, and the turn loop keeps it: an
+/// <c>AsyncLocal</c> written inside an async iterator does not survive the iterator's next
+/// <c>yield return</c>, so the loop re-establishes the ambient with <see cref="Enter"/> before each tool
+/// call, advances the provider round on the captured turn, and ends the captured turn rather than
+/// whatever the ambient holds when the iterator unwinds.
+/// </remarks>
 public static class ContextMaterializationLedgerAmbient
 {
-
-    private static readonly AsyncLocal<State?> Current = new();
+    private static readonly AsyncLocal<Turn?> Current = new();
 
     public static ContextMaterializationLedger? Ledger => Current.Value?.Ledger;
 
     public static int ProviderRound => Current.Value?.ProviderRound ?? 0;
 
-    public static void Begin(ContextMaterializationLedger ledger)
+    /// <summary>
+    /// Opens the turn's ledger and its attachment promotion state, and makes both ambient.
+    /// </summary>
+    /// <remarks>
+    /// The only place a turn's attachment promotion state is begun. Re-establishing it goes through
+    /// <see cref="Enter"/>, never through a second begin, which would replace the state and forget
+    /// every attachment the turn has already materialized.
+    /// </remarks>
+    public static Turn Begin(ContextMaterializationLedger ledger)
     {
-
         ArgumentNullException.ThrowIfNull(ledger);
 
-        Current.Value?.AttachmentMemoryScope.Dispose();
+        // An ambient turn here belongs to someone else — a delegated child turn begins inside its
+        // parent's tool call, where the parent's turn is re-established — so it is never disposed here.
+        // Each turn ends its own captured turn through End.
+        AttachmentMemoryGateAmbient.TurnScope attachmentMemory =
+            AttachmentMemoryGateAmbient.BeginTurn(ledger.SessionId);
 
-        Current.Value = new State(
-            ledger,
-            0,
-            AttachmentMemoryGateAmbient.BeginTurn(ledger.SessionId));
+        ledger.AttachmentMemory = attachmentMemory;
 
+        Turn turn = new(ledger, attachmentMemory);
+
+        Current.Value = turn;
+
+        return turn;
     }
 
-    public static void SetProviderRound(int providerRound)
+    /// <summary>Makes a begun turn's ledger and attachment promotion state ambient again.</summary>
+    public static void Enter(Turn? turn)
     {
+        Current.Value = turn;
 
-        if (Current.Value is { } state)
+        AttachmentMemoryGateAmbient.Enter(turn?.AttachmentMemory);
+    }
+
+    /// <summary>Ends the captured turn: clears the ambient and disposes its attachment state.</summary>
+    public static void End(Turn? turn)
+    {
+        if (ReferenceEquals(Current.Value, turn))
         {
-
-            state.ProviderRound = Math.Max(0, providerRound);
-
+            Current.Value = null;
         }
 
+        turn?.AttachmentMemory.Dispose();
     }
 
-    public static void End()
+    /// <summary>One turn's ledger, current provider round, and attachment promotion state.</summary>
+    public sealed class Turn
     {
+        private int _providerRound;
 
-        State? state = Current.Value;
+        internal Turn(
+            ContextMaterializationLedger ledger,
+            AttachmentMemoryGateAmbient.TurnScope attachmentMemory)
+        {
+            Ledger = ledger;
 
-        Current.Value = null;
+            AttachmentMemory = attachmentMemory;
+        }
 
-        state?.AttachmentMemoryScope.Dispose();
+        public ContextMaterializationLedger Ledger { get; }
 
+        public AttachmentMemoryGateAmbient.TurnScope AttachmentMemory { get; }
+
+        public int ProviderRound
+        {
+            get => Volatile.Read(ref _providerRound);
+
+            set => Volatile.Write(ref _providerRound, Math.Max(0, value));
+        }
     }
-
-    private sealed class State(
-        ContextMaterializationLedger ledger,
-        int providerRound,
-        IDisposable attachmentMemoryScope)
-    {
-
-        public ContextMaterializationLedger Ledger { get; } = ledger;
-
-        public int ProviderRound { get; set; } = providerRound;
-
-        public IDisposable AttachmentMemoryScope { get; } = attachmentMemoryScope;
-
-    }
-
 }

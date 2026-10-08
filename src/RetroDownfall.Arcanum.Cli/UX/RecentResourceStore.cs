@@ -62,26 +62,20 @@ public sealed class RecentResourceStore : IRecentResourceStore
             .RunAsync(
                 async token =>
                 {
-
                     Result<bool> revalidated = await revalidateAsync(token)
                         .ConfigureAwait(false);
 
                     if (revalidated.IsFailure || !revalidated.Value)
                     {
-
                         return false;
-
                     }
 
                     lock (_gate)
                     {
-
                         RememberUnderExclusive(resourceKind, id);
-
                     }
 
                     return true;
-
                 },
                 cancellationToken)
             .ConfigureAwait(false);
@@ -89,7 +83,6 @@ public sealed class RecentResourceStore : IRecentResourceStore
 
     private void RememberUnderExclusive(string resourceKind, string id)
     {
-
         try
         {
             List<RecentEntry> entries = ReadEntries()
@@ -110,56 +103,66 @@ public sealed class RecentResourceStore : IRecentResourceStore
 
             try
             {
-
-                using (FileStream stream = new(
-                    temp,
-                    FileMode.CreateNew,
-                    FileAccess.Write,
-                    FileShare.None))
+                using (FileStream stream = CreateStagingFile(temp))
                 using (StreamWriter writer = new(stream, Encoding.UTF8))
                 {
-
-                    SecureFilePermissions.ApplyOwnerOnlyFile(temp);
-
                     foreach (RecentEntry entry in entries)
                     {
-
                         writer.WriteLine(Serialize(entry));
-
                     }
 
                     writer.Flush();
 
                     stream.Flush(flushToDisk: true);
-
                 }
 
                 File.Move(temp, _path, overwrite: true);
 
                 SecureFilePermissions.ApplyOwnerOnlyFile(_path);
-
             }
             finally
             {
-
                 try
                 {
-
                     File.Delete(temp);
-
                 }
                 catch (Exception cleanupException) when (
                     cleanupException is IOException or UnauthorizedAccessException)
                 {
-
                 }
-
             }
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or ArgumentException)
         {
             // Recency is an optional UX hint. Selection must continue when it cannot persist.
         }
+    }
+
+    internal static FileStream CreateStagingFile(string path) =>
+        CreateStagingFile(path, SecureFilePermissions.ApplyOwnerOnlyFile);
+
+    /// <summary>
+    /// Creates the staging file owner-only before any byte is written, on every platform.
+    /// <see cref="SecureFilePermissions.CreateOwnerOnlyTempFile"/> already does so at creation (a create
+    /// mode on Unix, a protected ACL on Windows), so the narrowing applied here is belt and braces: a
+    /// repeat on a file the create made, and the repair for one it reused.
+    /// </summary>
+    internal static FileStream CreateStagingFile(string path, Action<string> applyOwnerOnly)
+    {
+        FileStream stream = SecureFilePermissions.CreateOwnerOnlyTempFile(path);
+
+        try
+        {
+            applyOwnerOnly(path);
+        }
+        catch
+        {
+            stream.Dispose();
+
+            throw;
+        }
+
+        return stream;
     }
 
     private List<RecentEntry> ReadEntries()

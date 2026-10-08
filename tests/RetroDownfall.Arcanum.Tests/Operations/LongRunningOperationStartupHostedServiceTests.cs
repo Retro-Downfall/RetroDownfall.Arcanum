@@ -1,6 +1,7 @@
 using System.Data.Common;
 using System.Reflection;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Operations;
@@ -114,15 +115,167 @@ public sealed class LongRunningOperationStartupHostedServiceTests
     }
 
     [Fact]
+    public async Task StopAsync_returns_after_the_drain_ceiling_when_a_handler_ignores_cancellation()
+    {
+        FakeTimeProvider time = new();
+        List<string> order = [];
+        RecoveryAdmissionGate gate = new(order);
+        FakeLongRunningOperationStore store = new(time);
+        RecoveryScopeFactory scopes = new(
+            store,
+            Reconciler(store, time),
+            order,
+            () => gate.ActiveLeases > 0);
+        TestCapturingLogger<LongRunningOperationStartupHostedService> logger = new();
+        LongRunningOperationStartupHostedService host = Host(
+            scopes,
+            time,
+            gate,
+            TimeSpan.FromMilliseconds(100),
+            logger);
+        TaskCompletionSource neverReleased = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        SetBackgroundTask(host, neverReleased.Task);
+
+        await host.StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.Contains(
+            logger.Entries,
+            static entry => entry.Level == LogLevel.Warning
+                && entry.Message.Contains("drain ceiling", StringComparison.Ordinal));
+
+        neverReleased.TrySetResult();
+    }
+
+    [Fact]
+    public async Task StopAsync_disposes_the_shutdown_source_once_the_background_owner_has_joined()
+    {
+        FakeTimeProvider time = new();
+        List<string> order = [];
+        RecoveryAdmissionGate gate = new(order);
+        FakeLongRunningOperationStore store = new(time);
+        RecoveryScopeFactory scopes = new(
+            store,
+            Reconciler(store, time),
+            order,
+            () => gate.ActiveLeases > 0);
+        LongRunningOperationStartupHostedService host = Host(scopes, time, gate);
+
+        SetBackgroundTask(host, Task.CompletedTask);
+
+        CancellationTokenSource shutdown = ShutdownSource(host);
+
+        await host.StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.True(shutdown.IsCancellationRequested);
+
+        Assert.Throws<ObjectDisposedException>(() => shutdown.Token.WaitHandle);
+    }
+
+    [Fact]
+    public async Task A_second_StopAsync_after_a_joined_stop_returns_without_throwing()
+    {
+        FakeTimeProvider time = new();
+        List<string> order = [];
+        RecoveryAdmissionGate gate = new(order);
+        FakeLongRunningOperationStore store = new(time);
+        RecoveryScopeFactory scopes = new(
+            store,
+            Reconciler(store, time),
+            order,
+            () => gate.ActiveLeases > 0);
+        LongRunningOperationStartupHostedService host = Host(scopes, time, gate);
+
+        SetBackgroundTask(host, Task.CompletedTask);
+
+        await host.StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(10));
+
+        // The generic host calls StopAsync once, but a second call (a test, a retried shutdown, a composition that
+        // stops the service itself) must find the source already disposed and do nothing, not report a failure.
+        await host.StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(10));
+    }
+
+    [Fact]
+    public async Task A_second_StopAsync_returns_the_first_calls_task()
+    {
+        FakeTimeProvider time = new();
+        List<string> order = [];
+        RecoveryAdmissionGate gate = new(order);
+        FakeLongRunningOperationStore store = new(time);
+        RecoveryScopeFactory scopes = new(
+            store,
+            Reconciler(store, time),
+            order,
+            () => gate.ActiveLeases > 0);
+        LongRunningOperationStartupHostedService host = Host(scopes, time, gate);
+
+        SetBackgroundTask(host, Task.CompletedTask);
+
+        // The stop is cached, not re-run or re-wrapped per call: every caller observes the one stop's own task,
+        // so a later caller can neither start a second stop nor see an outcome the first stop did not have.
+        Task first = host.StopAsync(CancellationToken.None);
+
+        Task second = host.StopAsync(CancellationToken.None);
+
+        Assert.Same(first, second);
+
+        await first.WaitAsync(TimeSpan.FromSeconds(10));
+    }
+
+    [Fact]
+    public async Task A_detached_owner_that_later_faults_is_logged_not_silently_dropped()
+    {
+        FakeTimeProvider time = new();
+        List<string> order = [];
+        RecoveryAdmissionGate gate = new(order);
+        FakeLongRunningOperationStore store = new(time);
+        RecoveryScopeFactory scopes = new(
+            store,
+            Reconciler(store, time),
+            order,
+            () => gate.ActiveLeases > 0);
+        TestCapturingLogger<LongRunningOperationStartupHostedService> logger = new();
+        LongRunningOperationStartupHostedService host = Host(
+            scopes,
+            time,
+            gate,
+            TimeSpan.FromMilliseconds(100),
+            logger);
+        TaskCompletionSource neverReleased = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        SetBackgroundTask(host, neverReleased.Task);
+
+        await host.StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(10));
+
+        InvalidOperationException late = new("the detached owner failed after shutdown");
+
+        neverReleased.SetException(late);
+
+        DateTime deadline = DateTime.UtcNow.AddSeconds(10);
+
+        while (DateTime.UtcNow < deadline
+            && !logger.Entries.Any(static entry => entry.Level == LogLevel.Error))
+        {
+            await Task.Delay(10);
+        }
+
+        TestLogEntry logged = Assert.Single(
+            logger.Entries,
+            static entry => entry.Level == LogLevel.Error);
+
+        Assert.Same(late, logged.Exception?.GetBaseException());
+    }
+
+    [Fact]
     public async Task Background_db_only_recovery_acquires_before_each_private_scope_without_a_group()
     {
         FakeTimeProvider time = new();
         FakeLongRunningOperationStore store = new(time);
         _ = store.Seed(
-            LongRunningOperationKinds.WorkspaceIndex,
-            LongRunningOperationRecoveryPolicy.RestartIdempotently);
+            LongRunningOperationKinds.Subagent,
+            LongRunningOperationRecoveryPolicy.AbandonSafely);
         RecordingRecoveryHandler handler = new(
-            LongRunningOperationKinds.WorkspaceIndex,
+            LongRunningOperationKinds.Subagent,
             supportedCheckpointVersion: 0);
         List<string> order = [];
         RecoveryAdmissionGate gate = new(order);
@@ -162,11 +315,11 @@ public sealed class LongRunningOperationStartupHostedServiceTests
         FakeTimeProvider time = new();
         FakeLongRunningOperationStore store = new(time);
         LongRunningOperation seeded = store.Seed(
-            LongRunningOperationKinds.Batch,
+            LongRunningOperationKinds.BlobEncryptionMigration,
             LongRunningOperationRecoveryPolicy.RestartIdempotently);
         List<string> order = [];
         RecordingRecoveryHandler handler = new(
-            LongRunningOperationKinds.Batch,
+            LongRunningOperationKinds.BlobEncryptionMigration,
             supportedCheckpointVersion: 0,
             _ =>
             {
@@ -209,7 +362,7 @@ public sealed class LongRunningOperationStartupHostedServiceTests
         FakeTimeProvider time = new();
         FakeLongRunningOperationStore store = new(time);
         _ = store.Seed(
-            LongRunningOperationKinds.Batch,
+            LongRunningOperationKinds.BlobEncryptionMigration,
             LongRunningOperationRecoveryPolicy.RestartIdempotently);
         List<string> order = [];
         RecoveryAdmissionGate gate = new(order);
@@ -221,7 +374,7 @@ public sealed class LongRunningOperationStartupHostedServiceTests
                 store,
                 time,
                 new RecordingRecoveryHandler(
-                    LongRunningOperationKinds.Batch,
+                    LongRunningOperationKinds.BlobEncryptionMigration,
                     supportedCheckpointVersion: 0)),
             order,
             () => gate.ActiveLeases > 0)
@@ -279,10 +432,10 @@ public sealed class LongRunningOperationStartupHostedServiceTests
         FakeTimeProvider time = new();
         FakeLongRunningOperationStore store = new(time);
         LongRunningOperation seeded = store.Seed(
-            LongRunningOperationKinds.Batch,
+            LongRunningOperationKinds.BlobEncryptionMigration,
             LongRunningOperationRecoveryPolicy.RestartIdempotently);
         RecordingRecoveryHandler handler = new(
-            LongRunningOperationKinds.Batch,
+            LongRunningOperationKinds.BlobEncryptionMigration,
             supportedCheckpointVersion: 0);
         List<string> order = [];
         RecoveryAdmissionGate gate = new(order) { RefuseFirstGroup = true };
@@ -315,7 +468,7 @@ public sealed class LongRunningOperationStartupHostedServiceTests
         FakeTimeProvider time = new();
         FakeLongRunningOperationStore store = new(time);
         _ = store.Seed(
-            LongRunningOperationKinds.Batch,
+            LongRunningOperationKinds.BlobEncryptionMigration,
             LongRunningOperationRecoveryPolicy.RestartIdempotently);
         List<string> order = [];
         RecoveryAdmissionGate gate = new(order) { ThrowOnGroupDisposal = true };
@@ -325,7 +478,7 @@ public sealed class LongRunningOperationStartupHostedServiceTests
                 store,
                 time,
                 new RecordingRecoveryHandler(
-                    LongRunningOperationKinds.Batch,
+                    LongRunningOperationKinds.BlobEncryptionMigration,
                     supportedCheckpointVersion: 0)),
             order,
             () => gate.ActiveLeases > 0);
@@ -349,7 +502,7 @@ public sealed class LongRunningOperationStartupHostedServiceTests
         FakeTimeProvider time = new();
         FakeLongRunningOperationStore store = new(time);
         _ = store.Seed(
-            LongRunningOperationKinds.Batch,
+            LongRunningOperationKinds.BlobEncryptionMigration,
             LongRunningOperationRecoveryPolicy.RestartIdempotently);
         List<string> order = [];
         RecoveryAdmissionGate gate = new(order) { ThrowOnGroupBegin = true };
@@ -359,7 +512,7 @@ public sealed class LongRunningOperationStartupHostedServiceTests
                 store,
                 time,
                 new RecordingRecoveryHandler(
-                    LongRunningOperationKinds.Batch,
+                    LongRunningOperationKinds.BlobEncryptionMigration,
                     supportedCheckpointVersion: 0)),
             order,
             () => gate.ActiveLeases > 0);
@@ -382,8 +535,8 @@ public sealed class LongRunningOperationStartupHostedServiceTests
         FakeTimeProvider time = new();
         FakeLongRunningOperationStore store = new(time);
         _ = store.Seed(
-            LongRunningOperationKinds.WorkspaceIndex,
-            LongRunningOperationRecoveryPolicy.RestartIdempotently);
+            LongRunningOperationKinds.Subagent,
+            LongRunningOperationRecoveryPolicy.AbandonSafely);
         List<string> order = [];
         RecoveryAdmissionGate gate = new(order);
         RecoveryScopeFactory scopes = new(
@@ -392,7 +545,7 @@ public sealed class LongRunningOperationStartupHostedServiceTests
                 store,
                 time,
                 new RecordingRecoveryHandler(
-                    LongRunningOperationKinds.WorkspaceIndex,
+                    LongRunningOperationKinds.Subagent,
                     supportedCheckpointVersion: 0)),
             order,
             () => gate.ActiveLeases > 0)
@@ -418,7 +571,7 @@ public sealed class LongRunningOperationStartupHostedServiceTests
         FakeTimeProvider time = new();
         FakeLongRunningOperationStore store = new(time);
         _ = store.Seed(
-            LongRunningOperationKinds.Batch,
+            LongRunningOperationKinds.BlobEncryptionMigration,
             LongRunningOperationRecoveryPolicy.RestartIdempotently);
         List<string> order = [];
         RecoveryAdmissionGate gate = new(order);
@@ -428,7 +581,7 @@ public sealed class LongRunningOperationStartupHostedServiceTests
                 store,
                 time,
                 new RecordingRecoveryHandler(
-                    LongRunningOperationKinds.Batch,
+                    LongRunningOperationKinds.BlobEncryptionMigration,
                     supportedCheckpointVersion: 0)),
             order,
             () => gate.ActiveLeases > 0)
@@ -457,7 +610,7 @@ public sealed class LongRunningOperationStartupHostedServiceTests
         FakeTimeProvider time = new();
         FakeLongRunningOperationStore store = new(time);
         _ = store.Seed(
-            LongRunningOperationKinds.Batch,
+            LongRunningOperationKinds.BlobEncryptionMigration,
             LongRunningOperationRecoveryPolicy.RestartIdempotently);
         List<string> order = [];
         RecoveryAdmissionGate gate = new(order) { ThrowOnGroupDisposal = true };
@@ -467,7 +620,7 @@ public sealed class LongRunningOperationStartupHostedServiceTests
                 store,
                 time,
                 new RecordingRecoveryHandler(
-                    LongRunningOperationKinds.Batch,
+                    LongRunningOperationKinds.BlobEncryptionMigration,
                     supportedCheckpointVersion: 0)),
             order,
             () => gate.ActiveLeases > 0)
@@ -493,13 +646,19 @@ public sealed class LongRunningOperationStartupHostedServiceTests
     private static LongRunningOperationStartupHostedService Host(
         IServiceScopeFactory scopes,
         TimeProvider time,
-        IGrimoireConnectionAdmissionGate gate) =>
+        IGrimoireConnectionAdmissionGate gate,
+        TimeSpan? drainCeiling = null,
+        ILogger<LongRunningOperationStartupHostedService>? logger = null) =>
         new(
             scopes,
             time,
             new LongRunningOperationReconciliationStatus(),
             gate,
-            NullLogger<LongRunningOperationStartupHostedService>.Instance);
+            logger ?? NullLogger<LongRunningOperationStartupHostedService>.Instance)
+        {
+            ShutdownDrainCeiling = drainCeiling
+                ?? LongRunningOperationStartupHostedService.DefaultShutdownDrainCeiling,
+        };
 
     private static void SetBackgroundTask(
         LongRunningOperationStartupHostedService host,

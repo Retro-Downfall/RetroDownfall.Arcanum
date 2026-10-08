@@ -47,13 +47,37 @@ public sealed class ServeCommand(
                         $"Could not stop the Arcanum host: {result.Error.Message} "
                         + "If no host is running there is nothing to stop.")));
 
-            return 1;
+            return CliFailureExit.ExitCode(result.Error);
         }
 
         AnsiConsole.MarkupLine(
             themePalette.HighlightMarkup(Markup.Escape("Arcanum host shutdown requested.")));
 
         return 0;
+    }
+
+    /// <summary>
+    /// Refuses <c>--json</c> (and <c>--output-format json</c>) before anything starts. <c>serve</c> runs
+    /// until it is stopped and has no result document, while the structured-output mode defers every
+    /// stdout write until the command returns, so the freshly generated master API key would be held
+    /// back until the host exits. Returns the exit code the process must stop with, or
+    /// <see langword="null"/> when the host may start.
+    /// </summary>
+    internal int? RefuseJsonOutput(CliInvocationOptions options)
+    {
+        if (!options.Json)
+        {
+            return null;
+        }
+
+        CliErrorOutput.WriteMarkupLine(
+            themePalette.ErrorMarkup(
+                Markup.Escape(
+                    "arcanum serve does not support --json or --output-format json: it runs until it is "
+                    + "stopped and has no result document, and buffering its output would hold back the "
+                    + "master API key it generates until the host exits. Run it without --json.")));
+
+        return (int)CliExitCode.ConfigurationError;
     }
 
     /// <summary>
@@ -100,10 +124,32 @@ public sealed class ServeCommand(
     /// Hosts the Arcanum Minimal API (default http://localhost:5001/; set Arcanum:Host:Port in arcanum.json).
     /// When ListenAny / ARCANUM_HOST_ANY is effective, binds HTTPS-only on Arcanum:Host:Https:Port.
     /// </summary>
-    public async Task<int> Run(CancellationToken cancellationToken)
+    public Task<int> Run(CancellationToken cancellationToken) =>
+        Run(cancellationToken, RunHostAsync);
+
+    /// <summary>
+    /// The gate in front of the host: a cancelled token and <c>--json</c> are settled here, before anything
+    /// reads configuration or builds a host. <paramref name="startHost"/> is the host itself, passed in so a
+    /// test can prove the gate holds without starting a Kestrel host in the test process.
+    /// </summary>
+    internal async Task<int> Run(
+        CancellationToken cancellationToken,
+        Func<CancellationToken, Task<int>> startHost)
     {
         cancellationToken.ThrowIfCancellationRequested();
 
+        int? jsonRefusal = RefuseJsonOutput(CliInvocationContext.Current);
+
+        if (jsonRefusal is not null)
+        {
+            return jsonRefusal.Value;
+        }
+
+        return await startHost(cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<int> RunHostAsync(CancellationToken cancellationToken)
+    {
         ConfigurationManager probeConfig = new();
 
         probeConfig.AddArcanumConfiguration();

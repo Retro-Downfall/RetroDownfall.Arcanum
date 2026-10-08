@@ -4,12 +4,14 @@ using System.Security.Cryptography;
 using System.Text;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Weave;
 using RetroDownfall.Arcanum.Tests.Fixtures;
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Weave;
 
@@ -17,7 +19,6 @@ namespace RetroDownfall.Arcanum.Tests.Weave;
 [Trait("Category", "Integration")]
 public sealed class DivinationServiceTests : IAsyncLifetime
 {
-
     private readonly GrimoireFixture _fixture;
 
     private string _dbPath = string.Empty;
@@ -26,45 +27,34 @@ public sealed class DivinationServiceTests : IAsyncLifetime
 
     public DivinationServiceTests(GrimoireFixture fixture)
     {
-
         _fixture = fixture;
-
     }
 
     public Task InitializeAsync()
     {
-
         _dbPath = _fixture.CopyDatabase();
 
         _db = _fixture.CreateContext(_dbPath);
 
         return Task.CompletedTask;
-
     }
 
     public async Task DisposeAsync()
     {
-
         if (_db is not null)
         {
-
             await _db.DisposeAsync();
-
         }
 
         if (File.Exists(_dbPath))
         {
-
             File.Delete(_dbPath);
-
         }
-
     }
 
     [SkippableFact]
     public async Task SearchAsync_ManagedFallback_ReturnsResultsAboveThreshold_OrderedBySimilarity()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         await InsertEmbeddingAsync(Identity("close"), [1f, 0f, 0f]);
@@ -98,13 +88,11 @@ public sealed class DivinationServiceTests : IAsyncLifetime
         Assert.Equal(Identity("closer"), hits[1].Id);
 
         Assert.True(hits[0].Similarity >= hits[1].Similarity);
-
     }
 
     [SkippableFact]
     public async Task SearchAsync_ManagedFallback_FiltersBelowSimilarityThreshold()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         await InsertEmbeddingAsync(Identity("orthogonal"), [0f, 1f, 0f]);
@@ -125,13 +113,11 @@ public sealed class DivinationServiceTests : IAsyncLifetime
         Assert.True(result.IsSuccess);
 
         Assert.Empty(result.Value);
-
     }
 
     [SkippableFact]
     public async Task SearchAsync_ManagedFallback_RespectsMaxResults()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         await InsertEmbeddingAsync(Identity("a"), [1f, 0f, 0f]);
@@ -160,13 +146,11 @@ public sealed class DivinationServiceTests : IAsyncLifetime
         Assert.Equal(Identity("a"), result.Value[0].Id);
 
         Assert.Equal(Identity("b"), result.Value[1].Id);
-
     }
 
     [SkippableFact]
     public async Task SearchScopedAsync_ManagedJoin_ReturnsOnlyInScopeRows()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         await EnsureWorkspaceTablesAsync();
@@ -207,13 +191,11 @@ public sealed class DivinationServiceTests : IAsyncLifetime
         // Not an Entry identity: this case reads workspace_file_chunks, whose ChunkId is a composite
         // key rather than a Guid and carries no identity guard.
         Assert.Equal("in-scope", result.Value[0].Id);
-
     }
 
     [SkippableFact]
     public async Task SearchAsync_ManagedFallback_ScoresRowsBeyondLegacyBudget()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         await InsertLegacyBudgetRegressionRowsAsync();
@@ -236,13 +218,239 @@ public sealed class DivinationServiceTests : IAsyncLifetime
         DivinationResult hit = Assert.Single(result.Value);
 
         Assert.Equal(Identity("late-best-match"), hit.Id);
+    }
 
+    /// <summary>
+    /// A row whose vector is not the query's width, or has no direction at all, carries no signal. Scored as
+    /// zero it still cleared a threshold of zero, so a corpus embedded at another width answered every
+    /// query with arbitrary rows at similarity 0 instead of saying nothing could be compared.
+    /// </summary>
+    [SkippableFact]
+    public async Task Managed_search_skips_rows_with_mismatched_dimension_at_threshold_zero()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await InsertEmbeddingAsync(Identity("good"), [1f, 0f, 0f]);
+
+        await InsertEmbeddingAsync(Identity("short"), [1f, 0f]);
+
+        await InsertEmbeddingAsync(Identity("long"), [1f, 0f, 0f, 0f]);
+
+        await InsertEmbeddingAsync(Identity("zero"), [0f, 0f, 0f]);
+
+        DivinationService service = CreateService(vecAvailable: false);
+
+        Result<DivinationResult[]> result = await service.SearchAsync(
+            "entry_embeddings_vec",
+            "EntryId",
+            "Embedding",
+            new Embedding<float>(new float[] { 1f, 0f, 0f }),
+            maxResults: 10,
+            similarityThreshold: 0f,
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+
+        DivinationResult hit = Assert.Single(result.Value);
+
+        Assert.Equal(Identity("good"), hit.Id);
+    }
+
+    [SkippableFact]
+    public async Task Managed_search_survives_one_corrupt_blob()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await InsertEmbeddingAsync(Identity("good"), [1f, 0f, 0f]);
+
+        // Five bytes is not a whole number of floats: the codec refuses to view it as a vector.
+        await InsertRawEmbeddingAsync(Identity("corrupt"), [1, 2, 3, 4, 5], dim: 3);
+
+        DivinationService service = CreateService(vecAvailable: false);
+
+        Result<DivinationResult[]> result = await service.SearchAsync(
+            "entry_embeddings_vec",
+            "EntryId",
+            "Embedding",
+            new Embedding<float>(new float[] { 1f, 0f, 0f }),
+            maxResults: 10,
+            similarityThreshold: 0f,
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+
+        DivinationResult hit = Assert.Single(result.Value);
+
+        Assert.Equal(Identity("good"), hit.Id);
+    }
+
+    [SkippableFact]
+    public async Task Managed_search_over_a_corpus_of_another_width_reports_a_dimension_mismatch()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await InsertEmbeddingAsync(Identity("a"), [1f, 0f]);
+
+        await InsertEmbeddingAsync(Identity("b"), [0f, 1f]);
+
+        DivinationService service = CreateService(vecAvailable: false);
+
+        Result<DivinationResult[]> result = await service.SearchAsync(
+            "entry_embeddings_vec",
+            "EntryId",
+            "Embedding",
+            new Embedding<float>(new float[] { 1f, 0f, 0f }),
+            maxResults: 10,
+            similarityThreshold: 0f,
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Embeddings.DimensionMismatch, result.Error.Code);
+
+        Assert.Contains("embeddings reset", result.Error.Message, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task Managed_search_logs_the_rows_it_skipped_once_per_scan()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await InsertEmbeddingAsync(Identity("good"), [1f, 0f, 0f]);
+
+        await InsertEmbeddingAsync(Identity("short-1"), [1f, 0f]);
+
+        await InsertEmbeddingAsync(Identity("short-2"), [0f, 1f]);
+
+        await InsertEmbeddingAsync(Identity("zero"), [0f, 0f, 0f]);
+
+        await InsertRawEmbeddingAsync(Identity("corrupt"), [1, 2, 3], dim: 3);
+
+        TestCapturingLogger<DivinationService> logger = new();
+
+        DivinationService service = CreateService(vecAvailable: false, logger);
+
+        Result<DivinationResult[]> result = await service.SearchAsync(
+            "entry_embeddings_vec",
+            "EntryId",
+            "Embedding",
+            new Embedding<float>(new float[] { 1f, 0f, 0f }),
+            maxResults: 10,
+            similarityThreshold: 0f,
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+
+        // One Warning for the whole scan, not one per skipped row, and it carries every count: four rows skipped
+        // in all (two of another width, one unreadable, one with no direction) against a 3-dimension query.
+        TestLogEntry warning = Assert.Single(logger.Entries, static entry => entry.Level == LogLevel.Warning);
+
+        Assert.Contains("skipped 4 stored embedding(s)", warning.Message, StringComparison.Ordinal);
+
+        Assert.Contains("with a 3-dimension query", warning.Message, StringComparison.Ordinal);
+
+        Assert.Contains(": 2 of another width, 1 unreadable, 1 with no direction.", warning.Message, StringComparison.Ordinal);
+
+        Assert.Contains("embeddings reset", warning.Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// A stored embedding that is SQL NULL is a row nothing can be compared with, so it is counted as unreadable
+    /// like a corrupt blob, never as a vector of another width. The production tables declare the column NOT
+    /// NULL, so the scan is pointed at a table that allows it.
+    /// </summary>
+    [SkippableFact]
+    public async Task Managed_search_counts_a_null_embedding_as_unreadable_not_as_another_width()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        DbConnection connection = _db!.Database.GetDbConnection();
+
+        if (connection.State != ConnectionState.Open)
+        {
+            await connection.OpenAsync();
+        }
+
+        await using (DbCommand create = connection.CreateCommand())
+        {
+            create.CommandText = """CREATE TABLE "nullable_embeddings" ("Id" TEXT PRIMARY KEY, "Embedding" BLOB);""";
+
+            _ = await create.ExecuteNonQueryAsync();
+        }
+
+        await using (DbCommand insert = connection.CreateCommand())
+        {
+            insert.CommandText =
+                """
+                INSERT INTO "nullable_embeddings" ("Id", "Embedding") VALUES ('good', @good), ('missing', NULL);
+                """;
+
+            AddParam(insert, "@good", EmbeddingBlobCodec.Encode([1f, 0f, 0f]));
+
+            _ = await insert.ExecuteNonQueryAsync();
+        }
+
+        TestCapturingLogger<DivinationService> logger = new();
+
+        DivinationService service = CreateService(vecAvailable: false, logger);
+
+        Result<DivinationResult[]> result = await service.SearchAsync(
+            "nullable_embeddings_vec",
+            "Id",
+            "Embedding",
+            new Embedding<float>(new float[] { 1f, 0f, 0f }),
+            maxResults: 10,
+            similarityThreshold: 0f,
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+
+        Assert.Equal("good", Assert.Single(result.Value).Id);
+
+        TestLogEntry warning = Assert.Single(logger.Entries, static entry => entry.Level == LogLevel.Warning);
+
+        Assert.Contains(": 0 of another width, 1 unreadable, 0 with no direction.", warning.Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Equal similarity is ranked by id, lowest first, so which rows a full result keeps does not depend on the
+    /// order SQLite happens to hand them over in.
+    /// </summary>
+    [SkippableFact]
+    public async Task Managed_search_breaks_similarity_ties_by_id()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        string[] ids = new[] { "a", "b", "c", "d" }
+            .Select(Identity)
+            .Order(StringComparer.Ordinal)
+            .ToArray();
+
+        // Highest id first: a scan that keeps whatever it met first would keep the two highest.
+        foreach (string id in ids.Reverse())
+        {
+            await InsertEmbeddingAsync(id, [1f, 0f, 0f]);
+        }
+
+        DivinationService service = CreateService(vecAvailable: false);
+
+        Result<DivinationResult[]> result = await service.SearchAsync(
+            "entry_embeddings_vec",
+            "EntryId",
+            "Embedding",
+            new Embedding<float>(new float[] { 1f, 0f, 0f }),
+            maxResults: 2,
+            similarityThreshold: 0f,
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+
+        Assert.Equal(ids[..2], result.Value.Select(static hit => hit.Id).ToArray());
     }
 
     [SkippableFact]
     public async Task SearchAsync_VecClaimedAvailableButTableMissing_NeverThrows_ReturnsFailure()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         // Phase 1 ships managed-only (no sqlite-vec native asset), so entry_embeddings_vec never
@@ -264,18 +472,15 @@ public sealed class DivinationServiceTests : IAsyncLifetime
         Assert.True(result.IsFailure);
 
         Assert.Equal(ErrorCodes.Embeddings.ProviderUnavailable, result.Error.Code);
-
     }
 
-    private DivinationService CreateService(bool vecAvailable)
+    private DivinationService CreateService(bool vecAvailable, ILogger<DivinationService>? logger = null)
     {
-
         WeaveIndexAvailability availability = new();
 
         availability.SetAvailable(vecAvailable);
 
-        return new DivinationService(_db!, availability, NullLogger<DivinationService>.Instance);
-
+        return new DivinationService(_db!, availability, logger ?? NullLogger<DivinationService>.Instance);
     }
 
     /// <summary>
@@ -296,14 +501,11 @@ public sealed class DivinationServiceTests : IAsyncLifetime
 
     private async Task InsertEmbeddingAsync(string entryId, float[] vector)
     {
-
         DbConnection connection = _db!.Database.GetDbConnection();
 
         if (connection.State != ConnectionState.Open)
         {
-
             await connection.OpenAsync();
-
         }
 
         await using DbCommand cmd = connection.CreateCommand();
@@ -339,19 +541,41 @@ public sealed class DivinationServiceTests : IAsyncLifetime
         cmd.Parameters.Add(dimParam);
 
         _ = await cmd.ExecuteNonQueryAsync();
-
     }
 
-    private async Task InsertLegacyBudgetRegressionRowsAsync()
+    private async Task InsertRawEmbeddingAsync(string entryId, byte[] blob, int dim)
     {
-
         DbConnection connection = _db!.Database.GetDbConnection();
 
         if (connection.State != ConnectionState.Open)
         {
-
             await connection.OpenAsync();
+        }
 
+        await using DbCommand cmd = connection.CreateCommand();
+
+        cmd.CommandText =
+            """
+            INSERT INTO "entry_embeddings" ("EntryId", "Embedding", "Dim")
+            VALUES (@id, @embedding, @dim);
+            """;
+
+        AddParam(cmd, "@id", entryId);
+
+        AddParam(cmd, "@embedding", blob);
+
+        AddParam(cmd, "@dim", dim);
+
+        _ = await cmd.ExecuteNonQueryAsync();
+    }
+
+    private async Task InsertLegacyBudgetRegressionRowsAsync()
+    {
+        DbConnection connection = _db!.Database.GetDbConnection();
+
+        if (connection.State != ConnectionState.Open)
+        {
+            await connection.OpenAsync();
         }
 
         await using DbCommand cmd = connection.CreateCommand();
@@ -377,19 +601,15 @@ public sealed class DivinationServiceTests : IAsyncLifetime
         AddParam(cmd, "@matching", EmbeddingBlobCodec.Encode([1f, 0f, 0f]));
 
         _ = await cmd.ExecuteNonQueryAsync();
-
     }
 
     private async Task EnsureWorkspaceTablesAsync()
     {
-
         DbConnection connection = _db!.Database.GetDbConnection();
 
         if (connection.State != ConnectionState.Open)
         {
-
             await connection.OpenAsync();
-
         }
 
         await using DbCommand embeddingsCmd = connection.CreateCommand();
@@ -423,7 +643,6 @@ public sealed class DivinationServiceTests : IAsyncLifetime
             """;
 
         _ = await chunksCmd.ExecuteNonQueryAsync();
-
     }
 
     private async Task InsertWorkspaceChunkAsync(
@@ -432,14 +651,11 @@ public sealed class DivinationServiceTests : IAsyncLifetime
         string relativePath,
         float[] vector)
     {
-
         DbConnection connection = _db!.Database.GetDbConnection();
 
         if (connection.State != ConnectionState.Open)
         {
-
             await connection.OpenAsync();
-
         }
 
         await using DbCommand chunkCmd = connection.CreateCommand();
@@ -479,12 +695,10 @@ public sealed class DivinationServiceTests : IAsyncLifetime
         AddParam(embeddingCmd, "@dim", vector.Length);
 
         _ = await embeddingCmd.ExecuteNonQueryAsync();
-
     }
 
     private static void AddParam(DbCommand cmd, string name, object value)
     {
-
         DbParameter parameter = cmd.CreateParameter();
 
         parameter.ParameterName = name;
@@ -492,7 +706,5 @@ public sealed class DivinationServiceTests : IAsyncLifetime
         parameter.Value = value;
 
         cmd.Parameters.Add(parameter);
-
     }
-
 }

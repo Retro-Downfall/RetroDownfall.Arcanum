@@ -12,7 +12,6 @@ namespace RetroDownfall.Arcanum.Tests.Data;
 [Trait("Category", "Integration")]
 public sealed class BatchRepositoryTests : IAsyncLifetime
 {
-
     private readonly GrimoireFixture _fixture;
 
     private string _dbPath = string.Empty;
@@ -23,14 +22,11 @@ public sealed class BatchRepositoryTests : IAsyncLifetime
 
     public BatchRepositoryTests(GrimoireFixture fixture)
     {
-
         _fixture = fixture;
-
     }
 
     public Task InitializeAsync()
     {
-
         _dbPath = _fixture.CopyDatabase();
 
         _db = _fixture.CreateContext(_dbPath);
@@ -38,32 +34,24 @@ public sealed class BatchRepositoryTests : IAsyncLifetime
         _repo = new BatchRepository(_db);
 
         return Task.CompletedTask;
-
     }
 
     public async Task DisposeAsync()
     {
-
         if (_db is not null)
         {
-
             await _db.DisposeAsync();
-
         }
 
         if (File.Exists(_dbPath))
         {
-
             File.Delete(_dbPath);
-
         }
-
     }
 
     [SkippableFact]
     public async Task CreateAsync_then_GetByIdAsync_round_trips()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid id = Guid.NewGuid();
@@ -95,7 +83,6 @@ public sealed class BatchRepositoryTests : IAsyncLifetime
         Assert.Null(loaded.OutputFileId);
 
         Assert.Null(loaded.ErrorFileId);
-
     }
 
     [SkippableFact]
@@ -103,7 +90,6 @@ public sealed class BatchRepositoryTests : IAsyncLifetime
     public async Task CreateAsync_StoresCanonicalNFormatBatchIdentity()
 
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid inputFileId = Guid.NewGuid();
@@ -113,9 +99,7 @@ public sealed class BatchRepositoryTests : IAsyncLifetime
         Guid batchId = Guid.NewGuid();
 
         await _repo!.CreateAsync(
-
             new BatchRecord(
-
                 batchId,
 
                 inputFileId,
@@ -149,11 +133,109 @@ public sealed class BatchRepositoryTests : IAsyncLifetime
         command.Parameters.Add(parameter);
 
         Assert.Equal(
-
             batchId.ToString("N"),
 
             await command.ExecuteScalarAsync(CancellationToken.None));
+    }
 
+    [SkippableFact]
+    public async Task CreateAsync_and_UpdateStatusAsync_store_each_file_role_in_the_canonical_spelling()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid inputFileId = Guid.NewGuid();
+
+        Guid outputFileId = Guid.NewGuid();
+
+        Guid errorFileId = Guid.NewGuid();
+
+        await SeedUploadedFileAsync(inputFileId);
+
+        await SeedUploadedFileAsync(outputFileId);
+
+        await SeedUploadedFileAsync(errorFileId);
+
+        Guid batchId = Guid.NewGuid();
+
+        await _repo!.CreateAsync(
+            new BatchRecord(
+                batchId,
+                inputFileId,
+                "/v1/chat/completions",
+                BatchStatuses.Validating,
+                DateTimeOffset.UtcNow,
+                null,
+                null,
+                null),
+            CancellationToken.None);
+
+        Assert.Equal(
+            [GrimoireEntitySql.Format(inputFileId), "<null>", "<null>"],
+            await ReadFileRolesAsync(batchId));
+
+        await _repo.UpdateStatusAsync(
+            batchId,
+            BatchStatuses.Completed,
+            DateTimeOffset.UtcNow,
+            outputFileId,
+            errorFileId,
+            CancellationToken.None);
+
+        Assert.Equal(
+            [GrimoireEntitySql.Format(inputFileId), GrimoireEntitySql.Format(outputFileId), GrimoireEntitySql.Format(errorFileId)],
+            await ReadFileRolesAsync(batchId));
+    }
+
+    /// <summary>
+    /// A new batch may name an input file still held in a pre-version-15 spelling, which the files endpoint has
+    /// already found by its Guid; the batch stores the canonical text.
+    /// </summary>
+    /// <remarks>
+    /// While an earlier step's backfill sweep drains, version 15 has not yet rewritten the files uploaded before
+    /// the upgrade, which the earlier writer stored lowercase dashed.
+    /// </remarks>
+    [SkippableFact]
+    public async Task CreateAsync_accepts_an_input_file_still_held_in_a_pre_version_15_spelling()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid inputFileId = Guid.NewGuid();
+
+        System.Data.Common.DbConnection connection = _db!.Database.GetDbConnection();
+
+        if (connection.State != System.Data.ConnectionState.Open)
+        {
+            await connection.OpenAsync(CancellationToken.None);
+        }
+
+        await using (System.Data.Common.DbCommand insert = connection.CreateCommand())
+        {
+            insert.CommandText =
+                $"""
+                INSERT INTO "UploadedFiles" ("Id", "Filename", "Bytes", "Purpose", "MimeType", "CreatedAt")
+                VALUES ('{inputFileId:D}', 'legacy.jsonl', 1, 'batch', 'application/jsonl', '{UtcInstantText.Format(DateTimeOffset.UtcNow)}');
+                """;
+
+            _ = await insert.ExecuteNonQueryAsync(CancellationToken.None);
+        }
+
+        Guid batchId = Guid.NewGuid();
+
+        await _repo!.CreateAsync(
+            new BatchRecord(
+                batchId,
+                inputFileId,
+                "/v1/chat/completions",
+                BatchStatuses.Validating,
+                DateTimeOffset.UtcNow,
+                null,
+                null,
+                null),
+            CancellationToken.None);
+
+        Assert.Equal(
+            [GrimoireEntitySql.Format(inputFileId), "<null>", "<null>"],
+            await ReadFileRolesAsync(batchId));
     }
 
     [SkippableTheory]
@@ -167,7 +249,6 @@ public sealed class BatchRepositoryTests : IAsyncLifetime
     public async Task CreateAsync_rejects_missing_file_references_atomically(
         string missingRole)
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid inputFileId = Guid.NewGuid();
@@ -184,7 +265,6 @@ public sealed class BatchRepositoryTests : IAsyncLifetime
 
         Guid missingFileId = missingRole switch
         {
-
             "input" => inputFileId,
 
             "output" => outputFileId,
@@ -192,7 +272,6 @@ public sealed class BatchRepositoryTests : IAsyncLifetime
             "error" => errorFileId,
 
             _ => throw new ArgumentOutOfRangeException(nameof(missingRole)),
-
         };
 
         await DeleteUploadedFileMetadataAsync(missingFileId);
@@ -213,7 +292,6 @@ public sealed class BatchRepositoryTests : IAsyncLifetime
             () => _repo!.CreateAsync(record, CancellationToken.None));
 
         Assert.Null(await _repo!.GetByIdAsync(batchId, CancellationToken.None));
-
     }
 
     [SkippableTheory]
@@ -225,7 +303,6 @@ public sealed class BatchRepositoryTests : IAsyncLifetime
     public async Task UpdateStatusAsync_rejects_missing_artifact_references_atomically(
         string missingRole)
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid inputFileId = Guid.NewGuid();
@@ -272,7 +349,6 @@ public sealed class BatchRepositoryTests : IAsyncLifetime
         Assert.Null(unchanged.OutputFileId);
 
         Assert.Null(unchanged.ErrorFileId);
-
     }
 
     [SkippableTheory]
@@ -284,7 +360,6 @@ public sealed class BatchRepositoryTests : IAsyncLifetime
     public async Task TryCompareAndSetStatusAsync_rejects_missing_artifact_reference(
         string missingRole)
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid inputFileId = Guid.NewGuid();
@@ -331,14 +406,12 @@ public sealed class BatchRepositoryTests : IAsyncLifetime
         Assert.Null(unchanged.OutputFileId);
 
         Assert.Null(unchanged.ErrorFileId);
-
     }
 
     [SkippableFact]
 
     public async Task CreateAsync_waits_for_concurrent_file_delete_and_rejects_stale_reference()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid inputFileId = Guid.NewGuid();
@@ -357,7 +430,6 @@ public sealed class BatchRepositoryTests : IAsyncLifetime
 
         await using (SqliteCommand delete = deleteConnection.CreateCommand())
         {
-
             delete.Transaction = deleteTransaction;
 
             delete.CommandText =
@@ -368,7 +440,6 @@ public sealed class BatchRepositoryTests : IAsyncLifetime
             Assert.Equal(
                 1,
                 await delete.ExecuteNonQueryAsync(CancellationToken.None));
-
         }
 
         Guid batchId = Guid.NewGuid();
@@ -379,7 +450,6 @@ public sealed class BatchRepositoryTests : IAsyncLifetime
         Task create = Task.Run(
             async () =>
             {
-
                 started.SetResult();
 
                 await concurrentBatches.CreateAsync(
@@ -393,7 +463,6 @@ public sealed class BatchRepositoryTests : IAsyncLifetime
                         null,
                         null),
                     CancellationToken.None);
-
             });
 
         await started.Task.WaitAsync(TimeSpan.FromSeconds(30));
@@ -405,25 +474,21 @@ public sealed class BatchRepositoryTests : IAsyncLifetime
         _ = await Assert.ThrowsAsync<BatchFileReferenceException>(() => create);
 
         Assert.Null(await concurrentBatches.GetByIdAsync(batchId, CancellationToken.None));
-
     }
 
     [SkippableFact]
     public async Task GetByIdAsync_returns_null_for_missing_id()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         BatchRecord? loaded = await _repo!.GetByIdAsync(Guid.NewGuid(), CancellationToken.None);
 
         Assert.Null(loaded);
-
     }
 
     [SkippableFact]
     public async Task UpdateStatusAsync_sets_completion_fields()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid id = Guid.NewGuid();
@@ -459,13 +524,11 @@ public sealed class BatchRepositoryTests : IAsyncLifetime
         Assert.Equal(errorFileId, loaded.ErrorFileId);
 
         Assert.NotNull(loaded.CompletedAt);
-
     }
 
     [SkippableFact]
     public async Task ListAsync_filters_by_status_when_provided()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         DateTimeOffset now = DateTimeOffset.UtcNow;
@@ -481,7 +544,6 @@ public sealed class BatchRepositoryTests : IAsyncLifetime
         IReadOnlyList<BatchRecord> all = await _repo.ListAsync(null, CancellationToken.None);
 
         Assert.Equal(2, all.Count);
-
     }
 
     [SkippableFact]
@@ -489,7 +551,6 @@ public sealed class BatchRepositoryTests : IAsyncLifetime
     public async Task LineCheckpoints_UpdateDurableRequestCountsExactlyOnce()
 
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid inputFileId = Guid.NewGuid();
@@ -499,9 +560,7 @@ public sealed class BatchRepositoryTests : IAsyncLifetime
         Guid batchId = Guid.NewGuid();
 
         await _repo!.CreateAsync(
-
             new BatchRecord(
-
                 batchId,
 
                 inputFileId,
@@ -521,7 +580,6 @@ public sealed class BatchRepositoryTests : IAsyncLifetime
             CancellationToken.None);
 
         Assert.True(await _repo.TryBeginLineAsync(
-
             batchId,
 
             1,
@@ -531,7 +589,6 @@ public sealed class BatchRepositoryTests : IAsyncLifetime
             CancellationToken.None));
 
         await _repo.CompleteLineAsync(
-
             batchId,
 
             1,
@@ -545,7 +602,6 @@ public sealed class BatchRepositoryTests : IAsyncLifetime
             CancellationToken.None);
 
         await _repo.CompleteLineAsync(
-
             batchId,
 
             1,
@@ -559,7 +615,6 @@ public sealed class BatchRepositoryTests : IAsyncLifetime
             CancellationToken.None);
 
         Assert.True(await _repo.TryBeginLineAsync(
-
             batchId,
 
             2,
@@ -569,7 +624,6 @@ public sealed class BatchRepositoryTests : IAsyncLifetime
             CancellationToken.None));
 
         await _repo.CompleteLineAsync(
-
             batchId,
 
             2,
@@ -583,7 +637,6 @@ public sealed class BatchRepositoryTests : IAsyncLifetime
             CancellationToken.None);
 
         BatchRecord loaded = Assert.IsType<BatchRecord>(
-
             await _repo.GetByIdAsync(batchId, CancellationToken.None));
 
         Assert.Equal(2, loaded.TotalRequestCount);
@@ -591,7 +644,6 @@ public sealed class BatchRepositoryTests : IAsyncLifetime
         Assert.Equal(1, loaded.CompletedRequestCount);
 
         Assert.Equal(1, loaded.FailedRequestCount);
-
     }
 
     [SkippableFact]
@@ -599,13 +651,11 @@ public sealed class BatchRepositoryTests : IAsyncLifetime
     public async Task ListPageAsync_UsesStableKeysetInsteadOfMutableOffset()
 
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         DateTimeOffset now = DateTimeOffset.UtcNow;
 
         BatchRecord oldest = await CreateBatchAndReturnAsync(
-
             BatchStatuses.Completed,
 
             now.AddMinutes(-3),
@@ -613,7 +663,6 @@ public sealed class BatchRepositoryTests : IAsyncLifetime
             now.AddMinutes(-2));
 
         BatchRecord middle = await CreateBatchAndReturnAsync(
-
             BatchStatuses.Completed,
 
             now.AddMinutes(-2),
@@ -621,7 +670,6 @@ public sealed class BatchRepositoryTests : IAsyncLifetime
             now.AddMinutes(-1));
 
         BatchRecord newest = await CreateBatchAndReturnAsync(
-
             BatchStatuses.Completed,
 
             now.AddMinutes(-1),
@@ -629,7 +677,6 @@ public sealed class BatchRepositoryTests : IAsyncLifetime
             now);
 
         BatchListPage first = await _repo!.ListPageAsync(
-
             BatchStatuses.Completed,
 
             after: null,
@@ -643,7 +690,6 @@ public sealed class BatchRepositoryTests : IAsyncLifetime
         Assert.Equal([newest.Id, middle.Id], first.Records.Select(static item => item.Id));
 
         _ = await CreateBatchAndReturnAsync(
-
             BatchStatuses.Completed,
 
             now,
@@ -653,7 +699,6 @@ public sealed class BatchRepositoryTests : IAsyncLifetime
         BatchRecord checkpoint = first.Records[^1];
 
         BatchListPage second = await _repo.ListPageAsync(
-
             BatchStatuses.Completed,
 
             new BatchListPosition(checkpoint.CreatedAt, checkpoint.Id),
@@ -665,7 +710,6 @@ public sealed class BatchRepositoryTests : IAsyncLifetime
         Assert.False(second.HasMore);
 
         Assert.Equal([oldest.Id], second.Records.Select(static item => item.Id));
-
     }
 
     [SkippableFact]
@@ -673,13 +717,11 @@ public sealed class BatchRepositoryTests : IAsyncLifetime
     public async Task ListPageAsync_SameCreatedAtVisitsEveryGuidWithoutSkipOrDuplicate()
 
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         DateTimeOffset createdAt = DateTimeOffset.UtcNow;
 
         BatchRecord first = await CreateBatchAndReturnAsync(
-
             BatchStatuses.Completed,
 
             createdAt,
@@ -687,7 +729,6 @@ public sealed class BatchRepositoryTests : IAsyncLifetime
             createdAt);
 
         BatchRecord second = await CreateBatchAndReturnAsync(
-
             BatchStatuses.Completed,
 
             createdAt,
@@ -695,7 +736,6 @@ public sealed class BatchRepositoryTests : IAsyncLifetime
             createdAt);
 
         BatchRecord third = await CreateBatchAndReturnAsync(
-
             BatchStatuses.Completed,
 
             createdAt,
@@ -709,9 +749,7 @@ public sealed class BatchRepositoryTests : IAsyncLifetime
         while (true)
 
         {
-
             BatchListPage page = await _repo!.ListPageAsync(
-
                 BatchStatuses.Completed,
 
                 after,
@@ -727,27 +765,21 @@ public sealed class BatchRepositoryTests : IAsyncLifetime
             if (!page.HasMore)
 
             {
-
                 break;
-
             }
 
             after = new BatchListPosition(item.CreatedAt, item.Id);
-
         }
 
         Assert.Equal(
-
             new HashSet<Guid> { first.Id, second.Id, third.Id },
 
             visited);
-
     }
 
     [SkippableFact]
     public async Task ListPendingPageAsync_VisitsEveryOldestValidatingBatchThroughAvailableCapacityPages()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         DateTimeOffset now = DateTimeOffset.UtcNow;
@@ -757,15 +789,12 @@ public sealed class BatchRepositoryTests : IAsyncLifetime
         for (int index = 0; index < 7; index++)
 
         {
-
             expected.Add(await CreateBatchAndReturnAsync(
-
                 BatchStatuses.Validating,
 
                 now.AddMinutes(index),
 
                 null));
-
         }
 
         _ = await CreateBatchAndReturnAsync(BatchStatuses.InProgress, now.AddMinutes(-2), null);
@@ -777,9 +806,7 @@ public sealed class BatchRepositoryTests : IAsyncLifetime
         while (true)
 
         {
-
             IReadOnlyList<BatchRecord> page = await _repo!.ListPendingPageAsync(
-
                 pageSize: 2,
 
                 CancellationToken.None);
@@ -787,19 +814,15 @@ public sealed class BatchRepositoryTests : IAsyncLifetime
             if (page.Count == 0)
 
             {
-
                 break;
-
             }
 
             foreach (BatchRecord batch in page)
 
             {
-
                 visited.Add(batch.Id);
 
                 await _repo.UpdateStatusAsync(
-
                     batch.Id,
 
                     BatchStatuses.InProgress,
@@ -811,19 +834,15 @@ public sealed class BatchRepositoryTests : IAsyncLifetime
                     null,
 
                     CancellationToken.None);
-
             }
-
         }
 
         Assert.Equal(expected.Select(static batch => batch.Id), visited);
-
     }
 
     [SkippableFact]
     public async Task ListByStatusAsync_returns_only_matching_status()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         DateTimeOffset now = DateTimeOffset.UtcNow;
@@ -839,13 +858,11 @@ public sealed class BatchRepositoryTests : IAsyncLifetime
         Assert.Equal(2, inProgress.Count);
 
         Assert.All(inProgress, b => Assert.Equal(BatchStatuses.InProgress, b.Status));
-
     }
 
     [SkippableFact]
     public async Task TryCompareAndSetStatusAsync_updates_only_when_expected_matches()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid id = Guid.NewGuid();
@@ -883,13 +900,11 @@ public sealed class BatchRepositoryTests : IAsyncLifetime
         BatchRecord? loaded = await _repo.GetByIdAsync(id, CancellationToken.None);
 
         Assert.Equal(BatchStatuses.Validating, loaded!.Status);
-
     }
 
     [SkippableFact]
     public async Task Migration_creates_Batches_table()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         System.Data.Common.DbConnection connection = _db!.Database.GetDbConnection();
@@ -898,9 +913,7 @@ public sealed class BatchRepositoryTests : IAsyncLifetime
 
         if (cmd.Connection!.State != System.Data.ConnectionState.Open)
         {
-
             await cmd.Connection.OpenAsync(CancellationToken.None);
-
         }
 
         cmd.CommandText = """
@@ -913,12 +926,38 @@ public sealed class BatchRepositoryTests : IAsyncLifetime
         object? result = await cmd.ExecuteScalarAsync(CancellationToken.None);
 
         Assert.NotNull(result);
+    }
 
+    private async Task<string[]> ReadFileRolesAsync(Guid batchId)
+    {
+        System.Data.Common.DbConnection connection = _db!.Database.GetDbConnection();
+
+        await using System.Data.Common.DbCommand command = connection.CreateCommand();
+
+        command.CommandText = "SELECT \"InputFileId\", \"OutputFileId\", \"ErrorFileId\" FROM \"Batches\" WHERE \"Id\" = @id";
+
+        System.Data.Common.DbParameter parameter = command.CreateParameter();
+
+        parameter.ParameterName = "@id";
+
+        parameter.Value = batchId.ToString("N");
+
+        command.Parameters.Add(parameter);
+
+        await using System.Data.Common.DbDataReader reader = await command.ExecuteReaderAsync(CancellationToken.None);
+
+        Assert.True(await reader.ReadAsync(CancellationToken.None));
+
+        return
+        [
+            reader.IsDBNull(0) ? "<null>" : reader.GetString(0),
+            reader.IsDBNull(1) ? "<null>" : reader.GetString(1),
+            reader.IsDBNull(2) ? "<null>" : reader.GetString(2),
+        ];
     }
 
     private Task SeedUploadedFileAsync(Guid id)
     {
-
         UploadedFileRepository files = new(_db!);
 
         return files.CreateAsync(
@@ -930,7 +969,6 @@ public sealed class BatchRepositoryTests : IAsyncLifetime
                 "application/jsonl",
                 DateTimeOffset.UtcNow),
             CancellationToken.None);
-
     }
 
     private async Task CreateBatchAsync(
@@ -938,7 +976,6 @@ public sealed class BatchRepositoryTests : IAsyncLifetime
         DateTimeOffset createdAt,
         DateTimeOffset? completedAt)
     {
-
         Guid inputFileId = Guid.NewGuid();
 
         await SeedUploadedFileAsync(inputFileId);
@@ -954,11 +991,9 @@ public sealed class BatchRepositoryTests : IAsyncLifetime
                 null,
                 null),
             CancellationToken.None);
-
     }
 
     private async Task<BatchRecord> CreateBatchAndReturnAsync(
-
         string status,
 
         DateTimeOffset createdAt,
@@ -966,13 +1001,11 @@ public sealed class BatchRepositoryTests : IAsyncLifetime
         DateTimeOffset? completedAt)
 
     {
-
         Guid inputFileId = Guid.NewGuid();
 
         await SeedUploadedFileAsync(inputFileId);
 
         BatchRecord record = new(
-
             Guid.NewGuid(),
 
             inputFileId,
@@ -992,16 +1025,12 @@ public sealed class BatchRepositoryTests : IAsyncLifetime
         await _repo!.CreateAsync(record, CancellationToken.None);
 
         return record;
-
     }
 
     private Task DeleteUploadedFileMetadataAsync(Guid id)
     {
-
         UploadedFileRepository files = new(_db!);
 
         return files.DeleteAsync(id, CancellationToken.None);
-
     }
-
 }

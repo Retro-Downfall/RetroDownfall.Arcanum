@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using RetroDownfall.Arcanum.Cli.UX;
 
 namespace RetroDownfall.Arcanum.Cli.CommandCenter;
 
@@ -237,62 +238,11 @@ internal static partial class IncantationFormatter
         return head + Ellipsis;
     }
 
-    internal static string Sanitize(string text)
-    {
-        if (string.IsNullOrEmpty(text))
-        {
-            return string.Empty;
-        }
-
-        StringBuilder sb = new(text.Length);
-
-        // Running column rather than re-measuring the accumulated buffer at every tab: the re-measure
-        // copied and rescanned the whole buffer per '\t', making a tab-indented payload quadratic.
-        int col = 0;
-        foreach (Rune rune in text.EnumerateRunes())
-        {
-            int value = rune.Value;
-            if (value == '\t')
-            {
-                int pad = ComposerLayout.TabStop - (col % ComposerLayout.TabStop);
-                if (pad <= 0 || pad > ComposerLayout.TabStop)
-                {
-                    pad = ComposerLayout.TabStop;
-                }
-
-                _ = sb.Append(' ', pad);
-                col += pad;
-                continue;
-            }
-
-            if (value is '\r' or '\n')
-            {
-                _ = sb.Append(' ');
-                col++;
-                continue;
-            }
-
-            // Strip C0/C1 controls and ANSI CSI-ish escapes (ESC).
-            if (value < 0x20 || value is 0x7F or 0x9B || value == 0x1B)
-            {
-                continue;
-            }
-
-            if (rune.IsAscii)
-            {
-                _ = sb.Append((char)value);
-                col++;
-                continue;
-            }
-
-            string glyph = rune.ToString();
-            _ = sb.Append(glyph);
-            col += ComposerLayout.MeasureGraphemeCellWidth(glyph, col);
-        }
-
-        // Strip leftover CSI sequences like "[32m".
-        return AnsiSequenceRegex().Replace(sb.ToString(), string.Empty);
-    }
+    /// <summary>
+    /// A tool's text as one safe line: <see cref="TerminalTextSanitizer.SanitizeLine"/>, so the escape
+    /// sequences, control characters and line breaks the Incantations pane cannot show are gone.
+    /// </summary>
+    internal static string Sanitize(string text) => TerminalTextSanitizer.SanitizeLine(text);
 
     internal static IEnumerable<string> WrapToCellWidth(string text, int width)
     {
@@ -503,7 +453,4 @@ internal static partial class IncantationFormatter
         @"content|body|payload|base64|patch|diff|replacement|old.?string|new.?string|api.?key|password|secret|token|authorization|bearer|client.?secret",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex SensitiveKeyRegex();
-
-    [GeneratedRegex(@"\x1B\[[0-9;?]*[ -/]*[@-~]|\[[0-9;]*m", RegexOptions.CultureInvariant)]
-    private static partial Regex AnsiSequenceRegex();
 }

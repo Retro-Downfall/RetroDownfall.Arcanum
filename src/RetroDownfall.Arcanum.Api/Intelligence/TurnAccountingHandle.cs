@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Threading;
+using Microsoft.Extensions.Logging;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -30,6 +31,12 @@ internal sealed class TurnAccountingHandle
     private readonly SemaphoreSlim _completionGate = new(1, 1);
 
     private readonly TurnAccountingHandle? _accountingOwner;
+
+    /// <summary>
+    /// How long a turn's reservation stays outstanding without renewal. Admission sets it and every
+    /// pre-call <see cref="EnsureReservationForContextAsync"/> renews it from that moment.
+    /// </summary>
+    internal static readonly TimeSpan ReservationLifetime = TimeSpan.FromHours(1);
 
     private TurnAccountingHandle(
         ITurnBudget budget,
@@ -69,6 +76,23 @@ internal sealed class TurnAccountingHandle
             lock (root._costGate)
             {
                 return root._accumulatedCostUsd;
+            }
+        }
+    }
+
+    /// <summary>
+    /// True once the run this handle ledgers against has frozen its completion: its status and its
+    /// reservation disposition are decided, and nothing recorded from here on is part of either.
+    /// </summary>
+    public bool IsSettled
+    {
+        get
+        {
+            TurnAccountingHandle root = AccountingRoot;
+
+            lock (root._costGate)
+            {
+                return root._completionSnapshotFrozen;
             }
         }
     }
@@ -135,18 +159,37 @@ internal sealed class TurnAccountingHandle
             reservationHighWaterUsd: 0m,
             accountingOwner: AccountingRoot);
 
+    /// <summary>
+    /// The pre-call budget admission for one provider call: raise the reservation when the call's
+    /// estimate grew, recheck the daily limit when it did not (or when delegated spend is known), and
+    /// renew the reservation's expiry.
+    /// </summary>
+    /// <remarks>
+    /// A nested handle (a batch line) never raises or rechecks the batch's shared aggregate
+    /// reservation; it only renews it. Renewal is bookkeeping for an expiry sweep, so a renewal that
+    /// fails is logged and the call goes ahead; only the caller's cancellation propagates from it.
+    /// </remarks>
     public async Task<Result> EnsureReservationForContextAsync(
         IBudgetReservationService? budgetReservations,
         PricingSettings pricing,
+        IExternalSpendLedger? delegatedSpend,
         string? model,
         ContextTokenBreakdown breakdown,
+        ILogger logger,
         CancellationToken cancellationToken)
     {
-        if (!OwnsLifecycle
-            || !ReservationActive
+        if (!ReservationActive
             || ReservationId is not Guid reservationId
             || budgetReservations is null)
         {
+            return Result.Success();
+        }
+
+        if (!OwnsLifecycle)
+        {
+            await RenewReservationAsync(budgetReservations, reservationId, logger, cancellationToken)
+                .ConfigureAwait(false);
+
             return Result.Success();
         }
 
@@ -160,32 +203,98 @@ internal sealed class TurnAccountingHandle
         await root._reservationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
+            bool raise;
+
             lock (root._costGate)
             {
-                if (reservedUsd <= root._reservationHighWaterUsd)
-                {
-                    return Result.Success();
-                }
+                raise = reservedUsd > root._reservationHighWaterUsd;
             }
 
-            Result adjusted = await budgetReservations
-                .AdjustAsync(reservationId, reservedUsd, cancellationToken)
-                .ConfigureAwait(false);
-            if (adjusted.IsSuccess)
+            Result admitted = Result.Success();
+
+            if (raise)
             {
-                lock (root._costGate)
+                // A raise rechecks committed + outstanding spend atomically inside the service.
+                admitted = await budgetReservations
+                    .AdjustAsync(reservationId, reservedUsd, cancellationToken)
+                    .ConfigureAwait(false);
+                if (admitted.IsSuccess)
                 {
-                    root._reservationHighWaterUsd = Math.Max(
-                        root._reservationHighWaterUsd,
-                        reservedUsd);
+                    lock (root._costGate)
+                    {
+                        root._reservationHighWaterUsd = Math.Max(
+                            root._reservationHighWaterUsd,
+                            reservedUsd);
+                    }
                 }
             }
 
-            return adjusted;
+            if (admitted.IsSuccess)
+            {
+                decimal delegatedUsd = delegatedSpend is null
+                    ? 0m
+                    : (await delegatedSpend.GetTodayAsync(cancellationToken).ConfigureAwait(false)).KnownCostUsd;
+
+                // The estimate plateaued, so nothing was raised, but the spend earlier rounds
+                // committed still counts: without this N rounds could each spend what one admission
+                // was sized for. A raise has already judged the local ledger, so after one this runs
+                // only to add the delegated work a raise cannot see. The days judged (the
+                // reservation's own and, once UTC midnight has passed, today) hold every earlier
+                // round's committed spend and the reservation is sized for the next call alone, so
+                // this checks accumulated actual spend and never multiplies an estimate by a call
+                // count.
+                if (!raise || delegatedUsd > 0m)
+                {
+                    admitted = await budgetReservations
+                        .RecheckDailyLimitAsync(reservationId, delegatedUsd, cancellationToken)
+                        .ConfigureAwait(false);
+                }
+            }
+
+            if (admitted.IsFailure)
+            {
+                return admitted;
+            }
+
+            await RenewReservationAsync(budgetReservations, reservationId, logger, cancellationToken)
+                .ConfigureAwait(false);
+
+            return Result.Success();
         }
         finally
         {
             root._reservationGate.Release();
+        }
+    }
+
+    /// <summary>
+    /// Moves the reservation's expiry to <see cref="ReservationLifetime"/> from now, best-effort.
+    /// </summary>
+    /// <remarks>
+    /// Nothing sweeps an expired reservation in production today, so a lost renewal costs nothing a
+    /// turn can observe, and failing the provider call over it would turn bookkeeping into a refusal.
+    /// </remarks>
+    private static async Task RenewReservationAsync(
+        IBudgetReservationService budgetReservations,
+        Guid reservationId,
+        ILogger logger,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await budgetReservations
+                .ExtendExpiryAsync(
+                    reservationId,
+                    DateTimeOffset.UtcNow.Add(ReservationLifetime),
+                    cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
+        {
+            logger.LogWarning(
+                "Budget reservation {ReservationId} could not be renewed; the call goes ahead (exception type {ExceptionType}).",
+                reservationId,
+                ex.GetType().FullName);
         }
     }
 
@@ -324,7 +433,7 @@ internal sealed class TurnAccountingHandle
                     new BudgetReservationRequest(
                         runId,
                         reservedUsd,
-                        ExpiresAt: DateTimeOffset.UtcNow.AddHours(1),
+                        ExpiresAt: DateTimeOffset.UtcNow.Add(ReservationLifetime),
                         period),
                     cancellationToken)
                 .ConfigureAwait(false);

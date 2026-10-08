@@ -7,11 +7,9 @@ namespace RetroDownfall.Arcanum.Tests.Intelligence;
 
 public sealed class SessionAttachmentRequestValidatorTests
 {
-
     [Fact]
     public async Task ValidateAsync_NullSessionIdWithRefs_Fails()
     {
-
         Guid attachmentId = Guid.NewGuid();
         StubSessionAttachmentStore store = new();
         AttachmentsSettings settings = ResolveAttachments(enabled: true);
@@ -28,13 +26,11 @@ public sealed class SessionAttachmentRequestValidatorTests
 
         Assert.Equal("AttachmentReferences require a SessionId.", error);
         Assert.Equal(0, store.ValidateCallCount);
-
     }
 
     [Fact]
     public async Task ValidateAsync_ReferencesBeyondFormerCountCeiling_Succeed()
     {
-
         Guid sessionId = Guid.NewGuid();
 
         Guid[] attachmentIds = Enumerable.Range(0, 33)
@@ -63,13 +59,11 @@ public sealed class SessionAttachmentRequestValidatorTests
         Assert.Equal(1, store.ValidateCallCount);
 
         Assert.Equal(attachmentIds, store.LastIds);
-
     }
 
     [Fact]
     public async Task ValidateAsync_HappyPath_Succeeds()
     {
-
         Guid sessionId = Guid.NewGuid();
         Guid attachmentId = Guid.NewGuid();
         StubSessionAttachmentStore store = new() { ValidIds = [attachmentId] };
@@ -89,13 +83,11 @@ public sealed class SessionAttachmentRequestValidatorTests
         Assert.Equal(1, store.ValidateCallCount);
         Assert.Equal(sessionId, store.LastSessionId);
         Assert.Equal([attachmentId], store.LastIds);
-
     }
 
     [Fact]
     public async Task ValidateAsync_DisabledWithRefs_Fails()
     {
-
         Guid sessionId = Guid.NewGuid();
         StubSessionAttachmentStore store = new();
         AttachmentsSettings settings = ResolveAttachments(enabled: false);
@@ -112,13 +104,11 @@ public sealed class SessionAttachmentRequestValidatorTests
 
         Assert.Contains("disabled", error, StringComparison.OrdinalIgnoreCase);
         Assert.Equal(0, store.ValidateCallCount);
-
     }
 
     [Fact]
     public async Task ValidateAsync_NullOrEmptyRefs_NoOp()
     {
-
         StubSessionAttachmentStore store = new();
         AttachmentsSettings settings = ResolveAttachments(enabled: false);
 
@@ -135,7 +125,6 @@ public sealed class SessionAttachmentRequestValidatorTests
         Assert.Null(nullRefs);
         Assert.Null(emptyRefs);
         Assert.Equal(0, store.ValidateCallCount);
-
     }
 
     private static AttachmentsSettings ResolveAttachments(bool enabled) =>
@@ -146,7 +135,6 @@ public sealed class SessionAttachmentRequestValidatorTests
 
     private sealed class StubSessionAttachmentStore : ISessionAttachmentStore
     {
-
         public HashSet<Guid> ValidIds { get; init; } = [];
 
         public int ValidateCallCount { get; private set; }
@@ -160,7 +148,6 @@ public sealed class SessionAttachmentRequestValidatorTests
             IReadOnlyList<Guid> attachmentIds,
             CancellationToken cancellationToken = default)
         {
-
             ValidateCallCount++;
             LastSessionId = sessionId;
             LastIds = attachmentIds.ToList();
@@ -174,7 +161,6 @@ public sealed class SessionAttachmentRequestValidatorTests
             }
 
             return Task.CompletedTask;
-
         }
 
         public Task<SessionAttachmentRecord> PersistNewAsync(
@@ -186,6 +172,23 @@ public sealed class SessionAttachmentRequestValidatorTests
             ReadOnlyMemory<byte> bytes,
             string mimeType,
             SessionAttachmentKind kind,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<SessionAttachmentPersistence> PersistNewWithOutcomeAsync(
+            Guid? sessionId,
+            string? pendingTurnId,
+            Guid? entryId,
+            string logicalNameHint,
+            string originalFileName,
+            ReadOnlyMemory<byte> bytes,
+            string mimeType,
+            SessionAttachmentKind kind,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<bool> DeleteCreatedAttachmentAsync(
+            SessionAttachmentRecord created,
             CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
 
@@ -259,15 +262,11 @@ public sealed class SessionAttachmentRequestValidatorTests
 
         private sealed class EmptyDisposable : IDisposable
         {
-
             public static readonly EmptyDisposable Instance = new();
 
             public void Dispose()
             {
             }
-
         }
-
     }
-
 }

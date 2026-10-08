@@ -14,7 +14,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.Backup;
 
 internal enum BackupRestoreRecoveryOutcome
 {
-
     /// <summary>Staging was found before any destructive step and was simply removed.</summary>
     Discarded = 0,
 
@@ -26,7 +25,6 @@ internal enum BackupRestoreRecoveryOutcome
 
     /// <summary>The commit landed but post-commit work is unverifiable; an operator must decide.</summary>
     ReconciliationRequired = 3,
-
 }
 
 internal sealed record BackupRestoreRecoveryReport(
@@ -60,7 +58,6 @@ internal sealed record BackupRestoreRecoveryReport(
 /// </remarks>
 internal sealed class BackupRestoreRecovery : IBackupRestoreStartupRecovery
 {
-
     private readonly string _guardedDirectory;
 
     private readonly BackupRestoreJournalAnchorStore _anchors;
@@ -83,7 +80,6 @@ internal sealed class BackupRestoreRecovery : IBackupRestoreStartupRecovery
         CovenantOperationGate? gate,
         ICampaignPathMarkerLifecycle? markers)
     {
-
         ArgumentException.ThrowIfNullOrWhiteSpace(guardedDirectory);
 
         ArgumentNullException.ThrowIfNull(anchors);
@@ -95,7 +91,6 @@ internal sealed class BackupRestoreRecovery : IBackupRestoreStartupRecovery
         _gate = gate;
 
         _markers = markers;
-
     }
 
     /// <inheritdoc />
@@ -103,7 +98,6 @@ internal sealed class BackupRestoreRecovery : IBackupRestoreStartupRecovery
         ArcanumMaintenanceLock heldInstallationLock,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(heldInstallationLock);
 
         cancellationToken.ThrowIfCancellationRequested();
@@ -116,18 +110,14 @@ internal sealed class BackupRestoreRecovery : IBackupRestoreStartupRecovery
 
         if (evidence.IsFailure)
         {
-
             return Task.FromResult(KeptPhysical(evidence.Error));
-
         }
 
         if (evidence.Value is not { } active)
         {
-
             return Task.FromResult(
                 Result<BackupRestorePhysicalRecoveryOutcome>.Success(
                     BackupRestorePhysicalRecoveryOutcome.NoActiveJournal));
-
         }
 
         Result<BackupRestoreTopologyState> converged = BackupRestorePhysicalTopology.Reconcile(
@@ -142,7 +132,6 @@ internal sealed class BackupRestoreRecovery : IBackupRestoreStartupRecovery
                 ? KeptPhysical(converged.Error)
                 : Result<BackupRestorePhysicalRecoveryOutcome>.Success(
                     BackupRestorePhysicalRecoveryOutcome.TopologyReady));
-
     }
 
     /// <inheritdoc />
@@ -150,7 +139,6 @@ internal sealed class BackupRestoreRecovery : IBackupRestoreStartupRecovery
         ArcanumMaintenanceLock heldInstallationLock,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(heldInstallationLock);
 
         cancellationToken.ThrowIfCancellationRequested();
@@ -161,35 +149,27 @@ internal sealed class BackupRestoreRecovery : IBackupRestoreStartupRecovery
 
         if (evidence.IsFailure)
         {
-
             return Kept(evidence.Error);
-
         }
 
         if (evidence.Value is not { } active)
         {
-
             return BackupRestoreStartupRecoveryOutcome.NoActiveJournal;
-
         }
 
         Result<CovenantExclusiveRecoveryOwner> owner = active.Publication.Payload.RecoveryOwner();
 
         if (owner.IsFailure)
         {
-
             return Kept(owner.Error);
-
         }
 
         if (_gate is null || _markers is null)
         {
-
             return Kept(new Error(
                 ErrorCodes.Covenant.ManualRecoveryRequired,
                 "An interrupted restore cannot be resumed by a process that composed no Covenant "
                 + "operation gate."));
-
         }
 
         // Re-derived rather than remembered. The first phase converged the tree and then a database was
@@ -201,28 +181,22 @@ internal sealed class BackupRestoreRecovery : IBackupRestoreStartupRecovery
 
         if (topology.IsFailure)
         {
-
             return Kept(topology.Error);
-
         }
 
         try
         {
-
             _gate.AdoptDurableRecoveryOwner(
                 owner.Value,
                 scope: null,
                 cleanupOnlyHistoricalCampaign: false);
-
         }
         catch (Exception exception) when (
             exception is InvalidOperationException or ArgumentException)
         {
-
             return Kept(new Error(
                 ErrorCodes.Covenant.ForbiddenAuthority,
                 "This restore's exclusive owner could not be reconstructed before readiness."));
-
         }
 
         Result<CovenantExclusiveLease> resumed = await _gate
@@ -231,9 +205,7 @@ internal sealed class BackupRestoreRecovery : IBackupRestoreStartupRecovery
 
         if (resumed.IsFailure)
         {
-
             return Kept(resumed.Error);
-
         }
 
         // Disposal without a disposition is exactly KeepClosed: the closure survives, the owner stays
@@ -249,16 +221,13 @@ internal sealed class BackupRestoreRecovery : IBackupRestoreStartupRecovery
 
         if (outcome.IsSuccess && outcome.Value is BackupRestoreStartupRecoveryOutcome.KeptClosed)
         {
-
             // The restart proof of §10.19.7 may have reopened roots for children this pass could not
             // finish. Nothing else in this process will adopt them and startup is about to stop, so the
             // one release that covers both arms runs here too.
             await _markers.ReleaseRetainedRootsAsync(owner.Value.OperationId).ConfigureAwait(false);
-
         }
 
         return outcome;
-
     }
 
     /// <summary>
@@ -269,6 +238,12 @@ internal sealed class BackupRestoreRecovery : IBackupRestoreStartupRecovery
     /// because physical convergence proved that the live root is still the tree that was always there.
     /// No marker child can exist to reconcile: preparation commits into the staged database, which this
     /// arm is about to discard.
+    /// <para>The tree being back says nothing about the secrets. A restore whose own rollback could not
+    /// reinstate them wrote that into the plain journal beside the envelope — on this arm only when its
+    /// reversal could not be verified either, or it would have spent this same disposition itself. This
+    /// ends exactly the way that restore would have: the disposition is spent and the anchor closed,
+    /// but staging and the plain journal are kept and startup stops, so the next start's plain-journal
+    /// sweep reports the failure and stops until an operator resolves it.</para>
     /// </remarks>
     private async Task<Result<BackupRestoreStartupRecoveryOutcome>> RollBackAsync(
         ArcanumMaintenanceLock heldInstallationLock,
@@ -277,24 +252,25 @@ internal sealed class BackupRestoreRecovery : IBackupRestoreStartupRecovery
         CovenantExclusiveLease lease,
         CancellationToken cancellationToken)
     {
-
         Result reopened = await lease
             .CompleteAsync(
                 CovenantExclusiveLeaseDisposition.RollbackAndReopen,
                 CovenantNoOpPostDispositionFinalizer.Instance,
-                cancellationToken)
+                CancellationToken.None)
             .ConfigureAwait(false);
 
         if (reopened.IsFailure)
         {
-
             return Kept(reopened.Error);
-
         }
 
-        return await TerminateAsync(heldInstallationLock, active, owner, cancellationToken)
+        // The disposition is spent, so closing the anchor is bookkeeping for a decision already made.
+        return await TerminateAsync(
+                heldInstallationLock,
+                active,
+                owner,
+                UnreinstatedSecretsJournal(active.Publication.Payload))
             .ConfigureAwait(false);
-
     }
 
     /// <summary>
@@ -314,14 +290,20 @@ internal sealed class BackupRestoreRecovery : IBackupRestoreStartupRecovery
         CovenantExclusiveLease lease,
         CancellationToken cancellationToken)
     {
+        if (!RewrapProven(active.Publication.Payload))
+        {
+            return Kept(new Error(
+                ErrorCodes.Covenant.ManualRecoveryRequired,
+                "A restore that displaced the installation left no plain journal at Reconcile, so nothing "
+                + "proves local secret protection was rebuilt for the new generation; the displaced "
+                + "installation is kept and admission stays closed."));
+        }
 
         if (active.Publication.Payload.MarkerCleanup is not { } checkpoint)
         {
-
             return Kept(new Error(
                 ErrorCodes.Covenant.ManualRecoveryRequired,
                 "A restore that displaced the installation carries no marker cleanup checkpoint."));
-
         }
 
         Result<CampaignPathMarkerGateCompletion> completion = await _markers!
@@ -336,36 +318,59 @@ internal sealed class BackupRestoreRecovery : IBackupRestoreStartupRecovery
 
         if (completion.IsFailure)
         {
-
             return Kept(completion.Error);
-
         }
 
         if (completion.Value.Outcome is not CampaignPathMarkerAggregateOutcome.Committed
             || completion.Value.Disposition is not CovenantExclusiveLeaseDisposition.CommitAndReopen)
         {
-
             return Kept(new Error(
                 ErrorCodes.Covenant.ManualRecoveryRequired,
                 "An interrupted restore's marker children did not reach a committed disposition."));
-
         }
 
+        // Children proven; the disposition and its finalizer are the point of no return.
         Result committed = await lease
-            .CompleteAsync(completion.Value.Disposition, completion.Value.Finalizer, cancellationToken)
+            .CompleteAsync(completion.Value.Disposition, completion.Value.Finalizer, CancellationToken.None)
             .ConfigureAwait(false);
 
         if (committed.IsFailure)
         {
-
             return Kept(committed.Error);
-
         }
 
-        return await TerminateAsync(heldInstallationLock, active, owner, cancellationToken)
+        return await TerminateAsync(heldInstallationLock, active, owner, unreinstatedSecrets: null)
             .ConfigureAwait(false);
-
     }
+
+    /// <summary>
+    /// Whether the plain journal beside the envelope shows that this operation rebuilt local secret
+    /// protection before it died.
+    /// </summary>
+    /// <remarks>
+    /// <c>BackupRestoreService</c> advances the plain journal to <see cref="BackupRestorePhase.Reconcile"/>
+    /// only after the rewrap has written the new generation's Grimoire secret; the envelope carries no
+    /// such step. A journal below that phase, an absent or unreadable one, and one naming another
+    /// operation all prove nothing, and committing on no proof would delete the displaced installation
+    /// — the one tree the machine's current secrets are known to open. Reading it can only refuse, never
+    /// authorize: the envelope remains the authority for everything else.
+    /// </remarks>
+    private static bool RewrapProven(BackupRestoreJournalPayloadV2 payload) =>
+        BackupRestoreJournal.TryRead(payload.StagedRoot.CanonicalParentPath) is { } legacy
+        && legacy.OperationId == payload.OwnerOperationId
+        && legacy.Phase >= BackupRestorePhase.Reconcile;
+
+    /// <summary>
+    /// The plain journal beside the envelope when it names this operation and records secrets its own
+    /// rollback could not reinstate, or <see langword="null"/> when it records none.
+    /// </summary>
+    private static BackupRestoreJournalRecord? UnreinstatedSecretsJournal(
+        BackupRestoreJournalPayloadV2 payload) =>
+        BackupRestoreJournal.TryRead(payload.StagedRoot.CanonicalParentPath)
+            is { SecretReinstatementFailure: not null } legacy
+        && legacy.OperationId == payload.OwnerOperationId
+            ? legacy
+            : null;
 
     /// <summary>
     /// Releases the roots this owner held, tombstones the anchor, and only then removes staging.
@@ -374,16 +379,19 @@ internal sealed class BackupRestoreRecovery : IBackupRestoreStartupRecovery
     /// The order is the anchor's, not this method's: the tombstone is written before the journal is
     /// deleted, so an active anchor can never name a file that no longer exists. Staging goes last,
     /// because until the anchor is closed the journal inside it is the evidence recovery runs on.
+    /// <para>It takes no startup token. Every caller reaches it after the lease disposition has been
+    /// spent, and a cancellation observed here would leave an active anchor naming a disposition the
+    /// gate has already applied — bookkeeping after the point of no return runs to completion.</para>
+    /// <para>With <paramref name="unreinstatedSecrets"/> set — the plain journal recording secrets the
+    /// restore's own rollback could not reinstate — staging is not removed: that journal is what carries
+    /// the failure to the next start, once the closed anchor no longer does.</para>
     /// </remarks>
     private async Task<Result<BackupRestoreStartupRecoveryOutcome>> TerminateAsync(
         ArcanumMaintenanceLock heldInstallationLock,
         BackupRestoreEvidence active,
         CovenantExclusiveRecoveryOwner owner,
-        CancellationToken cancellationToken)
+        BackupRestoreJournalRecord? unreinstatedSecrets)
     {
-
-        cancellationToken.ThrowIfCancellationRequested();
-
         await _markers!.ReleaseRetainedRootsAsync(owner.OperationId).ConfigureAwait(false);
 
         Result closed = _anchors.Close(
@@ -394,15 +402,24 @@ internal sealed class BackupRestoreRecovery : IBackupRestoreStartupRecovery
 
         if (closed.IsFailure)
         {
-
             return Kept(closed.Error);
+        }
 
+        if (unreinstatedSecrets is not null)
+        {
+            Log.Warning(
+                "An interrupted Arcanum restore was rolled back, but its own rollback could not reinstate "
+                + "every local secret, so its staging at {StagingRoot} is kept and startup stops: {Detail} {Advice}",
+                active.Publication.Payload.StagedRoot.CanonicalParentPath,
+                unreinstatedSecrets.SecretReinstatementFailure,
+                UnreinstatedSecretsAdvice(unreinstatedSecrets.SafetyBackupPath));
+
+            return BackupRestoreStartupRecoveryOutcome.ReconciliationRequired;
         }
 
         DiscardStaging(active.Publication.Payload);
 
         return BackupRestoreStartupRecoveryOutcome.RecoveredReady;
-
     }
 
     /// <summary>
@@ -415,7 +432,6 @@ internal sealed class BackupRestoreRecovery : IBackupRestoreStartupRecovery
     /// </remarks>
     private void DiscardStaging(BackupRestoreJournalPayloadV2 payload)
     {
-
         string stagingRoot = payload.StagedRoot.CanonicalParentPath;
 
         if (FileHandleIdentityInterop.TryGetPathMetadataNoFollow(
@@ -427,16 +443,13 @@ internal sealed class BackupRestoreRecovery : IBackupRestoreStartupRecovery
                 metadata.Identity.FileId)
                 == payload.StagedRoot.ParentPhysicalIdentityDigest)
         {
-
             _ = OwnedTemporaryDirectory.TryDelete(
                 stagingRoot,
                 metadata.Identity.VolumeId,
                 metadata.Identity.FileId);
-
         }
 
         PruneStagingIndex(_guardedDirectory);
-
     }
 
     /// <summary>
@@ -444,16 +457,13 @@ internal sealed class BackupRestoreRecovery : IBackupRestoreStartupRecovery
     /// </summary>
     private Result<BackupRestoreEvidence?> Authenticate(ArcanumMaintenanceLock heldInstallationLock)
     {
-
         string? parent = TryParentOf(_guardedDirectory);
 
         // No parent directory means no staging beside it, no profile namespace to derive, and no
         // installation to have restored. That is proven absence rather than an unreadable answer.
         if (parent is null || !Directory.Exists(parent))
         {
-
             return Result<BackupRestoreEvidence?>.Success(null);
-
         }
 
         Result<BackupRestoreProfileNamespace> profile =
@@ -461,9 +471,7 @@ internal sealed class BackupRestoreRecovery : IBackupRestoreStartupRecovery
 
         if (profile.IsFailure)
         {
-
             return Result<BackupRestoreEvidence?>.Failure(profile.Error);
-
         }
 
         Result<BackupRestoreJournalRecoveryState> state = _anchors.Recover(
@@ -474,16 +482,13 @@ internal sealed class BackupRestoreRecovery : IBackupRestoreStartupRecovery
 
         if (state.IsFailure)
         {
-
             return Result<BackupRestoreEvidence?>.Failure(state.Error);
-
         }
 
         return state.Value.Outcome is BackupRestoreJournalRecoveryOutcome.NoActiveJournal
             || state.Value.Publication is not { } publication
                 ? Result<BackupRestoreEvidence?>.Success(null)
                 : new BackupRestoreEvidence(profile.Value, publication);
-
     }
 
     /// <summary>
@@ -496,90 +501,67 @@ internal sealed class BackupRestoreRecovery : IBackupRestoreStartupRecovery
     /// </remarks>
     private IReadOnlyList<string> CandidateStagingRoots(string parent)
     {
-
         List<string> candidates = [];
 
         try
         {
-
             foreach (string candidate in Directory.EnumerateDirectories(
                          parent,
                          BackupRestoreJournal.StagingPrefix + "*",
                          SearchOption.TopDirectoryOnly))
             {
-
                 string full = Path.TrimEndingDirectorySeparator(Path.GetFullPath(candidate));
 
                 if (BackupRestoreJournal.IsCanonicalStagingName(Path.GetFileName(full)))
                 {
-
                     candidates.Add(full);
-
                 }
-
             }
-
         }
         catch (Exception exception) when (
             exception is IOException or UnauthorizedAccessException)
         {
-
         }
 
         foreach (string indexed in BackupRestoreStagingIndex.Read(_guardedDirectory))
         {
-
             if (TryNormalize(indexed) is { } normalized && !candidates.Contains(normalized, StringComparer.Ordinal))
             {
-
                 candidates.Add(normalized);
-
             }
-
         }
 
         return candidates;
-
     }
 
     private static string? TryParentOf(string directory)
     {
-
         try
         {
-
             return Path.GetDirectoryName(
                 Path.TrimEndingDirectorySeparator(Path.GetFullPath(directory)));
-
         }
         catch (Exception exception) when (
             exception is ArgumentException or NotSupportedException or PathTooLongException)
         {
-
             return null;
-
         }
-
     }
 
     private static Result<BackupRestorePhysicalRecoveryOutcome> KeptPhysical(Error error)
     {
-
         Warn(error);
 
         return Result<BackupRestorePhysicalRecoveryOutcome>.Success(
             BackupRestorePhysicalRecoveryOutcome.KeptClosed);
-
     }
 
     private static Result<BackupRestoreStartupRecoveryOutcome> Kept(Error error)
     {
-
         Warn(error);
 
         return Result<BackupRestoreStartupRecoveryOutcome>.Success(
             BackupRestoreStartupRecoveryOutcome.KeptClosed);
-
     }
 
     private static void Warn(Error error) =>
@@ -595,7 +577,6 @@ internal sealed class BackupRestoreRecovery : IBackupRestoreStartupRecovery
 
     public static IReadOnlyList<BackupRestoreRecoveryReport> Resolve(string grimoireDirectory)
     {
-
         ArgumentException.ThrowIfNullOrWhiteSpace(grimoireDirectory);
 
         string liveRoot = Path.TrimEndingDirectorySeparator(Path.GetFullPath(grimoireDirectory));
@@ -604,9 +585,7 @@ internal sealed class BackupRestoreRecovery : IBackupRestoreStartupRecovery
 
         if (parent is null)
         {
-
             return [];
-
         }
 
         IReadOnlyList<string> indexed = BackupRestoreStagingIndex.Read(grimoireDirectory);
@@ -623,31 +602,24 @@ internal sealed class BackupRestoreRecovery : IBackupRestoreStartupRecovery
 
         foreach (string stagingRoot in stagingRoots)
         {
-
             BackupRestoreJournalRecord? journal = BackupRestoreJournal.TryRead(stagingRoot);
 
             if (journal is null)
             {
-
                 continue;
-
             }
 
             reports.Add(ResolveOne(stagingRoot, journal, liveRoot));
-
         }
 
         if (indexedRoots.Count > 0)
         {
-
             // Rewriting the whole set rather than removing entry by entry is what prunes an index
             // still naming staging that was never created, or that some other sweep already took.
             PruneIndex(grimoireDirectory, indexedRoots);
-
         }
 
         return reports;
-
     }
 
     /// <summary>
@@ -661,43 +633,33 @@ internal sealed class BackupRestoreRecovery : IBackupRestoreStartupRecovery
     /// </remarks>
     private static void PruneStagingIndex(string grimoireDirectory)
     {
-
         try
         {
-
             BackupRestoreStagingIndex.Write(
                 grimoireDirectory,
                 [.. BackupRestoreStagingIndex.Read(grimoireDirectory)
                     .Select(TryNormalize)
                     .OfType<string>()
                     .Where(Directory.Exists)]);
-
         }
         catch (Exception exception) when (
             exception is IOException or UnauthorizedAccessException)
         {
-
         }
-
     }
 
     private static void PruneIndex(string grimoireDirectory, List<string> indexedRoots)
     {
-
         try
         {
-
             BackupRestoreStagingIndex.Write(
                 grimoireDirectory,
                 [.. indexedRoots.Where(BackupRestoreJournal.Exists)]);
-
         }
         catch (Exception exception) when (
             exception is IOException or UnauthorizedAccessException)
         {
-
         }
-
     }
 
     /// <summary>
@@ -708,25 +670,19 @@ internal sealed class BackupRestoreRecovery : IBackupRestoreStartupRecovery
     /// </summary>
     private static string? TryNormalize(string stagingRoot)
     {
-
         try
         {
-
             string full = Path.TrimEndingDirectorySeparator(Path.GetFullPath(stagingRoot));
 
             return BackupRestoreJournal.IsCanonicalStagingName(Path.GetFileName(full))
                 ? full
                 : null;
-
         }
         catch (Exception exception) when (
             exception is ArgumentException or NotSupportedException or PathTooLongException)
         {
-
             return null;
-
         }
-
     }
 
     private static BackupRestoreRecoveryReport ResolveOne(
@@ -734,7 +690,6 @@ internal sealed class BackupRestoreRecovery : IBackupRestoreStartupRecovery
         BackupRestoreJournalRecord journal,
         string liveRoot)
     {
-
         Result validation = BackupRestoreJournal.ValidateForRecovery(
             stagingRoot,
             liveRoot,
@@ -742,13 +697,11 @@ internal sealed class BackupRestoreRecovery : IBackupRestoreStartupRecovery
 
         if (validation.IsFailure)
         {
-
             return new BackupRestoreRecoveryReport(
                 stagingRoot,
                 BackupRestoreRecoveryOutcome.ReconciliationRequired,
                 journal.Phase,
                 "The legacy restore journal could not be admitted safely and was left untouched.");
-
         }
 
         bool stagedExists = Directory.Exists(journal.StagedRoot);
@@ -759,7 +712,6 @@ internal sealed class BackupRestoreRecovery : IBackupRestoreStartupRecovery
 
         if (journal.Phase < BackupRestorePhase.Commit)
         {
-
             Discard(stagingRoot, journal);
 
             return new BackupRestoreRecoveryReport(
@@ -768,25 +720,39 @@ internal sealed class BackupRestoreRecovery : IBackupRestoreStartupRecovery
                 journal.Phase,
                 "The restore was interrupted before any destructive step; staging was removed and the "
                 + "installation was never modified.");
-
         }
 
-        if (journal.Phase > BackupRestorePhase.Commit)
+        // A new-profile journal past Commit is resolved below with the rest of that mode.
+        if (journal.Phase > BackupRestorePhase.Commit
+            && journal.ConflictMode != BackupRestoreConflictMode.NewProfileRoot)
         {
+            return ResolveFinishedCommit(stagingRoot, journal, stagedExists, liveExists, displacedExists);
+        }
 
-            Discard(stagingRoot, journal);
-
-            return new BackupRestoreRecoveryReport(
+        // Read before the shapes below, because a verified reversal leaves exactly the tree an
+        // interruption before the first rename does. The restore that wrote this refused to call
+        // itself a rollback, and neither does startup.
+        if (journal.SecretReinstatementFailure is { } secretFailure)
+        {
+            return SecretsNotReinstated(
                 stagingRoot,
-                BackupRestoreRecoveryOutcome.CommitCompleted,
-                journal.Phase,
-                "The restore had already committed; only staging cleanup remained.");
+                journal,
+                secretFailure,
+                stagedExists,
+                liveExists,
+                displacedExists);
+        }
 
+        // A new-profile commit renames staged/ to a root this journal does not name and never touches the
+        // live root it does name, so the replacement shapes below would read the default installation's
+        // presence as evidence about a restore that never involved it.
+        if (journal.ConflictMode == BackupRestoreConflictMode.NewProfileRoot)
+        {
+            return ResolveNewProfileCommit(stagingRoot, journal, stagedExists, displacedExists);
         }
 
         if (stagedExists && liveExists && !displacedExists)
         {
-
             Discard(stagingRoot, journal);
 
             return new BackupRestoreRecoveryReport(
@@ -794,15 +760,12 @@ internal sealed class BackupRestoreRecovery : IBackupRestoreStartupRecovery
                 BackupRestoreRecoveryOutcome.RolledBack,
                 journal.Phase,
                 "The commit had not begun; the prior installation was already in place.");
-
         }
 
         if (!liveExists && displacedExists)
         {
-
             try
             {
-
                 Directory.Move(journal.DisplacedRoot, journal.LiveRoot);
 
                 Discard(stagingRoot, journal);
@@ -812,26 +775,21 @@ internal sealed class BackupRestoreRecovery : IBackupRestoreStartupRecovery
                     BackupRestoreRecoveryOutcome.RolledBack,
                     journal.Phase,
                     "The commit was interrupted between renames; the prior installation was restored.");
-
             }
             catch (Exception exception) when (
                 exception is IOException or UnauthorizedAccessException)
             {
-
                 return new BackupRestoreRecoveryReport(
                     stagingRoot,
                     BackupRestoreRecoveryOutcome.ReconciliationRequired,
                     journal.Phase,
                     "The prior installation could not be moved back into place. It is preserved at "
                     + journal.DisplacedRoot);
-
             }
-
         }
 
         if (!stagedExists && liveExists && displacedExists)
         {
-
             return new BackupRestoreRecoveryReport(
                 stagingRoot,
                 BackupRestoreRecoveryOutcome.ReconciliationRequired,
@@ -839,29 +797,203 @@ internal sealed class BackupRestoreRecovery : IBackupRestoreStartupRecovery
                 "The restored generation is committed but its local secret protection may not have "
                 + "been rebuilt. Re-run the restore, or verify the Grimoire opens. The prior "
                 + "installation is preserved at " + journal.DisplacedRoot);
+        }
 
+        // A completed replacement commit with nothing displaced has exactly one shape: the staged
+        // generation moved into the live root — a restore onto a machine with no installation to
+        // displace. (A new-profile commit, which moves it elsewhere, was resolved above.)
+        if (!stagedExists && liveExists && !displacedExists)
+        {
+            Discard(stagingRoot, journal);
+
+            return new BackupRestoreRecoveryReport(
+                stagingRoot,
+                BackupRestoreRecoveryOutcome.CommitCompleted,
+                journal.Phase,
+                "The commit had completed; only staging cleanup remained.");
+        }
+
+        // Every other combination is one no commit leaves behind, and staging may hold the only
+        // complete tree. Nothing is removed until an operator has looked.
+        return new BackupRestoreRecoveryReport(
+            stagingRoot,
+            BackupRestoreRecoveryOutcome.ReconciliationRequired,
+            journal.Phase,
+            "The restore journal names a commit, but the filesystem shows no state a commit leaves "
+            + $"behind (staged {Presence(stagedExists)}, live {Presence(liveExists)}, displaced "
+            + $"{Presence(displacedExists)}). Staging was left untouched at {stagingRoot} for an operator "
+            + "to resolve.");
+    }
+
+    /// <summary>
+    /// Resolves a replacement journal past <see cref="BackupRestorePhase.Commit"/>: a commit that
+    /// finished, which needs only its staging removed — over the tree a finished commit leaves.
+    /// </summary>
+    /// <remarks>
+    /// A finished commit leaves the restored generation in the live root and <c>staged/</c> gone, with
+    /// or without the displaced installation beside it. Anything else at this phase is a post-commit
+    /// reversal that stopped before it could rewind the journal — a process death between its two
+    /// renames, or a journal rewrite that failed — and staging may then hold the only copy of the prior
+    /// installation. Discarding it on the strength of the phase alone would delete that copy, so it is
+    /// kept for an operator instead.
+    /// </remarks>
+    private static BackupRestoreRecoveryReport ResolveFinishedCommit(
+        string stagingRoot,
+        BackupRestoreJournalRecord journal,
+        bool stagedExists,
+        bool liveExists,
+        bool displacedExists)
+    {
+        if (!stagedExists && liveExists)
+        {
+            Discard(stagingRoot, journal);
+
+            return new BackupRestoreRecoveryReport(
+                stagingRoot,
+                BackupRestoreRecoveryOutcome.CommitCompleted,
+                journal.Phase,
+                "The restore had already committed; only staging cleanup remained.");
+        }
+
+        return new BackupRestoreRecoveryReport(
+            stagingRoot,
+            BackupRestoreRecoveryOutcome.ReconciliationRequired,
+            journal.Phase,
+            "The restore journal records a finished commit, but the filesystem shows a tree no finished "
+            + $"commit leaves (staged {Presence(stagedExists)}, live {Presence(liveExists)}, displaced "
+            + $"{Presence(displacedExists)}): a reversal may have stopped partway. Staging was left untouched "
+            + $"at {stagingRoot} for an operator to resolve; it may hold the prior installation.");
+    }
+
+    /// <summary>
+    /// Resolves a new-profile journal at or past <see cref="BackupRestorePhase.Commit"/> from its own staging.
+    /// </summary>
+    /// <remarks>
+    /// The commit is one rename of <c>staged/</c> onto the new profile root, so staging alone tells the
+    /// two outcomes apart: <c>staged/</c> still present is a commit that never began, or one whose
+    /// reversal put the restored tree back, and <c>staged/</c> gone is a commit that landed (past
+    /// <c>Commit</c>, one whose post-commit work may not have finished, which the new root then shows). Either way
+    /// staging holds nothing anyone had before the restore, and only it is removed; the new root and the
+    /// default installation are never touched. A displaced root is a shape no new-profile restore leaves,
+    /// so that staging is kept for an operator.
+    /// </remarks>
+    private static BackupRestoreRecoveryReport ResolveNewProfileCommit(
+        string stagingRoot,
+        BackupRestoreJournalRecord journal,
+        bool stagedExists,
+        bool displacedExists)
+    {
+        if (displacedExists)
+        {
+            return new BackupRestoreRecoveryReport(
+                stagingRoot,
+                BackupRestoreRecoveryOutcome.ReconciliationRequired,
+                journal.Phase,
+                "A new-profile restore never displaces an installation, but its staging holds a displaced "
+                + "root. Staging was left untouched at " + stagingRoot + " for an operator to resolve.");
         }
 
         Discard(stagingRoot, journal);
 
+        return stagedExists
+            ? new BackupRestoreRecoveryReport(
+                stagingRoot,
+                BackupRestoreRecoveryOutcome.RolledBack,
+                journal.Phase,
+                "The new-profile restored generation never left staging, or its reversal put it back; "
+                + "staging was removed and the current installation was never modified.")
+            : new BackupRestoreRecoveryReport(
+                stagingRoot,
+                BackupRestoreRecoveryOutcome.CommitCompleted,
+                journal.Phase,
+                "The new-profile commit had completed; only staging cleanup remained.");
+    }
+
+    /// <summary>
+    /// Resolves a journal whose restore could not reinstate every local secret its rollback owed back.
+    /// </summary>
+    /// <remarks>
+    /// Never <see cref="BackupRestoreRecoveryOutcome.RolledBack"/> and never a discard, whatever the
+    /// shape: the secret store still holds what the restore installed, and the prior values existed only
+    /// in the process that died or gave up. The one repair taken is the one every other journal gets —
+    /// a displaced installation with no live root is moved back — because it only returns the prior
+    /// files to their place. Staging and the journal then stay, so startup stays stopped until an
+    /// operator has chosen how to recover.
+    /// </remarks>
+    private static BackupRestoreRecoveryReport SecretsNotReinstated(
+        string stagingRoot,
+        BackupRestoreJournalRecord journal,
+        string secretFailure,
+        bool stagedExists,
+        bool liveExists,
+        bool displacedExists)
+    {
+        bool priorInPlace = stagedExists && liveExists && !displacedExists;
+
+        if (!liveExists && displacedExists)
+        {
+            try
+            {
+                Directory.Move(journal.DisplacedRoot, journal.LiveRoot);
+
+                priorInPlace = true;
+            }
+            catch (Exception exception) when (
+                exception is IOException or UnauthorizedAccessException)
+            {
+            }
+        }
+
         return new BackupRestoreRecoveryReport(
             stagingRoot,
-            BackupRestoreRecoveryOutcome.CommitCompleted,
+            BackupRestoreRecoveryOutcome.ReconciliationRequired,
             journal.Phase,
-            "The commit had completed; only staging cleanup remained.");
-
+            "A restore failed after commit. "
+            + secretFailure
+            + " "
+            + (priorInPlace
+                ? "The prior installation's files are in place. Staging at " + stagingRoot + " holds no part "
+                    + "of it and was left untouched; startup stays stopped until an operator deletes it. "
+                : "The prior installation's files could not be verified in place (staged "
+                    + $"{Presence(stagedExists)}, live {Presence(liveExists)}, displaced "
+                    + $"{Presence(displacedExists)}). Staging was left untouched at {stagingRoot} for an "
+                    + "operator to resolve. ")
+            + UnreinstatedSecretsAdvice(journal.SafetyBackupPath));
     }
+
+    /// <summary>
+    /// What an operator can do about secrets a failed restore could not reinstate, shared by the
+    /// restore's own result and by the startup report so the two never disagree.
+    /// </summary>
+    /// <remarks>
+    /// The prior values were captured in memory and nowhere else, so the advice is never to reinstate
+    /// them. The pre-restore safety backup, when one was taken, is the one place they still exist.
+    /// <para>Every route it offers is another replacement restore, which is refused while the retained
+    /// staging is still the active restore evidence, so it says to resolve that first. It says resolve,
+    /// not delete: when the reversal was not verified, that staging holds the prior installation.</para>
+    /// </remarks>
+    internal static string UnreinstatedSecretsAdvice(string? safetyBackupPath) =>
+        "Their prior values existed only in the restoring process, so nothing Arcanum kept can reinstate "
+        + "them, and the prior installation is left with whatever the restore installed in their place. "
+        + "A follow-up restore is refused while the retained restore staging remains, so resolve that "
+        + "staging as described above first. "
+        + (safetyBackupPath is { } safety
+            ? "The pre-restore safety backup at " + safety + " carries the prior installation's secrets: "
+                + "restore it to return to the prior installation, or restore the archive again to adopt "
+                + "its generation and secrets."
+            : "No pre-restore safety backup was taken, so those prior values cannot be recovered: restore "
+                + "an earlier backup of this installation, or restore the archive again to adopt its "
+                + "generation and secrets.");
+
+    private static string Presence(bool exists) => exists ? "present" : "absent";
 
     private static void Discard(string stagingRoot, BackupRestoreJournalRecord journal)
     {
-
         BackupRestoreJournal.Delete(stagingRoot);
 
         _ = OwnedTemporaryDirectory.TryDelete(
             stagingRoot,
             journal.StagingVolumeId,
             journal.StagingFileId);
-
     }
-
 }

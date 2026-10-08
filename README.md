@@ -5,7 +5,7 @@
 [![CI](https://github.com/Retro-Downfall/RetroDownfall.Arcanum/actions/workflows/ci.yml/badge.svg)](https://github.com/Retro-Downfall/RetroDownfall.Arcanum/actions/workflows/ci.yml)
 [![Latest release](https://img.shields.io/github/v/release/Retro-Downfall/RetroDownfall.Arcanum?include_prereleases&sort=semver&label=release)](https://github.com/Retro-Downfall/RetroDownfall.Arcanum/releases)
 [![.NET 10](https://img.shields.io/badge/.NET-10-512BD4)](https://dotnet.microsoft.com/)
-[![Native AOT](https://img.shields.io/badge/Native%20AOT-yes-2ea44f)](#functions)
+[![Native AOT](https://img.shields.io/badge/Native%20AOT-yes-2ea44f)](#one-executable-no-runtime)
 [![Platforms](https://img.shields.io/badge/platforms-macOS%20arm64%20%C2%B7%20Windows%20x64%2Farm64-blue)](https://github.com/Retro-Downfall/RetroDownfall.Arcanum/releases)
 
 Arcanum runs a long-lived HTTP host (`arcanum serve`) with a set of thin CLI clients over that same API. It exposes an **OpenAI-compatible API** — so existing OpenAI clients and scripts talk to Arcanum unchanged — and routes inference across **any OpenAI-compatible provider**: hosted services, your own local Ollama or other model server, or the `Claude Code` and `Codex` CLIs you already have installed and signed in. Everything it learns lives in a **SQLCipher-encrypted** store on your disk, and the executable runs on **macOS and Windows**.
@@ -92,7 +92,7 @@ In practice OATH shows up in a few places:
 OATH is bitemporal-*ready*: immutable history, revisions, timestamps, generations, and source versions already exist. Full valid-time reasoning (exactly-when-something-was-true semantics) is planned work, not a claim about today's implementation.
 
 ### Encrypted by default
-Everything is stored **encrypted at rest on your own disk**. API keys and other secrets use your operating system's secure storage (Keychain, Windows Credential Manager, Secret Service) rather than a plain-text config file. Tools that touch the filesystem run inside a sandbox. Anything you read or write stays local — nothing goes to disk or the network beyond what you ask.
+Your sessions, attachments, and uploads are stored **encrypted on your own disk**, never in plain text. API keys and provider credentials live in your operating system's secure storage (Keychain, Windows Credential Manager, Secret Service), each with an owner-only encrypted backup file so a headless machine can still start; the key that unlocks the session database is kept only in such an owner-only file. Those files keep your secrets from other users of the machine, but they are not a defence against someone who can read your whole disk or an unprotected copy of it — pair Arcanum with full-disk encryption and protected backups for that. Tools that touch the filesystem run inside a sandbox. Anything you read or write stays local — nothing goes to disk or the network beyond what you ask.
 
 ### Full control over your data
 - **Backups** — a single, mobile, full-encrypted copy; no need to disrupt your work to take it.
@@ -133,6 +133,11 @@ unzip arcanum-osx-arm64.zip && cd arcanum-osx-arm64
 Expand-Archive .\arcanum-win-x64.zip -DestinationPath .
 .\arcanum-win-x64\arcanum.exe setup
 ```
+
+Windows also needs the **Microsoft Visual C++ Redistributable** (2015–2022) for its architecture,
+which many machines already have: [x64](https://aka.ms/vs/17/release/vc_redist.x64.exe) ·
+[arm64](https://aka.ms/vs/17/release/vc_redist.arm64.exe). Without it the encrypted store's
+library cannot load and `arcanum serve` cannot start.
 
 Verify any download against `SHA256SUMS.txt` from the same release. Run as a normal user —
 elevation is never required.
@@ -187,4 +192,4 @@ Permission is hereby granted, free of charge, to any person obtaining a copy of 
 
 The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.

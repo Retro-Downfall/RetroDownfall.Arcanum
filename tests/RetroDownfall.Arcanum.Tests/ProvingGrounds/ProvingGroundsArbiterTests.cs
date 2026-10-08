@@ -10,11 +10,9 @@ namespace RetroDownfall.Arcanum.Tests.ProvingGrounds;
 
 public sealed class ProvingGroundsArbiterTests
 {
-
     [Fact]
     public async Task RegexInquisitor_MatchAndShouldMatch_Passes()
     {
-
         ProvingGroundsArbiter arbiter = CreateArbiter(new FakeIntelligenceProvider());
 
         IReadOnlyList<InquisitorVerdict> verdicts = await arbiter.AdjudicateAsync(
@@ -27,13 +25,11 @@ public sealed class ProvingGroundsArbiterTests
         Assert.True(verdicts[0].Passed);
 
         Assert.Equal("regex", verdicts[0].Kind);
-
     }
 
     [Fact]
     public async Task RegexInquisitor_ShouldNotMatch_PassesWhenAbsent()
     {
-
         ProvingGroundsArbiter arbiter = CreateArbiter(new FakeIntelligenceProvider());
 
         IReadOnlyList<InquisitorVerdict> verdicts = await arbiter.AdjudicateAsync(
@@ -42,13 +38,11 @@ public sealed class ProvingGroundsArbiterTests
             judgeModel: null);
 
         Assert.True(verdicts[0].Passed);
-
     }
 
     [Fact]
     public async Task RegexInquisitor_InvalidPattern_Fails()
     {
-
         ProvingGroundsArbiter arbiter = CreateArbiter(new FakeIntelligenceProvider());
 
         IReadOnlyList<InquisitorVerdict> verdicts = await arbiter.AdjudicateAsync(
@@ -59,13 +53,11 @@ public sealed class ProvingGroundsArbiterTests
         Assert.False(verdicts[0].Passed);
 
         Assert.Contains("Invalid regex", verdicts[0].Detail, StringComparison.Ordinal);
-
     }
 
     [Fact]
     public async Task JsonSchemaInquisitor_ValidJsonWithRequiredProperty_Passes()
     {
-
         ProvingGroundsArbiter arbiter = CreateArbiter(new FakeIntelligenceProvider());
 
         JsonElement schema = JsonDocument.Parse("""{"type":"object","required":["name"],"properties":{"name":{"type":"string"}}}""").RootElement;
@@ -76,13 +68,11 @@ public sealed class ProvingGroundsArbiterTests
             judgeModel: null);
 
         Assert.True(verdicts[0].Passed);
-
     }
 
     [Fact]
     public async Task JsonSchemaInquisitor_MissingRequiredProperty_Fails()
     {
-
         ProvingGroundsArbiter arbiter = CreateArbiter(new FakeIntelligenceProvider());
 
         JsonElement schema = JsonDocument.Parse("""{"required":["name"]}""").RootElement;
@@ -95,13 +85,11 @@ public sealed class ProvingGroundsArbiterTests
         Assert.False(verdicts[0].Passed);
 
         Assert.Contains("name", verdicts[0].Detail, StringComparison.Ordinal);
-
     }
 
     [Fact]
     public async Task JsonSchemaInquisitor_TypeMismatch_Fails()
     {
-
         ProvingGroundsArbiter arbiter = CreateArbiter(new FakeIntelligenceProvider());
 
         JsonElement schema = JsonDocument.Parse("""{"properties":{"count":{"type":"number"}}}""").RootElement;
@@ -112,13 +100,11 @@ public sealed class ProvingGroundsArbiterTests
             judgeModel: null);
 
         Assert.False(verdicts[0].Passed);
-
     }
 
     [Fact]
     public async Task JsonSchemaInquisitor_MalformedOutput_Fails()
     {
-
         ProvingGroundsArbiter arbiter = CreateArbiter(new FakeIntelligenceProvider());
 
         IReadOnlyList<InquisitorVerdict> verdicts = await arbiter.AdjudicateAsync(
@@ -127,13 +113,11 @@ public sealed class ProvingGroundsArbiterTests
             judgeModel: null);
 
         Assert.False(verdicts[0].Passed);
-
     }
 
     [Fact]
     public async Task SemanticInquisitor_YesAnswer_WhenExpectedTrue_Passes()
     {
-
         FakeIntelligenceProvider provider = new() { NextText = "YES" };
 
         ProvingGroundsArbiter arbiter = CreateArbiter(provider);
@@ -146,13 +130,11 @@ public sealed class ProvingGroundsArbiterTests
         Assert.True(verdicts[0].Passed);
 
         Assert.Equal("semantic", verdicts[0].Kind);
-
     }
 
     [Fact]
     public async Task SemanticInquisitor_NoAnswer_WhenExpectedTrue_Fails()
     {
-
         FakeIntelligenceProvider provider = new() { NextText = "NO" };
 
         ProvingGroundsArbiter arbiter = CreateArbiter(provider);
@@ -163,13 +145,11 @@ public sealed class ProvingGroundsArbiterTests
             judgeModel: "fast-model");
 
         Assert.False(verdicts[0].Passed);
-
     }
 
     [Fact]
     public async Task SemanticInquisitor_InferenceFailure_Fails()
     {
-
         FakeIntelligenceProvider provider = new() { NextFailure = new Error("Hub.Model", "model unavailable") };
 
         ProvingGroundsArbiter arbiter = CreateArbiter(provider);
@@ -182,13 +162,11 @@ public sealed class ProvingGroundsArbiterTests
         Assert.False(verdicts[0].Passed);
 
         Assert.Contains("inference failed", verdicts[0].Detail, StringComparison.OrdinalIgnoreCase);
-
     }
 
     [Fact]
     public async Task AdjudicateAsync_CancelledToken_ThrowsBetweenInquisitors()
     {
-
         ProvingGroundsArbiter arbiter = CreateArbiter(new FakeIntelligenceProvider());
 
         using CancellationTokenSource cts = new();
@@ -197,13 +175,11 @@ public sealed class ProvingGroundsArbiterTests
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(
             () => arbiter.AdjudicateAsync("text", [new RegexInquisitor("a")], judgeModel: null, cts.Token));
-
     }
 
     [Fact]
     public async Task JsonSchemaInquisitor_UnknownDeclaredType_FailsClosed()
     {
-
         ProvingGroundsArbiter arbiter = CreateArbiter(new FakeIntelligenceProvider());
 
         JsonElement schema = JsonDocument.Parse("""{"properties":{"x":{"type":"mystery"}}}""").RootElement;
@@ -214,19 +190,169 @@ public sealed class ProvingGroundsArbiterTests
             judgeModel: null);
 
         Assert.False(verdicts[0].Passed);
+    }
 
+    /// <summary>
+    /// A malformed type declaration fails the verdict instead of being rewritten: a dropped
+    /// non-string union member let a matching string pass, and a numeric or empty-array type was read
+    /// as "object" so an object output passed against a schema the author never wrote.
+    /// </summary>
+    [Theory]
+    [InlineData("""{"type":["string",5]}""", "\"text\"")]
+    [InlineData("""{"type":7}""", "{}")]
+    [InlineData("""{"type":[]}""", "{}")]
+    public async Task JsonSchemaInquisitor_MalformedTypeDeclaration_FailsClosed(string schemaJson, string output)
+    {
+        ProvingGroundsArbiter arbiter = CreateArbiter(new FakeIntelligenceProvider());
+
+        JsonElement schema = JsonDocument.Parse(schemaJson).RootElement;
+
+        IReadOnlyList<InquisitorVerdict> verdicts = await arbiter.AdjudicateAsync(
+            output,
+            [new JsonSchemaInquisitor(schema)],
+            judgeModel: null);
+
+        Assert.False(verdicts[0].Passed);
+
+        Assert.Contains("Schema is not valid", verdicts[0].Detail, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task JsonSchemaInquisitor_EnumViolation_Fails()
+    {
+        ProvingGroundsArbiter arbiter = CreateArbiter(new FakeIntelligenceProvider());
+
+        JsonElement schema = JsonDocument.Parse("""{"properties":{"color":{"enum":["red","green"]}}}""").RootElement;
+
+        IReadOnlyList<InquisitorVerdict> verdicts = await arbiter.AdjudicateAsync(
+            """{"color":"blue"}""",
+            [new JsonSchemaInquisitor(schema)],
+            judgeModel: null);
+
+        Assert.False(verdicts[0].Passed);
+
+        Assert.Contains("enum", verdicts[0].Detail, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task JsonSchemaInquisitor_NestedRequiredItemsAndAdditionalProperties_AreEnforced()
+    {
+        ProvingGroundsArbiter arbiter = CreateArbiter(new FakeIntelligenceProvider());
+
+        JsonElement schema = JsonDocument.Parse(
+            """
+            {"type":"object","additionalProperties":false,"properties":{
+              "tags":{"type":"array","items":{"type":"string"}},
+              "owner":{"type":"object","required":["id"],"properties":{"id":{"type":"integer"}}}}}
+            """).RootElement;
+
+        IReadOnlyList<InquisitorVerdict> verdicts = await arbiter.AdjudicateAsync(
+            """{"tags":["a",2],"owner":{}}""",
+            [new JsonSchemaInquisitor(schema)],
+            judgeModel: null);
+
+        Assert.False(verdicts[0].Passed);
+
+        Assert.Contains("tags", verdicts[0].Detail, StringComparison.Ordinal);
+
+        Assert.Contains("id", verdicts[0].Detail, StringComparison.Ordinal);
+
+        IReadOnlyList<InquisitorVerdict> extra = await arbiter.AdjudicateAsync(
+            """{"surprise":1}""",
+            [new JsonSchemaInquisitor(schema)],
+            judgeModel: null);
+
+        Assert.False(extra[0].Passed);
+
+        IReadOnlyList<InquisitorVerdict> valid = await arbiter.AdjudicateAsync(
+            """{"tags":["a"],"owner":{"id":3}}""",
+            [new JsonSchemaInquisitor(schema)],
+            judgeModel: null);
+
+        Assert.True(valid[0].Passed);
+    }
+
+    [Fact]
+    public async Task JsonSchemaInquisitor_TypeUnion_AcceptsAnyDeclaredMember()
+    {
+        ProvingGroundsArbiter arbiter = CreateArbiter(new FakeIntelligenceProvider());
+
+        JsonElement schema = JsonDocument.Parse(
+            """{"properties":{"id":{"type":["string","integer"]}}}""").RootElement;
+
+        foreach (string output in new[] { """{"id":"a"}""", """{"id":5}""" })
+        {
+            IReadOnlyList<InquisitorVerdict> accepted = await arbiter.AdjudicateAsync(
+                output,
+                [new JsonSchemaInquisitor(schema)],
+                judgeModel: null);
+
+            Assert.True(accepted[0].Passed, accepted[0].Detail);
+        }
+
+        IReadOnlyList<InquisitorVerdict> rejected = await arbiter.AdjudicateAsync(
+            """{"id":true}""",
+            [new JsonSchemaInquisitor(schema)],
+            judgeModel: null);
+
+        Assert.False(rejected[0].Passed);
+    }
+
+    [Fact]
+    public async Task JsonSchemaInquisitor_UnknownMemberOfATypeUnion_FailsClosed()
+    {
+        ProvingGroundsArbiter arbiter = CreateArbiter(new FakeIntelligenceProvider());
+
+        JsonElement schema = JsonDocument.Parse(
+            """{"properties":{"x":{"type":["string","mystery"]}}}""").RootElement;
+
+        IReadOnlyList<InquisitorVerdict> verdicts = await arbiter.AdjudicateAsync(
+            """{"x":"hi"}""",
+            [new JsonSchemaInquisitor(schema)],
+            judgeModel: null);
+
+        Assert.False(verdicts[0].Passed);
+
+        Assert.Contains("mystery", verdicts[0].Detail, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The earlier hand-rolled check refused any root that was not an object; the shared validator
+    /// drops that rule, so a root array now satisfies (or violates) <c>type: array</c> on its merits.
+    /// </summary>
+    [Fact]
+    public async Task JsonSchemaInquisitor_RootArraySchema_ValidatesTheArray()
+    {
+        ProvingGroundsArbiter arbiter = CreateArbiter(new FakeIntelligenceProvider());
+
+        JsonElement schema = JsonDocument.Parse(
+            """{"type":"array","items":{"type":"integer"}}""").RootElement;
+
+        IReadOnlyList<InquisitorVerdict> valid = await arbiter.AdjudicateAsync(
+            "[1,2]",
+            [new JsonSchemaInquisitor(schema)],
+            judgeModel: null);
+
+        Assert.True(valid[0].Passed, valid[0].Detail);
+
+        IReadOnlyList<InquisitorVerdict> invalid = await arbiter.AdjudicateAsync(
+            """[1,"a"]""",
+            [new JsonSchemaInquisitor(schema)],
+            judgeModel: null);
+
+        Assert.False(invalid[0].Passed);
+
+        Assert.Contains("[1]", invalid[0].Detail, StringComparison.Ordinal);
     }
 
     private static ProvingGroundsArbiter CreateArbiter(
         IArcanumIntelligenceProvider intelligence)
     {
         return new ProvingGroundsArbiter(intelligence);
-
     }
 
     private sealed class FakeIntelligenceProvider : IArcanumIntelligenceProvider
     {
-
         public string NextText { get; init; } = "YES";
 
         public Error? NextFailure { get; init; }
@@ -237,7 +363,6 @@ public sealed class ProvingGroundsArbiterTests
             CancellationToken cancellationToken,
             InferenceAuditContext? auditContext = null)
         {
-
             if (NextFailure is Error failure)
             {
                 return Task.FromResult(Result<PromptTurnResult>.Failure(failure));
@@ -245,7 +370,6 @@ public sealed class ProvingGroundsArbiterTests
 
             return Task.FromResult(
                 Result<PromptTurnResult>.Success(new PromptTurnResult(NextText, null)));
-
         }
 
         public async IAsyncEnumerable<IntelligenceEvent> StreamPromptAsync(
@@ -254,18 +378,14 @@ public sealed class ProvingGroundsArbiterTests
             [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken,
             InferenceAuditContext? auditContext = null)
         {
-
             await Task.CompletedTask.ConfigureAwait(false);
 
             yield break;
-
         }
-
     }
 
     private sealed class TestOptionsMonitor(ArcanumSettings current) : IOptionsMonitor<ArcanumSettings>
     {
-
         public ArcanumSettings CurrentValue => current;
 
         public ArcanumSettings Get(string? name) => current;
@@ -274,15 +394,11 @@ public sealed class ProvingGroundsArbiterTests
 
         private sealed class NoopDisposable : IDisposable
         {
-
             public void Dispose()
             {
             }
-
         }
-
     }
-
 
     /// <summary>
     /// The trial output is clamped before adjudication. A raw char slice can leave a lone high
@@ -293,7 +409,6 @@ public sealed class ProvingGroundsArbiterTests
     [Fact]
     public async Task Clamped_output_never_ends_on_a_split_surrogate_pair()
     {
-
         int maxOutputChars = ArcanumSettingClamps.MaxPingPromptChars(
             ArcanumRuntimeDefaults.Intelligence.MaxPingPromptChars);
 
@@ -310,7 +425,5 @@ public sealed class ProvingGroundsArbiterTests
         Assert.Single(verdicts);
 
         Assert.False(verdicts[0].Passed);
-
     }
-
 }

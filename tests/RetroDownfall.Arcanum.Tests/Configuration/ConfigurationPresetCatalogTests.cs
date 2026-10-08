@@ -4,12 +4,10 @@ namespace RetroDownfall.Arcanum.Tests.Configuration;
 
 public sealed class ConfigurationPresetCatalogTests
 {
-
     [Fact]
 
     public void All_exposes_the_six_current_presets_in_stable_order()
     {
-
         string[] expectedIds =
         [
             "general-assistant",
@@ -27,14 +25,12 @@ public sealed class ConfigurationPresetCatalogTests
         Assert.Equal(
             expectedVersions,
             ConfigurationPresetCatalog.All.Select(static preset => preset.Version));
-
     }
 
     [Fact]
 
     public void Versions_preserve_the_hard_coded_pre_issue_219_version_one_goldens()
     {
-
         ExpectedPreset[] expected = VersionOneGoldens();
 
         ConfigurationPresetDefinition[] versionOne =
@@ -46,23 +42,19 @@ public sealed class ConfigurationPresetCatalogTests
 
         foreach (ConfigurationPresetDefinition preset in versionOne)
         {
-
             ExpectedPreset? expectedPreset = expected.SingleOrDefault(candidate =>
                 candidate.Id == preset.Id && candidate.Version == preset.Version);
 
             Assert.NotNull(expectedPreset);
 
             AssertPresetMatches(expectedPreset, preset);
-
         }
-
     }
 
     [Fact]
 
     public void Current_version_two_presets_subtract_only_the_retired_Ward_paths()
     {
-
         string[] changedIds =
         [
             "general-assistant",
@@ -80,7 +72,6 @@ public sealed class ConfigurationPresetCatalogTests
 
         foreach (string id in changedIds)
         {
-
             ExpectedPreset expectedVersionOne = VersionOneGoldens().Single(expected =>
                 expected.Id == id);
 
@@ -97,7 +88,6 @@ public sealed class ConfigurationPresetCatalogTests
 
             for (int index = 0; index < expectedSurvivors.Length; index++)
             {
-
                 ExpectedOwnedSetting expected = expectedSurvivors[index];
 
                 ConfigurationPresetOwnedSetting actual = versionTwo.OwnedSettings[index];
@@ -113,7 +103,6 @@ public sealed class ConfigurationPresetCatalogTests
                 Assert.Equal(
                     expected.PrerequisiteIds.ToArray(),
                     actual.PrerequisiteIds.ToArray());
-
             }
 
             Assert.DoesNotContain(
@@ -138,11 +127,9 @@ public sealed class ConfigurationPresetCatalogTests
 
             if (id is not "general-assistant" and not "automation")
             {
-
                 Assert.Equal(
                     expectedVersionOne.Disclosure.SecurityImplications,
                     versionTwo.Disclosure.SecurityImplications);
-
             }
 
             AssertPrerequisitesMatch(expectedVersionOne.Prerequisites, versionTwo.Prerequisites);
@@ -160,7 +147,6 @@ public sealed class ConfigurationPresetCatalogTests
             Assert.Equal(
                 expectedVersionOne.ProgressiveDisclosure.FirstSuccessRecommendation,
                 versionTwo.ProgressiveDisclosure.FirstSuccessRecommendation);
-
         }
 
         ConfigurationPresetDefinition automation =
@@ -179,14 +165,12 @@ public sealed class ConfigurationPresetCatalogTests
         Assert.Equal(
             "Ward records are informational; Covenant retirement keeps its independent authorization policy and existing tool permissions still apply.",
             automation.Disclosure.SecurityImplications);
-
     }
 
     [Fact]
 
     public void Historical_general_assistant_hash_matches_the_design_audit_golden()
     {
-
         ConfigurationPresetBaselineValue[] appliedValues =
         [
             new("features.attachments", "true"),
@@ -201,14 +185,12 @@ public sealed class ConfigurationPresetCatalogTests
         Assert.Equal(
             "a6240807df3e3e86bc649e5a790826a374c921de839f71790b03d7688616f522",
             ConfigurationPresetHash.ComputeCanonicalValues(appliedValues));
-
     }
 
     [Fact]
 
     public void FindVersion_selects_only_the_requested_catalog_id_and_version()
     {
-
         ConfigurationPresetDefinition expected = ConfigurationPresetCatalog.Versions.Single(static preset =>
             preset.Id == "general-assistant" && preset.Version == 2);
 
@@ -223,14 +205,12 @@ public sealed class ConfigurationPresetCatalogTests
         Assert.Null(ConfigurationPresetCatalog.FindVersion("general-assistant", 0));
 
         Assert.Null(ConfigurationPresetCatalog.FindVersion(null, 1));
-
     }
 
     [Fact]
 
     public void Coding_workspace_first_success_command_includes_the_required_prompt()
     {
-
         const string expectedCommand =
             "arcanum run --workspace . \"Inspect this workspace and summarize it.\"";
 
@@ -243,7 +223,6 @@ public sealed class ConfigurationPresetCatalogTests
         Assert.Equal(expectedCommand, recommendation.Command);
 
         Assert.Equal($"Run {expectedCommand}", preset.ProgressiveDisclosure.FirstSuccessRecommendation);
-
     }
 
     [Theory]
@@ -258,31 +237,26 @@ public sealed class ConfigurationPresetCatalogTests
         string query,
         string expectedId)
     {
-
         ConfigurationPresetDefinition? preset = ConfigurationPresetCatalog.Find(query);
 
         Assert.NotNull(preset);
 
         Assert.Equal(expectedId, preset.Id);
-
     }
 
     [Fact]
 
     public void Find_does_not_guess_from_an_ambiguous_or_partial_name()
     {
-
         Assert.Null(ConfigurationPresetCatalog.Find("general"));
 
         Assert.Null(ConfigurationPresetCatalog.Find("customized"));
-
     }
 
     [Fact]
 
     public void Catalog_never_owns_secrets_endpoints_internal_mechanics_or_unlimited_budget_values()
     {
-
         string[] prohibitedPathFragments =
         [
             "credential",
@@ -301,11 +275,9 @@ public sealed class ConfigurationPresetCatalogTests
         foreach (ConfigurationPresetOwnedSetting setting in
                  ConfigurationPresetCatalog.All.SelectMany(static preset => preset.OwnedSettings))
         {
-
             Assert.DoesNotContain(
                 prohibitedPathFragments,
                 fragment => setting.Path.Contains(fragment, StringComparison.OrdinalIgnoreCase));
-
         }
 
         Assert.DoesNotContain(
@@ -321,14 +293,49 @@ public sealed class ConfigurationPresetCatalogTests
                     "security.allowUnsandboxedToolChildren",
                     StringComparison.OrdinalIgnoreCase)
                 && setting.CanonicalJson.Equals("true", StringComparison.OrdinalIgnoreCase));
+    }
 
+    /// <summary>
+    /// Preset apply and reset re-check a candidate under the configuration mutex with the synchronous
+    /// rules only, because the outbound-URL pass resolves DNS and network I/O must not run under that
+    /// lock. That is sound only while a preset can never own a URL, host or endpoint: then the candidate's
+    /// endpoints are the ones already persisted, and a reset has nothing to resolve. The invariant is
+    /// held here, across every historical version as well as the current ones, so a future preset that
+    /// owns a non-flag value fails this test instead of silently skipping the DNS and egress check.
+    /// </summary>
+    [Fact]
+
+    public void Every_owned_setting_in_every_version_is_a_boolean_flag_so_a_preset_never_owns_a_url()
+    {
+        ConfigurationPresetOwnedSetting[] owned =
+        [
+            .. ConfigurationPresetCatalog.Versions.SelectMany(static preset => preset.OwnedSettings),
+        ];
+
+        // A reading that found nothing would let the assertion below pass vacuously.
+        Assert.True(owned.Length > 30, $"Only {owned.Length} owned settings were read from the catalog.");
+
+        string[] notFlags =
+        [
+            .. owned
+                .Where(static setting =>
+                    !setting.CanonicalJson.Equals("true", StringComparison.Ordinal)
+                    && !setting.CanonicalJson.Equals("false", StringComparison.Ordinal))
+                .Select(static setting => $"{setting.Path} = {setting.CanonicalJson}")
+                .Distinct(StringComparer.Ordinal)
+                .Order(StringComparer.Ordinal),
+        ];
+
+        Assert.True(
+            notFlags.Length == 0,
+            "A preset owns a non-flag value, so apply and reset must run the outbound-URL pass before the "
+            + $"commit again: {string.Join("; ", notFlags)}");
     }
 
     [Fact]
 
     public void Automation_requires_an_existing_positive_budget_without_owning_the_budget()
     {
-
         ConfigurationPresetDefinition automation = ConfigurationPresetCatalog.Find("automation")!;
 
         Assert.Contains(
@@ -338,14 +345,12 @@ public sealed class ConfigurationPresetCatalogTests
         Assert.DoesNotContain(
             automation.OwnedSettings,
             static setting => setting.Path.StartsWith("cost.budget", StringComparison.OrdinalIgnoreCase));
-
     }
 
     [Fact]
 
     public void Glossary_explains_product_terms_in_shared_plain_language()
     {
-
         string[] expectedTerms = ["Ward", "Sanctum", "Weave", "Saga", "Lexicon"];
 
         Assert.Equal(expectedTerms, ConfigurationPresetCatalog.Glossary.Select(static entry => entry.Term));
@@ -353,7 +358,6 @@ public sealed class ConfigurationPresetCatalogTests
         Assert.All(
             ConfigurationPresetCatalog.Glossary,
             static entry => Assert.False(string.IsNullOrWhiteSpace(entry.PlainLanguageMeaning)));
-
     }
 
     [Fact]
@@ -387,7 +391,6 @@ public sealed class ConfigurationPresetCatalogTests
         Assert.Equal(
             "Ward records are informational; Covenant retirement keeps its independent authorization policy and existing tool permissions still apply.",
             automation.Disclosure.SecurityImplications);
-
     }
 
     private static ExpectedPreset[] VersionOneGoldens() =>
@@ -616,7 +619,6 @@ public sealed class ConfigurationPresetCatalogTests
         ExpectedPreset expected,
         ConfigurationPresetDefinition actual)
     {
-
         Assert.Equal(expected.Id, actual.Id);
 
         Assert.Equal(expected.Version, actual.Version);
@@ -629,7 +631,6 @@ public sealed class ConfigurationPresetCatalogTests
 
         for (int index = 0; index < expected.OwnedSettings.Length; index++)
         {
-
             ExpectedOwnedSetting expectedSetting = expected.OwnedSettings[index];
 
             ConfigurationPresetOwnedSetting actualSetting = actual.OwnedSettings[index];
@@ -643,7 +644,6 @@ public sealed class ConfigurationPresetCatalogTests
             Assert.Equal(expectedSetting.PrerequisiteIds, actualSetting.PrerequisiteIds.ToArray());
 
             Assert.Equal(expectedSetting.IsSafetyBoundary, actualSetting.IsSafetyBoundary);
-
         }
 
         Assert.Equal(expected.Disclosure.Enables, actual.Disclosure.Enables);
@@ -677,21 +677,18 @@ public sealed class ConfigurationPresetCatalogTests
         Assert.Equal(
             expected.ProgressiveDisclosure.FirstSuccessRecommendation,
             actual.ProgressiveDisclosure.FirstSuccessRecommendation);
-
     }
 
     private static void AssertPrerequisitesMatch(
         ExpectedPrerequisite[] expected,
         IEnumerable<ConfigurationPresetPrerequisite> actual)
     {
-
         ConfigurationPresetPrerequisite[] actualArray = [.. actual];
 
         Assert.Equal(expected.Length, actualArray.Length);
 
         for (int index = 0; index < expected.Length; index++)
         {
-
             Assert.Equal(expected[index].Id, actualArray[index].Id);
 
             Assert.Equal(expected[index].Description, actualArray[index].Description);
@@ -699,31 +696,25 @@ public sealed class ConfigurationPresetCatalogTests
             Assert.Equal(expected[index].ResolutionCommand, actualArray[index].ResolutionCommand);
 
             Assert.Equal(expected[index].Required, actualArray[index].Required);
-
         }
-
     }
 
     private static void AssertRecommendationsMatch(
         ExpectedRecommendation[] expected,
         IEnumerable<ConfigurationPresetRecommendation> actual)
     {
-
         ConfigurationPresetRecommendation[] actualArray = [.. actual];
 
         Assert.Equal(expected.Length, actualArray.Length);
 
         for (int index = 0; index < expected.Length; index++)
         {
-
             Assert.Equal(expected[index].Description, actualArray[index].Description);
 
             Assert.Equal(expected[index].Command, actualArray[index].Command);
 
             Assert.Equal(expected[index].IsAdvancedFeature, actualArray[index].IsAdvancedFeature);
-
         }
-
     }
 
     private sealed record ExpectedPreset(
@@ -766,5 +757,4 @@ public sealed class ConfigurationPresetCatalogTests
         string EssentialChoice,
         string[] DeferredFeatures,
         string FirstSuccessRecommendation);
-
 }

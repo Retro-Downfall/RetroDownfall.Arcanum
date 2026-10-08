@@ -246,7 +246,10 @@ internal sealed class RunCommand(
             }
 
             return Fail(
-                contextResult.Error ?? "CLI context could not be resolved.");
+                contextResult.Error ?? "CLI context could not be resolved.",
+                CliFailureExit.Classify(
+                    contextResult.ErrorCode,
+                    CliExitCode.ConfigurationError));
         }
 
         WriteDiagnostics(

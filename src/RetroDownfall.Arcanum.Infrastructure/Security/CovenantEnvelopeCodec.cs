@@ -33,7 +33,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.Security;
 /// </remarks>
 internal sealed class CovenantEnvelopeCodec : ICovenantEnvelopeCodec
 {
-
     private readonly ICovenantEnvelopeMasterKeyProvider keys;
 
     private readonly TimeProvider timeProvider;
@@ -60,13 +59,11 @@ internal sealed class CovenantEnvelopeCodec : ICovenantEnvelopeCodec
         TimeProvider timeProvider,
         ICovenantEnvelopeCodecCheckpoint checkpoint)
     {
-
         this.keys = keys ?? throw new ArgumentNullException(nameof(keys));
 
         this.timeProvider = timeProvider ?? throw new ArgumentNullException(nameof(timeProvider));
 
         _checkpoint = checkpoint ?? throw new ArgumentNullException(nameof(checkpoint));
-
     }
 
     /// <inheritdoc/>
@@ -81,7 +78,6 @@ internal sealed class CovenantEnvelopeCodec : ICovenantEnvelopeCodec
         TimeSpan lifetime,
         DateTimeOffset? issuedAtUtc = null)
     {
-
         if (!Enum.IsDefined(purpose))
         {
             return Result<string>.Failure(
@@ -104,7 +100,6 @@ internal sealed class CovenantEnvelopeCodec : ICovenantEnvelopeCodec
         // stamp is doing. Forward-dating would extend it past the lifetime that was asked for.
         if (issuedAtUtc is { } stated)
         {
-
             DateTimeOffset now = timeProvider.GetUtcNow();
 
             if (stated > now)
@@ -123,14 +118,12 @@ internal sealed class CovenantEnvelopeCodec : ICovenantEnvelopeCodec
                 return Result<string>.Failure(
                     new Error(ErrorCodes.Covenant.InvalidCursor, "An envelope cannot be issued already expired."));
             }
-
         }
 
         Span<byte> key = stackalloc byte[32];
 
         try
         {
-
             CovenantEnvelopeKeyCopyStatus copyStatus = keys.TryCopyPurposeKeyAndReserve(
                 purpose,
                 key,
@@ -177,7 +170,6 @@ internal sealed class CovenantEnvelopeCodec : ICovenantEnvelopeCodec
 
             try
             {
-
                 WriteHeader(
                     wire,
                     purpose,
@@ -222,33 +214,25 @@ internal sealed class CovenantEnvelopeCodec : ICovenantEnvelopeCodec
                 _checkpoint.Reached(CovenantEnvelopeCodecStep.CurrentGenerationProven);
 
                 return Result<string>.Success(Base64Url.EncodeToString(wire));
-
             }
             finally
             {
-
                 ZeroAndObserve(plaintext, CovenantEnvelopeCodecBufferKind.Plaintext);
 
                 ZeroAndObserve(nonce, CovenantEnvelopeCodecBufferKind.Nonce);
 
                 ZeroAndObserve(wire, CovenantEnvelopeCodecBufferKind.Wire);
-
             }
-
         }
         finally
         {
-
             ZeroAndObserve(key, CovenantEnvelopeCodecBufferKind.Key);
-
         }
-
     }
 
     /// <inheritdoc/>
     public Result<CovenantEnvelopeBody> Decode(CovenantEnvelopePurpose expectedPurpose, string? token)
     {
-
         if (!Enum.IsDefined(expectedPurpose))
         {
             return Invalid();
@@ -271,7 +255,6 @@ internal sealed class CovenantEnvelopeCodec : ICovenantEnvelopeCodec
 
         try
         {
-
             // Whatever is wrong with a token, from a character outside the alphabet to a length no
             // decoder can read to a respelling of a real one, is this same refusal and never an
             // exception, which would hand anyone who can reach a token-bearing route an unhandled fault
@@ -302,13 +285,10 @@ internal sealed class CovenantEnvelopeCodec : ICovenantEnvelopeCodec
                 return Invalid();
             }
 
+            // The purpose read here is the header's claim, not yet a fact: nothing has verified the tag.
+            // Decryption therefore uses the key and nonce of the purpose the header declares, and a
+            // difference from the purpose this route accepts is answered only after that tag verifies.
             CovenantEnvelopePurpose purpose = (CovenantEnvelopePurpose)purposeCode;
-
-            if (purpose != expectedPurpose)
-            {
-                return Result<CovenantEnvelopeBody>.Failure(
-                    CovenantEnvelopeErrors.For(CovenantEnvelopeDecodeFailure.PurposeMismatch));
-            }
 
             uint masterKeyVersion = BinaryPrimitives.ReadUInt32BigEndian(header[6..]);
 
@@ -346,7 +326,6 @@ internal sealed class CovenantEnvelopeCodec : ICovenantEnvelopeCodec
 
             try
             {
-
                 CovenantEnvelopeKeyCopyStatus copyStatus = keys.TryCopyPurposeKey(
                     purpose,
                     key,
@@ -373,12 +352,10 @@ internal sealed class CovenantEnvelopeCodec : ICovenantEnvelopeCodec
 
                 try
                 {
-
                     WriteNonce(nonce, purpose, counter);
 
                     try
                     {
-
                         using AesGcm aes = new(key, CovenantEnvelopeLimits.TagBytes);
 
                         aes.Decrypt(
@@ -387,7 +364,6 @@ internal sealed class CovenantEnvelopeCodec : ICovenantEnvelopeCodec
                             wire[(CovenantEnvelopeLimits.HeaderBytes + actualCipherTextLength)..],
                             plaintext,
                             header);
-
                     }
                     catch (CryptographicException)
                     {
@@ -419,6 +395,14 @@ internal sealed class CovenantEnvelopeCodec : ICovenantEnvelopeCodec
                         return Invalid();
                     }
 
+                    // Authenticated under the declared purpose's key, so this refusal is now true of the
+                    // token rather than of whatever the header happened to say.
+                    if (purpose != expectedPurpose)
+                    {
+                        return Result<CovenantEnvelopeBody>.Failure(
+                            CovenantEnvelopeErrors.For(CovenantEnvelopeDecodeFailure.PurposeMismatch));
+                    }
+
                     DateTimeOffset issuedAt = DateTimeOffset.FromUnixTimeMilliseconds(bodyIssuedMs);
 
                     DateTimeOffset expiresAt = DateTimeOffset.FromUnixTimeMilliseconds(bodyExpiresMs);
@@ -440,33 +424,23 @@ internal sealed class CovenantEnvelopeCodec : ICovenantEnvelopeCodec
                             issuedAt,
                             expiresAt,
                             payload));
-
                 }
                 finally
                 {
-
                     ZeroAndObserve(plaintext, CovenantEnvelopeCodecBufferKind.Plaintext);
 
                     ZeroAndObserve(nonce, CovenantEnvelopeCodecBufferKind.Nonce);
-
                 }
-
             }
             finally
             {
-
                 ZeroAndObserve(key, CovenantEnvelopeCodecBufferKind.Key);
-
             }
-
         }
         finally
         {
-
             ZeroAndObserve(wireBuffer, CovenantEnvelopeCodecBufferKind.Wire);
-
         }
-
     }
 
     private static void WriteHeader(
@@ -479,7 +453,6 @@ internal sealed class CovenantEnvelopeCodec : ICovenantEnvelopeCodec
         DateTimeOffset expiresAt,
         int cipherTextLength)
     {
-
         MagicBytes.CopyTo(destination);
 
         destination[4] = CovenantEnvelopeLimits.Version;
@@ -497,27 +470,22 @@ internal sealed class CovenantEnvelopeCodec : ICovenantEnvelopeCodec
         BinaryPrimitives.WriteInt64BigEndian(destination[34..], expiresAt.ToUnixTimeMilliseconds());
 
         BinaryPrimitives.WriteUInt32BigEndian(destination[42..], (uint)cipherTextLength);
-
     }
 
     private static void WriteNonce(Span<byte> destination, CovenantEnvelopePurpose purpose, ulong counter)
     {
-
         BinaryPrimitives.WriteUInt32BigEndian(destination, (uint)purpose);
 
         BinaryPrimitives.WriteUInt64BigEndian(destination[4..], counter);
-
     }
 
     private void ZeroAndObserve(
         Span<byte> buffer,
         CovenantEnvelopeCodecBufferKind kind)
     {
-
         CryptographicOperations.ZeroMemory(buffer);
 
         _checkpoint.Zeroized(kind, IsZero(buffer));
-
     }
 
     /// <remarks>
@@ -537,22 +505,18 @@ internal sealed class CovenantEnvelopeCodec : ICovenantEnvelopeCodec
     private static Result<CovenantEnvelopeBody> Invalid() =>
         Result<CovenantEnvelopeBody>.Failure(
             CovenantEnvelopeErrors.For(CovenantEnvelopeDecodeFailure.Invalid));
-
 }
 
 /// <summary>Content-free checkpoints exposed only for deterministic codec race tests.</summary>
 internal interface ICovenantEnvelopeCodecCheckpoint
 {
-
     void Reached(CovenantEnvelopeCodecStep step);
 
     void Zeroized(CovenantEnvelopeCodecBufferKind kind, bool isZero);
-
 }
 
 internal enum CovenantEnvelopeCodecStep
 {
-
     PurposeKeyCopied = 1,
 
     CryptographyCompleted = 2,
@@ -560,12 +524,10 @@ internal enum CovenantEnvelopeCodecStep
     BeforeGenerationRevalidation = 3,
 
     CurrentGenerationProven = 4,
-
 }
 
 internal enum CovenantEnvelopeCodecBufferKind
 {
-
     Key = 1,
 
     Plaintext = 2,
@@ -573,17 +535,14 @@ internal enum CovenantEnvelopeCodecBufferKind
     Nonce = 3,
 
     Wire = 4,
-
 }
 
 internal static class CovenantEnvelopeCodecCheckpoint
 {
-
     internal static ICovenantEnvelopeCodecCheckpoint None { get; } = new NoOpCheckpoint();
 
     private sealed class NoOpCheckpoint : ICovenantEnvelopeCodecCheckpoint
     {
-
         public void Reached(CovenantEnvelopeCodecStep step)
         {
         }
@@ -591,7 +550,5 @@ internal static class CovenantEnvelopeCodecCheckpoint
         public void Zeroized(CovenantEnvelopeCodecBufferKind kind, bool isZero)
         {
         }
-
     }
-
 }

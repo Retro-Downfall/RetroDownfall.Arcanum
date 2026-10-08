@@ -20,7 +20,6 @@ namespace RetroDownfall.Arcanum.Cli.Infrastructure;
 
 public enum CliExitCode
 {
-
     Success = 0,
 
     GenericError = 1,
@@ -30,7 +29,6 @@ public enum CliExitCode
     NetworkError = 3,
 
     Cancelled = 130,
-
 }
 
 public readonly record struct CliInvocationOptions(
@@ -43,14 +41,11 @@ public readonly record struct CliInvocationOptions(
 
 public interface ICliInvocationContext
 {
-
     CliInvocationOptions Options { get; }
-
 }
 
 public interface IConsoleDispatcher
 {
-
     void WritePayload(string value);
 
     void WriteDiagnostic(string value);
@@ -67,16 +62,13 @@ public interface IConsoleDispatcher
     void WriteJson(JsonElement value);
 
     void BeginJsonStream();
-
 }
 
 public interface IConfirmationPrompt
 {
-
     Task<bool> PromptForConfirmationAsync(
         string question,
         CancellationToken cancellationToken);
-
 }
 
 public sealed record CliTextPayload(
@@ -86,26 +78,6 @@ public sealed record CliTextPayload(
 public sealed record CliErrorPayload(
     string Error,
     int ExitCode);
-
-public sealed record MemoryReviewCancellationPayload(
-    MemoryReviewStore Store,
-    Guid RequestId,
-    MemoryReviewAction Action,
-    bool Cancelled);
-
-/// <summary>
-/// The one document a declined erasure-family operation writes under <c>--json</c>.
-/// </summary>
-/// <remarks>
-/// <paramref name="Operation"/> is <c>erase</c>, <c>release</c> or <c>reset-key</c>. The store and
-/// mutation identity are present when the declined operation had them, so a script can tell which
-/// prepared erase was turned down; nothing about the item itself is carried.
-/// </remarks>
-public sealed record MemoryErasureCancellationPayload(
-    string Operation,
-    MemoryReviewStore? Store,
-    Guid? MutationId,
-    bool Cancelled);
 
 public sealed record SessionShowPayload(
     Guid Id,
@@ -314,7 +286,6 @@ public sealed record CredentialInventoryPayload(
 
 internal sealed class CliInvocationContext : ICliInvocationContext
 {
-
     private static readonly AsyncLocal<InvocationState?> AmbientState = new();
 
     public CliInvocationOptions Options =>
@@ -331,58 +302,43 @@ internal sealed class CliInvocationContext : ICliInvocationContext
 
     internal static IDisposable Push(CliInvocationOptions options)
     {
-
         InvocationState? previous = AmbientState.Value;
 
         AmbientState.Value = new InvocationState(options);
 
         return new RestoreScope(previous);
-
     }
 
     internal static void MarkStructuredPayloadWritten()
     {
-
         if (AmbientState.Value is { } state)
         {
-
             state.StructuredPayloadWritten = true;
-
         }
-
     }
 
     internal static void AttachJsonOutput(DeferredJsonTextWriter output)
     {
-
         if (AmbientState.Value is { } state)
         {
-
             state.JsonOutput = output;
-
         }
-
     }
 
     internal static void BeginJsonStream()
     {
-
         if (AmbientState.Value is { } state)
         {
-
             state.StructuredPayloadWritten = true;
 
             state.JsonStreamStarted = true;
 
             state.JsonOutput?.BeginStreaming();
-
         }
-
     }
 
     private sealed class InvocationState(CliInvocationOptions options)
     {
-
         public CliInvocationOptions Options { get; } = options;
 
         public bool StructuredPayloadWritten { get; set; }
@@ -390,37 +346,28 @@ internal sealed class CliInvocationContext : ICliInvocationContext
         public bool JsonStreamStarted { get; set; }
 
         public DeferredJsonTextWriter? JsonOutput { get; set; }
-
     }
 
     private sealed class RestoreScope(InvocationState? previous) : IDisposable
     {
-
         private bool _disposed;
 
         public void Dispose()
         {
-
             if (_disposed)
             {
-
                 return;
-
             }
 
             _disposed = true;
 
             AmbientState.Value = previous;
-
         }
-
     }
-
 }
 
 internal sealed class ConsoleDispatcher : IConsoleDispatcher
 {
-
     private readonly TextWriter? _standardOutput;
 
     private readonly TextWriter? _standardError;
@@ -431,9 +378,7 @@ internal sealed class ConsoleDispatcher : IConsoleDispatcher
 
     public ConsoleDispatcher(ICliInvocationContext invocationContext)
     {
-
         _invocationContext = invocationContext;
-
     }
 
     internal ConsoleDispatcher(
@@ -441,13 +386,11 @@ internal sealed class ConsoleDispatcher : IConsoleDispatcher
         TextWriter standardError,
         CliInvocationOptions options)
     {
-
         _standardOutput = standardOutput;
 
         _standardError = standardError;
 
         _fixedOptions = options;
-
     }
 
     public void WritePayload(string value) =>
@@ -458,16 +401,12 @@ internal sealed class ConsoleDispatcher : IConsoleDispatcher
 
     public void WriteVerbose(string value)
     {
-
         if (!Options.Verbose)
         {
-
             return;
-
         }
 
         WriteLine(StandardError, value);
-
     }
 
     /// <summary>
@@ -478,61 +417,48 @@ internal sealed class ConsoleDispatcher : IConsoleDispatcher
     /// </summary>
     public void WriteJson<T>(T value, JsonTypeInfo<T> typeInfo)
     {
-
         string json;
 
         try
         {
-
             json = JsonSerializer.Serialize(value, typeInfo);
-
         }
         catch (Exception exception) when (
             exception is JsonException or NotSupportedException or InvalidOperationException)
         {
-
             WriteSerializationFailure();
 
             return;
-
         }
 
         WriteLine(StandardOutput, json);
 
         CliInvocationContext.MarkStructuredPayloadWritten();
-
     }
 
     public void WriteJson(JsonElement value)
     {
-
         string json;
 
         try
         {
-
             json = JsonSerializer.Serialize(value, CliJsonContext.Default.JsonElement);
-
         }
         catch (Exception exception) when (
             exception is JsonException or NotSupportedException or InvalidOperationException)
         {
-
             WriteSerializationFailure();
 
             return;
-
         }
 
         WriteLine(StandardOutput, json);
 
         CliInvocationContext.MarkStructuredPayloadWritten();
-
     }
 
     private void WriteSerializationFailure()
     {
-
         WriteLine(
             StandardOutput,
             JsonSerializer.Serialize(
@@ -544,14 +470,11 @@ internal sealed class ConsoleDispatcher : IConsoleDispatcher
         WriteLine(StandardError, "The command result could not be serialized.");
 
         CliInvocationContext.MarkStructuredPayloadWritten();
-
     }
 
     public void BeginJsonStream()
     {
-
         CliInvocationContext.BeginJsonStream();
-
     }
 
     private CliInvocationOptions Options =>
@@ -565,21 +488,16 @@ internal sealed class ConsoleDispatcher : IConsoleDispatcher
 
     private void WriteLine(TextWriter writer, string value)
     {
-
         writer.WriteLine(Options.Plain ? StripAnsi(value) : value);
-
     }
 
     internal static string StripAnsi(string value)
     {
-
         int escapeIndex = value.IndexOf('\u001b');
 
         if (escapeIndex < 0)
         {
-
             return value;
-
         }
 
         char[] buffer = new char[value.Length];
@@ -588,97 +506,74 @@ internal sealed class ConsoleDispatcher : IConsoleDispatcher
 
         for (int index = 0; index < value.Length;)
         {
-
             if (value[index] != '\u001b')
             {
-
                 buffer[written++] = value[index++];
 
                 continue;
-
             }
 
             index++;
 
             if (index >= value.Length)
             {
-
                 break;
-
             }
 
             if (value[index] == '[')
             {
-
                 index++;
 
                 while (index < value.Length)
                 {
-
                     char current = value[index++];
 
                     if (current is >= '@' and <= '~')
                     {
-
                         break;
-
                     }
-
                 }
 
                 continue;
-
             }
 
             if (value[index] is ']' or 'P' or 'X' or '^' or '_')
             {
-
                 index++;
 
                 while (index < value.Length)
                 {
-
                     if (value[index] is '\a' or '\u009c')
                     {
-
                         index++;
 
                         break;
-
                     }
 
                     if (value[index] == '\u001b'
                         && index + 1 < value.Length
                         && value[index + 1] == '\\')
                     {
-
                         index += 2;
 
                         break;
-
                     }
 
                     index++;
-
                 }
 
                 continue;
-
             }
 
             index++;
-
         }
 
         return new string(buffer, 0, written);
-
     }
-
 }
 
 internal sealed class DeferredJsonTextWriter(TextWriter destination) : TextWriter
 {
-
     private readonly StringWriter _buffer = new();
 
     private readonly object _gate = new();
@@ -689,49 +584,33 @@ internal sealed class DeferredJsonTextWriter(TextWriter destination) : TextWrite
 
     public bool IsStreaming
     {
-
         get
         {
-
             lock (_gate)
             {
-
                 return _streaming;
-
             }
-
         }
-
     }
 
     public string BufferedOutput
     {
-
         get
         {
-
             lock (_gate)
             {
-
                 return _buffer.ToString();
-
             }
-
         }
-
     }
 
     public void BeginStreaming()
     {
-
         lock (_gate)
         {
-
             if (_streaming)
             {
-
                 return;
-
             }
 
             destination.Write(_buffer.ToString());
@@ -739,98 +618,70 @@ internal sealed class DeferredJsonTextWriter(TextWriter destination) : TextWrite
             destination.Flush();
 
             _streaming = true;
-
         }
-
     }
 
     public override void Write(char value)
     {
-
         lock (_gate)
         {
-
             ActiveWriter.Write(value);
 
             FlushDestinationWhenStreaming();
-
         }
-
     }
 
     public override void Write(string? value)
     {
-
         lock (_gate)
         {
-
             ActiveWriter.Write(value);
 
             FlushDestinationWhenStreaming();
-
         }
-
     }
 
     public override void WriteLine(string? value)
     {
-
         lock (_gate)
         {
-
             ActiveWriter.WriteLine(value);
 
             FlushDestinationWhenStreaming();
-
         }
-
     }
 
     public override void Flush()
     {
-
         lock (_gate)
         {
-
             ActiveWriter.Flush();
-
         }
-
     }
 
     protected override void Dispose(bool disposing)
     {
-
         if (disposing)
         {
-
             _buffer.Dispose();
-
         }
 
         base.Dispose(disposing);
-
     }
 
     private TextWriter ActiveWriter => _streaming ? destination : _buffer;
 
     private void FlushDestinationWhenStreaming()
     {
-
         if (_streaming)
         {
-
             destination.Flush();
-
         }
-
     }
-
 }
 
 internal sealed class ConfirmationPrompt : IConfirmationPrompt
 {
-
     private readonly IConsoleDispatcher _dispatcher;
 
     private readonly ICliInvocationContext? _invocationContext;
@@ -854,7 +705,6 @@ internal sealed class ConfirmationPrompt : IConfirmationPrompt
             static () => Console.IsOutputRedirected,
             static () => Console.IsInputRedirected)
     {
-
     }
 
     internal ConfirmationPrompt(
@@ -871,7 +721,6 @@ internal sealed class ConfirmationPrompt : IConfirmationPrompt
             isOutputRedirected,
             isInputRedirected)
     {
-
     }
 
     private ConfirmationPrompt(
@@ -882,7 +731,6 @@ internal sealed class ConfirmationPrompt : IConfirmationPrompt
         Func<bool> isOutputRedirected,
         Func<bool> isInputRedirected)
     {
-
         _dispatcher = dispatcher;
 
         _invocationContext = invocationContext;
@@ -894,22 +742,18 @@ internal sealed class ConfirmationPrompt : IConfirmationPrompt
         _isOutputRedirected = isOutputRedirected;
 
         _isInputRedirected = isInputRedirected;
-
     }
 
     public async Task<bool> PromptForConfirmationAsync(
         string question,
         CancellationToken cancellationToken)
     {
-
         CliInvocationOptions options =
             _fixedOptions ?? _invocationContext?.Options ?? default;
 
         if (options.Yes)
         {
-
             return true;
-
         }
 
         // Both halves of the console have to be a terminal, not just the half that shows the question.
@@ -925,9 +769,7 @@ internal sealed class ConfirmationPrompt : IConfirmationPrompt
         // SensitiveValueInput already read both flags; this was the one console path that did not.
         if (_isOutputRedirected() || _isInputRedirected() || options.Json || options.Print)
         {
-
             throw new NonInteractiveConfirmationException();
-
         }
 
         _dispatcher.WriteDiagnostic($"{question} [y/N]");
@@ -944,9 +786,7 @@ internal sealed class ConfirmationPrompt : IConfirmationPrompt
                 response?.Trim(),
                 "yes",
                 StringComparison.OrdinalIgnoreCase);
-
     }
-
 }
 
 public sealed class NonInteractiveConfirmationException()
@@ -955,7 +795,6 @@ public sealed class NonInteractiveConfirmationException()
 
 internal static class CliFailureMapper
 {
-
     public static CliFailure Map(Exception exception) =>
         // A startup failure that names what to do is unwrapped first, because the host wraps whatever
         // a hosted service throws and the switch below would otherwise fall to its default arm and
@@ -964,7 +803,9 @@ internal static class CliFailureMapper
             ? new CliFailure(CliExitCode.ConfigurationError, unavailable)
             : exception switch
         {
-            HttpRequestException => new CliFailure(
+            // HttpIOException derives from IOException but is a transport fault, so it has to be
+            // matched here, before the local-file arm below can claim it.
+            HttpRequestException or HttpIOException => new CliFailure(
                 CliExitCode.NetworkError,
                 "A network operation failed."),
             NonInteractiveConfirmationException => new CliFailure(
@@ -979,10 +820,38 @@ internal static class CliFailureMapper
             OperationCanceledException => new CliFailure(
                 CliExitCode.Cancelled,
                 "The operation was cancelled."),
+            // A refusal to replace a saved context this build cannot use carries its own operator-facing
+            // explanation (the file, its format version and what to do), written for exactly this line.
+            CliContextFileUnusableException unusable => new CliFailure(
+                CliExitCode.GenericError,
+                unusable.Message),
+            // The exception message of a file fault is a path the operator did not ask us to echo, so
+            // the line names the class of failure only; `-v` adds the exception type.
+            _ when IsLocalFileFault(exception) => new CliFailure(
+                CliExitCode.GenericError,
+                "Local file access failed. Check the path and its permissions."),
             _ => new CliFailure(
                 CliExitCode.GenericError,
                 "An unexpected CLI error occurred."),
         };
+
+    /// <summary>
+    /// Whether the file system itself raised <paramref name="exception"/>: a permission refusal, a
+    /// missing file, directory or drive, a path that is too long, or an <see cref="IOException"/> the
+    /// runtime raised directly (a sharing violation, a full disk). An <see cref="IOException"/> that
+    /// wraps another failure is not one: Kestrel reports a port that cannot be bound as an
+    /// <see cref="IOException"/> around the socket error, and `arcanum serve` has no catch of its own, so
+    /// the file-permission hint would point the operator at the wrong thing.
+    /// </summary>
+    private static bool IsLocalFileFault(Exception exception) =>
+        exception is UnauthorizedAccessException
+            or FileNotFoundException
+            or DirectoryNotFoundException
+            or DriveNotFoundException
+            or PathTooLongException
+        || (exception is IOException
+            && exception.GetType() == typeof(IOException)
+            && exception.InnerException is null);
 
     /// <summary>
     /// The operator-facing message of a Grimoire startup refusal anywhere in the exception chain.
@@ -995,38 +864,26 @@ internal static class CliFailureMapper
     /// </remarks>
     private static string? UnwrapGrimoireUnavailable(Exception exception)
     {
-
         for (Exception? current = exception; current is not null; current = current.InnerException)
         {
-
             if (current is GrimoireDatabaseUnavailableException)
             {
-
                 return current.Message;
-
             }
 
             if (current is AggregateException aggregate)
             {
-
                 foreach (Exception inner in aggregate.InnerExceptions)
                 {
-
                     if (UnwrapGrimoireUnavailable(inner) is { } found)
                     {
-
                         return found;
-
                     }
-
                 }
-
             }
-
         }
 
         return null;
-
     }
 
     /// <summary>
@@ -1037,34 +894,27 @@ internal static class CliFailureMapper
     internal static string DescribeConfigurationValidationFailure(
         ConfigurationValidationException exception)
     {
-
         ArgumentNullException.ThrowIfNull(exception);
 
         StringBuilder builder = new(exception.Message);
 
         if (exception.Error.Details is { Count: > 0 } details)
         {
-
             foreach (ConfigurationValidationError detail in details)
             {
-
                 builder.Append(Environment.NewLine)
                     .Append("  - ")
                     .Append(detail.Pointer)
                     .Append(": ")
                     .Append(detail.Detail);
-
             }
-
         }
 
         builder.Append(Environment.NewLine)
             .Append("Run 'arcanum config validate' to re-check, or 'arcanum config edit' to repair arcanum.json.");
 
         return builder.ToString();
-
     }
-
 }
 
 [JsonSourceGenerationOptions(
@@ -1072,8 +922,6 @@ internal static class CliFailureMapper
     WriteIndented = false)]
 [JsonSerializable(typeof(CliTextPayload))]
 [JsonSerializable(typeof(CliErrorPayload))]
-[JsonSerializable(typeof(MemoryReviewCancellationPayload))]
-[JsonSerializable(typeof(MemoryErasureCancellationPayload))]
 [JsonSerializable(typeof(CliContextStatusPayload))]
 [JsonSerializable(typeof(CliContextMutationResult))]
 [JsonSerializable(typeof(SessionShowPayload))]

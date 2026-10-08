@@ -47,10 +47,29 @@ on:
 permissions:
   contents: read
 
+# Never cancel a run in progress. Two dispatches that both leave `version` blank would each compute
+# "highest existing beta + 1" and then interleave their per-file uploads into the same draft,
+# shipping a zip from one run beside a checksum file from the other. One group per requested
+# version serializes runs that asked for the same thing: an explicit version is its own group, and
+# every blank version shares `auto`. The group is keyed on the input, not on the version prepare
+# resolves, so a blank dispatch that resolves to vX and an explicit vX dispatch still run side by
+# side; the publish job therefore carries a second group keyed on the resolved tag, and asks again
+# whether the release is still a draft immediately before it uploads. `cancel-in-progress` stays
+# false because a release must never be cancelled by whatever is dispatched next (the same reason
+# ci.yml carries the opposite setting and this file does not). GitHub keeps one pending run per
+# group, so this is not a queue: a second dispatch waits behind the running release, and a third
+# supersedes (cancels) the one that was waiting. Dispatch again after the running release finishes
+# if a superseded run was wanted. The publish job's group carries its own `release-publish-` prefix:
+# the workflow is also `workflow_call`, and a called job's group must never equal its caller's.
+concurrency:
+  group: release-${{ inputs.version || 'auto' }}
+  cancel-in-progress: false
+
 jobs:
   prepare:
     name: Validate the version and require every shipping asset
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       # `write` for a job that writes nothing: the releases API lists draft releases only to callers
       # with push access, and every release this workflow makes starts as a draft. With `read` the
@@ -68,8 +87,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      # A report card, never a gate. CI is dispatch-only, so a commit having no run is the ordinary
-      # case rather than a fault, and refusing to release on it would put the tool in charge of a call
+      # A report card, never a gate. CI runs on pull requests and manual dispatch, not on a push to
+      # main, so a squash or merge commit has no run of its own and a commit having no run is the
+      # ordinary case rather than a fault (the pull request's head ran CI, under a different SHA).
+      # Refusing to release on it would put the tool in charge of a call
       # that belongs to the operator. What it prevents is deciding blind: the answer is on the run page
       # before the first platform starts building, so an unintended ship is a choice rather than a
       # discovery. Every path writes a summary and exits zero -- a broken report card must never be
@@ -87,7 +108,7 @@ jobs:
             --jq '.workflow_runs | length' 2>/dev/null || echo "")"
           if [[ "$count" == "0" ]]; then
             verdict="never run"
-            detail="No CI run exists for this commit. CI is dispatch-only, so this is expected unless you ran it: \`gh workflow run CI --ref $SHA\`."
+            detail="No CI run exists for this commit. CI runs on pull requests and manual dispatch, not on push to main; a squash or merge commit has no run of its own, so look at the merged pull request's last run, or run it here: \`gh workflow run CI --ref $SHA\`."
           elif [[ -n "$count" ]]; then
             run_status="$(gh api "repos/$GH_REPO/actions/workflows/ci.yml/runs?head_sha=$SHA&per_page=1" --jq '.workflow_runs[0].status' 2>/dev/null || echo "")"
             run_conclusion="$(gh api "repos/$GH_REPO/actions/workflows/ci.yml/runs?head_sha=$SHA&per_page=1" --jq '.workflow_runs[0].conclusion // ""' 2>/dev/null || echo "")"
@@ -186,6 +207,31 @@ jobs:
           } >> "$GITHUB_OUTPUT"
           echo "VERSION=$VERSION"
 
+      # `gh release upload --clobber` succeeds on any release that exists, draft or published, so an
+      # explicit version (or a declared non-channel <Version>) that names a release already public
+      # would replace its notarized binaries and SHA256SUMS.txt in place. Refuse here, before any
+      # platform spends a build, unless the release is absent or still a draft. Any answer other than
+      # "release not found" fails closed: not being able to tell is not permission to overwrite.
+      - name: Refuse to replace a published release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ steps.ver.outputs.tag }}
+        run: |
+          set -uo pipefail
+          if state="$(gh release view "$TAG" --json isDraft --jq .isDraft 2>&1)"; then
+            if [[ "$state" != "true" ]]; then
+              echo "error: release $TAG is already published; refusing to replace its assets. Choose a new version." >&2
+              exit 1
+            fi
+            echo "Release $TAG exists as a draft; its assets may be replaced."
+          elif [[ "$state" == *"release not found"* ]]; then
+            echo "Release $TAG does not exist yet."
+          else
+            echo "error: could not determine whether release $TAG is published: $state" >&2
+            exit 1
+          fi
+
       - name: Require a verified hermetic SQLCipher asset for every shipping RID
         run: |
           set -euo pipefail
@@ -259,7 +305,12 @@ jobs:
       - prepare
       - macos-arm64
       - windows
+    # One upload per resolved tag at a time, whichever input chose it (see the top-level group).
+    concurrency:
+      group: release-publish-${{ needs.prepare.outputs.tag }}
+      cancel-in-progress: false
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     permissions:
       # `contents: write` alone would replace the default permission set rather than add to it,
       # and the artifact download reads the Actions API.
@@ -330,9 +381,22 @@ jobs:
           if [[ "$PRERELEASE" == "true" ]]; then
             PRE_ARGS+=(--prerelease)
           fi
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            echo "Release $TAG exists — uploading assets with --clobber"
+          # prepare refused a published release long before this upload, and another run could have
+          # published the tag since, so ask again here: only a draft may be clobbered, and an answer
+          # other than "release not found" fails closed. A reused draft also keeps the target of
+          # the run that created it, so it is moved to the commit these binaries were built from
+          # before anything is uploaded; publishing it then tags that commit.
+          if state="$(gh release view "$TAG" --json isDraft --jq .isDraft 2>&1)"; then
+            if [[ "$state" != "true" ]]; then
+              echo "error: release $TAG was published while this run was building; refusing to replace its assets." >&2
+              exit 1
+            fi
+            echo "Release $TAG exists as a draft — retargeting it to $GITHUB_SHA and uploading assets with --clobber"
+            gh release edit "$TAG" --target "$GITHUB_SHA"
             gh release upload "$TAG" "${ASSETS[@]}" --clobber
+          elif [[ "$state" != *"release not found"* ]]; then
+            echo "error: could not determine whether release $TAG is published: $state" >&2
+            exit 1
           else
             echo "Creating draft release $TAG"
             NOTES_FILE="$RUNNER_TEMP/release-notes.md"

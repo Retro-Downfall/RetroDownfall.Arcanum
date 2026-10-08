@@ -1,5 +1,7 @@
 using System.Collections.Immutable;
 
+using Microsoft.Extensions.Logging.Abstractions;
+
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.DataLifecycle;
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -24,11 +26,9 @@ namespace RetroDownfall.Arcanum.Tests.InstallationReset;
 /// </remarks>
 public sealed partial class HostToolsMarkerPairResetCoordinatorTests
 {
-
     [Fact]
     public async Task Cleanup_prepares_publishes_the_receipt_and_reconciles_under_a_fresh_authority()
     {
-
         await using CovenantSchemaScratchDatabase database =
             await CreateMarkerDatabaseAsync();
 
@@ -36,7 +36,6 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
 
         try
         {
-
             using ArcanumMaintenanceLock heldLock = Assert.IsType<ArcanumMaintenanceLock>(
                 ArcanumMaintenanceLock.TryAcquire(guardedRoot));
 
@@ -143,21 +142,16 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
             Assert.Equal(1, lifecycle.ReleaseCalls);
 
             Assert.Equal(claim.OperationId, lifecycle.ReleasedOwnerOperationId);
-
         }
         finally
         {
-
             Directory.Delete(guardedRoot, recursive: true);
-
         }
-
     }
 
     [Fact]
     public async Task Cleanup_publishes_once_when_reconciliation_changes_nothing()
     {
-
         await using CovenantSchemaScratchDatabase database =
             await CreateMarkerDatabaseAsync();
 
@@ -165,7 +159,6 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
 
         try
         {
-
             using ArcanumMaintenanceLock heldLock = Assert.IsType<ArcanumMaintenanceLock>(
                 ArcanumMaintenanceLock.TryAcquire(guardedRoot));
 
@@ -208,15 +201,11 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
                 events[events.IndexOf("advance:PairAbsenceVerified")..]);
 
             Assert.Equal(1, lifecycle.ReleaseCalls);
-
         }
         finally
         {
-
             Directory.Delete(guardedRoot, recursive: true);
-
         }
-
     }
 
     [Theory]
@@ -224,7 +213,6 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
     [InlineData("reconcile")]
     public async Task Cleanup_releases_retained_roots_once_on_failure(string failure)
     {
-
         await using CovenantSchemaScratchDatabase database =
             await CreateMarkerDatabaseAsync();
 
@@ -232,7 +220,6 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
 
         try
         {
-
             using ArcanumMaintenanceLock heldLock = Assert.IsType<ArcanumMaintenanceLock>(
                 ArcanumMaintenanceLock.TryAcquire(guardedRoot));
 
@@ -279,21 +266,16 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
             Assert.Equal(
                 failure == "reconcile" ? 1 : 0,
                 lifecycle.ReconcileCalls);
-
         }
         finally
         {
-
             Directory.Delete(guardedRoot, recursive: true);
-
         }
-
     }
 
     [Fact]
     public async Task Cleanup_survives_a_release_that_throws_and_still_refuses()
     {
-
         await using CovenantSchemaScratchDatabase database =
             await CreateMarkerDatabaseAsync();
 
@@ -301,7 +283,6 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
 
         try
         {
-
             using ArcanumMaintenanceLock heldLock = Assert.IsType<ArcanumMaintenanceLock>(
                 ArcanumMaintenanceLock.TryAcquire(guardedRoot));
 
@@ -341,21 +322,16 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
             Assert.Equal(1, lifecycle.ReleaseCalls);
 
             Assert.Equal(1, lifecycle.ReconcileCalls);
-
         }
         finally
         {
-
             Directory.Delete(guardedRoot, recursive: true);
-
         }
-
     }
 
     [Fact]
     public async Task Resume_from_a_terminal_receipt_republishes_nothing_and_prepares_nothing()
     {
-
         // The pair is already gone, so the live row has to read back clean for the resume to accept
         // the checkpoint at all.
         await using CovenantSchemaScratchDatabase database =
@@ -365,7 +341,6 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
 
         try
         {
-
             using ArcanumMaintenanceLock heldLock = Assert.IsType<ArcanumMaintenanceLock>(
                 ArcanumMaintenanceLock.TryAcquire(guardedRoot));
 
@@ -424,21 +399,16 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
             Assert.Equal(1ul, lifecycle.ReconcilePreparedReceipt.OrphanCount);
 
             Assert.Equal(1, lifecycle.ReleaseCalls);
-
         }
         finally
         {
-
             Directory.Delete(guardedRoot, recursive: true);
-
         }
-
     }
 
     [Fact]
     public async Task Cleanup_borrows_the_one_core_connection_the_pair_effects_used()
     {
-
         await using CovenantSchemaScratchDatabase database =
             await CreateMarkerDatabaseAsync();
 
@@ -446,7 +416,6 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
 
         try
         {
-
             using ArcanumMaintenanceLock heldLock = Assert.IsType<ArcanumMaintenanceLock>(
                 ArcanumMaintenanceLock.TryAcquire(guardedRoot));
 
@@ -499,15 +468,11 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
             Assert.Equal(
                 System.Data.ConnectionState.Open,
                 lifecycle.ReconcileConnectionState);
-
         }
         finally
         {
-
             Directory.Delete(guardedRoot, recursive: true);
-
         }
-
     }
 
     /// <summary>
@@ -518,7 +483,6 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
         ulong deletedCount,
         ulong orphanCount)
     {
-
         InstallationResetActivePublication claimPublication = Publication();
 
         FullInstallationResetRemediationClaimV1 claim = Claim(claimPublication);
@@ -585,12 +549,10 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
                 Revision = claimPublication.Anchor.Revision + 1,
                 EnvelopeDigest = envelopeDigest,
             });
-
     }
 
     private static string CreateGuardedRoot(string leaf)
     {
-
         string guardedRoot = Path.Combine(
             Path.GetTempPath(),
             $"arcanum-pair-{leaf}-{Guid.NewGuid():N}");
@@ -598,7 +560,6 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
         _ = Directory.CreateDirectory(guardedRoot);
 
         return guardedRoot;
-
     }
 
     private static FullInstallationResetRemediationClaimV1 Claim(
@@ -613,7 +574,6 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
         List<string>? events,
         FullInstallationResetRemediationClaimV1 claim)
     {
-
         HostProcessToolsMatchedPair pair = new(
             TaintedDatabaseEvidence(),
             MatchedOsEvidence());
@@ -643,8 +603,8 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
                     events,
                     HostToolsMarkerPairResetOsOpenResult.Opened(
                         pair.OsMarker,
-                        new FakeOsCapability())));
-
+                        new FakeOsCapability())),
+            NullLogger<HostToolsMarkerPairResetCoordinator>.Instance);
     }
 
     /// <summary>
@@ -654,12 +614,10 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
         Guid operationId,
         int campaignCount)
     {
-
         List<CampaignMarkerInventoryEntryV1> entries = [];
 
         for (int index = 0; index < campaignCount; index++)
         {
-
             entries.Add(new CampaignMarkerInventoryEntryV1(
                 Guid.NewGuid(),
                 index + 1,
@@ -667,7 +625,6 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
                 Digest((byte)(0x90 + index)),
                 Digest((byte)(0xA0 + index)),
                 Digest((byte)(0xB0 + index))));
-
         }
 
         entries.Sort(static (left, right) =>
@@ -681,7 +638,5 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
             operationId,
             ordered,
             Value(FullInstallationResetMarkerPairResetDigests.CampaignInventory(ordered))));
-
     }
-
 }

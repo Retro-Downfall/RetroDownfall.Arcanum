@@ -241,6 +241,58 @@ public sealed class OutboundUrlGuardEgressConnectTests : IDisposable
         Assert.Null(FindInner<AggregateException>(failure));
     }
 
+    [Fact]
+    public async Task ConnectCallback_ReturnedSocket_HasNoDelay()
+    {
+        using TcpListener listener = new(IPAddress.Loopback, 0);
+
+        listener.Start();
+
+        int port = ((IPEndPoint)listener.LocalEndpoint).Port;
+
+        FakeDnsResolver fake = new();
+
+        fake.Add(EgressHost, IPAddress.Loopback);
+
+        using SocketsHttpHandler handler = OutboundUrlGuard.CreateProviderEgressHandler(fake);
+
+        Func<SocketsHttpConnectionContext, CancellationToken, ValueTask<Stream>> inner = handler.ConnectCallback!;
+
+        Stream? captured = null;
+
+        handler.ConnectCallback = async (context, cancellationToken) =>
+        {
+            Stream stream = await inner(context, cancellationToken);
+
+            captured = stream;
+
+            return stream;
+        };
+
+        Task serve = Task.Run(async () =>
+        {
+            using TcpClient accepted = await listener.AcceptTcpClientAsync();
+
+            NetworkStream wire = accepted.GetStream();
+
+            byte[] buffer = new byte[1024];
+
+            _ = await wire.ReadAsync(buffer);
+
+            await wire.WriteAsync(Encoding.ASCII.GetBytes("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"));
+        });
+
+        using HttpClient client = new(handler, disposeHandler: false);
+
+        using HttpResponseMessage response = await client.GetAsync($"http://{EgressHost}:{port}/probe");
+
+        await serve;
+
+        NetworkStream networkStream = Assert.IsType<NetworkStream>(captured);
+
+        Assert.True(networkStream.Socket.NoDelay);
+    }
+
     private SocketsHttpHandler CreateUntrustedEgressHandler(TimeSpan? connectTimeout = null) =>
         OutboundUrlGuard.CreateUntrustedEgressHandler(_dns, connectTimeout);
 

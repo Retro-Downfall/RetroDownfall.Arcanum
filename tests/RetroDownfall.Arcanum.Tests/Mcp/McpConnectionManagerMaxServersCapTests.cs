@@ -61,7 +61,8 @@ public sealed class McpConnectionManagerRegistrationTests : IAsyncLifetime
             new FakeEventBus(),
             new UntrustedWorkspaceStore(),
             new FakeHttpClientFactory(),
-            new TestOptionsMonitor<ArcanumSettings>(settings));
+            new TestOptionsMonitor<ArcanumSettings>(settings),
+            NullLoggerFactory.Instance);
 
         _manager.ConfigureGlobalAdmission(
             new GrimoireConnectionAdmissionGate(TimeProvider.System));
@@ -183,7 +184,7 @@ public sealed class McpConnectionManagerRegistrationTests : IAsyncLifetime
             CancellationToken cancellationToken = default) =>
             Task.FromResult(default(TrustedMcpWorkspaceSnapshot));
 
-        public Task TrustAsync(string workspaceRootPath, CancellationToken cancellationToken = default) =>
+        public Task TrustAsync(string workspaceRootPath, string? expectedSourceDigest = null, CancellationToken cancellationToken = default) =>
             Task.CompletedTask;
     }
 

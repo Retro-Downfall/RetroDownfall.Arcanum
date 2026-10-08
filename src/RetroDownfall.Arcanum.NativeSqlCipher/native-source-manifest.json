@@ -121,9 +121,21 @@
       "image": "win25-vs2026 20260818.207.1",
       "deploymentTarget": "10.0.17763.0",
       "dynamicDependencies": [
+        "WS2_32.dll",
+        "CRYPT32.dll",
         "ADVAPI32.dll",
         "KERNEL32.dll",
-        "bcrypt.dll"
+        "VCRUNTIME140.dll",
+        "api-ms-win-crt-math-l1-1-0.dll",
+        "api-ms-win-crt-stdio-l1-1-0.dll",
+        "api-ms-win-crt-heap-l1-1-0.dll",
+        "api-ms-win-crt-utility-l1-1-0.dll",
+        "api-ms-win-crt-convert-l1-1-0.dll",
+        "api-ms-win-crt-string-l1-1-0.dll",
+        "api-ms-win-crt-time-l1-1-0.dll",
+        "api-ms-win-crt-runtime-l1-1-0.dll",
+        "api-ms-win-crt-environment-l1-1-0.dll",
+        "api-ms-win-crt-filesystem-l1-1-0.dll"
       ],
       "amalgamationSha256": "8adaff6b464052a74e7adaa3cfa2725400f48eca68f47856fa806eaf30bdf2c9"
     },
@@ -138,9 +150,22 @@
       "image": "win25-vs2026 20260818.207.1",
       "deploymentTarget": "10.0.17763.0",
       "dynamicDependencies": [
+        "WS2_32.dll",
+        "CRYPT32.dll",
         "ADVAPI32.dll",
+        "USER32.dll",
         "KERNEL32.dll",
-        "bcrypt.dll"
+        "VCRUNTIME140.dll",
+        "api-ms-win-crt-math-l1-1-0.dll",
+        "api-ms-win-crt-heap-l1-1-0.dll",
+        "api-ms-win-crt-stdio-l1-1-0.dll",
+        "api-ms-win-crt-utility-l1-1-0.dll",
+        "api-ms-win-crt-convert-l1-1-0.dll",
+        "api-ms-win-crt-string-l1-1-0.dll",
+        "api-ms-win-crt-time-l1-1-0.dll",
+        "api-ms-win-crt-runtime-l1-1-0.dll",
+        "api-ms-win-crt-environment-l1-1-0.dll",
+        "api-ms-win-crt-filesystem-l1-1-0.dll"
       ],
       "amalgamationSha256": "8adaff6b464052a74e7adaa3cfa2725400f48eca68f47856fa806eaf30bdf2c9"
     }

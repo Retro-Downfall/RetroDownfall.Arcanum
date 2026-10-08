@@ -27,6 +27,7 @@ internal sealed class ProviderHealthProbeService(
     IProviderHealthProbe probe,
     IProviderHealthTracker tracker,
     IGrimoireConnectionAdmissionGate admissionGate,
+    TimeProvider timeProvider,
     ILogger<ProviderHealthProbeService> logger) : BackgroundService
 {
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -44,7 +45,7 @@ internal sealed class ProviderHealthProbeService(
             {
                 await ProbeAllProvidersAsync(stoppingToken).ConfigureAwait(false);
 
-                anyUnhealthy = tracker.GetAllStatuses().Any(static status => !status.IsHealthy);
+                anyUnhealthy = ReconcileTrackedProviders();
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {
@@ -65,13 +66,44 @@ internal sealed class ProviderHealthProbeService(
                     : ArcanumSettingClamps.HealthProbeIntervalSeconds(
                         defaults.HealthProbeIntervalSeconds);
 
-                await Task.Delay(TimeSpan.FromSeconds(intervalSeconds), stoppingToken).ConfigureAwait(false);
+                await Task.Delay(TimeSpan.FromSeconds(intervalSeconds), timeProvider, stoppingToken).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {
                 break;
             }
         }
+    }
+
+    /// <summary>
+    /// Forgets every tracked provider that is no longer configured and reports whether any configured one is
+    /// still unhealthy. A removed provider will never be probed healthy again, so counting it would keep the
+    /// scheduler on the short recovery interval for the life of the host.
+    /// </summary>
+    internal bool ReconcileTrackedProviders()
+    {
+        HashSet<string> configured = new(StringComparer.Ordinal);
+
+        foreach (ProviderSettings provider in options.CurrentValue.Providers ?? [])
+        {
+            _ = configured.Add(provider.Name);
+        }
+
+        bool anyUnhealthy = false;
+
+        foreach (ProviderHealthStatus status in tracker.GetAllStatuses())
+        {
+            if (!configured.Contains(status.ProviderName))
+            {
+                tracker.Remove(status.ProviderName);
+
+                continue;
+            }
+
+            anyUnhealthy |= !status.IsHealthy;
+        }
+
+        return anyUnhealthy;
     }
 
     /// <summary>

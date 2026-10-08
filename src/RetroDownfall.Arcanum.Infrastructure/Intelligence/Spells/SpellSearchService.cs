@@ -1,10 +1,8 @@
-using System.Diagnostics.CodeAnalysis;
 using System.Text.RegularExpressions;
 using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Tower;
 using RetroDownfall.Arcanum.Core.Intelligence.Spells;
-using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.Workspaces;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Intelligence.Spells;
@@ -20,7 +18,6 @@ public sealed record SpellSearchQuery(
 
 internal static partial class SpellSearchSanitizer
 {
-
     [GeneratedRegex(@"[\[\]\\^$.|?*+(){}\-]")]
     private static partial Regex RegexMetaPattern();
 
@@ -33,12 +30,10 @@ internal static partial class SpellSearchSanitizer
 
         return RegexMetaPattern().Replace(query.Trim(), string.Empty);
     }
-
 }
 
 public sealed class SpellSearchService
 {
-
     private readonly IOptionsMonitor<ArcanumSettings> _settingsMonitor;
 
     public SpellSearchService(IOptionsMonitor<ArcanumSettings> settingsMonitor)
@@ -47,7 +42,7 @@ public sealed class SpellSearchService
     }
 
     private long GetMaxSpellFileSizeBytes() =>
-        ArcanumSettingClamps.EffectiveSpellMaxFileSizeBytes(_settingsMonitor.CurrentValue);
+        ArcanumSettingClamps.EffectiveSpellMaxFileSizeBytes();
 
     public async Task<SpellSummary[]> SearchAsync(SpellSearchQuery query, CancellationToken ct)
     {
@@ -57,7 +52,6 @@ public sealed class SpellSearchService
 
         if (query.Source is null or SpellSource.Builtin)
         {
-
             await MergeSourceAsync(
                 results,
                 priority: 1,
@@ -68,7 +62,6 @@ public sealed class SpellSearchService
                 SpellSource.Builtin,
                 query,
                 ct).ConfigureAwait(false);
-
         }
 
         if (!string.IsNullOrWhiteSpace(query.Workspace)
@@ -95,10 +88,8 @@ public sealed class SpellSearchService
 
         if (query.Source is null or SpellSource.Campaign)
         {
-
             foreach (Campaign campaign in campaigns)
             {
-
                 await MergeSourceAsync(
                     results,
                     priority: 3,
@@ -109,9 +100,7 @@ public sealed class SpellSearchService
                     SpellSource.Campaign,
                     query,
                     ct).ConfigureAwait(false);
-
             }
-
         }
 
         string sanitizedQ = SpellSearchSanitizer.SanitizeQuery(query.Query);
@@ -147,9 +136,7 @@ public sealed class SpellSearchService
 
             if (!isExpectedRoot)
             {
-
                 continue;
-
             }
 
             SpellSummary summary = spell with { Source = source };
@@ -203,5 +190,4 @@ public sealed class SpellSearchService
 
         return true;
     }
-
 }

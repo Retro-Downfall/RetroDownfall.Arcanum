@@ -161,6 +161,264 @@ public sealed class ApprenticeCommandTests
         Assert.Contains("--yes", result.Error, StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// Cancelling an Apprentice stops work in progress, so like <c>delete</c> it asks first; without
+    /// <c>--yes</c> a run that cannot be asked is refused and nothing is sent.
+    /// </summary>
+    [Fact]
+    public void Cancel_asks_for_confirmation()
+    {
+        RecordingHandler handler = new(_ => CreateResponse(
+            new ApiResponse<string>("cancelled", true, null),
+            ArcanumJsonContext.Default.ApiResponseString));
+
+        CliTestResult refused = RunCommand(handler, ["apprentice", "cancel", SampleId.ToString()]);
+
+        Assert.Equal((int)CliExitCode.ConfigurationError, refused.ExitCode);
+
+        Assert.Empty(handler.Requests);
+
+        Assert.Contains("--yes", refused.Error, StringComparison.Ordinal);
+
+        CliTestResult approved = RunCommand(handler, ["--yes", "apprentice", "cancel", SampleId.ToString()]);
+
+        Assert.Equal(0, approved.ExitCode);
+
+        HttpRequestMessage request = Assert.Single(handler.Requests);
+
+        Assert.Equal(HttpMethod.Post, request.Method);
+
+        Assert.Equal($"/api/apprentices/{SampleId:D}/cancel", request.RequestUri!.AbsolutePath);
+    }
+
+    /// <summary>
+    /// Reweaving replaces the plan the Apprentice has left to run, so it asks first as well, after the
+    /// plan itself has been validated: a malformed plan is refused before any question is put.
+    /// </summary>
+    [Fact]
+    public void Reweave_asks_for_confirmation_after_the_plan_is_validated()
+    {
+        const string Plan = "[{\"index\":0,\"description\":\"Step one\"}]";
+
+        RecordingHandler handler = new(_ => CreateResponse(
+            new ApiResponse<ApprenticeDetailDto>(
+                new ApprenticeDetailDto(
+                    SampleId, null, null, "Do the thing", "Do the thing", [new PlanStep { Index = 0, Description = "Step one" }], 0, "Idle", null, "/tmp/ws", null, null, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow),
+                true,
+                null),
+            ArcanumJsonContext.Default.ApiResponseApprenticeDetailDto));
+
+        CliTestResult malformed = RunCommand(handler, ["apprentice", "reweave", SampleId.ToString(), "--plan", "not json"]);
+
+        Assert.Equal(1, malformed.ExitCode);
+
+        Assert.Empty(handler.Requests);
+
+        Assert.DoesNotContain("--yes", malformed.Error, StringComparison.Ordinal);
+
+        CliTestResult refused = RunCommand(handler, ["apprentice", "reweave", SampleId.ToString(), "--plan", Plan]);
+
+        Assert.Equal((int)CliExitCode.ConfigurationError, refused.ExitCode);
+
+        Assert.Empty(handler.Requests);
+
+        Assert.Contains("--yes", refused.Error, StringComparison.Ordinal);
+
+        CliTestResult approved = RunCommand(handler, ["--yes", "apprentice", "reweave", SampleId.ToString(), "--plan", Plan]);
+
+        Assert.Equal(0, approved.ExitCode);
+
+        Assert.Equal($"/api/apprentices/{SampleId:D}/reweave", Assert.Single(handler.Requests).RequestUri!.AbsolutePath);
+    }
+
+    [Fact]
+    public void List_follows_hasMore_until_exhausted()
+    {
+        DateTimeOffset firstUpdated = new(2026, 7, 2, 12, 0, 0, TimeSpan.Zero);
+
+        ApprenticeSummaryDto first = new(SampleId, null, "Task", "firstgoal", "Idle", 0, 0, firstUpdated, firstUpdated);
+
+        Guid secondId = Guid.Parse("44444444-4444-4444-4444-444444444444");
+
+        ApprenticeSummaryDto second = new(secondId, null, "Task", "secondgoal", "Idle", 0, 0, firstUpdated.AddDays(-1), firstUpdated.AddDays(-1));
+
+        RecordingHandler handler = new(request => CreateResponse(
+            new ApiResponse<ListPageResult<ApprenticeSummaryDto>>(
+                request.RequestUri!.Query.Contains("beforeUpdatedAt=", StringComparison.Ordinal)
+                    ? new ListPageResult<ApprenticeSummaryDto>([second], false)
+                    : new ListPageResult<ApprenticeSummaryDto>([first], true, NextBeforeUpdatedAt: firstUpdated),
+                true,
+                null),
+            ArcanumJsonContext.Default.ApiResponseListPageResultApprenticeSummaryDto));
+
+        CliTestResult result = RunCommand(handler, ["apprentice", "list"]);
+
+        Assert.Equal(0, result.ExitCode);
+
+        Assert.Equal(2, handler.Requests.Count);
+
+        Assert.Contains("beforeUpdatedAt=", handler.Requests[1].RequestUri!.Query, StringComparison.Ordinal);
+
+        Assert.Contains(SampleId.ToString("D"), result.Output, StringComparison.Ordinal);
+
+        Assert.Contains(secondId.ToString("D"), result.Output, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void List_with_a_limit_reads_one_page_and_says_more_exist()
+    {
+        DateTimeOffset updated = new(2026, 7, 2, 12, 0, 0, TimeSpan.Zero);
+
+        ApprenticeSummaryDto only = new(SampleId, null, "Task", "Only page goal", "Idle", 0, 0, updated, updated);
+
+        RecordingHandler handler = new(_ => CreateResponse(
+            new ApiResponse<ListPageResult<ApprenticeSummaryDto>>(
+                new ListPageResult<ApprenticeSummaryDto>([only], true, NextBeforeUpdatedAt: updated),
+                true,
+                null),
+            ArcanumJsonContext.Default.ApiResponseListPageResultApprenticeSummaryDto));
+
+        CliTestResult result = RunCommand(handler, ["apprentice", "list", "--limit", "1"]);
+
+        Assert.Equal(0, result.ExitCode);
+
+        Assert.Single(handler.Requests);
+
+        Assert.Contains("omit --limit", result.Error, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("apprentice list --campaign-id not-a-guid")]
+    [InlineData("apprentice create --goal Do-the-thing --campaign-id not-a-guid")]
+    public void Invalid_campaign_id_diagnostics_name_the_option_the_operator_typed(string commandLine)
+    {
+        RecordingHandler handler = new();
+
+        CliTestResult result = RunCommand(handler, commandLine.Split(' '));
+
+        Assert.Equal((int)CliExitCode.ConfigurationError, result.ExitCode);
+
+        Assert.Contains("--campaign-id", result.Error, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("--campaignId", result.Error, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The list is where an operator reads the identifier to hand to <c>show</c>, <c>cancel</c> or
+    /// <c>delete</c>, so what it prints must be something those verbs accept. An eight-character
+    /// fragment of the identifier is none of an exact ID, a name or a name prefix.
+    /// </summary>
+    [Fact]
+    public void List_prints_an_identifier_that_show_accepts()
+    {
+        ApprenticeSummaryDto summary = new(SampleId, null, "Task", "Do the thing", "Idle", 0, 0, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow);
+
+        RecordingHandler listHandler = new(_ => CreateResponse(
+            new ApiResponse<ListPageResult<ApprenticeSummaryDto>>(new ListPageResult<ApprenticeSummaryDto>([summary], false), true, null),
+            ArcanumJsonContext.Default.ApiResponseListPageResultApprenticeSummaryDto));
+
+        CliTestResult list = RunCommand(listHandler, ["apprentice", "list"]);
+
+        Assert.Equal(0, list.ExitCode);
+
+        string printed = System.Text.RegularExpressions.Regex
+            .Match(list.Output, "[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}")
+            .Value;
+
+        Assert.Equal(SampleId.ToString("D"), printed, ignoreCase: true);
+
+        ApprenticeDetailDto detail = new(
+            SampleId, null, null, "Do the thing", "Do the thing", [], 0, "Idle", null, "/tmp/ws", null, null, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow);
+
+        RecordingHandler showHandler = new(_ => CreateResponse(
+            new ApiResponse<ApprenticeDetailDto>(detail, true, null),
+            ArcanumJsonContext.Default.ApiResponseApprenticeDetailDto));
+
+        CliTestResult show = RunCommand(showHandler, ["apprentice", "show", printed]);
+
+        Assert.Equal(0, show.ExitCode);
+
+        Assert.Equal($"/api/apprentices/{SampleId:D}", Assert.Single(showHandler.Requests).RequestUri!.AbsolutePath);
+    }
+
+    /// <summary>
+    /// The harness renders at 80 columns, and a row with a 36-character ID, a 36-character Campaign GUID
+    /// and an <c>Updated</c> instant has no room for the Goal beside them. The ID is the one thing that
+    /// must survive intact (it is what <c>show</c>, <c>cancel</c> and <c>delete</c> are handed), on one
+    /// line and without an ellipsis, and the Goal stays readable beside it; the Campaign and Updated
+    /// columns are left out, and a stderr line says so, rather than every column being squeezed to a few
+    /// characters with truncated headings.
+    /// </summary>
+    [Fact]
+    public void List_keeps_the_whole_identifier_on_one_line_beside_a_campaign_guid_at_80_columns()
+    {
+        Guid campaignId = Guid.Parse("55555555-5555-4555-8555-555555555555");
+
+        ApprenticeSummaryDto summary = new(
+            SampleId,
+            campaignId,
+            "Task",
+            "Refactor the nightly import so that a failed row no longer stops the whole batch",
+            "Running",
+            1,
+            4,
+            new DateTimeOffset(2026, 7, 2, 12, 0, 0, TimeSpan.Zero),
+            new DateTimeOffset(2026, 7, 2, 12, 0, 0, TimeSpan.Zero));
+
+        RecordingHandler handler = new(_ => CreateResponse(
+            new ApiResponse<ListPageResult<ApprenticeSummaryDto>>(new ListPageResult<ApprenticeSummaryDto>([summary], false), true, null),
+            ArcanumJsonContext.Default.ApiResponseListPageResultApprenticeSummaryDto));
+
+        CliTestResult result = RunCommand(handler, ["apprentice", "list"]);
+
+        Assert.Equal(0, result.ExitCode);
+
+        string[] lines = result.Output.ReplaceLineEndings("\n").Split('\n');
+
+        string idLine = Assert.Single(lines, line => line.Contains(SampleId.ToString("D"), StringComparison.Ordinal));
+
+        Assert.DoesNotContain("…", idLine, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("...", idLine, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("…", result.Output, StringComparison.Ordinal);
+
+        Assert.All(lines, line => Assert.True(line.Length <= 80, $"A line of {line.Length} columns overflows the 80-column terminal: {line}"));
+
+        foreach (string word in new[] { "Refactor", "nightly", "import", "failed", "whole", "batch" })
+        {
+            Assert.Contains(word, result.Output, StringComparison.Ordinal);
+        }
+
+        Assert.Contains("Not shown at 80 columns: Campaign, Updated.", result.Error, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Plan steps are planned by the model and an apprentice's error message can carry tool or
+    /// provider text, so <c>apprentice show</c> strips them before markup is built around them.
+    /// </summary>
+    [Fact]
+    public void Show_strips_terminal_controls_from_plan_steps_and_the_error()
+    {
+        PlanStep step = new() { Index = 1, Description = "read\u001b]52;c;QUFBQQ==\u0007step\u001b[2J\u009b", Status = "pending" };
+
+        ApprenticeDetailDto detail = new(
+            SampleId, null, null, "Task", "Do the thing", [step], 0, "Failed", null, "/tmp/ws", null, "boom\u001b]0;pwned\u0007 failed", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow);
+
+        RecordingHandler handler = new(_ => CreateResponse(
+            new ApiResponse<ApprenticeDetailDto>(detail, true, null),
+            ArcanumJsonContext.Default.ApiResponseApprenticeDetailDto));
+
+        CliTestResult result = RunCommand(handler, ["apprentice", "show", SampleId.ToString("D")]);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Contains("readstep", result.Output, StringComparison.Ordinal);
+        Assert.Contains("boom failed", result.Output, StringComparison.Ordinal);
+        Assert.DoesNotContain('\u001b', result.Output);
+        Assert.DoesNotContain('\u0007', result.Output);
+        Assert.DoesNotContain('\u009b', result.Output);
+    }
+
     private static CliTestResult RunCommand(
         RecordingHandler handler,
         string[] args,

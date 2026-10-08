@@ -20,16 +20,13 @@ namespace RetroDownfall.Arcanum.Cli.Commands;
 
 internal interface IInstallationResetConfirmationPrompt
 {
-
     Task<bool> PromptAsync(
         InstallationResetPlan plan,
         CancellationToken cancellationToken);
-
 }
 
 internal interface IInstallationResetApplyBoundary
 {
-
     Task<Result<InstallationResetResult>> ApplyFullAsync(
         FullInstallationResetRequest request,
         CancellationToken cancellationToken);
@@ -48,16 +45,13 @@ internal interface IInstallationResetApplyBoundary
         InstallationResetPlanRequest request,
         StoppedHostInstallationResetPlan confirmedPlan,
         CancellationToken cancellationToken);
-
 }
 
 internal interface IInstallationResetOnlinePlanValidator
 {
-
     Task<Result<InstallationResetOnlinePlanValidation>> ValidateAsync(
         InstallationResetPlan plan,
         CancellationToken cancellationToken);
-
 }
 
 internal sealed record InstallationResetOnlinePlanValidation(
@@ -66,12 +60,10 @@ internal sealed record InstallationResetOnlinePlanValidation(
 internal sealed class InstallationResetOnlinePlanValidator(
     ArcanumApiClient apiClient) : IInstallationResetOnlinePlanValidator
 {
-
     public async Task<Result<InstallationResetOnlinePlanValidation>> ValidateAsync(
         InstallationResetPlan plan,
         CancellationToken cancellationToken)
     {
-
         InstallationResetDataPlanRequest request = plan.Scope switch
         {
             InstallationResetScope.Workspace => new InstallationResetDataPlanRequest(
@@ -86,28 +78,22 @@ internal sealed class InstallationResetOnlinePlanValidator(
 
         if (online.IsFailure)
         {
-
             return Result<InstallationResetOnlinePlanValidation>.Failure(online.Error);
-
         }
 
         return Result<InstallationResetOnlinePlanValidation>.Success(
             new InstallationResetOnlinePlanValidation(online.Value));
-
     }
-
 }
 
 internal sealed class InstallationResetConfirmationPrompt(
     IConsoleDispatcher dispatcher,
     CliStandardInput standardInput) : IInstallationResetConfirmationPrompt
 {
-
     public async Task<bool> PromptAsync(
         InstallationResetPlan plan,
         CancellationToken cancellationToken)
     {
-
         dispatcher.WriteDiagnostic(
             $"Type RESET to apply installation reset plan {plan.PlanId}:");
 
@@ -120,9 +106,7 @@ internal sealed class InstallationResetConfirmationPrompt(
             response,
             "RESET",
             StringComparison.Ordinal);
-
     }
-
 }
 
 internal sealed class InstallationFactoryResetCommand(
@@ -139,7 +123,6 @@ internal sealed class InstallationFactoryResetCommand(
     CovenantExternalRetentionDisclosureWriter disclosureWriter,
     IGrimoireCliStoppedHostInitialization stoppedHostInitialization)
 {
-
     public async Task<int> Execute(
         bool workspace,
         bool global,
@@ -150,7 +133,6 @@ internal sealed class InstallationFactoryResetCommand(
         string? externalRemediationAttestationPath,
         CancellationToken cancellationToken)
     {
-
         string? validationError = ValidateShape(
             workspace,
             global,
@@ -162,11 +144,9 @@ internal sealed class InstallationFactoryResetCommand(
 
         if (validationError is not null)
         {
-
             return Fail(
                 validationError,
                 CliExitCode.ConfigurationError);
-
         }
 
         bool externalRemediationRequested =
@@ -174,18 +154,15 @@ internal sealed class InstallationFactoryResetCommand(
 
         if (externalRemediationRequested && (!all || !apply))
         {
-
             return Fail(
                 "External remediation authorization is valid only with --all and --apply.",
                 CliExitCode.ConfigurationError);
-
         }
 
         FullInstallationResetExternalRemediationAttestation? externalRemediation = null;
 
         if (externalRemediationRequested)
         {
-
             Result<FullInstallationResetExternalRemediationAttestation> read =
                 await attestationReader
                     .ReadAsync(
@@ -195,13 +172,10 @@ internal sealed class InstallationFactoryResetCommand(
 
             if (read.IsFailure)
             {
-
                 return Fail(read.Error);
-
             }
 
             externalRemediation = read.Value;
-
         }
 
         InstallationResetPlanRequest request = new(
@@ -214,51 +188,40 @@ internal sealed class InstallationFactoryResetCommand(
 
         if (activeRead.IsFailure)
         {
-
             return Fail(activeRead.Error);
-
         }
 
         if (apply && activeRead.Value is { } active)
         {
-
             if (active.Scope != request.Scope)
             {
-
                 return Fail(new Error(
                     ErrorCodes.Data.ResetInProgress,
                     "A different installation reset owns the active operation."));
-
             }
 
             if (active.RequiresExternalRemediationAttestation
                 && externalRemediation is null)
             {
-
                 return Fail(new Error(
                     ErrorCodes.Data.ExternalRemediationRequired,
                     "External remediation is required for this installation reset."));
-
             }
 
             if (!active.RequiresExternalRemediationAttestation
                 && externalRemediation is not null)
             {
-
                 return Fail(new Error(
                     ErrorCodes.Data.ExternalRemediationInvalid,
                     "The external remediation attestation could not be verified."));
-
             }
 
             if (externalRemediation is not null
                 && active.OperationId != externalRemediation.OperationId)
             {
-
                 return Fail(new Error(
                     ErrorCodes.Data.ExternalRemediationInvalid,
                     "The external remediation attestation could not be verified."));
-
             }
 
             InstallationResetApplyRequest applyRequest = new(
@@ -284,24 +247,19 @@ internal sealed class InstallationFactoryResetCommand(
 
             if (resumed.IsFailure)
             {
-
                 return Fail(resumed.Error);
-
             }
 
             WriteResult(resumed.Value);
 
             if (IsCancellationResult(resumed.Value))
             {
-
                 return (int)CliExitCode.Cancelled;
-
             }
 
             return IsCompleted(resumed.Value)
                 ? (int)CliExitCode.Success
                 : (int)CliExitCode.GenericError;
-
         }
 
         StoppedHostInstallationResetPlan? stoppedHostPlan = null;
@@ -310,7 +268,6 @@ internal sealed class InstallationFactoryResetCommand(
 
         if (externalRemediation is null)
         {
-
             Result<StoppedHostInstallationResetPlan> local =
                 await stoppedHostInitialization.RunAsync(
                     (provider, issuer, token) => provider
@@ -323,31 +280,24 @@ internal sealed class InstallationFactoryResetCommand(
 
             if (local.IsFailure)
             {
-
                 return Fail(local.Error);
-
             }
 
             stoppedHostPlan = local.Value;
 
             planned = Result<InstallationResetPlan>.Success(
                 stoppedHostPlan.Plan);
-
         }
         else
         {
-
             planned = await resetService
                 .PlanAsync(request, cancellationToken)
                 .ConfigureAwait(false);
-
         }
 
         if (planned.IsFailure)
         {
-
             return Fail(planned.Error);
-
         }
 
         InstallationResetPlan plan = planned.Value;
@@ -357,7 +307,6 @@ internal sealed class InstallationFactoryResetCommand(
         if (externalRemediation is not null
             && plan.Scope is InstallationResetScope.Global or InstallationResetScope.All)
         {
-
             Result<InstallationResetOnlinePlanValidation> onlineValidation =
                 await onlinePlanValidator
                     .ValidateAsync(plan, cancellationToken)
@@ -365,20 +314,16 @@ internal sealed class InstallationFactoryResetCommand(
 
             if (onlineValidation.IsFailure)
             {
-
                 return Fail(onlineValidation.Error);
-
             }
 
             onlinePlan = onlineValidation.Value.Plan;
 
             if (onlinePlan?.Covenant is null)
             {
-
                 return Fail(new Error(
                     ErrorCodes.Data.InventoryUnavailable,
                     "The authenticated host Covenant inventory is unavailable."));
-
             }
 
             Result<InstallationResetPlan> rebound = onlineDataHandoff
@@ -386,22 +331,17 @@ internal sealed class InstallationFactoryResetCommand(
 
             if (rebound.IsFailure)
             {
-
                 return Fail(rebound.Error);
-
             }
 
             plan = rebound.Value;
-
         }
 
         if (dryRun)
         {
-
             WritePlan(plan);
 
             return (int)CliExitCode.Success;
-
         }
 
         InstallationResetIssueSummary? blocker = plan.Blockers.FirstOrDefault(
@@ -413,11 +353,9 @@ internal sealed class InstallationFactoryResetCommand(
 
         if (blocker is not null)
         {
-
             return Fail(new Error(
                 ErrorCodes.Data.Blocked,
                 blocker.Message));
-
         }
 
         bool acknowledgedWithoutPrompt =
@@ -425,27 +363,22 @@ internal sealed class InstallationFactoryResetCommand(
 
         if (plan.Scope is InstallationResetScope.Global or InstallationResetScope.All)
         {
-
             disclosureWriter.Write(
                 stoppedHostPlan?.CovenantDisclosure
                     ?? onlinePlan!.Covenant);
-
         }
 
         if (!acknowledgedWithoutPrompt)
         {
-
             bool promptAvailable = environment.IsInteractive
                 && !invocationContext.Options.Json
                 && !invocationContext.Options.Print;
 
             if (!promptAvailable)
             {
-
                 return Fail(
                     "Confirmation is unavailable in headless mode. Pass --yes and --force together.",
                     CliExitCode.ConfigurationError);
-
             }
 
             WriteHumanPlan(plan);
@@ -456,13 +389,10 @@ internal sealed class InstallationFactoryResetCommand(
 
             if (!confirmed)
             {
-
                 return Fail(
                     "Installation reset confirmation was not accepted. Type exactly RESET to continue.",
                     CliExitCode.ConfigurationError);
-
             }
-
         }
 
         Result<InstallationResetResult> applied = externalRemediation is null
@@ -483,9 +413,7 @@ internal sealed class InstallationFactoryResetCommand(
 
         if (applied.IsFailure)
         {
-
             return Fail(applied.Error);
-
         }
 
         InstallationResetResult result = applied.Value;
@@ -494,15 +422,12 @@ internal sealed class InstallationFactoryResetCommand(
 
         if (IsCancellationResult(result))
         {
-
             return (int)CliExitCode.Cancelled;
-
         }
 
         return IsCompleted(result)
             ? (int)CliExitCode.Success
             : (int)CliExitCode.GenericError;
-
     }
 
     public Task<int> Execute(
@@ -532,82 +457,63 @@ internal sealed class InstallationFactoryResetCommand(
         bool force,
         bool yes)
     {
-
         int scopes = (workspace ? 1 : 0)
             + (global ? 1 : 0)
             + (all ? 1 : 0);
 
         if (scopes != 1)
         {
-
             return "Select exactly one reset scope: --workspace, --global, or --all.";
-
         }
 
         if (dryRun == apply)
         {
-
             return "Select exactly one reset mode: --dry-run or --apply.";
-
         }
 
         if (force && !apply)
         {
-
             return "--force is valid only with --apply.";
-
         }
 
         if (yes != force)
         {
-
             return "Noninteractive reset acknowledgement requires --yes and --force together.";
-
         }
 
         return null;
-
     }
 
     private static InstallationResetScope ResolveScope(
         bool workspace,
         bool global)
     {
-
         if (workspace)
         {
-
             return InstallationResetScope.Workspace;
-
         }
 
         return global
             ? InstallationResetScope.Global
             : InstallationResetScope.All;
-
     }
 
     private void WritePlan(InstallationResetPlan plan)
     {
-
         if (invocationContext.Options.Json)
         {
-
             dispatcher.WriteJson(
                 plan,
                 CliJsonContext.Default.InstallationResetPlan);
 
             return;
-
         }
 
         WriteHumanPlan(plan);
-
     }
 
     private void WriteHumanPlan(InstallationResetPlan plan)
     {
-
         dispatcher.WritePayload($"Installation reset plan {plan.PlanId}");
 
         dispatcher.WritePayload($"Scope: {FormatName(plan.Scope)}");
@@ -630,62 +536,48 @@ internal sealed class InstallationFactoryResetCommand(
 
         foreach (InstallationResetTargetDescriptor target in plan.Targets)
         {
-
             string authority = target.CanonicalPath
                 ?? target.DatabasePredicate
                 ?? target.ResourceId;
 
             dispatcher.WritePayload(
                 $"Target [{FormatName(target.Role)}]: {authority}");
-
         }
 
         foreach (InstallationResetCredentialSummary credential in plan.Credentials)
         {
-
             dispatcher.WritePayload(
                 $"Credential [{FormatName(credential.Status)}]: {credential.Account}");
-
         }
 
         foreach (InstallationResetPreservedBackup backup in plan.PreservedBackups)
         {
-
             dispatcher.WritePayload(
                 $"Preserved backup: {backup.CanonicalPath}");
-
         }
 
         foreach (InstallationResetExclusion exclusion in plan.Exclusions)
         {
-
             dispatcher.WritePayload(
                 $"Excluded: {exclusion.ResourceId} ({exclusion.Reason})");
-
         }
 
         foreach (InstallationResetIssueSummary blocker in plan.Blockers)
         {
-
             dispatcher.WritePayload(
                 $"Blocker [{blocker.Code}]: {blocker.Message}");
-
         }
-
     }
 
     private void WriteResult(InstallationResetResult result)
     {
-
         if (invocationContext.Options.Json)
         {
-
             dispatcher.WriteJson(
                 result,
                 CliJsonContext.Default.InstallationResetResult);
 
             return;
-
         }
 
         dispatcher.WritePayload("Installation reset result");
@@ -709,16 +601,12 @@ internal sealed class InstallationFactoryResetCommand(
 
         if (!string.IsNullOrWhiteSpace(result.ErrorCode))
         {
-
             dispatcher.WritePayload($"Error: {result.ErrorCode}");
-
         }
-
     }
 
     private int Fail(Error error)
     {
-
         CliExitCode exitCode = error.Code.StartsWith(
             "Connection.",
             StringComparison.Ordinal)
@@ -728,25 +616,20 @@ internal sealed class InstallationFactoryResetCommand(
         return Fail(
             $"{error.Code}: {error.Message}",
             exitCode);
-
     }
 
     private int Fail(string message, CliExitCode exitCode)
     {
-
         dispatcher.WriteDiagnostic(message);
 
         if (invocationContext.Options.Json)
         {
-
             dispatcher.WriteJson(
                 new CliErrorPayload(message, (int)exitCode),
                 CliJsonContext.Default.CliErrorPayload);
-
         }
 
         return (int)exitCode;
-
     }
 
     private static bool IsCompleted(InstallationResetResult result) =>
@@ -760,11 +643,8 @@ internal sealed class InstallationFactoryResetCommand(
         && result.Verification.RemainingIssues.Any(static issue =>
             string.Equals(
                 issue.Code,
-                ErrorCodes.Data.RecoveryRequired,
-                StringComparison.Ordinal)
-            && issue.Message.Contains(
-                "cancel",
-                StringComparison.OrdinalIgnoreCase));
+                ErrorCodes.Data.ResetCancelled,
+                StringComparison.Ordinal));
 
     private static string FormatCount(long? value) =>
         value?.ToString("N0", CultureInfo.InvariantCulture) ?? "unknown";
@@ -775,29 +655,22 @@ internal sealed class InstallationFactoryResetCommand(
     private static string FormatName<T>(T value)
         where T : struct, Enum
     {
-
         string name = value.ToString();
 
         List<char> formatted = new(name.Length + 4);
 
         for (int index = 0; index < name.Length; index++)
         {
-
             char character = name[index];
 
             if (index > 0 && char.IsUpper(character))
             {
-
                 formatted.Add('-');
-
             }
 
             formatted.Add(char.ToLowerInvariant(character));
-
         }
 
         return new string([.. formatted]);
-
     }
-
 }

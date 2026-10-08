@@ -19,8 +19,9 @@ permissions:
 
 # One run per branch. Before this, a push that superseded another left both queued against the same
 # small pool of macOS runners, and the older run -- testing a commit nobody would act on -- took the
-# slot the newer one needed. Deliberately absent from the release workflows: a release must never be
-# cancelled by whatever is dispatched next.
+# slot the newer one needed. The release workflows never use cancel-in-progress: a release in
+# progress must never be cancelled by whatever is dispatched next (release.yml's own groups keep it
+# false, and only a run still waiting can be superseded).
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -34,6 +35,7 @@ jobs:
     # the lane comes back on its own the moment the asset is verified and checked in.
     name: Native SQLCipher asset status
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     outputs:
       win-x64: ${{ steps.manifest.outputs.win-x64 }}
       win-arm64: ${{ steps.manifest.outputs.win-arm64 }}
@@ -63,6 +65,7 @@ jobs:
     # per RID, and Linux is not a shipping RID. A Linux runner has no native asset, so the build
     # fails by design (ARCSQLC002) rather than falling back to an unverified SQLite.
     runs-on: macos-26
+    timeout-minutes: 90
     env:
       DOTNET_NOLOGO: true
       DOTNET_CLI_TELEMETRY_OPTOUT: true
@@ -86,7 +89,7 @@ jobs:
       - name: Setup .NET
         uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4.3.1
         with:
-          dotnet-version: "10.0.401"
+          global-json-file: global.json
           cache: true
           cache-dependency-path: |
             **/packages.lock.json
@@ -120,8 +123,8 @@ jobs:
           # The Forge's suite is the sole automated guard for a shipped desktop client — including the
           # markdown image loader's SSRF policy — so a whole-project exclusion here is invisible in
           # every test report. Quarantine individual tests with Skip if it ever needs it again.
-          dotnet test tests/RetroDownfall.Compendium.Tests/RetroDownfall.Compendium.Tests.csproj -c Release --no-build
-          dotnet test tests/RetroDownfall.TheForge.Tests/RetroDownfall.TheForge.Tests.csproj -c Release --no-build
+          dotnet test tests/RetroDownfall.Compendium.Tests/RetroDownfall.Compendium.Tests.csproj -c Release --no-build --blame-hang-timeout 15m --blame-hang-dump-type none
+          dotnet test tests/RetroDownfall.TheForge.Tests/RetroDownfall.TheForge.Tests.csproj -c Release --no-build --blame-hang-timeout 15m --blame-hang-dump-type none
 
       # The macOS signing helpers pick an identity out of the operator's keychain, and every way
       # they can pick the wrong one still produces a signature that verifies. Drive them through
@@ -149,6 +152,7 @@ jobs:
   hosted-producer-primary-analysis:
     name: Hosted producer primary analysis
     runs-on: macos-26
+    timeout-minutes: 60
     env:
       DOTNET_NOLOGO: true
       DOTNET_CLI_TELEMETRY_OPTOUT: true
@@ -159,7 +163,7 @@ jobs:
       - name: Setup .NET
         uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4.3.1
         with:
-          dotnet-version: "10.0.401"
+          global-json-file: global.json
           cache: true
           cache-dependency-path: |
             **/packages.lock.json
@@ -193,6 +197,7 @@ jobs:
   hosted-producer-additional-analysis:
     name: Hosted producer additional analysis and fixtures
     runs-on: macos-26
+    timeout-minutes: 60
     env:
       DOTNET_NOLOGO: true
       DOTNET_CLI_TELEMETRY_OPTOUT: true
@@ -203,7 +208,7 @@ jobs:
       - name: Setup .NET
         uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4.3.1
         with:
-          dotnet-version: "10.0.401"
+          global-json-file: global.json
           cache: true
           cache-dependency-path: |
             **/packages.lock.json
@@ -238,6 +243,7 @@ jobs:
       - hosted-producer-additional-analysis
     if: always()
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -283,6 +289,7 @@ jobs:
   macos-workspace-check:
     name: macOS workspace-check runtime
     runs-on: macos-26
+    timeout-minutes: 120
     env:
       DOTNET_NOLOGO: true
       DOTNET_CLI_TELEMETRY_OPTOUT: true
@@ -294,7 +301,7 @@ jobs:
       - name: Setup .NET
         uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4.3.1
         with:
-          dotnet-version: "10.0.401"
+          global-json-file: global.json
           cache: true
           cache-dependency-path: |
             **/packages.lock.json
@@ -324,6 +331,8 @@ jobs:
             -c Release \
             --no-build \
             --no-restore \
+            --blame-hang-timeout 15m \
+            --blame-hang-dump-type none \
             --filter "FullyQualifiedName~Macos_ci_requires_real_workspace_check_production_surface|FullyQualifiedName~MacOsSandbox_DeniesLaunchServicesBrokerEscape|FullyQualifiedName~Real_dotnet_build_uses_seeded_assets|FullyQualifiedName~Real_dotnet_lint_uses_seeded_project_state|FullyQualifiedName~Real_dotnet_test_uses_seeded_assets|FullyQualifiedName~Ci_has_packaged_sqlcipher_native_asset"
 
       # verify-aot-il-warnings.sh fails closed without ripgrep, which the runner image does
@@ -393,6 +402,7 @@ jobs:
     needs: native-sqlcipher-assets
     if: needs.native-sqlcipher-assets.outputs.win-x64 == 'verified'
     runs-on: windows-latest
+    timeout-minutes: 90
     env:
       DOTNET_NOLOGO: true
       DOTNET_CLI_TELEMETRY_OPTOUT: true
@@ -408,7 +418,7 @@ jobs:
       - name: Setup .NET
         uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4.3.1
         with:
-          dotnet-version: "10.0.401"
+          global-json-file: global.json
           cache: true
           cache-dependency-path: |
             **/packages.lock.json
@@ -432,13 +442,33 @@ jobs:
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
 
+      # WindowsAppContainerBrokerTests runs a bare command through the real AppContainer broker, and the
+      # broker is the published apphost: the xunit host cannot re-execute itself as one without starting
+      # the test platform. The class skips when ARCANUM_PUBLISHED_EXECUTABLE is unset, which would
+      # report a green skip for the one test that exercises the broker's success path, so publish the
+      # apphost for this RID first and export its path for the suite. A private artifacts path keeps the
+      # RID-specific restore from rewriting the assets the suite was built against.
+      - name: Publish the apphost the AppContainer broker smoke re-executes
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $publishDir = Join-Path $env:RUNNER_TEMP 'arcanum-broker-publish'
+          $artifactsDir = Join-Path $env:RUNNER_TEMP 'arcanum-broker-artifacts'
+          dotnet publish src/RetroDownfall.Arcanum.Cli/RetroDownfall.Arcanum.Cli.csproj -c Release -r win-x64 --self-contained true --artifacts-path $artifactsDir -o $publishDir
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $executable = Join-Path $publishDir 'RetroDownfall.Arcanum.Cli.exe'
+          if (-not (Test-Path -LiteralPath $executable)) { throw "Expected published apphost not found: $executable" }
+          "ARCANUM_PUBLISHED_EXECUTABLE=$executable" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
       - name: Test Arcanum
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          # Keep the native/OS surface explicit; portable runtime coverage runs on macOS.
+          # Keep the native/OS surface explicit; portable runtime coverage runs on macOS. Every test
+          # that skips unless the host is Windows must be selected here, by class or exact name
+          # (ContinuousIntegrationWorkflowTests.Every_windows_gated_test_is_selected_by_both_windows_lanes).
           dotnet test tests/RetroDownfall.Arcanum.Tests/RetroDownfall.Arcanum.Tests.csproj `
-            -c Release --no-build --no-restore --filter "Category!=Perf&Category!=HostedProducerAnalysis&(FullyQualifiedName~RetroDownfall.Arcanum.Tests.Platform.WindowsCiSurfaceTests|FullyQualifiedName~RetroDownfall.Arcanum.Tests.NativeSqlCipher.NativeSqlCipherDeliveryTests|FullyQualifiedName~RetroDownfall.Arcanum.Tests.NativeSqlCipher.SqlCipherCompatibilityTests|FullyQualifiedName~RetroDownfall.Arcanum.Tests.Security.OsCredentialStoreRoundTripTests|FullyQualifiedName~RetroDownfall.Arcanum.Tests.Platform.ProcessResourceLimiterWindowsBehaviorTests|FullyQualifiedName~RetroDownfall.Arcanum.Tests.Platform.WindowsJobObjectSessionTests|FullyQualifiedName~RetroDownfall.Arcanum.Tests.Process.WindowsAppContainerPolicyTests|FullyQualifiedName~RetroDownfall.Arcanum.Tests.Process.WindowsAppContainerRestoreJournalTests|FullyQualifiedName~RetroDownfall.Arcanum.Tests.Process.ChildProcessBoundaryBehaviorTests|FullyQualifiedName~RetroDownfall.Arcanum.Tests.Process.ChildProcessFilesystemJailTests|FullyQualifiedName~RetroDownfall.Arcanum.Tests.Familiars.FamiliarExecutableResolverTests|FullyQualifiedName=RetroDownfall.Arcanum.Tests.GrimoireTransitions.GrimoireOfflineTransitionJournalFileStoreTests.Windows_delete_durably_succeeds_after_publication|FullyQualifiedName=RetroDownfall.Arcanum.Tests.GrimoireTransitions.GrimoireOfflineTransitionJournalFileStoreTests.Windows_read_fails_closed_when_the_published_file_acl_is_weakened|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Cli.FullInstallationResetAttestationFileReaderTests.Reader_rejects_a_file_not_controlled_only_by_the_current_owner|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Mcp.WorkspacePathPolicySymlinkTests.IsPathUnderWorkspace_OnWindows_IgnoresDirectoryNameCase|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Platform.ProcessResourceLimiterTests.Apply_returns_assign_after_start_on_windows|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Security.HttpsCertificateLoaderTests.Load_PemPair_OnWindows_ZeroesTheExportedPkcs12Buffer|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Security.SecureFileReaderTests.TryOpenRegularFile_on_windows_rejects_reparse_symlink|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Workspaces.PhysicalFileSystemBrowserTests.ListAsync_And_ReadAsync_NormalizeBackslashesInRelativePaths_OnWindows|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Diagnostics.MaintenanceLockCheckTests.Windows_read_only_stale_lock_is_degraded_and_its_bytes_are_unchanged|FullyQualifiedName=RetroDownfall.Arcanum.Tests.GrimoireTransitions.GrimoireOfflineTransitionJournalFileStoreTests.Windows_compare_unlink_removes_the_name_while_the_retained_evidence_handle_stays_readable|FullyQualifiedName=RetroDownfall.Arcanum.Tests.GrimoireTransitions.GrimoireOfflineTransitionJournalFileStoreTests.Windows_real_primitives_reinspect_then_publish_a_new_working_file|FullyQualifiedName=RetroDownfall.Arcanum.Tests.GrimoireTransitions.GrimoireOfflineTransitionJournalFileStoreTests.Windows_no_replace_rename_preserves_both_files_when_destination_exists|FullyQualifiedName=RetroDownfall.Arcanum.Tests.GrimoireTransitions.GrimoireOfflineTransitionJournalFileStoreTests.Windows_exchange_through_the_real_primitives_retains_authentic_predecessor_identity|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Storage.AtomicFileTests.ReplaceAsync_rejects_existing_file_with_multiple_hard_links|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Mcp.FileHandleIdentityTests.TryGetPathMetadata_hard_link_reports_multiple_links|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Configuration.ConfigurationPresetPersistenceTests.Journal_cleanup_reports_a_denied_delete_instead_of_throwing)"
+            -c Release --no-build --no-restore --blame-hang-timeout 15m --blame-hang-dump-type none --filter "Category!=Perf&Category!=HostedProducerAnalysis&(FullyQualifiedName~RetroDownfall.Arcanum.Tests.Platform.WindowsCiSurfaceTests|FullyQualifiedName~RetroDownfall.Arcanum.Tests.NativeSqlCipher.NativeSqlCipherDeliveryTests|FullyQualifiedName~RetroDownfall.Arcanum.Tests.NativeSqlCipher.SqlCipherCompatibilityTests|FullyQualifiedName~RetroDownfall.Arcanum.Tests.Security.OsCredentialStoreRoundTripTests|FullyQualifiedName~RetroDownfall.Arcanum.Tests.Platform.ProcessResourceLimiterWindowsBehaviorTests|FullyQualifiedName~RetroDownfall.Arcanum.Tests.Platform.WindowsJobObjectSessionTests|FullyQualifiedName~RetroDownfall.Arcanum.Tests.Process.WindowsAppContainerPolicyTests|FullyQualifiedName~RetroDownfall.Arcanum.Tests.Process.WindowsAppContainerRestoreJournalTests|FullyQualifiedName~RetroDownfall.Arcanum.Tests.Process.WindowsAppContainerBrokerTests|FullyQualifiedName~RetroDownfall.Arcanum.Tests.Process.WindowsAppContainerAclTests|FullyQualifiedName~RetroDownfall.Arcanum.Tests.Process.WindowsBrokerTargetResolverTests|FullyQualifiedName~RetroDownfall.Arcanum.Tests.Process.ChildProcessSandboxRootsTests|FullyQualifiedName~RetroDownfall.Arcanum.Tests.Process.WindowsAppContainerJobAssignmentTests|FullyQualifiedName~RetroDownfall.Arcanum.Tests.Process.WindowsAppContainerBrokerExitTests|FullyQualifiedName~RetroDownfall.Arcanum.Tests.Process.WindowsAppContainerRootLockBudgetTests|FullyQualifiedName~RetroDownfall.Arcanum.Tests.Process.ChildProcessBoundaryBehaviorTests|FullyQualifiedName~RetroDownfall.Arcanum.Tests.Process.ChildProcessFilesystemJailTests|FullyQualifiedName~RetroDownfall.Arcanum.Tests.Familiars.FamiliarExecutableResolverTests|FullyQualifiedName=RetroDownfall.Arcanum.Tests.GrimoireTransitions.GrimoireOfflineTransitionJournalFileStoreTests.Windows_delete_durably_succeeds_after_publication|FullyQualifiedName=RetroDownfall.Arcanum.Tests.GrimoireTransitions.GrimoireOfflineTransitionJournalFileStoreTests.Windows_read_fails_closed_when_the_published_file_acl_is_weakened|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Cli.FullInstallationResetAttestationFileReaderTests.Reader_rejects_a_file_not_controlled_only_by_the_current_owner|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Mcp.WorkspacePathPolicySymlinkTests.IsPathUnderWorkspace_OnWindows_IgnoresDirectoryNameCase|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Platform.ProcessResourceLimiterTests.Apply_returns_assign_after_start_on_windows|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Security.HttpsCertificateLoaderTests.Load_PemPair_OnWindows_ZeroesTheExportedPkcs12Buffer|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Security.SecureFileReaderTests.TryOpenRegularFile_on_windows_rejects_reparse_symlink|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Workspaces.PhysicalFileSystemBrowserTests.ListAsync_And_ReadAsync_NormalizeBackslashesInRelativePaths_OnWindows|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Diagnostics.MaintenanceLockCheckTests.Windows_read_only_stale_lock_is_degraded_and_its_bytes_are_unchanged|FullyQualifiedName=RetroDownfall.Arcanum.Tests.GrimoireTransitions.GrimoireOfflineTransitionJournalFileStoreTests.Windows_compare_unlink_removes_the_name_while_the_retained_evidence_handle_stays_readable|FullyQualifiedName=RetroDownfall.Arcanum.Tests.GrimoireTransitions.GrimoireOfflineTransitionJournalFileStoreTests.Windows_real_primitives_reinspect_then_publish_a_new_working_file|FullyQualifiedName=RetroDownfall.Arcanum.Tests.GrimoireTransitions.GrimoireOfflineTransitionJournalFileStoreTests.Windows_no_replace_rename_preserves_both_files_when_destination_exists|FullyQualifiedName=RetroDownfall.Arcanum.Tests.GrimoireTransitions.GrimoireOfflineTransitionJournalFileStoreTests.Windows_exchange_through_the_real_primitives_retains_authentic_predecessor_identity|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Storage.AtomicFileTests.ReplaceAsync_rejects_existing_file_with_multiple_hard_links|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Mcp.FileHandleIdentityTests.TryGetPathMetadata_hard_link_reports_multiple_links|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Configuration.ConfigurationPresetPersistenceTests.Journal_cleanup_reports_a_denied_delete_instead_of_throwing|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Cli.CliOutputFileTests.Replacing_an_existing_file_keeps_its_attributes_on_Windows|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Cli.ConfigCommandTests.Cancelling_the_edit_terminates_the_spawned_editor_on_Windows|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Data.GrimoireMaintenanceConnectionFactoryTests.OpenJournalCandidateReopenAsync_OpensAWindowsPathContainingSpacePercentHashAndDriveColon|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Fixtures.TestDirectoryCleanupTests.TryDelete_reports_a_tree_Windows_cannot_delete_because_a_file_is_still_open|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Api.WorkspaceIndexAliasEndpointTests.Indexed_alias_is_visible_without_changing_persisted_identity_or_crossing_workspace_scope|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Backup.BackupCreateRecoveryHandlerTests.Windows_a_planned_checkpoint_with_an_empty_directory_readable_by_everyone_is_preserved|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Backup.BackupInventoryPlannerTests.Windows_treats_a_trailing_dot_name_as_the_same_destination|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Cli.CommandCenter.CommandCenterTurnAttachmentBuilderTests.Windows_a_reparse_point_that_names_no_other_location_stages|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Cli.CommandCenter.CommandCenterTurnAttachmentBuilderTests.Windows_a_symbolic_link_to_a_regular_file_stages|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Cli.CommandCenter.CommandCenterTurnAttachmentBuilderTests.Windows_an_ordinary_file_stages_by_at_token_and_by_attach|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Cli.CommandCenter.CommandCenterTurnAttachmentBuilderTests.Windows_the_open_reads_an_ordinary_file_and_refuses_a_directory|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Cli.McpWorkspacePathTests.On_Windows_a_real_path_in_another_case_and_separator_is_the_same_location|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Cli.RecentResourceStoreTests.CreateStagingFile_leaves_an_empty_staging_file_owner_only_on_windows|FullyQualifiedName=RetroDownfall.Arcanum.Tests.GrimoireTransitions.GrimoireOfflineTransitionJournalFileStoreTests.Windows_exchange_by_no_replace_renames_publishes_through_the_real_primitives|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Hosting.DaemonManagerTests.Windows_real_runner_install_reports_a_missing_sc_exe_as_a_start_failure_not_an_elevation_problem|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Hosting.DaemonManagerTests.Windows_real_runner_install_without_an_account_refuses_without_starting_sc_exe|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Hosting.DaemonManagerTests.Windows_real_runner_reports_a_start_failure_for_a_missing_sc_exe_as_a_fatal_error|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Hosting.DaemonManagerTests.Windows_real_sc_exe_answers_a_query_for_a_missing_service_with_1060|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Hosting.DaemonProcessRunnerTests.Windows_HungChild_AndItsGrandchild_AreKilledAtTimeout|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Hosting.PidFileOwnershipTests.Windows_look_up_answers_for_the_system_process_whether_or_not_it_can_be_opened|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Hosting.PidFileServiceTests.Windows_a_claim_over_a_file_with_a_pending_delete_is_retried_not_thrown|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Mcp.FileHandleIdentityTests.Windows_handle_identity_is_resolved_from_FileIdInfo|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Mcp.WorkspacePathPolicySymlinkTests.IsPathUnderWorkspaceWithSymlinkCheck_OnWindows_RejectsLinkWhoseTextualInterpretationEscapes|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Security.DataProtectionSecretStoreTests.Windows_secret_save_leaves_the_directory_and_mirror_owner_only|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Security.FileEncryptionRuntimeCompositionTests.Windows_key_ring_directory_is_created_owner_only|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Security.GrimoireKdfSidecarTests.Write_preserves_the_original_failure_when_windows_refuses_the_temp_cleanup|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Security.HostProcessToolsMarkerNativeCapabilityContractTests.The_windows_arm_opens_compare_deletes_and_proves_the_real_fixed_slot_absent|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Security.HttpsCertificateLoaderTests.LoadPem_OnWindows_ProducesSchannelBindableCertificate|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Security.HttpsCertificateLoaderTests.LoadPfx_OnWindows_ProducesSchannelBindableCertificate|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Security.SecureFilePermissionsTests.CreateOwnerOnlyTempFile_is_owner_only_from_the_create_on_windows|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Storage.EncryptedBlobStoreTests.Windows_streaming_writer_replaces_destination_held_open_by_reader|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Weave.WorkspaceIndexingServiceTests.Dot_prefixed_entries_that_Windows_does_not_hide_are_still_never_indexed|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Workspaces.PhysicalFileSystemWriterTests.Windows_lane_alias_spellings_of_protected_metadata_are_refused_and_plant_nothing|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Workspaces.WorkspaceProtectedPathsTests.Windows_lane_stream_suffix_and_numbered_short_name_aliases_are_protected_on_the_host_platform|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Workspaces.WorkspaceProtectedPathsTests.Windows_lane_trailing_dot_git_alias_is_protected_on_the_host_platform)"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Test Compendium
@@ -446,7 +476,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           dotnet test tests/RetroDownfall.Compendium.Tests/RetroDownfall.Compendium.Tests.csproj `
-            -c Release --no-build --no-restore --filter "FullyQualifiedName=RetroDownfall.Compendium.Ux.Tests.Compendium.ConfigurationStoreSmokeTests.WriteAsync_hardens_the_destination_that_arrived_with_loose_permissions"
+            -c Release --no-build --no-restore --blame-hang-timeout 15m --blame-hang-dump-type none --filter "FullyQualifiedName=RetroDownfall.Compendium.Ux.Tests.Compendium.ConfigurationStoreSmokeTests.WriteAsync_hardens_the_destination_that_arrived_with_loose_permissions"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       # The AOT diagnostic gate fails closed when ripgrep is absent. Windows runner images do not
@@ -514,6 +544,7 @@ jobs:
     # Each Windows architecture tests on its own architecture for the reason build-windows.yml
     # publishes on its own: `windows-11-arm` is free for this repository because it is public.
     runs-on: windows-11-arm
+    timeout-minutes: 90
     env:
       DOTNET_NOLOGO: true
       DOTNET_CLI_TELEMETRY_OPTOUT: true
@@ -533,7 +564,7 @@ jobs:
       - name: Setup .NET
         uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4.3.1
         with:
-          dotnet-version: "10.0.401"
+          global-json-file: global.json
           cache: true
           cache-dependency-path: |
             **/packages.lock.json
@@ -582,13 +613,32 @@ jobs:
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
 
+      # WindowsAppContainerBrokerTests runs a bare command through the real AppContainer broker, and the
+      # broker is the published apphost: the xunit host cannot re-execute itself as one without starting
+      # the test platform. The class skips when ARCANUM_PUBLISHED_EXECUTABLE is unset, which would
+      # report a green skip for the one test that exercises the broker's success path, so publish the
+      # apphost for this RID first and export its path for the suite. A private artifacts path keeps the
+      # RID-specific restore from rewriting the assets the suite was built against.
+      - name: Publish the apphost the AppContainer broker smoke re-executes
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $publishDir = Join-Path $env:RUNNER_TEMP 'arcanum-broker-publish'
+          $artifactsDir = Join-Path $env:RUNNER_TEMP 'arcanum-broker-artifacts'
+          dotnet publish src/RetroDownfall.Arcanum.Cli/RetroDownfall.Arcanum.Cli.csproj -c Release -r win-arm64 --self-contained true --artifacts-path $artifactsDir -o $publishDir
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $executable = Join-Path $publishDir 'RetroDownfall.Arcanum.Cli.exe'
+          if (-not (Test-Path -LiteralPath $executable)) { throw "Expected published apphost not found: $executable" }
+          "ARCANUM_PUBLISHED_EXECUTABLE=$executable" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
       - name: Test Arcanum
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          # Same explicit native/OS surface as x64, exercised with the arm64 asset and SDK.
+          # Same explicit native/OS surface as x64, exercised with the arm64 asset and SDK, including
+          # every test that skips unless the host is Windows.
           dotnet test tests/RetroDownfall.Arcanum.Tests/RetroDownfall.Arcanum.Tests.csproj `
-            -c Release --no-build --no-restore --filter "Category!=Perf&Category!=HostedProducerAnalysis&(FullyQualifiedName~RetroDownfall.Arcanum.Tests.Platform.WindowsCiSurfaceTests|FullyQualifiedName~RetroDownfall.Arcanum.Tests.NativeSqlCipher.NativeSqlCipherDeliveryTests|FullyQualifiedName~RetroDownfall.Arcanum.Tests.NativeSqlCipher.SqlCipherCompatibilityTests|FullyQualifiedName~RetroDownfall.Arcanum.Tests.Security.OsCredentialStoreRoundTripTests|FullyQualifiedName~RetroDownfall.Arcanum.Tests.Platform.ProcessResourceLimiterWindowsBehaviorTests|FullyQualifiedName~RetroDownfall.Arcanum.Tests.Platform.WindowsJobObjectSessionTests|FullyQualifiedName~RetroDownfall.Arcanum.Tests.Process.WindowsAppContainerPolicyTests|FullyQualifiedName~RetroDownfall.Arcanum.Tests.Process.WindowsAppContainerRestoreJournalTests|FullyQualifiedName~RetroDownfall.Arcanum.Tests.Process.ChildProcessBoundaryBehaviorTests|FullyQualifiedName~RetroDownfall.Arcanum.Tests.Process.ChildProcessFilesystemJailTests|FullyQualifiedName~RetroDownfall.Arcanum.Tests.Familiars.FamiliarExecutableResolverTests|FullyQualifiedName=RetroDownfall.Arcanum.Tests.GrimoireTransitions.GrimoireOfflineTransitionJournalFileStoreTests.Windows_delete_durably_succeeds_after_publication|FullyQualifiedName=RetroDownfall.Arcanum.Tests.GrimoireTransitions.GrimoireOfflineTransitionJournalFileStoreTests.Windows_read_fails_closed_when_the_published_file_acl_is_weakened|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Cli.FullInstallationResetAttestationFileReaderTests.Reader_rejects_a_file_not_controlled_only_by_the_current_owner|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Mcp.WorkspacePathPolicySymlinkTests.IsPathUnderWorkspace_OnWindows_IgnoresDirectoryNameCase|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Platform.ProcessResourceLimiterTests.Apply_returns_assign_after_start_on_windows|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Security.HttpsCertificateLoaderTests.Load_PemPair_OnWindows_ZeroesTheExportedPkcs12Buffer|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Security.SecureFileReaderTests.TryOpenRegularFile_on_windows_rejects_reparse_symlink|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Workspaces.PhysicalFileSystemBrowserTests.ListAsync_And_ReadAsync_NormalizeBackslashesInRelativePaths_OnWindows|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Diagnostics.MaintenanceLockCheckTests.Windows_read_only_stale_lock_is_degraded_and_its_bytes_are_unchanged|FullyQualifiedName=RetroDownfall.Arcanum.Tests.GrimoireTransitions.GrimoireOfflineTransitionJournalFileStoreTests.Windows_compare_unlink_removes_the_name_while_the_retained_evidence_handle_stays_readable|FullyQualifiedName=RetroDownfall.Arcanum.Tests.GrimoireTransitions.GrimoireOfflineTransitionJournalFileStoreTests.Windows_real_primitives_reinspect_then_publish_a_new_working_file|FullyQualifiedName=RetroDownfall.Arcanum.Tests.GrimoireTransitions.GrimoireOfflineTransitionJournalFileStoreTests.Windows_no_replace_rename_preserves_both_files_when_destination_exists|FullyQualifiedName=RetroDownfall.Arcanum.Tests.GrimoireTransitions.GrimoireOfflineTransitionJournalFileStoreTests.Windows_exchange_through_the_real_primitives_retains_authentic_predecessor_identity|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Storage.AtomicFileTests.ReplaceAsync_rejects_existing_file_with_multiple_hard_links|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Mcp.FileHandleIdentityTests.TryGetPathMetadata_hard_link_reports_multiple_links|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Configuration.ConfigurationPresetPersistenceTests.Journal_cleanup_reports_a_denied_delete_instead_of_throwing)"
+            -c Release --no-build --no-restore --blame-hang-timeout 15m --blame-hang-dump-type none --filter "Category!=Perf&Category!=HostedProducerAnalysis&(FullyQualifiedName~RetroDownfall.Arcanum.Tests.Platform.WindowsCiSurfaceTests|FullyQualifiedName~RetroDownfall.Arcanum.Tests.NativeSqlCipher.NativeSqlCipherDeliveryTests|FullyQualifiedName~RetroDownfall.Arcanum.Tests.NativeSqlCipher.SqlCipherCompatibilityTests|FullyQualifiedName~RetroDownfall.Arcanum.Tests.Security.OsCredentialStoreRoundTripTests|FullyQualifiedName~RetroDownfall.Arcanum.Tests.Platform.ProcessResourceLimiterWindowsBehaviorTests|FullyQualifiedName~RetroDownfall.Arcanum.Tests.Platform.WindowsJobObjectSessionTests|FullyQualifiedName~RetroDownfall.Arcanum.Tests.Process.WindowsAppContainerPolicyTests|FullyQualifiedName~RetroDownfall.Arcanum.Tests.Process.WindowsAppContainerRestoreJournalTests|FullyQualifiedName~RetroDownfall.Arcanum.Tests.Process.WindowsAppContainerBrokerTests|FullyQualifiedName~RetroDownfall.Arcanum.Tests.Process.WindowsAppContainerAclTests|FullyQualifiedName~RetroDownfall.Arcanum.Tests.Process.WindowsBrokerTargetResolverTests|FullyQualifiedName~RetroDownfall.Arcanum.Tests.Process.ChildProcessSandboxRootsTests|FullyQualifiedName~RetroDownfall.Arcanum.Tests.Process.WindowsAppContainerJobAssignmentTests|FullyQualifiedName~RetroDownfall.Arcanum.Tests.Process.WindowsAppContainerBrokerExitTests|FullyQualifiedName~RetroDownfall.Arcanum.Tests.Process.WindowsAppContainerRootLockBudgetTests|FullyQualifiedName~RetroDownfall.Arcanum.Tests.Process.ChildProcessBoundaryBehaviorTests|FullyQualifiedName~RetroDownfall.Arcanum.Tests.Process.ChildProcessFilesystemJailTests|FullyQualifiedName~RetroDownfall.Arcanum.Tests.Familiars.FamiliarExecutableResolverTests|FullyQualifiedName=RetroDownfall.Arcanum.Tests.GrimoireTransitions.GrimoireOfflineTransitionJournalFileStoreTests.Windows_delete_durably_succeeds_after_publication|FullyQualifiedName=RetroDownfall.Arcanum.Tests.GrimoireTransitions.GrimoireOfflineTransitionJournalFileStoreTests.Windows_read_fails_closed_when_the_published_file_acl_is_weakened|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Cli.FullInstallationResetAttestationFileReaderTests.Reader_rejects_a_file_not_controlled_only_by_the_current_owner|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Mcp.WorkspacePathPolicySymlinkTests.IsPathUnderWorkspace_OnWindows_IgnoresDirectoryNameCase|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Platform.ProcessResourceLimiterTests.Apply_returns_assign_after_start_on_windows|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Security.HttpsCertificateLoaderTests.Load_PemPair_OnWindows_ZeroesTheExportedPkcs12Buffer|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Security.SecureFileReaderTests.TryOpenRegularFile_on_windows_rejects_reparse_symlink|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Workspaces.PhysicalFileSystemBrowserTests.ListAsync_And_ReadAsync_NormalizeBackslashesInRelativePaths_OnWindows|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Diagnostics.MaintenanceLockCheckTests.Windows_read_only_stale_lock_is_degraded_and_its_bytes_are_unchanged|FullyQualifiedName=RetroDownfall.Arcanum.Tests.GrimoireTransitions.GrimoireOfflineTransitionJournalFileStoreTests.Windows_compare_unlink_removes_the_name_while_the_retained_evidence_handle_stays_readable|FullyQualifiedName=RetroDownfall.Arcanum.Tests.GrimoireTransitions.GrimoireOfflineTransitionJournalFileStoreTests.Windows_real_primitives_reinspect_then_publish_a_new_working_file|FullyQualifiedName=RetroDownfall.Arcanum.Tests.GrimoireTransitions.GrimoireOfflineTransitionJournalFileStoreTests.Windows_no_replace_rename_preserves_both_files_when_destination_exists|FullyQualifiedName=RetroDownfall.Arcanum.Tests.GrimoireTransitions.GrimoireOfflineTransitionJournalFileStoreTests.Windows_exchange_through_the_real_primitives_retains_authentic_predecessor_identity|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Storage.AtomicFileTests.ReplaceAsync_rejects_existing_file_with_multiple_hard_links|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Mcp.FileHandleIdentityTests.TryGetPathMetadata_hard_link_reports_multiple_links|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Configuration.ConfigurationPresetPersistenceTests.Journal_cleanup_reports_a_denied_delete_instead_of_throwing|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Cli.CliOutputFileTests.Replacing_an_existing_file_keeps_its_attributes_on_Windows|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Cli.ConfigCommandTests.Cancelling_the_edit_terminates_the_spawned_editor_on_Windows|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Data.GrimoireMaintenanceConnectionFactoryTests.OpenJournalCandidateReopenAsync_OpensAWindowsPathContainingSpacePercentHashAndDriveColon|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Fixtures.TestDirectoryCleanupTests.TryDelete_reports_a_tree_Windows_cannot_delete_because_a_file_is_still_open|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Api.WorkspaceIndexAliasEndpointTests.Indexed_alias_is_visible_without_changing_persisted_identity_or_crossing_workspace_scope|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Backup.BackupCreateRecoveryHandlerTests.Windows_a_planned_checkpoint_with_an_empty_directory_readable_by_everyone_is_preserved|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Backup.BackupInventoryPlannerTests.Windows_treats_a_trailing_dot_name_as_the_same_destination|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Cli.CommandCenter.CommandCenterTurnAttachmentBuilderTests.Windows_a_reparse_point_that_names_no_other_location_stages|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Cli.CommandCenter.CommandCenterTurnAttachmentBuilderTests.Windows_a_symbolic_link_to_a_regular_file_stages|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Cli.CommandCenter.CommandCenterTurnAttachmentBuilderTests.Windows_an_ordinary_file_stages_by_at_token_and_by_attach|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Cli.CommandCenter.CommandCenterTurnAttachmentBuilderTests.Windows_the_open_reads_an_ordinary_file_and_refuses_a_directory|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Cli.McpWorkspacePathTests.On_Windows_a_real_path_in_another_case_and_separator_is_the_same_location|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Cli.RecentResourceStoreTests.CreateStagingFile_leaves_an_empty_staging_file_owner_only_on_windows|FullyQualifiedName=RetroDownfall.Arcanum.Tests.GrimoireTransitions.GrimoireOfflineTransitionJournalFileStoreTests.Windows_exchange_by_no_replace_renames_publishes_through_the_real_primitives|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Hosting.DaemonManagerTests.Windows_real_runner_install_reports_a_missing_sc_exe_as_a_start_failure_not_an_elevation_problem|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Hosting.DaemonManagerTests.Windows_real_runner_install_without_an_account_refuses_without_starting_sc_exe|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Hosting.DaemonManagerTests.Windows_real_runner_reports_a_start_failure_for_a_missing_sc_exe_as_a_fatal_error|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Hosting.DaemonManagerTests.Windows_real_sc_exe_answers_a_query_for_a_missing_service_with_1060|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Hosting.DaemonProcessRunnerTests.Windows_HungChild_AndItsGrandchild_AreKilledAtTimeout|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Hosting.PidFileOwnershipTests.Windows_look_up_answers_for_the_system_process_whether_or_not_it_can_be_opened|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Hosting.PidFileServiceTests.Windows_a_claim_over_a_file_with_a_pending_delete_is_retried_not_thrown|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Mcp.FileHandleIdentityTests.Windows_handle_identity_is_resolved_from_FileIdInfo|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Mcp.WorkspacePathPolicySymlinkTests.IsPathUnderWorkspaceWithSymlinkCheck_OnWindows_RejectsLinkWhoseTextualInterpretationEscapes|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Security.DataProtectionSecretStoreTests.Windows_secret_save_leaves_the_directory_and_mirror_owner_only|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Security.FileEncryptionRuntimeCompositionTests.Windows_key_ring_directory_is_created_owner_only|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Security.GrimoireKdfSidecarTests.Write_preserves_the_original_failure_when_windows_refuses_the_temp_cleanup|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Security.HostProcessToolsMarkerNativeCapabilityContractTests.The_windows_arm_opens_compare_deletes_and_proves_the_real_fixed_slot_absent|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Security.HttpsCertificateLoaderTests.LoadPem_OnWindows_ProducesSchannelBindableCertificate|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Security.HttpsCertificateLoaderTests.LoadPfx_OnWindows_ProducesSchannelBindableCertificate|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Security.SecureFilePermissionsTests.CreateOwnerOnlyTempFile_is_owner_only_from_the_create_on_windows|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Storage.EncryptedBlobStoreTests.Windows_streaming_writer_replaces_destination_held_open_by_reader|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Weave.WorkspaceIndexingServiceTests.Dot_prefixed_entries_that_Windows_does_not_hide_are_still_never_indexed|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Workspaces.PhysicalFileSystemWriterTests.Windows_lane_alias_spellings_of_protected_metadata_are_refused_and_plant_nothing|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Workspaces.WorkspaceProtectedPathsTests.Windows_lane_stream_suffix_and_numbered_short_name_aliases_are_protected_on_the_host_platform|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Workspaces.WorkspaceProtectedPathsTests.Windows_lane_trailing_dot_git_alias_is_protected_on_the_host_platform)"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       # These checks evaluate actual Windows compiler inputs without traversing producer roots.
@@ -597,7 +647,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           dotnet test tests/RetroDownfall.Arcanum.Tests/RetroDownfall.Arcanum.Tests.csproj `
-            -c Release --no-build --no-restore --filter "Category!=Perf&(FullyQualifiedName=RetroDownfall.Arcanum.Tests.Operations.HostedGrimoireProducerInventoryTests.ProductionCompilationsResolveGeneratedJsonSymbols|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Operations.HostedGrimoireProducerInventoryTests.ProductionCompilerGraphUsesCanonicalProjectReferences|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Operations.HostedGrimoireProducerInventoryTests.ProductionIncludesEveryFirstPartyDependencyAndApiCliRoots)"
+            -c Release --no-build --no-restore --blame-hang-timeout 15m --blame-hang-dump-type none --filter "Category!=Perf&(FullyQualifiedName=RetroDownfall.Arcanum.Tests.Operations.HostedGrimoireProducerInventoryTests.ProductionCompilationsResolveGeneratedJsonSymbols|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Operations.HostedGrimoireProducerInventoryTests.ProductionCompilerGraphUsesCanonicalProjectReferences|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Operations.HostedGrimoireProducerInventoryTests.ProductionIncludesEveryFirstPartyDependencyAndApiCliRoots)"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Test Compendium
@@ -605,7 +655,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           dotnet test tests/RetroDownfall.Compendium.Tests/RetroDownfall.Compendium.Tests.csproj `
-            -c Release --no-build --no-restore --filter "FullyQualifiedName=RetroDownfall.Compendium.Ux.Tests.Compendium.ConfigurationStoreSmokeTests.WriteAsync_hardens_the_destination_that_arrived_with_loose_permissions"
+            -c Release --no-build --no-restore --blame-hang-timeout 15m --blame-hang-dump-type none --filter "FullyQualifiedName=RetroDownfall.Compendium.Ux.Tests.Compendium.ConfigurationStoreSmokeTests.WriteAsync_hardens_the_destination_that_arrived_with_loose_permissions"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       # The AOT diagnostic gate fails closed when ripgrep is absent. The arm64 runner can execute
@@ -642,6 +692,7 @@ jobs:
     # Both executable smokes open the Grimoire, so this host RID needs its verified native
     # SQLCipher asset just like build-test.
     runs-on: macos-26
+    timeout-minutes: 90
     env:
       DOTNET_NOLOGO: true
       DOTNET_CLI_TELEMETRY_OPTOUT: true
@@ -652,7 +703,7 @@ jobs:
       - name: Setup .NET
         uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4.3.1
         with:
-          dotnet-version: "10.0.401"
+          global-json-file: global.json
           cache: true
           cache-dependency-path: |
             **/packages.lock.json
@@ -682,6 +733,7 @@ jobs:
     # This job compiles nothing and runs in under a minute, which is what makes it affordable to gate on.
     name: Formatting and shell lint
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0

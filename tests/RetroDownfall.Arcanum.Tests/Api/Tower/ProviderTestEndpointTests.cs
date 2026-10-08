@@ -332,7 +332,7 @@ public sealed class ProviderTestEndpointTests : IAsyncLifetime
                 // a client that insists on reading it all.
                 await Task.Delay(TimeSpan.FromMinutes(2)).ConfigureAwait(false);
             }
-            catch (Exception)
+            catch (Exception ex) when (ex is HttpListenerException or IOException or ObjectDisposedException)
             {
                 // Expected: the endpoint aborts the read as soon as the declared length passes the cap.
             }
@@ -383,7 +383,7 @@ public sealed class ProviderTestEndpointTests : IAsyncLifetime
 
                 ctx.Response.OutputStream.Close();
             }
-            catch (Exception)
+            catch (Exception ex) when (ex is HttpListenerException or IOException or ObjectDisposedException)
             {
                 // The client aborts the read once the response passes the cap, so a write failure
                 // after the request arrived is the expected path of the oversized-response test.

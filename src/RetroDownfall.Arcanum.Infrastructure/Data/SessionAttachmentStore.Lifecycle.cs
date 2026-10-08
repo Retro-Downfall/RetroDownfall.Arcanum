@@ -86,9 +86,9 @@ internal sealed partial class SessionAttachmentStore
                   AND "EntryId" = @entryId
                 """;
 
-            AddParameter(cmd, "@sessionId", sessionId.ToString().ToUpperInvariant());
+            AddParameter(cmd, "@sessionId", GrimoireEntitySql.Format(sessionId));
 
-            AddParameter(cmd, "@entryId", entryId.ToString().ToUpperInvariant());
+            AddParameter(cmd, "@entryId", GrimoireEntitySql.Format(entryId));
 
             _ = await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         }
@@ -205,7 +205,7 @@ internal sealed partial class SessionAttachmentStore
                     LIMIT @pageSize
                     """;
 
-                AddParameter(cmd, "@sessionId", sourceSessionId.ToString().ToUpperInvariant());
+                AddParameter(cmd, "@sessionId", GrimoireEntitySql.Format(sourceSessionId));
 
                 AddParameter(cmd, "@state", nameof(SessionAttachmentState.Bound));
 
@@ -217,7 +217,7 @@ internal sealed partial class SessionAttachmentStore
 
                 if (afterAttachmentId is Guid cursor)
                 {
-                    AddParameter(cmd, "@afterAttachmentId", cursor.ToString().ToUpperInvariant());
+                    AddParameter(cmd, "@afterAttachmentId", GrimoireEntitySql.Format(cursor));
                 }
 
                 List<SessionAttachmentRecord> rows = new(ForkAttachmentPageSize);
@@ -619,7 +619,7 @@ internal sealed partial class SessionAttachmentStore
                         WHERE "SessionId" = @sessionId
                         """;
 
-                    AddParameter(cmd, "@sessionId", sessionId.ToString().ToUpperInvariant());
+                    AddParameter(cmd, "@sessionId", GrimoireEntitySql.Format(sessionId));
 
                     _ = await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 
@@ -724,6 +724,43 @@ internal sealed partial class SessionAttachmentStore
     }
 
     /// <summary>
+    /// Removes a row <see cref="PersistNewWithOutcomeAsync"/> created for a turn that then failed, and
+    /// its blob. Guarded by the same <c>State</c>/<c>RelativePath</c> predicate as a sweep delete, so a
+    /// row that was promoted (or otherwise rewritten) in the meantime is left alone. The derived index
+    /// rows go with it through their <c>ON DELETE CASCADE</c> keys. The blob unlink is best effort: the
+    /// orphan-file sweep reclaims it if it fails. It runs while the attachment gate is still held: once
+    /// the row is gone a concurrent persist of the same logical key can reuse the freed version number
+    /// and so this path, and an unlink after the gate was released could remove that persist's fresh
+    /// bytes and leave its row pointing at nothing.
+    /// </summary>
+    public async Task<bool> DeleteCreatedAttachmentAsync(
+        SessionAttachmentRecord created,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(created);
+
+        return await DeleteSweptRowAsync(
+            created,
+            cancellationToken,
+            whileGateHeld: async token =>
+            {
+                if (AfterCreatedRowDeletedForTesting is not null)
+                {
+                    await AfterCreatedRowDeletedForTesting(token).ConfigureAwait(false);
+                }
+
+                try
+                {
+                    TryDeleteFile(ResolveUnderRoot(created.RelativePath));
+                }
+                catch (InvalidOperationException)
+                {
+                    // A path that escapes the root names nothing this store owns; the row is already gone.
+                }
+            }).ConfigureAwait(false);
+    }
+
+    /// <summary>
     /// Deletes a row a sweep decided is dead, but only while the persisted row still names the exact
     /// <c>State</c> and <c>RelativePath</c> the sweep observed.
     /// </summary>
@@ -736,9 +773,13 @@ internal sealed partial class SessionAttachmentStore
     /// Entry still references. The <c>State</c>/<c>RelativePath</c> predicate makes the delete an atomic
     /// no-op in that window, matching the guard every sibling sweep in this file already applies. Returns
     /// <see langword="true"/> only when a row was actually removed, so the caller never logs a phantom
-    /// deletion.
+    /// deletion. <paramref name="whileGateHeld"/>, when given, runs after a row was removed and before
+    /// the gate is released, for work that must not interleave with another persist of the same key.
     /// </remarks>
-    private async Task<bool> DeleteSweptRowAsync(SessionAttachmentRecord row, CancellationToken cancellationToken)
+    private async Task<bool> DeleteSweptRowAsync(
+        SessionAttachmentRecord row,
+        CancellationToken cancellationToken,
+        Func<CancellationToken, Task>? whileGateHeld = null)
     {
         string? gateKey = row.SessionId is Guid sessionId
             ? SessionGateKey(sessionId)
@@ -770,7 +811,7 @@ internal sealed partial class SessionAttachmentStore
                       AND "RelativePath" = @relativePath
                     """;
 
-                AddParameter(cmd, "@id", row.Id.ToString().ToUpperInvariant());
+                AddParameter(cmd, "@id", GrimoireEntitySql.Format(row.Id));
 
                 AddParameter(cmd, "@state", row.State.ToString());
 
@@ -779,6 +820,11 @@ internal sealed partial class SessionAttachmentStore
                 affected = await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
             },
             cancellationToken).ConfigureAwait(false);
+
+        if (affected > 0 && whileGateHeld is not null)
+        {
+            await whileGateHeld(cancellationToken).ConfigureAwait(false);
+        }
 
         return affected > 0;
     }

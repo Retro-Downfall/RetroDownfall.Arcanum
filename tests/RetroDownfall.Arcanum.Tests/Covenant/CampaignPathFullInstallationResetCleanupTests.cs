@@ -5,6 +5,8 @@ using System.Security.Cryptography;
 
 using Microsoft.Data.Sqlite;
 
+using Microsoft.Extensions.Logging.Abstractions;
+
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.DataLifecycle;
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -37,13 +39,11 @@ namespace RetroDownfall.Arcanum.Tests.Covenant;
 [Trait("Category", "Integration")]
 public sealed partial class CampaignPathFullInstallationResetCleanupTests
 {
-
     private static CancellationToken Token => CancellationToken.None;
 
     [Fact]
     public async Task Preparation_inserts_one_distinct_kind_four_child_per_authenticated_campaign()
     {
-
         await using CleanupHarness harness = await CleanupHarness.CreateAsync();
 
         RegisteredRoot first = await harness.AddMarkedRootAsync("alpha");
@@ -89,7 +89,6 @@ public sealed partial class CampaignPathFullInstallationResetCleanupTests
 
         foreach (CampaignPathFullResetCleanupChildRow child in children)
         {
-
             Assert.Equal(operation.OwnerOperationId, child.Intent.OwnerOperationId);
 
             Assert.Equal(operation.OwnerEffectDigest, child.Intent.OwnerEffectDigest);
@@ -109,21 +108,17 @@ public sealed partial class CampaignPathFullInstallationResetCleanupTests
             Assert.Equal(
                 CampaignPathFullResetCleanupObservationCode.Opened,
                 child.Evidence.ObservationCode);
-
         }
 
         // Keyed by Campaign rather than by any sort: the vector's order is the authenticated
         // inventory's, which orders by RFC 4122 bytes and not by anything a test can assume.
         foreach (RegisteredRoot root in new[] { first, second })
         {
-
             Assert.Equal(
                 root.DisplayPath,
                 children.Single(child => child.Intent.CampaignId == root.CampaignId)
                     .Intent.TargetDisplayPath);
-
         }
-
     }
 
     /// <summary>
@@ -132,7 +127,6 @@ public sealed partial class CampaignPathFullInstallationResetCleanupTests
     [Fact]
     public async Task Preparation_records_the_opened_unavailable_and_mismatch_observation_shapes()
     {
-
         await using CleanupHarness harness = await CleanupHarness.CreateAsync();
 
         RegisteredRoot intact = await harness.AddMarkedRootAsync("intact");
@@ -169,7 +163,6 @@ public sealed partial class CampaignPathFullInstallationResetCleanupTests
         AssertBlocked(
             children[moved.CampaignId],
             CampaignPathFullResetCleanupObservationCode.Mismatch);
-
     }
 
     /// <summary>
@@ -183,7 +176,6 @@ public sealed partial class CampaignPathFullInstallationResetCleanupTests
     [Fact]
     public async Task A_marker_that_no_longer_proves_its_root_is_a_mismatch_child_with_no_path()
     {
-
         await using CleanupHarness harness = await CleanupHarness.CreateAsync();
 
         RegisteredRoot root = await harness.AddMarkedRootAsync("swapped");
@@ -206,13 +198,11 @@ public sealed partial class CampaignPathFullInstallationResetCleanupTests
         AssertBlocked(
             Assert.Single(await operation.ReadChildrenAsync()),
             CampaignPathFullResetCleanupObservationCode.Mismatch);
-
     }
 
     [Fact]
     public async Task Preparation_borrows_and_never_begins_commits_rolls_back_or_disposes_the_callers_transaction()
     {
-
         await using CleanupHarness harness = await CleanupHarness.CreateAsync();
 
         _ = await harness.AddMarkedRootAsync("alpha");
@@ -231,13 +221,11 @@ public sealed partial class CampaignPathFullInstallationResetCleanupTests
         await operation.RollbackAsync();
 
         Assert.Equal(0L, await harness.CountCommittedChildrenAsync());
-
     }
 
     [Fact]
     public async Task Parent_and_companion_insert_atomically_in_the_same_caller_transaction()
     {
-
         await using CleanupHarness harness = await CleanupHarness.CreateAsync();
 
         _ = await harness.AddMarkedRootAsync("alpha");
@@ -263,13 +251,11 @@ public sealed partial class CampaignPathFullInstallationResetCleanupTests
         Assert.Equal(2L, await harness.CountCommittedChildrenAsync());
 
         Assert.Equal(2L, await harness.CountCommittedEvidenceAsync());
-
     }
 
     [Fact]
     public async Task Replay_returns_the_same_children_when_parent_and_every_companion_field_match()
     {
-
         await using CleanupHarness harness = await CleanupHarness.CreateAsync();
 
         _ = await harness.AddMarkedRootAsync("alpha");
@@ -301,13 +287,11 @@ public sealed partial class CampaignPathFullInstallationResetCleanupTests
         Assert.Equal(2L, await harness.CountCommittedChildrenAsync());
 
         Assert.Equal(2L, await harness.CountCommittedEvidenceAsync());
-
     }
 
     [Fact]
     public async Task Replay_rejects_an_expected_receipt_whose_ordered_identifiers_are_reordered()
     {
-
         await using CleanupHarness harness = await CleanupHarness.CreateAsync();
 
         _ = await harness.AddMarkedRootAsync("alpha");
@@ -335,7 +319,6 @@ public sealed partial class CampaignPathFullInstallationResetCleanupTests
         AssertRefused(await replay.RunAsync());
 
         await replay.RollbackAsync();
-
     }
 
     /// <summary>
@@ -344,7 +327,6 @@ public sealed partial class CampaignPathFullInstallationResetCleanupTests
     [Fact]
     public async Task Replay_rejects_a_same_count_campaign_replacement()
     {
-
         await using CleanupHarness harness = await CleanupHarness.CreateAsync();
 
         RegisteredRoot replaced = await harness.AddMarkedRootAsync("alpha");
@@ -373,7 +355,6 @@ public sealed partial class CampaignPathFullInstallationResetCleanupTests
         AssertRefused(await replay.RunAsync(resumed));
 
         await replay.RollbackAsync();
-
     }
 
     /// <summary>
@@ -389,7 +370,6 @@ public sealed partial class CampaignPathFullInstallationResetCleanupTests
     [Fact]
     public async Task Replay_rejects_children_whose_evidence_disagrees_with_the_authenticated_inventory()
     {
-
         await using CleanupHarness harness = await CleanupHarness.CreateAsync();
 
         RegisteredRoot root = await harness.AddMarkedRootAsync("alpha");
@@ -418,13 +398,11 @@ public sealed partial class CampaignPathFullInstallationResetCleanupTests
         AssertRefused(await replay.RunAsync());
 
         await replay.RollbackAsync();
-
     }
 
     [Fact]
     public async Task Zero_campaign_preparation_returns_the_frozen_empty_receipt_without_any_dml()
     {
-
         await using CleanupHarness harness = await CleanupHarness.CreateAsync();
 
         PreparedOperation operation = await harness.PrepareAsync();
@@ -459,7 +437,6 @@ public sealed partial class CampaignPathFullInstallationResetCleanupTests
             again.Value));
 
         await replay.RollbackAsync();
-
     }
 
     /// <summary>
@@ -473,7 +450,6 @@ public sealed partial class CampaignPathFullInstallationResetCleanupTests
     [Fact]
     public async Task An_expected_receipt_the_checkpoint_never_published_is_refused()
     {
-
         await using CleanupHarness harness = await CleanupHarness.CreateAsync();
 
         PreparedOperation operation = await harness.PrepareAsync();
@@ -486,7 +462,6 @@ public sealed partial class CampaignPathFullInstallationResetCleanupTests
         AssertRefused(await operation.RunAsync(expectedReceipt: receipt.Value));
 
         await operation.RollbackAsync();
-
     }
 
     /// <summary>
@@ -495,7 +470,6 @@ public sealed partial class CampaignPathFullInstallationResetCleanupTests
     [Fact]
     public async Task Preparation_requires_current_cleanup_authority_before_read_or_write()
     {
-
         await using CleanupHarness harness = await CleanupHarness.CreateAsync();
 
         _ = await harness.AddMarkedRootAsync("alpha");
@@ -510,7 +484,6 @@ public sealed partial class CampaignPathFullInstallationResetCleanupTests
         Assert.Equal(0L, await operation.CountChildrenInTransactionAsync());
 
         await operation.RollbackAsync();
-
     }
 
     /// <summary>
@@ -519,7 +492,6 @@ public sealed partial class CampaignPathFullInstallationResetCleanupTests
     [Fact]
     public async Task Preparation_refuses_an_owner_effect_the_checkpoint_does_not_name()
     {
-
         await using CleanupHarness harness = await CleanupHarness.CreateAsync();
 
         _ = await harness.AddMarkedRootAsync("alpha");
@@ -537,7 +509,6 @@ public sealed partial class CampaignPathFullInstallationResetCleanupTests
         Assert.Equal(0L, await operation.CountChildrenInTransactionAsync());
 
         await operation.RollbackAsync();
-
     }
 
     /// <summary>
@@ -552,7 +523,6 @@ public sealed partial class CampaignPathFullInstallationResetCleanupTests
     [Fact]
     public async Task Fresh_process_preparation_without_the_root_identity_key_opens_nothing_and_journals_nothing()
     {
-
         await using CleanupHarness harness = await CleanupHarness.CreateAsync();
 
         _ = await harness.AddMarkedRootAsync("alpha");
@@ -568,7 +538,6 @@ public sealed partial class CampaignPathFullInstallationResetCleanupTests
         Assert.Equal(0L, await operation.CountChildrenInTransactionAsync());
 
         await operation.RollbackAsync();
-
     }
 
     /// <summary>
@@ -577,7 +546,6 @@ public sealed partial class CampaignPathFullInstallationResetCleanupTests
     [Fact]
     public async Task Fresh_process_replay_of_prepared_opened_children_without_the_key_is_refused()
     {
-
         await using CleanupHarness harness = await CleanupHarness.CreateAsync();
 
         _ = await harness.AddMarkedRootAsync("alpha");
@@ -599,7 +567,6 @@ public sealed partial class CampaignPathFullInstallationResetCleanupTests
         Assert.Equal(1, keys.Calls);
 
         await replay.RollbackAsync();
-
     }
 
     /// <summary>
@@ -613,7 +580,6 @@ public sealed partial class CampaignPathFullInstallationResetCleanupTests
     [Fact]
     public async Task Replay_of_blocked_children_needs_no_root_identity_key_at_all()
     {
-
         await using CleanupHarness harness = await CleanupHarness.CreateAsync();
 
         RegisteredRoot vanishing = await harness.AddMarkedRootAsync("vanishing");
@@ -644,7 +610,6 @@ public sealed partial class CampaignPathFullInstallationResetCleanupTests
         Assert.Equal(0, keys.Calls);
 
         await replay.RollbackAsync();
-
     }
 
     /// <summary>
@@ -653,7 +618,6 @@ public sealed partial class CampaignPathFullInstallationResetCleanupTests
     [Fact]
     public async Task A_published_receipt_with_an_empty_journal_is_refused_rather_than_rewritten()
     {
-
         await using CleanupHarness harness = await CleanupHarness.CreateAsync();
 
         _ = await harness.AddMarkedRootAsync("alpha");
@@ -674,7 +638,6 @@ public sealed partial class CampaignPathFullInstallationResetCleanupTests
         Assert.Equal(0L, await replay.CountChildrenInTransactionAsync());
 
         await replay.RollbackAsync();
-
     }
 
     /// <summary>
@@ -684,7 +647,6 @@ public sealed partial class CampaignPathFullInstallationResetCleanupTests
     [Fact]
     public async Task The_joined_read_projects_every_distinct_digest_column_to_its_own_field()
     {
-
         await using CleanupHarness harness = await CleanupHarness.CreateAsync();
 
         RegisteredRoot root = await harness.AddMarkedRootAsync("alpha");
@@ -741,14 +703,12 @@ public sealed partial class CampaignPathFullInstallationResetCleanupTests
             child.Evidence.ObservationDigest);
 
         await operation.RollbackAsync();
-
     }
 
     private static void AssertOpened(
         CampaignPathFullResetCleanupChildRow child,
         RegisteredRoot root)
     {
-
         Assert.Equal(
             CampaignPathFullResetCleanupObservationCode.Opened,
             child.Evidence.ObservationCode);
@@ -758,14 +718,12 @@ public sealed partial class CampaignPathFullInstallationResetCleanupTests
         Assert.Equal(
             child.Evidence.SameHandleOwnershipEvidenceDigest,
             child.Evidence.OpenedSameHandleOwnershipEvidenceDigest);
-
     }
 
     private static void AssertBlocked(
         CampaignPathFullResetCleanupChildRow child,
         CampaignPathFullResetCleanupObservationCode expected)
     {
-
         Assert.Equal(expected, child.Evidence.ObservationCode);
 
         Assert.Null(child.Intent.TargetDisplayPath);
@@ -773,12 +731,10 @@ public sealed partial class CampaignPathFullInstallationResetCleanupTests
         Assert.Null(child.Evidence.OpenedSameHandleOwnershipEvidenceDigest);
 
         Assert.Equal(CampaignPathMarkerPhase.Prepared, child.Intent.Phase);
-
     }
 
     private static void AssertRefused<T>(Result<T> result)
     {
-
         Assert.True(result.IsFailure);
 
         Assert.Equal(ErrorCodes.Data.RecoveryRequired, result.Error.Code);
@@ -786,7 +742,6 @@ public sealed partial class CampaignPathFullInstallationResetCleanupTests
         Assert.Equal(
             "The full-installation reset Campaign cleanup is not available.",
             result.Error.Message);
-
     }
 
     private static string Describe<T>(Result<T> result) =>
@@ -794,11 +749,9 @@ public sealed partial class CampaignPathFullInstallationResetCleanupTests
 
     private static T Value<T>(Result<T> result)
     {
-
         Assert.True(result.IsSuccess, Describe(result));
 
         return result.Value;
-
     }
 
     private static CovenantDigest Digest(byte fill) =>
@@ -819,7 +772,6 @@ public sealed partial class CampaignPathFullInstallationResetCleanupTests
     /// </summary>
     private sealed class PreparedOperation
     {
-
         private readonly CleanupHarness _harness;
 
         internal PreparedOperation(
@@ -832,7 +784,6 @@ public sealed partial class CampaignPathFullInstallationResetCleanupTests
             CampaignPathFullInstallationResetCleanupReceipt? publishedReceipt,
             FullInstallationResetMarkerCleanupAuthority authority)
         {
-
             _harness = harness;
 
             Authority = authority;
@@ -848,7 +799,6 @@ public sealed partial class CampaignPathFullInstallationResetCleanupTests
             Transaction = transaction;
 
             PublishedReceipt = publishedReceipt;
-
         }
 
         internal Guid OwnerOperationId { get; }
@@ -873,7 +823,6 @@ public sealed partial class CampaignPathFullInstallationResetCleanupTests
             CampaignPathFullInstallationResetCleanupPreparation? preparation = null,
             CampaignPathFullInstallationResetCleanupReceipt? expectedReceipt = null)
         {
-
             CampaignPathMarkerLifecycle subject = lifecycle ?? _harness.Lifecycle;
 
             return await subject.PrepareFullInstallationResetCleanupAsync(
@@ -887,25 +836,21 @@ public sealed partial class CampaignPathFullInstallationResetCleanupTests
                 _harness.Connection,
                 Transaction,
                 Token);
-
         }
 
         internal async Task<IReadOnlyList<CampaignPathFullResetCleanupChildRow>>
             ReadChildrenAsync()
         {
-
             CampaignPathFullResetCleanupEvidenceStore store = new(
                 CovenantSqliteConnectionInitializer.Instance,
                 _harness.Connection,
                 Transaction);
 
             return Value(await store.ReadOwnerChildrenAsync(OwnerOperationId, Token));
-
         }
 
         internal async Task<long> CountChildrenInTransactionAsync()
         {
-
             await using SqliteCommand command = _harness.Connection.CreateCommand();
 
             command.Transaction = Transaction;
@@ -914,7 +859,6 @@ public sealed partial class CampaignPathFullInstallationResetCleanupTests
                 "SELECT COUNT(*) FROM campaign_path_marker_intents WHERE IntentKindCode = 4;";
 
             return Convert.ToInt64(await command.ExecuteScalarAsync(Token), provider: null);
-
         }
 
         /// <summary>
@@ -925,7 +869,6 @@ public sealed partial class CampaignPathFullInstallationResetCleanupTests
             CampaignPathFullInstallationResetCleanupReceipt prepared,
             CampaignPathMarkerLifecycle? lifecycle = null)
         {
-
             await RollbackAsync();
 
             return await (lifecycle ?? _harness.Lifecycle)
@@ -934,32 +877,25 @@ public sealed partial class CampaignPathFullInstallationResetCleanupTests
                     Authority,
                     _harness.Connection,
                     Token);
-
         }
 
         internal async Task CommitAsync()
         {
-
             await Transaction.CommitAsync(Token);
 
             await Transaction.DisposeAsync();
-
         }
 
         internal async Task RollbackAsync()
         {
-
             await Transaction.RollbackAsync(Token);
 
             await Transaction.DisposeAsync();
-
         }
-
     }
 
     private sealed class CleanupHarness : IAsyncDisposable
     {
-
         private static readonly byte[] RootIdentityKey = Convert.FromHexString(
             "000102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F");
 
@@ -989,7 +925,6 @@ public sealed partial class CampaignPathFullInstallationResetCleanupTests
             RecordingActiveStore store,
             HostToolsMarkerPairResetCoordinator coordinator)
         {
-
             _database = database;
 
             _scratch = scratch;
@@ -1007,7 +942,6 @@ public sealed partial class CampaignPathFullInstallationResetCleanupTests
             Codec = codec;
 
             Lifecycle = lifecycle;
-
         }
 
         internal SqliteConnection Connection => _database.Connection;
@@ -1020,7 +954,6 @@ public sealed partial class CampaignPathFullInstallationResetCleanupTests
 
         internal static async Task<CleanupHarness> CreateAsync()
         {
-
             CovenantSchemaScratchDatabase database =
                 await CovenantSchemaScratchDatabase.CreateAsync(Token);
 
@@ -1032,7 +965,6 @@ public sealed partial class CampaignPathFullInstallationResetCleanupTests
 
             try
             {
-
                 _ = await GrimoireSchemaTestInstaller.InstallAsync(
                     database.Connection,
                     1536,
@@ -1062,7 +994,8 @@ public sealed partial class CampaignPathFullInstallationResetCleanupTests
                     new HostProcessToolsMarkerPairJoiner(),
                     new AcceptingVerifier(() => store.Current),
                     new InertLifecycle(),
-                    new InertOsPort());
+                    new InertOsPort(),
+                    NullLogger<HostToolsMarkerPairResetCoordinator>.Instance);
 
                 return new CleanupHarness(
                     database,
@@ -1074,19 +1007,15 @@ public sealed partial class CampaignPathFullInstallationResetCleanupTests
                     lifecycle,
                     store,
                     coordinator);
-
             }
             catch
             {
-
                 await database.DisposeAsync();
 
                 Directory.Delete(scratch, recursive: true);
 
                 throw;
-
             }
-
         }
 
         /// <summary>
@@ -1109,7 +1038,6 @@ public sealed partial class CampaignPathFullInstallationResetCleanupTests
             Guid? ownerOperationId = null,
             CampaignPathMarkerLifecycle? inventoryLifecycle = null)
         {
-
             Guid owner = ownerOperationId ?? Guid.NewGuid();
 
             Result<CampaignPathFullInstallationResetInventory> inventory =
@@ -1129,7 +1057,6 @@ public sealed partial class CampaignPathFullInstallationResetCleanupTests
                 await BeginImmediateAsync(),
                 publishedReceipt: null,
                 await MintAuthorityAsync(publication));
-
         }
 
         /// <summary>
@@ -1139,7 +1066,6 @@ public sealed partial class CampaignPathFullInstallationResetCleanupTests
             PreparedOperation previous,
             CampaignPathFullInstallationResetCleanupReceipt receipt)
         {
-
             InstallationResetActivePublication publication = Publish(
                 previous.OwnerOperationId,
                 previous.Inventory,
@@ -1154,7 +1080,6 @@ public sealed partial class CampaignPathFullInstallationResetCleanupTests
                 await BeginImmediateAsync(),
                 receipt,
                 await MintAuthorityAsync(publication));
-
         }
 
         internal void AdvancePublishedPhase(HostToolsMarkerPairResetPhase phase) =>
@@ -1173,7 +1098,6 @@ public sealed partial class CampaignPathFullInstallationResetCleanupTests
         internal async Task<FullInstallationResetMarkerCleanupAuthority> MintAuthorityAsync(
             InstallationResetActivePublication publication)
         {
-
             MethodInfo? reflected = typeof(HostToolsMarkerPairResetCoordinator).GetMethod(
                 "MintCleanupAuthorityAsync",
                 BindingFlags.Instance | BindingFlags.NonPublic);
@@ -1187,25 +1111,20 @@ public sealed partial class CampaignPathFullInstallationResetCleanupTests
                     method.Invoke(_coordinator, [_heldLock, publication, Token]));
 
             return Value(await task);
-
         }
 
         internal async Task<SqliteTransaction> BeginImmediateAsync()
         {
-
             await using (SqliteCommand command = Connection.CreateCommand())
             {
-
                 command.CommandText = "PRAGMA foreign_keys;";
 
                 _ = await command.ExecuteScalarAsync(Token);
-
             }
 
             return (SqliteTransaction)await Connection.BeginTransactionAsync(
                 System.Data.IsolationLevel.Serializable,
                 Token);
-
         }
 
         internal static string MarkerPathOf(RegisteredRoot root) =>
@@ -1217,7 +1136,6 @@ public sealed partial class CampaignPathFullInstallationResetCleanupTests
         internal async Task<IReadOnlyList<CampaignPathFullResetCleanupChildRow>>
             ReadCommittedChildrenAsync(Guid ownerOperationId)
         {
-
             await using SqliteTransaction transaction = await BeginImmediateAsync();
 
             CampaignPathFullResetCleanupEvidenceStore store = new(
@@ -1231,7 +1149,6 @@ public sealed partial class CampaignPathFullInstallationResetCleanupTests
             await transaction.RollbackAsync(Token);
 
             return children;
-
         }
 
         internal async Task<long> CountCommittedChildrenAsync() =>
@@ -1266,7 +1183,6 @@ public sealed partial class CampaignPathFullInstallationResetCleanupTests
         /// </remarks>
         internal async Task<string> MoveRootAsync(RegisteredRoot root, string leaf)
         {
-
             string moved = Path.Combine(_scratch, leaf);
 
             Directory.Move(root.DisplayPath, moved);
@@ -1280,7 +1196,6 @@ public sealed partial class CampaignPathFullInstallationResetCleanupTests
                 ("$campaign", Canonical(root.CampaignId)));
 
             return moved;
-
         }
 
         internal async Task ReplaceMarkerAsync(
@@ -1290,7 +1205,6 @@ public sealed partial class CampaignPathFullInstallationResetCleanupTests
             ulong rootVolumeId,
             ulong rootFileId)
         {
-
             Result<byte[]> encoded = Codec.Encode(
                 new CampaignPathMarkerContent(
                     CampaignPathMarkerPolicy.Version,
@@ -1308,12 +1222,10 @@ public sealed partial class CampaignPathFullInstallationResetCleanupTests
                 Path.Combine(root.DisplayPath, ".arcanum", "campaign-root.marker"),
                 encoded.Value,
                 Token);
-
         }
 
         internal async Task<RegisteredRoot> AddMarkedRootAsync(string leaf)
         {
-
             Guid campaignId = Guid.NewGuid();
 
             long revision = 3;
@@ -1402,12 +1314,10 @@ public sealed partial class CampaignPathFullInstallationResetCleanupTests
                 new CovenantDigest(SHA256.HashData(encoded.Value)),
                 metadata.Identity.VolumeId,
                 metadata.Identity.FileId);
-
         }
 
         public async ValueTask DisposeAsync()
         {
-
             _heldLock.Dispose();
 
             await _database.DisposeAsync();
@@ -1420,7 +1330,6 @@ public sealed partial class CampaignPathFullInstallationResetCleanupTests
             {
                 // A leftover scratch directory is not worth failing a suite over.
             }
-
         }
 
         /// <summary>
@@ -1438,33 +1347,27 @@ public sealed partial class CampaignPathFullInstallationResetCleanupTests
 
         private async Task<long> ScalarAsync(string sql)
         {
-
             await using SqliteCommand command = Connection.CreateCommand();
 
             command.CommandText = sql;
 
             return Convert.ToInt64(await command.ExecuteScalarAsync(Token), provider: null);
-
         }
 
         private async Task ExecuteAsync(
             string sql,
             params (string Name, object Value)[] parameters)
         {
-
             await using SqliteCommand command = Connection.CreateCommand();
 
             command.CommandText = sql;
 
             foreach ((string name, object value) in parameters)
             {
-
                 _ = command.Parameters.AddWithValue(name, value);
-
             }
 
             _ = await command.ExecuteNonQueryAsync(Token);
-
         }
 
         private static HostToolsMarkerPairResetCheckpointV1 CheckpointOf(
@@ -1480,7 +1383,6 @@ public sealed partial class CampaignPathFullInstallationResetCleanupTests
             CampaignPathFullInstallationResetInventory inventory,
             CampaignPathFullInstallationResetCleanupReceipt? receipt)
         {
-
             Guid installation = Guid.Parse("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee");
 
             DateTimeOffset acceptedAtUtc = new(2026, 8, 22, 12, 0, 0, TimeSpan.Zero);
@@ -1598,7 +1500,6 @@ public sealed partial class CampaignPathFullInstallationResetCleanupTests
             _store.Current = publication;
 
             return publication;
-
         }
 
         private static FullInstallationResetExternalRemediationAttestation Attestation(
@@ -1636,13 +1537,11 @@ public sealed partial class CampaignPathFullInstallationResetCleanupTests
                 Digest(0x5A),
                 Digest(0x23),
                 Digest(0x25));
-
     }
 
     private sealed class RecordingRecoveryKeyProvider(bool available)
         : ICampaignRootIdentityRecoveryKeyProvider
     {
-
         private static readonly byte[] Key = Convert.FromHexString(
             "000102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F");
 
@@ -1650,48 +1549,36 @@ public sealed partial class CampaignPathFullInstallationResetCleanupTests
 
         public bool TryCopyExistingRootIdentityKey(Span<byte> destination)
         {
-
             Calls++;
 
             if (!available || destination.Length != Key.Length)
             {
-
                 return false;
-
             }
 
             Key.CopyTo(destination);
 
             return true;
-
         }
-
     }
 
     private sealed class StubKeySource(byte[] key) : ICampaignRootIdentityKeyProvider
     {
-
         public bool TryCopyRootIdentityKey(Span<byte> destination)
         {
-
             if (destination.Length < key.Length)
             {
-
                 return false;
-
             }
 
             key.CopyTo(destination);
 
             return true;
-
         }
-
     }
 
     private sealed class ForbiddenConnectionSource : ICovenantConnectionSource
     {
-
         public ValueTask<SqliteConnection> GetOpenConnectionAsync(
             CancellationToken cancellationToken) =>
             throw new InvalidOperationException(
@@ -1701,13 +1588,11 @@ public sealed partial class CampaignPathFullInstallationResetCleanupTests
             CancellationToken cancellationToken) =>
             throw new InvalidOperationException(
                 "The full-reset cleanup must borrow its caller's Core connection.");
-
     }
 
     private sealed class RecordingActiveStore(string guardedRoot)
         : IInstallationResetActiveStore
     {
-
         public string GuardedRoot { get; } = guardedRoot;
 
         internal InstallationResetActivePublication Current { get; set; } = null!;
@@ -1757,14 +1642,12 @@ public sealed partial class CampaignPathFullInstallationResetCleanupTests
             ArcanumMaintenanceLock heldInstallationLock,
             CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
-
     }
 
     private sealed class AcceptingVerifier(
         Func<InstallationResetActivePublication> current)
         : IFullInstallationResetRemediationAttestationVerifier
     {
-
         public bool MatchesAuthenticatedClaim(
             FullInstallationResetExternalRemediationAttestation attestation,
             Guid currentInstallationId,
@@ -1788,7 +1671,6 @@ public sealed partial class CampaignPathFullInstallationResetCleanupTests
             HostProcessToolsMatchedPair persistedPair,
             DateTimeOffset acceptedAtUtc)
         {
-
             FullInstallationResetRemediationClaimV1 claim = Assert.IsType<
                 FullInstallationResetRemediationClaimV1>(
                     current().Payload.FullInstallationResetRemediationClaim);
@@ -1801,35 +1683,28 @@ public sealed partial class CampaignPathFullInstallationResetCleanupTests
                     claim.NonceDigest,
                     claim.IssuerDigest,
                     claim.AcceptedAtUtc));
-
         }
-
     }
 
     private sealed class InertDatabase : IHostToolsMarkerPairResetDatabase
     {
-
         public Task<Result<HostToolsMarkerPairResetDatabaseSession>>
             OpenHostToolsMarkerPairResetDatabaseSessionAsync(
             IStoppedHostGrimoireConnectionAuthority authority,
             CancellationToken cancellationToken) =>
             throw new NotSupportedException();
-
     }
 
     private sealed class InertReadiness : IFullInstallationResetCampaignSchemaReadiness
     {
-
         public Task<Result> RequireExactAsync(
             SqliteConnection liveCoreConnection,
             CancellationToken cancellationToken) =>
             throw new NotSupportedException();
-
     }
 
     private sealed class InertOsPort : IHostToolsMarkerPairResetOsPort
     {
-
         public HostToolsMarkerPairResetOsOpenResult OpenExact() =>
             throw new NotSupportedException();
 
@@ -1846,12 +1721,10 @@ public sealed partial class CampaignPathFullInstallationResetCleanupTests
         public Task<HostToolsMarkerPairResetOsAbsenceStatus> ProveExactAbsenceAsync(
             CancellationToken cancellationToken) =>
             throw new NotSupportedException();
-
     }
 
     private sealed class InertLifecycle : ICampaignPathMarkerLifecycle
     {
-
         public Task<Result<CampaignPathFullInstallationResetInventory>>
             InventoryFullInstallationResetCleanupAsync(
                 Guid ownerOperationId,
@@ -1904,7 +1777,5 @@ public sealed partial class CampaignPathFullInstallationResetCleanupTests
 
         public ValueTask ReleaseRetainedRootsAsync(Guid ownerOperationId) =>
             throw new NotSupportedException();
-
     }
-
 }

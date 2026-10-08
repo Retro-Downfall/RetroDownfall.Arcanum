@@ -215,6 +215,12 @@ public sealed class InstallationResetApiAdmissionTests
 
         builder.Services.AddSingleton(admission);
 
+        // The callback route takes the registry. Recovery mode must answer before it is touched, so the
+        // container knows it as a service (or endpoint building takes it for a request body) and refuses
+        // to build it, which makes a registry access fail this test instead of passing it.
+        builder.Services.AddSingleton<A2ASendingCallbackRegistry>(static _ =>
+            throw new InvalidOperationException("Recovery mode must answer before the callback registry is touched."));
+
         WebApplication app = builder.Build();
 
         app.UseArcanumApiKeyAuthentication();

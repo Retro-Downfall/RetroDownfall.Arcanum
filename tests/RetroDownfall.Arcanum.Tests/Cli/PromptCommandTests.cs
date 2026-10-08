@@ -252,6 +252,220 @@ public sealed class PromptCommandTests
             "The tool-call argument preview emitted an unpaired surrogate.");
     }
 
+    /// <summary>
+    /// A tool call's name and arguments are model-authored, and the summary on stderr is a terminal
+    /// sink, so both are stripped before markup is built around them.
+    /// </summary>
+    [Fact]
+    public void Prompt_execute_strips_terminal_controls_from_the_tool_call_summary()
+    {
+        PromptResponseDto response = new(
+            "done",
+            null,
+            [new PromptToolCall("call-1", "read\u001b]0;pwned\u0007_file", "{\"p\":\"a\u001b]52;c;QUFBQQ==\u0007b\u009b\"}")]);
+
+        RecordingHandler handler = new(_ => CreateResponse(
+            new ApiResponse<PromptResponseDto>(response, true, null),
+            ArcanumJsonContext.Default.ApiResponsePromptResponseDto));
+
+        CliTestResult result = RunCommand(
+            handler,
+            ["prompt", "execute", SampleId.ToString(), "--input", "hello"]);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Contains("read_file", result.Error, StringComparison.Ordinal);
+        Assert.Contains("\"p\":\"ab\"", result.Error, StringComparison.Ordinal);
+        Assert.DoesNotContain('\u001b', result.Error);
+        Assert.DoesNotContain('\u0007', result.Error);
+        Assert.DoesNotContain('\u009b', result.Error);
+    }
+
+    [Fact]
+    public void List_follows_hasMore_until_exhausted()
+    {
+        PromptSummaryDto first = new(Guid.NewGuid(), null, "first-page-prompt", "1", null, [], DateTimeOffset.UtcNow);
+
+        PromptSummaryDto second = new(Guid.NewGuid(), null, "second-page-prompt", "1", null, [], DateTimeOffset.UtcNow);
+
+        RecordingHandler handler = new(request => CreateResponse(
+            new ApiResponse<ListPageResult<PromptSummaryDto>>(
+                request.RequestUri!.Query.Contains("offset=1", StringComparison.Ordinal)
+                    ? new ListPageResult<PromptSummaryDto>([second], false)
+                    : new ListPageResult<PromptSummaryDto>([first], true, NextOffset: 1),
+                true,
+                null),
+            ArcanumJsonContext.Default.ApiResponseListPageResultPromptSummaryDto));
+
+        CliTestResult result = RunCommand(handler, ["prompt", "list"]);
+
+        Assert.Equal(0, result.ExitCode);
+
+        Assert.Equal(2, handler.Requests.Count);
+
+        Assert.Contains("offset=1", handler.Requests[1].RequestUri!.Query, StringComparison.Ordinal);
+
+        Assert.Contains("first-page-prompt", result.Output, StringComparison.Ordinal);
+
+        Assert.Contains("second-page-prompt", result.Output, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The diagnostic names the option the operator typed. It used to name <c>--campaignId</c> and
+    /// <c>--sessionId</c>, spellings the parser has not accepted since the kebab-case rename.
+    /// </summary>
+    [Theory]
+    [InlineData("prompt list --campaign-id not-a-guid", "--campaign-id")]
+    [InlineData("prompt versions greeting --campaign-id not-a-guid", "--campaign-id")]
+    [InlineData("prompt create --name n --version 1 --template t --campaign-id not-a-guid", "--campaign-id")]
+    [InlineData("prompt execute 22222222-2222-2222-2222-222222222222 --input hi --session-id not-a-guid", "--session-id")]
+    public void Invalid_guid_diagnostics_name_the_option_the_operator_typed(string commandLine, string option)
+    {
+        RecordingHandler handler = new();
+
+        CliTestResult result = RunCommand(handler, commandLine.Split(' '));
+
+        Assert.Equal((int)CliExitCode.ConfigurationError, result.ExitCode);
+
+        Assert.Contains(option, result.Error, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("--campaignId", result.Error, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("--sessionId", result.Error, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// <c>prompt import</c> reaches its campaign check only after it has read and parsed the export file, so
+    /// the diagnostic needs a real export to be seen; it names the option typed, and nothing is sent.
+    /// </summary>
+    [Fact]
+    public void Import_with_an_invalid_campaign_id_names_the_option_the_operator_typed()
+    {
+        string file = Path.Combine(Path.GetTempPath(), $"arcanum-prompt-import-{Guid.NewGuid():N}.json");
+
+        File.WriteAllText(file, "{\"name\":\"greeting\",\"version\":\"1\",\"tags\":[],\"template\":\"Hello\"}");
+
+        try
+        {
+            RecordingHandler handler = new();
+
+            CliTestResult result = RunCommand(handler, ["prompt", "import", "--file", file, "--campaign-id", "not-a-guid"]);
+
+            Assert.Equal((int)CliExitCode.ConfigurationError, result.ExitCode);
+
+            Assert.Contains("--campaign-id", result.Error, StringComparison.Ordinal);
+
+            Assert.DoesNotContain("--campaignId", result.Error, StringComparison.Ordinal);
+
+            Assert.Empty(handler.Requests);
+        }
+        finally
+        {
+            File.Delete(file);
+        }
+    }
+
+    [Fact]
+    public void Update_without_any_field_exits_2_and_sends_nothing()
+    {
+        RecordingHandler handler = new();
+
+        CliTestResult result = RunCommand(handler, ["prompt", "update", SampleId.ToString()]);
+
+        Assert.Equal((int)CliExitCode.ConfigurationError, result.ExitCode);
+
+        Assert.Empty(handler.Requests);
+
+        Assert.Contains("--template", result.Error, StringComparison.Ordinal);
+
+        Assert.Contains("--tag", result.Error, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// R-327: <c>prompt export --output</c> over an existing file asks first and a refusal leaves the
+    /// file untouched; a confirmed overwrite goes through a temporary sibling that is not left behind.
+    /// </summary>
+    [Fact]
+    public void Export_prompts_before_overwriting_an_existing_output_file()
+    {
+        string directory = Path.Combine(
+            Path.GetTempPath(),
+            $"arcanum-prompt-export-{Guid.NewGuid():N}");
+
+        Directory.CreateDirectory(directory);
+
+        string output = Path.Combine(directory, "prompt.json");
+
+        File.WriteAllText(output, "original");
+
+        try
+        {
+            RecordingPrompt declined = new(answer: false);
+
+            RecordingHandler declinedHandler = new(_ => PromptExportResponse());
+
+            CliTestResult refused = RunCommand(
+                declinedHandler,
+                ["prompt", "export", SampleId.ToString(), "--output", output],
+                services => UsePrompt(services, declined));
+
+            Assert.Equal(0, refused.ExitCode);
+
+            // The overwrite question is settled before the export is fetched, so a refusal costs no request.
+            Assert.Empty(declinedHandler.Requests);
+
+            Assert.Equal("original", File.ReadAllText(output));
+
+            Assert.Contains(
+                Path.GetFullPath(output),
+                Assert.Single(declined.Questions),
+                StringComparison.Ordinal);
+
+            CliTestResult approved = RunCommand(
+                new RecordingHandler(_ => PromptExportResponse()),
+                ["prompt", "export", SampleId.ToString(), "--output", output],
+                services => UsePrompt(services, new RecordingPrompt(answer: true)));
+
+            Assert.Equal(0, approved.ExitCode);
+
+            Assert.Contains("exported template", File.ReadAllText(output), StringComparison.Ordinal);
+
+            Assert.Equal(
+                ["prompt.json"],
+                Directory.GetFileSystemEntries(directory).Select(Path.GetFileName));
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    private static void UsePrompt(ServiceCollection services, IConfirmationPrompt prompt)
+    {
+        services.RemoveAll<IConfirmationPrompt>();
+
+        services.AddSingleton(prompt);
+    }
+
+    private static HttpResponseMessage PromptExportResponse() =>
+        CreateResponse(
+            new ApiResponse<PromptExportDto>(
+                new PromptExportDto("greeting", "1", null, [], "exported template", null, null, null, null, null, null, null, null),
+                true,
+                null),
+            ArcanumJsonContext.Default.ApiResponsePromptExportDto);
+
+    private sealed class RecordingPrompt(bool answer) : IConfirmationPrompt
+    {
+        public List<string> Questions { get; } = [];
+
+        public Task<bool> PromptForConfirmationAsync(string question, CancellationToken cancellationToken)
+        {
+            Questions.Add(question);
+
+            return Task.FromResult(answer);
+        }
+    }
+
     private static CliTestResult RunCommand(
         RecordingHandler handler,
         string[] args,

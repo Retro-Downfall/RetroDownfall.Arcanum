@@ -9,7 +9,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.ProcessExecution;
 /// </remarks>
 internal sealed class ChildProcessSandboxRequest
 {
-
     /// <summary>Absolute roots granted read + write.</summary>
     internal required IReadOnlyList<string> ReadWriteRoots { get; init; }
 
@@ -51,5 +50,4 @@ internal sealed class ChildProcessSandboxRequest
 
     /// <summary>Canonical package-cache root used to classify a denied sandbox write.</summary>
     internal string? PackageReadOnlyRoot { get; init; }
-
 }

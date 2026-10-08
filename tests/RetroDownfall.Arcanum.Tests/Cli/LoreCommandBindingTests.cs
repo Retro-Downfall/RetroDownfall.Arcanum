@@ -216,6 +216,33 @@ public sealed class LoreCommandBindingTests
         Assert.Contains("\"body\":\"Disk full\"", body, StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// A lore value can be scribed by the model, and the snippet column is a terminal sink, so
+    /// <c>lore list</c> strips the key and the snippet before markup is built around them. The value is
+    /// stripped before it is cut, so a cut cannot leave the tail of a sequence behind as text.
+    /// </summary>
+    [Fact]
+    public void Lore_list_strips_terminal_controls_from_keys_and_snippets()
+    {
+        LoreDto hostile = new("deploy\u001b[2J.notes", "ok\u001b]52;c;QUFBQQ==\u0007value\u009b", DateTime.UtcNow);
+
+        RecordingHandler handler = new(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new ByteArrayContent(JsonSerializer.SerializeToUtf8Bytes(
+                new ApiResponse<ListPageResult<LoreDto>>(new ListPageResult<LoreDto>([hostile], false), true, null),
+                ArcanumJsonContext.Default.ApiResponseListPageResultLoreDto)),
+        });
+
+        CliTestResult result = RunCommand(handler, ["lore", "list"]);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Contains("deploy.notes", result.Output, StringComparison.Ordinal);
+        Assert.Contains("okvalue", result.Output, StringComparison.Ordinal);
+        Assert.DoesNotContain('\u001b', result.Output);
+        Assert.DoesNotContain('\u0007', result.Output);
+        Assert.DoesNotContain('\u009b', result.Output);
+    }
+
     private static RecordingHandler CreateLoreHandler() =>
         new(_ => CreateLoreResponse(new ApiResponse<LoreDto>(
             new LoreDto("ward.color", "cobalt", DateTime.UtcNow),

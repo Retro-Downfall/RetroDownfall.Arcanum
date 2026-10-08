@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using RetroDownfall.Arcanum.Core.Configuration;
@@ -11,7 +12,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
 /// </summary>
 internal static class McpSecurityLimits
 {
-
     public const int MaxMcpConfigBytes = 256 * 1024;
 
     public const int MaxJsonDepth = 64;
@@ -24,6 +24,14 @@ internal static class McpSecurityLimits
 
     public const int MaxMcpToolInputSchemaUtf8Bytes = 64 * 1024;
 
+    /// <summary>
+    /// The code-owned per-message cap (not an <c>Arcanum:Mcp</c> setting), clamped once here. The in-process
+    /// transport and the Streamable HTTP response bound both enforce it, so neither reads the default and
+    /// clamps it on its own.
+    /// </summary>
+    public static int MaxJsonRpcLineBytes =>
+        ArcanumSettingClamps.McpMaxJsonRpcLineBytes(ArcanumRuntimeDefaults.Mcp.MaxJsonRpcLineBytes);
+
     public static readonly JsonDocumentOptions JsonDocumentOptions = new()
     {
         MaxDepth = MaxJsonDepth,
@@ -31,78 +39,110 @@ internal static class McpSecurityLimits
 
     public static bool ExceedsMaxLineUtf8Bytes(string line, int maxJsonRpcLineBytes)
     {
-
         return Encoding.UTF8.GetByteCount(line) > maxJsonRpcLineBytes;
-
     }
 
-    public static string BoundToolDescription(string description)
+    public static string BoundToolDescription(string toolName, string description)
     {
-
         if (string.IsNullOrEmpty(description))
         {
-
             return string.Empty;
-
         }
 
         int bytes = Encoding.UTF8.GetByteCount(description);
 
         if (bytes > MaxMcpToolDescriptionUtf8Bytes)
         {
-
             throw new InvalidDataException(
-                $"The MCP tool description exceeded the physical metadata allocation boundary of {MaxMcpToolDescriptionUtf8Bytes} UTF-8 bytes; the server must publish a smaller description.");
-
+                $"The description of MCP tool '{ToolLabel(toolName)}' is {bytes} UTF-8 bytes, over the physical metadata allocation boundary of {MaxMcpToolDescriptionUtf8Bytes} bytes; the server must publish a smaller description.");
         }
 
         return description;
-
     }
 
-    public static JsonElement BoundToolInputSchema(JsonElement schema, McpJsonSerializerContext json)
+    public static JsonElement BoundToolInputSchema(string toolName, JsonElement schema)
     {
-
         string raw = schema.GetRawText();
 
-        if (Encoding.UTF8.GetByteCount(raw) <= MaxMcpToolInputSchemaUtf8Bytes)
+        int bytes = Encoding.UTF8.GetByteCount(raw);
+
+        if (bytes <= MaxMcpToolInputSchemaUtf8Bytes)
         {
-
             return schema.Clone();
-
         }
 
         throw new InvalidDataException(
-            $"The MCP tool input schema exceeded the physical metadata allocation boundary of {MaxMcpToolInputSchemaUtf8Bytes} UTF-8 bytes; the server must publish a smaller or externally referenced schema.");
-
+            $"The input schema of MCP tool '{ToolLabel(toolName)}' is {bytes} UTF-8 bytes, over the physical metadata allocation boundary of {MaxMcpToolInputSchemaUtf8Bytes} bytes; the server must publish a smaller or externally referenced schema.");
     }
+
+    /// <summary>
+    /// A tool name as an external server chose it, made safe to quote in an error: an over-long name is cut
+    /// at 80 characters, and anything that could break up or disguise the operator-facing message is
+    /// replaced, so a hostile server cannot inject lines, bidirectional text or bulk into it.
+    /// </summary>
+    /// <remarks>
+    /// The name is walked a Unicode scalar at a time, so the cut can never split a surrogate pair, and an
+    /// unpaired surrogate (a JSON <c>\ud800</c> escape the server sent) is already a replacement character
+    /// by the time it is quoted: System.Text.Json refuses to write one, which would break the status
+    /// payload that carries this message. Control, format (zero-width and bidirectional controls), line
+    /// separator and paragraph separator characters become <c>?</c>.
+    /// </remarks>
+    private static string ToolLabel(string toolName)
+    {
+        const int MaxLabelCharacters = 80;
+
+        StringBuilder label = new();
+
+        int characters = 0;
+
+        foreach (Rune rune in (toolName ?? string.Empty).EnumerateRunes())
+        {
+            if (characters == MaxLabelCharacters)
+            {
+                _ = label.Append("...");
+
+                break;
+            }
+
+            _ = IsUnsafeInLabel(rune) ? label.Append('?') : label.Append(rune.ToString());
+
+            characters++;
+        }
+
+        return label.ToString();
+    }
+
+    private static bool IsUnsafeInLabel(Rune rune) =>
+        Rune.GetUnicodeCategory(rune) is
+            UnicodeCategory.Control
+            or UnicodeCategory.Format
+            or UnicodeCategory.LineSeparator
+            or UnicodeCategory.ParagraphSeparator;
 
     public static string TruncateUtf8(string text, long maxUtf8Bytes)
     {
-
         if (string.IsNullOrEmpty(text) || maxUtf8Bytes <= 0L)
         {
-
             return string.Empty;
-
         }
 
         long byteCount = Encoding.UTF8.GetByteCount(text);
 
         if (byteCount <= maxUtf8Bytes)
         {
-
             return text;
-
         }
 
         int safeCharCount = Utf8Truncation.ChooseSafeCharCount(text, maxUtf8Bytes);
 
         string prefix = safeCharCount <= 0 ? string.Empty : text[..safeCharCount];
 
-        return prefix + $"\n[truncated: exceeded {maxUtf8Bytes} bytes]";
-
+        return prefix + TruncationMarker(maxUtf8Bytes);
     }
+
+    /// <summary>The notice appended after text cut to <paramref name="maxUtf8Bytes"/> UTF-8 bytes.</summary>
+    public static string TruncationMarker(long maxUtf8Bytes) =>
+        $"\n[truncated: exceeded {maxUtf8Bytes} bytes]";
 
     public static IReadOnlyDictionary<string, string>? ScrubProcessEnvironment(
         IReadOnlyDictionary<string, string>? source,
@@ -110,25 +150,19 @@ internal static class McpSecurityLimits
         IReadOnlySet<string>? inheritAllowlist = null,
         Func<string, string?>? hostEnvironmentReader = null)
     {
-
         if (stripUserEnvironment)
         {
-
             return BuildChildProcessEnvironment(source, inheritAllowlist, hostEnvironmentReader);
-
         }
 
         if (source is null || source.Count == 0)
         {
-
             return null;
-
         }
 
         Dictionary<string, string> scrubbed = BuildChildProcessEnvironment(source, inheritAllowlist, hostEnvironmentReader);
 
         return scrubbed.Count == 0 ? null : scrubbed;
-
     }
 
     /// <summary>
@@ -146,79 +180,57 @@ internal static class McpSecurityLimits
         IReadOnlySet<string>? inheritAllowlist = null,
         Func<string, string?>? hostEnvironmentReader = null)
     {
-
         Dictionary<string, string> result = new(StringComparer.Ordinal);
 
         if (source is not null)
         {
-
             foreach (KeyValuePair<string, string> kv in source)
             {
-
                 if (string.IsNullOrEmpty(kv.Key))
                 {
-
                     continue;
-
                 }
 
                 if (IsAbsolutelyDeniedEnvironmentVariable(kv.Key))
                 {
-
                     continue;
-
                 }
 
                 if (IsBlockedEnvironmentVariable(kv.Key) && !IsInheritAllowed(kv.Key, inheritAllowlist))
                 {
-
                     continue;
-
                 }
 
                 result[kv.Key] = kv.Value;
-
             }
-
         }
 
         if (inheritAllowlist is { Count: > 0 })
         {
-
             Func<string, string?> reader = hostEnvironmentReader ?? Environment.GetEnvironmentVariable;
 
             foreach (string name in inheritAllowlist)
             {
-
                 if (string.IsNullOrEmpty(name) || result.ContainsKey(name))
                 {
-
                     continue;
-
                 }
 
                 if (IsAbsolutelyDeniedEnvironmentVariable(name))
                 {
-
                     continue;
-
                 }
 
                 string? value = reader(name);
 
                 if (!string.IsNullOrEmpty(value))
                 {
-
                     result[name] = value;
-
                 }
-
             }
-
         }
 
         return result;
-
     }
 
     private static bool IsInheritAllowed(string key, IReadOnlySet<string>? inheritAllowlist) =>
@@ -232,27 +244,20 @@ internal static class McpSecurityLimits
     /// </summary>
     public static bool IsAbsolutelyDeniedEnvironmentVariable(string key)
     {
-
         if (string.IsNullOrEmpty(key))
         {
-
             return true;
-
         }
 
         if (key.StartsWith("ARCANUM_", StringComparison.OrdinalIgnoreCase))
         {
-
             return true;
-
         }
 
         if (key.StartsWith("LD_", StringComparison.OrdinalIgnoreCase)
             || key.StartsWith("DYLD_", StringComparison.OrdinalIgnoreCase))
         {
-
             return true;
-
         }
 
         if (key.Equals("DOTNET_STARTUP_HOOKS", StringComparison.OrdinalIgnoreCase)
@@ -260,9 +265,7 @@ internal static class McpSecurityLimits
             || key.Equals("CORECLR_PROFILER", StringComparison.OrdinalIgnoreCase)
             || key.Equals("CORECLR_ENABLE_PROFILING", StringComparison.OrdinalIgnoreCase))
         {
-
             return true;
-
         }
 
         if (key.Equals("NODE_OPTIONS", StringComparison.OrdinalIgnoreCase)
@@ -285,50 +288,36 @@ internal static class McpSecurityLimits
             || key.Equals("HOSTALIASES", StringComparison.OrdinalIgnoreCase)
             || key.Equals("RES_OPTIONS", StringComparison.OrdinalIgnoreCase))
         {
-
             return true;
-
         }
 
         return false;
-
     }
 
     public static bool IsBlockedEnvironmentVariable(string key)
     {
-
         if (string.IsNullOrEmpty(key))
         {
-
             return true;
-
         }
 
         if (IsAbsolutelyDeniedEnvironmentVariable(key))
         {
-
             return true;
-
         }
 
         if (key.Equals("PATH", StringComparison.OrdinalIgnoreCase))
         {
-
             return true;
-
         }
 
         if (key.Equals("HTTP_PROXY", StringComparison.OrdinalIgnoreCase)
             || key.Equals("HTTPS_PROXY", StringComparison.OrdinalIgnoreCase)
             || key.Equals("ALL_PROXY", StringComparison.OrdinalIgnoreCase))
         {
-
             return true;
-
         }
 
         return false;
-
     }
-
 }

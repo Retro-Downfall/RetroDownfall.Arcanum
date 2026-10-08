@@ -145,7 +145,7 @@ public sealed class HostProcessToolsAdvertisementAfterStartupTests : IAsyncLifet
                     _credentials,
                     covenantEnabled: true);
 
-            await GrimoireDatabaseBootstrapper.EnsureInitializedAsync(
+            await GrimoireDatabaseBootstrapper.EnsureInitializedWithoutInstallationLockForTestsAsync(
                 _secrets,
                 _passphrase,
                 scopes,
@@ -210,9 +210,9 @@ public sealed class HostProcessToolsAdvertisementAfterStartupTests : IAsyncLifet
                 cast.Value.AvailableTools,
                 StringComparer.Ordinal);
 
-            // Handing the binding back restores the answer a process with no gate would give, which
-            // is what keeps this test's refusal from following the rest of the run around.
-            HostProcessToolPolicy.SetStartupDecisionForTests(null);
+            // Binding a permitting decision stands in for a gate that allowed the tools, which
+            // proves the refusal above came from the blocked decision and nothing else.
+            HostProcessToolsEscapeHatchScope.BindPermittingDecision();
 
             Assert.True(HostProcessToolPolicy.AreAllowed(ArcanumEdition.Development));
         }
@@ -276,7 +276,8 @@ public sealed class HostProcessToolsAdvertisementAfterStartupTests : IAsyncLifet
             new SilentEventBus(),
             new UntrustedWorkspaceStore(),
             new FakeHttpClientFactory(),
-            new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings()));
+            new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings()),
+            NullLoggerFactory.Instance);
 
         manager.ConfigureGlobalAdmission(
             new GrimoireConnectionAdmissionGate(TimeProvider.System));
@@ -322,6 +323,7 @@ public sealed class HostProcessToolsAdvertisementAfterStartupTests : IAsyncLifet
 
         public Task TrustAsync(
             string workspaceRootPath,
+            string? expectedSourceDigest = null,
             CancellationToken cancellationToken = default) =>
             Task.CompletedTask;
     }

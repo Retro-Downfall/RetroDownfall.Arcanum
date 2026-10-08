@@ -1,3 +1,5 @@
+using Microsoft.Extensions.Logging;
+
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Security;
@@ -21,11 +23,16 @@ namespace RetroDownfall.Arcanum.Infrastructure.Covenant;
 ///
 /// <para>Cancellation happens outside the lock. <see cref="CancellationTokenSource.Cancel()"/> runs
 /// registered callbacks synchronously on the calling thread, and a consumer callback that reached
-/// back into the gate would deadlock against a lock the canceller still held.</para>
+/// back into the gate would deadlock against a lock the canceller still held. A callback that
+/// <em>throws</em> makes <c>Cancel()</c> throw too, so the gate contains it: the lease is revoked
+/// either way, the fault is logged by a fixed message that says only that a callback faulted, and the
+/// close it belonged to carries on.</para>
+///
+/// <para>That message is the one thing the gate logs. It carries no count, no exception, and never
+/// names a Campaign or any Covenant content.</para>
 /// </remarks>
 internal sealed class CovenantOperationGate : ICovenantOperationGate
 {
-
     private static readonly TimeSpan DefaultDrainTimeout = TimeSpan.FromSeconds(30);
 
     private readonly CovenantRuntimeGenerationProvider _runtime;
@@ -33,6 +40,8 @@ internal sealed class CovenantOperationGate : ICovenantOperationGate
     private readonly ICovenantCampaignScopeProbe _campaigns;
 
     private readonly TimeSpan _drainTimeout;
+
+    private readonly ILogger<CovenantOperationGate> _logger;
 
     private readonly Lock _sync = new();
 
@@ -49,12 +58,14 @@ internal sealed class CovenantOperationGate : ICovenantOperationGate
     internal CovenantOperationGate(
         CovenantRuntimeGenerationProvider runtime,
         ICovenantCampaignScopeProbe campaigns,
+        ILogger<CovenantOperationGate> logger,
         TimeSpan? drainTimeout = null)
     {
-
         ArgumentNullException.ThrowIfNull(runtime);
 
         ArgumentNullException.ThrowIfNull(campaigns);
+
+        ArgumentNullException.ThrowIfNull(logger);
 
         _runtime = runtime;
 
@@ -62,7 +73,14 @@ internal sealed class CovenantOperationGate : ICovenantOperationGate
 
         _drainTimeout = drainTimeout ?? DefaultDrainTimeout;
 
+        _logger = logger;
     }
+
+    /// <summary>
+    /// Runs inside the gate's lock after a close has drained and before it builds its registration, or
+    /// <see langword="null"/>. A seam so a test can fault that window, which nothing else can reach.
+    /// </summary>
+    internal Action? AfterDrainForTesting { get; init; }
 
     /// <summary>
     /// Live ordinary registrations. Exclusive registrations are tracked on their closure instead, so
@@ -70,19 +88,13 @@ internal sealed class CovenantOperationGate : ICovenantOperationGate
     /// </summary>
     internal int LiveRegistrationCount
     {
-
         get
         {
-
             lock (_sync)
             {
-
                 return _registrations.Count;
-
             }
-
         }
-
     }
 
     /// <summary>
@@ -150,7 +162,6 @@ internal sealed class CovenantOperationGate : ICovenantOperationGate
         CanonicalCampaignContext campaign,
         CancellationToken cancellationToken)
     {
-
         CovenantOperationScope scope = campaign.IsCampaignBound
             ? CovenantOperationScope.ForCampaign(campaign.CampaignId!.Value)
             : CovenantOperationScope.Global;
@@ -163,7 +174,6 @@ internal sealed class CovenantOperationGate : ICovenantOperationGate
                 campaign.PathIdentityRevision,
                 cancellationToken,
                 static registration => new CovenantTurnLease(registration)));
-
     }
 
     public ValueTask<Result<CovenantMcpLease>> AcquireMcpAsync(
@@ -206,29 +216,22 @@ internal sealed class CovenantOperationGate : ICovenantOperationGate
         CovenantExclusiveRecoveryOwner owner,
         CancellationToken cancellationToken)
     {
-
         if (owner.Operation is not CovenantExclusiveOperation.CampaignPathMutation
             and not CovenantExclusiveOperation.CampaignDelete)
         {
-
             return ForbiddenOperationShape();
-
         }
 
         if (campaignId == Guid.Empty)
         {
-
             return new Error(ErrorCodes.Covenant.InvalidScope, "A Campaign-exclusive operation requires a Campaign identity.");
-
         }
 
         Result campaignPresent = await RequireLiveCampaignAsync(campaignId, cancellationToken).ConfigureAwait(false);
 
         if (campaignPresent.IsFailure)
         {
-
             return campaignPresent.Error;
-
         }
 
         return await AcquireExclusiveCoreAsync(
@@ -239,7 +242,6 @@ internal sealed class CovenantOperationGate : ICovenantOperationGate
                 cancellationToken,
                 static registration => new CovenantCampaignExclusiveLease(registration))
             .ConfigureAwait(false);
-
     }
 
     public async ValueTask<Result<CovenantProtectedTransferLease>> AcquireProtectedTransferAsync(
@@ -247,19 +249,15 @@ internal sealed class CovenantOperationGate : ICovenantOperationGate
         CovenantExclusiveRecoveryOwner owner,
         CancellationToken cancellationToken)
     {
-
         if (owner.Operation != CovenantExclusiveOperation.ProtectedSessionTransfer)
         {
-
             return ForbiddenOperationShape();
-
         }
 
         CovenantOperationScope operationScope = scope.ToOperationScope();
 
         if (operationScope.Kind == CovenantScope.Campaign)
         {
-
             Result campaignPresent = await RequireLiveCampaignAsync(
                     operationScope.CampaignId!.Value,
                     cancellationToken)
@@ -267,11 +265,8 @@ internal sealed class CovenantOperationGate : ICovenantOperationGate
 
             if (campaignPresent.IsFailure)
             {
-
                 return campaignPresent.Error;
-
             }
-
         }
 
         return await AcquireExclusiveCoreAsync(
@@ -282,7 +277,6 @@ internal sealed class CovenantOperationGate : ICovenantOperationGate
                 cancellationToken,
                 static registration => new CovenantProtectedTransferLease(registration))
             .ConfigureAwait(false);
-
     }
 
     public async ValueTask<Result<CovenantEntryErasureLease>> AcquireEntryErasureAsync(
@@ -291,26 +285,20 @@ internal sealed class CovenantOperationGate : ICovenantOperationGate
         CovenantExclusiveRecoveryOwner owner,
         CancellationToken cancellationToken)
     {
-
         if (owner.Operation != CovenantExclusiveOperation.CovenantEntryErasure)
         {
-
             return ForbiddenOperationShape();
-
         }
 
         if (!entryScope.IsInitialized)
         {
-
             return new Error(ErrorCodes.Covenant.InvalidScope, "An entry erasure requires the entry's validated scope.");
-
         }
 
         // A Campaign entry names its Campaign whichever slot it closes: an erase that reclaims the key
         // still deletes that Campaign's rows, and a deleted Campaign has nothing left to erase.
         if (entryScope.Kind == CovenantScope.Campaign)
         {
-
             Result campaignPresent = await RequireLiveCampaignAsync(
                     entryScope.CampaignId!.Value,
                     cancellationToken)
@@ -318,11 +306,8 @@ internal sealed class CovenantOperationGate : ICovenantOperationGate
 
             if (campaignPresent.IsFailure)
             {
-
                 return campaignPresent.Error;
-
             }
-
         }
 
         // Only a Campaign entry that keeps its key is confined to its Campaign. Every Campaign's turns
@@ -338,19 +323,15 @@ internal sealed class CovenantOperationGate : ICovenantOperationGate
                 cancellationToken,
                 static registration => new CovenantEntryErasureLease(registration))
             .ConfigureAwait(false);
-
     }
 
     public ValueTask<Result<CovenantExclusiveLease>> AcquireExclusiveAsync(
         CovenantExclusiveRecoveryOwner owner,
         CancellationToken cancellationToken)
     {
-
         if (!IsInstallationOperation(owner.Operation))
         {
-
             return ValueTask.FromResult<Result<CovenantExclusiveLease>>(ForbiddenOperationShape());
-
         }
 
         return AcquireExclusiveCoreAsync(
@@ -360,23 +341,18 @@ internal sealed class CovenantOperationGate : ICovenantOperationGate
             owner,
             cancellationToken,
             static registration => new CovenantExclusiveLease(registration));
-
     }
 
     public ValueTask<Result<CovenantExclusiveLease>> ResumeOrAcquireExclusiveAsync(
         CovenantExclusiveRecoveryOwner owner,
         CancellationToken cancellationToken)
     {
-
         if (!IsInstallationOperation(owner.Operation))
         {
-
             return ValueTask.FromResult<Result<CovenantExclusiveLease>>(ForbiddenOperationShape());
-
         }
 
         return ResumeOrAcquireInstallationAsync(owner, cancellationToken);
-
     }
 
     public ValueTask<Result<CovenantCampaignExclusiveLease>> ResumeCampaignExclusiveAsync(
@@ -384,15 +360,12 @@ internal sealed class CovenantOperationGate : ICovenantOperationGate
         CovenantExclusiveRecoveryOwner owner,
         CancellationToken cancellationToken)
     {
-
         cancellationToken.ThrowIfCancellationRequested();
 
         if (owner.Operation is not CovenantExclusiveOperation.CampaignPathMutation
             and not CovenantExclusiveOperation.CampaignDelete)
         {
-
             return ValueTask.FromResult<Result<CovenantCampaignExclusiveLease>>(ForbiddenOperationShape());
-
         }
 
         return ValueTask.FromResult(
@@ -401,7 +374,6 @@ internal sealed class CovenantOperationGate : ICovenantOperationGate
                 campaignId,
                 owner,
                 static registration => new CovenantCampaignExclusiveLease(registration)));
-
     }
 
     public ValueTask<Result<CovenantProtectedTransferLease>> ResumeProtectedTransferAsync(
@@ -409,14 +381,11 @@ internal sealed class CovenantOperationGate : ICovenantOperationGate
         CovenantExclusiveRecoveryOwner owner,
         CancellationToken cancellationToken)
     {
-
         cancellationToken.ThrowIfCancellationRequested();
 
         if (owner.Operation != CovenantExclusiveOperation.ProtectedSessionTransfer)
         {
-
             return ValueTask.FromResult<Result<CovenantProtectedTransferLease>>(ForbiddenOperationShape());
-
         }
 
         CovenantOperationScope operationScope = scope.ToOperationScope();
@@ -427,21 +396,17 @@ internal sealed class CovenantOperationGate : ICovenantOperationGate
                 operationScope.CampaignId,
                 owner,
                 static registration => new CovenantProtectedTransferLease(registration)));
-
     }
 
     public ValueTask<Result<CovenantExclusiveLease>> ResumeExclusiveAsync(
         CovenantExclusiveRecoveryOwner owner,
         CancellationToken cancellationToken)
     {
-
         cancellationToken.ThrowIfCancellationRequested();
 
         if (!IsInstallationOperation(owner.Operation))
         {
-
             return ValueTask.FromResult<Result<CovenantExclusiveLease>>(ForbiddenOperationShape());
-
         }
 
         return ValueTask.FromResult(
@@ -450,7 +415,6 @@ internal sealed class CovenantOperationGate : ICovenantOperationGate
                 campaignId: null,
                 owner,
                 static registration => new CovenantExclusiveLease(registration)));
-
     }
 
     /// <summary>
@@ -468,44 +432,32 @@ internal sealed class CovenantOperationGate : ICovenantOperationGate
         CovenantOperationScope? scope,
         bool cleanupOnlyHistoricalCampaign)
     {
-
         if (!owner.IsValid)
         {
-
             throw new ArgumentException("A durable recovery owner must be fully populated.", nameof(owner));
-
         }
 
         (ClosureSlot slot, CovenantLeaseKind leaseKind) = ClassifyOwner(owner, scope);
 
         lock (_sync)
         {
-
             if (_readinessPublished)
             {
-
                 throw new InvalidOperationException(
                     "Covenant recovery ownership cannot be reconstructed after readiness has been published.");
-
             }
 
             Closure closure = new(owner, slot, scope, leaseKind)
             {
-
                 CleanupOnlyHistoricalCampaign = cleanupOnlyHistoricalCampaign,
-
             };
 
             if (!TryInstallClosure(closure))
             {
-
                 throw new InvalidOperationException(
                     "Another Covenant recovery owner already holds this scope.");
-
             }
-
         }
-
     }
 
     /// <summary>
@@ -514,14 +466,10 @@ internal sealed class CovenantOperationGate : ICovenantOperationGate
     /// </summary>
     internal void PublishReadiness()
     {
-
         lock (_sync)
         {
-
             _readinessPublished = true;
-
         }
-
     }
 
     private static Error ForbiddenOperationShape() =>
@@ -549,10 +497,8 @@ internal sealed class CovenantOperationGate : ICovenantOperationGate
         CovenantExclusiveRecoveryOwner owner,
         CovenantOperationScope? scope)
     {
-
         switch (owner.Operation)
         {
-
             case CovenantExclusiveOperation.CovenantEntryErasure:
 
                 throw new ArgumentException(
@@ -564,11 +510,9 @@ internal sealed class CovenantOperationGate : ICovenantOperationGate
 
                 if (scope is not { Kind: CovenantScope.Campaign })
                 {
-
                     throw new ArgumentException(
                         "A Campaign-exclusive recovery owner requires a Campaign scope.",
                         nameof(scope));
-
                 }
 
                 return (ClosureSlot.Campaign, CovenantLeaseKind.CampaignExclusive);
@@ -577,11 +521,9 @@ internal sealed class CovenantOperationGate : ICovenantOperationGate
 
                 if (scope is not { IsInitialized: true })
                 {
-
                     throw new ArgumentException(
                         "A protected-transfer recovery owner requires a validated transfer scope.",
                         nameof(scope));
-
                 }
 
                 return (
@@ -592,42 +534,33 @@ internal sealed class CovenantOperationGate : ICovenantOperationGate
 
                 if (!IsInstallationOperation(owner.Operation))
                 {
-
                     throw new ArgumentOutOfRangeException(
                         nameof(owner),
                         "This exclusive operation code has no durable recovery classification.");
-
                 }
 
                 if (scope is not null)
                 {
-
                     throw new ArgumentException(
                         "An installation-wide recovery owner carries no persisted scope.",
                         nameof(scope));
-
                 }
 
                 return (ClosureSlot.Installation, CovenantLeaseKind.Exclusive);
-
         }
-
     }
 
     private async ValueTask<Result> RequireLiveCampaignAsync(
         Guid campaignId,
         CancellationToken cancellationToken)
     {
-
         Result<CovenantCampaignScopeState> state = await _campaigns
             .ResolveAsync(campaignId, cancellationToken)
             .ConfigureAwait(false);
 
         if (state.IsFailure)
         {
-
             return state.Error;
-
         }
 
         // Deleted and Unknown refuse the same acquisition but are not the same diagnosis: a
@@ -645,7 +578,6 @@ internal sealed class CovenantOperationGate : ICovenantOperationGate
                 ErrorCodes.Covenant.NotFound,
                 "The Campaign this exclusive operation names is not live on this installation."),
         };
-
     }
 
     private Result<TLease> AcquireOrdinary<TLease>(
@@ -657,23 +589,18 @@ internal sealed class CovenantOperationGate : ICovenantOperationGate
         Func<ICovenantLeaseRegistration, TLease> create)
         where TLease : CovenantOperationLease
     {
-
         cancellationToken.ThrowIfCancellationRequested();
 
         if (scope is { IsInitialized: false })
         {
-
             return new Error(ErrorCodes.Covenant.InvalidScope, "An uninitialized Covenant operation scope cannot be leased.");
-
         }
 
         Result<GateFacts> facts = CaptureFacts(requireCanonical: true);
 
         if (facts.IsFailure)
         {
-
             return facts.Error;
-
         }
 
         CovenantLeaseCoverage coverage = scope is null
@@ -684,14 +611,11 @@ internal sealed class CovenantOperationGate : ICovenantOperationGate
 
         lock (_sync)
         {
-
             if (IsAcquisitionBlocked(coverage, scope))
             {
-
                 return new Error(
                     ErrorCodes.Covenant.Unavailable,
                     "A Covenant operation is closing this scope, so no new lease may be taken over it.");
-
             }
 
             registration = new ScopedRegistration(
@@ -718,11 +642,9 @@ internal sealed class CovenantOperationGate : ICovenantOperationGate
                     CleanupOnlyHistoricalCampaign: false));
 
             _registrations.Add(registration.Snapshot.RegistrationId, registration);
-
         }
 
         return create(registration);
-
     }
 
     private async ValueTask<Result<TLease>> AcquireExclusiveCoreAsync<TLease>(
@@ -734,7 +656,6 @@ internal sealed class CovenantOperationGate : ICovenantOperationGate
         Func<ICovenantExclusiveLeaseRegistration, TLease> create)
         where TLease : CovenantExclusiveOperationLease
     {
-
         cancellationToken.ThrowIfCancellationRequested();
 
         // An exclusive operation may be exactly the thing that repairs an unhealthy canonical tier,
@@ -743,9 +664,7 @@ internal sealed class CovenantOperationGate : ICovenantOperationGate
 
         if (facts.IsFailure)
         {
-
             return facts.Error;
-
         }
 
         Closure closure = new(owner, slot, scope, leaseKind);
@@ -756,62 +675,24 @@ internal sealed class CovenantOperationGate : ICovenantOperationGate
 
         lock (_sync)
         {
-
             if (!TryInstallClosure(closure))
             {
-
                 return new Error(
                     ErrorCodes.Covenant.Unavailable,
                     "Another Covenant operation already owns this scope.");
-
             }
 
             draining = [.. _registrations.Values.Where(closure.Covers)];
-
         }
 
-        // Outside the lock: cancellation runs consumer callbacks synchronously.
-        foreach (ScopedRegistration registration in draining)
+        Error? refused = await RevokeAndDrainAsync(closure, draining, cancellationToken).ConfigureAwait(false);
+
+        if (refused is { } drainFailure)
         {
-
-            registration.RequestRevocation();
-
+            return drainFailure;
         }
 
-        bool drained = await DrainAsync(draining, cancellationToken).ConfigureAwait(false);
-
-        if (!drained)
-        {
-
-            lock (_sync)
-            {
-
-                RemoveClosure(closure);
-
-            }
-
-            return new Error(
-                ErrorCodes.Covenant.MaintenanceFailed,
-                "Covenant leases over this scope did not drain within the operation bound, so nothing was changed.");
-
-        }
-
-        lock (_sync)
-        {
-
-            ExclusiveRegistration registration = new(
-                this,
-                closure,
-                BuildExclusiveSnapshot(closure, facts.Value));
-
-            closure.LiveRegistration = registration;
-
-            closure.AcquisitionInProgress = false;
-
-            return create(registration);
-
-        }
-
+        return InstallExclusiveRegistration(closure, facts.Value, create);
     }
 
     private Result<TLease> Resume<TLease>(
@@ -821,28 +702,22 @@ internal sealed class CovenantOperationGate : ICovenantOperationGate
         Func<ICovenantExclusiveLeaseRegistration, TLease> create)
         where TLease : CovenantExclusiveOperationLease
     {
-
         lock (_sync)
         {
-
             Closure? closure = FindClosure(slot, campaignId);
 
             if (closure is null || closure.Owner != owner)
             {
-
                 return new Error(
                     ErrorCodes.Covenant.ManualRecoveryRequired,
                     "No Covenant operation with this exact recovery identity holds this scope closed.");
-
             }
 
             if (closure.LiveRegistration is not null || closure.AcquisitionInProgress)
             {
-
                 return new Error(
                     ErrorCodes.Covenant.LifecycleConflict,
                     "This closed Covenant scope already has a live recovery lease.");
-
             }
 
             // Match the gate's exact durable closure before consulting the runtime's retired marker.
@@ -851,9 +726,7 @@ internal sealed class CovenantOperationGate : ICovenantOperationGate
 
             if (facts.IsFailure)
             {
-
                 return facts.Error;
-
             }
 
             ExclusiveRegistration registration = new(
@@ -864,16 +737,13 @@ internal sealed class CovenantOperationGate : ICovenantOperationGate
             closure.LiveRegistration = registration;
 
             return create(registration);
-
         }
-
     }
 
     private async ValueTask<Result<CovenantExclusiveLease>> ResumeOrAcquireInstallationAsync(
         CovenantExclusiveRecoveryOwner owner,
         CancellationToken cancellationToken)
     {
-
         cancellationToken.ThrowIfCancellationRequested();
 
         Result<GateFacts> acquisitionFacts;
@@ -884,37 +754,29 @@ internal sealed class CovenantOperationGate : ICovenantOperationGate
 
         lock (_sync)
         {
-
             Closure? existing = FindClosure(ClosureSlot.Installation, campaignId: null);
 
             if (existing is not null)
             {
-
                 if (existing.Owner != owner)
                 {
-
                     return new Error(
                         ErrorCodes.Covenant.ManualRecoveryRequired,
                         "Another Covenant recovery owner already holds this scope closed.");
-
                 }
 
                 if (existing.LiveRegistration is not null || existing.AcquisitionInProgress)
                 {
-
                     return new Error(
                         ErrorCodes.Covenant.LifecycleConflict,
                         "This closed Covenant scope already has a live recovery lease.");
-
                 }
 
                 Result<GateFacts> recoveryFacts = CaptureFacts(requireCanonical: false, owner);
 
                 if (recoveryFacts.IsFailure)
                 {
-
                     return recoveryFacts.Error;
-
                 }
 
                 ExclusiveRegistration resumed = new(
@@ -925,16 +787,13 @@ internal sealed class CovenantOperationGate : ICovenantOperationGate
                 existing.LiveRegistration = resumed;
 
                 return new CovenantExclusiveLease(resumed);
-
             }
 
             acquisitionFacts = CaptureFacts(requireCanonical: false);
 
             if (acquisitionFacts.IsFailure)
             {
-
                 return acquisitionFacts.Error;
-
             }
 
             acquiredClosure = new Closure(
@@ -943,65 +802,72 @@ internal sealed class CovenantOperationGate : ICovenantOperationGate
                 scope: null,
                 CovenantLeaseKind.Exclusive)
             {
-
                 AcquisitionInProgress = true,
-
             };
 
             if (!TryInstallClosure(acquiredClosure))
             {
-
                 return new Error(
                     ErrorCodes.Covenant.Unavailable,
                     "Another Covenant operation already owns this scope.");
-
             }
 
             draining = [.. _registrations.Values.Where(acquiredClosure.Covers)];
-
         }
 
-        foreach (ScopedRegistration registration in draining)
+        Error? refused = await RevokeAndDrainAsync(acquiredClosure, draining, cancellationToken).ConfigureAwait(false);
+
+        if (refused is { } drainFailure)
         {
-
-            registration.RequestRevocation();
-
+            return drainFailure;
         }
 
-        bool drained = await DrainAsync(draining, cancellationToken).ConfigureAwait(false);
+        return InstallExclusiveRegistration(
+            acquiredClosure,
+            acquisitionFacts.Value,
+            static registration => new CovenantExclusiveLease(registration));
+    }
 
-        if (!drained)
-        {
-
-            lock (_sync)
-            {
-
-                RemoveClosure(acquiredClosure);
-
-            }
-
-            return new Error(
-                ErrorCodes.Covenant.MaintenanceFailed,
-                "Covenant leases over this scope did not drain within the operation bound, so nothing was changed.");
-
-        }
-
+    /// <summary>
+    /// Turns a drained closure into the live exclusive registration and its lease, and removes the closure
+    /// if anything in that window throws.
+    /// </summary>
+    /// <remarks>
+    /// The drain's own cleanup does not cover this lock block, and a closure that outlives its acquisition
+    /// only by completing it would otherwise stay installed for good. No consumer callback runs here
+    /// (revocation finished before the drain), so, unlike the revocation path, the removal can happen
+    /// inside the lock without a callback having to re-enter it.
+    /// </remarks>
+    private TLease InstallExclusiveRegistration<TLease>(
+        Closure closure,
+        GateFacts facts,
+        Func<ICovenantExclusiveLeaseRegistration, TLease> create)
+        where TLease : CovenantExclusiveOperationLease
+    {
         lock (_sync)
         {
+            try
+            {
+                AfterDrainForTesting?.Invoke();
 
-            ExclusiveRegistration registration = new(
-                this,
-                acquiredClosure,
-                BuildExclusiveSnapshot(acquiredClosure, acquisitionFacts.Value));
+                ExclusiveRegistration registration = new(
+                    this,
+                    closure,
+                    BuildExclusiveSnapshot(closure, facts));
 
-            acquiredClosure.LiveRegistration = registration;
+                closure.LiveRegistration = registration;
 
-            acquiredClosure.AcquisitionInProgress = false;
+                closure.AcquisitionInProgress = false;
 
-            return new CovenantExclusiveLease(registration);
+                return create(registration);
+            }
+            catch
+            {
+                RemoveClosure(closure);
 
+                throw;
+            }
         }
-
     }
 
     private static CovenantOperationLeaseSnapshot BuildExclusiveSnapshot(Closure closure, GateFacts facts) =>
@@ -1022,82 +888,114 @@ internal sealed class CovenantOperationGate : ICovenantOperationGate
             RecoveryOwner: closure.Owner,
             CleanupOnlyHistoricalCampaign: closure.CleanupOnlyHistoricalCampaign);
 
+    /// <summary>
+    /// Revokes every registration the closure covers and waits for them to release, and leaves no closure
+    /// installed unless every one of them did.
+    /// </summary>
+    /// <returns>
+    /// <see langword="null"/> when the scope drained; otherwise the refusal, after the closure was removed.
+    /// </returns>
+    /// <exception cref="OperationCanceledException">
+    /// The caller's token fired while draining. That is the caller giving up, not a maintenance failure, so
+    /// it is not turned into a result; the closure is removed first.
+    /// </exception>
+    private async ValueTask<Error?> RevokeAndDrainAsync(
+        Closure closure,
+        List<ScopedRegistration> draining,
+        CancellationToken cancellationToken)
+    {
+        bool drained;
+
+        try
+        {
+            // Outside the lock: cancellation runs consumer callbacks synchronously. A faulty callback is
+            // contained inside RequestRevocation, so it cannot abort the close from here.
+            foreach (ScopedRegistration registration in draining)
+            {
+                registration.RequestRevocation();
+            }
+
+            drained = await DrainAsync(draining, cancellationToken).ConfigureAwait(false);
+        }
+        catch
+        {
+            // A closure outlives its acquisition only by completing it. Cleaned up after the callbacks
+            // above have finished running, never inside the lock they would have to re-enter.
+            lock (_sync)
+            {
+                RemoveClosure(closure);
+            }
+
+            throw;
+        }
+
+        if (drained)
+        {
+            return null;
+        }
+
+        lock (_sync)
+        {
+            RemoveClosure(closure);
+        }
+
+        return new Error(
+            ErrorCodes.Covenant.MaintenanceFailed,
+            "Covenant leases over this scope did not drain within the operation bound. The in-flight Covenant work over this scope was cancelled, and the operation did not start.");
+    }
+
     private async Task<bool> DrainAsync(
         List<ScopedRegistration> draining,
         CancellationToken cancellationToken)
     {
-
         if (draining.Count == 0)
         {
-
             return true;
-
         }
 
         try
         {
-
             await Task.WhenAll(draining.Select(static registration => registration.Released))
                 .WaitAsync(_drainTimeout, cancellationToken)
                 .ConfigureAwait(false);
 
             return true;
-
         }
         catch (TimeoutException)
         {
-
             return false;
-
         }
-        catch (OperationCanceledException)
-        {
-
-            return false;
-
-        }
-
     }
 
     private bool IsAcquisitionBlocked(CovenantLeaseCoverage coverage, CovenantOperationScope? scope)
     {
-
         if (_installationClosure is not null)
         {
-
             return true;
-
         }
 
         if (coverage == CovenantLeaseCoverage.Installation)
         {
-
             // Installation coverage spans every scope, so any pending close excludes it.
             return _globalScopeClosure is not null || _campaignClosures.Count > 0;
-
         }
 
         return scope!.Value.Kind == CovenantScope.Global
             ? _globalScopeClosure is not null
             : _campaignClosures.ContainsKey(scope.Value.CampaignId!.Value);
-
     }
 
     private bool TryInstallClosure(Closure closure)
     {
-
         switch (closure.Slot)
         {
-
             case ClosureSlot.Installation:
 
                 if (_installationClosure is not null
                     || _globalScopeClosure is not null
                     || _campaignClosures.Count > 0)
                 {
-
                     return false;
-
                 }
 
                 _installationClosure = closure;
@@ -1108,9 +1006,7 @@ internal sealed class CovenantOperationGate : ICovenantOperationGate
 
                 if (_installationClosure is not null || _globalScopeClosure is not null)
                 {
-
                     return false;
-
                 }
 
                 _globalScopeClosure = closure;
@@ -1123,32 +1019,24 @@ internal sealed class CovenantOperationGate : ICovenantOperationGate
 
                 if (_installationClosure is not null || _campaignClosures.ContainsKey(campaignId))
                 {
-
                     return false;
-
                 }
 
                 _campaignClosures.Add(campaignId, closure);
 
                 return true;
-
         }
-
     }
 
     private void RemoveClosure(Closure closure)
     {
-
         switch (closure.Slot)
         {
-
             case ClosureSlot.Installation:
 
                 if (ReferenceEquals(_installationClosure, closure))
                 {
-
                     _installationClosure = null;
-
                 }
 
                 break;
@@ -1157,9 +1045,7 @@ internal sealed class CovenantOperationGate : ICovenantOperationGate
 
                 if (ReferenceEquals(_globalScopeClosure, closure))
                 {
-
                     _globalScopeClosure = null;
-
                 }
 
                 break;
@@ -1171,15 +1057,11 @@ internal sealed class CovenantOperationGate : ICovenantOperationGate
                 if (_campaignClosures.TryGetValue(campaignId, out Closure? existing)
                     && ReferenceEquals(existing, closure))
                 {
-
                     _ = _campaignClosures.Remove(campaignId);
-
                 }
 
                 break;
-
         }
-
     }
 
     private Closure? FindClosure(ClosureSlot slot, Guid? campaignId) =>
@@ -1198,7 +1080,6 @@ internal sealed class CovenantOperationGate : ICovenantOperationGate
         bool requireCanonical,
         CovenantExclusiveRecoveryOwner? recoveryOwner = null)
     {
-
         CovenantRuntimeGenerationState state = _runtime.Current;
 
         CovenantAuthoritySnapshot? authority = state.ActiveAuthority;
@@ -1208,18 +1089,14 @@ internal sealed class CovenantOperationGate : ICovenantOperationGate
             && state.AuthorityRetired
             && state.RecoveryOwner == owner)
         {
-
             authority = state.AuthoritySlot;
-
         }
 
         if (authority is null)
         {
-
             return new Error(
                 ErrorCodes.Covenant.OperatorAuthorityUnavailable,
                 "Installation authority has not been established, so no Covenant lease can be bound to it.");
-
         }
 
         CovenantAvailabilitySnapshot availability = state.Availability;
@@ -1228,11 +1105,9 @@ internal sealed class CovenantOperationGate : ICovenantOperationGate
             && (availability.Canonical != CovenantCapabilityState.Healthy
                 || availability.DatasetGeneration is null))
         {
-
             return new Error(
                 ErrorCodes.Covenant.Unavailable,
                 "The Covenant canonical tier is not healthy, so no ordinary lease can be taken over it.");
-
         }
 
         return new GateFacts(
@@ -1243,12 +1118,10 @@ internal sealed class CovenantOperationGate : ICovenantOperationGate
             availability.CanonicalSequence,
             availability.AcceleratorEpoch,
             availability.AppliedCampaignDeletionSequence);
-
     }
 
     private Result Revalidate(CovenantOperationLeaseSnapshot snapshot, bool exclusive)
     {
-
         CovenantRuntimeGenerationState state = _runtime.Current;
 
         CovenantAuthoritySnapshot? authority = state.ActiveAuthority;
@@ -1259,133 +1132,100 @@ internal sealed class CovenantOperationGate : ICovenantOperationGate
             && state.AuthorityRetired
             && state.RecoveryOwner == owner)
         {
-
             authority = state.AuthoritySlot;
-
         }
 
         if (authority is null
             || authority.RuntimeAuthorityGeneration != snapshot.RuntimeAuthorityGeneration
             || authority.AuthorityEpoch != snapshot.AuthorityEpoch)
         {
-
             return new Error(
                 ErrorCodes.Covenant.ForbiddenAuthority,
                 "Installation authority changed after this Covenant lease was taken.");
-
         }
 
         CovenantAvailabilitySnapshot availability = state.Availability;
 
         if (snapshot.DatasetGeneration is { } captured && availability.DatasetGeneration != captured)
         {
-
             return new Error(
                 ErrorCodes.Covenant.StaleSnapshot,
                 "The Covenant dataset generation changed after this lease was taken.");
-
         }
 
         if (snapshot.AcceleratorEpoch is { } acceleratorEpoch
             && availability.AcceleratorEpoch != acceleratorEpoch)
         {
-
             return new Error(
                 ErrorCodes.Covenant.StaleSnapshot,
                 "The Covenant accelerator epoch changed after this lease was taken.");
-
         }
 
         if (!exclusive && availability.Canonical != CovenantCapabilityState.Healthy)
         {
-
             return new Error(
                 ErrorCodes.Covenant.Unavailable,
                 "The Covenant canonical tier stopped being healthy while this lease was held.");
-
         }
 
         return Result.Success();
-
     }
 
     private void Release(ScopedRegistration registration)
     {
-
         lock (_sync)
         {
-
             // Compare the exact instance: a delayed cleanup must never evict a registration that has
             // since reused this identity.
             if (_registrations.TryGetValue(registration.Snapshot.RegistrationId, out ScopedRegistration? live)
                 && ReferenceEquals(live, registration))
             {
-
                 _ = _registrations.Remove(registration.Snapshot.RegistrationId);
-
             }
-
         }
-
     }
 
     private void ReleaseExclusive(ExclusiveRegistration registration)
     {
-
         lock (_sync)
         {
-
             if (ReferenceEquals(registration.Closure.LiveRegistration, registration))
             {
-
                 registration.Closure.LiveRegistration = null;
-
             }
-
         }
-
     }
 
     private Result CompleteExclusive(
         ExclusiveRegistration registration,
         CovenantExclusiveLeaseDisposition disposition)
     {
-
         lock (_sync)
         {
-
             if (!ReferenceEquals(registration.Closure.LiveRegistration, registration))
             {
-
                 return new Error(
                     ErrorCodes.Covenant.LifecycleConflict,
                     "This exclusive Covenant lease no longer owns its closed scope.");
-
             }
 
             if (disposition != CovenantExclusiveLeaseDisposition.KeepClosed)
             {
-
                 RemoveClosure(registration.Closure);
 
                 registration.Closure.LiveRegistration = null;
-
             }
 
             return Result.Success();
-
         }
-
     }
 
     private Result ExecuteWhileHeld(
         ExclusiveRegistration registration,
         Func<Result> callback)
     {
-
         lock (_sync)
         {
-
             Closure closure = registration.Closure;
 
             if (!ReferenceEquals(FindClosure(closure.Slot, closure.Scope?.CampaignId), closure)
@@ -1393,25 +1233,19 @@ internal sealed class CovenantOperationGate : ICovenantOperationGate
                 || registration.IsReleased
                 || registration.IsDispositionClaimed)
             {
-
                 return new Error(
                     ErrorCodes.Covenant.LifecycleConflict,
                     "This exclusive Covenant lease no longer owns its exact closed scope.");
-
             }
 
             return callback();
-
         }
-
     }
 
     private Result RevalidateExclusive(ExclusiveRegistration registration)
     {
-
         lock (_sync)
         {
-
             Closure closure = registration.Closure;
 
             if (!ReferenceEquals(FindClosure(closure.Slot, closure.Scope?.CampaignId), closure)
@@ -1419,28 +1253,22 @@ internal sealed class CovenantOperationGate : ICovenantOperationGate
                 || registration.IsReleased
                 || registration.IsDispositionClaimed)
             {
-
                 return new Error(
                     ErrorCodes.Covenant.StaleSnapshot,
                     "This exclusive Covenant lease no longer owns its exact closed scope.");
-
             }
-
         }
 
         return Revalidate(registration.Snapshot, exclusive: true);
-
     }
 
     private enum ClosureSlot : byte
     {
-
         Installation = 1,
 
         GlobalScope = 2,
 
         Campaign = 3,
-
     }
 
     private readonly record struct GateFacts(
@@ -1461,7 +1289,6 @@ internal sealed class CovenantOperationGate : ICovenantOperationGate
         CovenantOperationScope? scope,
         CovenantLeaseKind leaseKind)
     {
-
         public CovenantExclusiveRecoveryOwner Owner { get; } = owner;
 
         public ClosureSlot Slot { get; } = slot;
@@ -1491,12 +1318,10 @@ internal sealed class CovenantOperationGate : ICovenantOperationGate
                 _ => registration.Snapshot.Coverage == CovenantLeaseCoverage.Installation
                     || registration.Snapshot.Scope!.Value.CampaignId == Scope!.Value.CampaignId,
             };
-
     }
 
     private sealed class ScopedRegistration : ICovenantLeaseRegistration, IDisposable
     {
-
         private readonly CovenantOperationGate _gate;
 
         private readonly CancellationTokenSource _revocation = new();
@@ -1508,11 +1333,9 @@ internal sealed class CovenantOperationGate : ICovenantOperationGate
 
         internal ScopedRegistration(CovenantOperationGate gate, CovenantOperationLeaseSnapshot snapshot)
         {
-
             _gate = gate;
 
             Snapshot = snapshot;
-
         }
 
         public CovenantOperationLeaseSnapshot Snapshot { get; }
@@ -1523,77 +1346,67 @@ internal sealed class CovenantOperationGate : ICovenantOperationGate
 
         internal void RequestRevocation()
         {
-
             try
             {
-
                 if (!_revocation.IsCancellationRequested)
                 {
-
                     _revocation.Cancel();
-
                 }
-
             }
             catch (ObjectDisposedException)
             {
-
                 // The holder released between the drain set being snapshotted and this cancellation.
                 // That is the outcome the revocation was asking for, so there is nothing left to do.
-
             }
-
+            catch (AggregateException)
+            {
+                // Cancel() runs every registered callback and then throws what they threw. The token is
+                // already cancelled, which is all a revocation asks for; a consumer's fault must not
+                // abort the close that revoked it or leave its closure installed. Only that a callback
+                // faulted is logged: what it threw can carry anything its owner put in a message.
+                _gate._logger.LogWarning(
+                    "A Covenant revocation callback faulted; the lease is revoked regardless.");
+            }
         }
 
         public ValueTask<Result> RevalidateAsync(CancellationToken cancellationToken)
         {
-
             cancellationToken.ThrowIfCancellationRequested();
 
             if (Volatile.Read(ref _releaseClaimed) != 0)
             {
-
                 return ValueTask.FromResult(
                     Result.Failure(
                         new Error(ErrorCodes.Covenant.StaleSnapshot, "This Covenant lease has already been released.")));
-
             }
 
             if (_revocation.IsCancellationRequested)
             {
-
                 return ValueTask.FromResult(
                     Result.Failure(
                         new Error(
                             ErrorCodes.Covenant.Unavailable,
                             "A Covenant operation revoked this lease so its scope could be closed.")));
-
             }
 
             return ValueTask.FromResult(_gate.Revalidate(Snapshot, exclusive: false));
-
         }
 
         public ValueTask ReleaseAsync()
         {
-
             if (Interlocked.Exchange(ref _releaseClaimed, 1) == 0)
             {
-
                 _gate.Release(this);
 
                 Dispose();
 
                 _ = _released.TrySetResult();
-
             }
 
             return ValueTask.CompletedTask;
-
         }
 
         public void Dispose() => _revocation.Dispose();
-
     }
 
     private sealed class ExclusiveRegistration(
@@ -1601,7 +1414,6 @@ internal sealed class CovenantOperationGate : ICovenantOperationGate
         Closure closure,
         CovenantOperationLeaseSnapshot snapshot) : ICovenantExclusiveLeaseRegistration
     {
-
         private int _dispositionClaimed;
 
         private int _releaseClaimed;
@@ -1621,58 +1433,44 @@ internal sealed class CovenantOperationGate : ICovenantOperationGate
 
         public Result ExecuteWhileHeld(Func<Result> callback)
         {
-
             ArgumentNullException.ThrowIfNull(callback);
 
             return gate.ExecuteWhileHeld(this, callback);
-
         }
 
         public ValueTask<Result> RevalidateAsync(CancellationToken cancellationToken)
         {
-
             cancellationToken.ThrowIfCancellationRequested();
 
             return ValueTask.FromResult(gate.RevalidateExclusive(this));
-
         }
 
         public ValueTask<Result> CompleteAsync(
             CovenantExclusiveLeaseDisposition disposition,
             CancellationToken cancellationToken)
         {
-
             cancellationToken.ThrowIfCancellationRequested();
 
             if (Interlocked.Exchange(ref _dispositionClaimed, 1) != 0)
             {
-
                 return ValueTask.FromResult(
                     Result.Failure(
                         new Error(
                             ErrorCodes.Covenant.LifecycleConflict,
                             "This exclusive Covenant registration has already used its disposition.")));
-
             }
 
             return ValueTask.FromResult(gate.CompleteExclusive(this, disposition));
-
         }
 
         public ValueTask ReleaseAsync()
         {
-
             if (Interlocked.Exchange(ref _releaseClaimed, 1) == 0)
             {
-
                 gate.ReleaseExclusive(this);
-
             }
 
             return ValueTask.CompletedTask;
-
         }
-
     }
-
 }

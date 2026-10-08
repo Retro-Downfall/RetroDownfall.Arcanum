@@ -26,6 +26,7 @@ using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.Wards;
 using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Core.Workspaces;
+using RetroDownfall.Arcanum.Infrastructure.Security;
 
 namespace RetroDownfall.Arcanum.Cli.Services;
 
@@ -36,6 +37,41 @@ public sealed partial class ArcanumApiClient(
     public const string StreamingHttpClientName = "ArcanumApi";
 
     public const string RequestHttpClientName = "ArcanumApiRequest";
+
+    /// <summary>
+    /// How long a call on the short-call client may wait for the host to start answering. It bounds
+    /// only the time to the response headers: never a response body, a stream, or any call routed to
+    /// the unbounded streaming client (DESIGN 2.1).
+    /// </summary>
+    internal static readonly TimeSpan DefaultRequestResponseHeadersTimeout = TimeSpan.FromMinutes(5);
+
+    internal TimeSpan RequestResponseHeadersTimeout { get; init; } = DefaultRequestResponseHeadersTimeout;
+
+    /// <summary>
+    /// The clock the response-headers deadline runs on. Production uses the system clock; a test
+    /// substitutes one it advances by hand so a deadline never depends on how fast a thread runs.
+    /// </summary>
+    internal TimeProvider HeadersDeadlineClock { get; init; } = TimeProvider.System;
+
+    /// <summary>
+    /// The most characters one line of an NDJSON or Chronicle stream may hold before it is discarded
+    /// with a diagnostic. Without it a stream that never ends a line grows the client without bound.
+    /// </summary>
+    internal int MaxStreamLineLength { get; init; } = BoundedLineReader.DefaultMaxLineLength;
+
+    /// <summary>
+    /// The one rule for who carries the headers deadline: a call on the short-call client does, a
+    /// call on any other client (the unbounded streaming client) never does. Every call that has no
+    /// Arcanum-owned expected duration is therefore exempt by being issued on the streaming client,
+    /// and the choice of client at each call site is the whole policy. The CLI's two API clients
+    /// both read it from here so they cannot drift.
+    /// </summary>
+    internal static TimeSpan? ResponseHeadersDeadlineFor(
+        string httpClientName,
+        TimeSpan requestResponseHeadersTimeout) =>
+        string.Equals(httpClientName, RequestHttpClientName, StringComparison.Ordinal)
+            ? requestResponseHeadersTimeout
+            : null;
 
     /// <summary>Operator-facing copy when an SSE/NDJSON stream disconnects mid-flight.</summary>
     public const string StreamDisconnectMessage =
@@ -71,6 +107,37 @@ public sealed partial class ArcanumApiClient(
             HttpRequestException => StreamUnreachableMessage,
             _ => null,
         };
+    }
+
+    /// <summary>
+    /// Reads the body of a non-success stream response. The body travels over the same connection as
+    /// the stream would have, so a host that drops while answering must surface as the shared transport
+    /// copy a stream read failure gets, never as an exception that escapes the async iterator. The
+    /// caller yields <c>Failure</c> as its terminal error frame; a null <c>Bytes</c> with no failure
+    /// means the body was over the buffering cap.
+    /// </summary>
+    private static async Task<(byte[]? Bytes, string? Failure)> TryReadStreamErrorBodyAsync(
+        HttpContent content,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            byte[]? bytes = await TryReadCappedContentAsync(content, MaxResponseBytes, cancellationToken)
+                .ConfigureAwait(false);
+
+            return (bytes, null);
+        }
+        catch (Exception exception)
+        {
+            string? failure = TryMapStreamReadFailure(exception, cancellationToken);
+
+            if (failure is null)
+            {
+                throw;
+            }
+
+            return (null, failure);
+        }
     }
 
     private static T? TryDeserialize<T>(byte[] bytes, JsonTypeInfo<T> typeInfo) where T : class
@@ -219,6 +286,8 @@ public sealed partial class ArcanumApiClient(
                     return request;
                 }
 
+                // Only the short-call client carries the headers deadline; the streaming client is the
+                // home of every call that has no expected duration and stays unbounded.
                 using ArcanumAuthenticatedHttpResponse sent =
                     await ArcanumAuthenticatedHttpSender.SendAsync(
                         client,
@@ -226,7 +295,10 @@ public sealed partial class ArcanumApiClient(
                         CreateRequest,
                         HttpCompletionOption.ResponseHeadersRead,
                         canReplayAfterUnauthorized: true,
-                        cancellationToken)
+                        ArcanumAuthenticatedHttpSender.PresenceProbeTimeout,
+                        cancellationToken,
+                        ResponseHeadersDeadlineFor(httpClientName, RequestResponseHeadersTimeout),
+                        HeadersDeadlineClock)
                     .ConfigureAwait(false);
 
                 if (!sent.IsAuthenticated)
@@ -441,6 +513,11 @@ public sealed partial class ArcanumApiClient(
             ArcanumJsonContext.Default.ApiResponseLongRunningOperationDto,
             cancellationToken);
 
+    /// <summary>
+    /// Runs the reconciliation sweep inline on the host, over up to 500 durable operations, and answers
+    /// when it has finished. Durable operations have no Arcanum-owned expected duration, so the call
+    /// uses the unbounded streaming client rather than the headers deadline.
+    /// </summary>
     public Task<Result<LongRunningOperationReconciliationSummary>> ReconcileOperationsAsync(
         CancellationToken cancellationToken = default) =>
         SendRequestAsync(
@@ -449,7 +526,8 @@ public sealed partial class ArcanumApiClient(
             null,
             null,
             ArcanumJsonContext.Default.ApiResponseLongRunningOperationReconciliationSummary,
-            cancellationToken);
+            cancellationToken,
+            StreamingHttpClientName);
 
     #endregion
 
@@ -476,7 +554,8 @@ public sealed partial class ArcanumApiClient(
 
     /// <summary>
     /// Dispatches a Sending to a remote A2A agent and waits for its terminal result. Cancelling
-    /// <paramref name="cancellationToken"/> also cancels the remote task.
+    /// <paramref name="cancellationToken"/> also cancels the remote task. The wait has no expected
+    /// duration, so the call uses the unbounded streaming client rather than the headers deadline.
     /// </summary>
     public Task<Result<SendingDispatchDto>> DispatchSendingAsync(
         string agentUrl,
@@ -505,7 +584,8 @@ public sealed partial class ArcanumApiClient(
             json,
             JsonUtf8ContentType,
             ArcanumJsonContext.Default.ApiResponseSendingDispatchDto,
-            cancellationToken);
+            cancellationToken,
+            StreamingHttpClientName);
     }
 
     public Task<Result<SendingDispatchDto>> ContinueSendingAsync(
@@ -527,11 +607,17 @@ public sealed partial class ArcanumApiClient(
             json,
             JsonUtf8ContentType,
             ArcanumJsonContext.Default.ApiResponseSendingDispatchDto,
-            cancellationToken);
+            cancellationToken,
+            StreamingHttpClientName);
     }
 
     #endregion
 
+    /// <summary>
+    /// One non-streaming model turn. It answers only when the turn, tool rounds included, is done,
+    /// and a turn has no Arcanum-owned duration, so the call uses the unbounded streaming client
+    /// rather than the headers deadline.
+    /// </summary>
     public async Task<Result<string>> AskAsync(PingRequest body, CancellationToken cancellationToken)
     {
         byte[] json = JsonSerializer.SerializeToUtf8Bytes(body, ArcanumJsonContext.Default.PingRequest);
@@ -542,7 +628,8 @@ public sealed partial class ArcanumApiClient(
             json,
             JsonUtf8ContentType,
             ArcanumJsonContext.Default.ApiResponsePromptResponseDto,
-            cancellationToken).ConfigureAwait(false);
+            cancellationToken,
+            StreamingHttpClientName).ConfigureAwait(false);
 
         return result.IsSuccess
             ? Result<string>.Success(result.Value?.Text ?? string.Empty)
@@ -941,13 +1028,34 @@ public sealed partial class ArcanumApiClient(
             cancellationToken).ConfigureAwait(false);
     }
 
-    public async Task<Result<bool>> TrustMcpWorkspaceAsync(
+    /// <summary>
+    /// Asks the host what trusting the workspace's <c>mcp.json</c> would allow, from the host's own copy of
+    /// the file, so the operator reads the bytes the host would bind trust to.
+    /// </summary>
+    public async Task<Result<McpWorkspaceTrustPreview>> PreviewMcpWorkspaceTrustAsync(
         OptionalWorkspaceRequest request,
         CancellationToken cancellationToken)
     {
         byte[] json = JsonSerializer.SerializeToUtf8Bytes(
             request,
             ArcanumJsonContext.Default.OptionalWorkspaceRequest);
+
+        return await SendRequestAsync(
+            HttpMethod.Post,
+            "api/mcp/trust-workspace/preview",
+            json,
+            JsonUtf8ContentType,
+            ArcanumJsonContext.Default.ApiResponseMcpWorkspaceTrustPreview,
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<Result<bool>> TrustMcpWorkspaceAsync(
+        McpTrustWorkspaceRequest request,
+        CancellationToken cancellationToken)
+    {
+        byte[] json = JsonSerializer.SerializeToUtf8Bytes(
+            request,
+            ArcanumJsonContext.Default.McpTrustWorkspaceRequest);
 
         return await SendRequestAsync(
             HttpMethod.Post,
@@ -958,6 +1066,11 @@ public sealed partial class ArcanumApiClient(
             cancellationToken).ConfigureAwait(false);
     }
 
+    /// <summary>
+    /// Invokes one tool on an external MCP server and answers when the tool returns. A tool has no
+    /// Arcanum-owned duration, so the call uses the unbounded streaming client rather than the
+    /// headers deadline.
+    /// </summary>
     public async Task<Result<McpToolInvokeResponse>> InvokeDiagnosticMcpToolAsync(
         McpToolInvokeRequest request,
         CancellationToken cancellationToken = default)
@@ -972,7 +1085,8 @@ public sealed partial class ArcanumApiClient(
             json,
             JsonUtf8ContentType,
             ArcanumJsonContext.Default.ApiResponseMcpToolInvokeResponse,
-            cancellationToken).ConfigureAwait(false);
+            cancellationToken,
+            StreamingHttpClientName).ConfigureAwait(false);
     }
 
     public async Task<Result<WorkspaceArsenalDto>> GetWorkspaceArsenalAsync(OptionalWorkspaceRequest request, CancellationToken cancellationToken)
@@ -1370,6 +1484,11 @@ public sealed partial class ArcanumApiClient(
             cancellationToken).ConfigureAwait(false);
     }
 
+    /// <summary>
+    /// Uploads one attachment. The response headers arrive only after the whole body has been sent and
+    /// stored, which takes as long as the file is large, so the upload uses the unbounded streaming
+    /// client rather than the headers deadline.
+    /// </summary>
     public async Task<Result<SessionAttachmentDto>> UploadSessionAttachmentAsync(
         Guid sessionId,
 
@@ -1385,7 +1504,7 @@ public sealed partial class ArcanumApiClient(
         try
 
         {
-            HttpClient client = httpClientFactory.CreateClient(RequestHttpClientName);
+            HttpClient client = httpClientFactory.CreateClient(StreamingHttpClientName);
 
             long? initialPosition = contentStream.CanSeek
                 ? contentStream.Position
@@ -1623,18 +1742,10 @@ public sealed partial class ArcanumApiClient(
 
             long byteCount = 0;
 
-            await using (FileStream destination = new(
-                             temporaryPath,
-
-                             FileMode.CreateNew,
-
-                             FileAccess.Write,
-
-                             FileShare.None,
-
-                             bufferSize: 81_920,
-
-                             options: FileOptions.Asynchronous | FileOptions.SequentialScan))
+            // The staging file holds decrypted content, so it is owner-only before the first byte is
+            // written, like the file and batch download staging file, not created with the umask's
+            // permissions and narrowed after the move.
+            await using (FileStream destination = SecureFilePermissions.CreateOwnerOnlyTempFile(temporaryPath))
 
             {
                 byte[] buffer = new byte[81_920];
@@ -1920,7 +2031,8 @@ public sealed partial class ArcanumApiClient(
             null,
             null,
             ArcanumJsonContext.Default.ApiResponseCompactResult,
-            cancellationToken);
+            cancellationToken,
+            StreamingHttpClientName);
 
     public Task<Result> DeleteSessionEntryAsync(
         Guid sessionId,
@@ -2058,8 +2170,15 @@ public sealed partial class ArcanumApiClient(
         {
             if (!response.IsSuccessStatusCode)
             {
-                byte[]? responseBytes = await TryReadCappedContentAsync(response.Content, MaxResponseBytes, cancellationToken)
+                (byte[]? responseBytes, string? bodyReadError) = await TryReadStreamErrorBodyAsync(response.Content, cancellationToken)
                     .ConfigureAwait(false);
+
+                if (bodyReadError is not null)
+                {
+                    yield return new IntelligenceEvent(IntelligenceEventType.Error, bodyReadError);
+
+                    yield break;
+                }
 
                 ApiResponse<string>? envelope = responseBytes is null
                     ? null
@@ -2110,17 +2229,19 @@ public sealed partial class ArcanumApiClient(
             {
                 Stream openedStream = responseStream!;
 
-                using StreamReader lineReader = new(openedStream, Encoding.UTF8, detectEncodingFromByteOrderMarks: false, bufferSize: 1024, leaveOpen: true);
+                using StreamingTextReader streamReader = new(openedStream, Encoding.UTF8);
+
+                BoundedLineReader lineReader = new(streamReader, MaxStreamLineLength);
 
                 while (true)
                 {
-                    string? line = null;
+                    BoundedLine? read = null;
 
                     string? readError = null;
 
                     try
                     {
-                        line = await lineReader.ReadLineAsync(cancellationToken).ConfigureAwait(false);
+                        read = await lineReader.ReadLineAsync(cancellationToken).ConfigureAwait(false);
                     }
                     catch (Exception ex)
                     {
@@ -2139,10 +2260,21 @@ public sealed partial class ArcanumApiClient(
                         yield break;
                     }
 
-                    if (line is null)
+                    if (read is not { } bounded)
                     {
                         break;
                     }
+
+                    if (bounded.TooLong)
+                    {
+                        yield return new IntelligenceEvent(
+                            IntelligenceEventType.Status,
+                            BoundedLineReader.DescribeOversizedLine(MaxStreamLineLength));
+
+                        continue;
+                    }
+
+                    string line = bounded.Text;
 
                     if (string.IsNullOrWhiteSpace(line))
                     {
@@ -2693,12 +2825,14 @@ public sealed partial class ArcanumApiClient(
         Guid campaignId,
         string? q = null,
         string? tag = null,
+        int? offset = null,
         CancellationToken cancellationToken = default)
     {
         string path = BuildQueryString(
             $"api/campaigns/{campaignId:D}/prompts",
             ("q", q),
-            ("tag", tag));
+            ("tag", tag),
+            ("offset", offset?.ToString(CultureInfo.InvariantCulture)));
 
         return await SendRequestAsync(
             HttpMethod.Get,
@@ -3593,8 +3727,15 @@ public sealed partial class ArcanumApiClient(
         {
             if (!response.IsSuccessStatusCode)
             {
-                byte[]? responseBytes = await TryReadCappedContentAsync(response.Content, MaxResponseBytes, cancellationToken)
+                (byte[]? responseBytes, string? bodyReadError) = await TryReadStreamErrorBodyAsync(response.Content, cancellationToken)
                     .ConfigureAwait(false);
+
+                if (bodyReadError is not null)
+                {
+                    yield return new ChronicleFrame("error", null, bodyReadError);
+
+                    yield break;
+                }
 
                 ApiResponse<string>? envelope = responseBytes is null
                     ? null
@@ -3636,17 +3777,19 @@ public sealed partial class ArcanumApiClient(
 
             await using (responseStream!)
             {
-                using StreamReader lineReader = new(responseStream!, Encoding.UTF8, detectEncodingFromByteOrderMarks: false, bufferSize: 1024, leaveOpen: true);
+                using StreamingTextReader streamReader = new(responseStream!, Encoding.UTF8);
+
+                BoundedLineReader lineReader = new(streamReader, MaxStreamLineLength);
 
                 while (true)
                 {
-                    string? line = null;
+                    BoundedLine? read = null;
 
                     string? readError = null;
 
                     try
                     {
-                        line = await lineReader.ReadLineAsync(cancellationToken).ConfigureAwait(false);
+                        read = await lineReader.ReadLineAsync(cancellationToken).ConfigureAwait(false);
                     }
                     catch (Exception ex)
                     {
@@ -3665,10 +3808,22 @@ public sealed partial class ArcanumApiClient(
                         yield break;
                     }
 
-                    if (line is null)
+                    if (read is not { } bounded)
                     {
                         break;
                     }
+
+                    if (bounded.TooLong)
+                    {
+                        yield return new ChronicleFrame(
+                            "warning",
+                            null,
+                            BoundedLineReader.DescribeOversizedLine(MaxStreamLineLength));
+
+                        continue;
+                    }
+
+                    string line = bounded.Text;
 
                     if (line.Length == 0 || line[0] == ':')
                     {
@@ -4002,11 +4157,22 @@ public sealed partial class ArcanumApiClient(
         {
             if (!response.IsSuccessStatusCode)
             {
-                byte[]? responseBytes = await TryReadCappedContentAsync(
+                (byte[]? responseBytes, string? bodyReadError) = await TryReadStreamErrorBodyAsync(
                         response.Content,
-                        MaxResponseBytes,
                         cancellationToken)
                     .ConfigureAwait(false);
+
+                if (bodyReadError is not null)
+                {
+                    yield return ResearchError(
+                        new Error(
+                            bodyReadError == StreamTimeoutMessage
+                                ? ErrorCodes.Connection.Timeout
+                                : ErrorCodes.Connection.Unreachable,
+                            bodyReadError));
+
+                    yield break;
+                }
 
                 ApiResponse<string>? envelope = responseBytes is null
                     ? null
@@ -4028,22 +4194,19 @@ public sealed partial class ArcanumApiClient(
                 .ReadAsStreamAsync(cancellationToken)
                 .ConfigureAwait(false);
 
-            using StreamReader reader = new(
-                stream,
-                Encoding.UTF8,
-                detectEncodingFromByteOrderMarks: false,
-                bufferSize: 4_096,
-                leaveOpen: true);
+            using StreamingTextReader streamReader = new(stream, Encoding.UTF8);
+
+            BoundedLineReader reader = new(streamReader, MaxStreamLineLength);
 
             while (true)
             {
-                string? line = null;
+                BoundedLine? read = null;
 
                 string? readError = null;
 
                 try
                 {
-                    line = await reader.ReadLineAsync(cancellationToken)
+                    read = await reader.ReadLineAsync(cancellationToken)
                         .ConfigureAwait(false);
                 }
                 catch (Exception exception)
@@ -4068,10 +4231,22 @@ public sealed partial class ArcanumApiClient(
                     yield break;
                 }
 
-                if (line is null)
+                if (read is not { } bounded)
                 {
                     break;
                 }
+
+                if (bounded.TooLong)
+                {
+                    yield return ResearchError(
+                        new Error(
+                            "Api.InvalidResponse",
+                            BoundedLineReader.DescribeOversizedLine(MaxStreamLineLength)));
+
+                    continue;
+                }
+
+                string line = bounded.Text;
 
                 if (string.IsNullOrWhiteSpace(line))
                 {
@@ -4110,16 +4285,16 @@ public sealed partial class ArcanumApiClient(
             Message = error.Message,
         };
 
+    /// <summary>
+    /// Executes one built-in tool and answers when it finishes. A tool has no Arcanum-owned
+    /// duration, so the call uses the unbounded streaming client rather than the headers deadline.
+    /// </summary>
     public async Task<Result<ToolInvokeResponse>> InvokeToolAsync(
         string toolName,
         JsonElement arguments,
         CancellationToken cancellationToken = default)
     {
-        ToolInvokeRequest request = new()
-        {
-            ToolName = toolName,
-            Arguments = arguments,
-        };
+        ToolInvokeRequest request = new(toolName, arguments);
 
         byte[] json = JsonSerializer.SerializeToUtf8Bytes(request, ArcanumJsonContext.Default.ToolInvokeRequest);
 
@@ -4136,7 +4311,8 @@ public sealed partial class ArcanumApiClient(
                 { Data: null } => Result<ToolInvokeResponse>.Failure(InvalidResponseError),
                 _ => Result<ToolInvokeResponse>.Success(envelope.Data)
             },
-            cancellationToken).ConfigureAwait(false);
+            cancellationToken,
+            StreamingHttpClientName).ConfigureAwait(false);
     }
 
     #endregion

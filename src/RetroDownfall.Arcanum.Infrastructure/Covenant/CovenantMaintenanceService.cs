@@ -32,7 +32,6 @@ internal sealed class CovenantMaintenanceService(
     CovenantIndexRebuildCoordinator indexRebuild,
     TimeProvider timeProvider) : ICovenantMaintenanceService
 {
-
     private const string OwnerId = "covenant-maintenance";
 
     private readonly ICovenantConnectionSource _connections =
@@ -58,16 +57,13 @@ internal sealed class CovenantMaintenanceService(
         CovenantSchemaRepairRequest request,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(request);
 
         Result valid = request.Validate();
 
         if (valid.IsFailure)
         {
-
             return Result<CovenantSchemaRepairResultDto>.Failure(valid.Error);
-
         }
 
         SqliteConnection connection = await _connections
@@ -76,10 +72,8 @@ internal sealed class CovenantMaintenanceService(
 
         if (connection.GetType() != typeof(SqliteConnection))
         {
-
             throw new InvalidOperationException(
                 "Schema repair requires an exact SQLite connection.");
-
         }
 
         Result<CovenantSchemaRepairInspection> inspected = await _executor
@@ -88,9 +82,7 @@ internal sealed class CovenantMaintenanceService(
 
         if (inspected.IsFailure)
         {
-
             return Result<CovenantSchemaRepairResultDto>.Failure(inspected.Error);
-
         }
 
         Guid operationId = Guid.NewGuid();
@@ -106,9 +98,7 @@ internal sealed class CovenantMaintenanceService(
 
         if (acquired.IsFailure)
         {
-
             return Result<CovenantSchemaRepairResultDto>.Failure(acquired.Error);
-
         }
 
         await using CovenantExclusiveLease lease = acquired.Value;
@@ -135,34 +125,28 @@ internal sealed class CovenantMaintenanceService(
 
         if (committed.IsFailure)
         {
-
             _ = await lease
-                .CompleteAsync(CovenantExclusiveLeaseDisposition.RollbackAndReopen, cancellationToken)
+                .CompleteAsync(CovenantExclusiveLeaseDisposition.RollbackAndReopen, CancellationToken.None)
                 .ConfigureAwait(false);
 
             return Result<CovenantSchemaRepairResultDto>.Failure(committed.Error);
-
         }
 
         return await ExecuteRepairAsync(connection, lease, intent, inspected.Value, cancellationToken)
             .ConfigureAwait(false);
-
     }
 
     public async ValueTask<Result<LongRunningOperationDto>> RebuildIndexAsync(
         CovenantIndexRebuildRequest request,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(request);
 
         Result valid = request.Validate();
 
         if (valid.IsFailure)
         {
-
             return Result<LongRunningOperationDto>.Failure(valid.Error);
-
         }
 
         // The caller's operation identity is deliberately not adopted. A rebuild has no authenticated
@@ -175,14 +159,12 @@ internal sealed class CovenantMaintenanceService(
         return started.IsFailure
             ? Result<LongRunningOperationDto>.Failure(started.Error)
             : Result<LongRunningOperationDto>.Success(LongRunningOperationDto.FromOperation(started.Value));
-
     }
 
     public ValueTask<Result<CovenantFamilyReinitializePlanDto>> PrepareFamilyReinitializeAsync(
         CovenantFamilyReinitializePrepareRequest request,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(request);
 
         Result valid = request.Validate();
@@ -198,14 +180,12 @@ internal sealed class CovenantMaintenanceService(
                     : new Error(
                         ErrorCodes.Covenant.ManualRecoveryRequired,
                         "Covenant family reinitialize planning requires the operator surfaces.")));
-
     }
 
     public ValueTask<Result<LongRunningOperationDto>> ApplyFamilyReinitializeAsync(
         CovenantFamilyReinitializeApplyRequest request,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(request);
 
         Result valid = request.Validate();
@@ -217,7 +197,6 @@ internal sealed class CovenantMaintenanceService(
                     : new Error(
                         ErrorCodes.Covenant.ManualRecoveryRequired,
                         "Covenant family reinitialize apply requires the operator surfaces.")));
-
     }
 
     /// <summary>
@@ -231,14 +210,12 @@ internal sealed class CovenantMaintenanceService(
         CovenantSchemaRepairInspection inspected,
         CancellationToken cancellationToken)
     {
-
         Result<bool> repaired = await _executor
             .RepairAsync(connection, intent.Action, inspected, cancellationToken)
             .ConfigureAwait(false);
 
         if (repaired.IsFailure)
         {
-
             return await FinishAsync(
                 connection,
                 lease,
@@ -249,14 +226,12 @@ internal sealed class CovenantMaintenanceService(
                 inspected,
                 repaired.Error.Code,
                 cancellationToken).ConfigureAwait(false);
-
         }
 
         CovenantSchemaRepairIntent current = intent;
 
         if (repaired.Value)
         {
-
             Result<CovenantSchemaRepairIntent?> committed = await AdvanceAsync(
                 connection,
                 current,
@@ -265,7 +240,6 @@ internal sealed class CovenantMaintenanceService(
 
             if (committed.IsFailure || committed.Value is not { } afterCommit)
             {
-
                 return await FinishAsync(
                     connection,
                     lease,
@@ -275,7 +249,6 @@ internal sealed class CovenantMaintenanceService(
                     inspected,
                     ErrorCodes.Covenant.MaintenanceFailed,
                     cancellationToken).ConfigureAwait(false);
-
             }
 
             current = afterCommit;
@@ -286,7 +259,6 @@ internal sealed class CovenantMaintenanceService(
 
             if (verified.IsFailure || !verified.Value.CanonicalValid)
             {
-
                 return await FinishAsync(
                     connection,
                     lease,
@@ -296,7 +268,6 @@ internal sealed class CovenantMaintenanceService(
                     verified.IsSuccess ? verified.Value : inspected,
                     ErrorCodes.Covenant.IntegrityFailure,
                     cancellationToken).ConfigureAwait(false);
-
             }
 
             inspected = verified.Value;
@@ -309,7 +280,6 @@ internal sealed class CovenantMaintenanceService(
 
             if (healthy.IsFailure || healthy.Value is not { } afterHealth)
             {
-
                 return await FinishAsync(
                     connection,
                     lease,
@@ -319,11 +289,9 @@ internal sealed class CovenantMaintenanceService(
                     inspected,
                     ErrorCodes.Covenant.MaintenanceFailed,
                     cancellationToken).ConfigureAwait(false);
-
             }
 
             current = afterHealth;
-
         }
 
         Result<CovenantSchemaRepairIntent?> pending = await AdvanceAsync(
@@ -334,7 +302,6 @@ internal sealed class CovenantMaintenanceService(
 
         if (pending.IsFailure || pending.Value is not { } afterPending)
         {
-
             return await FinishAsync(
                 connection,
                 lease,
@@ -344,7 +311,6 @@ internal sealed class CovenantMaintenanceService(
                 inspected,
                 ErrorCodes.Covenant.MaintenanceFailed,
                 cancellationToken).ConfigureAwait(false);
-
         }
 
         CovenantExclusiveLeaseDisposition disposition = CovenantExclusiveDisposition.Select(
@@ -365,7 +331,6 @@ internal sealed class CovenantMaintenanceService(
             inspected,
             blockingCode: null,
             cancellationToken).ConfigureAwait(false);
-
     }
 
     /// <summary>
@@ -381,20 +346,17 @@ internal sealed class CovenantMaintenanceService(
         string? blockingCode,
         CancellationToken cancellationToken)
     {
-
         if (connection.GetType() != typeof(SqliteConnection))
         {
-
             throw new InvalidOperationException(
                 "Schema repair finalization requires an exact SQLite connection.");
-
         }
 
         CovenantSchemaRepairPostDispositionFinalizer finalizer = new(
             (phase, token) => AdvanceToTerminalAsync(connection, intent, phase, token));
 
         Result closed = await lease
-            .CompleteAsync(disposition, finalizer, cancellationToken)
+            .CompleteAsync(disposition, finalizer, CancellationToken.None)
             .ConfigureAwait(false);
 
         CovenantSchemaRepairPhase phase = closed.IsSuccess && finalizer.WasInvoked
@@ -415,7 +377,6 @@ internal sealed class CovenantMaintenanceService(
                 snapshot.Generation,
                 inspected.CatalogFingerprint,
                 closed.IsSuccess ? blockingCode : closed.Error.Code));
-
     }
 
     private async Task<Result<CovenantSchemaRepairIntent?>> AdvanceAsync(
@@ -424,7 +385,6 @@ internal sealed class CovenantMaintenanceService(
         CovenantSchemaRepairPhase next,
         CancellationToken cancellationToken)
     {
-
         Result<bool> advanced = await CovenantSchemaRepairJournal.TryAdvanceAsync(
             connection,
             _initializer,
@@ -436,16 +396,13 @@ internal sealed class CovenantMaintenanceService(
 
         if (advanced.IsFailure)
         {
-
             return Result<CovenantSchemaRepairIntent?>.Failure(advanced.Error);
-
         }
 
         return Result<CovenantSchemaRepairIntent?>.Success(
             advanced.Value
                 ? intent with { Phase = next, Revision = intent.Revision + 1 }
                 : null);
-
     }
 
     private async Task<Result> AdvanceToTerminalAsync(
@@ -454,7 +411,6 @@ internal sealed class CovenantMaintenanceService(
         CovenantSchemaRepairPhase terminal,
         CancellationToken cancellationToken)
     {
-
         Result<CovenantSchemaRepairIntent?> advanced = await AdvanceAsync(
             connection,
             intent,
@@ -463,9 +419,7 @@ internal sealed class CovenantMaintenanceService(
 
         if (advanced.IsFailure)
         {
-
             return Result.Failure(advanced.Error);
-
         }
 
         return advanced.Value is null
@@ -474,9 +428,7 @@ internal sealed class CovenantMaintenanceService(
                     ErrorCodes.Covenant.RevisionConflict,
                     "The schema repair journal moved before its finalizer ran."))
             : Result.Success();
-
     }
-
 }
 
 /// <summary>
@@ -505,7 +457,6 @@ internal sealed record CovenantProtectedInventory(
 /// </remarks>
 internal sealed class CovenantProtectedInventoryService(ICovenantConnectionSource connections)
 {
-
     private readonly ICovenantConnectionSource _connections =
         connections ?? throw new ArgumentNullException(nameof(connections));
 
@@ -513,16 +464,13 @@ internal sealed class CovenantProtectedInventoryService(ICovenantConnectionSourc
         CovenantInstallationReadLease lease,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(lease);
 
         Result current = await lease.RevalidateAsync(cancellationToken).ConfigureAwait(false);
 
         if (current.IsFailure)
         {
-
             return Result<CovenantProtectedInventory>.Failure(current.Error);
-
         }
 
         SqliteConnection connection = await _connections
@@ -531,7 +479,6 @@ internal sealed class CovenantProtectedInventoryService(ICovenantConnectionSourc
 
         try
         {
-
             return Result<CovenantProtectedInventory>.Success(
                 new CovenantProtectedInventory(
                     await CountAsync(connection, "SELECT COUNT(*) FROM artifact_sensitivity;", cancellationToken)
@@ -556,16 +503,12 @@ internal sealed class CovenantProtectedInventoryService(ICovenantConnectionSourc
                         connection,
                         "SELECT COUNT(*) FROM external_disclosure_receipts WHERE RevocabilityCode = 2;",
                         cancellationToken).ConfigureAwait(false)));
-
         }
         catch (SqliteException exception)
         {
-
             return Result<CovenantProtectedInventory>.Failure(
                 new Error(ErrorCodes.Covenant.MaintenanceFailed, exception.Message));
-
         }
-
     }
 
     private static async Task<long> CountAsync(
@@ -573,7 +516,6 @@ internal sealed class CovenantProtectedInventoryService(ICovenantConnectionSourc
         string sql,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = connection.CreateCommand();
 
         command.CommandText = sql;
@@ -581,7 +523,5 @@ internal sealed class CovenantProtectedInventoryService(ICovenantConnectionSourc
         return Convert.ToInt64(
             await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false),
             CultureInfo.InvariantCulture);
-
     }
-
 }

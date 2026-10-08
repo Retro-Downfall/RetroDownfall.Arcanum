@@ -10,7 +10,7 @@ internal static partial class CliCommandTree
 {
     private static Command BuildDoctor(IServiceProvider sp)
     {
-        DoctorCommand handler = sp.GetRequiredService<DoctorCommand>();
+        DeferredHandler<DoctorCommand> handler = new(sp);
         Command doctor = new("doctor", "Run subsystem diagnostics, plan safe repairs, and name the exact remediation command.");
         Option<string[]> only = new("--only") { AllowMultipleArgumentsPerToken = true, Description = "Run only these diagnostic ids or subsystems; repeatable. See 'arcanum doctor list'." };
         Option<string[]> skip = new("--skip") { AllowMultipleArgumentsPerToken = true, Description = "Skip these diagnostic ids or subsystems; repeatable. See 'arcanum doctor list'." };
@@ -31,7 +31,7 @@ internal static partial class CliCommandTree
         Command list = new("list", "List every diagnostic id, its subsystem, and every repair id it can emit.");
 
         list.SetAction(async (ParseResult pr, CancellationToken ct) =>
-            await handler.List(CliInvocationContext.Current.Json, ct).ConfigureAwait(false));
+            await handler.Value.List(CliInvocationContext.Current.Json, ct).ConfigureAwait(false));
 
         Command explain = new("explain", "Explain one diagnostic or repair: what it reads, what it changes, and how to run it.");
         Argument<string> explainId = new("id") { Description = "A diagnostic or repair id from 'arcanum doctor list'." };
@@ -39,13 +39,13 @@ internal static partial class CliCommandTree
         explain.Add(explainId);
 
         explain.SetAction(async (ParseResult pr, CancellationToken ct) =>
-            await handler.Explain(pr.GetValue(explainId)!, CliInvocationContext.Current.Json, ct).ConfigureAwait(false));
+            await handler.Value.Explain(pr.GetValue(explainId)!, CliInvocationContext.Current.Json, ct).ConfigureAwait(false));
 
         doctor.Add(list);
         doctor.Add(explain);
 
         doctor.SetAction(async (ParseResult pr, CancellationToken ct) =>
-            await handler.Run(
+            await handler.Value.Run(
                 new DoctorRunRequest(
                     pr.GetValue(only) ?? [],
                     pr.GetValue(skip) ?? [],
@@ -61,27 +61,20 @@ internal static partial class CliCommandTree
 
     private static Command BuildKey(IServiceProvider sp)
     {
-        KeyCommands handler = sp.GetRequiredService<KeyCommands>();
+        DeferredHandler<KeyCommands> handler = new(sp);
         Command key = new("key", "Master and native-provider API key utilities (secure local stores; no HTTP).");
         Command show = new("show", "Print the stored master API key to stderr (stdout piping does not capture the secret).");
-        Command set = new("set", "Store a master API key in the OS credential store (mirrors to security.dat when possible).");
-        Argument<string?> apiKey = new("api-key")
-        {
-            Arity = ArgumentArity.ZeroOrOne,
-            Description = "The master API key to store; omit to read a single line from stdin or a secure prompt.",
-        };
+        Command set = new("set", "Store a master API key in the OS credential store from redirected stdin or a secure prompt (mirrors to security.dat when possible).");
 
-        set.Add(apiKey);
-
-        show.SetAction(async (ParseResult pr, CancellationToken ct) => await handler.Show(ct).ConfigureAwait(false));
-        set.SetAction(async (ParseResult pr, CancellationToken ct) => await handler.Set(ct, pr.GetValue(apiKey)).ConfigureAwait(false));
+        show.SetAction(async (ParseResult pr, CancellationToken ct) => await handler.Value.Show(ct).ConfigureAwait(false));
+        set.SetAction(async (ParseResult pr, CancellationToken ct) => await handler.Value.Set(ct).ConfigureAwait(false));
 
         Command list = new(
             "list",
             "Report every Arcanum-owned credential identity with presence, status, and recovery guidance.");
 
         list.SetAction(async (ParseResult pr, CancellationToken ct) =>
-            await handler.Inventory(ct).ConfigureAwait(false));
+            await handler.Value.Inventory(ct).ConfigureAwait(false));
 
         Command provider = new(
             "provider",
@@ -105,17 +98,17 @@ internal static partial class CliCommandTree
         providerDelete.Add(kindForDelete);
 
         providerSet.SetAction(async (ParseResult pr, CancellationToken ct) =>
-            await handler.SetProvider(
+            await handler.Value.SetProvider(
                 pr.GetValue(providerForSet)!,
                 ct,
                 pr.GetValue(kindForSet)).ConfigureAwait(false));
         providerStatus.SetAction(async (ParseResult pr, CancellationToken ct) =>
-            await handler.ProviderStatus(
+            await handler.Value.ProviderStatus(
                 pr.GetValue(providerForStatus)!,
                 ct,
                 pr.GetValue(kindForStatus)).ConfigureAwait(false));
         providerDelete.SetAction(async (ParseResult pr, CancellationToken ct) =>
-            await handler.DeleteProvider(
+            await handler.Value.DeleteProvider(
                 pr.GetValue(providerForDelete)!,
                 ct,
                 pr.GetValue(kindForDelete)).ConfigureAwait(false));
@@ -145,48 +138,47 @@ internal static partial class CliCommandTree
 
     private static Command BuildLook(IServiceProvider sp)
     {
-        LookCommand handler = sp.GetRequiredService<LookCommand>();
+        DeferredHandler<LookCommand> handler = new(sp);
         Command look = new("look", "Eye of the World: situational snapshot of the current directory (domain + TOC).");
-        look.SetAction(async (ParseResult pr, CancellationToken ct) => await handler.Run(ct).ConfigureAwait(false));
+        look.SetAction(async (ParseResult pr, CancellationToken ct) => await handler.Value.Run(ct).ConfigureAwait(false));
         return look;
     }
 
     private static Command BuildModel(IServiceProvider sp)
     {
-        ModelCommands handler = sp.GetRequiredService<ModelCommands>();
+        DeferredHandler<ModelCommands> handler = new(sp);
         Command model = new("model", "Native model listing across configured providers (requires arcanum serve).");
         Command list = new("list", "List configured models across all providers (GET /api/models).");
-        list.SetAction(async (ParseResult pr, CancellationToken ct) => await handler.List(ct).ConfigureAwait(false));
+        list.SetAction(async (ParseResult pr, CancellationToken ct) => await handler.Value.List(ct).ConfigureAwait(false));
         model.Add(list);
         Command show = new("show", "Show a configured model without exposing its endpoint.");
         Argument<string?> identifier = OptionalResourceArgument("model", "model name or provider/model ID");
         show.Add(identifier);
         show.SetAction(async (ParseResult pr, CancellationToken ct) =>
-            await handler.Get(pr.GetValue(identifier), ct).ConfigureAwait(false));
+            await handler.Value.Get(pr.GetValue(identifier), ct).ConfigureAwait(false));
         model.Add(show);
         return model;
     }
 
     private static Command BuildProvider(IServiceProvider sp)
     {
-        ProviderCommands handler = sp.GetRequiredService<ProviderCommands>();
+        DeferredHandler<ProviderCommands> handler = new(sp);
         Command provider = new("provider", "Native provider listing and configuration summary (requires arcanum serve).");
         Command list = new("list", "List configured providers with redacted secrets (GET /api/providers).");
-        list.SetAction(async (ParseResult pr, CancellationToken ct) => await handler.List(ct).ConfigureAwait(false));
+        list.SetAction(async (ParseResult pr, CancellationToken ct) => await handler.Value.List(ct).ConfigureAwait(false));
         provider.Add(list);
         Command show = new("show", "Show a configured provider without exposing endpoint or credential details.");
         Argument<string?> identifier = OptionalResourceArgument("provider", "provider name");
         show.Add(identifier);
         show.SetAction(async (ParseResult pr, CancellationToken ct) =>
-            await handler.Get(pr.GetValue(identifier), ct).ConfigureAwait(false));
+            await handler.Value.Get(pr.GetValue(identifier), ct).ConfigureAwait(false));
         provider.Add(show);
         return provider;
     }
 
     private static Command BuildWorkspace(IServiceProvider sp)
     {
-
-        WorkspaceCommands handler = sp.GetRequiredService<WorkspaceCommands>();
+        DeferredHandler<WorkspaceCommands> handler = new(sp);
 
         Command workspace = new(
             "workspace",
@@ -194,7 +186,7 @@ internal static partial class CliCommandTree
 
         Command list = new("list", "List registered workspaces.");
 
-        list.SetAction(async (ParseResult pr, CancellationToken ct) => await handler.List(ct).ConfigureAwait(false));
+        list.SetAction(async (ParseResult pr, CancellationToken ct) => await handler.Value.List(ct).ConfigureAwait(false));
 
         Command current = new(
             "current",
@@ -202,7 +194,7 @@ internal static partial class CliCommandTree
 
         current.SetAction(
             async (ParseResult pr, CancellationToken ct) =>
-                await handler.Current(ct).ConfigureAwait(false));
+                await handler.Value.Current(ct).ConfigureAwait(false));
 
         Command register = new(
             "register",
@@ -210,25 +202,19 @@ internal static partial class CliCommandTree
 
         Argument<string?> registerPath = new("path")
         {
-
             Arity = ArgumentArity.ZeroOrOne,
 
             Description = "Server-host filesystem path; defaults to the client current directory for the bundled local server.",
-
         };
 
         Option<string?> registerName = new("--name")
         {
-
             Description = "Workspace display name; defaults to the path's final segment.",
-
         };
 
         Option<string?> registerType = new("--type")
         {
-
             Description = "Workspace type: spell, campaign, data, or custom (default).",
-
         };
 
         register.Add(registerPath);
@@ -239,7 +225,7 @@ internal static partial class CliCommandTree
 
         register.SetAction(
             async (ParseResult pr, CancellationToken ct) =>
-                await handler.Register(
+                await handler.Value.Register(
                     pr.GetValue(registerPath),
                     pr.GetValue(registerName),
                     pr.GetValue(registerType),
@@ -254,7 +240,7 @@ internal static partial class CliCommandTree
         show.Add(showIdentifier);
 
         show.SetAction(async (ParseResult pr, CancellationToken ct) =>
-            await handler.Show(pr.GetValue(showIdentifier), ct).ConfigureAwait(false));
+            await handler.Value.Show(pr.GetValue(showIdentifier), ct).ConfigureAwait(false));
 
         Command tree = new("tree", "List the server-side workspace tree recursively.");
 
@@ -264,9 +250,7 @@ internal static partial class CliCommandTree
 
         Option<string?> treePath = new("--path")
         {
-
             Description = "Optional relative path inside the selected workspace.",
-
         };
 
         tree.Add(treeWorkspace);
@@ -274,7 +258,7 @@ internal static partial class CliCommandTree
         tree.Add(treePath);
 
         tree.SetAction(async (ParseResult pr, CancellationToken ct) =>
-            await handler.Tree(
+            await handler.Value.Tree(
                 pr.GetValue(treeWorkspace),
                 pr.GetValue(treePath),
                 ct).ConfigureAwait(false));
@@ -283,9 +267,7 @@ internal static partial class CliCommandTree
 
         Argument<string> infoPath = new("path")
         {
-
             Description = "Relative path within the selected server workspace.",
-
         };
 
         Option<string?> infoWorkspace = WorkspaceOption();
@@ -295,7 +277,7 @@ internal static partial class CliCommandTree
         info.Add(infoWorkspace);
 
         info.SetAction(async (ParseResult pr, CancellationToken ct) =>
-            await handler.Info(
+            await handler.Value.Info(
                 pr.GetValue(infoPath)!,
                 pr.GetValue(infoWorkspace),
                 ct).ConfigureAwait(false));
@@ -304,9 +286,7 @@ internal static partial class CliCommandTree
 
         Argument<string> readPath = new("path")
         {
-
             Description = "Relative file path within the selected server workspace.",
-
         };
 
         Option<string?> readWorkspace = WorkspaceOption();
@@ -316,7 +296,7 @@ internal static partial class CliCommandTree
         read.Add(readWorkspace);
 
         read.SetAction(async (ParseResult pr, CancellationToken ct) =>
-            await handler.Read(
+            await handler.Value.Read(
                 pr.GetValue(readPath)!,
                 pr.GetValue(readWorkspace),
                 ct).ConfigureAwait(false));
@@ -325,18 +305,14 @@ internal static partial class CliCommandTree
 
         Argument<string> searchQuery = new("query")
         {
-
             Description = "Semantic search query.",
-
         };
 
         Option<string?> searchWorkspace = WorkspaceOption();
 
         Option<int?> searchLimit = new("--limit")
         {
-
             Description = "Optional bounded result count.",
-
         };
 
         search.Add(searchQuery);
@@ -346,7 +322,7 @@ internal static partial class CliCommandTree
         search.Add(searchLimit);
 
         search.SetAction(async (ParseResult pr, CancellationToken ct) =>
-            await handler.Search(
+            await handler.Value.Search(
                 pr.GetValue(searchQuery)!,
                 pr.GetValue(searchWorkspace),
                 pr.GetValue(searchLimit),
@@ -361,7 +337,7 @@ internal static partial class CliCommandTree
         index.Add(indexWorkspace);
 
         index.SetAction(async (ParseResult pr, CancellationToken ct) =>
-            await handler.Index(pr.GetValue(indexWorkspace), ct).ConfigureAwait(false));
+            await handler.Value.Index(pr.GetValue(indexWorkspace), ct).ConfigureAwait(false));
 
         Command indexStatus = new("index-status", "Show server-side workspace indexing status.");
 
@@ -372,7 +348,7 @@ internal static partial class CliCommandTree
         indexStatus.Add(statusWorkspace);
 
         indexStatus.SetAction(async (ParseResult pr, CancellationToken ct) =>
-            await handler.IndexStatus(pr.GetValue(statusWorkspace), ct).ConfigureAwait(false));
+            await handler.Value.IndexStatus(pr.GetValue(statusWorkspace), ct).ConfigureAwait(false));
 
         Command chunks = new("chunks", "Inspect bounded previews of server-side indexed chunks.");
 
@@ -382,23 +358,17 @@ internal static partial class CliCommandTree
 
         Option<string?> chunksPath = new("--path")
         {
-
             Description = "Optional relative-path filter.",
-
         };
 
         Option<int?> chunksLimit = new("--limit")
         {
-
             Description = "Maximum number of chunks to return.",
-
         };
 
         Option<int?> chunksOffset = new("--offset")
         {
-
             Description = "Number of chunks to skip before returning results.",
-
         };
 
         chunks.Add(chunksWorkspace);
@@ -410,7 +380,7 @@ internal static partial class CliCommandTree
         chunks.Add(chunksOffset);
 
         chunks.SetAction(async (ParseResult pr, CancellationToken ct) =>
-            await handler.Chunks(
+            await handler.Value.Chunks(
                 pr.GetValue(chunksWorkspace),
                 pr.GetValue(chunksPath),
                 pr.GetValue(chunksLimit),
@@ -426,7 +396,7 @@ internal static partial class CliCommandTree
         unregister.Add(unregisterWorkspace);
 
         unregister.SetAction(async (ParseResult pr, CancellationToken ct) =>
-            await handler.Unregister(
+            await handler.Value.Unregister(
                 pr.GetValue(unregisterWorkspace),
                 ct).ConfigureAwait(false));
 
@@ -455,21 +425,28 @@ internal static partial class CliCommandTree
         workspace.Add(unregister);
 
         return workspace;
-
     }
 
     private static Option<string?> WorkspaceOption() =>
         new("--workspace")
         {
-
             Description = "Workspace ID, name, or server path; defaults to saved context or current-path detection.",
+        };
 
+    /// <summary>
+    /// The <c>--workspace</c> of the verbs that default to the workspace saved by <c>use workspace</c> and
+    /// never look at the current directory (<c>mcp</c> and <c>tool</c>): unlike <see cref="WorkspaceOption"/>
+    /// its help text does not promise a detection those verbs do not perform.
+    /// </summary>
+    private static Option<string?> SavedContextWorkspaceOption() =>
+        new("--workspace")
+        {
+            Description = "Workspace ID, name, or server path; defaults to the workspace saved with 'use workspace'. The current directory is not detected.",
         };
 
     private static Command BuildMcp(IServiceProvider sp)
     {
-
-        McpCommands handler = sp.GetRequiredService<McpCommands>();
+        DeferredHandler<McpCommands> handler = new(sp);
 
         Command mcp = new(
             "mcp",
@@ -477,15 +454,15 @@ internal static partial class CliCommandTree
 
         Command list = new(
             "list",
-            "List safe MCP scope, transport, trust, lifecycle, tool-count, and last-error status.");
+            "List safe MCP scope, transport, lifecycle, tool-count, and last-error status.");
 
-        Option<string?> listWorkspace = WorkspaceOption();
+        Option<string?> listWorkspace = SavedContextWorkspaceOption();
 
         list.Add(listWorkspace);
 
         list.SetAction(
             async (ParseResult pr, CancellationToken ct) =>
-                await handler.List(
+                await handler.Value.List(
                     ActiveWorkspace(sp, pr.GetValue(listWorkspace)),
                     ct).ConfigureAwait(false));
 
@@ -497,7 +474,7 @@ internal static partial class CliCommandTree
             "server",
             "MCP server name");
 
-        Option<string?> showWorkspace = WorkspaceOption();
+        Option<string?> showWorkspace = SavedContextWorkspaceOption();
 
         show.Add(showIdentifier);
 
@@ -505,7 +482,7 @@ internal static partial class CliCommandTree
 
         show.SetAction(
             async (ParseResult pr, CancellationToken ct) =>
-                await handler.Show(
+                await handler.Value.Show(
                     pr.GetValue(showIdentifier),
                     ActiveWorkspace(sp, pr.GetValue(showWorkspace)),
                     ct).ConfigureAwait(false));
@@ -513,32 +490,32 @@ internal static partial class CliCommandTree
         Command start = BuildMcpLifecycleCommand(
             "start",
             "Start one trusted MCP server.",
-            handler.Start,
+            (first, second, cancellationToken) => handler.Value.Start(first, second, cancellationToken),
             sp);
 
         Command stop = BuildMcpLifecycleCommand(
             "stop",
             "Stop one MCP server.",
-            handler.Stop,
+            (first, second, cancellationToken) => handler.Value.Stop(first, second, cancellationToken),
             sp);
 
         Command restart = BuildMcpLifecycleCommand(
             "restart",
             "Restart one trusted MCP server.",
-            handler.Restart,
+            (first, second, cancellationToken) => handler.Value.Restart(first, second, cancellationToken),
             sp);
 
         Command reload = new(
             "reload",
             "Clear MCP partitions and reload global or explicitly scoped workspace configuration.");
 
-        Option<string?> reloadWorkspace = WorkspaceOption();
+        Option<string?> reloadWorkspace = SavedContextWorkspaceOption();
 
         reload.Add(reloadWorkspace);
 
         reload.SetAction(
             async (ParseResult pr, CancellationToken ct) =>
-                await handler.Reload(
+                await handler.Value.Reload(
                     ActiveWorkspace(sp, pr.GetValue(reloadWorkspace)),
                     ct).ConfigureAwait(false));
 
@@ -548,18 +525,16 @@ internal static partial class CliCommandTree
 
         Argument<string?> trustWorkspace = new("workspace")
         {
-
             Arity = ArgumentArity.ZeroOrOne,
 
             Description = "Server-host workspace path; defaults to the current directory.",
-
         };
 
         trust.Add(trustWorkspace);
 
         trust.SetAction(
             async (ParseResult pr, CancellationToken ct) =>
-                await handler.Trust(
+                await handler.Value.Trust(
                     pr.GetValue(trustWorkspace),
                     ct).ConfigureAwait(false));
 
@@ -571,7 +546,7 @@ internal static partial class CliCommandTree
             "server",
             "MCP server name");
 
-        Option<string?> toolsWorkspace = WorkspaceOption();
+        Option<string?> toolsWorkspace = SavedContextWorkspaceOption();
 
         tools.Add(toolsIdentifier);
 
@@ -579,7 +554,7 @@ internal static partial class CliCommandTree
 
         tools.SetAction(
             async (ParseResult pr, CancellationToken ct) =>
-                await handler.Tools(
+                await handler.Value.Tools(
                     pr.GetValue(toolsIdentifier),
                     ActiveWorkspace(sp, pr.GetValue(toolsWorkspace)),
                     ct).ConfigureAwait(false));
@@ -590,21 +565,17 @@ internal static partial class CliCommandTree
 
         Argument<string> invokeTool = new("tool")
         {
-
             Description = "External MCP tool name or unique prefix.",
-
         };
 
         Argument<string?> invokeArguments = ToolArgumentsArgument();
 
         Option<string?> invokeServer = new("--server")
         {
-
             Description = "External MCP server name or unique prefix; omit for tool-based selection.",
-
         };
 
-        Option<string?> invokeWorkspace = WorkspaceOption();
+        Option<string?> invokeWorkspace = SavedContextWorkspaceOption();
 
         invoke.Add(invokeTool);
 
@@ -616,7 +587,7 @@ internal static partial class CliCommandTree
 
         invoke.SetAction(
             async (ParseResult pr, CancellationToken ct) =>
-                await handler.Invoke(
+                await handler.Value.Invoke(
                     pr.GetValue(invokeTool)!,
                     pr.GetValue(invokeArguments),
                     pr.GetValue(invokeServer),
@@ -642,7 +613,6 @@ internal static partial class CliCommandTree
         mcp.Add(invoke);
 
         return mcp;
-
     }
 
     private static Command BuildMcpLifecycleCommand(
@@ -651,14 +621,13 @@ internal static partial class CliCommandTree
         Func<string?, string?, CancellationToken, Task<int>> action,
         IServiceProvider serviceProvider)
     {
-
         Command command = new(name, description);
 
         Argument<string?> identifier = OptionalResourceArgument(
             "server",
             "MCP server name");
 
-        Option<string?> workspace = WorkspaceOption();
+        Option<string?> workspace = SavedContextWorkspaceOption();
 
         command.Add(identifier);
 
@@ -672,13 +641,11 @@ internal static partial class CliCommandTree
                     ct).ConfigureAwait(false));
 
         return command;
-
     }
 
     private static Command BuildTool(IServiceProvider sp)
     {
-
-        ToolCommands handler = sp.GetRequiredService<ToolCommands>();
+        DeferredHandler<ToolCommands> handler = new(sp);
 
         Command tool = new(
             "tool",
@@ -688,13 +655,13 @@ internal static partial class CliCommandTree
             "list",
             "List built-in diagnostic tools available for the selected workspace scope.");
 
-        Option<string?> listWorkspace = WorkspaceOption();
+        Option<string?> listWorkspace = SavedContextWorkspaceOption();
 
         list.Add(listWorkspace);
 
         list.SetAction(
             async (ParseResult pr, CancellationToken ct) =>
-                await handler.List(
+                await handler.Value.List(
                     ActiveWorkspace(sp, pr.GetValue(listWorkspace)),
                     ct).ConfigureAwait(false));
 
@@ -704,12 +671,10 @@ internal static partial class CliCommandTree
 
         Argument<string> showTool = new("tool")
         {
-
             Description = "Built-in tool name or unique prefix.",
-
         };
 
-        Option<string?> showWorkspace = WorkspaceOption();
+        Option<string?> showWorkspace = SavedContextWorkspaceOption();
 
         show.Add(showTool);
 
@@ -717,7 +682,7 @@ internal static partial class CliCommandTree
 
         show.SetAction(
             async (ParseResult pr, CancellationToken ct) =>
-                await handler.Show(
+                await handler.Value.Show(
                     pr.GetValue(showTool)!,
                     ActiveWorkspace(sp, pr.GetValue(showWorkspace)),
                     ct).ConfigureAwait(false));
@@ -728,14 +693,12 @@ internal static partial class CliCommandTree
 
         Argument<string> invokeTool = new("tool")
         {
-
             Description = "Built-in tool name or unique prefix.",
-
         };
 
         Argument<string?> invokeArguments = ToolArgumentsArgument();
 
-        Option<string?> invokeWorkspace = WorkspaceOption();
+        Option<string?> invokeWorkspace = SavedContextWorkspaceOption();
 
         invoke.Add(invokeTool);
 
@@ -745,7 +708,7 @@ internal static partial class CliCommandTree
 
         invoke.SetAction(
             async (ParseResult pr, CancellationToken ct) =>
-                await handler.Invoke(
+                await handler.Value.Invoke(
                     pr.GetValue(invokeTool)!,
                     pr.GetValue(invokeArguments),
                     ActiveWorkspace(sp, pr.GetValue(invokeWorkspace)),
@@ -758,17 +721,14 @@ internal static partial class CliCommandTree
         tool.Add(invoke);
 
         return tool;
-
     }
 
     private static Argument<string?> ToolArgumentsArgument() =>
         new("arguments")
         {
-
             Arity = ArgumentArity.ZeroOrOne,
 
             Description = "Optional JSON object, @file, or redirected stdin; defaults to {} in an interactive terminal.",
-
         };
 
     private static Argument<string?> OptionalResourceArgument(string name, string accepted)

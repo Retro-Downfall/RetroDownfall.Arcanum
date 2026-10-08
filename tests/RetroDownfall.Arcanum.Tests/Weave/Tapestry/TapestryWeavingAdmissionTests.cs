@@ -16,8 +16,14 @@ namespace RetroDownfall.Arcanum.Tests.Weave.Tapestry;
 
 public sealed class TapestryWeavingAdmissionTests
 {
+    /// <summary>
+    /// A refused sweep parks exactly one generation waiter instead of sleeping the rebuild interval:
+    /// <c>KeepClosed</c> leaves that waiter parked without a retry spin, an immediate reclose repeats
+    /// admission without creating a scope, and a stable reopen runs the owed sweep once before the
+    /// cadence resumes.
+    /// </summary>
     [Fact]
-    public async Task KeepClosedAndImmediateRecloseReturnToCadenceWithoutWaiters()
+    public async Task KeepClosedParksOneWaiterAndImmediateRecloseRepeatsAdmissionBeforeOneSweepAndTheCadence()
     {
         CadenceClock clock = new();
 
@@ -37,21 +43,20 @@ public sealed class TapestryWeavingAdmissionTests
 
         try
         {
-            CadenceClock.Tick first = await clock.NextAsync();
-
-            Assert.Equal(TimeSpan.FromHours(1), first.DueTime);
+            await TapestryAdmissionHarness.WaitUntilAsync(() => harness.Gate.ActiveGenerationWaiters == 1);
 
             Assert.Equal(0, harness.Scopes.Created);
+
+            Assert.Single(harness.Gate.RequestedWorkKinds);
 
             Assert.True((await closed.CompleteAsync(CovenantExclusiveLeaseDisposition.KeepClosed, CancellationToken.None)).IsSuccess);
 
-            first.Fire();
+            // The gate stays closed, so the one waiter stays parked and nothing retries.
+            await Task.Delay(TimeSpan.FromMilliseconds(100));
 
-            CadenceClock.Tick second = await clock.NextAsync();
+            Assert.Equal(1, harness.Gate.ActiveGenerationWaiters);
 
-            Assert.Equal(0, harness.Scopes.Created);
-
-            Assert.Equal(2, harness.Gate.RequestedWorkKinds.Count);
+            Assert.Single(harness.Gate.RequestedWorkKinds);
 
             await closed.DisposeAsync();
 
@@ -59,31 +64,36 @@ public sealed class TapestryWeavingAdmissionTests
 
             IGrimoireExclusiveClosedLease reopened = (await harness.Inner.CloseConnectionAdmissionAsync(resumed, CancellationToken.None)).Value;
 
+            IGrimoireClosingOwner? reclosed = null;
+
+            harness.Gate.AfterOpenGenerationObserved = _ => reclosed ??= harness.Inner.BeginOrResumeExclusive(Owner()).Value;
+
             Assert.True((await reopened.CompleteAsync(CovenantExclusiveLeaseDisposition.RollbackAndReopen, CancellationToken.None)).IsSuccess);
 
             await reopened.DisposeAsync();
 
-            IGrimoireClosingOwner immediate = harness.Inner.BeginOrResumeExclusive(Owner()).Value;
-
-            second.Fire();
-
-            CadenceClock.Tick third = await clock.NextAsync();
+            // The reopen woke the waiter, the gate closed again before the sweep took its lease, and the
+            // refused sweep parked a fresh waiter without creating a scope.
+            await TapestryAdmissionHarness.WaitUntilAsync(() => harness.Gate.RequestedWorkKinds.Count == 2 && harness.Gate.ActiveGenerationWaiters == 1);
 
             Assert.Equal(0, harness.Scopes.Created);
 
-            Assert.True((await harness.Inner.DrainRequestAndWorkAsync(immediate, CancellationToken.None)).IsSuccess);
+            harness.Gate.AfterOpenGenerationObserved = static _ => { };
 
-            IGrimoireExclusiveClosedLease finalClosed = (await harness.Inner.CloseConnectionAdmissionAsync(immediate, CancellationToken.None)).Value;
+            Assert.True((await harness.Inner.DrainRequestAndWorkAsync(reclosed!, CancellationToken.None)).IsSuccess);
+
+            IGrimoireExclusiveClosedLease finalClosed = (await harness.Inner.CloseConnectionAdmissionAsync(reclosed!, CancellationToken.None)).Value;
 
             Assert.True((await finalClosed.CompleteAsync(CovenantExclusiveLeaseDisposition.RollbackAndReopen, CancellationToken.None)).IsSuccess);
 
             await finalClosed.DisposeAsync();
 
+            // The stable reopen runs the owed sweep once and only then returns to the rebuild cadence.
+            CadenceClock.Tick cadence = await clock.NextAsync();
+
+            Assert.Equal(TimeSpan.FromHours(1), cadence.DueTime);
+
             Assert.Equal(3, harness.Gate.RequestedWorkKinds.Count);
-
-            third.Fire();
-
-            _ = await clock.NextAsync();
 
             Assert.Equal(1, harness.Scopes.Created);
 

@@ -8,6 +8,8 @@ using RetroDownfall.Arcanum.Core.Configuration.Presets;
 
 using RetroDownfall.Arcanum.Core.Primitives;
 
+using RetroDownfall.Arcanum.Core.Security;
+
 using RetroDownfall.Arcanum.Core.Storage;
 
 using RetroDownfall.Arcanum.Infrastructure.Configuration;
@@ -22,7 +24,6 @@ namespace RetroDownfall.Arcanum.Tests.Configuration;
 
 public sealed class ConfigurationPresetPersistenceTests : IAsyncLifetime
 {
-
     private const string LegacyGeneralAssistantAppliedHash =
         "a6240807df3e3e86bc649e5a790826a374c921de839f71790b03d7688616f522";
 
@@ -70,7 +71,6 @@ public sealed class ConfigurationPresetPersistenceTests : IAsyncLifetime
 
     public async Task InitializeAsync()
     {
-
         _workspace = new TempWorkspace();
 
         await _workspace.InitializeAsync();
@@ -89,12 +89,10 @@ public sealed class ConfigurationPresetPersistenceTests : IAsyncLifetime
         global::System.Environment.SetEnvironmentVariable("ASPNETCORE_ENVIRONMENT", "Testing");
 
         global::System.Environment.SetEnvironmentVariable("ARCANUM_TEST_HOME", _workspace.Root);
-
     }
 
     public async Task DisposeAsync()
     {
-
         global::System.Environment.SetEnvironmentVariable(
             "DOTNET_ENVIRONMENT",
             _originalDotnetEnvironment);
@@ -108,14 +106,12 @@ public sealed class ConfigurationPresetPersistenceTests : IAsyncLifetime
             _originalTestHome);
 
         await _workspace.DisposeAsync();
-
     }
 
     [Fact]
 
     public async Task Apply_writes_owner_only_provenance_and_rollback_without_copying_provider_secrets()
     {
-
         ConfigurationWriter writer = CreateWriter();
 
         ArcanumSettings current = Settings(
@@ -175,14 +171,12 @@ public sealed class ConfigurationPresetPersistenceTests : IAsyncLifetime
         AssertOwnerOnly(ArcanumPaths.ConfigurationPresetStateFile);
 
         AssertOwnerOnly(ArcanumPaths.ConfigurationPresetRollbackFile);
-
     }
 
     [Fact]
 
     public async Task Apply_fails_closed_when_journal_permissions_cannot_be_verified()
     {
-
         ConfigurationWriter writer = CreateWriter();
 
         ArcanumSettings current = Settings(
@@ -204,7 +198,6 @@ public sealed class ConfigurationPresetPersistenceTests : IAsyncLifetime
 
         try
         {
-
             Result<ConfigurationPresetCommitResult> result = await CreatePersistence(writer)
                 .ApplyAsync(
                     new ConfigurationPresetCommitRequest(
@@ -226,22 +219,17 @@ public sealed class ConfigurationPresetPersistenceTests : IAsyncLifetime
             Assert.False(
                 ConfigurationBootstrapper.LoadPersistedArcanumSettings()
                     .Features.Attachments);
-
         }
         finally
         {
-
             SecureFilePermissions.StrictOwnerOnlyVerificationForTests = null;
-
         }
-
     }
 
     [Fact]
 
     public async Task Apply_restores_configuration_and_sidecars_when_finalization_fails()
     {
-
         ConfigurationWriter writer = CreateWriter();
 
         ArcanumSettings current = Settings(
@@ -253,9 +241,7 @@ public sealed class ConfigurationPresetPersistenceTests : IAsyncLifetime
 
         ConfigurationPresetPersistenceHooks hooks = new()
         {
-
             ContinueAfterConfigurationWrite = static () => false,
-
         };
 
         FileConfigurationPresetPersistence persistence = CreatePersistence(writer, hooks);
@@ -284,14 +270,12 @@ public sealed class ConfigurationPresetPersistenceTests : IAsyncLifetime
         Assert.False(File.Exists(ArcanumPaths.ConfigurationPresetRollbackFile));
 
         Assert.False(File.Exists(ArcanumPaths.ConfigurationPresetJournalFile));
-
     }
 
     [Fact]
 
     public async Task Reset_restores_only_unchanged_owned_values_and_preserves_drift_and_unrelated_edits()
     {
-
         ConfigurationWriter writer = CreateWriter();
 
         ArcanumSettings baseline = Settings(
@@ -321,11 +305,9 @@ public sealed class ConfigurationPresetPersistenceTests : IAsyncLifetime
 
         ArcanumSettings customized = applied with
         {
-
             Cli = applied.Cli with { ShowManaBar = false },
 
             Features = applied.Features with { Attachments = false },
-
         };
 
         Assert.True((await writer.WriteAsync(customized, CancellationToken.None)).IsSuccess);
@@ -358,14 +340,136 @@ public sealed class ConfigurationPresetPersistenceTests : IAsyncLifetime
         Assert.False(File.Exists(ArcanumPaths.ConfigurationPresetRollbackFile));
 
         Assert.False(File.Exists(ArcanumPaths.ConfigurationPresetJournalFile));
+    }
 
+    /// <summary>
+    /// The outbound-URL pass resolves provider hosts, and name resolution is unbounded network I/O.
+    /// The preset service runs it before the commit, outside the cross-process configuration mutex, so
+    /// the persistence layer re-checks only the synchronous rules while it holds the lock. A host name
+    /// under <c>.invalid</c> can never resolve: if the persistence layer asked the resolver, the apply
+    /// would be refused as unresolvable.
+    /// </summary>
+    [Fact]
+
+    public async Task Apply_does_not_resolve_dns_while_holding_the_configuration_transaction()
+    {
+        ConfigurationWriter writer = CreateWriter();
+
+        ArcanumSettings current = Settings(
+            saga: false,
+            attachments: false,
+            defaultModel: "local-model");
+
+        Assert.Single(current.Providers).Endpoint = "https://dns-probe.invalid/v1";
+
+        Assert.True((await writer.WriteAsync(current, CancellationToken.None)).IsSuccess);
+
+        ConfigurationPresetPlanningResult plan = GeneralAssistantPlan(current);
+
+        FileConfigurationPresetPersistence persistence = CreatePersistence(writer);
+
+        Result<ConfigurationPresetCommitResult> result = await persistence.ApplyAsync(
+            new ConfigurationPresetCommitRequest(
+                plan.CandidateSettings,
+                Provenance(plan),
+                ConfigurationPresetHash.ComputeSettings(current)),
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess, result.IsFailure ? result.Error.Message : null);
+
+        Assert.True(result.Value.Snapshot.PersistedSettings.Features.Attachments);
+    }
+
+    /// <summary>
+    /// A reset restores preset-owned flag values and never introduces a URL, so it has no outbound pass
+    /// to run under the lock either; the synchronous validator still checks the restored candidate.
+    /// </summary>
+    [Fact]
+
+    public async Task Reset_does_not_resolve_dns_while_holding_the_configuration_transaction()
+    {
+        ConfigurationWriter writer = CreateWriter();
+
+        ArcanumSettings baseline = Settings(
+            saga: false,
+            attachments: false,
+            defaultModel: "local-model");
+
+        Assert.Single(baseline.Providers).Endpoint = "https://dns-probe.invalid/v1";
+
+        ConfigurationPresetPlanningResult plan = GeneralAssistantPlan(baseline);
+
+        ConfigurationPresetProvenance provenance = Provenance(plan);
+
+        Assert.True((await writer.WriteAsync(plan.CandidateSettings, CancellationToken.None)).IsSuccess);
+
+        await WriteProvenanceAsync(ArcanumPaths.ConfigurationPresetStateFile, provenance);
+
+        await WriteProvenanceAsync(ArcanumPaths.ConfigurationPresetRollbackFile, provenance);
+
+        FileConfigurationPresetPersistence persistence = CreatePersistence(writer);
+
+        Result<ConfigurationPresetResetCommitResult> reset = await persistence.ResetAsync(
+            new ConfigurationPresetResetCommitRequest(
+                provenance,
+                ConfigurationPresetHash.ComputeSettings(plan.CandidateSettings)),
+            CancellationToken.None);
+
+        Assert.True(reset.IsSuccess, reset.IsFailure ? reset.Error.Message : null);
+
+        Assert.Null(reset.Value.Snapshot.Provenance);
+    }
+
+    /// <summary>
+    /// The two <c>.invalid</c> tests above pass for the wrong reason if a resolver on the machine answers
+    /// for names that cannot exist (a captive portal or a search-suffix hijack). This holds the same
+    /// property without asking the network: the persistence layer has no way to reach a resolver or the
+    /// outbound-URL pass at all, neither through a constructor parameter, a field, nor its source text.
+    /// </summary>
+    [Fact]
+
+    public void The_persistence_layer_has_no_route_to_the_dns_resolver_or_the_outbound_url_pass()
+    {
+        Type persistence = typeof(FileConfigurationPresetPersistence);
+
+        Type[] forbidden = [typeof(IDnsResolver), typeof(IConfigurationPresetCandidateValidator)];
+
+        Type[] reachable =
+        [
+            .. persistence
+                .GetConstructors(System.Reflection.BindingFlags.Instance
+                    | System.Reflection.BindingFlags.Public
+                    | System.Reflection.BindingFlags.NonPublic)
+                .SelectMany(static constructor => constructor.GetParameters())
+                .Select(static parameter => parameter.ParameterType),
+            .. persistence
+                .GetFields(System.Reflection.BindingFlags.Instance
+                    | System.Reflection.BindingFlags.Public
+                    | System.Reflection.BindingFlags.NonPublic)
+                .Select(static field => field.FieldType),
+        ];
+
+        Assert.NotEmpty(reachable);
+
+        Assert.DoesNotContain(reachable, type => forbidden.Contains(type));
+
+        ProductionSource source = Assert.Single(
+            ProductionSourceInventory.Sources(),
+            static candidate => candidate.RelativePath.Equals(
+                "src/RetroDownfall.Arcanum.Infrastructure/Configuration/FileConfigurationPresetPersistence.cs",
+                StringComparison.Ordinal));
+
+        Assert.DoesNotContain("IDnsResolver", source.Text, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("OutboundUrlGuard", source.Text, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("IConfigurationPresetCandidateValidator", source.Text, StringComparison.Ordinal);
     }
 
     [Fact]
 
     public async Task Apply_rejects_stale_snapshot_without_mutating_configuration()
     {
-
         ConfigurationWriter writer = CreateWriter();
 
         ArcanumSettings current = Settings(
@@ -399,14 +503,12 @@ public sealed class ConfigurationPresetPersistenceTests : IAsyncLifetime
         Assert.False(File.Exists(ArcanumPaths.ConfigurationPresetRollbackFile));
 
         Assert.False(File.Exists(ArcanumPaths.ConfigurationPresetJournalFile));
-
     }
 
     [Fact]
 
     public async Task Apply_rejects_unowned_mutations_in_a_supplied_candidate()
     {
-
         ConfigurationWriter writer = CreateWriter();
 
         ArcanumSettings current = Settings(
@@ -420,9 +522,7 @@ public sealed class ConfigurationPresetPersistenceTests : IAsyncLifetime
 
         ArcanumSettings forgedCandidate = plan.CandidateSettings with
         {
-
             Cli = plan.CandidateSettings.Cli with { ShowManaBar = false },
-
         };
 
         Result<ConfigurationPresetCommitResult> result = await CreatePersistence(writer)
@@ -445,14 +545,12 @@ public sealed class ConfigurationPresetPersistenceTests : IAsyncLifetime
         Assert.False(retained.Features.Attachments);
 
         Assert.False(File.Exists(ArcanumPaths.ConfigurationPresetJournalFile));
-
     }
 
     [Fact]
 
     public async Task Prepared_journal_contains_only_owned_values_and_no_unrelated_configuration()
     {
-
         ConfigurationWriter writer = CreateWriter();
 
         ArcanumSettings current = Settings(
@@ -466,17 +564,13 @@ public sealed class ConfigurationPresetPersistenceTests : IAsyncLifetime
 
         ConfigurationPresetPersistenceHooks hooks = new()
         {
-
             ContinueAfterConfigurationWrite = () =>
             {
-
                 preparedJournal = File.ReadAllText(
                     ArcanumPaths.ConfigurationPresetJournalFile);
 
                 return false;
-
             },
-
         };
 
         FileConfigurationPresetPersistence persistence = CreatePersistence(writer, hooks);
@@ -502,14 +596,12 @@ public sealed class ConfigurationPresetPersistenceTests : IAsyncLifetime
         Assert.DoesNotContain("LOCAL_PROVIDER_KEY", preparedJournal, StringComparison.Ordinal);
 
         Assert.DoesNotContain("providers", preparedJournal, StringComparison.OrdinalIgnoreCase);
-
     }
 
     [Fact]
 
     public async Task Rollback_preserves_a_concurrent_unrelated_user_edit()
     {
-
         ConfigurationWriter writer = CreateWriter();
 
         ArcanumSettings current = Settings(
@@ -521,18 +613,14 @@ public sealed class ConfigurationPresetPersistenceTests : IAsyncLifetime
 
         ConfigurationPresetPersistenceHooks hooks = new()
         {
-
             ContinueAfterConfigurationWrite = () =>
             {
-
                 ArcanumSettings afterPreset =
                     ConfigurationBootstrapper.LoadPersistedArcanumSettings();
 
                 ArcanumSettings userEdit = afterPreset with
                 {
-
                     Cli = afterPreset.Cli with { ShowManaBar = false },
-
                 };
 
                 Result write = writer
@@ -543,9 +631,7 @@ public sealed class ConfigurationPresetPersistenceTests : IAsyncLifetime
                 Assert.True(write.IsSuccess, write.Error.Message);
 
                 return false;
-
             },
-
         };
 
         FileConfigurationPresetPersistence persistence = CreatePersistence(writer, hooks);
@@ -566,14 +652,12 @@ public sealed class ConfigurationPresetPersistenceTests : IAsyncLifetime
         Assert.False(restored.Features.Attachments);
 
         Assert.False(restored.Cli.ShowManaBar);
-
     }
 
     [Fact]
 
     public async Task Cancellation_after_configuration_write_rolls_back_before_propagating()
     {
-
         ConfigurationWriter writer = CreateWriter();
 
         ArcanumSettings current = Settings(
@@ -587,16 +671,12 @@ public sealed class ConfigurationPresetPersistenceTests : IAsyncLifetime
 
         ConfigurationPresetPersistenceHooks hooks = new()
         {
-
             ContinueAfterConfigurationWrite = () =>
             {
-
                 cancellation.Cancel();
 
                 return false;
-
             },
-
         };
 
         FileConfigurationPresetPersistence persistence = CreatePersistence(writer, hooks);
@@ -616,14 +696,12 @@ public sealed class ConfigurationPresetPersistenceTests : IAsyncLifetime
         Assert.False(restored.Features.Attachments);
 
         Assert.False(File.Exists(ArcanumPaths.ConfigurationPresetJournalFile));
-
     }
 
     [Fact]
 
     public async Task Cancellation_surfaces_failed_rollback_and_retains_the_recovery_journal()
     {
-
         ConfigurationWriter writer = CreateWriter();
 
         ArcanumSettings current = Settings(
@@ -641,10 +719,8 @@ public sealed class ConfigurationPresetPersistenceTests : IAsyncLifetime
 
         ConfigurationPresetPersistenceHooks hooks = new()
         {
-
             ContinueAfterConfigurationWrite = () =>
             {
-
                 Assert.True(HardLinkTestSupport.TryCreate(
                     aliasPath,
                     ArcanumPaths.ConfigurationFile));
@@ -652,9 +728,7 @@ public sealed class ConfigurationPresetPersistenceTests : IAsyncLifetime
                 cancellation.Cancel();
 
                 return false;
-
             },
-
         };
 
         Result<ConfigurationPresetCommitResult> result = await CreatePersistence(writer, hooks)
@@ -676,14 +750,12 @@ public sealed class ConfigurationPresetPersistenceTests : IAsyncLifetime
                 .LoadPersistedArcanumSettings()
                 .Features
                 .Attachments);
-
     }
 
     [Fact]
 
     public async Task Read_rejects_provenance_that_claims_paths_outside_the_versioned_preset()
     {
-
         ConfigurationWriter writer = CreateWriter();
 
         ArcanumSettings current = Settings(
@@ -714,14 +786,12 @@ public sealed class ConfigurationPresetPersistenceTests : IAsyncLifetime
         Assert.Equal("Preset.RollbackSnapshotInvalid", result.Error.Code);
 
         Assert.Equal(5001, ConfigurationBootstrapper.LoadPersistedArcanumSettings().Host.Port);
-
     }
 
     [Fact]
 
     public async Task Read_and_peek_normalize_a_real_legacy_pair_without_rewriting_its_bytes()
     {
-
         ConfigurationWriter writer = CreateWriter();
 
         ArcanumSettings applied = Settings(
@@ -769,7 +839,6 @@ public sealed class ConfigurationPresetPersistenceTests : IAsyncLifetime
         Assert.Equal(
             rollbackBefore,
             await File.ReadAllBytesAsync(ArcanumPaths.ConfigurationPresetRollbackFile));
-
     }
 
     [Theory]
@@ -786,7 +855,6 @@ public sealed class ConfigurationPresetPersistenceTests : IAsyncLifetime
 
     public async Task Read_rejects_tampered_legacy_pairs(string tampering)
     {
-
         ConfigurationWriter writer = CreateWriter();
 
         ArcanumSettings applied = Settings(
@@ -806,7 +874,6 @@ public sealed class ConfigurationPresetPersistenceTests : IAsyncLifetime
 
                 state = state with
                 {
-
                     BaselineValues =
                     [
                         .. state.BaselineValues.Where(static value =>
@@ -818,15 +885,12 @@ public sealed class ConfigurationPresetPersistenceTests : IAsyncLifetime
                         .. state.AppliedValues.Where(static value =>
                             value.Path != "security.ward.enabled"),
                     ],
-
                 };
 
                 state = state with
                 {
-
                     OwnedValuesHash = ConfigurationPresetHash.ComputeCanonicalValues(
                         state.AppliedValues),
-
                 };
 
                 rollback = state;
@@ -837,7 +901,6 @@ public sealed class ConfigurationPresetPersistenceTests : IAsyncLifetime
 
                 state = state with
                 {
-
                     AppliedValues =
                     [
                         .. state.AppliedValues.Select(static value =>
@@ -845,15 +908,12 @@ public sealed class ConfigurationPresetPersistenceTests : IAsyncLifetime
                                 ? value with { CanonicalJson = "false" }
                                 : value),
                     ],
-
                 };
 
                 state = state with
                 {
-
                     OwnedValuesHash = ConfigurationPresetHash.ComputeCanonicalValues(
                         state.AppliedValues),
-
                 };
 
                 rollback = state;
@@ -864,7 +924,6 @@ public sealed class ConfigurationPresetPersistenceTests : IAsyncLifetime
 
                 state = state with
                 {
-
                     BaselineValues =
                     [
                         .. state.BaselineValues.Select(static value =>
@@ -872,7 +931,6 @@ public sealed class ConfigurationPresetPersistenceTests : IAsyncLifetime
                                 ? value with { CanonicalJson = "0" }
                                 : value),
                     ],
-
                 };
 
                 rollback = state;
@@ -891,7 +949,6 @@ public sealed class ConfigurationPresetPersistenceTests : IAsyncLifetime
 
                 rollback = rollback with
                 {
-
                     BaselineValues =
                     [
                         .. rollback.BaselineValues.Select(static value =>
@@ -899,7 +956,6 @@ public sealed class ConfigurationPresetPersistenceTests : IAsyncLifetime
                                 ? value with { CanonicalJson = "true" }
                                 : value),
                     ],
-
                 };
 
                 break;
@@ -929,14 +985,12 @@ public sealed class ConfigurationPresetPersistenceTests : IAsyncLifetime
             settingsHashBefore,
             ConfigurationPresetHash.ComputeSettings(
                 ConfigurationBootstrapper.LoadPersistedArcanumSettings()));
-
     }
 
     [Fact]
 
     public async Task Reset_from_normalized_legacy_provenance_restores_only_v2_survivors()
     {
-
         ConfigurationWriter writer = CreateWriter();
 
         ArcanumSettings drifted = Settings(
@@ -987,14 +1041,12 @@ public sealed class ConfigurationPresetPersistenceTests : IAsyncLifetime
         Assert.False(File.Exists(ArcanumPaths.ConfigurationPresetJournalFile));
 
         await AssertRemovedWardPathsAreAbsentFromConfigurationAsync();
-
     }
 
     [Fact]
 
     public async Task Recovery_of_a_validated_legacy_journal_skips_retired_paths()
     {
-
         ConfigurationWriter writer = CreateWriter();
 
         ArcanumSettings interrupted = Settings(
@@ -1046,14 +1098,12 @@ public sealed class ConfigurationPresetPersistenceTests : IAsyncLifetime
         Assert.False(File.Exists(ArcanumPaths.ConfigurationPresetJournalFile));
 
         await AssertRemovedWardPathsAreAbsentFromConfigurationAsync();
-
     }
 
     [Fact]
 
     public async Task Recovery_rejects_a_rehashed_legacy_journal_that_disagrees_with_provenance()
     {
-
         ConfigurationWriter writer = CreateWriter();
 
         ArcanumSettings interrupted = Settings(
@@ -1113,14 +1163,12 @@ public sealed class ConfigurationPresetPersistenceTests : IAsyncLifetime
         Assert.Equal(
             journalBefore,
             await File.ReadAllBytesAsync(ArcanumPaths.ConfigurationPresetJournalFile));
-
     }
 
     [Fact]
 
     public async Task Read_rejects_oversized_sidecars_before_deserialization()
     {
-
         ConfigurationWriter writer = CreateWriter();
 
         ArcanumSettings current = Settings(
@@ -1158,14 +1206,12 @@ public sealed class ConfigurationPresetPersistenceTests : IAsyncLifetime
         Assert.True(result.IsFailure);
 
         Assert.Equal("Preset.SidecarInvalid", result.Error.Code);
-
     }
 
     [Fact]
 
     public async Task Read_rejects_null_required_sidecar_values_without_throwing()
     {
-
         ConfigurationWriter writer = CreateWriter();
 
         ArcanumSettings current = Settings(
@@ -1196,14 +1242,12 @@ public sealed class ConfigurationPresetPersistenceTests : IAsyncLifetime
         Assert.True(result.IsFailure);
 
         Assert.Equal("Preset.SidecarInvalid", result.Error.Code);
-
     }
 
     [SkippableFact]
 
     public async Task Read_rejects_a_symbolic_link_sidecar()
     {
-
         Skip.If(
             OperatingSystem.IsWindows(),
             "This asserts POSIX behaviour that Windows does not model.");
@@ -1246,14 +1290,12 @@ public sealed class ConfigurationPresetPersistenceTests : IAsyncLifetime
         Assert.True(result.IsFailure);
 
         Assert.Equal("Preset.SidecarInvalid", result.Error.Code);
-
     }
 
     [Fact]
 
     public async Task Recovery_restores_only_owned_values_and_preserves_a_manual_edit()
     {
-
         ConfigurationWriter writer = CreateWriter();
 
         ArcanumSettings baseline = Settings(
@@ -1269,9 +1311,7 @@ public sealed class ConfigurationPresetPersistenceTests : IAsyncLifetime
 
         ArcanumSettings interrupted = plan.CandidateSettings with
         {
-
             Cli = plan.CandidateSettings.Cli with { ShowManaBar = false },
-
         };
 
         Assert.True((await writer.WriteAsync(interrupted, CancellationToken.None)).IsSuccess);
@@ -1313,14 +1353,12 @@ public sealed class ConfigurationPresetPersistenceTests : IAsyncLifetime
         Assert.False(File.Exists(ArcanumPaths.ConfigurationPresetRollbackFile));
 
         Assert.False(File.Exists(ArcanumPaths.ConfigurationPresetJournalFile));
-
     }
 
     [Fact]
 
     public async Task Peek_rejects_a_prepared_transaction_without_recovering_or_mutating_it()
     {
-
         ConfigurationWriter writer = CreateWriter();
 
         ArcanumSettings baseline = Settings(
@@ -1364,9 +1402,7 @@ public sealed class ConfigurationPresetPersistenceTests : IAsyncLifetime
 
         foreach (string path in paths)
         {
-
             before[path] = await File.ReadAllBytesAsync(path);
-
         }
 
         string[] namesBefore = Directory
@@ -1392,18 +1428,14 @@ public sealed class ConfigurationPresetPersistenceTests : IAsyncLifetime
 
         foreach (string path in paths)
         {
-
             Assert.Equal(before[path], await File.ReadAllBytesAsync(path));
-
         }
-
     }
 
     [Fact]
 
     public async Task Recovery_keeps_a_committed_apply_and_post_commit_owned_drift()
     {
-
         ConfigurationWriter writer = CreateWriter();
 
         ArcanumSettings baseline = Settings(
@@ -1418,11 +1450,9 @@ public sealed class ConfigurationPresetPersistenceTests : IAsyncLifetime
 
         ArcanumSettings postCommitEdit = plan.CandidateSettings with
         {
-
             Cli = plan.CandidateSettings.Cli with { ShowManaBar = false },
 
             Features = plan.CandidateSettings.Features with { Attachments = false },
-
         };
 
         Assert.True((await writer.WriteAsync(
@@ -1476,14 +1506,12 @@ public sealed class ConfigurationPresetPersistenceTests : IAsyncLifetime
         Assert.Equal(provenance.AppliedValues.ToArray(), recovered.AppliedValues.ToArray());
 
         Assert.False(File.Exists(ArcanumPaths.ConfigurationPresetJournalFile));
-
     }
 
     [Fact]
 
     public async Task Recovery_keeps_a_committed_reset_and_post_commit_owned_drift()
     {
-
         ConfigurationWriter writer = CreateWriter();
 
         ArcanumSettings baseline = Settings(
@@ -1498,11 +1526,9 @@ public sealed class ConfigurationPresetPersistenceTests : IAsyncLifetime
 
         ArcanumSettings postCommitEdit = baseline with
         {
-
             Cli = baseline.Cli with { ShowManaBar = false },
 
             Features = baseline.Features with { Attachments = true },
-
         };
 
         Assert.True((await writer.WriteAsync(
@@ -1537,14 +1563,12 @@ public sealed class ConfigurationPresetPersistenceTests : IAsyncLifetime
         Assert.False(File.Exists(ArcanumPaths.ConfigurationPresetRollbackFile));
 
         Assert.False(File.Exists(ArcanumPaths.ConfigurationPresetJournalFile));
-
     }
 
     [Fact]
 
     public async Task Recovery_completes_a_committed_apply_when_arcanum_json_is_unparseable()
     {
-
         ConfigurationWriter writer = CreateWriter();
 
         ArcanumSettings baseline = Settings(
@@ -1586,14 +1610,12 @@ public sealed class ConfigurationPresetPersistenceTests : IAsyncLifetime
         Assert.True(File.Exists(ArcanumPaths.ConfigurationPresetRollbackFile));
 
         Assert.False(File.Exists(ArcanumPaths.ConfigurationPresetJournalFile));
-
     }
 
     [Fact]
 
     public async Task Read_rejects_state_and_rollback_records_that_differ_only_by_timestamp()
     {
-
         ConfigurationWriter writer = CreateWriter();
 
         ArcanumSettings current = Settings(
@@ -1607,9 +1629,7 @@ public sealed class ConfigurationPresetPersistenceTests : IAsyncLifetime
 
         ConfigurationPresetProvenance mismatchedRollback = state with
         {
-
             AppliedAt = state.AppliedAt.AddSeconds(1),
-
         };
 
         Assert.True((await writer.WriteAsync(
@@ -1629,14 +1649,12 @@ public sealed class ConfigurationPresetPersistenceTests : IAsyncLifetime
         Assert.True(result.IsFailure);
 
         Assert.Equal("Preset.RollbackSnapshotInvalid", result.Error.Code);
-
     }
 
     [Fact]
 
     public async Task Configuration_transaction_serializes_callers_and_honors_cancellation()
     {
-
         TaskCompletionSource acquired = new(
             TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -1646,13 +1664,11 @@ public sealed class ConfigurationPresetPersistenceTests : IAsyncLifetime
         Task<int> first = ArcanumConfigurationTransaction.RunAsync(
             async () =>
             {
-
                 acquired.SetResult();
 
                 await release.Task.WaitAsync(TimeSpan.FromSeconds(30));
 
                 return 1;
-
             });
 
         await acquired.Task.WaitAsync(TimeSpan.FromSeconds(30));
@@ -1664,29 +1680,23 @@ public sealed class ConfigurationPresetPersistenceTests : IAsyncLifetime
         Task<int> second = ArcanumConfigurationTransaction.RunAsync(
             () =>
             {
-
                 secondEntered = true;
 
                 return Task.FromResult(2);
-
             },
             cancellation.Token);
 
         try
         {
-
             cancellation.Cancel();
 
             await Assert.ThrowsAnyAsync<OperationCanceledException>(() => second);
 
             Assert.False(secondEntered);
-
         }
         finally
         {
-
             release.TrySetResult();
-
         }
 
         Assert.Equal(1, await first);
@@ -1695,7 +1705,6 @@ public sealed class ConfigurationPresetPersistenceTests : IAsyncLifetime
             () => Task.FromResult(3));
 
         Assert.Equal(3, third);
-
     }
 
     [Theory]
@@ -1706,7 +1715,6 @@ public sealed class ConfigurationPresetPersistenceTests : IAsyncLifetime
 
     public async Task Configuration_transaction_bounds_a_contended_acquisition(bool cancellable)
     {
-
         using CancellationTokenSource cancellation = new();
 
         CancellationToken waiting = cancellable
@@ -1722,20 +1730,17 @@ public sealed class ConfigurationPresetPersistenceTests : IAsyncLifetime
         Task<int> holder = ArcanumConfigurationTransaction.RunAsync(
             async () =>
             {
-
                 acquired.SetResult();
 
                 await release.Task.WaitAsync(TimeSpan.FromSeconds(30));
 
                 return 1;
-
             });
 
         await acquired.Task.WaitAsync(TimeSpan.FromSeconds(30));
 
         try
         {
-
             Task<int> blocked = ArcanumConfigurationTransaction.RunAsync(
                 () => Task.FromResult(2),
                 waiting,
@@ -1748,24 +1753,19 @@ public sealed class ConfigurationPresetPersistenceTests : IAsyncLifetime
             Assert.Same(blocked, settled);
 
             await Assert.ThrowsAsync<ArcanumConfigurationLockException>(() => blocked);
-
         }
         finally
         {
-
             release.TrySetResult();
-
         }
 
         Assert.Equal(1, await holder);
-
     }
 
     [SkippableFact]
 
     public void Journal_cleanup_reports_a_denied_delete_instead_of_throwing()
     {
-
         string directory = Path.Combine(_workspace.Root, "undeletable-journal");
 
         Directory.CreateDirectory(directory);
@@ -1780,14 +1780,11 @@ public sealed class ConfigurationPresetPersistenceTests : IAsyncLifetime
 
         try
         {
-
             if (!OperatingSystem.IsWindows())
             {
-
                 File.SetUnixFileMode(
                     directory,
                     UnixFileMode.UserRead | UnixFileMode.UserExecute);
-
             }
 
             Skip.IfNot(
@@ -1797,43 +1794,31 @@ public sealed class ConfigurationPresetPersistenceTests : IAsyncLifetime
             Assert.False(FileConfigurationPresetPersistence.TryDeleteKnownFile(path));
 
             Assert.True(File.Exists(path));
-
         }
         finally
         {
-
             if (!OperatingSystem.IsWindows())
             {
-
                 File.SetUnixFileMode(
                     directory,
                     UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
-
             }
-
         }
-
     }
 
     private static bool DeletionIsDenied(string path)
     {
-
         try
         {
-
             File.Delete(path);
 
             return false;
-
         }
         catch (Exception exception) when (
             exception is IOException or UnauthorizedAccessException)
         {
-
             return true;
-
         }
-
     }
 
     private static ConfigurationWriter CreateWriter() =>
@@ -1842,7 +1827,6 @@ public sealed class ConfigurationPresetPersistenceTests : IAsyncLifetime
     private static async Task WriteJournalAsync(
         ConfigurationPresetJournalDocument journal)
     {
-
         Directory.CreateDirectory(ArcanumPaths.GrimoireDirectory);
 
         await using FileStream stream = File.Create(
@@ -1852,14 +1836,12 @@ public sealed class ConfigurationPresetPersistenceTests : IAsyncLifetime
             stream,
             journal,
             ConfigurationPresetPersistenceJsonContext.Default.ConfigurationPresetJournalDocument);
-
     }
 
     private static async Task WriteProvenanceAsync(
         string path,
         ConfigurationPresetProvenance provenance)
     {
-
         Directory.CreateDirectory(ArcanumPaths.GrimoireDirectory);
 
         await using FileStream stream = File.Create(path);
@@ -1868,12 +1850,10 @@ public sealed class ConfigurationPresetPersistenceTests : IAsyncLifetime
             stream,
             provenance,
             ConfigurationPresetPersistenceJsonContext.Default.ConfigurationPresetProvenance);
-
     }
 
     private static async Task WriteLegacyGeneralAssistantPairAsync()
     {
-
         Directory.CreateDirectory(ArcanumPaths.GrimoireDirectory);
 
         await File.WriteAllTextAsync(
@@ -1883,7 +1863,6 @@ public sealed class ConfigurationPresetPersistenceTests : IAsyncLifetime
         await File.WriteAllTextAsync(
             ArcanumPaths.ConfigurationPresetRollbackFile,
             LegacyGeneralAssistantProvenanceJson);
-
     }
 
     private static ConfigurationPresetProvenance LegacyGeneralAssistantProvenance() =>
@@ -1895,7 +1874,6 @@ public sealed class ConfigurationPresetPersistenceTests : IAsyncLifetime
     private static void AssertNormalizedLegacyGeneralAssistant(
         ConfigurationPresetSnapshot snapshot)
     {
-
         ConfigurationPresetProvenance provenance =
             Assert.IsType<ConfigurationPresetProvenance>(snapshot.Provenance);
 
@@ -1932,12 +1910,10 @@ public sealed class ConfigurationPresetPersistenceTests : IAsyncLifetime
         Assert.Equal(
             NormalizedGeneralAssistantAppliedHash,
             ConfigurationPresetHash.ComputeCanonicalValues(provenance.AppliedValues));
-
     }
 
     private static async Task AssertRemovedWardPathsAreAbsentFromConfigurationAsync()
     {
-
         byte[] configurationBytes = await File.ReadAllBytesAsync(
             ArcanumPaths.ConfigurationFile);
 
@@ -1955,7 +1931,6 @@ public sealed class ConfigurationPresetPersistenceTests : IAsyncLifetime
         Assert.DoesNotContain(
             ward.EnumerateObject(),
             static property => property.NameEquals("autoDenyInUnattendedMode"));
-
     }
 
     private static FileConfigurationPresetPersistence CreatePersistence(
@@ -1974,12 +1949,10 @@ public sealed class ConfigurationPresetPersistenceTests : IAsyncLifetime
         bool allowUnsandboxedToolChildren = false) =>
         new()
         {
-
             Providers =
             [
                 new ProviderSettings
                 {
-
                     Name = "local",
 
                     Endpoint = "http://127.0.0.1:11434/v1",
@@ -1987,7 +1960,6 @@ public sealed class ConfigurationPresetPersistenceTests : IAsyncLifetime
                     CredentialEnvironmentVariable = "LOCAL_PROVIDER_KEY",
 
                     Models = ["local-model"],
-
                 },
             ],
 
@@ -1995,26 +1967,20 @@ public sealed class ConfigurationPresetPersistenceTests : IAsyncLifetime
 
             Features = new FeatureSettings
             {
-
                 Saga = saga,
 
                 Attachments = attachments,
-
             },
 
             Security = new SecuritySettings
             {
-
                 AllowUnsandboxedToolChildren = allowUnsandboxedToolChildren,
-
             },
-
         };
 
     private static ConfigurationPresetPlanningResult GeneralAssistantPlan(
         ArcanumSettings settings)
     {
-
         ConfigurationPresetDefinition preset =
             ConfigurationPresetCatalog.Find("general-assistant")!;
 
@@ -2033,7 +1999,6 @@ public sealed class ConfigurationPresetPersistenceTests : IAsyncLifetime
         Assert.True(result.Value.Plan.IsApplicable);
 
         return result.Value;
-
     }
 
     private static ConfigurationPresetProvenance Provenance(
@@ -2048,12 +2013,9 @@ public sealed class ConfigurationPresetPersistenceTests : IAsyncLifetime
 
     private static void AssertOwnerOnly(string path)
     {
-
         if (OperatingSystem.IsWindows())
         {
-
             return;
-
         }
 
         UnixFileMode mode = File.GetUnixFileMode(path);
@@ -2067,7 +2029,5 @@ public sealed class ConfigurationPresetPersistenceTests : IAsyncLifetime
             | UnixFileMode.OtherExecute;
 
         Assert.Equal((UnixFileMode)0, mode & disallowed);
-
     }
-
 }

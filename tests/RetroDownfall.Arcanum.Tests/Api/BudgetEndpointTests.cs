@@ -16,7 +16,6 @@ namespace RetroDownfall.Arcanum.Tests.Api;
 [Collection("ApiHost")]
 public sealed class BudgetEndpointTests
 {
-
     private readonly ArcanumWebApplicationFactory _factory;
 
     public BudgetEndpointTests(ArcanumWebApplicationFactory factory)
@@ -27,7 +26,6 @@ public sealed class BudgetEndpointTests
     [Fact]
     public async Task GetBudget_Disabled_ReturnsEnabledFalseAndZeroSpend()
     {
-
         await using ArcanumWebApplicationFactory factory = _factory.WithBudget(
             new BudgetPolicySettings { Enabled = false, DailyLimitUsd = 10m },
             todaySpend: 999m);
@@ -48,13 +46,11 @@ public sealed class BudgetEndpointTests
         Assert.False(body.Data!.Enabled);
 
         Assert.Equal(0m, body.Data.TodaySpendUsd);
-
     }
 
     [Fact]
     public async Task GetBudget_DistinguishesLocalFromDelegatedSpendAndFlagsUnpricedSendings()
     {
-
         await using ArcanumWebApplicationFactory factory = _factory.WithBudget(
             new BudgetPolicySettings { Enabled = true, DailyLimitUsd = 20m },
             todaySpend: 5m,
@@ -78,13 +74,11 @@ public sealed class BudgetEndpointTests
         // The unpriced Sending is counted, never costed: adding it at zero would make the total look
         // complete when part of the day's delegated work has no price at all (issue #69).
         Assert.Equal(1, summary.UnpricedDelegatedSendings);
-
     }
 
     [Fact]
     public async Task GetBudget_Enabled_ReturnsSpendAndRemaining()
     {
-
         await using ArcanumWebApplicationFactory factory = _factory.WithBudget(
             new BudgetPolicySettings { Enabled = true, DailyLimitUsd = 20m },
             todaySpend: 5m);
@@ -113,13 +107,11 @@ public sealed class BudgetEndpointTests
         Assert.Equal(25, body.Data.SpentPercent);
 
         Assert.Equal(80, body.Data.AlertThresholdPercent);
-
     }
 
     [Fact]
     public async Task GetBudget_ReportsCommittedSpendPlusOutstandingReservations_NotTheSessionProjection()
     {
-
         // A session opened yesterday that is still being worked in today contributes nothing to the
         // Sessions.TotalCostUsd projection for today (it is keyed on Sessions.CreatedAt), and a call in
         // flight has no completed BillableOperations row at all. The reported figure must be the same
@@ -144,14 +136,11 @@ public sealed class BudgetEndpointTests
         Assert.Equal(13m, summary.RemainingUsd);
 
         Assert.Equal(35, summary.SpentPercent);
-
     }
-
 }
 
 internal static class BudgetEndpointTestFactoryExtensions
 {
-
     public static ArcanumWebApplicationFactory WithBudget(
         this ArcanumWebApplicationFactory factory,
         BudgetPolicySettings budget,
@@ -160,10 +149,8 @@ internal static class BudgetEndpointTestFactoryExtensions
         decimal outstandingReservations = 0m,
         decimal? sessionProjectionSpend = null)
     {
-
         return new ArcanumWebApplicationFactory
         {
-
             SettingsOverride = settings => settings with
             {
                 Cost = settings.Cost with { Budget = budget },
@@ -171,7 +158,6 @@ internal static class BudgetEndpointTestFactoryExtensions
 
             ServiceOverrides = services =>
             {
-
                 services.RemoveAll<IGrimoireRepository>();
 
                 services.AddScoped<IGrimoireRepository>(
@@ -186,25 +172,19 @@ internal static class BudgetEndpointTestFactoryExtensions
 
                 services.AddScoped<IExternalSpendLedger>(
                     _ => new StubExternalSpendLedger(externalSpend ?? ExternalSpendSummary.None));
-
             },
-
         };
-
     }
 
     private sealed class StubExternalSpendLedger(ExternalSpendSummary summary) : IExternalSpendLedger
     {
-
         public Task<ExternalSpendSummary> GetTodayAsync(CancellationToken cancellationToken = default) =>
             Task.FromResult(summary);
-
     }
 
     private sealed class StubBudgetReservationService(decimal committedUsd, decimal outstandingUsd)
         : IBudgetReservationService
     {
-
         public Task<decimal> GetTodayCommittedSpendAsync(CancellationToken cancellationToken = default) =>
             Task.FromResult(committedUsd);
 
@@ -225,14 +205,18 @@ internal static class BudgetEndpointTestFactoryExtensions
         public Task ReleaseAsync(Guid reservationId, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
 
-        public Task<int> SweepExpiredAsync(DateTimeOffset utcNow, CancellationToken cancellationToken = default) =>
+        public Task ExtendExpiryAsync(Guid reservationId, DateTimeOffset expiresAt, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
 
+        public Task<Result> RecheckDailyLimitAsync(Guid reservationId, decimal delegatedSpendUsd, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<int> SweepExpiredAsync(DateTimeOffset utcNow, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
     }
 
     private sealed class StubGrimoireRepository : IGrimoireRepository
     {
-
         private readonly decimal _todaySpend;
 
         public StubGrimoireRepository(decimal todaySpend)
@@ -328,7 +312,5 @@ internal static class BudgetEndpointTestFactoryExtensions
 
         public Task<WorkspaceContext?> GetLatestWorkspaceContextAsync(string workspacePath, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
-
     }
-
 }

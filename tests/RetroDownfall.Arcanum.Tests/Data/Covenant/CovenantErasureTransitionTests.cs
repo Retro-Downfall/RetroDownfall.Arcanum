@@ -1,5 +1,7 @@
 using System.Reflection;
 
+using Microsoft.Extensions.Logging.Abstractions;
+
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -16,11 +18,9 @@ namespace RetroDownfall.Arcanum.Tests.Data.Covenant;
 /// </summary>
 public sealed class CovenantErasureTransitionTests
 {
-
     [Fact]
     public void Storage_transition_requires_the_exact_closed_period_authority()
     {
-
         Assert.Equal(
             [
                 typeof(CovenantExclusiveOperation),
@@ -43,13 +43,11 @@ public sealed class CovenantErasureTransitionTests
             typeof(ICovenantErasureTransition).GetMethod(nameof(ICovenantErasureTransition.CompactAsync))!
                 .GetParameters()
                 .Select(static parameter => parameter.ParameterType));
-
     }
 
     [Fact]
     public async Task Storage_operations_delegate_once_and_verification_returns_the_exact_candidate()
     {
-
         using TransitionHarness harness = new();
 
         Assert.True((await harness.Subject.ApplyCanonicalErasureAsync(
@@ -118,13 +116,11 @@ public sealed class CovenantErasureTransitionTests
             authority => Assert.Same(harness.Authority, authority));
 
         Assert.Equal(5, harness.Storage.Authorities.Count);
-
     }
 
     [Fact]
     public void The_canonical_erasure_owner_exposes_no_ordinary_candidate_generation_reread()
     {
-
         Assert.DoesNotContain(
             typeof(ICovenantCanonicalErasure).GetMethods(),
             static method => string.Equals(
@@ -138,13 +134,11 @@ public sealed class CovenantErasureTransitionTests
                 method.Name,
                 "ReadCandidateDatasetGenerationAsync",
                 StringComparison.Ordinal));
-
     }
 
     [Fact]
     public async Task Publish_projects_only_the_verified_candidate_and_one_captured_runtime_state()
     {
-
         using TransitionHarness harness = new();
 
         CovenantRuntimeGenerationState expected = harness.Runtime.Current;
@@ -246,13 +240,11 @@ public sealed class CovenantErasureTransitionTests
         Assert.Equal(availability.CanonicalDiagnosticCode, transition.Capability.CanonicalDiagnosticCode);
 
         Assert.Equal(availability.AcceleratorDiagnosticCode, transition.Capability.AcceleratorDiagnosticCode);
-
     }
 
     [Fact]
     public async Task Fresh_recovery_runtime_projects_a_verified_candidate_without_inventing_schema_health()
     {
-
         CovenantVerifiedCandidateState candidate = TransitionHarness.CandidateState();
 
         using CovenantRuntimeGenerationProvider runtime = new();
@@ -261,7 +253,6 @@ public sealed class CovenantErasureTransitionTests
 
         _ = runtime.PublishAvailability(current => current with
         {
-
             DatasetGeneration = Guid.Parse("AAAAAAAA-BBBB-4CCC-8DDD-EEEEEEEEEEEE"),
 
             CanonicalSequence = 101,
@@ -269,7 +260,6 @@ public sealed class CovenantErasureTransitionTests
             CoreCampaignDeletionSequence = 102,
 
             AcceleratorEpoch = 103,
-
         });
 
         ResultRecordingPublisher publisher = new();
@@ -316,7 +306,6 @@ public sealed class CovenantErasureTransitionTests
         Assert.Equal(candidate.Dataset.EnvelopeKeyEpoch, projected.CanonicalEnvelopeEpoch);
 
         Assert.Equal(candidate.Authority.RecoveryEnvelopeEpoch, projected.RecoveryEnvelopeEpoch);
-
     }
 
     [Theory]
@@ -325,7 +314,6 @@ public sealed class CovenantErasureTransitionTests
     public async Task An_unhealthy_or_absent_accelerator_publishes_unavailable_synchronization(
         CovenantCapabilityState accelerator)
     {
-
         using TransitionHarness harness = new(accelerator);
 
         Result published = await harness.Subject.PublishCommittedAsync(
@@ -338,13 +326,11 @@ public sealed class CovenantErasureTransitionTests
         Assert.Equal(
             CovenantFtsSynchronizationState.Unavailable,
             harness.Publisher.Transition!.Capability.FtsSynchronization);
-
     }
 
     [Fact]
     public async Task Projection_failure_after_committed_erasure_retires_the_captured_runtime_and_all_issuance()
     {
-
         CovenantVerifiedCandidateState candidate = TransitionHarness.CandidateState();
 
         using CovenantRuntimeGenerationProvider runtime = new();
@@ -391,9 +377,7 @@ public sealed class CovenantErasureTransitionTests
             runtime,
             initialized with
             {
-
                 Availability = SaturatedAvailability(candidate),
-
             });
 
         CovenantAuthoritySnapshotProvider authority = new(runtime);
@@ -419,7 +403,10 @@ public sealed class CovenantErasureTransitionTests
             CovenantExclusiveOperation.CovenantReset,
             new CovenantDigest([.. Enumerable.Repeat((byte)0x7B, CovenantLimits.DigestBytes)]));
 
-        CovenantOperationGate gate = new(runtime, new NoCampaignProbe());
+        CovenantOperationGate gate = new(
+            runtime,
+            new NoCampaignProbe(),
+            NullLogger<CovenantOperationGate>.Instance);
 
         await using CovenantExclusiveLease lease =
             (await gate.AcquireExclusiveAsync(owner, CancellationToken.None)).Value;
@@ -463,13 +450,11 @@ public sealed class CovenantErasureTransitionTests
             purpose => Assert.True(codec.Encode(purpose, [0x42], TimeSpan.FromMinutes(5)).IsFailure));
 
         Assert.True(issuer.Issue(CovenantAuthorityRequirement.CovenantManage).IsFailure);
-
     }
 
     [Fact]
     public async Task Projection_failure_after_an_intervening_committed_winner_preserves_the_winner()
     {
-
         CovenantVerifiedCandidateState candidate = TransitionHarness.CandidateState();
 
         using CovenantRuntimeGenerationProvider runtime = new();
@@ -510,7 +495,10 @@ public sealed class CovenantErasureTransitionTests
             CovenantExclusiveOperation.CovenantReset,
             new CovenantDigest([.. Enumerable.Repeat((byte)0x6A, CovenantLimits.DigestBytes)]));
 
-        CovenantOperationGate gate = new(runtime, new NoCampaignProbe());
+        CovenantOperationGate gate = new(
+            runtime,
+            new NoCampaignProbe(),
+            NullLogger<CovenantOperationGate>.Instance);
 
         await using CovenantExclusiveLease lease =
             (await gate.AcquireExclusiveAsync(owner, CancellationToken.None)).Value;
@@ -540,9 +528,7 @@ public sealed class CovenantErasureTransitionTests
 
         CovenantVerifiedCandidateState malformed = candidate with
         {
-
             Authority = candidate.Authority with { CurrentMasterKeyVersion = long.MaxValue },
-
         };
 
         Result published = await subject.PublishCommittedAsync(
@@ -565,7 +551,6 @@ public sealed class CovenantErasureTransitionTests
         Assert.NotNull(runtime.Current.ActiveAuthority);
 
         Assert.Null(runtime.Current.RecoveryOwner);
-
     }
 
     private static CovenantAvailabilitySnapshot SaturatedAvailability(
@@ -594,11 +579,9 @@ public sealed class CovenantErasureTransitionTests
 
     private sealed class TransitionHarness : IDisposable
     {
-
         internal TransitionHarness(
             CovenantCapabilityState accelerator = CovenantCapabilityState.Healthy)
         {
-
             Candidate = CandidateState();
 
             Canonical = new RecordingCanonical(Candidate.Dataset.DatasetGeneration);
@@ -612,7 +595,6 @@ public sealed class CovenantErasureTransitionTests
             Publisher = new RecordingPublisher();
 
             Subject = new CovenantErasureTransition(Canonical, Storage, Runtime, Publisher);
-
         }
 
         internal CovenantVerifiedCandidateState Candidate { get; }
@@ -699,12 +681,10 @@ public sealed class CovenantErasureTransitionTests
                     : accelerator == CovenantCapabilityState.Degraded
                         ? "accelerator-degraded"
                         : "accelerator-unavailable");
-
     }
 
     private sealed class RecordingCanonical(Guid generation) : ICovenantCanonicalErasure
     {
-
         internal int ApplyCalls { get; private set; }
 
         internal CovenantClosedPeriodAuthority? Authority { get; private set; }
@@ -715,21 +695,17 @@ public sealed class CovenantErasureTransitionTests
             CovenantClosedPeriodAuthority authority,
             CancellationToken cancellationToken)
         {
-
             ApplyCalls++;
 
             Authority = authority;
 
             return Task.FromResult(Result<Guid>.Success(generation));
-
         }
-
     }
 
     private sealed class RecordingStorage(CovenantVerifiedCandidateState candidate)
         : ICovenantLocalErasureStorageHealth
     {
-
         internal int CloseCalls { get; private set; }
 
         internal int TruncateCalls { get; private set; }
@@ -759,24 +735,20 @@ public sealed class CovenantErasureTransitionTests
             CovenantClosedPeriodAuthority authority,
             CancellationToken cancellationToken)
         {
-
             Result recorded = await Record(authority, () => CompactCalls++);
 
             return recorded.IsFailure ? Result<bool>.Failure(recorded.Error) : Result<bool>.Success(false);
-
         }
 
         public async Task<Result<CovenantDigest>> StageCandidateAsync(
             CovenantClosedPeriodAuthority authority,
             CancellationToken cancellationToken)
         {
-
             Result recorded = await Record(authority, () => StageCalls++);
 
             return recorded.IsFailure
                 ? Result<CovenantDigest>.Failure(recorded.Error)
                 : Result<CovenantDigest>.Success(Staged);
-
         }
 
         public async Task<Result<CovenantDigest>> ProveStagedCandidateAsync(
@@ -784,13 +756,11 @@ public sealed class CovenantErasureTransitionTests
             CovenantDigest stagingIdentity,
             CancellationToken cancellationToken)
         {
-
             Result recorded = await Record(authority, () => ProveCalls++);
 
             return recorded.IsFailure
                 ? Result<CovenantDigest>.Failure(recorded.Error)
                 : Result<CovenantDigest>.Success(Staged);
-
         }
 
         public Task<Result> InstallCompactionReplacementAsync(
@@ -805,13 +775,11 @@ public sealed class CovenantErasureTransitionTests
             CovenantClosedPeriodAuthority authority,
             CancellationToken cancellationToken)
         {
-
             Result recorded = await Record(authority, () => CanonicalIdentityReads++);
 
             return recorded.IsFailure
                 ? Result<CovenantDigest>.Failure(recorded.Error)
                 : Result<CovenantDigest>.Success(Staged);
-
         }
 
         internal int StageCalls { get; private set; }
@@ -839,36 +807,28 @@ public sealed class CovenantErasureTransitionTests
             CovenantClosedPeriodAuthority authority,
             CancellationToken cancellationToken)
         {
-
             ReopenCalls++;
 
             Authorities.Add(authority);
 
             return Task.FromResult(Result<CovenantVerifiedCandidateState>.Success(candidate));
-
         }
 
         private Task<Result> Record(CovenantClosedPeriodAuthority? authority, Action increment)
         {
-
             increment();
 
             if (authority is not null)
             {
-
                 Authorities.Add(authority);
-
             }
 
             return Task.FromResult(Result.Success());
-
         }
-
     }
 
     private sealed class RecordingPublisher : ICovenantCommittedTransitionPublisher
     {
-
         internal CovenantRuntimeGenerationState? Expected { get; private set; }
 
         internal CovenantCommittedAuthorityTransition? Transition { get; private set; }
@@ -879,20 +839,16 @@ public sealed class CovenantErasureTransitionTests
             CovenantRuntimeGenerationState expected,
             CancellationToken cancellationToken)
         {
-
             Transition = transition.Value;
 
             Expected = expected;
 
             return ValueTask.FromResult(Result.Success());
-
         }
-
     }
 
     private sealed class ResultRecordingPublisher : ICovenantCommittedTransitionPublisher
     {
-
         internal CovenantRuntimeGenerationState? Expected { get; private set; }
 
         internal Result<CovenantCommittedAuthorityTransition>? Transition { get; private set; }
@@ -903,7 +859,6 @@ public sealed class CovenantErasureTransitionTests
             CovenantRuntimeGenerationState expected,
             CancellationToken cancellationToken)
         {
-
             Transition = transition;
 
             Expected = expected;
@@ -911,9 +866,7 @@ public sealed class CovenantErasureTransitionTests
             return ValueTask.FromResult(transition.IsSuccess
                 ? Result.Success()
                 : Result.Failure(transition.Error));
-
         }
-
     }
 
     private sealed class CommitWinnerBeforeFailurePublisher(
@@ -922,7 +875,6 @@ public sealed class CovenantErasureTransitionTests
         CovenantRuntimeGenerationProvider runtime,
         CovenantVerifiedCandidateState candidate) : ICovenantCommittedTransitionPublisher
     {
-
         internal Result? WinnerResult { get; private set; }
 
         internal CovenantRuntimeGenerationState? Winner { get; private set; }
@@ -933,7 +885,6 @@ public sealed class CovenantErasureTransitionTests
             CovenantRuntimeGenerationState expected,
             CancellationToken cancellationToken)
         {
-
             WinnerResult = await winner.PublishCommittedAsync(
                 lease,
                 candidate,
@@ -946,14 +897,11 @@ public sealed class CovenantErasureTransitionTests
                 lease,
                 expected,
                 cancellationToken);
-
         }
-
     }
 
     private sealed class NullExclusiveLease : ICovenantExclusiveOperationLease
     {
-
         public CovenantOperationLeaseSnapshot Snapshot { get; } = new(
             Guid.NewGuid(),
             1,
@@ -987,17 +935,13 @@ public sealed class CovenantErasureTransitionTests
             ValueTask.FromResult(Result.Success());
 
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
-
     }
 
     private sealed class NoCampaignProbe : ICovenantCampaignScopeProbe
     {
-
         public ValueTask<Result<CovenantCampaignScopeState>> ResolveAsync(
             Guid campaignId,
             CancellationToken cancellationToken) =>
             ValueTask.FromResult<Result<CovenantCampaignScopeState>>(CovenantCampaignScopeState.Live);
-
     }
-
 }

@@ -16,7 +16,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data;
 /// </summary>
 internal static class ArcanumDbContextOptionsConfigurator
 {
-
     /// <summary>
     /// Builds one serving workload's options with the host-wide admission and drain singletons.
     /// </summary>
@@ -27,7 +26,6 @@ internal static class ArcanumDbContextOptionsConfigurator
         ICovenantConnectionDrain drain,
         ICovenantSqliteConnectionInitializer initializer)
     {
-
         ArgumentNullException.ThrowIfNull(lifecycle);
 
         ArgumentNullException.ThrowIfNull(drain);
@@ -37,7 +35,6 @@ internal static class ArcanumDbContextOptionsConfigurator
         ConfigureProvider(optionsBuilder, passphraseSource);
 
         _ = ConfigureServingEnrolment(optionsBuilder, lifecycle, drain, initializer);
-
     }
 
     /// <summary>
@@ -55,7 +52,8 @@ internal static class ArcanumDbContextOptionsConfigurator
             new CovenantConnectionEnrolmentInterceptor(
                 lifecycle,
                 drain,
-                initializer));
+                initializer,
+                SqliteNativeRuntime.Instance));
 
     /// <summary>
     /// Configures the manual/design-time fallback that has no serving host or maintenance owner.
@@ -64,18 +62,15 @@ internal static class ArcanumDbContextOptionsConfigurator
         DbContextOptionsBuilder optionsBuilder,
         IGrimoireDbPassphraseSource passphraseSource)
     {
-
         ConfigureProvider(optionsBuilder, passphraseSource);
 
         _ = optionsBuilder.AddInterceptors(SqlitePragmaConnectionInterceptor.Instance);
-
     }
 
     private static void ConfigureProvider(
         DbContextOptionsBuilder optionsBuilder,
         IGrimoireDbPassphraseSource passphraseSource)
     {
-
         string connectionString = new SqliteConnectionStringBuilder
         {
             DataSource = ArcanumPaths.GrimoireDatabaseFile,
@@ -85,7 +80,5 @@ internal static class ArcanumDbContextOptionsConfigurator
         _ = optionsBuilder
             .UseSqlite(connectionString)
             .UseModel(ArcanumDbContextModel.Instance);
-
     }
-
 }

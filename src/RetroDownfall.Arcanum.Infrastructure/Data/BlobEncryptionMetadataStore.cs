@@ -147,11 +147,17 @@ internal sealed class BlobEncryptionMetadataStore(ArcanumDbContext db)
             .ConfigureAwait(false);
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-            Guid id = Guid.Parse(reader.GetString(0));
+            string storedId = reader.GetString(0);
+
+            Guid id = Guid.Parse(storedId);
+
             string purpose = reader.GetString(2);
+
             candidates.Add(new BlobEncryptionCandidate(
                 BlobEncryptionRecordKind.UploadedFile,
-                id.ToString("D"),
+                // The text as stored, not a rendering of the parsed identity: the write-back below matches this
+                // column exactly, and a row still held in an earlier spelling has to find itself.
+                storedId,
                 UploadedFileStorage.ResolvePath(id),
                 UploadedFileStorage.ResolveEncryptionPurpose(purpose),
                 reader.GetInt64(1),

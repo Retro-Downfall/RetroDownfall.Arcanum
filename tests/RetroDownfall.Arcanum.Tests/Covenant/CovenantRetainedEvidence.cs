@@ -31,7 +31,6 @@ namespace RetroDownfall.Arcanum.Tests.Covenant;
 /// </remarks>
 internal static class CovenantRetainedEvidence
 {
-
     /// <summary>
     /// Every schema object a suite must install before it can assert retention.
     /// </summary>
@@ -110,7 +109,6 @@ internal static class CovenantRetainedEvidence
         IOsCredentialStore credentials,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(connection);
 
         ArgumentNullException.ThrowIfNull(credentials);
@@ -130,7 +128,6 @@ internal static class CovenantRetainedEvidence
             Digest(0x40));
 
         Assert.Equal(HostProcessToolsMarkerWriteStatus.Written, written);
-
     }
 
     /// <summary>Renders every retained artifact, so a later render can be compared to it exactly.</summary>
@@ -139,7 +136,6 @@ internal static class CovenantRetainedEvidence
         IOsCredentialStore credentials,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(connection);
 
         ArgumentNullException.ThrowIfNull(credentials);
@@ -148,9 +144,7 @@ internal static class CovenantRetainedEvidence
 
         foreach ((string table, string order) in RetainedTables)
         {
-
             rows.AddRange(await RenderAsync(connection, table, order, cancellationToken));
-
         }
 
         OsCredentialStoreResult marker = credentials.TryGet(
@@ -158,7 +152,6 @@ internal static class CovenantRetainedEvidence
             ArcanumCredentialIdentity.HostProcessToolsTaintAccount);
 
         return new CovenantRetainedEvidenceSnapshot(rows, marker.Status, marker.Value);
-
     }
 
     /// <summary>
@@ -175,7 +168,6 @@ internal static class CovenantRetainedEvidence
         IOsCredentialStore credentials,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(before);
 
         Assert.NotEmpty(before.Rows);
@@ -191,7 +183,6 @@ internal static class CovenantRetainedEvidence
         Assert.Equal(before.MarkerStatus, after.MarkerStatus);
 
         Assert.Equal(before.MarkerPayload, after.MarkerPayload);
-
     }
 
     /// <summary>
@@ -207,7 +198,6 @@ internal static class CovenantRetainedEvidence
     /// </remarks>
     internal static void AssertNoProductionPathDeletesRetainedEvidence()
     {
-
         List<string> offenders =
         [
             .. ProductionSourceInventory.Sources()
@@ -238,23 +228,18 @@ internal static class CovenantRetainedEvidence
         // account only in its explicit retained-identity filter; the catalog tests prove it never
         // returns that name to DeleteAndVerify. No other production file may spell it at all.
         Assert.Empty(credentialOffenders);
-
     }
 
     internal static CovenantDigest Digest(byte seed)
     {
-
         byte[] bytes = new byte[CovenantLimits.DigestBytes];
 
         for (int index = 0; index < bytes.Length; index++)
         {
-
             bytes[index] = unchecked((byte)(seed + index));
-
         }
 
         return new CovenantDigest(bytes);
-
     }
 
     private static async Task<List<string>> RenderAsync(
@@ -263,7 +248,6 @@ internal static class CovenantRetainedEvidence
         string order,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = connection.CreateCommand();
 
         command.CommandText = $"SELECT * FROM \"{table}\" ORDER BY \"{order}\";";
@@ -274,22 +258,17 @@ internal static class CovenantRetainedEvidence
 
         while (await reader.ReadAsync(cancellationToken))
         {
-
             StringBuilder row = new(table);
 
             for (int index = 0; index < reader.FieldCount; index++)
             {
-
                 _ = row.Append('|').Append(reader.GetName(index)).Append('=').Append(Render(reader.GetValue(index)));
-
             }
 
             rendered.Add(row.ToString());
-
         }
 
         return rendered;
-
     }
 
     /// <summary>
@@ -305,7 +284,6 @@ internal static class CovenantRetainedEvidence
 
     private static async Task SeedAuthorityAsync(SqliteConnection connection, CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = connection.CreateCommand();
 
         command.CommandText = """
@@ -329,14 +307,12 @@ internal static class CovenantRetainedEvidence
         _ = command.Parameters.AddWithValue("$updated", "2026-08-16T00:00:00.0000000+00:00");
 
         _ = await command.ExecuteNonQueryAsync(cancellationToken);
-
     }
 
-    private static async Task SeedCampaignPathIdentityAsync(
+    internal static async Task SeedCampaignPathIdentityAsync(
         SqliteConnection connection,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = connection.CreateCommand();
 
         command.CommandText = """
@@ -352,7 +328,6 @@ internal static class CovenantRetainedEvidence
         _ = command.Parameters.AddWithValue("$updated", "2026-08-16T00:00:00.0000000+00:00");
 
         _ = await command.ExecuteNonQueryAsync(cancellationToken);
-
     }
 
     /// <summary>
@@ -364,9 +339,8 @@ internal static class CovenantRetainedEvidence
     /// this assertion for the wrong reason — it would be stopped by the phase check rather than by the
     /// missing authorization.
     /// </remarks>
-    private static async Task SeedMarkerIntentAsync(SqliteConnection connection, CancellationToken cancellationToken)
+    internal static async Task SeedMarkerIntentAsync(SqliteConnection connection, CancellationToken cancellationToken)
     {
-
         // The journal's insert guard demands the marker intent mutation scope, exactly as its delete
         // guard does. Seeding through the same authorization production uses is what makes the row
         // realistic; a suite that installed the table without its guards would seed one nothing
@@ -409,9 +383,7 @@ internal static class CovenantRetainedEvidence
         _ = command.Parameters.AddWithValue("$updated", "2026-08-16T00:00:01.0000000+00:00");
 
         _ = await command.ExecuteNonQueryAsync(cancellationToken);
-
     }
-
 
     /// <summary>
     /// A blocked full installation reset cleanup child and the evidence behind it.
@@ -426,14 +398,12 @@ internal static class CovenantRetainedEvidence
         SqliteConnection connection,
         CancellationToken cancellationToken)
     {
-
         using CovenantSqliteAuthorizationScope authorization = CovenantSqliteConnectionInitializer.Instance.Authorize(
             connection,
             CovenantSqliteAuthorizationKind.CampaignPathMarkerIntentMutation);
 
         await using (SqliteCommand parent = connection.CreateCommand())
         {
-
             parent.CommandText = """
                 INSERT INTO campaign_path_marker_intents (
                     IntentId, OwnerOperationId, CampaignId, IntentKindCode, ExclusiveOwnerOperationCode,
@@ -464,7 +434,6 @@ internal static class CovenantRetainedEvidence
             _ = parent.Parameters.AddWithValue("$updated", "2026-08-22T00:00:01.0000000+00:00");
 
             _ = await parent.ExecuteNonQueryAsync(cancellationToken);
-
         }
 
         await using SqliteCommand companion = connection.CreateCommand();
@@ -490,9 +459,7 @@ internal static class CovenantRetainedEvidence
         _ = companion.Parameters.AddWithValue("$observation", Digest(0x86).Bytes);
 
         _ = await companion.ExecuteNonQueryAsync(cancellationToken);
-
     }
-
 }
 
 /// <summary>

@@ -13,10 +13,22 @@ namespace RetroDownfall.Arcanum.Infrastructure.Workspaces;
 
 public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> options) : IFileSystemWriter
 {
-
     private static readonly byte[] Utf8Bom = [0xEF, 0xBB, 0xBF];
 
     private static readonly UTF8Encoding StrictUtf8 = new(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
+
+    private static readonly AsyncLocal<Action<string>?> AfterReplaceTextBlockReadSeam = new();
+
+    /// <summary>
+    /// Deterministic test seam invoked with the absolute target path after <see cref="ReplaceTextBlockAsync"/>
+    /// has read the file and before it writes, so a test can change the destination at exactly that point.
+    /// Scoped to the current async flow, so it cannot leak into a concurrently running test.
+    /// </summary>
+    internal static Action<string>? AfterReplaceTextBlockReadForTests
+    {
+        get => AfterReplaceTextBlockReadSeam.Value;
+        set => AfterReplaceTextBlockReadSeam.Value = value;
+    }
 
     public async Task<Result<FileWriteResult>> WriteFileAsync(
         WorkspaceInfo workspace,
@@ -24,7 +36,6 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
         string content,
         CancellationToken ct)
     {
-
         ct.ThrowIfCancellationRequested();
 
         if (!IsFileWriteEnabled())
@@ -42,6 +53,11 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
         string resolvedPath = resolvedResult.Value;
 
         string workspaceRoot = Path.GetFullPath(workspace.Path);
+
+        if (IsProtectedWriteRefused(workspaceRoot, resolvedPath))
+        {
+            return new Error(ErrorCodes.Workspace.PathNotAllowed, ProtectedPathMessage);
+        }
 
         if (Directory.Exists(resolvedPath))
         {
@@ -87,7 +103,6 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
         int? expectedReplacements,
         CancellationToken ct)
     {
-
         ct.ThrowIfCancellationRequested();
 
         if (!IsFileWriteEnabled())
@@ -106,19 +121,28 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
 
         string workspaceRoot = Path.GetFullPath(workspace.Path);
 
+        if (IsProtectedWriteRefused(workspaceRoot, resolvedPath))
+        {
+            return new Error(ErrorCodes.Workspace.PathNotAllowed, ProtectedPathMessage);
+        }
+
         if (!File.Exists(resolvedPath))
         {
             return new Error(ErrorCodes.Workspace.FileNotFound, FileNotFoundMessage);
         }
 
+        long maxWriteBytes = GetMaxFileWriteSizeBytes();
+
         long newStringBytes = Encoding.UTF8.GetByteCount(newString);
 
-        if (newStringBytes > GetMaxFileWriteSizeBytes())
+        if (newStringBytes > maxWriteBytes)
         {
             return new Error(ErrorCodes.Workspace.FileTooLarge, FileTooLargeMessage);
         }
 
-        long combinedBytes = Encoding.UTF8.GetByteCount(oldString) + newStringBytes;
+        long oldStringBytes = Encoding.UTF8.GetByteCount(oldString);
+
+        long combinedBytes = oldStringBytes + newStringBytes;
 
         if (combinedBytes > GetMaxReplaceTextBlockBytes())
         {
@@ -136,12 +160,14 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
 
         bool hadBom;
 
+        long readByteCount;
+
+        FileContentBaseline readBaseline = default;
+
         try
         {
-
             await using (readStream)
             {
-
                 using SecureFileReadResult readResult = await SecureFileReader
                     .ReadBytesAsync(
                         readStream,
@@ -155,6 +181,12 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
                 }
 
                 ReadOnlySpan<byte> bytes = readResult.Bytes.Span;
+
+                readByteCount = bytes.Length;
+
+                // The exact bytes the edit is computed from, taken from this read (BOM included); the
+                // replace aborts if the destination is no longer byte-for-byte this.
+                readBaseline = FileContentBaseline.Of(bytes);
 
                 hadBom = bytes.StartsWith(Utf8Bom);
 
@@ -182,9 +214,7 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
                 {
                     return new Error(ErrorCodes.Workspace.PathNotAllowed, InvalidUtf8Message);
                 }
-
             }
-
         }
         catch (Exception ex) when (ex is UnauthorizedAccessException or SecurityException)
         {
@@ -207,13 +237,29 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
             return new Error(ErrorCodes.Workspace.ReplacementAmbiguous, ReplacementAmbiguousMessage);
         }
 
+        // The block limits bound oldString and newString, not what they make together: a short oldString
+        // that occurs many times and a long newString can project a result far past the write limit, or past
+        // what a string can hold at all. The size is checked from the projection before anything is built
+        // (the read bytes already include any BOM), and once more on the encoded bytes.
+        if (readByteCount + (occurrences * (newStringBytes - oldStringBytes)) > maxWriteBytes)
+        {
+            return new Error(ErrorCodes.Workspace.FileTooLarge, FileTooLargeMessage);
+        }
+
         string replacedText = text.Replace(oldString, newString, StringComparison.Ordinal);
 
         byte[] replacedTextBytes = Encoding.UTF8.GetBytes(replacedText);
 
         byte[] outputBytes = hadBom ? [.. Utf8Bom, .. replacedTextBytes] : replacedTextBytes;
 
-        Result writeResult = await WriteAtomicallyAsync(workspaceRoot, resolvedPath, outputBytes, ct).ConfigureAwait(false);
+        if (outputBytes.LongLength > maxWriteBytes)
+        {
+            return new Error(ErrorCodes.Workspace.FileTooLarge, FileTooLargeMessage);
+        }
+
+        AfterReplaceTextBlockReadForTests?.Invoke(resolvedPath);
+
+        Result writeResult = await WriteAtomicallyAsync(workspaceRoot, resolvedPath, outputBytes, ct, readBaseline).ConfigureAwait(false);
 
         if (writeResult.IsFailure)
         {
@@ -231,7 +277,6 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
         bool recursive,
         CancellationToken ct)
     {
-
         ct.ThrowIfCancellationRequested();
 
         if (!IsFileWriteEnabled())
@@ -263,6 +308,12 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
                     "The workspace root cannot be deleted. Name a path inside the workspace."));
         }
 
+        if (IsProtectedWriteRefused(workspaceRoot, resolvedPath))
+        {
+            return Task.FromResult<Result<FileDeleteResult>>(
+                new Error(ErrorCodes.Workspace.PathNotAllowed, ProtectedPathMessage));
+        }
+
         bool isDirectory = Directory.Exists(resolvedPath);
 
         bool isFile = !isDirectory && File.Exists(resolvedPath);
@@ -281,14 +332,12 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
 
         try
         {
-
             if (isFile)
             {
                 File.Delete(resolvedPath);
             }
             else if (!recursive)
             {
-
                 if (Directory.EnumerateFileSystemEntries(resolvedPath).Any())
                 {
                     return Task.FromResult<Result<FileDeleteResult>>(
@@ -296,13 +345,39 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
                 }
 
                 Directory.Delete(resolvedPath, recursive: false);
-
             }
             else
             {
+                // .git is protected at any depth, so a directory whose own path is fine can still hold a
+                // nested checkout's .git. DeleteRecursive would remove it as a side effect (the data loss
+                // the guard exists to prevent for a hook), so refuse the whole delete up front.
+                string? protectedEntry = IsProtectedPathWriteAllowed()
+                    ? null
+                    : FindProtectedEntry(workspaceRoot, resolvedPath, ct);
+
+                if (protectedEntry is not null)
+                {
+                    return Task.FromResult<Result<FileDeleteResult>>(
+                        new Error(
+                            ErrorCodes.Workspace.PathNotAllowed,
+                            $"The directory contains protected workspace metadata ('{Path.GetRelativePath(workspaceRoot, protectedEntry)}'), so nothing was deleted. Delete the entries around it individually, or ask the operator to set Arcanum:Workspaces:AllowProtectedPathWrites."));
+                }
+
+                // Refuse before deleting anything: an escaping link inside the tree is never followed or
+                // removed, so deleting around it used to empty the directory, then fail on the final
+                // directory removal with a generic I/O error that named nothing.
+                string? escapingEntry = FindEscapingEntry(workspaceRoot, resolvedPath, ct);
+
+                if (escapingEntry is not null)
+                {
+                    return Task.FromResult<Result<FileDeleteResult>>(
+                        new Error(
+                            ErrorCodes.Workspace.SymbolicLinkEscape,
+                            $"The directory contains a symbolic link that resolves outside the workspace ('{Path.GetRelativePath(workspaceRoot, escapingEntry)}'), so nothing was deleted. Remove or retarget that link first."));
+                }
+
                 DeleteRecursive(workspaceRoot, resolvedPath, ct);
             }
-
         }
         catch (Exception ex) when (ex is UnauthorizedAccessException or SecurityException)
         {
@@ -326,7 +401,6 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
         string relativePath,
         CancellationToken ct)
     {
-
         ct.ThrowIfCancellationRequested();
 
         if (!IsFileWriteEnabled())
@@ -345,6 +419,12 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
         string resolvedPath = resolvedResult.Value;
 
         string workspaceRoot = Path.GetFullPath(workspace.Path);
+
+        if (IsProtectedWriteRefused(workspaceRoot, resolvedPath))
+        {
+            return Task.FromResult<Result<DirectoryCreateResult>>(
+                new Error(ErrorCodes.Workspace.PathNotAllowed, ProtectedPathMessage));
+        }
 
         if (File.Exists(resolvedPath))
         {
@@ -370,7 +450,7 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
         catch (IOException)
         {
             return Task.FromResult<Result<DirectoryCreateResult>>(
-                new Error(ErrorCodes.Workspace.WriteFailed, IoWriteErrorMessage));
+                DirectoryCreationFailure(workspaceRoot, resolvedPath));
         }
 
         string entryRelativePath = Path.GetRelativePath(workspaceRoot, resolvedPath);
@@ -379,13 +459,36 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
             new DirectoryCreateResult(entryRelativePath, DateTimeOffset.UtcNow));
     }
 
+    /// <summary>
+    /// The error for a directory that could not be created. An existing file, or a symbolic link that does not
+    /// lead to a directory (a dangling in-workspace link passes containment), is named as
+    /// <c>Workspace.PathIsFile</c>, the caller's own mistake; anything else stays the generic I/O failure.
+    /// </summary>
+    private static Error DirectoryCreationFailure(string workspaceRoot, string directoryPath) =>
+        WorkspacePathPolicy.HasEntryBlockingDirectoryCreation(workspaceRoot, directoryPath)
+            ? new Error(ErrorCodes.Workspace.PathIsFile, BlockedDirectoryMessage)
+            : new Error(ErrorCodes.Workspace.WriteFailed, IoWriteErrorMessage);
+
     private bool IsFileWriteEnabled()
     {
-
         ArcanumSettings settings = options.Value;
 
         return settings.Workspaces?.EnableFileWrite ?? new WorkspaceSettings().EnableFileWrite;
     }
+
+    /// <summary>
+    /// Whether a write to <paramref name="resolvedPath"/> is refused as protected workspace metadata
+    /// (<c>.git</c> at any depth or the first-level <c>.arcanum</c>, by spelling or canonical location).
+    /// The operator opt-out <c>Arcanum:Workspaces:AllowProtectedPathWrites</c> is read from the request's
+    /// settings snapshot, so a change applies to the next request without a restart.
+    /// </summary>
+    private bool IsProtectedWriteRefused(string workspaceRoot, string resolvedPath) =>
+        !IsProtectedPathWriteAllowed()
+        && WorkspaceProtectedPaths.IsProtectedPath(workspaceRoot, resolvedPath);
+
+    private bool IsProtectedPathWriteAllowed() =>
+        options.Value.Workspaces?.AllowProtectedPathWrites
+        ?? new WorkspaceSettings().AllowProtectedPathWrites;
 
     private long GetMaxFileWriteSizeBytes()
     {
@@ -436,9 +539,9 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
         string workspaceRoot,
         string absolutePath,
         byte[] contentBytes,
-        CancellationToken ct)
+        CancellationToken ct,
+        FileContentBaseline? expectedExistingContent = null)
     {
-
         if (!WorkspacePathPolicy.RevalidatePathBeforeIo(workspaceRoot, absolutePath))
         {
             return new Error(ErrorCodes.Workspace.SymbolicLinkEscape, SymlinkEscapeMessage);
@@ -448,7 +551,6 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
 
         if (!string.IsNullOrEmpty(parentDir))
         {
-
             try
             {
                 Directory.CreateDirectory(parentDir);
@@ -459,9 +561,8 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
             }
             catch (IOException)
             {
-                return new Error(ErrorCodes.Workspace.WriteFailed, IoWriteErrorMessage);
+                return DirectoryCreationFailure(workspaceRoot, parentDir);
             }
-
         }
 
         if (!WorkspacePathPolicy.RevalidatePathBeforeIo(workspaceRoot, absolutePath))
@@ -479,7 +580,6 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
 
         try
         {
-
             replaceStatus = await AtomicFile.ReplaceAsync(
                 absolutePath,
                 tempPath,
@@ -492,8 +592,8 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
                     WorkspacePathPolicy.RevalidatePathBeforeIo(workspaceRoot, absolutePath)
                         && FileHandleIdentityInterop.TryGetPathIdentity(tempPath, out expectedIdentity),
                 afterReplace: () =>
-                    TryVerifyMovedDestination(workspaceRoot, absolutePath, expectedIdentity)).ConfigureAwait(false);
-
+                    TryVerifyMovedDestination(workspaceRoot, absolutePath, expectedIdentity),
+                expectedDestinationContent: expectedExistingContent).ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is UnauthorizedAccessException or SecurityException)
         {
@@ -510,8 +610,38 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
             AtomicReplaceStatus.ReplacedButUnverified => new Error(
                 ErrorCodes.Workspace.WriteFailed,
                 "The file was replaced but post-move verification failed; the destination was left in an unverified state."),
+            AtomicReplaceStatus.Aborted when IsLinkedDestination(absolutePath) => new Error(
+                ErrorCodes.Workspace.SymbolicLinkEscape,
+                LinkedDestinationMessage),
+            AtomicReplaceStatus.Aborted when expectedExistingContent is not null => new Error(
+                ErrorCodes.Workspace.FileChanged,
+                FileContentBaseline.ChangedAfterReadMessage),
             _ => new Error(ErrorCodes.Workspace.WriteFailed, IoWriteErrorMessage),
         };
+    }
+
+    /// <summary>
+    /// Whether the destination is a symbolic link or a file with more than one hard link, the two states under
+    /// which <see cref="AtomicFile.ReplaceAsync"/> refuses to touch it. Used only to give that refusal an
+    /// accurate error instead of a generic I/O failure.
+    /// </summary>
+    private static bool IsLinkedDestination(string path)
+    {
+        try
+        {
+            if (new FileInfo(path).LinkTarget is not null)
+            {
+                return true;
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or SecurityException)
+        {
+            return false;
+        }
+
+        return FileHandleIdentityInterop.TryGetPathMetadataNoFollow(path, out FileHandleMetadata metadata)
+            && metadata.Kind == FileSystemObjectKind.RegularFile
+            && metadata.HardLinkCount > 1;
     }
 
     /// <summary>
@@ -523,7 +653,6 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
     /// </summary>
     private static bool DestinationStartsWithUtf8Bom(string workspaceRoot, string absolutePath)
     {
-
         if (!File.Exists(absolutePath))
         {
             return false;
@@ -538,7 +667,6 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
 
         using (probeStream)
         {
-
             Span<byte> preamble = stackalloc byte[3];
 
             try
@@ -550,9 +678,7 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
             {
                 return false;
             }
-
         }
-
     }
 
     /// <summary>
@@ -562,12 +688,10 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
     /// </summary>
     private static bool TryVerifyMovedDestination(string workspaceRoot, string absolutePath, FileHandleIdentity expectedIdentity)
     {
-
         FileStream verifyStream;
 
         try
         {
-
             verifyStream = new FileStream(
                 absolutePath,
                 FileMode.Open,
@@ -575,7 +699,6 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
                 FileShare.ReadWrite | FileShare.Delete,
                 bufferSize: 4096,
                 FileOptions.Asynchronous | FileOptions.SequentialScan);
-
         }
         catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException or UnauthorizedAccessException or IOException)
         {
@@ -584,8 +707,7 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
 
         using (verifyStream)
         {
-
-            if (!WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(workspaceRoot, Path.GetFullPath(verifyStream.Name), out _))
+            if (!WorkspacePathPolicy.IsOpenedHandleUnderWorkspace(workspaceRoot, verifyStream.SafeFileHandle))
             {
                 return false;
             }
@@ -596,9 +718,7 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
             }
 
             return FileHandleIdentity.IdentitiesMatch(expectedIdentity, actualIdentity);
-
         }
-
     }
 
     /// <summary>
@@ -608,12 +728,6 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
     /// </summary>
     private static (FileStream? Stream, Error? Error) TryOpenForHandleCheckedRead(string workspaceRoot, string absolutePath)
     {
-
-        if (!WorkspacePathPolicy.RevalidatePathBeforeIo(workspaceRoot, absolutePath))
-        {
-            return (null, new Error(ErrorCodes.Workspace.SymbolicLinkEscape, SymlinkEscapeMessage));
-        }
-
         if (!WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(workspaceRoot, absolutePath, out string? resolvedFinalPath))
         {
             return (null, new Error(ErrorCodes.Workspace.SymbolicLinkEscape, SymlinkEscapeMessage));
@@ -642,7 +756,6 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
 
         try
         {
-
             stream = new FileStream(
                 absolutePath,
                 FileMode.Open,
@@ -650,7 +763,6 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
                 FileShare.Read,
                 bufferSize: 4096,
                 FileOptions.Asynchronous | FileOptions.SequentialScan);
-
         }
         catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException)
         {
@@ -665,38 +777,96 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
             return (null, new Error(ErrorCodes.Workspace.WriteFailed, IoWriteErrorMessage));
         }
 
-        if (!FileHandleIdentityInterop.TryGetHandleIdentity(stream.SafeFileHandle, out FileHandleIdentity actualIdentity)
-            || !FileHandleIdentity.IdentitiesMatch(expectedIdentity, actualIdentity))
+        if (!IsOpenedReadHandleContained(workspaceRoot, stream, expectedIdentity))
         {
-
-            stream.Dispose();
-
-            return (null, new Error(ErrorCodes.Workspace.SymbolicLinkEscape, SymlinkEscapeMessage));
-        }
-
-        string openedFullPath;
-
-        try
-        {
-            openedFullPath = Path.GetFullPath(stream.Name);
-        }
-        catch (Exception)
-        {
-
-            stream.Dispose();
-
-            return (null, new Error(ErrorCodes.Workspace.SymbolicLinkEscape, SymlinkEscapeMessage));
-        }
-
-        if (!WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(workspaceRoot, openedFullPath, out _))
-        {
-
             stream.Dispose();
 
             return (null, new Error(ErrorCodes.Workspace.SymbolicLinkEscape, SymlinkEscapeMessage));
         }
 
         return (stream, null);
+    }
+
+    /// <summary>
+    /// Post-open check for the replace path: the opened handle must be the pre-open identity and the kernel's
+    /// path for it must lie under the workspace root. <see cref="FileStream.Name"/> is never consulted: it is
+    /// only the string the stream was opened with, so an escaping link swapped in before the open (which also
+    /// makes the captured identity the outside file's) would pass a check on it.
+    /// </summary>
+    internal static bool IsOpenedReadHandleContained(
+        string workspaceRoot,
+        FileStream stream,
+        FileHandleIdentity expectedIdentity) =>
+        FileHandleIdentityInterop.TryGetHandleIdentity(stream.SafeFileHandle, out FileHandleIdentity actualIdentity)
+        && FileHandleIdentity.IdentitiesMatch(expectedIdentity, actualIdentity)
+        && WorkspacePathPolicy.IsOpenedHandleUnderWorkspace(workspaceRoot, stream.SafeFileHandle);
+
+    /// <summary>
+    /// Walks the directory tree <see cref="DeleteRecursive"/> would delete (never following links) and returns
+    /// the first descendant whose spelling is protected workspace metadata, or <see langword="null"/>. The
+    /// caller has already proved <paramref name="directory"/> itself is not protected, so a descendant's
+    /// canonical location is that directory's plus its own name and the lexical check is exact; a descendant
+    /// link is removed as a link and never traversed, so a link into <c>.git</c> deletes nothing there.
+    /// </summary>
+    private static string? FindProtectedEntry(string workspaceRoot, string directory, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+
+        foreach (string child in Directory.EnumerateFileSystemEntries(directory))
+        {
+            ct.ThrowIfCancellationRequested();
+
+            if (WorkspaceProtectedPaths.IsProtectedAbsolutePath(workspaceRoot, child))
+            {
+                return child;
+            }
+
+            if (Directory.Exists(child) && new DirectoryInfo(child).LinkTarget is null)
+            {
+                string? nested = FindProtectedEntry(workspaceRoot, child, ct);
+
+                if (nested is not null)
+                {
+                    return nested;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Walks the tree <see cref="DeleteRecursive"/> would delete (never following links) and returns the first
+    /// entry whose canonical location leaves the workspace, or <see langword="null"/> when the whole tree is safe
+    /// to delete.
+    /// </summary>
+    private static string? FindEscapingEntry(string workspaceRoot, string path, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+
+        if (!WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(workspaceRoot, path, out _))
+        {
+            return path;
+        }
+
+        if (!Directory.Exists(path) || new DirectoryInfo(path).LinkTarget is not null)
+        {
+            // A file, or an in-workspace directory link that DeleteRecursive removes as a link without
+            // traversing it.
+            return null;
+        }
+
+        foreach (string child in Directory.EnumerateFileSystemEntries(path))
+        {
+            string? escaping = FindEscapingEntry(workspaceRoot, child, ct);
+
+            if (escaping is not null)
+            {
+                return escaping;
+            }
+        }
+
+        return null;
     }
 
     /// <summary>
@@ -708,7 +878,6 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
     /// </summary>
     private static void DeleteRecursive(string workspaceRoot, string path, CancellationToken ct)
     {
-
         ct.ThrowIfCancellationRequested();
 
         if (!WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(workspaceRoot, path, out _))
@@ -720,12 +889,10 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
 
         if (isDirectory)
         {
-
             bool isSymlink = new DirectoryInfo(path).LinkTarget is not null;
 
             if (isSymlink)
             {
-
                 Directory.Delete(path, recursive: false);
 
                 return;
@@ -749,7 +916,6 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
 
     private static int CountOccurrences(string haystack, string needle)
     {
-
         if (needle.Length == 0)
         {
             return 0;
@@ -761,7 +927,6 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
 
         while (true)
         {
-
             int found = haystack.IndexOf(needle, index, StringComparison.Ordinal);
 
             if (found < 0)
@@ -779,7 +944,6 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
 
     private static DateTimeOffset GetLastWriteTimeUtcSafe(string path)
     {
-
         try
         {
             return File.GetLastWriteTimeUtc(path);
@@ -803,6 +967,8 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
 
     private const string SymlinkEscapeMessage = "The path resolves outside the workspace via a symbolic link.";
 
+    private const string LinkedDestinationMessage = "The destination is a symbolic link or has more than one hard link, so it cannot be written through this endpoint. Write to the real file instead.";
+
     private const string IoWriteErrorMessage = "An I/O error occurred while writing the file. See server logs.";
 
     private const string IoDeleteErrorMessage = "An I/O error occurred while deleting the file or directory. See server logs.";
@@ -813,12 +979,15 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
 
     private const string ReplacementAmbiguousMessage = "The specified text was found a different number of times than expectedReplacements. Provide an expectedReplacements value matching the exact occurrence count.";
 
+    private const string ProtectedPathMessage = "The path is protected workspace metadata (.git or .arcanum) and cannot be created, modified or deleted through the file API. An operator can lift this by setting Arcanum:Workspaces:AllowProtectedPathWrites to true.";
+
     private const string PathIsDirectoryMessage = "The target path is an existing directory; file content cannot be written to it.";
 
     private const string PathIsFileMessage = "The target path is an existing file; a directory cannot be created there.";
 
+    private const string BlockedDirectoryMessage = "A directory on the path is an existing file or a symbolic link that does not lead to a directory (for example, a link whose target does not exist); a directory cannot be created there.";
+
     private const string InvalidUtf8Message = "The file is not valid UTF-8 text. This endpoint edits UTF-8 text files only.";
 
     private const string BinaryTargetMessage = "The file contains NUL bytes and is treated as binary. This endpoint edits UTF-8 text files only.";
-
 }

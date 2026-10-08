@@ -11,6 +11,14 @@
     <!-- Required so ArcanumSettingsBindingTests exercises the generated binder, not reflection. -->
     <EnableConfigurationBindingGenerator>true</EnableConfigurationBindingGenerator>
 
+    <!--
+      The shipped binary is Native AOT, where System.Text.Json has no reflection fallback. With the default (true)
+      the test host quietly serializes any type ArcanumJsonContext forgot, so removing a [JsonSerializable] entry
+      leaves every route test green and reaches users. Off, an unregistered payload fails the test that sends it.
+      A test that needs an ad-hoc shape builds a JsonObject or names a source-generated type instead.
+    -->
+    <JsonSerializerIsReflectionEnabledByDefault>false</JsonSerializerIsReflectionEnabledByDefault>
+
   </PropertyGroup>
 
   <ItemGroup>
@@ -99,8 +107,4 @@
     <Compile Remove="Tools\ProcessRunnerResourceLimitTests.cs" />
 
   </ItemGroup>
-  <ItemGroup>
-    <PackageReference Update="Microsoft.Bcl.Memory" Version="10.0.10" />
-  </ItemGroup>
-
 </Project>

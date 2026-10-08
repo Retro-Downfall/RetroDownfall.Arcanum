@@ -298,7 +298,7 @@ internal sealed class CovenantCleanupWorker(
 
         await ExecuteAsync(
                 transaction,
-                "DELETE FROM covenant_mutation_receipts WHERE CampaignId = $campaign;",
+                CovenantStoreSql.DeleteCampaignMutationReceipts,
                 cancellationToken,
                 ("$campaign", campaign))
             .ConfigureAwait(false);

@@ -33,7 +33,6 @@ internal sealed class HostProcessToolsStartupGate(
     IHostProcessToolsMarkerPairJoiner joiner,
     HostProcessToolsRuntimePolicy policy)
 {
-
     /// <summary>What an operator whose host merely started with the escape hatch armed can do.</summary>
     /// <remarks>
     /// This used to name <c>arcanum security host-process-tools enable --yes</c>, the offline
@@ -84,11 +83,9 @@ internal sealed class HostProcessToolsStartupGate(
     public async Task<Result<HostProcessToolsStartupDecision>> ClassifyAndPublishAsync(
         CancellationToken cancellationToken)
     {
-
         HostProcessToolsMarkerReadResult marker = markers.Read();
 
         return await ClassifyAndPublishAsync(marker, cancellationToken).ConfigureAwait(false);
-
     }
 
     /// <summary>
@@ -103,19 +100,16 @@ internal sealed class HostProcessToolsStartupGate(
         HostProcessToolsMarkerReadResult marker,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(marker);
 
         if (marker.Status is HostProcessToolsMarkerReadStatus.Unavailable
             or HostProcessToolsMarkerReadStatus.Malformed)
         {
-
             return Block(
                 HostProcessToolsMarkerPairDisposition.MismatchBlocked,
-                HostProcessToolsStartupBlocker.MarkerMismatch,
+                HostProcessToolsStartupBlocker.MarkerUnreadable,
                 "The host-process-tools marker could not be read or is malformed.",
                 MarkerUnreadableRemediation);
-
         }
 
         Result<HostProcessToolsAuthorityRow?> read = await authority.TryReadAsync(cancellationToken)
@@ -123,18 +117,15 @@ internal sealed class HostProcessToolsStartupGate(
 
         if (read.IsFailure)
         {
-
             return Block(
                 HostProcessToolsMarkerPairDisposition.MismatchBlocked,
                 HostProcessToolsStartupBlocker.AuthorityUnreadable,
                 "The durable authority row could not be read.",
                 AuthorityUnreadableRemediation);
-
         }
 
         if (read.Value is not { } row)
         {
-
             // A database that has never been installed has no authority row. That is ordinary
             // absence only while the independent marker is absent too; a marker beside it means an
             // earlier tainted installation was replaced, which is exactly the evidence-loss case.
@@ -145,26 +136,21 @@ internal sealed class HostProcessToolsStartupGate(
                     HostProcessToolsStartupBlocker.MarkerMismatch,
                     "An operating-system taint marker exists for an installation with no authority row.",
                     EvidenceMismatchRemediation);
-
         }
 
         HostProcessToolsDatabaseMarkerEvidence database;
 
         try
         {
-
             database = row.ToEvidence();
-
         }
         catch (Exception exception) when (exception is ArgumentException or ArgumentOutOfRangeException)
         {
-
             return Block(
                 HostProcessToolsMarkerPairDisposition.MismatchBlocked,
                 HostProcessToolsStartupBlocker.AuthorityUnreadable,
                 "The durable authority row does not describe a valid host-tools state.",
                 AuthorityUnreadableRemediation);
-
         }
 
         HostProcessToolsMarkerPairJoinResult join = joiner.Join(database, marker.Marker);
@@ -187,7 +173,6 @@ internal sealed class HostProcessToolsStartupGate(
                 "The durable authority row and the operating-system marker do not describe the same installation.",
                 EvidenceMismatchRemediation),
         };
-
     }
 
     /// <summary>
@@ -200,25 +185,21 @@ internal sealed class HostProcessToolsStartupGate(
     /// </remarks>
     private Result<HostProcessToolsStartupDecision> PublishClean()
     {
-
         HostProcessToolsTransitionEnvironment probe = environment.Read();
 
         if (probe.Edition is ArcanumEdition.Development && probe.EscapeHatchOptIn)
         {
-
             return Block(
                 HostProcessToolsMarkerPairDisposition.MismatchBlocked,
                 HostProcessToolsStartupBlocker.EscapeHatchWithoutTransition,
                 "This host was started with the host-process-tools escape hatch but has no completed transition.",
                 EscapeHatchRemediation);
-
         }
 
         return Publish(new HostProcessToolsStartupDecision(
             HostProcessToolsMarkerPairDisposition.Clean,
             CovenantPermitted: true,
             HostProcessToolsPermitted: false));
-
     }
 
     /// <summary>
@@ -230,7 +211,6 @@ internal sealed class HostProcessToolsStartupGate(
     /// </remarks>
     private Result<HostProcessToolsStartupDecision> PublishTainted()
     {
-
         HostProcessToolsTransitionEnvironment probe = environment.Read();
 
         Log.Warning(
@@ -240,18 +220,15 @@ internal sealed class HostProcessToolsStartupGate(
             HostProcessToolsMarkerPairDisposition.TaintedMatched,
             CovenantPermitted: false,
             HostProcessToolsPermitted: probe.Edition is ArcanumEdition.Development && probe.EscapeHatchOptIn));
-
     }
 
     private Result<HostProcessToolsStartupDecision> Publish(HostProcessToolsStartupDecision decision)
     {
-
         Result published = policy.Publish(decision);
 
         return published.IsSuccess
             ? Result<HostProcessToolsStartupDecision>.Success(decision)
             : published.Error;
-
     }
 
     /// <summary>
@@ -269,7 +246,6 @@ internal sealed class HostProcessToolsStartupGate(
         string reason,
         string remediation)
     {
-
         // Publishing the block is what keeps a service that starts anyway from finding an
         // unpublished policy and deciding for itself.
         _ = policy.Publish(new HostProcessToolsStartupDecision(
@@ -286,7 +262,5 @@ internal sealed class HostProcessToolsStartupGate(
         return new Error(
             ErrorCodes.Covenant.HostToolsTransitionRequired,
             $"{reason} {remediation}");
-
     }
-
 }

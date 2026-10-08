@@ -4,35 +4,28 @@ namespace RetroDownfall.Arcanum.Tests.Data;
 
 public sealed class FtsMatchQuerySanitizerTests
 {
-
     [Fact]
     public void Sanitize_keeps_alphanumeric_tokens_and_underscores()
     {
-
         string sanitized = FtsMatchQuerySanitizer.Sanitize("hello_world 42");
 
         Assert.Equal("hello_world 42", sanitized);
-
     }
 
     [Fact]
     public void Sanitize_strips_special_characters_and_collapses_whitespace()
     {
-
         string sanitized = FtsMatchQuerySanitizer.Sanitize("  foo!!  bar@@  ");
 
         Assert.Equal("foo bar", sanitized);
-
     }
 
     [Fact]
     public void Sanitize_returns_empty_for_only_symbols()
     {
-
         string sanitized = FtsMatchQuerySanitizer.Sanitize("!!!");
 
         Assert.Equal(string.Empty, sanitized);
-
     }
 
     [Theory]
@@ -42,11 +35,21 @@ public sealed class FtsMatchQuerySanitizerTests
     [InlineData("NEAR token", "\"NEAR\" token")]
     public void Sanitize_quotes_fts_reserved_tokens(string input, string expected)
     {
-
         string sanitized = FtsMatchQuerySanitizer.Sanitize(input);
 
         Assert.Equal(expected, sanitized);
-
     }
 
+    [Theory]
+    [InlineData("\U00020000 x", "\U00020000 x")]
+    [InlineData("\U0001D49C bc", "\U0001D49C bc")]
+    [InlineData("cafe\u0301 au lait", "cafe\u0301 au lait")]
+    [InlineData("\u0301", "")]
+    [InlineData("\U0001F600 hi", "hi")]
+    public void Sanitize_keeps_supplementary_plane_letters_and_combining_marks(string input, string expected)
+    {
+        string sanitized = FtsMatchQuerySanitizer.Sanitize(input);
+
+        Assert.Equal(expected, sanitized);
+    }
 }

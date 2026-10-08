@@ -3,7 +3,6 @@ using System.Diagnostics.CodeAnalysis;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
-using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Api.Intelligence;
 using RetroDownfall.Arcanum.Api.Primitives;
 using RetroDownfall.Arcanum.Api.Security;
@@ -25,7 +24,6 @@ namespace RetroDownfall.Arcanum.Api.Tower;
 [ExcludeFromCodeCoverage] // Reason: spell execution HTTP streaming endpoints; covered via spell execution integration tests.
 internal static partial class SpellExecutionEndpoints
 {
-
     public static RouteGroupBuilder MapSpellExecutionEndpoints(this RouteGroupBuilder apiGroup)
     {
         apiGroup.MapPost(
@@ -112,7 +110,7 @@ internal static partial class SpellExecutionEndpoints
                             Result<PromptResponseDto>.Failure(resolvedPing.Error),
                             traceId),
                         ArcanumJsonContext.Default.ApiResponsePromptResponseDto,
-                        statusCode: StatusCodes.Status400BadRequest);
+                        statusCode: ArcanumErrorMapper.ResolveStatusCode(resolvedPing.Error.Code));
                 }
 
                 Result<PromptTurnResult> turn = await intelligence
@@ -239,7 +237,7 @@ internal static partial class SpellExecutionEndpoints
 
                 if (resolvedPing.IsFailure)
                 {
-                    ctx.Response.StatusCode = StatusCodes.Status400BadRequest;
+                    ctx.Response.StatusCode = ArcanumErrorMapper.ResolveStatusCode(resolvedPing.Error.Code);
 
                     await ctx.Response
                         .WriteAsJsonAsync(
@@ -275,7 +273,6 @@ internal static partial class SpellExecutionEndpoints
                 ISpellRepository repo,
                 SpellWorkspaceResolver workspaceResolver,
                 ICampaignRepository campaignRepository,
-                IOptionsSnapshot<ArcanumSettings> settings,
                 HttpContext ctx) =>
             {
                 string traceId = Activity.Current?.Id ?? ctx.TraceIdentifier;
@@ -325,7 +322,7 @@ internal static partial class SpellExecutionEndpoints
 
                 List<SpellVersionDto> versions = [];
 
-                long maxFileSizeBytes = ArcanumSettingClamps.EffectiveSpellMaxFileSizeBytes(settings.Value);
+                long maxFileSizeBytes = ArcanumSettingClamps.EffectiveSpellMaxFileSizeBytes();
 
                 string? activeVersionLabel = spell.ActiveVersion;
 
@@ -746,5 +743,4 @@ internal static partial class SpellExecutionEndpoints
 
         return new SpellVersionDto(version, isActive, createdAt, description);
     }
-
 }

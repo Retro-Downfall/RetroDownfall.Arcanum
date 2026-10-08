@@ -12,7 +12,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.Tower;
 
 internal sealed partial class PhysicalCampaignRootOpener
 {
-
     /// <summary>The fixed private directory a Campaign marker lives in.</summary>
     private const string MarkerDirectoryLeaf = ".arcanum";
 
@@ -22,6 +21,8 @@ internal sealed partial class PhysicalCampaignRootOpener
     internal Action? AfterRootHandleOpenedBeforeMarkerDirectoryOpenForTests { get; set; }
 
     internal Action? BeforeMarkerChildOpenForTests { get; set; }
+
+    internal Action? BeforeMarkerChildEffectForTests { get; set; }
 
     /// <summary>The longest display path this producer will consider.</summary>
     /// <remarks>Matches the durable <c>TargetDisplayPath</c> ceiling, so nothing openable is unstorable.</remarks>
@@ -86,7 +87,6 @@ internal sealed partial class PhysicalCampaignRootOpener
         bool requireExistingMarkerDirectory,
         CancellationToken cancellationToken)
     {
-
         cancellationToken.ThrowIfCancellationRequested();
 
         if (campaignId == Guid.Empty
@@ -124,7 +124,6 @@ internal sealed partial class PhysicalCampaignRootOpener
                 expectedPhysicalIdentityDigest,
                 canonical,
                 requireExistingMarkerDirectory));
-
     }
 
     private static Error InvalidRootRequest =>
@@ -142,14 +141,12 @@ internal sealed partial class PhysicalCampaignRootOpener
         string canonicalRootPath,
         bool requireExistingMarkerDirectory)
     {
-
         SafeFileHandle? root = null;
 
         SafeFileHandle? markerDirectory = null;
 
         try
         {
-
             if (!FileHandleIdentityInterop.TryOpenDirectoryMetadata(
                     canonicalRootPath,
                     out root,
@@ -228,17 +225,13 @@ internal sealed partial class PhysicalCampaignRootOpener
             markerDirectory = null;
 
             return capability;
-
         }
         finally
         {
-
             root?.Dispose();
 
             markerDirectory?.Dispose();
-
         }
-
     }
 
     /// <summary>
@@ -251,17 +244,16 @@ internal sealed partial class PhysicalCampaignRootOpener
     /// </remarks>
     private static bool TryPrepareMarkerDirectory(string markerDirectoryPath)
     {
-
         if (!FileHandleIdentityInterop.TryGetPathMetadataNoFollow(
                 markerDirectoryPath,
                 out FileHandleMetadata existing))
         {
-
             try
             {
-
                 if (OperatingSystem.IsWindows())
                 {
+                    // Windows: the directory inherits the Campaign root's ACL. It is neither tightened
+                    // nor DACL-verified here; owner-only posture is a Unix mode check (§10.12).
                     _ = Directory.CreateDirectory(markerDirectoryPath);
                 }
                 else
@@ -272,7 +264,6 @@ internal sealed partial class PhysicalCampaignRootOpener
                 }
 
                 return true;
-
             }
             catch (Exception exception) when (
                 exception is IOException
@@ -282,11 +273,9 @@ internal sealed partial class PhysicalCampaignRootOpener
             {
                 return false;
             }
-
         }
 
         return ExistingMarkerDirectoryIsUsable(markerDirectoryPath, existing);
-
     }
 
     private static bool TryValidateExistingMarkerDirectory(string markerDirectoryPath) =>
@@ -299,7 +288,6 @@ internal sealed partial class PhysicalCampaignRootOpener
         string markerDirectoryPath,
         FileHandleMetadata existing)
     {
-
         if (existing.Kind is not FileSystemObjectKind.Directory)
         {
             return false;
@@ -312,12 +300,10 @@ internal sealed partial class PhysicalCampaignRootOpener
 
         try
         {
-
             UnixFileMode mode = File.GetUnixFileMode(markerDirectoryPath);
 
             return (mode & (UnixFileMode.GroupWrite | UnixFileMode.OtherWrite)) == 0
                 && CampaignMarkerNativeMethods.OwnsPath(markerDirectoryPath);
-
         }
         catch (Exception exception) when (
             exception is IOException
@@ -327,7 +313,6 @@ internal sealed partial class PhysicalCampaignRootOpener
         {
             return false;
         }
-
     }
 
     /// <summary>
@@ -355,29 +340,22 @@ internal sealed partial class PhysicalCampaignRootOpener
     /// </summary>
     private CovenantDigest? DeriveIdentityDigest(FileHandleIdentity identity)
     {
-
         Span<byte> key = stackalloc byte[32];
 
         try
         {
-
             return _keys.TryCopyRootIdentityKey(key)
                 ? DeriveIdentity(key, identity)
                 : null;
-
         }
         finally
         {
-
             CryptographicOperations.ZeroMemory(key);
-
         }
-
     }
 
     private static bool IsBoundedLeaf(string? leaf)
     {
-
         if (string.IsNullOrWhiteSpace(leaf)
             || leaf.Length > MaximumLeafLength
             || leaf is "." or ".."
@@ -389,7 +367,6 @@ internal sealed partial class PhysicalCampaignRootOpener
 
         foreach (char character in leaf)
         {
-
             // An explicit allowlist rather than a list of forbidden characters. Separators, traversal,
             // NTFS alternate-stream colons, NUL, and every Unicode spelling that normalizes onto another
             // name are all excluded by not being on it.
@@ -397,7 +374,6 @@ internal sealed partial class PhysicalCampaignRootOpener
             {
                 return false;
             }
-
         }
 
         ReadOnlySpan<char> stem = leaf.AsSpan();
@@ -410,7 +386,6 @@ internal sealed partial class PhysicalCampaignRootOpener
         }
 
         return !IsReservedDeviceName(stem);
-
     }
 
     private static bool IsReservedDeviceName(ReadOnlySpan<char> stem) =>
@@ -448,7 +423,12 @@ internal sealed partial class PhysicalCampaignRootOpener
     /// bounded leaf at most — never a directory, a parent, or a target path. That is what makes the
     /// create/write/fsync/rename sequence safe to interrupt: a resumed phase reuses the same retained
     /// handles rather than re-resolving a path that could have become a symlink while the process was
-    /// down (§10.12).
+    /// down (§10.12). On macOS and Linux the create, rename, and unlink themselves run relative to the
+    /// retained marker-directory descriptor (<c>openat</c>, no-replace <c>renameat</c>,
+    /// <c>unlinkat</c>), so a directory swapped in under the display path receives nothing. On Windows
+    /// those three effects are still issued by path, each immediately after the retained directory's
+    /// identity is re-proven at that path, so a swap inside that window is narrowed rather than closed;
+    /// reads there are handle-relative as on Unix.
     ///
     /// <para>Child capabilities are checked for belonging by reference to this exact instance, not by
     /// comparing evidence. Byte and identity evidence that matches is not authority over a file — the
@@ -457,7 +437,6 @@ internal sealed partial class PhysicalCampaignRootOpener
     /// </remarks>
     internal sealed class MarkerRootCapability : IAsyncDisposable
     {
-
         private readonly PhysicalCampaignRootOpener _producer;
 
         private readonly FileHandleIdentity _markerDirectoryIdentity;
@@ -479,7 +458,6 @@ internal sealed partial class PhysicalCampaignRootOpener
             FileHandleIdentity markerDirectoryIdentity,
             string markerDirectoryPath)
         {
-
             _producer = producer;
 
             CampaignId = campaignId;
@@ -497,7 +475,6 @@ internal sealed partial class PhysicalCampaignRootOpener
             _markerDirectoryIdentity = markerDirectoryIdentity;
 
             _markerDirectoryPath = markerDirectoryPath;
-
         }
 
         internal Guid CampaignId { get; }
@@ -549,7 +526,6 @@ internal sealed partial class PhysicalCampaignRootOpener
             string temporaryLeaf,
             CancellationToken cancellationToken)
         {
-
             cancellationToken.ThrowIfCancellationRequested();
 
             _ = GetMarkerDirectory();
@@ -562,6 +538,13 @@ internal sealed partial class PhysicalCampaignRootOpener
             if (!MarkerDirectoryIsStillOurs())
             {
                 return ValueTask.FromResult<Result<MarkerTemporaryHandleCapability>>(MarkerRootChanged);
+            }
+
+            _producer.BeforeMarkerChildOpenForTests?.Invoke();
+
+            if (!OperatingSystem.IsWindows())
+            {
+                return ValueTask.FromResult(CreateTemporaryRelative(temporaryLeaf));
             }
 
             string path = Path.Combine(_markerDirectoryPath, temporaryLeaf);
@@ -597,7 +580,6 @@ internal sealed partial class PhysicalCampaignRootOpener
 
             try
             {
-
                 stream = new FileStream(path, options);
 
                 Result<MarkerTemporaryHandleCapability> created = AdoptTemporary(
@@ -611,7 +593,6 @@ internal sealed partial class PhysicalCampaignRootOpener
                 }
 
                 return ValueTask.FromResult(created);
-
             }
             catch (Exception exception) when (
                 exception is IOException
@@ -623,11 +604,64 @@ internal sealed partial class PhysicalCampaignRootOpener
             }
             finally
             {
-
                 stream?.Dispose();
+            }
+        }
 
+        /// <summary>
+        /// The macOS and Linux create: <c>openat</c> relative to the retained marker directory.
+        /// </summary>
+        /// <remarks>
+        /// <c>O_CREAT | O_EXCL | O_NOFOLLOW</c> against the retained descriptor, so neither a symlink at
+        /// the leaf nor a directory swapped in under the display path after the identity re-check can
+        /// receive the file. The exclusive <c>flock</c> a path-opened <c>FileShare.None</c> stream would
+        /// take is taken here too.
+        /// </remarks>
+        private Result<MarkerTemporaryHandleCapability> CreateTemporaryRelative(string temporaryLeaf)
+        {
+            SafeFileHandle? handle = CampaignMarkerNativeMethods.TryCreateExclusiveRelative(
+                GetMarkerDirectory(),
+                temporaryLeaf);
+
+            if (handle is null)
+            {
+                return MarkerIoFailed;
             }
 
+            FileStream? stream = null;
+
+            try
+            {
+                stream = new FileStream(handle, FileAccess.ReadWrite, bufferSize: 0, isAsync: false);
+
+                handle = null;
+
+                Result<MarkerTemporaryHandleCapability> created = AdoptTemporary(
+                    stream,
+                    temporaryLeaf,
+                    writable: true);
+
+                if (created.IsSuccess)
+                {
+                    stream = null;
+                }
+
+                return created;
+            }
+            catch (Exception exception) when (
+                exception is IOException
+                    or UnauthorizedAccessException
+                    or ArgumentException
+                    or NotSupportedException)
+            {
+                return MarkerIoFailed;
+            }
+            finally
+            {
+                stream?.Dispose();
+
+                handle?.Dispose();
+            }
         }
 
         /// <summary>
@@ -642,7 +676,6 @@ internal sealed partial class PhysicalCampaignRootOpener
             string temporaryLeaf,
             CancellationToken cancellationToken)
         {
-
             cancellationToken.ThrowIfCancellationRequested();
 
             _ = GetMarkerDirectory();
@@ -678,7 +711,6 @@ internal sealed partial class PhysicalCampaignRootOpener
             }
 
             return ValueTask.FromResult(adopted);
-
         }
 
         /// <summary>
@@ -687,7 +719,6 @@ internal sealed partial class PhysicalCampaignRootOpener
         internal ValueTask<Result<PhysicalCampaignMarkerOpenResult>> OpenMarkerOrProveAbsentNoFollowAsync(
             CancellationToken cancellationToken)
         {
-
             cancellationToken.ThrowIfCancellationRequested();
 
             _ = GetMarkerDirectory();
@@ -716,16 +747,13 @@ internal sealed partial class PhysicalCampaignRootOpener
 
             if (!adopted.IsSuccess)
             {
-
                 stream.Dispose();
 
                 return ValueTask.FromResult<Result<PhysicalCampaignMarkerOpenResult>>(adopted.Error);
-
             }
 
             return ValueTask.FromResult<Result<PhysicalCampaignMarkerOpenResult>>(
                 new PhysicalCampaignMarkerOpenResult.Opened(adopted.Value));
-
         }
 
         /// <summary>
@@ -804,7 +832,6 @@ internal sealed partial class PhysicalCampaignRootOpener
         /// </remarks>
         internal ValueTask<Result> FlushMarkerDirectoryAsync(CancellationToken cancellationToken)
         {
-
             cancellationToken.ThrowIfCancellationRequested();
 
             SafeFileHandle directory = GetMarkerDirectory();
@@ -813,13 +840,11 @@ internal sealed partial class PhysicalCampaignRootOpener
                 CampaignMarkerNativeMethods.TryFlushDirectory(directory)
                     ? Result.Success()
                     : Result.Failure(MarkerIoFailed));
-
         }
 
         /// <inheritdoc />
         public async ValueTask DisposeAsync()
         {
-
             SafeFileHandle? markerDirectory = Interlocked.Exchange(ref _markerDirectory, null);
 
             SafeFileHandle? root = Interlocked.Exchange(ref _root, null);
@@ -829,7 +854,6 @@ internal sealed partial class PhysicalCampaignRootOpener
             root?.Dispose();
 
             await ValueTask.CompletedTask;
-
         }
 
         private SafeFileHandle GetMarkerDirectory() =>
@@ -849,7 +873,6 @@ internal sealed partial class PhysicalCampaignRootOpener
 
         private Result<FileStream> OpenChildReadOnly(string leaf, out bool absent)
         {
-
             absent = false;
 
             _producer.BeforeMarkerChildOpenForTests?.Invoke();
@@ -861,11 +884,9 @@ internal sealed partial class PhysicalCampaignRootOpener
 
             if (status is SecureFileOpenStatus.NotFound)
             {
-
                 absent = true;
 
                 return MarkerIoFailed;
-
             }
 
             if (status is not SecureFileOpenStatus.Success || handle is null)
@@ -877,13 +898,11 @@ internal sealed partial class PhysicalCampaignRootOpener
 
             try
             {
-
                 return new FileStream(
                     handle,
                     FileAccess.Read,
                     bufferSize: 0,
                     isAsync: OperatingSystem.IsWindows());
-
             }
             catch (Exception exception) when (
                 exception is IOException
@@ -891,13 +910,10 @@ internal sealed partial class PhysicalCampaignRootOpener
                     or ArgumentException
                     or NotSupportedException)
             {
-
                 handle.Dispose();
 
                 return MarkerIoFailed;
-
             }
-
         }
 
         private Result<MarkerTemporaryHandleCapability> AdoptTemporary(
@@ -905,7 +921,6 @@ internal sealed partial class PhysicalCampaignRootOpener
             string leaf,
             bool writable)
         {
-
             Result<CovenantDigest> proven = ProveChildHandle(stream, out FileHandleIdentity identity);
 
             return proven.IsSuccess
@@ -917,25 +932,21 @@ internal sealed partial class PhysicalCampaignRootOpener
                     proven.Value,
                     writable)
                 : proven.Error;
-
         }
 
         private Result<MarkerHandleCapability> AdoptMarker(FileStream stream)
         {
-
             Result<CovenantDigest> proven = ProveChildHandle(stream, out FileHandleIdentity identity);
 
             return proven.IsSuccess
                 ? MarkerHandleCapability.Adopt(this, stream, identity, proven.Value)
                 : proven.Error;
-
         }
 
         private Result<CovenantDigest> ProveChildHandle(
             FileStream stream,
             out FileHandleIdentity identity)
         {
-
             identity = default;
 
             // Regular, unaliased, and on the same volume as the directory it was opened relative to. A
@@ -960,7 +971,6 @@ internal sealed partial class PhysicalCampaignRootOpener
             identity = metadata.Identity;
 
             return proven;
-
         }
 
         private async ValueTask<Result> RenameProvenChildAsync(
@@ -970,7 +980,6 @@ internal sealed partial class PhysicalCampaignRootOpener
             string destinationLeaf,
             CancellationToken cancellationToken)
         {
-
             cancellationToken.ThrowIfCancellationRequested();
 
             _ = GetMarkerDirectory();
@@ -984,6 +993,11 @@ internal sealed partial class PhysicalCampaignRootOpener
             if (!proven.IsSuccess)
             {
                 return proven.Error;
+            }
+
+            if (!OperatingSystem.IsWindows())
+            {
+                return RenameRelative(child!, proven.Value, destinationLeaf);
             }
 
             string source = Path.Combine(_markerDirectoryPath, proven.Value);
@@ -998,11 +1012,11 @@ internal sealed partial class PhysicalCampaignRootOpener
                 return MarkerEvidenceRejected;
             }
 
+            _producer.BeforeMarkerChildEffectForTests?.Invoke();
+
             try
             {
-
                 File.Move(source, destination);
-
             }
             catch (Exception exception) when (
                 exception is IOException
@@ -1016,7 +1030,6 @@ internal sealed partial class PhysicalCampaignRootOpener
             child!.ReleaseFor(this);
 
             return Result.Success();
-
         }
 
         private async ValueTask<Result> CompareDeleteChildAsync(
@@ -1025,7 +1038,6 @@ internal sealed partial class PhysicalCampaignRootOpener
             ReadOnlyMemory<byte> expectedExactCodecBytes,
             CancellationToken cancellationToken)
         {
-
             cancellationToken.ThrowIfCancellationRequested();
 
             _ = GetMarkerDirectory();
@@ -1041,6 +1053,11 @@ internal sealed partial class PhysicalCampaignRootOpener
                 return proven.Error;
             }
 
+            if (!OperatingSystem.IsWindows())
+            {
+                return DeleteRelative(child!, proven.Value, expectedPhysicalIdentityDigest);
+            }
+
             string path = Path.Combine(_markerDirectoryPath, proven.Value);
 
             // The delegated-deletion window: no portable unlink-by-handle exists, so the name is checked
@@ -1053,11 +1070,11 @@ internal sealed partial class PhysicalCampaignRootOpener
                 return MarkerEvidenceRejected;
             }
 
+            _producer.BeforeMarkerChildEffectForTests?.Invoke();
+
             try
             {
-
                 File.Delete(path);
-
             }
             catch (Exception exception) when (
                 exception is IOException
@@ -1071,7 +1088,94 @@ internal sealed partial class PhysicalCampaignRootOpener
             child!.ReleaseFor(this);
 
             return Result.Success();
+        }
 
+        /// <summary>
+        /// The macOS and Linux rename: a no-replace <c>renameat</c> within the retained directory.
+        /// </summary>
+        private Result RenameRelative(
+            IMarkerChildCapability child,
+            string sourceLeaf,
+            string destinationLeaf)
+        {
+            SafeFileHandle directory = GetMarkerDirectory();
+
+            // Refuse a destination that already exists before attempting the move, and let the
+            // no-replace move refuse again; both look only inside the retained directory.
+            SecureFileOpenStatus destination = FileHandleIdentityInterop.TryOpenReadOnlyNoFollowRelative(
+                directory,
+                destinationLeaf,
+                out SafeFileHandle? existing);
+
+            existing?.Dispose();
+
+            if (destination is not SecureFileOpenStatus.NotFound)
+            {
+                return MarkerEvidenceRejected;
+            }
+
+            _producer.BeforeMarkerChildEffectForTests?.Invoke();
+
+            CampaignMarkerRenameStatus renamed = CampaignMarkerNativeMethods.TryRenameNoReplaceRelative(
+                directory,
+                sourceLeaf,
+                destinationLeaf);
+
+            if (renamed is not CampaignMarkerRenameStatus.Renamed)
+            {
+                return renamed is CampaignMarkerRenameStatus.DestinationExists
+                    ? MarkerEvidenceRejected
+                    : MarkerIoFailed;
+            }
+
+            child.ReleaseFor(this);
+
+            return Result.Success();
+        }
+
+        /// <summary>
+        /// The macOS and Linux compare-delete: the name is re-proven and unlinked, both relative to the
+        /// retained directory.
+        /// </summary>
+        /// <remarks>
+        /// Unix has no unlink-by-handle, so the window between the identity comparison and
+        /// <c>unlinkat</c> is narrowed rather than closed, exactly as the journal retirement states it
+        /// (§10.17); what it no longer has is a path a swapped directory could redirect.
+        /// </remarks>
+        private Result DeleteRelative(
+            IMarkerChildCapability child,
+            string leaf,
+            CovenantDigest expectedPhysicalIdentityDigest)
+        {
+            SafeFileHandle directory = GetMarkerDirectory();
+
+            SecureFileOpenStatus status = FileHandleIdentityInterop.TryOpenReadOnlyNoFollowRelative(
+                directory,
+                leaf,
+                out SafeFileHandle? named);
+
+            using (named)
+            {
+                if (status is not SecureFileOpenStatus.Success
+                    || named is null
+                    || !FileHandleIdentityInterop.TryGetHandleMetadata(named, out FileHandleMetadata metadata)
+                    || metadata.Kind is not FileSystemObjectKind.RegularFile
+                    || _producer.DeriveIdentityDigest(metadata.Identity) != expectedPhysicalIdentityDigest)
+                {
+                    return MarkerEvidenceRejected;
+                }
+            }
+
+            _producer.BeforeMarkerChildEffectForTests?.Invoke();
+
+            if (!CampaignMarkerNativeMethods.TryUnlinkRelative(directory, leaf))
+            {
+                return MarkerIoFailed;
+            }
+
+            child.ReleaseFor(this);
+
+            return Result.Success();
         }
 
         private async ValueTask<Result<string>> ProveChildAsync(
@@ -1080,7 +1184,6 @@ internal sealed partial class PhysicalCampaignRootOpener
             ReadOnlyMemory<byte> expectedExactCodecBytes,
             CancellationToken cancellationToken)
         {
-
             if (child is null || !expectedPhysicalIdentityDigest.IsValid)
             {
                 return MarkerEvidenceRejected;
@@ -1096,9 +1199,7 @@ internal sealed partial class PhysicalCampaignRootOpener
                 expectedPhysicalIdentityDigest,
                 expectedExactCodecBytes,
                 cancellationToken);
-
         }
-
     }
 
     /// <summary>
@@ -1111,7 +1212,6 @@ internal sealed partial class PhysicalCampaignRootOpener
     /// </remarks>
     private interface IMarkerChildCapability
     {
-
         ValueTask<Result<string>> ProveForAsync(
             MarkerRootCapability owner,
             CovenantDigest expectedPhysicalIdentityDigest,
@@ -1119,7 +1219,6 @@ internal sealed partial class PhysicalCampaignRootOpener
             CancellationToken cancellationToken);
 
         void ReleaseFor(MarkerRootCapability owner);
-
     }
 
     /// <summary>
@@ -1132,7 +1231,6 @@ internal sealed partial class PhysicalCampaignRootOpener
     /// </remarks>
     internal sealed class MarkerTemporaryHandleCapability : IAsyncDisposable, IMarkerChildCapability
     {
-
         private readonly MarkerRootCapability _owner;
 
         private readonly string _leaf;
@@ -1151,7 +1249,6 @@ internal sealed partial class PhysicalCampaignRootOpener
             CovenantDigest physicalIdentityDigest,
             bool writable)
         {
-
             _owner = owner;
 
             _stream = stream;
@@ -1163,7 +1260,6 @@ internal sealed partial class PhysicalCampaignRootOpener
             _writable = writable;
 
             PhysicalIdentityDigest = physicalIdentityDigest;
-
         }
 
         internal CovenantDigest PhysicalIdentityDigest { get; }
@@ -1205,7 +1301,6 @@ internal sealed partial class PhysicalCampaignRootOpener
         /// </summary>
         internal ValueTask<Result> FlushToDiskAsync(CancellationToken cancellationToken)
         {
-
             cancellationToken.ThrowIfCancellationRequested();
 
             FileStream stream = GetStream();
@@ -1217,27 +1312,22 @@ internal sealed partial class PhysicalCampaignRootOpener
 
             try
             {
-
                 stream.Flush(flushToDisk: true);
 
                 return ValueTask.FromResult(Result.Success());
-
             }
             catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
             {
                 return ValueTask.FromResult<Result>(MarkerIoFailed);
             }
-
         }
 
         /// <inheritdoc />
         public async ValueTask DisposeAsync()
         {
-
             Interlocked.Exchange(ref _stream, null)?.Dispose();
 
             await ValueTask.CompletedTask;
-
         }
 
         async ValueTask<Result<string>> IMarkerChildCapability.ProveForAsync(
@@ -1257,18 +1347,15 @@ internal sealed partial class PhysicalCampaignRootOpener
 
         void IMarkerChildCapability.ReleaseFor(MarkerRootCapability owner)
         {
-
             if (ReferenceEquals(_owner, owner))
             {
                 Interlocked.Exchange(ref _stream, null)?.Dispose();
             }
-
         }
 
         private FileStream GetStream() =>
             Volatile.Read(ref _stream)
             ?? throw new ObjectDisposedException(nameof(MarkerTemporaryHandleCapability));
-
     }
 
     /// <summary>
@@ -1281,7 +1368,6 @@ internal sealed partial class PhysicalCampaignRootOpener
     /// </remarks>
     internal sealed class MarkerHandleCapability : IAsyncDisposable, IMarkerChildCapability
     {
-
         private readonly MarkerRootCapability _owner;
 
         private readonly FileHandleIdentity _identity;
@@ -1294,7 +1380,6 @@ internal sealed partial class PhysicalCampaignRootOpener
             FileHandleIdentity identity,
             CovenantDigest physicalIdentityDigest)
         {
-
             _owner = owner;
 
             _stream = stream;
@@ -1302,7 +1387,6 @@ internal sealed partial class PhysicalCampaignRootOpener
             _identity = identity;
 
             PhysicalIdentityDigest = physicalIdentityDigest;
-
         }
 
         internal CovenantDigest PhysicalIdentityDigest { get; }
@@ -1330,11 +1414,9 @@ internal sealed partial class PhysicalCampaignRootOpener
         /// <inheritdoc />
         public async ValueTask DisposeAsync()
         {
-
             Interlocked.Exchange(ref _stream, null)?.Dispose();
 
             await ValueTask.CompletedTask;
-
         }
 
         async ValueTask<Result<string>> IMarkerChildCapability.ProveForAsync(
@@ -1354,18 +1436,15 @@ internal sealed partial class PhysicalCampaignRootOpener
 
         void IMarkerChildCapability.ReleaseFor(MarkerRootCapability owner)
         {
-
             if (ReferenceEquals(_owner, owner))
             {
                 Interlocked.Exchange(ref _stream, null)?.Dispose();
             }
-
         }
 
         private FileStream GetStream() =>
             Volatile.Read(ref _stream)
             ?? throw new ObjectDisposedException(nameof(MarkerHandleCapability));
-
     }
 
     /// <summary>
@@ -1379,18 +1458,15 @@ internal sealed partial class PhysicalCampaignRootOpener
     /// </remarks>
     internal sealed class MarkerCodecBytesLease : IDisposable
     {
-
         private readonly int _length;
 
         private byte[]? _buffer;
 
         private MarkerCodecBytesLease(byte[] buffer, int length)
         {
-
             _buffer = buffer;
 
             _length = length;
-
         }
 
         /// <summary>
@@ -1407,16 +1483,13 @@ internal sealed partial class PhysicalCampaignRootOpener
         /// <inheritdoc />
         public void Dispose()
         {
-
             byte[]? buffer = Interlocked.Exchange(ref _buffer, null);
 
             if (buffer is not null)
             {
                 CryptographicOperations.ZeroMemory(buffer);
             }
-
         }
-
     }
 
     private static async ValueTask<Result<MarkerCodecBytesLease>> ReadBoundedAsync(
@@ -1424,7 +1497,6 @@ internal sealed partial class PhysicalCampaignRootOpener
         int maximumBytes,
         CancellationToken cancellationToken)
     {
-
         cancellationToken.ThrowIfCancellationRequested();
 
         if (maximumBytes <= 0 || maximumBytes > CampaignPathMarkerPolicy.MaximumMarkerByteCount)
@@ -1456,10 +1528,8 @@ internal sealed partial class PhysicalCampaignRootOpener
 
         try
         {
-
             while (read < buffer.Length)
             {
-
                 int chunk = await RandomAccess.ReadAsync(
                     stream.SafeFileHandle,
                     buffer.AsMemory(read),
@@ -1472,30 +1542,23 @@ internal sealed partial class PhysicalCampaignRootOpener
                 }
 
                 read += chunk;
-
             }
-
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
-
             CryptographicOperations.ZeroMemory(buffer);
 
             return MarkerIoFailed;
-
         }
 
         if (read != buffer.Length)
         {
-
             CryptographicOperations.ZeroMemory(buffer);
 
             return MarkerEvidenceRejected;
-
         }
 
         return MarkerCodecBytesLease.Adopt(buffer, read);
-
     }
 
     private static async ValueTask<Result> WriteAllToAsync(
@@ -1503,7 +1566,6 @@ internal sealed partial class PhysicalCampaignRootOpener
         ReadOnlyMemory<byte> exactCodecBytes,
         CancellationToken cancellationToken)
     {
-
         cancellationToken.ThrowIfCancellationRequested();
 
         if (exactCodecBytes.IsEmpty
@@ -1514,7 +1576,6 @@ internal sealed partial class PhysicalCampaignRootOpener
 
         try
         {
-
             RandomAccess.SetLength(stream.SafeFileHandle, 0);
 
             await RandomAccess.WriteAsync(
@@ -1524,13 +1585,11 @@ internal sealed partial class PhysicalCampaignRootOpener
                 cancellationToken);
 
             return Result.Success();
-
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
             return MarkerIoFailed;
         }
-
     }
 
     private static async ValueTask<Result<string>> ProveChildForAsync(
@@ -1543,7 +1602,6 @@ internal sealed partial class PhysicalCampaignRootOpener
         ReadOnlyMemory<byte> expectedExactCodecBytes,
         CancellationToken cancellationToken)
     {
-
         // Belonging first. Matching evidence under a different retained root is still someone else's
         // file, and checking the evidence first would make that the deciding factor.
         if (!belongsToOwner
@@ -1577,24 +1635,18 @@ internal sealed partial class PhysicalCampaignRootOpener
 
         try
         {
-
             return lease.Bytes.Length == expectedExactCodecBytes.Length
                 && CryptographicOperations.FixedTimeEquals(
                     lease.Bytes.Span,
                     expectedExactCodecBytes.Span)
                 ? leaf
                 : MarkerEvidenceRejected;
-
         }
         finally
         {
-
             lease.Dispose();
-
         }
-
     }
-
 }
 
 /// <summary>
@@ -1607,7 +1659,6 @@ internal sealed partial class PhysicalCampaignRootOpener
 /// </remarks>
 internal abstract record PhysicalCampaignMarkerOpenResult
 {
-
     private PhysicalCampaignMarkerOpenResult()
     {
     }
@@ -1619,47 +1670,42 @@ internal abstract record PhysicalCampaignMarkerOpenResult
     internal sealed record Opened(
         PhysicalCampaignRootOpener.MarkerHandleCapability Marker)
         : PhysicalCampaignMarkerOpenResult;
+}
 
+/// <summary>The outcome of a no-replace rename inside a retained marker directory.</summary>
+internal enum CampaignMarkerRenameStatus : byte
+{
+    Renamed = 1,
+
+    DestinationExists = 2,
+
+    Failed = 3,
 }
 
 /// <summary>
-/// The two native calls the marker protocol needs and no shared helper already provides.
+/// The native calls the marker protocol needs and no shared helper already provides.
 /// </summary>
 /// <remarks>
-/// Kept beside its only caller rather than added to the shared identity interop, because both entries
-/// exist for the marker durability barrier and the marker ownership check specifically, and a shared
-/// surface invites a caller who wants "an fsync" to reach for one on a handle nobody proved.
+/// Kept beside its only caller rather than added to the shared identity interop, because every entry
+/// exists for the marker protocol specifically — its durability barrier, its ownership check, and its
+/// retained-directory create, rename, and unlink — and a shared surface invites a caller who wants
+/// "an fsync" to reach for one on a handle nobody proved.
 /// </remarks>
 internal static partial class CampaignMarkerNativeMethods
 {
-
     /// <summary>
     /// Flushes a retained directory handle, or reports that the platform cannot prove it.
     /// </summary>
     /// <remarks>
-    /// Windows exposes no directory-handle flush and journals directory metadata itself, so the barrier
-    /// is satisfied there rather than demonstrated. That distinction is stated rather than papered over:
-    /// a call that silently returned success on a platform where it does nothing would let the rename
-    /// phase claim a durability guarantee it never obtained (§10.17).
+    /// The shared <see cref="Storage.DurableDirectoryFlush"/> issues <c>F_FULLFSYNC</c> on macOS, where a
+    /// plain <c>fsync</c> leaves the entry in the drive's cache. Windows exposes no directory-handle
+    /// flush and journals directory metadata itself, so the barrier is satisfied there rather than
+    /// demonstrated. That distinction is stated rather than papered over: a call that silently returned
+    /// success on a platform where it does nothing would let the rename phase claim a durability
+    /// guarantee it never obtained (§10.17).
     /// </remarks>
-    internal static bool TryFlushDirectory(SafeFileHandle directory)
-    {
-
-        if (OperatingSystem.IsWindows())
-        {
-            return true;
-        }
-
-        if (directory is null || directory.IsInvalid || directory.IsClosed)
-        {
-            return false;
-        }
-
-        int descriptor = directory.DangerousGetHandle().ToInt32();
-
-        return descriptor >= 0 && Fsync(descriptor) == 0;
-
-    }
+    internal static bool TryFlushDirectory(SafeFileHandle directory) =>
+        Storage.DurableDirectoryFlush.TryFlush(directory);
 
     /// <summary>
     /// Reports whether the calling process owns the object at the supplied path.
@@ -1670,7 +1716,6 @@ internal static partial class CampaignMarkerNativeMethods
     /// </remarks>
     internal static bool OwnsPath(string path)
     {
-
         if (OperatingSystem.IsWindows())
         {
             return true;
@@ -1678,13 +1723,236 @@ internal static partial class CampaignMarkerNativeMethods
 
         return FileHandleIdentityInterop.TryGetUnixOwnerUserId(path, out uint owner)
             && owner == GetEffectiveUserId();
-
     }
 
-    [LibraryImport("libc", EntryPoint = "fsync", SetLastError = true)]
-    private static partial int Fsync(int fileDescriptor);
+    /// <summary>
+    /// Creates one new owner-only regular file relative to a retained directory, or returns
+    /// <see langword="null"/> when anything at all already answers to the leaf.
+    /// </summary>
+    internal static SafeFileHandle? TryCreateExclusiveRelative(SafeFileHandle directory, string leaf)
+    {
+        if (OperatingSystem.IsWindows() || !UsableDirectory(directory))
+        {
+            return null;
+        }
+
+        bool referenced = false;
+
+        try
+        {
+            directory.DangerousAddRef(ref referenced);
+
+            int flags = OperatingSystem.IsMacOS()
+                ? MacOpenReadWrite | MacOpenCreate | MacOpenExclusive | MacOpenNoFollow | MacOpenCloseOnExec
+                : LinuxOpenReadWrite | LinuxOpenCreate | LinuxOpenExclusive | LinuxOpenNoFollow | LinuxOpenCloseOnExec;
+
+            int descriptor = OpenAtUnix(
+                directory.DangerousGetHandle().ToInt32(),
+                leaf,
+                flags,
+                OwnerReadWriteMode);
+
+            if (descriptor < 0)
+            {
+                return null;
+            }
+
+            SafeFileHandle created = new(new IntPtr(descriptor), ownsHandle: true);
+
+            // Belt and braces on the mode, as the path-based create applied it; and the exclusive
+            // advisory lock a FileShare.None stream takes on Unix.
+            if (Fchmod(descriptor, OwnerReadWriteMode) != 0
+                || Flock(descriptor, LockExclusive | LockNonBlocking) != 0)
+            {
+                created.Dispose();
+
+                return null;
+            }
+
+            return created;
+        }
+        catch (Exception exception) when (
+            exception is EntryPointNotFoundException
+                or DllNotFoundException
+                or ObjectDisposedException)
+        {
+            return null;
+        }
+        finally
+        {
+            if (referenced)
+            {
+                directory.DangerousRelease();
+            }
+        }
+    }
+
+    /// <summary>Renames one child to another leaf of the same retained directory, replacing nothing.</summary>
+    internal static CampaignMarkerRenameStatus TryRenameNoReplaceRelative(
+        SafeFileHandle directory,
+        string sourceLeaf,
+        string destinationLeaf)
+    {
+        if (OperatingSystem.IsWindows() || !UsableDirectory(directory))
+        {
+            return CampaignMarkerRenameStatus.Failed;
+        }
+
+        bool referenced = false;
+
+        try
+        {
+            directory.DangerousAddRef(ref referenced);
+
+            int descriptor = directory.DangerousGetHandle().ToInt32();
+
+            int result = OperatingSystem.IsMacOS()
+                ? RenameAtXMac(descriptor, sourceLeaf, descriptor, destinationLeaf, MacRenameExclusive)
+                : RenameAt2(descriptor, sourceLeaf, descriptor, destinationLeaf, LinuxRenameNoReplace);
+
+            if (result == 0)
+            {
+                return CampaignMarkerRenameStatus.Renamed;
+            }
+
+            return Marshal.GetLastPInvokeError() == ErrorExists
+                ? CampaignMarkerRenameStatus.DestinationExists
+                : CampaignMarkerRenameStatus.Failed;
+        }
+        catch (Exception exception) when (
+            exception is EntryPointNotFoundException
+                or DllNotFoundException
+                or ObjectDisposedException)
+        {
+            return CampaignMarkerRenameStatus.Failed;
+        }
+        finally
+        {
+            if (referenced)
+            {
+                directory.DangerousRelease();
+            }
+        }
+    }
+
+    /// <summary>Unlinks one regular-file leaf of a retained directory.</summary>
+    internal static bool TryUnlinkRelative(SafeFileHandle directory, string leaf)
+    {
+        if (OperatingSystem.IsWindows() || !UsableDirectory(directory))
+        {
+            return false;
+        }
+
+        bool referenced = false;
+
+        try
+        {
+            directory.DangerousAddRef(ref referenced);
+
+            return UnlinkAt(directory.DangerousGetHandle().ToInt32(), leaf, flags: 0) == 0;
+        }
+        catch (Exception exception) when (
+            exception is EntryPointNotFoundException
+                or DllNotFoundException
+                or ObjectDisposedException)
+        {
+            return false;
+        }
+        finally
+        {
+            if (referenced)
+            {
+                directory.DangerousRelease();
+            }
+        }
+    }
+
+    private static bool UsableDirectory(SafeFileHandle directory) =>
+        directory is { IsInvalid: false, IsClosed: false }
+        && (OperatingSystem.IsMacOS() || OperatingSystem.IsLinux());
+
+    private const int OwnerReadWriteMode = 0x180;
+
+    private const int MacOpenReadWrite = 0x00000002;
+
+    private const int MacOpenNoFollow = 0x00000100;
+
+    private const int MacOpenCreate = 0x00000200;
+
+    private const int MacOpenExclusive = 0x00000800;
+
+    private const int MacOpenCloseOnExec = 0x01000000;
+
+    private const int LinuxOpenReadWrite = 0x00000002;
+
+    private const int LinuxOpenCreate = 0x00000040;
+
+    private const int LinuxOpenExclusive = 0x00000080;
+
+    private const int LinuxOpenNoFollow = 0x00020000;
+
+    private const int LinuxOpenCloseOnExec = 0x00080000;
+
+    private const uint MacRenameExclusive = 0x00000004;
+
+    private const int LinuxRenameNoReplace = 1;
+
+    private const int ErrorExists = 17;
+
+    private const int LockExclusive = 2;
+
+    private const int LockNonBlocking = 4;
+
+    /// <summary>
+    /// <c>openat</c> is variadic in <c>mode</c>; Apple's arm64 ABI passes a variadic argument on the
+    /// stack, so the mode is spilled past the eight argument registers there, exactly as the journal
+    /// primitives do.
+    /// </summary>
+    private static int OpenAtUnix(int directory, string path, int flags, int mode) =>
+        OperatingSystem.IsMacOS() && RuntimeInformation.ProcessArchitecture == Architecture.Arm64
+            ? OpenAtAppleArm64(directory, path, flags, 0, 0, 0, 0, 0, mode)
+            : OpenAtFixedArity(directory, path, flags, mode);
+
+    [LibraryImport("libc", EntryPoint = "openat", SetLastError = true, StringMarshalling = StringMarshalling.Utf8)]
+    private static partial int OpenAtFixedArity(int directory, string path, int flags, int mode);
+
+    [LibraryImport("libc", EntryPoint = "openat", SetLastError = true, StringMarshalling = StringMarshalling.Utf8)]
+    private static partial int OpenAtAppleArm64(
+        int directory,
+        string path,
+        int flags,
+        int registerFiller3,
+        int registerFiller4,
+        int registerFiller5,
+        int registerFiller6,
+        int registerFiller7,
+        int mode);
+
+    [LibraryImport("libc", EntryPoint = "renameat2", SetLastError = true, StringMarshalling = StringMarshalling.Utf8)]
+    private static partial int RenameAt2(
+        int oldDirectory,
+        string oldPath,
+        int newDirectory,
+        string newPath,
+        int flags);
+
+    [LibraryImport("libc", EntryPoint = "renameatx_np", SetLastError = true, StringMarshalling = StringMarshalling.Utf8)]
+    private static partial int RenameAtXMac(
+        int oldDirectory,
+        string oldPath,
+        int newDirectory,
+        string newPath,
+        uint flags);
+
+    [LibraryImport("libc", EntryPoint = "unlinkat", SetLastError = true, StringMarshalling = StringMarshalling.Utf8)]
+    private static partial int UnlinkAt(int directory, string path, int flags);
+
+    [LibraryImport("libc", EntryPoint = "fchmod", SetLastError = true)]
+    private static partial int Fchmod(int descriptor, int mode);
+
+    [LibraryImport("libc", EntryPoint = "flock", SetLastError = true)]
+    private static partial int Flock(int descriptor, int operation);
 
     [LibraryImport("libc", EntryPoint = "geteuid")]
     private static partial uint GetEffectiveUserId();
-
 }

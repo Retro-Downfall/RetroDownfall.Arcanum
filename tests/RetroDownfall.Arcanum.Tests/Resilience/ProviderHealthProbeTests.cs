@@ -1,5 +1,6 @@
 using System.Net;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Infrastructure.Resilience;
 
 namespace RetroDownfall.Arcanum.Tests.Resilience;
@@ -50,13 +51,11 @@ public sealed class ProviderHealthProbeTests : IDisposable
         Assert.Equal("Bearer", request.Headers.Authorization!.Scheme);
 
         Assert.Equal("plain-test-key", request.Headers.Authorization!.Parameter);
-
     }
 
     [Fact]
     public async Task ProbeAsync_NoApiKeyConfigured_SendsNoAuthorizationHeader()
     {
-
         RecordingHttpHandler handler = new(_ => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)));
 
         ProviderHealthProbe probe = CreateProbe(handler);
@@ -76,7 +75,6 @@ public sealed class ProviderHealthProbeTests : IDisposable
         HttpRequestMessage request = Assert.Single(handler.Requests);
 
         Assert.Null(request.Headers.Authorization);
-
     }
 
     [Fact]
@@ -104,13 +102,11 @@ public sealed class ProviderHealthProbeTests : IDisposable
         bool healthy = await probe.ProbeAsync(provider, CancellationToken.None);
 
         Assert.True(healthy);
-
     }
 
     [Fact]
     public async Task ProbeAsync_EmptyEndpoint_ReturnsFalseWithoutHttpCall()
     {
-
         RecordingHttpHandler handler = new(_ => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)));
 
         ProviderHealthProbe probe = CreateProbe(handler);
@@ -128,47 +124,90 @@ public sealed class ProviderHealthProbeTests : IDisposable
         Assert.False(healthy);
 
         Assert.Empty(handler.Requests);
-
     }
 
     [Fact]
     public async Task ProbeAsync_DoesNotBufferSuccessfulResponseBody()
     {
-
         StreamContent content = new(new ThrowOnReadStream());
 
         RecordingHttpHandler handler = new(_ => Task.FromResult(
             new HttpResponseMessage(HttpStatusCode.OK)
             {
-
                 Content = content,
-
             }));
 
         ProviderHealthProbe probe = CreateProbe(handler);
 
         ProviderSettings provider = new()
         {
-
             Name = "streaming-health",
 
             Type = AiProviderKind.OpenAICompatible,
 
             Endpoint = "https://example.test/v1",
-
         };
 
         bool healthy = await probe.ProbeAsync(provider, CancellationToken.None);
 
         Assert.True(healthy);
+    }
 
+    [Fact]
+    public async Task Cancelled_probe_is_not_reported_as_unhealthy()
+    {
+        RecordingHttpHandler handler = new(_ => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)));
+
+        ProviderHealthProbe probe = CreateProbe(handler);
+
+        ProviderSettings provider = new()
+        {
+            Name = "stopping-host",
+
+            Type = AiProviderKind.OpenAICompatible,
+
+            Endpoint = "https://example.test/v1",
+        };
+
+        using CancellationTokenSource stopping = new();
+
+        stopping.Cancel();
+
+        // A host shutting down is not evidence about the provider: the caller must see the cancellation
+        // instead of a false that would be published as a failed observation.
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => probe.ProbeAsync(provider, stopping.Token));
+    }
+
+    [Fact]
+    public async Task ProbeAsync_TransportFailureStillReportsUnhealthy()
+    {
+        BlockingHttpHandler handler = new();
+
+        ProviderHealthProbe probe = CreateProbe(handler);
+
+        ProviderSettings provider = new()
+        {
+            Name = "slow",
+
+            Type = AiProviderKind.OpenAICompatible,
+
+            Endpoint = "https://example.test/v1",
+        };
+
+        // A transport failure is a real observation; only the caller's own cancellation is not.
+        Task<bool> probing = probe.ProbeAsync(provider, CancellationToken.None);
+
+        handler.FaultRequest(new HttpRequestException("connection refused"));
+
+        Assert.False(await probing);
     }
 
     private static ProviderHealthProbe CreateProbe(HttpMessageHandler handler)
     {
         return new ProviderHealthProbe(
-            new FakeHttpClientFactory(handler));
-
+            new FakeHttpClientFactory(handler),
+            EnvironmentOnlyProviderApiKeyResolver.Instance);
     }
 
     public void Dispose()
@@ -180,32 +219,38 @@ public sealed class ProviderHealthProbeTests : IDisposable
 
     private sealed class FakeHttpClientFactory(HttpMessageHandler handler) : IHttpClientFactory
     {
-
         public HttpClient CreateClient(string name) => new(handler, disposeHandler: false);
-
     }
 
     private sealed class RecordingHttpHandler(Func<HttpRequestMessage, Task<HttpResponseMessage>> responder) : HttpMessageHandler
     {
-
         public List<HttpRequestMessage> Requests { get; } = [];
 
         protected override Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
             CancellationToken cancellationToken)
         {
-
             Requests.Add(request);
 
             return responder(request);
-
         }
+    }
 
+    private sealed class BlockingHttpHandler : HttpMessageHandler
+    {
+        private readonly TaskCompletionSource<HttpResponseMessage> _response = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public void FaultRequest(Exception exception) => _response.TrySetException(exception);
+
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken) =>
+            _response.Task;
     }
 
     private sealed class ThrowOnReadStream : Stream
     {
-
         public override bool CanRead => true;
 
         public override bool CanSeek => false;
@@ -216,11 +261,9 @@ public sealed class ProviderHealthProbeTests : IDisposable
 
         public override long Position
         {
-
             get => 0;
 
             set => throw new NotSupportedException();
-
         }
 
         public override int Read(byte[] buffer, int offset, int count) =>
@@ -234,7 +277,6 @@ public sealed class ProviderHealthProbeTests : IDisposable
 
         public override void Flush()
         {
-
         }
 
         public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
@@ -242,7 +284,5 @@ public sealed class ProviderHealthProbeTests : IDisposable
         public override void SetLength(long value) => throw new NotSupportedException();
 
         public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
-
     }
-
 }

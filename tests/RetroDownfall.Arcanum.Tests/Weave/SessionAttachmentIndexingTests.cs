@@ -44,7 +44,6 @@ namespace RetroDownfall.Arcanum.Tests.Weave;
 
 public sealed class SessionAttachmentIndexingTests : IAsyncLifetime
 {
-
     public static TheoryData<string, string, string> SourceExtensionMappings => new()
     {
         { ".py", "text/x-python", "print('python source')" },
@@ -76,14 +75,11 @@ public sealed class SessionAttachmentIndexingTests : IAsyncLifetime
 
     public SessionAttachmentIndexingTests(GrimoireFixture fixture)
     {
-
         _fixture = fixture;
-
     }
 
     public Task InitializeAsync()
     {
-
         _dbPath = _fixture.CopyDatabase();
 
         _attachmentsRoot = Path.Combine(
@@ -107,40 +103,30 @@ public sealed class SessionAttachmentIndexingTests : IAsyncLifetime
             new WeaveIndexAvailability());
 
         return Task.CompletedTask;
-
     }
 
     public async Task DisposeAsync()
     {
-
         if (_db is not null)
         {
-
             await _db.DisposeAsync();
-
         }
 
         if (File.Exists(_dbPath))
         {
-
             File.Delete(_dbPath);
-
         }
 
         if (Directory.Exists(_attachmentsRoot))
         {
-
             Directory.Delete(_attachmentsRoot, recursive: true);
-
         }
-
     }
 
     [SkippableFact]
 
     public async Task PersistAndPromote_EnqueueOnlyNewBoundVersions()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         RecordingQueue queue = new();
@@ -215,14 +201,151 @@ public sealed class SessionAttachmentIndexingTests : IAsyncLifetime
         Assert.Contains(
             queue.Requests,
             request => request.AttachmentId == pending.Id && request.SessionId == sessionId);
+    }
 
+    [SkippableFact]
+
+    public async Task PersistNewWithOutcomeAsync_ReportsCreatedThenReused_AndDeleteCreatedRemovesRowAndBlob()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = Guid.NewGuid();
+
+        byte[] bytes = Encoding.UTF8.GetBytes("rolled back");
+
+        SessionAttachmentPersistence created = await _attachments!.PersistNewWithOutcomeAsync(
+            sessionId,
+            null,
+            null,
+            "rollback",
+            "rollback.txt",
+            bytes,
+            "text/plain",
+            SessionAttachmentKind.Text);
+
+        Assert.True(created.NewVersionCreated);
+
+        SessionAttachmentPersistence reused = await _attachments.PersistNewWithOutcomeAsync(
+            sessionId,
+            null,
+            null,
+            "rollback",
+            "rollback.txt",
+            bytes,
+            "text/plain",
+            SessionAttachmentKind.Text);
+
+        Assert.False(reused.NewVersionCreated);
+
+        Assert.Equal(created.Record.Id, reused.Record.Id);
+
+        string blobPath = Path.Combine(_attachmentsRoot, created.Record.RelativePath);
+
+        Assert.True(File.Exists(blobPath));
+
+        Assert.True(await _attachments.DeleteCreatedAttachmentAsync(created.Record));
+
+        Assert.Null(await _attachments.GetByIdAsync(created.Record.Id));
+
+        Assert.False(File.Exists(blobPath));
+
+        Assert.False(await _attachments.DeleteCreatedAttachmentAsync(created.Record));
+    }
+
+    /// <summary>
+    /// The row is deleted under the attachment gate, but once the gate is released a concurrent persist of
+    /// the same logical key can reuse the freed version number and so the same blob path. Unlinking the
+    /// blob after the release could then remove the other persist's fresh bytes and leave its row pointing
+    /// at nothing, so the unlink has to happen while the gate is still held.
+    /// </summary>
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task DeleteCreatedAttachmentAsync_UnlinksTheBlobWhileStillHoldingTheAttachmentGate(bool pending)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = Guid.NewGuid();
+
+        string pendingTurn = Guid.NewGuid().ToString("N");
+
+        SessionAttachmentPersistence created = await _attachments!.PersistNewWithOutcomeAsync(
+            pending ? null : sessionId,
+            pending ? pendingTurn : null,
+            null,
+            "gated",
+            "gated.txt",
+            Encoding.UTF8.GetBytes("gated content"),
+            "text/plain",
+            SessionAttachmentKind.Text);
+
+        Assert.True(created.NewVersionCreated);
+
+        string blobPath = Path.Combine(_attachmentsRoot, created.Record.RelativePath);
+
+        string gateKey = pending
+            ? SessionAttachmentStore.PendingTurnGateKey(pendingTurn)
+            : SessionAttachmentStore.SessionGateKey(sessionId);
+
+        bool? gateHeldBeforeUnlink = null;
+
+        bool? blobPresentBeforeUnlink = null;
+
+        _attachments.AfterCreatedRowDeletedForTesting = _ =>
+        {
+            gateHeldBeforeUnlink = SessionAttachmentStore.AttachmentGates.IsHeld(gateKey);
+
+            blobPresentBeforeUnlink = File.Exists(blobPath);
+
+            return Task.CompletedTask;
+        };
+
+        Assert.True(await _attachments.DeleteCreatedAttachmentAsync(created.Record));
+
+        Assert.True(blobPresentBeforeUnlink);
+
+        Assert.True(gateHeldBeforeUnlink, "the blob was unlinked after the attachment gate was released.");
+
+        Assert.False(File.Exists(blobPath));
+    }
+
+    [SkippableFact]
+
+    public async Task DeleteCreatedAttachmentAsync_LeavesARowThatWasPromotedSinceItWasCreated()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = Guid.NewGuid();
+
+        string pendingTurn = Guid.NewGuid().ToString("N");
+
+        SessionAttachmentPersistence pending = await _attachments!.PersistNewWithOutcomeAsync(
+            null,
+            pendingTurn,
+            null,
+            "promoted",
+            "promoted.txt",
+            Encoding.UTF8.GetBytes("promoted content"),
+            "text/plain",
+            SessionAttachmentKind.Text);
+
+        Assert.True(pending.NewVersionCreated);
+
+        await _attachments.PromotePendingAsync(pendingTurn, sessionId, null);
+
+        Assert.False(await _attachments.DeleteCreatedAttachmentAsync(pending.Record));
+
+        SessionAttachmentRecord? survivor = await _attachments.GetByIdAsync(pending.Record.Id);
+
+        Assert.NotNull(survivor);
+
+        Assert.Equal(SessionAttachmentState.Bound, survivor.State);
     }
 
     [SkippableFact]
 
     public async Task ForkAsync_EnqueuesCopiedAttachmentAfterCommit()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         RecordingQueue queue = new();
@@ -264,7 +387,6 @@ public sealed class SessionAttachmentIndexingTests : IAsyncLifetime
         Assert.Equal(forked.Id, request.AttachmentId);
 
         Assert.Equal(result.Value.Id, request.SessionId);
-
     }
 
     /// <summary>
@@ -283,7 +405,6 @@ public sealed class SessionAttachmentIndexingTests : IAsyncLifetime
 
     public async Task MarkWithoutIndexAsync_EmptiesAStagedGenerationsPlainVectorMirrorRowsWhileTheFlagIsOff()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         GrimoireRepository repository = CreateRepository();
@@ -309,9 +430,7 @@ public sealed class SessionAttachmentIndexingTests : IAsyncLifetime
 
         foreach (string chunkId in chunkIds)
         {
-
             await SeedVectorMirrorRowAsync(chunkId);
-
         }
 
         await SeedVectorMirrorRowAsync("another-attachments-chunk");
@@ -329,7 +448,6 @@ public sealed class SessionAttachmentIndexingTests : IAsyncLifetime
             1,
             await CountAsync(
                 "SELECT COUNT(*) FROM session_attachment_embeddings_vec WHERE ChunkId = 'another-attachments-chunk';"));
-
     }
 
     /// <summary>
@@ -340,7 +458,6 @@ public sealed class SessionAttachmentIndexingTests : IAsyncLifetime
 
     public async Task ReconcileAndFindPendingAsync_SweepsOrphanedPlainVectorMirrorRowsWhileTheFlagIsOff()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         (Guid sessionId, _) = await CreateRepository().BeginAssistantReplyAsync(
@@ -381,7 +498,6 @@ public sealed class SessionAttachmentIndexingTests : IAsyncLifetime
             1,
             await CountAsync(
                 $"SELECT COUNT(*) FROM session_attachment_embeddings_vec WHERE ChunkId = '{liveChunkId}';"));
-
     }
 
     /// <summary>
@@ -392,7 +508,6 @@ public sealed class SessionAttachmentIndexingTests : IAsyncLifetime
 
     public async Task ReconcileAndFindPendingAsync_SkipsALegacyVirtualVectorMirrorWithoutFailing()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         await ExecuteAsync(
@@ -403,7 +518,6 @@ public sealed class SessionAttachmentIndexingTests : IAsyncLifetime
         _ = await _index!.ReconcileAndFindPendingAsync(Dimensions, 10, CancellationToken.None);
 
         Assert.Equal(1, await CountAsync("SELECT COUNT(*) FROM session_attachment_embeddings_vec;"));
-
     }
 
     /// <summary>
@@ -419,7 +533,6 @@ public sealed class SessionAttachmentIndexingTests : IAsyncLifetime
 
     public async Task MarkWithoutIndexAsync_SkipsALegacyVirtualVectorMirrorWithoutFailing()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         GrimoireRepository repository = CreateRepository();
@@ -451,7 +564,6 @@ public sealed class SessionAttachmentIndexingTests : IAsyncLifetime
         Assert.Equal(0, await CountAsync("SELECT COUNT(*) FROM session_attachment_chunks;"));
 
         Assert.Equal(1, await CountAsync("SELECT COUNT(*) FROM session_attachment_embeddings_vec;"));
-
     }
 
     /// <summary>
@@ -460,7 +572,6 @@ public sealed class SessionAttachmentIndexingTests : IAsyncLifetime
     /// </summary>
     private async Task<string[]> StageUnpublishedGenerationAsync(SessionAttachmentRecord attachment)
     {
-
         DateTimeOffset now = DateTimeOffset.UtcNow;
 
         await _index!.SetPendingAsync(attachment, 1, CancellationToken.None);
@@ -488,9 +599,7 @@ public sealed class SessionAttachmentIndexingTests : IAsyncLifetime
 
         if (_db!.Database.GetDbConnection().State != System.Data.ConnectionState.Open)
         {
-
             await _db.Database.OpenConnectionAsync(CancellationToken.None);
-
         }
 
         await using System.Data.Common.DbCommand command = _db.Database.GetDbConnection().CreateCommand();
@@ -511,13 +620,10 @@ public sealed class SessionAttachmentIndexingTests : IAsyncLifetime
 
         while (await reader.ReadAsync(CancellationToken.None))
         {
-
             chunkIds.Add(reader.GetString(0));
-
         }
 
         return [.. chunkIds];
-
     }
 
     /// <summary>Gives up on the attachment's index, as the indexer does, which removes what was never published.</summary>
@@ -553,12 +659,9 @@ public sealed class SessionAttachmentIndexingTests : IAsyncLifetime
 
     private async Task ExecuteAsync(string sql)
     {
-
         if (_db!.Database.GetDbConnection().State != System.Data.ConnectionState.Open)
         {
-
             await _db.Database.OpenConnectionAsync(CancellationToken.None);
-
         }
 
         await using System.Data.Common.DbCommand command = _db.Database.GetDbConnection().CreateCommand();
@@ -566,17 +669,13 @@ public sealed class SessionAttachmentIndexingTests : IAsyncLifetime
         command.CommandText = sql;
 
         _ = await command.ExecuteNonQueryAsync(CancellationToken.None);
-
     }
 
     private async Task<int> CountAsync(string sql)
     {
-
         if (_db!.Database.GetDbConnection().State != System.Data.ConnectionState.Open)
         {
-
             await _db.Database.OpenConnectionAsync(CancellationToken.None);
-
         }
 
         await using System.Data.Common.DbCommand command = _db.Database.GetDbConnection().CreateCommand();
@@ -586,14 +685,12 @@ public sealed class SessionAttachmentIndexingTests : IAsyncLifetime
         return Convert.ToInt32(
             await command.ExecuteScalarAsync(CancellationToken.None),
             System.Globalization.CultureInfo.InvariantCulture);
-
     }
 
     [SkippableFact]
 
     public async Task ProcessAsync_TextAttachment_PersistsProvenanceAndIndexedStatus()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = Guid.NewGuid();
@@ -629,7 +726,6 @@ public sealed class SessionAttachmentIndexingTests : IAsyncLifetime
 
         Assert.All(chunks, chunk =>
         {
-
             Assert.Equal(sessionId, chunk.SessionId);
 
             Assert.Equal(attachment.Id, chunk.AttachmentId);
@@ -645,9 +741,7 @@ public sealed class SessionAttachmentIndexingTests : IAsyncLifetime
             Assert.Equal(attachment.ContentSha256, chunk.ContentSha256);
 
             Assert.Equal(Dimensions, chunk.EmbeddingDimension);
-
         });
-
     }
 
     [SkippableTheory]
@@ -659,7 +753,6 @@ public sealed class SessionAttachmentIndexingTests : IAsyncLifetime
         string expectedMimeType,
         string source)
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = Guid.NewGuid();
@@ -709,14 +802,12 @@ public sealed class SessionAttachmentIndexingTests : IAsyncLifetime
         Assert.Equal(attachment.Id, hit.AttachmentId);
 
         Assert.Contains(source, hit.Content, StringComparison.Ordinal);
-
     }
 
     [SkippableFact]
 
     public async Task ProcessAsync_ContinuesAutomaticEmbeddingBatchesUntilEveryChunkIsIndexed()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = Guid.NewGuid();
@@ -747,14 +838,12 @@ public sealed class SessionAttachmentIndexingTests : IAsyncLifetime
         Assert.True(chunks.Length > 64);
 
         Assert.Equal(text.Length, chunks[^1].CharacterEnd);
-
     }
 
     [SkippableFact]
 
     public async Task ProcessAsync_CheckpointsEachEmbeddingBatchBeforeRequestingTheNextBatch()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = Guid.NewGuid();
@@ -772,15 +861,11 @@ public sealed class SessionAttachmentIndexingTests : IAsyncLifetime
 
         FakeWeaveService weave = new()
         {
-
             BeforeEmbedBatchAsync = async callNumber =>
             {
-
                 if (callNumber != 2)
                 {
-
                     return;
-
                 }
 
                 SessionAttachmentIndexedChunk[] checkpoint = await _index!
@@ -800,9 +885,7 @@ public sealed class SessionAttachmentIndexingTests : IAsyncLifetime
                         CancellationToken.None);
 
                 Assert.Empty(historicalSearch);
-
             },
-
         };
 
         SessionAttachmentIndexOutcome outcome = await CreateProcessor(weave).ProcessUnderOpenAdmissionAsync(
@@ -812,14 +895,12 @@ public sealed class SessionAttachmentIndexingTests : IAsyncLifetime
         Assert.Equal(SessionAttachmentIndexStatus.Indexed, outcome.Status);
 
         Assert.Equal(64, checkpointedChunkCount);
-
     }
 
     [SkippableFact]
 
     public async Task ProcessAsync_ReadsAttachmentThroughStreamingStoreBoundary()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = Guid.NewGuid();
@@ -845,14 +926,12 @@ public sealed class SessionAttachmentIndexingTests : IAsyncLifetime
         Assert.True(streamingStore.OpenReadCallCount > 0);
 
         Assert.Equal(0, streamingStore.ReadBytesCallCount);
-
     }
 
     [SkippableFact]
 
     public async Task ProcessAsync_CancellationResumesAfterDurableBatchAndAtomicallyReplacesPublishedGeneration()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = Guid.NewGuid();
@@ -886,21 +965,15 @@ public sealed class SessionAttachmentIndexingTests : IAsyncLifetime
 
         FakeWeaveService cancellingWeave = new()
         {
-
             BeforeEmbedBatchAsync = callNumber =>
             {
-
                 if (callNumber == 2)
                 {
-
                     interrupted.Cancel();
-
                 }
 
                 return Task.CompletedTask;
-
             },
-
         };
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
@@ -958,14 +1031,12 @@ public sealed class SessionAttachmentIndexingTests : IAsyncLifetime
         Assert.DoesNotContain(
             publishedAfter,
             chunk => publishedChunkIds.Contains(chunk.ChunkId));
-
     }
 
     [SkippableFact]
 
     public async Task ProcessAsync_UnsupportedBinary_MarksNotEligibleWithoutEmbedding()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = Guid.NewGuid();
@@ -991,14 +1062,12 @@ public sealed class SessionAttachmentIndexingTests : IAsyncLifetime
         Assert.Equal(0, weave.EmbedBatchCallCount);
 
         Assert.Empty(await _index!.GetChunksForAttachmentAsync(attachment.Id, CancellationToken.None));
-
     }
 
     [SkippableFact]
 
     public async Task ProcessAsync_EmbeddingFailure_MarksFailedAndRequestsRetry()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = Guid.NewGuid();
@@ -1022,14 +1091,51 @@ public sealed class SessionAttachmentIndexingTests : IAsyncLifetime
         Assert.Equal(
             SessionAttachmentIndexStatus.Failed,
             (await _index!.GetStateAsync(attachment.Id, CancellationToken.None)).Status);
+    }
 
+    /// <summary>
+    /// A provider that answers fewer vectors than inputs is failed once, by the real service, at the
+    /// provider boundary, so the processor sees an ordinary embedding failure: the attachment is marked
+    /// failed for the provider (not for its dimensions) and a retry is requested. Before the service
+    /// enforced the count, this shape reached the dimensions check and ended terminal without a retry.
+    /// </summary>
+    [SkippableFact]
+
+    public async Task ProcessAsync_ProviderAnswersFewerVectorsThanChunks_MarksFailedAndRequestsRetry()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = Guid.NewGuid();
+
+        SessionAttachmentRecord attachment = await PersistAsync(
+            sessionId,
+            "notes",
+            "notes.txt",
+            "text/plain",
+            "short answer");
+
+        SessionAttachmentIndexOutcome outcome = await CreateProcessor(
+            ShortAnsweringEmbeddingGeneratorFactory.CreateWeaveService()).ProcessUnderOpenAdmissionAsync(
+                new SessionAttachmentIndexRequest(attachment.Id, sessionId),
+                CancellationToken.None);
+
+        Assert.Equal(SessionAttachmentIndexStatus.Failed, outcome.Status);
+
+        Assert.True(outcome.ShouldRetry);
+
+        Assert.Empty(await _index!.GetChunksForAttachmentAsync(attachment.Id, CancellationToken.None));
+
+        SessionAttachmentIndexState state = await _index.GetStateAsync(attachment.Id, CancellationToken.None);
+
+        Assert.Equal(SessionAttachmentIndexStatus.Failed, state.Status);
+
+        Assert.Equal("The embedding provider failed.", state.FailureReason);
     }
 
     [SkippableFact]
 
     public async Task ProcessAsync_DimensionMismatch_MarksFailedWithoutPartialChunks()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = Guid.NewGuid();
@@ -1051,14 +1157,12 @@ public sealed class SessionAttachmentIndexingTests : IAsyncLifetime
         Assert.False(outcome.ShouldRetry);
 
         Assert.Empty(await _index!.GetChunksForAttachmentAsync(attachment.Id, CancellationToken.None));
-
     }
 
     [SkippableFact]
 
     public async Task SearchAsync_DefaultsToLatestVersionAndEnforcesSessionIsolation()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid firstSession = Guid.NewGuid();
@@ -1128,14 +1232,12 @@ public sealed class SessionAttachmentIndexingTests : IAsyncLifetime
         Assert.Contains(historical, hit => hit.AttachmentId == firstV2.Id);
 
         Assert.DoesNotContain(historical, hit => hit.AttachmentId == other.Id);
-
     }
 
     [SkippableFact]
 
     public async Task ProcessAsync_LatestVersionFailure_RemovesHistoricalVersionFromDefaultScope()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = Guid.NewGuid();
@@ -1182,14 +1284,12 @@ public sealed class SessionAttachmentIndexingTests : IAsyncLifetime
         Assert.Contains(historical, hit => hit.AttachmentId == first.Id);
 
         Assert.DoesNotContain(historical, hit => hit.AttachmentId == second.Id);
-
     }
 
     [SkippableFact]
 
     public async Task SearchAsync_OutOfOrderHistoricalIndexing_PreservesLatestScope()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = Guid.NewGuid();
@@ -1223,7 +1323,6 @@ public sealed class SessionAttachmentIndexingTests : IAsyncLifetime
         Assert.NotEmpty(latest);
 
         Assert.All(latest, hit => Assert.Equal(second.Id, hit.AttachmentId));
-
     }
 
     private SessionAttachmentRetrievalService CreateRetrievalService() =>
@@ -1264,42 +1363,31 @@ public sealed class SessionAttachmentIndexingTests : IAsyncLifetime
 
     private static ArcanumSettings CreateSettings() => new()
     {
-
         Features = new FeatureSettings
         {
-
             AttachmentRetrieval = true,
-
         },
 
         Integrations = new IntegrationSettings
         {
-
             Embeddings = new EmbeddingIntegrationSettings
             {
-
                 Dimensions = Dimensions,
-
             },
-
         },
-
     };
 
     private static float[] CreateVector(int dimensions)
     {
-
         float[] vector = new float[dimensions];
 
         vector[0] = 1f;
 
         return vector;
-
     }
 
     private sealed class FakeWeaveService : IWeaveService
     {
-
         public bool FailEmbedding { get; init; }
 
         public Func<int, Task>? BeforeEmbedBatchAsync { get; init; }
@@ -1319,25 +1407,20 @@ public sealed class SessionAttachmentIndexingTests : IAsyncLifetime
             IReadOnlyList<string> texts,
             CancellationToken cancellationToken)
         {
-
             EmbedBatchCallCount++;
 
             if (BeforeEmbedBatchAsync is not null)
             {
-
                 await BeforeEmbedBatchAsync(EmbedBatchCallCount);
-
             }
 
             cancellationToken.ThrowIfCancellationRequested();
 
             if (FailEmbedding)
             {
-
                 return Result<Embedding<float>[]>.Failure(new Error(
                     ErrorCodes.Embeddings.ProviderUnavailable,
                     "Simulated embedding failure."));
-
             }
 
             Embedding<float>[] generated = texts
@@ -1345,36 +1428,29 @@ public sealed class SessionAttachmentIndexingTests : IAsyncLifetime
                 .ToArray();
 
             return Result<Embedding<float>[]>.Success(generated);
-
         }
 
         public Task<Result<(string Chunk, int Offset)[]>> ChunkAsync(
             string text,
             CancellationToken cancellationToken) =>
             throw new NotSupportedException();
-
     }
 
     private sealed class RecordingQueue : ISessionAttachmentIndexQueue
     {
-
         public List<SessionAttachmentIndexRequest> Requests { get; } = [];
 
         public bool TryEnqueue(SessionAttachmentIndexRequest request)
         {
-
             Requests.Add(request);
 
             return true;
-
         }
-
     }
 
     private sealed class StreamingOnlyAttachmentStore(
         ISessionAttachmentStore inner) : ISessionAttachmentStore
     {
-
         public int OpenReadCallCount { get; private set; }
 
         public int ReadBytesCallCount { get; private set; }
@@ -1388,22 +1464,18 @@ public sealed class SessionAttachmentIndexingTests : IAsyncLifetime
             SessionAttachmentRecord record,
             CancellationToken cancellationToken = default)
         {
-
             OpenReadCallCount++;
 
             return await inner.OpenReadAsync(record, cancellationToken);
-
         }
 
         public Task<ReadOnlyMemory<byte>> ReadBytesAsync(
             SessionAttachmentRecord record,
             CancellationToken cancellationToken = default)
         {
-
             ReadBytesCallCount++;
 
             throw new InvalidOperationException("The processor must use the streaming read boundary.");
-
         }
 
         public Task<SessionAttachmentRecord> PersistNewAsync(
@@ -1415,6 +1487,23 @@ public sealed class SessionAttachmentIndexingTests : IAsyncLifetime
             ReadOnlyMemory<byte> bytes,
             string mimeType,
             SessionAttachmentKind kind,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<SessionAttachmentPersistence> PersistNewWithOutcomeAsync(
+            Guid? sessionId,
+            string? pendingTurnId,
+            Guid? entryId,
+            string logicalNameHint,
+            string originalFileName,
+            ReadOnlyMemory<byte> bytes,
+            string mimeType,
+            SessionAttachmentKind kind,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<bool> DeleteCreatedAttachmentAsync(
+            SessionAttachmentRecord created,
             CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
 
@@ -1490,7 +1579,5 @@ public sealed class SessionAttachmentIndexingTests : IAsyncLifetime
             IReadOnlyList<SessionAttachmentForkCopyPlan> plans,
             CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
-
     }
-
 }

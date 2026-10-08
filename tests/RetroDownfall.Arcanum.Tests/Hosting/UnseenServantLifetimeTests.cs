@@ -11,7 +11,7 @@ namespace RetroDownfall.Arcanum.Tests.Hosting;
 public sealed class UnseenServantLifetimeTests
 {
     [Fact]
-    public async Task HostCancellationDuringWatermarkIsNotReportedAsPersistenceFailure()
+    public async Task HostCancellationDuringWatermarkDoesNotCancelTheWatermarkSave()
     {
         await using UnseenServantAdmissionHarness harness = new();
 
@@ -25,7 +25,8 @@ public sealed class UnseenServantLifetimeTests
         {
             if (step == "watermark")
             {
-                Assert.Equal(host.Token, token);
+                // The runner already returned, so the save is bookkeeping on its own bounded token.
+                Assert.NotEqual(host.Token, token);
 
                 host.Cancel();
 
@@ -47,11 +48,9 @@ public sealed class UnseenServantLifetimeTests
 
         Assert.DoesNotContain(harness.Logger.Entries, static entry => entry.Level >= LogLevel.Warning);
 
-        Assert.Contains(harness.Logger.Entries, static entry => entry.Message.Contains("cancelled during shutdown", StringComparison.Ordinal));
-
         Assert.Equal(["scope-dispose", "group-dispose", "lease-dispose"], harness.Events.Where(static step => step.EndsWith("-dispose", StringComparison.Ordinal)));
 
-        Assert.Empty(harness.Store.Rows);
+        Assert.Single(harness.Store.Rows);
     }
 
     [Theory]

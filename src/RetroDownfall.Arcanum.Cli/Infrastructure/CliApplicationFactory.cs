@@ -1,7 +1,6 @@
 using System.Diagnostics.CodeAnalysis;
 using System.CommandLine;
 using System.CommandLine.Parsing;
-using Microsoft.AspNetCore.DataProtection;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
@@ -20,14 +19,10 @@ using RetroDownfall.Arcanum.Cli.Services;
 using RetroDownfall.Arcanum.Cli.Services.Setup;
 using RetroDownfall.Arcanum.Cli.UX;
 using RetroDownfall.Arcanum.Core.Configuration;
-using RetroDownfall.Arcanum.Core.DataLifecycle;
 using RetroDownfall.Arcanum.Core.Desktop;
 using RetroDownfall.Arcanum.Core.Hosting;
 using RetroDownfall.Arcanum.Core.Security;
-using RetroDownfall.Arcanum.Core.Telemetry;
 using RetroDownfall.Arcanum.Infrastructure.DependencyInjection;
-using RetroDownfall.Arcanum.Infrastructure.Configuration;
-using RetroDownfall.Arcanum.Infrastructure.InstallationReset;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 using RetroDownfall.Arcanum.Infrastructure.Theme;
 using Spectre.Console;
@@ -131,10 +126,6 @@ internal static class CliApplicationFactory
 
         services.AddSingleton<IAttachmentRevealLauncher, AttachmentRevealLauncher>();
 
-        services.AddSingleton<TelemetryService>();
-
-        services.AddSingleton<MarkdigSpectreRenderer>();
-
         // W6.4: shared secret/grimoire stack (Data Protection + digest cache + secret store +
         // CLI Grimoire), owned by Infrastructure so it cannot drift from the host wiring.
         services.AddArcanumCliClientStack();
@@ -163,6 +154,8 @@ internal static class CliApplicationFactory
 
                 client.BaseAddress = new Uri(ArcanumLocalApiAddress.ResolveBaseUrl(settings.Host));
 
+                // No HttpClient-wide timeout: the short-call deadline is per request and bounds only
+                // the wait for response headers (ArcanumApiClient.RequestResponseHeadersTimeout).
                 client.Timeout = Timeout.InfiniteTimeSpan;
             })
             .ConfigurePrimaryHttpMessageHandler(CreateLocalApiHttpMessageHandler);
@@ -271,6 +264,11 @@ internal static class CliApplicationFactory
 
         services.AddTransient<DaemonCommands>();
 
+        services.AddTransient<IDaemonServiceAccountPrompt>(
+            static sp => new DaemonServiceAccountPrompt(
+                sp.GetRequiredService<ICliInvocationContext>(),
+                SystemSensitiveValueConsole.Instance));
+
         services.AddTransient<CampaignCommands>();
 
         services.AddTransient<CampaignCodexCommands>();
@@ -354,6 +352,48 @@ internal static class CliApplicationFactory
         };
 
     /// <summary>
+    /// Runs one invocation on a provider the caller built for it and disposes that provider when the
+    /// invocation ends, so the singletons it created (pooled HTTP handlers, monitors) are released by
+    /// the code that owns them rather than by process exit.
+    /// </summary>
+    internal static async Task<int> RunAndDisposeProviderAsync(
+        string[] args,
+        ServiceProvider provider)
+    {
+        ArgumentNullException.ThrowIfNull(args);
+
+        ArgumentNullException.ThrowIfNull(provider);
+
+        try
+        {
+            return await RunAsync(args, provider).ConfigureAwait(false);
+        }
+        finally
+        {
+            await DisposeProviderAfterTheCommandAsync(provider).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
+    /// Releases the provider once the command has finished. A singleton whose release throws must
+    /// not replace the command's exit code (or the exception it is already unwinding with) with an
+    /// unhandled crash, so the failure is reported by type, never by message (an upstream message can
+    /// carry a secret or a path), and the command's own result stands.
+    /// </summary>
+    private static async Task DisposeProviderAfterTheCommandAsync(ServiceProvider provider)
+    {
+        try
+        {
+            await provider.DisposeAsync().ConfigureAwait(false);
+        }
+        catch (Exception exception)
+        {
+            Console.Error.WriteLine(
+                $"Releasing the CLI's services failed ({exception.GetType().FullName}); the command's own result stands.");
+        }
+    }
+
+    /// <summary>
     /// Runs the CLI end-to-end with System.CommandLine 2.0.
     /// Keeps the empty-args Command Center branch intact; non-empty args invoke CliCommandTree.
     /// </summary>
@@ -391,10 +431,12 @@ internal static class CliApplicationFactory
                 ICommandCenterHost host =
                     serviceProvider.GetRequiredService<ICommandCenterHost>();
 
+                using CommandCenterTermination deepLinkTermination = new();
+
                 int hostExitCode = await host
                     .RunAsync(
                         deepLinkIntake.StartupSessionId,
-                        CancellationToken.None)
+                        deepLinkTermination.Token)
                     .ConfigureAwait(false);
 
                 return NormalizeExitCode(hostExitCode);
@@ -411,8 +453,12 @@ internal static class CliApplicationFactory
                 {
                     ICommandCenterHost host = serviceProvider.GetRequiredService<ICommandCenterHost>();
 
+                    // SIGTERM and SIGHUP cancel this token, so the host can unwind, stop the server it
+                    // launched and restore the terminal instead of being killed mid-run.
+                    using CommandCenterTermination termination = new();
+
                     int hostExitCode = await host
-                        .RunAsync(CancellationToken.None)
+                        .RunAsync(termination.Token)
                         .ConfigureAwait(false);
 
                     return NormalizeExitCode(hostExitCode);
@@ -591,6 +637,16 @@ internal static class CliApplicationFactory
             }
 
             dispatcher.WriteDiagnostic(failure.SafeMessage);
+
+            // The invocation scope that carried the parsed options was disposed while the exception
+            // unwound, so the dispatcher cannot see `-v` here; the options captured above can. Only
+            // the type is named: an upstream message can carry a secret or a path.
+            if (activeOptions.Verbose
+                && exception is not OperationCanceledException)
+            {
+                dispatcher.WriteDiagnostic(
+                    $"Exception type: {exception.GetType().FullName}");
+            }
 
             return (int)failure.ExitCode;
         }

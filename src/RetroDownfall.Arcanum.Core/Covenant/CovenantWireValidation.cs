@@ -19,7 +19,6 @@ namespace RetroDownfall.Arcanum.Core.Covenant;
 /// </remarks>
 internal static class CovenantWireValidation
 {
-
     /// <summary>The exact character length of a 32-byte digest rendered as uppercase hex.</summary>
     internal const int DigestHexCharacters = CovenantLimits.DigestBytes * 2;
 
@@ -111,28 +110,21 @@ internal static class CovenantWireValidation
     /// <summary>Validates a lowercase hexadecimal digest on the wire, before anything tries to read it.</summary>
     internal static Result ValidateDigestText(string? value, string subject)
     {
-
+        // A digest is a body field, not a scope: a malformed one is a malformed body.
         if (value is not { Length: 64 })
         {
-
-            return InvalidScope($"The {subject} must be a 64-character hexadecimal digest.");
-
+            return InvalidBody($"The {subject} must be a 64-character hexadecimal digest.");
         }
 
         foreach (char character in value)
         {
-
             if (character is not ((>= '0' and <= '9') or (>= 'a' and <= 'f') or (>= 'A' and <= 'F')))
             {
-
-                return InvalidScope($"The {subject} must be a 64-character hexadecimal digest.");
-
+                return InvalidBody($"The {subject} must be a 64-character hexadecimal digest.");
             }
-
         }
 
         return Result.Success();
-
     }
 
     internal static Result ValidateCurationKind(CovenantCurationKind kind) =>
@@ -151,25 +143,19 @@ internal static class CovenantWireValidation
     /// </remarks>
     internal static Result ValidateMaskablePlacement(CovenantCurationKind kind, CovenantScope scope, CovenantLane lane)
     {
-
         if (kind is not (CovenantCurationKind.Mask or CovenantCurationKind.Unmask))
         {
-
             return Result.Success();
-
         }
 
         if (scope != CovenantScope.Campaign)
         {
-
             return InvalidScope("A Covenant scope mask names one Campaign, because Global content has no broader scope to fall through from.");
-
         }
 
         return lane != CovenantLane.Confirmed
             ? InvalidScope("A Covenant scope mask names the Confirmed lane, because the Proposed lane is review-only beside it.")
             : Result.Success();
-
     }
 
     /// <summary>
@@ -178,18 +164,14 @@ internal static class CovenantWireValidation
     /// </summary>
     internal static Result ValidateCursor(string? cursor)
     {
-
         if (cursor is null)
         {
-
             return Result.Success();
-
         }
 
         return cursor.Length is > 0 and <= CovenantLimits.MaxEnvelopeEncodedBytes
             ? Result.Success()
             : new Error(ErrorCodes.Covenant.InvalidCursor, "This cursor is not valid.");
-
     }
 
     /// <summary>
@@ -210,48 +192,50 @@ internal static class CovenantWireValidation
 
     internal static Result ValidateAuthoredContent(string? content)
     {
-
         if (content is null)
         {
-
             return new Error(ErrorCodes.Covenant.InvalidContent, "Authored Covenant content is required.");
-
         }
 
         // Measured in UTF-8 bytes, which is what the compiler and every storage bound count. A
         // character bound would admit four times the declared cost for astral text.
-        return Encoding.UTF8.GetByteCount(content) is > 0 and <= CovenantLimits.MaxAuthoredContentBytes
+        // Strict: an unpaired surrogate has no UTF-8 form, and the lenient encoder would count it as
+        // a three-byte U+FFFD and admit text the compiler then refuses.
+        return TryGetStrictByteCount(content, out int byteCount)
+            && byteCount is > 0 and <= CovenantLimits.MaxAuthoredContentBytes
             ? Result.Success()
             : new Error(
                 ErrorCodes.Covenant.InvalidContent,
                 $"Authored Covenant content must be between 1 and {CovenantLimits.MaxAuthoredContentBytes} UTF-8 bytes.");
-
     }
 
     internal static Result ValidateSearchText(string? query)
     {
-
-        if (query is null || Encoding.UTF8.GetByteCount(query) > CovenantLimits.MaxSearchQueryBytes)
+        if (query is null
+            || !TryGetStrictByteCount(query, out int queryBytes)
+            || queryBytes > CovenantLimits.MaxSearchQueryBytes)
         {
-
             return new Error(
                 ErrorCodes.Validation.InvalidQuery,
                 $"A Covenant search is at most {CovenantLimits.MaxSearchQueryBytes} UTF-8 bytes.");
-
         }
 
         int terms = 0;
 
-        foreach (Range segment in query.AsSpan().SplitAny(" \t\r\n"))
-        {
+        bool inTerm = false;
 
-            if (!query.AsSpan()[segment].IsEmpty)
+        foreach (Rune rune in query.EnumerateRunes())
+        {
+            if (CovenantUnicodePolicyV1.IsWhitespaceScalar(rune.Value))
             {
+                inTerm = false;
+            }
+            else if (!inTerm)
+            {
+                inTerm = true;
 
                 terms++;
-
             }
-
         }
 
         return terms is > 0 and <= CovenantLimits.MaxSearchQueryTerms
@@ -259,7 +243,22 @@ internal static class CovenantWireValidation
             : new Error(
                 ErrorCodes.Validation.InvalidQuery,
                 $"A Covenant search carries between 1 and {CovenantLimits.MaxSearchQueryTerms} terms.");
+    }
 
+    private static bool TryGetStrictByteCount(string value, out int byteCount)
+    {
+        try
+        {
+            byteCount = StrictUtf8.Encoding.GetByteCount(value);
+
+            return true;
+        }
+        catch (EncoderFallbackException)
+        {
+            byteCount = 0;
+
+            return false;
+        }
     }
 
     internal static Result RequireIdentity(Guid value, string subject) =>
@@ -296,28 +295,20 @@ internal static class CovenantWireValidation
     /// </remarks>
     internal static Result ValidateApplyRequestDigest(string? digest)
     {
-
         if (digest is null || digest.Length != DigestHexCharacters)
         {
-
             return InvalidBody($"An apply-request digest is exactly {DigestHexCharacters} hexadecimal characters.");
-
         }
 
         foreach (char character in digest)
         {
-
             if (character is not (>= '0' and <= '9' or >= 'a' and <= 'f' or >= 'A' and <= 'F'))
             {
-
                 return InvalidBody("An apply-request digest is hexadecimal.");
-
             }
-
         }
 
         return Result.Success();
-
     }
 
     /// <summary>
@@ -326,21 +317,14 @@ internal static class CovenantWireValidation
     /// </summary>
     internal static Result First(params ReadOnlySpan<Result> checks)
     {
-
         foreach (Result check in checks)
         {
-
             if (check.IsFailure)
             {
-
                 return check;
-
             }
-
         }
 
         return Result.Success();
-
     }
-
 }

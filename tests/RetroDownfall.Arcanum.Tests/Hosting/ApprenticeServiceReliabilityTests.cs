@@ -21,7 +21,7 @@ using RetroDownfall.Arcanum.Tests.Support;
 namespace RetroDownfall.Arcanum.Tests.Hosting;
 
 [Collection("ApprenticeReliability")]
-public sealed class ApprenticeServiceReliabilityTests
+public sealed partial class ApprenticeServiceReliabilityTests
 {
     [Fact]
     public async Task ReweaveAsync_MaterializesPlanBeforeValidationIndexesIt()
@@ -121,8 +121,8 @@ public sealed class ApprenticeServiceReliabilityTests
                 IntelligenceEventType.WardResolved,
                 Message: "legacy audit record",
                 WardId: "legacy-ward",
-                WardToolName: "write_file",
-                WardAllowed: false),
+                ToolName: "write_file",
+                Allowed: false),
             new IntelligenceEvent(
                 IntelligenceEventType.Result,
                 Message: "completed"));
@@ -982,7 +982,7 @@ public sealed class ApprenticeServiceReliabilityTests
     }
 
     [Fact]
-    public async Task SimulacrumValidatesChildrenAndShiftsFateBeforeCheckpointAdvance()
+    public async Task SimulacrumValidatesChildrenThenCommitsCompletionBeforeShiftingFate()
     {
         Guid apprenticeId = Guid.NewGuid();
 
@@ -1056,32 +1056,15 @@ public sealed class ApprenticeServiceReliabilityTests
 
             await intelligence.ShiftingFateReached.Task.WaitAsync(TimeSpan.FromSeconds(10));
 
-            AssertUnadvanced(repo.Get(apprenticeId));
+            // The group's effects are done, so its completion is already durable while the cancellable
+            // Shifting Fate evaluation is still running.
+            AssertAdvanced(repo.Get(apprenticeId), expectedTail: "Original tail");
 
             intelligence.AllowShiftingFate.TrySetResult();
 
             Assert.True(await execution.WaitAsync(TimeSpan.FromSeconds(10)));
 
-            Apprentice completed = repo.Get(apprenticeId);
-
-            Assert.Equal(2, completed.CurrentStep);
-
-            ApprenticeCheckpoint checkpoint = Assert.IsType<ApprenticeCheckpoint>(
-                ApprenticeRepository.DeserializeCheckpoint(completed.CheckpointData));
-
-            Assert.Equal(2, checkpoint.CurrentStep);
-
-            Assert.Equal("keep me", checkpoint.ConversationSummary);
-
-            Assert.Equal(["receipt-1"], checkpoint.CompletedToolCallIds);
-
-            List<PlanStep> completedPlan = ApprenticeRepository.DeserializePlan(completed.Plan);
-
-            Assert.Equal("completed", completedPlan[0].Status);
-
-            Assert.Equal("completed", completedPlan[1].Status);
-
-            Assert.Equal("Revised tail", completedPlan[2].Description);
+            AssertAdvanced(repo.Get(apprenticeId), expectedTail: "Revised tail");
         }
         finally
         {
@@ -1103,6 +1086,27 @@ public sealed class ApprenticeServiceReliabilityTests
             Assert.Equal("keep me", checkpoint.ConversationSummary);
 
             Assert.Equal(["receipt-1"], checkpoint.CompletedToolCallIds);
+        }
+        static void AssertAdvanced(Apprentice persisted, string expectedTail)
+        {
+            Assert.Equal(2, persisted.CurrentStep);
+
+            ApprenticeCheckpoint checkpoint = Assert.IsType<ApprenticeCheckpoint>(
+                ApprenticeRepository.DeserializeCheckpoint(persisted.CheckpointData));
+
+            Assert.Equal(2, checkpoint.CurrentStep);
+
+            Assert.Equal("keep me", checkpoint.ConversationSummary);
+
+            Assert.Equal(["receipt-1"], checkpoint.CompletedToolCallIds);
+
+            List<PlanStep> plan = ApprenticeRepository.DeserializePlan(persisted.Plan);
+
+            Assert.Equal("completed", plan[0].Status);
+
+            Assert.Equal("completed", plan[1].Status);
+
+            Assert.Equal(expectedTail, plan[2].Description);
         }
     }
 
@@ -2538,6 +2542,120 @@ public sealed class ApprenticeServiceReliabilityTests
         }
     }
 
+    /// <summary>
+    /// The Apprentice consequence of a revocation being a boundary signal, not a preemption (DESIGN 10.7, "Which
+    /// workers observe a maintenance revocation"): a step already in flight holds the effect group it won through its
+    /// provider call and cannot be interrupted, so maintenance waits for it up to the stage-one bound and then fails
+    /// the closure with <c>Grimoire.WorkDrainTimeout</c>; aborting that closure reopens admission and the step still
+    /// finishes normally. Until now only the gate half of that was pinned.
+    /// </summary>
+    [Fact]
+    public async Task MaintenanceDrainWithInFlightStep_FailsWithWorkDrainTimeoutAndReopens()
+    {
+        Guid apprenticeId = Guid.NewGuid();
+
+        Apprentice apprentice = new()
+        {
+            Id = apprenticeId,
+            Name = "In-flight step",
+            Goal = "Finish the step that maintenance could not interrupt.",
+            WorkspacePath = Path.GetTempPath(),
+            Status = ApprenticeStatus.Running.ToString(),
+            Plan = ApprenticeRepository.SerializePlan(
+            [
+                new PlanStep { Index = 0, Description = "Run through maintenance" },
+            ]),
+            CurrentStep = 0,
+            SessionId = Guid.NewGuid(),
+        };
+        InMemoryApprenticeRepository repo = new(apprentice);
+
+        BlockingSuccessfulStepIntelligence intelligence = new();
+
+        SingleServiceScopeFactory scopes = new(
+            repo,
+            intelligence,
+            new NotImplementedGrimoireRepository());
+
+        // A short stage-one bound on the real clock stands in for the five-second Grimoire.WorkDrainTimeout budget.
+        GrimoireConnectionAdmissionGate inner = new(
+            TimeProvider.System,
+            new RetroDownfall.Arcanum.Infrastructure.Data.Covenant.CovenantConnectionDrain(),
+            TimeSpan.FromSeconds(5),
+            TimeSpan.FromMilliseconds(200));
+
+        RecordingGrimoireWorkAdmissionGate gate = new(inner);
+
+        using ApprenticeService service = new(
+            scopes,
+            new TestOptionsMonitor<ArcanumSettings>(CreateCapacitySettings()),
+            new ChronicleHub(),
+            new CapturingLogger<ApprenticeService>(),
+            gate);
+
+        Assert.True(TryAcquireExecutionSlot(service, apprenticeId));
+
+        BeginExecutionTask(service, apprenticeId);
+
+        try
+        {
+            // The step is inside its provider call, holding the effect group it won.
+            await intelligence.StreamReached.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+            Assert.Equal(1, gate.EffectGroupAttempts);
+
+            await using IGrimoireClosingOwner closing = inner.BeginOrResumeExclusive(Owner()).Value;
+
+            Result drained = await inner
+                .DrainRequestAndWorkAsync(closing, CancellationToken.None)
+                .AsTask()
+                .WaitAsync(TimeSpan.FromSeconds(10));
+
+            Assert.True(drained.IsFailure);
+
+            Assert.Equal("Grimoire.WorkDrainTimeout", drained.Error.Code);
+
+            // The step was not preempted: it is still in flight, its task live, its durable row untouched.
+            Assert.True(GetActiveTasks(service).ContainsKey(apprenticeId));
+
+            Assert.Equal(ApprenticeStatus.Running.ToString(), repo.Get(apprenticeId).Status);
+
+            Assert.Equal(0, repo.Get(apprenticeId).CurrentStep);
+
+            Assert.False(inner.TryAcquireWorkLease(GrimoireWorkKind.ApprenticeExecution, out IGrimoireWorkLease? refused));
+
+            Assert.Null(refused);
+
+            Result aborted = await inner.AbortClosingAsync(
+                closing,
+                static _ => ValueTask.FromResult(true),
+                CancellationToken.None);
+
+            Assert.True(aborted.IsSuccess, aborted.IsFailure ? aborted.Error.Message : null);
+
+            // Admission is open again while the step is still running.
+            Assert.True(inner.TryAcquireWorkLease(GrimoireWorkKind.ApprenticeExecution, out IGrimoireWorkLease? admitted));
+
+            await admitted!.DisposeAsync();
+
+            intelligence.AllowStream.TrySetResult();
+
+            await WaitUntilAsync(() => !GetActiveTasks(service).ContainsKey(apprenticeId));
+
+            Assert.Equal(ApprenticeStatus.Completed.ToString(), repo.Get(apprenticeId).Status);
+
+            Assert.Equal(1, repo.Get(apprenticeId).CurrentStep);
+
+            Assert.Equal(0, GetConcurrencyGate(service).RunningCount);
+        }
+        finally
+        {
+            intelligence.AllowStream.TrySetResult();
+
+            await service.StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(10));
+        }
+    }
+
     [Fact]
     public async Task KeepClosedWaitIsObservedByStop()
     {
@@ -2911,23 +3029,25 @@ public sealed class ApprenticeServiceReliabilityTests
 
         repo.AllowChildSettlement.TrySetResult();
 
-        await intelligence.ShiftingFateReached.Task.WaitAsync(TimeSpan.FromSeconds(10));
-
-        Assert.Equal(["provider", "child-authority", "shifting-fate"], phases);
-
-        Assert.False(drain.IsCompleted);
-
-        intelligence.AllowShiftingFate.TrySetResult();
-
+        // The group's completion is past the point of no return, so it commits before the cancellable
+        // Shifting Fate evaluation rather than after it.
         await repo.FinalCheckpointReached.Task.WaitAsync(TimeSpan.FromSeconds(10));
 
-        Assert.Equal(
-            ["provider", "child-authority", "shifting-fate", "final-checkpoint"],
-            phases);
+        Assert.Equal(["provider", "child-authority", "final-checkpoint"], phases);
 
         Assert.False(drain.IsCompleted);
 
         repo.AllowFinalCheckpoint.TrySetResult();
+
+        await intelligence.ShiftingFateReached.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.Equal(
+            ["provider", "child-authority", "final-checkpoint", "shifting-fate"],
+            phases);
+
+        Assert.False(drain.IsCompleted);
+
+        intelligence.AllowShiftingFate.TrySetResult();
 
         await barriers.EffectGroupDisposalReached.Task.WaitAsync(TimeSpan.FromSeconds(10));
 
@@ -2935,8 +3055,8 @@ public sealed class ApprenticeServiceReliabilityTests
             [
                 "provider",
                 "child-authority",
-                "shifting-fate",
                 "final-checkpoint",
+                "shifting-fate",
                 "effect-group-disposal",
             ],
             phases);
@@ -2951,8 +3071,8 @@ public sealed class ApprenticeServiceReliabilityTests
             [
                 "provider",
                 "child-authority",
-                "shifting-fate",
                 "final-checkpoint",
+                "shifting-fate",
                 "effect-group-disposal",
                 "scope-disposal",
             ],
@@ -2968,8 +3088,8 @@ public sealed class ApprenticeServiceReliabilityTests
             [
                 "provider",
                 "child-authority",
-                "shifting-fate",
                 "final-checkpoint",
+                "shifting-fate",
                 "effect-group-disposal",
                 "scope-disposal",
                 "work-lease-disposal",
@@ -4630,35 +4750,160 @@ public sealed class ApprenticeServiceReliabilityTests
         }
     }
 
+    /// <summary>
+    /// Behaves like the Grimoire row it stands in for: every read is a private copy and every write
+    /// replaces the stored row, so a stale snapshot written back is visible as exactly that.
+    /// </summary>
     private class InMemoryApprenticeRepository : IApprenticeRepository
     {
         private readonly Dictionary<Guid, Apprentice> _store = new();
+
+        private readonly Lock _sync = new();
 
         public InMemoryApprenticeRepository(params Apprentice[] apprentices)
         {
             foreach (Apprentice apprentice in apprentices)
             {
-                _store[apprentice.Id] = apprentice;
+                _store[apprentice.Id] = CloneApprentice(apprentice);
             }
         }
 
         public Apprentice Get(Guid id)
         {
-            return _store[id];
+            lock (_sync)
+            {
+                return CloneApprentice(_store[id]);
+            }
+        }
+
+        /// <summary>
+        /// Changes the stored row in place, the way a write from another writer — an operator request, or the
+        /// run itself — lands between two of the code under test's own reads and writes.
+        /// </summary>
+        public void Mutate(Guid id, Action<Apprentice> change)
+        {
+            lock (_sync)
+            {
+                change(_store[id]);
+            }
         }
 
         public virtual Task<Apprentice?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default)
         {
-            Apprentice? value = _store.TryGetValue(id, out Apprentice? found) ? found : null;
+            lock (_sync)
+            {
+                Apprentice? value = _store.TryGetValue(id, out Apprentice? found) ? CloneApprentice(found) : null;
 
-            return Task.FromResult(value);
+                return Task.FromResult(value);
+            }
         }
 
         public virtual Task<Apprentice> UpdateAsync(Apprentice apprentice, CancellationToken cancellationToken = default)
         {
-            _store[apprentice.Id] = apprentice;
+            lock (_sync)
+            {
+                _store[apprentice.Id] = CloneApprentice(apprentice);
+            }
 
             return Task.FromResult(apprentice);
+        }
+
+        public virtual async Task<bool> UpdateProgressAsync(
+            Apprentice apprentice,
+            string expectedPlan,
+            int expectedCurrentStep,
+            CancellationToken cancellationToken = default)
+        {
+            Apprentice merged;
+
+            lock (_sync)
+            {
+                if (!_store.TryGetValue(apprentice.Id, out Apprentice? stored)
+                    || !string.Equals(stored.Plan, expectedPlan, StringComparison.Ordinal)
+                    || stored.CurrentStep != expectedCurrentStep)
+                {
+                    return false;
+                }
+                merged = CloneApprentice(stored);
+            }
+            merged.Plan = apprentice.Plan;
+
+            merged.CurrentStep = apprentice.CurrentStep;
+
+            merged.CheckpointData = apprentice.CheckpointData;
+
+            // Routed through UpdateAsync so a repository that observes writes sees this one too.
+            _ = await UpdateAsync(merged, cancellationToken);
+
+            return true;
+        }
+
+        public virtual async Task<bool> BindSessionAsync(
+            Guid id,
+            Guid sessionId,
+            CancellationToken cancellationToken = default)
+        {
+            Apprentice bound;
+
+            lock (_sync)
+            {
+                if (!_store.TryGetValue(id, out Apprentice? stored) || stored.SessionId is not null)
+                {
+                    return false;
+                }
+                bound = CloneApprentice(stored);
+            }
+            bound.SessionId = sessionId;
+
+            // Routed through UpdateAsync so a repository that observes writes sees this one too.
+            _ = await UpdateAsync(bound, cancellationToken);
+
+            return true;
+        }
+
+        public virtual async Task<bool> TryUpdateAsync(
+            Apprentice apprentice,
+            IReadOnlyCollection<string> expectedStatuses,
+            int expectedCurrentStep,
+            CancellationToken cancellationToken = default)
+        {
+            lock (_sync)
+            {
+                if (!_store.TryGetValue(apprentice.Id, out Apprentice? stored)
+                    || stored.CurrentStep != expectedCurrentStep
+                    || !expectedStatuses.Contains(stored.Status, StringComparer.Ordinal))
+                {
+                    return false;
+                }
+            }
+            _ = await UpdateAsync(apprentice, cancellationToken);
+
+            return true;
+        }
+
+        public virtual async Task<bool> TryUpdateStatusAsync(
+            Guid id,
+            string status,
+            IReadOnlyCollection<string> expectedStatuses,
+            CancellationToken cancellationToken = default)
+        {
+            Apprentice updated;
+
+            lock (_sync)
+            {
+                if (!_store.TryGetValue(id, out Apprentice? stored)
+                    || !expectedStatuses.Contains(stored.Status, StringComparer.Ordinal))
+                {
+                    return false;
+                }
+                updated = CloneApprentice(stored);
+            }
+            updated.Status = status;
+
+            // Routed through UpdateAsync so a repository that observes writes sees this one too.
+            _ = await UpdateAsync(updated, cancellationToken);
+
+            return true;
         }
 
         public Task<IReadOnlyList<Apprentice>> GetResumableAsync(CancellationToken cancellationToken = default)
@@ -4669,39 +4914,37 @@ public sealed class ApprenticeServiceReliabilityTests
 
             string idle = ApprenticeStatus.Idle.ToString();
 
-            IReadOnlyList<Apprentice> values = _store.Values
-                .Where(a =>
-                    string.Equals(a.Status, running, StringComparison.Ordinal)
-                    || string.Equals(a.Status, planning, StringComparison.Ordinal)
-                    && ApprenticeRepository.DeserializePlan(a.Plan).Count == 0
-                    || string.Equals(a.Status, idle, StringComparison.Ordinal)
-                    && ApprenticeRepository.DeserializeCheckpoint(a.CheckpointData)?.LaunchRequested is true)
-                .ToList();
+            lock (_sync)
+            {
+                IReadOnlyList<Apprentice> values = _store.Values
+                    .Where(a =>
+                        string.Equals(a.Status, running, StringComparison.Ordinal)
+                        || string.Equals(a.Status, planning, StringComparison.Ordinal)
+                        || string.Equals(a.Status, idle, StringComparison.Ordinal)
+                        && ApprenticeRepository.DeserializeCheckpoint(a.CheckpointData)?.LaunchRequested is true)
+                    .Select(CloneApprentice)
+                    .ToList();
 
-            return Task.FromResult(values);
-        }
-
-        public Task<IReadOnlyList<Apprentice>> GetInterruptedPlanningAsync(CancellationToken cancellationToken = default)
-        {
-            string planning = ApprenticeStatus.Planning.ToString();
-
-            IReadOnlyList<Apprentice> values = _store.Values
-                .Where(a => string.Equals(a.Status, planning, StringComparison.Ordinal))
-                .ToList();
-
-            return Task.FromResult(values);
+                return Task.FromResult(values);
+            }
         }
 
         public Task<Apprentice> AddAsync(Apprentice apprentice, CancellationToken cancellationToken = default)
         {
-            _store[apprentice.Id] = apprentice;
+            lock (_sync)
+            {
+                _store[apprentice.Id] = CloneApprentice(apprentice);
+            }
 
             return Task.FromResult(apprentice);
         }
 
         public Task<bool> DeleteAsync(Guid id, CancellationToken cancellationToken = default)
         {
-            return Task.FromResult(_store.Remove(id));
+            lock (_sync)
+            {
+                return Task.FromResult(_store.Remove(id));
+            }
         }
 
         public Task<ListPageResult<Apprentice>> ListAsync(
@@ -5890,6 +6133,9 @@ public sealed class ApprenticeServiceReliabilityTests
 
         internal int BeginCalls => Volatile.Read(ref _beginCalls);
 
+        /// <summary>Runs once the Session is durably created, before the caller sees its id.</summary>
+        internal Action? AfterCreate { get; set; }
+
         public ValueTask<Result<Guid>> CreateBoundSessionAsync(
             CanonicalCampaignContext campaign,
             string title,
@@ -5898,6 +6144,8 @@ public sealed class ApprenticeServiceReliabilityTests
             cancellationToken.ThrowIfCancellationRequested();
 
             Creations.Enqueue(new SessionCreationCall(campaign, title));
+
+            AfterCreate?.Invoke();
 
             return ValueTask.FromResult(_createResult);
         }

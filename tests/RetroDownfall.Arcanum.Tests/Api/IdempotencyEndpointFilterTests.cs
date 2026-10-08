@@ -30,20 +30,16 @@ namespace RetroDownfall.Arcanum.Tests.Api;
 [Collection("ApiHost")]
 public sealed class IdempotencyEndpointFilterTests
 {
-
     private readonly ArcanumWebApplicationFactory _factory;
 
     public IdempotencyEndpointFilterTests(ArcanumWebApplicationFactory factory)
     {
-
         _factory = factory;
-
     }
 
     [SkippableFact]
     public async Task PostPing_WithIdempotencyKey_SecondRequestReplaysWithoutReExecuting()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         _factory.FakeIntelligence.NextFailure = null;
@@ -97,13 +93,11 @@ public sealed class IdempotencyEndpointFilterTests
 
         // The provider must not have been invoked a second time — this is a replay, not a re-execution.
         Assert.Equal(before + 1, _factory.FakeIntelligence.ExecutePromptCallCount);
-
     }
 
     [SkippableFact]
     public async Task PostPing_WithoutIdempotencyKey_AlwaysExecutes()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         _factory.FakeIntelligence.NextFailure = null;
@@ -120,23 +114,19 @@ public sealed class IdempotencyEndpointFilterTests
 
         for (int i = 0; i < 2; i++)
         {
-
             HttpResponseMessage response = await client.PostAsync(
                 "/api/intelligence/ping",
                 new StringContent(payload, Encoding.UTF8, "application/json"));
 
             Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-
         }
 
         Assert.Equal(before + 2, _factory.FakeIntelligence.ExecutePromptCallCount);
-
     }
 
     [SkippableFact]
     public async Task PostPing_DifferentBodySameKey_Returns409Conflict()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         _factory.FakeIntelligence.NextFailure = null;
@@ -149,7 +139,6 @@ public sealed class IdempotencyEndpointFilterTests
 
         async Task<HttpResponseMessage> SendAsync(string prompt)
         {
-
             string payload = JsonSerializer.Serialize(new PingRequest(Prompt: prompt), ArcanumJsonContext.Default.PingRequest);
 
             HttpRequestMessage req = new(HttpMethod.Post, "/api/intelligence/ping")
@@ -160,7 +149,6 @@ public sealed class IdempotencyEndpointFilterTests
             req.Headers.Add(ArcanumApiHeaders.IdempotencyKey, key);
 
             return await client.SendAsync(req);
-
         }
 
         _factory.FakeIntelligence.NextText = "response-a";
@@ -177,13 +165,11 @@ public sealed class IdempotencyEndpointFilterTests
 
         // Same Idempotency-Key with a different fingerprint must not execute again.
         Assert.Equal(before + 1, _factory.FakeIntelligence.ExecutePromptCallCount);
-
     }
 
     [SkippableFact]
     public async Task PostPing_SameKeyAndBodyButDifferentQueryString_Returns409Conflict()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         // Query parameters steer execution (?workspace= / ?version= on the spell and prompt execute
@@ -203,7 +189,6 @@ public sealed class IdempotencyEndpointFilterTests
 
         async Task<HttpResponseMessage> SendAsync(string query)
         {
-
             HttpRequestMessage req = new(HttpMethod.Post, "/api/intelligence/ping" + query)
             {
                 Content = new StringContent(payload, Encoding.UTF8, "application/json"),
@@ -212,7 +197,6 @@ public sealed class IdempotencyEndpointFilterTests
             req.Headers.Add(ArcanumApiHeaders.IdempotencyKey, key);
 
             return await client.SendAsync(req);
-
         }
 
         _factory.FakeIntelligence.NextText = "workspace-a-response";
@@ -233,13 +217,73 @@ public sealed class IdempotencyEndpointFilterTests
             StringComparison.Ordinal);
 
         Assert.Equal(before + 1, _factory.FakeIntelligence.ExecutePromptCallCount);
+    }
 
+    /// <summary>
+    /// A retry that adds or drops <c>X-Arcanum-Context-Policy: none</c> is a different request.
+    /// </summary>
+    /// <remarks>
+    /// The header decides whether durable memory is injected into the turn, so a fingerprint blind to it
+    /// replays the first answer, which may carry memory the retry asked to exclude, or not carry memory
+    /// the retry asked for.
+    /// </remarks>
+    [SkippableFact]
+    public async Task SameKeyDifferentContextPolicy_IsAnIdempotencyConflict()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        _factory.FakeIntelligence.NextFailure = null;
+
+        int before = _factory.FakeIntelligence.ExecutePromptCallCount;
+
+        string key = $"test-key-{Guid.NewGuid():N}";
+
+        HttpClient client = _factory.CreateAuthenticatedClient();
+
+        string payload = JsonSerializer.Serialize(
+            new PingRequest(Prompt: "identical body"),
+            ArcanumJsonContext.Default.PingRequest);
+
+        async Task<HttpResponseMessage> SendAsync(bool withoutContext)
+        {
+            HttpRequestMessage req = new(HttpMethod.Post, "/api/intelligence/ping")
+            {
+                Content = new StringContent(payload, Encoding.UTF8, "application/json"),
+            };
+
+            req.Headers.Add(ArcanumApiHeaders.IdempotencyKey, key);
+
+            if (withoutContext)
+            {
+                req.Headers.Add(ArcanumApiHeaders.ContextPolicy, "none");
+            }
+
+            return await client.SendAsync(req);
+        }
+
+        _factory.FakeIntelligence.NextText = "with-context-response";
+
+        HttpResponseMessage first = await SendAsync(withoutContext: false);
+
+        Assert.Equal(HttpStatusCode.OK, first.StatusCode);
+
+        _factory.FakeIntelligence.NextText = "without-context-response";
+
+        HttpResponseMessage second = await SendAsync(withoutContext: true);
+
+        Assert.Equal(HttpStatusCode.Conflict, second.StatusCode);
+
+        Assert.Contains(
+            ErrorCodes.Security.IdempotencyConflict,
+            await second.Content.ReadAsStringAsync(),
+            StringComparison.Ordinal);
+
+        Assert.Equal(before + 1, _factory.FakeIntelligence.ExecutePromptCallCount);
     }
 
     [SkippableFact]
     public async Task PostPing_SameKeyAndSameQueryInAnyOrder_StillReplays()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         _factory.FakeIntelligence.NextFailure = null;
@@ -258,7 +302,6 @@ public sealed class IdempotencyEndpointFilterTests
 
         async Task<HttpResponseMessage> SendAsync(string query)
         {
-
             HttpRequestMessage req = new(HttpMethod.Post, "/api/intelligence/ping" + query)
             {
                 Content = new StringContent(payload, Encoding.UTF8, "application/json"),
@@ -267,7 +310,6 @@ public sealed class IdempotencyEndpointFilterTests
             req.Headers.Add(ArcanumApiHeaders.IdempotencyKey, key);
 
             return await client.SendAsync(req);
-
         }
 
         HttpResponseMessage first = await SendAsync("?a=1&b=2");
@@ -280,13 +322,11 @@ public sealed class IdempotencyEndpointFilterTests
         Assert.Equal(HttpStatusCode.OK, second.StatusCode);
 
         Assert.Equal(before + 1, _factory.FakeIntelligence.ExecutePromptCallCount);
-
     }
 
     [SkippableFact]
     public async Task PostPing_WithDuplicateIdempotencyKeyHeaders_Returns400AndDoesNotExecute()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         // An ambiguous header used to fall through to the handler with no claim at all — the caller
@@ -322,13 +362,11 @@ public sealed class IdempotencyEndpointFilterTests
             StringComparison.Ordinal);
 
         Assert.Equal(before, _factory.FakeIntelligence.ExecutePromptCallCount);
-
     }
 
     [Fact]
     public void ResolvePrincipal_IsIndependentOfTheClientSuppliedHostHeader()
     {
-
         // A caller that varies Host could otherwise partition its own claims and defeat replay protection.
         DefaultHttpContext localhost = new();
 
@@ -341,13 +379,11 @@ public sealed class IdempotencyEndpointFilterTests
         Assert.Equal(
             IdempotencyIdentity.ResolvePrincipal(localhost),
             IdempotencyIdentity.ResolvePrincipal(loopbackIp));
-
     }
 
     [SkippableFact]
     public async Task PostSpellExecute_WithIdempotencyKey_SecondRequestReplaysWithoutReExecuting()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         string workspaceRoot = _factory.TempHome;
@@ -433,13 +469,11 @@ public sealed class IdempotencyEndpointFilterTests
         Assert.DoesNotContain("spell-second-should-never-be-seen", secondBody);
 
         Assert.Equal(before + 1, _factory.FakeIntelligence.ExecutePromptCallCount);
-
     }
 
     [SkippableFact]
     public async Task PostPromptExecute_WithIdempotencyKey_SecondRequestReplaysWithoutReExecuting()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         _factory.FakeIntelligence.NextFailure = null;
@@ -508,13 +542,11 @@ public sealed class IdempotencyEndpointFilterTests
         Assert.DoesNotContain("prompt-second-should-never-be-seen", secondBody);
 
         Assert.Equal(before + 1, _factory.FakeIntelligence.ExecutePromptCallCount);
-
     }
 
     [SkippableFact]
     public async Task PostPingStream_WithIdempotencyKey_SecondRequestReplaysWithoutReExecuting()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         _factory.FakeIntelligence.NextFailure = null;
@@ -566,13 +598,11 @@ public sealed class IdempotencyEndpointFilterTests
         Assert.DoesNotContain("streamed-second-should-never-be-seen", secondBody);
 
         Assert.Equal(before + 1, _factory.FakeIntelligence.StreamPromptCallCount);
-
     }
 
     [SkippableFact]
     public async Task PostPing_IdempotencyKeyOver256Chars_Returns400()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         _factory.FakeIntelligence.NextFailure = null;
@@ -598,12 +628,10 @@ public sealed class IdempotencyEndpointFilterTests
 
         // The oversized key must be rejected before the handler ever runs.
         Assert.Equal(before, _factory.FakeIntelligence.ExecutePromptCallCount);
-
     }
 
     private async Task<Guid> CreatePromptInFactoryGrimoireAsync()
     {
-
         using IServiceScope scope = _factory.Services.CreateScope();
 
         IServiceProvider sp = scope.ServiceProvider;
@@ -612,7 +640,6 @@ public sealed class IdempotencyEndpointFilterTests
 
         Prompt prompt = new()
         {
-
             Id = Guid.NewGuid(),
             Name = "idempotent-test-prompt",
             Version = "1.0.0",
@@ -622,7 +649,6 @@ public sealed class IdempotencyEndpointFilterTests
             Model = "mistral:latest",
             CreatedAt = DateTimeOffset.UtcNow,
             UpdatedAt = DateTimeOffset.UtcNow,
-
         };
 
         db.Prompts.Add(prompt);
@@ -630,13 +656,11 @@ public sealed class IdempotencyEndpointFilterTests
         await db.SaveChangesAsync();
 
         return prompt.Id;
-
     }
 
     [SkippableFact]
     public async Task PostPing_WithIdempotencyKey_AttachmentBearingTurn_SecondRequestReplaysWithoutReExecuting()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         _factory.FakeIntelligence.NextFailure = null;
@@ -696,13 +720,11 @@ public sealed class IdempotencyEndpointFilterTests
         Assert.DoesNotContain("attachment-second-should-never-be-seen", secondBody);
 
         Assert.Equal(before + 1, _factory.FakeIntelligence.ExecutePromptCallCount);
-
     }
 
     [SkippableFact]
     public async Task PostPing_ConcurrentIdenticalIdempotencyKey_SharesSingleExecution()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         _factory.FakeIntelligence.NextFailure = null;
@@ -729,7 +751,6 @@ public sealed class IdempotencyEndpointFilterTests
 
         async Task<HttpResponseMessage> SendAsync(HttpClient client)
         {
-
             HttpRequestMessage req = new(HttpMethod.Post, "/api/intelligence/ping")
             {
                 Content = new StringContent(payload, Encoding.UTF8, "application/json"),
@@ -738,7 +759,6 @@ public sealed class IdempotencyEndpointFilterTests
             req.Headers.Add(ArcanumApiHeaders.IdempotencyKey, key);
 
             return await client.SendAsync(req);
-
         }
 
         Task<HttpResponseMessage> firstTask = SendAsync(client1);
@@ -767,13 +787,11 @@ public sealed class IdempotencyEndpointFilterTests
 
         _factory.FakeIntelligence.ExecuteGate = null;
         _factory.FakeIntelligence.ExecuteEntered = null;
-
     }
 
     [SkippableFact]
     public async Task PostPing_IdempotencyKeyFingerprintMismatch_Returns409()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         _factory.FakeIntelligence.NextFailure = null;
@@ -817,13 +835,11 @@ public sealed class IdempotencyEndpointFilterTests
         string body = await secondResponse.Content.ReadAsStringAsync();
 
         Assert.Contains("IdempotencyConflict", body, StringComparison.Ordinal);
-
     }
 
     [SkippableFact]
     public async Task PostPing_OversizedResponse_IsNotCached()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         await using ArcanumWebApplicationFactory oversizedFactory = new();
@@ -847,7 +863,6 @@ public sealed class IdempotencyEndpointFilterTests
 
         async Task<HttpResponseMessage> SendAsync()
         {
-
             HttpRequestMessage req = new(HttpMethod.Post, "/api/intelligence/ping")
             {
                 Content = new StringContent(payload, Encoding.UTF8, "application/json"),
@@ -856,7 +871,6 @@ public sealed class IdempotencyEndpointFilterTests
             req.Headers.Add(ArcanumApiHeaders.IdempotencyKey, key);
 
             return await client.SendAsync(req);
-
         }
 
         HttpResponseMessage firstResponse = await SendAsync();
@@ -873,13 +887,11 @@ public sealed class IdempotencyEndpointFilterTests
 
         // The response exceeded the cap, so it was never cached — the second call re-executed.
         Assert.Equal(before + 2, oversizedFactory.FakeIntelligence.ExecutePromptCallCount);
-
     }
 
     [SkippableFact]
     public async Task PostPing_ProviderUnreachableFirstCall_SecondRequestReExecutesFreshInsteadOfReplaying503()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         _factory.FakeIntelligence.NextFailure = new Error(ErrorCodes.Connection.Unreachable, "provider unreachable");
@@ -930,7 +942,6 @@ public sealed class IdempotencyEndpointFilterTests
 
         // The retry must have re-executed the handler fresh, not replayed the cached 503.
         Assert.Equal(before + 2, _factory.FakeIntelligence.ExecutePromptCallCount);
-
     }
 
     // A provider that yields
@@ -943,7 +954,6 @@ public sealed class IdempotencyEndpointFilterTests
     [SkippableFact]
     public async Task PostPingStream_ProviderYieldsErrorEventFirstCall_SecondRequestReExecutesFreshInsteadOfReplayingTheErrorFrame()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         _factory.FakeIntelligence.NextFailure = new Error(ErrorCodes.Connection.Unreachable, "provider unreachable");
@@ -1000,7 +1010,6 @@ public sealed class IdempotencyEndpointFilterTests
 
         // The retry must have re-executed the handler fresh, not replayed the cached error frame.
         Assert.Equal(before + 2, _factory.FakeIntelligence.StreamPromptCallCount);
-
     }
 
     // The sibling gap: a provider whose enumerator THROWS (rather than yielding an Error event)
@@ -1013,7 +1022,6 @@ public sealed class IdempotencyEndpointFilterTests
     [SkippableFact]
     public async Task PostPingStream_ProviderThrowsFirstCall_SecondRequestReExecutesFreshInsteadOfReplayingTheErrorFrame()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         _factory.FakeIntelligence.NextFailure = null;
@@ -1067,13 +1075,11 @@ public sealed class IdempotencyEndpointFilterTests
         Assert.Contains("recovered-after-thrown-exception", secondBody, StringComparison.Ordinal);
 
         Assert.Equal(before + 2, _factory.FakeIntelligence.StreamPromptCallCount);
-
     }
 
     [SkippableFact]
     public async Task PostChatCompletions_LargeKeyedBody_DoesNotMaterializeWholeBodyInManagedMemory()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         await using ArcanumWebApplicationFactory largeBodyFactory = new();
@@ -1092,7 +1098,6 @@ public sealed class IdempotencyEndpointFilterTests
 
         HttpRequestMessage BuildRequest()
         {
-
             HttpRequestMessage req = new(HttpMethod.Post, "/v1/chat/completions")
             {
                 Content = new StringContent(payload, Encoding.UTF8, "application/json"),
@@ -1101,7 +1106,6 @@ public sealed class IdempotencyEndpointFilterTests
             req.Headers.Add(ArcanumApiHeaders.IdempotencyKey, $"large-body-{Guid.NewGuid():N}");
 
             return req;
-
         }
 
         // Warm up the request pipeline (JIT, first-request DI graph construction) on the same shape
@@ -1141,7 +1145,6 @@ public sealed class IdempotencyEndpointFilterTests
         Assert.True(
             allocated < 5L * contentSize,
             $"Expected allocated bytes well under the old code's ~10x multiple of the 8 MiB body; observed {allocated:N0} bytes for a {contentSize:N0}-byte body.");
-
     }
 
     // ComputeBodyDigestAsync reads the body through an 80 KiB (81920-byte)
@@ -1158,7 +1161,6 @@ public sealed class IdempotencyEndpointFilterTests
     [SkippableFact]
     public async Task PostChatCompletions_TwoLargeBodiesSharingAnEightyKibPrefix_SecondRequestConflictsInsteadOfReplaying()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         _factory.FakeIntelligence.NextFailure = null;
@@ -1177,7 +1179,6 @@ public sealed class IdempotencyEndpointFilterTests
 
         async Task<HttpResponseMessage> SendAsync(string distinctTail)
         {
-
             string payload = boilerplate + sharedPadding + distinctTail + "\"}]}";
 
             HttpRequestMessage request = new(HttpMethod.Post, "/v1/chat/completions")
@@ -1188,7 +1189,6 @@ public sealed class IdempotencyEndpointFilterTests
             request.Headers.Add(ArcanumApiHeaders.IdempotencyKey, key);
 
             return await client.SendAsync(request);
-
         }
 
         HttpResponseMessage firstResponse = await SendAsync("-body-one-tail");
@@ -1198,18 +1198,14 @@ public sealed class IdempotencyEndpointFilterTests
         HttpResponseMessage secondResponse = await SendAsync("-body-two-tail-differs-here");
 
         Assert.Equal(HttpStatusCode.Conflict, secondResponse.StatusCode);
-
     }
-
 }
 
 public sealed class IdempotencyEndpointFilterOwnershipTests
 {
-
     [Fact]
     public void OwnerIds_UseStableProcessComponentAndUniqueRequestComponent()
     {
-
         string first = IdempotencyEndpointFilters.CreateOwnerId();
 
         string second = IdempotencyEndpointFilters.CreateOwnerId();
@@ -1226,7 +1222,6 @@ public sealed class IdempotencyEndpointFilterOwnershipTests
         Assert.Equal(
             first[..first.IndexOf(':')],
             second[..second.IndexOf(':')]);
-
     }
 
     [Theory]
@@ -1244,15 +1239,12 @@ public sealed class IdempotencyEndpointFilterOwnershipTests
         string? contentType,
         bool expected)
     {
-
         Assert.Equal(expected, IdempotencyEndpointFilters.IsReplayableContentType(contentType));
-
     }
 
     [Fact]
     public async Task ConcurrentRequest_WhenFirstAcquireHasNotRegisteredLocally_NeverExecutesAsNonOwner()
     {
-
         FakeClaimStore store = new()
         {
             BlockFirstAcquire = true,
@@ -1270,7 +1262,6 @@ public sealed class IdempotencyEndpointFilterOwnershipTests
 
         EndpointFilterDelegate next = async invocationContext =>
         {
-
             _ = Interlocked.Increment(ref handlerCalls);
 
             invocationContext.HttpContext.Response.ContentType = "application/json";
@@ -1280,7 +1271,6 @@ public sealed class IdempotencyEndpointFilterOwnershipTests
                 invocationContext.HttpContext.RequestAborted);
 
             return null;
-
         };
 
         Func<EndpointFilterInvocationContext, EndpointFilterDelegate, ValueTask<object?>> filter =
@@ -1299,13 +1289,11 @@ public sealed class IdempotencyEndpointFilterOwnershipTests
         await Task.WhenAll(first, second).WaitAsync(TimeSpan.FromSeconds(5));
 
         Assert.Equal(1, handlerCalls);
-
     }
 
     [Fact]
     public async Task LiveCrossProcessLease_ReturnsNativeInProgressWithoutInvokingHandler()
     {
-
         string key = $"cross-process-native-{Guid.NewGuid():N}";
 
         FakeClaimStore store = new()
@@ -1326,11 +1314,9 @@ public sealed class IdempotencyEndpointFilterOwnershipTests
 
         EndpointFilterDelegate next = _ =>
         {
-
             Interlocked.Increment(ref handlerCalls);
 
             return ValueTask.FromResult<object?>(null);
-
         };
 
         await InvokeAndCompleteAsync(CreateFilter(), context, response, next);
@@ -1344,13 +1330,11 @@ public sealed class IdempotencyEndpointFilterOwnershipTests
             ArcanumJsonContext.Default.ApiResponseString);
 
         Assert.Equal(ErrorCodes.Security.IdempotencyInProgress, body?.Error?.Code);
-
     }
 
     [Fact]
     public async Task StaleReclaimLostToLiveCrossProcessWinner_Returns409WithoutInvokingHandler()
     {
-
         string key = $"stale-reclaim-loser-{Guid.NewGuid():N}";
         IdempotencyClaim stale = CreateClaim(
             key,
@@ -1385,11 +1369,9 @@ public sealed class IdempotencyEndpointFilterOwnershipTests
             response,
             _ =>
             {
-
                 Interlocked.Increment(ref handlerCalls);
 
                 return ValueTask.FromResult<object?>(null);
-
             });
 
         Assert.Equal(StatusCodes.Status409Conflict, context.HttpContext.Response.StatusCode);
@@ -1401,13 +1383,11 @@ public sealed class IdempotencyEndpointFilterOwnershipTests
             ArcanumJsonContext.Default.ApiResponseString);
 
         Assert.Equal(ErrorCodes.Security.IdempotencyInProgress, body?.Error?.Code);
-
     }
 
     [Fact]
     public async Task LiveCrossProcessLease_OnV1_ReturnsStableOpenAiInProgressCode()
     {
-
         string key = $"cross-process-openai-{Guid.NewGuid():N}";
 
         const string path = "/v1/chat/completions";
@@ -1431,11 +1411,9 @@ public sealed class IdempotencyEndpointFilterOwnershipTests
 
         EndpointFilterDelegate next = _ =>
         {
-
             Interlocked.Increment(ref handlerCalls);
 
             return ValueTask.FromResult<object?>(null);
-
         };
 
         await InvokeAndCompleteAsync(CreateFilter(), context, response, next);
@@ -1449,13 +1427,11 @@ public sealed class IdempotencyEndpointFilterOwnershipTests
             ArcanumJsonContext.Default.OpenAiErrorResponse);
 
         Assert.Equal("idempotency_in_progress", body?.Error.Code);
-
     }
 
     [Fact]
     public async Task LiveSameProcessLease_WithoutCoordinator_IsRetiredAndReacquired()
     {
-
         string key = $"same-process-orphan-{Guid.NewGuid():N}";
 
         FakeClaimStore store = new()
@@ -1480,13 +1456,11 @@ public sealed class IdempotencyEndpointFilterOwnershipTests
             response,
             async invocationContext =>
             {
-
                 _ = Interlocked.Increment(ref handlerCalls);
 
                 await invocationContext.HttpContext.Response.WriteAsync("""{"recovered":true}""");
 
                 return null;
-
             });
 
         Assert.Equal(1, handlerCalls);
@@ -1494,13 +1468,11 @@ public sealed class IdempotencyEndpointFilterOwnershipTests
         Assert.Equal(1, store.MarkFailedCallCount);
 
         Assert.Equal(IdempotencyClaimState.Completed, store.Claim?.State);
-
     }
 
     [Fact]
     public async Task LiveSameProcessLease_WhenRetirementDoesNotTransition_FailsSafeWithoutExecution()
     {
-
         string key = $"same-process-fail-safe-{Guid.NewGuid():N}";
 
         FakeClaimStore store = new()
@@ -1524,23 +1496,19 @@ public sealed class IdempotencyEndpointFilterOwnershipTests
                 context,
                 _ =>
                 {
-
                     Interlocked.Increment(ref handlerCalls);
 
                     return ValueTask.FromResult<object?>(null);
-
                 }));
 
         Assert.Contains("ownership", exception.Message, StringComparison.OrdinalIgnoreCase);
 
         Assert.Equal(0, handlerCalls);
-
     }
 
     [Fact]
     public async Task AcquireResult_WithDifferentOwner_FailsSafeWithoutExecution()
     {
-
         string key = $"wrong-acquired-owner-{Guid.NewGuid():N}";
 
         FakeClaimStore store = new()
@@ -1559,23 +1527,19 @@ public sealed class IdempotencyEndpointFilterOwnershipTests
                 context,
                 _ =>
                 {
-
                     Interlocked.Increment(ref handlerCalls);
 
                     return ValueTask.FromResult<object?>(null);
-
                 }));
 
         Assert.Contains("owner", exception.Message, StringComparison.OrdinalIgnoreCase);
 
         Assert.Equal(0, handlerCalls);
-
     }
 
     [Fact]
     public async Task AcquireResult_InClaimedState_FailsSafeWithoutExecution()
     {
-
         string key = $"claimed-acquire-{Guid.NewGuid():N}";
 
         FakeClaimStore store = new()
@@ -1594,15 +1558,12 @@ public sealed class IdempotencyEndpointFilterOwnershipTests
                 context,
                 _ =>
                 {
-
                     Interlocked.Increment(ref handlerCalls);
                     return ValueTask.FromResult<object?>(null);
-
                 }));
 
         Assert.Contains("ownership", exception.Message, StringComparison.OrdinalIgnoreCase);
         Assert.Equal(0, handlerCalls);
-
     }
 
     [Theory]
@@ -1610,7 +1571,6 @@ public sealed class IdempotencyEndpointFilterOwnershipTests
     [InlineData("/v1/no-content")]
     public async Task ExplicitNoContentResponse_IsReplayedWithEmptyBody(string path)
     {
-
         string key = $"empty-terminal-{Guid.NewGuid():N}";
         FakeClaimStore store = new();
 
@@ -1619,11 +1579,9 @@ public sealed class IdempotencyEndpointFilterOwnershipTests
         int handlerCalls = 0;
         EndpointFilterDelegate next = invocationContext =>
         {
-
             Interlocked.Increment(ref handlerCalls);
             invocationContext.HttpContext.Response.StatusCode = StatusCodes.Status204NoContent;
             return ValueTask.FromResult<object?>(null);
-
         };
 
         (TestEndpointFilterInvocationContext firstContext, CompletionTrackingResponseFeature firstResponse) =
@@ -1641,13 +1599,11 @@ public sealed class IdempotencyEndpointFilterOwnershipTests
         Assert.Equal(string.Empty, ReadResponseBody(secondContext.HttpContext));
         Assert.Equal(IdempotencyClaimState.Completed, store.Claim?.State);
         Assert.Equal(string.Empty, store.Claim?.ResponseBody);
-
     }
 
     [Fact]
     public async Task RequestAbort_DoesNotStopOwnedHeartbeatBeforeExecutionCompletes()
     {
-
         string key = $"heartbeat-disconnect-{Guid.NewGuid():N}";
         ManualTimeProvider time = new();
         FakeClaimStore store = new();
@@ -1670,14 +1626,12 @@ public sealed class IdempotencyEndpointFilterOwnershipTests
                 context,
                 async invocationContext =>
                 {
-
                     handlerEntered.SetResult();
                     await releaseHandler.Task.WaitAsync(TimeSpan.FromSeconds(30));
                     await invocationContext.HttpContext.Response.WriteAsync(
                         """{"continued":true}""",
                         CancellationToken.None);
                     return null;
-
                 })
             .AsTask();
 
@@ -1693,13 +1647,11 @@ public sealed class IdempotencyEndpointFilterOwnershipTests
         await response.CompleteAsync();
 
         Assert.True(store.HeartbeatCallCount >= 1);
-
     }
 
     [Fact]
     public async Task AcquiredLeaseExpiry_DrivesFirstHeartbeat()
     {
-
         string key = $"actual-lease-{Guid.NewGuid():N}";
         ManualTimeProvider time = new();
         FakeClaimStore store = new()
@@ -1723,11 +1675,9 @@ public sealed class IdempotencyEndpointFilterOwnershipTests
                 context,
                 async invocationContext =>
                 {
-
                     await releaseHandler.Task.WaitAsync(invocationContext.HttpContext.RequestAborted);
                     await invocationContext.HttpContext.Response.WriteAsync("""{"ok":true}""");
                     return null;
-
                 })
             .AsTask();
 
@@ -1742,13 +1692,11 @@ public sealed class IdempotencyEndpointFilterOwnershipTests
         releaseHandler.SetResult();
         _ = await invocation;
         await response.CompleteAsync();
-
     }
 
     [Fact]
     public async Task HeartbeatOwnershipLoss_CancelsEndpointAndStopsOldOwner()
     {
-
         string key = $"ownership-loss-{Guid.NewGuid():N}";
         ManualTimeProvider time = new();
         FakeClaimStore store = new()
@@ -1773,26 +1721,20 @@ public sealed class IdempotencyEndpointFilterOwnershipTests
                 context,
                 async invocationContext =>
                 {
-
                     CancellationToken executionToken = invocationContext.HttpContext.RequestAborted;
                     handlerEntered.SetResult();
 
                     try
                     {
-
                         await Task.Delay(Timeout.InfiniteTimeSpan, executionToken);
-
                     }
                     catch (OperationCanceledException) when (executionToken.IsCancellationRequested)
                     {
-
                         ownershipCancellationObserved.SetResult();
                         throw;
-
                     }
 
                     return null;
-
                 })
             .AsTask();
 
@@ -1821,21 +1763,17 @@ public sealed class IdempotencyEndpointFilterOwnershipTests
             retryResponse,
             _ =>
             {
-
                 Interlocked.Increment(ref retryHandlerCalls);
                 return ValueTask.FromResult<object?>(null);
-
             });
 
         Assert.Equal(0, retryHandlerCalls);
         Assert.Equal(StatusCodes.Status409Conflict, retryContext.HttpContext.Response.StatusCode);
-
     }
 
     [Fact]
     public async Task LongRunningOwner_RenewsBeyondOriginalLease_AndStopsAfterCompletion()
     {
-
         string key = $"heartbeat-{Guid.NewGuid():N}";
 
         ManualTimeProvider time = new();
@@ -1861,7 +1799,6 @@ public sealed class IdempotencyEndpointFilterOwnershipTests
                 context,
                 async invocationContext =>
                 {
-
                     handlerEntered.SetResult();
 
                     await releaseHandler.Task.WaitAsync(invocationContext.HttpContext.RequestAborted);
@@ -1869,7 +1806,6 @@ public sealed class IdempotencyEndpointFilterOwnershipTests
                     await invocationContext.HttpContext.Response.WriteAsync("""{"renewed":true}""");
 
                     return null;
-
                 })
             .AsTask();
 
@@ -1879,11 +1815,9 @@ public sealed class IdempotencyEndpointFilterOwnershipTests
 
         for (int heartbeat = 1; heartbeat <= 6; heartbeat++)
         {
-
             await time.WaitForScheduledTimerCountAsync(heartbeat).WaitAsync(TimeSpan.FromSeconds(5));
             time.Advance(timing.HeartbeatInterval);
             await store.WaitForHeartbeatCountAsync(heartbeat).WaitAsync(TimeSpan.FromSeconds(5));
-
         }
 
         IdempotencyClaim renewed = Assert.IsType<IdempotencyClaim>(store.Claim);
@@ -1905,13 +1839,11 @@ public sealed class IdempotencyEndpointFilterOwnershipTests
         Assert.Equal(heartbeatCountAtCompletion, store.HeartbeatCallCount);
 
         Assert.Equal(IdempotencyClaimState.Completed, store.Claim?.State);
-
     }
 
     [Fact]
     public async Task Completion_DoesNotWaitForHeartbeatStoreCallThatIgnoresCancellation()
     {
-
         string key = $"heartbeat-shutdown-{Guid.NewGuid():N}";
 
         TaskCompletionSource blockedHeartbeat = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -1940,19 +1872,16 @@ public sealed class IdempotencyEndpointFilterOwnershipTests
                 context,
                 async invocationContext =>
                 {
-
                     await releaseHandler.Task.WaitAsync(invocationContext.HttpContext.RequestAborted);
 
                     await invocationContext.HttpContext.Response.WriteAsync("""{"ok":true}""");
 
                     return null;
-
                 })
             .AsTask();
 
         try
         {
-
             await time.WaitForScheduledTimerCountAsync(1).WaitAsync(TimeSpan.FromSeconds(5));
             time.Advance(timing.HeartbeatInterval);
             await store.WaitForHeartbeatCountAsync(1).WaitAsync(TimeSpan.FromSeconds(5));
@@ -1964,21 +1893,16 @@ public sealed class IdempotencyEndpointFilterOwnershipTests
             await response.CompleteAsync().WaitAsync(TimeSpan.FromMilliseconds(500));
 
             Assert.Equal(IdempotencyClaimState.Completed, store.Claim?.State);
-
         }
         finally
         {
-
             blockedHeartbeat.TrySetResult();
-
         }
-
     }
 
     [Fact]
     public async Task RepeatedHeartbeatFaults_AbortOwnerBeforeOriginalLeaseExpires()
     {
-
         string key = $"heartbeat-fault-{Guid.NewGuid():N}";
 
         ManualTimeProvider time = new();
@@ -2004,7 +1928,6 @@ public sealed class IdempotencyEndpointFilterOwnershipTests
                 context,
                 async invocationContext =>
                 {
-
                     handlerEntered.SetResult();
 
                     await Task.Delay(
@@ -2012,22 +1935,18 @@ public sealed class IdempotencyEndpointFilterOwnershipTests
                         invocationContext.HttpContext.RequestAborted);
 
                     return null;
-
                 })
             .AsTask();
 
         try
         {
-
             await handlerEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
             for (int heartbeat = 1; heartbeat <= 4; heartbeat++)
             {
-
                 await time.WaitForScheduledTimerCountAsync(heartbeat).WaitAsync(TimeSpan.FromSeconds(5));
                 time.Advance(timing.HeartbeatInterval);
                 await store.WaitForHeartbeatCountAsync(heartbeat).WaitAsync(TimeSpan.FromSeconds(5));
-
             }
 
             await Assert.ThrowsAnyAsync<OperationCanceledException>(
@@ -2036,21 +1955,16 @@ public sealed class IdempotencyEndpointFilterOwnershipTests
             Assert.True(store.HeartbeatCallCount >= 1);
 
             Assert.Equal(IdempotencyClaimState.Failed, store.Claim?.State);
-
         }
         finally
         {
-
             context.HttpContext.Abort();
-
         }
-
     }
 
     [Fact]
     public async Task LookupFault_FailsOpenExactlyOnce_WithoutAttemptingAcquire()
     {
-
         string key = $"lookup-fault-{Guid.NewGuid():N}";
 
         FakeClaimStore store = new()
@@ -2071,13 +1985,11 @@ public sealed class IdempotencyEndpointFilterOwnershipTests
             response,
             async invocationContext =>
             {
-
                 _ = Interlocked.Increment(ref handlerCalls);
 
                 await invocationContext.HttpContext.Response.WriteAsync("""{"fresh":true}""");
 
                 return null;
-
             });
 
         Assert.Equal(1, handlerCalls);
@@ -2087,13 +1999,11 @@ public sealed class IdempotencyEndpointFilterOwnershipTests
         Assert.Equal(0, store.TryAcquireCallCount);
 
         Assert.Null(store.Claim);
-
     }
 
     [Fact]
     public async Task AcquireFault_FailsOpenExactlyOnce_WithoutReturningInProgress()
     {
-
         string key = $"acquire-fault-{Guid.NewGuid():N}";
 
         FakeClaimStore store = new()
@@ -2114,13 +2024,11 @@ public sealed class IdempotencyEndpointFilterOwnershipTests
             response,
             async invocationContext =>
             {
-
                 _ = Interlocked.Increment(ref handlerCalls);
 
                 await invocationContext.HttpContext.Response.WriteAsync("""{"fresh":true}""");
 
                 return null;
-
             });
 
         Assert.Equal(1, handlerCalls);
@@ -2130,13 +2038,11 @@ public sealed class IdempotencyEndpointFilterOwnershipTests
         Assert.Equal(1, store.TryAcquireCallCount);
 
         Assert.Null(store.Claim);
-
     }
 
     [Fact]
     public async Task WaiterReReadFault_FailsOpenOnce_AfterLeaderReleases()
     {
-
         string key = $"reread-fault-{Guid.NewGuid():N}";
 
         FakeClaimStore store = new()
@@ -2160,22 +2066,18 @@ public sealed class IdempotencyEndpointFilterOwnershipTests
 
         EndpointFilterDelegate next = async invocationContext =>
         {
-
             int call = Interlocked.Increment(ref handlerCalls);
 
             if (call == 1)
             {
-
                 leaderEntered.SetResult();
 
                 await releaseLeader.Task.WaitAsync(invocationContext.HttpContext.RequestAborted);
-
             }
 
             await invocationContext.HttpContext.Response.WriteAsync("""{"ok":true}""");
 
             return null;
-
         };
 
         Task<object?> leader = InvokeAndCompleteAsync(
@@ -2199,13 +2101,11 @@ public sealed class IdempotencyEndpointFilterOwnershipTests
         Assert.Equal(2, handlerCalls);
 
         Assert.Equal(2, store.TryGetCallCount);
-
     }
 
     [Fact]
     public async Task CompletionSaveFault_DoesNotReEnterHandler_AndLaterRequestExecutesFresh()
     {
-
         string key = $"save-fault-{Guid.NewGuid():N}";
 
         FakeClaimStore store = new()
@@ -2219,13 +2119,11 @@ public sealed class IdempotencyEndpointFilterOwnershipTests
 
         EndpointFilterDelegate next = async invocationContext =>
         {
-
             _ = Interlocked.Increment(ref handlerCalls);
 
             await invocationContext.HttpContext.Response.WriteAsync("""{"ok":true}""");
 
             return null;
-
         };
 
         (TestEndpointFilterInvocationContext firstContext, CompletionTrackingResponseFeature firstResponse) =
@@ -2247,13 +2145,11 @@ public sealed class IdempotencyEndpointFilterOwnershipTests
         Assert.Equal(2, handlerCalls);
 
         Assert.Equal(IdempotencyClaimState.Completed, store.Claim?.State);
-
     }
 
     [Fact]
     public async Task AbandonSaveFault_DoesNotReEnterHandler_AndLaterRequestExecutesFresh()
     {
-
         string key = $"abandon-fault-{Guid.NewGuid():N}";
 
         FakeClaimStore store = new()
@@ -2274,11 +2170,9 @@ public sealed class IdempotencyEndpointFilterOwnershipTests
             firstResponse,
             _ =>
             {
-
                 Interlocked.Increment(ref handlerCalls);
 
                 return ValueTask.FromResult<object?>(null);
-
             });
 
         Assert.Equal(1, handlerCalls);
@@ -2298,19 +2192,16 @@ public sealed class IdempotencyEndpointFilterOwnershipTests
             secondResponse,
             async invocationContext =>
             {
-
                 _ = Interlocked.Increment(ref handlerCalls);
 
                 await invocationContext.HttpContext.Response.WriteAsync("""{"fresh":true}""");
 
                 return null;
-
             });
 
         Assert.Equal(2, handlerCalls);
 
         Assert.Equal(IdempotencyClaimState.Completed, store.Claim?.State);
-
     }
 
     [Theory]
@@ -2319,7 +2210,6 @@ public sealed class IdempotencyEndpointFilterOwnershipTests
     public async Task NonReplayableTerminalClaim_IsReacquiredBeforeHandlerExecution(
         IdempotencyClaimState state)
     {
-
         string key = $"terminal-reacquire-{state}-{Guid.NewGuid():N}";
 
         FakeClaimStore store = new()
@@ -2344,25 +2234,21 @@ public sealed class IdempotencyEndpointFilterOwnershipTests
             response,
             async invocationContext =>
             {
-
                 _ = Interlocked.Increment(ref handlerCalls);
 
                 await invocationContext.HttpContext.Response.WriteAsync("""{"fresh":true}""");
 
                 return null;
-
             });
 
         Assert.Equal(1, handlerCalls);
 
         Assert.Equal(IdempotencyClaimState.Completed, store.Claim?.State);
-
     }
 
     [Fact]
     public async Task HandlerFailure_WhenFailureSaveAlsoFaults_ReleasesCoordinatorWithoutReEntry()
     {
-
         string key = $"handler-failure-{Guid.NewGuid():N}";
 
         FakeClaimStore store = new()
@@ -2381,11 +2267,9 @@ public sealed class IdempotencyEndpointFilterOwnershipTests
                 firstContext,
                 _ =>
                 {
-
                     Interlocked.Increment(ref handlerCalls);
 
                     throw new InvalidOperationException("handler failed");
-
                 }));
 
         Assert.Equal(1, handlerCalls);
@@ -2403,25 +2287,21 @@ public sealed class IdempotencyEndpointFilterOwnershipTests
             secondResponse,
             async invocationContext =>
             {
-
                 _ = Interlocked.Increment(ref handlerCalls);
 
                 await invocationContext.HttpContext.Response.WriteAsync("""{"fresh":true}""");
 
                 return null;
-
             });
 
         Assert.Equal(2, handlerCalls);
 
         Assert.Equal(IdempotencyClaimState.Completed, store.Claim?.State);
-
     }
 
     [Fact]
     public async Task LocalWait_IsCallerCancellable_WithoutInvokingWaiterHandler()
     {
-
         string key = $"wait-cancel-{Guid.NewGuid():N}";
 
         FakeClaimStore store = new();
@@ -2439,7 +2319,6 @@ public sealed class IdempotencyEndpointFilterOwnershipTests
 
         EndpointFilterDelegate next = async invocationContext =>
         {
-
             _ = Interlocked.Increment(ref handlerCalls);
 
             leaderEntered.SetResult();
@@ -2449,7 +2328,6 @@ public sealed class IdempotencyEndpointFilterOwnershipTests
             await invocationContext.HttpContext.Response.WriteAsync("""{"ok":true}""");
 
             return null;
-
         };
 
         Task<object?> leader = CreateFilter()(leaderContext, next).AsTask();
@@ -2477,13 +2355,11 @@ public sealed class IdempotencyEndpointFilterOwnershipTests
         await leaderResponse.CompleteAsync();
 
         Assert.Equal(1, handlerCalls);
-
     }
 
     [Fact]
     public async Task CancellationAfterAcquire_DoesNotInvokeHandlerOrReturnSuccess()
     {
-
         string key = $"acquired-cancel-{Guid.NewGuid():N}";
 
         using CancellationTokenSource cancellation = new();
@@ -2505,17 +2381,54 @@ public sealed class IdempotencyEndpointFilterOwnershipTests
                 context,
                 _ =>
                 {
-
                     Interlocked.Increment(ref handlerCalls);
 
                     return ValueTask.FromResult<object?>(null);
-
                 }));
 
         Assert.Equal(0, handlerCalls);
 
         Assert.Equal(IdempotencyClaimState.Failed, store.Claim?.State);
+    }
 
+    /// <summary>
+    /// A response marked protected is never stored for replay: the claim table is a generic cache that keeps
+    /// the body, and a replay is written by a request that never re-made the decision the protected headers
+    /// follow from. The claim is abandoned instead, so a retry with the same key runs again and carries its
+    /// own headers.
+    /// </summary>
+    [Fact]
+    public async Task A_protected_response_is_never_cached_for_replay()
+    {
+        string key = $"protected-response-{Guid.NewGuid():N}";
+
+        FakeClaimStore store = new();
+
+        using ServiceProvider services = CreateServices(store);
+
+        (TestEndpointFilterInvocationContext context, CompletionTrackingResponseFeature response) =
+            CreateContext(services, key);
+
+        EndpointFilterDelegate next = async invocationContext =>
+        {
+            CovenantRequestFeatures.MarkProtectedResponse(invocationContext.HttpContext);
+
+            await invocationContext.HttpContext.Response.WriteAsync(
+                """{"answer":"drawn from protected memory"}""",
+                invocationContext.HttpContext.RequestAborted);
+
+            return null;
+        };
+
+        await InvokeAndCompleteAsync(CreateFilter(), context, response, next);
+
+        Assert.Equal(StatusCodes.Status200OK, context.HttpContext.Response.StatusCode);
+
+        Assert.Equal(0, store.CompleteCallCount);
+
+        Assert.Equal(1, store.MarkAbandonedCallCount);
+
+        Assert.Null(store.Claim?.ResponseBody);
     }
 
     private static Func<EndpointFilterInvocationContext, EndpointFilterDelegate, ValueTask<object?>> CreateFilter() =>
@@ -2525,7 +2438,6 @@ public sealed class IdempotencyEndpointFilterOwnershipTests
         FakeClaimStore store,
         IdempotencyLeaseTiming? timing = null)
     {
-
         ServiceCollection services = new();
 
         services.AddLogging();
@@ -2539,13 +2451,10 @@ public sealed class IdempotencyEndpointFilterOwnershipTests
 
         if (timing is not null)
         {
-
             services.AddSingleton(timing);
-
         }
 
         return services.BuildServiceProvider();
-
     }
 
     private static (
@@ -2558,7 +2467,6 @@ public sealed class IdempotencyEndpointFilterOwnershipTests
             string prompt = "ownership race",
             CancellationToken requestAborted = default)
     {
-
         DefaultHttpContext httpContext = new();
 
         IHttpResponseFeature responseFeature = httpContext.Features.Get<IHttpResponseFeature>()!;
@@ -2593,7 +2501,6 @@ public sealed class IdempotencyEndpointFilterOwnershipTests
                 httpContext,
                 [new PingRequest(Prompt: prompt)]),
             completionFeature);
-
     }
 
     private static async Task<object?> InvokeAndCompleteAsync(
@@ -2602,20 +2509,16 @@ public sealed class IdempotencyEndpointFilterOwnershipTests
         CompletionTrackingResponseFeature responseFeature,
         EndpointFilterDelegate next)
     {
-
         object? result = await filter(context, next);
 
         if (result is IResult responseResult)
         {
-
             await responseResult.ExecuteAsync(context.HttpContext);
-
         }
 
         await responseFeature.CompleteAsync();
 
         return result;
-
     }
 
     private static IdempotencyClaim CreateClaim(
@@ -2626,7 +2529,6 @@ public sealed class IdempotencyEndpointFilterOwnershipTests
         string path = "/api/intelligence/ping",
         string prompt = "ownership race")
     {
-
         DateTimeOffset now = DateTimeOffset.UtcNow;
 
         byte[] bodyBytes = JsonSerializer.SerializeToUtf8Bytes(
@@ -2643,7 +2545,8 @@ public sealed class IdempotencyEndpointFilterOwnershipTests
             bodyBytes,
             path,
             string.Empty,
-            "application/json");
+            "application/json",
+            CovenantContextPolicy.Default);
 
         return new IdempotencyClaim(
             Guid.NewGuid(),
@@ -2660,12 +2563,10 @@ public sealed class IdempotencyEndpointFilterOwnershipTests
             TerminalStreamComplete: false,
             now,
             now);
-
     }
 
     private static string ReadResponseBody(HttpContext httpContext)
     {
-
         httpContext.Response.Body.Position = 0;
 
         using StreamReader reader = new(
@@ -2675,23 +2576,19 @@ public sealed class IdempotencyEndpointFilterOwnershipTests
             leaveOpen: true);
 
         return reader.ReadToEnd();
-
     }
 
     private sealed class TestEndpointFilterInvocationContext : EndpointFilterInvocationContext
     {
-
         private readonly IList<object?> _arguments;
 
         public TestEndpointFilterInvocationContext(
             HttpContext httpContext,
             IList<object?> arguments)
         {
-
             HttpContext = httpContext;
 
             _arguments = arguments;
-
         }
 
         public override HttpContext HttpContext { get; }
@@ -2699,12 +2596,10 @@ public sealed class IdempotencyEndpointFilterOwnershipTests
         public override IList<object?> Arguments => _arguments;
 
         public override T GetArgument<T>(int index) => (T)_arguments[index]!;
-
     }
 
     private sealed class CompletionTrackingResponseFeature(IHttpResponseFeature inner) : IHttpResponseFeature
     {
-
         private readonly List<(Func<object, Task> Callback, object State)> _completed = [];
 
         public int StatusCode
@@ -2734,57 +2629,43 @@ public sealed class IdempotencyEndpointFilterOwnershipTests
 
         public void OnCompleted(Func<object, Task> callback, object state)
         {
-
             _completed.Add((callback, state));
-
         }
 
         public async Task CompleteAsync()
         {
-
             for (int index = _completed.Count - 1; index >= 0; index--)
             {
-
                 (Func<object, Task> callback, object state) = _completed[index];
 
                 await callback(state);
-
             }
 
             _completed.Clear();
-
         }
-
     }
 
     private sealed class TestRequestLifetimeFeature : IHttpRequestLifetimeFeature
     {
-
         private readonly CancellationTokenSource _abort;
 
         public TestRequestLifetimeFeature(CancellationToken callerCancellation)
         {
-
             _abort = CancellationTokenSource.CreateLinkedTokenSource(callerCancellation);
 
             RequestAborted = _abort.Token;
-
         }
 
         public CancellationToken RequestAborted { get; set; }
 
         public void Abort()
         {
-
             _abort.Cancel();
-
         }
-
     }
 
     private sealed class ManualTimeProvider : TimeProvider
     {
-
         private readonly object _gate = new();
         private readonly List<ManualTimer> _timers = [];
         private readonly List<(int ExpectedCount, TaskCompletionSource Completion)> _timerWaiters = [];
@@ -2795,14 +2676,10 @@ public sealed class IdempotencyEndpointFilterOwnershipTests
 
         public override DateTimeOffset GetUtcNow()
         {
-
             lock (_gate)
             {
-
                 return _utcNow;
-
             }
-
         }
 
         public override long GetTimestamp() => GetUtcNow().UtcTicks;
@@ -2813,49 +2690,37 @@ public sealed class IdempotencyEndpointFilterOwnershipTests
             TimeSpan dueTime,
             TimeSpan period)
         {
-
             ArgumentNullException.ThrowIfNull(callback);
 
             ManualTimer timer = new(this, callback, state);
             _ = timer.Change(dueTime, period);
 
             return timer;
-
         }
 
         public void Advance(TimeSpan amount)
         {
-
             if (amount < TimeSpan.Zero)
             {
-
                 throw new ArgumentOutOfRangeException(nameof(amount));
-
             }
 
             List<(TimerCallback Callback, object? State)> callbacks = [];
 
             lock (_gate)
             {
-
                 _utcNow = _utcNow.Add(amount);
 
                 foreach (ManualTimer timer in _timers.ToArray())
                 {
-
                     timer.CollectDueCallbacks(_utcNow, callbacks);
-
                 }
-
             }
 
             foreach ((TimerCallback callback, object? state) in callbacks)
             {
-
                 callback(state);
-
             }
-
         }
 
         public Task WaitForScheduledTimerCountAsync(int expectedCount)
@@ -2876,38 +2741,28 @@ public sealed class IdempotencyEndpointFilterOwnershipTests
 
         private void ChangeTimer(ManualTimer timer, TimeSpan dueTime, TimeSpan period)
         {
-
             if (dueTime < Timeout.InfiniteTimeSpan)
             {
-
                 throw new ArgumentOutOfRangeException(nameof(dueTime));
-
             }
 
             if (period < Timeout.InfiniteTimeSpan || period == TimeSpan.Zero)
             {
-
                 throw new ArgumentOutOfRangeException(nameof(period));
-
             }
 
             List<TaskCompletionSource> completedWaiters = [];
 
             lock (_gate)
             {
-
                 if (timer.Disposed)
                 {
-
                     throw new ObjectDisposedException(nameof(ManualTimer));
-
                 }
 
                 if (!_timers.Contains(timer))
                 {
-
                     _timers.Add(timer);
-
                 }
 
                 timer.DueAt = dueTime == Timeout.InfiniteTimeSpan
@@ -2930,26 +2785,20 @@ public sealed class IdempotencyEndpointFilterOwnershipTests
                         _timerWaiters.RemoveAt(index);
                     }
                 }
-
             }
 
             foreach (TaskCompletionSource waiter in completedWaiters)
             {
                 waiter.TrySetResult();
             }
-
         }
 
         private void RemoveTimer(ManualTimer timer)
         {
-
             lock (_gate)
             {
-
                 _ = _timers.Remove(timer);
-
             }
-
         }
 
         private sealed class ManualTimer(
@@ -2958,87 +2807,65 @@ public sealed class IdempotencyEndpointFilterOwnershipTests
             object? state)
             : ITimer
         {
-
             public bool Disposed { get; private set; }
             public DateTimeOffset? DueAt { get; set; }
             public TimeSpan Period { get; set; } = Timeout.InfiniteTimeSpan;
 
             public bool Change(TimeSpan dueTime, TimeSpan period)
             {
-
                 owner.ChangeTimer(this, dueTime, period);
                 return true;
-
             }
 
             public void Dispose()
             {
-
                 if (Disposed)
                 {
-
                     return;
-
                 }
 
                 Disposed = true;
                 owner.RemoveTimer(this);
-
             }
 
             public ValueTask DisposeAsync()
             {
-
                 Dispose();
                 return ValueTask.CompletedTask;
-
             }
 
             public void CollectDueCallbacks(
                 DateTimeOffset now,
                 List<(TimerCallback Callback, object? State)> callbacks)
             {
-
                 if (Disposed || DueAt is not DateTimeOffset dueAt || dueAt > now)
                 {
-
                     return;
-
                 }
 
                 callbacks.Add((callback, state));
 
                 if (Period == Timeout.InfiniteTimeSpan)
                 {
-
                     DueAt = null;
-
                 }
                 else
                 {
-
                     do
                     {
-
                         dueAt = dueAt.Add(Period);
-
                     }
 
                     while (dueAt <= now);
 
                     DueAt = dueAt;
-
                 }
-
             }
-
         }
-
     }
 
     private sealed class FakeClaimStore : IIdempotencyClaimStore
     {
-
         private readonly object _gate = new();
 
         private IdempotencyClaim? _claim;
@@ -3103,25 +2930,17 @@ public sealed class IdempotencyEndpointFilterOwnershipTests
         {
             get
             {
-
                 lock (_gate)
                 {
-
                     return _claim;
-
                 }
-
             }
             set
             {
-
                 lock (_gate)
                 {
-
                     _claim = value;
-
                 }
-
             }
         }
 
@@ -3129,14 +2948,10 @@ public sealed class IdempotencyEndpointFilterOwnershipTests
         {
             get
             {
-
                 lock (_gate)
                 {
-
                     return _heartbeatLeases.ToArray();
-
                 }
-
             }
         }
 
@@ -3153,24 +2968,18 @@ public sealed class IdempotencyEndpointFilterOwnershipTests
 
         public Task WaitForHeartbeatCountAsync(int expectedCount)
         {
-
             lock (_gate)
             {
-
                 if (_heartbeatCalls >= expectedCount)
                 {
-
                     return Task.CompletedTask;
-
                 }
 
                 TaskCompletionSource waiter =
                     new(TaskCreationOptions.RunContinuationsAsynchronously);
                 _heartbeatWaiters.Add((expectedCount, waiter));
                 return waiter.Task;
-
             }
-
         }
 
         private readonly List<(int ExpectedCount, TaskCompletionSource Completion)> _heartbeatWaiters = [];
@@ -3179,23 +2988,18 @@ public sealed class IdempotencyEndpointFilterOwnershipTests
             Guid claimId,
             CancellationToken cancellationToken = default)
         {
-
             cancellationToken.ThrowIfCancellationRequested();
 
             lock (_gate)
             {
-
                 return Task.FromResult(_claim?.Id == claimId ? _claim : null);
-
             }
-
         }
 
         public Task<IdempotencyClaim?> TryGetAsync(
             string claimKeyHash,
             CancellationToken cancellationToken = default)
         {
-
             cancellationToken.ThrowIfCancellationRequested();
 
             int call = Interlocked.Increment(ref _tryGetCalls);
@@ -3204,53 +3008,41 @@ public sealed class IdempotencyEndpointFilterOwnershipTests
 
             if (failure is not null)
             {
-
                 return Task.FromException<IdempotencyClaim?>(failure);
-
             }
 
             lock (_gate)
             {
-
                 return Task.FromResult(_claim);
-
             }
-
         }
 
         public async Task<IdempotencyClaimAcquireResult> TryAcquireAsync(
             IdempotencyClaimAcquireRequest request,
             CancellationToken cancellationToken = default)
         {
-
             int call = Interlocked.Increment(ref _acquireCalls);
 
             Exception? failure = TryAcquireFailure?.Invoke(call);
 
             if (failure is not null)
             {
-
                 throw failure;
-
             }
 
             if (AcquireResultOverride is { } overrideResult)
             {
-
                 Claim = overrideResult.Claim;
 
                 return overrideResult;
-
             }
 
             IdempotencyClaimAcquireResult result;
 
             lock (_gate)
             {
-
                 if (_claim is null)
                 {
-
                     DateTimeOffset leaseExpiresAt = AcquiredLeaseDuration is TimeSpan leaseDuration
                         ? request.CreatedAt.Add(leaseDuration)
                         : request.LeaseExpiresAt;
@@ -3279,35 +3071,29 @@ public sealed class IdempotencyEndpointFilterOwnershipTests
                         Conflict: false,
                         Acquired: true,
                         Claim: created);
-
                 }
                 else if (!string.Equals(
                              _claim.FingerprintHash,
                              request.FingerprintHash,
                              StringComparison.Ordinal))
                 {
-
                     result = new IdempotencyClaimAcquireResult(
                         Conflict: true,
                         Acquired: false,
                         Claim: _claim);
-
                 }
                 else if (_claim.State == IdempotencyClaimState.Completed
                          && _claim.TerminalStreamComplete)
                 {
-
                     result = new IdempotencyClaimAcquireResult(
                         Conflict: false,
                         Acquired: false,
                         Claim: _claim);
-
                 }
                 else if (_claim.State is IdempotencyClaimState.Failed or IdempotencyClaimState.Abandoned
                          || (_claim.State is IdempotencyClaimState.Running or IdempotencyClaimState.Claimed
                              && _claim.LeaseExpiresAt <= request.CreatedAt))
                 {
-
                     _claim = _claim with
                     {
                         State = IdempotencyClaimState.Running,
@@ -3325,34 +3111,27 @@ public sealed class IdempotencyEndpointFilterOwnershipTests
                         Conflict: false,
                         Acquired: true,
                         Claim: _claim);
-
                 }
                 else
                 {
-
                     result = new IdempotencyClaimAcquireResult(
                         Conflict: false,
                         Acquired: false,
                         Claim: _claim);
-
                 }
-
             }
 
             if (call == 1
                 && BlockFirstAcquire
                 && result.Acquired)
             {
-
                 FirstAcquireEntered.SetResult();
 
                 await ReleaseFirstAcquire.Task.WaitAsync(cancellationToken);
-
             }
 
             if (result.Acquired && ReturnDifferentOwnerOnAcquire)
             {
-
                 result = result with
                 {
                     Claim = result.Claim with
@@ -3360,18 +3139,14 @@ public sealed class IdempotencyEndpointFilterOwnershipTests
                         OwnerId = $"different-process:{Guid.NewGuid():N}",
                     },
                 };
-
             }
 
             if (result.Acquired)
             {
-
                 AfterSuccessfulAcquire?.Invoke();
-
             }
 
             return result;
-
         }
 
         public async Task<bool> HeartbeatAsync(
@@ -3380,7 +3155,6 @@ public sealed class IdempotencyEndpointFilterOwnershipTests
             DateTimeOffset leaseExpiresAt,
             CancellationToken cancellationToken = default)
         {
-
             cancellationToken.ThrowIfCancellationRequested();
 
             int heartbeatCount = Interlocked.Increment(ref _heartbeatCalls);
@@ -3389,7 +3163,6 @@ public sealed class IdempotencyEndpointFilterOwnershipTests
 
             lock (_gate)
             {
-
                 _heartbeatLeases.Add(leaseExpiresAt);
 
                 if (HeartbeatException is null
@@ -3399,7 +3172,6 @@ public sealed class IdempotencyEndpointFilterOwnershipTests
                     && claim.State == IdempotencyClaimState.Running
                     && string.Equals(claim.OwnerId, ownerId, StringComparison.Ordinal))
                 {
-
                     DateTimeOffset now = DateTimeOffset.UtcNow;
 
                     _claim = claim with
@@ -3409,7 +3181,6 @@ public sealed class IdempotencyEndpointFilterOwnershipTests
                         UpdatedAt = now,
                     };
                     renewed = true;
-
                 }
                 else if (HeartbeatException is null
                          && !HeartbeatResult
@@ -3417,57 +3188,43 @@ public sealed class IdempotencyEndpointFilterOwnershipTests
                          && _claim is { } reclaimedClaim
                          && reclaimedClaim.Id == claimId)
                 {
-
                     _claim = reclaimedClaim with
                     {
                         OwnerId = $"reclaimed-process:{Guid.NewGuid():N}",
                         LeaseExpiresAt = leaseExpiresAt,
                     };
-
                 }
 
                 for (int index = _heartbeatWaiters.Count - 1; index >= 0; index--)
                 {
-
                     if (_heartbeatWaiters[index].ExpectedCount > heartbeatCount)
                     {
-
                         continue;
-
                     }
 
                     completedWaiters.Add(_heartbeatWaiters[index].Completion);
                     _heartbeatWaiters.RemoveAt(index);
-
                 }
-
             }
 
             foreach (TaskCompletionSource waiter in completedWaiters)
             {
-
                 waiter.TrySetResult();
-
             }
 
             HeartbeatObserved.TrySetResult();
 
             if (HeartbeatException is not null)
             {
-
                 throw HeartbeatException;
-
             }
 
             if (HeartbeatBlocker is not null)
             {
-
                 await HeartbeatBlocker.WaitAsync(cancellationToken);
-
             }
 
             return renewed;
-
         }
 
         public Task CompleteAsync(
@@ -3480,34 +3237,27 @@ public sealed class IdempotencyEndpointFilterOwnershipTests
             Guid? runId,
             CancellationToken cancellationToken = default)
         {
-
             cancellationToken.ThrowIfCancellationRequested();
 
             _ = Interlocked.Increment(ref _completeCalls);
 
             if (CompleteException is not null)
             {
-
                 return Task.FromException(CompleteException);
-
             }
 
             if (!terminalStreamValid)
             {
-
                 return MarkAbandonedAsync(claimId, ownerId, cancellationToken);
-
             }
 
             lock (_gate)
             {
-
                 if (_claim is { } claim
                     && claim.Id == claimId
                     && claim.State == IdempotencyClaimState.Running
                     && string.Equals(claim.OwnerId, ownerId, StringComparison.Ordinal))
                 {
-
                     _claim = claim with
                     {
                         State = IdempotencyClaimState.Completed,
@@ -3516,13 +3266,10 @@ public sealed class IdempotencyEndpointFilterOwnershipTests
                         ResponseBody = responseBody,
                         TerminalStreamComplete = terminalStreamValid,
                     };
-
                 }
-
             }
 
             return Task.CompletedTask;
-
         }
 
         public Task MarkFailedAsync(
@@ -3530,41 +3277,33 @@ public sealed class IdempotencyEndpointFilterOwnershipTests
             string ownerId,
             CancellationToken cancellationToken = default)
         {
-
             cancellationToken.ThrowIfCancellationRequested();
 
             _ = Interlocked.Increment(ref _markFailedCalls);
 
             if (MarkFailedException is not null)
             {
-
                 return Task.FromException(MarkFailedException);
-
             }
 
             lock (_gate)
             {
-
                 if (!IgnoreMarkFailed
                     && _claim is { } claim
                     && claim.Id == claimId
                     && claim.State is IdempotencyClaimState.Running or IdempotencyClaimState.Claimed
                     && string.Equals(claim.OwnerId, ownerId, StringComparison.Ordinal))
                 {
-
                     _claim = claim with
                     {
                         State = IdempotencyClaimState.Failed,
                         TerminalStreamComplete = false,
                         UpdatedAt = DateTimeOffset.UtcNow,
                     };
-
                 }
-
             }
 
             return Task.CompletedTask;
-
         }
 
         public Task MarkAbandonedAsync(
@@ -3572,40 +3311,32 @@ public sealed class IdempotencyEndpointFilterOwnershipTests
             string ownerId,
             CancellationToken cancellationToken = default)
         {
-
             cancellationToken.ThrowIfCancellationRequested();
 
             _ = Interlocked.Increment(ref _markAbandonedCalls);
 
             if (MarkAbandonedException is not null)
             {
-
                 return Task.FromException(MarkAbandonedException);
-
             }
 
             lock (_gate)
             {
-
                 if (_claim is { } claim
                     && claim.Id == claimId
                     && claim.State is IdempotencyClaimState.Running or IdempotencyClaimState.Claimed
                     && string.Equals(claim.OwnerId, ownerId, StringComparison.Ordinal))
                 {
-
                     _claim = claim with
                     {
                         State = IdempotencyClaimState.Abandoned,
                         TerminalStreamComplete = false,
                         UpdatedAt = DateTimeOffset.UtcNow,
                     };
-
                 }
-
             }
 
             return Task.CompletedTask;
-
         }
 
         public Task<bool> TryReclaimAsync(
@@ -3614,21 +3345,17 @@ public sealed class IdempotencyEndpointFilterOwnershipTests
             DateTimeOffset leaseExpiresAt,
             CancellationToken cancellationToken = default)
         {
-
             cancellationToken.ThrowIfCancellationRequested();
 
             lock (_gate)
             {
-
                 if (_claim is not { } claim
                     || claim.Id != claimId
                     || (claim.State is not (IdempotencyClaimState.Failed or IdempotencyClaimState.Abandoned)
                         && !(claim.State is IdempotencyClaimState.Running or IdempotencyClaimState.Claimed
                              && claim.LeaseExpiresAt < DateTimeOffset.UtcNow)))
                 {
-
                     return Task.FromResult(false);
-
                 }
 
                 DateTimeOffset now = DateTimeOffset.UtcNow;
@@ -3647,9 +3374,7 @@ public sealed class IdempotencyEndpointFilterOwnershipTests
                 };
 
                 return Task.FromResult(true);
-
             }
-
         }
 
         public Task LinkRunAsync(
@@ -3657,30 +3382,22 @@ public sealed class IdempotencyEndpointFilterOwnershipTests
             Guid runId,
             CancellationToken cancellationToken = default)
         {
-
             cancellationToken.ThrowIfCancellationRequested();
 
             lock (_gate)
             {
-
                 if (_claim is { } claim && claim.Id == claimId)
                 {
-
                     _claim = claim with { RunId = runId };
-
                 }
-
             }
 
             return Task.CompletedTask;
-
         }
 
         public Task<int> DeleteExpiredAsync(
             DateTimeOffset olderThan,
             CancellationToken cancellationToken = default) =>
             Task.FromResult(0);
-
     }
-
 }

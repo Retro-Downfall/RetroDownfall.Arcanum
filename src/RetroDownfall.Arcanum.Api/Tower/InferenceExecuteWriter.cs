@@ -8,6 +8,7 @@ using RetroDownfall.Arcanum.Api.Security;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Api.Streaming;
 using System.Buffers;
+using System.Runtime.CompilerServices;
 using System.Diagnostics;
 using System.Text.Json;
 using RetroDownfall.Arcanum.Core.Configuration;
@@ -20,7 +21,6 @@ namespace RetroDownfall.Arcanum.Api.Tower;
 
 internal static class InferenceExecuteWriter
 {
-
     /// <summary>
     /// Client-visible NDJSON Error text for caught streaming exceptions (not intentional
     /// provider Error events). Uses the centralized native inference-failure contract.
@@ -30,13 +30,134 @@ internal static class InferenceExecuteWriter
 
     private static readonly byte[] NewlineBytes = "\n"u8.ToArray();
 
+    /// <summary>
+    /// How long a native NDJSON stream may sit idle before a blank keep-alive line goes out: the same
+    /// <c>Arcanum:EventBus:HeartbeatSeconds</c> the SSE routes use, <c>0</c> turning it off.
+    /// </summary>
+    private static TimeSpan ResolveHeartbeatInterval(IServiceProvider? services)
+    {
+        EventBusSettings eventBus = services
+            ?.GetService<IOptionsSnapshot<ArcanumSettings>>()
+            ?.Value.ResolveEventBus()
+            ?? new EventBusSettings();
+
+        return TimeSpan.FromSeconds(ArcanumSettingClamps.EventBusHeartbeatSeconds(eventBus.HeartbeatSeconds));
+    }
+
+    /// <summary>
+    /// Yields <paramref name="source"/>'s events, and <see langword="null"/> each time a whole
+    /// <paramref name="interval"/> passes with nothing yielded (never when the interval is zero).
+    /// </summary>
+    /// <remarks>
+    /// <para>One <c>MoveNextAsync</c> is outstanding at a time, as an async enumerator requires, and the idle
+    /// timer races that same task rather than starting a second. If the consumer stops while one is
+    /// outstanding, the source's token is cancelled and the move awaited before the source is disposed,
+    /// because an iterator cannot be disposed mid-move.</para>
+    /// <para>The idle clock is a timestamp, not a timer per event. A timer is started only when a move is
+    /// actually waiting, for whatever is left of the interval since the last thing yielded, and it is kept
+    /// across events until it fires; when it fires the clock is read again, so an event that arrived in the
+    /// meantime restarts the wait rather than earning a heartbeat. A token stream therefore starts at most one
+    /// timer per interval instead of a timer and a linked cancellation source per token.</para>
+    /// </remarks>
+    /// <param name="delay">The timer; <see cref="Task.Delay(TimeSpan, CancellationToken)"/> unless a test counts it.</param>
+    internal static async IAsyncEnumerable<IntelligenceEvent?> WithHeartbeats(
+        IAsyncEnumerable<IntelligenceEvent> source,
+        TimeSpan interval,
+        [EnumeratorCancellation] CancellationToken cancellationToken,
+        Func<TimeSpan, CancellationToken, Task>? delay = null)
+    {
+        Func<TimeSpan, CancellationToken, Task> startTimer = delay ?? Task.Delay;
+
+        using CancellationTokenSource sourceCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+
+        // The timer's own source, cancelled when the stream ends so an outstanding timer does not outlive it.
+        using CancellationTokenSource timerCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+
+        await using IAsyncEnumerator<IntelligenceEvent> events = source.GetAsyncEnumerator(sourceCts.Token);
+
+        Task<bool>? pendingMove = null;
+
+        Task? timer = null;
+
+        long lastYielded = Stopwatch.GetTimestamp();
+
+        try
+        {
+            while (true)
+            {
+                pendingMove ??= events.MoveNextAsync().AsTask();
+
+                if (interval > TimeSpan.Zero && !pendingMove.IsCompleted)
+                {
+                    TimeSpan idle = Stopwatch.GetElapsedTime(lastYielded);
+
+                    if (idle >= interval)
+                    {
+                        cancellationToken.ThrowIfCancellationRequested();
+
+                        lastYielded = Stopwatch.GetTimestamp();
+
+                        yield return null;
+
+                        continue;
+                    }
+
+                    timer ??= startTimer(interval - idle, timerCts.Token);
+
+                    if (await Task.WhenAny(pendingMove, timer).ConfigureAwait(false) == timer)
+                    {
+                        // Fired: read the clock again. An event that arrived since the timer started has
+                        // already moved it, and then this is not yet a whole idle interval.
+                        timer = null;
+
+                        cancellationToken.ThrowIfCancellationRequested();
+
+                        continue;
+                    }
+                }
+
+                bool hasNext = await pendingMove.ConfigureAwait(false);
+
+                pendingMove = null;
+
+                if (!hasNext)
+                {
+                    yield break;
+                }
+
+                lastYielded = Stopwatch.GetTimestamp();
+
+                yield return events.Current;
+            }
+        }
+        finally
+        {
+            await timerCts.CancelAsync().ConfigureAwait(false);
+
+            if (pendingMove is not null)
+            {
+                await sourceCts.CancelAsync().ConfigureAwait(false);
+
+                try
+                {
+                    _ = await pendingMove.ConfigureAwait(false);
+                }
+                catch (Exception)
+                {
+                    // The move was abandoned by the consumer; whatever it ended in is not this stream's to report.
+                }
+            }
+        }
+    }
+
     public static async Task WriteStreamAsync(
         HttpContext httpContext,
         IArcanumIntelligenceProvider intelligence,
         PingRequest request,
         CancellationToken cancellationToken,
         InferenceAuditContext? auditContext = null,
-        CanonicalCampaignContext? campaign = null)
+        CanonicalCampaignContext? campaign = null,
+        TimeSpan? heartbeatInterval = null)
     {
         // Prefer RequestServices in production; tolerate null/partial providers in unit tests.
         IServiceProvider? services = httpContext.RequestServices;
@@ -83,17 +204,51 @@ internal static class InferenceExecuteWriter
 
         try
         {
-            await foreach (IntelligenceEvent ev in intelligence.StreamPromptAsync(
-                request,
-                ArcanumInvocationContexts.ForTurn(httpContext, request, campaign),
-                ct,
-                auditContext).ConfigureAwait(false))
+            TimeSpan interval = heartbeatInterval ?? ResolveHeartbeatInterval(services);
+
+            await foreach (IntelligenceEvent? tick in WithHeartbeats(
+                intelligence.StreamPromptAsync(
+                    request,
+                    ArcanumInvocationContexts.ForTurn(httpContext, request, campaign),
+                    ct,
+                    auditContext),
+                interval,
+                ct).ConfigureAwait(false))
             {
                 if (clientGone)
                 {
                     // Continue-then-replay: drain remaining events without writing.
                     continue;
                 }
+
+                if (tick is null)
+                {
+                    // The provider has said nothing for a whole interval. A blank line is the NDJSON
+                    // keep-alive: every reader skips it, and it is written here, between frames, never
+                    // inside one, so it can never split a document.
+                    try
+                    {
+                        await httpContext.Response.Body.WriteAsync(NewlineBytes, ct).ConfigureAwait(false);
+
+                        await httpContext.Response.Body.FlushAsync(ct).ConfigureAwait(false);
+
+                        responseStarted = true;
+                    }
+                    catch (Exception heartbeatEx) when (ClientDisconnect.IsClientDisconnect(heartbeatEx, httpContext))
+                    {
+                        clientGone = true;
+
+                        if (!continueThenReplay)
+                        {
+                            streamCts.Cancel();
+                            break;
+                        }
+                    }
+
+                    continue;
+                }
+
+                IntelligenceEvent ev = tick;
 
                 if (ev.Type == IntelligenceEventType.Error)
                 {
@@ -135,14 +290,12 @@ internal static class InferenceExecuteWriter
                         break;
                     }
                 }
-
             }
 
             if (!clientGone || continueThenReplay)
             {
                 TurnContextGuards.MarkIdempotencyTerminal(httpContext);
             }
-
         }
         catch (OperationCanceledException)
         {
@@ -175,7 +328,8 @@ internal static class InferenceExecuteWriter
             {
                 IntelligenceEvent cancelEvent = new(
                     IntelligenceEventType.Error,
-                    PublicStreamFailureMessage);
+                    PublicStreamFailureMessage,
+                    ErrorCodes.Hub.Error);
 
                 eventBuffer.ResetWrittenCount();
                 jsonWriter.Reset();
@@ -214,7 +368,8 @@ internal static class InferenceExecuteWriter
 
             IntelligenceEvent errorEvent = new(
                 IntelligenceEventType.Error,
-                PublicStreamFailureMessage);
+                PublicStreamFailureMessage,
+                ErrorCodes.Hub.Error);
 
             // See the matching comment in the OperationCanceledException arm
             // above — a client still connected here (the common case for a provider-side fault)
@@ -247,12 +402,10 @@ internal static class InferenceExecuteWriter
                     writeEx.GetType().FullName,
                     httpContext.TraceIdentifier);
             }
-
         }
         finally
         {
             jsonWriter.Dispose();
         }
     }
-
 }

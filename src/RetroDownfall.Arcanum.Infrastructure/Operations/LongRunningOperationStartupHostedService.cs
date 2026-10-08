@@ -14,7 +14,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Operations;
 /// readiness pass never abandons unfinished recovery: the same checkpointed reconciliation keeps
 /// running periodically in the background until host shutdown.
 /// </summary>
-[ExcludeFromCodeCoverage]
+[ExcludeFromCodeCoverage] // Reason: IHostedService readiness/periodic-loop shell; the reconciliation it drives is covered by LongRunningOperationStartupHostedServiceTests and CovenantResetBootstrapBarrierTests.
 internal sealed class LongRunningOperationStartupHostedService(
     IServiceScopeFactory scopeFactory,
     TimeProvider timeProvider,
@@ -30,9 +30,21 @@ internal sealed class LongRunningOperationStartupHostedService(
 
     internal static readonly TimeSpan BackgroundInterval = TimeSpan.FromMinutes(1);
 
+    /// <summary>
+    /// Longest <see cref="StopAsync"/> waits for the background reconciliation owner to unwind after shutdown
+    /// is signalled. A handler that ignores cancellation is logged and detached once it elapses.
+    /// </summary>
+    internal static readonly TimeSpan DefaultShutdownDrainCeiling = TimeSpan.FromSeconds(30);
+
+    internal TimeSpan ShutdownDrainCeiling { get; init; } = DefaultShutdownDrainCeiling;
+
     private readonly CancellationTokenSource _shutdown = new();
 
+    private readonly object _stopGate = new();
+
     private Task? _backgroundTask;
+
+    private Task? _stopTask;
 
     public async Task StartAsync(CancellationToken cancellationToken)
     {
@@ -84,7 +96,26 @@ internal sealed class LongRunningOperationStartupHostedService(
             cancellationToken).ConfigureAwait(false);
     }
 
-    public async Task StopAsync(CancellationToken cancellationToken)
+    /// <summary>
+    /// Stops the background owner once. A second call returns the first call's outcome instead of cancelling a
+    /// source that a joined stop has already disposed, which would report a failure for a service that is stopped.
+    /// </summary>
+    public Task StopAsync(CancellationToken cancellationToken)
+    {
+        lock (_stopGate)
+        {
+            if (_stopTask is not null)
+            {
+                return _stopTask;
+            }
+
+            _stopTask = StopCoreAsync(cancellationToken);
+
+            return _stopTask;
+        }
+    }
+
+    private async Task StopCoreAsync(CancellationToken cancellationToken)
     {
         _ = cancellationToken;
 
@@ -101,6 +132,8 @@ internal sealed class LongRunningOperationStartupHostedService(
 
         if (_backgroundTask is null)
         {
+            _shutdown.Dispose();
+
             Rethrow(cancellationFailure);
 
             return;
@@ -108,17 +141,41 @@ internal sealed class LongRunningOperationStartupHostedService(
 
         Exception? backgroundFailure = null;
 
+        bool joined = true;
+
         try
         {
-            await _backgroundTask.ConfigureAwait(false);
+            // The join ignores the host's own shutdown token on purpose: the background owner may be
+            // inside a durable recovery step that must not be abandoned early. It is still bounded, because
+            // a handler that ignores cancellation would otherwise hold host shutdown until the process is
+            // killed.
+            await _backgroundTask
+                .WaitAsync(ShutdownDrainCeiling, timeProvider)
+                .ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (
             _shutdown.IsCancellationRequested)
         {
         }
+        catch (TimeoutException)
+        {
+            joined = false;
+
+            logger.LogWarning(
+                "Durable-operation reconciliation did not stop within the {Ceiling} drain ceiling after shutdown was requested; detaching it so host shutdown can finish.",
+                ShutdownDrainCeiling);
+
+            ObserveDetached(_backgroundTask);
+        }
         catch (Exception exception)
         {
             backgroundFailure = exception;
+        }
+
+        if (joined)
+        {
+            // Only a joined owner can no longer read the token; a detached one keeps the source alive.
+            _shutdown.Dispose();
         }
 
         if (cancellationFailure is not null
@@ -129,6 +186,19 @@ internal sealed class LongRunningOperationStartupHostedService(
 
         Rethrow(cancellationFailure ?? backgroundFailure);
     }
+
+    /// <summary>
+    /// A detached owner is no longer awaited, so a fault that arrives after the ceiling would otherwise vanish. The
+    /// background loop records its own failures, so this is the record of the one that escapes it.
+    /// </summary>
+    private void ObserveDetached(Task detached) =>
+        _ = detached.ContinueWith(
+            task => logger.LogError(
+                task.Exception,
+                "The detached durable-operation reconciliation owner failed after shutdown."),
+            CancellationToken.None,
+            TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
 
     private static void Rethrow(Exception? exception)
     {

@@ -5,7 +5,6 @@ namespace RetroDownfall.Arcanum.Core.Tower;
 
 public interface ISessionRepository
 {
-
     Task<Session> CreateAsync(Guid? campaignId, string? title, CancellationToken ct);
 
     Task<Session?> GetByIdAsync(Guid id, CancellationToken ct);
@@ -50,8 +49,12 @@ public interface ISessionRepository
 
     Task<int> GetEntryCountAsync(Guid sessionId, CancellationToken ct);
 
-    Task UpdateSessionAsync(Session session, CancellationToken ct);
+    /// <summary>
+    /// Applies only the header fields <paramref name="patch"/> supplies, in one statement, so a concurrent
+    /// change to a field the caller did not name is never overwritten with a stale read. Returns the
+    /// Session as stored afterwards, or null when it does not exist.
+    /// </summary>
+    Task<Session?> PatchSessionAsync(Guid id, SessionHeaderPatch patch, CancellationToken ct);
 
     Task ArchiveAsync(Guid id, CancellationToken ct);
-
 }

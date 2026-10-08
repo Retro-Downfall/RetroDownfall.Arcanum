@@ -10,12 +10,15 @@ using RetroDownfall.Arcanum.Infrastructure.Backup;
 
 using RetroDownfall.Arcanum.Infrastructure.Security;
 
+using Serilog.Core;
+
+using Serilog.Events;
+
 namespace RetroDownfall.Arcanum.Tests.Backup;
 
 [Collection("WorkspacePathPolicy")]
 public sealed class BackupArchiveCodecCleanupTests : IDisposable
 {
-
     private const string Passphrase = "cleanup test passphrase";
 
     private readonly string _root = Path.Combine(
@@ -26,22 +29,21 @@ public sealed class BackupArchiveCodecCleanupTests : IDisposable
 
     public void Dispose()
     {
-
         SecureFilePermissions.StrictOwnerOnlyVerificationForTests = null;
 
         if (Directory.Exists(_root))
         {
-
             Directory.Delete(_root, recursive: true);
-
         }
-
     }
 
+    /// <summary>
+    /// The owner-only check that can refuse an archive runs on the staged temp, before the move, so a
+    /// refusal costs the destination nothing.
+    /// </summary>
     [Fact]
-    public async Task Write_removes_owned_destination_when_final_owner_only_verification_fails()
+    public async Task Write_refuses_before_publication_when_the_staged_archive_cannot_be_verified_owner_only()
     {
-
         byte[] content = "permission failure payload"u8.ToArray();
 
         BackupManifestEntry entry = Entry(content);
@@ -50,13 +52,7 @@ public sealed class BackupArchiveCodecCleanupTests : IDisposable
             _root,
             "permission-failure.arcbackup");
 
-        SecureFilePermissions.StrictOwnerOnlyVerificationForTests =
-            (path, isDirectory) =>
-                isDirectory
-                || !string.Equals(
-                    Path.GetFullPath(path),
-                    archive,
-                    StringComparison.Ordinal);
+        FailStagedArchiveAfterCreation(archive);
 
         IOException error = await Assert.ThrowsAsync<IOException>(
             () => CreateCodec().WriteAsync(
@@ -74,12 +70,105 @@ public sealed class BackupArchiveCodecCleanupTests : IDisposable
 
         Assert.False(File.Exists(archive));
 
+        Assert.Empty(Directory.GetFiles(_root, ".*.tmp.*"));
+    }
+
+    /// <summary>
+    /// A staged archive that cannot be verified owner-only is refused while the archive it would have
+    /// replaced is still in place.
+    /// </summary>
+    [Fact]
+    public async Task Write_permission_failure_with_overwrite_preserves_the_previous_archive()
+    {
+        byte[] content = "replacement payload"u8.ToArray();
+
+        BackupManifestEntry entry = Entry(content);
+
+        string archive = Path.Combine(
+            _root,
+            "permission-overwrite.arcbackup");
+
+        byte[] previous = "the previous archive the operator is relying on"u8.ToArray();
+
+        await File.WriteAllBytesAsync(archive, previous);
+
+        FailStagedArchiveAfterCreation(archive);
+
+        IOException error = await Assert.ThrowsAsync<IOException>(
+            () => CreateCodec().WriteAsync(
+                archive,
+                Manifest(entry),
+                [BackupArchiveSource.FromMemory(entry.Path, content)],
+                Passphrase.AsMemory(),
+                overwrite: true,
+                CancellationToken.None));
+
+        Assert.Contains(
+            "owner-only",
+            error.Message,
+            StringComparison.OrdinalIgnoreCase);
+
+        Assert.Equal(previous, await File.ReadAllBytesAsync(archive));
+
+        Assert.Empty(Directory.GetFiles(_root, ".*.tmp.*"));
+    }
+
+    /// <summary>
+    /// Once the move has replaced the previous archive, a failure to re-apply permissions is a warning:
+    /// deleting the destination then would destroy the new archive and the one it replaced together.
+    /// </summary>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Write_keeps_the_published_archive_when_the_post_publication_owner_only_check_fails(
+        bool overwrite)
+    {
+        byte[] content = "post-publication permission payload"u8.ToArray();
+
+        BackupManifestEntry entry = Entry(content);
+
+        string archive = Path.Combine(
+            _root,
+            "permission-post-publication.arcbackup");
+
+        if (overwrite)
+        {
+            await File.WriteAllBytesAsync(archive, "previous archive"u8.ToArray());
+        }
+
+        SecureFilePermissions.StrictOwnerOnlyVerificationForTests =
+            (path, isDirectory) =>
+                isDirectory
+                || !string.Equals(
+                    Path.GetFullPath(path),
+                    archive,
+                    StringComparison.Ordinal);
+
+        _ = await CreateCodec().WriteAsync(
+            archive,
+            Manifest(entry),
+            [BackupArchiveSource.FromMemory(entry.Path, content)],
+            Passphrase.AsMemory(),
+            overwrite,
+            CancellationToken.None);
+
+        SecureFilePermissions.StrictOwnerOnlyVerificationForTests = null;
+
+        BackupVerifyResult verified = await CreateCodec().VerifyAsync(
+            archive,
+            Passphrase.AsMemory(),
+            CancellationToken.None);
+
+        Assert.True(
+            verified.IsValid,
+            string.Join(", ", verified.Issues.Select(static issue => issue.Code)));
+
+        Assert.Empty(Directory.GetFiles(_root, ".*.tmp.*"));
     }
 
     [Fact]
     public async Task Write_permission_failure_preserves_a_replacement_destination()
     {
-
         byte[] content = "replacement permission payload"u8.ToArray();
 
         BackupManifestEntry entry = Entry(content);
@@ -93,16 +182,13 @@ public sealed class BackupArchiveCodecCleanupTests : IDisposable
         SecureFilePermissions.StrictOwnerOnlyVerificationForTests =
             (path, isDirectory) =>
             {
-
                 if (isDirectory
                     || !string.Equals(
                         Path.GetFullPath(path),
                         archive,
                         StringComparison.Ordinal))
                 {
-
                     return true;
-
                 }
 
                 File.Move(archive, movedArchive);
@@ -110,7 +196,6 @@ public sealed class BackupArchiveCodecCleanupTests : IDisposable
                 File.WriteAllText(archive, "replacement destination");
 
                 return false;
-
             };
 
         IOException error = await Assert.ThrowsAsync<IOException>(
@@ -122,7 +207,87 @@ public sealed class BackupArchiveCodecCleanupTests : IDisposable
                 overwrite: false,
                 CancellationToken.None));
 
+        // An identity failure is reported as one: the destination is no longer the staged file, which
+        // says nothing about whether its permissions could be verified.
         Assert.Contains(
+            "changed",
+            error.Message,
+            StringComparison.OrdinalIgnoreCase);
+
+        Assert.DoesNotContain(
+            "owner-only",
+            error.Message,
+            StringComparison.OrdinalIgnoreCase);
+
+        Assert.Equal(
+            "replacement destination",
+            await File.ReadAllTextAsync(archive));
+
+        Assert.True(File.Exists(movedArchive));
+    }
+
+    /// <summary>
+    /// The destination is checked against the staged file's identity before permissions are
+    /// re-applied to it, so a path swapped the instant after publication is neither touched nor
+    /// deleted and the refusal names the swap rather than a permission problem.
+    /// </summary>
+    [Fact]
+    public async Task Write_refuses_without_touching_a_destination_replaced_immediately_after_publication()
+    {
+        byte[] content = "swap after publication payload"u8.ToArray();
+
+        BackupManifestEntry entry = Entry(content);
+
+        string archive = Path.Combine(
+            _root,
+            "swap-after-publication.arcbackup");
+
+        string movedArchive = archive + ".owned";
+
+        int permissionChecksOfTheDestination = 0;
+
+        SecureFilePermissions.StrictOwnerOnlyVerificationForTests =
+            (path, isDirectory) =>
+            {
+                if (!isDirectory
+                    && string.Equals(
+                        Path.GetFullPath(path),
+                        archive,
+                        StringComparison.Ordinal))
+                {
+                    permissionChecksOfTheDestination++;
+                }
+
+                return true;
+            };
+
+        BackupArchiveCodec codec = new(new BackupArchiveCodecOptions
+        {
+            KdfIterations = 10_000,
+
+            AfterArchivePublishedForTests = published =>
+            {
+                File.Move(published, movedArchive);
+
+                File.WriteAllText(published, "replacement destination");
+            },
+        });
+
+        IOException error = await Assert.ThrowsAsync<IOException>(
+            () => codec.WriteAsync(
+                archive,
+                Manifest(entry),
+                [BackupArchiveSource.FromMemory(entry.Path, content)],
+                Passphrase.AsMemory(),
+                overwrite: false,
+                CancellationToken.None));
+
+        Assert.Contains(
+            "changed",
+            error.Message,
+            StringComparison.OrdinalIgnoreCase);
+
+        Assert.DoesNotContain(
             "owner-only",
             error.Message,
             StringComparison.OrdinalIgnoreCase);
@@ -133,24 +298,82 @@ public sealed class BackupArchiveCodecCleanupTests : IDisposable
 
         Assert.True(File.Exists(movedArchive));
 
+        // The re-apply never ran against the swapped file.
+        Assert.Equal(0, permissionChecksOfTheDestination);
+    }
+
+    /// <summary>
+    /// A permission re-apply that fails after publication leaves the archive in place, and says so in
+    /// the log: the helper that re-applies them is silent when the apply succeeds and the verification
+    /// that follows it does not, so the warning is the codec's to give.
+    /// </summary>
+    [Fact]
+    public async Task Write_warns_when_the_published_archive_cannot_be_verified_owner_only()
+    {
+        byte[] content = "post-publication warning payload"u8.ToArray();
+
+        BackupManifestEntry entry = Entry(content);
+
+        string archive = Path.Combine(
+            _root,
+            "permission-warning.arcbackup");
+
+        SecureFilePermissions.StrictOwnerOnlyVerificationForTests =
+            (path, isDirectory) =>
+                isDirectory
+                || !string.Equals(
+                    Path.GetFullPath(path),
+                    archive,
+                    StringComparison.Ordinal);
+
+        CapturingSink sink = new();
+
+        Serilog.ILogger previous = Serilog.Log.Logger;
+
+        Serilog.Log.Logger = new Serilog.LoggerConfiguration().WriteTo.Sink(sink).CreateLogger();
+
+        try
+        {
+            _ = await CreateCodec().WriteAsync(
+                archive,
+                Manifest(entry),
+                [BackupArchiveSource.FromMemory(entry.Path, content)],
+                Passphrase.AsMemory(),
+                overwrite: false,
+                CancellationToken.None);
+        }
+        finally
+        {
+            Serilog.Log.Logger = previous;
+        }
+
+        LogEvent warning = Assert.Single(
+            sink.Events,
+            static logEvent => logEvent.Level == LogEventLevel.Warning
+                && logEvent.MessageTemplate.Text.Contains(
+                    "owner-only",
+                    StringComparison.OrdinalIgnoreCase));
+
+        Assert.Equal(
+            archive,
+            ((ScalarValue)warning.Properties["Path"]).Value);
+
+        Assert.True(File.Exists(archive));
     }
 
     [Fact]
     public async Task Inspect_with_a_passphrase_never_creates_a_plaintext_payload_temp()
     {
-
         string archive = await WriteArchiveAsync("inspect-without-temp.arcbackup");
 
         int temporaryPayloadCleanupCalls = 0;
 
         BackupArchiveCodec codec = new(new BackupArchiveCodecOptions
         {
-
             KdfIterations = 10_000,
 
             BeforeTemporaryPayloadCleanupForTests = _ =>
                 temporaryPayloadCleanupCalls++,
-
         });
 
         BackupInspectResult result = await codec.InspectAsync(
@@ -163,13 +386,11 @@ public sealed class BackupArchiveCodecCleanupTests : IDisposable
         Assert.Equal(0, temporaryPayloadCleanupCalls);
 
         Assert.Empty(Directory.GetFiles(_root, ".*.payload.tmp.*"));
-
     }
 
     [Fact]
     public async Task Inspect_skips_large_content_with_chunk_bounded_plaintext_buffers()
     {
-
         const int chunkSize = 64 * 1024;
 
         byte[] content = RandomNumberGenerator.GetBytes(
@@ -181,11 +402,9 @@ public sealed class BackupArchiveCodecCleanupTests : IDisposable
 
         BackupArchiveCodec writer = new(new BackupArchiveCodecOptions
         {
-
             ChunkSize = chunkSize,
 
             KdfIterations = 10_000,
-
         });
 
         await writer.WriteAsync(
@@ -200,12 +419,10 @@ public sealed class BackupArchiveCodecCleanupTests : IDisposable
 
         BackupArchiveCodec inspector = new(new BackupArchiveCodecOptions
         {
-
             KdfIterations = 10_000,
 
             InspectPlaintextBufferSizeForTests = size =>
                 observedPlaintextBuffers.Add(size),
-
         });
 
         BackupInspectResult result = await inspector.InspectAsync(
@@ -227,13 +444,11 @@ public sealed class BackupArchiveCodecCleanupTests : IDisposable
             size => Assert.InRange(size, 1, chunkSize));
 
         Assert.Empty(Directory.GetFiles(_root, ".*.payload.tmp.*"));
-
     }
 
     [Fact]
     public async Task Inspect_streaming_honors_cancellation_without_plaintext_staging()
     {
-
         string archive = await WriteArchiveAsync("cancelled-inspect.arcbackup");
 
         using CancellationTokenSource cancellation = new();
@@ -242,18 +457,14 @@ public sealed class BackupArchiveCodecCleanupTests : IDisposable
 
         BackupArchiveCodec codec = new(new BackupArchiveCodecOptions
         {
-
             KdfIterations = 10_000,
 
             InspectAuthenticatedPlaintextProgressForTests = progress =>
             {
-
                 authenticatedPlaintext = progress;
 
                 cancellation.Cancel();
-
             },
-
         });
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(
@@ -265,7 +476,6 @@ public sealed class BackupArchiveCodecCleanupTests : IDisposable
         Assert.True(authenticatedPlaintext > 0);
 
         Assert.Empty(Directory.GetFiles(_root, ".*.payload.tmp.*"));
-
     }
 
     [Theory]
@@ -274,7 +484,6 @@ public sealed class BackupArchiveCodecCleanupTests : IDisposable
     public async Task Inspect_streaming_authenticates_header_and_payload_bytes(
         int corruptionOffset)
     {
-
         string archive = await WriteArchiveAsync("authenticated-inspect.arcbackup");
 
         byte[] bytes = await File.ReadAllBytesAsync(archive);
@@ -300,7 +509,6 @@ public sealed class BackupArchiveCodecCleanupTests : IDisposable
                 CancellationToken.None));
 
         Assert.Empty(Directory.GetFiles(_root, ".*.payload.tmp.*"));
-
     }
 
     [Theory]
@@ -310,7 +518,6 @@ public sealed class BackupArchiveCodecCleanupTests : IDisposable
     public async Task Inspect_streaming_preserves_payload_topology_validation(
         MalformedInspectPayload malformed)
     {
-
         byte[] firstContent = "first payload"u8.ToArray();
 
         BackupManifestEntry first = Entry(
@@ -328,7 +535,6 @@ public sealed class BackupArchiveCodecCleanupTests : IDisposable
 
         if (malformed == MalformedInspectPayload.DuplicatePath)
         {
-
             byte[] secondContent = "second payload"u8.ToArray();
 
             BackupManifestEntry second = Entry(
@@ -341,7 +547,6 @@ public sealed class BackupArchiveCodecCleanupTests : IDisposable
                 BackupArchiveSource.FromMemory(
                     second.Path,
                     secondContent));
-
         }
 
         string archive = Path.Combine(
@@ -367,13 +572,11 @@ public sealed class BackupArchiveCodecCleanupTests : IDisposable
                 CancellationToken.None));
 
         Assert.Empty(Directory.GetFiles(_root, ".*.payload.tmp.*"));
-
     }
 
     [Fact]
     public async Task Write_routes_all_self_verification_artifacts_through_the_protected_scratch_root()
     {
-
         byte[] content = "protected scratch payload"u8.ToArray();
 
         BackupManifestEntry entry = Entry(content);
@@ -402,12 +605,10 @@ public sealed class BackupArchiveCodecCleanupTests : IDisposable
 
         BackupArchiveCodec codec = new(new BackupArchiveCodecOptions
         {
-
             KdfIterations = 10_000,
 
             BeforeTemporaryPayloadCleanupForTests = path =>
             {
-
                 payloadPath = path;
 
                 stagedArchive = Assert.Single(
@@ -416,12 +617,10 @@ public sealed class BackupArchiveCodecCleanupTests : IDisposable
                         candidate,
                         path,
                         StringComparison.Ordinal));
-
             },
 
             BeforeTemporaryExtractionCleanupForTests = path =>
                 extractionRoot = path,
-
         });
 
         await codec.WriteAsync(
@@ -442,13 +641,11 @@ public sealed class BackupArchiveCodecCleanupTests : IDisposable
         Assert.Equal(scratchRoot, Path.GetDirectoryName(extractionRoot));
 
         Assert.Empty(Directory.EnumerateFileSystemEntries(scratchRoot));
-
     }
 
     [Fact]
     public async Task Write_rejects_a_relative_protected_scratch_root()
     {
-
         byte[] content = "relative scratch payload"u8.ToArray();
 
         BackupManifestEntry entry = Entry(content);
@@ -466,13 +663,11 @@ public sealed class BackupArchiveCodecCleanupTests : IDisposable
                 CancellationToken.None));
 
         Assert.False(File.Exists(archive));
-
     }
 
     [Fact]
     public async Task Write_rejects_a_missing_protected_scratch_root()
     {
-
         byte[] content = "missing scratch payload"u8.ToArray();
 
         BackupManifestEntry entry = Entry(content);
@@ -492,13 +687,11 @@ public sealed class BackupArchiveCodecCleanupTests : IDisposable
                 CancellationToken.None));
 
         Assert.False(File.Exists(archive));
-
     }
 
     [Fact]
     public async Task Write_rejects_a_protected_scratch_root_outside_the_destination_parent()
     {
-
         byte[] content = "outside scratch payload"u8.ToArray();
 
         BackupManifestEntry entry = Entry(content);
@@ -524,13 +717,11 @@ public sealed class BackupArchiveCodecCleanupTests : IDisposable
                 CancellationToken.None));
 
         Assert.False(File.Exists(archive));
-
     }
 
     [Fact]
     public async Task Verify_cleanup_refuses_to_delete_a_replacement_extraction_path()
     {
-
         string archive = await WriteArchiveAsync("verify-replacement.arcbackup");
 
         string? replacementRoot = null;
@@ -541,12 +732,10 @@ public sealed class BackupArchiveCodecCleanupTests : IDisposable
 
         BackupArchiveCodec codec = new(new BackupArchiveCodecOptions
         {
-
             KdfIterations = 10_000,
 
             BeforeTemporaryExtractionCleanupForTests = path =>
             {
-
                 replacementRoot = path;
 
                 movedRoot = path + ".owned";
@@ -558,9 +747,7 @@ public sealed class BackupArchiveCodecCleanupTests : IDisposable
                 sentinel = Path.Combine(path, "do-not-delete");
 
                 File.WriteAllText(sentinel, "replacement extraction root");
-
             },
-
         });
 
         BackupVerifyResult result = await codec.VerifyAsync(
@@ -585,13 +772,11 @@ public sealed class BackupArchiveCodecCleanupTests : IDisposable
         Assert.Equal(
             "replacement extraction root",
             await File.ReadAllTextAsync(sentinel));
-
     }
 
     [Fact]
     public async Task Write_refuses_to_publish_or_delete_a_replacement_staging_path()
     {
-
         byte[] content = "staging identity payload"u8.ToArray();
 
         BackupManifestEntry entry = Entry(content);
@@ -604,12 +789,10 @@ public sealed class BackupArchiveCodecCleanupTests : IDisposable
 
         BackupArchiveCodec codec = new(new BackupArchiveCodecOptions
         {
-
             KdfIterations = 10_000,
 
             BeforeTemporaryPayloadCleanupForTests = payloadPath =>
             {
-
                 replacementPath = Assert.Single(
                     Directory.GetFiles(_root, ".*.tmp.*"),
                     path => !string.Equals(
@@ -622,9 +805,7 @@ public sealed class BackupArchiveCodecCleanupTests : IDisposable
                 File.Move(replacementPath, movedPath);
 
                 File.WriteAllText(replacementPath, "replacement staging file");
-
             },
-
         });
 
         IOException error = await Assert.ThrowsAsync<IOException>(
@@ -649,13 +830,11 @@ public sealed class BackupArchiveCodecCleanupTests : IDisposable
             await File.ReadAllTextAsync(replacementPath));
 
         Assert.True(File.Exists(movedPath));
-
     }
 
     [Fact]
     public async Task Inspect_and_verify_remove_normally_owned_temporary_artifacts()
     {
-
         string archive = await WriteArchiveAsync("normal-cleanup.arcbackup");
 
         BackupArchiveCodec codec = CreateCodec();
@@ -679,12 +858,10 @@ public sealed class BackupArchiveCodecCleanupTests : IDisposable
         Assert.Empty(Directory.GetDirectories(_root, ".arcanum-backup-verify-*"));
 
         Assert.Empty(Directory.GetDirectories(_root, ".arcanum-cleanup-*"));
-
     }
 
     private async Task<string> WriteArchiveAsync(string name)
     {
-
         byte[] content = "temporary cleanup payload"u8.ToArray();
 
         BackupManifestEntry entry = Entry(content);
@@ -700,15 +877,39 @@ public sealed class BackupArchiveCodecCleanupTests : IDisposable
             CancellationToken.None);
 
         return archive;
+    }
 
+    /// <summary>
+    /// Lets the staged temp archive pass owner-only verification when it is created and fail every
+    /// later check, which is the one that runs immediately before publication.
+    /// </summary>
+    private void FailStagedArchiveAfterCreation(string archive)
+    {
+        string stagedPrefix = "." + Path.GetFileName(archive) + ".tmp.";
+
+        Dictionary<string, int> checks = [];
+
+        SecureFilePermissions.StrictOwnerOnlyVerificationForTests =
+            (path, isDirectory) =>
+            {
+                if (isDirectory
+                    || !Path.GetFileName(path).StartsWith(stagedPrefix, StringComparison.Ordinal))
+                {
+                    return true;
+                }
+
+                string key = Path.GetFullPath(path);
+
+                checks[key] = checks.GetValueOrDefault(key) + 1;
+
+                return checks[key] == 1;
+            };
     }
 
     private static BackupArchiveCodec CreateCodec() =>
         new(new BackupArchiveCodecOptions
         {
-
             KdfIterations = 10_000,
-
         });
 
     private static BackupManifestEntry Entry(
@@ -766,7 +967,6 @@ public sealed class BackupArchiveCodecCleanupTests : IDisposable
         string archivePath,
         Func<byte[], byte[]> rewrite)
     {
-
         byte[] archive = await File.ReadAllBytesAsync(archivePath);
 
         byte[] header = archive.AsSpan(0, 68).ToArray();
@@ -780,19 +980,16 @@ public sealed class BackupArchiveCodecCleanupTests : IDisposable
         byte[] authenticated = EncryptPayload(header, rewritten);
 
         await File.WriteAllBytesAsync(archivePath, authenticated);
-
     }
 
     private static byte[] MalformPayload(
         byte[] payload,
         MalformedInspectPayload malformed)
     {
-
         TestPayloadRecord[] records = ParseRecords(payload);
 
         if (malformed == MalformedInspectPayload.NonCanonicalPath)
         {
-
             byte[] replacement = Encoding.UTF8.GetBytes(
                 "content//ayload.txt");
 
@@ -804,12 +1001,10 @@ public sealed class BackupArchiveCodecCleanupTests : IDisposable
                     records[0].PathLength));
 
             return payload;
-
         }
 
         if (malformed == MalformedInspectPayload.DuplicatePath)
         {
-
             Assert.True(records.Length >= 3);
 
             Assert.Equal(records[0].PathLength, records[1].PathLength);
@@ -822,7 +1017,6 @@ public sealed class BackupArchiveCodecCleanupTests : IDisposable
                     records[1].PathLength));
 
             return payload;
-
         }
 
         Assert.Equal(MalformedInspectPayload.ManifestNotLast, malformed);
@@ -842,19 +1036,16 @@ public sealed class BackupArchiveCodecCleanupTests : IDisposable
             .CopyTo(reordered.AsSpan(records[1].TotalLength));
 
         return reordered;
-
     }
 
     private static TestPayloadRecord[] ParseRecords(byte[] payload)
     {
-
         List<TestPayloadRecord> records = [];
 
         int offset = 0;
 
         while (offset < payload.Length)
         {
-
             int recordOffset = offset;
 
             int pathLength = BinaryPrimitives.ReadInt32BigEndian(
@@ -879,20 +1070,17 @@ public sealed class BackupArchiveCodecCleanupTests : IDisposable
                 nextOffset - recordOffset));
 
             offset = nextOffset;
-
         }
 
         Assert.Equal(payload.Length, offset);
 
         return [.. records];
-
     }
 
     private static byte[] DecryptPayload(
         byte[] archive,
         byte[] header)
     {
-
         int iterations = BinaryPrimitives.ReadInt32BigEndian(
             header.AsSpan(20));
 
@@ -916,10 +1104,8 @@ public sealed class BackupArchiveCodecCleanupTests : IDisposable
 
         try
         {
-
             while (plaintextOffset < plaintext.Length)
             {
-
                 int length = BinaryPrimitives.ReadInt32BigEndian(
                     archive.AsSpan(archiveOffset, sizeof(int)));
 
@@ -935,22 +1121,18 @@ public sealed class BackupArchiveCodecCleanupTests : IDisposable
 
                 try
                 {
-
                     aes.Decrypt(
                         nonce,
                         archive.AsSpan(archiveOffset, length),
                         archive.AsSpan(archiveOffset + length, 16),
                         plaintext.AsSpan(plaintextOffset, length),
                         associatedData);
-
                 }
                 finally
                 {
-
                     CryptographicOperations.ZeroMemory(nonce);
 
                     CryptographicOperations.ZeroMemory(associatedData);
-
                 }
 
                 archiveOffset += length + 16;
@@ -958,28 +1140,22 @@ public sealed class BackupArchiveCodecCleanupTests : IDisposable
                 plaintextOffset += length;
 
                 chunkIndex++;
-
             }
 
             Assert.Equal(archive.Length, archiveOffset);
 
             return plaintext;
-
         }
         finally
         {
-
             CryptographicOperations.ZeroMemory(key);
-
         }
-
     }
 
     private static byte[] EncryptPayload(
         byte[] header,
         byte[] plaintext)
     {
-
         int iterations = BinaryPrimitives.ReadInt32BigEndian(
             header.AsSpan(20));
 
@@ -1009,10 +1185,8 @@ public sealed class BackupArchiveCodecCleanupTests : IDisposable
 
         try
         {
-
             while (plaintextOffset < plaintext.Length)
             {
-
                 int length = Math.Min(
                     chunkSize,
                     plaintext.Length - plaintextOffset);
@@ -1029,22 +1203,18 @@ public sealed class BackupArchiveCodecCleanupTests : IDisposable
 
                 try
                 {
-
                     aes.Encrypt(
                         nonce,
                         plaintext.AsSpan(plaintextOffset, length),
                         archive.AsSpan(archiveOffset, length),
                         archive.AsSpan(archiveOffset + length, 16),
                         associatedData);
-
                 }
                 finally
                 {
-
                     CryptographicOperations.ZeroMemory(nonce);
 
                     CryptographicOperations.ZeroMemory(associatedData);
-
                 }
 
                 archiveOffset += length + 16;
@@ -1052,55 +1222,43 @@ public sealed class BackupArchiveCodecCleanupTests : IDisposable
                 plaintextOffset += length;
 
                 chunkIndex++;
-
             }
 
             Assert.Equal(archive.Length, archiveOffset);
 
             return archive;
-
         }
         finally
         {
-
             CryptographicOperations.ZeroMemory(key);
-
         }
-
     }
 
     private static byte[] DeriveTestKey(
         byte[] header,
         int iterations)
     {
-
         byte[] passphrase = Encoding.UTF8.GetBytes(Passphrase);
 
         try
         {
-
             return Rfc2898DeriveBytes.Pbkdf2(
                 passphrase,
                 header.AsSpan(44, 16),
                 iterations,
                 HashAlgorithmName.SHA256,
                 32);
-
         }
         finally
         {
-
             CryptographicOperations.ZeroMemory(passphrase);
-
         }
-
     }
 
     private static byte[] Nonce(
         byte[] header,
         uint chunkIndex)
     {
-
         byte[] nonce = new byte[12];
 
         header.AsSpan(60, 8).CopyTo(nonce);
@@ -1110,14 +1268,12 @@ public sealed class BackupArchiveCodecCleanupTests : IDisposable
             chunkIndex);
 
         return nonce;
-
     }
 
     private static byte[] AssociatedData(
         byte[] header,
         uint chunkIndex)
     {
-
         byte[] associatedData = new byte[header.Length + sizeof(uint)];
 
         header.CopyTo(associatedData, 0);
@@ -1127,18 +1283,15 @@ public sealed class BackupArchiveCodecCleanupTests : IDisposable
             chunkIndex);
 
         return associatedData;
-
     }
 
     public enum MalformedInspectPayload
     {
-
         NonCanonicalPath,
 
         DuplicatePath,
 
         ManifestNotLast,
-
     }
 
     private readonly record struct TestPayloadRecord(
@@ -1147,4 +1300,27 @@ public sealed class BackupArchiveCodecCleanupTests : IDisposable
         int PathLength,
         int TotalLength);
 
+    private sealed class CapturingSink : ILogEventSink
+    {
+        private readonly List<LogEvent> _events = [];
+
+        public IReadOnlyList<LogEvent> Events
+        {
+            get
+            {
+                lock (_events)
+                {
+                    return [.. _events];
+                }
+            }
+        }
+
+        public void Emit(LogEvent logEvent)
+        {
+            lock (_events)
+            {
+                _events.Add(logEvent);
+            }
+        }
+    }
 }

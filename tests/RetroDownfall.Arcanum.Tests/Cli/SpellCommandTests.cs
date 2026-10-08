@@ -426,6 +426,165 @@ public sealed class SpellCommandTests
             "The spell body preview emitted an unpaired surrogate.");
     }
 
+    /// <summary>
+    /// The host reports a failed validation as a successful result carrying <c>IsValid=false</c>; the
+    /// command is the only place that can turn it into an exit status, and a validation that can never
+    /// fail cannot gate a pipeline.
+    /// </summary>
+    [Fact]
+    public void Validate_returns_nonzero_when_the_host_reports_the_spell_invalid()
+    {
+        RecordingHandler handler = new(_ => CreateResponse(
+            new ApiResponse<SpellValidationResultDto>(
+                new SpellValidationResultDto(false, ["frontmatter-problem"], []),
+                true,
+                null),
+            ArcanumJsonContext.Default.ApiResponseSpellValidationResultDto));
+
+        CliTestResult result = RunCommand(handler, ["spell", "validate", "broken"]);
+
+        Assert.Equal((int)CliExitCode.GenericError, result.ExitCode);
+
+        Assert.Contains("frontmatter-problem", result.Output, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Validate_returns_zero_for_a_valid_spell()
+    {
+        RecordingHandler handler = new(_ => CreateResponse(
+            new ApiResponse<SpellValidationResultDto>(
+                new SpellValidationResultDto(true, [], ["a-warning"]),
+                true,
+                null),
+            ArcanumJsonContext.Default.ApiResponseSpellValidationResultDto));
+
+        CliTestResult result = RunCommand(handler, ["spell", "validate", "fine"]);
+
+        Assert.Equal(0, result.ExitCode);
+
+        Assert.Contains("a-warning", result.Output, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Validate_under_json_writes_the_validation_result_as_the_one_document()
+    {
+        RecordingHandler handler = new(_ => CreateResponse(
+            new ApiResponse<SpellValidationResultDto>(
+                new SpellValidationResultDto(false, ["frontmatter-problem"], []),
+                true,
+                null),
+            ArcanumJsonContext.Default.ApiResponseSpellValidationResultDto));
+
+        CliTestResult result = RunCommand(handler, ["--json", "spell", "validate", "broken"]);
+
+        Assert.Equal((int)CliExitCode.GenericError, result.ExitCode);
+
+        using JsonDocument document = JsonDocument.Parse(result.Output);
+
+        Assert.False(document.RootElement.GetProperty("isValid").GetBoolean());
+
+        Assert.Equal("frontmatter-problem", document.RootElement.GetProperty("errors")[0].GetString());
+    }
+
+    [Fact]
+    public void Update_without_any_field_exits_2_and_sends_nothing()
+    {
+        RecordingHandler handler = new();
+
+        CliTestResult result = RunCommand(handler, ["spell", "update", "greet", "--workspace", "/tmp/ws"]);
+
+        Assert.Equal((int)CliExitCode.ConfigurationError, result.ExitCode);
+
+        Assert.Empty(handler.Requests);
+
+        Assert.Contains("--description", result.Error, StringComparison.Ordinal);
+
+        Assert.Contains("--tag", result.Error, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// R-327: <c>spell export --output</c> over an existing file asks first and a refusal leaves the
+    /// file untouched; a confirmed overwrite goes through a temporary sibling that is not left behind.
+    /// </summary>
+    [Fact]
+    public void Export_prompts_before_overwriting_an_existing_output_file()
+    {
+        string directory = Path.Combine(
+            Path.GetTempPath(),
+            $"arcanum-spell-export-{Guid.NewGuid():N}");
+
+        Directory.CreateDirectory(directory);
+
+        string output = Path.Combine(directory, "spell.json");
+
+        File.WriteAllText(output, "original");
+
+        try
+        {
+            RecordingPrompt declined = new(answer: false);
+
+            RecordingHandler declinedHandler = new(_ => SpellExportResponse());
+
+            CliTestResult refused = RunCommand(
+                declinedHandler,
+                ["spell", "export", "greet", "--output", output],
+                configureServices: services => UsePrompt(services, declined));
+
+            Assert.Equal(0, refused.ExitCode);
+
+            // The overwrite question is settled before the export is fetched, so a refusal costs no request.
+            Assert.Empty(declinedHandler.Requests);
+
+            Assert.Equal("original", File.ReadAllText(output));
+
+            Assert.Contains(
+                Path.GetFullPath(output),
+                Assert.Single(declined.Questions),
+                StringComparison.Ordinal);
+
+            CliTestResult approved = RunCommand(
+                new RecordingHandler(_ => SpellExportResponse()),
+                ["spell", "export", "greet", "--output", output],
+                configureServices: services => UsePrompt(services, new RecordingPrompt(answer: true)));
+
+            Assert.Equal(0, approved.ExitCode);
+
+            Assert.Contains("exported content", File.ReadAllText(output), StringComparison.Ordinal);
+
+            Assert.Equal(
+                ["spell.json"],
+                Directory.GetFileSystemEntries(directory).Select(Path.GetFileName));
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    private static void UsePrompt(ServiceCollection services, IConfirmationPrompt prompt)
+    {
+        services.RemoveAll<IConfirmationPrompt>();
+
+        services.AddSingleton(prompt);
+    }
+
+    private static HttpResponseMessage SpellExportResponse() =>
+        CreateResponse(
+            new ApiResponse<SpellExportDto>(new SpellExportDto(null, "exported content", []), true, null),
+            ArcanumJsonContext.Default.ApiResponseSpellExportDto);
+
+    private sealed class RecordingPrompt(bool answer) : IConfirmationPrompt
+    {
+        public List<string> Questions { get; } = [];
+
+        public Task<bool> PromptForConfirmationAsync(string question, CancellationToken cancellationToken)
+        {
+            Questions.Add(question);
+
+            return Task.FromResult(answer);
+        }
+    }
+
     private static CliTestResult RunCommand(
         RecordingHandler handler,
         string[] args,

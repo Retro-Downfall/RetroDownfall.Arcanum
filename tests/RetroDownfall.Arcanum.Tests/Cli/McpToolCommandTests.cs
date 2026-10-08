@@ -14,6 +14,8 @@ using RetroDownfall.Arcanum.Api.Serialization;
 
 using RetroDownfall.Arcanum.Cli.Commands;
 
+using RetroDownfall.Arcanum.Cli.Commands.Configuration;
+
 using RetroDownfall.Arcanum.Cli.Infrastructure;
 
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
@@ -23,6 +25,11 @@ using RetroDownfall.Arcanum.Core.Mcp;
 using RetroDownfall.Arcanum.Core.Primitives;
 
 using RetroDownfall.Arcanum.Core.Security;
+
+using RetroDownfall.Arcanum.Core.Workspaces;
+
+using RetroDownfall.Arcanum.Infrastructure.Mcp;
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Cli;
 
@@ -69,7 +76,7 @@ public sealed class McpToolCommandTests
 
     [Fact]
 
-    public void Mcp_list_shows_safe_scope_transport_trust_lifecycle_tool_count_and_error()
+    public void Mcp_list_shows_safe_scope_transport_lifecycle_tool_count_and_error()
     {
         McpServerInfo server = WorkspaceServer() with
         {
@@ -92,8 +99,6 @@ public sealed class McpToolCommandTests
 
         Assert.Contains("Transport", result.Output, StringComparison.Ordinal);
 
-        Assert.Contains("Trust", result.Output, StringComparison.Ordinal);
-
         Assert.Contains("Lifecycle", result.Output, StringComparison.Ordinal);
 
         Assert.Contains("Tools", result.Output, StringComparison.Ordinal);
@@ -103,8 +108,6 @@ public sealed class McpToolCommandTests
         Assert.Contains("error", result.Output, StringComparison.OrdinalIgnoreCase);
 
         Assert.Contains("workspace", result.Output, StringComparison.OrdinalIgnoreCase);
-
-        Assert.Contains("trusted", result.Output, StringComparison.OrdinalIgnoreCase);
 
         Assert.Contains("connection", result.Output, StringComparison.Ordinal);
 
@@ -174,21 +177,28 @@ public sealed class McpToolCommandTests
 
         Assert.Equal("/api/mcp/workspace-server", handler.Requests[^1].RequestUri!.AbsolutePath);
 
-        Assert.Contains("trusted", result.Output, StringComparison.OrdinalIgnoreCase);
-
         Assert.Contains("workspace", result.Output, StringComparison.OrdinalIgnoreCase);
     }
+
+    private const string PreviewPath = "/api/mcp/trust-workspace/preview";
+
+    private const string TrustPath = "/api/mcp/trust-workspace";
+
+    private const string PreviewedDigest = "A1B2C3D4E5F60718293A4B5C6D7E8F90A1B2C3D4E5F60718293A4B5C6D7E8F90";
 
     [Fact]
 
     public void Mcp_reload_and_trust_send_explicit_workspace_scope()
     {
         RecordingHandler handler = new(request =>
-            request.RequestUri!.AbsolutePath.EndsWith("/reload", StringComparison.Ordinal)
-                ? CreateResponse(
+            request.RequestUri!.AbsolutePath switch
+            {
+                var path when path.EndsWith("/reload", StringComparison.Ordinal) => CreateResponse(
                     new ApiResponse<string>("reloaded", true, null),
-                    ArcanumJsonContext.Default.ApiResponseString)
-                : BooleanResponse());
+                    ArcanumJsonContext.Default.ApiResponseString),
+                PreviewPath => PreviewResponse(Preview("/srv/workspace")),
+                _ => BooleanResponse(),
+            });
 
         CliTestResult reload = RunCommand(
             handler,
@@ -196,15 +206,15 @@ public sealed class McpToolCommandTests
 
         CliTestResult trust = RunCommand(
             handler,
-            ["mcp", "trust", "/srv/workspace"]);
+            ["--yes", "mcp", "trust", "/srv/workspace"]);
 
         Assert.Equal(0, reload.ExitCode);
 
         Assert.Equal(0, trust.ExitCode);
 
-        Assert.Equal("/api/mcp/reload", handler.Requests[0].RequestUri!.AbsolutePath);
-
-        Assert.Equal("/api/mcp/trust-workspace", handler.Requests[1].RequestUri!.AbsolutePath);
+        Assert.Equal(
+            ["/api/mcp/reload", PreviewPath, TrustPath],
+            handler.Requests.Select(static request => request.RequestUri!.AbsolutePath));
 
         Assert.All(
             handler.Requests,
@@ -212,6 +222,229 @@ public sealed class McpToolCommandTests
                 "\"workingDirectory\":\"/srv/workspace\"",
                 ReadBody(request),
                 StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// R-336: <c>mcp trust</c> grants a workspace-local <c>mcp.json</c> the right to launch its commands,
+    /// so it shows the servers and commands in the file it is about to trust and asks first. The preview is
+    /// the host's reading of its own copy, so a refusal reaches the host only as the preview request, never
+    /// as a trust request.
+    /// </summary>
+    [Fact]
+
+    public void Trust_asks_for_confirmation_and_does_not_call_the_trust_route_when_declined()
+    {
+        McpWorkspaceTrustPreview preview = Preview(
+            "/srv/workspace",
+            "  build-helper [stdio] /bin/sh -c \"echo pwned\"",
+            "    environment: API_TOKEN (values not shown)",
+            "  remote [http] https://example.test/mcp");
+
+        RecordingPrompt prompt = new(answer: false);
+
+        RecordingHandler handler = new(_ => PreviewResponse(preview));
+
+        CliTestResult result = RunCommand(handler, ["mcp", "trust", "/srv/workspace"], prompt);
+
+        Assert.Equal(0, result.ExitCode);
+
+        HttpRequestMessage request = Assert.Single(handler.Requests);
+
+        Assert.Equal(PreviewPath, request.RequestUri!.AbsolutePath);
+
+        string question = Assert.Single(prompt.Questions);
+
+        Assert.Contains("/srv/workspace", question, StringComparison.Ordinal);
+
+        foreach (string line in preview.Lines)
+        {
+            Assert.Contains(line, result.Error, StringComparison.Ordinal);
+        }
+
+        Assert.DoesNotContain("trusted", result.Output, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// R-336: the approval is for the bytes the operator was shown, so the trust request carries the digest
+    /// the host reported with the preview. The host refuses if the file is no longer those bytes.
+    /// </summary>
+    [Fact]
+
+    public void Trust_sends_the_previewed_digest_with_the_trust_request()
+    {
+        RecordingHandler handler = new(request =>
+            request.RequestUri!.AbsolutePath == PreviewPath
+                ? PreviewResponse(Preview("/srv/workspace", "  files [stdio] npx -y server-files"))
+                : BooleanResponse());
+
+        CliTestResult result = RunCommand(
+            handler,
+            ["mcp", "trust", "/srv/workspace"],
+            new RecordingPrompt(answer: true));
+
+        Assert.Equal(0, result.ExitCode);
+
+        Assert.Equal(2, handler.Requests.Count);
+
+        HttpRequestMessage trust = handler.Requests[1];
+
+        Assert.Equal(TrustPath, trust.RequestUri!.AbsolutePath);
+
+        string body = ReadBody(trust);
+
+        Assert.Contains("\"workingDirectory\":\"/srv/workspace\"", body, StringComparison.Ordinal);
+
+        Assert.Contains($"\"expectedConfigDigest\":\"{PreviewedDigest}\"", body, StringComparison.Ordinal);
+
+        Assert.Contains("npx -y server-files", result.Error, StringComparison.Ordinal);
+
+        Assert.Contains("Workspace MCP trusted", result.Output, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// R-336: a field the host had to cut short is never approved, not even with <c>--yes</c>. The preview
+    /// says so, nothing is asked, and the trust route is never called.
+    /// </summary>
+    [Theory]
+
+    [InlineData(false)]
+
+    [InlineData(true)]
+
+    public void Trust_refuses_a_preview_the_host_marked_truncated(bool withYes)
+    {
+        McpWorkspaceTrustPreview preview = Preview(
+            "/srv/workspace",
+            "  long [stdio] sh -c aaaa [16 more characters not shown]") with
+        {
+            Truncated = true,
+        };
+
+        RecordingPrompt prompt = new(answer: true);
+
+        RecordingHandler handler = new(_ => PreviewResponse(preview));
+
+        string[] arguments = withYes
+            ? ["mcp", "trust", "/srv/workspace", "--yes"]
+            : ["mcp", "trust", "/srv/workspace"];
+
+        CliTestResult result = RunCommand(handler, arguments, prompt);
+
+        Assert.Equal((int)CliExitCode.ConfigurationError, result.ExitCode);
+
+        Assert.Equal(PreviewPath, Assert.Single(handler.Requests).RequestUri!.AbsolutePath);
+
+        Assert.Empty(prompt.Questions);
+
+        Assert.Contains("[16 more characters not shown]", result.Error, StringComparison.Ordinal);
+
+        Assert.Contains("nothing was trusted", result.Error, StringComparison.OrdinalIgnoreCase);
+
+        Assert.DoesNotContain("trusted:", result.Output, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// R-336: a host that cannot describe the file (none there, not JSON, too large) is not asked to trust
+    /// it. The failure is reported, nothing is asked, and nothing is trusted, <c>--yes</c> included.
+    /// </summary>
+    [Fact]
+
+    public void Trust_reports_a_preview_failure_and_asks_nothing()
+    {
+        RecordingPrompt prompt = new(answer: true);
+
+        RecordingHandler handler = new(_ => CreateResponse(
+            new ApiResponse<McpWorkspaceTrustPreview>(
+                default,
+                false,
+                new Error("Mcp.MissingConfig", "Workspace mcp.json was not found.")),
+            ArcanumJsonContext.Default.ApiResponseMcpWorkspaceTrustPreview,
+            HttpStatusCode.BadRequest));
+
+        CliTestResult result = RunCommand(
+            handler,
+            ["--yes", "mcp", "trust", "/srv/workspace-without-a-config"],
+            prompt);
+
+        Assert.NotEqual(0, result.ExitCode);
+
+        Assert.Equal(PreviewPath, Assert.Single(handler.Requests).RequestUri!.AbsolutePath);
+
+        Assert.Empty(prompt.Questions);
+
+        Assert.Contains("Mcp.MissingConfig", result.Error, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("trusted:", result.Output, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// R-336: when the file changed between the preview and the approval the host refuses with
+    /// <c>Mcp.ConfigChanged</c> and records nothing. The CLI reports that and does not claim success.
+    /// </summary>
+    [Fact]
+
+    public void Trust_reports_a_file_that_changed_after_it_was_previewed()
+    {
+        RecordingHandler handler = new(request =>
+            request.RequestUri!.AbsolutePath == PreviewPath
+                ? PreviewResponse(Preview("/srv/workspace", "  files [stdio] npx -y server-files"))
+                : CreateResponse(
+                    new ApiResponse<bool>(
+                        false,
+                        false,
+                        new Error(
+                            "Mcp.ConfigChanged",
+                            "The workspace mcp.json changed after it was previewed, so nothing was trusted.")),
+                    ArcanumJsonContext.Default.ApiResponseBoolean,
+                    HttpStatusCode.BadRequest));
+
+        CliTestResult result = RunCommand(
+            handler,
+            ["mcp", "trust", "/srv/workspace"],
+            new RecordingPrompt(answer: true));
+
+        Assert.NotEqual(0, result.ExitCode);
+
+        Assert.Equal(2, handler.Requests.Count);
+
+        Assert.Contains("Mcp.ConfigChanged", result.Error, StringComparison.Ordinal);
+
+        Assert.Contains("changed after it was previewed", result.Error, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("Workspace MCP trusted", result.Output, StringComparison.Ordinal);
+    }
+
+    private static McpWorkspaceTrustPreview Preview(
+        string workspace,
+        params string[] serverLines) =>
+        new(
+            workspace,
+            [
+                serverLines.Length == 0
+                    ? $"The mcp.json in {workspace} defines no MCP servers."
+                    : $"The mcp.json in {workspace} defines {serverLines.Length} MCP server(s):",
+                .. serverLines,
+            ],
+            Truncated: false,
+            PreviewedDigest);
+
+    private static HttpResponseMessage PreviewResponse(McpWorkspaceTrustPreview preview) =>
+        CreateResponse(
+            new ApiResponse<McpWorkspaceTrustPreview>(preview, true, null),
+            ArcanumJsonContext.Default.ApiResponseMcpWorkspaceTrustPreview);
+
+    private sealed class RecordingPrompt(bool answer) : IConfirmationPrompt
+    {
+        public List<string> Questions { get; } = [];
+
+        public Task<bool> PromptForConfirmationAsync(
+            string question,
+            CancellationToken cancellationToken)
+        {
+            Questions.Add(question);
+
+            return Task.FromResult(answer);
+        }
     }
 
     [Fact]
@@ -266,7 +499,7 @@ public sealed class McpToolCommandTests
 
             McpToolInvokeResponse response = new()
             {
-                Result = JsonSerializer.SerializeToElement(new { answer = 42 }),
+                Result = JsonSerializer.SerializeToElement(new { answer = 42 }, AdHocJson.Options),
 
                 ServerName = "workspace-server",
 
@@ -315,9 +548,17 @@ public sealed class McpToolCommandTests
 
         Assert.Contains("\"workingDirectory\":\"/srv/workspace\"", body, StringComparison.Ordinal);
 
-        Assert.Contains("42", result.Output, StringComparison.Ordinal);
+        // stdout is the raw result and nothing else: a redirect to a file must parse as JSON.
+        using JsonDocument document = JsonDocument.Parse(result.Output);
 
-        Assert.Contains("12", result.Output, StringComparison.Ordinal);
+        Assert.Equal(42, document.RootElement.GetProperty("answer").GetInt32());
+
+        Assert.DoesNotContain("12ms", result.Output, StringComparison.Ordinal);
+
+        // The summary, and the only signal that the result was cut, goes to the diagnostic stream.
+        Assert.Contains("12ms", result.Error, StringComparison.Ordinal);
+
+        Assert.Contains("truncated: no", result.Error, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -426,7 +667,7 @@ public sealed class McpToolCommandTests
 
                 ToolInvokeResponse response = new()
                 {
-                    Result = JsonSerializer.SerializeToElement("12:00"),
+                    Result = JsonSerializer.SerializeToElement("12:00", AdHocJson.Options),
                 };
 
                 return CreateResponse(
@@ -486,7 +727,7 @@ public sealed class McpToolCommandTests
 
             ToolInvokeResponse response = new()
             {
-                Result = JsonSerializer.SerializeToElement("ok"),
+                Result = JsonSerializer.SerializeToElement("ok", AdHocJson.Options),
             };
 
             return CreateResponse(
@@ -519,6 +760,171 @@ public sealed class McpToolCommandTests
         Assert.False(success);
 
         Assert.Contains("input limit", error, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// <c>--workspace</c> takes a workspace ID, name, or server path. A name used to be compared to the
+    /// servers' working directories as raw text and matched nothing, and a saved context workspace hid
+    /// every global server, which belongs to every workspace.
+    /// </summary>
+    [Fact]
+    public void Mcp_list_workspace_accepts_a_workspace_name_and_keeps_global_servers()
+    {
+        McpServerInfo global = WorkspaceServer() with { Name = "global-server", WorkingDirectory = null };
+
+        McpServerInfo project = WorkspaceServer() with { Name = "project-server", WorkingDirectory = "/srv/proj" };
+
+        McpServerInfo other = WorkspaceServer() with { Name = "other-server", WorkingDirectory = "/srv/other" };
+
+        WorkspaceInfo registered = new("ws-1", "proj", "/srv/proj", WorkspaceType.Custom, DateTimeOffset.UtcNow);
+
+        RecordingHandler handler = new(request =>
+            request.RequestUri!.AbsolutePath == "/api/workspaces"
+                ? CreateResponse(
+                    new ApiResponse<WorkspaceInfo[]>([registered], true, null),
+                    ArcanumJsonContext.Default.ApiResponseWorkspaceInfoArray)
+                : McpListResponse([global, project, other]));
+
+        CliTestResult result = RunCommand(handler, ["mcp", "list", "--workspace", "proj"]);
+
+        Assert.Equal(0, result.ExitCode);
+
+        Assert.Contains("global-server", result.Output, StringComparison.Ordinal);
+
+        Assert.Contains("project-server", result.Output, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("other-server", result.Output, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Mcp_list_workspace_by_path_keeps_global_servers_and_drops_other_workspaces()
+    {
+        McpServerInfo global = WorkspaceServer() with { Name = "global-server", WorkingDirectory = null };
+
+        McpServerInfo project = WorkspaceServer() with { Name = "project-server", WorkingDirectory = "/srv/proj" };
+
+        McpServerInfo other = WorkspaceServer() with { Name = "other-server", WorkingDirectory = "/srv/other" };
+
+        RecordingHandler handler = new(_ => McpListResponse([global, project, other]));
+
+        CliTestResult result = RunCommand(handler, ["mcp", "list", "--workspace", "/srv/proj/"]);
+
+        Assert.Equal(0, result.ExitCode);
+
+        Assert.Contains("global-server", result.Output, StringComparison.Ordinal);
+
+        Assert.Contains("project-server", result.Output, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("other-server", result.Output, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// A path-looking <c>--workspace</c> is canonicalised before it is compared, so a relative spelling, a
+    /// dot segment and doubled or trailing separators name the server's directory the way its absolute
+    /// spelling does.
+    /// </summary>
+    [Theory]
+    [InlineData("./mcp-proj/")]
+    [InlineData("sub/../mcp-proj")]
+    [InlineData("./mcp-proj//")]
+    public void Mcp_list_workspace_accepts_a_relative_spelling_of_the_servers_directory(string spelling)
+    {
+        McpServerInfo project = WorkspaceServer() with
+        {
+            Name = "project-server",
+            WorkingDirectory = Path.Combine(global::System.Environment.CurrentDirectory, "mcp-proj"),
+        };
+
+        McpServerInfo other = WorkspaceServer() with
+        {
+            Name = "other-server",
+            WorkingDirectory = Path.Combine(global::System.Environment.CurrentDirectory, "mcp-other"),
+        };
+
+        RecordingHandler handler = new(_ => McpListResponse([project, other]));
+
+        CliTestResult result = RunCommand(handler, ["mcp", "list", "--workspace", spelling]);
+
+        Assert.Equal(0, result.ExitCode);
+
+        Assert.Contains("project-server", result.Output, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("other-server", result.Output, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// A server-owned Windows path matches in either separator and any case, on every platform, because
+    /// Windows treats them as one location. The Windows lane of this is
+    /// <c>McpWorkspacePathTests.On_Windows_a_real_path_in_another_case_and_separator_is_the_same_location</c>.
+    /// </summary>
+    [Fact]
+    public void Mcp_list_workspace_accepts_a_windows_path_in_another_separator_and_case()
+    {
+        McpServerInfo project = WorkspaceServer() with { Name = "project-server", WorkingDirectory = @"C:\Srv\Proj" };
+
+        McpServerInfo other = WorkspaceServer() with { Name = "other-server", WorkingDirectory = @"D:\srv\proj" };
+
+        RecordingHandler handler = new(_ => McpListResponse([project, other]));
+
+        CliTestResult result = RunCommand(handler, ["mcp", "list", "--workspace", "c:/srv/proj/"]);
+
+        Assert.Equal(0, result.ExitCode);
+
+        Assert.Contains("project-server", result.Output, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("other-server", result.Output, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The path the host is asked about is the canonical one, so a relative <c>--workspace</c> reaches it
+    /// as the absolute path the CLI's own current directory makes it, not as text the host would resolve
+    /// against its own.
+    /// </summary>
+    [Fact]
+    public void Mcp_reload_sends_the_canonical_absolute_workspace_path()
+    {
+        RecordingHandler handler = new(_ => CreateResponse(
+            new ApiResponse<string>("reloaded", true, null),
+            ArcanumJsonContext.Default.ApiResponseString));
+
+        CliTestResult reload = RunCommand(handler, ["mcp", "reload", "--workspace", "./mcp-proj/"]);
+
+        Assert.Equal(0, reload.ExitCode);
+
+        using JsonDocument body = JsonDocument.Parse(ReadBody(Assert.Single(handler.Requests)));
+
+        Assert.Equal(
+            Path.Combine(global::System.Environment.CurrentDirectory, "mcp-proj"),
+            body.RootElement.GetProperty("workingDirectory").GetString());
+    }
+
+    /// <summary>
+    /// The listing knows only a server's working directory, which says where it was configured and
+    /// nothing about whether the host trusts that configuration, so it does not print a trust verdict.
+    /// </summary>
+    [Fact]
+    public void Mcp_list_does_not_claim_trust_the_host_did_not_report()
+    {
+        RecordingHandler handler = new(_ => McpListResponse([WorkspaceServer()]));
+
+        CliTestResult list = RunCommand(handler, ["mcp", "list"]);
+
+        Assert.Equal(0, list.ExitCode);
+
+        Assert.DoesNotContain("trust", list.Output, StringComparison.OrdinalIgnoreCase);
+
+        CliTestResult show = RunCommand(
+            new RecordingHandler(request =>
+                request.RequestUri!.AbsolutePath == "/api/mcp"
+                    ? McpListResponse([WorkspaceServer()])
+                    : CreateResponse(
+                        new ApiResponse<McpServerInfo>(WorkspaceServer(), true, null),
+                        ArcanumJsonContext.Default.ApiResponseMcpServerInfo)),
+            ["mcp", "show", "workspace-server"]);
+
+        Assert.Equal(0, show.ExitCode);
+
+        Assert.DoesNotContain("trust", show.Output, StringComparison.OrdinalIgnoreCase);
     }
 
     private static McpServerInfo WorkspaceServer() =>
@@ -583,7 +989,8 @@ public sealed class McpToolCommandTests
 
     private static CliTestResult RunCommand(
         RecordingHandler handler,
-        string[] args)
+        string[] args,
+        IConfirmationPrompt? prompt = null)
     {
         ServiceCollection services = new();
 
@@ -604,6 +1011,13 @@ public sealed class McpToolCommandTests
         CliTestHarness.AddKeyedArcanumResponder(
             services,
             "test-key");
+
+        if (prompt is not null)
+        {
+            services.RemoveAll<IConfirmationPrompt>();
+
+            services.AddSingleton(prompt);
+        }
 
         return CliTestHarness.Run(services, args);
     }

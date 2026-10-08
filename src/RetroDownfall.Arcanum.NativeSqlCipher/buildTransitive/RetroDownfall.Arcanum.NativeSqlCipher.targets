@@ -31,9 +31,11 @@
   <ItemGroup>
 
     <!--
-      The runtime validator compares the loaded library against the same provenance the build and
-      verify scripts use, so the manifest travels inside the assembly rather than being read from a
-      path that a deployed installation may not have.
+      The manifest is embedded so the test-time native runtime validator (SqlCipherCompatibilityTests)
+      compares the delivered library against the same provenance the build and verify scripts use.
+      NativeSqlCipherDeliveryTests hash-checks the delivered file against the on-disk manifest
+      instead and never reads the embedded copy. No host code reads it at run time: the behavioral
+      and hash proofs are build, CI, and test-time gates (docs/Arcanum.DESIGN.md section 5.4).
     -->
     <EmbeddedResource Include="$(ArcanumSqlCipherAssetRoot)native-source-manifest.json">
 

@@ -13,21 +13,17 @@ namespace RetroDownfall.Arcanum.Cli.Commands.Conclave;
 
 internal static class ApprenticeCommandSupport
 {
-
     private const int MaxDerivedNameChars = 60;
 
     public static string DeriveNameFromGoal(string goal)
     {
-
         string trimmed = goal.Trim();
 
         return trimmed.Length > MaxDerivedNameChars ? trimmed[..MaxDerivedNameChars] + "\u2026" : trimmed;
-
     }
 
     public static void WriteApprenticeDetailPanel(ApprenticeDetailDto apprentice, IThemePalette themePalette)
     {
-
         Table table = new();
 
         table.Border(TableBorder.None);
@@ -40,11 +36,11 @@ internal static class ApprenticeCommandSupport
 
         table.AddRow(themePalette.MutedMarkup(Markup.Escape("Id:")), themePalette.TextMarkup(Markup.Escape(apprentice.Id.ToString("D"))));
 
-        table.AddRow(themePalette.MutedMarkup(Markup.Escape("Name:")), themePalette.HighlightMarkup(Markup.Escape(apprentice.Name)));
+        table.AddRow(themePalette.MutedMarkup(Markup.Escape("Name:")), themePalette.HighlightMarkup(Markup.Escape(TerminalTextSanitizer.SanitizeLine(apprentice.Name))));
 
-        table.AddRow(themePalette.MutedMarkup(Markup.Escape("Goal:")), themePalette.TextMarkup(Markup.Escape(apprentice.Goal)));
+        table.AddRow(themePalette.MutedMarkup(Markup.Escape("Goal:")), themePalette.TextMarkup(Markup.Escape(TerminalTextSanitizer.SanitizeLine(apprentice.Goal))));
 
-        table.AddRow(themePalette.MutedMarkup(Markup.Escape("Status:")), themePalette.TextMarkup(Markup.Escape(apprentice.Status)));
+        table.AddRow(themePalette.MutedMarkup(Markup.Escape("Status:")), themePalette.TextMarkup(Markup.Escape(TerminalTextSanitizer.SanitizeLine(apprentice.Status))));
 
         table.AddRow(
             themePalette.MutedMarkup(Markup.Escape("Current step:")),
@@ -56,18 +52,18 @@ internal static class ApprenticeCommandSupport
 
         table.AddRow(
             themePalette.MutedMarkup(Markup.Escape("Workspace:")),
-            themePalette.TextMarkup(Markup.Escape(apprentice.WorkspacePath)));
+            themePalette.TextMarkup(Markup.Escape(TerminalTextSanitizer.SanitizeLine(apprentice.WorkspacePath))));
 
         if (!string.IsNullOrWhiteSpace(apprentice.ErrorMessage))
         {
             table.AddRow(
                 themePalette.MutedMarkup(Markup.Escape("Error:")),
-                themePalette.ErrorMarkup(Markup.Escape(apprentice.ErrorMessage)));
+                themePalette.ErrorMarkup(Markup.Escape(TerminalTextSanitizer.SanitizeLine(apprentice.ErrorMessage))));
         }
 
         Panel panel = new(table)
         {
-            Header = new PanelHeader(themePalette.HeadingBoldMarkup(Markup.Escape($"Apprentice: {apprentice.Name}"))),
+            Header = new PanelHeader(themePalette.HeadingBoldMarkup(Markup.Escape($"Apprentice: {TerminalTextSanitizer.SanitizeLine(apprentice.Name)}"))),
             Border = BoxBorder.Rounded,
             BorderStyle = themePalette.HighlightStyle(),
         };
@@ -89,18 +85,14 @@ internal static class ApprenticeCommandSupport
 
         foreach (PlanStep step in apprentice.Plan)
         {
-
             planTable.AddRow(
                 new Markup(themePalette.TextMarkup(Markup.Escape(step.Index.ToString(System.Globalization.CultureInfo.InvariantCulture)))),
-                new Markup(themePalette.TextMarkup(Markup.Escape(step.Description))),
-                new Markup(themePalette.MutedMarkup(Markup.Escape(step.Status))));
-
+                new Markup(themePalette.TextMarkup(Markup.Escape(TerminalTextSanitizer.SanitizeLine(step.Description)))),
+                new Markup(themePalette.MutedMarkup(Markup.Escape(TerminalTextSanitizer.SanitizeLine(step.Status)))));
         }
 
         AnsiConsole.Write(planTable);
-
     }
-
 }
 
 /// <summary>
@@ -112,9 +104,8 @@ public sealed class ApprenticeCommands(
     WatchCommands watchCommands,
     IConfirmationPrompt confirmationPrompt,
     IOptions<ArcanumSettings> settings,
-    ICliResourceCatalog? resourceCatalog = null)
+    ICliResourceCatalog resourceCatalog)
 {
-
     private void WriteError(Error error) =>
         CliErrorOutput.WriteMarkupLine(
             themePalette.ErrorMarkup(CliFailureExit.Annotate(error, settings.Value.Host)));
@@ -122,7 +113,7 @@ public sealed class ApprenticeCommands(
     /// <summary>
     /// List Apprentices (GET /api/apprentices).
     /// </summary>
-    /// <param name="campaignId">--campaignId, Filter by campaign GUID.</param>
+    /// <param name="campaignId">--campaign-id, Filter by campaign GUID.</param>
     /// <param name="status">Filter by status.</param>
     /// <param name="limit">Maximum number of Apprentices to return.</param>
     public async Task<int> List(
@@ -131,25 +122,32 @@ public sealed class ApprenticeCommands(
         int? limit = null,
         CancellationToken cancellationToken = default)
     {
-
         Guid? parsedCampaignId = null;
 
         if (!string.IsNullOrWhiteSpace(campaignId))
         {
-
             if (!CliArgReader.TryParseGuid(campaignId, out Guid parsed))
             {
-                CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--campaignId must be a valid GUID.")));
+                CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--campaign-id must be a valid GUID.")));
 
                 return (int)CliExitCode.ConfigurationError;
             }
 
             parsedCampaignId = parsed;
-
         }
 
-        Result<ListPageResult<ApprenticeSummaryDto>> result = await apiClient
-            .GetApprenticesAsync(parsedCampaignId, status, limit, cancellationToken: cancellationToken)
+        // Without --limit the listing is every Apprentice: the host bounds each page and reports the
+        // rest. An operator-supplied --limit is one page of that size, and says so when more exist.
+        Result<HostListing<ApprenticeSummaryDto>> result = await HostPageWalker
+            .ReadAsync<ApprenticeSummaryDto, DateTimeOffset>(
+                "Apprentice list",
+                singlePage: limit is not null,
+                async (cursor, token) => HostPageWalker.ByUpdatedAt(
+                    await apiClient
+                        .GetApprenticesAsync(parsedCampaignId, status, limit, cursor, token)
+                        .ConfigureAwait(false),
+                    static apprentice => apprentice.UpdatedAt),
+                cancellationToken)
             .ConfigureAwait(false);
 
         if (result.IsFailure)
@@ -161,41 +159,42 @@ public sealed class ApprenticeCommands(
 
         ApprenticeSummaryDto[] apprentices = result.Value.Items;
 
-        Table table = new();
+        // The whole identifier, never wrapped: the listing is where an operator reads what to hand to
+        // show, cancel or delete, and a fragment of it is not an ID, a name or a name prefix. What gives way
+        // on a narrow terminal is the columns beside it, least useful first, and the operator is told which.
+        IReadOnlyList<ListingColumn<ApprenticeSummaryDto>> columns =
+        [
+            new("ID", static apprentice => apprentice.Id.ToString("D"), ListingColumnRole.Fixed),
+            new("Goal", static apprentice => apprentice.Goal, ListingColumnRole.Flexible),
+            new("Status", static apprentice => apprentice.Status, ListingColumnRole.Fixed, Muted: true),
+            new("Campaign", static apprentice => apprentice.CampaignId?.ToString("D") ?? "-", ListingColumnRole.Optional, Muted: true, DropOrder: 2),
+            new("Updated", static apprentice => apprentice.UpdatedAt.ToString("u"), ListingColumnRole.Optional, Muted: true, DropOrder: 1),
+        ];
 
-        table.AddColumn(themePalette.HeadingTableColumn(Markup.Escape("ID")));
+        int width = AnsiConsole.Profile.Width;
 
-        table.AddColumn(themePalette.HeadingTableColumn(Markup.Escape("Goal")));
+        ListingTableResult rendered = ListingTable.Build(themePalette, columns, apprentices, width);
 
-        table.AddColumn(themePalette.HeadingTableColumn(Markup.Escape("Status")));
+        AnsiConsole.Write(rendered.Table);
 
-        table.AddColumn(themePalette.HeadingTableColumn(Markup.Escape("Campaign")));
-
-        table.AddColumn(themePalette.HeadingTableColumn(Markup.Escape("Updated")));
-
-        foreach (ApprenticeSummaryDto apprentice in apprentices)
+        if (ListingTable.HiddenColumnsNotice(rendered, width) is { } hiddenNotice)
         {
-
-            string idShort = apprentice.Id.ToString("N")[..8].ToUpperInvariant();
-
-            table.AddRow(
-                new Markup(themePalette.TextMarkup(Markup.Escape(idShort))),
-                new Markup(themePalette.TextMarkup(Markup.Escape(apprentice.Goal))),
-                new Markup(themePalette.MutedMarkup(Markup.Escape(apprentice.Status))),
-                new Markup(themePalette.MutedMarkup(Markup.Escape(apprentice.CampaignId?.ToString("D") ?? "-"))),
-                new Markup(themePalette.MutedMarkup(Markup.Escape(apprentice.UpdatedAt.ToString("u")))));
-
+            CliErrorOutput.WriteMarkupLine(themePalette.MutedMarkup(Markup.Escape(hiddenNotice)));
         }
-
-        AnsiConsole.Write(table);
 
         if (apprentices.Length == 0)
         {
             AnsiConsole.MarkupLine(themePalette.MutedMarkup(Markup.Escape("No Apprentices found.")));
         }
 
-        return 0;
+        if (result.Value.MoreAvailable)
+        {
+            CliErrorOutput.WriteMarkupLine(
+                themePalette.MutedMarkup(
+                    Markup.Escape("More Apprentices are available; omit --limit to list them all.")));
+        }
 
+        return 0;
     }
 
     /// <summary>
@@ -207,12 +206,6 @@ public sealed class ApprenticeCommands(
         Guid apprenticeId;
         if (!CliArgReader.TryParseGuid(id, out apprenticeId))
         {
-            if (resourceCatalog is null)
-            {
-                CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("<ID> must be a valid GUID.")));
-                return 1;
-            }
-
             ResourceSelectionResult<ApprenticeSummaryDto> selection = await resourceCatalog
                 .SelectApprenticeAsync(id, cancellationToken)
                 .ConfigureAwait(false);
@@ -224,7 +217,7 @@ public sealed class ApprenticeCommands(
             if (selection.Status == ResourceSelectionStatus.Error)
             {
                 CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape(selection.Error!)));
-                return 1;
+                return CliFailureExit.ExitCode(selection.ErrorCode);
             }
 
             apprenticeId = selection.Value!.Id;
@@ -242,7 +235,6 @@ public sealed class ApprenticeCommands(
         ApprenticeCommandSupport.WriteApprenticeDetailPanel(result.Value, themePalette);
 
         return 0;
-
     }
 
     /// <summary>
@@ -250,7 +242,7 @@ public sealed class ApprenticeCommands(
     /// </summary>
     /// <param name="goal">Apprentice goal: inline text, or @filename to read from a file.</param>
     /// <param name="name">Display name; defaults to a truncated form of the goal.</param>
-    /// <param name="campaignId">--campaignId, Campaign GUID to associate with.</param>
+    /// <param name="campaignId">--campaign-id, Campaign GUID to associate with.</param>
     /// <param name="workspace">Workspace root to scope the Apprentice.</param>
     public async Task<int> Create(
         string? goal = null,
@@ -259,7 +251,6 @@ public sealed class ApprenticeCommands(
         string? workspace = null,
         CancellationToken cancellationToken = default)
     {
-
         if (string.IsNullOrEmpty(goal))
         {
             CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--goal is required.")));
@@ -285,16 +276,14 @@ public sealed class ApprenticeCommands(
 
         if (!string.IsNullOrWhiteSpace(campaignId))
         {
-
             if (!CliArgReader.TryParseGuid(campaignId, out Guid parsed))
             {
-                CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--campaignId must be a valid GUID.")));
+                CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--campaign-id must be a valid GUID.")));
 
                 return (int)CliExitCode.ConfigurationError;
             }
 
             parsedCampaignId = parsed;
-
         }
 
         string resolvedName = string.IsNullOrWhiteSpace(name)
@@ -318,22 +307,15 @@ public sealed class ApprenticeCommands(
                 Markup.Escape($"{result.Value.Name} ({result.Value.Id:D})")));
 
         return 0;
-
     }
 
-    private async Task<(bool Resolved, bool Cancelled, Guid Id)> ResolveApprenticeIdAsync(
+    private async Task<(bool Resolved, bool Cancelled, Guid Id, int ExitCode)> ResolveApprenticeIdAsync(
         string? identifier,
         CancellationToken cancellationToken)
     {
         if (CliArgReader.TryParseGuid(identifier, out Guid id))
         {
-            return (true, false, id);
-        }
-
-        if (resourceCatalog is null)
-        {
-            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("<ID> must be a valid GUID.")));
-            return (false, false, default);
+            return (true, false, id, 0);
         }
 
         ResourceSelectionResult<ApprenticeSummaryDto> selection = await resourceCatalog
@@ -341,16 +323,16 @@ public sealed class ApprenticeCommands(
             .ConfigureAwait(false);
         if (selection.Status == ResourceSelectionStatus.Cancelled)
         {
-            return (false, true, default);
+            return (false, true, default, 0);
         }
 
         if (selection.Status == ResourceSelectionStatus.Error)
         {
             CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape(selection.Error!)));
-            return (false, false, default);
+            return (false, false, default, CliFailureExit.ExitCode(selection.ErrorCode));
         }
 
-        return (true, false, selection.Value!.Id);
+        return (true, false, selection.Value!.Id, 0);
     }
 
     /// <summary>
@@ -359,9 +341,8 @@ public sealed class ApprenticeCommands(
     /// <param name="id">Apprentice GUID.</param>
     public async Task<int> Delete(string? id, CancellationToken cancellationToken)
     {
-
-        (bool resolved, bool cancelled, Guid apprenticeId) = await ResolveApprenticeIdAsync(id, cancellationToken).ConfigureAwait(false);
-        if (!resolved) return cancelled ? 0 : 1;
+        (bool resolved, bool cancelled, Guid apprenticeId, int resolveExitCode) = await ResolveApprenticeIdAsync(id, cancellationToken).ConfigureAwait(false);
+        if (!resolved) return cancelled ? 0 : resolveExitCode;
 
         if (!await confirmationPrompt
                 .PromptForConfirmationAsync($"Delete Apprentice {apprenticeId:D}?", cancellationToken)
@@ -384,7 +365,6 @@ public sealed class ApprenticeCommands(
         AnsiConsole.MarkupLine(themePalette.MutedMarkup(Markup.Escape("Apprentice removed.")));
 
         return 0;
-
     }
 
     /// <summary>
@@ -413,17 +393,34 @@ public sealed class ApprenticeCommands(
     /// </summary>
     /// <param name="id">Apprentice GUID.</param>
     public Task<int> Cancel(string? id, CancellationToken cancellationToken) =>
-        RunLifecycleActionAsync(id, "cancelled", apiClient.CancelApprenticeAsync, cancellationToken);
+        RunLifecycleActionAsync(
+            id,
+            "cancelled",
+            apiClient.CancelApprenticeAsync,
+            cancellationToken,
+            confirmationQuestion: static apprenticeId => $"Cancel Apprentice {apprenticeId:D}?");
 
     private async Task<int> RunLifecycleActionAsync(
         string? id,
         string actionLabel,
         Func<Guid, CancellationToken, Task<Result<string>>> invoke,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Func<Guid, string>? confirmationQuestion = null)
     {
+        (bool resolved, bool cancelled, Guid apprenticeId, int resolveExitCode) = await ResolveApprenticeIdAsync(id, cancellationToken).ConfigureAwait(false);
+        if (!resolved) return cancelled ? 0 : resolveExitCode;
 
-        (bool resolved, bool cancelled, Guid apprenticeId) = await ResolveApprenticeIdAsync(id, cancellationToken).ConfigureAwait(false);
-        if (!resolved) return cancelled ? 0 : 1;
+        // Stopping work in progress is not undone by starting it again, so like delete it asks first;
+        // --yes answers the question.
+        if (confirmationQuestion is not null
+            && !await confirmationPrompt
+                .PromptForConfirmationAsync(confirmationQuestion(apprenticeId), cancellationToken)
+                .ConfigureAwait(false))
+        {
+            CliErrorOutput.WriteMarkupLine(themePalette.MutedMarkup(Markup.Escape("Apprentice cancellation declined; nothing was changed.")));
+
+            return 0;
+        }
 
         Result<string> result = await invoke(apprenticeId, cancellationToken).ConfigureAwait(false);
 
@@ -437,7 +434,6 @@ public sealed class ApprenticeCommands(
         AnsiConsole.MarkupLine(themePalette.HighlightLabelMarkup(Markup.Escape($"Apprentice {actionLabel}:"), Markup.Escape(apprenticeId.ToString("D"))));
 
         return 0;
-
     }
 
     /// <summary>
@@ -447,9 +443,8 @@ public sealed class ApprenticeCommands(
     /// <param name="plan">JSON array of plan steps: inline text, or @filename to read from a file.</param>
     public async Task<int> Reweave(string? id, string? plan = null, CancellationToken cancellationToken = default)
     {
-
-        (bool resolved, bool cancelled, Guid apprenticeId) = await ResolveApprenticeIdAsync(id, cancellationToken).ConfigureAwait(false);
-        if (!resolved) return cancelled ? 0 : 1;
+        (bool resolved, bool cancelled, Guid apprenticeId, int resolveExitCode) = await ResolveApprenticeIdAsync(id, cancellationToken).ConfigureAwait(false);
+        if (!resolved) return cancelled ? 0 : resolveExitCode;
 
         if (string.IsNullOrEmpty(plan))
         {
@@ -485,6 +480,19 @@ public sealed class ApprenticeCommands(
             return (int)CliExitCode.ConfigurationError;
         }
 
+        // The remaining plan is replaced, not merged, so the operator is asked once the plan itself is known
+        // to be well formed; --yes answers the question.
+        if (!await confirmationPrompt
+                .PromptForConfirmationAsync(
+                    $"Replace the remaining plan of Apprentice {apprenticeId:D} with {steps.Count} step(s)?",
+                    cancellationToken)
+                .ConfigureAwait(false))
+        {
+            CliErrorOutput.WriteMarkupLine(themePalette.MutedMarkup(Markup.Escape("Apprentice reweave declined; the plan was not changed.")));
+
+            return 0;
+        }
+
         Result<ApprenticeDetailDto> result = await apiClient.ReweaveApprenticeAsync(apprenticeId, steps, cancellationToken).ConfigureAwait(false);
 
         if (result.IsFailure)
@@ -500,7 +508,6 @@ public sealed class ApprenticeCommands(
                 Markup.Escape($"{result.Value.Plan.Count} step(s).")));
 
         return 0;
-
     }
 
     /// <summary>
@@ -510,9 +517,8 @@ public sealed class ApprenticeCommands(
     /// <param name="guidance">Guidance text for the escalated Apprentice.</param>
     public async Task<int> Intervene(string? id, string? guidance = null, CancellationToken cancellationToken = default)
     {
-
-        (bool resolved, bool cancelled, Guid apprenticeId) = await ResolveApprenticeIdAsync(id, cancellationToken).ConfigureAwait(false);
-        if (!resolved) return cancelled ? 0 : 1;
+        (bool resolved, bool cancelled, Guid apprenticeId, int resolveExitCode) = await ResolveApprenticeIdAsync(id, cancellationToken).ConfigureAwait(false);
+        if (!resolved) return cancelled ? 0 : resolveExitCode;
 
         if (string.IsNullOrWhiteSpace(guidance))
         {
@@ -533,7 +539,6 @@ public sealed class ApprenticeCommands(
         AnsiConsole.MarkupLine(themePalette.MutedMarkup(Markup.Escape("Divine Intervention submitted; Apprentice resuming.")));
 
         return 0;
-
     }
 
     /// <summary>
@@ -548,9 +553,8 @@ public sealed class ApprenticeCommands(
         string? name = null,
         CancellationToken cancellationToken = default)
     {
-
-        (bool resolved, bool cancelled, Guid apprenticeId) = await ResolveApprenticeIdAsync(id, cancellationToken).ConfigureAwait(false);
-        if (!resolved) return cancelled ? 0 : 1;
+        (bool resolved, bool cancelled, Guid apprenticeId, int resolveExitCode) = await ResolveApprenticeIdAsync(id, cancellationToken).ConfigureAwait(false);
+        if (!resolved) return cancelled ? 0 : resolveExitCode;
 
         if (string.IsNullOrWhiteSpace(goal))
         {
@@ -565,7 +569,6 @@ public sealed class ApprenticeCommands(
 
         if (result.IsFailure)
         {
-
             if (string.Equals(result.Error.Code, "Apprentice.ConclaveDisabled", StringComparison.Ordinal))
             {
                 CliErrorOutput.WriteMarkupLine(
@@ -578,7 +581,6 @@ public sealed class ApprenticeCommands(
             }
 
             return CliFailureExit.ExitCode(result.Error);
-
         }
 
         AnsiConsole.MarkupLine(
@@ -587,7 +589,6 @@ public sealed class ApprenticeCommands(
                 Markup.Escape($"{result.Value.Name} ({result.Value.Id:D})")));
 
         return 0;
-
     }
 
     /// <summary>
@@ -601,5 +602,4 @@ public sealed class ApprenticeCommands(
             id,
             new WatchCommandOptions(false, [], []),
             cancellationToken).ConfigureAwait(false);
-
 }

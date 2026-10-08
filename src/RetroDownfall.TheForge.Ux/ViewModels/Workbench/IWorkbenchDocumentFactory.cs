@@ -15,9 +15,7 @@ namespace RetroDownfall.TheForge.Ux.ViewModels.Workbench;
 /// <summary>Factory seam used by <c>MainViewModel</c> to create Workbench documents from navigation requests.</summary>
 public interface IWorkbenchDocumentFactory
 {
-
     ViewModelBase Create(DocumentKind kind, string id, string? workspace = null);
-
 }
 
 /// <summary>
@@ -28,7 +26,6 @@ public interface IWorkbenchDocumentFactory
 /// </summary>
 public sealed class WorkbenchDocumentFactory : IWorkbenchDocumentFactory
 {
-
     private readonly ISpellEditorDataSource _spellEditorDataSource;
 
     private readonly IPromptEditorDataSource _promptEditorDataSource;
@@ -85,7 +82,6 @@ public sealed class WorkbenchDocumentFactory : IWorkbenchDocumentFactory
         IWhispersService whispers,
         ITheForgeLocalMutationRunner mutationRunner)
     {
-
         _spellEditorDataSource = spellEditorDataSource;
 
         _promptEditorDataSource = promptEditorDataSource;
@@ -121,15 +117,12 @@ public sealed class WorkbenchDocumentFactory : IWorkbenchDocumentFactory
         _whispers = whispers;
 
         _mutationRunner = mutationRunner;
-
     }
 
     public ViewModelBase Create(DocumentKind kind, string id, string? workspace = null)
     {
-
         if (kind == DocumentKind.Spell)
         {
-
             SpellEditorViewModel editor = new(
                 id,
                 _spellEditorDataSource,
@@ -140,17 +133,16 @@ public sealed class WorkbenchDocumentFactory : IWorkbenchDocumentFactory
                 _textInputDialog,
                 _whispers,
                 _mutationRunner,
+                _inferenceTraceStore,
                 workspace);
 
             _ = editor.LoadCommand.ExecuteAsync(null);
 
             return editor;
-
         }
 
         if (kind == DocumentKind.Prompt && Guid.TryParse(id, out Guid promptId))
         {
-
             ScriptoriumViewModel scriptorium = new(
                 promptId,
                 _promptEditorDataSource,
@@ -160,17 +152,16 @@ public sealed class WorkbenchDocumentFactory : IWorkbenchDocumentFactory
                 _fileDialog,
                 _textInputDialog,
                 _whispers,
-                _mutationRunner);
+                _mutationRunner,
+                _inferenceTraceStore);
 
             _ = scriptorium.LoadCommand.ExecuteAsync(null);
 
             return scriptorium;
-
         }
 
         if (kind == DocumentKind.Session && Guid.TryParse(id, out Guid sessionId))
         {
-
             TomeViewModel tome = new(
                 sessionId,
                 _tomeDataSource,
@@ -178,17 +169,17 @@ public sealed class WorkbenchDocumentFactory : IWorkbenchDocumentFactory
                 _foundryFloor,
                 _clipboard,
                 _confirmationDialog,
-                _mutationRunner);
+                _mutationRunner,
+                _inferenceTraceStore,
+                _fileDialog);
 
             _ = tome.LoadCommand.ExecuteAsync(null);
 
             return tome;
-
         }
 
         if (kind == DocumentKind.Codex)
         {
-
             Guid? campaignId = string.Equals(id, "global", StringComparison.OrdinalIgnoreCase)
                 ? null
                 : Guid.TryParse(id, out Guid parsed)
@@ -197,9 +188,7 @@ public sealed class WorkbenchDocumentFactory : IWorkbenchDocumentFactory
 
             if (!string.Equals(id, "global", StringComparison.OrdinalIgnoreCase) && campaignId is null)
             {
-
                 return new WorkbenchDocumentPlaceholderViewModel(kind, id);
-
             }
 
             CodexViewModel codex = new(campaignId, _codexDataSource, _foundryFloor, _confirmationDialog);
@@ -207,15 +196,12 @@ public sealed class WorkbenchDocumentFactory : IWorkbenchDocumentFactory
             _ = codex.LoadCommand.ExecuteAsync(null);
 
             return codex;
-
         }
 
         if (kind == DocumentKind.Markdown)
         {
-
             if (_markdownContentStore.TryGet(id, out MarkdownDocumentPayload payload))
             {
-
                 return new MarkdownDocumentViewModel(
                     payload.Id,
                     payload.Title,
@@ -224,19 +210,16 @@ public sealed class WorkbenchDocumentFactory : IWorkbenchDocumentFactory
                     payload.WorkspaceId,
                     payload.RelativePath,
                     payload.BaseRelativeDirectory);
-
             }
 
             return new WorkbenchDocumentPlaceholderViewModel(
                 kind,
                 id,
                 "Markdown preview content is no longer available. Reopen the file from Workspace Explorer.");
-
         }
 
         if (kind == DocumentKind.Trial)
         {
-
             ProvingGroundsViewModel provingGrounds = new(
                 _trialDataSource,
                 _foundryFloor,
@@ -249,12 +232,10 @@ public sealed class WorkbenchDocumentFactory : IWorkbenchDocumentFactory
             _ = provingGrounds.LoadPickersCommand.ExecuteAsync(null);
 
             return provingGrounds;
-
         }
 
         if (kind == DocumentKind.Comparison)
         {
-
             ComparisonWorkbenchViewModel comparison = new(
                 _comparisonDataSource,
                 _comparisonRunStore,
@@ -269,11 +250,8 @@ public sealed class WorkbenchDocumentFactory : IWorkbenchDocumentFactory
             _ = comparison.LoadHistoryCommand.ExecuteAsync(null);
 
             return comparison;
-
         }
 
         return new WorkbenchDocumentPlaceholderViewModel(kind, id);
-
     }
-
 }

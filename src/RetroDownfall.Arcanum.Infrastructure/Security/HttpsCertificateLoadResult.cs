@@ -8,14 +8,11 @@ namespace RetroDownfall.Arcanum.Infrastructure.Security;
 /// </summary>
 public sealed record HttpsCertificateLoadResult
 {
-
     private HttpsCertificateLoadResult(X509Certificate2? certificate, string? error)
     {
-
         Certificate = certificate;
 
         Error = error;
-
     }
 
     public X509Certificate2? Certificate { get; }
@@ -29,5 +26,4 @@ public sealed record HttpsCertificateLoadResult
 
     public static HttpsCertificateLoadResult Failure(string error) =>
         new(certificate: null, error);
-
 }

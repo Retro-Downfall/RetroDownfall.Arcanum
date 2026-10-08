@@ -3,12 +3,11 @@ using Markdig;
 namespace RetroDownfall.TheForge.Ux.Markdown;
 
 /// <summary>
-/// Markdig 1.2.0 pipeline for The Illumination. Extensions are limited to APIs that compile
-/// against the CLI-pinned Markdig package.
+/// Markdig pipeline for The Illumination. Extensions are limited to APIs that compile against the
+/// Markdig package this project references.
 /// </summary>
 public static class IlluminationMarkdownPipeline
 {
-
     private static readonly MarkdownPipeline Pipeline = new MarkdownPipelineBuilder()
         .UsePreciseSourceLocation()
         .UsePipeTables()
@@ -23,5 +22,4 @@ public static class IlluminationMarkdownPipeline
 
     public static Markdig.Syntax.MarkdownDocument Parse(string markdown) =>
         Markdig.Markdown.Parse(markdown ?? string.Empty, Pipeline);
-
 }

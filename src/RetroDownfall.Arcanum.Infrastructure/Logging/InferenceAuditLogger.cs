@@ -21,20 +21,15 @@ namespace RetroDownfall.Arcanum.Infrastructure.Logging;
 /// </summary>
 public sealed class InferenceAuditLogger : IInferenceAuditLogger, IDisposable
 {
+    private const string DefaultStem = "audit";
 
-    private readonly SemaphoreSlim _writeLock = new(1, 1);
+    private readonly DailyJsonlAuditWriter _writer;
 
     private readonly IOptionsMonitor<ArcanumSettings> _optionsMonitor;
 
     private readonly ILogger<InferenceAuditLogger> _logger;
 
     private readonly string? _filePathOverride;
-
-    private readonly IManagedLogMutationGate _managedLogMutationGate;
-
-    private string? _lastPreparedDateStamp;
-
-    private bool _sizeCapWarnedForCurrentDate;
 
     public InferenceAuditLogger(
         IOptionsMonitor<ArcanumSettings> optionsMonitor,
@@ -46,7 +41,6 @@ public sealed class InferenceAuditLogger : IInferenceAuditLogger, IDisposable
             filePathOverride,
             new ManagedLogMutationGate())
     {
-
     }
 
     internal InferenceAuditLogger(
@@ -55,111 +49,34 @@ public sealed class InferenceAuditLogger : IInferenceAuditLogger, IDisposable
         string? filePathOverride,
         IManagedLogMutationGate managedLogMutationGate)
     {
-
         _optionsMonitor = optionsMonitor;
 
         _logger = logger;
 
         _filePathOverride = filePathOverride;
 
-        _managedLogMutationGate = managedLogMutationGate;
-
+        _writer = new DailyJsonlAuditWriter(
+            "inference",
+            DefaultStem,
+            logger,
+            managedLogMutationGate);
     }
 
     public async Task LogAsync(InferenceAuditRecord record, CancellationToken cancellationToken)
     {
-
         HostAuditLogSettings config = ResolveConfig();
 
         if (!config.Enabled)
         {
-
             return;
-
         }
 
-        try
-        {
-
-            await using IAsyncDisposable managedLogLease =
-                await _managedLogMutationGate.AcquireExclusiveAsync(
-                    cancellationToken).ConfigureAwait(false);
-
-            await _writeLock.WaitAsync(cancellationToken).ConfigureAwait(false);
-
-            try
-            {
-
-                (string directory, string stem) =
-                    ResolvePathParts(_filePathOverride ?? config.FilePath);
-
-                string dateStamp = DateTimeOffset.UtcNow.ToString("yyyyMMdd", CultureInfo.InvariantCulture);
-
-                if (!string.Equals(_lastPreparedDateStamp, dateStamp, StringComparison.Ordinal))
-                {
-
-                    PrepareForNewDate(directory, dateStamp);
-
-                }
-
-                string filePath = Path.Combine(directory, $"{stem}-{dateStamp}.jsonl");
-
-                long maxSizeBytes = (long)ArcanumSettingClamps.HostAuditLogMaxSizeMb(config.MaxSizeMb) * 1024L * 1024L;
-
-                if (File.Exists(filePath) && new FileInfo(filePath).Length >= maxSizeBytes)
-                {
-
-                    if (!_sizeCapWarnedForCurrentDate)
-                    {
-
-                        _logger.LogWarning(
-                            "Inference audit log {FilePath} reached its {MaxSizeMb} MB size cap; further entries for today are dropped.",
-                            filePath,
-                            config.MaxSizeMb);
-
-                        _sizeCapWarnedForCurrentDate = true;
-
-                    }
-
-                    return;
-
-                }
-
-                bool isNewFile = !File.Exists(filePath);
-
-                string json = JsonSerializer.Serialize(record, AuditJsonContext.Default.InferenceAuditRecord);
-
-                await File.AppendAllTextAsync(filePath, json + "\n", cancellationToken).ConfigureAwait(false);
-
-                if (isNewFile)
-                {
-
-                    SecureFilePermissions.ApplyOwnerOnlyFile(filePath);
-
-                }
-
-            }
-            finally
-            {
-
-                _writeLock.Release();
-
-            }
-
-        }
-        catch (OperationCanceledException)
-        {
-
-            throw;
-
-        }
-        catch (Exception ex)
-        {
-
-            _logger.LogWarning(ex, "Failed to write inference audit log entry.");
-
-        }
-
+        await _writer.AppendAsync(
+            record,
+            AuditJsonContext.Default.InferenceAuditRecord,
+            _filePathOverride ?? config.FilePath,
+            config.MaxSizeMb,
+            cancellationToken).ConfigureAwait(false);
     }
 
     public async Task<IReadOnlyList<InferenceAuditRecord>> QueryAsync(
@@ -170,7 +87,6 @@ public sealed class InferenceAuditLogger : IInferenceAuditLogger, IDisposable
         int limit,
         CancellationToken cancellationToken)
     {
-
         Result<AuditQueryPage<InferenceAuditRecord>> page = await QueryPageAsync(
             from,
             to,
@@ -183,7 +99,6 @@ public sealed class InferenceAuditLogger : IInferenceAuditLogger, IDisposable
         return page.IsSuccess
             ? page.Value.Records
             : [];
-
     }
 
     public async Task<Result<AuditQueryPage<InferenceAuditRecord>>> QueryPageAsync(
@@ -195,23 +110,19 @@ public sealed class InferenceAuditLogger : IInferenceAuditLogger, IDisposable
         string? cursor,
         CancellationToken cancellationToken)
     {
-
         HostAuditLogSettings config = ResolveConfig();
 
         if (!config.Enabled)
         {
-
             return Result<AuditQueryPage<InferenceAuditRecord>>.Success(
                 new AuditQueryPage<InferenceAuditRecord>([], null));
-
         }
 
         (string directory, string stem) =
-            ResolvePathParts(_filePathOverride ?? config.FilePath);
+            _writer.ResolvePathParts(_filePathOverride ?? config.FilePath);
 
         if (!Directory.Exists(directory))
         {
-
             return string.IsNullOrWhiteSpace(cursor)
                 ? Result<AuditQueryPage<InferenceAuditRecord>>.Success(
                     new AuditQueryPage<InferenceAuditRecord>([], null))
@@ -219,7 +130,6 @@ public sealed class InferenceAuditLogger : IInferenceAuditLogger, IDisposable
                     new Error(
                         ErrorCodes.Validation.InvalidQuery,
                         "The audit cursor no longer references retained log data. Restart without 'cursor'."));
-
         }
 
         return await AuditLogPageReader.QueryAsync(
@@ -241,63 +151,17 @@ public sealed class InferenceAuditLogger : IInferenceAuditLogger, IDisposable
             cancellationToken,
             model,
             sessionId).ConfigureAwait(false);
-
-    }
-
-    private void PrepareForNewDate(string directory, string dateStamp)
-    {
-
-        try
-        {
-
-            Directory.CreateDirectory(directory);
-
-            SecureFilePermissions.ApplyOwnerOnlyDirectory(directory);
-
-        }
-        catch (Exception ex)
-        {
-            // Leave the date unmarked so the next turn retries preparation once the transient cause
-            // clears, rather than silently dropping the rest of the UTC day's audit trail.
-            _logger.LogError(ex, "Failed to create or secure inference audit log directory {Directory}; audit entries for {DateStamp} will be dropped.", directory, dateStamp);
-
-            return;
-
-        }
-
-        _lastPreparedDateStamp = dateStamp;
-
-        _sizeCapWarnedForCurrentDate = false;
-
     }
 
     private HostAuditLogSettings ResolveConfig() =>
         _optionsMonitor.CurrentValue.ResolveHostAuditLog();
 
     /// <summary>
-    /// Splits the configured <c>FilePath</c> into the directory to write dated files into and the
-    /// filename stem (default <c>audit</c>) combined with a UTC date to produce each day's file —
-    /// honors the documented default (<c>~/.config/arcanum/audit.jsonl</c>) while implementing
-    /// date-based rotation rather than one ever-growing file.
+    /// Splits the configured <c>FilePath</c> into the directory and filename stem (default
+    /// <c>audit</c>); see <see cref="DailyJsonlAuditWriter.ResolvePathParts(string, string)"/>.
     /// </summary>
-    internal static (string Directory, string Stem) ResolvePathParts(string configuredPath)
-    {
+    internal static (string Directory, string Stem) ResolvePathParts(string configuredPath) =>
+        DailyJsonlAuditWriter.ResolvePathParts(configuredPath, DefaultStem);
 
-        string? directory = Path.GetDirectoryName(configuredPath);
-
-        string stem = Path.GetFileNameWithoutExtension(configuredPath);
-
-        if (string.IsNullOrWhiteSpace(stem))
-        {
-
-            stem = "audit";
-
-        }
-
-        return (string.IsNullOrWhiteSpace(directory) ? "." : directory, stem);
-
-    }
-
-    public void Dispose() => _writeLock.Dispose();
-
+    public void Dispose() => _writer.Dispose();
 }

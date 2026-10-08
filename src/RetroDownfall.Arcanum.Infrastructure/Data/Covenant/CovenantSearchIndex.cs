@@ -22,18 +22,26 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 /// </remarks>
 internal sealed class CovenantSearchIndex(ICovenantConnectionSource connections) : ICovenantSearchIndex
 {
-
     /// <summary>
     /// The materialized candidate bound for the canonical fallback.
     /// </summary>
     internal const int FallbackCandidateLimit = CovenantLimits.MaxFallbackCandidates;
+
+    /// <summary>
+    /// The exact-key operand of a query with more than one term, which names no one key.
+    /// </summary>
+    /// <remarks>
+    /// A Covenant key matches <c>[a-z0-9][a-z0-9._-]{0,127}</c>, so no key can equal a NUL and the
+    /// exact-key comparison matches nothing. It is spelled as an escape: a raw NUL byte in a source
+    /// file is one an editor, a diff tool or a formatter is free to drop or mangle without a word.
+    /// </remarks>
+    private const string NoExactKey = "\0";
 
     public async ValueTask<Result<CovenantSearchPage>> SearchAsync(
         CovenantSearchQuery query,
         ICovenantSnapshotReadLease readLease,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(query);
 
         ArgumentNullException.ThrowIfNull(readLease);
@@ -42,18 +50,14 @@ internal sealed class CovenantSearchIndex(ICovenantConnectionSource connections)
 
         if (scope.IsFailure)
         {
-
             return scope.Error;
-
         }
 
         Result validated = await ValidateLeaseAsync(readLease, scope.Value, cancellationToken).ConfigureAwait(false);
 
         if (validated.IsFailure)
         {
-
             return validated.Error;
-
         }
 
         SqliteConnection connection = await connections.GetOpenConnectionAsync(cancellationToken).ConfigureAwait(false);
@@ -77,19 +81,15 @@ internal sealed class CovenantSearchIndex(ICovenantConnectionSource connections)
         // objects and a current tuple, and status already reports it as answering from the fallback.
         if (acceleratorInstalled && sources.AcceleratorEligible && query.Accelerator is CovenantCapabilityState.Healthy)
         {
-
             page = await SearchFtsAsync(connection, transaction, query, scope.Value, sources, cancellationToken)
                 .ConfigureAwait(false);
 
             if (page.IsSuccess)
             {
-
                 await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
 
                 return page;
-
             }
-
         }
 
         page = await SearchFallbackAsync(
@@ -106,7 +106,6 @@ internal sealed class CovenantSearchIndex(ICovenantConnectionSource connections)
         await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
 
         return page;
-
     }
 
     private static async ValueTask<Result<CovenantSearchPage>> SearchFtsAsync(
@@ -117,7 +116,6 @@ internal sealed class CovenantSearchIndex(ICovenantConnectionSource connections)
         CovenantSearchSourceSnapshot sources,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = connection.CreateCommand();
 
         command.Transaction = transaction;
@@ -130,32 +128,31 @@ internal sealed class CovenantSearchIndex(ICovenantConnectionSource connections)
 
         try
         {
-
-            ImmutableArray<CovenantSearchHit> hits = await ReadHitsAsync(
+            ImmutableArray<Candidate> candidates = await ReadCandidatesAsync(
                     command,
                     query.EffectivePageSize + 1,
                     cancellationToken)
                 .ConfigureAwait(false);
 
             // An answer from the index is the synchronized one, which asks nothing of the caller.
-            return BuildPage(
-                hits,
-                query,
-                sources,
-                CovenantSearchExecutionMode.Fts,
-                truncated: false,
-                CovenantSearchRebuildGuidance.None);
-
+            return await BuildPageAsync(
+                    connection,
+                    transaction,
+                    candidates,
+                    query,
+                    sources,
+                    CovenantSearchExecutionMode.Fts,
+                    truncated: false,
+                    CovenantSearchRebuildGuidance.None,
+                    cancellationToken)
+                .ConfigureAwait(false);
         }
         catch (SqliteException exception)
         {
-
             // A corrupt, locked, or version-mismatched index is a degradation, not a failure: the
             // caller still gets an answer, from canonical, with explicit guidance.
             return new Error(ErrorCodes.Covenant.Unavailable, exception.Message);
-
         }
-
     }
 
     private static async ValueTask<Result<CovenantSearchPage>> SearchFallbackAsync(
@@ -168,7 +165,6 @@ internal sealed class CovenantSearchIndex(ICovenantConnectionSource connections)
         bool rebuildOwed,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = connection.CreateCommand();
 
         command.Transaction = transaction;
@@ -184,15 +180,15 @@ internal sealed class CovenantSearchIndex(ICovenantConnectionSource connections)
 
         for (int index = 0; index < query.Terms.LikePatterns.Length; index++)
         {
-
             Bind(command, $"$like{index}", query.Terms.LikePatterns[index]);
 
+            Bind(command, $"$term{index}", query.Terms.NormalizedTerms[index]);
         }
 
-        long candidates = await CountCandidatesAsync(connection, transaction, query, scope, cancellationToken)
+        long candidateCount = await CountCandidatesAsync(connection, transaction, query, scope, cancellationToken)
             .ConfigureAwait(false);
 
-        ImmutableArray<CovenantSearchHit> hits = await ReadHitsAsync(
+        ImmutableArray<Candidate> candidates = await ReadCandidatesAsync(
                 command,
                 query.EffectivePageSize + 1,
                 cancellationToken)
@@ -200,7 +196,7 @@ internal sealed class CovenantSearchIndex(ICovenantConnectionSource connections)
 
         // Truncation is about the candidate set, not the page: a caller told "no more results" when
         // 2,048 heads were examined out of 5,000 would draw a false conclusion.
-        bool truncated = candidates > FallbackCandidateLimit;
+        bool truncated = candidateCount > FallbackCandidateLimit;
 
         // The same rule the status route applies, over the facts this page was answered from. A page the
         // canonical scan answered was not answered by the index, so it is never the synchronized case. The
@@ -214,80 +210,148 @@ internal sealed class CovenantSearchIndex(ICovenantConnectionSource connections)
                 && sources.AppliedDatasetGeneration == sources.DatasetGeneration,
             rebuildOwed: rebuildOwed);
 
-        return BuildPage(
-            hits,
-            query,
-            sources,
-            CovenantSearchExecutionMode.CanonicalFallback,
-            truncated,
-            guidance);
-
+        return await BuildPageAsync(
+                connection,
+                transaction,
+                candidates,
+                query,
+                sources,
+                CovenantSearchExecutionMode.CanonicalFallback,
+                truncated,
+                guidance,
+                cancellationToken)
+            .ConfigureAwait(false);
     }
 
-    private static Result<CovenantSearchPage> BuildPage(
-        ImmutableArray<CovenantSearchHit> hits,
+    /// <summary>
+    /// Trims the candidates to the page and reads each surviving head, in the same transaction.
+    /// </summary>
+    /// <remarks>
+    /// The heads are what the caller renders, so they are read here rather than by one detail read per
+    /// hit afterwards: a later transaction could observe a different dataset than the rows it is
+    /// completing, and would then have to refuse a first page as stale.
+    /// </remarks>
+    private static async ValueTask<Result<CovenantSearchPage>> BuildPageAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        ImmutableArray<Candidate> candidates,
         CovenantSearchQuery query,
         CovenantSearchSourceSnapshot sources,
         CovenantSearchExecutionMode mode,
         bool truncated,
-        CovenantSearchRebuildGuidance guidance)
+        CovenantSearchRebuildGuidance guidance,
+        CancellationToken cancellationToken)
     {
+        bool hasMore = candidates.Length > query.EffectivePageSize;
 
-        bool hasMore = hits.Length > query.EffectivePageSize;
-
-        ImmutableArray<CovenantSearchHit> page = hasMore
-            ? hits[..query.EffectivePageSize]
-            : hits;
+        ImmutableArray<Candidate> page = hasMore
+            ? candidates[..query.EffectivePageSize]
+            : candidates;
 
         CovenantSearchKeyset? next = hasMore && !page.IsEmpty
             ? ToKeyset(page[^1])
             : null;
 
-        return new CovenantSearchPage(page, next, sources, mode, truncated, guidance);
+        Dictionary<Guid, CovenantHeadItem> heads = await ReadHeadsAsync(
+                connection,
+                transaction,
+                page,
+                cancellationToken)
+            .ConfigureAwait(false);
 
+        List<CovenantSearchHit> hits = new(page.Length);
+
+        foreach (Candidate candidate in page)
+        {
+            // A document whose head is no longer that version is a row the index and canonical disagree
+            // about. Inside one transaction that is an index that is not what it claims to be, so the
+            // FTS caller falls back to canonical and the fallback, which has no such rows, never sees it.
+            if (!heads.TryGetValue(candidate.VersionId, out CovenantHeadItem? head))
+            {
+                return new Error(ErrorCodes.Covenant.Unavailable, "A search hit no longer names a current head.");
+            }
+
+            hits.Add(new CovenantSearchHit(head, candidate.MatchClass, candidate.Score));
+        }
+
+        return new CovenantSearchPage([.. hits], next, sources, mode, truncated, guidance);
     }
 
-    private static CovenantSearchKeyset ToKeyset(CovenantSearchHit hit) =>
-        new(
-            hit.MatchClass,
-            CovenantSearchKeyset.EncodeScore(hit.Score) is { IsSuccess: true } bits ? bits.Value : 0UL,
-            hit.EntryId,
-            hit.VersionId);
-
-    private static async ValueTask<ImmutableArray<CovenantSearchHit>> ReadHitsAsync(
-        SqliteCommand command,
-        int limit,
+    private static async ValueTask<Dictionary<Guid, CovenantHeadItem>> ReadHeadsAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        ImmutableArray<Candidate> page,
         CancellationToken cancellationToken)
     {
+        Dictionary<Guid, CovenantHeadItem> heads = [];
 
-        Bind(command, "$limit", limit);
+        if (page.IsEmpty)
+        {
+            return heads;
+        }
 
-        List<CovenantSearchHit> hits = [];
+        await using SqliteCommand command = connection.CreateCommand();
+
+        command.Transaction = transaction;
+
+        command.CommandText = CovenantStoreSql.HeadsByVersion(page.Length);
+
+        for (int index = 0; index < page.Length; index++)
+        {
+            Bind(command, $"$version{index}", page[index].VersionId.ToString("D"));
+        }
 
         await using SqliteDataReader reader = await command.ExecuteReaderAsync(cancellationToken)
             .ConfigureAwait(false);
 
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
+            CovenantHeadItem head = CovenantStore.MaterializeHeadItem(reader, offset: 0);
 
-            hits.Add(
-                new CovenantSearchHit(
-                    Guid.Parse(reader.GetString(0), CultureInfo.InvariantCulture),
-                    Guid.Parse(reader.GetString(1), CultureInfo.InvariantCulture),
-                    (CovenantScope)reader.GetInt32(2),
-                    reader.IsDBNull(3) ? null : Guid.Parse(reader.GetString(3), CultureInfo.InvariantCulture),
-                    (CovenantLane)reader.GetInt32(4),
-                    (CovenantLifecycle)reader.GetInt32(5),
-                    reader.GetString(6),
-                    (CovenantSearchMatchClass)reader.GetInt32(7),
-                    reader.GetDouble(8),
-                    reader.GetInt64(9)));
-
+            heads[head.VersionId] = head;
         }
 
-        return [.. hits];
-
+        return heads;
     }
+
+    private static CovenantSearchKeyset ToKeyset(Candidate candidate) =>
+        new(
+            candidate.MatchClass,
+            CovenantSearchKeyset.EncodeScore(candidate.Score) is { IsSuccess: true } bits ? bits.Value : 0UL,
+            candidate.EntryId,
+            candidate.VersionId);
+
+    private static async ValueTask<ImmutableArray<Candidate>> ReadCandidatesAsync(
+        SqliteCommand command,
+        int limit,
+        CancellationToken cancellationToken)
+    {
+        Bind(command, "$limit", limit);
+
+        List<Candidate> candidates = [];
+
+        await using SqliteDataReader reader = await command.ExecuteReaderAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            candidates.Add(
+                new Candidate(
+                    Guid.Parse(reader.GetString(0), CultureInfo.InvariantCulture),
+                    Guid.Parse(reader.GetString(1), CultureInfo.InvariantCulture),
+                    (CovenantSearchMatchClass)reader.GetInt32(7),
+                    reader.GetDouble(8)));
+        }
+
+        return [.. candidates];
+    }
+
+    /// <summary>One ranked row, before its head is read.</summary>
+    private readonly record struct Candidate(
+        Guid EntryId,
+        Guid VersionId,
+        CovenantSearchMatchClass MatchClass,
+        double Score);
 
     private static async ValueTask<long> CountCandidatesAsync(
         SqliteConnection connection,
@@ -296,7 +360,6 @@ internal sealed class CovenantSearchIndex(ICovenantConnectionSource connections)
         CovenantOperationScope? scope,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = connection.CreateCommand();
 
         command.Transaction = transaction;
@@ -308,7 +371,6 @@ internal sealed class CovenantSearchIndex(ICovenantConnectionSource connections)
         object? value = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
 
         return Convert.ToInt64(value, CultureInfo.InvariantCulture);
-
     }
 
     private static void BindCommonFilters(
@@ -316,32 +378,26 @@ internal sealed class CovenantSearchIndex(ICovenantConnectionSource connections)
         CovenantSearchQuery query,
         CovenantOperationScope? scope)
     {
-
         if (scope is { Kind: CovenantScope.Campaign } campaign)
         {
-
             Bind(command, "$campaign", campaign.CampaignId!.Value.ToString("D"));
-
         }
 
         if (query.Lane is { } lane)
         {
-
             Bind(command, "$lane", (int)lane);
-
         }
 
         // Exact and prefix classes come from the compiled terms, never from raw caller text.
         Bind(
             command,
             "$exactKey",
-            query.Terms.NormalizedTerms.Length == 1 ? query.Terms.NormalizedTerms[0] : " ");
+            query.Terms.NormalizedTerms.Length == 1 ? query.Terms.NormalizedTerms[0] : NoExactKey);
 
-        Bind(command, "$prefixKey", TrimTrailingWildcard(query.Terms.LikePatterns[0]));
+        Bind(command, "$prefixKey", query.Terms.KeyPrefixPattern);
 
         if (query.After is { } after)
         {
-
             Bind(command, "$afterClass", (int)after.MatchClass);
 
             Bind(command, "$afterScore", after.Score);
@@ -349,18 +405,8 @@ internal sealed class CovenantSearchIndex(ICovenantConnectionSource connections)
             Bind(command, "$afterEntry", after.EntryId.ToString("D"));
 
             Bind(command, "$afterVersion", after.VersionId.ToString("D"));
-
         }
-
     }
-
-    /// <summary>
-    /// Turns the term's contains-pattern into a starts-with pattern for the prefix match class.
-    /// </summary>
-    private static string TrimTrailingWildcard(string containsPattern) =>
-        containsPattern.Length >= 2
-            ? containsPattern[1..]
-            : containsPattern;
 
     /// <summary>
     /// Reads the generation facts and the persisted rebuild debt in one statement, so both belong to the
@@ -376,7 +422,6 @@ internal sealed class CovenantSearchIndex(ICovenantConnectionSource connections)
         SqliteTransaction transaction,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = connection.CreateCommand();
 
         command.Transaction = transaction;
@@ -399,7 +444,6 @@ internal sealed class CovenantSearchIndex(ICovenantConnectionSource connections)
 
         // Idle is the only rebuild state that owes nothing, which is the rule the status publisher applies.
         return (sources, (CovenantFtsRebuildState)reader.GetInt32(7) != CovenantFtsRebuildState.Idle);
-
     }
 
     private static async ValueTask<bool> AcceleratorInstalledAsync(
@@ -407,7 +451,6 @@ internal sealed class CovenantSearchIndex(ICovenantConnectionSource connections)
         SqliteTransaction transaction,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = connection.CreateCommand();
 
         command.Transaction = transaction;
@@ -421,7 +464,6 @@ internal sealed class CovenantSearchIndex(ICovenantConnectionSource connections)
         object? value = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
 
         return Convert.ToInt64(value, CultureInfo.InvariantCulture) == 2;
-
     }
 
     private static Result<CovenantOperationScope?> ResolveSelection(
@@ -449,30 +491,23 @@ internal sealed class CovenantSearchIndex(ICovenantConnectionSource connections)
         CovenantOperationScope? required,
         CancellationToken cancellationToken)
     {
-
         Result revalidated = await readLease.RevalidateAsync(cancellationToken).ConfigureAwait(false);
 
         if (revalidated.IsFailure)
         {
-
             return revalidated;
-
         }
 
         if (readLease.Snapshot.Coverage == CovenantLeaseCoverage.Installation)
         {
-
             return Result.Success();
-
         }
 
         if (required is null)
         {
-
             return new Error(
                 ErrorCodes.Covenant.ForbiddenAuthority,
                 "An all-scopes Covenant search requires the installation read capability.");
-
         }
 
         CovenantOperationScope held = readLease.Snapshot.Scope!.Value;
@@ -482,19 +517,13 @@ internal sealed class CovenantSearchIndex(ICovenantConnectionSource connections)
             : new Error(
                 ErrorCodes.Covenant.ForbiddenAuthority,
                 "This Covenant lease does not cover the scope the search names.");
-
     }
 
     private static void Bind(SqliteCommand command, string name, object value)
     {
-
         if (!command.Parameters.Contains(name))
         {
-
             _ = command.Parameters.AddWithValue(name, value);
-
         }
-
     }
-
 }

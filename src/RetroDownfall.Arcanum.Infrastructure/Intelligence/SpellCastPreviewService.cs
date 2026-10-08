@@ -21,9 +21,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Intelligence;
 /// </summary>
 public interface ISpellCastPreviewService
 {
-
     Task<Result<SpellCastResult>> CastAsync(string spellName, string? resolvedWorkspace, CancellationToken cancellationToken);
-
 }
 
 internal sealed class SpellCastPreviewService(
@@ -31,12 +29,11 @@ internal sealed class SpellCastPreviewService(
     IOptionsMonitor<ArcanumSettings> settingsMonitor,
     ILogger<SpellCastPreviewService> logger) : ISpellCastPreviewService
 {
-
     public async Task<Result<SpellCastResult>> CastAsync(string spellName, string? resolvedWorkspace, CancellationToken cancellationToken)
     {
         ArcanumSettings settings = settingsMonitor.CurrentValue;
 
-        long maxSpellFileSizeBytes = ArcanumSettingClamps.EffectiveSpellMaxFileSizeBytes(settings);
+        long maxSpellFileSizeBytes = ArcanumSettingClamps.EffectiveSpellMaxFileSizeBytes();
 
         int maxDeclaredTools = ArcanumSettingClamps.MaxDeclaredTools(
             ArcanumRuntimeDefaults.Spells.MaxDeclaredTools);
@@ -57,7 +54,7 @@ internal sealed class SpellCastPreviewService(
             .ResolveAsync(primary, resolvedWorkspace, maxSpellFileSizeBytes, cancellationToken, logger)
             .ConfigureAwait(false);
 
-        long maxCodexBytes = ArcanumSettingClamps.EffectiveCodexMaxSizeBytes(settings);
+        long maxCodexBytes = ArcanumSettingClamps.EffectiveCodexMaxSizeBytes();
 
         string? codexContent = await CodexReader.ReadCodexAsync(resolvedWorkspace, maxCodexBytes, cancellationToken).ConfigureAwait(false);
 
@@ -177,5 +174,4 @@ internal sealed class SpellCastPreviewService(
 
         return null;
     }
-
 }

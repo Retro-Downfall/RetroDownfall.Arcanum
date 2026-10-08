@@ -1,10 +1,13 @@
 using System.Text.Json;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using RetroDownfall.Arcanum.Api.Intelligence;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.Data;
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Intelligence;
 
@@ -57,6 +60,168 @@ public sealed class TurnAccountingHandleTests
         {
             TurnAccountingAmbient.Clear();
         }
+    }
+
+    /// <summary>
+    /// A delegated child hides the parent turn's accounting while it runs and gets it back after.
+    /// Observed in one synchronous flow, because an <c>AsyncLocal</c> written inside an awaited async
+    /// method never flows back to its caller and so cannot prove a restoration from outside.
+    /// </summary>
+    [Fact]
+    public async Task AmbientSuspend_HidesTheHandleAndWriterThenRestoresThem()
+    {
+        TurnAccountingAmbient.Clear();
+        RecordingTurnRunWriter writer = new();
+        TurnAccountingHandle parent = (await TurnAccountingHandle.BeginAsync(
+            writer,
+            budgetReservations: null,
+            new PricingSettings(),
+            model: null,
+            sessionId: null,
+            surface: "test",
+            purpose: "suspend",
+            requestId: "suspend",
+            cancellationToken: CancellationToken.None)).Value;
+
+        try
+        {
+            using (TurnAccountingAmbient.Push(parent, writer))
+            {
+                using (TurnAccountingAmbient.Suspend())
+                {
+                    Assert.Null(TurnAccountingAmbient.Current);
+                    Assert.Null(TurnAccountingAmbient.Writer);
+                }
+
+                Assert.Same(parent, TurnAccountingAmbient.Current);
+                Assert.Same(writer, TurnAccountingAmbient.Writer);
+            }
+        }
+        finally
+        {
+            TurnAccountingAmbient.Clear();
+        }
+    }
+
+    /// <summary>
+    /// A tool task abandoned past the grace keeps running in a flow that still holds the turn's
+    /// accounting. Once that run has settled (its status written and its reservation reconciled or
+    /// released), nested work there must not ledger against it: it no longer sees the settled turn's
+    /// handle or writer, and accounts for itself instead.
+    /// </summary>
+    [Fact]
+    public async Task Ambient_HidesTheHandleAndWriterOfARunThatHasSettled()
+    {
+        TurnAccountingAmbient.Clear();
+        RecordingTurnRunWriter writer = new();
+        TurnAccountingHandle turn = (await TurnAccountingHandle.BeginAsync(
+            writer,
+            budgetReservations: null,
+            new PricingSettings(),
+            model: null,
+            sessionId: null,
+            surface: "test",
+            purpose: "settled",
+            requestId: "settled",
+            cancellationToken: CancellationToken.None)).Value;
+        TurnAccountingHandle nested = turn.CreateNestedOperationHandle();
+
+        try
+        {
+            TurnAccountingAmbient.Publish(nested, writer);
+
+            Assert.Same(nested, TurnAccountingAmbient.Current);
+
+            await turn.CompleteAsync(
+                writer,
+                budgetReservations: null,
+                InferenceRunStatus.Completed,
+                CancellationToken.None);
+
+            Assert.Null(TurnAccountingAmbient.Current);
+            Assert.Null(TurnAccountingAmbient.Writer);
+        }
+        finally
+        {
+            TurnAccountingAmbient.Clear();
+        }
+    }
+
+    /// <summary>
+    /// What settlement deliberately leaves alone. A nested handle a tool task captured before its
+    /// turn settled still writes the provider usage it records: the row counts toward the day's
+    /// spend, outside the settled run's reconciled total, because dropping real spend would be worse.
+    /// And the delegated-spend attribution keeps naming the turn's reservation, because a Sending the
+    /// task dispatches is still work that turn delegated.
+    /// </summary>
+    [Fact]
+    public async Task Settlement_KeepsLateUsageAndDelegatedAttributionButNotTheReconciledTotal()
+    {
+        TurnAccountingAmbient.Clear();
+        RecordingTurnRunWriter writer = new();
+        RecordingBudgetReservationService reservations = new();
+        PricingSettings pricing = ReasonerPricing();
+        TurnAccountingHandle turn = await BeginReasonerTurnAsync(writer, reservations, pricing);
+        TurnAccountingHandle nested = turn.CreateNestedOperationHandle();
+
+        try
+        {
+            TurnAccountingAmbient.Publish(nested, writer);
+
+            await turn.CompleteAsync(
+                writer,
+                reservations,
+                InferenceRunStatus.Completed,
+                CancellationToken.None);
+
+            Assert.Null(TurnAccountingAmbient.Current);
+            Assert.Equal(turn.ReservationId, DelegatedSpendAttribution.BudgetReservationId);
+            Assert.Equal(0m, reservations.ReconciledUsd);
+
+            await nested.RecordChatUsageAsync(
+                writer,
+                "provider",
+                "reasoner",
+                promptTokens: 10_000,
+                completionTokens: 0,
+                cachedTokens: 0,
+                reasoningTokens: 0,
+                pricing.DefaultPricing,
+                CancellationToken.None);
+
+            Assert.NotNull(writer.LastOperation);
+            Assert.Equal(0.10m, writer.RecordedCostUsd);
+            Assert.Equal(1, reservations.ReconcileCalls);
+            Assert.Equal(0m, reservations.ReconciledUsd);
+        }
+        finally
+        {
+            TurnAccountingAmbient.Clear();
+        }
+    }
+
+    /// <summary>
+    /// The reservation disposition follows the spend, with one exception for the label: a
+    /// <c>Completed</c> run reconciles even at zero (a provider that reported no usage still
+    /// answered), while any other run with nothing recorded releases.
+    /// </summary>
+    [Theory]
+    [InlineData(InferenceRunStatus.Completed, false)]
+    [InlineData(InferenceRunStatus.Failed, true)]
+    [InlineData(InferenceRunStatus.Abandoned, true)]
+    public async Task CompleteAsync_ACompletedRunReconcilesEvenAtZeroAndAnyOtherUnspentRunReleases(
+        InferenceRunStatus status,
+        bool released)
+    {
+        RecordingTurnRunWriter writer = new();
+        RecordingBudgetReservationService reservations = new();
+        TurnAccountingHandle turn = await BeginReasonerTurnAsync(writer, reservations, ReasonerPricing());
+
+        await turn.CompleteAsync(writer, reservations, status, CancellationToken.None);
+
+        Assert.Equal(released, reservations.WasReleased);
+        Assert.Equal(released ? 0 : 1, reservations.ReconcileCalls);
+        Assert.Equal(status, writer.CompletedStatus);
     }
 
     [Fact]
@@ -196,14 +361,18 @@ public sealed class TurnAccountingHandleTests
         Result adjusted = await handle.EnsureReservationForContextAsync(
             reservations,
             pricing,
+            delegatedSpend: null,
             "reasoner",
             breakdown,
+            NullLogger.Instance,
             CancellationToken.None);
         Result repeated = await handle.EnsureReservationForContextAsync(
             reservations,
             pricing,
+            delegatedSpend: null,
             "reasoner",
             breakdown,
+            NullLogger.Instance,
             CancellationToken.None);
 
         Assert.True(adjusted.IsSuccess);
@@ -216,6 +385,304 @@ public sealed class TurnAccountingHandleTests
             expectedPerCall,
             reservations.AdjustedUsd);
         Assert.Equal(1, reservations.AdjustCount);
+    }
+
+    /// <summary>
+    /// R-053: once the pre-call estimate stops growing the reservation is never raised again, and the
+    /// raise was the only place the daily limit was rechecked. Spend the earlier rounds already
+    /// committed must still be compared with the limit before the next provider call.
+    /// </summary>
+    [Fact]
+    public async Task EnsureReservationForContextAsync_FailsWhenAccumulatedSpendExceedsDailyLimitEvenIfEstimateDidNotGrow()
+    {
+        RecordingTurnRunWriter writer = new();
+        RecordingBudgetReservationService reservations = new()
+        {
+            DailyLimitUsd = 1.00m,
+            CommittedSpend = () => writer.RecordedCostUsd,
+        };
+        PricingSettings pricing = ReasonerPricing();
+        TurnAccountingHandle handle = await BeginReasonerTurnAsync(writer, reservations, pricing);
+        ContextTokenBreakdown breakdown = ReasonerContextBreakdown();
+
+        Result first = await handle.EnsureReservationForContextAsync(
+            reservations,
+            pricing,
+            delegatedSpend: null,
+            "reasoner",
+            breakdown,
+            NullLogger.Instance,
+            CancellationToken.None);
+
+        // 95,000 input tokens at 10 USD per million: 0.95 USD of actual spend for the first round.
+        await handle.RecordChatUsageAsync(
+            writer,
+            "provider",
+            "reasoner",
+            promptTokens: 95_000,
+            completionTokens: 0,
+            cachedTokens: 0,
+            reasoningTokens: 0,
+            pricing.DefaultPricing,
+            CancellationToken.None);
+
+        Result second = await handle.EnsureReservationForContextAsync(
+            reservations,
+            pricing,
+            delegatedSpend: null,
+            "reasoner",
+            breakdown,
+            NullLogger.Instance,
+            CancellationToken.None);
+
+        Assert.True(first.IsSuccess);
+        Assert.True(second.IsFailure);
+        Assert.Equal(ErrorCodes.Budget.Exceeded, second.Error.Code);
+
+        // The estimate did not grow, so the refusal came from the accumulated-spend check, not a raise.
+        Assert.Equal(1, reservations.AdjustCount);
+    }
+
+    /// <summary>
+    /// R-053: the reservation was admitted with a fixed one-hour lifetime and never renewed, so a
+    /// turn running past it could end holding an expired reservation that reconciliation skips.
+    /// Every pre-call admission now moves the expiry forward, whether or not it raised the amount.
+    /// </summary>
+    [Fact]
+    public async Task EnsureReservationForContextAsync_RenewsTheReservationExpiryEveryRound()
+    {
+        RecordingTurnRunWriter writer = new();
+        RecordingBudgetReservationService reservations = new();
+        PricingSettings pricing = ReasonerPricing();
+        TurnAccountingHandle handle = await BeginReasonerTurnAsync(writer, reservations, pricing);
+        ContextTokenBreakdown breakdown = ReasonerContextBreakdown();
+        DateTimeOffset admittedUntil = reservations.LastRequest!.ExpiresAt;
+
+        for (int round = 0; round < 2; round++)
+        {
+            Result admitted = await handle.EnsureReservationForContextAsync(
+                reservations,
+                pricing,
+                delegatedSpend: null,
+                "reasoner",
+                breakdown,
+                NullLogger.Instance,
+                CancellationToken.None);
+
+            Assert.True(admitted.IsSuccess);
+        }
+
+        Assert.Equal(2, reservations.ExtendedExpiries.Count);
+        Assert.All(reservations.ExtendedExpiries, expiry => Assert.True(expiry >= admittedUntil));
+    }
+
+    /// <summary>
+    /// A turn admitted before UTC midnight keeps its reservation in the day it was admitted on. The
+    /// plateau check read today's ledger, which after midnight holds neither that reservation nor the
+    /// spend the turn's earlier rounds committed, so a turn that crossed midnight ran on unchecked. It
+    /// judges the ledger a raise judges: the reservation's own budget period, and today's as well
+    /// (the service's own tests pin the rounds finished after midnight).
+    /// </summary>
+    [Fact]
+    public async Task EnsureReservationForContextAsync_PlateauCheckJudgesTheDayTheReservationWasAdmittedOn()
+    {
+        RecordingTurnRunWriter writer = new();
+        RecordingBudgetReservationService reservations = new()
+        {
+            DailyLimitUsd = 1.00m,
+            CommittedSpend = static () => 0m,
+            TodayOutstanding = static () => 0m,
+            ReservationPeriodCommittedSpend = static () => 0.95m,
+        };
+        PricingSettings pricing = ReasonerPricing();
+        TurnAccountingHandle handle = await BeginReasonerTurnAsync(writer, reservations, pricing);
+        ContextTokenBreakdown breakdown = ReasonerContextBreakdown();
+
+        Result raised = await handle.EnsureReservationForContextAsync(
+            reservations,
+            pricing,
+            delegatedSpend: null,
+            "reasoner",
+            breakdown,
+            NullLogger.Instance,
+            CancellationToken.None);
+        Result plateau = await handle.EnsureReservationForContextAsync(
+            reservations,
+            pricing,
+            delegatedSpend: null,
+            "reasoner",
+            breakdown,
+            NullLogger.Instance,
+            CancellationToken.None);
+
+        Assert.True(raised.IsSuccess);
+        Assert.True(plateau.IsFailure);
+        Assert.Equal(ErrorCodes.Budget.Exceeded, plateau.Error.Code);
+    }
+
+    /// <summary>
+    /// Renewal is expiry bookkeeping for a sweep, not admission: a renewal write that fails is logged
+    /// and the provider call goes ahead, rather than failing the turn with a generic error mid tool
+    /// loop.
+    /// </summary>
+    [Fact]
+    public async Task EnsureReservationForContextAsync_ARenewalThatFailsDoesNotFailTheCall()
+    {
+        RecordingTurnRunWriter writer = new();
+        RecordingBudgetReservationService reservations = new()
+        {
+            ExtendExpiryException = new InvalidOperationException("the renewal write failed"),
+        };
+        PricingSettings pricing = ReasonerPricing();
+        TurnAccountingHandle handle = await BeginReasonerTurnAsync(writer, reservations, pricing);
+        TestCapturingLogger<TurnAccountingHandleTests> logger = new();
+
+        Result admitted = await handle.EnsureReservationForContextAsync(
+            reservations,
+            pricing,
+            delegatedSpend: null,
+            "reasoner",
+            ReasonerContextBreakdown(),
+            logger,
+            CancellationToken.None);
+
+        Assert.True(admitted.IsSuccess);
+        Assert.Single(reservations.ExtendedExpiries);
+        TestLogEntry warning = Assert.Single(logger.Entries);
+        Assert.Equal(LogLevel.Warning, warning.Level);
+        Assert.Contains("could not be renewed", warning.Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Tolerating a failed renewal never swallows the caller's cancellation: a turn the caller
+    /// abandoned while its reservation was being renewed stops there.
+    /// </summary>
+    [Fact]
+    public async Task EnsureReservationForContextAsync_CallerCancellationDuringRenewalPropagates()
+    {
+        using CancellationTokenSource caller = new();
+        RecordingTurnRunWriter writer = new();
+        RecordingBudgetReservationService reservations = new()
+        {
+            CancelDuringRenewal = caller,
+        };
+        PricingSettings pricing = ReasonerPricing();
+        TurnAccountingHandle handle = await BeginReasonerTurnAsync(writer, reservations, pricing);
+
+        _ = await Assert.ThrowsAnyAsync<OperationCanceledException>(() => handle.EnsureReservationForContextAsync(
+            reservations,
+            pricing,
+            delegatedSpend: null,
+            "reasoner",
+            ReasonerContextBreakdown(),
+            NullLogger.Instance,
+            caller.Token));
+    }
+
+    /// <summary>
+    /// Delegated work counts against the ceiling before every provider call, not only at the turn's
+    /// start: a turn whose Sendings settle mid-loop is refused at its next call once its local ledger
+    /// plus today's known delegated spend passes the limit, on a plateau round and a raise alike.
+    /// </summary>
+    [Fact]
+    public async Task EnsureReservationForContextAsync_CountsTodaysKnownDelegatedSpendBeforeEveryCall()
+    {
+        RecordingTurnRunWriter writer = new();
+        RecordingBudgetReservationService reservations = new() { DailyLimitUsd = 1.00m };
+        FixedExternalSpendLedger delegated = new(0.50m);
+        PricingSettings pricing = ReasonerPricing();
+        TurnAccountingHandle handle = await BeginReasonerTurnAsync(writer, reservations, pricing);
+        ContextTokenBreakdown breakdown = ReasonerContextBreakdown();
+
+        Result raised = await handle.EnsureReservationForContextAsync(
+            reservations,
+            pricing,
+            delegated,
+            "reasoner",
+            breakdown,
+            NullLogger.Instance,
+            CancellationToken.None);
+
+        Assert.True(raised.IsSuccess);
+        Assert.Equal(1, reservations.AdjustCount);
+        Assert.Equal(1, reservations.RecheckCount);
+        Assert.Equal(0.50m, reservations.LastRecheckDelegatedSpendUsd);
+
+        delegated.KnownCostUsd = 0.95m;
+
+        Result plateau = await handle.EnsureReservationForContextAsync(
+            reservations,
+            pricing,
+            delegated,
+            "reasoner",
+            breakdown,
+            NullLogger.Instance,
+            CancellationToken.None);
+
+        Assert.True(plateau.IsFailure);
+        Assert.Equal(ErrorCodes.Budget.Exceeded, plateau.Error.Code);
+        Assert.Equal(0.95m, reservations.LastRecheckDelegatedSpendUsd);
+    }
+
+    /// <summary>
+    /// A raise already judged the local ledger, so a raise round with no delegated spend known does
+    /// not read it a second time.
+    /// </summary>
+    [Fact]
+    public async Task EnsureReservationForContextAsync_ARaiseWithNoDelegatedSpendDoesNotRecheck()
+    {
+        RecordingTurnRunWriter writer = new();
+        RecordingBudgetReservationService reservations = new() { DailyLimitUsd = 1.00m };
+        PricingSettings pricing = ReasonerPricing();
+        TurnAccountingHandle handle = await BeginReasonerTurnAsync(writer, reservations, pricing);
+
+        Result raised = await handle.EnsureReservationForContextAsync(
+            reservations,
+            pricing,
+            new FixedExternalSpendLedger(0m),
+            "reasoner",
+            ReasonerContextBreakdown(),
+            NullLogger.Instance,
+            CancellationToken.None);
+
+        Assert.True(raised.IsSuccess);
+        Assert.Equal(1, reservations.AdjustCount);
+        Assert.Equal(0, reservations.RecheckCount);
+    }
+
+    /// <summary>
+    /// A batch line's nested handle never raises the batch's shared aggregate reservation, but it
+    /// keeps it alive: a page of slow lines can outlast the lifetime the batch was admitted with.
+    /// </summary>
+    [Fact]
+    public async Task EnsureReservationForContextAsync_NestedBatchLineRenewsTheSharedReservation()
+    {
+        RecordingTurnRunWriter writer = new();
+        RecordingBudgetReservationService reservations = new();
+        PricingSettings pricing = ReasonerPricing();
+        TurnAccountingHandle batch = (await TurnAccountingHandle.BeginBatchAsync(
+            writer,
+            reservations,
+            pricing,
+            [new BatchReservationLine("reasoner", 1_000, 600)],
+            requestId: "batch-renewal",
+            CancellationToken.None)).Value;
+        TurnAccountingHandle line = batch.CreateNestedOperationHandle();
+        DateTimeOffset admittedUntil = reservations.LastRequest!.ExpiresAt;
+
+        Result admitted = await line.EnsureReservationForContextAsync(
+            reservations,
+            pricing,
+            delegatedSpend: null,
+            "reasoner",
+            ReasonerContextBreakdown(),
+            NullLogger.Instance,
+            CancellationToken.None);
+
+        Assert.True(admitted.IsSuccess);
+        DateTimeOffset renewed = Assert.Single(reservations.ExtendedExpiries);
+        Assert.True(renewed >= admittedUntil);
+        Assert.Equal(0, reservations.AdjustCount);
     }
 
     [Fact]
@@ -679,6 +1146,76 @@ public sealed class TurnAccountingHandleTests
         Assert.Equal(decimal.MaxValue, handle.AccumulatedCostUsd);
     }
 
+    private static PricingSettings ReasonerPricing() =>
+        new()
+        {
+            DefaultPricing = new ModelPricingEntry
+            {
+                InputPer1M = 10m,
+                OutputPer1M = 20m,
+                ReasoningPer1M = 80m,
+            },
+        };
+
+    private static async Task<TurnAccountingHandle> BeginReasonerTurnAsync(
+        RecordingTurnRunWriter writer,
+        RecordingBudgetReservationService reservations,
+        PricingSettings pricing) =>
+        (await TurnAccountingHandle.BeginAsync(
+            writer,
+            reservations,
+            pricing,
+            "reasoner",
+            sessionId: null,
+            surface: "test",
+            purpose: "chat",
+            requestId: "context-reservation",
+            cancellationToken: CancellationToken.None,
+            maxOutputTokens: 1_000,
+            reasoningBudgetTokens: 600)).Value;
+
+    private static ContextTokenBreakdown ReasonerContextBreakdown() =>
+        new()
+        {
+            Provider = "provider",
+            Model = "reasoner",
+            Profile = new ResolvedModelTokenizationProfile
+            {
+                ProfileId = "test",
+                Type = ModelTokenizationProfileType.UnknownFallback,
+                TokenizerId = "o200k_base",
+                SafetyMarginPercent = 15,
+                PerMessageOverheadTokens = 4,
+                PerToolOverheadTokens = 8,
+                ProviderFramingTokens = 3,
+                StopTokenOverheadTokens = 1,
+                UnknownImageReserveTokens = 2048,
+                Confidence = 0.5,
+            },
+            Components =
+            [
+                new ContextTokenComponent(
+                    ContextTokenSource.ReservedAnswer,
+                    new TokenEstimate(
+                        1_000,
+                        TokenEstimateClassification.Reserved,
+                        "test")),
+                new ContextTokenComponent(
+                    ContextTokenSource.ReservedReasoning,
+                    new TokenEstimate(
+                        600,
+                        TokenEstimateClassification.Reserved,
+                        "test")),
+            ],
+            InputTokens = 5_000,
+            ReservedTokens = 1_600,
+            ReservedAnswerTokens = 1_000,
+            ReservedReasoningTokens = 600,
+            TotalTokens = 6_600,
+            OverallClassification = TokenEstimateClassification.Estimated,
+            SafetyMarginTokens = 500,
+        };
+
     private sealed class RecordingTurnRunWriter : ITurnRunWriter
     {
         public Guid RunId { get; } = Guid.NewGuid();
@@ -694,6 +1231,9 @@ public sealed class TurnAccountingHandleTests
         public Exception? RecordException { get; init; }
 
         public int CompleteFailuresRemaining { get; set; }
+
+        /// <summary>The summed actual cost of every operation recorded so far.</summary>
+        public decimal RecordedCostUsd { get; private set; }
 
         public Task<Guid> StartRunAsync(
             InferenceRunStart start,
@@ -733,6 +1273,7 @@ public sealed class TurnAccountingHandleTests
             }
 
             LastOperation = operation;
+            RecordedCostUsd += operation.ActualCostUsd;
             return Task.FromResult(Guid.NewGuid());
         }
     }
@@ -761,6 +1302,74 @@ public sealed class TurnAccountingHandleTests
 
         public TaskCompletionSource? AllowReconciliation { get; init; }
 
+        /// <summary>Today's committed spend, as the ledger behind the writer would report it.</summary>
+        public Func<decimal>? CommittedSpend { get; init; }
+
+        /// <summary>The single reservation's current amount: reserved, then raised by each adjust.</summary>
+        public decimal OutstandingUsd { get; private set; }
+
+        /// <summary>The daily limit a recheck reads; zero leaves the recheck with nothing to enforce.</summary>
+        public decimal DailyLimitUsd { get; init; }
+
+        /// <summary>
+        /// Committed spend in the reservation's own budget period, when that differs from today's (a
+        /// turn admitted before UTC midnight). Set, the recheck judges that day and today
+        /// (<see cref="CommittedSpend"/> plus <see cref="TodayOutstanding"/>) separately, as the
+        /// service does; unset, the two are one day.
+        /// </summary>
+        public Func<decimal>? ReservationPeriodCommittedSpend { get; init; }
+
+        /// <summary>What today's outstanding read reports, when today is not the reservation's day.</summary>
+        public Func<decimal>? TodayOutstanding { get; init; }
+
+        public Exception? ExtendExpiryException { get; init; }
+
+        /// <summary>Cancelled by the renewal itself, as a caller walking away mid-write would.</summary>
+        public CancellationTokenSource? CancelDuringRenewal { get; init; }
+
+        public int RecheckCount { get; private set; }
+
+        public decimal? LastRecheckDelegatedSpendUsd { get; private set; }
+
+        public List<DateTimeOffset> ExtendedExpiries { get; } = [];
+
+        public Task<Result> RecheckDailyLimitAsync(
+            Guid reservationId,
+            decimal delegatedSpendUsd,
+            CancellationToken cancellationToken = default)
+        {
+            RecheckCount++;
+            LastRecheckDelegatedSpendUsd = delegatedSpendUsd;
+
+            if (DailyLimitUsd <= 0m)
+            {
+                return Task.FromResult(Result.Success());
+            }
+
+            decimal todayCommitted = CommittedSpend?.Invoke() ?? 0m;
+            bool overLimit;
+
+            if (ReservationPeriodCommittedSpend is null)
+            {
+                overLimit = todayCommitted + OutstandingUsd + delegatedSpendUsd > DailyLimitUsd;
+            }
+            else
+            {
+                // The reservation's own day is not today: both days are judged, and the delegated
+                // spend (today's) and the next call count toward today.
+                decimal admittedDay = ReservationPeriodCommittedSpend() + OutstandingUsd;
+                decimal today = todayCommitted
+                    + (TodayOutstanding?.Invoke() ?? 0m)
+                    + OutstandingUsd
+                    + delegatedSpendUsd;
+                overLimit = admittedDay > DailyLimitUsd || today > DailyLimitUsd;
+            }
+
+            return Task.FromResult(overLimit
+                ? Result.Failure(new Error(ErrorCodes.Budget.Exceeded, "over the daily limit"))
+                : Result.Success());
+        }
+
         public Task<Result<BudgetReservation>> ReserveAsync(
             BudgetReservationRequest request,
             CancellationToken cancellationToken = default)
@@ -771,6 +1380,8 @@ public sealed class TurnAccountingHandleTests
             {
                 return Task.FromException<Result<BudgetReservation>>(ReserveException);
             }
+
+            OutstandingUsd = request.ReservedUsd;
 
             return Task.FromResult(Result<BudgetReservation>.Success(new BudgetReservation(
                 Guid.NewGuid(),
@@ -814,6 +1425,7 @@ public sealed class TurnAccountingHandleTests
         {
             AdjustedUsd = reservedUsd;
             AdjustCount++;
+            OutstandingUsd = Math.Max(OutstandingUsd, reservedUsd);
             return Task.FromResult(Result.Success());
         }
 
@@ -827,15 +1439,43 @@ public sealed class TurnAccountingHandleTests
 
         public Task<decimal> GetTodayCommittedSpendAsync(
             CancellationToken cancellationToken = default) =>
-            Task.FromResult(0m);
+            Task.FromResult(CommittedSpend?.Invoke() ?? 0m);
 
         public Task<decimal> GetTodayOutstandingReservationsAsync(
             CancellationToken cancellationToken = default) =>
-            Task.FromResult(0m);
+            Task.FromResult(TodayOutstanding?.Invoke() ?? OutstandingUsd);
+
+        public Task ExtendExpiryAsync(
+            Guid reservationId,
+            DateTimeOffset expiresAt,
+            CancellationToken cancellationToken = default)
+        {
+            ExtendedExpiries.Add(expiresAt);
+
+            if (CancelDuringRenewal is not null)
+            {
+                CancelDuringRenewal.Cancel();
+
+                cancellationToken.ThrowIfCancellationRequested();
+            }
+
+            return ExtendExpiryException is null
+                ? Task.CompletedTask
+                : Task.FromException(ExtendExpiryException);
+        }
 
         public Task<int> SweepExpiredAsync(
             DateTimeOffset utcNow,
             CancellationToken cancellationToken = default) =>
             Task.FromResult(0);
+    }
+
+    /// <summary>Today's delegated spend, as a settled Sending ledger would report it.</summary>
+    private sealed class FixedExternalSpendLedger(decimal knownCostUsd) : IExternalSpendLedger
+    {
+        public decimal KnownCostUsd { get; set; } = knownCostUsd;
+
+        public Task<ExternalSpendSummary> GetTodayAsync(CancellationToken cancellationToken = default) =>
+            Task.FromResult(new ExternalSpendSummary(KnownCostUsd, 0, PricedSendings: 1, UnpricedSendings: 0));
     }
 }

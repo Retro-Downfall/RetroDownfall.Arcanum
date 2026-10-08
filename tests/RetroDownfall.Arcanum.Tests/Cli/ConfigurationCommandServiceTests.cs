@@ -25,37 +25,26 @@ public sealed class ConfigurationCommandServiceTests : IAsyncLifetime
 {
     private const string PortVariable = "ARCANUM_Arcanum__Host__Port";
 
-    private TempWorkspace _workspace = null!;
+    private ArcanumTestHomeScope _home = null!;
 
     private string? _originalPort;
 
-    private string? _originalTestHome;
-
-    public async Task InitializeAsync()
+    public Task InitializeAsync()
     {
-        _workspace = new TempWorkspace();
-
-        await _workspace.InitializeAsync();
+        _home = new ArcanumTestHomeScope("arcanum-configuration-command-service-tests");
 
         _originalPort = global::System.Environment.GetEnvironmentVariable(PortVariable);
 
-        _originalTestHome = global::System.Environment.GetEnvironmentVariable(
-            "ARCANUM_TEST_HOME");
-
-        global::System.Environment.SetEnvironmentVariable(
-            "ARCANUM_TEST_HOME",
-            _workspace.Root);
+        return Task.CompletedTask;
     }
 
-    public async Task DisposeAsync()
+    public Task DisposeAsync()
     {
         global::System.Environment.SetEnvironmentVariable(PortVariable, _originalPort);
 
-        global::System.Environment.SetEnvironmentVariable(
-            "ARCANUM_TEST_HOME",
-            _originalTestHome);
+        _home.Dispose();
 
-        await _workspace.DisposeAsync();
+        return Task.CompletedTask;
     }
 
     [Fact]

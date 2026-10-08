@@ -176,11 +176,26 @@ internal sealed class CovenantIndexRebuilder(
         CovenantIndexRebuildProgress progress,
         CancellationToken cancellationToken)
     {
+        long after = progress.BaseScanAfterSearchRowId ?? 0;
+
+        // The batch is the next window of heads by the stable projection row ID, which never moves
+        // within a generation, so a batch boundary is a real position rather than a place in an
+        // unstable sort. The window is chosen from the heads alone: whether a head already has a
+        // projection row says nothing about whether the scan has passed it, because a resume from a
+        // cursor that trails the committed batches re-selects heads that are already projected, and
+        // counting only fresh inserts would end the scan at the first such batch with the rest of the
+        // heads never visited.
+        (long selected, long highest) = await SelectBatchAsync(transaction, after, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (selected == 0)
+        {
+            return progress with { Phase = CovenantIndexRebuildPhase.DeltaCatchUp };
+        }
+
         await using SqliteCommand command = transaction.CreateCommand();
 
-        // Ordered by the stable projection row ID, which never moves within a generation, so a batch
-        // boundary is a real position rather than a place in an unstable sort.
-        command.CommandText = $"""
+        command.CommandText = """
             INSERT INTO covenant_search_documents (
                 SearchRowId, EntryId, LaneCode, VersionId, ScopeCode, CampaignId, LifecycleCode,
                 NormalizedKey, AuthoredContent, CompiledContent, DatasetGeneration, CanonicalSearchSequence)
@@ -191,9 +206,7 @@ internal sealed class CovenantIndexRebuilder(
                    $dataset, $target
             FROM covenant_heads h
             JOIN covenant_versions v ON v.VersionId = h.CurrentVersionId
-            WHERE h.SearchRowId > $after
-            ORDER BY h.SearchRowId
-            LIMIT {CovenantIndexRebuildProgress.BaseBatchHeads}
+            WHERE h.SearchRowId > $after AND h.SearchRowId <= $highest
             ON CONFLICT (SearchRowId) DO NOTHING;
             """;
 
@@ -201,35 +214,56 @@ internal sealed class CovenantIndexRebuilder(
 
         Bind(command, "$target", progress.BaseTargetSearchSequence);
 
-        Bind(command, "$after", progress.BaseScanAfterSearchRowId ?? 0);
+        Bind(command, "$after", after);
 
-        int written = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        Bind(command, "$highest", highest);
 
-        if (written == 0)
-        {
-            return progress with { Phase = CovenantIndexRebuildPhase.DeltaCatchUp };
-        }
-
-        long cursor = await ScalarAsync(
-                transaction,
-                "SELECT MAX(SearchRowId) FROM covenant_search_documents;",
-                cancellationToken)
-            .ConfigureAwait(false);
+        _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 
         await ExecuteAsync(
                 transaction,
                 "UPDATE covenant_state SET RebuildCursor = $cursor, UpdatedAtUtc = $updated WHERE StateKey = 1;",
                 cancellationToken,
-                ("$cursor", cursor),
+                ("$cursor", highest),
                 ("$updated", NowIso()))
             .ConfigureAwait(false);
 
         return progress with
         {
-            BaseScanAfterSearchRowId = cursor,
+            BaseScanAfterSearchRowId = highest,
 
-            BaseHeadsProcessed = checked(progress.BaseHeadsProcessed + written),
+            BaseHeadsProcessed = checked(progress.BaseHeadsProcessed + selected),
         };
+    }
+
+    /// <summary>
+    /// How many heads the next base-scan window holds, and the highest projection row ID in it.
+    /// </summary>
+    private static async ValueTask<(long Selected, long Highest)> SelectBatchAsync(
+        CovenantMutationTransaction transaction,
+        long after,
+        CancellationToken cancellationToken)
+    {
+        await using SqliteCommand command = transaction.CreateCommand();
+
+        command.CommandText = $"""
+            SELECT COUNT(*), COALESCE(MAX(SearchRowId), 0)
+            FROM (
+                SELECT SearchRowId
+                FROM covenant_heads
+                WHERE SearchRowId > $after
+                ORDER BY SearchRowId
+                LIMIT {CovenantIndexRebuildProgress.BaseBatchHeads});
+            """;
+
+        Bind(command, "$after", after);
+
+        await using SqliteDataReader reader = await command.ExecuteReaderAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        _ = await reader.ReadAsync(cancellationToken).ConfigureAwait(false);
+
+        return (reader.GetInt64(0), reader.GetInt64(1));
     }
 
     /// <summary>
@@ -328,6 +362,22 @@ internal sealed class CovenantIndexRebuilder(
         if (progress.LastContiguousAppliedSequence != state.CanonicalSearchSequence)
         {
             return progress with { Phase = CovenantIndexRebuildPhase.DeltaCatchUp };
+        }
+
+        // Coverage is checked as well as consistency: after the delta replay, at the target sequence,
+        // the projection holds exactly one document per canonical head. A scan that skipped a window
+        // leaves a perfectly consistent index that is missing heads, which rank-1 integrity cannot see.
+        long documents = await ScalarAsync(transaction, "SELECT COUNT(*) FROM covenant_search_documents;", cancellationToken)
+            .ConfigureAwait(false);
+
+        long heads = await ScalarAsync(transaction, "SELECT COUNT(*) FROM covenant_heads;", cancellationToken)
+            .ConfigureAwait(false);
+
+        if (documents != heads)
+        {
+            return new Error(
+                ErrorCodes.Covenant.IntegrityFailure,
+                "The rebuilt Covenant projection does not hold one document for every canonical head.");
         }
 
         try

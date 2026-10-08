@@ -1,5 +1,3 @@
-using System.Security.Cryptography;
-using System.Text;
 using Microsoft.AspNetCore.DataProtection;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.Storage;
@@ -10,7 +8,7 @@ public sealed class DataProtectionSecretStore(
     IDataProtectionProvider dataProtectionProvider,
     IApiKeyDigestCache apiKeyDigestCache) : ISecretStore, IDisposable
 {
-    internal const int MaxProtectedSecretBytes = 64 * 1024;
+    internal const int MaxProtectedSecretBytes = ProtectedCredentialFile.MaxProtectedSecretBytes;
 
     private const string ProtectorPurpose = "Arcanum.Core.ApiKey";
 
@@ -92,8 +90,9 @@ public sealed class DataProtectionSecretStore(
 
     /// <summary>
     /// Like <see cref="GetGrimoireEncryptionSecretAsync"/> but preserves
-    /// <see cref="SecretStoreReadStatus.Corrupted"/> so callers can refuse a silent
-    /// API-key fallback when the sealed secret is present but undecryptable.
+    /// <see cref="SecretStoreReadStatus.Corrupted"/> and <see cref="SecretStoreReadStatus.Unreadable"/>
+    /// so callers can refuse a silent API-key fallback when the sealed secret is present but
+    /// undecryptable or cannot be read.
     /// </summary>
     public Task<SecretStoreReadResult> GetGrimoireEncryptionSecretReadResultAsync() =>
         ReadProtectedResultAsync(
@@ -144,6 +143,38 @@ public sealed class DataProtectionSecretStore(
         }
     }
 
+    public async Task DeleteApiKeyAsync()
+    {
+        await DeleteProtectedAsync(StorePath).ConfigureAwait(false);
+
+        apiKeyDigestCache.Invalidate();
+    }
+
+    public Task DeleteGrimoireEncryptionSecretAsync() => DeleteProtectedAsync(GrimoireStorePath);
+
+    public Task DeleteFileEncryptionSecretAsync() => DeleteProtectedAsync(FileEncryptionStorePath);
+
+    /// <summary>
+    /// Removes one protected credential file under the store's lock. An absent file, or an absent
+    /// store directory, is already the requested state.
+    /// </summary>
+    private async Task DeleteProtectedAsync(string path)
+    {
+        await _fileLock.WaitAsync().ConfigureAwait(false);
+
+        try
+        {
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
+        }
+        finally
+        {
+            _fileLock.Release();
+        }
+    }
+
     private async Task<SecretStoreReadResult> ReadProtectedResultAsync(
         string path,
         IDataProtector protector,
@@ -153,50 +184,12 @@ public sealed class DataProtectionSecretStore(
 
         try
         {
-            using SecureFileReadResult read = await SecureFileReader
-                .ReadBytesAsync(
-                    path,
-                    MaxProtectedSecretBytes,
-                    CancellationToken.None)
+            // Only undecryptable or empty content is Corrupted and carries the recovery text; a file
+            // that could not be read at all (access denied, I/O error, over the ceiling, linked) is
+            // Unreadable with retry guidance, never the advice to delete it.
+            return await ProtectedCredentialFile
+                .ReadAsync(path, protector, corruptMessage, CancellationToken.None)
                 .ConfigureAwait(false);
-
-            if (read.Status == SecureFileReadStatus.NotFound)
-            {
-                return SecretStoreReadResult.Missing();
-            }
-
-            if (read.Status != SecureFileReadStatus.Success)
-            {
-                return SecretStoreReadResult.Corrupted(corruptMessage);
-            }
-
-            byte[] cipher = read.Bytes.ToArray();
-
-            if (cipher.Length == 0)
-            {
-                CryptographicOperations.ZeroMemory(cipher);
-
-                return SecretStoreReadResult.Corrupted(corruptMessage);
-            }
-
-            try
-            {
-                byte[] plain = protector.Unprotect(cipher);
-
-                string value = Encoding.UTF8.GetString(plain);
-
-                CryptographicOperations.ZeroMemory(plain);
-
-                return SecretStoreReadResult.Ok(value);
-            }
-            catch (CryptographicException)
-            {
-                return SecretStoreReadResult.Corrupted(corruptMessage);
-            }
-            finally
-            {
-                CryptographicOperations.ZeroMemory(cipher);
-            }
         }
         finally
         {
@@ -212,60 +205,13 @@ public sealed class DataProtectionSecretStore(
     internal static Task WriteProtectedForTestsAsync(string path, string plainText, IDataProtector protector) =>
         WriteProtectedAsync(path, plainText, protector);
 
-    private static async Task WriteProtectedAsync(string path, string plainText, IDataProtector protector)
-    {
-        string directory = Path.GetDirectoryName(path)
-            ?? throw new InvalidOperationException("Invalid secret store path.");
-
-        SecureFilePermissions.EnsureOwnerOnlyDirectoryExists(directory);
-
-        byte[] plain = Encoding.UTF8.GetBytes(plainText);
-
-        byte[] cipher = protector.Protect(plain);
-
-        CryptographicOperations.ZeroMemory(plain);
-
-        string tempPath = path + ".tmp." + Guid.NewGuid().ToString("N");
-
-        try
-        {
-            await using (FileStream stream = SecureFilePermissions.CreateOwnerOnlyTempFile(tempPath))
-            {
-                await stream.WriteAsync(cipher).ConfigureAwait(false);
-
-                await stream.FlushAsync().ConfigureAwait(false);
-
-                // FlushAsync only drains the managed buffer to the OS. grimoire-key.dat has no
-                // OS-credential copy, so the rename must not be able to outrun the data: fsync
-                // before the atomic replace, matching GrimoireKdfSidecarFile.Write.
-                stream.Flush(flushToDisk: true);
-            }
-
-            File.Move(tempPath, path, overwrite: true);
-
-            SecureFilePermissions.ApplyOwnerOnlyFile(path);
-        }
-        finally
-        {
-            if (File.Exists(tempPath))
-            {
-                try
-                {
-                    File.Delete(tempPath);
-                }
-                catch (Exception cleanupFailure)
-                    when (cleanupFailure is IOException or UnauthorizedAccessException)
-                {
-                    // Best effort cleanup of temp file. UnauthorizedAccessException belongs here as
-                    // much as IOException: Windows raises it for a delete the filesystem refuses, and
-                    // an uncaught throw from a finally does not merely fail to clean up -- it replaces
-                    // the exception that explains why the save failed with one about the tidying
-                    // afterwards. TheForge's OpenAiCompatApiClient already catches the pair for the
-                    // same reason.
-                }
-            }
-        }
-    }
+    /// <summary>
+    /// grimoire-key.dat has no OS-credential copy, so the rename must not be able to outrun the data:
+    /// the shared writer fsyncs the owner-only temp file before the atomic replace, exactly as the
+    /// Grimoire <c>.kdf</c> sidecar and every other credential mirror do.
+    /// </summary>
+    private static Task WriteProtectedAsync(string path, string plainText, IDataProtector protector) =>
+        ProtectedCredentialFile.WriteAsync(path, plainText, protector, CancellationToken.None);
 
     internal static bool GrimoireDatabaseExists() => File.Exists(ArcanumPaths.GrimoireDatabaseFile);
 }

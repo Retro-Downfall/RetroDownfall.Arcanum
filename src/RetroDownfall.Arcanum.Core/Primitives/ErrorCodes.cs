@@ -171,6 +171,23 @@ public static class ErrorCodes
         /// (§10.12).
         /// </remarks>
         public const string PathIdentityRequired = "Campaign.PathIdentityRequired";
+
+        /// <summary>
+        /// Campaign roots are registered, but the installation's root-identity key is missing from the OS
+        /// credential store, so no replacement is created.
+        /// </summary>
+        /// <remarks>
+        /// A fresh key would re-derive every registered root's identity under a different secret and
+        /// orphan all of them while the installation kept looking healthy, so the loss is reported and
+        /// never repaired by minting (§10.12).
+        /// </remarks>
+        public const string RootIdentityKeyLost = "Campaign.RootIdentityKeyLost";
+
+        /// <summary>
+        /// The root-identity key could not be read, or could not be created and read back, in the OS
+        /// credential store right now. Retryable.
+        /// </summary>
+        public const string RootIdentityKeyUnavailable = "Campaign.RootIdentityKeyUnavailable";
     }
 
     /// <summary>Session — grimoire conversation persistence.</summary>
@@ -210,6 +227,9 @@ public static class ErrorCodes
 
         /// <summary>Pinning an entry would exceed the code-owned per-session limit.</summary>
         public const string TooManyPinned = "Session.TooManyPinned";
+
+        /// <summary>The context pin named by <c>DELETE /api/sessions/{id}/context-pins/{pinId}</c> does not exist in that Session.</summary>
+        public const string PinNotFound = "Session.PinNotFound";
 
         /// <summary>Explicit <c>POST /api/sessions/{id}/rest</c> could not enqueue Campaign Log consolidation.</summary>
         public const string RestQueueFull = "Session.RestQueueFull";
@@ -323,6 +343,12 @@ public static class ErrorCodes
         public const string FileWriteDisabled = "Workspace.FileWriteDisabled";
 
         public const string WriteFailed = "Workspace.WriteFailed";
+
+        /// <summary>
+        /// A read-modify-write edit (PATCH) found its target no longer holds the bytes the edit was computed
+        /// from, so nothing was written. Not a server fault: the caller re-reads and retries.
+        /// </summary>
+        public const string FileChanged = "Workspace.FileChanged";
 
         public const string DeleteFailed = "Workspace.DeleteFailed";
 
@@ -473,6 +499,18 @@ public static class ErrorCodes
 
         /// <summary>Diagnostic MCP Invocation: the route exists only on the Development edition.</summary>
         public const string DiagnosticDisabled = "Mcp.DiagnosticDisabled";
+
+        /// <summary>
+        /// A restart was cancelled after the old server had already stopped, so the answer says what the
+        /// server was left in rather than surfacing a bare cancellation. No status arm: it stays 400.
+        /// </summary>
+        public const string RestartCanceled = "Mcp.RestartCanceled";
+
+        /// <summary>
+        /// The previous MCP client has not finished shutting down, so a start or restart that would
+        /// replace it cannot proceed yet. No status arm: it stays 400.
+        /// </summary>
+        public const string ClientDisposalIncomplete = "Mcp.ClientDisposalIncomplete";
     }
 
     /// <summary>Daemon — background job orchestration.</summary>
@@ -509,6 +547,15 @@ public static class ErrorCodes
     public static class CommLink
     {
         public const string Suppressed = "CommLink.Suppressed";
+
+        /// <summary>The webhook receiver answered with a non-success status.</summary>
+        public const string WebhookHttpError = "CommLink.WebhookHttpError";
+
+        /// <summary>The webhook POST failed before a status was read; the detail stays in the log.</summary>
+        public const string WebhookException = "CommLink.WebhookException";
+
+        /// <summary>A Comm Link sink threw unexpectedly; the detail stays in the log.</summary>
+        public const string DispatcherException = "CommLink.DispatcherException";
     }
 
     /// <summary>Api — HTTP surface and streaming admission.</summary>
@@ -581,6 +628,13 @@ public static class ErrorCodes
         public const string PinnedAfterPlanning = "Data.PinnedAfterPlanning";
 
         public const string RecoveryRequired = "Data.RecoveryRequired";
+
+        /// <summary>
+        /// The issue an installation reset reports when cancellation reached it after its active record
+        /// or a filesystem mutation was already in place. A client tells the operator's own cancellation
+        /// from any other recovery-required condition by this code, never by the wording of the message.
+        /// </summary>
+        public const string ResetCancelled = "Data.ResetCancelled";
 
         public const string FileLocked = "Data.FileLocked";
 
@@ -679,6 +733,8 @@ public static class ErrorCodes
         public const string FeatureDisabled = "Embeddings.FeatureDisabled";
 
         public const string ConfirmationRequired = "Embeddings.ConfirmationRequired";
+
+        public const string DimensionMismatch = "Embeddings.DimensionMismatch";
     }
 
     /// <summary>Provider rows in <c>Arcanum:Providers</c>.</summary>
@@ -729,6 +785,9 @@ public static class ErrorCodes
         /// than leaving this memory's text and its vector disagreeing about what it says.
         /// </summary>
         public const string EmbeddingUnavailable = "Saga.EmbeddingUnavailable";
+
+        /// <summary>A durable Saga write did not commit. The transaction wrote nothing.</summary>
+        public const string WriteFailed = "Saga.WriteFailed";
     }
 
     /// <summary>Lexicon — structured agent-directed entity memory (replaces model-facing Lore).</summary>
@@ -837,6 +896,8 @@ public static class ErrorCodes
         public const string Timeout = "WebBrowsing.Timeout";
 
         public const string InvalidUrl = "WebBrowsing.InvalidUrl";
+
+        public const string RedirectLimitExceeded = "WebBrowsing.RedirectLimitExceeded";
     }
 
     /// <summary>WebResearch — native synthesized search and direct URL-reading failures.</summary>
@@ -1055,6 +1116,13 @@ public static class ErrorCodes
 
         /// <summary>A maintenance, cleanup, or synchronization step did not complete.</summary>
         public const string MaintenanceFailed = "Covenant.MaintenanceFailed";
+
+        /// <summary>
+        /// A durable Covenant write did not commit, or a storage read before it failed. The transaction wrote
+        /// nothing. A database that stayed busy past the retry bound is <see cref="Unavailable"/> instead,
+        /// because retrying the same request is the right answer to it.
+        /// </summary>
+        public const string WriteFailed = "Covenant.WriteFailed";
 
         /// <summary>Automatic recovery is refused; an authenticated operator operation is required.</summary>
         public const string ManualRecoveryRequired = "Covenant.ManualRecoveryRequired";

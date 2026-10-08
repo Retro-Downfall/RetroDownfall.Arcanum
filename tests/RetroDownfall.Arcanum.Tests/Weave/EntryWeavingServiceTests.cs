@@ -24,7 +24,6 @@ namespace RetroDownfall.Arcanum.Tests.Weave;
 [Trait("Category", "Integration")]
 public sealed class EntryWeavingServiceTests : IAsyncLifetime
 {
-
     private readonly GrimoireFixture _fixture;
 
     private string _dbPath = string.Empty;
@@ -33,45 +32,34 @@ public sealed class EntryWeavingServiceTests : IAsyncLifetime
 
     public EntryWeavingServiceTests(GrimoireFixture fixture)
     {
-
         _fixture = fixture;
-
     }
 
     public Task InitializeAsync()
     {
-
         _dbPath = _fixture.CopyDatabase();
 
         _db = _fixture.CreateContext(_dbPath);
 
         return Task.CompletedTask;
-
     }
 
     public async Task DisposeAsync()
     {
-
         if (_db is not null)
         {
-
             await _db.DisposeAsync();
-
         }
 
         if (File.Exists(_dbPath))
         {
-
             File.Delete(_dbPath);
-
         }
-
     }
 
     [SkippableFact]
     public async Task RunTickAsync_EmbedsUnembeddedEntries_AndSkipsAlreadyEmbeddedOnNextTick()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = await CreateSessionAsync();
@@ -100,13 +88,48 @@ public sealed class EntryWeavingServiceTests : IAsyncLifetime
         _ = entryOneId;
 
         _ = entryTwoId;
+    }
 
+    /// <summary>
+    /// The provider call is billed the moment it returns, so a shutdown that arrives with the answer must
+    /// not discard what was paid for: the rows are written on a token the host cannot cancel, and the
+    /// next tick would otherwise select and bill the same entries again.
+    /// </summary>
+    [SkippableFact]
+    public async Task Embeddings_are_persisted_when_shutdown_is_requested_after_the_provider_returns()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = await CreateSessionAsync();
+
+        await CreateEntryAsync(sessionId, "first entry content");
+
+        await CreateEntryAsync(sessionId, "second entry content");
+
+        using CancellationTokenSource shutdown = new();
+
+        FakeWeaveService weave = new()
+        {
+            OnEmbed = () =>
+            {
+                shutdown.Cancel();
+
+                return Task.CompletedTask;
+            },
+        };
+
+        EntryWeavingService service = CreateService(weave, out EmbeddingSettings embeddings);
+
+        Assert.Equal(EntryWeavingTickOutcome.Woven, await service.RunTickAsync(embeddings, shutdown.Token));
+
+        Assert.Equal(2, await CountEntryEmbeddingsAsync());
+
+        Assert.Equal(1, weave.EmbedBatchCallCount);
     }
 
     [SkippableFact]
     public async Task RunTickAsync_SkipsEmptyContentEntries()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = await CreateSessionAsync();
@@ -126,13 +149,11 @@ public sealed class EntryWeavingServiceTests : IAsyncLifetime
         Assert.Single(weave.LastBatch!);
 
         Assert.Equal("real content", weave.LastBatch![0]);
-
     }
 
     [SkippableFact]
     public async Task RunTickAsync_TruncatesContentToChunkSizeChars()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = await CreateSessionAsync();
@@ -155,13 +176,11 @@ public sealed class EntryWeavingServiceTests : IAsyncLifetime
         Assert.Equal(chunkSize, weave.LastBatch![0].Length);
 
         Assert.Equal(new string('x', chunkSize), weave.LastBatch![0]);
-
     }
 
     [SkippableFact]
     public async Task RunTickAsync_EmbeddingFailure_LogsAndContinues_WritesNoRows()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = await CreateSessionAsync();
@@ -176,13 +195,129 @@ public sealed class EntryWeavingServiceTests : IAsyncLifetime
         await service.RunTickAsync(embeddings, CancellationToken.None);
 
         Assert.Equal(0, await CountEntryEmbeddingsAsync());
+    }
 
+    /// <summary>
+    /// A batch the provider refuses is not billed again every interval: each entry in it waits one tick,
+    /// then two, then four, and is retried when its wait is over.
+    /// </summary>
+    [SkippableFact]
+    public async Task RunTickAsync_FailedBatch_IsNotBilledAgainImmediatelyAndRetriesOnTheLadder()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = await CreateSessionAsync();
+
+        await CreateEntryAsync(sessionId, "content the provider refuses");
+
+        FakeWeaveService weave = new() { FailNextBatch = true };
+
+        EntryWeavingService service = CreateService(weave, out EmbeddingSettings embeddings);
+
+        // Tick 1 bills and fails; the entry waits out tick 2.
+        await service.RunTickAsync(embeddings, CancellationToken.None);
+
+        Assert.Equal(1, weave.EmbedBatchCallCount);
+
+        await service.RunTickAsync(embeddings, CancellationToken.None);
+
+        Assert.Equal(1, weave.EmbedBatchCallCount);
+
+        // Tick 3 retries and fails again; the second failure waits two ticks.
+        await service.RunTickAsync(embeddings, CancellationToken.None);
+
+        Assert.Equal(2, weave.EmbedBatchCallCount);
+
+        await service.RunTickAsync(embeddings, CancellationToken.None);
+
+        await service.RunTickAsync(embeddings, CancellationToken.None);
+
+        Assert.Equal(2, weave.EmbedBatchCallCount);
+
+        weave.FailNextBatch = false;
+
+        // Tick 6 retries once the provider recovers, and the entry is embedded and leaves the ladder.
+        await service.RunTickAsync(embeddings, CancellationToken.None);
+
+        Assert.Equal(3, weave.EmbedBatchCallCount);
+
+        Assert.Equal(1, await CountEntryEmbeddingsAsync());
+
+        await service.RunTickAsync(embeddings, CancellationToken.None);
+
+        Assert.Equal(3, weave.EmbedBatchCallCount);
+    }
+
+    /// <summary>
+    /// A batch that keeps failing must not hold the head of the queue: the entries behind it are read
+    /// past it and embedded while it waits.
+    /// </summary>
+    [SkippableFact]
+    public async Task RunTickAsync_EntriesBehindAFailingBatchAreNotStarved()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = await CreateSessionAsync();
+
+        int batchSize = ArcanumSettingClamps.EmbeddingsBatchSize(
+            ArcanumRuntimeDefaults.Embeddings.BatchSize);
+
+        await CreateEntryAsync(sessionId, "older entry the provider accepts");
+
+        // Newer entries are read first (CreatedAt DESC), so a full batch of refused ones heads the queue.
+        await Task.Delay(TimeSpan.FromMilliseconds(25));
+
+        for (int index = 0; index < batchSize; index++)
+        {
+            await CreateEntryAsync(sessionId, $"poison entry {index}");
+        }
+
+        FakeWeaveService weave = new() { FailForContentContaining = "poison" };
+
+        EntryWeavingService service = CreateService(weave, out EmbeddingSettings embeddings);
+
+        await service.RunTickAsync(embeddings, CancellationToken.None);
+
+        Assert.Equal(0, await CountEntryEmbeddingsAsync());
+
+        await service.RunTickAsync(embeddings, CancellationToken.None);
+
+        Assert.Equal(1, await CountEntryEmbeddingsAsync());
+
+        Assert.Equal(2, weave.EmbedBatchCallCount);
+
+        Assert.Equal(["older entry the provider accepts"], weave.LastBatch);
+    }
+
+    /// <summary>
+    /// A provider that throws is charged to the ladder too, so the loop's one-second fault backoff does
+    /// not re-bill the same batch on every retry.
+    /// </summary>
+    [SkippableFact]
+    public async Task RunTickAsync_ThrowingProvider_IsNotBilledAgainOnTheNextTick()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = await CreateSessionAsync();
+
+        await CreateEntryAsync(sessionId, "content that makes the provider throw");
+
+        FakeWeaveService weave = new() { ThrowOnEmbed = true };
+
+        EntryWeavingService service = CreateService(weave, out EmbeddingSettings embeddings);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => service.RunTickAsync(embeddings, CancellationToken.None));
+
+        Assert.Equal(1, weave.EmbedBatchCallCount);
+
+        Assert.Equal(EntryWeavingTickOutcome.Woven, await service.RunTickAsync(embeddings, CancellationToken.None));
+
+        Assert.Equal(1, weave.EmbedBatchCallCount);
     }
 
     [SkippableFact]
     public async Task RunTickAsync_ShortProviderResponse_WritesNoRowsAndDoesNotThrow()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = await CreateSessionAsync();
@@ -191,23 +326,23 @@ public sealed class EntryWeavingServiceTests : IAsyncLifetime
 
         await CreateEntryAsync(sessionId, "second entry");
 
-        // IWeaveService never promises one vector per input. Indexing positionally against the request
-        // count would throw IndexOutOfRangeException, which the hosted loop's catch-all retries once a
-        // second forever — re-issuing a billable embedding call every second.
-        FakeWeaveService weave = new() { DropVectors = 1 };
+        // A provider can answer fewer vectors than inputs. The real WeaveService turns that into a
+        // failed batch at the provider boundary, so the tick writes nothing and does not throw. A
+        // positional index against the request count would instead throw IndexOutOfRangeException,
+        // which the hosted loop's catch-all retries once a second forever, re-issuing a billable
+        // embedding call every second.
+        IWeaveService weave = ShortAnsweringEmbeddingGeneratorFactory.CreateWeaveService();
 
         EntryWeavingService service = CreateService(weave, out EmbeddingSettings embeddings);
 
         await service.RunTickAsync(embeddings, CancellationToken.None);
 
         Assert.Equal(0, await CountEntryEmbeddingsAsync());
-
     }
 
     [SkippableFact]
     public async Task RunTickAsync_RespectsBatchSizeAcrossMultipleTicks()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = await CreateSessionAsync();
@@ -216,9 +351,7 @@ public sealed class EntryWeavingServiceTests : IAsyncLifetime
             ArcanumRuntimeDefaults.Embeddings.BatchSize);
         for (int i = 0; i < (batchSize * 2) + 1; i++)
         {
-
             await CreateEntryAsync(sessionId, $"entry number {i}");
-
         }
 
         FakeWeaveService weave = new();
@@ -236,13 +369,11 @@ public sealed class EntryWeavingServiceTests : IAsyncLifetime
         await service.RunTickAsync(embeddings, CancellationToken.None);
 
         Assert.Equal((batchSize * 2) + 1, await CountEntryEmbeddingsAsync());
-
     }
 
     [SkippableFact]
     public async Task ExecuteAsync_IdlesWhenDisabled_NeverCallsEmbedBatch()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = await CreateSessionAsync();
@@ -279,13 +410,11 @@ public sealed class EntryWeavingServiceTests : IAsyncLifetime
         Assert.Equal(0, weave.EmbedBatchCallCount);
 
         Assert.Equal(0, await CountEntryEmbeddingsAsync());
-
     }
 
     [SkippableFact]
     public async Task ExecuteAsync_TickThrowsRepeatedly_BacksOffInsteadOfTightLooping()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = await CreateSessionAsync();
@@ -309,13 +438,11 @@ public sealed class EntryWeavingServiceTests : IAsyncLifetime
         Assert.True(
             weave.EmbedBatchCallCount <= 2,
             $"Expected at most 2 tick attempts within 300ms given a 1s backoff after failure; got {weave.EmbedBatchCallCount}.");
-
     }
 
     [SkippableFact]
     public async Task RunTickAsync_AdmittedTick_ReportsWoven()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = await CreateSessionAsync();
@@ -329,13 +456,11 @@ public sealed class EntryWeavingServiceTests : IAsyncLifetime
         Assert.Equal(
             EntryWeavingTickOutcome.Woven,
             await service.RunTickAsync(embeddings, CancellationToken.None));
-
     }
 
     [SkippableFact]
     public async Task RunTickAsync_DeniedItsWorkLease_MakesNoScopeProviderCallOrWrite()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = await CreateSessionAsync();
@@ -365,13 +490,11 @@ public sealed class EntryWeavingServiceTests : IAsyncLifetime
         Assert.Equal(0, weave.EmbedBatchCallCount);
 
         Assert.Equal(0, await CountEntryEmbeddingsAsync());
-
     }
 
     [SkippableFact]
     public async Task RunTickAsync_RevocationWinsTheEffectRace_MakesNoProviderCallOrWrite()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = await CreateSessionAsync();
@@ -407,13 +530,11 @@ public sealed class EntryWeavingServiceTests : IAsyncLifetime
         Assert.Equal(0, await CountEntryEmbeddingsAsync());
 
         await closing!.DisposeAsync();
-
     }
 
     [SkippableFact]
     public async Task RunTickAsync_HoldsItsWorkLeaseUntilAfterTheScopeHasDisposed()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = await CreateSessionAsync();
@@ -439,7 +560,6 @@ public sealed class EntryWeavingServiceTests : IAsyncLifetime
         // time to run, which is what made an earlier IsCompleted-after-the-fact probe meaningless.
         scopes.OnScopeDisposed = () =>
         {
-
             closing = BeginClosing(gate, 43);
 
             Task<Result> started = gate
@@ -451,7 +571,6 @@ public sealed class EntryWeavingServiceTests : IAsyncLifetime
             drain = started;
 
             return ValueTask.CompletedTask;
-
         };
 
         EntryWeavingService service = CreateService(
@@ -475,13 +594,11 @@ public sealed class EntryWeavingServiceTests : IAsyncLifetime
         Assert.Equal(1, await CountEntryEmbeddingsAsync());
 
         await closing!.DisposeAsync();
-
     }
 
     [SkippableFact]
     public async Task RunTickAsync_EffectStartWinsTheRace_IsNotCutAndTheClosureWaitsThroughIt()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = await CreateSessionAsync();
@@ -502,13 +619,11 @@ public sealed class EntryWeavingServiceTests : IAsyncLifetime
         // the effect group is already open, so maintenance must wait it out rather than revoke it.
         weave.OnEmbed = () =>
         {
-
             closing = BeginClosing(gate, 45);
 
             drain = gate.DrainRequestAndWorkAsync(closing, CancellationToken.None).AsTask();
 
             return Task.CompletedTask;
-
         };
 
         EntryWeavingService service = CreateService(
@@ -532,13 +647,11 @@ public sealed class EntryWeavingServiceTests : IAsyncLifetime
         Assert.Equal(1, await CountEntryEmbeddingsAsync());
 
         await closing!.DisposeAsync();
-
     }
 
     [SkippableFact]
     public async Task ExecuteAsync_RepeatedlyDeferred_DoesNotLogAnErrorOrEnterTheFaultBackoff()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = await CreateSessionAsync();
@@ -582,7 +695,6 @@ public sealed class EntryWeavingServiceTests : IAsyncLifetime
         // a worker on the fault path would have logged and retried; one on the cadence path has not
         // come back at all.
         Assert.Equal(0, await CountEntryEmbeddingsAsync());
-
     }
 
     /// <summary>
@@ -597,7 +709,6 @@ public sealed class EntryWeavingServiceTests : IAsyncLifetime
     [SkippableFact]
     public async Task RunTickAsync_RemovesTheStalePlainMirrorRowOfAnEntryItEmbedsWhileTheFlagIsOff()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = await CreateSessionAsync();
@@ -630,7 +741,6 @@ public sealed class EntryWeavingServiceTests : IAsyncLifetime
         Assert.Equal(2, await CountEntryEmbeddingsAsync());
 
         Assert.Equal(1, await CountMirrorRowsAsync());
-
     }
 
     /// <summary>
@@ -644,7 +754,6 @@ public sealed class EntryWeavingServiceTests : IAsyncLifetime
     [SkippableFact]
     public async Task RunTickAsync_LeavesALegacyVirtualMirrorAloneWhileTheFlagIsOff()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = await CreateSessionAsync();
@@ -665,7 +774,6 @@ public sealed class EntryWeavingServiceTests : IAsyncLifetime
         Assert.Equal(1, await CountEntryEmbeddingsAsync());
 
         Assert.Equal(1, await CountMirrorRowsAsync());
-
     }
 
     /// <summary>
@@ -674,7 +782,6 @@ public sealed class EntryWeavingServiceTests : IAsyncLifetime
     [SkippableFact]
     public async Task RunTickAsync_RewritesTheMirrorRowWithTheEmbeddingWhileTheFlagIsOn()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = await CreateSessionAsync();
@@ -707,7 +814,6 @@ public sealed class EntryWeavingServiceTests : IAsyncLifetime
         Assert.Equal(
             await ScalarAsync("""SELECT "Embedding" FROM "entry_embeddings" """),
             await ScalarAsync("""SELECT "Embedding" FROM "entry_embeddings_vec" """));
-
     }
 
     /// <summary>
@@ -726,7 +832,6 @@ public sealed class EntryWeavingServiceTests : IAsyncLifetime
     [SkippableFact]
     public async Task RunTickAsync_RollsTheEmbeddingBackWhenTheStaleMirrorRowCannotBeRemoved()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = await CreateSessionAsync();
@@ -757,18 +862,16 @@ public sealed class EntryWeavingServiceTests : IAsyncLifetime
         Assert.Equal(0, await CountEntryEmbeddingsAsync());
 
         Assert.Equal(1, await CountMirrorRowsAsync());
-
     }
 
     private EntryWeavingService CreateService(
-        FakeWeaveService weave,
+        IWeaveService weave,
         out EmbeddingSettings embeddings,
         IGrimoireConnectionAdmissionGate? gate = null,
         ObservingScopeFactory? scopeFactory = null,
         ILogger<EntryWeavingService>? logger = null,
         WeaveIndexAvailability? vectorAccelerator = null)
     {
-
         embeddings = ArcanumRuntimeDefaults.Embeddings;
 
         return new EntryWeavingService(
@@ -793,19 +896,16 @@ public sealed class EntryWeavingServiceTests : IAsyncLifetime
             scopeFactory ?? BuildScopeFactory(),
             gate ?? OpenGate(),
             logger ?? NullLogger<EntryWeavingService>.Instance);
-
     }
 
     private ObservingScopeFactory BuildScopeFactory()
     {
-
         ServiceCollection services = new();
 
         services.AddSingleton(_db!);
 
         return new ObservingScopeFactory(
             services.BuildServiceProvider().GetRequiredService<IServiceScopeFactory>());
-
     }
 
     /// <summary>A gate whose ordinary admission is open, which is every pre-existing case here.</summary>
@@ -821,13 +921,11 @@ public sealed class EntryWeavingServiceTests : IAsyncLifetime
         GrimoireConnectionAdmissionGate gate,
         byte seed)
     {
-
         Result<IGrimoireClosingOwner> begun = gate.BeginOrResumeExclusive(Owner(seed));
 
         Assert.True(begun.IsSuccess, begun.IsFailure ? begun.Error.Message : null);
 
         return begun.Value;
-
     }
 
     /// <summary>
@@ -846,7 +944,6 @@ public sealed class EntryWeavingServiceTests : IAsyncLifetime
     /// </remarks>
     private sealed class ObservingScopeFactory(IServiceScopeFactory inner) : IServiceScopeFactory
     {
-
         private int _scopesCreated;
 
         internal int ScopesCreated => Volatile.Read(ref _scopesCreated);
@@ -857,7 +954,6 @@ public sealed class EntryWeavingServiceTests : IAsyncLifetime
 
         public IServiceScope CreateScope()
         {
-
             _ = Interlocked.Increment(ref _scopesCreated);
 
             IServiceScope scope = inner.CreateScope();
@@ -865,39 +961,30 @@ public sealed class EntryWeavingServiceTests : IAsyncLifetime
             OnScopeCreated?.Invoke();
 
             return new ObservingScope(scope, OnScopeDisposed);
-
         }
-
     }
 
     private sealed class ObservingScope(
         IServiceScope inner,
         Func<ValueTask>? onDisposing) : IServiceScope, IAsyncDisposable
     {
-
         public IServiceProvider ServiceProvider => inner.ServiceProvider;
 
         public void Dispose() => inner.Dispose();
 
         public async ValueTask DisposeAsync()
         {
-
             inner.Dispose();
 
             if (onDisposing is not null)
             {
-
                 await onDisposing().ConfigureAwait(false);
-
             }
-
         }
-
     }
 
     private async Task<Guid> CreateSessionAsync()
     {
-
         Session session = new()
         {
             Id = Guid.NewGuid(),
@@ -911,7 +998,6 @@ public sealed class EntryWeavingServiceTests : IAsyncLifetime
         await _db.SaveChangesAsync();
 
         return session.Id;
-
     }
 
     /// <summary>
@@ -922,7 +1008,6 @@ public sealed class EntryWeavingServiceTests : IAsyncLifetime
 
     private async Task<Guid> CreateEntryAsync(Guid sessionId, string content)
     {
-
         Entry entry = new()
         {
             Id = Guid.NewGuid(),
@@ -938,7 +1023,6 @@ public sealed class EntryWeavingServiceTests : IAsyncLifetime
         await _db.SaveChangesAsync();
 
         return entry.Id;
-
     }
 
     private async Task<int> CountMirrorRowsAsync() =>
@@ -946,14 +1030,11 @@ public sealed class EntryWeavingServiceTests : IAsyncLifetime
 
     private async Task<object?> ScalarAsync(string sql)
     {
-
         DbConnection connection = _db!.Database.GetDbConnection();
 
         if (connection.State != ConnectionState.Open)
         {
-
             await connection.OpenAsync();
-
         }
 
         await using DbCommand cmd = connection.CreateCommand();
@@ -961,21 +1042,17 @@ public sealed class EntryWeavingServiceTests : IAsyncLifetime
         cmd.CommandText = sql;
 
         return await cmd.ExecuteScalarAsync();
-
     }
 
     private async Task ExecuteAsync(string sql) => _ = await ScalarAsync(sql);
 
     private async Task<int> CountEntryEmbeddingsAsync()
     {
-
         DbConnection connection = _db!.Database.GetDbConnection();
 
         if (connection.State != ConnectionState.Open)
         {
-
             await connection.OpenAsync();
-
         }
 
         await using DbCommand cmd = connection.CreateCommand();
@@ -985,18 +1062,15 @@ public sealed class EntryWeavingServiceTests : IAsyncLifetime
         object? result = await cmd.ExecuteScalarAsync();
 
         return Convert.ToInt32(result);
-
     }
 
     private sealed class FakeWeaveService : IWeaveService
     {
-
         public bool FailNextBatch { get; set; }
 
         public bool ThrowOnEmbed { get; set; }
 
-        /// <summary>Vectors to omit from an otherwise successful response, simulating a short provider reply.</summary>
-        public int DropVectors { get; set; }
+        public string? FailForContentContaining { get; set; }
 
         public int EmbedBatchCallCount { get; private set; }
 
@@ -1012,49 +1086,38 @@ public sealed class EntryWeavingServiceTests : IAsyncLifetime
 
         public async Task<Result<Embedding<float>[]>> EmbedBatchAsync(IReadOnlyList<string> texts, CancellationToken cancellationToken)
         {
-
             EmbedBatchCallCount++;
 
             LastBatch = [.. texts];
 
             if (OnEmbed is not null)
             {
-
                 await OnEmbed().ConfigureAwait(false);
-
             }
 
             if (ThrowOnEmbed)
             {
-
                 throw new InvalidOperationException("Simulated unexpected tick failure.");
-
             }
 
-            if (FailNextBatch)
+            if (FailNextBatch
+                || (FailForContentContaining is { } needle && texts.Any(text => text.Contains(needle, StringComparison.Ordinal))))
             {
-
                 return Result<Embedding<float>[]>.Failure(
                     new Error(ErrorCodes.Embeddings.ProviderUnavailable, "Simulated embedding failure."));
-
             }
 
-            Embedding<float>[] generated = new Embedding<float>[Math.Max(0, texts.Count - DropVectors)];
+            Embedding<float>[] generated = new Embedding<float>[texts.Count];
 
             for (int i = 0; i < generated.Length; i++)
             {
-
                 generated[i] = new Embedding<float>(new float[] { 1f, 0f, 0f });
-
             }
 
             return Result<Embedding<float>[]>.Success(generated);
-
         }
 
         public Task<Result<(string Chunk, int Offset)[]>> ChunkAsync(string text, CancellationToken cancellationToken) =>
             throw new NotSupportedException("Not used by EntryWeavingService.");
-
     }
-
 }

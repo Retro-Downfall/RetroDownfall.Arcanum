@@ -45,7 +45,7 @@ public sealed class MemoryReviewCommandTests
     }
 
     [Fact]
-    public async Task Declined_json_review_apply_writes_one_cancellation_document_and_never_applies()
+    public async Task Declined_review_apply_says_so_and_never_applies()
     {
         Guid requestId = Guid.NewGuid();
 
@@ -60,7 +60,7 @@ public sealed class MemoryReviewCommandTests
 
         RecordingHandler handler = new(plan);
 
-        CliInvocationOptions options = new(Json: true, Plain: false, Yes: false);
+        CliInvocationOptions options = new(Json: false, Plain: false, Yes: false);
 
         StringWriter output = new();
 
@@ -77,7 +77,8 @@ public sealed class MemoryReviewCommandTests
             themePalette: null!,
             dispatcher,
             new FixedConfirmation(confirmed: false),
-            Options.Create(new ArcanumSettings()));
+            Options.Create(new ArcanumSettings()),
+            resourceCatalog: null!);
 
         string requestPath = Path.Combine(Path.GetTempPath(), $"arcanum-review-{Guid.NewGuid():N}.json");
 
@@ -102,12 +103,8 @@ public sealed class MemoryReviewCommandTests
                 exitCode == (int)CliExitCode.Success,
                 $"Expected a successful cancellation, but stderr contained: {error}");
 
-            using JsonDocument document = JsonDocument.Parse(output.ToString());
+            Assert.Contains("bulk review cancelled; nothing was applied.", error.ToString(), StringComparison.Ordinal);
 
-            Assert.True(document.RootElement.GetProperty("cancelled").GetBoolean());
-            Assert.Equal("Saga", document.RootElement.GetProperty("store").GetString());
-            Assert.Equal(requestId, document.RootElement.GetProperty("requestId").GetGuid());
-            Assert.Equal("Confirm", document.RootElement.GetProperty("action").GetString());
             Assert.Single(handler.Paths);
             Assert.Equal("/api/memory/saga/review/prepare", handler.Paths[0]);
         }
@@ -534,7 +531,8 @@ public sealed class MemoryReviewCommandTests
             themePalette: null!,
             new ConsoleDispatcher(output, error, options),
             new FixedConfirmation(confirmed: false),
-            Options.Create(new ArcanumSettings()));
+            Options.Create(new ArcanumSettings()),
+            resourceCatalog: null!);
     }
 
     private static void AssertJsonInputError(

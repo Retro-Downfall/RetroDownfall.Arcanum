@@ -50,7 +50,6 @@ namespace RetroDownfall.Arcanum.Tests.Data;
 /// </remarks>
 public sealed partial class DataRetentionServiceTests
 {
-
     private static readonly string CovenantResetEffect = new('a', 64);
 
     /// <summary>
@@ -86,7 +85,6 @@ public sealed partial class DataRetentionServiceTests
     public async Task Recovery_stops_renewing_the_durable_lease_while_the_coordinator_runs(
         bool factoryReset)
     {
-
         RequireSqlCipher();
 
         LongRunningOperationStore operations = new(
@@ -124,7 +122,6 @@ public sealed partial class DataRetentionServiceTests
 
         try
         {
-
             // Given time to renew, and asserted not to have.
             await Task.Delay(TimeSpan.FromMilliseconds(400), TimeProvider.System);
 
@@ -137,13 +134,10 @@ public sealed partial class DataRetentionServiceTests
             // And claimed, so a background reconciliation pass would leave the row alone rather than
             // reading its lapsed lease as an invitation to start a second recovery beside this one.
             Assert.True(ownership.IsClaimed(operation.Id));
-
         }
         finally
         {
-
             pause.Release();
-
         }
 
         LongRunningOperationRecoveryResult result = await recovering.WaitAsync(
@@ -156,7 +150,6 @@ public sealed partial class DataRetentionServiceTests
         Assert.Equal(LongRunningOperationState.Completed, after.State);
 
         Assert.False(ownership.IsClaimed(operation.Id));
-
     }
 
     /// <summary>
@@ -180,7 +173,6 @@ public sealed partial class DataRetentionServiceTests
     public async Task Recovery_terminalizes_its_row_once_even_after_the_lease_is_adopted_elsewhere(
         bool factoryReset)
     {
-
         RequireSqlCipher();
 
         LongRunningOperationStore operations = new(
@@ -213,7 +205,6 @@ public sealed partial class DataRetentionServiceTests
 
         try
         {
-
             // The takeover is performed directly rather than waited for. It used to arrive through a
             // renewal callback, because the durable lease was being heartbeated for the whole run and
             // the heartbeat was what noticed; the closed period renews nothing now, so nothing notices
@@ -235,13 +226,10 @@ public sealed partial class DataRetentionServiceTests
             Assert.True(adopted.Acquired);
 
             replacement = adopted.Operation;
-
         }
         finally
         {
-
             pause.Release();
-
         }
 
         LongRunningOperationRecoveryResult result = await recovering.WaitAsync(
@@ -256,7 +244,6 @@ public sealed partial class DataRetentionServiceTests
         // takeover changes that name, so the deletion refuses and the erasure has nothing to record.
         if (factoryReset)
         {
-
             Assert.NotEqual(LongRunningOperationState.Completed, result.State);
 
             Assert.Equal(replacement.State, after.State);
@@ -268,7 +255,6 @@ public sealed partial class DataRetentionServiceTests
             Assert.Equal(replacement.LeaseExpiresAt, after.LeaseExpiresAt);
 
             return;
-
         }
 
         Assert.Equal(LongRunningOperationState.Completed, result.State);
@@ -284,7 +270,6 @@ public sealed partial class DataRetentionServiceTests
         Assert.Equal(replacement.CheckpointPayload, after.CheckpointPayload);
 
         Assert.Equal(replacement.CheckpointVersion, after.CheckpointVersion);
-
     }
 
     /// <summary>
@@ -302,7 +287,6 @@ public sealed partial class DataRetentionServiceTests
     [SkippableFact]
     public async Task RecoverMutationAsync_FromACovenantLaunch_RunsTheCoordinatorAndCompletes()
     {
-
         RequireSqlCipher();
 
         LongRunningOperationStore operations = new(
@@ -338,7 +322,6 @@ public sealed partial class DataRetentionServiceTests
                 .DecodeCovenantOfflineTransitionLaunch(after.CheckpointPayload!)
                 .Value
                 .TargetDatasetGeneration);
-
     }
 
     /// <summary>
@@ -356,7 +339,6 @@ public sealed partial class DataRetentionServiceTests
     [SkippableFact]
     public async Task RecoverMutationAsync_FromACovenantLaunch_AdoptsTheLaunchAndReportsItsPhase()
     {
-
         RequireSqlCipher();
 
         LongRunningOperationStore operations = new(
@@ -389,7 +371,6 @@ public sealed partial class DataRetentionServiceTests
             StringComparison.Ordinal);
 
         Assert.Contains(operation.Id.ToString(), adopted, StringComparison.Ordinal);
-
     }
 
     /// <summary>
@@ -399,7 +380,6 @@ public sealed partial class DataRetentionServiceTests
     [SkippableFact]
     public async Task RecoverMutationAsync_WithALaunchNamingAnotherOperation_RefusesWithoutAdopting()
     {
-
         RequireSqlCipher();
 
         LongRunningOperationStore operations = new(
@@ -427,7 +407,6 @@ public sealed partial class DataRetentionServiceTests
         Assert.DoesNotContain(
             log.Messages,
             message => message.Contains("Covenant reset was interrupted", StringComparison.Ordinal));
-
     }
 
     /// <summary>
@@ -437,7 +416,6 @@ public sealed partial class DataRetentionServiceTests
     [SkippableFact]
     public async Task RecoverMutationAsync_WithAnUnreadableLaunchPayload_ParksWithoutAdopting()
     {
-
         RequireSqlCipher();
 
         LongRunningOperationStore operations = new(
@@ -463,7 +441,6 @@ public sealed partial class DataRetentionServiceTests
         Assert.DoesNotContain(
             log.Messages,
             message => message.Contains("Covenant reset was interrupted", StringComparison.Ordinal));
-
     }
 
     /// <summary>
@@ -481,7 +458,6 @@ public sealed partial class DataRetentionServiceTests
     [SkippableFact]
     public async Task RecoverMutationAsync_WithANonLaunchCheckpointVersion_IsAnOrdinaryReconciliationFailure()
     {
-
         RequireSqlCipher();
 
         LongRunningOperationStore operations = new(
@@ -503,7 +479,6 @@ public sealed partial class DataRetentionServiceTests
         Assert.Equal(LongRunningOperationState.ReconciliationRequired, result.State);
 
         Assert.Equal(ErrorCodes.Data.ReconciliationFailed, result.ErrorCode);
-
     }
 
     /// <summary>
@@ -515,7 +490,6 @@ public sealed partial class DataRetentionServiceTests
     [SkippableFact]
     public async Task RecoverMutationAsync_WithLegacyV2Journal_StillResumesAndCompletes()
     {
-
         RequireSqlCipher();
 
         LongRunningOperationStore operations = new(
@@ -538,7 +512,6 @@ public sealed partial class DataRetentionServiceTests
         LongRunningOperation after = (await operations.GetAsync(operation.Id))!;
 
         Assert.Equal(2, after.CheckpointVersion);
-
     }
 
     /// <summary>
@@ -548,7 +521,6 @@ public sealed partial class DataRetentionServiceTests
     [SkippableFact]
     public async Task RecoverMutationAsync_WithVersionZeroRow_StillAbandonsAsNeverStarted()
     {
-
         RequireSqlCipher();
 
         LongRunningOperationStore operations = new(
@@ -573,7 +545,6 @@ public sealed partial class DataRetentionServiceTests
         Assert.Equal(
             LongRunningOperationRecoveryOutcomes.RetentionMutationNeverStarted,
             result.ErrorCode);
-
     }
 
     /// <summary>
@@ -589,7 +560,6 @@ public sealed partial class DataRetentionServiceTests
     [SkippableFact]
     public async Task RecoverFactoryResetAsync_FromAFactoryLaunch_RunsTheCoordinatorAndCompletes()
     {
-
         RequireSqlCipher();
 
         _ = await SeedSessionAsync(pinned: false);
@@ -625,14 +595,12 @@ public sealed partial class DataRetentionServiceTests
         long ordinarySessions = await _db!.Sessions.LongCountAsync();
 
         Assert.Equal(0, ordinarySessions);
-
     }
 
     [SkippableFact]
 
     public async Task RecoverFactoryResetAsync_WhenOrdinaryContinuationFails_KeepsAdmissionClosedAtManagedBoundary()
     {
-
         RequireSqlCipher();
 
         _ = await SeedSessionAsync(pinned: false);
@@ -645,7 +613,7 @@ public sealed partial class DataRetentionServiceTests
 
         _ = await operations.CreateAsync(
             new LongRunningOperationCreateRequest(
-                LongRunningOperationKinds.WorkspaceIndex,
+                LongRunningOperationKinds.BlobEncryptionMigration,
                 LongRunningOperationRecoveryPolicy.RestartIdempotently,
                 "Conflicting operation blocks factory continuation.",
                 DateTimeOffset.UtcNow));
@@ -677,7 +645,6 @@ public sealed partial class DataRetentionServiceTests
                 .DecodeDataRetentionFactoryTransitionLaunch(after.CheckpointPayload!)
                 .Value
                 .TargetDatasetGeneration);
-
     }
 
     [SkippableTheory]
@@ -696,7 +663,6 @@ public sealed partial class DataRetentionServiceTests
         LongRunningOperationState expectedState,
         string expectedError)
     {
-
         RequireSqlCipher();
 
         LongRunningOperationStore operations = new(
@@ -718,13 +684,11 @@ public sealed partial class DataRetentionServiceTests
         Assert.Equal(expectedState, result.State);
 
         Assert.Equal(expectedError, result.ErrorCode);
-
     }
 
     [SkippableFact]
     public async Task RecoverFactoryResetAsync_RequiresTheCurrentLeaseOwner()
     {
-
         RequireSqlCipher();
 
         LongRunningOperationStore operations = new(
@@ -735,9 +699,7 @@ public sealed partial class DataRetentionServiceTests
 
         LongRunningOperation unowned = (await operations.GetAsync(operation.Id))! with
         {
-
             LeaseOwner = " ",
-
         };
 
         LongRunningOperationRecoveryResult result = await CreateService(
@@ -752,18 +714,15 @@ public sealed partial class DataRetentionServiceTests
         Assert.Equal(LongRunningOperationState.ReconciliationRequired, result.State);
 
         Assert.Equal(ErrorCodes.Covenant.MaintenanceFailed, result.ErrorCode);
-
     }
 
     public enum RecoveryDisposition
     {
-
         Commit,
 
         Rollback,
 
         KeepClosed,
-
     }
 
     private static CovenantErasureCoordinator RecoveryCoordinator(
@@ -776,7 +735,6 @@ public sealed partial class DataRetentionServiceTests
         LocalOfflineTransitionPhaseAuthority? phases = null,
         LongRunningOperationOwnership? ownership = null)
     {
-
         Result<CovenantErasureCheckpointState> checkpoint = operation.Kind
             == LongRunningOperationKinds.DataRetentionFactoryReset
             ? CovenantErasureCheckpointState.FromFactoryResetCheckpoint(
@@ -838,7 +796,6 @@ public sealed partial class DataRetentionServiceTests
             ownership ?? new LongRunningOperationOwnership(),
             clock,
             NullLogger<CovenantErasureCoordinator>.Instance);
-
     }
 
     private sealed class RecoveryInventory(
@@ -846,7 +803,6 @@ public sealed partial class DataRetentionServiceTests
         RecoveryPause? pause = null)
         : ICovenantErasureInventorySource
     {
-
         /// <summary>
         /// The same source tuple the seeded launches bind to, so the fake and the durable rows this
         /// file writes cannot disagree about which dataset is being erased.
@@ -867,12 +823,9 @@ public sealed partial class DataRetentionServiceTests
             CovenantClosedPeriodAuthority authority,
             CancellationToken cancellationToken)
         {
-
             if (pause is not null)
             {
-
                 await pause.WaitForReleaseAsync(cancellationToken);
-
             }
 
             return disposition == RecoveryDisposition.Rollback
@@ -885,7 +838,6 @@ public sealed partial class DataRetentionServiceTests
                         0,
                         0,
                         new CovenantDisclosureExposure(0, CovenantDisclosureCountKind.Exact)));
-
         }
 
         public Task<Result> PreflightRemainingManagedAsync(
@@ -917,12 +869,10 @@ public sealed partial class DataRetentionServiceTests
             Task.FromResult(
                 Result<CovenantDisclosureExposure>.Success(
                     new CovenantDisclosureExposure(0, CovenantDisclosureCountKind.Exact)));
-
     }
 
     private sealed class RecoveryArtifactKernel : ICovenantProtectedArtifactErasureKernel
     {
-
         public ValueTask<Result<CovenantArtifactErasureProgress>> ErasePageAsync(
             CovenantProtectedArtifactErasurePage page,
             CovenantArtifactErasureAuthority authority,
@@ -930,12 +880,10 @@ public sealed partial class DataRetentionServiceTests
             ValueTask.FromResult(
                 Result<CovenantArtifactErasureProgress>.Success(
                     new CovenantArtifactErasureProgress(0, 0, 0, CovenantErasureBlocker.None)));
-
     }
 
     private sealed class RecoveryManagedFileKernel : ICovenantManagedFileErasureKernel
     {
-
         public ValueTask<Result<CovenantArtifactErasureProgress>> EraseAsync(
             CovenantManagedFileErasureRequest request,
             CovenantArtifactErasureAuthority authority,
@@ -943,24 +891,20 @@ public sealed partial class DataRetentionServiceTests
             ValueTask.FromResult(
                 Result<CovenantArtifactErasureProgress>.Success(
                     new CovenantArtifactErasureProgress(0, 0, 0, CovenantErasureBlocker.None)));
-
     }
 
     private sealed class RecoveryWriterLifecycle : ICovenantDisclosureWriterLifecycle
     {
-
         public ValueTask<Result> QuiesceAsync(CancellationToken cancellationToken) =>
             ValueTask.FromResult(Result.Success());
 
         public ValueTask<Result> ReopenAsync(CancellationToken cancellationToken) =>
             ValueTask.FromResult(Result.Success());
-
     }
 
     private sealed class RecoveryTransition(RecoveryDisposition disposition)
         : ICovenantErasureTransition
     {
-
         public Task<Result<Guid>> ApplyCanonicalErasureAsync(
             CovenantExclusiveOperation operation,
             CovenantCanonicalDatasetTransition dataset,
@@ -1065,7 +1009,6 @@ public sealed partial class DataRetentionServiceTests
                     CovenantHostToolsState.Clean,
                     null),
                 new CovenantCandidateCapabilityState(0, 0, false));
-
     }
 
     private async Task<LongRunningOperation> SeedRecoveryCheckpointAsync(
@@ -1079,7 +1022,6 @@ public sealed partial class DataRetentionServiceTests
 
     private sealed class RecoveryPause
     {
-
         private readonly TaskCompletionSource _paused = new(
             TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -1092,18 +1034,14 @@ public sealed partial class DataRetentionServiceTests
 
         internal async Task WaitForReleaseAsync(CancellationToken cancellationToken)
         {
-
             _paused.TrySetResult();
 
             await _release.Task.WaitAsync(cancellationToken);
-
         }
-
     }
 
     private sealed class RecoveryTimeProvider(DateTimeOffset initialUtcNow) : TimeProvider
     {
-
         private readonly object _gate = new();
 
         private readonly List<RecoveryTimer> _timers = [];
@@ -1118,14 +1056,10 @@ public sealed partial class DataRetentionServiceTests
 
         public override DateTimeOffset GetUtcNow()
         {
-
             lock (_gate)
             {
-
                 return _utcNow;
-
             }
-
         }
 
         public override long GetTimestamp() => GetUtcNow().UtcTicks;
@@ -1136,7 +1070,6 @@ public sealed partial class DataRetentionServiceTests
             TimeSpan dueTime,
             TimeSpan period)
         {
-
             ArgumentNullException.ThrowIfNull(callback);
 
             RecoveryTimer timer = new(this, callback, state);
@@ -1144,55 +1077,40 @@ public sealed partial class DataRetentionServiceTests
             _ = timer.Change(dueTime, period);
 
             return timer;
-
         }
 
         internal void Advance(TimeSpan amount)
         {
-
             if (amount < TimeSpan.Zero)
             {
-
                 throw new ArgumentOutOfRangeException(nameof(amount));
-
             }
 
             List<(TimerCallback Callback, object? State)> callbacks = [];
 
             lock (_gate)
             {
-
                 _utcNow = _utcNow.Add(amount);
 
                 foreach (RecoveryTimer timer in _timers.ToArray())
                 {
-
                     timer.CollectDueCallbacks(_utcNow, callbacks);
-
                 }
-
             }
 
             foreach ((TimerCallback callback, object? state) in callbacks)
             {
-
                 callback(state);
-
             }
-
         }
 
         internal Task WaitForScheduledTimerCountAsync(int expectedCount)
         {
-
             lock (_gate)
             {
-
                 if (_scheduledTimerCount >= expectedCount)
                 {
-
                     return Task.CompletedTask;
-
                 }
 
                 TaskCompletionSource waiter = new(
@@ -1201,9 +1119,7 @@ public sealed partial class DataRetentionServiceTests
                 _waiters.Add((expectedCount, waiter));
 
                 return waiter.Task;
-
             }
-
         }
 
         private void ChangeTimer(
@@ -1211,38 +1127,28 @@ public sealed partial class DataRetentionServiceTests
             TimeSpan dueTime,
             TimeSpan period)
         {
-
             if (dueTime < Timeout.InfiniteTimeSpan)
             {
-
                 throw new ArgumentOutOfRangeException(nameof(dueTime));
-
             }
 
             if (period < Timeout.InfiniteTimeSpan || period == TimeSpan.Zero)
             {
-
                 throw new ArgumentOutOfRangeException(nameof(period));
-
             }
 
             List<TaskCompletionSource> completed = [];
 
             lock (_gate)
             {
-
                 if (timer.Disposed)
                 {
-
                     throw new ObjectDisposedException(nameof(RecoveryTimer));
-
                 }
 
                 if (!_timers.Contains(timer))
                 {
-
                     _timers.Add(timer);
-
                 }
 
                 timer.DueAt = dueTime == Timeout.InfiniteTimeSpan
@@ -1253,48 +1159,34 @@ public sealed partial class DataRetentionServiceTests
 
                 if (dueTime != Timeout.InfiniteTimeSpan)
                 {
-
                     _scheduledTimerCount++;
 
                     for (int index = _waiters.Count - 1; index >= 0; index--)
                     {
-
                         if (_waiters[index].ExpectedCount > _scheduledTimerCount)
                         {
-
                             continue;
-
                         }
 
                         completed.Add(_waiters[index].Completion);
 
                         _waiters.RemoveAt(index);
-
                     }
-
                 }
-
             }
 
             foreach (TaskCompletionSource waiter in completed)
             {
-
                 waiter.TrySetResult();
-
             }
-
         }
 
         private void RemoveTimer(RecoveryTimer timer)
         {
-
             lock (_gate)
             {
-
                 _ = _timers.Remove(timer);
-
             }
-
         }
 
         private sealed class RecoveryTimer(
@@ -1303,7 +1195,6 @@ public sealed partial class DataRetentionServiceTests
             object? state)
             : ITimer
         {
-
             internal bool Disposed { get; private set; }
 
             internal DateTimeOffset? DueAt { get; set; }
@@ -1312,76 +1203,58 @@ public sealed partial class DataRetentionServiceTests
 
             public bool Change(TimeSpan dueTime, TimeSpan period)
             {
-
                 owner.ChangeTimer(this, dueTime, period);
 
                 return true;
-
             }
 
             public void Dispose()
             {
-
                 if (Disposed)
                 {
-
                     return;
-
                 }
 
                 Disposed = true;
 
                 owner.RemoveTimer(this);
-
             }
 
             public ValueTask DisposeAsync()
             {
-
                 Dispose();
 
                 return ValueTask.CompletedTask;
-
             }
 
             internal void CollectDueCallbacks(
                 DateTimeOffset now,
                 List<(TimerCallback Callback, object? State)> callbacks)
             {
-
                 if (Disposed || DueAt is not DateTimeOffset dueAt || dueAt > now)
                 {
-
                     return;
-
                 }
 
                 callbacks.Add((callback, state));
 
                 if (Period == Timeout.InfiniteTimeSpan)
                 {
-
                     DueAt = null;
 
                     return;
-
                 }
 
                 do
                 {
-
                     dueAt = dueAt.Add(Period);
-
                 }
 
                 while (dueAt <= now);
 
                 DueAt = dueAt;
-
             }
-
         }
-
     }
 
     private async Task<LongRunningOperation> SeedCovenantResetCheckpointAsync(
@@ -1466,7 +1339,6 @@ public sealed partial class DataRetentionServiceTests
         DateTimeOffset? startedAt = null,
         TimeSpan? leaseDuration = null)
     {
-
         DateTimeOffset now = startedAt ?? DateTimeOffset.UtcNow;
 
         TimeSpan ownedFor = leaseDuration ?? TimeSpan.FromMinutes(5);
@@ -1504,7 +1376,6 @@ public sealed partial class DataRetentionServiceTests
                 now));
 
         return (await operations.GetAsync(operation.Id))!;
-
     }
 
     /// <summary>
@@ -1514,7 +1385,6 @@ public sealed partial class DataRetentionServiceTests
     /// </summary>
     private sealed class RecordingLogger<T> : ILogger<T>
     {
-
         public List<string> Messages { get; } = [];
 
         public IDisposable? BeginScope<TState>(TState state)
@@ -1530,7 +1400,6 @@ public sealed partial class DataRetentionServiceTests
             Exception? exception,
             Func<TState, Exception?, string> formatter) =>
             Messages.Add(formatter(state, exception));
-
     }
 
     /// <summary>
@@ -1539,7 +1408,6 @@ public sealed partial class DataRetentionServiceTests
     /// </summary>
     private static byte[] LegacyResetMemoryJournal()
     {
-
         string body =
             "ARCAMUT2\n"
             + "reset-memory\n"
@@ -1554,7 +1422,5 @@ public sealed partial class DataRetentionServiceTests
                 System.Text.Encoding.UTF8.GetBytes(body)));
 
         return System.Text.Encoding.UTF8.GetBytes(body + "H:" + digest + "\n");
-
     }
-
 }

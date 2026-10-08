@@ -1,6 +1,7 @@
 using System.Text;
 
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
 using RetroDownfall.Arcanum.Core.Configuration;
@@ -68,7 +69,9 @@ internal static class CovenantOperationGateFixture
         FakeCovenantAvailability? availability = null,
         FakeCovenantAuthorityProvider? authority = null,
         FakeCovenantCampaignScopeProbe? campaigns = null,
-        TimeSpan? drainTimeout = null)
+        TimeSpan? drainTimeout = null,
+        Action? afterDrain = null,
+        ILogger<CovenantOperationGate>? logger = null)
     {
         FakeCovenantAvailability resolvedAvailability = availability ?? new FakeCovenantAvailability();
 
@@ -87,7 +90,11 @@ internal static class CovenantOperationGateFixture
             return new CovenantOperationGate(
                 runtime,
                 campaigns ?? new FakeCovenantCampaignScopeProbe(),
-                drainTimeout ?? TimeSpan.FromSeconds(5));
+                logger ?? NullLogger<CovenantOperationGate>.Instance,
+                drainTimeout ?? TimeSpan.FromSeconds(5))
+            {
+                AfterDrainForTesting = afterDrain,
+            };
         }
 
         CovenantEnvelopeMasterKeyProvider keys = new(runtime);
@@ -131,7 +138,11 @@ internal static class CovenantOperationGateFixture
         return new CovenantOperationGate(
             runtime,
             campaigns ?? new FakeCovenantCampaignScopeProbe(),
-            drainTimeout ?? TimeSpan.FromSeconds(5));
+            logger ?? NullLogger<CovenantOperationGate>.Instance,
+            drainTimeout ?? TimeSpan.FromSeconds(5))
+        {
+            AfterDrainForTesting = afterDrain,
+        };
     }
 }
 
@@ -378,6 +389,27 @@ internal sealed class RecordingPostDispositionFinalizer(bool succeed = true)
             succeed
                 ? Result.Success()
                 : Result.Failure(new Error(ErrorCodes.Covenant.MaintenanceFailed, "The durable journal did not advance.")));
+    }
+}
+
+/// <summary>
+/// A one-shot finalizer that throws the given fault instead of answering, which is what the journal's own
+/// database does when the disk fills between the disposition and the finalizer's commit.
+/// </summary>
+internal sealed class FaultingPostDispositionFinalizer(Exception fault)
+    : ICovenantExclusivePostDispositionFinalizer
+{
+    private int _invocations;
+
+    internal int Invocations => Volatile.Read(ref _invocations);
+
+    public ValueTask<Result> FinalizeAfterSuccessfulDispositionAsync(
+        CovenantExclusiveLeaseDisposition disposition,
+        CancellationToken cancellationToken)
+    {
+        _ = Interlocked.Increment(ref _invocations);
+
+        throw fault;
     }
 }
 

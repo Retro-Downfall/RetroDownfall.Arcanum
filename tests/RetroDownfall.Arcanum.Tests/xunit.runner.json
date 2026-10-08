@@ -1,5 +1,7 @@
 {
   "maxParallelThreads": 4,
   "parallelAlgorithm": "conservative",
-  "parallelizeTestCollections": true
+  "parallelizeTestCollections": true,
+  "longRunningTestSeconds": 60,
+  "diagnosticMessages": true
 }

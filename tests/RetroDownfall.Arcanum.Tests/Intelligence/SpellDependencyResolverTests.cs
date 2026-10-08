@@ -2,13 +2,13 @@ using System.Text.Json;
 using Microsoft.Extensions.Logging.Abstractions;
 using RetroDownfall.Arcanum.Infrastructure.Intelligence.Spells;
 using RetroDownfall.Arcanum.Infrastructure.Workspaces;
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Intelligence;
 
 [Collection("SpellScanner")]
 public sealed class SpellDependencyResolverTests : IDisposable
 {
-
     private readonly string _workspace;
 
     private readonly long _maxFileSizeBytes = 262144L;
@@ -22,16 +22,7 @@ public sealed class SpellDependencyResolverTests : IDisposable
 
     public void Dispose()
     {
-        try
-        {
-            if (Directory.Exists(_workspace))
-            {
-                Directory.Delete(_workspace, recursive: true);
-            }
-        }
-        catch
-        {
-        }
+        _ = TestDirectoryCleanup.TryDelete(_workspace, nameof(SpellDependencyResolverTests));
     }
 
     [Fact]
@@ -60,7 +51,6 @@ public sealed class SpellDependencyResolverTests : IDisposable
         Assert.Equal("Primary", resolved.Primary!.Name);
 
         Assert.Equal(["SpellA", "SpellB", "SpellC", "SpellD"], resolved.Resonants.Select(static s => s.Name));
-
     }
 
     [Fact]
@@ -203,7 +193,7 @@ public sealed class SpellDependencyResolverTests : IDisposable
         string dependenciesJson = dependencyMode switch
         {
             "null" => "null",
-            _ => JsonSerializer.Serialize(dependencies ?? Array.Empty<string>()),
+            _ => JsonSerializer.Serialize(dependencies ?? Array.Empty<string>(), AdHocJson.Options),
         };
 
         string skillJson = $$"""
@@ -221,5 +211,4 @@ public sealed class SpellDependencyResolverTests : IDisposable
 
         await File.WriteAllTextAsync(Path.Combine(dir, "SKILL.json"), skillJson);
     }
-
 }

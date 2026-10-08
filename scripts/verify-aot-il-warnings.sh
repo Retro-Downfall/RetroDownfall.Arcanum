@@ -33,12 +33,16 @@ Arguments:
 
 Options:
   --force             Attempt publish even when the host OS cannot link this RID
-  --strict            Exit non-zero when any RID is skipped (CI matrix mode)
+  --strict            Exit non-zero when any RID is skipped (the default for a single RID;
+                      pass it to make the all matrix strict as well)
+  --allow-skip        Exit zero when a single RID is skipped (local convenience only; a CI or
+                      release audit that skips verified nothing)
   -h, --help          Show this help
 
 Exit codes:
-  0  All attempted RIDs passed (skips are OK unless --strict)
-  1  At least one attempted RID failed (publish or IL gate)
+  0  All attempted RIDs passed (a skipped leg of the all matrix is OK unless --strict)
+  1  At least one attempted RID failed (publish or IL gate), or a single RID was skipped
+     without --allow-skip
 
 Skips are chosen from the host OS:
   darwin  → builds osx-* only
@@ -670,6 +674,7 @@ main() {
   local target=""
   local force=0
   local strict=0
+  local allow_skip=0
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -683,6 +688,10 @@ main() {
         ;;
       --strict)
         strict=1
+        shift
+        ;;
+      --allow-skip)
+        allow_skip=1
         shift
         ;;
       all)
@@ -726,6 +735,13 @@ main() {
     rids=("${DEFAULT_RIDS[@]}")
   else
     rids=("$target")
+
+    # A single RID is a request to audit that RID, so a skip means nothing was audited. Exiting 0
+    # there let a runner-image regression turn a CI or release audit into a green no-op. The matrix
+    # keeps its documented skip-with-a-note behavior unless --strict is passed.
+    if [[ "$allow_skip" -eq 0 ]]; then
+      strict=1
+    fi
   fi
 
   local passed=0

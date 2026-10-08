@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Serialization.Metadata;
 using RetroDownfall.Arcanum.Api.Intelligence.OpenAi;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
@@ -113,6 +114,7 @@ public sealed class OpenAiChatUsageJsonTests
             new JsonSerializerOptions
             {
                 Converters = { new OpenAiChatUsageJsonConverter() },
+                TypeInfoResolver = new DefaultJsonTypeInfoResolver(),
             });
 
         Assert.NotNull(usage);
@@ -128,6 +130,7 @@ public sealed class OpenAiChatUsageJsonTests
         JsonSerializerOptions options = new()
         {
             Converters = { new OpenAiChatUsageJsonConverter() },
+            TypeInfoResolver = new DefaultJsonTypeInfoResolver(),
         };
 
         ChatCompletionUsage usage = JsonSerializer.Deserialize<ChatCompletionUsage>(json, options)!;

@@ -19,7 +19,6 @@ using RetroDownfall.Arcanum.Core.Intelligence;
 /// </remarks>
 public interface ISagaMemoryStore
 {
-
     /// <summary>
     /// Inserts a new memory: a row in <c>saga_memories</c>, its BLOB embedding in
     /// <c>saga_memory_embeddings</c>, and, only while the accelerator is live, a mirrored row in a
@@ -35,6 +34,11 @@ public interface ISagaMemoryStore
     /// <para>When the store holds erasure fingerprints that the erasure key cannot verify, because the
     /// key is lost, unreadable, or not the key that recorded them, the insert fails closed and throws
     /// rather than writing anything.</para>
+    ///
+    /// <para>Returns <see cref="SagaMemoryWriteOutcome.AlreadyPresent"/>, writing nothing, when the owning
+    /// Session (<paramref name="sessionId"/>) already holds this exact content in the same derived scope —
+    /// a retried extraction page meets the conclusions its earlier attempt committed. The same content from
+    /// another Session, or with no Session, is written as its own row.</para>
     /// </remarks>
     Task<SagaMemoryWriteOutcome> InsertAsync(
         string id,
@@ -50,6 +54,12 @@ public interface ISagaMemoryStore
     /// Inserts attachment-derived memory together with typed provenance. Implementations must keep
     /// provenance after source deletion and surface the source as unavailable.
     /// </summary>
+    /// <remarks>
+    /// The outcomes are the other overload's. In particular, when the owning Session already holds this exact
+    /// content in the same scope the answer is <see cref="SagaMemoryWriteOutcome.AlreadyPresent"/> and no
+    /// provenance is recorded on the stored memory: an ordinary conclusion the conversation reached on its own
+    /// must not become removable with the attachment that merely restated it.
+    /// </remarks>
     Task<SagaMemoryWriteOutcome> InsertAsync(
         string id,
         string content,
@@ -141,13 +151,11 @@ public interface ISagaMemoryStore
         int limit,
         CancellationToken cancellationToken)
     {
-
         cancellationToken.ThrowIfCancellationRequested();
 
         return Task.FromException<SagaMemoryPosition[]>(
             new NotSupportedException(
                 "This Saga memory store does not expose an ordered keyset walk over its memories."));
-
     }
 
     /// <summary>
@@ -264,13 +272,11 @@ public interface ISagaMemoryStore
         Guid sessionId,
         CancellationToken cancellationToken)
     {
-
         cancellationToken.ThrowIfCancellationRequested();
 
         return Task.FromException<SagaExtractionCursor?>(
             new NotSupportedException(
                 "This Saga memory store does not expose an exact extraction sequence cursor."));
-
     }
 
     /// <summary>Upserts the exact committed extraction cursor for a session.</summary>
@@ -279,13 +285,11 @@ public interface ISagaMemoryStore
         SagaExtractionCursor cursor,
         CancellationToken cancellationToken)
     {
-
         cancellationToken.ThrowIfCancellationRequested();
 
         return Task.FromException(
             new NotSupportedException(
                 "This Saga memory store does not persist an exact extraction sequence cursor."));
-
     }
 
     /// <summary>The <c>CreatedAt</c> of the most recently extracted Grimoire entry for a session, or <c>null</c> when no extraction has occurred yet.</summary>
@@ -293,7 +297,6 @@ public interface ISagaMemoryStore
 
     /// <summary>Upserts the extraction watermark for a session.</summary>
     Task SetWatermarkAsync(Guid sessionId, DateTimeOffset lastExtractedEntryCreatedAt, CancellationToken cancellationToken);
-
 }
 
 /// <summary>

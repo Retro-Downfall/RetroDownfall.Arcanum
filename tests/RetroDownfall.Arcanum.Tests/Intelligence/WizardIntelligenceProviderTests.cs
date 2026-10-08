@@ -229,6 +229,8 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.Contains("Daily budget limit", error.Message);
 
+        Assert.Equal(ErrorCodes.Budget.Exceeded, error.Data);
+
         Assert.Equal(0, chat.BufferedCallCount);
     }
 
@@ -248,7 +250,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
               "required": ["name"],
               "additionalProperties": false
             }
-            """);
+            """, AdHocJson.Options);
 
         WizardIntelligenceProvider wizard = CreateWizard(chat, settings);
 
@@ -291,7 +293,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
               "required": ["name"],
               "additionalProperties": false
             }
-            """);
+            """, AdHocJson.Options);
 
         WizardIntelligenceProvider wizard = CreateWizard(chat);
 
@@ -1029,30 +1031,6 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
             BaseRequest() with { Prompt = "stream fail", SkipSpellRouting = true, DisableMcpTools = true });
 
         Assert.Contains(events, static e => e.Type == IntelligenceEventType.Error);
-    }
-
-    [Fact]
-    public async Task Scenario16_CancellationDuringStream_CancelsCleanly()
-    {
-        ScriptingChatClient chat = new();
-
-        chat.EnqueueSlowStream(TimeSpan.FromSeconds(5), "tok");
-
-        WizardIntelligenceProvider wizard = CreateWizard(chat);
-
-        using CancellationTokenSource cts = new();
-
-        cts.CancelAfter(TimeSpan.FromMilliseconds(100));
-
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () =>
-        {
-            await foreach (IntelligenceEvent _ in wizard.StreamPromptAsync(
-                BaseRequest() with { Prompt = "cancel", SkipSpellRouting = true, DisableMcpTools = true },
-                InvocationContexts.AttendedSession(),
-                cts.Token))
-            {
-            }
-        });
     }
 
     [Fact]
@@ -2023,10 +2001,9 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.False(result.IsSuccess);
 
-        // The buffered projection reports in-turn aborts as Hub.Error; the begin failure's own message
-        // survives, and carrying the typed storage code all the way out is a turn-result change that
-        // belongs with the turn-publication slice.
-        Assert.Equal(ErrorCodes.Hub.Error, result.Error.Code);
+        // R-050: the begin failure's typed code is the turn's terminal result, so the caller sees the
+        // storage failure rather than the generic Hub.Error the drain falls back to.
+        Assert.Equal(ErrorCodes.Grimoire.WriteFailed, result.Error.Code);
 
         // The provider was never dialled, so its scripted answer is still queued.
         Assert.Equal(0, chat.BufferedCallCount);
@@ -2475,7 +2452,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
                         "function",
                         new OpenAiFunctionDefinition("optional_tool")),
                 ],
-                ClientToolChoice = JsonSerializer.Deserialize<JsonElement>("\"auto\""),
+                ClientToolChoice = JsonSerializer.Deserialize<JsonElement>("\"auto\"", AdHocJson.Options),
             });
 
         Assert.Equal(1, chat.StreamingCallCount);
@@ -2506,7 +2483,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
         };
         WizardIntelligenceProvider wizard = CreateWizard(chat, settings);
 
-        JsonElement toolChoice = JsonSerializer.Deserialize<JsonElement>(toolChoiceJson);
+        JsonElement toolChoice = JsonSerializer.Deserialize<JsonElement>(toolChoiceJson, AdHocJson.Options);
 
         List<IntelligenceEvent> events = await CollectStreamAsync(
             wizard,
@@ -2562,7 +2539,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
                         "function",
                         new OpenAiFunctionDefinition("get_weather")),
                 ],
-                ClientToolChoice = JsonSerializer.Deserialize<JsonElement>("\"required\""),
+                ClientToolChoice = JsonSerializer.Deserialize<JsonElement>("\"required\"", AdHocJson.Options),
             },
             InvocationContexts.AttendedSession(),
             CancellationToken.None);
@@ -2601,7 +2578,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
                         "function",
                         new OpenAiFunctionDefinition("get_weather")),
                 ],
-                ClientToolChoice = JsonSerializer.Deserialize<JsonElement>(toolChoiceJson),
+                ClientToolChoice = JsonSerializer.Deserialize<JsonElement>(toolChoiceJson, AdHocJson.Options),
             },
             InvocationContexts.AttendedSession(),
             CancellationToken.None);
@@ -2641,7 +2618,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
                         "function",
                         new OpenAiFunctionDefinition("get_weather")),
                 ],
-                ClientToolChoice = JsonSerializer.Deserialize<JsonElement>(toolChoiceJson),
+                ClientToolChoice = JsonSerializer.Deserialize<JsonElement>(toolChoiceJson, AdHocJson.Options),
             });
 
         IntelligenceEvent error = Assert.Single(
@@ -2689,7 +2666,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
                 DisableMcpTools = true,
                 ForwardClientTools = true,
                 ClientTools = clientTools.ToArray(),
-                ClientToolChoice = JsonSerializer.Deserialize<JsonElement>(toolChoiceJson),
+                ClientToolChoice = JsonSerializer.Deserialize<JsonElement>(toolChoiceJson, AdHocJson.Options),
                 ToolPolicy = ToolPolicy.ReadOnlyTools,
             },
             InvocationContexts.AttendedSession(),
@@ -2728,7 +2705,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
                         "function",
                         new OpenAiFunctionDefinition("write_file")),
                 ],
-                ClientToolChoice = JsonSerializer.Deserialize<JsonElement>("\"required\""),
+                ClientToolChoice = JsonSerializer.Deserialize<JsonElement>("\"required\"", AdHocJson.Options),
                 ToolPolicy = toolPolicy,
             },
             InvocationContexts.AttendedSession(),
@@ -2770,7 +2747,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
                         "function",
                         new OpenAiFunctionDefinition("write_file")),
                 ],
-                ClientToolChoice = JsonSerializer.Deserialize<JsonElement>("\"required\""),
+                ClientToolChoice = JsonSerializer.Deserialize<JsonElement>("\"required\"", AdHocJson.Options),
                 ToolPolicy = toolPolicy,
             });
 
@@ -2806,7 +2783,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
                         "function",
                         new OpenAiFunctionDefinition("get_weather")),
                 ],
-                ClientToolChoice = JsonSerializer.Deserialize<JsonElement>("\"auto\""),
+                ClientToolChoice = JsonSerializer.Deserialize<JsonElement>("\"auto\"", AdHocJson.Options),
                 ToolPolicy = ToolPolicy.NoTools,
             },
             InvocationContexts.AttendedSession(),
@@ -2978,7 +2955,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
                             new OpenAiFunctionDefinition("get_weather")),
                     ]
                     : [],
-                ClientToolChoice = JsonSerializer.Deserialize<JsonElement>(toolChoiceJson),
+                ClientToolChoice = JsonSerializer.Deserialize<JsonElement>(toolChoiceJson, AdHocJson.Options),
             });
 
         IntelligenceEvent error = Assert.Single(
@@ -3015,7 +2992,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
                         "function",
                         new OpenAiFunctionDefinition("get_weather")),
                 ],
-                ClientToolChoice = JsonSerializer.Deserialize<JsonElement>(toolChoiceJson),
+                ClientToolChoice = JsonSerializer.Deserialize<JsonElement>(toolChoiceJson, AdHocJson.Options),
             },
             InvocationContexts.AttendedSession(),
             CancellationToken.None);
@@ -3392,11 +3369,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
                 SkipSpellRouting = true,
             },
             InvocationContexts.AttendedSession(),
-            TurnResponseMode.Buffered,
-            TurnPurpose.Interactive,
-            HumanInteractionAvailable: false,
-            HasIdempotencyKey: false,
-            AccountingHandle: null);
+            TurnResponseMode.Buffered);
 
         TurnEngine engine = new(wizard);
 
@@ -4711,6 +4684,8 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
             global::System.Environment.SetEnvironmentVariable("ARCANUM_EDITION", "development");
 
+            HostProcessToolsEscapeHatchScope.BindPermittingDecision();
+
             await CreateSpellWithDeclaredToolsAsync("exec-spell", ["execute_command"]);
 
             ScriptingChatClient chat = new();
@@ -4756,13 +4731,13 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
                 events,
                 static evt => evt.Type == IntelligenceEventType.ToolResult);
 
-            Assert.Equal(WardResolutionOrigin.Ungated, warded.WardOrigin);
+            Assert.Equal(WardResolutionOrigin.Ungated, warded.Origin);
 
-            Assert.Equal(WardResolutionOrigin.Ungated, resolved.WardOrigin);
+            Assert.Equal(WardResolutionOrigin.Ungated, resolved.Origin);
 
             Assert.Equal(warded.WardId, resolved.WardId);
 
-            Assert.True(resolved.WardAllowed);
+            Assert.True(resolved.Allowed);
 
             Assert.False(toolResult.ToolDenied);
 
@@ -4774,6 +4749,8 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
         }
         finally
         {
+            HostProcessToolPolicy.SetStartupDecisionForTests(null);
+
             global::System.Environment.SetEnvironmentVariable(HostProcessToolPolicy.AllowHostProcessToolsEnvVar, previousAllow);
 
             global::System.Environment.SetEnvironmentVariable("ARCANUM_EDITION", previousEdition);
@@ -5066,9 +5043,10 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
                 {
                     await disposeTask.WaitAsync(TimeSpan.FromSeconds(15));
                 }
-                catch
+                catch (Exception ex) when (ex is TimeoutException or OperationCanceledException)
                 {
-                    // Best-effort cleanup only — must not mask an assertion failure above.
+                    // A disposal that will not return was already reported by the 8 s wait above; this
+                    // wait only drains it and must not mask that failure.
                 }
             }
         }
@@ -8422,7 +8400,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
               "required": ["name"],
               "additionalProperties": false
             }
-            """);
+            """, AdHocJson.Options);
 
         WizardIntelligenceProvider wizard = CreateWizard(chat, settings);
 
@@ -8485,7 +8463,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
               "required": ["name"],
               "additionalProperties": false
             }
-            """);
+            """, AdHocJson.Options);
 
         WizardIntelligenceProvider wizard = CreateWizard(chat, settings);
 
@@ -8561,7 +8539,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
               "required": ["name"],
               "additionalProperties": false
             }
-            """);
+            """, AdHocJson.Options);
 
         FakeGrimoireRepository grimoire = new();
 
@@ -8639,7 +8617,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
               "required": ["name"],
               "additionalProperties": false
             }
-            """);
+            """, AdHocJson.Options);
 
         WizardIntelligenceProvider wizard = CreateWizard(
             chat,
@@ -8694,7 +8672,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
               "required": ["name"],
               "additionalProperties": false
             }
-            """);
+            """, AdHocJson.Options);
 
         WizardIntelligenceProvider wizard = CreateWizard(chat, settings);
 
@@ -8750,7 +8728,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
               "required": ["name"],
               "additionalProperties": false
             }
-            """);
+            """, AdHocJson.Options);
 
         WizardIntelligenceProvider wizard = CreateWizard(chat, settings);
 
@@ -8817,7 +8795,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
             },
         };
         JsonElement schema = JsonSerializer.Deserialize<JsonElement>(
-            """{"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}""");
+            """{"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}""", AdHocJson.Options);
 
         WizardIntelligenceProvider wizard = CreateWizard(
             chat,
@@ -8875,7 +8853,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
               "required": ["name"],
               "additionalProperties": false
             }
-            """);
+            """, AdHocJson.Options);
 
         WizardIntelligenceProvider wizard = CreateWizard(
             chat,
@@ -9153,7 +9131,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
               "required": ["name"],
               "additionalProperties": false
             }
-            """);
+            """, AdHocJson.Options);
 
         WizardIntelligenceProvider wizard = CreateWizard(chat, settings);
 
@@ -9574,7 +9552,9 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
         FixtureOrdinaryConnectionFactory? ordinaryConnections = null,
         IModelTokenEstimator? modelTokenEstimator = null,
         IHumanPromptRegistry? humanPrompts = null,
-        SessionTurnConcurrencyGate? sessionTurnGate = null)
+        SessionTurnConcurrencyGate? sessionTurnGate = null,
+        CovenantDispatchGate? covenantDispatch = null,
+        CovenantToolCapabilityRegistry? covenantToolCapabilities = null)
     {
         settings ??= DefaultSettings();
 
@@ -9683,7 +9663,9 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
             webResearchProviderCatalog: new WebResearchProviderCatalog([]),
             sessionAttachmentRetrieval: sessionAttachmentRetrieval,
             serviceProvider: ordinaryProvider,
-            modelTokenEstimator: modelTokenEstimator);
+            modelTokenEstimator: modelTokenEstimator,
+            covenantDispatch: covenantDispatch,
+            covenantToolCapabilities: covenantToolCapabilities);
     }
 
     private static GuardrailsPipeline CreateGuardrailsPipeline(ArcanumSettings settings, FakeGuardrailAuditLogger? audit = null) =>
@@ -9975,7 +9957,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         await File.WriteAllTextAsync(Path.Combine(dir, "SPELL.md"), spellMd);
 
-        string dependenciesJson = JsonSerializer.Serialize(dependencies ?? Array.Empty<string>());
+        string dependenciesJson = JsonSerializer.Serialize(dependencies ?? Array.Empty<string>(), AdHocJson.Options);
 
         string skillJson = $$"""
             {
@@ -10030,7 +10012,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         await File.WriteAllTextAsync(Path.Combine(dir, "SPELL.md"), spellMd);
 
-        string toolsJson = JsonSerializer.Serialize(declaredTools);
+        string toolsJson = JsonSerializer.Serialize(declaredTools, AdHocJson.Options);
 
         string skillJson = $$"""
             {
@@ -10336,8 +10318,9 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
         public void EnqueueImmediateStreamFailure(Exception ex) =>
             _streaming.Enqueue(_ => ImmediateFailingStream(ex));
 
-        public void EnqueueSlowStream(TimeSpan delay, string token) =>
-            _streaming.Enqueue(ct => SlowStream(delay, token, ct));
+        /// <summary>Answers the next streaming call with <paramref name="respond"/>, given the call's token.</summary>
+        public void EnqueueStreamResponder(Func<CancellationToken, IAsyncEnumerable<ChatResponseUpdate>> respond) =>
+            _streaming.Enqueue(respond);
 
         /// <summary>
         /// Yields one usage-bearing update, then blocks until the caller's own token is cancelled
@@ -10350,6 +10333,10 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
         /// </summary>
         public void EnqueueUsageThenBlock(UsageDetails usage, TaskCompletionSource? aboutToBlock = null) =>
             _streaming.Enqueue(ct => UsageThenBlock(usage, aboutToBlock, ct));
+
+        /// <summary>Answers the next buffered call with <paramref name="respond"/>, given the call's token.</summary>
+        public void EnqueueBufferedResponder(Func<CancellationToken, Task<ChatResponse>> respond) =>
+            _buffered.Enqueue(respond);
 
         public void EnqueueSlowBuffered(TimeSpan delay, string text) =>
             _buffered.Enqueue(async ct =>
@@ -10562,16 +10549,6 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 #pragma warning restore CS0162
         }
 
-        private static async IAsyncEnumerable<ChatResponseUpdate> SlowStream(
-            TimeSpan delay,
-            string token,
-            [EnumeratorCancellation] CancellationToken cancellationToken = default)
-        {
-            await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
-
-            yield return new ChatResponseUpdate(ChatRole.Assistant, token);
-        }
-
         private static async IAsyncEnumerable<ChatResponseUpdate> UsageThenBlock(
             UsageDetails usage,
             TaskCompletionSource? aboutToBlock,
@@ -10631,6 +10608,12 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         public bool ThrowOnFinalize { get; init; }
 
+        /// <summary>
+        /// When set, the tool-interaction append and the Session token increment refuse a cancelled
+        /// token before writing anything, as a real Grimoire write would.
+        /// </summary>
+        public bool ThrowWhenCancelled { get; init; }
+
         public Guid? FixedSessionId { get; init; }
 
         public long PreRequestHistoryRevision { get; init; }
@@ -10664,6 +10647,8 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
         public int AppendToolInteractionCallCount { get; private set; }
 
         public Action? OnFinalize { get; set; }
+
+        public Action? OnDiscard { get; init; }
 
         public Func<CancellationToken, Task>?
             AppendToolInteractionHandler { get; init; }
@@ -10765,6 +10750,8 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
         {
             DiscardCallCount++;
 
+            OnDiscard?.Invoke();
+
             return Task.CompletedTask;
         }
 
@@ -10776,6 +10763,11 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
             string modelUsed,
             CancellationToken cancellationToken = default)
         {
+            if (ThrowWhenCancelled)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+            }
+
             ToolInteractions.Add(new RecordedToolInteraction(
                 sessionId,
                 toolName,
@@ -10870,6 +10862,11 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         public Task IncrementSessionTokensAndCostAsync(Guid sessionId, long totalTokens, decimal costUsd, CancellationToken cancellationToken = default)
         {
+            if (ThrowWhenCancelled)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+            }
+
             LastIncrementedSessionId = sessionId;
 
             LastIncrementedTokens = totalTokens;
@@ -11051,7 +11048,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         public Task ReloadAsync(string workingDirectory, CancellationToken cancellationToken = default) => Task.CompletedTask;
 
-        public Task<Result> TrustWorkspaceAsync(string workingDirectory, CancellationToken cancellationToken = default) =>
+        public Task<Result> TrustWorkspaceAsync(string workingDirectory, string? expectedConfigDigest = null, CancellationToken cancellationToken = default) =>
             Task.FromResult(Result.Success());
     }
 
@@ -11103,7 +11100,12 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         private readonly ConcurrentQueue<BillableOperationRecord> _operations = new();
 
+        private readonly ConcurrentQueue<(Guid RunId, InferenceRunStatus Status)> _completedRuns = new();
+
         public BillableOperationRecord? LastOperation => _operations.LastOrDefault();
+
+        /// <summary>Every run completion, in order, with the status it recorded.</summary>
+        public IReadOnlyList<(Guid RunId, InferenceRunStatus Status)> CompletedRuns => [.. _completedRuns];
 
         public IReadOnlyList<BillableOperationRecord> Operations => [.. _operations];
 
@@ -11119,8 +11121,12 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
         public Task CompleteRunAsync(
             Guid runId,
             InferenceRunStatus status,
-            CancellationToken cancellationToken = default) =>
-            Task.CompletedTask;
+            CancellationToken cancellationToken = default)
+        {
+            _completedRuns.Enqueue((runId, status));
+
+            return Task.CompletedTask;
+        }
 
         public Task<bool> TryAbandonRunAsync(Guid runId, CancellationToken cancellationToken = default) =>
             Task.FromResult(false);
@@ -11214,6 +11220,18 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
         public Task<decimal> GetTodayOutstandingReservationsAsync(
             CancellationToken cancellationToken = default) =>
             Task.FromResult(0m);
+
+        public Task ExtendExpiryAsync(
+            Guid reservationId,
+            DateTimeOffset expiresAt,
+            CancellationToken cancellationToken = default) =>
+            Task.CompletedTask;
+
+        public Task<Result> RecheckDailyLimitAsync(
+            Guid reservationId,
+            decimal delegatedSpendUsd,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(Result.Success());
 
         public Task<int> SweepExpiredAsync(
             DateTimeOffset utcNow,

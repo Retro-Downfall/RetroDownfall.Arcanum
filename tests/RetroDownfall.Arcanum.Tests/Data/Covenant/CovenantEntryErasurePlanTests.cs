@@ -3,6 +3,7 @@ using System.Data;
 using System.Globalization;
 
 using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.Logging.Abstractions;
 
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Memory;
@@ -896,7 +897,8 @@ public sealed class CovenantEntryErasurePlanTests
             new CovenantMutationKernel(new CovenantQuotaGuard(), MemoryErasureTestKeys.Isolated()),
             new CovenantCurationKernel(),
             TimeProvider.System,
-            DetachedAvailabilityRepublisher.Create());
+            DetachedAvailabilityRepublisher.Create(),
+            NullLogger<CovenantMemoryReviewService>.Instance);
 
         CovenantOperationScope scope = CovenantOperationScope.ForCampaign(campaignId);
 

@@ -40,7 +40,6 @@ public sealed class WebResearchWorkflowService(
     ICampaignRepository campaigns,
     ISanctumGuard sanctum)
 {
-
     private const int MaximumResearchPromptCharacters = 120_000;
 
     /// <summary>
@@ -66,7 +65,6 @@ public sealed class WebResearchWorkflowService(
         WebSearchWorkflowRequest request,
         CancellationToken cancellationToken)
     {
-
         Result<WebSearchOptions> validation = BuildSearchOptions(
             request.Query,
             request.ResultCount,
@@ -76,9 +74,7 @@ public sealed class WebResearchWorkflowService(
 
         if (validation.IsFailure)
         {
-
             return Result<WebSearchWorkflowResult>.Failure(validation.Error);
-
         }
 
         Result attachmentTarget = await PreflightAttachmentTargetAsync(
@@ -87,9 +83,7 @@ public sealed class WebResearchWorkflowService(
 
         if (attachmentTarget.IsFailure)
         {
-
             return Result<WebSearchWorkflowResult>.Failure(attachmentTarget.Error);
-
         }
 
         WebBrowsingSettings web = settings.Value.ResolveWebBrowsing();
@@ -99,11 +93,9 @@ public sealed class WebResearchWorkflowService(
                 out IWebResearchProvider? provider)
             || (provider.Capabilities & WebResearchCapabilities.Search) == 0)
         {
-
             return Failure<WebSearchWorkflowResult>(
                 ErrorCodes.WebResearch.UnsupportedOperation,
                 "The configured web-search provider is unavailable.");
-
         }
 
         Result<WebSearchResult> search = await provider
@@ -115,9 +107,7 @@ public sealed class WebResearchWorkflowService(
 
         if (search.IsFailure)
         {
-
             return Result<WebSearchWorkflowResult>.Failure(search.Error);
-
         }
 
         WebSearchWorkflowResult result = MapSearchResult(
@@ -139,21 +129,17 @@ public sealed class WebResearchWorkflowService(
                 result with { AttachmentId = null, AttachmentError = attached.Error.Message })
             : Result<WebSearchWorkflowResult>.Success(
                 result with { AttachmentId = attached.Value });
-
     }
 
     public async Task<Result<WebBrowseWorkflowResult>> BrowseAsync(
         WebBrowseWorkflowRequest request,
         CancellationToken cancellationToken)
     {
-
         if (!settings.Value.ResolveWebBrowsing().Enabled)
         {
-
             return Failure<WebBrowseWorkflowResult>(
                 ErrorCodes.WebResearch.UnsupportedOperation,
                 "Native web workflows are disabled. Enable Arcanum:Features:WebBrowsing.");
-
         }
 
         // System.Text.Json writes an explicit JSON null straight over the property initializer, so a
@@ -164,20 +150,16 @@ public sealed class WebResearchWorkflowService(
 
         if (renderMode == "javascript")
         {
-
             return Failure<WebBrowseWorkflowResult>(
                 ErrorCodes.WebResearch.JavaScriptRenderingUnavailable,
                 "JavaScript rendering is not configured; retry with --render static.");
-
         }
 
         if (renderMode != "static")
         {
-
             return Failure<WebBrowseWorkflowResult>(
                 ErrorCodes.WebResearch.RequestRejected,
                 "Render mode must be 'static' or 'javascript'.");
-
         }
 
         if (!Uri.TryCreate(request.Url, UriKind.Absolute, out Uri? uri)
@@ -190,11 +172,9 @@ public sealed class WebResearchWorkflowService(
                     Uri.UriSchemeHttps,
                     StringComparison.OrdinalIgnoreCase)))
         {
-
             return Failure<WebBrowseWorkflowResult>(
                 ErrorCodes.WebResearch.InvalidUrl,
                 "An absolute HTTP or HTTPS URL is required.");
-
         }
 
         Result attachmentTarget = await PreflightAttachmentTargetAsync(
@@ -203,9 +183,7 @@ public sealed class WebResearchWorkflowService(
 
         if (attachmentTarget.IsFailure)
         {
-
             return Result<WebBrowseWorkflowResult>.Failure(attachmentTarget.Error);
-
         }
 
         if (!providers.TryGetProvider(
@@ -213,11 +191,9 @@ public sealed class WebResearchWorkflowService(
                 out IWebResearchProvider? provider)
             || (provider.Capabilities & WebResearchCapabilities.ReadUrl) == 0)
         {
-
             return Failure<WebBrowseWorkflowResult>(
                 ErrorCodes.WebResearch.UnsupportedOperation,
                 "Static URL reading is unavailable.");
-
         }
 
         Result<WebReadResult> read = await provider
@@ -229,14 +205,11 @@ public sealed class WebResearchWorkflowService(
 
         if (read.IsFailure)
         {
-
             return Result<WebBrowseWorkflowResult>.Failure(read.Error);
-
         }
 
         WebBrowseWorkflowResult result = new()
         {
-
             Title = read.Value.Title,
 
             Markdown = read.Value.Markdown,
@@ -247,11 +220,9 @@ public sealed class WebResearchWorkflowService(
                 .Select(
                     static link => new WebWorkflowLink
                     {
-
                         Text = link.Text,
 
                         Url = link.Url,
-
                     })
                 .ToArray(),
 
@@ -260,7 +231,6 @@ public sealed class WebResearchWorkflowService(
             RenderMode = renderMode,
 
             Truncated = read.Value.Truncated,
-
         };
 
         Result<Guid?> attached = await AttachAsync(
@@ -276,23 +246,19 @@ public sealed class WebResearchWorkflowService(
                 result with { AttachmentId = null, AttachmentError = attached.Error.Message })
             : Result<WebBrowseWorkflowResult>.Success(
                 result with { AttachmentId = attached.Value });
-
     }
 
     public async IAsyncEnumerable<WebResearchStreamFrame> ResearchAsync(
         WebResearchWorkflowRequest request,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
-
         Result validation = ValidateResearchRequest(request);
 
         if (validation.IsFailure)
         {
-
             yield return ErrorFrame(validation.Error);
 
             yield break;
-
         }
 
         Result<PingRequest> synthesisPreflight = await PreflightSynthesisAsync(
@@ -301,11 +267,9 @@ public sealed class WebResearchWorkflowService(
 
         if (synthesisPreflight.IsFailure)
         {
-
             yield return ErrorFrame(synthesisPreflight.Error);
 
             yield break;
-
         }
 
         PingRequest synthesisEnvelope = synthesisPreflight.Value;
@@ -317,14 +281,12 @@ public sealed class WebResearchWorkflowService(
                 out IWebResearchProvider? searchProvider)
             || (searchProvider.Capabilities & WebResearchCapabilities.Search) == 0)
         {
-
             yield return ErrorFrame(
                 new Error(
                     ErrorCodes.WebResearch.UnsupportedOperation,
                     "The configured web-search provider is unavailable."));
 
             yield break;
-
         }
 
         _ = providers.TryGetProvider(
@@ -333,12 +295,10 @@ public sealed class WebResearchWorkflowService(
 
         yield return new WebResearchStreamFrame
         {
-
             Type = WebResearchStreamFrameType.Limits,
 
             Message =
                 $"Policy: continue while new sources are discovered; {FormatSourceTarget(request.SourceTarget)}, {request.TokenBudget} synthesis tokens, {FormatCostLimit(request.CostBudgetUsd)}.",
-
         };
 
         List<WebSearchResult> searches = [];
@@ -362,7 +322,6 @@ public sealed class WebResearchWorkflowService(
 
         while (true)
         {
-
             pass++;
 
             yield return Progress(
@@ -386,11 +345,9 @@ public sealed class WebResearchWorkflowService(
 
             if (options.IsFailure)
             {
-
                 yield return ErrorFrame(options.Error);
 
                 yield break;
-
             }
 
             Result<WebSearchResult> search = await searchProvider
@@ -399,11 +356,9 @@ public sealed class WebResearchWorkflowService(
 
             if (search.IsFailure)
             {
-
                 yield return ErrorFrame(search.Error);
 
                 yield break;
-
             }
 
             searches.Add(search.Value);
@@ -421,53 +376,42 @@ public sealed class WebResearchWorkflowService(
 
             foreach (WebCitation citation in search.Value.Citations)
             {
-
                 if (citations.TryAdd(citation.Url, citation))
                 {
-
                     newCitationCount++;
-
                 }
-
             }
 
             if (request.CostBudgetUsd is decimal costLimit
                 && hasReportedCost
                 && totalCost > costLimit)
             {
-
                 yield return ErrorFrame(
                     new Error(
                         ErrorCodes.WebResearch.BudgetExceeded,
                         $"Research stopped after reported provider cost exceeded the ${costLimit:0.####} limit."));
 
                 yield break;
-
             }
 
             if (request.SourceTarget is int target
                 && citations.Count >= target)
             {
-
                 yield return Progress(
                     "source_target_reached",
                     $"The explicit source target of {target} was reached; synthesis will begin.");
 
                 break;
-
             }
 
             if (newCitationCount == 0)
             {
-
                 yield return Progress(
                     "source_exhausted",
                     "No new sources were discovered; research reached deterministic no-progress and synthesis will begin.");
 
                 break;
-
             }
-
         }
 
         List<ResearchSource> sources = [];
@@ -488,7 +432,6 @@ public sealed class WebResearchWorkflowService(
 
         for (int index = 0; index < selectedCitations.Length; index++)
         {
-
             WebCitation citation = selectedCitations[index];
 
             // Everything past the synthesis prompt's character budget is fetched, held, and then
@@ -496,13 +439,11 @@ public sealed class WebResearchWorkflowService(
             // never see.
             if (retainedContentChars >= retainedContentBudget)
             {
-
                 yield return Progress(
                     "source_budget_reached",
                     $"Stopped fetching at source {index + 1} of {selectedCitations.Length}; the synthesis prompt budget is already covered.");
 
                 break;
-
             }
 
             yield return Progress(
@@ -515,13 +456,11 @@ public sealed class WebResearchWorkflowService(
             if (!await IsEgressAllowedAsync(egressWard, citation.Url, cancellationToken)
                     .ConfigureAwait(false))
             {
-
                 yield return Progress(
                     "source_denied",
                     $"Source {index + 1} of {selectedCitations.Length} was denied by the Campaign Sanctum network policy.");
 
                 continue;
-
             }
 
             string content = string.Empty;
@@ -529,7 +468,6 @@ public sealed class WebResearchWorkflowService(
             if (readProvider is not null
                 && (readProvider.Capabilities & WebResearchCapabilities.ReadUrl) != 0)
             {
-
                 Result<WebReadResult> read = await readProvider
                     .ReadUrlAsync(
                         citation.Url,
@@ -539,7 +477,6 @@ public sealed class WebResearchWorkflowService(
 
                 if (read.IsSuccess)
                 {
-
                     // Truncate as the page is retained, not when the prompt is built — holding a full
                     // 1 MB body only to slice a few thousand characters off it is the whole cost.
                     string markdown = read.Value.Markdown;
@@ -547,9 +484,7 @@ public sealed class WebResearchWorkflowService(
                     content = markdown[..Utf8Truncation.SafeCharSliceLength(
                         markdown,
                         retainedContentBudget - retainedContentChars)];
-
                 }
-
             }
 
             retainedContentChars += content.Length;
@@ -564,14 +499,13 @@ public sealed class WebResearchWorkflowService(
                     citation.Url,
                     citation.Title,
                     content));
-
         }
 
         yield return Progress(
             "synthesizing",
             "Synthesizing the final answer.");
 
-        string synthesisPrompt = BuildSynthesisPrompt(
+        SynthesisPrompt synthesisPrompt = BuildSynthesisPrompt(
             request.Question,
             searches,
             sources,
@@ -584,56 +518,46 @@ public sealed class WebResearchWorkflowService(
             .ExecutePromptAsync(
                 synthesisEnvelope with
                 {
-
-                    Prompt = synthesisPrompt,
-
+                    Prompt = synthesisPrompt.Text,
                 },
                 ArcanumInvocationContext.None,
                 cancellationToken,
                 new InferenceAuditContext
                 {
-
                     RequestType = "research",
-
                 })
             .ConfigureAwait(false);
 
         if (synthesis.IsFailure)
         {
-
             yield return ErrorFrame(synthesis.Error);
 
             yield break;
-
         }
 
         if (synthesis.Value.Usage is { } inferenceUsage)
         {
-
             promptTokens += inferenceUsage.PromptTokens;
 
             completionTokens += inferenceUsage.CompletionTokens;
 
             totalTokens += inferenceUsage.TotalTokens;
-
         }
 
         WebResearchWorkflowResult result = new()
         {
-
             Answer = synthesis.Value.Text,
 
             Citations = sources
+                .Where(source => synthesisPrompt.EmittedSourceIndexes.Contains(source.Index))
                 .Select(
                     static source => new WebWorkflowCitation
                     {
-
                         Index = source.Index,
 
                         Url = source.Url,
 
                         Title = source.Title,
-
                     })
                 .ToArray(),
 
@@ -649,7 +573,6 @@ public sealed class WebResearchWorkflowService(
 
             Usage = new WebWorkflowUsage
             {
-
                 PromptTokens = promptTokens,
 
                 CompletionTokens = completionTokens,
@@ -659,9 +582,7 @@ public sealed class WebResearchWorkflowService(
                 SearchQueries = searchQueries,
 
                 CostUsd = hasReportedCost ? totalCost : null,
-
             },
-
         };
 
         Result<Guid?> attached = await AttachAsync(
@@ -677,27 +598,20 @@ public sealed class WebResearchWorkflowService(
         // progress frame and the `result` frame is still emitted, with no attachment id on it.
         if (attached.IsFailure)
         {
-
             yield return Progress(
                 "attachment_failed",
                 $"The research answer could not be attached to the Session ({attached.Error.Code}): {attached.Error.Message}");
-
         }
 
         yield return new WebResearchStreamFrame
         {
-
             Type = WebResearchStreamFrameType.Result,
 
             Result = result with
             {
-
                 AttachmentId = attached.IsSuccess ? attached.Value : null,
-
             },
-
         };
-
     }
 
     /// <remarks>
@@ -712,16 +626,13 @@ public sealed class WebResearchWorkflowService(
         string[]? includeDomains,
         string[]? excludeDomains)
     {
-
         WebBrowsingSettings web = settings.Value.ResolveWebBrowsing();
 
         if (!web.Enabled)
         {
-
             return Failure<WebSearchOptions>(
                 ErrorCodes.WebResearch.UnsupportedOperation,
                 "Native web workflows are disabled. Enable Arcanum:Features:WebBrowsing.");
-
         }
 
         if (string.IsNullOrWhiteSpace(query)
@@ -730,17 +641,14 @@ public sealed class WebResearchWorkflowService(
             || !AreValidDomains(includeDomains)
             || !AreValidDomains(excludeDomains))
         {
-
             return Failure<WebSearchOptions>(
                 ErrorCodes.WebResearch.RequestRejected,
                 "Search requires a query, count 1-20, freshness day|week|month|year, and valid domain filters.");
-
         }
 
         return Result<WebSearchOptions>.Success(
             new WebSearchOptions
             {
-
                 Model = web.PerplexityModel,
 
                 IdleTimeout = TimeSpan.FromSeconds(
@@ -775,20 +683,16 @@ public sealed class WebResearchWorkflowService(
                 IncludeDomains = includeDomains ?? [],
 
                 ExcludeDomains = excludeDomains ?? [],
-
             });
-
     }
 
     private WebReadOptions BuildReadOptions(
         Func<Uri, CancellationToken, ValueTask<bool>>? redirectEgressWard = null)
     {
-
         WebBrowsingSettings web = settings.Value.ResolveWebBrowsing();
 
         return new WebReadOptions
         {
-
             RedirectEgressWard = redirectEgressWard,
 
             IdleTimeout = TimeSpan.FromSeconds(
@@ -813,9 +717,7 @@ public sealed class WebResearchWorkflowService(
             MaxRedirects =
                 ArcanumSettingClamps.WebBrowsingMaxRedirects(
                     web.MaxRedirects),
-
         };
-
     }
 
     /// <summary>
@@ -828,15 +730,12 @@ public sealed class WebResearchWorkflowService(
     /// </summary>
     private static int ResolveRetainedContentBudget(IReadOnlyList<WebSearchResult> searches)
     {
-
         int consumedBySummaries = 0;
 
         foreach (WebSearchResult search in searches)
         {
-
             consumedBySummaries = int.CreateSaturating(
                 (long)consumedBySummaries + search.Answer.Length);
-
         }
 
         int synthesisBudget = Math.Min(
@@ -847,7 +746,6 @@ public sealed class WebResearchWorkflowService(
         return Math.Max(
             0,
             synthesisBudget - SynthesisInstruction.Length - consumedBySummaries);
-
     }
 
     /// <summary>
@@ -860,19 +758,15 @@ public sealed class WebResearchWorkflowService(
     /// </summary>
     private Func<Uri, CancellationToken, ValueTask<bool>>? BuildCampaignEgressWard(Guid? campaignId)
     {
-
         if (campaignId is not Guid resolved)
         {
-
             return null;
-
         }
 
         string campaign = resolved.ToString();
 
         return async (Uri target, CancellationToken token) =>
         {
-
             SanctumResult verdict = await sanctum
                 .ValidateNetworkAsync(
                     campaign,
@@ -882,9 +776,7 @@ public sealed class WebResearchWorkflowService(
                 .ConfigureAwait(false);
 
             return verdict.Allowed;
-
         };
-
     }
 
     /// <summary>
@@ -897,17 +789,13 @@ public sealed class WebResearchWorkflowService(
         string url,
         CancellationToken cancellationToken)
     {
-
         if (ward is null)
         {
-
             return true;
-
         }
 
         return Uri.TryCreate(url, UriKind.Absolute, out Uri? target)
             && await ward(target, cancellationToken).ConfigureAwait(false);
-
     }
 
     /// <summary>
@@ -919,35 +807,27 @@ public sealed class WebResearchWorkflowService(
         Guid? sessionId,
         CancellationToken cancellationToken)
     {
-
         if (sessionId is null)
         {
-
             return Result.Success();
-
         }
 
         if (!settings.Value.ResolveAttachments().Enabled)
         {
-
             return Result.Failure(new Error(
                 ErrorCodes.WebResearch.RequestRejected,
                 "Session attachments are disabled."));
-
         }
 
         if (await sessions.GetByIdAsync(sessionId.Value, cancellationToken).ConfigureAwait(false)
             is null)
         {
-
             return Result.Failure(new Error(
                 ErrorCodes.Session.NotFound,
                 "The attachment target session was not found."));
-
         }
 
         return Result.Success();
-
     }
 
     private async Task<Result<Guid?>> AttachAsync(
@@ -956,32 +836,25 @@ public sealed class WebResearchWorkflowService(
         string content,
         CancellationToken cancellationToken)
     {
-
         if (sessionId is null)
         {
-
             return Result<Guid?>.Success(null);
-
         }
 
         if (!settings.Value.ResolveAttachments().Enabled)
         {
-
             return Failure<Guid?>(
                 ErrorCodes.WebResearch.RequestRejected,
                 "Session attachments are disabled.");
-
         }
 
         if (await sessions.GetByIdAsync(sessionId.Value, cancellationToken)
                 .ConfigureAwait(false)
             is null)
         {
-
             return Failure<Guid?>(
                 ErrorCodes.Session.NotFound,
                 "The attachment target session was not found.");
-
         }
 
         SessionAttachmentRecord record = await attachments
@@ -998,7 +871,6 @@ public sealed class WebResearchWorkflowService(
             .ConfigureAwait(false);
 
         return Result<Guid?>.Success(record.Id);
-
     }
 
     private static string BuildFollowUpQuery(string question, int pass) =>
@@ -1016,15 +888,12 @@ public sealed class WebResearchWorkflowService(
     private static Result ValidateResearchRequest(
         WebResearchWorkflowRequest request)
     {
-
         if (request.Question?.Trim().Length > MaxResearchQuestionChars)
         {
-
             return Result.Failure(
                 new Error(
                     ErrorCodes.WebResearch.RequestRejected,
                     $"The research question must be at most {MaxResearchQuestionChars} characters so every follow-up pass stays within the provider's {WebResearchConstants.MaxInputQueryChars}-character query limit."));
-
         }
 
         if (string.IsNullOrWhiteSpace(request.Question)
@@ -1032,23 +901,19 @@ public sealed class WebResearchWorkflowService(
             || request.TokenBudget < 1
             || request.CostBudgetUsd is < 0)
         {
-
             return Result.Failure(
                 new Error(
                     ErrorCodes.WebResearch.RequestRejected,
                     "Research requires a question, an optional positive source target, a positive explicit synthesis-token budget, and a nonnegative cost budget."));
-
         }
 
         return Result.Success();
-
     }
 
     private async Task<Result<PingRequest>> PreflightSynthesisAsync(
         WebResearchWorkflowRequest request,
         CancellationToken cancellationToken)
     {
-
         PingRequest envelope = new(
             request.Question.Trim(),
             Model: request.Model,
@@ -1078,9 +943,7 @@ public sealed class WebResearchWorkflowService(
 
         if (resolved.IsFailure)
         {
-
             return resolved;
-
         }
 
         Result payload = PingRequestPreflightValidator.Validate(
@@ -1089,9 +952,7 @@ public sealed class WebResearchWorkflowService(
 
         if (payload.IsFailure)
         {
-
             return Result<PingRequest>.Failure(payload.Error);
-
         }
 
         if (!ProviderResolver.TryResolveProviderForModel(
@@ -1100,61 +961,48 @@ public sealed class WebResearchWorkflowService(
                 out _,
                 out _))
         {
-
             return Result<PingRequest>.Failure(
                 new Error(
                     ErrorCodes.Hub.Model,
                     PublicInferenceErrorMessages.ModelNotConfigured));
-
         }
 
         if (request.AttachToSessionId is not null
             && !settings.Value.ResolveAttachments().Enabled)
         {
-
             return Result<PingRequest>.Failure(
                 new Error(
                     ErrorCodes.WebResearch.RequestRejected,
                     "Session attachments are disabled."));
-
         }
 
         HashSet<Guid> sessionIds = [];
 
         if (request.ContinueSessionId is Guid continueSessionId)
         {
-
             _ = sessionIds.Add(continueSessionId);
-
         }
 
         if (request.AttachToSessionId is Guid attachSessionId)
         {
-
             _ = sessionIds.Add(attachSessionId);
-
         }
 
         foreach (Guid sessionId in sessionIds)
         {
-
             if (await sessions
                     .GetByIdAsync(sessionId, cancellationToken)
                     .ConfigureAwait(false)
                 is null)
             {
-
                 return Result<PingRequest>.Failure(
                     new Error(
                         ErrorCodes.Session.NotFound,
                         "The selected research Session was not found."));
-
             }
-
         }
 
         return resolved;
-
     }
 
     private static WebSearchWorkflowResult MapSearchResult(
@@ -1163,14 +1011,12 @@ public sealed class WebResearchWorkflowService(
         string model) =>
         new()
         {
-
             Answer = search.Answer,
 
             Citations = search.Citations
                 .Select(
                     static citation => new WebWorkflowCitation
                     {
-
                         Index = citation.Index,
 
                         Url = citation.Url,
@@ -1178,7 +1024,6 @@ public sealed class WebResearchWorkflowService(
                         Title = citation.Title,
 
                         PublishedDate = citation.PublishedDate,
-
                     })
                 .ToArray(),
 
@@ -1189,13 +1034,11 @@ public sealed class WebResearchWorkflowService(
             Truncated = search.Truncated,
 
             Usage = MapUsage(search.Usage),
-
         };
 
     private static WebWorkflowUsage MapUsage(WebResearchUsage usage) =>
         new()
         {
-
             PromptTokens = usage.PromptTokens,
 
             CompletionTokens = usage.CompletionTokens,
@@ -1205,7 +1048,6 @@ public sealed class WebResearchWorkflowService(
             SearchQueries = usage.SearchQueries,
 
             CostUsd = usage.CostUsd,
-
         };
 
     private static void AccumulateUsage(
@@ -1217,7 +1059,6 @@ public sealed class WebResearchWorkflowService(
         ref decimal totalCost,
         ref bool hasReportedCost)
     {
-
         promptTokens += usage.PromptTokens;
 
         completionTokens += usage.CompletionTokens;
@@ -1228,13 +1069,10 @@ public sealed class WebResearchWorkflowService(
 
         if (usage.CostUsd is decimal cost)
         {
-
             totalCost += cost;
 
             hasReportedCost = true;
-
         }
-
     }
 
     /// <summary>
@@ -1245,13 +1083,12 @@ public sealed class WebResearchWorkflowService(
     /// instruction is reserved out of the budget up front so an oversized source can never truncate
     /// it away and leave attacker text as the last thing the model reads.
     /// </summary>
-    internal static string BuildSynthesisPrompt(
+    internal static SynthesisPrompt BuildSynthesisPrompt(
         string question,
         IReadOnlyList<WebSearchResult> searches,
         IReadOnlyList<ResearchSource> sources,
         int maximumCharacters)
     {
-
         StringBuilder builder = new();
 
         _ = builder.AppendLine("Research question:");
@@ -1266,35 +1103,47 @@ public sealed class WebResearchWorkflowService(
 
         for (int index = 0; index < searches.Count; index++)
         {
-
-            AppendUntrustedBounded(
+            _ = AppendUntrustedBounded(
                 builder,
                 string.Create(CultureInfo.InvariantCulture, $"Search summary {index + 1}"),
                 searches[index].Answer,
                 contentBudget);
-
         }
 
         _ = builder.AppendLine("Sources (untrusted data):");
 
+        // A source the budget could not carry is one the model never read. Only the sources whose
+        // framed block actually landed in the prompt may be cited, or the answer would list evidence
+        // it was never given.
+        List<(int Index, int End)> emitted = [];
+
         foreach (ResearchSource source in sources)
         {
-
-            AppendUntrustedBounded(
-                builder,
-                string.Create(CultureInfo.InvariantCulture, $"Source [{source.Index}]"),
-                FormatSourceBody(source),
-                contentBudget);
-
+            if (AppendUntrustedBounded(
+                    builder,
+                    string.Create(CultureInfo.InvariantCulture, $"Source [{source.Index}]"),
+                    FormatSourceBody(source),
+                    contentBudget))
+            {
+                emitted.Add((source.Index, builder.Length));
+            }
         }
 
         _ = builder.AppendLine(SynthesisInstruction);
 
-        return builder.Length <= maximumCharacters
+        string text = builder.Length <= maximumCharacters
             ? builder.ToString()
             : builder.ToString(0, maximumCharacters);
 
+        // The final clamp can only matter when the question alone outgrew the budget; a block cut by
+        // it is not carried whole, so it is not cited either.
+        return new SynthesisPrompt(
+            text,
+            [.. emitted.Where(entry => entry.End <= text.Length).Select(static entry => entry.Index)]);
     }
+
+    /// <summary>The synthesis prompt and the source indexes it actually carries.</summary>
+    internal sealed record SynthesisPrompt(string Text, IReadOnlyList<int> EmittedSourceIndexes);
 
     /// <summary>
     /// The page URL and title are attacker-controlled too, so they travel inside the fence with the
@@ -1311,20 +1160,22 @@ public sealed class WebResearchWorkflowService(
             Environment.NewLine,
             source.Content);
 
-    private static void AppendUntrustedBounded(
+    /// <summary>
+    /// Appends one framed untrusted block within <paramref name="contentBudget"/>. Returns
+    /// <see langword="true"/> when the block (possibly with a shortened payload) landed in the prompt
+    /// and <see langword="false"/> when the budget left no room for it.
+    /// </summary>
+    private static bool AppendUntrustedBounded(
         StringBuilder builder,
         string label,
         string content,
         int contentBudget)
     {
-
         int remaining = contentBudget - builder.Length;
 
         if (remaining <= 0)
         {
-
-            return;
-
+            return false;
         }
 
         string payload = content.Length <= remaining
@@ -1337,9 +1188,7 @@ public sealed class WebResearchWorkflowService(
 
         if (builder.Length <= contentBudget)
         {
-
-            return;
-
+            return true;
         }
 
         // The label and fences pushed the framed block past the budget. Roll the whole block back
@@ -1351,9 +1200,7 @@ public sealed class WebResearchWorkflowService(
 
         if (payload.Length <= overflow)
         {
-
-            return;
-
+            return false;
         }
 
         // A shorter payload can only shorten its own fence, so this second attempt cannot overflow.
@@ -1362,6 +1209,7 @@ public sealed class WebResearchWorkflowService(
             label,
             payload[..(payload.Length - overflow)]);
 
+        return true;
     }
 
     private static string FormatSearchMarkdown(WebSearchWorkflowResult result) =>
@@ -1418,25 +1266,21 @@ public sealed class WebResearchWorkflowService(
         string message) =>
         new()
         {
-
             Type = WebResearchStreamFrameType.Progress,
 
             Stage = stage,
 
             Message = message,
-
         };
 
     private static WebResearchStreamFrame ErrorFrame(Error error) =>
         new()
         {
-
             Type = WebResearchStreamFrameType.Error,
 
             Code = error.Code,
 
             Message = error.Message,
-
         };
 
     private static Result<T> Failure<T>(string code, string message) =>
@@ -1447,5 +1291,4 @@ public sealed class WebResearchWorkflowService(
         string Url,
         string? Title,
         string Content);
-
 }

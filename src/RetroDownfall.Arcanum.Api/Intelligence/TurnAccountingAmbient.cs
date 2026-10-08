@@ -8,20 +8,30 @@ namespace RetroDownfall.Arcanum.Api.Intelligence;
 /// </summary>
 internal static class TurnAccountingAmbient
 {
-
     private static readonly AsyncLocal<TurnAccountingHandle?> CurrentLocal = new();
 
     private static readonly AsyncLocal<ITurnRunWriter?> WriterLocal = new();
 
+    /// <summary>
+    /// The turn accounting nested work ledgers against, or <see langword="null"/> when there is none
+    /// or its run has already settled.
+    /// </summary>
+    /// <remarks>
+    /// A settled run reads as no run. A tool task abandoned past the turn's grace keeps running in a
+    /// flow that still holds the turn's handle; once that run has written its status and reconciled
+    /// or released its reservation, work there must account for itself rather than ledger against a
+    /// run whose totals are already final.
+    /// </remarks>
     public static TurnAccountingHandle? Current
     {
-        get => CurrentLocal.Value;
+        get => CurrentLocal.Value is { IsSettled: false } handle ? handle : null;
         set => CurrentLocal.Value = value;
     }
 
+    /// <summary>The writer paired with <see cref="Current"/>, hidden with it once the run settles.</summary>
     public static ITurnRunWriter? Writer
     {
-        get => WriterLocal.Value;
+        get => CurrentLocal.Value is { IsSettled: true } ? null : WriterLocal.Value;
         set => WriterLocal.Value = value;
     }
 
@@ -40,6 +50,21 @@ internal static class TurnAccountingAmbient
     {
         RestorationScope scope = new(Current, Writer);
         Publish(handle, writer);
+        return scope;
+    }
+
+    /// <summary>
+    /// Hides the current turn's accounting from work that must account for itself, then restores it.
+    /// </summary>
+    /// <remarks>
+    /// A delegated child turn begins its own run and reservation. Seeing the parent's handle it would
+    /// adopt it instead, and on completion settle the parent's run and reservation while the parent is
+    /// still mid-turn.
+    /// </remarks>
+    public static IDisposable Suspend()
+    {
+        RestorationScope scope = new(Current, Writer);
+        Clear();
         return scope;
     }
 
@@ -73,5 +98,4 @@ internal static class TurnAccountingAmbient
             Publish(previousHandle, previousWriter);
         }
     }
-
 }

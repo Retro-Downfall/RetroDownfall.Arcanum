@@ -4,7 +4,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 /// The three shipped version chains, built once from the catalog.
 /// </summary>
 /// <remarks>
-/// Core is at version 13 and declares twelve steps, Covenant canonical is at version 6 and declares five,
+/// Core is at version 15 and declares fourteen steps, Covenant canonical is at version 6 and declares five,
 /// and the Covenant accelerator is still at version 1 and declares none. A tier that never left version 1
 /// keeps the cheapest state there is - the loader, the planner's evolve arm, the installer's step arm,
 /// and the backfill driver all run in production and find nothing to do - and a tier that has left it
@@ -97,8 +97,38 @@ internal static class GrimoireSchemaVersionChains
     /// index once so tokens left by earlier deletes are gone. The step declares no sweep: every new
     /// table starts empty, and the index, the setting and the merge all complete inside the step's own
     /// transaction.</para>
+    ///
+    /// <para>Version 14 adds three expression indexes in the normalized shape a Session delete compares
+    /// with, <c>lower(replace(SessionId, '-', ''))</c>, on <c>attachment_memory_consultations</c>,
+    /// <c>saga_extraction_watermarks</c> and <c>SessionContextPins</c>, so those deletes and their
+    /// post-commit counts search rather than scan. The step declares no sweep: an index is built inside
+    /// the step's own transaction.</para>
+    ///
+    /// <para>Version 15 settles the file identities on the canonical uppercase dashed spelling the rest of the
+    /// schema holds. <c>UploadedFiles.Id</c> and the three file roles a batch names, <c>InputFileId</c>,
+    /// <c>OutputFileId</c> and <c>ErrorFileId</c>, were written in lowercase dashed form while every lookup
+    /// wrapped the column in <c>lower(replace(col, '-', ''))</c>, so deleting an uploaded file and checking
+    /// whether a batch still named it scanned both tables. The step rewrites any non-canonical value in
+    /// place, in the statement's own transaction, and indexes the three batch columns twice: once on the canonical
+    /// text the repositories compare, and once on the <c>lower(replace(col, '-', ''))</c> expression the retention
+    /// sweep compares so it can stay correct for any spelling without scanning every batch. It also adds
+    /// <c>IX_InferenceRuns_SessionId_Norm</c>, the expression index the retention sweep's
+    /// <c>lower(replace(SessionId, '-', ''))</c> comparisons against the run ledger need; that column keeps its
+    /// dash-free spelling, so no value is rewritten. Last, it adds <c>ux_tapestry_generations_complete_scope</c>, the
+    /// partial unique index that makes the Tapestry's one-Complete-generation-per-scope invariant the schema's rather
+    /// than the publishing statement's alone; one statement first supersedes every Complete generation of a scope but
+    /// the newest, so the index can be built over a pair the old switch left behind. It also adds
+    /// <c>tapestry_leaf_hashes</c>, the per-leaf content hashes the Tapestry's sweep fingerprints a scope from
+    /// without reading its text, with one insert, one update and one delete trigger on each of
+    /// <c>workspace_file_chunks</c>, <c>session_attachment_chunks</c> and <c>Entries</c> that drop a leaf's hash
+    /// whenever its source row is inserted, rewritten or deleted. The table starts empty and is filled by the
+    /// Tapestry on first use, one scope at a time, so the step needs no backfill. It declares no sweep:
+    /// the two file tables are small relative to the Entries family, no trigger or foreign key names either file
+    /// column, the rewrite is one statement per column, the Tapestry repair is one statement over a derived table,
+    /// the new table and its triggers are plain DDL over nothing, and an index is built inside the step's own
+    /// transaction.</para>
     /// </remarks>
-    internal const int CoreSchemaVersion = 13;
+    internal const int CoreSchemaVersion = 15;
 
     /// <summary>The version of Covenant's authoritative tables this binary declares.</summary>
     /// <remarks>
@@ -220,6 +250,18 @@ internal static class GrimoireSchemaVersionChains
             // version 12. Its frozen copies also keep the raw version-1 to version-5 pins still.
             [(GrimoireSchemaTransactionTier.Core, 13)] =
                 "616E371CA834F78D84C484E4918C4124F8399686B17E1E8D497557303C08063B",
+
+            // Captured from the normalized Core version-13 head before any version-14 head edit.
+            // CoreSchemaVersionThirteenFixture freezes the three tables version 14 appends an index to
+            // and proves this literal still names version 13.
+            [(GrimoireSchemaTransactionTier.Core, 14)] =
+                "E46E5902803F25CD43236A77882E5B057374A7B902840E0AC1308427513A8D84",
+
+            // Captured from the normalized Core version-14 head before any version-15 head edit.
+            // CoreSchemaVersionFourteenFixture freezes the table version 15 appends indexes to and proves
+            // this literal still names version 14.
+            [(GrimoireSchemaTransactionTier.Core, 15)] =
+                "F699757C9C5F2EDA486ECBF0CD1017762936D5730B8C01557FB33E5338347372",
 
             // Read out of the Covenant canonical head tree immediately before the curation objects were
             // added. Nothing can recompute it either. CovenantCanonicalSchemaVersionOneFixture

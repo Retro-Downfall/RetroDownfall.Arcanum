@@ -350,6 +350,145 @@ public sealed class FileHandleIdentityTests : IDisposable
         Assert.Equal(48, layout.FileIndexLowOffset);
     }
 
+    /// <summary>
+    /// An NTFS file id is a 64-bit file reference whose upper half is zero, and the legacy identity (the
+    /// 32-bit volume serial and 64-bit file index) is exactly that id. It must come back unchanged, because
+    /// every registered Campaign root digest, marker and journal entry on an NTFS volume was derived from it.
+    /// </summary>
+    [Fact]
+    public void Windows_file_ids_that_fit_in_64_bits_keep_the_legacy_identity()
+    {
+        FileHandleIdentity legacy = new(0x1234ABCDUL, 0x0001000000000042UL);
+
+        FileHandleIdentity resolved = FileHandleIdentityInterop.ResolveWindowsFileIdInfoIdentity(
+            legacy,
+            volumeSerialNumber: 0xAAAA00001234ABCDUL,
+            fileIdLow: 0x0001000000000042UL,
+            fileIdHigh: 0UL);
+
+        Assert.Equal(legacy, resolved);
+    }
+
+    /// <summary>
+    /// ReFS and Dev Drive file ids are 128-bit. The legacy 64-bit index drops the upper half, so two
+    /// different files whose ids differ only there had the same identity; the 128-bit id is what tells
+    /// them apart.
+    /// </summary>
+    [Fact]
+    public void Windows_128_bit_file_ids_that_differ_only_in_the_upper_half_have_distinct_identities()
+    {
+        FileHandleIdentity legacy = new(0x1234ABCDUL, 0x0000000000000007UL);
+
+        FileHandleIdentity first = FileHandleIdentityInterop.ResolveWindowsFileIdInfoIdentity(
+            legacy,
+            volumeSerialNumber: 0x00000000_1234ABCDUL,
+            fileIdLow: 0x0000000000000007UL,
+            fileIdHigh: 1UL);
+
+        FileHandleIdentity second = FileHandleIdentityInterop.ResolveWindowsFileIdInfoIdentity(
+            legacy,
+            volumeSerialNumber: 0x00000000_1234ABCDUL,
+            fileIdLow: 0x0000000000000007UL,
+            fileIdHigh: 2UL);
+
+        Assert.NotEqual(first, second);
+
+        Assert.NotEqual(legacy, first);
+
+        Assert.NotEqual(legacy, second);
+
+        // The same inputs always give the same identity.
+        Assert.Equal(
+            first,
+            FileHandleIdentityInterop.ResolveWindowsFileIdInfoIdentity(
+                legacy,
+                volumeSerialNumber: 0x00000000_1234ABCDUL,
+                fileIdLow: 0x0000000000000007UL,
+                fileIdHigh: 1UL));
+    }
+
+    /// <summary>
+    /// The volume half of an identity is a property of the volume alone: the same-volume checks compare it
+    /// across different files, so a wide id must never leak into it.
+    /// </summary>
+    [Fact]
+    public void Windows_128_bit_file_ids_keep_the_legacy_volume_and_separate_volumes_by_the_64_bit_serial()
+    {
+        FileHandleIdentity legacy = new(0x1234ABCDUL, 0x0000000000000007UL);
+
+        FileHandleIdentity onVolumeA = FileHandleIdentityInterop.ResolveWindowsFileIdInfoIdentity(
+            legacy,
+            volumeSerialNumber: 0x00000001_1234ABCDUL,
+            fileIdLow: 0x0000000000000007UL,
+            fileIdHigh: 5UL);
+
+        FileHandleIdentity onVolumeB = FileHandleIdentityInterop.ResolveWindowsFileIdInfoIdentity(
+            legacy,
+            volumeSerialNumber: 0x00000002_1234ABCDUL,
+            fileIdLow: 0x0000000000000007UL,
+            fileIdHigh: 5UL);
+
+        Assert.Equal(legacy.VolumeId, onVolumeA.VolumeId);
+
+        Assert.Equal(legacy.VolumeId, onVolumeB.VolumeId);
+
+        // Two volumes whose 32-bit serials agree but whose 64-bit serials differ no longer share file ids.
+        Assert.NotEqual(onVolumeA.FileId, onVolumeB.FileId);
+    }
+
+    [Fact]
+    public void Windows_file_id_info_layout_matches_native_FILE_ID_INFO()
+    {
+        WindowsFileIdInfoLayout layout = FileHandleIdentityInterop.GetWindowsFileIdInfoLayoutForTests();
+
+        Assert.Equal(24, layout.Size);
+
+        Assert.Equal(0, layout.VolumeSerialNumberOffset);
+
+        Assert.Equal(8, layout.FileIdLowOffset);
+
+        Assert.Equal(16, layout.FileIdHighOffset);
+    }
+
+    /// <summary>
+    /// The Windows lane: the identity a handle reports is the legacy identity widened by the handle's own
+    /// <c>FileIdInfo</c>, never a different file's. Not run on non-Windows hosts.
+    /// </summary>
+    [SkippableFact]
+    public void Windows_handle_identity_is_resolved_from_FileIdInfo()
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), "FILE_ID_INFO is a Windows API.");
+
+        using SafeFileHandle handle = File.OpenHandle(_tempFile, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+
+        Assert.True(FileHandleIdentityInterop.TryGetHandleMetadata(handle, out FileHandleMetadata metadata));
+
+        Assert.True(
+            FileHandleIdentityInterop.TryReadWindowsFileIdInfoForTests(
+                handle,
+                out ulong volumeSerialNumber,
+                out ulong fileIdLow,
+                out ulong fileIdHigh));
+
+        FileHandleIdentity expected = FileHandleIdentityInterop.ResolveWindowsFileIdInfoIdentity(
+            new FileHandleIdentity(volumeSerialNumber & 0xFFFFFFFFUL, metadata.Identity.FileId),
+            volumeSerialNumber,
+            fileIdLow,
+            fileIdHigh);
+
+        if (fileIdHigh == 0)
+        {
+            // An NTFS volume: the identity is the legacy one, so previously registered roots still match.
+            Assert.Equal(fileIdLow, metadata.Identity.FileId);
+
+            Assert.True(metadata.Identity.VolumeId <= uint.MaxValue);
+        }
+        else
+        {
+            Assert.Equal(expected.FileId, metadata.Identity.FileId);
+        }
+    }
+
     [Fact]
     public void Windows_directory_enumeration_capability_requests_list_access()
     {
@@ -365,6 +504,108 @@ public sealed class FileHandleIdentityTests : IDisposable
         Assert.Equal(0u, metadataOnly & 0x0001u);
         Assert.Equal(0x0001u, enumerable & 0x0001u);
         Assert.Equal(0x00100000u, enumerable & 0x00100000u);
+    }
+
+    [Fact]
+    public void Macos_arm64_metadata_layout_reads_dev_mode_nlink_and_inode()
+    {
+        byte[] buffer = new byte[144];
+
+        BinaryPrimitives.WriteUInt32LittleEndian(buffer.AsSpan(0), 0x01020304U);
+
+        BinaryPrimitives.WriteUInt16LittleEndian(buffer.AsSpan(4), 0x81A4);
+
+        BinaryPrimitives.WriteUInt16LittleEndian(buffer.AsSpan(6), 3);
+
+        BinaryPrimitives.WriteUInt64LittleEndian(buffer.AsSpan(8), 0x1112131415161718UL);
+
+        Assert.True(
+            FileHandleIdentityInterop.TryParseUnixFileMetadataForTests(
+                buffer,
+                isMacOS: true,
+                Architecture.Arm64,
+                out FileHandleMetadata metadata));
+
+        Assert.Equal(
+            new FileHandleMetadata(
+                new FileHandleIdentity(0x01020304UL, 0x1112131415161718UL),
+                3UL),
+            metadata);
+    }
+
+    [Fact]
+    public void Macos_arm64_access_metadata_layout_reads_mode_and_owner()
+    {
+        byte[] buffer = new byte[144];
+
+        BinaryPrimitives.WriteUInt16LittleEndian(buffer.AsSpan(4), 0x81A4);
+
+        BinaryPrimitives.WriteUInt32LittleEndian(buffer.AsSpan(16), 501U);
+
+        Assert.True(
+            FileHandleIdentityInterop.TryParseUnixAccessMetadataForTests(
+                buffer,
+                isMacOS: true,
+                Architecture.Arm64,
+                out UnixFileMode mode,
+                out uint ownerUserId));
+
+        Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.GroupRead | UnixFileMode.OtherRead, mode);
+
+        Assert.Equal(501U, ownerUserId);
+    }
+
+    /// <summary>
+    /// The owner and permission readers share the stat layout the identity reader refuses on macOS x64:
+    /// the legacy 32-bit-inode struct puts the owner at offset 12, not 16, so the arm64 offsets would read
+    /// another field as the owner. It fails closed the same way.
+    /// </summary>
+    [Fact]
+    public void Macos_x64_access_metadata_layout_is_rejected()
+    {
+        byte[] buffer = new byte[144];
+
+        BinaryPrimitives.WriteUInt16LittleEndian(buffer.AsSpan(4), 0x81A4);
+
+        BinaryPrimitives.WriteUInt32LittleEndian(buffer.AsSpan(16), 501U);
+
+        Assert.False(
+            FileHandleIdentityInterop.TryParseUnixAccessMetadataForTests(
+                buffer,
+                isMacOS: true,
+                Architecture.X64,
+                out UnixFileMode mode,
+                out uint ownerUserId));
+
+        Assert.Equal(default, mode);
+
+        Assert.Equal(0U, ownerUserId);
+    }
+
+    [Fact]
+    public void Macos_x64_layout_is_rejected()
+    {
+        // The plain `stat` symbol on macOS x64 is the legacy struct with a 32-bit inode, so reading it
+        // through the 64-bit-inode offsets would fabricate an identity from the wrong bytes. Only the
+        // arm64 layout is read; x64 is not a shipping RID and fails closed.
+        byte[] buffer = new byte[144];
+
+        BinaryPrimitives.WriteUInt32LittleEndian(buffer.AsSpan(0), 0x01020304U);
+
+        BinaryPrimitives.WriteUInt16LittleEndian(buffer.AsSpan(4), 0x81A4);
+
+        BinaryPrimitives.WriteUInt16LittleEndian(buffer.AsSpan(6), 3);
+
+        BinaryPrimitives.WriteUInt64LittleEndian(buffer.AsSpan(8), 0x1112131415161718UL);
+
+        Assert.False(
+            FileHandleIdentityInterop.TryParseUnixFileMetadataForTests(
+                buffer,
+                isMacOS: true,
+                Architecture.X64,
+                out FileHandleMetadata metadata));
+
+        Assert.Equal(default, metadata);
     }
 
     [Fact]
@@ -471,5 +712,65 @@ public sealed class FileHandleIdentityTests : IDisposable
         Assert.False(result);
 
         Assert.Equal(default, identity);
+    }
+
+    [SkippableFact]
+    public void TryGetHandleKernelPath_ReportsTheCanonicalLocationOfTheOpenFile()
+    {
+        Skip.If(
+            !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux() && !OperatingSystem.IsWindows(),
+            "The kernel path query is implemented for macOS, Linux and Windows.");
+
+        using SafeFileHandle handle = File.OpenHandle(_tempFile);
+
+        Assert.True(FileHandleIdentityInterop.TryGetHandleKernelPath(handle, out string? kernelPath));
+
+        Assert.True(WorkspacePathPolicy.TryCanonicalize(Path.GetFullPath(_tempFile), out string? canonical, out bool exists));
+
+        Assert.True(exists);
+
+        Assert.Equal(canonical, kernelPath, ignoreCase: OperatingSystem.IsWindows() || OperatingSystem.IsMacOS());
+    }
+
+    [Fact]
+    public void TryGetHandleKernelPath_ClosedHandle_ReturnsFalse()
+    {
+        SafeFileHandle handle = File.OpenHandle(_tempFile);
+
+        handle.Dispose();
+
+        Assert.False(FileHandleIdentityInterop.TryGetHandleKernelPath(handle, out string? kernelPath));
+
+        Assert.Null(kernelPath);
+    }
+
+    /// <summary>
+    /// A host whose libc lacks <c>proc_pidfdinfo</c>, or whose kernel32 lacks
+    /// <c>GetFinalPathNameByHandleW</c>, makes the P/Invoke throw rather than return an error code. The
+    /// query must still answer "cannot name this handle" so the containment check fails closed with a
+    /// refusal instead of an unhandled exception escaping into the tool or request pipeline.
+    /// </summary>
+    [Fact]
+    public void IsKernelPathQueryFailure_TreatsAMissingNativeEntryPointAsAFailedQuery()
+    {
+        Assert.True(FileHandleIdentityInterop.IsKernelPathQueryFailure(new DllNotFoundException("libc")));
+
+        Assert.True(FileHandleIdentityInterop.IsKernelPathQueryFailure(new EntryPointNotFoundException("proc_pidfdinfo")));
+
+        Assert.True(FileHandleIdentityInterop.IsKernelPathQueryFailure(new ObjectDisposedException("handle")));
+
+        Assert.True(FileHandleIdentityInterop.IsKernelPathQueryFailure(new IOException()));
+
+        Assert.False(FileHandleIdentityInterop.IsKernelPathQueryFailure(new InvalidOperationException()));
+    }
+
+    [Theory]
+    [InlineData(@"\\?\C:\work\file.txt", @"C:\work\file.txt")]
+    [InlineData(@"\\?\UNC\server\share\file.txt", @"\\server\share\file.txt")]
+    [InlineData(@"\\?\unc\server\share\file.txt", @"\\server\share\file.txt")]
+    [InlineData(@"C:\already\plain.txt", @"C:\already\plain.txt")]
+    public void NormalizeWindowsFinalPath_StripsTheExtendedLengthPrefix(string finalPath, string expected)
+    {
+        Assert.Equal(expected, FileHandleIdentityInterop.NormalizeWindowsFinalPath(finalPath));
     }
 }

@@ -2,6 +2,7 @@ using System.Globalization;
 
 using Microsoft.Data.Sqlite;
 
+using RetroDownfall.Arcanum.Core.Annals;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 using RetroDownfall.Arcanum.Tests.Fixtures;
@@ -24,7 +25,6 @@ namespace RetroDownfall.Arcanum.Tests.Data.Schema;
 /// </remarks>
 public sealed class AnnalsSchemaInvariantTests
 {
-
     static AnnalsSchemaInvariantTests() => SqliteNativeRuntime.Instance.Initialize();
 
     [Fact]
@@ -46,7 +46,6 @@ public sealed class AnnalsSchemaInvariantTests
     [Fact]
     public async Task An_edge_that_does_not_point_strictly_backwards_is_refused()
     {
-
         await using AnnalsScratch scratch = await AnnalsScratch.StartAsync();
 
         (string first, long firstSequence) = await scratch.SeedVersionAsync("claim-a");
@@ -64,7 +63,6 @@ public sealed class AnnalsSchemaInvariantTests
             () => scratch.SeedEdgeAsync(first, firstSequence, first, firstSequence));
 
         Assert.Contains("CHECK constraint failed", self.Message, StringComparison.Ordinal);
-
     }
 
     /// <summary>
@@ -74,7 +72,6 @@ public sealed class AnnalsSchemaInvariantTests
     [Fact]
     public async Task An_edge_that_misstates_a_versions_sequence_is_refused()
     {
-
         await using AnnalsScratch scratch = await AnnalsScratch.StartAsync();
 
         (string first, long firstSequence) = await scratch.SeedVersionAsync("claim-a");
@@ -85,54 +82,57 @@ public sealed class AnnalsSchemaInvariantTests
             () => scratch.SeedEdgeAsync(second, secondSequence, first, firstSequence - 1));
 
         Assert.Contains("FOREIGN KEY constraint failed", lie.Message, StringComparison.Ordinal);
-
     }
 
+    /// <summary>
+    /// The schema's ceiling on one version's edges is exactly <see cref="AnnalLimits.MaxDependenciesPerVersion"/>.
+    /// </summary>
+    /// <remarks>
+    /// The constant restates a <c>CHECK</c> in <c>annal_dependencies.sql</c> and no production writer
+    /// reads it yet, so nothing but this case ties the two together. It fills a version to the
+    /// constant and asks the database for one more: a constant that drifted below the schema leaves
+    /// the next edge accepted, and one that drifted above it makes the last legal edge fail.
+    /// </remarks>
     [Fact]
-    public async Task A_seventeenth_edge_on_one_version_is_refused()
+    public async Task The_edge_after_the_dependency_ceiling_is_refused_and_the_ceiling_is_the_published_constant()
     {
+        int ceiling = AnnalLimits.MaxDependenciesPerVersion;
 
         await using AnnalsScratch scratch = await AnnalsScratch.StartAsync();
 
         List<(string VersionId, long Sequence)> targets = [];
 
-        for (int index = 0; index < 17; index++)
+        for (int index = 0; index <= ceiling; index++)
         {
-
             targets.Add(await scratch.SeedVersionAsync($"claim-{index}"));
-
         }
 
         (string dependent, long dependentSequence) = await scratch.SeedVersionAsync("claim-dependent");
 
-        for (int index = 0; index < 16; index++)
+        for (int index = 0; index < ceiling; index++)
         {
-
             await scratch.SeedEdgeAsync(
                 dependent,
                 dependentSequence,
                 targets[index].VersionId,
                 targets[index].Sequence,
                 ordinal: index + 1);
-
         }
 
         SqliteException overflow = await Assert.ThrowsAsync<SqliteException>(
             () => scratch.SeedEdgeAsync(
                 dependent,
                 dependentSequence,
-                targets[16].VersionId,
-                targets[16].Sequence,
-                ordinal: 17));
+                targets[ceiling].VersionId,
+                targets[ceiling].Sequence,
+                ordinal: ceiling + 1));
 
         Assert.Contains("CHECK constraint failed", overflow.Message, StringComparison.Ordinal);
-
     }
 
     [Fact]
     public async Task Claims_versions_and_edges_all_refuse_an_update()
     {
-
         await using AnnalsScratch scratch = await AnnalsScratch.StartAsync();
 
         (string version, long sequence) = await scratch.SeedVersionAsync("claim-a");
@@ -159,7 +159,6 @@ public sealed class AnnalsSchemaInvariantTests
             (await Assert.ThrowsAsync<SqliteException>(
                 () => scratch.ExecuteAsync("UPDATE annal_dependencies SET RelationCode = 2;"))).Message,
             StringComparison.Ordinal);
-
     }
 
     /// <summary>
@@ -169,7 +168,6 @@ public sealed class AnnalsSchemaInvariantTests
     [Fact]
     public async Task A_head_may_advance_but_never_retreat()
     {
-
         await using AnnalsScratch scratch = await AnnalsScratch.StartAsync();
 
         (string first, _) = await scratch.SeedVersionAsync("claim-a");
@@ -185,7 +183,6 @@ public sealed class AnnalsSchemaInvariantTests
             (await Assert.ThrowsAsync<SqliteException>(
                 () => scratch.AdvanceHeadAsync("claim-a", first, revision: 1))).Message,
             StringComparison.Ordinal);
-
     }
 
     /// <summary>
@@ -195,7 +192,6 @@ public sealed class AnnalsSchemaInvariantTests
     [Fact]
     public async Task A_head_cannot_adopt_a_version_belonging_to_another_claim()
     {
-
         await using AnnalsScratch scratch = await AnnalsScratch.StartAsync();
 
         _ = await scratch.SeedVersionAsync("claim-a");
@@ -206,7 +202,6 @@ public sealed class AnnalsSchemaInvariantTests
             () => scratch.SeedHeadAsync("claim-a", foreignVersion, revision: 1));
 
         Assert.Contains("FOREIGN KEY constraint failed", adopted.Message, StringComparison.Ordinal);
-
     }
 
     /// <summary>
@@ -216,7 +211,6 @@ public sealed class AnnalsSchemaInvariantTests
     [Fact]
     public async Task A_retirement_carries_no_content_hash_and_an_assertion_must()
     {
-
         await using AnnalsScratch scratch = await AnnalsScratch.StartAsync();
 
         _ = await Assert.ThrowsAsync<SqliteException>(
@@ -224,7 +218,6 @@ public sealed class AnnalsSchemaInvariantTests
 
         _ = await Assert.ThrowsAsync<SqliteException>(
             () => scratch.SeedVersionAsync("claim-b", operationCode: 1, withContentHash: false));
-
     }
 
     /// <summary>
@@ -234,7 +227,6 @@ public sealed class AnnalsSchemaInvariantTests
     [Fact]
     public async Task An_unresolved_scope_is_storable_and_a_campaign_scope_must_name_its_campaign()
     {
-
         await using AnnalsScratch scratch = await AnnalsScratch.StartAsync();
 
         _ = await scratch.SeedVersionAsync("claim-unclassified", scopeKindCode: 0);
@@ -250,7 +242,6 @@ public sealed class AnnalsSchemaInvariantTests
             () => scratch.SeedVersionAsync("claim-global", scopeKindCode: 1, campaignId: "A0000000-0000-4000-8000-000000000001"));
 
         Assert.Contains("CHECK constraint failed", borrowed.Message, StringComparison.Ordinal);
-
     }
 
     /// <summary>
@@ -260,7 +251,6 @@ public sealed class AnnalsSchemaInvariantTests
     [Fact]
     public async Task Two_claims_cannot_own_one_durable_row()
     {
-
         await using AnnalsScratch scratch = await AnnalsScratch.StartAsync();
 
         await scratch.SeedClaimAsync("claim-a", "shared-subject");
@@ -269,7 +259,6 @@ public sealed class AnnalsSchemaInvariantTests
             () => scratch.SeedClaimAsync("claim-b", "shared-subject"));
 
         Assert.Contains("UNIQUE constraint failed", duplicate.Message, StringComparison.Ordinal);
-
     }
 
     /// <summary>
@@ -277,7 +266,6 @@ public sealed class AnnalsSchemaInvariantTests
     /// </summary>
     private sealed class AnnalsScratch : IAsyncDisposable
     {
-
         private const string Timestamp = "2026-01-01T00:00:00.0000000+00:00";
 
         private readonly EvolutionScratchDatabase _file;
@@ -286,16 +274,13 @@ public sealed class AnnalsSchemaInvariantTests
 
         private AnnalsScratch(EvolutionScratchDatabase file, SqliteConnection connection)
         {
-
             _file = file;
 
             _connection = connection;
-
         }
 
         internal static async Task<AnnalsScratch> StartAsync()
         {
-
             EvolutionScratchDatabase file = EvolutionScratchDatabase.Create();
 
             SqliteConnection connection = await file.OpenAsync(CancellationToken.None);
@@ -309,7 +294,6 @@ public sealed class AnnalsSchemaInvariantTests
             Assert.Equal(GrimoireSchemaTierHealth.Healthy, installed.Core.Health);
 
             return new AnnalsScratch(file, connection);
-
         }
 
         /// <summary>
@@ -341,7 +325,6 @@ public sealed class AnnalsSchemaInvariantTests
             string? campaignId = null,
             string? subjectId = null)
         {
-
             await ExecuteAsync(
                 """
                 INSERT OR IGNORE INTO annal_claims (ClaimId, SubjectStoreCode, SubjectId, CreatedAtUtc)
@@ -376,7 +359,6 @@ public sealed class AnnalsSchemaInvariantTests
             return (versionId, await ScalarAsync(
                 "SELECT Sequence FROM annal_versions WHERE VersionId = $versionId;",
                 ("$versionId", versionId)));
-
         }
 
         internal Task SeedEdgeAsync(
@@ -425,51 +407,39 @@ public sealed class AnnalsSchemaInvariantTests
 
         internal async Task ExecuteAsync(string sql, params (string Name, object? Value)[] parameters)
         {
-
             await using SqliteCommand command = _connection.CreateCommand();
 
             command.CommandText = sql;
 
             foreach ((string name, object? value) in parameters)
             {
-
                 _ = command.Parameters.AddWithValue(name, value ?? DBNull.Value);
-
             }
 
             _ = await command.ExecuteNonQueryAsync(CancellationToken.None);
-
         }
 
         public async ValueTask DisposeAsync()
         {
-
             await _connection.DisposeAsync();
 
             _file.Dispose();
-
         }
 
         internal async Task<long> ScalarAsync(string sql, params (string Name, object? Value)[] parameters)
         {
-
             await using SqliteCommand command = _connection.CreateCommand();
 
             command.CommandText = sql;
 
             foreach ((string name, object? value) in parameters)
             {
-
                 _ = command.Parameters.AddWithValue(name, value ?? DBNull.Value);
-
             }
 
             return Convert.ToInt64(
                 await command.ExecuteScalarAsync(CancellationToken.None),
                 CultureInfo.InvariantCulture);
-
         }
-
     }
-
 }

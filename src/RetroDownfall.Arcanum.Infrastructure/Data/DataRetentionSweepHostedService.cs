@@ -16,7 +16,7 @@ using RetroDownfall.Arcanum.Core.Primitives;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Data;
 
-[ExcludeFromCodeCoverage]
+[ExcludeFromCodeCoverage] // Reason: BackgroundService interval loop; RunOnceAsync is covered by DataRetentionSweepHostedServiceTests.
 internal sealed class DataRetentionSweepHostedService(
     IServiceScopeFactory scopeFactory,
     IDataRetentionPolicyStore policyStore,

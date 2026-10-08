@@ -20,18 +20,15 @@ namespace RetroDownfall.Arcanum.Core.Primitives;
 /// </remarks>
 public static class EmbeddingBlobCodec
 {
-
     public static byte[] Encode(ReadOnlySpan<float> vector) =>
         MemoryMarshal.AsBytes(vector).ToArray();
 
     public static float[] Decode(byte[] bytes)
     {
-
         if (bytes.Length % sizeof(float) != 0)
         {
             throw new InvalidOperationException(
                 $"Embedding blob length {bytes.Length} is not a multiple of {sizeof(float)} bytes.");
-
         }
 
         float[] result = new float[bytes.Length / sizeof(float)];
@@ -39,7 +36,6 @@ public static class EmbeddingBlobCodec
         MemoryMarshal.Cast<byte, float>(bytes).CopyTo(result);
 
         return result;
-
     }
 
     /// <summary>
@@ -51,16 +47,13 @@ public static class EmbeddingBlobCodec
     /// </summary>
     public static ReadOnlySpan<float> AsVector(ReadOnlySpan<byte> bytes)
     {
-
         if (bytes.Length % sizeof(float) != 0)
         {
             throw new InvalidOperationException(
                 $"Embedding blob length {bytes.Length} is not a multiple of {sizeof(float)} bytes.");
-
         }
 
         return MemoryMarshal.Cast<byte, float>(bytes);
-
     }
 
     /// <summary>
@@ -71,7 +64,6 @@ public static class EmbeddingBlobCodec
     /// </summary>
     public static double NormSquared(ReadOnlySpan<float> vector)
     {
-
         double norm = 0;
 
         int simdWidth = Vector<float>.Count;
@@ -80,27 +72,20 @@ public static class EmbeddingBlobCodec
 
         if (vector.Length >= simdWidth)
         {
-
             for (; i <= vector.Length - simdWidth; i += simdWidth)
             {
-
                 Vector<float> v = new(vector.Slice(i, simdWidth));
 
                 norm += Vector.Dot(v, v);
-
             }
-
         }
 
         for (; i < vector.Length; i++)
         {
-
             norm += (double)vector[i] * vector[i];
-
         }
 
         return norm;
-
     }
 
     /// <summary>
@@ -121,15 +106,12 @@ public static class EmbeddingBlobCodec
     /// </summary>
     public static float CosineSimilarity(ReadOnlySpan<float> a, ReadOnlySpan<float> b)
     {
-
         if (a.Length != b.Length || a.Length == 0)
         {
             return 0f;
-
         }
 
         return CosineSimilarity(a, NormSquared(a), b);
-
     }
 
     /// <summary>
@@ -139,13 +121,28 @@ public static class EmbeddingBlobCodec
     /// its norm per row spends a third of the vector math re-deriving a constant; pass
     /// <see cref="NormSquared"/> of the query once instead. Results are bit-identical either way.
     /// </summary>
-    public static float CosineSimilarity(ReadOnlySpan<float> a, double normA, ReadOnlySpan<float> b)
+    public static float CosineSimilarity(ReadOnlySpan<float> a, double normA, ReadOnlySpan<float> b) =>
+        TryCosineSimilarity(a, normA, b, out float similarity) ? similarity : 0f;
+
+    /// <summary>
+    /// <see cref="CosineSimilarity(ReadOnlySpan{float}, double, ReadOnlySpan{float})"/> that says whether
+    /// there was a similarity to report. <c>false</c> (with <paramref name="similarity"/> <c>0</c>) means
+    /// the pair carries no signal: the vectors differ in length or are empty, either has a zero norm, or
+    /// the result is not finite. A scan that must tell a row it could not compare from one that really is
+    /// orthogonal to the query (similarity <c>0</c>) uses this; the other overloads fold both into
+    /// <c>0</c>. Results are bit-identical to those overloads whenever this returns <c>true</c>.
+    /// </summary>
+    public static bool TryCosineSimilarity(
+        ReadOnlySpan<float> a,
+        double normA,
+        ReadOnlySpan<float> b,
+        out float similarity)
     {
+        similarity = 0f;
 
         if (a.Length != b.Length || a.Length == 0)
         {
-            return 0f;
-
+            return false;
         }
 
         double dot = 0;
@@ -158,10 +155,8 @@ public static class EmbeddingBlobCodec
 
         if (a.Length >= simdWidth)
         {
-
             for (; i <= a.Length - simdWidth; i += simdWidth)
             {
-
                 Vector<float> va = new(a.Slice(i, simdWidth));
 
                 Vector<float> vb = new(b.Slice(i, simdWidth));
@@ -169,27 +164,22 @@ public static class EmbeddingBlobCodec
                 dot += Vector.Dot(va, vb);
 
                 normB += Vector.Dot(vb, vb);
-
             }
-
         }
 
         for (; i < a.Length; i++)
         {
-
             dot += (double)a[i] * b[i];
 
             normB += (double)b[i] * b[i];
-
         }
 
         if (normA <= 0 || normB <= 0)
         {
-            return 0f;
-
+            return false;
         }
 
-        float similarity = (float)(dot / (Math.Sqrt(normA) * Math.Sqrt(normB)));
+        float computed = (float)(dot / (Math.Sqrt(normA) * Math.Sqrt(normB)));
 
         // A poisoned provider response (a NaN/Infinity float slipping into an otherwise
         // finite-looking vector) can still yield a non-finite result even with both norms positive.
@@ -198,8 +188,13 @@ public static class EmbeddingBlobCodec
         // corruption), and sort order among NaN values is undefined, so callers that sort by
         // similarity (SemanticSpellRouter, Divination) could rank results unpredictably. Treating
         // it as "no signal" (0) is the same safe default already used for mismatched/zero vectors.
-        return float.IsFinite(similarity) ? similarity : 0f;
+        if (!float.IsFinite(computed))
+        {
+            return false;
+        }
 
+        similarity = computed;
+
+        return true;
     }
-
 }

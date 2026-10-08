@@ -8,12 +8,9 @@ namespace RetroDownfall.Arcanum.Cli.Infrastructure;
 
 internal static partial class CliCommandTree
 {
-
     private static Command BuildAttachment(IServiceProvider serviceProvider)
     {
-
-        AttachmentCommands handler = serviceProvider
-            .GetRequiredService<AttachmentCommands>();
+        DeferredHandler<AttachmentCommands> handler = new(serviceProvider);
 
         Command attachment = new(
             "attachment",
@@ -25,11 +22,9 @@ internal static partial class CliCommandTree
 
         Argument<string?> listIdentifier = new("session")
         {
-
             Arity = ArgumentArity.ZeroOrOne,
 
             Description = "Optional session GUID, title, or unique title prefix.",
-
         };
 
         Option<string?> listSession = SessionOption();
@@ -39,7 +34,7 @@ internal static partial class CliCommandTree
         list.Add(listSession);
 
         list.SetAction(async (ParseResult parseResult, CancellationToken cancellationToken) =>
-            await handler
+            await handler.Value
                 .List(
                     ActiveSession(
                         serviceProvider,
@@ -56,23 +51,17 @@ internal static partial class CliCommandTree
 
         Argument<string> addPath = new("path")
         {
-
             Description = "Local path to snapshot, or '-' for stdin.",
-
         };
 
         Option<string?> addMime = new("--mime")
         {
-
             Description = "Optional MIME type hint; the server remains authoritative.",
-
         };
 
         Option<string?> addName = new("--name")
         {
-
             Description = "Filename metadata, especially useful with stdin.",
-
         };
 
         Option<string?> addSession = SessionOption();
@@ -86,7 +75,7 @@ internal static partial class CliCommandTree
         add.Add(addSession);
 
         add.SetAction(async (ParseResult parseResult, CancellationToken cancellationToken) =>
-            await handler
+            await handler.Value
                 .Add(
                     parseResult.GetValue(addPath)!,
                     parseResult.GetValue(addMime),
@@ -105,23 +94,17 @@ internal static partial class CliCommandTree
 
         Argument<string> referencePath = new("workspace-path")
         {
-
             Description = "Workspace-relative path interpreted only by the server host.",
-
         };
 
         Option<string?> referenceWorkspace = new("--workspace")
         {
-
             Description = "Registered workspace ID, name, or saved workspace path.",
-
         };
 
         Option<string?> referenceName = new("--name")
         {
-
             Description = "Optional logical attachment key.",
-
         };
 
         Option<string?> referenceSession = SessionOption();
@@ -135,7 +118,7 @@ internal static partial class CliCommandTree
         reference.Add(referenceSession);
 
         reference.SetAction(async (ParseResult parseResult, CancellationToken cancellationToken) =>
-            await handler
+            await handler.Value
                 .Reference(
                     parseResult.GetValue(referencePath)!,
                     ActiveWorkspace(
@@ -158,9 +141,7 @@ internal static partial class CliCommandTree
 
         Option<bool> showPrivacy = new("--privacy")
         {
-
             Description = "Explain snapshot, reference, export, and terminal-byte privacy semantics.",
-
         };
 
         Option<string?> showSession = SessionOption();
@@ -172,7 +153,7 @@ internal static partial class CliCommandTree
         show.Add(showSession);
 
         show.SetAction(async (ParseResult parseResult, CancellationToken cancellationToken) =>
-            await handler
+            await handler.Value
                 .Show(
                     parseResult.GetValue(showIdentifier),
                     parseResult.GetValue(showPrivacy),
@@ -197,7 +178,7 @@ internal static partial class CliCommandTree
         versions.Add(versionsSession);
 
         versions.SetAction(async (ParseResult parseResult, CancellationToken cancellationToken) =>
-            await handler
+            await handler.Value
                 .Versions(
                     parseResult.GetValue(versionsIdentifier),
                     ActiveSession(
@@ -213,21 +194,21 @@ internal static partial class CliCommandTree
             serviceProvider,
             "refresh",
             "Ask the server to refresh a live reference through the shared refresh service.",
-            handler.Refresh);
+            (first, second, cancellationToken) => handler.Value.Refresh(first, second, cancellationToken));
 
         AddAttachmentMutation(
             attachment,
             serviceProvider,
             "pin",
             "Pin an attachment version into durable session context.",
-            handler.Pin);
+            (first, second, cancellationToken) => handler.Value.Pin(first, second, cancellationToken));
 
         AddAttachmentMutation(
             attachment,
             serviceProvider,
             "unpin",
             "Remove an attachment version from durable session context.",
-            handler.Unpin);
+            (first, second, cancellationToken) => handler.Value.Unpin(first, second, cancellationToken));
 
         Command export = new(
             "export",
@@ -237,9 +218,7 @@ internal static partial class CliCommandTree
 
         Option<string?> exportOutput = new("--output", "-o")
         {
-
             Description = "Destination file. Attachment bytes are never written to stdout.",
-
         };
 
         Option<string?> exportSession = SessionOption();
@@ -251,7 +230,7 @@ internal static partial class CliCommandTree
         export.Add(exportSession);
 
         export.SetAction(async (ParseResult parseResult, CancellationToken cancellationToken) =>
-            await handler
+            await handler.Value
                 .Export(
                     parseResult.GetValue(exportIdentifier),
                     parseResult.GetValue(exportOutput),
@@ -268,10 +247,9 @@ internal static partial class CliCommandTree
             serviceProvider,
             "reveal",
             "Reveal the encrypted stored snapshot artifact in the operating system file manager.",
-            handler.Reveal);
+            (first, second, cancellationToken) => handler.Value.Reveal(first, second, cancellationToken));
 
         return attachment;
-
     }
 
     private static void AddAttachmentMutation(
@@ -281,7 +259,6 @@ internal static partial class CliCommandTree
         string description,
         Func<string?, string?, CancellationToken, Task<int>> action)
     {
-
         Command command = new(name, description);
 
         Argument<string?> identifier = AttachmentArgument();
@@ -302,7 +279,6 @@ internal static partial class CliCommandTree
                 .ConfigureAwait(false));
 
         parent.Add(command);
-
     }
 
     private static Argument<string?> AttachmentArgument() =>
@@ -313,9 +289,6 @@ internal static partial class CliCommandTree
     private static Option<string?> SessionOption() =>
         new("--session")
         {
-
             Description = "Session GUID, title, or unique title prefix.",
-
         };
-
 }

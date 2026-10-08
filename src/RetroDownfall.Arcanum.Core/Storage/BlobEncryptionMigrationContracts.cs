@@ -27,6 +27,16 @@ public enum BlobEncryptionVerificationIssue
     CorruptEnvelope,
     PlaintextLengthMismatch,
     PlaintextHashMismatch,
+
+    /// <summary>The blob could not be read: an I/O or access-denied failure on this one file.</summary>
+    IoError,
+
+    /// <summary>
+    /// The envelope authenticates and matches its metadata, but predates the current format: it binds no
+    /// final-chunk marker or total length, so a chunk-boundary truncation of it would still authenticate.
+    /// <c>migrate</c> re-encrypts it to the current version.
+    /// </summary>
+    OutdatedEnvelopeVersion,
 }
 
 public sealed record BlobEncryptionVerificationResult(

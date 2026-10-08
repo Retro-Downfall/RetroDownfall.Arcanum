@@ -5,7 +5,6 @@ namespace RetroDownfall.Arcanum.Core.Configuration;
 /// </summary>
 public static class ArcanumSettingClamps
 {
-
     public static int HostPort(int value) => Math.Clamp(value, 1, 65_535);
 
     public static int HostHttpsPort(int value) => Math.Clamp(value, 1, 65_535);
@@ -36,7 +35,7 @@ public static class ArcanumSettingClamps
 
     public static long SpellMaxFileSizeBytes(long value) => Math.Clamp(value, 1024L, 1024L * 1024L);
 
-    public static long EffectiveSpellMaxFileSizeBytes(SpellSettings spells, WorkspaceSettings workspaces)
+    public static long EffectiveSpellMaxFileSizeBytes(SpellSettings spells)
     {
         long spell = SpellMaxFileSizeBytes(spells.MaxFileSizeBytes);
 
@@ -46,7 +45,7 @@ public static class ArcanumSettingClamps
         return Math.Min(spell, workspace);
     }
 
-    public static long EffectiveCodexMaxSizeBytes(CodexSettings codex, WorkspaceSettings workspaces)
+    public static long EffectiveCodexMaxSizeBytes(CodexSettings codex)
     {
         long codexMax = CodexMaxSizeBytes(codex.MaxSizeBytes);
 
@@ -56,11 +55,11 @@ public static class ArcanumSettingClamps
         return Math.Min(codexMax, workspace);
     }
 
-    public static long EffectiveSpellMaxFileSizeBytes(ArcanumSettings settings) =>
-        EffectiveSpellMaxFileSizeBytes(ArcanumRuntimeDefaults.Spells, settings.Workspaces);
+    public static long EffectiveSpellMaxFileSizeBytes() =>
+        EffectiveSpellMaxFileSizeBytes(ArcanumRuntimeDefaults.Spells);
 
-    public static long EffectiveCodexMaxSizeBytes(ArcanumSettings settings) =>
-        EffectiveCodexMaxSizeBytes(ArcanumRuntimeDefaults.Codex, settings.Workspaces);
+    public static long EffectiveCodexMaxSizeBytes() =>
+        EffectiveCodexMaxSizeBytes(ArcanumRuntimeDefaults.Codex);
 
     public static int MaxApiKeyHeaderUtf16Chars(int value) => Math.Clamp(value, 128, 8192);
 
@@ -197,7 +196,6 @@ public static class ArcanumSettingClamps
 
     public static long EffectiveInProcessToolOutputCapBytes(long toolOutputCapBytes, int maxJsonRpcLineBytes)
     {
-
         long configuredCap = ToolOutputCapBytes(toolOutputCapBytes);
 
         long lineBudget = Math.Max(0L, maxJsonRpcLineBytes - JsonRpcEnvelopeUtf8MarginBytes);
@@ -205,7 +203,6 @@ public static class ArcanumSettingClamps
         long escapedBudget = lineBudget / JsonRpcMaxEscapingFactor;
 
         return Math.Min(configuredCap, escapedBudget);
-
     }
 
     public static int DaemonMaxConcurrentJobs(int value) => Math.Clamp(value, 1, 1_024);
@@ -449,5 +446,4 @@ public static class ArcanumSettingClamps
     /// accepted by binding — callers that still hold a legacy string should map explicitly.
     /// </summary>
     public static GuardrailsStreamingMode GuardrailsStreamingMode(GuardrailsStreamingMode value) => value;
-
 }

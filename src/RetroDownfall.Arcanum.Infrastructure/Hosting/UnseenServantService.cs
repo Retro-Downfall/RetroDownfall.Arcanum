@@ -55,6 +55,17 @@ internal sealed class UnseenServantService(
 
     private DateTimeOffset _lastIdempotencyCleanupUtc = DateTimeOffset.MinValue;
 
+    /// <summary>
+    /// Code-owned upper bound for saving a watermark after a job returned; see <see cref="PersistWatermarkAsync"/>.
+    /// </summary>
+    internal static readonly TimeSpan DefaultWatermarkSaveTimeout = TimeSpan.FromSeconds(5);
+
+    /// <summary>
+    /// The bound in force. It is a property only so a test can shorten it to prove the save is abandoned at the
+    /// bound rather than waiting for a store that never answers; production leaves it at the default.
+    /// </summary>
+    internal TimeSpan WatermarkSaveTimeout { get; set; } = DefaultWatermarkSaveTimeout;
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         await Task.Yield();
@@ -439,7 +450,7 @@ internal sealed class UnseenServantService(
             jobTracker.RecordCompletion(job, completed,
                 completed ? "Success" : $"{summary.Status}: {summary.ErrorMessage}");
 
-            await PersistWatermarkAsync(job, key, stoppingToken).ConfigureAwait(false);
+            await PersistWatermarkAsync(job, key).ConfigureAwait(false);
         }
         else if (result.Error.Code != "Daemon.Cancelled")
         {
@@ -453,19 +464,22 @@ internal sealed class UnseenServantService(
         return true;
     }
 
-    private async Task PersistWatermarkAsync(UnseenServantJob job, string key, CancellationToken stoppingToken)
+    /// <summary>
+    /// Records the run once the runner has returned, so it is bookkeeping for external effects that already
+    /// happened. It runs on its own short bounded token, not the host's: a shutdown that lands right after
+    /// the job completed must not discard the watermark and make the next process repeat the whole run.
+    /// </summary>
+    private async Task PersistWatermarkAsync(UnseenServantJob job, string key)
     {
         try
         {
+            using CancellationTokenSource bounded = new(WatermarkSaveTimeout);
+
             await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
 
             IUnseenServantWatermarkStore store = scope.ServiceProvider.GetRequiredService<IUnseenServantWatermarkStore>();
 
-            await store.SaveLastRunAsync(key, timeProvider.GetUtcNow(), pacer.GetEffectiveInterval(job), stoppingToken).ConfigureAwait(false);
-        }
-        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
-        {
-            throw;
+            await store.SaveLastRunAsync(key, timeProvider.GetUtcNow(), pacer.GetEffectiveInterval(job), bounded.Token).ConfigureAwait(false);
         }
         catch (Exception ex)
         {

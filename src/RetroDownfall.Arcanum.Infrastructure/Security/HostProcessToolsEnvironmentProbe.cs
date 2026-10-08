@@ -17,7 +17,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.Security;
 internal sealed class HostProcessToolsEnvironmentProbe(IOptions<ArcanumSettings>? settings)
     : IHostProcessToolsEnvironmentProbe
 {
-
     /// <summary>
     /// The configured edition, or the hardened default when this container never bound options.
     /// </summary>
@@ -32,5 +31,4 @@ internal sealed class HostProcessToolsEnvironmentProbe(IOptions<ArcanumSettings>
             ArcanumEnvironment.ResolveEdition(settings?.Value.Edition ?? ArcanumEdition.Local),
             ArcanumEnvironment.IsAllowHostProcessToolsEnabled(),
             CovenantProcessResidence.HasOpened);
-
 }

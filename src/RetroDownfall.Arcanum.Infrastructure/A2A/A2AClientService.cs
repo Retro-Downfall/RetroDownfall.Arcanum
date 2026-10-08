@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Text.Json;
 
 using A2A;
 
@@ -36,6 +37,26 @@ public sealed class A2AClientService : IA2AClientService
     /// or caller/host cancellation (issue #55).
     /// </summary>
     public static readonly TimeSpan OutboundConnectTimeout = TimeSpan.FromSeconds(30);
+
+    /// <summary>
+    /// Bound on discovering a remote agent: resolving its Agent Card and validating the interfaces it
+    /// advertises. It covers discovery only — never the Sending itself, which has no deadline (issue #55)
+    /// — so a peer that stalls or drip-feeds its card cannot pin a <c>MaxConcurrentA2ATasks</c> slot.
+    /// </summary>
+    public static readonly TimeSpan DefaultDiscoveryTimeout = TimeSpan.FromSeconds(30);
+
+    /// <summary>
+    /// Largest Agent Card body this client will buffer. A card is a few kilobytes of metadata, and the
+    /// peer is chosen by a model-supplied URL, so the cap is generous rather than tight.
+    /// </summary>
+    internal const long MaxAgentCardBytes = 1024 * 1024;
+
+    /// <summary>
+    /// Largest JSON-RPC response body (<c>SendMessage</c>, <c>GetTask</c>, push registration) this client
+    /// will buffer. A settled task carries the remote agent's whole answer, so this is far above a card.
+    /// Streaming (<c>tasks/subscribe</c>) is not buffered and is not bounded by it.
+    /// </summary>
+    internal const long MaxRpcResponseBytes = 16 * 1024 * 1024;
 
     /// <summary>Default header the peer credential is sent in — Arcanum's own API-key header.</summary>
     public const string DefaultOutboundCredentialHeader = "X-Arcanum-Key";
@@ -80,6 +101,9 @@ public sealed class A2AClientService : IA2AClientService
     /// the blocking path rather than waiting on a wake-up nothing can deliver (issue #67).
     /// </summary>
     private readonly A2ASendingCallbackRegistry? _callbacks;
+
+    /// <summary>The discovery deadline this instance applies; settable so a test need not wait out the default.</summary>
+    internal TimeSpan DiscoveryTimeout { get; init; } = DefaultDiscoveryTimeout;
 
     public A2AClientService(
         IHttpClientFactory httpClientFactory,
@@ -208,8 +232,10 @@ public sealed class A2AClientService : IA2AClientService
                         return Result<A2ADispatchResult>.Success(
                             new A2ADispatchResult(taskId.Trim(), "canceled"));
                     }
-                    catch (Exception ex) when (ex is HttpRequestException or A2AException)
+                    catch (Exception ex) when (ex is HttpRequestException or A2AException or JsonException)
                     {
+                        // The answer is remote-authored: one this client cannot read is a cancel that failed,
+                        // not an exception out of the cancel verb.
                         return Result<A2ADispatchResult>.Failure(new Error(
                             ErrorCodes.Sending.AgentUnreachable,
                             $"Could not cancel remote task '{taskId}': {ex.Message}"));
@@ -274,8 +300,31 @@ public sealed class A2AClientService : IA2AClientService
 
         try
         {
-            Result<ConnectedPeer> peer = await ConnectAsync(trimmedUrl, allowlist, cancellationToken)
-                .ConfigureAwait(false);
+            Result<ConnectedPeer> peer;
+
+            // Discovery — and only discovery — is bounded: the peer is a model-named host, and a card that
+            // stalls or drips would otherwise hold this slot until the turn or host is cancelled. The
+            // deadline's token never reaches the Sending itself, which has no deadline (issue #55).
+            using (CancellationTokenSource discovery = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
+            {
+                discovery.CancelAfter(DiscoveryTimeout);
+
+                try
+                {
+                    peer = await ConnectAsync(trimmedUrl, allowlist, discovery.Token).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+                {
+                    _logger.LogWarning(
+                        "dispatch_sending: discovery of the remote agent at {AgentUrl} did not finish within {Seconds:0.###} s.",
+                        trimmedUrl,
+                        DiscoveryTimeout.TotalSeconds);
+
+                    return Result<A2ADispatchResult>.Failure(new Error(
+                        ErrorCodes.Sending.AgentUnreachable,
+                        $"The remote agent did not finish discovery within {DiscoveryTimeout.TotalSeconds:0.###} s."));
+                }
+            }
 
             if (peer.IsFailure)
             {
@@ -334,8 +383,10 @@ public sealed class A2AClientService : IA2AClientService
         {
             card = await ResolveCardAsync(discoveryUrl, allowlist, cancellationToken).ConfigureAwait(false);
         }
-        catch (Exception ex) when (ex is HttpRequestException or A2AException or InvalidOperationException)
+        catch (Exception ex) when (ex is HttpRequestException or A2AException or InvalidOperationException or JsonException or FormatException)
         {
+            // A card is remote-authored: a body that is not JSON, or that carries a malformed value, is an
+            // invalid card, not an unhandled exception out of the tool call.
             _logger.LogWarning(ex, "dispatch_sending: failed to resolve Agent Card at {AgentUrl}.", discoveryUrl);
 
             return Result<ConnectedPeer>.Failure(
@@ -374,7 +425,10 @@ public sealed class A2AClientService : IA2AClientService
             }
         }
 
-        HttpClient httpClient = CreateOutboundClient(CredentialTargetForCard(card, discoveryUrl, allowlist), allowlist);
+        HttpClient httpClient = CreateOutboundClient(
+            CredentialTargetForCard(card, discoveryUrl, allowlist),
+            allowlist,
+            MaxRpcResponseBytes);
 
         IA2AClient client;
 
@@ -544,7 +598,7 @@ public sealed class A2AClientService : IA2AClientService
         {
             response = await client.SendMessageAsync(sendRequest, cancellationToken).ConfigureAwait(false);
         }
-        catch (Exception ex) when (ex is HttpRequestException or A2AException)
+        catch (Exception ex) when (ex is HttpRequestException or A2AException or JsonException)
         {
             _logger.LogWarning(ex, "dispatch_sending: failed to send message to the remote agent.");
 
@@ -564,8 +618,33 @@ public sealed class A2AClientService : IA2AClientService
                 DateTimeOffset.UtcNow));
         }
 
-        AgentTask task = response.Task
-            ?? throw new InvalidOperationException("A2A SendMessageResponse carried neither a Message nor a Task payload.");
+        // Remote-authored: a response that names no task, or a task with no status, is a malformed peer and
+        // not an exception out of the tool call.
+        if (response.Task is not { Status: not null } accepted)
+        {
+            _logger.LogWarning("dispatch_sending: the remote agent accepted the message with no usable task payload.");
+
+            // A fresh dispatch has recorded nothing durably yet and there is no usable snapshot to follow, so
+            // a task id that did arrive names a task the remote may be running: it is cancelled rather than
+            // abandoned. A continuation is the opposite case. It answers a task the Mage's parked row still
+            // points at, and one malformed reply must not destroy it — the poll path treats a reply it cannot
+            // read the same way, leaving the task and its row for reconciliation.
+            bool continuation = !string.IsNullOrWhiteSpace(message.TaskId);
+
+            if (!continuation && response.Task is { Id.Length: > 0 } unusable)
+            {
+                await TryCancelRemoteTaskAsync(client, unusable.Id).ConfigureAwait(false);
+            }
+
+            return Result<A2ADispatchResult>.Failure(new Error(
+                ErrorCodes.Sending.AgentUnreachable,
+                continuation
+                    ? "The remote agent answered with neither a Message nor a usable Task payload. "
+                      + $"The remote task '{message.TaskId}' may still be waiting for the answer; it was not cancelled."
+                    : "The remote agent answered with neither a Message nor a usable Task payload."));
+        }
+
+        AgentTask task = accepted;
 
         // One filter across both the subscription and the poll fallback: a stream that drops after
         // reporting `working` must not make the poll loop report `working` again (issue #61).
@@ -592,17 +671,25 @@ public sealed class A2AClientService : IA2AClientService
         // Callback mode asks the peer to report back, then stops occupying a slot while it works. A peer
         // that cannot (or an instance that has the surface off) simply keeps the slot and waits, which is
         // the historical behavior rather than a failure (issue #67).
-        A2ACallbackSubscription? callback = mode == A2ADispatchMode.Callback
-            ? await TryRegisterCallbackAsync(client, card, task.Id, ledgerEntry, cancellationToken).ConfigureAwait(false)
-            : null;
-
-        if (callback is not null)
-        {
-            slot.Release();
-        }
+        A2ACallbackSubscription? callback = null;
 
         try
         {
+            // Inside the try on purpose: the remote task exists and its ledger row is already being
+            // renewed, so a cancel or a malformed answer during the registration round-trip needs the same
+            // peer-cancel and ledger handling as one during the wait. Outside it, that cancel skipped both
+            // and left the peer running and the lease renewing for the host's lifetime.
+            if (mode == A2ADispatchMode.Callback)
+            {
+                callback = await TryRegisterCallbackAsync(client, card, task.Id, ledgerEntry, cancellationToken)
+                    .ConfigureAwait(false);
+
+                if (callback is not null)
+                {
+                    slot.Release();
+                }
+            }
+
             task = callback is null
                 ? await AwaitSettledAsync(client, card, task, discoveryUrl, progress, transitions, cancellationToken)
                     .ConfigureAwait(false)
@@ -629,6 +716,22 @@ public sealed class A2AClientService : IA2AClientService
             return Result<A2ADispatchResult>.Failure(new Error(
                 ErrorCodes.Sending.AgentUnreachable,
                 $"Lost contact with the remote agent while awaiting task '{task.Id}': {ex.Message}. "
+                + "The remote task may still be running; it was not cancelled."));
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // Anything else after the remote accepted the task is a peer that answered with something this
+            // client cannot read (a body that is not JSON, a task with no status, an I/O fault mid-body).
+            // Treated like lost contact: the row stays open for reconciliation to cancel, but this process
+            // stops renewing it — left renewing, nothing would ever cancel the still-running remote task or
+            // release its budget reservation.
+            StopRenewing(ledgerEntry);
+
+            _logger.LogWarning(ex, "dispatch_sending: the remote agent answered task {TaskId} with an unreadable response.", task.Id);
+
+            return Result<A2ADispatchResult>.Failure(new Error(
+                ErrorCodes.Sending.AgentUnreachable,
+                $"The remote agent sent an unreadable response while awaiting task '{task.Id}': {ex.Message}. "
                 + "The remote task may still be running; it was not cancelled."));
         }
         finally
@@ -788,8 +891,11 @@ public sealed class A2AClientService : IA2AClientService
                     cancellationToken)
                 .ConfigureAwait(false);
         }
-        catch (Exception ex) when (ex is HttpRequestException or A2AException)
+        catch (Exception ex) when (ex is HttpRequestException or A2AException or JsonException)
         {
+            // An answer this client cannot read is a peer that cannot register a callback, the same as an
+            // HTTP error: it must not reach the catch-all that follows an accepted task, which ends the whole
+            // Sending as lost contact and leaves the remote task running.
             _logger.LogInformation(
                 ex,
                 "dispatch_sending: the peer would not register a callback for remote task {TaskId}; "
@@ -1167,8 +1273,10 @@ public sealed class A2AClientService : IA2AClientService
         {
             throw;
         }
-        catch (Exception ex) when (ex is HttpRequestException or A2AException or IOException or InvalidOperationException)
+        catch (Exception ex) when (ex is HttpRequestException or A2AException or IOException or InvalidOperationException or JsonException)
         {
+            // A frame the peer sent that is not JSON is the same failure as a stream it refused or dropped:
+            // the Sending is still running on the far side, so it degrades to the poll.
             _logger.LogInformation(
                 ex,
                 "dispatch_sending: could not follow remote task {TaskId} by subscription; falling back to polling.",
@@ -1419,7 +1527,7 @@ public sealed class A2AClientService : IA2AClientService
 
         // agent_url is model-supplied on dispatch_sending, so discovery is credentialed only when the
         // allowlist vouches for it. CreateOutboundClient owns that decision for every caller.
-        HttpClient httpClient = CreateOutboundClient(discoveryUrl, allowlist);
+        HttpClient httpClient = CreateOutboundClient(discoveryUrl, allowlist, MaxAgentCardBytes);
 
         Exception? lastFailure = null;
 
@@ -1427,21 +1535,68 @@ public sealed class A2AClientService : IA2AClientService
         {
             try
             {
-                A2ACardResolver resolver = new(new Uri(origin), httpClient, candidate);
-
-                AgentCard card = await resolver.GetAgentCardAsync(cancellationToken).ConfigureAwait(false);
+                // origin + candidate rather than a relative-URI resolve: a path that begins with "//" would
+                // otherwise be read as a network-path reference and name a different host.
+                AgentCard card = await FetchAgentCardAsync(httpClient, new Uri(origin + candidate), cancellationToken)
+                    .ConfigureAwait(false);
 
                 CacheCard(discoveryUrl, card, now);
 
                 return card;
             }
-            catch (Exception ex) when (ex is HttpRequestException or A2AException)
+            catch (Exception ex) when (ex is HttpRequestException or A2AException or JsonException or FormatException)
             {
                 lastFailure = ex;
             }
         }
 
         throw lastFailure ?? new A2AException("The remote agent did not serve an Agent Card.");
+    }
+
+    /// <summary>
+    /// Fetches one Agent Card with the body read under <see cref="MaxAgentCardBytes"/>, so a peer cannot
+    /// make this client buffer an unbounded response on its way to a JSON parse.
+    /// </summary>
+    /// <remarks>
+    /// The SDK's card resolver reads the response as a stream with no limit, which is why the cap lives
+    /// here rather than on <see cref="HttpClient.MaxResponseContentBufferSize"/> alone.
+    /// </remarks>
+    private static async Task<AgentCard> FetchAgentCardAsync(HttpClient httpClient, Uri cardUri, CancellationToken cancellationToken)
+    {
+        using HttpResponseMessage response = await httpClient
+            .GetAsync(cardUri, HttpCompletionOption.ResponseHeadersRead, cancellationToken)
+            .ConfigureAwait(false);
+
+        response.EnsureSuccessStatusCode();
+
+        if (response.Content.Headers.ContentLength is { } declared && declared > MaxAgentCardBytes)
+        {
+            throw new A2AException($"The remote Agent Card is larger than the {MaxAgentCardBytes}-byte limit.");
+        }
+
+        await using Stream body = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
+
+        using MemoryStream buffer = new();
+
+        byte[] chunk = new byte[16 * 1024];
+
+        int read;
+
+        while ((read = await body.ReadAsync(chunk, cancellationToken).ConfigureAwait(false)) > 0)
+        {
+            if (buffer.Length + read > MaxAgentCardBytes)
+            {
+                throw new A2AException($"The remote Agent Card is larger than the {MaxAgentCardBytes}-byte limit.");
+            }
+
+            buffer.Write(chunk, 0, read);
+        }
+
+        return JsonSerializer.Deserialize(
+                buffer.GetBuffer().AsSpan(0, (int)buffer.Length),
+                (System.Text.Json.Serialization.Metadata.JsonTypeInfo<AgentCard>)
+                    A2AJsonUtilities.DefaultOptions.GetTypeInfo(typeof(AgentCard)))
+            ?? throw new A2AException("The remote agent served an empty Agent Card.");
     }
 
     /// <summary>
@@ -1494,10 +1649,18 @@ public sealed class A2AClientService : IA2AClientService
     /// peer Arcanum API key — an operator-equivalent credential (&#167;11.13) — during card discovery, before
     /// any card-interface scoping runs. When nothing vouches for the target the Sending still goes out, just
     /// unauthenticated.
+    /// <para>
+    /// <paramref name="maxResponseBytes"/> caps every buffered response this client reads. The named
+    /// client is registered with the generous RPC cap, and a caller that needs less (the Agent Card)
+    /// tightens it here, so the bound holds for any <see cref="IHttpClientFactory"/> rather than only the
+    /// production registration.
+    /// </para>
     /// </remarks>
-    private HttpClient CreateOutboundClient(string? credentialTarget, string[] allowlist)
+    private HttpClient CreateOutboundClient(string? credentialTarget, string[] allowlist, long maxResponseBytes)
     {
         HttpClient httpClient = _httpClientFactory.CreateClient(OutboundHttpClientName);
+
+        httpClient.MaxResponseContentBufferSize = maxResponseBytes;
 
         ConclaveA2ASettings a2a = _options.CurrentValue.ResolveA2A();
 

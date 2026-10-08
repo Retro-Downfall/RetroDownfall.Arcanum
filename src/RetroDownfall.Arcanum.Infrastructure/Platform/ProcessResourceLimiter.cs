@@ -19,7 +19,17 @@ namespace RetroDownfall.Arcanum.Infrastructure.Platform;
 /// the invocation through a <c>/bin/sh -c '...; exec "$@"'</c> prelude that calls the <c>ulimit</c>
 /// shell builtin (which itself calls <c>setrlimit</c>) inside the child, before it execs the real
 /// target. Every original argument is passed as a separate <c>argv</c> entry so the shell sees them
-/// positionally (<c>$1..$N</c>) with no word-splitting, globbing, or injection risk.
+/// positionally (<c>$1..$N</c>) with no word-splitting, globbing, or injection risk. The prelude fails
+/// closed: every step is <c>... || exit 126</c>, and a refusal writes the per-run
+/// <see cref="ProcessResourceLimiterResult.PreExecFailureMarker"/> to stderr so the runner reports a
+/// resource-limit apply failure instead of the target's result.
+/// </para>
+/// <para>
+/// Memory uses one effective ceiling everywhere (<see cref="EffectiveMemoryLimitMb"/>). macOS rejects
+/// <c>RLIMIT_AS</c> (<c>ulimit -v</c>) unconditionally, so the macOS prelude never carries it; the
+/// limiter instead returns <see cref="ProcessResourceLimiterResult.MonitoredMemoryLimitBytes"/> and
+/// the runner samples the started tree's physical footprint, killing the tree when it crosses the
+/// ceiling.
 /// </para>
 /// <para>
 /// On Linux, cgroups v2 is preferred for memory enforcement because it triggers an accurate RSS-based
@@ -44,13 +54,12 @@ namespace RetroDownfall.Arcanum.Infrastructure.Platform;
 /// <para>
 /// Known gap: cgroups v2 cgroup membership covers the entire process subtree (grandchildren included),
 /// but the <c>ulimit</c>/setrlimit path only bounds the direct child — a grandchild process spawned by
-/// the tool script is not rlimit-bound by this mechanism. This is an accepted limitation of setrlimit,
-/// not a bug.
+/// the tool script is not rlimit-bound by this mechanism (CPU time and descriptors; the macOS memory
+/// monitor sums the whole tracked tree). This is an accepted limitation of setrlimit, not a bug.
 /// </para>
 /// </remarks>
 public sealed class ProcessResourceLimiter : IProcessResourceLimiter
 {
-
     private const string CgroupRoot = "/sys/fs/cgroup";
 
     private readonly ILogger<ProcessResourceLimiter>? _logger;
@@ -59,95 +68,97 @@ public sealed class ProcessResourceLimiter : IProcessResourceLimiter
 
     public ProcessResourceLimiter(ILogger<ProcessResourceLimiter>? logger = null)
     {
-
         _logger = logger;
-
     }
 
     /// <summary>Test seam for injecting a fake <see cref="IWindowsJobObjectApi"/>.</summary>
     internal ProcessResourceLimiter(ILogger<ProcessResourceLimiter>? logger, IWindowsJobObjectApi windowsJobApi)
     {
-
         _logger = logger;
 
         _windowsJobApi = windowsJobApi;
-
     }
 
     public ProcessResourceLimiterResult Apply(ProcessStartInfo startInfo, ResourceLimits limits)
     {
-
         ArgumentNullException.ThrowIfNull(startInfo);
 
         ArgumentNullException.ThrowIfNull(limits);
 
         if (OperatingSystem.IsWindows())
         {
-
             return ApplyOnWindows(startInfo, limits);
-
         }
 
         if (!HasUnixLimit(limits))
         {
-
             return new ProcessResourceLimiterResult(null, null);
-
         }
 
         if (string.IsNullOrEmpty(startInfo.FileName))
         {
-
             return new ProcessResourceLimiterResult(
                 new ResourceLimitError("execute_command: no target executable was specified for resource-limited execution."),
                 null);
-
         }
 
         if (OperatingSystem.IsLinux())
         {
-
             return ApplyOnLinux(startInfo, limits);
-
         }
 
         if (OperatingSystem.IsMacOS())
         {
-
             return ApplyOnMacOs(startInfo, limits);
-
         }
 
         // Unsupported/unknown OS: fail open with no enforcement rather than blocking every tool
         // invocation on a platform we have not validated setrlimit/cgroups on.
         return new ProcessResourceLimiterResult(null, null);
+    }
 
+    /// <summary>
+    /// The one memory ceiling, in megabytes, every platform enforces for a child: the smaller of the
+    /// configured non-zero values of <see cref="ResourceLimits.MaxMemoryMb"/> and
+    /// <see cref="ResourceLimits.MaxProcessMemoryMb"/>, or 0 (no ceiling) when both are 0. Used by the
+    /// Unix limiter, the Linux cgroup scope, the Windows Job Object, breach attribution and the
+    /// model-facing denial so they can never disagree about which ceiling applied.
+    /// </summary>
+    internal static int EffectiveMemoryLimitMb(ResourceLimits limits)
+    {
+        int invocationMb = Math.Max(0, limits.MaxMemoryMb);
+
+        int processMb = Math.Max(0, limits.MaxProcessMemoryMb);
+
+        if (invocationMb == 0)
+        {
+            return processMb;
+        }
+
+        return processMb == 0
+            ? invocationMb
+            : Math.Min(invocationMb, processMb);
     }
 
     private static bool HasUnixLimit(ResourceLimits limits) =>
         limits.MaxCpuSeconds > 0
-        || limits.MaxMemoryMb > 0
+        || EffectiveMemoryLimitMb(limits) > 0
         || limits.MaxFileDescriptors > 0
         || limits.MaxProcessCount > 0;
 
     private ProcessResourceLimiterResult ApplyOnWindows(ProcessStartInfo startInfo, ResourceLimits limits)
     {
-
         if (!WindowsJobObjectSession.HasJobEnforceableLimits(limits))
         {
-
             // MaxFileDescriptors-only (or all-zero Job-relevant fields): nothing Job Objects can enforce.
             return new ProcessResourceLimiterResult(null, null);
-
         }
 
         if (string.IsNullOrEmpty(startInfo.FileName))
         {
-
             return new ProcessResourceLimiterResult(
                 new ResourceLimitError("execute_command: no target executable was specified for resource-limited execution."),
                 null);
-
         }
 
         IWindowsJobObjectApi api = _windowsJobApi ?? WindowsJobObjectInterop.CreateDefaultApi();
@@ -156,73 +167,73 @@ public sealed class ProcessResourceLimiter : IProcessResourceLimiter
 
         if (error is not null)
         {
-
             return new ProcessResourceLimiterResult(error, null);
-
         }
 
         if (session is null)
         {
-
             return new ProcessResourceLimiterResult(null, null);
-
         }
 
         Func<Process, ResourceLimitError?> assignAfterStart = process => session.Assign(process);
 
         Func<int, Task> cleanup = _ =>
         {
-
             session.Dispose();
 
             return Task.CompletedTask;
-
         };
 
         return new ProcessResourceLimiterResult(null, cleanup, WasOomKilledAsync: null, AssignAfterStart: assignAfterStart);
-
     }
 
     private ProcessResourceLimiterResult ApplyOnMacOs(ProcessStartInfo startInfo, ResourceLimits limits)
     {
-
         if (limits.MaxProcessCount > 0)
         {
-
             _logger?.LogWarning(
                 "macOS cannot safely enforce a per-tree process-count limit through setrlimit; process-group teardown remains enforced.");
-
         }
 
-        string prelude = BuildUlimitPrelude(limits, includeMemory: true);
+        // macOS rejects RLIMIT_AS (`ulimit -v`) every time, so memory never goes through the prelude:
+        // emitting it would make the fail-closed prelude refuse every child. The runner enforces the
+        // effective ceiling instead by sampling the started tree's physical footprint.
+        string marker = CreatePreExecFailureMarker();
 
-        RewriteToShellPrelude(startInfo, prelude);
+        string? prelude = BuildUlimitPrelude(limits, includeMemory: false, cgroupPath: null, marker);
 
-        return new ProcessResourceLimiterResult(null, null);
+        if (prelude is not null)
+        {
+            RewriteToShellPrelude(startInfo, prelude);
+        }
 
+        int memoryMb = EffectiveMemoryLimitMb(limits);
+
+        return new ProcessResourceLimiterResult(
+            null,
+            null,
+            MonitoredMemoryLimitBytes: memoryMb > 0 ? memoryMb * 1024L * 1024L : null,
+            PreExecFailureMarker: prelude is null ? null : marker);
     }
 
     private ProcessResourceLimiterResult ApplyOnLinux(ProcessStartInfo startInfo, ResourceLimits limits)
     {
-
         string? cgroupPath = TryCreateAndConfigureCgroup(limits);
 
         // Memory is handled by cgroups (accurate RSS-based OOM) when available; CPU time and file
         // descriptors always go through the ulimit prelude since cgroups v2 cannot enforce either.
-        string prelude = BuildUlimitPrelude(limits, includeMemory: cgroupPath is null);
+        // When a cgroup is in play the shell joins it (before it execs the real target) by writing
+        // its own pid; cgroups v2 migration is by-process and exec() preserves the pid, so the target
+        // ends up in the cgroup without the .NET side ever learning the pid. A refused join exits
+        // 126 like a refused ulimit, never running the target outside the scope.
+        string marker = CreatePreExecFailureMarker();
 
-        if (cgroupPath is not null)
+        string? prelude = BuildUlimitPrelude(limits, includeMemory: cgroupPath is null, cgroupPath, marker);
+
+        if (prelude is not null)
         {
-
-            // The child (the shell itself, before it execs the real target) joins the cgroup by
-            // writing its own pid. cgroups v2 migration is by-process and exec() preserves the pid,
-            // so the eventual target process ends up in the cgroup too — the .NET side never needs
-            // to learn the OS pid before Process.Start() returns it.
-            prelude = $"echo $$ > \"{cgroupPath}/cgroup.procs\" 2>/dev/null; " + prelude;
-
+            RewriteToShellPrelude(startInfo, prelude);
         }
-
-        RewriteToShellPrelude(startInfo, prelude);
 
         Func<int, Task>? cleanup = cgroupPath is null
             ? null
@@ -232,8 +243,11 @@ public sealed class ProcessResourceLimiter : IProcessResourceLimiter
             ? null
             : () => Task.FromResult(WasOomKilled(cgroupPath));
 
-        return new ProcessResourceLimiterResult(null, cleanup, wasOomKilled);
-
+        return new ProcessResourceLimiterResult(
+            null,
+            cleanup,
+            wasOomKilled,
+            PreExecFailureMarker: prelude is null ? null : marker);
     }
 
     /// <summary>
@@ -245,59 +259,44 @@ public sealed class ProcessResourceLimiter : IProcessResourceLimiter
     /// </summary>
     private bool WasOomKilled(string cgroupPath)
     {
-
         try
         {
-
             string eventsPath = Path.Combine(cgroupPath, "memory.events");
 
             if (!File.Exists(eventsPath))
             {
-
                 return false;
-
             }
 
             foreach (string line in File.ReadLines(eventsPath))
             {
-
                 string[] parts = line.Split(' ', 2, StringSplitOptions.TrimEntries);
 
                 if (parts.Length == 2
                     && parts[0].Equals("oom_kill", StringComparison.Ordinal)
                     && long.TryParse(parts[1], CultureInfo.InvariantCulture, out long oomKillCount))
                 {
-
                     return oomKillCount > 0;
-
                 }
-
             }
 
             return false;
-
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-
             _logger?.LogDebug(ex, "Could not read cgroups v2 memory.events to confirm an OOM kill.");
 
             return false;
-
         }
-
     }
 
     private string? TryCreateAndConfigureCgroup(ResourceLimits limits)
     {
-
-        if (limits.MaxMemoryMb <= 0
+        if (EffectiveMemoryLimitMb(limits) <= 0
             && limits.MaxProcessCount <= 0)
         {
-
             // Nothing for cgroups to contribute; CPU/FD are always handled by the ulimit prelude.
             return null;
-
         }
 
         // A GUID-named scope (rather than a pid-named one) sidesteps the pid-reuse race entirely,
@@ -306,49 +305,40 @@ public sealed class ProcessResourceLimiter : IProcessResourceLimiter
 
         try
         {
-
             Directory.CreateDirectory(path);
-
         }
         catch (Exception ex) when (ex is DirectoryNotFoundException or UnauthorizedAccessException or IOException)
         {
-
             // /sys/fs/cgroup not mounted, or cgroup delegation not available to this user: fall back
             // to setrlimit (via the ulimit prelude) for memory too.
             _logger?.LogDebug(ex, "Sanctum could not create a cgroups v2 scope; falling back to setrlimit.");
 
             return null;
-
         }
 
         try
         {
-
             WriteCgroupLimits(path, limits);
 
             return path;
-
         }
         catch (Exception ex) when (ex is UnauthorizedAccessException or IOException)
         {
-
             _logger?.LogDebug(ex, "Sanctum could not configure a cgroups v2 scope; falling back to setrlimit.");
 
             TryDeleteCgroupDirectory(path);
 
             return null;
-
         }
-
     }
 
     private static void WriteCgroupLimits(string cgroupPath, ResourceLimits limits)
     {
+        int memoryMb = EffectiveMemoryLimitMb(limits);
 
-        if (limits.MaxMemoryMb > 0)
+        if (memoryMb > 0)
         {
-
-            long memoryBytes = (long)limits.MaxMemoryMb * 1024L * 1024L;
+            long memoryBytes = (long)memoryMb * 1024L * 1024L;
 
             string memoryText = memoryBytes.ToString(CultureInfo.InvariantCulture);
 
@@ -359,7 +349,6 @@ public sealed class ProcessResourceLimiter : IProcessResourceLimiter
 
         if (limits.MaxProcessCount > 0)
         {
-
             File.WriteAllText(
                 Path.Combine(cgroupPath, "pids.max"),
                 limits.MaxProcessCount.ToString(
@@ -368,7 +357,6 @@ public sealed class ProcessResourceLimiter : IProcessResourceLimiter
 
         if (limits.MaxCpuSeconds > 0)
         {
-
             // cpu.max is "<quota> <period>" in microseconds; the kernel clamps period to at most
             // 1_000_000us (1s). quota == period therefore caps the process to at most one full CPU
             // core rather than expressing a cumulative CPU-time budget — this is a defense-in-depth
@@ -376,82 +364,93 @@ public sealed class ProcessResourceLimiter : IProcessResourceLimiter
             // SIGXCPU once MaxCpuSeconds of CPU time have actually been consumed) comes from
             // RLIMIT_CPU, applied via the ulimit prelude regardless of cgroup availability.
             File.WriteAllText(Path.Combine(cgroupPath, "cpu.max"), "1000000 1000000");
-
         }
-
     }
 
     private Task DeleteCgroupAsync(string cgroupPath)
     {
-
         TryDeleteCgroupDirectory(cgroupPath);
 
         return Task.CompletedTask;
-
     }
 
     private void TryDeleteCgroupDirectory(string cgroupPath)
     {
-
         try
         {
-
             string killPath = Path.Combine(
                 cgroupPath,
                 "cgroup.kill");
 
             if (File.Exists(killPath))
             {
-
                 File.WriteAllText(killPath, "1");
             }
 
             Directory.Delete(cgroupPath, recursive: false);
-
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or DirectoryNotFoundException)
         {
-
             // Best-effort cleanup: a leaked, empty, process-less cgroup directory is cosmetic, not a
             // security concern. Nothing further to do here.
             _logger?.LogDebug(ex, "Failed to delete a transient Sanctum cgroups v2 scope directory.");
-
         }
-
     }
 
-    private static string BuildUlimitPrelude(ResourceLimits limits, bool includeMemory)
-    {
+    /// <summary>
+    /// A per-run token the prelude writes to stderr only when it refuses to <c>exec</c> because a
+    /// limit could not be applied. Random per run, so neither a target's own output nor a stale run
+    /// can spell it.
+    /// </summary>
+    private static string CreatePreExecFailureMarker() =>
+        $"arcanum-resource-limit-not-applied-{Guid.NewGuid():N}";
 
-        StringBuilder script = new();
+    /// <summary>
+    /// Builds the fail-closed prelude, or returns <see langword="null"/> when there is nothing for it
+    /// to apply. Every step is followed by <c>|| exit 126</c>: a <c>ulimit</c> the shell cannot apply
+    /// (macOS RLIMIT_AS, or a value above the inherited hard limit) prints an error and returns
+    /// non-zero, and a <c>; </c>-joined prelude would still <c>exec</c> the target unlimited. An EXIT
+    /// trap writes <paramref name="marker"/> to stderr on that refusal and is removed just before
+    /// <c>exec</c>, so only a prelude refusal — never the target's own exit 126 — carries it.
+    /// </summary>
+    internal static string? BuildUlimitPrelude(
+        ResourceLimits limits,
+        bool includeMemory,
+        string? cgroupPath,
+        string marker)
+    {
+        StringBuilder steps = new();
+
+        if (cgroupPath is not null)
+        {
+            steps.Append("echo $$ > \"").Append(cgroupPath).Append("/cgroup.procs\" || exit 126; ");
+        }
 
         if (limits.MaxCpuSeconds > 0)
         {
-
-            script.Append("ulimit -t ").Append(limits.MaxCpuSeconds).Append("; ");
-
+            steps.Append("ulimit -t ").Append(limits.MaxCpuSeconds).Append(" || exit 126; ");
         }
 
-        if (includeMemory && limits.MaxMemoryMb > 0)
+        int memoryMb = EffectiveMemoryLimitMb(limits);
+
+        if (includeMemory && memoryMb > 0)
         {
+            long memoryKb = (long)memoryMb * 1024L;
 
-            long memoryKb = (long)limits.MaxMemoryMb * 1024L;
-
-            script.Append("ulimit -v ").Append(memoryKb.ToString(CultureInfo.InvariantCulture)).Append("; ");
-
+            steps.Append("ulimit -v ").Append(memoryKb.ToString(CultureInfo.InvariantCulture)).Append(" || exit 126; ");
         }
 
         if (limits.MaxFileDescriptors > 0)
         {
-
-            script.Append("ulimit -n ").Append(limits.MaxFileDescriptors).Append("; ");
-
+            steps.Append("ulimit -n ").Append(limits.MaxFileDescriptors).Append(" || exit 126; ");
         }
 
-        script.Append("exec \"$@\"");
+        if (steps.Length == 0)
+        {
+            return null;
+        }
 
-        return script.ToString();
-
+        return $"trap 'echo {marker} >&2' EXIT; {steps}trap - EXIT; exec \"$@\"";
     }
 
     /// <summary>
@@ -464,7 +463,6 @@ public sealed class ProcessResourceLimiter : IProcessResourceLimiter
     /// </summary>
     private static void RewriteToShellPrelude(ProcessStartInfo startInfo, string preludeScript)
     {
-
         string targetFileName = startInfo.FileName;
 
         List<string> originalArguments = [..startInfo.ArgumentList];
@@ -482,13 +480,9 @@ public sealed class ProcessResourceLimiter : IProcessResourceLimiter
 
         foreach (string argument in originalArguments)
         {
-
             startInfo.ArgumentList.Add(argument);
-
         }
 
         startInfo.FileName = "/bin/sh";
-
     }
-
 }

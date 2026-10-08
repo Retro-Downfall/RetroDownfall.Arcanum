@@ -336,6 +336,10 @@ internal sealed class Loremaster(
             model = arc.DefaultModel.Trim();
         }
 
+        // The transcript being summarized can carry hostile text (a fetched page, a tool result), and this
+        // call runs unattended, so the model has nothing it could be talked into calling: with web
+        // browsing on, a hub-native read_url would carry the transcript out of the installation.
+        // DisableMcpTools stops only the MCP block of the tool set; DisableAllTools advertises none.
         PingRequest ping = new(
             Prompt: string.Empty,
             Model: model,
@@ -343,7 +347,8 @@ internal sealed class Loremaster(
             UnattendedMode: true,
             DisableMcpTools: true,
             StatelessMessages: statelessMessages,
-            SkipSpellRouting: true);
+            SkipSpellRouting: true,
+            DisableAllTools: true);
 
         if (!lease.TryBeginExternalEffectGroup(out IGrimoireExternalEffectGroup? admittedGroup))
         {
@@ -371,8 +376,11 @@ internal sealed class Loremaster(
 
             string summaryText = result.Value.Text.Trim();
 
+            // The provider call is billed once it returns, so the write that keeps its result runs on a
+            // token the host cannot cancel: a shutdown arriving here would otherwise discard the summary
+            // and leave the watermark behind, and the next sweep would pay for the same batch again.
             await grimoire
-                .UpdateSessionCampaignRollupAsync(sessionId, summaryText, batchEndUtc, stoppingToken)
+                .UpdateSessionCampaignRollupAsync(sessionId, summaryText, batchEndUtc, CancellationToken.None)
                 .ConfigureAwait(false);
 
             hostLogger.LogInformation(

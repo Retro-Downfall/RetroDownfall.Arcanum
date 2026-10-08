@@ -1,4 +1,5 @@
 using RetroDownfall.Arcanum.Cli.Services;
+using RetroDownfall.Arcanum.Cli.UX;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
@@ -63,13 +64,98 @@ internal sealed class CommandCenterState
 
     public ContextTokenBreakdown? LastContextBreakdown { get; set; }
 
-    public HashSet<string> StagedAttachmentPaths { get; } = new(StringComparer.Ordinal);
+    /// <summary>
+    /// Guards both staged sets. The composer thread stages a path or reference while a turn on a worker
+    /// thread snapshots and then clears what it sent, so neither set is ever exposed for mutation.
+    /// </summary>
+    private readonly object _stagedGate = new();
+
+    private readonly HashSet<string> _stagedAttachmentPaths = new(StringComparer.Ordinal);
+
+    private readonly HashSet<Guid> _stagedAttachmentReferences = [];
+
+    /// <summary>Paths staged for the next turn; a point-in-time copy, so it is safe to enumerate.</summary>
+    public IReadOnlyCollection<string> StagedAttachmentPaths
+    {
+        get
+        {
+            lock (_stagedGate)
+            {
+                return _stagedAttachmentPaths.ToArray();
+            }
+        }
+    }
 
     /// <summary>
     /// Bound session attachment ids staged via <c>/attachments add</c> for the next turn
-    /// (<see cref="PingRequest.AttachmentReferences"/>).
+    /// (<see cref="PingRequest.AttachmentReferences"/>); a point-in-time copy.
     /// </summary>
-    public HashSet<Guid> StagedAttachmentReferences { get; } = [];
+    public IReadOnlyCollection<Guid> StagedAttachmentReferences
+    {
+        get
+        {
+            lock (_stagedGate)
+            {
+                return _stagedAttachmentReferences.ToArray();
+            }
+        }
+    }
+
+    /// <summary>Stages a file path for the next turn. Returns <see langword="false"/> if it was already staged.</summary>
+    public bool StageAttachmentPath(string fullPath)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(fullPath);
+
+        lock (_stagedGate)
+        {
+            return _stagedAttachmentPaths.Add(fullPath);
+        }
+    }
+
+    /// <summary>Stages a session attachment reference for the next turn.</summary>
+    public bool StageAttachmentReference(Guid attachmentId)
+    {
+        lock (_stagedGate)
+        {
+            return _stagedAttachmentReferences.Add(attachmentId);
+        }
+    }
+
+    /// <summary>
+    /// Takes both staged sets in one critical section, so a turn sees a consistent pair even while the
+    /// composer thread stages more.
+    /// </summary>
+    public StagedAttachmentSnapshot SnapshotStaged()
+    {
+        lock (_stagedGate)
+        {
+            return new StagedAttachmentSnapshot(
+                _stagedAttachmentPaths.ToArray(),
+                _stagedAttachmentReferences.ToArray());
+        }
+    }
+
+    /// <summary>
+    /// Removes what a finished turn sent. Only the snapshot's own entries go, so anything staged while
+    /// the turn ran stays staged for the next one.
+    /// </summary>
+    public void ClearStaged(StagedAttachmentSnapshot sent)
+    {
+        ArgumentNullException.ThrowIfNull(sent);
+
+        lock (_stagedGate)
+        {
+            foreach (string path in sent.Paths)
+            {
+                _ = _stagedAttachmentPaths.Remove(path);
+            }
+
+            foreach (Guid id in sent.References)
+            {
+                _ = _stagedAttachmentReferences.Remove(id);
+            }
+        }
+    }
 
     public IReadOnlyList<SessionAttachmentDto> SessionAttachments { get; set; } = [];
 
@@ -88,7 +174,66 @@ internal sealed class CommandCenterState
 
     public string StreamingAssistantText { get; set; } = string.Empty;
 
-    public CancellationTokenSource? TurnCts { get; set; }
+    private CancellationTokenSource? _turnCts;
+
+    /// <summary>
+    /// The current turn's token source. The submit path owns it — it creates, publishes, and disposes
+    /// it — so everything else reads it through <see cref="TryCancelTurn"/> and <see cref="TurnTokenOr"/>,
+    /// which tolerate the disposal that can land at any moment.
+    /// </summary>
+    public CancellationTokenSource? TurnCts
+    {
+        get => Volatile.Read(ref _turnCts);
+        set => Volatile.Write(ref _turnCts, value);
+    }
+
+    /// <summary>
+    /// Cancels the turn in flight. Returns <see langword="false"/> when there is none, or when the submit
+    /// path disposed its source between the read and the call: Ctrl+C reaches this from a fire-and-forget
+    /// task, where the <see cref="ObjectDisposedException"/> a disposed source throws would go unobserved.
+    /// </summary>
+    public bool TryCancelTurn()
+    {
+        CancellationTokenSource? turn = TurnCts;
+        if (turn is null)
+        {
+            return false;
+        }
+
+        try
+        {
+            turn.Cancel();
+            return true;
+        }
+        catch (ObjectDisposedException)
+        {
+            // The turn finished and the submit path disposed its source first; nothing is left to cancel.
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// The current turn's token, or <paramref name="fallback"/> when no turn is in flight or its source
+    /// has just been disposed (reading <see cref="CancellationTokenSource.Token"/> then throws).
+    /// </summary>
+    public CancellationToken TurnTokenOr(CancellationToken fallback)
+    {
+        CancellationTokenSource? turn = TurnCts;
+        if (turn is null)
+        {
+            return fallback;
+        }
+
+        try
+        {
+            return turn.Token;
+        }
+        catch (ObjectDisposedException)
+        {
+            // Same race as TryCancelTurn: the source went away between the read and the call.
+            return fallback;
+        }
+    }
 
     public bool RequestExit { get; set; }
 
@@ -338,8 +483,11 @@ internal sealed class CommandCenterState
     {
         SessionId = id;
         SelectedSessionId = id;
-        SessionTitle = string.IsNullOrWhiteSpace(title) ? "Untitled" : title.Trim();
-        SessionStatus = string.IsNullOrWhiteSpace(status) ? "Active" : status.Trim();
+        // Host text, stored from a conversation: stripped here so no pane has to remember to.
+        string safeTitle = TerminalTextSanitizer.SanitizeLine(title).Trim();
+        string safeStatus = TerminalTextSanitizer.SanitizeLine(status).Trim();
+        SessionTitle = safeTitle.Length == 0 ? "Untitled" : safeTitle;
+        SessionStatus = safeStatus.Length == 0 ? "Active" : safeStatus;
         SessionEntryCount = entryCount;
         ForkedFromSessionId = forkedFromSessionId;
     }
@@ -358,6 +506,9 @@ internal sealed class CommandCenterState
         return $"Session: {title} · {shortId} · {status}{branch}";
     }
 }
+
+/// <summary>The attachments staged for the next turn, as one consistent copy.</summary>
+internal sealed record StagedAttachmentSnapshot(string[] Paths, Guid[] References);
 
 internal sealed record SessionListItem(
     Guid Id,
@@ -387,14 +538,24 @@ internal sealed record SessionListItem(
         }
     }
 
-    public static SessionListItem FromSummary(SessionSummaryDto dto) =>
-        new(
+    /// <summary>
+    /// A row for a host Session summary. The title and status are text the host stored from a
+    /// conversation, so they are stripped of anything a terminal would act on before they can reach the
+    /// sidebar or the session picker.
+    /// </summary>
+    public static SessionListItem FromSummary(SessionSummaryDto dto)
+    {
+        string title = TerminalTextSanitizer.SanitizeLine(dto.Title).Trim();
+        string status = TerminalTextSanitizer.SanitizeLine(dto.Status).Trim();
+
+        return new SessionListItem(
             dto.Id,
-            string.IsNullOrWhiteSpace(dto.Title) ? "Untitled" : dto.Title!,
-            string.IsNullOrWhiteSpace(dto.Status) ? "Active" : dto.Status,
+            title.Length == 0 ? "Untitled" : title,
+            status.Length == 0 ? "Active" : status,
             dto.UpdatedAt,
             dto.EntryCount,
             dto.ForkedFromSessionId);
+    }
 }
 
 internal enum CommandCenterOverlayKind

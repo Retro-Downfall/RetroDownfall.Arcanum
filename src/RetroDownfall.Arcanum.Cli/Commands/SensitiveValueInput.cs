@@ -11,13 +11,17 @@ namespace RetroDownfall.Arcanum.Cli.Commands;
 /// </summary>
 internal interface ISensitiveValueConsole
 {
-
     bool IsInputRedirected { get; }
 
     Task<string?> ReadLineAsync(CancellationToken cancellationToken);
 
     string PromptHidden(string prompt, CliInvocationOptions options);
 
+    /// <summary>
+    /// A prompt whose answer is echoed, for the value that accompanies a hidden credential but is not itself
+    /// secret, such as the account name a password belongs to.
+    /// </summary>
+    string PromptVisible(string prompt, string defaultValue, CliInvocationOptions options);
 }
 
 /// <summary>
@@ -27,16 +31,13 @@ internal interface ISensitiveValueConsole
 /// </summary>
 internal readonly record struct SensitiveValueRead(bool IsAvailable, string? Value)
 {
-
     internal static SensitiveValueRead Unavailable { get; } = new(false, null);
 
     internal static SensitiveValueRead From(string? value) => new(true, value);
-
 }
 
 internal static class SensitiveValueInput
 {
-
     internal const string UnavailableDiagnostic =
         "A sensitive value must be supplied on redirected stdin when --print or "
         + "--output-format json is in effect; the hidden prompt cannot run headless.";
@@ -54,24 +55,18 @@ internal static class SensitiveValueInput
         string prompt,
         CancellationToken cancellationToken)
     {
-
         if (console.IsInputRedirected)
         {
-
             return SensitiveValueRead.From(
                 await console.ReadLineAsync(cancellationToken).ConfigureAwait(false));
-
         }
 
         if (options.Print || options.Json)
         {
-
             return SensitiveValueRead.Unavailable;
-
         }
 
         return SensitiveValueRead.From(console.PromptHidden(prompt, options));
-
     }
 
     /// <summary>
@@ -103,22 +98,20 @@ internal static class SensitiveValueInput
     internal static AnsiConsoleSettings CreatePromptSettings(CliInvocationOptions options) =>
         new()
         {
-
             Ansi = options.Plain ? AnsiSupport.No : AnsiSupport.Detect,
 
             ColorSystem = options.Plain ? ColorSystemSupport.NoColors : ColorSystemSupport.Detect,
 
             Interactive = InteractionSupport.Yes,
 
-            Out = new AnsiConsoleOutput(Console.Out),
-
+            // The question is a diagnostic, so it goes to stderr like the backup passphrase prompt:
+            // stdout belongs to the command's payload, and the operator may have redirected it.
+            Out = new AnsiConsoleOutput(Console.Error),
         };
-
 }
 
 internal sealed class SystemSensitiveValueConsole : ISensitiveValueConsole
 {
-
     internal static SystemSensitiveValueConsole Instance { get; } = new();
 
     public bool IsInputRedirected => Console.IsInputRedirected;
@@ -131,4 +124,8 @@ internal sealed class SystemSensitiveValueConsole : ISensitiveValueConsole
             .Create(SensitiveValueInput.CreatePromptSettings(options))
             .Prompt(new TextPrompt<string>(prompt).Secret());
 
+    public string PromptVisible(string prompt, string defaultValue, CliInvocationOptions options) =>
+        AnsiConsole
+            .Create(SensitiveValueInput.CreatePromptSettings(options))
+            .Prompt(new TextPrompt<string>(prompt).DefaultValue(defaultValue));
 }

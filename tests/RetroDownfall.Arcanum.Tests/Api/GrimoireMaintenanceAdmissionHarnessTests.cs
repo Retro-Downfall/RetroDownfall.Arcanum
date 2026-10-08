@@ -752,7 +752,7 @@ public sealed class GrimoireMaintenanceAdmissionHarnessTests
 
             Assert.Same(scope.ServiceProvider.GetRequiredService<LongRunningOperationStore>(), store.Inner);
 
-            LongRunningOperation created = await store.CreateAsync(new(LongRunningOperationKinds.WorkspaceIndex,
+            LongRunningOperation created = await store.CreateAsync(new(LongRunningOperationKinds.BlobEncryptionMigration,
                 LongRunningOperationRecoveryPolicy.RestartIdempotently, "Observer checkpoint", now), timeout.Token);
 
             operationId = created.Id;

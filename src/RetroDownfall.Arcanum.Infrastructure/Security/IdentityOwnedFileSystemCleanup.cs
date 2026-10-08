@@ -391,6 +391,8 @@ internal static class IdentityOwnedFileSystemCleanup
                 FileSystemObjectKind.Directory,
                 out artifact))
         {
+            TryRemoveUncapturedQuarantineDirectory(quarantinePath);
+
             return false;
         }
 
@@ -411,6 +413,35 @@ internal static class IdentityOwnedFileSystemCleanup
         }
 
         return true;
+    }
+
+    /// <summary>
+    /// Best-effort removal of a quarantine directory this call just created but could not capture an
+    /// identity for. It deletes only when a no-follow lookup still reports a directory, and never
+    /// recursively, so a swapped-in link or a populated directory is left untouched.
+    /// </summary>
+    private static void TryRemoveUncapturedQuarantineDirectory(string quarantinePath)
+    {
+        if (!FileHandleIdentityInterop.TryGetPathMetadataNoFollow(
+                quarantinePath,
+                out FileHandleMetadata current)
+            || current.Kind != FileSystemObjectKind.Directory)
+        {
+            return;
+        }
+
+        try
+        {
+            Directory.Delete(
+                quarantinePath,
+                recursive: false);
+        }
+        catch (IOException)
+        {
+        }
+        catch (UnauthorizedAccessException)
+        {
+        }
     }
 
     private static bool IsSafeQuarantineDirectoryPrefix(string prefix) =>

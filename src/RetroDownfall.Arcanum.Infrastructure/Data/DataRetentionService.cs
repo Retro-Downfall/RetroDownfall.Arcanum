@@ -825,6 +825,8 @@ internal sealed partial class DataRetentionService(
 
         bool keepClaim = false;
 
+        bool candidateCompleted = false;
+
         try
         {
             DataRetentionPruneExecutionOutcome execution = await ApplyUnifiedPruneCoreAsync(
@@ -854,6 +856,8 @@ internal sealed partial class DataRetentionService(
             {
                 return ConcludedHostedPrune(Result<DataRetentionApplyResult>.Failure(failure));
             }
+
+            candidateCompleted = HasCandidateEffect(execution.Applied);
 
             return ConcludedHostedPrune(await CompleteHostedPruneAsync(
                 operation.Id,
@@ -891,12 +895,11 @@ internal sealed partial class DataRetentionService(
                 "Automatic retention operation {OperationId} failed outside a candidate frontier.",
                 operation.Id);
 
-            return ConcludedHostedPrune(await SettleHostedPruneAsync(
+            return ConcludedHostedPrune(await SettleUnexpectedHostedPruneFailureAsync(
                 operation,
                 ownerId,
-                LongRunningOperationState.Failed,
-                HostedPruneError("The automatic retention operation failed before a candidate effect began."),
-                CancellationToken.None).ConfigureAwait(false));
+                candidateCompleted,
+                "The automatic retention operation failed before a candidate effect began.").ConfigureAwait(false));
         }
         finally
         {
@@ -925,6 +928,8 @@ internal sealed partial class DataRetentionService(
         }
 
         bool keepClaim = false;
+
+        bool resumedCandidateCompleted = false;
 
         try
         {
@@ -1004,6 +1009,8 @@ internal sealed partial class DataRetentionService(
                 return ConcludedHostedPrune(Result<DataRetentionApplyResult>.Failure(failure));
             }
 
+            resumedCandidateCompleted = HasCandidateEffect(recovery.Execution?.Applied);
+
             return ConcludedHostedPrune(await CompleteHostedPruneAsync(
                 operation!.Id,
                 continuation.OwnerId,
@@ -1050,12 +1057,11 @@ internal sealed partial class DataRetentionService(
                 continuation.OperationId,
                 CancellationToken.None).ConfigureAwait(false);
 
-            return ConcludedHostedPrune(await SettleHostedPruneAsync(
+            return ConcludedHostedPrune(await SettleUnexpectedHostedPruneFailureAsync(
                 operation,
                 continuation.OwnerId,
-                LongRunningOperationState.Failed,
-                HostedPruneError("The automatic retention operation failed while resuming."),
-                CancellationToken.None).ConfigureAwait(false));
+                resumedCandidateCompleted,
+                "The automatic retention operation failed while resuming, before a candidate effect began.").ConfigureAwait(false));
         }
         finally
         {
@@ -1080,6 +1086,68 @@ internal sealed partial class DataRetentionService(
         && operation.State is LongRunningOperationState.Running
             or LongRunningOperationState.Waiting
             or LongRunningOperationState.Cancelling;
+
+    /// <summary>Whether a finished pass removed anything at all.</summary>
+    private static bool HasCandidateEffect(DataRetentionApplyResult? applied) =>
+        applied is not null
+        && (applied.RowsDeleted != 0 || applied.FilesDeleted != 0 || applied.DerivedRecordsDeleted != 0);
+
+    /// <summary>
+    /// Settles a hosted prune that failed outside every candidate frontier, by whether a candidate effect
+    /// may already exist.
+    /// </summary>
+    /// <remarks>
+    /// Effects may exist when a pass finished having removed something, or when the durable row carries
+    /// a checkpoint — read through <see cref="ReadEffectEvidenceAsync"/>, the one reading
+    /// <see cref="FailUnexpectedCovenantResetAsync"/> shares. Such a row is left
+    /// <c>ReconciliationRequired</c> under the retention recovery code, which recovery adopts and
+    /// restarts idempotently; marking it terminally <c>Failed</c> would leave nothing to reconcile what
+    /// did happen, and its message would claim nothing had. A pass saves its first checkpoint before it
+    /// reaches any candidate, so only a failure before that save can be terminal. A row whose evidence
+    /// cannot be read is treated as one with effects. Only a row with neither is <c>Failed</c>, with the
+    /// caller's wording.
+    /// </remarks>
+    private async Task<Result<DataRetentionApplyResult>> SettleUnexpectedHostedPruneFailureAsync(
+        LongRunningOperation? operation,
+        string ownerId,
+        bool candidateCompleted,
+        string noEffectMessage)
+    {
+        bool effectsMayExist = candidateCompleted;
+
+        if (!effectsMayExist && operation is not null)
+        {
+            try
+            {
+                effectsMayExist = (await ReadEffectEvidenceAsync(operation).ConfigureAwait(false)).EffectsMayExist;
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(
+                    ex,
+                    "Automatic retention operation {OperationId} could not classify its durable effect boundary.",
+                    operation.Id);
+
+                effectsMayExist = true;
+            }
+        }
+
+        return effectsMayExist
+            ? await SettleHostedPruneAsync(
+                operation,
+                ownerId,
+                LongRunningOperationState.ReconciliationRequired,
+                HostedPruneError(
+                    "The automatic retention operation failed after a candidate effect may have begun; durable recovery will reconcile it."),
+                CancellationToken.None,
+                RetentionRecoveryTerminalCode).ConfigureAwait(false)
+            : await SettleHostedPruneAsync(
+                operation,
+                ownerId,
+                LongRunningOperationState.Failed,
+                HostedPruneError(noEffectMessage),
+                CancellationToken.None).ConfigureAwait(false);
+    }
 
     private async Task<Result<DataRetentionApplyResult>> CompleteHostedPruneAsync(
         Guid operationId,
@@ -1352,19 +1420,14 @@ internal sealed partial class DataRetentionService(
 
         DateTimeOffset now = timeProvider.GetUtcNow();
 
-        string operationKind = request.Request.Operation switch
-        {
-            DataRetentionOperation.Prune => LongRunningOperationKinds.DataRetentionPrune,
-
-            DataRetentionOperation.FactoryReset =>
-                LongRunningOperationKinds.DataRetentionFactoryReset,
-
-            _ => LongRunningOperationKinds.DataRetentionMutation,
-        };
+        // A factory reset never reaches this path: ApplyAsync routes it to its own, which owns the lease
+        // maintainer and the launch checkpoint this path has neither of.
+        string operationKind = request.Request.Operation == DataRetentionOperation.Prune
+            ? LongRunningOperationKinds.DataRetentionPrune
+            : LongRunningOperationKinds.DataRetentionMutation;
 
         LongRunningOperationRecoveryPolicy recoveryPolicy =
-            request.Request.Operation is DataRetentionOperation.Prune
-                or DataRetentionOperation.FactoryReset
+            request.Request.Operation == DataRetentionOperation.Prune
                 ? LongRunningOperationRecoveryPolicy.RestartIdempotently
                 : LongRunningOperationRecoveryPolicy.ReconcileAndComplete;
 
@@ -1394,44 +1457,48 @@ internal sealed partial class DataRetentionService(
 
         LongRunningOperation operation = started;
 
-        LongRunningOperationLeaseResult lease = new(true, operation);
+        // A single-transaction mutation takes no heartbeat, so once its five-minute lease passes its row
+        // looks abandoned to generic reconciliation, which would adopt it and start a recovery beside the
+        // call still running it. The process-local claim is what the reconciler asks before it looks at
+        // the lease; it is preferred over a heartbeat here because a renewal is a write and would contend
+        // with the open write transaction. Released on every exit, by the token that took it.
+        Guid ownershipToken = Guid.Empty;
 
-        if (request.Request.Operation == DataRetentionOperation.FactoryReset)
+        bool claimed = _operationOwnership is { } ownership
+            && ownership.TryClaim(operation.Id, out ownershipToken);
+
+        try
         {
-            DataRetentionConflict[] boundaryConflicts = await ReadGlobalConflictsAsync(
-                cancellationToken,
-                operation.Id).ConfigureAwait(false);
-
-            if (boundaryConflicts.Length > 0)
+            return await ApplyStartedOrdinaryAsync(
+                request,
+                current,
+                operation,
+                ownerId,
+                operationKind,
+                expectedSessionSnapshot,
+                expectedAttachmentSnapshot,
+                cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            if (claimed)
             {
-                LongRunningOperation latest = await operations.GetAsync(
-                    operation.Id,
-                    cancellationToken).ConfigureAwait(false)
-                    ?? lease.Operation;
-
-                bool terminalized = await operations.TryTransitionAsync(
-                    operation.Id,
-                    latest.Revision,
-                    ownerId,
-                    LongRunningOperationState.Failed,
-                    timeProvider.GetUtcNow(),
-                    ErrorCodes.Data.Conflict,
-                    cancellationToken).ConfigureAwait(false);
-
-                if (!terminalized)
-                {
-                    return Result<DataRetentionApplyResult>.Failure(
-                        new Error(
-                            ErrorCodes.Data.ReconciliationFailed,
-                            "A factory-reset conflict appeared, but its durable marker could not be finalized."));
-                }
-
-                return Result<DataRetentionApplyResult>.Failure(
-                    new Error(
-                        ErrorCodes.Data.Conflict,
-                        boundaryConflicts[0].Message));
+                _ = _operationOwnership!.Release(operation.Id, ownershipToken);
             }
         }
+    }
+
+    private async Task<Result<DataRetentionApplyResult>> ApplyStartedOrdinaryAsync(
+        DataRetentionApplyRequest request,
+        DataRetentionPlan current,
+        LongRunningOperation operation,
+        string ownerId,
+        string operationKind,
+        SessionPlanSnapshot? expectedSessionSnapshot,
+        AttachmentPlanSnapshot? expectedAttachmentSnapshot,
+        CancellationToken cancellationToken)
+    {
+        LongRunningOperationLeaseResult lease = new(true, operation);
 
         try
         {
@@ -1494,13 +1561,6 @@ internal sealed partial class DataRetentionService(
                         request.Request.Workspace!,
                         cancellationToken).ConfigureAwait(false),
 
-                DataRetentionOperation.FactoryReset =>
-                    await ApplyFactoryResetAsync(
-                        operation.Id,
-                        ownerId,
-                        current,
-                        cancellationToken).ConfigureAwait(false),
-
                 _ => throw new InvalidOperationException("Unsupported data-retention operation."),
             };
 
@@ -1510,9 +1570,13 @@ internal sealed partial class DataRetentionService(
                     "Post-delete reconciliation found retained owned data for the retention mutation.");
             }
 
+            // Past the point of no return: the mutation has committed, so the bookkeeping that records it
+            // runs on CancellationToken.None, as the arms' own post-commit reconciliation reads do. A cancel
+            // landing here would otherwise report a committed deletion as cancelled and leave its row for
+            // recovery to rediscover.
             LongRunningOperation latest = await operations.GetAsync(
                 operation.Id,
-                cancellationToken).ConfigureAwait(false)
+                CancellationToken.None).ConfigureAwait(false)
                 ?? lease.Operation;
 
             bool completed = await operations.TryTransitionAsync(
@@ -1521,7 +1585,7 @@ internal sealed partial class DataRetentionService(
                 ownerId,
                 LongRunningOperationState.Completed,
                 timeProvider.GetUtcNow(),
-                cancellationToken: cancellationToken).ConfigureAwait(false);
+                cancellationToken: CancellationToken.None).ConfigureAwait(false);
 
             if (!completed)
             {
@@ -2078,6 +2142,32 @@ internal sealed partial class DataRetentionService(
         return current is not null && current.State == state;
     }
 
+    /// <summary>
+    /// The durable row as it stands now, and whether it carries the checkpoint that says a candidate
+    /// effect may already exist.
+    /// </summary>
+    /// <remarks>
+    /// The one reading of that evidence, shared by the two arms that settle an unexpected failure, so
+    /// they cannot drift apart on what counts. Read on <see cref="CancellationToken.None"/>, because it
+    /// decides how a failure that has already happened is recorded. A row that is gone answers with the
+    /// row the caller held. A read that throws is left to the caller, because the two arms answer it
+    /// differently: the hosted prune assumes effects, and the Covenant reset records nothing.
+    /// </remarks>
+    private async Task<(LongRunningOperation Current, bool EffectsMayExist)> ReadEffectEvidenceAsync(
+        LongRunningOperation operation)
+    {
+        LongRunningOperation current = await operations
+            .GetAsync(operation.Id, CancellationToken.None)
+            .ConfigureAwait(false)
+            ?? operation;
+
+        return (
+            current,
+            current.CheckpointVersion != 0
+                || current.CheckpointPayload is not null
+                || current.CheckpointReference is not null);
+    }
+
     private async Task<Result<DataRetentionApplyResult>> FailUnexpectedCovenantResetAsync(
         LongRunningOperation operation,
         string ownerId)
@@ -2086,14 +2176,8 @@ internal sealed partial class DataRetentionService(
 
         try
         {
-            LongRunningOperation current = await operations
-                .GetAsync(operation.Id, CancellationToken.None)
-                .ConfigureAwait(false)
-                ?? operation;
-
-            bool effectsMayExist = current.CheckpointVersion != 0
-                || current.CheckpointPayload is not null
-                || current.CheckpointReference is not null;
+            (LongRunningOperation current, bool effectsMayExist) =
+                await ReadEffectEvidenceAsync(operation).ConfigureAwait(false);
 
             return await FailCovenantResetAsync(
                 current,
@@ -2603,9 +2687,7 @@ internal sealed partial class DataRetentionService(
                 ? []
                 : [new DataRetentionPlanItem(dataClass, 0, 0, 0, rows)],
             [],
-            await ReadMemoryResetConflictsAsync(
-                request.MemoryScope!.Value,
-                cancellationToken).ConfigureAwait(false),
+            await ReadMemoryResetConflictsAsync(cancellationToken).ConfigureAwait(false),
             rows == 0 ? [] : [MemoryResetCandidateId(request.MemoryScope!.Value, request.TargetId)],
             requiresConfirmation: true);
     }
@@ -2617,7 +2699,7 @@ internal sealed partial class DataRetentionService(
     /// A null predicate is the whole table, which is what an untargeted reset has always meant. Ordered
     /// dependents-first so a delete's subquery still sees the rows it selects on.
     /// </remarks>
-    private readonly record struct MemoryResetSelection(
+    internal readonly record struct MemoryResetSelection(
         string Table,
         string? Predicate,
         (string Name, object Value)[] Parameters);
@@ -3113,47 +3195,47 @@ internal sealed partial class DataRetentionService(
         reconciled &= await CountTableAsync(
             "Sessions",
             "lower(replace(Id, '-', '')) = @id",
-            cancellationToken,
+            CancellationToken.None,
             ("@id", sessionId.ToString("N"))).ConfigureAwait(false) == 0;
 
         reconciled &= await CountTableAsync(
             "Entries",
             "lower(replace(SessionId, '-', '')) = @id",
-            cancellationToken,
+            CancellationToken.None,
             ("@id", sessionId.ToString("N"))).ConfigureAwait(false) == 0;
 
         reconciled &= await CountTableAsync(
             "SessionAttachments",
             "lower(replace(SessionId, '-', '')) = @id",
-            cancellationToken,
+            CancellationToken.None,
             ("@id", sessionId.ToString("N"))).ConfigureAwait(false) == 0;
 
         reconciled &= await CountTableAsync(
             "session_attachment_chunks",
             "lower(replace(SessionId, '-', '')) = @id",
-            cancellationToken,
+            CancellationToken.None,
             ("@id", sessionId.ToString("N"))).ConfigureAwait(false) == 0;
 
         reconciled &= await CountTableAsync(
             "SessionContextPins",
             "lower(replace(SessionId, '-', '')) = @id",
-            cancellationToken,
+            CancellationToken.None,
             ("@id", sessionId.ToString("N"))).ConfigureAwait(false) == 0;
 
         reconciled &= await CountEntryFtsRowsAsync(
             snapshot.EntryRowIds,
-            cancellationToken).ConfigureAwait(false) == 0;
+            CancellationToken.None).ConfigureAwait(false) == 0;
 
         reconciled &= await CountTableAsync(
             "attachment_memory_consultations",
             "lower(replace(SessionId, '-', '')) = @id",
-            cancellationToken,
+            CancellationToken.None,
             ("@id", sessionId.ToString("N"))).ConfigureAwait(false) == 0;
 
         reconciled &= await CountTableAsync(
             "saga_extraction_watermarks",
             "lower(replace(SessionId, '-', '')) = @id",
-            cancellationToken,
+            CancellationToken.None,
             ("@id", sessionId.ToString("N"))).ConfigureAwait(false) == 0;
 
         string[] normalizedEntryIds =
@@ -3163,20 +3245,20 @@ internal sealed partial class DataRetentionService(
             "entry_embeddings",
             "lower(replace(EntryId, '-', ''))",
             normalizedEntryIds,
-            cancellationToken).ConfigureAwait(false) == 0;
+            CancellationToken.None).ConfigureAwait(false) == 0;
 
         reconciled &= await CountIdSetAsync(
             "entry_embeddings_vec",
             "lower(replace(EntryId, '-', ''))",
             normalizedEntryIds,
-            cancellationToken).ConfigureAwait(false) == 0;
+            CancellationToken.None).ConfigureAwait(false) == 0;
 
         foreach (AttachmentPlanSnapshot attachment in snapshot.Attachments)
         {
             reconciled &= await CountTableAsync(
                 "session_attachment_index_state",
                 "lower(replace(AttachmentId, '-', '')) = @id",
-                cancellationToken,
+                CancellationToken.None,
                 ("@id", attachment.Id.ToString("N"))).ConfigureAwait(false) == 0;
         }
 
@@ -3187,13 +3269,13 @@ internal sealed partial class DataRetentionService(
             "session_attachment_embeddings",
             "ChunkId",
             snapshotChunkIds,
-            cancellationToken).ConfigureAwait(false) == 0;
+            CancellationToken.None).ConfigureAwait(false) == 0;
 
         reconciled &= await CountIdSetAsync(
             "session_attachment_embeddings_vec",
             "ChunkId",
             snapshotChunkIds,
-            cancellationToken).ConfigureAwait(false) == 0;
+            CancellationToken.None).ConfigureAwait(false) == 0;
 
         return new DataRetentionApplyResult(
             operationId,
@@ -3386,32 +3468,32 @@ internal sealed partial class DataRetentionService(
         reconciled &= await CountTableAsync(
             "SessionAttachments",
             "lower(replace(Id, '-', '')) = @id",
-            cancellationToken,
+            CancellationToken.None,
             ("@id", attachmentId.ToString("N"))).ConfigureAwait(false) == 0;
 
         reconciled &= await CountTableAsync(
             "session_attachment_chunks",
             "lower(replace(AttachmentId, '-', '')) = @id",
-            cancellationToken,
+            CancellationToken.None,
             ("@id", attachmentId.ToString("N"))).ConfigureAwait(false) == 0;
 
         reconciled &= await CountTableAsync(
             "session_attachment_index_state",
             "lower(replace(AttachmentId, '-', '')) = @id",
-            cancellationToken,
+            CancellationToken.None,
             ("@id", attachmentId.ToString("N"))).ConfigureAwait(false) == 0;
 
         reconciled &= await CountIdSetAsync(
             "session_attachment_embeddings",
             "ChunkId",
             snapshot.ChunkIds,
-            cancellationToken).ConfigureAwait(false) == 0;
+            CancellationToken.None).ConfigureAwait(false) == 0;
 
         reconciled &= await CountIdSetAsync(
             "session_attachment_embeddings_vec",
             "ChunkId",
             snapshot.ChunkIds,
-            cancellationToken).ConfigureAwait(false) == 0;
+            CancellationToken.None).ConfigureAwait(false) == 0;
 
         return new DataRetentionApplyResult(
             operationId,
@@ -3464,9 +3546,10 @@ internal sealed partial class DataRetentionService(
         {
             // First, once the transaction holds the write lock, so no label can be committed between
             // the answer and the deletes below.
-            await RefuseLabeledUntargetedResetAsync(
+            await RefuseLabeledMemoryResetAsync(
                 scope,
                 campaignId,
+                selections,
                 connection,
                 transaction,
                 cancellationToken).ConfigureAwait(false);
@@ -3475,7 +3558,6 @@ internal sealed partial class DataRetentionService(
                 await ReadMemoryResetConflictsInTransactionAsync(
                     connection,
                     transaction,
-                    scope,
                     cancellationToken).ConfigureAwait(false);
 
             if (conflicts.Length > 0)
@@ -3551,7 +3633,7 @@ internal sealed partial class DataRetentionService(
             reconciled &= await CountTableAsync(
                 selection.Table,
                 selection.Predicate,
-                cancellationToken,
+                CancellationToken.None,
                 selection.Parameters).ConfigureAwait(false) == 0;
         }
 
@@ -4431,7 +4513,6 @@ internal sealed partial class DataRetentionService(
     private async Task<DataRetentionConflict[]> ReadMemoryResetConflictsInTransactionAsync(
         DbConnection connection,
         DbTransaction transaction,
-        MemoryResetScope scope,
         CancellationToken cancellationToken)
     {
         List<DataRetentionConflict> conflicts =
@@ -4446,33 +4527,8 @@ internal sealed partial class DataRetentionService(
                 ("@running", (int)InferenceRunStatus.Running)).ConfigureAwait(false),
         ];
 
-        string? operationKind = scope switch
-        {
-            MemoryResetScope.Attachments => LongRunningOperationKinds.AttachmentPromotion,
-
-            MemoryResetScope.Workspace => LongRunningOperationKinds.WorkspaceIndex,
-
-            _ => null,
-        };
-
-        if (operationKind is not null)
-        {
-            conflicts.AddRange(
-                await ReadConflictsInTransactionAsync(
-                    connection,
-                    transaction,
-                    $"""
-                    SELECT Id
-                    FROM LongRunningOperations
-                    WHERE Kind = @kind
-                      AND State IN ({string.Join(",", ActiveOperationStates)})
-                    """,
-                    "Data.ActiveOperation",
-                    "An active derived-data operation protects this memory scope.",
-                    cancellationToken,
-                    ("@kind", operationKind)).ConfigureAwait(false));
-        }
-
+        // Attachment promotion and workspace indexing record no durable operation, so no ledger row
+        // can stand for them here; the active-inference conflict above is the reset's whole guard.
         return [.. conflicts
             .DistinctBy(static conflict => (conflict.Code, conflict.ResourceId))];
     }
@@ -4914,8 +4970,10 @@ internal sealed partial class DataRetentionService(
         return
         [
             .. history
-                .Where(static execution => execution.Status is
-                    DaemonJobStatus.Pending or DaemonJobStatus.Running)
+                .Where(execution => execution.Status is
+                    DaemonJobStatus.Pending or DaemonJobStatus.Running
+                    // A cancelled execution whose body has not drained still owns the daemon's single-flight slot.
+                    || daemonExecutions.IsAwaitingDrain(execution.Id))
                 .Select(static execution => new DataRetentionConflict(
                     "Data.DaemonExecutionActive",
                     execution.Id,
@@ -6084,13 +6142,22 @@ internal sealed partial class DataRetentionService(
     }
 
     /// <summary>
-    /// Refuses an untargeted memory reset over a store that still holds a labelled member.
+    /// Refuses a memory reset that would take a labelled member of the store with it.
     /// </summary>
     /// <remarks>
     /// An untargeted reset hands one bare <c>DELETE FROM</c> the whole table, which is the exact
     /// shape the guard's bulk arm exists for: the statement examines no identity, so no per-artifact
     /// check can see the rows it never enumerated and the only safe answer for a labelled member is
-    /// to refuse. A Campaign-targeted reset takes the predicate arm instead and is left alone.
+    /// to refuse.
+    ///
+    /// <para>A Campaign-targeted reset deletes by predicate, so it is asked about exactly the rows that
+    /// predicate selects: their identities are read inside this transaction and handed to the guard's
+    /// batched arm. The question is about the artifact set rather than the label's own
+    /// <c>CampaignId</c>, because that column records a historical owner and a memory can have moved
+    /// scope since it was labelled; a label filter would miss exactly that memory and the delete would
+    /// orphan its label. A selected row whose identity is not a Guid is one the guard cannot be asked
+    /// about at all, so it refuses the reset with <c>Covenant.Unavailable</c> rather than being left for
+    /// the delete unexamined.</para>
     ///
     /// <para>Saga and Lexicon are the two stores asked about, because they are the two kinds the
     /// label table names for a store's own rows. The embedding scopes truncate derived rows whose
@@ -6098,42 +6165,138 @@ internal sealed partial class DataRetentionService(
     /// distinguish an Entry embedding from an attachment one — asking it here would refuse an
     /// attachment reset for a labelled Entry embedding it never touches.</para>
     /// </remarks>
-    private async Task RefuseLabeledUntargetedResetAsync(
+    private async Task RefuseLabeledMemoryResetAsync(
         MemoryResetScope scope,
         Guid? campaignId,
+        IReadOnlyList<MemoryResetSelection> selections,
         DbConnection connection,
         DbTransaction transaction,
         CancellationToken cancellationToken)
     {
-        if (campaignId is not null)
+        (SensitiveArtifactKind Kind, string Table)? store = scope switch
         {
-            return;
-        }
+            MemoryResetScope.Saga => (SensitiveArtifactKind.Saga, "saga_memories"),
 
-        SensitiveArtifactKind? kind = scope switch
-        {
-            MemoryResetScope.Saga => SensitiveArtifactKind.Saga,
-
-            MemoryResetScope.Lexicon => SensitiveArtifactKind.Lexicon,
+            MemoryResetScope.Lexicon => (SensitiveArtifactKind.Lexicon, "lexicon_entries"),
 
             _ => null,
         };
 
-        if (kind is not { } protectedKind)
+        if (store is not { } protectedStore)
         {
             return;
         }
 
-        Result unlabeled = await EnsureKindUnlabeledAsync(
-            protectedKind,
-            connection,
-            transaction,
-            cancellationToken).ConfigureAwait(false);
+        Result unlabeled;
+
+        if (campaignId is null)
+        {
+            unlabeled = await EnsureKindUnlabeledAsync(
+                protectedStore.Kind,
+                connection,
+                transaction,
+                cancellationToken).ConfigureAwait(false);
+        }
+        else
+        {
+            Result<Guid[]> memberIds = await ReadResetMemberIdsInTransactionAsync(
+                connection,
+                transaction,
+                selections,
+                protectedStore.Table,
+                cancellationToken).ConfigureAwait(false);
+
+            if (memberIds.IsFailure)
+            {
+                throw new RetentionCovenantLabelException(memberIds.Error);
+            }
+
+            if (memberIds.Value.Length == 0)
+            {
+                return;
+            }
+
+            unlabeled = await labeledArtifactGuard
+                .EnsureAllUnlabeledAsync(
+                    protectedStore.Kind,
+                    memberIds.Value,
+                    connection,
+                    transaction,
+                    cancellationToken)
+                .ConfigureAwait(false);
+        }
 
         if (unlabeled.IsFailure)
         {
             throw new RetentionCovenantLabelException(unlabeled.Error);
         }
+    }
+
+    /// <summary>
+    /// The identities of the store rows one Campaign-targeted reset selects, read inside its
+    /// transaction by the same predicates and bindings the deletes use.
+    /// </summary>
+    /// <remarks>
+    /// Read through every selection that deletes from <paramref name="table"/>, not only the last one,
+    /// and answered as the union, each identity once: a list that ever named the store's table twice
+    /// would otherwise leave the first selection's rows unasked about while its delete still removed
+    /// them.
+    ///
+    /// <para>A selected row whose identity does not read as a Guid refuses the reset with
+    /// <c>Covenant.Unavailable</c> rather than being skipped. The column has no format check, so such a
+    /// row is corruption or tampering and the guard cannot show it is unlabelled; skipping it let the
+    /// predicate delete remove a row nothing had been asked about. It is the condition, and the answer,
+    /// the embeddings reset gives a label it cannot parse, and the refusal names no artifact.</para>
+    /// </remarks>
+    internal static async Task<Result<Guid[]>> ReadResetMemberIdsInTransactionAsync(
+        DbConnection connection,
+        DbTransaction transaction,
+        IReadOnlyList<MemoryResetSelection> selections,
+        string table,
+        CancellationToken cancellationToken)
+    {
+        HashSet<Guid> ids = [];
+
+        foreach (MemoryResetSelection selection in selections)
+        {
+            if (!string.Equals(selection.Table, table, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            await using DbCommand command = connection.CreateCommand();
+
+            command.Transaction = transaction;
+
+            command.CommandText = selection.Predicate is null
+                ? $"SELECT \"Id\" FROM \"{selection.Table}\""
+                : $"SELECT \"Id\" FROM \"{selection.Table}\" WHERE {selection.Predicate}";
+
+            foreach ((string name, object value) in selection.Parameters)
+            {
+                Add(command, name, value);
+            }
+
+            await using DbDataReader reader = await command.ExecuteReaderAsync(
+                cancellationToken).ConfigureAwait(false);
+
+            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                if (reader.IsDBNull(0)
+                    || !Guid.TryParse(reader.GetString(0), CultureInfo.InvariantCulture, out Guid id))
+                {
+                    return Result<Guid[]>.Failure(
+                        new Error(
+                            ErrorCodes.Covenant.Unavailable,
+                            "A memory this reset selects has an identity the sensitivity labels cannot name, "
+                                + "so the reset was refused before its first delete."));
+                }
+
+                _ = ids.Add(id);
+            }
+        }
+
+        return Result<Guid[]>.Success([.. ids]);
     }
 
     /// <summary>
@@ -6984,11 +7147,14 @@ internal sealed partial class DataRetentionService(
     /// body, or the request-identity row, because a retry with a changed plan would otherwise
     /// reconstruct an owner that matched a closed scope it has no right to adopt.
     ///
-    /// <para>An interrupted reset is resumed by the erasure coordinator with that exact owner while
-    /// the durable operation lease is maintained. If exact ownership cannot be established, lease
-    /// maintenance is lost, or the coordinator cannot safely finish, recovery returns a typed
-    /// requires-attention result so the checkpoint and closed admission remain available for operator
-    /// reconciliation (§10.20.3).</para>
+    /// <para>An interrupted reset is resumed by the erasure coordinator with that exact owner. The
+    /// durable operation lease is deliberately not maintained across the resumed closed period: a
+    /// renewal advances the row's revision, and the transition journal binds itself to the exact
+    /// revision the launch produced. A second recovery starting beside this one is guarded instead by
+    /// the coordinator's process-local claim and the journal's one active slot per profile. If exact
+    /// ownership cannot be established or is lost, or the coordinator cannot safely finish, recovery
+    /// returns a typed requires-attention result so the checkpoint and closed admission remain
+    /// available for operator reconciliation (§10.20.3).</para>
     /// </remarks>
     private async Task<LongRunningOperationRecoveryResult> RecoverCovenantResetMutationAsync(
         LongRunningOperation operation,

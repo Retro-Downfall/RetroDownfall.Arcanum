@@ -1,4 +1,5 @@
 using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.Logging;
 
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.DataLifecycle;
@@ -13,7 +14,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.InstallationReset;
 
 internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPairResetCoordinator
 {
-
     private readonly IInstallationResetActiveStore _activeStore;
 
     private readonly IHostToolsMarkerPairResetDatabase _database;
@@ -28,7 +28,22 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
 
     private readonly ICampaignPathMarkerLifecycle _lifecycle;
 
+    /// <summary>
+    /// The bound on one local effect: a database statement, a durable publication, a reread.
+    /// </summary>
+    private static readonly TimeSpan LocalEffectBound = TimeSpan.FromSeconds(5);
+
+    /// <summary>
+    /// The bound on one operating-system credential call, which can wait on the user's keychain and
+    /// is the one effect here whose latency the operator, not the disk, decides.
+    /// </summary>
+    private static readonly TimeSpan OsCredentialEffectBound = TimeSpan.FromSeconds(30);
+
     private readonly IHostToolsMarkerPairResetOsPort _os;
+
+    private readonly ILogger<HostToolsMarkerPairResetCoordinator> _logger;
+
+    private readonly TimeProvider _timeProvider;
 
     /// <summary>
     /// The managed-file reconciliation this coordinator hands off to once its receipt is terminal.
@@ -49,11 +64,14 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
         IFullInstallationResetRemediationAttestationVerifier verifier,
         ICampaignPathMarkerLifecycle lifecycle,
         IHostToolsMarkerPairResetOsPort os,
+        ILogger<HostToolsMarkerPairResetCoordinator> logger,
         IFullInstallationResetManagedFileReconciler? managedFiles = null,
-        string? canonicalDatabasePath = null)
+        string? canonicalDatabasePath = null,
+        TimeProvider? timeProvider = null)
     {
-
         _managedFiles = managedFiles;
+
+        _timeProvider = timeProvider ?? TimeProvider.System;
 
         _activeStore = activeStore ?? throw new ArgumentNullException(nameof(activeStore));
 
@@ -75,6 +93,7 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
 
         _os = os ?? throw new ArgumentNullException(nameof(os));
 
+        _logger = logger ?? throw new ArgumentNullException(nameof(logger));
     }
 
     internal async Task<Result<InstallationResetActivePublication>> BeginAsync(
@@ -83,7 +102,6 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
         FullInstallationResetExternalRemediationAttestation attestation,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(heldInstallationLock);
 
         ArgumentNullException.ThrowIfNull(acceptedClaim);
@@ -96,38 +114,33 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
 
         try
         {
-
             return await BeginCoreAsync(
                 heldInstallationLock,
                 acceptedClaim,
                 attestation,
                 attempt,
                 cancellationToken).ConfigureAwait(false);
-
         }
         catch (OperationCanceledException exception) when (
             !attempt.PairJournaledPublished
             && cancellationToken.IsCancellationRequested
             && exception.CancellationToken == cancellationToken)
         {
-
             throw;
-
         }
-        catch (Exception) when (!attempt.PairJournaledPublished)
+        catch (Exception exception) when (!attempt.PairJournaledPublished)
         {
+            LogUnexpected("begin-pre-journal", step: null, exception);
 
             return PreJournalRefusal<InstallationResetActivePublication>(
                 cancellationToken);
-
         }
-        catch (Exception)
+        catch (Exception exception)
         {
+            LogUnexpected("begin-post-journal", step: null, exception);
 
             return Inert<InstallationResetActivePublication>();
-
         }
-
     }
 
     private async Task<Result<InstallationResetActivePublication>> BeginCoreAsync(
@@ -137,7 +150,6 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
         BeginAttemptState attempt,
         CancellationToken cancellationToken)
     {
-
         Result<InstallationResetActiveRecoveryState> recovered =
             await _activeStore.RecoverAsync(
                 heldInstallationLock,
@@ -153,10 +165,8 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
             || current.Payload.FullInstallationResetRemediationClaim is not { } claim
             || current.Payload.HostToolsMarkerPairReset is not null)
         {
-
             return PreJournalRefusal<InstallationResetActivePublication>(
                 cancellationToken);
-
         }
 
         HostToolsMarkerPairResetOsOpenResult opened = _os.OpenExact();
@@ -165,10 +175,8 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
             || opened.Evidence is null
             || opened.Capability is null)
         {
-
             return PreJournalRefusal<InstallationResetActivePublication>(
                 cancellationToken);
-
         }
 
         using IHostToolsMarkerPairResetOsCapability capability = opened.Capability;
@@ -180,10 +188,8 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
 
         if (databaseOpened.IsFailure)
         {
-
             return PreJournalRefusal<InstallationResetActivePublication>(
                 cancellationToken);
-
         }
 
         await using HostToolsMarkerPairResetDatabaseSession session = databaseOpened.Value;
@@ -194,10 +200,8 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
 
         if (ready.IsFailure)
         {
-
             return PreJournalRefusal<InstallationResetActivePublication>(
                 cancellationToken);
-
         }
 
         Result<HostProcessToolsDatabaseMarkerEvidence> databaseEvidence =
@@ -205,10 +209,8 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
 
         if (databaseEvidence.IsFailure)
         {
-
             return PreJournalRefusal<InstallationResetActivePublication>(
                 cancellationToken);
-
         }
 
         HostProcessToolsMarkerPairJoinResult joined = _joiner.Join(
@@ -221,10 +223,8 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
             || !DatabaseEvidenceEquals(pair.Database, databaseEvidence.Value)
             || !OsEvidenceEquals(pair.OsMarker, opened.Evidence))
         {
-
             return PreJournalRefusal<InstallationResetActivePublication>(
                 cancellationToken);
-
         }
 
         Result<FullInstallationResetRemediationAuthorization> verified =
@@ -236,10 +236,8 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
 
         if (verified.IsFailure)
         {
-
             return PreJournalRefusal<InstallationResetActivePublication>(
                 cancellationToken);
-
         }
 
         FullInstallationResetRemediationAuthorization authorization = verified.Value;
@@ -254,15 +252,12 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
             || authorization.AcceptedAtUtc.Ticks != claim.AcceptedAtUtc.Ticks
             || authorization.AcceptedAtUtc.Offset != claim.AcceptedAtUtc.Offset)
         {
-
             return PreJournalRefusal<InstallationResetActivePublication>(
                 cancellationToken);
-
         }
 
         try
         {
-
             Result<CampaignPathFullInstallationResetInventory> inventory =
                 await _lifecycle.InventoryFullInstallationResetCleanupAsync(
                     claim.OperationId,
@@ -271,18 +266,14 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
 
             if (inventory.IsFailure)
             {
-
                 return PreJournalRefusal<InstallationResetActivePublication>(
                     cancellationToken);
-
             }
 
             if (inventory.Value.OwnerOperationId != claim.OperationId)
             {
-
                 return PreJournalRefusal<InstallationResetActivePublication>(
                     cancellationToken);
-
             }
 
             Result<CovenantDigest> signedDigest =
@@ -303,10 +294,8 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
                     inventoryDigest.Value,
                     inventory.Value.InventoryDigest))
             {
-
                 return PreJournalRefusal<InstallationResetActivePublication>(
                     cancellationToken);
-
             }
 
             Result<CovenantDigest> ownerEffect =
@@ -323,10 +312,8 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
 
             if (ownerEffect.IsFailure)
             {
-
                 return PreJournalRefusal<InstallationResetActivePublication>(
                     cancellationToken);
-
             }
 
             Result inventoryRevalidated =
@@ -337,10 +324,8 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
 
             if (inventoryRevalidated.IsFailure)
             {
-
                 return PreJournalRefusal<InstallationResetActivePublication>(
                     cancellationToken);
-
             }
 
             HostToolsMarkerPairResetCheckpointV1 journaled = new(
@@ -378,34 +363,28 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
 
             if (published.IsFailure)
             {
-
                 return PreJournalRefusal<InstallationResetActivePublication>(
                     cancellationToken);
-
             }
 
             attempt.PairJournaledPublished = true;
 
             InstallationResetActivePublication? pairAbsenceVerifiedPublication = null;
 
-            using CancellationTokenSource recoveryCheckpoint =
-                new(TimeSpan.FromSeconds(5));
+            using PairEffectDeadline deadline = new(_timeProvider);
 
             try
             {
-
                 Result<RevalidatedPairCheckpoint> journalProof =
                     await RecoverAndRevalidatePairCheckpointAsync(
                         heldInstallationLock,
                         published.Value,
                         HostToolsMarkerPairResetPhase.PairJournaled,
-                        recoveryCheckpoint.Token).ConfigureAwait(false);
+                        deadline.Next("begin-journal-revalidation", LocalEffectBound)).ConfigureAwait(false);
 
                 if (journalProof.IsFailure)
                 {
-
                     return Inert<InstallationResetActivePublication>();
-
                 }
 
                 InstallationResetActivePublication currentJournal =
@@ -417,25 +396,21 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
                 Result<HostToolsDatabaseMarkerCompareDeleteCapability> captured =
                     await session.BeginImmediateAndCaptureAsync(
                         checkpoint.RestartProof.DatabaseMarkerEvidence,
-                        recoveryCheckpoint.Token).ConfigureAwait(false);
+                        deadline.Next("begin-database-marker-capture", LocalEffectBound)).ConfigureAwait(false);
 
                 if (captured.IsFailure)
                 {
-
                     return Inert<InstallationResetActivePublication>();
-
                 }
 
                 Result databaseCleared =
                     await session.CompareClearCommitAndProveDurableAsync(
                         captured.Value,
-                        recoveryCheckpoint.Token).ConfigureAwait(false);
+                        deadline.Next("begin-database-marker-clear", LocalEffectBound)).ConfigureAwait(false);
 
                 if (databaseCleared.IsFailure)
                 {
-
                     return Inert<InstallationResetActivePublication>();
-
                 }
 
                 HostToolsMarkerPairResetCheckpointV1 databaseMarkerDeleted =
@@ -455,13 +430,11 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
                         heldInstallationLock,
                         currentJournal,
                         databaseMarkerDeletedRecord,
-                        recoveryCheckpoint.Token).ConfigureAwait(false);
+                        deadline.Next("begin-database-marker-publication", LocalEffectBound)).ConfigureAwait(false);
 
                 if (databaseMarkerPublished.IsFailure)
                 {
-
                     return Inert<InstallationResetActivePublication>();
-
                 }
 
                 Result<RevalidatedPairCheckpoint> databaseMarkerProof =
@@ -469,26 +442,22 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
                         heldInstallationLock,
                         databaseMarkerPublished.Value,
                         HostToolsMarkerPairResetPhase.DatabaseMarkerCompareDeleted,
-                        recoveryCheckpoint.Token).ConfigureAwait(false);
+                        deadline.Next("begin-database-marker-revalidation", LocalEffectBound)).ConfigureAwait(false);
 
                 if (databaseMarkerProof.IsFailure)
                 {
-
                     return Inert<InstallationResetActivePublication>();
-
                 }
 
                 HostToolsMarkerPairResetOsDeleteStatus deleted =
                     await _os.CompareDeleteExactAsync(
                         capability,
                         databaseMarkerProof.Value.Checkpoint.RestartProof.OsMarkerEvidence,
-                        recoveryCheckpoint.Token).ConfigureAwait(false);
+                        deadline.Next("begin-os-marker-delete", OsCredentialEffectBound)).ConfigureAwait(false);
 
                 if (deleted is not HostToolsMarkerPairResetOsDeleteStatus.Deleted)
                 {
-
                     return Inert<InstallationResetActivePublication>();
-
                 }
 
                 Result<RevalidatedPairCheckpoint> deletedMarkerProof =
@@ -496,13 +465,11 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
                         heldInstallationLock,
                         databaseMarkerProof.Value.Publication,
                         HostToolsMarkerPairResetPhase.DatabaseMarkerCompareDeleted,
-                        recoveryCheckpoint.Token).ConfigureAwait(false);
+                        deadline.Next("begin-os-delete-revalidation", LocalEffectBound)).ConfigureAwait(false);
 
                 if (deletedMarkerProof.IsFailure)
                 {
-
                     return Inert<InstallationResetActivePublication>();
-
                 }
 
                 HostToolsMarkerPairResetCheckpointV1 osMarkerDeleted =
@@ -522,13 +489,11 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
                         heldInstallationLock,
                         deletedMarkerProof.Value.Publication,
                         osMarkerDeletedRecord,
-                        recoveryCheckpoint.Token).ConfigureAwait(false);
+                        deadline.Next("begin-os-marker-publication", LocalEffectBound)).ConfigureAwait(false);
 
                 if (osMarkerPublished.IsFailure)
                 {
-
                     return Inert<InstallationResetActivePublication>();
-
                 }
 
                 Result<RevalidatedPairCheckpoint> osMarkerProof =
@@ -536,24 +501,20 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
                         heldInstallationLock,
                         osMarkerPublished.Value,
                         HostToolsMarkerPairResetPhase.OsMarkerCompareDeleted,
-                        recoveryCheckpoint.Token).ConfigureAwait(false);
+                        deadline.Next("begin-os-marker-revalidation", LocalEffectBound)).ConfigureAwait(false);
 
                 if (osMarkerProof.IsFailure)
                 {
-
                     return Inert<InstallationResetActivePublication>();
-
                 }
 
                 HostToolsMarkerPairResetOsAbsenceStatus finalOsAbsence =
                     await _os.ProveExactAbsenceAsync(
-                        recoveryCheckpoint.Token).ConfigureAwait(false);
+                        deadline.Next("begin-os-absence-proof", OsCredentialEffectBound)).ConfigureAwait(false);
 
                 if (finalOsAbsence is not HostToolsMarkerPairResetOsAbsenceStatus.Absent)
                 {
-
                     return Inert<InstallationResetActivePublication>();
-
                 }
 
                 Result<RevalidatedPairCheckpoint> finalDatabaseProof =
@@ -561,26 +522,22 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
                         heldInstallationLock,
                         osMarkerProof.Value.Publication,
                         HostToolsMarkerPairResetPhase.OsMarkerCompareDeleted,
-                        recoveryCheckpoint.Token).ConfigureAwait(false);
+                        deadline.Next("begin-final-revalidation", LocalEffectBound)).ConfigureAwait(false);
 
                 if (finalDatabaseProof.IsFailure)
                 {
-
                     return Inert<InstallationResetActivePublication>();
-
                 }
 
                 Result databaseAbsent =
                     await session.ProveSameInstallationCleanDurableAsync(
                         finalDatabaseProof.Value.Checkpoint.RestartProof
                             .DatabaseMarkerEvidence.InstallationIdentity,
-                        recoveryCheckpoint.Token).ConfigureAwait(false);
+                        deadline.Next("begin-database-absence-proof", LocalEffectBound)).ConfigureAwait(false);
 
                 if (databaseAbsent.IsFailure)
                 {
-
                     return Inert<InstallationResetActivePublication>();
-
                 }
 
                 HostToolsMarkerPairResetCheckpointV1 pairAbsenceVerified =
@@ -600,23 +557,24 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
                         heldInstallationLock,
                         finalDatabaseProof.Value.Publication,
                         pairAbsenceVerifiedRecord,
-                        recoveryCheckpoint.Token).ConfigureAwait(false);
+                        deadline.Next("begin-pair-absence-publication", LocalEffectBound)).ConfigureAwait(false);
 
                 if (pairAbsencePublished.IsFailure)
                 {
-
                     return Inert<InstallationResetActivePublication>();
-
                 }
 
                 pairAbsenceVerifiedPublication = pairAbsencePublished.Value;
-
             }
-            catch (Exception)
+            catch (Exception exception)
             {
+                LogUnexpected(
+                    "pair-effects",
+                    deadline.Step,
+                    exception,
+                    timedOut: deadline.Expired);
 
                 return Inert<InstallationResetActivePublication>();
-
             }
 
             // Outside the short recovery deadline the pair effects ran under, and outside its
@@ -626,30 +584,23 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
                 heldInstallationLock,
                 pairAbsenceVerifiedPublication,
                 session).ConfigureAwait(false);
-
         }
         finally
         {
-
             if (!attempt.PairJournaledPublished)
             {
-
                 try
                 {
-
                     await _lifecycle.ReleaseRetainedRootsAsync(
                         claim.OperationId).ConfigureAwait(false);
-
                 }
-                catch (Exception)
+                catch (Exception exception)
                 {
                     // Best effort: cleanup cannot replace the primary refusal or caller cancellation.
+                    LogUnexpected("begin-release-retained-roots", step: null, exception);
                 }
-
             }
-
         }
-
     }
 
     internal async Task<Result<InstallationResetActivePublication>> ResumeAsync(
@@ -657,7 +608,6 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
         InstallationResetActivePublication checkpoint,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(heldInstallationLock);
 
         ArgumentNullException.ThrowIfNull(checkpoint);
@@ -666,16 +616,14 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
 
         _ = cancellationToken;
 
-        using CancellationTokenSource recoveryCheckpoint =
-            new(TimeSpan.FromSeconds(5));
+        using PairEffectDeadline deadline = new(_timeProvider);
 
         try
         {
-
             Result<InstallationResetActiveRecoveryState> recovered =
                 await _activeStore.RecoverAsync(
                     heldInstallationLock,
-                    recoveryCheckpoint.Token).ConfigureAwait(false);
+                    deadline.Next("resume-recover-checkpoint", LocalEffectBound)).ConfigureAwait(false);
 
             if (recovered.IsFailure
                 || recovered.Value.Outcome
@@ -689,22 +637,18 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
                     and not HostToolsMarkerPairResetPhase.OsMarkerCompareDeleted
                     and not HostToolsMarkerPairResetPhase.PairAbsenceVerified)
             {
-
                 return Inert<InstallationResetActivePublication>();
-
             }
 
             if (currentCheckpoint.Phase
                 is HostToolsMarkerPairResetPhase.OsMarkerCompareDeleted
                     or HostToolsMarkerPairResetPhase.PairAbsenceVerified)
             {
-
                 return await ResumeFromAbsentPairStateAsync(
                     heldInstallationLock,
                     current,
                     currentCheckpoint,
-                    recoveryCheckpoint.Token).ConfigureAwait(false);
-
+                    deadline).ConfigureAwait(false);
             }
 
             HostToolsMarkerPairResetOsOpenResult opened = _os.ReopenExact(
@@ -714,21 +658,17 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
                     is HostToolsMarkerPairResetPhase.DatabaseMarkerCompareDeleted
                 && opened.Status is HostToolsMarkerPairResetOsOpenStatus.Absent)
             {
-
                 return await ResumeFromDatabaseDeletedOsAbsentAsync(
                     heldInstallationLock,
                     current,
                     currentCheckpoint,
-                    recoveryCheckpoint.Token).ConfigureAwait(false);
-
+                    deadline).ConfigureAwait(false);
             }
 
             if (opened.Status is not HostToolsMarkerPairResetOsOpenStatus.Opened
                 || opened.Capability is null)
             {
-
                 return Inert<InstallationResetActivePublication>();
-
             }
 
             using IHostToolsMarkerPairResetOsCapability capability = opened.Capability;
@@ -738,21 +678,17 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
                     opened.Evidence,
                     currentCheckpoint.RestartProof.OsMarkerEvidence))
             {
-
                 return Inert<InstallationResetActivePublication>();
-
             }
 
             Result<HostToolsMarkerPairResetDatabaseSession> databaseOpened =
                 await OpenDatabaseAsync(
                     heldInstallationLock,
-                    recoveryCheckpoint.Token).ConfigureAwait(false);
+                    deadline.Next("resume-database-open", LocalEffectBound)).ConfigureAwait(false);
 
             if (databaseOpened.IsFailure)
             {
-
                 return Inert<InstallationResetActivePublication>();
-
             }
 
             await using HostToolsMarkerPairResetDatabaseSession session =
@@ -760,19 +696,17 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
 
             Result ready = await _readiness.RequireExactAsync(
                 session.BorrowCoreConnection(),
-                recoveryCheckpoint.Token).ConfigureAwait(false);
+                deadline.Next("resume-schema-readiness", LocalEffectBound)).ConfigureAwait(false);
 
             if (ready.IsFailure)
             {
-
                 return Inert<InstallationResetActivePublication>();
-
             }
 
             Result<HostToolsDatabaseMarkerRecoveryObservation> observed =
                 await session.ObserveExpectedOrCleanAsync(
                     currentCheckpoint.RestartProof.DatabaseMarkerEvidence,
-                    recoveryCheckpoint.Token).ConfigureAwait(false);
+                    deadline.Next("resume-database-marker-observation", LocalEffectBound)).ConfigureAwait(false);
 
             if (observed.IsFailure
                 || currentCheckpoint.Phase
@@ -785,9 +719,7 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
                     && observed.Value
                         is not HostToolsDatabaseMarkerRecoveryObservation.SameInstallationClean)
             {
-
                 return Inert<InstallationResetActivePublication>();
-
             }
 
             HostProcessToolsMarkerPairJoinResult joined = _joiner.Join(
@@ -804,9 +736,7 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
                     pair.OsMarker,
                     currentCheckpoint.RestartProof.OsMarkerEvidence))
             {
-
                 return Inert<InstallationResetActivePublication>();
-
             }
 
             Result<RevalidatedPairCheckpoint> revalidated =
@@ -814,13 +744,11 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
                     heldInstallationLock,
                     current,
                     currentCheckpoint.Phase,
-                    recoveryCheckpoint.Token).ConfigureAwait(false);
+                    deadline.Next("resume-checkpoint-revalidation", LocalEffectBound)).ConfigureAwait(false);
 
             if (revalidated.IsFailure)
             {
-
                 return Inert<InstallationResetActivePublication>();
-
             }
 
             if (currentCheckpoint.Phase
@@ -828,18 +756,15 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
                 && observed.Value
                     is HostToolsDatabaseMarkerRecoveryObservation.SameInstallationClean)
             {
-
                 Result databaseAbsent =
                     await session.ProveSameInstallationCleanDurableAsync(
                         revalidated.Value.Checkpoint.RestartProof.DatabaseMarkerEvidence
                             .InstallationIdentity,
-                        recoveryCheckpoint.Token).ConfigureAwait(false);
+                        deadline.Next("resume-database-absence-proof", LocalEffectBound)).ConfigureAwait(false);
 
                 if (databaseAbsent.IsFailure)
                 {
-
                     return Inert<InstallationResetActivePublication>();
-
                 }
 
                 Result<RevalidatedPairCheckpoint> durableProof =
@@ -847,13 +772,11 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
                         heldInstallationLock,
                         revalidated.Value.Publication,
                         HostToolsMarkerPairResetPhase.PairJournaled,
-                        recoveryCheckpoint.Token).ConfigureAwait(false);
+                        deadline.Next("resume-durable-checkpoint-revalidation", LocalEffectBound)).ConfigureAwait(false);
 
                 if (durableProof.IsFailure)
                 {
-
                     return Inert<InstallationResetActivePublication>();
-
                 }
 
                 HostToolsMarkerPairResetCheckpointV1 recoveredDatabaseMarkerDeleted =
@@ -873,34 +796,28 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
                         heldInstallationLock,
                         durableProof.Value.Publication,
                         recoveredDatabaseMarkerDeletedRecord,
-                        recoveryCheckpoint.Token).ConfigureAwait(false);
+                        deadline.Next("resume-recovered-database-publication", LocalEffectBound)).ConfigureAwait(false);
 
                 if (recoveredPublication.IsFailure)
                 {
-
                     return Inert<InstallationResetActivePublication>();
-
                 }
 
                 return Inert<InstallationResetActivePublication>();
-
             }
 
             if (currentCheckpoint.Phase
                 is HostToolsMarkerPairResetPhase.DatabaseMarkerCompareDeleted)
             {
-
                 HostToolsMarkerPairResetOsDeleteStatus deleted =
                     await _os.CompareDeleteExactAsync(
                         capability,
                         revalidated.Value.Checkpoint.RestartProof.OsMarkerEvidence,
-                        recoveryCheckpoint.Token).ConfigureAwait(false);
+                        deadline.Next("resume-os-marker-delete", OsCredentialEffectBound)).ConfigureAwait(false);
 
                 if (deleted is not HostToolsMarkerPairResetOsDeleteStatus.Deleted)
                 {
-
                     return Inert<InstallationResetActivePublication>();
-
                 }
 
                 Result<RevalidatedPairCheckpoint> deletedMarkerProof =
@@ -908,13 +825,11 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
                         heldInstallationLock,
                         revalidated.Value.Publication,
                         HostToolsMarkerPairResetPhase.DatabaseMarkerCompareDeleted,
-                        recoveryCheckpoint.Token).ConfigureAwait(false);
+                        deadline.Next("resume-os-delete-revalidation", LocalEffectBound)).ConfigureAwait(false);
 
                 if (deletedMarkerProof.IsFailure)
                 {
-
                     return Inert<InstallationResetActivePublication>();
-
                 }
 
                 HostToolsMarkerPairResetCheckpointV1 osMarkerDeleted =
@@ -934,41 +849,34 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
                         heldInstallationLock,
                         deletedMarkerProof.Value.Publication,
                         osMarkerDeletedRecord,
-                        recoveryCheckpoint.Token).ConfigureAwait(false);
+                        deadline.Next("resume-os-marker-publication", LocalEffectBound)).ConfigureAwait(false);
 
                 if (osMarkerPublished.IsFailure)
                 {
-
                     return Inert<InstallationResetActivePublication>();
-
                 }
 
                 return Inert<InstallationResetActivePublication>();
-
             }
 
             Result<HostToolsDatabaseMarkerCompareDeleteCapability> captured =
                 await session.BeginImmediateAndCaptureAsync(
                     revalidated.Value.Checkpoint.RestartProof.DatabaseMarkerEvidence,
-                    recoveryCheckpoint.Token).ConfigureAwait(false);
+                    deadline.Next("resume-database-marker-capture", LocalEffectBound)).ConfigureAwait(false);
 
             if (captured.IsFailure)
             {
-
                 return Inert<InstallationResetActivePublication>();
-
             }
 
             Result databaseCleared =
                 await session.CompareClearCommitAndProveDurableAsync(
                     captured.Value,
-                    recoveryCheckpoint.Token).ConfigureAwait(false);
+                    deadline.Next("resume-database-marker-clear", LocalEffectBound)).ConfigureAwait(false);
 
             if (databaseCleared.IsFailure)
             {
-
                 return Inert<InstallationResetActivePublication>();
-
             }
 
             HostToolsMarkerPairResetCheckpointV1 databaseMarkerDeleted =
@@ -988,25 +896,25 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
                     heldInstallationLock,
                     revalidated.Value.Publication,
                     databaseMarkerDeletedRecord,
-                    recoveryCheckpoint.Token).ConfigureAwait(false);
+                    deadline.Next("resume-checkpoint-publication", LocalEffectBound)).ConfigureAwait(false);
 
             if (published.IsFailure)
             {
-
                 return Inert<InstallationResetActivePublication>();
-
             }
-
         }
-        catch (Exception)
+        catch (Exception exception)
         {
+            LogUnexpected(
+                "resume",
+                deadline.Step,
+                exception,
+                timedOut: deadline.Expired);
 
             return Inert<InstallationResetActivePublication>();
-
         }
 
         return Inert<InstallationResetActivePublication>();
-
     }
 
     private async Task<Result<InstallationResetActivePublication>>
@@ -1014,19 +922,16 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
             ArcanumMaintenanceLock heldInstallationLock,
             InstallationResetActivePublication current,
             HostToolsMarkerPairResetCheckpointV1 currentCheckpoint,
-            CancellationToken cancellationToken)
+            PairEffectDeadline deadline)
     {
-
         Result<HostToolsMarkerPairResetDatabaseSession> databaseOpened =
             await OpenDatabaseAsync(
                 heldInstallationLock,
-                cancellationToken).ConfigureAwait(false);
+                deadline.Next("resume-database-deleted-database-open", LocalEffectBound)).ConfigureAwait(false);
 
         if (databaseOpened.IsFailure)
         {
-
             return Inert<InstallationResetActivePublication>();
-
         }
 
         await using HostToolsMarkerPairResetDatabaseSession session =
@@ -1034,27 +939,23 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
 
         Result ready = await _readiness.RequireExactAsync(
             session.BorrowCoreConnection(),
-            cancellationToken).ConfigureAwait(false);
+            deadline.Next("resume-database-deleted-schema-readiness", LocalEffectBound)).ConfigureAwait(false);
 
         if (ready.IsFailure)
         {
-
             return Inert<InstallationResetActivePublication>();
-
         }
 
         Result<HostToolsDatabaseMarkerRecoveryObservation> observed =
             await session.ObserveExpectedOrCleanAsync(
                 currentCheckpoint.RestartProof.DatabaseMarkerEvidence,
-                cancellationToken).ConfigureAwait(false);
+                deadline.Next("resume-database-deleted-database-marker-observation", LocalEffectBound)).ConfigureAwait(false);
 
         if (observed.IsFailure
             || observed.Value
                 is not HostToolsDatabaseMarkerRecoveryObservation.SameInstallationClean)
         {
-
             return Inert<InstallationResetActivePublication>();
-
         }
 
         HostProcessToolsMarkerPairJoinResult joined = _joiner.Join(
@@ -1071,9 +972,7 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
                 pair.OsMarker,
                 currentCheckpoint.RestartProof.OsMarkerEvidence))
         {
-
             return Inert<InstallationResetActivePublication>();
-
         }
 
         Result<RevalidatedPairCheckpoint> revalidated =
@@ -1081,23 +980,21 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
                 heldInstallationLock,
                 current,
                 HostToolsMarkerPairResetPhase.DatabaseMarkerCompareDeleted,
-                cancellationToken).ConfigureAwait(false);
+                deadline.Next("resume-database-deleted-checkpoint-revalidation", LocalEffectBound)).ConfigureAwait(false);
 
         if (revalidated.IsFailure)
         {
-
             return Inert<InstallationResetActivePublication>();
-
         }
 
         HostToolsMarkerPairResetOsAbsenceStatus osAbsence =
-            await _os.ProveExactAbsenceAsync(cancellationToken).ConfigureAwait(false);
+            await _os.ProveExactAbsenceAsync(
+                deadline.Next("resume-database-deleted-os-absence-proof", OsCredentialEffectBound))
+                .ConfigureAwait(false);
 
         if (osAbsence is not HostToolsMarkerPairResetOsAbsenceStatus.Absent)
         {
-
             return Inert<InstallationResetActivePublication>();
-
         }
 
         Result<RevalidatedPairCheckpoint> durableProof =
@@ -1105,13 +1002,11 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
                 heldInstallationLock,
                 revalidated.Value.Publication,
                 HostToolsMarkerPairResetPhase.DatabaseMarkerCompareDeleted,
-                cancellationToken).ConfigureAwait(false);
+                deadline.Next("resume-database-deleted-durable-checkpoint-revalidation", LocalEffectBound)).ConfigureAwait(false);
 
         if (durableProof.IsFailure)
         {
-
             return Inert<InstallationResetActivePublication>();
-
         }
 
         HostToolsMarkerPairResetCheckpointV1 osMarkerDeleted =
@@ -1131,17 +1026,14 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
                 heldInstallationLock,
                 durableProof.Value.Publication,
                 osMarkerDeletedRecord,
-                cancellationToken).ConfigureAwait(false);
+                deadline.Next("resume-database-deleted-checkpoint-publication", LocalEffectBound)).ConfigureAwait(false);
 
         if (published.IsFailure)
         {
-
             return Inert<InstallationResetActivePublication>();
-
         }
 
         return Inert<InstallationResetActivePublication>();
-
     }
 
     private async Task<Result<InstallationResetActivePublication>>
@@ -1149,9 +1041,8 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
             ArcanumMaintenanceLock heldInstallationLock,
             InstallationResetActivePublication current,
             HostToolsMarkerPairResetCheckpointV1 currentCheckpoint,
-            CancellationToken cancellationToken)
+            PairEffectDeadline deadline)
     {
-
         HostProcessToolsMarkerPairJoinResult joined = _joiner.Join(
             currentCheckpoint.RestartProof.DatabaseMarkerEvidence,
             currentCheckpoint.RestartProof.OsMarkerEvidence);
@@ -1166,9 +1057,7 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
                 pair.OsMarker,
                 currentCheckpoint.RestartProof.OsMarkerEvidence))
         {
-
             return Inert<InstallationResetActivePublication>();
-
         }
 
         Result<RevalidatedPairCheckpoint> revalidated =
@@ -1176,35 +1065,31 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
                 heldInstallationLock,
                 current,
                 currentCheckpoint.Phase,
-                cancellationToken).ConfigureAwait(false);
+                deadline.Next("resume-pair-absent-checkpoint-revalidation", LocalEffectBound)).ConfigureAwait(false);
 
         if (revalidated.IsFailure)
         {
-
             return Inert<InstallationResetActivePublication>();
-
         }
 
         HostToolsMarkerPairResetOsAbsenceStatus osAbsence =
-            await _os.ProveExactAbsenceAsync(cancellationToken).ConfigureAwait(false);
+            await _os.ProveExactAbsenceAsync(
+                deadline.Next("resume-pair-absent-os-absence-proof", OsCredentialEffectBound))
+                .ConfigureAwait(false);
 
         if (osAbsence is not HostToolsMarkerPairResetOsAbsenceStatus.Absent)
         {
-
             return Inert<InstallationResetActivePublication>();
-
         }
 
         Result<HostToolsMarkerPairResetDatabaseSession> databaseOpened =
             await OpenDatabaseAsync(
                 heldInstallationLock,
-                cancellationToken).ConfigureAwait(false);
+                deadline.Next("resume-pair-absent-database-open", LocalEffectBound)).ConfigureAwait(false);
 
         if (databaseOpened.IsFailure)
         {
-
             return Inert<InstallationResetActivePublication>();
-
         }
 
         await using HostToolsMarkerPairResetDatabaseSession session =
@@ -1212,40 +1097,34 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
 
         Result ready = await _readiness.RequireExactAsync(
             session.BorrowCoreConnection(),
-            cancellationToken).ConfigureAwait(false);
+            deadline.Next("resume-pair-absent-schema-readiness", LocalEffectBound)).ConfigureAwait(false);
 
         if (ready.IsFailure)
         {
-
             return Inert<InstallationResetActivePublication>();
-
         }
 
         Result<HostToolsDatabaseMarkerRecoveryObservation> observed =
             await session.ObserveExpectedOrCleanAsync(
                 currentCheckpoint.RestartProof.DatabaseMarkerEvidence,
-                cancellationToken).ConfigureAwait(false);
+                deadline.Next("resume-pair-absent-database-marker-observation", LocalEffectBound)).ConfigureAwait(false);
 
         if (observed.IsFailure
             || observed.Value
                 is not HostToolsDatabaseMarkerRecoveryObservation.SameInstallationClean)
         {
-
             return Inert<InstallationResetActivePublication>();
-
         }
 
         Result databaseAbsent =
             await session.ProveSameInstallationCleanDurableAsync(
                 revalidated.Value.Checkpoint.RestartProof.DatabaseMarkerEvidence
                     .InstallationIdentity,
-                cancellationToken).ConfigureAwait(false);
+                deadline.Next("resume-pair-absent-database-absence-proof", LocalEffectBound)).ConfigureAwait(false);
 
         if (databaseAbsent.IsFailure)
         {
-
             return Inert<InstallationResetActivePublication>();
-
         }
 
         Result<RevalidatedPairCheckpoint> finalProof =
@@ -1253,24 +1132,20 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
                 heldInstallationLock,
                 revalidated.Value.Publication,
                 currentCheckpoint.Phase,
-                cancellationToken).ConfigureAwait(false);
+                deadline.Next("resume-pair-absent-final-revalidation", LocalEffectBound)).ConfigureAwait(false);
 
         if (finalProof.IsFailure)
         {
-
             return Inert<InstallationResetActivePublication>();
-
         }
 
         if (currentCheckpoint.Phase
             is HostToolsMarkerPairResetPhase.PairAbsenceVerified)
         {
-
             return await RunCampaignCleanupAsync(
                 heldInstallationLock,
                 finalProof.Value.Publication,
                 session).ConfigureAwait(false);
-
         }
 
         HostToolsMarkerPairResetCheckpointV1 pairAbsenceVerified =
@@ -1290,20 +1165,17 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
                 heldInstallationLock,
                 finalProof.Value.Publication,
                 pairAbsenceVerifiedRecord,
-                cancellationToken).ConfigureAwait(false);
+                deadline.Next("resume-pair-absent-checkpoint-publication", LocalEffectBound)).ConfigureAwait(false);
 
         if (published.IsFailure)
         {
-
             return Inert<InstallationResetActivePublication>();
-
         }
 
         return await RunCampaignCleanupAsync(
             heldInstallationLock,
             published.Value,
             session).ConfigureAwait(false);
-
     }
 
     Task<Result<InstallationResetActivePublication>>
@@ -1354,7 +1226,6 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
             ArcanumMaintenanceLock heldInstallationLock,
             CancellationToken cancellationToken)
     {
-
         StoppedHostGrimoireAuthorityIssuer issuer = new(
             heldInstallationLock,
             _activeStore.GuardedRoot,
@@ -1365,10 +1236,8 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
 
         if (issued.IsFailure)
         {
-
             return Result<HostToolsMarkerPairResetDatabaseSession>.Failure(
                 issued.Error);
-
         }
 
         await using IStoppedHostGrimoireConnectionAuthority authority =
@@ -1378,7 +1247,6 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
             .OpenHostToolsMarkerPairResetDatabaseSessionAsync(
                 authority,
                 cancellationToken).ConfigureAwait(false);
-
     }
 
     private async Task<Result<InstallationResetActivePublication>> RunCampaignCleanupAsync(
@@ -1386,47 +1254,38 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
         InstallationResetActivePublication pairAbsence,
         HostToolsMarkerPairResetDatabaseSession session)
     {
-
         if (pairAbsence.Payload.FullInstallationResetRemediationClaim is not { } claim)
         {
-
             return Inert<InstallationResetActivePublication>();
-
         }
 
         try
         {
-
             return await RunCampaignCleanupCoreAsync(
                 heldInstallationLock,
                 pairAbsence,
                 session).ConfigureAwait(false);
-
         }
-        catch (Exception)
+        catch (Exception exception)
         {
+            LogUnexpected("campaign-cleanup", step: null, exception);
 
             return Inert<InstallationResetActivePublication>();
-
         }
         finally
         {
-
             try
             {
-
                 await _lifecycle.ReleaseRetainedRootsAsync(claim.OperationId)
                     .ConfigureAwait(false);
-
             }
-            catch (Exception)
+            catch (Exception exception)
             {
                 // Best effort: a handle that refuses to close cannot replace the operation's own
                 // outcome, and the release itself already continues past an individual failure.
+                LogUnexpected("campaign-cleanup-release", step: null, exception);
             }
-
         }
-
     }
 
     private async Task<Result<InstallationResetActivePublication>> RunCampaignCleanupCoreAsync(
@@ -1434,7 +1293,6 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
         InstallationResetActivePublication pairAbsence,
         HostToolsMarkerPairResetDatabaseSession session)
     {
-
         Result<RevalidatedPairCheckpoint> revalidated =
             await RecoverAndRevalidatePairCheckpointAsync(
                 heldInstallationLock,
@@ -1444,9 +1302,7 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
 
         if (revalidated.IsFailure)
         {
-
             return Inert<InstallationResetActivePublication>();
-
         }
 
         Result<CampaignPathFullInstallationResetCleanupReceipt?> journaled =
@@ -1454,9 +1310,7 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
 
         if (journaled.IsFailure)
         {
-
             return Inert<InstallationResetActivePublication>();
-
         }
 
         CleanupJournalState state = new(
@@ -1471,7 +1325,6 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
         // one it would have built.
         if (state.Receipt is null or { DeletedCount: 0, OrphanCount: 0 })
         {
-
             Result<CleanupJournalState> journaledVector = await JournalCleanupVectorAsync(
                 heldInstallationLock,
                 state,
@@ -1479,20 +1332,15 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
 
             if (journaledVector.IsFailure)
             {
-
                 return Inert<InstallationResetActivePublication>();
-
             }
 
             state = journaledVector.Value;
-
         }
 
         if (state.Receipt is not { } prepared)
         {
-
             return Inert<InstallationResetActivePublication>();
-
         }
 
         // Freshly minted against the publication that now carries the receipt. The authority that
@@ -1505,9 +1353,7 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
 
         if (authority.IsFailure)
         {
-
             return Inert<InstallationResetActivePublication>();
-
         }
 
         Result<CampaignPathFullInstallationResetCleanupReceipt> terminal =
@@ -1519,9 +1365,7 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
 
         if (terminal.IsFailure)
         {
-
             return Inert<InstallationResetActivePublication>();
-
         }
 
         // An authenticated retry whose children are all already terminal reaches the identical
@@ -1531,7 +1375,6 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
                 prepared,
                 terminal.Value))
         {
-
             Result<InstallationResetActivePublication> published =
                 await PublishCleanupReceiptAsync(
                     heldInstallationLock,
@@ -1540,11 +1383,8 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
 
             if (published.IsFailure)
             {
-
                 return Inert<InstallationResetActivePublication>();
-
             }
-
         }
 
         // The Campaign receipt is terminal, which is the exact precondition the managed-file
@@ -1562,7 +1402,6 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
         // locked service that called in here, which reads the checkpoint this published rather than
         // this return value.
         return Inert<InstallationResetActivePublication>();
-
     }
 
     /// <summary>
@@ -1583,12 +1422,9 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
         ArcanumMaintenanceLock heldInstallationLock,
         HostToolsMarkerPairResetDatabaseSession session)
     {
-
         if (_managedFiles is null)
         {
-
             return Inert<InstallationResetActivePublication>();
-
         }
 
         Result<InstallationResetActiveRecoveryState> recovered = await _activeStore
@@ -1600,9 +1436,7 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
                 is not InstallationResetActiveRecoveryOutcome.AuthenticatedV2
             || recovered.Value.Publication is not { } current)
         {
-
             return Inert<InstallationResetActivePublication>();
-
         }
 
         return await _managedFiles.ReconcileAsync(
@@ -1610,7 +1444,6 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
             current,
             session.BorrowCoreConnection(),
             CancellationToken.None).ConfigureAwait(false);
-
     }
 
     /// <summary>
@@ -1627,7 +1460,6 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
         CleanupJournalState state,
         HostToolsMarkerPairResetDatabaseSession session)
     {
-
         Result<CampaignPathFullInstallationResetInventory> inventory =
             CampaignPathFullInstallationResetInventory.Create(
                 state.Checkpoint.RestartProof.SignedAttestation.OperationId,
@@ -1636,9 +1468,7 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
 
         if (inventory.IsFailure)
         {
-
             return Inert<CleanupJournalState>();
-
         }
 
         Result<CampaignPathFullInstallationResetCleanupPreparation> preparation =
@@ -1649,9 +1479,7 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
 
         if (preparation.IsFailure)
         {
-
             return Inert<CleanupJournalState>();
-
         }
 
         Result<FullInstallationResetMarkerCleanupAuthority> authority =
@@ -1662,9 +1490,7 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
 
         if (authority.IsFailure)
         {
-
             return Inert<CleanupJournalState>();
-
         }
 
         SqliteConnection connection = session.BorrowCoreConnection();
@@ -1676,7 +1502,6 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
                 .BeginTransactionAsync(CancellationToken.None)
                 .ConfigureAwait(false))
         {
-
             Result<CampaignPathFullInstallationResetCleanupReceipt> committed =
                 await _lifecycle.PrepareFullInstallationResetCleanupAsync(
                     preparation.Value,
@@ -1688,17 +1513,14 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
 
             if (committed.IsFailure)
             {
-
                 await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
 
                 return Inert<CleanupJournalState>();
-
             }
 
             await transaction.CommitAsync(CancellationToken.None).ConfigureAwait(false);
 
             receipt = committed.Value;
-
         }
 
         if (state.Receipt is not null
@@ -1706,9 +1528,7 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
                 state.Receipt,
                 receipt))
         {
-
             return state with { Receipt = receipt };
-
         }
 
         Result<InstallationResetActivePublication> published =
@@ -1719,9 +1539,7 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
 
         if (published.IsFailure)
         {
-
             return Inert<CleanupJournalState>();
-
         }
 
         Result<RevalidatedPairCheckpoint> revalidated =
@@ -1737,7 +1555,6 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
                 revalidated.Value.Publication,
                 revalidated.Value.Checkpoint,
                 receipt);
-
     }
 
     private Task<Result<InstallationResetActivePublication>> PublishCleanupReceiptAsync(
@@ -1775,7 +1592,6 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
             HostToolsMarkerPairResetPhase expectedPhase,
             CancellationToken cancellationToken)
     {
-
         Result<InstallationResetActiveRecoveryState> recovered =
             await _activeStore.RecoverAsync(
                 heldInstallationLock,
@@ -1790,14 +1606,11 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
             || checkpoint.Phase != expectedPhase
             || current.Payload.FullInstallationResetRemediationClaim is not { } claim)
         {
-
             return Inert<RevalidatedPairCheckpoint>();
-
         }
 
         try
         {
-
             FullInstallationResetExternalRemediationAttestation attestation =
                 checkpoint.RestartProof.SignedAttestation.ToAttestation();
 
@@ -1862,22 +1675,18 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
                     claim,
                     checkpoint.RestartProof.AcceptedAtUtc))
             {
-
                 return Inert<RevalidatedPairCheckpoint>();
-
             }
 
             return Result<RevalidatedPairCheckpoint>.Success(
                 new RevalidatedPairCheckpoint(current, checkpoint));
-
         }
-        catch (Exception)
+        catch (Exception exception)
         {
+            LogUnexpected("revalidate-checkpoint", step: null, exception);
 
             return Inert<RevalidatedPairCheckpoint>();
-
         }
-
     }
 
     private static bool AuthorizationEqualsClaim(
@@ -1902,7 +1711,6 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
             InstallationResetActivePublication publication,
             CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(heldInstallationLock);
 
         ArgumentNullException.ThrowIfNull(publication);
@@ -1918,9 +1726,7 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
 
         if (revalidated.IsFailure)
         {
-
             return Inert<FullInstallationResetMarkerCleanupAuthority>();
-
         }
 
         HostToolsMarkerPairResetCheckpointV1 checkpoint =
@@ -1937,9 +1743,7 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
 
         if (inventory.IsFailure || receipt.IsFailure)
         {
-
             return Inert<FullInstallationResetMarkerCleanupAuthority>();
-
         }
 
         MintTicket mintTicket = new();
@@ -1958,17 +1762,14 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
                 mintTicket,
                 this,
                 proof));
-
     }
 
     private async Task<Result> RevalidateCleanupProofAsync(
         AuthenticatedFullInstallationResetJournalProof proof,
         CancellationToken cancellationToken)
     {
-
         try
         {
-
             proof.HeldInstallationLock.AssertHeldFor(_activeStore.GuardedRoot);
 
             Result<RevalidatedPairCheckpoint> revalidated =
@@ -1981,9 +1782,7 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
             if (revalidated.IsFailure
                 || !CheckpointEquals(proof.Checkpoint, revalidated.Value.Checkpoint))
             {
-
                 return Inert();
-
             }
 
             Result<CampaignPathFullInstallationResetInventory> inventory =
@@ -2005,31 +1804,26 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
                     receipt.Value)
                     ? Result.Success()
                     : Inert();
-
         }
-        catch (Exception)
+        catch (Exception exception)
         {
+            LogUnexpected("revalidate-cleanup-proof", step: null, exception);
 
             return Inert();
-
         }
-
     }
 
     private static Result<CampaignPathFullInstallationResetCleanupReceipt?>
         ReconstructCleanupReceipt(
             HostToolsMarkerPairResetCheckpointV1 checkpoint)
     {
-
         if (checkpoint.MarkerIntentCount is null
             && checkpoint.OrderedMarkerIntentIds is null
             && checkpoint.MarkerIntentVectorDigest is null
             && checkpoint.DeletedCount is null
             && checkpoint.OrphanCount is null)
         {
-
             return Result<CampaignPathFullInstallationResetCleanupReceipt?>.Success(null);
-
         }
 
         if (checkpoint.OrderedMarkerIntentIds is not { } intentIds
@@ -2037,9 +1831,7 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
             || checkpoint.DeletedCount is not { } deletedCount
             || checkpoint.OrphanCount is not { } orphanCount)
         {
-
             return Inert<CampaignPathFullInstallationResetCleanupReceipt?>();
-
         }
 
         Result<CampaignPathFullInstallationResetCleanupReceipt> receipt =
@@ -2060,14 +1852,11 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
         if (receipt.IsFailure
             || receipt.Value.MarkerIntentCount != checkpoint.MarkerIntentCount)
         {
-
             return Inert<CampaignPathFullInstallationResetCleanupReceipt?>();
-
         }
 
         return Result<CampaignPathFullInstallationResetCleanupReceipt?>.Success(
             receipt.Value);
-
     }
 
     private sealed class MintTicket
@@ -2076,7 +1865,6 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
 
     private sealed class AuthenticatedFullInstallationResetJournalProof
     {
-
         private AuthenticatedFullInstallationResetJournalProof(
             ArcanumMaintenanceLock heldInstallationLock,
             InstallationResetActivePublication publication,
@@ -2084,7 +1872,6 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
             CampaignPathFullInstallationResetInventory inventory,
             CampaignPathFullInstallationResetCleanupReceipt? receipt)
         {
-
             HeldInstallationLock = heldInstallationLock;
 
             Publication = publication;
@@ -2094,7 +1881,6 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
             Inventory = inventory;
 
             Receipt = receipt;
-
         }
 
         internal ArcanumMaintenanceLock HeldInstallationLock { get; }
@@ -2115,7 +1901,6 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
             CampaignPathFullInstallationResetInventory inventory,
             CampaignPathFullInstallationResetCleanupReceipt? receipt)
         {
-
             ArgumentNullException.ThrowIfNull(mintTicket);
 
             return new AuthenticatedFullInstallationResetJournalProof(
@@ -2124,25 +1909,20 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
                 checkpoint,
                 inventory,
                 receipt);
-
         }
-
     }
 
     internal sealed class FullInstallationResetMarkerCleanupAuthority
     {
-
         private FullInstallationResetMarkerCleanupAuthority(
             HostToolsMarkerPairResetCoordinator owner,
             AuthenticatedFullInstallationResetJournalProof proof)
         {
-
             _owner = owner ?? throw new ArgumentNullException(nameof(owner));
 
             ArgumentNullException.ThrowIfNull(proof);
 
             _proof = proof;
-
         }
 
         private readonly HostToolsMarkerPairResetCoordinator _owner;
@@ -2154,18 +1934,14 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
             HostToolsMarkerPairResetCoordinator owner,
             object proof)
         {
-
             if (mintTicket is not MintTicket
                 || proof is not AuthenticatedFullInstallationResetJournalProof typedProof)
             {
-
                 throw new InvalidOperationException(
                     "The full-installation reset cleanup authority is unavailable.");
-
             }
 
             return new FullInstallationResetMarkerCleanupAuthority(owner, typedProof);
-
         }
 
         internal Task<Result> RevalidatePreparationAsync(
@@ -2173,14 +1949,12 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
             CampaignPathFullInstallationResetCleanupReceipt? expectedReceipt,
             CancellationToken cancellationToken)
         {
-
             ArgumentNullException.ThrowIfNull(preparation);
 
             return RevalidatePreparationCoreAsync(
                 preparation,
                 expectedReceipt,
                 cancellationToken);
-
         }
 
         private async Task<Result> RevalidatePreparationCoreAsync(
@@ -2188,16 +1962,13 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
             CampaignPathFullInstallationResetCleanupReceipt? expectedReceipt,
             CancellationToken cancellationToken)
         {
-
             Result current = await _owner.RevalidateCleanupProofAsync(
                 _proof,
                 cancellationToken).ConfigureAwait(false);
 
             if (current.IsFailure)
             {
-
                 return current;
-
             }
 
             Result<CampaignPathFullInstallationResetCleanupPreparation> expected =
@@ -2215,25 +1986,21 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
                     expectedReceipt)
                     ? Result.Success()
                     : Inert();
-
         }
 
         internal Task<Result> RevalidateReceiptAsync(
             CampaignPathFullInstallationResetCleanupReceipt receipt,
             CancellationToken cancellationToken)
         {
-
             ArgumentNullException.ThrowIfNull(receipt);
 
             return RevalidateReceiptCoreAsync(receipt, cancellationToken);
-
         }
 
         private async Task<Result> RevalidateReceiptCoreAsync(
             CampaignPathFullInstallationResetCleanupReceipt receipt,
             CancellationToken cancellationToken)
         {
-
             Result current = await _owner.RevalidateCleanupProofAsync(
                 _proof,
                 cancellationToken).ConfigureAwait(false);
@@ -2245,10 +2012,90 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
                     receipt)
                     ? Result.Success()
                     : Inert();
-
         }
-
     }
+
+    /// <summary>
+    /// Records that a catch-all is about to turn an exception into the one content-free refusal.
+    /// </summary>
+    /// <remarks>
+    /// Every failure in this operation collapses to a single recovery-required answer on purpose, which
+    /// leaves the log as the only place an operator can learn what actually went wrong. It carries the
+    /// exception's type and where it happened, and nothing the exception said: the exception object is
+    /// deliberately not passed, because its message and stack come from collaborators that handle
+    /// attestation, marker and digest material, and a content-free return contract that leaked the same
+    /// content through the log would not be one.
+    ///
+    /// <para>A fault in the logger cannot be allowed to change the answer, so it is swallowed here.</para>
+    /// </remarks>
+    private void LogUnexpected(
+        string phase,
+        string? step,
+        Exception exception,
+        bool timedOut = false)
+    {
+        try
+        {
+            if (timedOut)
+            {
+                _logger.LogWarning(
+                    "Full-installation reset marker-pair operation timed out at step {Step} of {Phase}; reporting recovery required.",
+                    step,
+                    phase);
+            }
+            else
+            {
+                _logger.LogWarning(
+                    "Full-installation reset marker-pair operation hit an unexpected {ExceptionType} during {Phase} (step {Step}); reporting recovery required.",
+                    ExceptionKind(exception),
+                    phase,
+                    step ?? "none");
+            }
+        }
+        catch (Exception)
+        {
+            // Diagnostics only: the answer the caller gets is already decided.
+        }
+    }
+
+    /// <summary>
+    /// A bounded, content-free name for the kind of exception a catch-all absorbed.
+    /// </summary>
+    /// <remarks>
+    /// A closed set matched by type rather than read from the exception: the type's name is the one
+    /// thing worth logging, and reading it reflectively would put a reflection-shaped call on a path the
+    /// hosted-producer analysis has to classify, for no gain over naming the families that can occur
+    /// here. Anything outside the set is reported as <c>Other</c>.
+    ///
+    /// <para>The set covers the families the collaborators of this operation can raise: storage and
+    /// platform failures, the decoding and cryptographic failures of the records it authenticates, a
+    /// native credential backend that is missing or unloadable, and the shapes a defect takes (a null
+    /// reference, a bad cast, a missing key). The more specific type is listed before the family it
+    /// belongs to, so a disposed object is not reported as a generic invalid operation.</para>
+    /// </remarks>
+    private static string ExceptionKind(Exception exception) =>
+        exception switch
+        {
+            OperationCanceledException => nameof(OperationCanceledException),
+            TimeoutException => nameof(TimeoutException),
+            SqliteException => nameof(SqliteException),
+            InvalidDataException => nameof(InvalidDataException),
+            IOException => nameof(IOException),
+            UnauthorizedAccessException => nameof(UnauthorizedAccessException),
+            NotSupportedException => nameof(NotSupportedException),
+            FormatException => nameof(FormatException),
+            System.Security.Cryptography.CryptographicException => "CryptographicException",
+            System.Text.Json.JsonException => "JsonException",
+            DllNotFoundException => nameof(DllNotFoundException),
+            BadImageFormatException => nameof(BadImageFormatException),
+            KeyNotFoundException => nameof(KeyNotFoundException),
+            InvalidCastException => nameof(InvalidCastException),
+            NullReferenceException => nameof(NullReferenceException),
+            ArgumentException => nameof(ArgumentException),
+            ObjectDisposedException => nameof(ObjectDisposedException),
+            InvalidOperationException => nameof(InvalidOperationException),
+            _ => "Other",
+        };
 
     private static Result Inert() =>
         Result.Failure(new Error(
@@ -2262,18 +2109,48 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
 
     private static Result<T> PreJournalRefusal<T>(CancellationToken cancellationToken)
     {
-
         cancellationToken.ThrowIfCancellationRequested();
 
         return Inert<T>();
+    }
 
+    /// <summary>
+    /// The recovery-owned deadline the marker effects run under, re-armed for each effect.
+    /// </summary>
+    /// <remarks>
+    /// One clock around the whole sequence made a slow operating-system call spend the budget of every
+    /// publication after it. This keeps what the original gave - one token for the whole sequence,
+    /// owned by recovery and never the caller's - and gives each effect its own window by re-arming the
+    /// same source immediately before the call that uses it. Once a window has expired the source stays
+    /// cancelled, so a timed-out effect still stops everything that would have followed it.
+    ///
+    /// <para><see cref="Step"/> names the effect that currently holds the window, which is what a
+    /// timeout is reported against.</para>
+    /// </remarks>
+    private sealed class PairEffectDeadline(TimeProvider timeProvider) : IDisposable
+    {
+        private readonly CancellationTokenSource _source =
+            new(Timeout.InfiniteTimeSpan, timeProvider);
+
+        internal string Step { get; private set; } = "start";
+
+        internal bool Expired => _source.IsCancellationRequested;
+
+        internal CancellationToken Next(string step, TimeSpan bound)
+        {
+            Step = step;
+
+            _source.CancelAfter(bound);
+
+            return _source.Token;
+        }
+
+        public void Dispose() => _source.Dispose();
     }
 
     private sealed class BeginAttemptState
     {
-
         internal bool PairJournaledPublished { get; set; }
-
     }
 
     private static bool PublicationEquals(
@@ -2380,17 +2257,13 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
         System.Collections.Immutable.ImmutableArray<InstallationResetActivePreservedBackupV2> left,
         System.Collections.Immutable.ImmutableArray<InstallationResetActivePreservedBackupV2> right)
     {
-
         if (left.IsDefault || right.IsDefault || left.Length != right.Length)
         {
-
             return left.IsDefault && right.IsDefault;
-
         }
 
         for (int index = 0; index < left.Length; index++)
         {
-
             InstallationResetActivePreservedBackupV2 first = left[index];
 
             InstallationResetActivePreservedBackupV2 second = right[index];
@@ -2406,32 +2279,24 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
                 || first.Identity.Length != second.Identity.Length
                 || first.Identity.HardLinkCount != second.Identity.HardLinkCount)
             {
-
                 return false;
-
             }
-
         }
 
         return true;
-
     }
 
     private static bool CredentialResultsEqual(
         System.Collections.Immutable.ImmutableArray<InstallationResetActiveCredentialResultV2> left,
         System.Collections.Immutable.ImmutableArray<InstallationResetActiveCredentialResultV2> right)
     {
-
         if (left.IsDefault || right.IsDefault || left.Length != right.Length)
         {
-
             return left.IsDefault && right.IsDefault;
-
         }
 
         for (int index = 0; index < left.Length; index++)
         {
-
             InstallationResetActiveCredentialResultV2 first = left[index];
 
             InstallationResetActiveCredentialResultV2 second = right[index];
@@ -2440,15 +2305,11 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
                 || first.Status != second.Status
                 || !string.Equals(first.ErrorCode, second.ErrorCode, StringComparison.Ordinal))
             {
-
                 return false;
-
             }
-
         }
 
         return true;
-
     }
 
     private static bool OnlineCompletionEquals(
@@ -2629,17 +2490,13 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
         System.Collections.Immutable.ImmutableArray<CampaignMarkerInventoryEntryV1> left,
         System.Collections.Immutable.ImmutableArray<CampaignMarkerInventoryEntryV1> right)
     {
-
         if (left.IsDefault || right.IsDefault || left.Length != right.Length)
         {
-
             return left.IsDefault && right.IsDefault;
-
         }
 
         for (int index = 0; index < left.Length; index++)
         {
-
             CampaignMarkerInventoryEntryV1 first = left[index];
 
             CampaignMarkerInventoryEntryV1 second = right[index];
@@ -2657,52 +2514,38 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
                     first.SameHandleOwnershipEvidenceDigest,
                     second.SameHandleOwnershipEvidenceDigest))
             {
-
                 return false;
-
             }
-
         }
 
         return true;
-
     }
 
     private static bool IntentIdsEqual(
         System.Collections.Immutable.ImmutableArray<Guid>? left,
         System.Collections.Immutable.ImmutableArray<Guid>? right)
     {
-
         if (left is null || right is null)
         {
-
             return left is null && right is null;
-
         }
 
         if (left.Value.IsDefault
             || right.Value.IsDefault
             || left.Value.Length != right.Value.Length)
         {
-
             return left.Value.IsDefault && right.Value.IsDefault;
-
         }
 
         for (int index = 0; index < left.Value.Length; index++)
         {
-
             if (left.Value[index] != right.Value[index])
             {
-
                 return false;
-
             }
-
         }
 
         return true;
-
     }
 
     private static bool ClaimEquals(
@@ -2731,28 +2574,20 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
         System.Collections.Immutable.ImmutableArray<string> left,
         System.Collections.Immutable.ImmutableArray<string> right)
     {
-
         if (left.IsDefault || right.IsDefault || left.Length != right.Length)
         {
-
             return left.IsDefault && right.IsDefault;
-
         }
 
         for (int index = 0; index < left.Length; index++)
         {
-
             if (!string.Equals(left[index], right[index], StringComparison.Ordinal))
             {
-
                 return false;
-
             }
-
         }
 
         return true;
-
     }
 
     private static bool DigestEquals(
@@ -2761,5 +2596,4 @@ internal sealed class HostToolsMarkerPairResetCoordinator : IHostToolsMarkerPair
         left.IsValid
         && right.IsValid
         && left.Bytes.AsSpan().SequenceEqual(right.Bytes);
-
 }

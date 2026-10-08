@@ -1116,18 +1116,10 @@
         {
           "path": "key set",
           "name": "set",
-          "description": "Store a master API key in the OS credential store (mirrors to security.dat when possible).",
+          "description": "Store a master API key in the OS credential store from redirected stdin or a secure prompt (mirrors to security.dat when possible).",
           "runnable": true,
           "aliases": [],
-          "arguments": [
-            {
-              "name": "api-key",
-              "description": "The master API key to store; omit to read a single line from stdin or a secure prompt.",
-              "required": false,
-              "variadic": false,
-              "values": []
-            }
-          ],
+          "arguments": [],
           "options": [],
           "examples": [],
           "commands": []
@@ -6670,7 +6662,7 @@
         {
           "path": "mcp list",
           "name": "list",
-          "description": "List safe MCP scope, transport, trust, lifecycle, tool-count, and last-error status.",
+          "description": "List safe MCP scope, transport, lifecycle, tool-count, and last-error status.",
           "runnable": true,
           "aliases": [],
           "arguments": [],
@@ -6678,7 +6670,7 @@
             {
               "name": "--workspace",
               "aliases": [],
-              "description": "Workspace ID, name, or server path; defaults to saved context or current-path detection.",
+              "description": "Workspace ID, name, or server path; defaults to the workspace saved with \u0027use workspace\u0027. The current directory is not detected.",
               "recursive": false,
               "takesValue": true,
               "repeatable": false,
@@ -6711,7 +6703,7 @@
             {
               "name": "--workspace",
               "aliases": [],
-              "description": "Workspace ID, name, or server path; defaults to saved context or current-path detection.",
+              "description": "Workspace ID, name, or server path; defaults to the workspace saved with \u0027use workspace\u0027. The current directory is not detected.",
               "recursive": false,
               "takesValue": true,
               "repeatable": false,
@@ -6744,7 +6736,7 @@
             {
               "name": "--workspace",
               "aliases": [],
-              "description": "Workspace ID, name, or server path; defaults to saved context or current-path detection.",
+              "description": "Workspace ID, name, or server path; defaults to the workspace saved with \u0027use workspace\u0027. The current directory is not detected.",
               "recursive": false,
               "takesValue": true,
               "repeatable": false,
@@ -6777,7 +6769,7 @@
             {
               "name": "--workspace",
               "aliases": [],
-              "description": "Workspace ID, name, or server path; defaults to saved context or current-path detection.",
+              "description": "Workspace ID, name, or server path; defaults to the workspace saved with \u0027use workspace\u0027. The current directory is not detected.",
               "recursive": false,
               "takesValue": true,
               "repeatable": false,
@@ -6810,7 +6802,7 @@
             {
               "name": "--workspace",
               "aliases": [],
-              "description": "Workspace ID, name, or server path; defaults to saved context or current-path detection.",
+              "description": "Workspace ID, name, or server path; defaults to the workspace saved with \u0027use workspace\u0027. The current directory is not detected.",
               "recursive": false,
               "takesValue": true,
               "repeatable": false,
@@ -6834,7 +6826,7 @@
             {
               "name": "--workspace",
               "aliases": [],
-              "description": "Workspace ID, name, or server path; defaults to saved context or current-path detection.",
+              "description": "Workspace ID, name, or server path; defaults to the workspace saved with \u0027use workspace\u0027. The current directory is not detected.",
               "recursive": false,
               "takesValue": true,
               "repeatable": false,
@@ -6889,7 +6881,7 @@
             {
               "name": "--workspace",
               "aliases": [],
-              "description": "Workspace ID, name, or server path; defaults to saved context or current-path detection.",
+              "description": "Workspace ID, name, or server path; defaults to the workspace saved with \u0027use workspace\u0027. The current directory is not detected.",
               "recursive": false,
               "takesValue": true,
               "repeatable": false,
@@ -6938,7 +6930,7 @@
             {
               "name": "--workspace",
               "aliases": [],
-              "description": "Workspace ID, name, or server path; defaults to saved context or current-path detection.",
+              "description": "Workspace ID, name, or server path; defaults to the workspace saved with \u0027use workspace\u0027. The current directory is not detected.",
               "recursive": false,
               "takesValue": true,
               "repeatable": false,
@@ -6974,7 +6966,7 @@
             {
               "name": "--workspace",
               "aliases": [],
-              "description": "Workspace ID, name, or server path; defaults to saved context or current-path detection.",
+              "description": "Workspace ID, name, or server path; defaults to the workspace saved with \u0027use workspace\u0027. The current directory is not detected.",
               "recursive": false,
               "takesValue": true,
               "repeatable": false,
@@ -7006,7 +6998,7 @@
             {
               "name": "--workspace",
               "aliases": [],
-              "description": "Workspace ID, name, or server path; defaults to saved context or current-path detection.",
+              "description": "Workspace ID, name, or server path; defaults to the workspace saved with \u0027use workspace\u0027. The current directory is not detected.",
               "recursive": false,
               "takesValue": true,
               "repeatable": false,
@@ -7045,7 +7037,7 @@
             {
               "name": "--workspace",
               "aliases": [],
-              "description": "Workspace ID, name, or server path; defaults to saved context or current-path detection.",
+              "description": "Workspace ID, name, or server path; defaults to the workspace saved with \u0027use workspace\u0027. The current directory is not detected.",
               "recursive": false,
               "takesValue": true,
               "repeatable": false,
@@ -8866,7 +8858,7 @@
             {
               "path": "data encryption verify",
               "name": "verify",
-              "description": "Verify metadata, envelope authentication, plaintext length, and SHA-256.",
+              "description": "Verify metadata, envelope authentication, plaintext length, and SHA-256, and report a version-1 envelope as outdated until migrate upgrades it.",
               "runnable": true,
               "aliases": [],
               "arguments": [],

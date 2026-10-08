@@ -159,6 +159,84 @@ public sealed class WorkspaceCheckCapabilityReporterTests
             StringComparison.OrdinalIgnoreCase);
     }
 
+    /// <summary>
+    /// The default capability probe consults the mandatory jail (a <c>sandbox-exec</c> spawn) only for an
+    /// enabled tool. A disabled one must never pay it: the reporter backs tools/list, health and the status
+    /// route, and every one of them used to spawn the probe for a tool nobody had turned on.
+    /// </summary>
+    [Fact]
+    public async Task Disabled_workspace_check_reports_disabled_without_probing_the_mandatory_jail()
+    {
+        int jailProbes = 0;
+
+        WorkspaceCheckCapabilityReporter reporter = CreateReporter(
+            new ArcanumSettings
+            {
+                Features = new FeatureSettings { WorkspaceChecks = false },
+            },
+            () =>
+            {
+                jailProbes++;
+
+                return true;
+            });
+
+        WorkspaceCheckCapabilityStatus status =
+            await reporter.GetStatusAsync(
+                "/workspace",
+                CancellationToken.None);
+
+        Assert.False(status.IsAvailable);
+        Assert.Contains(
+            "disabled",
+            status.Reason,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(0, jailProbes);
+    }
+
+    [Fact]
+    public async Task Enabled_workspace_check_consults_the_mandatory_jail_probe()
+    {
+        int jailProbes = 0;
+
+        WorkspaceCheckCapabilityReporter reporter = CreateReporter(
+            new ArcanumSettings
+            {
+                Features = new FeatureSettings { WorkspaceChecks = true },
+            },
+            () =>
+            {
+                jailProbes++;
+
+                return false;
+            });
+
+        WorkspaceCheckCapabilityStatus status =
+            await reporter.GetStatusAsync(
+                "/workspace",
+                CancellationToken.None);
+
+        Assert.False(status.IsAvailable);
+        Assert.DoesNotContain(
+            "disabled by configuration",
+            status.Reason,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(1, jailProbes);
+    }
+
+    private static WorkspaceCheckCapabilityReporter CreateReporter(
+        ArcanumSettings settings,
+        Func<bool> mandatoryJailAvailability) =>
+        new(
+            new TestOptionsMonitor<ArcanumSettings>(settings),
+            generationProvider: _ => "generation-a",
+            probe: null,
+            TimeProvider.System,
+            freshFor: TimeSpan.FromMinutes(1),
+            asyncWait: TimeSpan.FromSeconds(5),
+            probeTimeout: TimeSpan.FromSeconds(5),
+            mandatoryJailAvailability);
+
     private static WorkspaceCheckCapabilityReporter CreateReporter(
         Func<string> generation,
         Func<string?, CancellationToken, Task<WorkspaceCheckCapabilityStatus>>
@@ -173,5 +251,6 @@ public sealed class WorkspaceCheckCapabilityReporterTests
             TimeProvider.System,
             freshFor: TimeSpan.FromMinutes(1),
             asyncWait ?? TimeSpan.FromSeconds(1),
-            probeTimeout ?? TimeSpan.FromSeconds(1));
+            probeTimeout ?? TimeSpan.FromSeconds(1),
+            mandatoryJailAvailability: null);
 }

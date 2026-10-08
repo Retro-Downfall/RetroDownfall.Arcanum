@@ -10,12 +10,9 @@ namespace RetroDownfall.Arcanum.Cli.Infrastructure;
 
 internal static partial class CliCommandTree
 {
-
     private static Command BuildFileCommands(IServiceProvider serviceProvider)
     {
-
-        FileBatchCommands handler = serviceProvider
-            .GetRequiredService<FileBatchCommands>();
+        DeferredHandler<FileBatchCommands> handler = new(serviceProvider);
 
         Command file = new(
             "file",
@@ -27,23 +24,17 @@ internal static partial class CliCommandTree
 
         Argument<string> uploadPath = new("path")
         {
-
             Description = "Local file path.",
-
         };
 
         Option<string?> purpose = new("--purpose")
         {
-
             Description = "OpenAI file purpose (default: batch).",
-
         };
 
         Option<string?> contentType = new("--content-type")
         {
-
             Description = "Declared MIME type; otherwise inferred conservatively from the extension.",
-
         };
 
         upload.Add(uploadPath);
@@ -54,7 +45,7 @@ internal static partial class CliCommandTree
 
         upload.SetAction(
             async (ParseResult result, CancellationToken cancellationToken) =>
-                await handler.UploadFile(
+                await handler.Value.UploadFile(
                     result.GetValue(uploadPath)!,
                     result.GetValue(purpose) ?? "batch",
                     result.GetValue(contentType),
@@ -66,16 +57,14 @@ internal static partial class CliCommandTree
 
         Option<string?> listPurpose = new("--purpose")
         {
-
             Description = "Filter by exact file purpose.",
-
         };
 
         list.Add(listPurpose);
 
         list.SetAction(
             async (ParseResult result, CancellationToken cancellationToken) =>
-                await handler.ListFiles(
+                await handler.Value.ListFiles(
                     result.GetValue(listPurpose),
                     cancellationToken).ConfigureAwait(false));
 
@@ -89,7 +78,7 @@ internal static partial class CliCommandTree
 
         show.SetAction(
             async (ParseResult result, CancellationToken cancellationToken) =>
-                await handler.ShowFile(
+                await handler.Value.ShowFile(
                     result.GetValue(showId)!,
                     cancellationToken).ConfigureAwait(false));
 
@@ -107,7 +96,7 @@ internal static partial class CliCommandTree
 
         download.SetAction(
             async (ParseResult result, CancellationToken cancellationToken) =>
-                await handler.DownloadFile(
+                await handler.Value.DownloadFile(
                     result.GetValue(downloadId)!,
                     result.GetValue(downloadOutput),
                     cancellationToken).ConfigureAwait(false));
@@ -122,7 +111,7 @@ internal static partial class CliCommandTree
 
         delete.SetAction(
             async (ParseResult result, CancellationToken cancellationToken) =>
-                await handler.DeleteFile(
+                await handler.Value.DeleteFile(
                     result.GetValue(deleteId)!,
                     cancellationToken).ConfigureAwait(false));
 
@@ -137,14 +126,11 @@ internal static partial class CliCommandTree
         file.Add(delete);
 
         return file;
-
     }
 
     private static Command BuildBatchCommands(IServiceProvider serviceProvider)
     {
-
-        FileBatchCommands handler = serviceProvider
-            .GetRequiredService<FileBatchCommands>();
+        DeferredHandler<FileBatchCommands> handler = new(serviceProvider);
 
         Command batch = new(
             "batch",
@@ -156,16 +142,14 @@ internal static partial class CliCommandTree
 
         Argument<string> input = new("input-file")
         {
-
             Description = "Local JSONL path or file-* uploaded ID.",
-
         };
 
         create.Add(input);
 
         create.SetAction(
             async (ParseResult result, CancellationToken cancellationToken) =>
-                await handler.CreateBatch(
+                await handler.Value.CreateBatch(
                     result.GetValue(input)!,
                     cancellationToken).ConfigureAwait(false));
 
@@ -175,17 +159,13 @@ internal static partial class CliCommandTree
 
         Option<string?> status = new("--status")
         {
-
             Description = "Filter by exact batch status.",
-
         };
 
         Option<string?> cursor = new("--cursor")
 
         {
-
             Description = "Opaque continuation cursor returned by the previous batch-list page.",
-
         };
 
         list.Add(status);
@@ -194,7 +174,7 @@ internal static partial class CliCommandTree
 
         list.SetAction(
             async (ParseResult result, CancellationToken cancellationToken) =>
-                await handler.ListBatches(
+                await handler.Value.ListBatches(
                     result.GetValue(status),
                     result.GetValue(cursor),
                     cancellationToken).ConfigureAwait(false));
@@ -209,7 +189,7 @@ internal static partial class CliCommandTree
 
         show.SetAction(
             async (ParseResult result, CancellationToken cancellationToken) =>
-                await handler.ShowBatch(
+                await handler.Value.ShowBatch(
                     result.GetValue(showId)!,
                     cancellationToken).ConfigureAwait(false));
 
@@ -224,9 +204,7 @@ internal static partial class CliCommandTree
 
         Option<int?> pollInterval = new("--poll-interval")
         {
-
             Description = "Initial poll interval in milliseconds (1-10000; default: 1000).",
-
         };
 
         wait.Add(waitId);
@@ -235,7 +213,7 @@ internal static partial class CliCommandTree
 
         wait.SetAction(
             async (ParseResult result, CancellationToken cancellationToken) =>
-                await handler.WatchBatch(
+                await handler.Value.WatchBatch(
                     result.GetValue(waitId)!,
                     result.GetValue(pollInterval) ?? 1_000,
                     cancellationToken).ConfigureAwait(false));
@@ -243,22 +221,22 @@ internal static partial class CliCommandTree
         Command cancel = BatchMutationCommand(
             "cancel",
             "Request cancellation using the server's idempotent semantics.",
-            handler.CancelBatch);
+            (first, cancellationToken) => handler.Value.CancelBatch(first, cancellationToken));
 
         Command reset = BatchMutationCommand(
             "reset",
             "Reset a server-classified stuck batch for retry.",
-            handler.ResetBatch);
+            (first, cancellationToken) => handler.Value.ResetBatch(first, cancellationToken));
 
         Command output = BatchArtifactCommand(
             "output",
             "Download the batch output JSONL file.",
-            handler.DownloadBatchOutput);
+            (first, second, cancellationToken) => handler.Value.DownloadBatchOutput(first, second, cancellationToken));
 
         Command errors = BatchArtifactCommand(
             "errors",
             "Download the batch error JSONL file.",
-            handler.DownloadBatchErrors);
+            (first, second, cancellationToken) => handler.Value.DownloadBatchErrors(first, second, cancellationToken));
 
         batch.Add(create);
 
@@ -277,7 +255,6 @@ internal static partial class CliCommandTree
         batch.Add(errors);
 
         return batch;
-
     }
 
     private static Command BatchMutationCommand(
@@ -285,7 +262,6 @@ internal static partial class CliCommandTree
         string description,
         Func<string, CancellationToken, Task<int>> action)
     {
-
         Command command = new(name, description);
 
         Argument<string> id = BatchIdArgument();
@@ -299,7 +275,6 @@ internal static partial class CliCommandTree
                     cancellationToken).ConfigureAwait(false));
 
         return command;
-
     }
 
     private static Command BatchArtifactCommand(
@@ -307,7 +282,6 @@ internal static partial class CliCommandTree
         string description,
         Func<string, string?, CancellationToken, Task<int>> action)
     {
-
         Command command = new(name, description);
 
         Argument<string> id = BatchIdArgument();
@@ -326,31 +300,23 @@ internal static partial class CliCommandTree
                     cancellationToken).ConfigureAwait(false));
 
         return command;
-
     }
 
     private static Argument<string> FileIdArgument() =>
         new("id")
         {
-
             Description = "OpenAI-compatible file-* ID.",
-
         };
 
     private static Argument<string> BatchIdArgument() =>
         new("id")
         {
-
             Description = "OpenAI-compatible batch_* ID.",
-
         };
 
     private static Option<string?> OutputOption() =>
         new("--output")
         {
-
             Description = "Explicit local destination path.",
-
         };
-
 }

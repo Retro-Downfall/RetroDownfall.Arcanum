@@ -19,7 +19,6 @@ namespace RetroDownfall.TheForge.Ux.ViewModels.Workbench;
 /// </summary>
 public sealed partial class InferenceTraceViewModel : ObservableObject
 {
-
     public const string LimitationsText =
         "This trace shows stream events only (status, session binding, tokens, reasoning metadata with body redacted, tools, wards, result/usage, errors). "
         + "It does not include full provider request messages, full assembled system prompts for arbitrary Tome runs, "
@@ -28,17 +27,30 @@ public sealed partial class InferenceTraceViewModel : ObservableObject
     public const string SensitiveHistoryWarning =
         "This history may contain prompts, model outputs, tool arguments, and file snippets. It is stored locally on this machine.";
 
-    private readonly IInferenceTraceStore? _store;
+    /// <summary>
+    /// Retention bound for <see cref="Entries"/>, matching <see cref="TomeViewModel.MaxMessages"/>: a
+    /// turn streams one frame per token, so the trace keeps the latest events rather than every one.
+    /// </summary>
+    public const int MaxEntries = 2000;
+
+    /// <summary>
+    /// The most characters of one event's data the trace keeps; a large tool result is cut here.
+    /// </summary>
+    public const int MaxEntryDataChars = 16 * 1024;
+
+    private readonly IInferenceTraceStore _store;
 
     private readonly ITheForgeLocalMutationRunner _mutationRunner;
 
-    private readonly IArtifactFileDialogService? _fileDialog;
+    private readonly IArtifactFileDialogService _fileDialog;
 
     private readonly Action? _openSpellCastPreview;
 
     private readonly Action? _openPromptTestPreview;
 
     private string? _openToolRoundId;
+
+    private int _droppedEntries;
 
     [ObservableProperty]
     private string? _sourceKind;
@@ -57,23 +69,23 @@ public sealed partial class InferenceTraceViewModel : ObservableObject
 
     public InferenceTraceViewModel(
         ITheForgeLocalMutationRunner mutationRunner,
-        IInferenceTraceStore? store = null,
-        IArtifactFileDialogService? fileDialog = null,
+        IInferenceTraceStore store,
+        IArtifactFileDialogService fileDialog,
         Action? openSpellCastPreview = null,
         Action? openPromptTestPreview = null)
     {
-
         _mutationRunner = mutationRunner
             ?? throw new ArgumentNullException(nameof(mutationRunner));
 
-        _store = store;
+        _store = store
+            ?? throw new ArgumentNullException(nameof(store));
 
-        _fileDialog = fileDialog;
+        _fileDialog = fileDialog
+            ?? throw new ArgumentNullException(nameof(fileDialog));
 
         _openSpellCastPreview = openSpellCastPreview;
 
         _openPromptTestPreview = openPromptTestPreview;
-
     }
 
     public ObservableCollection<InferenceTraceEntryViewModel> Entries { get; } = [];
@@ -84,7 +96,6 @@ public sealed partial class InferenceTraceViewModel : ObservableObject
 
     public void BeginCapture(string sourceKind, string? sourceId)
     {
-
         Clear();
 
         SourceKind = sourceKind;
@@ -92,60 +103,49 @@ public sealed partial class InferenceTraceViewModel : ObservableObject
         SourceId = sourceId;
 
         StatusText = "Capturing…";
-
     }
 
     public void Capture(IntelligenceEvent ev)
     {
-
         ArgumentNullException.ThrowIfNull(ev);
 
         string? toolRoundId = null;
 
         string? toolCallId = ev.ToolCall?.CallId;
 
-        string? toolName = ev.ToolCall?.Name ?? ev.WardToolName;
+        string? toolName = ev.ToolCall?.Name ?? ev.ToolName;
 
         if (ev.Type == IntelligenceEventType.ToolCall)
         {
-
             _openToolRoundId = string.IsNullOrWhiteSpace(toolCallId) ? Guid.NewGuid().ToString("N") : toolCallId;
 
             toolRoundId = _openToolRoundId;
-
         }
         else if (ev.Type is IntelligenceEventType.ToolResult or IntelligenceEventType.ToolError)
         {
-
             toolRoundId = _openToolRoundId;
 
             if (ev.Type == IntelligenceEventType.ToolResult)
             {
-
                 _openToolRoundId = null;
-
             }
-
         }
         else if (ev.Type is IntelligenceEventType.Warded or IntelligenceEventType.WardResolved)
         {
-
             toolRoundId = _openToolRoundId;
-
         }
 
         if (ev.Type == IntelligenceEventType.SessionBound && Guid.TryParse(ev.Message, out Guid sessionId))
         {
-
             SessionId = sessionId.ToString("D");
-
         }
 
         bool redactReasoning = ev.Type == IntelligenceEventType.Reasoning;
+
         Entries.Add(new InferenceTraceEntryViewModel(
             ev.Type.ToString(),
             redactReasoning ? "[reasoning body redacted]" : ev.Message,
-            redactReasoning ? null : ev.Data,
+            redactReasoning ? null : CapData(ev.Data),
             ev.Usage?.PromptTokens,
             ev.Usage?.CompletionTokens,
             ev.Usage?.TotalTokens,
@@ -158,12 +158,35 @@ public sealed partial class InferenceTraceViewModel : ObservableObject
             ev.Reasoning?.Output.ToString(),
             ev.Usage is null ? null : ev.Usage.ReasoningTokens));
 
+        if (Entries.Count > MaxEntries)
+        {
+            _droppedEntries += Entries.Count - MaxEntries;
+
+            while (Entries.Count > MaxEntries)
+            {
+                Entries.RemoveAt(0);
+            }
+
+            StatusText = $"Capturing… the trace keeps the latest {MaxEntries} events; {_droppedEntries} older events were dropped.";
+        }
+    }
+
+    private static string? CapData(string? data)
+    {
+        if (data is not { Length: > MaxEntryDataChars })
+        {
+            return data;
+        }
+
+        // Never keep half of a surrogate pair: a lone high surrogate makes the trace unserializable.
+        int kept = char.IsHighSurrogate(data[MaxEntryDataChars - 1]) ? MaxEntryDataChars - 1 : MaxEntryDataChars;
+
+        return string.Concat(data.AsSpan(0, kept), $"… [truncated {data.Length - kept} chars]");
     }
 
     [RelayCommand]
     public void Clear()
     {
-
         Entries.Clear();
 
         SessionId = null;
@@ -174,46 +197,32 @@ public sealed partial class InferenceTraceViewModel : ObservableObject
 
         _openToolRoundId = null;
 
+        _droppedEntries = 0;
     }
 
     public string BuildExportJson()
     {
-
         InferenceTraceRecord record = ToRecord(Guid.NewGuid(), DateTimeOffset.UtcNow);
 
         return JsonSerializer.Serialize(record, TheForgeInferenceTracesJsonContext.Default.InferenceTraceRecord);
-
     }
 
     [RelayCommand]
     public async Task ExportAsync(CancellationToken cancellationToken)
     {
-
-        if (_fileDialog is null)
-        {
-
-            LastError = "Export dialog unavailable.";
-
-            return;
-
-        }
-
         string? path = await _fileDialog
             .PickSaveJsonPathAsync($"inference-trace-{DateTimeOffset.UtcNow:yyyyMMddHHmmss}.json", cancellationToken)
             .ConfigureAwait(true);
 
         if (string.IsNullOrWhiteSpace(path))
         {
-
             return;
-
         }
 
         LastError = null;
 
         try
         {
-
             await _mutationRunner
                 .RunAsync(
                     path,
@@ -224,11 +233,9 @@ public sealed partial class InferenceTraceViewModel : ObservableObject
                         admittedCancellationToken),
                     cancellationToken)
                 .ConfigureAwait(true);
-
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-
             // A read-only volume, a vanished removable drive, or a denied path must land in
             // LastError; unguarded it escapes onto the dispatcher from a fire-and-forget command.
             LastError = ex.Message;
@@ -236,36 +243,22 @@ public sealed partial class InferenceTraceViewModel : ObservableObject
             StatusText = "Trace export failed.";
 
             return;
-
         }
 
         StatusText = "Trace exported.";
-
     }
 
     [RelayCommand]
     public async Task PersistAsync(CancellationToken cancellationToken)
     {
-
-        if (_store is null)
-        {
-
-            LastError = "Local trace store unavailable.";
-
-            return;
-
-        }
-
         LastError = null;
 
         try
         {
-
             await _store
                 .UpdateAsync(
                     (document, _) =>
                     {
-
                         DateTimeOffset now = DateTimeOffset.UtcNow;
 
                         List<InferenceTraceRecord> traces = [ToRecord(Guid.NewGuid(), now), .. document.Traces];
@@ -276,79 +269,61 @@ public sealed partial class InferenceTraceViewModel : ObservableObject
                                 document.CreatedAt,
                                 now,
                                 traces));
-
                     },
                     cancellationToken)
                 .ConfigureAwait(true);
-
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-
             LastError = ex.Message;
 
             StatusText = "Trace save failed.";
 
             return;
-
         }
 
         StatusText = "Trace saved locally.";
-
     }
 
     [RelayCommand]
     public void OpenSessionInTome(INavigationService? navigation)
     {
-
         if (navigation is null || string.IsNullOrWhiteSpace(SessionId))
         {
-
             return;
-
         }
 
         navigation.OpenDocument(DocumentKind.Session, SessionId);
-
     }
 
     [RelayCommand]
     private void OpenSpellCastPreview()
     {
-
         if (_openSpellCastPreview is null)
         {
-
             StatusText = "Open the Spell editor Cast tab for assembled-context preview (no general dry-run API).";
 
             return;
-
         }
 
         _openSpellCastPreview();
-
     }
 
     [RelayCommand]
     private void OpenPromptTestPreview()
     {
-
         if (_openPromptTestPreview is null)
         {
-
             StatusText = "Open The Scriptorium Test tab for assembled-context preview (no general dry-run API).";
 
             return;
-
         }
 
         _openPromptTestPreview();
-
     }
 
     public InferenceTraceRecord ToRecord(Guid id, DateTimeOffset capturedAt)
     {
-
         List<InferenceTraceEventRecord> events = Entries
             .Select(static e => new InferenceTraceEventRecord(
                 e.Type,
@@ -374,9 +349,7 @@ public sealed partial class InferenceTraceViewModel : ObservableObject
             SourceId,
             SessionId,
             events);
-
     }
-
 }
 
 public sealed record InferenceTraceEntryViewModel(
@@ -395,79 +368,57 @@ public sealed record InferenceTraceEntryViewModel(
     string? ReasoningOutputMode = null,
     int? ReasoningTokens = null)
 {
-
     public string DisplayLine
     {
-
         get
         {
-
             StringBuilder sb = new();
 
             sb.Append(Type);
 
             if (!string.IsNullOrWhiteSpace(ToolRoundId))
             {
-
                 sb.Append(" [round ").Append(ToolRoundId.AsSpan(0, Math.Min(8, ToolRoundId.Length))).Append(']');
-
             }
 
             if (!string.IsNullOrWhiteSpace(ToolName))
             {
-
                 sb.Append(' ').Append(ToolName);
-
             }
 
             if (!string.IsNullOrWhiteSpace(Message))
             {
-
                 sb.Append(": ").Append(Message);
-
             }
 
             if (!string.IsNullOrWhiteSpace(ReasoningOutputMode))
             {
-
                 sb.Append(" mode=").Append(ReasoningOutputMode);
-
             }
 
             if (ReasoningTokens is int reasoningTokens)
             {
-
                 sb.Append(" reasoningTokens=").Append(reasoningTokens);
-
             }
 
             if (TotalTokens is int total)
             {
-
                 sb.Append(" (tokens=").Append(total);
 
                 if (CachedTokens is int cached and > 0)
                 {
-
                     sb.Append(" cached=").Append(cached);
-
                 }
 
                 sb.Append(')');
-
             }
 
             if (!string.IsNullOrWhiteSpace(FinishReason))
             {
-
                 sb.Append(" finish=").Append(FinishReason);
-
             }
 
             return sb.ToString();
-
         }
-
     }
-
 }

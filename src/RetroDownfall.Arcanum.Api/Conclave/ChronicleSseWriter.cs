@@ -11,19 +11,6 @@ namespace RetroDownfall.Arcanum.Api.Conclave;
 [ExcludeFromCodeCoverage] // Reason: HTTP SSE streaming glue; exercised via apprentice chronicle integration routes.
 internal static class ChronicleSseWriter
 {
-
-    public static async Task WriteEventAsync(
-        HttpContext httpContext,
-        ApprenticeEvent @event,
-        CancellationToken cancellationToken)
-    {
-
-        ChronicleSseStreamWriter writer = new(httpContext);
-
-        await writer.WriteEventAsync(@event, cancellationToken).ConfigureAwait(false);
-
-    }
-
     internal static void WritePassThroughEvent(
         Utf8JsonWriter writer,
         ApprenticeEvent envelope,
@@ -61,26 +48,26 @@ internal static class ChronicleSseWriter
             writer.WriteString("wardId", wizard.WardId);
         }
 
-        if (wizard.WardToolName is not null)
+        if (wizard.ToolName is not null)
         {
-            writer.WriteString("toolName", wizard.WardToolName);
+            writer.WriteString("toolName", wizard.ToolName);
         }
 
-        if (wizard.WardArguments is { } wardArgs)
+        if (wizard.Arguments is { } wardArgs)
         {
             writer.WritePropertyName("arguments");
 
             wardArgs.WriteTo(writer);
         }
 
-        if (wizard.WardAllowed is { } allowed)
+        if (wizard.Allowed is { } allowed)
         {
             writer.WriteBoolean("allowed", allowed);
         }
 
-        if (wizard.WardReason is not null)
+        if (wizard.Reason is not null)
         {
-            writer.WriteString("reason", wizard.WardReason);
+            writer.WriteString("reason", wizard.Reason);
         }
 
         writer.WriteString("timestamp", (wizard.Timestamp ?? envelope.Timestamp).ToString("O"));
@@ -116,9 +103,7 @@ internal static class ChronicleSseWriter
 
             foreach (PlanStep step in @event.Plan)
             {
-
                 JsonSerializer.Serialize(writer, step, ArcanumJsonContext.Default.PlanStep);
-
             }
 
             writer.WriteEndArray();
@@ -244,5 +229,4 @@ internal static class ChronicleSseWriter
         // follow-up PR that updates this switch and the CLI parser together.
         _ => type.ToString(),
     };
-
 }

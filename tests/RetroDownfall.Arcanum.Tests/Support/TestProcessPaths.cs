@@ -6,10 +6,15 @@ internal static class TestProcessPaths
 {
     internal static string OriginalUserProfile { get; private set; } = string.Empty;
 
+    internal static string OriginalApplicationData { get; private set; } = string.Empty;
+
     [ModuleInitializer]
     internal static void CaptureProcessStartPaths()
     {
         OriginalUserProfile = global::System.Environment.GetFolderPath(
             global::System.Environment.SpecialFolder.UserProfile);
+
+        OriginalApplicationData = global::System.Environment.GetFolderPath(
+            global::System.Environment.SpecialFolder.ApplicationData);
     }
 }

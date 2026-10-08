@@ -257,7 +257,8 @@ public sealed class McpConnectionManagerTransportFactoryTests
             new FakeEventBus(),
             new UntrustedWorkspaceStore(),
             new FakeHttpClientFactory(),
-            new TestOptionsMonitor<ArcanumSettings>(settings));
+            new TestOptionsMonitor<ArcanumSettings>(settings),
+            NullLoggerFactory.Instance);
 
         manager.ConfigureGlobalAdmission(
             new GrimoireConnectionAdmissionGate(TimeProvider.System));
@@ -320,7 +321,7 @@ public sealed class McpConnectionManagerTransportFactoryTests
             CancellationToken cancellationToken = default) =>
             Task.FromResult(default(TrustedMcpWorkspaceSnapshot));
 
-        public Task TrustAsync(string workspaceRootPath, CancellationToken cancellationToken = default) =>
+        public Task TrustAsync(string workspaceRootPath, string? expectedSourceDigest = null, CancellationToken cancellationToken = default) =>
             Task.CompletedTask;
     }
 

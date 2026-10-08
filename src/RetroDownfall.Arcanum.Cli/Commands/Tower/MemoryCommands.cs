@@ -32,14 +32,12 @@ public sealed partial class MemoryCommands(
     IConsoleDispatcher dispatcher,
     IConfirmationPrompt confirmationPrompt,
     IOptions<ArcanumSettings> settings,
-    ICliResourceCatalog? resourceCatalog = null)
+    ICliResourceCatalog resourceCatalog)
 {
-
     public async Task<int> Status(
         string? sessionIdentifier,
         CancellationToken cancellationToken)
     {
-
         SessionResolution resolution = await ResolveOptionalSessionAsync(
                 sessionIdentifier,
                 cancellationToken)
@@ -47,9 +45,7 @@ public sealed partial class MemoryCommands(
 
         if (!resolution.Success)
         {
-
-            return resolution.Cancelled ? 0 : 1;
-
+            return resolution.Cancelled ? 0 : resolution.FailureExitCode;
         }
 
         Result<MemoryStatusDto> result = await apiClient
@@ -58,20 +54,16 @@ public sealed partial class MemoryCommands(
 
         if (result.IsFailure)
         {
-
             return WriteError(result.Error);
-
         }
 
         if (CliInvocationContext.Current.Json)
         {
-
             dispatcher.WriteJson(
                 result.Value,
                 ArcanumJsonContext.Default.MemoryStatusDto);
 
             return 0;
-
         }
 
         Table table = new();
@@ -88,14 +80,12 @@ public sealed partial class MemoryCommands(
 
         foreach (MemoryStoreStatusDto store in result.Value.Stores)
         {
-
             table.AddRow(
                 Markup.Escape(store.Name),
                 store.Enabled ? "yes" : "no",
                 store.Count.ToString(CultureInfo.InvariantCulture),
                 Markup.Escape(store.Scope),
                 Markup.Escape(store.Retention));
-
         }
 
         AnsiConsole.Write(table);
@@ -105,7 +95,6 @@ public sealed partial class MemoryCommands(
         WriteCovenantStatus(result.Value.Covenant);
 
         return 0;
-
     }
 
     /// <summary>
@@ -118,16 +107,12 @@ public sealed partial class MemoryCommands(
     /// </remarks>
     private void WriteCampaignScope(MemoryCampaignScopeDto? scope)
     {
-
         if (scope is null)
         {
-
             return;
-
         }
 
         AnsiConsole.MarkupLine(themePalette.MutedMarkup(Markup.Escape(scope.Detail)));
-
     }
 
     /// <summary>
@@ -142,12 +127,9 @@ public sealed partial class MemoryCommands(
     /// </remarks>
     private void WriteCovenantStatus(CovenantStatusDto? covenant)
     {
-
         if (covenant is null)
         {
-
             return;
-
         }
 
         dispatcher.WritePayload(
@@ -160,21 +142,17 @@ public sealed partial class MemoryCommands(
         // about an installation nobody counted.
         if (covenant.Census is not CovenantCensusReadState.Read)
         {
-
             dispatcher.WritePayload(
                 $"  Covenant entries were not counted ({covenant.Census}). This is not a report that you have none.");
 
             return;
-
         }
 
         if (covenant.Counts.Length == 0)
         {
-
             dispatcher.WritePayload("  No Covenant entries.");
 
             return;
-
         }
 
         Table covenantTable = new();
@@ -189,13 +167,11 @@ public sealed partial class MemoryCommands(
 
         foreach (CovenantScopeCountDto row in covenant.Counts)
         {
-
             covenantTable.AddRow(
                 row.Scope.ToString(),
                 row.Lane.ToString(),
                 row.Lifecycle.ToString(),
                 row.Count.ToString(CultureInfo.InvariantCulture));
-
         }
 
         AnsiConsole.Write(covenantTable);
@@ -208,14 +184,12 @@ public sealed partial class MemoryCommands(
             + $"largest Campaign Confirmed {covenant.MaxCampaignConfirmedRenderedBytes}, "
             + $"largest Campaign Proposed {covenant.MaxCampaignProposedRenderedBytes} "
             + $"(ceiling {covenant.RenderedByteCeilingPerSection} per section)");
-
     }
 
     public async Task<int> Sources(
         string? sessionIdentifier,
         CancellationToken cancellationToken)
     {
-
         SessionResolution resolution = await ResolveOptionalSessionAsync(
                 sessionIdentifier,
                 cancellationToken)
@@ -223,9 +197,7 @@ public sealed partial class MemoryCommands(
 
         if (!resolution.Success)
         {
-
-            return resolution.Cancelled ? 0 : 1;
-
+            return resolution.Cancelled ? 0 : resolution.FailureExitCode;
         }
 
         Result<MemorySourcesDto> result = await apiClient
@@ -234,20 +206,16 @@ public sealed partial class MemoryCommands(
 
         if (result.IsFailure)
         {
-
             return WriteError(result.Error);
-
         }
 
         if (CliInvocationContext.Current.Json)
         {
-
             dispatcher.WriteJson(
                 result.Value,
                 ArcanumJsonContext.Default.MemorySourcesDto);
 
             return 0;
-
         }
 
         Table table = new();
@@ -264,20 +232,17 @@ public sealed partial class MemoryCommands(
 
         foreach (MemorySourceDto source in result.Value.Sources)
         {
-
             table.AddRow(
                 Markup.Escape(source.Name),
                 Markup.Escape(source.Scope),
                 Markup.Escape(source.Provenance),
                 Markup.Escape(source.Retention),
                 source.Count.ToString(CultureInfo.InvariantCulture));
-
         }
 
         AnsiConsole.Write(table);
 
         return 0;
-
     }
 
     public async Task<int> Search(
@@ -287,24 +252,19 @@ public sealed partial class MemoryCommands(
         string? workspaceId,
         CancellationToken cancellationToken)
     {
-
         if (string.IsNullOrWhiteSpace(query))
         {
-
             dispatcher.WriteDiagnostic("<QUERY> is required.");
 
             return (int)CliExitCode.ConfigurationError;
-
         }
 
-        if (!Enum.TryParse(scope ?? "all", true, out MemorySearchScope parsedScope))
+        if (!CliEnumInput.TryParseName(scope ?? "all", out MemorySearchScope parsedScope))
         {
-
             dispatcher.WriteDiagnostic(
                 "--scope must be one of: session, attachments, workspace, saga, lexicon, all.");
 
             return (int)CliExitCode.ConfigurationError;
-
         }
 
         SessionResolution resolution = await ResolveOptionalSessionAsync(
@@ -314,9 +274,7 @@ public sealed partial class MemoryCommands(
 
         if (!resolution.Success)
         {
-
-            return resolution.Cancelled ? 0 : 1;
-
+            return resolution.Cancelled ? 0 : resolution.FailureExitCode;
         }
 
         MemorySearchRequest request = new(
@@ -331,20 +289,16 @@ public sealed partial class MemoryCommands(
 
         if (result.IsFailure)
         {
-
             return WriteError(result.Error);
-
         }
 
         if (CliInvocationContext.Current.Json)
         {
-
             dispatcher.WriteJson(
                 result.Value,
                 ArcanumJsonContext.Default.MemorySearchResponse);
 
             return 0;
-
         }
 
         dispatcher.WritePayload($"Scope: {result.Value.Scope.ToString().ToLowerInvariant()}");
@@ -355,14 +309,11 @@ public sealed partial class MemoryCommands(
                 .Select(static match => match.CampaignScope)
                 .FirstOrDefault(static campaignScope => campaignScope is not null) is { } searchScope)
         {
-
             dispatcher.WritePayload($"Campaign scope: {searchScope.Detail}");
-
         }
 
         foreach (MemorySearchResultDto match in result.Value.Results)
         {
-
             dispatcher.WritePayload(
                 $"[{match.Scope.ToString().ToLowerInvariant()}] {match.Title}");
 
@@ -407,25 +358,20 @@ public sealed partial class MemoryCommands(
                         break;
                 }
             }
-
         }
 
         if (result.Value.Results.Length == 0)
         {
-
             dispatcher.WritePayload("No memory matched.");
-
         }
 
         return 0;
-
     }
 
     public async Task<int> Explain(
         string? sessionIdentifier,
         CancellationToken cancellationToken)
     {
-
         SessionResolution resolution = await ResolveOptionalSessionAsync(
                 sessionIdentifier,
                 cancellationToken)
@@ -433,9 +379,7 @@ public sealed partial class MemoryCommands(
 
         if (!resolution.Success)
         {
-
-            return resolution.Cancelled ? 0 : 1;
-
+            return resolution.Cancelled ? 0 : resolution.FailureExitCode;
         }
 
         Result<MemoryExplainDto> result = await apiClient
@@ -444,20 +388,16 @@ public sealed partial class MemoryCommands(
 
         if (result.IsFailure)
         {
-
             return WriteError(result.Error);
-
         }
 
         if (CliInvocationContext.Current.Json)
         {
-
             dispatcher.WriteJson(
                 result.Value,
                 ArcanumJsonContext.Default.MemoryExplainDto);
 
             return 0;
-
         }
 
         Table table = new();
@@ -472,13 +412,11 @@ public sealed partial class MemoryCommands(
 
         foreach (MemoryEligibilityDto source in result.Value.Sources)
         {
-
             table.AddRow(
                 Markup.Escape(source.Name),
                 source.Eligible ? "eligible" : "not eligible",
                 Markup.Escape(source.Reason),
                 Markup.Escape(source.Retention));
-
         }
 
         AnsiConsole.Write(table);
@@ -486,7 +424,6 @@ public sealed partial class MemoryCommands(
         WriteCampaignScope(result.Value.CampaignScope);
 
         return 0;
-
     }
 
     public Task<int> LexiconList(CancellationToken cancellationToken) =>
@@ -501,18 +438,15 @@ public sealed partial class MemoryCommands(
         string name,
         CancellationToken cancellationToken)
     {
-
         if (!await confirmationPrompt
             .PromptForConfirmationAsync(
                 $"Delete Lexicon entity '{name}'? This does not delete session, attachment, Saga, workspace, or Lore data.",
                 cancellationToken)
             .ConfigureAwait(false))
         {
-
             dispatcher.WriteDiagnostic("Lexicon deletion cancelled.");
 
             return 0;
-
         }
 
         Result result = await apiClient
@@ -521,66 +455,52 @@ public sealed partial class MemoryCommands(
 
         if (result.IsFailure)
         {
-
             return WriteError(result.Error);
-
         }
 
         dispatcher.WritePayload(
             $"Lexicon entity '{name}' was deleted, not erased; use 'arcanum memory lexicon erase' to erase and suppress.");
 
         return 0;
-
     }
 
     private async Task<int> WriteLexiconList(
         string? query,
         CancellationToken cancellationToken)
     {
-
         Result<LexiconListDto> result = await apiClient
             .ListLexiconAsync(query, cancellationToken)
             .ConfigureAwait(false);
 
         if (result.IsFailure)
         {
-
             return WriteError(result.Error);
-
         }
 
         if (CliInvocationContext.Current.Json)
         {
-
             dispatcher.WriteJson(
                 result.Value.Entries,
                 ArcanumJsonContext.Default.LexiconEntryDtoArray);
 
             return 0;
-
         }
 
         foreach (LexiconEntryDto entry in result.Value.Entries)
         {
-
             WriteLexiconEntry(entry);
-
         }
 
         if (result.Value.Entries.Length == 0)
         {
-
             dispatcher.WritePayload("No Lexicon entities found.");
-
         }
 
         return 0;
-
     }
 
     private void WriteLexiconEntry(LexiconEntryDto entry)
     {
-
         string facts = entry.Facts.Length == 0
             ? "(no facts)"
             : string.Join("; ", entry.Facts);
@@ -590,7 +510,6 @@ public sealed partial class MemoryCommands(
 
         dispatcher.WritePayload(
             $"  {LifecycleText(true, entry.RetiredAtUtc, entry.PinnedAtUtc, entry.Eligibility.ToString())}");
-
     }
 
     /// <summary>
@@ -619,28 +538,14 @@ public sealed partial class MemoryCommands(
         string? identifier,
         CancellationToken cancellationToken)
     {
-
         if (string.IsNullOrWhiteSpace(identifier))
         {
-
             return new SessionResolution(true, false, null);
-
         }
 
         if (Guid.TryParse(identifier, out Guid parsedId))
         {
-
             return new SessionResolution(true, false, parsedId);
-
-        }
-
-        if (resourceCatalog is null)
-        {
-
-            dispatcher.WriteDiagnostic("<SESSION> must be a valid GUID.");
-
-            return default;
-
         }
 
         ResourceSelectionResult<SessionSummaryDto> selection = await resourceCatalog
@@ -649,36 +554,32 @@ public sealed partial class MemoryCommands(
 
         if (selection.Status == ResourceSelectionStatus.Cancelled)
         {
-
             return new SessionResolution(false, true, null);
-
         }
 
         if (selection.Status == ResourceSelectionStatus.Error)
         {
-
             dispatcher.WriteDiagnostic(selection.Error ?? "Session selection failed.");
 
-            return default;
-
+            return new SessionResolution(false, false, null, selection.ErrorCode);
         }
 
         return new SessionResolution(true, false, selection.Value!.Id);
-
     }
 
     private int WriteError(Error error)
     {
-
         dispatcher.WriteDiagnostic(error.Message);
 
         return CliFailureExit.ExitCode(error);
-
     }
 
     private readonly record struct SessionResolution(
         bool Success,
         bool Cancelled,
-        Guid? Id);
-
+        Guid? Id,
+        string? ErrorCode = null)
+    {
+        public int FailureExitCode => CliFailureExit.ExitCode(ErrorCode);
+    }
 }

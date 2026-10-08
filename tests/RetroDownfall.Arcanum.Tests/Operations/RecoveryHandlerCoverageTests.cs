@@ -11,6 +11,7 @@ using RetroDownfall.Arcanum.Infrastructure.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Operations;
 using RetroDownfall.Arcanum.Infrastructure.Storage;
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Operations;
 
@@ -39,14 +40,7 @@ public sealed class RecoveryHandlerCoverageTests
     private static readonly IReadOnlyDictionary<string, Type> ExpectedHandlers =
         new Dictionary<string, Type>(StringComparer.Ordinal)
         {
-            [LongRunningOperationKinds.InferenceRun] = typeof(InferenceRunRecoveryHandler),
             [LongRunningOperationKinds.Subagent] = typeof(SubagentRecoveryHandler),
-            [LongRunningOperationKinds.BudgetReservation] = typeof(BudgetReservationRecoveryHandler),
-            [LongRunningOperationKinds.Batch] = typeof(BatchOperationRecoveryHandler),
-            [LongRunningOperationKinds.Apprentice] = typeof(ApprenticeRecoveryHandler),
-            [LongRunningOperationKinds.AttachmentPromotion] = typeof(AttachmentPromotionRecoveryHandler),
-            [LongRunningOperationKinds.WorkspaceIndex] = typeof(WorkspaceIndexRecoveryHandler),
-            [LongRunningOperationKinds.IdempotencyClaim] = typeof(IdempotencyClaimRecoveryHandler),
             [LongRunningOperationKinds.BlobEncryptionMigration] = typeof(BlobEncryptionMigrationRecoveryHandler),
             [LongRunningOperationKinds.BlobEncryptionKeyRotation] = typeof(BlobEncryptionKeyRotationRecoveryHandler),
             [LongRunningOperationKinds.BackupCreate] = typeof(BackupCreateRecoveryHandler),
@@ -59,6 +53,79 @@ public sealed class RecoveryHandlerCoverageTests
             [LongRunningOperationKinds.CovenantFamilyReinitialize] =
                 typeof(CovenantFamilyReinitializeRecoveryHandler),
         };
+
+    /// <summary>
+    /// Kind → the production source file that creates its ledger rows. A descriptor and handler for a
+    /// kind nothing creates is a recovery path for work that is never recorded, and a guard that reads
+    /// such a kind protects nothing, so a kind is registered only together with the place that produces it.
+    /// </summary>
+    private static readonly IReadOnlyDictionary<string, string> ProductionProducers =
+        new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            [LongRunningOperationKinds.Subagent] =
+                "src/RetroDownfall.Arcanum.Api/Intelligence/Subagents/SubagentRunner.cs",
+            [LongRunningOperationKinds.BlobEncryptionMigration] =
+                "src/RetroDownfall.Arcanum.Infrastructure/Storage/BlobEncryptionLifecycleService.cs",
+            [LongRunningOperationKinds.BlobEncryptionKeyRotation] =
+                "src/RetroDownfall.Arcanum.Infrastructure/Storage/BlobEncryptionLifecycleService.cs",
+            [LongRunningOperationKinds.BackupCreate] =
+                "src/RetroDownfall.Arcanum.Infrastructure/Backup/BackupService.cs",
+            [LongRunningOperationKinds.DataRetentionPrune] =
+                "src/RetroDownfall.Arcanum.Infrastructure/Data/DataRetentionService.cs",
+            [LongRunningOperationKinds.DataRetentionMutation] =
+                "src/RetroDownfall.Arcanum.Infrastructure/Data/DataRetentionService.cs",
+            [LongRunningOperationKinds.DataRetentionFactoryReset] =
+                "src/RetroDownfall.Arcanum.Infrastructure/Data/DataRetentionService.FactoryReset.cs",
+            [LongRunningOperationKinds.CovenantIndexRebuild] =
+                "src/RetroDownfall.Arcanum.Infrastructure/Covenant/CovenantIndexRebuildCoordinator.cs",
+            [LongRunningOperationKinds.CovenantFamilyReinitialize] =
+                "src/RetroDownfall.Arcanum.Infrastructure/Covenant/CovenantFamilyReinitializeCoordinator.cs",
+            [LongRunningOperationKinds.A2AInboundSending] =
+                "src/RetroDownfall.Arcanum.Infrastructure/A2A/A2ASendingLedger.cs",
+            [LongRunningOperationKinds.A2AOutboundSending] =
+                "src/RetroDownfall.Arcanum.Infrastructure/A2A/A2ASendingLedger.cs",
+        };
+
+    [Fact]
+    public void Every_registry_kind_has_a_production_producer()
+    {
+        string[] unproduced =
+        [
+            .. LongRunningOperationRecoveryRegistry.Descriptors.Keys
+                .Where(static kind => !ProductionProducers.ContainsKey(kind))
+                .Order(StringComparer.Ordinal),
+        ];
+
+        Assert.Empty(unproduced);
+    }
+
+    /// <summary>
+    /// Keeps the allow-list honest: each named producer must still name its kind, so a producer that
+    /// stops creating a kind cannot leave the descriptor behind on the strength of a stale entry.
+    /// </summary>
+    [Fact]
+    public void Every_named_producer_still_names_its_kind()
+    {
+        IReadOnlyList<ProductionSource> sources = ProductionSourceInventory.Sources();
+
+        string[] stale =
+        [
+            .. ProductionProducers
+                .Where(pair => !sources.Any(source =>
+                    source.IsExactOwner(pair.Value)
+                    && source.Names($"LongRunningOperationKinds.{KindConstantName(pair.Key)}")))
+                .Select(static pair => $"{pair.Key} -> {pair.Value}")
+                .Order(StringComparer.Ordinal),
+        ];
+
+        Assert.Empty(stale);
+    }
+
+    private static string KindConstantName(string kind) =>
+        typeof(LongRunningOperationKinds)
+            .GetFields(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static)
+            .Single(field => field.IsLiteral && string.Equals((string?)field.GetRawConstantValue(), kind, StringComparison.Ordinal))
+            .Name;
 
     private static IReadOnlyList<Type> RegisteredHandlerTypes()
     {
@@ -183,7 +250,7 @@ public sealed class RecoveryHandlerCoverageTests
         ServiceCollection services = [];
         _ = services.AddArcanumApiServices(configuration);
 
-        // Stands in for an existing handler (e.g. BatchOperationRecoveryHandler, already registered by
+        // Stands in for an existing handler (e.g. SubagentRecoveryHandler, already registered by
         // closed generic above) gaining a second registration through an implementation factory; the
         // probe never builds a provider, so the factory delegate itself is never invoked.
         services.AddScoped<ILongRunningOperationRecoveryHandler>(

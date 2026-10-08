@@ -8,22 +8,22 @@ namespace RetroDownfall.Arcanum.Core.Desktop;
 
 internal enum CompendiumLaunchPlatform
 {
-
     MacOS = 0,
 
     Windows = 1,
 
     Linux = 2,
-
 }
 
 /// <summary>
 /// Locates Compendium via an installed binary, sibling build output, or <c>dotnet run</c> on the
 /// solution project, then starts it with <see cref="ProcessStartInfo.ArgumentList"/> (no shell).
+/// The <c>dotnet run</c> arm obeys the same <c>ARCANUM_DEV_LAUNCHER</c> opt-in as
+/// <see cref="ApplicationLauncher"/> (see <see cref="ApplicationDiscoveryEnvironment"/>), and takes
+/// the project only from an ancestor that also holds the repository's solution marker.
 /// </summary>
 public sealed class CompendiumLauncher : ICompendiumLauncher
 {
-
     private const string CliFallbackCommand = "arcanum config edit";
 
     public const string AssemblyName = "RetroDownfall.Compendium.Ux";
@@ -40,6 +40,8 @@ public sealed class CompendiumLauncher : ICompendiumLauncher
 
     private readonly Architecture? _processArchitectureOverride;
 
+    private readonly bool? _developmentProjectAllowedOverride;
+
     public CompendiumLauncher()
     {
     }
@@ -50,13 +52,22 @@ public sealed class CompendiumLauncher : ICompendiumLauncher
         Func<string, bool> fileExists,
         Func<ProcessStartInfo, bool> startProcess)
     {
-
         _baseDirectoryOverride = baseDirectory;
 
         _fileExistsOverride = fileExists;
 
         _startOverride = startProcess;
+    }
 
+    /// <summary>Test seam for discovery and process start with an explicit development-project gate.</summary>
+    public CompendiumLauncher(
+        Func<string> baseDirectory,
+        Func<string, bool> fileExists,
+        Func<ProcessStartInfo, bool> startProcess,
+        bool allowDevelopmentProject)
+        : this(baseDirectory, fileExists, startProcess)
+    {
+        _developmentProjectAllowedOverride = allowDevelopmentProject;
     }
 
     internal CompendiumLauncher(
@@ -67,18 +78,27 @@ public sealed class CompendiumLauncher : ICompendiumLauncher
         Architecture processArchitecture)
         : this(baseDirectory, fileExists, startProcess)
     {
-
         _platformOverride = platform;
 
         _processArchitectureOverride = processArchitecture;
+    }
 
+    internal CompendiumLauncher(
+        Func<string> baseDirectory,
+        Func<string, bool> fileExists,
+        Func<ProcessStartInfo, bool> startProcess,
+        CompendiumLaunchPlatform platform,
+        Architecture processArchitecture,
+        bool allowDevelopmentProject)
+        : this(baseDirectory, fileExists, startProcess, platform, processArchitecture)
+    {
+        _developmentProjectAllowedOverride = allowDevelopmentProject;
     }
 
     public string ConfigPath => Path.Combine(ArcanumPaths.GrimoireDirectory, "arcanum.json");
 
     public CompendiumLaunchResult TryLaunch()
     {
-
         string configPath = ConfigPath;
 
         string deepLinkPayload = ApplicationDeepLinkCodec.Encode(
@@ -90,68 +110,67 @@ public sealed class CompendiumLauncher : ICompendiumLauncher
 
         List<string> existingExecutables = [];
 
+        string? executableFailureType = null;
+
         foreach (string executable in executableCandidates)
         {
-
             if (!FileExists(executable))
             {
-
                 continue;
-
             }
 
             existingExecutables.Add(executable);
 
-            if (TryStart(CreateExecutableStartInfo(executable, deepLinkPayload)))
+            if (TryStart(
+                CreateExecutableStartInfo(executable, deepLinkPayload),
+                out string? failureType))
             {
-
                 return new CompendiumLaunchResult(
                     true,
                     executable,
                     configPath,
                     "Opened Compendium.");
-
             }
 
+            executableFailureType = failureType ?? executableFailureType;
         }
 
-        if (TryFindProject(out string? projectPath) && projectPath is not null)
+        // The repository project is only ever executed when this process opted in with
+        // ARCANUM_DEV_LAUNCHER=1 (R-009), the same gate the `arcanum open` launcher applies, on JIT
+        // and Native AOT images alike. It stays in the printed discovery locations either way.
+        if (DevelopmentProjectAllowed()
+            && TryFindProject(out string? projectPath)
+            && projectPath is not null)
         {
-
             ProcessStartInfo startInfo = CreateDevelopmentStartInfo(
                 projectPath,
                 deepLinkPayload);
 
-            if (TryStart(startInfo))
+            if (TryStart(startInfo, out string? developmentFailureType))
             {
-
                 return new CompendiumLaunchResult(
                     true,
                     projectPath,
                     configPath,
                     "Started Compendium via dotnet run (development).");
-
             }
 
             return new CompendiumLaunchResult(
                 false,
                 projectPath,
                 configPath,
-                $"Found the Compendium development project but failed to start it. Discovery locations tried: {discoveryLocations}. Edit {configPath} directly or run: {CreateDevelopmentCommand(deepLinkPayload)}. CLI fallback: {CliFallbackCommand}");
-
+                $"Found the Compendium development project but failed to start it{FormatFailureType(developmentFailureType)}. Discovery locations tried: {discoveryLocations}. Edit {configPath} directly or run: {CreateDevelopmentCommand(deepLinkPayload)}. CLI fallback: {CliFallbackCommand}");
         }
 
         string developmentCommand = CreateDevelopmentCommand(deepLinkPayload);
 
         if (existingExecutables.Count > 0)
         {
-
             return new CompendiumLaunchResult(
                 false,
                 existingExecutables[0],
                 configPath,
-                $"Compendium could not be started. Discovery locations tried: {discoveryLocations}. Edit {configPath} directly or run: {developmentCommand}. CLI fallback: {CliFallbackCommand}");
-
+                $"Compendium could not be started{FormatFailureType(executableFailureType)}. Discovery locations tried: {discoveryLocations}. Edit {configPath} directly or run: {developmentCommand}. CLI fallback: {CliFallbackCommand}");
         }
 
         return new CompendiumLaunchResult(
@@ -159,7 +178,6 @@ public sealed class CompendiumLauncher : ICompendiumLauncher
             null,
             configPath,
             $"Compendium was not found. Discovery locations tried: {discoveryLocations}. Edit {configPath} directly or run: {developmentCommand}. CLI fallback: {CliFallbackCommand}");
-
     }
 
     private static ApplicationDeepLink CreateSettingsDeepLink() =>
@@ -173,38 +191,31 @@ public sealed class CompendiumLauncher : ICompendiumLauncher
         string executable,
         string deepLinkPayload)
     {
-
         ProcessStartInfo startInfo = new()
         {
-
             FileName = executable,
 
             UseShellExecute = false,
 
             CreateNoWindow = true,
-
         };
 
         AddDeepLinkArguments(startInfo, deepLinkPayload);
 
         return startInfo;
-
     }
 
     private static ProcessStartInfo CreateDevelopmentStartInfo(
         string projectPath,
         string deepLinkPayload)
     {
-
         ProcessStartInfo startInfo = new()
         {
-
             FileName = "dotnet",
 
             UseShellExecute = false,
 
             CreateNoWindow = true,
-
         };
 
         startInfo.ArgumentList.Add("run");
@@ -218,18 +229,15 @@ public sealed class CompendiumLauncher : ICompendiumLauncher
         AddDeepLinkArguments(startInfo, deepLinkPayload);
 
         return startInfo;
-
     }
 
     private static void AddDeepLinkArguments(
         ProcessStartInfo startInfo,
         string deepLinkPayload)
     {
-
         startInfo.ArgumentList.Add(ApplicationDeepLinkCodec.ArgumentName);
 
         startInfo.ArgumentList.Add(deepLinkPayload);
-
     }
 
     private static string CreateDevelopmentCommand(string deepLinkPayload) =>
@@ -238,7 +246,6 @@ public sealed class CompendiumLauncher : ICompendiumLauncher
     private static string BuildDiscoveryLocations(
         IReadOnlyList<string> executableCandidates)
     {
-
         IEnumerable<string> displayedExecutables = executableCandidates.Select(
             path => $"{ApplicationCandidateKind.Executable}: {path}");
 
@@ -246,50 +253,45 @@ public sealed class CompendiumLauncher : ICompendiumLauncher
             ", ",
             displayedExecutables.Append(
                 $"{ApplicationCandidateKind.DevelopmentProject}: {ProjectRelativePath}"));
-
     }
 
     private bool TryFindProject(out string? path)
     {
-
         path = null;
 
         string? directory = GetBaseDirectory();
 
         while (!string.IsNullOrEmpty(directory))
         {
-
             string candidate = Path.Combine(directory, ProjectRelativePath);
 
-            if (FileExists(candidate))
+            // The project path alone is not a repository: an ancestor of the install directory that
+            // another account can write to (a folder at a drive root) could otherwise supply the
+            // project `dotnet run` executes. Require the solution marker beside it.
+            if (FileExists(candidate)
+                && FileExists(
+                    Path.Combine(directory, ApplicationDiscoveryEnvironment.RepositoryMarkerFileName)))
             {
-
                 path = candidate;
 
                 return true;
-
             }
 
             string? parent = Directory.GetParent(directory)?.FullName;
 
             if (string.Equals(parent, directory, StringComparison.Ordinal))
             {
-
                 break;
-
             }
 
             directory = parent;
-
         }
 
         return false;
-
     }
 
     private IEnumerable<string> EnumerateExecutableCandidates()
     {
-
         string baseDir = GetBaseDirectory();
 
         CompendiumLaunchPlatform platform = GetPlatform();
@@ -310,50 +312,41 @@ public sealed class CompendiumLauncher : ICompendiumLauncher
 
         if (portablePackageDirectory is not null)
         {
-
             yield return Path.GetFullPath(
                 Path.Combine(
                     baseDir,
                     "..",
                     portablePackageDirectory,
                     fileName));
-
         }
 
         if (platform == CompendiumLaunchPlatform.MacOS)
         {
-
             string home = global::System.Environment.GetFolderPath(
                 global::System.Environment.SpecialFolder.UserProfile);
 
             yield return Path.Combine(home, "Applications", "Compendium.app", "Contents", "MacOS", AssemblyName);
 
             yield return Path.Combine("/Applications", "Compendium.app", "Contents", "MacOS", AssemblyName);
-
         }
 
         if (platform == CompendiumLaunchPlatform.Linux)
         {
-
             string home = global::System.Environment.GetFolderPath(
                 global::System.Environment.SpecialFolder.UserProfile);
 
             yield return Path.Combine(home, ".local", "bin", AssemblyName);
 
             yield return Path.Combine("/usr", "local", "bin", AssemblyName);
-
         }
 
         if (platform == CompendiumLaunchPlatform.Windows)
         {
-
             string local = global::System.Environment.GetFolderPath(
                 global::System.Environment.SpecialFolder.LocalApplicationData);
 
             yield return Path.Combine(local, "Compendium", fileName);
-
         }
-
     }
 
     private static string? PortablePackageDirectory(
@@ -361,7 +354,6 @@ public sealed class CompendiumLauncher : ICompendiumLauncher
         Architecture processArchitecture) =>
         platform switch
         {
-
             CompendiumLaunchPlatform.Windows => "compendium-win-x64",
 
             CompendiumLaunchPlatform.Linux when processArchitecture == Architecture.X64 =>
@@ -371,30 +363,23 @@ public sealed class CompendiumLauncher : ICompendiumLauncher
                 "compendium-linux-arm64",
 
             _ => null,
-
         };
 
     private CompendiumLaunchPlatform GetPlatform()
     {
-
         if (_platformOverride is { } platform)
         {
-
             return platform;
-
         }
 
         if (OperatingSystem.IsWindows())
         {
-
             return CompendiumLaunchPlatform.Windows;
-
         }
 
         return OperatingSystem.IsMacOS()
             ? CompendiumLaunchPlatform.MacOS
             : CompendiumLaunchPlatform.Linux;
-
     }
 
     private Architecture GetProcessArchitecture() =>
@@ -403,34 +388,37 @@ public sealed class CompendiumLauncher : ICompendiumLauncher
     private string GetBaseDirectory() =>
         _baseDirectoryOverride?.Invoke() ?? AppContext.BaseDirectory;
 
+    private bool DevelopmentProjectAllowed() =>
+        _developmentProjectAllowedOverride
+        ?? ApplicationDiscoveryEnvironment.DevelopmentProjectLaunchAllowed();
+
     private bool FileExists(string path) =>
         _fileExistsOverride?.Invoke(path) ?? File.Exists(path);
 
-    private bool TryStart(ProcessStartInfo startInfo)
+    private bool TryStart(ProcessStartInfo startInfo, out string? failureType)
     {
-
-        if (_startOverride is not null)
-        {
-
-            return _startOverride(startInfo);
-
-        }
+        failureType = null;
 
         try
         {
+            if (_startOverride is not null)
+            {
+                return _startOverride(startInfo);
+            }
 
             using Process? process = Process.Start(startInfo);
 
             return process is not null;
-
         }
-        catch
+        catch (Exception exception)
         {
+            // The type name only: exception message text can carry paths and secrets.
+            failureType = exception.GetType().Name;
 
             return false;
-
         }
-
     }
 
+    private static string FormatFailureType(string? failureType) =>
+        failureType is null ? string.Empty : $" ({failureType})";
 }

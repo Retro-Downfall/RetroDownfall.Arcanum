@@ -6,7 +6,6 @@ namespace RetroDownfall.Arcanum.Tests.Intelligence;
 
 public sealed class ToolRiskClassifierTests
 {
-
     private const string WardToolInventoryStart = "<!-- ward-tool-inventory:start -->";
 
     private const string WardToolInventoryEnd = "<!-- ward-tool-inventory:end -->";
@@ -20,7 +19,6 @@ public sealed class ToolRiskClassifierTests
 
     private static IReadOnlyList<WardToolInventoryRow> ReadWardToolInventory(string design)
     {
-
         int sectionStart = design.IndexOf(
             "### 11.14 Wards (record-only server tool calls and retained compatibility engine)",
             StringComparison.Ordinal);
@@ -59,7 +57,6 @@ public sealed class ToolRiskClassifierTests
 
         foreach (string line in lines.Skip(2))
         {
-
             string[] cells = line.Trim('|').Split('|', StringSplitOptions.TrimEntries);
 
             Assert.Equal(5, cells.Length);
@@ -70,11 +67,9 @@ public sealed class ToolRiskClassifierTests
                 cells[2],
                 cells[3],
                 cells[4]));
-
         }
 
         return rows;
-
     }
 
     private static readonly string[] KnownToolNames =
@@ -112,26 +107,6 @@ public sealed class ToolRiskClassifierTests
         "get_arcanum_system_info",
     ];
 
-    [Theory]
-    [MemberData(nameof(KnownToolAndCampaignSettings))]
-    public void RequiresWard_returns_false_for_every_known_tool_under_either_campaign_setting(
-        string toolName,
-        bool campaignRequiresWard)
-    {
-        WardSettings wards = ArcanumRuntimeDefaults.Ward with
-        {
-            ForbiddenArts = [toolName],
-        };
-
-        Assert.False(ToolRiskClassifier.RequiresWard(toolName, campaignRequiresWard, wards));
-    }
-
-    [Fact]
-    public void Intrinsic_ward_inventory_is_empty()
-    {
-        Assert.Empty(ToolRiskClassifier.IntrinsicWardToolNames);
-    }
-
     [Fact]
     public void Ward_defaults_name_no_forbidden_arts()
     {
@@ -141,17 +116,14 @@ public sealed class ToolRiskClassifierTests
     [Fact]
     public void Known_tool_inventory_contains_31_distinct_names()
     {
-
         Assert.Equal(31, KnownToolNames.Length);
 
         Assert.Equal(31, KnownToolNames.Distinct(StringComparer.Ordinal).Count());
-
     }
 
     [Fact]
     public void Design_ward_inventory_matches_every_known_tool_and_names_no_ward_decision()
     {
-
         string root = NativeSqlCipherTestPaths.RepositoryRoot();
 
         string design = File.ReadAllText(Path.Combine(root, "docs", "Arcanum.DESIGN.md"));
@@ -188,7 +160,6 @@ public sealed class ToolRiskClassifierTests
             static row => row.Name == ArcanumBuiltInToolNames.BrowseWeb);
 
         Assert.Equal("recognized compatibility alias", browseWeb.CatalogStatus);
-
     }
 
     [Fact]
@@ -200,25 +171,14 @@ public sealed class ToolRiskClassifierTests
     }
 
     [Fact]
-    public void PublishedIntrinsicAndReservedSetsAreNotMutableHashSets()
+    public void PublishedReservedSetsAreNotMutableHashSets()
     {
-        Assert.IsNotType<HashSet<string>>(ToolRiskClassifier.IntrinsicWardToolNames);
         Assert.IsNotType<HashSet<string>>(WorkspaceCheckCatalogDefaults.ReservedProfileIds);
-    }
-
-    public static IEnumerable<object[]> KnownToolAndCampaignSettings()
-    {
-        foreach (string toolName in KnownToolNames)
-        {
-            yield return [toolName, false];
-            yield return [toolName, true];
-        }
     }
 
     [Fact]
     public void Workspace_check_ward_disclosure_names_code_execution_and_residual_risks()
     {
-
         string disclosure = ToolRiskClassifier.GetWardDisclosure(
             ToolRiskClassifier.WorkspaceCheckToolName);
 

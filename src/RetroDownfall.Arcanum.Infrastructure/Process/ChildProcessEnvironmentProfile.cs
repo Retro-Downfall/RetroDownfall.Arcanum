@@ -5,14 +5,16 @@ namespace RetroDownfall.Arcanum.Infrastructure.ProcessExecution;
 /// </summary>
 public enum ChildProcessEnvironmentProfile
 {
-
     /// <summary>
     /// MCP workspace servers: full scrub via <see cref="Mcp.McpSecurityLimits"/> (explicit env block).
     /// </summary>
     McpChild,
 
     /// <summary>
-    /// <c>execute_command</c>: strip <c>ARCANUM_*</c> secrets only; preserve PATH, HOME, and other host vars.
+    /// <c>execute_command</c>: strip every <c>ARCANUM_*</c> variable, the operator-declared secret
+    /// variable names (<c>FamiliarSecretEnvironmentNames</c>, which the prefix scrub cannot see), and the
+    /// loader/runtime hijack denylist (<c>LD_PRELOAD</c>, <c>DYLD_*</c> and the like); preserve PATH, HOME, and
+    /// every other host var. See <c>ChildProcessEnvironmentScrubber.ApplyProfile</c>.
     /// </summary>
     ToolExec,
 
@@ -36,5 +38,4 @@ public enum ChildProcessEnvironmentProfile
     /// provider credential variables to strip.
     /// </summary>
     Familiar,
-
 }

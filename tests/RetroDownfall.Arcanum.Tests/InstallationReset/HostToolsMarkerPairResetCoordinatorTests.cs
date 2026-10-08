@@ -3,6 +3,9 @@ using Microsoft.Data.Sqlite;
 using System.Buffers.Text;
 using System.Collections.Immutable;
 
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
+
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.DataLifecycle;
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -19,11 +22,9 @@ namespace RetroDownfall.Arcanum.Tests.InstallationReset;
 
 public sealed partial class HostToolsMarkerPairResetCoordinatorTests
 {
-
     [Fact]
     public async Task Begin_requires_the_callers_exact_held_installation_lock_and_authenticated_claim_publication()
     {
-
         await using CovenantSchemaScratchDatabase database =
             await CovenantSchemaScratchDatabase.CreateAsync(CancellationToken.None);
 
@@ -35,7 +36,6 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
 
         try
         {
-
             using ArcanumMaintenanceLock heldLock = Assert.IsType<ArcanumMaintenanceLock>(
                 ArcanumMaintenanceLock.TryAcquire(guardedRoot));
 
@@ -47,7 +47,6 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
 
             try
             {
-
                 using ArcanumMaintenanceLock wrongLock = Assert.IsType<ArcanumMaintenanceLock>(
                     ArcanumMaintenanceLock.TryAcquire(otherRoot));
 
@@ -69,7 +68,8 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
                     new HostProcessToolsMarkerPairJoiner(),
                     new RejectingVerifier(),
                     new FakeCampaignPathMarkerLifecycle(),
-                    os);
+                    os,
+                    NullLogger<HostToolsMarkerPairResetCoordinator>.Instance);
 
                 await Assert.ThrowsAnyAsync<Exception>(() => subject.BeginAsync(
                     wrongLock,
@@ -87,29 +87,21 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
                 Assert.True(staleResult.IsFailure);
 
                 Assert.Equal(0, os.OpenCalls);
-
             }
             finally
             {
-
                 Directory.Delete(otherRoot, recursive: true);
-
             }
-
         }
         finally
         {
-
             Directory.Delete(guardedRoot, recursive: true);
-
         }
-
     }
 
     [Fact]
     public async Task Begin_rejects_an_authenticated_pair_checkpoint_before_fresh_os_or_database_admission()
     {
-
         await using CovenantSchemaScratchDatabase database =
             await CreateMarkerDatabaseAsync();
 
@@ -121,7 +113,6 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
 
         try
         {
-
             using ArcanumMaintenanceLock heldLock = Assert.IsType<ArcanumMaintenanceLock>(
                 ArcanumMaintenanceLock.TryAcquire(guardedRoot));
 
@@ -153,7 +144,8 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
                 joiner,
                 new RejectingVerifier(),
                 lifecycle,
-                os);
+                os,
+                NullLogger<HostToolsMarkerPairResetCoordinator>.Instance);
 
             Result<InstallationResetActivePublication> result = await subject.BeginAsync(
                 heldLock,
@@ -178,21 +170,16 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
             Assert.DoesNotContain("database-effect", events);
 
             Assert.DoesNotContain("os-effect", events);
-
         }
         finally
         {
-
             Directory.Delete(guardedRoot, recursive: true);
-
         }
-
     }
 
     [Fact]
     public async Task Begin_rejects_an_authenticated_claimless_publication_before_fresh_os_or_database_admission()
     {
-
         await using CovenantSchemaScratchDatabase database =
             await CreateMarkerDatabaseAsync();
 
@@ -204,7 +191,6 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
 
         try
         {
-
             using ArcanumMaintenanceLock heldLock = Assert.IsType<ArcanumMaintenanceLock>(
                 ArcanumMaintenanceLock.TryAcquire(guardedRoot));
 
@@ -252,7 +238,8 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
                 joiner,
                 new RejectingVerifier(),
                 lifecycle,
-                os);
+                os,
+                NullLogger<HostToolsMarkerPairResetCoordinator>.Instance);
 
             Result<InstallationResetActivePublication> result = await subject.BeginAsync(
                 heldLock,
@@ -277,15 +264,11 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
             Assert.DoesNotContain("database-effect", events);
 
             Assert.DoesNotContain("os-effect", events);
-
         }
         finally
         {
-
             Directory.Delete(guardedRoot, recursive: true);
-
         }
-
     }
 
     [Theory]
@@ -305,7 +288,6 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
     public async Task Begin_refuses_every_noncanonical_claim_only_field_before_any_downstream_call(
         int mutation)
     {
-
         string guardedRoot = Path.Combine(
             Path.GetTempPath(),
             $"arcanum-pair-begin-claim-shape-{mutation}-{Guid.NewGuid():N}");
@@ -314,7 +296,6 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
 
         try
         {
-
             using ArcanumMaintenanceLock heldLock = Assert.IsType<ArcanumMaintenanceLock>(
                 ArcanumMaintenanceLock.TryAcquire(guardedRoot));
 
@@ -396,7 +377,8 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
                 joiner,
                 verifier,
                 lifecycle,
-                os);
+                os,
+                NullLogger<HostToolsMarkerPairResetCoordinator>.Instance);
 
             Result<InstallationResetActivePublication> result = await subject.BeginAsync(
                 heldLock,
@@ -417,21 +399,16 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
             Assert.Equal(0, verifier.RecoveryCalls);
 
             Assert.Equal(0, lifecycle.InventoryCalls);
-
         }
         finally
         {
-
             Directory.Delete(guardedRoot, recursive: true);
-
         }
-
     }
 
     [Fact]
     public async Task Begin_binds_isolated_guarded_database_path_before_opening_the_database()
     {
-
         await using CovenantSchemaScratchDatabase database =
             await CovenantSchemaScratchDatabase.CreateAsync(CancellationToken.None);
 
@@ -443,7 +420,6 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
 
         try
         {
-
             using ArcanumMaintenanceLock heldLock = Assert.IsType<ArcanumMaintenanceLock>(
                 ArcanumMaintenanceLock.TryAcquire(guardedRoot));
 
@@ -478,6 +454,7 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
                 new RejectingVerifier(),
                 new FakeCampaignPathMarkerLifecycle(),
                 os,
+                NullLogger<HostToolsMarkerPairResetCoordinator>.Instance,
                 canonicalDatabasePath: canonicalDatabasePath);
 
             Result<InstallationResetActivePublication> result = await subject.BeginAsync(
@@ -491,15 +468,11 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
             Assert.Equal(["os", "database"], events.Take(2));
 
             Assert.Equal(1, capability.DisposeCalls);
-
         }
         finally
         {
-
             Directory.Delete(guardedRoot, recursive: true);
-
         }
-
     }
 
     [Theory]
@@ -513,7 +486,6 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
         bool carriesPair,
         int expectedVerifierCalls)
     {
-
         await using CovenantSchemaScratchDatabase database =
             await CreateMarkerDatabaseAsync();
 
@@ -525,7 +497,6 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
 
         try
         {
-
             using ArcanumMaintenanceLock heldLock = Assert.IsType<ArcanumMaintenanceLock>(
                 ArcanumMaintenanceLock.TryAcquire(guardedRoot));
 
@@ -555,7 +526,8 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
                 new RecordingOsPort(
                     openResult: HostToolsMarkerPairResetOsOpenResult.Opened(
                         osEvidence,
-                        new FakeOsCapability())));
+                        new FakeOsCapability())),
+                NullLogger<HostToolsMarkerPairResetCoordinator>.Instance);
 
             Result<InstallationResetActivePublication> result = await subject.BeginAsync(
                 heldLock,
@@ -568,15 +540,11 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
             Assert.Equal(1, joiner.Calls);
 
             Assert.Equal(expectedVerifierCalls, verifier.RecoveryCalls);
-
         }
         finally
         {
-
             Directory.Delete(guardedRoot, recursive: true);
-
         }
-
     }
 
     [Theory]
@@ -592,7 +560,6 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
         int authorizationMutation,
         int expectedInventoryCalls)
     {
-
         await using CovenantSchemaScratchDatabase database =
             await CreateMarkerDatabaseAsync();
 
@@ -604,7 +571,6 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
 
         try
         {
-
             using ArcanumMaintenanceLock heldLock = Assert.IsType<ArcanumMaintenanceLock>(
                 ArcanumMaintenanceLock.TryAcquire(guardedRoot));
 
@@ -626,7 +592,6 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
 
             if (authorizationMutation == 6)
             {
-
                 accepted = new FullInstallationResetRemediationAuthorization(
                     claim.OperationId,
                     claim.InstallationId,
@@ -634,7 +599,6 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
                     claim.NonceDigest,
                     claim.IssuerDigest,
                     claim.AcceptedAtUtc.ToOffset(TimeSpan.FromHours(1)));
-
             }
 
             AuthorizingVerifier verifier = new(accepted);
@@ -662,7 +626,8 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
                 new RecordingOsPort(
                     openResult: HostToolsMarkerPairResetOsOpenResult.Opened(
                         pair.OsMarker,
-                        new FakeOsCapability())));
+                        new FakeOsCapability())),
+                NullLogger<HostToolsMarkerPairResetCoordinator>.Instance);
 
             Result<InstallationResetActivePublication> result = await subject.BeginAsync(
                 heldLock,
@@ -685,21 +650,16 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
             Assert.True(OsEvidenceEqual(pair.OsMarker, verifier.Pair.OsMarker));
 
             Assert.Equal(expectedInventoryCalls, lifecycle.InventoryCalls);
-
         }
         finally
         {
-
             Directory.Delete(guardedRoot, recursive: true);
-
         }
-
     }
 
     [Fact]
     public async Task Begin_completes_campaign_inventory_before_pair_journal_publication()
     {
-
         await using CovenantSchemaScratchDatabase database =
             await CreateMarkerDatabaseAsync();
 
@@ -711,7 +671,6 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
 
         try
         {
-
             using ArcanumMaintenanceLock heldLock = Assert.IsType<ArcanumMaintenanceLock>(
                 ArcanumMaintenanceLock.TryAcquire(guardedRoot));
 
@@ -747,7 +706,8 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
                 new RecordingOsPort(
                     openResult: HostToolsMarkerPairResetOsOpenResult.Opened(
                         pair.OsMarker,
-                        new FakeOsCapability())));
+                        new FakeOsCapability())),
+                NullLogger<HostToolsMarkerPairResetCoordinator>.Instance);
 
             Result<InstallationResetActivePublication> result = await subject.BeginAsync(
                 heldLock,
@@ -770,15 +730,11 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
             Assert.Empty(checkpoint.CampaignInventory);
 
             Assert.Null(checkpoint.MarkerIntentCount);
-
         }
         finally
         {
-
             Directory.Delete(guardedRoot, recursive: true);
-
         }
-
     }
 
     [Theory]
@@ -813,7 +769,6 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
     [Fact]
     public async Task Pair_recovery_uses_frozen_campaign_inventory_after_pair_journaled()
     {
-
         await using CovenantSchemaScratchDatabase database =
             await CreateMarkerDatabaseAsync();
 
@@ -825,7 +780,6 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
 
         try
         {
-
             using ArcanumMaintenanceLock heldLock = Assert.IsType<ArcanumMaintenanceLock>(
                 ArcanumMaintenanceLock.TryAcquire(guardedRoot));
 
@@ -867,7 +821,8 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
                     events,
                     HostToolsMarkerPairResetOsOpenResult.Opened(
                         pair.OsMarker,
-                        new FakeOsCapability())));
+                        new FakeOsCapability())),
+                NullLogger<HostToolsMarkerPairResetCoordinator>.Instance);
 
             Result<InstallationResetActivePublication> result = await subject.BeginAsync(
                 heldLock,
@@ -882,21 +837,16 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
             Assert.Equal(
                 HostToolsMarkerPairResetPhase.PairAbsenceVerified,
                 store.CurrentPublication.Payload.HostToolsMarkerPairReset!.Phase);
-
         }
         finally
         {
-
             Directory.Delete(guardedRoot, recursive: true);
-
         }
-
     }
 
     [Fact]
     public async Task Begin_publishes_pair_journaled_before_either_marker_effect()
     {
-
         await using CovenantSchemaScratchDatabase database =
             await CreateMarkerDatabaseAsync();
 
@@ -908,7 +858,6 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
 
         try
         {
-
             using ArcanumMaintenanceLock heldLock = Assert.IsType<ArcanumMaintenanceLock>(
                 ArcanumMaintenanceLock.TryAcquire(guardedRoot));
 
@@ -949,7 +898,8 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
                     events,
                     HostToolsMarkerPairResetOsOpenResult.Opened(
                         pair.OsMarker,
-                        new FakeOsCapability())));
+                        new FakeOsCapability())),
+                NullLogger<HostToolsMarkerPairResetCoordinator>.Instance);
 
             Result<InstallationResetActivePublication> result = await subject.BeginAsync(
                 heldLock,
@@ -968,21 +918,16 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
             Assert.True(databaseEffect > journaled);
 
             Assert.DoesNotContain("os-effect", events.Take(databaseEffect));
-
         }
         finally
         {
-
             Directory.Delete(guardedRoot, recursive: true);
-
         }
-
     }
 
     [Fact]
     public async Task Fresh_pair_journal_revalidates_full_checkpoint_before_first_database_effect()
     {
-
         await using CovenantSchemaScratchDatabase database =
             await CreateMarkerDatabaseAsync();
 
@@ -994,7 +939,6 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
 
         try
         {
-
             using ArcanumMaintenanceLock heldLock = Assert.IsType<ArcanumMaintenanceLock>(
                 ArcanumMaintenanceLock.TryAcquire(guardedRoot));
 
@@ -1033,7 +977,8 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
                     events,
                     HostToolsMarkerPairResetOsOpenResult.Opened(
                         pair.OsMarker,
-                        new FakeOsCapability())));
+                        new FakeOsCapability())),
+                NullLogger<HostToolsMarkerPairResetCoordinator>.Instance);
 
             Result<InstallationResetActivePublication> result = await subject.BeginAsync(
                 heldLock,
@@ -1050,21 +995,16 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
             Assert.DoesNotContain("database-effect", events);
 
             Assert.DoesNotContain("advance:DatabaseMarkerCompareDeleted", events);
-
         }
         finally
         {
-
             Directory.Delete(guardedRoot, recursive: true);
-
         }
-
     }
 
     [Fact]
     public async Task Database_effect_advances_only_to_database_marker_compare_deleted_after_durability()
     {
-
         await using CovenantSchemaScratchDatabase database =
             await CreateMarkerDatabaseAsync();
 
@@ -1076,7 +1016,6 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
 
         try
         {
-
             using ArcanumMaintenanceLock heldLock = Assert.IsType<ArcanumMaintenanceLock>(
                 ArcanumMaintenanceLock.TryAcquire(guardedRoot));
 
@@ -1115,7 +1054,8 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
                     events,
                     HostToolsMarkerPairResetOsOpenResult.Opened(
                         pair.OsMarker,
-                        new FakeOsCapability())));
+                        new FakeOsCapability())),
+                NullLogger<HostToolsMarkerPairResetCoordinator>.Instance);
 
             Result<InstallationResetActivePublication> result = await subject.BeginAsync(
                 heldLock,
@@ -1137,21 +1077,16 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
             int osEffect = events.IndexOf("os-effect");
 
             Assert.True(osEffect < 0 || osEffect > publication);
-
         }
         finally
         {
-
             Directory.Delete(guardedRoot, recursive: true);
-
         }
-
     }
 
     [Fact]
     public async Task Os_effect_advances_only_to_os_marker_compare_deleted_after_exact_delete_and_absence()
     {
-
         await using CovenantSchemaScratchDatabase database =
             await CreateMarkerDatabaseAsync();
 
@@ -1163,7 +1098,6 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
 
         try
         {
-
             using ArcanumMaintenanceLock heldLock = Assert.IsType<ArcanumMaintenanceLock>(
                 ArcanumMaintenanceLock.TryAcquire(guardedRoot));
 
@@ -1206,7 +1140,8 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
                 new RecordingFullResetLifecycle(
                     events,
                     Inventory(claim.OperationId)),
-                os);
+                os,
+                NullLogger<HostToolsMarkerPairResetCoordinator>.Instance);
 
             Result<InstallationResetActivePublication> result = await subject.BeginAsync(
                 heldLock,
@@ -1241,21 +1176,561 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
             Assert.Equal(
                 HostToolsMarkerPairResetPhase.PairAbsenceVerified,
                 store.CurrentPublication.Payload.HostToolsMarkerPairReset!.Phase);
-
         }
         finally
         {
-
             Directory.Delete(guardedRoot, recursive: true);
+        }
+    }
 
+    [Fact]
+    public async Task Unexpected_exception_is_logged_with_its_phase_and_still_reports_recovery_required()
+    {
+        // Every failure in this operation collapses to one content-free refusal by design, so the
+        // log is the only place the operator can learn what actually happened. It records the
+        // exception's type and where it happened, and nothing the exception said: a message from a
+        // collaborator that handled attestation or marker material is exactly what must not reach it.
+        RecordingLogger logger = new();
+
+        PairBeginOutcome outcome = await BeginWithOsDeleteBehaviorAsync(
+            _ => throw new InvalidOperationException("sentinel-diagnostic-detail"),
+            new ManualClock(),
+            logger,
+            driveClock: null);
+
+        Assert.True(outcome.Result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Data.RecoveryRequired, outcome.Result.Error.Code);
+
+        Assert.DoesNotContain(
+            "sentinel",
+            outcome.Result.Error.Message,
+            StringComparison.OrdinalIgnoreCase);
+
+        LogEntry entry = Assert.Single(
+            logger.Entries,
+            static candidate => candidate.Level >= LogLevel.Warning);
+
+        Assert.Contains("InvalidOperationException", entry.Message);
+
+        Assert.Contains("pair-effects", entry.Message);
+
+        Assert.Contains("os-marker-delete", entry.Message);
+
+        Assert.DoesNotContain("sentinel-diagnostic-detail", entry.Message);
+
+        Assert.Null(entry.Exception);
+
+        Assert.Equal(
+            HostToolsMarkerPairResetPhase.DatabaseMarkerCompareDeleted,
+            outcome.Store.CurrentPublication.Payload.HostToolsMarkerPairReset!.Phase);
+    }
+
+    [Fact]
+    public async Task Unexpected_exception_before_the_pair_journal_is_logged_with_its_phase()
+    {
+        await using CovenantSchemaScratchDatabase database =
+            await CreateMarkerDatabaseAsync();
+
+        string guardedRoot = Path.Combine(
+            Path.GetTempPath(),
+            $"arcanum-pair-prejournal-log-{Guid.NewGuid():N}");
+
+        Directory.CreateDirectory(guardedRoot);
+
+        try
+        {
+            using ArcanumMaintenanceLock heldLock = Assert.IsType<ArcanumMaintenanceLock>(
+                ArcanumMaintenanceLock.TryAcquire(guardedRoot));
+
+            InstallationResetActivePublication current = Publication();
+
+            FullInstallationResetRemediationClaimV1 claim = Assert.IsType<
+                FullInstallationResetRemediationClaimV1>(
+                    current.Payload.FullInstallationResetRemediationClaim);
+
+            HostProcessToolsMatchedPair pair = new(
+                TaintedDatabaseEvidence(),
+                MatchedOsEvidence());
+
+            RecordingLogger logger = new();
+
+            HostToolsMarkerPairResetCoordinator subject = new(
+                new RecordingActiveStore(guardedRoot, current, []),
+                new HostToolsMarkerPairResetDatabase(
+                    database.MaintenanceConnections(),
+                    CovenantSqliteConnectionInitializer.Instance),
+                new ThrowingReadiness(),
+                new HostProcessToolsMarkerPairJoiner(),
+                new AuthorizingVerifier(Authorization(claim)),
+                new RecordingFullResetLifecycle([], Inventory(claim.OperationId)),
+                new RecordingOsPort(
+                    openResult: HostToolsMarkerPairResetOsOpenResult.Opened(
+                        pair.OsMarker,
+                        new FakeOsCapability())),
+                logger);
+
+            Result<InstallationResetActivePublication> result = await subject.BeginAsync(
+                heldLock,
+                current,
+                Attestation(current.Payload.OperationId),
+                CancellationToken.None);
+
+            Assert.True(result.IsFailure);
+
+            Assert.Equal(ErrorCodes.Data.RecoveryRequired, result.Error.Code);
+
+            LogEntry entry = Assert.Single(
+                logger.Entries,
+                static candidate => candidate.Level >= LogLevel.Warning);
+
+            Assert.Contains("InvalidOperationException", entry.Message);
+
+            Assert.Contains("begin-pre-journal", entry.Message);
+
+            Assert.DoesNotContain("sentinel", entry.Message, StringComparison.OrdinalIgnoreCase);
+
+            Assert.DoesNotContain("readiness", entry.Message, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            Directory.Delete(guardedRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Unexpected_exceptions_are_named_by_their_kind_and_never_by_their_message()
+    {
+        // The kind is the one thing the log can say about a failure the answer collapses, so a closed
+        // set that files the failures a decoding or cryptographic collaborator actually raises under
+        // "Other" leaves the operator with no more than they had before the logging existed. A
+        // null-reference is in the set too: it is the shape a defect takes, and the log is where a
+        // defect has to be recognisable.
+        (Func<Exception> Create, string Kind)[] cases =
+        [
+            (() => new NullReferenceException("sentinel-diagnostic-detail"), nameof(NullReferenceException)),
+            (() => new FormatException("sentinel-diagnostic-detail"), nameof(FormatException)),
+            (() => new InvalidDataException("sentinel-diagnostic-detail"), nameof(InvalidDataException)),
+            (() => new System.Security.Cryptography.CryptographicException("sentinel-diagnostic-detail"), "CryptographicException"),
+            (() => new System.Text.Json.JsonException("sentinel-diagnostic-detail"), "JsonException"),
+            (() => new KeyNotFoundException("sentinel-diagnostic-detail"), nameof(KeyNotFoundException)),
+            (() => new InvalidCastException("sentinel-diagnostic-detail"), nameof(InvalidCastException)),
+            (() => new ObjectDisposedException("sentinel-diagnostic-detail"), nameof(ObjectDisposedException)),
+            (() => new DllNotFoundException("sentinel-diagnostic-detail"), nameof(DllNotFoundException)),
+            (() => new BadImageFormatException("sentinel-diagnostic-detail"), nameof(BadImageFormatException)),
+            (() => new UnlistedFailure("sentinel-diagnostic-detail"), "Other"),
+        ];
+
+        foreach ((Func<Exception> create, string kind) in cases)
+        {
+            RecordingLogger logger = new();
+
+            PairBeginOutcome outcome = await BeginWithOsDeleteBehaviorAsync(
+                _ => throw create(),
+                new ManualClock(),
+                logger,
+                driveClock: null);
+
+            Assert.True(outcome.Result.IsFailure, kind);
+
+            LogEntry entry = Assert.Single(
+                logger.Entries,
+                static candidate => candidate.Level >= LogLevel.Warning);
+
+            Assert.Contains($"unexpected {kind} during", entry.Message);
+
+            Assert.DoesNotContain(
+                "sentinel",
+                entry.Message,
+                StringComparison.OrdinalIgnoreCase);
+        }
+    }
+
+    private sealed class UnlistedFailure(string message) : Exception(message);
+
+    [Fact]
+    public async Task Slow_os_credential_call_does_not_exhaust_the_shared_deadline()
+    {
+        // Six seconds in an operating-system credential call, which can be as slow as the user's
+        // keychain. One five-second clock around the whole effect sequence cancelled the delete and
+        // then every publication after it, leaving the record at the last phase it had proven.
+        ManualClock clock = new();
+
+        TaskCompletionSource deleteStarted = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        RecordingLogger logger = new();
+
+        PairBeginOutcome outcome = await BeginWithOsDeleteBehaviorAsync(
+            async token =>
+            {
+                await WaitOnClockAsync(clock, TimeSpan.FromSeconds(6), deleteStarted, token);
+
+                return HostToolsMarkerPairResetOsDeleteStatus.Deleted;
+            },
+            clock,
+            logger,
+            async () =>
+            {
+                await deleteStarted.Task;
+
+                clock.Advance(TimeSpan.FromSeconds(6));
+            });
+
+        // Recovery is still the answer on the success path, by design; the checkpoint is the result.
+        Assert.True(outcome.Result.IsFailure);
+
+        Assert.Equal(
+            HostToolsMarkerPairResetPhase.PairAbsenceVerified,
+            outcome.Store.CurrentPublication.Payload.HostToolsMarkerPairReset!.Phase);
+
+        Assert.DoesNotContain(logger.Entries, static entry => entry.Level >= LogLevel.Warning);
+    }
+
+    [Fact]
+    public async Task An_os_credential_call_that_exceeds_its_own_bound_times_out_and_logs_which_step()
+    {
+        ManualClock clock = new();
+
+        TaskCompletionSource deleteStarted = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        RecordingLogger logger = new();
+
+        PairBeginOutcome outcome = await BeginWithOsDeleteBehaviorAsync(
+            async token =>
+            {
+                await WaitOnClockAsync(clock, TimeSpan.FromMinutes(10), deleteStarted, token);
+
+                return HostToolsMarkerPairResetOsDeleteStatus.Deleted;
+            },
+            clock,
+            logger,
+            async () =>
+            {
+                await deleteStarted.Task;
+
+                clock.Advance(TimeSpan.FromMinutes(1));
+            });
+
+        Assert.True(outcome.Result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Data.RecoveryRequired, outcome.Result.Error.Code);
+
+        // The last proven phase is still the active one: the delete never reported success.
+        Assert.Equal(
+            HostToolsMarkerPairResetPhase.DatabaseMarkerCompareDeleted,
+            outcome.Store.CurrentPublication.Payload.HostToolsMarkerPairReset!.Phase);
+
+        LogEntry entry = Assert.Single(
+            logger.Entries,
+            static candidate => candidate.Level >= LogLevel.Warning);
+
+        Assert.Contains("os-marker-delete", entry.Message);
+
+        Assert.Contains("timed out", entry.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// Waits on the manual clock, and reports that its timer exists before it starts waiting.
+    /// </summary>
+    /// <remarks>
+    /// The driver advances the clock as soon as it is told the call has started, so the timer has to be
+    /// registered first. Signalling before <c>Task.Delay</c> had created its timer let the driver's
+    /// continuation advance the clock on another thread first; the delay's timer was then created at
+    /// the advanced time, never fired, and the awaiting call hung.
+    /// </remarks>
+    private static async Task WaitOnClockAsync(
+        ManualClock clock,
+        TimeSpan delay,
+        TaskCompletionSource armed,
+        CancellationToken cancellationToken)
+    {
+        TaskCompletionSource elapsed = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        using ITimer timer = clock.CreateTimer(
+            static state => ((TaskCompletionSource)state!).TrySetResult(),
+            elapsed,
+            delay,
+            Timeout.InfiniteTimeSpan);
+
+        using CancellationTokenRegistration registration = cancellationToken.Register(
+            () => elapsed.TrySetCanceled(cancellationToken));
+
+        armed.SetResult();
+
+        await elapsed.Task;
+    }
+
+    private sealed record PairBeginOutcome(
+        Result<InstallationResetActivePublication> Result,
+        RecordingActiveStore Store);
+
+    private static async Task<PairBeginOutcome> BeginWithOsDeleteBehaviorAsync(
+        Func<CancellationToken, Task<HostToolsMarkerPairResetOsDeleteStatus>> deleteBehavior,
+        TimeProvider timeProvider,
+        ILogger<HostToolsMarkerPairResetCoordinator> logger,
+        Func<Task>? driveClock)
+    {
+        await using CovenantSchemaScratchDatabase database =
+            await CreateMarkerDatabaseAsync();
+
+        string guardedRoot = Path.Combine(
+            Path.GetTempPath(),
+            $"arcanum-pair-os-behavior-{Guid.NewGuid():N}");
+
+        Directory.CreateDirectory(guardedRoot);
+
+        try
+        {
+            using ArcanumMaintenanceLock heldLock = Assert.IsType<ArcanumMaintenanceLock>(
+                ArcanumMaintenanceLock.TryAcquire(guardedRoot));
+
+            InstallationResetActivePublication current = Publication();
+
+            FullInstallationResetRemediationClaimV1 claim = Assert.IsType<
+                FullInstallationResetRemediationClaimV1>(
+                    current.Payload.FullInstallationResetRemediationClaim);
+
+            List<string> events = [];
+
+            RecordingActiveStore store = new(guardedRoot, current, events)
+            {
+                AdvanceSucceeds = true,
+            };
+
+            HostProcessToolsMatchedPair pair = new(
+                TaintedDatabaseEvidence(),
+                MatchedOsEvidence());
+
+            RecordingOsPort os = new(
+                events,
+                HostToolsMarkerPairResetOsOpenResult.Opened(
+                    pair.OsMarker,
+                    new FakeOsCapability()))
+            {
+                DeleteBehavior = deleteBehavior,
+            };
+
+            HostToolsMarkerPairResetCoordinator subject = new(
+                store,
+                new HostToolsMarkerPairResetDatabase(
+                    database.MaintenanceConnections(),
+                    CovenantSqliteConnectionInitializer.Instance,
+                    new RecordingDatabaseSeam(events)),
+                new SuccessfulReadiness(),
+                new RecordingJoiner(new HostProcessToolsMarkerPairJoinResult(
+                    HostProcessToolsMarkerPairDisposition.TaintedMatched,
+                    pair)),
+                new AuthorizingVerifier(Authorization(claim)),
+                new RecordingFullResetLifecycle(
+                    events,
+                    Inventory(claim.OperationId)),
+                os,
+                logger,
+                timeProvider: timeProvider);
+
+            Task<Result<InstallationResetActivePublication>> begin = subject.BeginAsync(
+                heldLock,
+                current,
+                Attestation(current.Payload.OperationId),
+                CancellationToken.None);
+
+            if (driveClock is not null)
+            {
+                await driveClock();
+            }
+
+            return new PairBeginOutcome(await begin, store);
+        }
+        finally
+        {
+            Directory.Delete(guardedRoot, recursive: true);
+        }
+    }
+
+    private sealed record LogEntry(LogLevel Level, string Message, Exception? Exception);
+
+    private sealed class RecordingLogger : ILogger<HostToolsMarkerPairResetCoordinator>
+    {
+        private readonly Lock _gate = new();
+
+        private readonly List<LogEntry> _entries = [];
+
+        internal IReadOnlyList<LogEntry> Entries
+        {
+            get
+            {
+                lock (_gate)
+                {
+                    return [.. _entries];
+                }
+            }
         }
 
+        public IDisposable? BeginScope<TState>(TState state)
+            where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(
+            LogLevel logLevel,
+            EventId eventId,
+            TState state,
+            Exception? exception,
+            Func<TState, Exception?, string> formatter)
+        {
+            lock (_gate)
+            {
+                _entries.Add(new LogEntry(logLevel, formatter(state, exception), exception));
+            }
+        }
+    }
+
+    /// <summary>
+    /// A clock whose timers fire only when the test advances it, so a six-second keychain call can
+    /// be exercised without waiting six seconds.
+    /// </summary>
+    private sealed class ManualClock : TimeProvider
+    {
+        private readonly Lock _gate = new();
+
+        private readonly List<ManualTimer> _timers = [];
+
+        private TimeSpan _elapsed;
+
+        public override long TimestampFrequency => TimeSpan.TicksPerSecond;
+
+        public override long GetTimestamp()
+        {
+            lock (_gate)
+            {
+                return _elapsed.Ticks;
+            }
+        }
+
+        public override ITimer CreateTimer(
+            TimerCallback callback,
+            object? state,
+            TimeSpan dueTime,
+            TimeSpan period)
+        {
+            ManualTimer timer = new(this, callback, state);
+
+            lock (_gate)
+            {
+                _timers.Add(timer);
+            }
+
+            _ = timer.Change(dueTime, period);
+
+            return timer;
+        }
+
+        internal void Advance(TimeSpan delta)
+        {
+            TimeSpan target;
+
+            lock (_gate)
+            {
+                target = _elapsed + delta;
+            }
+
+            while (true)
+            {
+                ManualTimer? next;
+
+                lock (_gate)
+                {
+                    next = _timers
+                        .Where(candidate => candidate.IsDueBy(target))
+                        .OrderBy(static candidate => candidate.DueAt)
+                        .FirstOrDefault();
+
+                    if (next is null)
+                    {
+                        _elapsed = target;
+
+                        return;
+                    }
+
+                    _elapsed = next.DueAt!.Value;
+
+                    next.Fired();
+                }
+
+                next.Run();
+            }
+        }
+
+        internal TimeSpan Elapsed
+        {
+            get
+            {
+                lock (_gate)
+                {
+                    return _elapsed;
+                }
+            }
+        }
+
+        private void Remove(ManualTimer timer)
+        {
+            lock (_gate)
+            {
+                _ = _timers.Remove(timer);
+            }
+        }
+
+        private sealed class ManualTimer(
+            ManualClock owner,
+            TimerCallback callback,
+            object? state) : ITimer
+        {
+            private TimeSpan? _dueAt;
+
+            private TimeSpan _period = Timeout.InfiniteTimeSpan;
+
+            internal TimeSpan? DueAt => _dueAt;
+
+            internal bool IsDueBy(TimeSpan target) => _dueAt is { } due && due <= target;
+
+            public bool Change(TimeSpan dueTime, TimeSpan period)
+            {
+                lock (owner._gate)
+                {
+                    _dueAt = dueTime == Timeout.InfiniteTimeSpan
+                        ? null
+                        : owner._elapsed + dueTime;
+
+                    _period = period;
+                }
+
+                return true;
+            }
+
+            internal void Fired() =>
+                _dueAt = _period == Timeout.InfiniteTimeSpan || _period <= TimeSpan.Zero
+                    ? null
+                    : _dueAt + _period;
+
+            internal void Run() => callback(state);
+
+            public void Dispose() => owner.Remove(this);
+
+            public ValueTask DisposeAsync()
+            {
+                Dispose();
+
+                return ValueTask.CompletedTask;
+            }
+        }
     }
 
     [Fact]
     public async Task Final_pair_proof_advances_only_to_pair_absence_verified()
     {
-
         await using CovenantSchemaScratchDatabase database =
             await CreateMarkerDatabaseAsync();
 
@@ -1267,7 +1742,6 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
 
         try
         {
-
             using ArcanumMaintenanceLock heldLock = Assert.IsType<ArcanumMaintenanceLock>(
                 ArcanumMaintenanceLock.TryAcquire(guardedRoot));
 
@@ -1308,7 +1782,8 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
                 new RecordingFullResetLifecycle(
                     events,
                     Inventory(claim.OperationId)),
-                os);
+                os,
+                NullLogger<HostToolsMarkerPairResetCoordinator>.Instance);
 
             Result<InstallationResetActivePublication> result = await subject.BeginAsync(
                 heldLock,
@@ -1337,15 +1812,11 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
             Assert.Equal(
                 HostToolsMarkerPairResetPhase.PairAbsenceVerified,
                 store.LastNext!.HostToolsMarkerPairReset!.Phase);
-
         }
         finally
         {
-
             Directory.Delete(guardedRoot, recursive: true);
-
         }
-
     }
 
     [Theory]
@@ -1359,7 +1830,6 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
         bool tamperAnchor,
         string forbiddenEvent)
     {
-
         await using CovenantSchemaScratchDatabase database =
             await CreateMarkerDatabaseAsync();
 
@@ -1371,7 +1841,6 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
 
         try
         {
-
             using ArcanumMaintenanceLock heldLock = Assert.IsType<ArcanumMaintenanceLock>(
                 ArcanumMaintenanceLock.TryAcquire(guardedRoot));
 
@@ -1432,7 +1901,8 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
                     events,
                     HostToolsMarkerPairResetOsOpenResult.Opened(
                         pair.OsMarker,
-                        new FakeOsCapability())));
+                        new FakeOsCapability())),
+                NullLogger<HostToolsMarkerPairResetCoordinator>.Instance);
 
             Result<InstallationResetActivePublication> result = await subject.BeginAsync(
                 heldLock,
@@ -1445,15 +1915,11 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
             Assert.DoesNotContain(forbiddenEvent, events);
 
             Assert.Equal(tamperedRecoveryCall, store.RecoverCalls);
-
         }
         finally
         {
-
             Directory.Delete(guardedRoot, recursive: true);
-
         }
-
     }
 
     [Theory]
@@ -1462,7 +1928,6 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
     public async Task Failure_or_uncertainty_leaves_the_last_proven_phase_active_and_recovery_required(
         bool failPairJournalPublication)
     {
-
         await using CovenantSchemaScratchDatabase database =
             await CreateMarkerDatabaseAsync();
 
@@ -1474,7 +1939,6 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
 
         try
         {
-
             using ArcanumMaintenanceLock heldLock = Assert.IsType<ArcanumMaintenanceLock>(
                 ArcanumMaintenanceLock.TryAcquire(guardedRoot));
 
@@ -1515,7 +1979,8 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
                     events,
                     HostToolsMarkerPairResetOsOpenResult.Opened(
                         pair.OsMarker,
-                        new FakeOsCapability())));
+                        new FakeOsCapability())),
+                NullLogger<HostToolsMarkerPairResetCoordinator>.Instance);
 
             Result<InstallationResetActivePublication> result = await subject.BeginAsync(
                 heldLock,
@@ -1537,15 +2002,11 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
             Assert.DoesNotContain("os-effect", events);
 
             Assert.Null(store.CurrentPublication.Payload.HostToolsMarkerPairReset);
-
         }
         finally
         {
-
             Directory.Delete(guardedRoot, recursive: true);
-
         }
-
     }
 
     [Theory]
@@ -1557,7 +2018,6 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
     public async Task Begin_maps_every_prejournal_result_failure_to_content_free_recovery_required(
         int sentinel)
     {
-
         await using CovenantSchemaScratchDatabase database = sentinel == 2
             ? await CovenantSchemaScratchDatabase.CreateAsync(CancellationToken.None)
             : await CreateMarkerDatabaseAsync();
@@ -1570,7 +2030,6 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
 
         try
         {
-
             using ArcanumMaintenanceLock heldLock = Assert.IsType<ArcanumMaintenanceLock>(
                 ArcanumMaintenanceLock.TryAcquire(guardedRoot));
 
@@ -1626,7 +2085,8 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
                     events,
                     HostToolsMarkerPairResetOsOpenResult.Opened(
                         pair.OsMarker,
-                        capability)));
+                        capability)),
+                NullLogger<HostToolsMarkerPairResetCoordinator>.Instance);
 
             Result<InstallationResetActivePublication> result = await subject.BeginAsync(
                 heldLock,
@@ -1649,15 +2109,11 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
             Assert.DoesNotContain("database-effect", events);
 
             Assert.DoesNotContain("os-effect", events);
-
         }
         finally
         {
-
             Directory.Delete(guardedRoot, recursive: true);
-
         }
-
     }
 
     [Theory]
@@ -1672,7 +2128,6 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
     public async Task Begin_maps_non_cancellation_prejournal_collaborator_exceptions_to_content_free_recovery_required(
         int sentinel)
     {
-
         await using CovenantSchemaScratchDatabase database =
             await CreateMarkerDatabaseAsync();
 
@@ -1684,7 +2139,6 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
 
         try
         {
-
             using ArcanumMaintenanceLock heldLock = Assert.IsType<ArcanumMaintenanceLock>(
                 ArcanumMaintenanceLock.TryAcquire(guardedRoot));
 
@@ -1750,7 +2204,8 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
                 joiner,
                 verifier,
                 lifecycle,
-                os);
+                os,
+                NullLogger<HostToolsMarkerPairResetCoordinator>.Instance);
 
             Result<InstallationResetActivePublication> result = await subject.BeginAsync(
                 heldLock,
@@ -1773,21 +2228,16 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
             Assert.DoesNotContain("database-effect", events);
 
             Assert.DoesNotContain("os-effect", events);
-
         }
         finally
         {
-
             Directory.Delete(guardedRoot, recursive: true);
-
         }
-
     }
 
     [Fact]
     public async Task Caller_cancellation_before_pair_journaled_performs_no_marker_effect()
     {
-
         await using CovenantSchemaScratchDatabase database =
             await CreateMarkerDatabaseAsync();
 
@@ -1799,7 +2249,6 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
 
         try
         {
-
             using ArcanumMaintenanceLock heldLock = Assert.IsType<ArcanumMaintenanceLock>(
                 ArcanumMaintenanceLock.TryAcquire(guardedRoot));
 
@@ -1842,7 +2291,8 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
                     events,
                     HostToolsMarkerPairResetOsOpenResult.Opened(
                         pair.OsMarker,
-                        new FakeOsCapability())));
+                        new FakeOsCapability())),
+                NullLogger<HostToolsMarkerPairResetCoordinator>.Instance);
 
             await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
                 subject.BeginAsync(
@@ -1856,21 +2306,16 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
             Assert.DoesNotContain("os-effect", events);
 
             Assert.Null(store.CurrentPublication.Payload.HostToolsMarkerPairReset);
-
         }
         finally
         {
-
             Directory.Delete(guardedRoot, recursive: true);
-
         }
-
     }
 
     [Fact]
     public async Task Prejournal_failure_after_caller_cancellation_propagates_the_exact_caller_cancellation()
     {
-
         await using CovenantSchemaScratchDatabase database =
             await CreateMarkerDatabaseAsync();
 
@@ -1882,7 +2327,6 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
 
         try
         {
-
             using ArcanumMaintenanceLock heldLock = Assert.IsType<ArcanumMaintenanceLock>(
                 ArcanumMaintenanceLock.TryAcquire(guardedRoot));
 
@@ -1922,7 +2366,8 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
                     events,
                     HostToolsMarkerPairResetOsOpenResult.Opened(
                         pair.OsMarker,
-                        new FakeOsCapability())));
+                        new FakeOsCapability())),
+                NullLogger<HostToolsMarkerPairResetCoordinator>.Instance);
 
             OperationCanceledException canceled =
                 await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
@@ -1939,15 +2384,11 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
             Assert.DoesNotContain("database-effect", events);
 
             Assert.DoesNotContain("os-effect", events);
-
         }
         finally
         {
-
             Directory.Delete(guardedRoot, recursive: true);
-
         }
-
     }
 
     [Theory]
@@ -1959,7 +2400,6 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
         bool callerCanceled,
         int releaseFailure)
     {
-
         await using CovenantSchemaScratchDatabase database =
             await CreateMarkerDatabaseAsync();
 
@@ -1971,7 +2411,6 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
 
         try
         {
-
             using ArcanumMaintenanceLock heldLock = Assert.IsType<ArcanumMaintenanceLock>(
                 ArcanumMaintenanceLock.TryAcquire(guardedRoot));
 
@@ -2030,11 +2469,11 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
                     events,
                     HostToolsMarkerPairResetOsOpenResult.Opened(
                         pair.OsMarker,
-                        new FakeOsCapability())));
+                        new FakeOsCapability())),
+                NullLogger<HostToolsMarkerPairResetCoordinator>.Instance);
 
             if (callerCanceled)
             {
-
                 OperationCanceledException canceled =
                     await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
                         subject.BeginAsync(
@@ -2046,11 +2485,9 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
                 Assert.Same(exactCallerCancellation, canceled);
 
                 Assert.Equal(callerCancellation.Token, canceled.CancellationToken);
-
             }
             else
             {
-
                 Result<InstallationResetActivePublication> result = await subject.BeginAsync(
                     heldLock,
                     current,
@@ -2064,7 +2501,6 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
                 Assert.Equal(
                     "The full-installation reset marker-pair operation requires recovery.",
                     result.Error.Message);
-
             }
 
             Assert.Equal(1, lifecycle.ReleaseCalls);
@@ -2072,21 +2508,16 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
             Assert.DoesNotContain("database-effect", events);
 
             Assert.DoesNotContain("os-effect", events);
-
         }
         finally
         {
-
             Directory.Delete(guardedRoot, recursive: true);
-
         }
-
     }
 
     [Fact]
     public async Task Caller_cancellation_after_pair_journaled_uses_a_bounded_recovery_owned_checkpoint_token()
     {
-
         await using CovenantSchemaScratchDatabase database =
             await CreateMarkerDatabaseAsync();
 
@@ -2098,7 +2529,6 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
 
         try
         {
-
             using ArcanumMaintenanceLock heldLock = Assert.IsType<ArcanumMaintenanceLock>(
                 ArcanumMaintenanceLock.TryAcquire(guardedRoot));
 
@@ -2145,7 +2575,8 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
                 new RecordingFullResetLifecycle(
                     events,
                     Inventory(claim.OperationId)),
-                os);
+                os,
+                NullLogger<HostToolsMarkerPairResetCoordinator>.Instance);
 
             Result<InstallationResetActivePublication> result = await subject.BeginAsync(
                 heldLock,
@@ -2168,21 +2599,16 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
             Assert.Equal(
                 HostToolsMarkerPairResetPhase.PairAbsenceVerified,
                 store.CurrentPublication.Payload.HostToolsMarkerPairReset!.Phase);
-
         }
         finally
         {
-
             Directory.Delete(guardedRoot, recursive: true);
-
         }
-
     }
 
     [Fact]
     public async Task Resume_from_pair_journaled_reverifies_projection_signature_pair_and_database_cas()
     {
-
         await using CovenantSchemaScratchDatabase database =
             await CreateMarkerDatabaseAsync();
 
@@ -2194,7 +2620,6 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
 
         try
         {
-
             using ArcanumMaintenanceLock heldLock = Assert.IsType<ArcanumMaintenanceLock>(
                 ArcanumMaintenanceLock.TryAcquire(guardedRoot));
 
@@ -2247,7 +2672,8 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
                 new RecordingFullResetLifecycle(
                     events,
                     Inventory(claim.OperationId)),
-                os);
+                os,
+                NullLogger<HostToolsMarkerPairResetCoordinator>.Instance);
 
             Result<InstallationResetActivePublication> result = await subject.ResumeAsync(
                 heldLock,
@@ -2271,21 +2697,16 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
             Assert.Contains("advance:DatabaseMarkerCompareDeleted", events);
 
             Assert.Equal(1, capability.DisposeCalls);
-
         }
         finally
         {
-
             Directory.Delete(guardedRoot, recursive: true);
-
         }
-
     }
 
     [Fact]
     public async Task Resume_from_database_deleted_reopens_only_the_exact_fixed_os_slot()
     {
-
         await using CovenantSchemaScratchDatabase database =
             await CreateCleanMarkerDatabaseAsync();
 
@@ -2297,7 +2718,6 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
 
         try
         {
-
             using ArcanumMaintenanceLock heldLock = Assert.IsType<ArcanumMaintenanceLock>(
                 ArcanumMaintenanceLock.TryAcquire(guardedRoot));
 
@@ -2346,7 +2766,8 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
                 new RecordingFullResetLifecycle(
                     events,
                     Inventory(claim.OperationId)),
-                os);
+                os,
+                NullLogger<HostToolsMarkerPairResetCoordinator>.Instance);
 
             Result<InstallationResetActivePublication> result = await subject.ResumeAsync(
                 heldLock,
@@ -2374,21 +2795,16 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
             Assert.Contains("advance:OsMarkerCompareDeleted", events);
 
             Assert.Equal(1, capability.DisposeCalls);
-
         }
         finally
         {
-
             Directory.Delete(guardedRoot, recursive: true);
-
         }
-
     }
 
     [Fact]
     public async Task Resume_disposes_reopened_capability_when_valid_evidence_changed_before_database_access()
     {
-
         await using CovenantSchemaScratchDatabase database =
             await CreateMarkerDatabaseAsync();
 
@@ -2400,7 +2816,6 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
 
         try
         {
-
             using ArcanumMaintenanceLock heldLock = Assert.IsType<ArcanumMaintenanceLock>(
                 ArcanumMaintenanceLock.TryAcquire(guardedRoot));
 
@@ -2445,7 +2860,8 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
                     events,
                     reopenResult: HostToolsMarkerPairResetOsOpenResult.Opened(
                         changed,
-                        capability)));
+                        capability)),
+                NullLogger<HostToolsMarkerPairResetCoordinator>.Instance);
 
             Result<InstallationResetActivePublication> result = await subject.ResumeAsync(
                 heldLock,
@@ -2463,15 +2879,11 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
             Assert.DoesNotContain(
                 events,
                 value => value.StartsWith("advance:", StringComparison.Ordinal));
-
         }
         finally
         {
-
             Directory.Delete(guardedRoot, recursive: true);
-
         }
-
     }
 
     [Theory]
@@ -2483,7 +2895,6 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
         byte phaseCode,
         bool rejectJoin)
     {
-
         HostToolsMarkerPairResetPhase phase =
             (HostToolsMarkerPairResetPhase)phaseCode;
 
@@ -2498,7 +2909,6 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
 
         try
         {
-
             using ArcanumMaintenanceLock heldLock = Assert.IsType<ArcanumMaintenanceLock>(
                 ArcanumMaintenanceLock.TryAcquire(guardedRoot));
 
@@ -2544,7 +2954,8 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
                 joiner,
                 verifier,
                 new RecordingFullResetLifecycle(),
-                os);
+                os,
+                NullLogger<HostToolsMarkerPairResetCoordinator>.Instance);
 
             Result<InstallationResetActivePublication> result = await subject.ResumeAsync(
                 heldLock,
@@ -2558,15 +2969,11 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
             Assert.Equal(0, os.AbsenceCalls);
 
             Assert.DoesNotContain("database", events);
-
         }
         finally
         {
-
             Directory.Delete(guardedRoot, recursive: true);
-
         }
-
     }
 
     [Theory]
@@ -2596,7 +3003,6 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
         bool expectedDatabaseOpen,
         bool expectedPairAbsencePublication)
     {
-
         HostToolsMarkerPairResetOsAbsenceStatus osAbsence =
             (HostToolsMarkerPairResetOsAbsenceStatus)osAbsenceCode;
 
@@ -2612,7 +3018,6 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
 
         try
         {
-
             using ArcanumMaintenanceLock heldLock = Assert.IsType<ArcanumMaintenanceLock>(
                 ArcanumMaintenanceLock.TryAcquire(guardedRoot));
 
@@ -2658,7 +3063,8 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
                 new RecordingFullResetLifecycle(
                     events,
                     Inventory(claim.OperationId)),
-                os);
+                os,
+                NullLogger<HostToolsMarkerPairResetCoordinator>.Instance);
 
             Result<InstallationResetActivePublication> result = await subject.ResumeAsync(
                 heldLock,
@@ -2683,26 +3089,19 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
 
             if (expectedDatabaseOpen)
             {
-
                 Assert.True(
                     events.IndexOf("os-absence") < events.IndexOf("database"));
-
             }
-
         }
         finally
         {
-
             Directory.Delete(guardedRoot, recursive: true);
-
         }
-
     }
 
     [Fact]
     public async Task Resume_from_pair_absence_verified_replays_no_pair_mutation()
     {
-
         await using CovenantSchemaScratchDatabase database =
             await CreateCleanMarkerDatabaseAsync();
 
@@ -2714,7 +3113,6 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
 
         try
         {
-
             using ArcanumMaintenanceLock heldLock = Assert.IsType<ArcanumMaintenanceLock>(
                 ArcanumMaintenanceLock.TryAcquire(guardedRoot));
 
@@ -2758,7 +3156,8 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
                 new RecordingFullResetLifecycle(
                     events,
                     Inventory(claim.OperationId)),
-                os);
+                os,
+                NullLogger<HostToolsMarkerPairResetCoordinator>.Instance);
 
             Result<InstallationResetActivePublication> result = await subject.ResumeAsync(
                 heldLock,
@@ -2789,15 +3188,11 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
             Assert.Equal(
                 HostToolsMarkerPairResetPhase.PairAbsenceVerified,
                 store.LastNext!.HostToolsMarkerPairReset!.Phase);
-
         }
         finally
         {
-
             Directory.Delete(guardedRoot, recursive: true);
-
         }
-
     }
 
     [Theory]
@@ -2811,7 +3206,6 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
         bool carriesPair,
         int expectedVerifierCalls)
     {
-
         await using CovenantSchemaScratchDatabase database =
             await CreateCleanMarkerDatabaseAsync();
 
@@ -2823,7 +3217,6 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
 
         try
         {
-
             using ArcanumMaintenanceLock heldLock = Assert.IsType<ArcanumMaintenanceLock>(
                 ArcanumMaintenanceLock.TryAcquire(guardedRoot));
 
@@ -2858,7 +3251,8 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
                 verifier,
                 new RecordingFullResetLifecycle(
                     inventory: Inventory(claim.OperationId)),
-                new RecordingOsPort());
+                new RecordingOsPort(),
+                NullLogger<HostToolsMarkerPairResetCoordinator>.Instance);
 
             Result<InstallationResetActivePublication> result = await subject.ResumeAsync(
                 heldLock,
@@ -2878,21 +3272,16 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
                 joiner.OsMarker!));
 
             Assert.Equal(expectedVerifierCalls, verifier.Attestation is null ? 0 : 1);
-
         }
         finally
         {
-
             Directory.Delete(guardedRoot, recursive: true);
-
         }
-
     }
 
     [Fact]
     public async Task Resume_never_falls_back_to_a_fresh_live_pair_admission_read_or_second_classifier()
     {
-
         await using CovenantSchemaScratchDatabase database =
             await CreateCleanMarkerDatabaseAsync();
 
@@ -2904,7 +3293,6 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
 
         try
         {
-
             using ArcanumMaintenanceLock heldLock = Assert.IsType<ArcanumMaintenanceLock>(
                 ArcanumMaintenanceLock.TryAcquire(guardedRoot));
 
@@ -2941,7 +3329,8 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
                 joiner,
                 new AuthorizingVerifier(Authorization(claim)),
                 lifecycle,
-                os);
+                os,
+                NullLogger<HostToolsMarkerPairResetCoordinator>.Instance);
 
             Result<InstallationResetActivePublication> result = await subject.ResumeAsync(
                 heldLock,
@@ -2961,15 +3350,11 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
             Assert.Equal(0, lifecycle.InventoryCalls);
 
             Assert.Equal(0, lifecycle.RevalidateCalls);
-
         }
         finally
         {
-
             Directory.Delete(guardedRoot, recursive: true);
-
         }
-
     }
 
     [Theory]
@@ -2981,7 +3366,6 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
     public async Task Resume_rejects_zero_unknown_skipped_regressed_or_tampered_checkpoint_state(
         int mutation)
     {
-
         await using CovenantSchemaScratchDatabase database =
             await CovenantSchemaScratchDatabase.CreateAsync(CancellationToken.None);
 
@@ -2993,7 +3377,6 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
 
         try
         {
-
             using ArcanumMaintenanceLock heldLock = Assert.IsType<ArcanumMaintenanceLock>(
                 ArcanumMaintenanceLock.TryAcquire(guardedRoot));
 
@@ -3048,7 +3431,8 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
                 new HostProcessToolsMarkerPairJoiner(),
                 new RejectingVerifier(),
                 new RecordingFullResetLifecycle(),
-                os);
+                os,
+                NullLogger<HostToolsMarkerPairResetCoordinator>.Instance);
 
             Result<InstallationResetActivePublication> result = await subject.ResumeAsync(
                 heldLock,
@@ -3064,15 +3448,11 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
             Assert.Equal(0, os.AbsenceCalls);
 
             Assert.DoesNotContain("database", events);
-
         }
         finally
         {
-
             Directory.Delete(guardedRoot, recursive: true);
-
         }
-
     }
 
     [Theory]
@@ -3083,7 +3463,6 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
     public async Task Resume_rejects_offset_shifted_claim_restart_or_signed_projection_before_os_access(
         int mutation)
     {
-
         await using CovenantSchemaScratchDatabase database =
             await CovenantSchemaScratchDatabase.CreateAsync(CancellationToken.None);
 
@@ -3095,7 +3474,6 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
 
         try
         {
-
             using ArcanumMaintenanceLock heldLock = Assert.IsType<ArcanumMaintenanceLock>(
                 ArcanumMaintenanceLock.TryAcquire(guardedRoot));
 
@@ -3177,7 +3555,8 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
                 new HostProcessToolsMarkerPairJoiner(),
                 new RejectingVerifier(),
                 new RecordingFullResetLifecycle(),
-                os);
+                os,
+                NullLogger<HostToolsMarkerPairResetCoordinator>.Instance);
 
             Result<InstallationResetActivePublication> result = await subject.ResumeAsync(
                 heldLock,
@@ -3193,21 +3572,16 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
             Assert.Equal(0, os.AbsenceCalls);
 
             Assert.DoesNotContain("database", events);
-
         }
         finally
         {
-
             Directory.Delete(guardedRoot, recursive: true);
-
         }
-
     }
 
     [Fact]
     public async Task Matching_recovered_recomputed_checkpoint_still_requires_fixed_time_verifier()
     {
-
         await using CovenantSchemaScratchDatabase database =
             await CovenantSchemaScratchDatabase.CreateAsync(CancellationToken.None);
 
@@ -3219,7 +3593,6 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
 
         try
         {
-
             using ArcanumMaintenanceLock heldLock = Assert.IsType<ArcanumMaintenanceLock>(
                 ArcanumMaintenanceLock.TryAcquire(guardedRoot));
 
@@ -3250,7 +3623,8 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
                     pair)),
                 verifier,
                 new RecordingFullResetLifecycle(),
-                os);
+                os,
+                NullLogger<HostToolsMarkerPairResetCoordinator>.Instance);
 
             Result<InstallationResetActivePublication> result = await subject.ResumeAsync(
                 heldLock,
@@ -3262,21 +3636,16 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
             Assert.Equal(1, verifier.RecoveryCalls);
 
             Assert.Equal(0, os.AbsenceCalls);
-
         }
         finally
         {
-
             Directory.Delete(guardedRoot, recursive: true);
-
         }
-
     }
 
     [Fact]
     public async Task Begin_refuses_an_exact_issue_121_predecessor_schema_before_pair_journal_or_marker_effect()
     {
-
         await using CovenantSchemaScratchDatabase database =
             await CreateMarkerDatabaseAsync();
 
@@ -3288,7 +3657,6 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
 
         try
         {
-
             using ArcanumMaintenanceLock heldLock = Assert.IsType<ArcanumMaintenanceLock>(
                 ArcanumMaintenanceLock.TryAcquire(guardedRoot));
 
@@ -3323,7 +3691,8 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
                     events,
                     HostToolsMarkerPairResetOsOpenResult.Opened(
                         MatchedOsEvidence(),
-                        capability)));
+                        capability)),
+                NullLogger<HostToolsMarkerPairResetCoordinator>.Instance);
 
             Result<InstallationResetActivePublication> result = await subject.BeginAsync(
                 heldLock,
@@ -3346,21 +3715,16 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
             Assert.DoesNotContain(events, entry => entry.StartsWith(
                 "advance:",
                 StringComparison.Ordinal));
-
         }
         finally
         {
-
             Directory.Delete(guardedRoot, recursive: true);
-
         }
-
     }
 
     [Fact]
     public async Task Resume_refuses_missing_or_drifted_issue_122_cleanup_schema_before_pair_effect()
     {
-
         await using CovenantSchemaScratchDatabase database =
             await CreateCleanMarkerDatabaseAsync();
 
@@ -3372,7 +3736,6 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
 
         try
         {
-
             using ArcanumMaintenanceLock heldLock = Assert.IsType<ArcanumMaintenanceLock>(
                 ArcanumMaintenanceLock.TryAcquire(guardedRoot));
 
@@ -3410,7 +3773,8 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
                     events,
                     reopenResult: HostToolsMarkerPairResetOsOpenResult.Opened(
                         checkpoint.RestartProof.OsMarkerEvidence,
-                        capability)));
+                        capability)),
+                NullLogger<HostToolsMarkerPairResetCoordinator>.Instance);
 
             Result<InstallationResetActivePublication> result = await subject.ResumeAsync(
                 heldLock,
@@ -3430,21 +3794,16 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
             Assert.DoesNotContain(events, entry => entry.StartsWith(
                 "advance:",
                 StringComparison.Ordinal));
-
         }
         finally
         {
-
             Directory.Delete(guardedRoot, recursive: true);
-
         }
-
     }
 
     [Fact]
     public async Task Exact_issue_122_core_schema_is_proven_on_the_same_connection_before_inventory_or_effect()
     {
-
         await using CovenantSchemaScratchDatabase database =
             await CreateMarkerDatabaseAsync();
 
@@ -3456,7 +3815,6 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
 
         try
         {
-
             using ArcanumMaintenanceLock heldLock = Assert.IsType<ArcanumMaintenanceLock>(
                 ArcanumMaintenanceLock.TryAcquire(guardedRoot));
 
@@ -3494,7 +3852,8 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
                     events,
                     HostToolsMarkerPairResetOsOpenResult.Opened(
                         pair.OsMarker,
-                        new FakeOsCapability())));
+                        new FakeOsCapability())),
+                NullLogger<HostToolsMarkerPairResetCoordinator>.Instance);
 
             Result<InstallationResetActivePublication> result = await subject.BeginAsync(
                 heldLock,
@@ -3515,21 +3874,16 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
             Assert.DoesNotContain("database-effect", events);
 
             Assert.DoesNotContain("os-effect", events);
-
         }
         finally
         {
-
             Directory.Delete(guardedRoot, recursive: true);
-
         }
-
     }
 
     [Fact]
     public async Task Pair_journaled_clean_database_with_unchanged_os_recovers_the_database_effect_publication_gap()
     {
-
         await using CovenantSchemaScratchDatabase database =
             await CreateCleanMarkerDatabaseAsync();
 
@@ -3541,7 +3895,6 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
 
         try
         {
-
             using ArcanumMaintenanceLock heldLock = Assert.IsType<ArcanumMaintenanceLock>(
                 ArcanumMaintenanceLock.TryAcquire(guardedRoot));
 
@@ -3584,7 +3937,8 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
                     events,
                     reopenResult: HostToolsMarkerPairResetOsOpenResult.Opened(
                         pair.OsMarker,
-                        new FakeOsCapability())));
+                        new FakeOsCapability())),
+                NullLogger<HostToolsMarkerPairResetCoordinator>.Instance);
 
             Result<InstallationResetActivePublication> result = await subject.ResumeAsync(
                 heldLock,
@@ -3598,21 +3952,16 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
             Assert.Contains("advance:DatabaseMarkerCompareDeleted", events);
 
             Assert.DoesNotContain("os-effect", events);
-
         }
         finally
         {
-
             Directory.Delete(guardedRoot, recursive: true);
-
         }
-
     }
 
     [Fact]
     public async Task Pair_journaled_offset_shifted_fixed_time_authorization_refuses_before_database_effect_or_advance()
     {
-
         await using CovenantSchemaScratchDatabase database =
             await CreateCleanMarkerDatabaseAsync();
 
@@ -3624,7 +3973,6 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
 
         try
         {
-
             using ArcanumMaintenanceLock heldLock = Assert.IsType<ArcanumMaintenanceLock>(
                 ArcanumMaintenanceLock.TryAcquire(guardedRoot));
 
@@ -3673,7 +4021,8 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
                     events,
                     reopenResult: HostToolsMarkerPairResetOsOpenResult.Opened(
                         pair.OsMarker,
-                        new FakeOsCapability())));
+                        new FakeOsCapability())),
+                NullLogger<HostToolsMarkerPairResetCoordinator>.Instance);
 
             Result<InstallationResetActivePublication> result = await subject.ResumeAsync(
                 heldLock,
@@ -3687,21 +4036,16 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
             Assert.DoesNotContain(
                 events,
                 value => value.StartsWith("advance:", StringComparison.Ordinal));
-
         }
         finally
         {
-
             Directory.Delete(guardedRoot, recursive: true);
-
         }
-
     }
 
     [Fact]
     public async Task Database_deleted_clean_database_with_exact_os_absence_recovers_the_os_effect_publication_gap()
     {
-
         await using CovenantSchemaScratchDatabase database =
             await CreateCleanMarkerDatabaseAsync();
 
@@ -3713,7 +4057,6 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
 
         try
         {
-
             using ArcanumMaintenanceLock heldLock = Assert.IsType<ArcanumMaintenanceLock>(
                 ArcanumMaintenanceLock.TryAcquire(guardedRoot));
 
@@ -3754,7 +4097,8 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
                 new AuthorizingVerifier(Authorization(claim)),
                 new RecordingFullResetLifecycle(
                     inventory: Inventory(claim.OperationId)),
-                os);
+                os,
+                NullLogger<HostToolsMarkerPairResetCoordinator>.Instance);
 
             Result<InstallationResetActivePublication> result = await subject.ResumeAsync(
                 heldLock,
@@ -3770,21 +4114,16 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
             Assert.Null(os.DeleteCapability);
 
             Assert.Contains("advance:OsMarkerCompareDeleted", events);
-
         }
         finally
         {
-
             Directory.Delete(guardedRoot, recursive: true);
-
         }
-
     }
 
     [Fact]
     public async Task Recovered_database_effect_reruns_wal_durability_before_advancing()
     {
-
         await using CovenantSchemaScratchDatabase database =
             await CreateCleanMarkerDatabaseAsync();
 
@@ -3806,7 +4145,6 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
 
         try
         {
-
             using ArcanumMaintenanceLock heldLock = Assert.IsType<ArcanumMaintenanceLock>(
                 ArcanumMaintenanceLock.TryAcquire(guardedRoot));
 
@@ -3835,10 +4173,8 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
                     if (phase
                         is HostToolsMarkerPairResetPhase.DatabaseMarkerCompareDeleted)
                     {
-
                         durableBeforeAdvance = !File.Exists(walPath)
                             || new FileInfo(walPath).Length == 0;
-
                     }
                 },
             };
@@ -3858,7 +4194,8 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
                 new RecordingOsPort(
                     reopenResult: HostToolsMarkerPairResetOsOpenResult.Opened(
                         pair.OsMarker,
-                        new FakeOsCapability())));
+                        new FakeOsCapability())),
+                NullLogger<HostToolsMarkerPairResetCoordinator>.Instance);
 
             Result<InstallationResetActivePublication> result = await subject.ResumeAsync(
                 heldLock,
@@ -3868,21 +4205,16 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
             Assert.True(result.IsFailure);
 
             Assert.True(durableBeforeAdvance);
-
         }
         finally
         {
-
             Directory.Delete(guardedRoot, recursive: true);
-
         }
-
     }
 
     [Fact]
     public async Task Recovered_os_effect_reruns_platform_durability_and_second_absence_readback_before_advancing()
     {
-
         await using CovenantSchemaScratchDatabase database =
             await CreateCleanMarkerDatabaseAsync();
 
@@ -3894,7 +4226,6 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
 
         try
         {
-
             using ArcanumMaintenanceLock heldLock = Assert.IsType<ArcanumMaintenanceLock>(
                 ArcanumMaintenanceLock.TryAcquire(guardedRoot));
 
@@ -3934,7 +4265,8 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
                 new AuthorizingVerifier(Authorization(claim)),
                 new RecordingFullResetLifecycle(
                     inventory: Inventory(claim.OperationId)),
-                os);
+                os,
+                NullLogger<HostToolsMarkerPairResetCoordinator>.Instance);
 
             Result<InstallationResetActivePublication> result = await subject.ResumeAsync(
                 heldLock,
@@ -3948,15 +4280,11 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
             Assert.True(
                 events.IndexOf("os-absence:1")
                     < events.IndexOf("advance:OsMarkerCompareDeleted"));
-
         }
         finally
         {
-
             Directory.Delete(guardedRoot, recursive: true);
-
         }
-
     }
 
     [Theory]
@@ -3965,7 +4293,6 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
     public async Task Recovered_effect_barrier_failure_preserves_the_prior_authenticated_phase(
         bool databaseBarrierFailure)
     {
-
         await using CovenantSchemaScratchDatabase database =
             await CreateCleanMarkerDatabaseAsync();
 
@@ -3973,7 +4300,6 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
 
         if (databaseBarrierFailure)
         {
-
             await database.ExecuteAsync(
                 "PRAGMA wal_autocheckpoint=0;",
                 CancellationToken.None);
@@ -3985,17 +4311,14 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
 
             await using (SqliteCommand read = blockingReader.CreateCommand())
             {
-
                 read.CommandText = "SELECT COUNT(*) FROM covenant_authority_state;";
 
                 _ = await read.ExecuteScalarAsync(CancellationToken.None);
-
             }
 
             await database.ExecuteAsync(
                 "UPDATE covenant_authority_state SET AuthorityEpoch = AuthorityEpoch + 1;",
                 CancellationToken.None);
-
         }
 
         string guardedRoot = Path.Combine(
@@ -4006,7 +4329,6 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
 
         try
         {
-
             using ArcanumMaintenanceLock heldLock = Assert.IsType<ArcanumMaintenanceLock>(
                 ArcanumMaintenanceLock.TryAcquire(guardedRoot));
 
@@ -4056,7 +4378,8 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
                 new AuthorizingVerifier(Authorization(claim)),
                 new RecordingFullResetLifecycle(
                     inventory: Inventory(claim.OperationId)),
-                os);
+                os,
+                NullLogger<HostToolsMarkerPairResetCoordinator>.Instance);
 
             Result<InstallationResetActivePublication> result = await subject.ResumeAsync(
                 heldLock,
@@ -4068,24 +4391,18 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
             Assert.DoesNotContain(events, entry => entry.StartsWith(
                 "advance:",
                 StringComparison.Ordinal));
-
         }
         finally
         {
-
             if (blockingReader is not null)
             {
-
                 await ExecuteSqlAsync(blockingReader, "ROLLBACK;");
 
                 await blockingReader.DisposeAsync();
-
             }
 
             Directory.Delete(guardedRoot, recursive: true);
-
         }
-
     }
 
     [Theory]
@@ -4094,7 +4411,6 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
     public async Task Pair_journaled_os_absence_or_both_absent_is_out_of_order_and_blocks(
         bool databaseIsAlreadyClean)
     {
-
         await using CovenantSchemaScratchDatabase database = databaseIsAlreadyClean
             ? await CreateCleanMarkerDatabaseAsync()
             : await CreateMarkerDatabaseAsync();
@@ -4107,7 +4423,6 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
 
         try
         {
-
             using ArcanumMaintenanceLock heldLock = Assert.IsType<ArcanumMaintenanceLock>(
                 ArcanumMaintenanceLock.TryAcquire(guardedRoot));
 
@@ -4134,7 +4449,8 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
                 new HostProcessToolsMarkerPairJoiner(),
                 new RejectingVerifier(),
                 new RecordingFullResetLifecycle(),
-                os);
+                os,
+                NullLogger<HostToolsMarkerPairResetCoordinator>.Instance);
 
             Result<InstallationResetActivePublication> result = await subject.ResumeAsync(
                 heldLock,
@@ -4152,15 +4468,11 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
             Assert.DoesNotContain(events, entry => entry.StartsWith(
                 "advance:",
                 StringComparison.Ordinal));
-
         }
         finally
         {
-
             Directory.Delete(guardedRoot, recursive: true);
-
         }
-
     }
 
     [Theory]
@@ -4170,18 +4482,15 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
     public async Task Any_missing_singleton_generic_read_failure_or_nonadjacent_phase_state_blocks(
         int failureKind)
     {
-
         await using CovenantSchemaScratchDatabase database = failureKind == 1
             ? await CovenantSchemaScratchDatabase.CreateAsync(CancellationToken.None)
             : await CreateMarkerDatabaseAsync();
 
         if (failureKind == 0)
         {
-
             await database.ExecuteAsync(
                 "DELETE FROM covenant_authority_state;",
                 CancellationToken.None);
-
         }
 
         string guardedRoot = Path.Combine(
@@ -4192,7 +4501,6 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
 
         try
         {
-
             using ArcanumMaintenanceLock heldLock = Assert.IsType<ArcanumMaintenanceLock>(
                 ArcanumMaintenanceLock.TryAcquire(guardedRoot));
 
@@ -4230,7 +4538,8 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
                     events,
                     reopenResult: HostToolsMarkerPairResetOsOpenResult.Opened(
                         checkpoint.RestartProof.OsMarkerEvidence,
-                        new FakeOsCapability())));
+                        new FakeOsCapability())),
+                NullLogger<HostToolsMarkerPairResetCoordinator>.Instance);
 
             Result<InstallationResetActivePublication> result = await subject.ResumeAsync(
                 heldLock,
@@ -4246,15 +4555,11 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
             Assert.DoesNotContain(events, entry => entry.StartsWith(
                 "advance:",
                 StringComparison.Ordinal));
-
         }
         finally
         {
-
             Directory.Delete(guardedRoot, recursive: true);
-
         }
-
     }
 
     [Theory]
@@ -4263,17 +4568,14 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
     public async Task Changed_surviving_database_or_os_evidence_is_preserved_and_blocks(
         bool changeDatabase)
     {
-
         await using CovenantSchemaScratchDatabase database =
             await CreateMarkerDatabaseAsync();
 
         if (changeDatabase)
         {
-
             await database.ExecuteAsync(
                 "UPDATE covenant_authority_state SET TransitionId = '99999999-2222-4333-8444-555555555555';",
                 CancellationToken.None);
-
         }
 
         string guardedRoot = Path.Combine(
@@ -4284,7 +4586,6 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
 
         try
         {
-
             using ArcanumMaintenanceLock heldLock = Assert.IsType<ArcanumMaintenanceLock>(
                 ArcanumMaintenanceLock.TryAcquire(guardedRoot));
 
@@ -4316,7 +4617,8 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
                         ? HostToolsMarkerPairResetOsOpenResult.Opened(
                             checkpoint.RestartProof.OsMarkerEvidence,
                             new FakeOsCapability())
-                        : HostToolsMarkerPairResetOsOpenResult.Mismatch()));
+                        : HostToolsMarkerPairResetOsOpenResult.Mismatch()),
+                NullLogger<HostToolsMarkerPairResetCoordinator>.Instance);
 
             Result<InstallationResetActivePublication> result = await subject.ResumeAsync(
                 heldLock,
@@ -4332,21 +4634,16 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
             Assert.DoesNotContain(events, entry => entry.StartsWith(
                 "advance:",
                 StringComparison.Ordinal));
-
         }
         finally
         {
-
             Directory.Delete(guardedRoot, recursive: true);
-
         }
-
     }
 
     [Fact]
     public async Task Restart_after_statement_expiry_uses_only_authenticated_accepted_at_utc()
     {
-
         await using CovenantSchemaScratchDatabase database =
             await CreateCleanMarkerDatabaseAsync();
 
@@ -4358,7 +4655,6 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
 
         try
         {
-
             using ArcanumMaintenanceLock heldLock = Assert.IsType<ArcanumMaintenanceLock>(
                 ArcanumMaintenanceLock.TryAcquire(guardedRoot));
 
@@ -4395,7 +4691,8 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
                 verifier,
                 new RecordingFullResetLifecycle(
                     inventory: Inventory(claim.OperationId)),
-                new RecordingOsPort());
+                new RecordingOsPort(),
+                NullLogger<HostToolsMarkerPairResetCoordinator>.Instance);
 
             Result<InstallationResetActivePublication> result = await subject.ResumeAsync(
                 heldLock,
@@ -4409,20 +4706,15 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
             Assert.Equal(
                 checkpoint.RestartProof.AcceptedAtUtc,
                 verifier.AcceptedAtUtc);
-
         }
         finally
         {
-
             Directory.Delete(guardedRoot, recursive: true);
-
         }
-
     }
 
     private static async Task AssertAttemptRootReleaseBoundaryAsync(string failure)
     {
-
         await using CovenantSchemaScratchDatabase database =
             await CreateMarkerDatabaseAsync();
 
@@ -4434,7 +4726,6 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
 
         try
         {
-
             using ArcanumMaintenanceLock heldLock = Assert.IsType<ArcanumMaintenanceLock>(
                 ArcanumMaintenanceLock.TryAcquire(guardedRoot));
 
@@ -4495,24 +4786,22 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
                     events,
                     HostToolsMarkerPairResetOsOpenResult.Opened(
                         pair.OsMarker,
-                        new FakeOsCapability())));
+                        new FakeOsCapability())),
+                NullLogger<HostToolsMarkerPairResetCoordinator>.Instance);
 
             FullInstallationResetExternalRemediationAttestation attestation =
                 Attestation(current.Payload.OperationId);
 
             if (failure == "digest")
             {
-
                 attestation = attestation with
                 {
                     RemediationActionDigest = Digest(0xE7),
                 };
-
             }
 
             if (failure == "cancellation")
             {
-
                 OperationCanceledException canceled =
                     await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
                         subject.BeginAsync(
@@ -4522,11 +4811,9 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
                             callerCancellation.Token));
 
                 Assert.Equal(callerCancellation.Token, canceled.CancellationToken);
-
             }
             else
             {
-
                 Result<InstallationResetActivePublication> result = await subject.BeginAsync(
                     heldLock,
                     current,
@@ -4534,7 +4821,6 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
                     CancellationToken.None);
 
                 Assert.True(result.IsFailure);
-
             }
 
             int expectedReleaseCalls = failure == "post-journal" ? 0 : 1;
@@ -4543,34 +4829,25 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
 
             if (expectedReleaseCalls == 1)
             {
-
                 Assert.Equal(claim.OperationId, lifecycle.ReleasedOwnerOperationId);
 
                 Assert.Equal("release", events[^1]);
-
             }
             else
             {
-
                 Assert.Equal(
                     HostToolsMarkerPairResetPhase.PairJournaled,
                     store.CurrentPublication.Payload.HostToolsMarkerPairReset!.Phase);
-
             }
-
         }
         finally
         {
-
             Directory.Delete(guardedRoot, recursive: true);
-
         }
-
     }
 
     private static InstallationResetActivePublication Publication(Guid? operationId = null)
     {
-
         Guid operation = operationId ?? Guid.NewGuid();
 
         Guid installation = Guid.Parse("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee");
@@ -4650,13 +4927,11 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
             envelopeDigest,
             payload,
             anchor);
-
     }
 
     private static InstallationResetActivePublication CheckpointPublication(
         HostToolsMarkerPairResetPhase phase)
     {
-
         InstallationResetActivePublication claimPublication = Publication();
 
         FullInstallationResetRemediationClaimV1 claim = Assert.IsType<
@@ -4734,7 +5009,6 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
                 Revision = claimPublication.Anchor.Revision + 1,
                 EnvelopeDigest = envelopeDigest,
             });
-
     }
 
     private static FullInstallationResetExternalRemediationAttestation Attestation(
@@ -4811,7 +5085,6 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
     private static InstallationResetActivePublication WithRecomputedInventory(
         InstallationResetActivePublication publication)
     {
-
         FullInstallationResetRemediationClaimV1 claim = Assert.IsType<
             FullInstallationResetRemediationClaimV1>(
                 publication.Payload.FullInstallationResetRemediationClaim);
@@ -4861,7 +5134,6 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
                 CampaignMarkerInventoryDigest = inventoryDigest,
                 OwnerEffectDigest = ownerEffect,
             });
-
     }
 
     private static FullInstallationResetRemediationAuthorization Authorization(
@@ -4876,7 +5148,6 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
 
     private static CampaignPathFullInstallationResetInventory Inventory(Guid operationId)
     {
-
         System.Collections.Immutable.ImmutableArray<CampaignMarkerInventoryEntryV1> entries = [];
 
         CovenantDigest digest = Value(
@@ -4886,16 +5157,13 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
             operationId,
             entries,
             digest));
-
     }
 
     private static T Value<T>(Result<T> result)
     {
-
         Assert.True(result.IsSuccess, result.Error.Message);
 
         return result.Value;
-
     }
 
     private static HostProcessToolsOsMarkerEvidence OsEvidence() =>
@@ -4926,7 +5194,6 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
 
     private static async Task<CovenantSchemaScratchDatabase> CreateMarkerDatabaseAsync()
     {
-
         CovenantSchemaScratchDatabase database =
             await CovenantSchemaScratchDatabase.CreateAsync(CancellationToken.None);
 
@@ -4971,13 +5238,11 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
             CancellationToken.None);
 
         return database;
-
     }
 
     private static async Task<CovenantSchemaScratchDatabase>
         CreateCleanMarkerDatabaseAsync()
     {
-
         CovenantSchemaScratchDatabase database =
             await CreateMarkerDatabaseAsync();
 
@@ -4992,7 +5257,6 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
             CancellationToken.None);
 
         return database;
-
     }
 
     private static CovenantDigest Digest(byte value) =>
@@ -5002,13 +5266,11 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
         SqliteConnection connection,
         string sql)
     {
-
         await using SqliteCommand command = connection.CreateCommand();
 
         command.CommandText = sql;
 
         _ = await command.ExecuteNonQueryAsync(CancellationToken.None);
-
     }
 
     private static bool DatabaseEvidenceEqual(
@@ -5037,7 +5299,6 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
         List<string>? events = null)
         : IInstallationResetActiveStore
     {
-
         public string GuardedRoot { get; } = guardedRoot;
 
         internal InstallationResetActiveRecord? LastNext { get; private set; }
@@ -5067,15 +5328,12 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
             ArcanumMaintenanceLock heldInstallationLock,
             CancellationToken cancellationToken = default)
         {
-
             RecoverCalls++;
 
             if (ThrowOnRecover)
             {
-
                 throw new InvalidOperationException(
                     "The active-store sentinel diagnostic must not escape.");
-
             }
 
             InstallationResetActivePublication recovered =
@@ -5086,7 +5344,6 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
                     InstallationResetActiveRecoveryOutcome.AuthenticatedV2,
                     recovered,
                     LegacyRecord: null)));
-
         }
 
         public Task<Result<InstallationResetActivePublication>> BeginAsync(
@@ -5102,13 +5359,10 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
             InstallationResetActiveRecord next,
             CancellationToken cancellationToken = default)
         {
-
             if (HonorCancellation && cancellationToken.IsCancellationRequested)
             {
-
                 return Task.FromCanceled<Result<InstallationResetActivePublication>>(
                     cancellationToken);
-
             }
 
             string phase = next.HostToolsMarkerPairReset?.Phase.ToString() ?? "none";
@@ -5121,7 +5375,6 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
 
             if (AdvanceSucceeds)
             {
-
                 CovenantDigest digest = Digest(
                     checked((byte)(0x60 + current.Envelope.Revision)));
 
@@ -5146,21 +5399,17 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
 
                 if (CancelAfterAdvancePhase == next.HostToolsMarkerPairReset?.Phase)
                 {
-
                     CancellationToSignal?.Cancel();
-
                 }
 
                 return Task.FromResult(
                     Result<InstallationResetActivePublication>.Success(current));
-
             }
 
             return Task.FromResult(
                 Result<InstallationResetActivePublication>.Failure(new Error(
                     ErrorCodes.Data.RecoveryRequired,
                     "The test publication remains active.")));
-
         }
 
         public Task<Result<InstallationResetActiveRecoveryState>> InspectAsync(
@@ -5185,13 +5434,11 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
             ArcanumMaintenanceLock heldInstallationLock,
             CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
-
     }
 
     private sealed class RecordingDatabaseSeam(List<string> events)
         : IHostToolsMarkerPairResetDatabaseTestSeam
     {
-
         internal CancellationToken MarkerClearToken { get; private set; }
 
         public void BeforeRollback()
@@ -5201,24 +5448,20 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
         public ValueTask AfterMarkerClearAsync(
             CancellationToken callerCancellationToken)
         {
-
             events.Add("database-effect");
 
             MarkerClearToken = callerCancellationToken;
 
             return ValueTask.CompletedTask;
-
         }
 
         public ValueTask BeforeCommitAsync(
             CancellationToken checkpointCancellationToken) =>
             ValueTask.CompletedTask;
-
     }
 
     private sealed class FailingOpenDatabase : IHostToolsMarkerPairResetDatabase
     {
-
         public Task<Result<HostToolsMarkerPairResetDatabaseSession>>
             OpenHostToolsMarkerPairResetDatabaseSessionAsync(
             IStoppedHostGrimoireConnectionAuthority authority,
@@ -5227,24 +5470,20 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
                 new Error(
                     ErrorCodes.Covenant.IntegrityFailure,
                     "The sentinel database-open diagnostic must not escape.")));
-
     }
 
     private sealed class ThrowingDatabase : IHostToolsMarkerPairResetDatabase
     {
-
         public Task<Result<HostToolsMarkerPairResetDatabaseSession>>
             OpenHostToolsMarkerPairResetDatabaseSessionAsync(
             IStoppedHostGrimoireConnectionAuthority authority,
             CancellationToken cancellationToken) =>
             throw new InvalidOperationException(
                 "The database sentinel diagnostic must not escape.");
-
     }
 
     private sealed class ThrowingOsPort : IHostToolsMarkerPairResetOsPort
     {
-
         public HostToolsMarkerPairResetOsOpenResult OpenExact() =>
             throw new InvalidOperationException(
                 "The OS-open sentinel diagnostic must not escape.");
@@ -5262,12 +5501,10 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
         public Task<HostToolsMarkerPairResetOsAbsenceStatus> ProveExactAbsenceAsync(
             CancellationToken cancellationToken) =>
             throw new NotSupportedException();
-
     }
 
     private sealed class RecordingOsPort : IHostToolsMarkerPairResetOsPort
     {
-
         private readonly List<string>? _events;
 
         private readonly HostToolsMarkerPairResetOsOpenResult _openResult;
@@ -5283,7 +5520,6 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
             HostToolsMarkerPairResetOsAbsenceStatus absenceStatus =
                 HostToolsMarkerPairResetOsAbsenceStatus.Absent)
         {
-
             _events = events;
 
             _openResult = openResult ?? HostToolsMarkerPairResetOsOpenResult.Unavailable();
@@ -5292,7 +5528,6 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
                 ?? HostToolsMarkerPairResetOsOpenResult.Unavailable();
 
             _absenceStatus = absenceStatus;
-
         }
 
         internal int OpenCalls { get; private set; }
@@ -5302,6 +5537,10 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
         internal int AbsenceCalls { get; private set; }
 
         internal CancellationToken DeleteToken { get; private set; }
+
+        /// <summary>Replaces the immediate success the port answers a delete with.</summary>
+        internal Func<CancellationToken, Task<HostToolsMarkerPairResetOsDeleteStatus>>?
+            DeleteBehavior { get; init; }
 
         internal IHostToolsMarkerPairResetOsCapability? DeleteCapability
         {
@@ -5317,25 +5556,21 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
 
         public HostToolsMarkerPairResetOsOpenResult OpenExact()
         {
-
             OpenCalls++;
 
             _events?.Add("os");
 
             return _openResult;
-
         }
 
         public HostToolsMarkerPairResetOsOpenResult ReopenExact(
             HostProcessToolsOsMarkerEvidence expectedEvidence)
         {
-
             ReopenCalls++;
 
             _events?.Add("os-reopen");
 
             return _reopenResult;
-
         }
 
         public Task<HostToolsMarkerPairResetOsDeleteStatus> CompareDeleteExactAsync(
@@ -5343,7 +5578,6 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
             HostProcessToolsOsMarkerEvidence expectedEvidence,
             CancellationToken cancellationToken)
         {
-
             DeleteCapability = capability;
 
             DeleteExpectedEvidence = expectedEvidence;
@@ -5352,14 +5586,14 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
 
             _events?.Add("os-effect");
 
-            return Task.FromResult(HostToolsMarkerPairResetOsDeleteStatus.Deleted);
-
+            return DeleteBehavior is { } behavior
+                ? behavior(cancellationToken)
+                : Task.FromResult(HostToolsMarkerPairResetOsDeleteStatus.Deleted);
         }
 
         public Task<HostToolsMarkerPairResetOsAbsenceStatus> ProveExactAbsenceAsync(
             CancellationToken cancellationToken)
         {
-
             AbsenceCalls++;
 
             _events?.Add("os-absence");
@@ -5367,18 +5601,14 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
             _events?.Add($"os-absence:{AbsenceCalls}");
 
             return Task.FromResult(_absenceStatus);
-
         }
-
     }
 
     private sealed class FakeOsCapability : IHostToolsMarkerPairResetOsCapability
     {
-
         internal int DisposeCalls { get; private set; }
 
         public void Dispose() => DisposeCalls++;
-
     }
 
     private sealed class RecordingMaintenanceConnections(
@@ -5386,16 +5616,13 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
         List<string> events)
         : IDesignTimeGrimoireConnectionFactory
     {
-
         public string DatabasePath => inner.DatabasePath;
 
         public Task<SqliteConnection> OpenAsync(CancellationToken cancellationToken)
         {
-
             events.Add("database");
 
             return inner.OpenAsync(cancellationToken);
-
         }
 
         public Task<SqliteConnection> OpenReadOnlyAsync(
@@ -5417,30 +5644,25 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
             string path,
             CancellationToken cancellationToken) =>
             inner.AttachSideFileAsync(connection, alias, path, cancellationToken);
-
     }
 
     private sealed class SuccessfulReadiness
         : IFullInstallationResetCampaignSchemaReadiness
     {
-
         public Task<Result> RequireExactAsync(
             SqliteConnection liveCoreConnection,
             CancellationToken cancellationToken) =>
             Task.FromResult(Result.Success());
-
     }
 
     private sealed class ThrowingReadiness
         : IFullInstallationResetCampaignSchemaReadiness
     {
-
         public Task<Result> RequireExactAsync(
             SqliteConnection liveCoreConnection,
             CancellationToken cancellationToken) =>
             throw new InvalidOperationException(
                 "The readiness sentinel diagnostic must not escape.");
-
     }
 
     private sealed class RecordingReadiness(
@@ -5448,14 +5670,12 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
         bool succeeds)
         : IFullInstallationResetCampaignSchemaReadiness
     {
-
         internal SqliteConnection? Connection { get; private set; }
 
         public Task<Result> RequireExactAsync(
             SqliteConnection liveCoreConnection,
             CancellationToken cancellationToken)
         {
-
             Connection = liveCoreConnection;
 
             events.Add("readiness");
@@ -5465,15 +5685,12 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
                 : Result.Failure(new Error(
                     ErrorCodes.Data.RecoveryRequired,
                     "The test schema is not exact.")));
-
         }
-
     }
 
     private sealed class RecordingJoiner(HostProcessToolsMarkerPairJoinResult result)
         : IHostProcessToolsMarkerPairJoiner
     {
-
         internal int Calls { get; private set; }
 
         internal HostProcessToolsDatabaseMarkerEvidence? Database { get; private set; }
@@ -5484,7 +5701,6 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
             HostProcessToolsDatabaseMarkerEvidence database,
             HostProcessToolsOsMarkerEvidence? osMarker)
         {
-
             Calls++;
 
             Database = database;
@@ -5492,27 +5708,22 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
             OsMarker = osMarker;
 
             return result;
-
         }
-
     }
 
     private sealed class ThrowingJoiner : IHostProcessToolsMarkerPairJoiner
     {
-
         public HostProcessToolsMarkerPairJoinResult Join(
             HostProcessToolsDatabaseMarkerEvidence database,
             HostProcessToolsOsMarkerEvidence? osMarker) =>
             throw new InvalidOperationException(
                 "The joiner sentinel diagnostic must not escape.");
-
     }
 
     private sealed class AuthorizingVerifier(
         FullInstallationResetRemediationAuthorization authorization)
         : IFullInstallationResetRemediationAttestationVerifier
     {
-
         internal FullInstallationResetExternalRemediationAttestation? Attestation { get; private set; }
 
         internal Guid InstallationId { get; private set; }
@@ -5544,7 +5755,6 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
             HostProcessToolsMatchedPair persistedPair,
             DateTimeOffset acceptedAtUtc)
         {
-
             Attestation = attestation;
 
             InstallationId = authenticatedInstallationId;
@@ -5554,15 +5764,12 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
             AcceptedAtUtc = acceptedAtUtc;
 
             return authorization;
-
         }
-
     }
 
     private sealed class ThrowingVerifier
         : IFullInstallationResetRemediationAttestationVerifier
     {
-
         public bool MatchesAuthenticatedClaim(
             FullInstallationResetExternalRemediationAttestation attestation,
             Guid currentInstallationId,
@@ -5587,14 +5794,12 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
             DateTimeOffset acceptedAtUtc) =>
             throw new InvalidOperationException(
                 "The verifier sentinel diagnostic must not escape.");
-
     }
 
     private sealed class FirstThenRejectingVerifier(
         FullInstallationResetRemediationAuthorization first)
         : IFullInstallationResetRemediationAttestationVerifier
     {
-
         internal int Calls { get; private set; }
 
         public bool MatchesAuthenticatedClaim(
@@ -5620,7 +5825,6 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
             HostProcessToolsMatchedPair persistedPair,
             DateTimeOffset acceptedAtUtc)
         {
-
             Calls++;
 
             return Calls == 1
@@ -5628,14 +5832,11 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
                 : Result<FullInstallationResetRemediationAuthorization>.Failure(new Error(
                     ErrorCodes.Data.ExternalRemediationInvalid,
                     "The test rejects post-publication verification."));
-
         }
-
     }
 
     private sealed class RecordingFullResetLifecycle : ICampaignPathMarkerLifecycle
     {
-
         private readonly List<string>? _events;
 
         private readonly CampaignPathFullInstallationResetInventory? _inventory;
@@ -5662,7 +5863,6 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
             Exception? revalidateException = null,
             Exception? releaseException = null)
         {
-
             _events = events;
 
             _inventory = inventory;
@@ -5678,7 +5878,6 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
             _revalidateException = revalidateException;
 
             _releaseException = releaseException;
-
         }
 
         internal int InventoryCalls { get; private set; }
@@ -5759,15 +5958,12 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
                 SqliteConnection liveCoreConnection,
                 CancellationToken cancellationToken)
         {
-
             InventoryCalls++;
 
             if (_throwOnInventory)
             {
-
                 throw new InvalidOperationException(
                     "The inventory sentinel diagnostic must not escape.");
-
             }
 
             InventoryConnection = liveCoreConnection;
@@ -5779,7 +5975,6 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
                     ErrorCodes.Data.RecoveryRequired,
                     "The test Campaign inventory is unavailable."))
                 : Result<CampaignPathFullInstallationResetInventory>.Success(_inventory));
-
         }
 
         public Task<Result> RevalidateFullInstallationResetInventoryAsync(
@@ -5787,15 +5982,12 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
             SqliteConnection liveCoreConnection,
             CancellationToken cancellationToken)
         {
-
             RevalidateCalls++;
 
             if (_throwOnRevalidate)
             {
-
                 throw new InvalidOperationException(
                     "The inventory-revalidation sentinel diagnostic must not escape.");
-
             }
 
             RevalidateConnection = liveCoreConnection;
@@ -5806,9 +5998,7 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
 
             if (_revalidateException is not null)
             {
-
                 throw _revalidateException;
-
             }
 
             return Task.FromResult(
@@ -5817,7 +6007,6 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
                         ErrorCodes.Data.RecoveryRequired,
                         "The live Campaign inventory changed after journaling."))
                     : Result.Success());
-
         }
 
         public Task<Result<CampaignPathFullInstallationResetCleanupReceipt>>
@@ -5829,7 +6018,6 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
                 SqliteTransaction liveCoreTransaction,
                 CancellationToken cancellationToken)
         {
-
             PrepareCalls++;
 
             PrepareAuthority = authority;
@@ -5847,12 +6035,10 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
 
             if (FailPrepare)
             {
-
                 return Task.FromResult(
                     Result<CampaignPathFullInstallationResetCleanupReceipt>.Failure(new Error(
                         ErrorCodes.Data.RecoveryRequired,
                         "The test Campaign cleanup preparation is unavailable.")));
-
             }
 
             // Built from the preparation the coordinator handed over, so the receipt carries that
@@ -5864,7 +6050,6 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
                     PreparedIntentIds,
                     Value(FullInstallationResetMarkerPairResetDigests.FullResetIntentVector(
                         PreparedIntentIds))));
-
         }
 
         public Task<Result<CampaignPathFullInstallationResetCleanupReceipt>>
@@ -5874,7 +6059,6 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
                 SqliteConnection liveCoreConnection,
                 CancellationToken cancellationToken)
         {
-
             ReconcileCalls++;
 
             ReconcileAuthority = authority;
@@ -5889,12 +6073,10 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
 
             if (FailReconcile)
             {
-
                 return Task.FromResult(
                     Result<CampaignPathFullInstallationResetCleanupReceipt>.Failure(new Error(
                         ErrorCodes.Data.RecoveryRequired,
                         "The test Campaign cleanup reconciliation is unavailable.")));
-
             }
 
             return Task.FromResult(
@@ -5905,7 +6087,6 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
                     prepared.MarkerIntentVectorDigest,
                     ReconciledDeletedCount,
                     ReconciledOrphanCount));
-
         }
 
         public Task<Result<CampaignPathRestoreCleanupInventory>> InventoryRestoreCleanupAsync(
@@ -5929,7 +6110,6 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
 
         public ValueTask ReleaseRetainedRootsAsync(Guid ownerOperationId)
         {
-
             ReleaseCalls++;
 
             ReleasedOwnerOperationId = ownerOperationId;
@@ -5938,21 +6118,16 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
 
             if (_releaseException is not null)
             {
-
                 throw _releaseException;
-
             }
 
             return ValueTask.CompletedTask;
-
         }
-
     }
 
     private sealed class RejectingVerifier
         : IFullInstallationResetRemediationAttestationVerifier
     {
-
         internal int RecoveryCalls { get; private set; }
 
         public bool MatchesAuthenticatedClaim(
@@ -5978,15 +6153,11 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
             HostProcessToolsMatchedPair persistedPair,
             DateTimeOffset acceptedAtUtc)
         {
-
             RecoveryCalls++;
 
             return Result<FullInstallationResetRemediationAuthorization>.Failure(new Error(
                 ErrorCodes.Data.ExternalRemediationInvalid,
                 "The external remediation attestation could not be verified."));
-
         }
-
     }
-
 }

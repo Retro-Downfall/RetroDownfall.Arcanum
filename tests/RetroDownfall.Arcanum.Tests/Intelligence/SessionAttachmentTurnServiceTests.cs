@@ -17,7 +17,6 @@ public sealed class SessionAttachmentTurnServiceTests
     [Fact]
     public async Task PrepareAsync_WhenDisabled_ReturnsEmptyWithoutTouchingStore()
     {
-
         FakeSessionAttachmentStore store = new();
         ArcanumSettings settings = new()
         {
@@ -40,13 +39,11 @@ public sealed class SessionAttachmentTurnServiceTests
         Assert.Empty(prep.RehydratedContents);
         Assert.Null(prep.PendingTurnId);
         Assert.Equal(0, store.PersistCallCount);
-
     }
 
     [Fact]
     public async Task PrepareAsync_PersistsAttachedFilesAndBuildsIndex()
     {
-
         Guid sessionId = Guid.NewGuid();
         Guid entryId = Guid.NewGuid();
         FakeSessionAttachmentStore store = new() { IndexSessionId = sessionId };
@@ -75,13 +72,11 @@ public sealed class SessionAttachmentTurnServiceTests
         Assert.Equal("hello world", Encoding.UTF8.GetString(store.LastBytes.Span));
         Assert.Single(prep.IndexItems);
         Assert.Empty(prep.RehydratedContents);
-
     }
 
     [Fact]
     public async Task PrepareAsync_PersistsScryingFociAsImages()
     {
-
         Guid sessionId = Guid.NewGuid();
         FakeSessionAttachmentStore store = new();
         byte[] png = [0x89, 0x50, 0x4E, 0x47];
@@ -104,7 +99,6 @@ public sealed class SessionAttachmentTurnServiceTests
         Assert.Equal(SessionAttachmentKind.Image, store.LastKind);
         Assert.Equal("image/png", store.LastMimeType);
         Assert.True(store.LastBytes.Span.SequenceEqual(png));
-
     }
 
     [Fact]
@@ -149,7 +143,6 @@ public sealed class SessionAttachmentTurnServiceTests
     [Fact]
     public async Task PrepareAsync_queries_latest_rows_for_distinct_index_keys_in_index_order()
     {
-
         Guid sessionId = Guid.NewGuid();
         SessionAttachmentRecord alpha =
             FakeSessionAttachmentStore.BoundRecord(
@@ -207,13 +200,11 @@ public sealed class SessionAttachmentTurnServiceTests
             Assert.IsAssignableFrom<IReadOnlySet<Guid>>(
                     prep.VisibleAttachmentIds)
                 .Order());
-
     }
 
     [Fact]
     public async Task PrepareAsync_UsesPendingWhenNoSessionId()
     {
-
         FakeSessionAttachmentStore store = new();
         string pending = Guid.NewGuid().ToString("N");
         PingRequest request = new(
@@ -232,13 +223,11 @@ public sealed class SessionAttachmentTurnServiceTests
         Assert.Equal(pending, prep.PendingTurnId);
         Assert.Null(store.LastPersistSessionId);
         Assert.Equal(pending, store.LastPersistPendingTurnId);
-
     }
 
     [Fact]
     public async Task PrepareAsync_PersistFailure_ReturnsSanitizedErrorMessage()
     {
-
         Guid sessionId = Guid.NewGuid();
         FakeSessionAttachmentStore store = new() { PersistThrows = true };
         TestCapturingLogger<SessionAttachmentTurnServiceTests> logger = new();
@@ -270,13 +259,11 @@ public sealed class SessionAttachmentTurnServiceTests
         Assert.Contains(nameof(InvalidOperationException), log.Message, StringComparison.Ordinal);
         Assert.Contains(sessionId.ToString("D"), log.Message, StringComparison.Ordinal);
         Assert.Contains("persist", log.Message, StringComparison.OrdinalIgnoreCase);
-
     }
 
     [Fact]
     public async Task PrepareAsync_CallerCancellation_PropagatesWithoutValidationError()
     {
-
         FakeSessionAttachmentStore store = new() { PersistThrowsCanceled = true };
         PingRequest request = new(
             "hi",
@@ -295,7 +282,6 @@ public sealed class SessionAttachmentTurnServiceTests
                 turnEntryId: null,
                 pendingTurnId: null,
                 cts.Token));
-
     }
 
     [Fact]
@@ -400,7 +386,6 @@ public sealed class SessionAttachmentTurnServiceTests
     [Fact]
     public async Task PrepareAsync_DefersReferencedTextAndImageWithoutReadingBytes()
     {
-
         Guid sessionId = Guid.NewGuid();
         Guid textId = Guid.NewGuid();
         Guid imageId = Guid.NewGuid();
@@ -490,13 +475,11 @@ public sealed class SessionAttachmentTurnServiceTests
         Assert.Equal(0, store.ReadBytesCallCount);
 
         Assert.Equal(0, store.OpenReadCallCount);
-
     }
 
     [Fact]
     public async Task PrepareAsync_InvalidReferences_FailClosed()
     {
-
         FakeSessionAttachmentStore store = new();
         PingRequest request = new(
             "hi",
@@ -513,12 +496,157 @@ public sealed class SessionAttachmentTurnServiceTests
 
         Assert.Equal("AttachmentReferences require a SessionId.", prep.ErrorMessage);
         Assert.Equal(0, store.PersistCallCount);
+    }
 
+    /// <summary>
+    /// A persist that fails after an earlier file already landed used to leave that earlier row bound
+    /// to the Session with no turn to reference it. The rows this call created are removed.
+    /// </summary>
+    [Fact]
+    public async Task Prepare_WhenSecondPersistFails_RemovesTheRowsCreatedByThisCall()
+    {
+        Guid sessionId = Guid.NewGuid();
+        FakeSessionAttachmentStore store = new() { PersistFailsOnCall = 2 };
+        PingRequest request = new(
+            "hi",
+            SessionId: sessionId,
+            AttachedFiles: [new AttachedFileDto("a.txt", "first"), new AttachedFileDto("b.txt", "second")]);
+
+        SessionAttachmentTurnPreparation prep = await SessionAttachmentTurnService.PrepareAsync(
+            request,
+            store,
+            new ArcanumSettings(),
+            turnSessionId: sessionId,
+            turnEntryId: null,
+            pendingTurnId: null);
+
+        Assert.Equal(SessionAttachmentTurnService.PublicPersistenceFailureMessage, prep.ErrorMessage);
+
+        Guid firstId = Assert.Single(store.PersistedIds);
+
+        Assert.Equal([firstId], store.DeletedAttachmentIds);
+        Assert.Empty(store.Records);
+    }
+
+    /// <summary>
+    /// A file whose identical latest version already existed was reused, not created, so rolling back
+    /// must not delete a row another turn may still reference.
+    /// </summary>
+    [Fact]
+    public async Task Prepare_WhenSecondPersistFails_KeepsARowThatWasReusedNotCreated()
+    {
+        Guid sessionId = Guid.NewGuid();
+        FakeSessionAttachmentStore store = new() { PersistFailsOnCall = 2 };
+        _ = store.ReusedLogicalNameHints.Add("a.txt");
+        PingRequest request = new(
+            "hi",
+            SessionId: sessionId,
+            AttachedFiles: [new AttachedFileDto("a.txt", "first"), new AttachedFileDto("b.txt", "second")]);
+
+        SessionAttachmentTurnPreparation prep = await SessionAttachmentTurnService.PrepareAsync(
+            request,
+            store,
+            new ArcanumSettings(),
+            turnSessionId: sessionId,
+            turnEntryId: null,
+            pendingTurnId: null);
+
+        Assert.Equal(SessionAttachmentTurnService.PublicPersistenceFailureMessage, prep.ErrorMessage);
+        Assert.Empty(store.DeletedAttachmentIds);
+        Assert.Single(store.Records);
+    }
+
+    /// <summary>
+    /// The caller going away after a row landed is still a failed preparation: the row is removed, on
+    /// a token the cancelled request cannot reach, and the cancellation still propagates.
+    /// </summary>
+    [Fact]
+    public async Task Prepare_WhenCancelledAfterAPersist_RemovesTheRowsAndStillPropagatesCancellation()
+    {
+        Guid sessionId = Guid.NewGuid();
+        using CancellationTokenSource cancellation = new();
+        FakeSessionAttachmentStore store = new()
+        {
+            OnPersist = call =>
+            {
+                if (call == 2)
+                {
+                    cancellation.Cancel();
+                }
+            },
+        };
+        PingRequest request = new(
+            "hi",
+            SessionId: sessionId,
+            AttachedFiles: [new AttachedFileDto("a.txt", "first"), new AttachedFileDto("b.txt", "second")]);
+
+        _ = await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            SessionAttachmentTurnService.PrepareAsync(
+                request,
+                store,
+                new ArcanumSettings(),
+                turnSessionId: sessionId,
+                turnEntryId: null,
+                pendingTurnId: null,
+                cancellation.Token));
+
+        Guid firstId = Assert.Single(store.PersistedIds);
+
+        Assert.Equal([firstId], store.DeletedAttachmentIds);
+        Assert.False(store.DeleteSawCancelledToken);
+    }
+
+    [Fact]
+    public async Task Prepare_WhenBuildingTheIndexFailsAfterPersisting_RemovesTheRowsCreatedByThisCall()
+    {
+        Guid sessionId = Guid.NewGuid();
+        FakeSessionAttachmentStore store = new() { IndexFailure = new InvalidOperationException("index down") };
+        PingRequest request = new(
+            "hi",
+            SessionId: sessionId,
+            AttachedFiles: [new AttachedFileDto("a.txt", "first")]);
+
+        SessionAttachmentTurnPreparation prep = await SessionAttachmentTurnService.PrepareAsync(
+            request,
+            store,
+            new ArcanumSettings(),
+            turnSessionId: sessionId,
+            turnEntryId: null,
+            pendingTurnId: null);
+
+        Assert.Equal(SessionAttachmentTurnService.PublicPersistenceFailureMessage, prep.ErrorMessage);
+        Assert.Equal(store.PersistedIds, store.DeletedAttachmentIds);
+    }
+
+    /// <summary>
+    /// Everything that can be refused without writing is checked before the first persist, so a bad
+    /// image after a good file leaves no row behind.
+    /// </summary>
+    [Fact]
+    public async Task Prepare_WhenAScryingFocusIsNotBase64_FailsBeforeAnyRowIsPersisted()
+    {
+        Guid sessionId = Guid.NewGuid();
+        FakeSessionAttachmentStore store = new();
+        PingRequest request = new(
+            "hi",
+            SessionId: sessionId,
+            AttachedFiles: [new AttachedFileDto("a.txt", "first")],
+            ScryingFoci: [new ScryingFocusDto("not base64 !!!", "image/png")]);
+
+        SessionAttachmentTurnPreparation prep = await SessionAttachmentTurnService.PrepareAsync(
+            request,
+            store,
+            new ArcanumSettings(),
+            turnSessionId: sessionId,
+            turnEntryId: null,
+            pendingTurnId: null);
+
+        Assert.NotNull(prep.ErrorMessage);
+        Assert.Equal(0, store.PersistCallCount);
     }
 
     private sealed class FakeSessionAttachmentStore : ISessionAttachmentStore
     {
-
         public int PersistCallCount { get; private set; }
 
         public int OpenReadCallCount { get; private set; }
@@ -547,6 +675,23 @@ public sealed class SessionAttachmentTurnServiceTests
 
         public bool PersistThrows { get; init; }
 
+        /// <summary>1-based persist call that throws, after earlier calls already succeeded.</summary>
+        public int? PersistFailsOnCall { get; init; }
+
+        /// <summary>Invoked with the 1-based call number as each persist starts.</summary>
+        public Action<int>? OnPersist { get; init; }
+
+        public Exception? IndexFailure { get; init; }
+
+        public List<Guid> PersistedIds { get; } = [];
+
+        public List<Guid> DeletedAttachmentIds { get; } = [];
+
+        public bool DeleteSawCancelledToken { get; private set; }
+
+        /// <summary>Logical names whose persist reports a reused row rather than a created one.</summary>
+        public HashSet<string> ReusedLogicalNameHints { get; } = new(StringComparer.Ordinal);
+
         public bool PersistThrowsCanceled { get; init; }
 
         public Exception? PromoteFailure { get; init; }
@@ -572,8 +717,15 @@ public sealed class SessionAttachmentTurnServiceTests
             SessionAttachmentKind kind,
             CancellationToken cancellationToken = default)
         {
-
             PersistCallCount++;
+            OnPersist?.Invoke(PersistCallCount);
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (PersistFailsOnCall == PersistCallCount)
+            {
+                throw new InvalidOperationException(PersistFailureCanary);
+            }
+
             LastPersistSessionId = sessionId;
             LastPersistPendingTurnId = pendingTurnId;
             LastPersistEntryId = entryId;
@@ -612,8 +764,45 @@ public sealed class SessionAttachmentTurnServiceTests
 
             Records[id] = record;
             BytesById[id] = bytes.ToArray();
+            PersistedIds.Add(id);
             return Task.FromResult(record);
+        }
 
+        public async Task<SessionAttachmentPersistence> PersistNewWithOutcomeAsync(
+            Guid? sessionId,
+            string? pendingTurnId,
+            Guid? entryId,
+            string logicalNameHint,
+            string originalFileName,
+            ReadOnlyMemory<byte> bytes,
+            string mimeType,
+            SessionAttachmentKind kind,
+            CancellationToken cancellationToken = default)
+        {
+            SessionAttachmentRecord record = await PersistNewAsync(
+                sessionId,
+                pendingTurnId,
+                entryId,
+                logicalNameHint,
+                originalFileName,
+                bytes,
+                mimeType,
+                kind,
+                cancellationToken);
+
+            return new SessionAttachmentPersistence(
+                record,
+                NewVersionCreated: !ReusedLogicalNameHints.Contains(logicalNameHint));
+        }
+
+        public Task<bool> DeleteCreatedAttachmentAsync(
+            SessionAttachmentRecord created,
+            CancellationToken cancellationToken = default)
+        {
+            DeleteSawCancelledToken |= cancellationToken.IsCancellationRequested;
+            DeletedAttachmentIds.Add(created.Id);
+
+            return Task.FromResult(Records.Remove(created.Id));
         }
 
         public Task PromotePendingAsync(
@@ -644,7 +833,6 @@ public sealed class SessionAttachmentTurnServiceTests
             Guid sessionId,
             CancellationToken cancellationToken = default)
         {
-
             ListBoundCallCount++;
 
             return Task.FromResult<IReadOnlyList<SessionAttachmentRecord>>(
@@ -652,7 +840,6 @@ public sealed class SessionAttachmentTurnServiceTests
                     .Where(record => record.SessionId == sessionId
                         && record.State == SessionAttachmentState.Bound)
                     .ToList());
-
         }
 
         public Task<IReadOnlyList<SessionAttachmentRecord>>
@@ -661,7 +848,6 @@ public sealed class SessionAttachmentTurnServiceTests
                 IReadOnlyList<string> logicalKeys,
                 CancellationToken cancellationToken = default)
         {
-
             SelectedLatestCallCount++;
             LastSelectedLogicalKeys = logicalKeys.ToArray();
             Dictionary<string, SessionAttachmentRecord> latestByLogicalKey =
@@ -682,13 +868,11 @@ public sealed class SessionAttachmentTurnServiceTests
 
             foreach (string logicalKey in logicalKeys)
             {
-
                 if (emitted.Add(logicalKey)
                     && latestByLogicalKey.TryGetValue(
                         logicalKey,
                         out SessionAttachmentRecord? record))
                 {
-
                     selected.Add(record);
                 }
             }
@@ -702,6 +886,10 @@ public sealed class SessionAttachmentTurnServiceTests
             int maxItems,
             CancellationToken cancellationToken = default)
         {
+            if (IndexFailure is not null)
+            {
+                throw IndexFailure;
+            }
 
             if (IndexItems is not null)
             {
@@ -717,7 +905,6 @@ public sealed class SessionAttachmentTurnServiceTests
             }
 
             return Task.FromResult<IReadOnlyList<SessionAttachmentIndexItem>>([]);
-
         }
 
         internal static SessionAttachmentRecord BoundRecord(Guid id, Guid sessionId, string logicalKey) =>
@@ -741,21 +928,18 @@ public sealed class SessionAttachmentTurnServiceTests
             SessionAttachmentRecord record,
             CancellationToken cancellationToken = default)
         {
-
             ReadBytesCallCount++;
 
             return Task.FromResult(
                 BytesById.TryGetValue(record.Id, out ReadOnlyMemory<byte> bytes)
                     ? bytes
                     : ReadOnlyMemory<byte>.Empty);
-
         }
 
         public Task<Stream> OpenReadAsync(
             SessionAttachmentRecord record,
             CancellationToken cancellationToken = default)
         {
-
             OpenReadCallCount++;
 
             ReadOnlyMemory<byte> bytes = BytesById.TryGetValue(
@@ -765,7 +949,6 @@ public sealed class SessionAttachmentTurnServiceTests
                     : ReadOnlyMemory<byte>.Empty;
 
             return Task.FromResult<Stream>(new MemoryStream(bytes.ToArray(), writable: false));
-
         }
 
         public Task DeleteStalePendingAsync(TimeSpan olderThan, CancellationToken cancellationToken = default) =>
@@ -779,7 +962,6 @@ public sealed class SessionAttachmentTurnServiceTests
             IReadOnlyList<Guid> attachmentIds,
             CancellationToken cancellationToken = default)
         {
-
             foreach (Guid id in attachmentIds)
             {
                 if (!ValidIds.Contains(id))
@@ -789,7 +971,6 @@ public sealed class SessionAttachmentTurnServiceTests
             }
 
             return Task.CompletedTask;
-
         }
 
         public Task<IDisposable> AcquireSessionGateAsync(Guid sessionId, CancellationToken cancellationToken = default) =>
@@ -808,7 +989,6 @@ public sealed class SessionAttachmentTurnServiceTests
             IReadOnlySet<Guid>? copiedSourceEntryIds,
             CancellationToken cancellationToken = default)
         {
-
             IEnumerable<SessionAttachmentRecord> bound = Records.Values.Where(r =>
                 r.SessionId == sourceSessionId && r.State == SessionAttachmentState.Bound);
 
@@ -818,7 +998,6 @@ public sealed class SessionAttachmentTurnServiceTests
             }
 
             return Task.FromResult<IReadOnlyList<SessionAttachmentRecord>>(bound.ToList());
-
         }
 
         public Task CopyBytesForForkAsync(
@@ -835,15 +1014,11 @@ public sealed class SessionAttachmentTurnServiceTests
 
         private sealed class EmptyDisposable : IDisposable
         {
-
             public static readonly EmptyDisposable Instance = new();
 
             public void Dispose()
             {
             }
-
         }
-
     }
-
 }

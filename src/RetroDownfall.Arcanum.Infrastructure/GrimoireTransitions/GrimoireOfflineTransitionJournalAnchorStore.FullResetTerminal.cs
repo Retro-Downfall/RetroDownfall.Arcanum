@@ -20,29 +20,33 @@ namespace RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions;
 /// <remarks>
 /// Two, and no third. <c>NeverTransitionedAbsence</c> is an installation whose slot was never opened:
 /// no anchor, no key, no journal file. <c>ClosedAnchor</c> is one whose last transition retired and
-/// left its closing tombstone behind. Everything else is not terminal and mints no proof — an active
-/// anchor, a surviving journal file, and above all a key sitting beside an absent anchor, which is the
-/// residue of a genesis that began. Genesis mints the key itself and refuses to start when one is
-/// already present, so that combination is durable evidence rather than a tidy-up opportunity.
+/// left its closing tombstone behind, or whose genesis wrote its closed epoch-0 anchor and stopped
+/// before minting the key: that anchor never sealed a transition, so a missing key is terminal for it
+/// and for nothing else. Everything else is not terminal and mints no proof — an active anchor, a
+/// closed anchor above epoch 0 with no key, a surviving journal file, and above all a key sitting
+/// beside an absent anchor. Genesis writes its anchor before it mints the key and refuses to start
+/// when a key is already present, so no genesis leaves that combination behind and it is durable
+/// evidence rather than a tidy-up opportunity.
 /// </remarks>
 internal enum GrimoireOfflineTransitionFullResetTerminalArm : byte
 {
-
     NeverTransitionedAbsence = 1,
 
     ClosedAnchor = 2,
-
 }
 
 /// <summary>
 /// What a transition-slot terminal proof observed, and the single digest it commits to.
 /// </summary>
 /// <remarks>
-/// The closed-anchor fields are all nonnull for
-/// <see cref="GrimoireOfflineTransitionFullResetTerminalArm.ClosedAnchor"/> and all null for the
-/// absence arm. The two account-value digests are what a later compare-removal has to reproduce, and
-/// each is bound to its own account name, so a digest taken for the anchor cannot authorize removing
-/// the key.
+/// The closed epoch, revision and anchor-account digest are nonnull for
+/// <see cref="GrimoireOfflineTransitionFullResetTerminalArm.ClosedAnchor"/>, and every closed-anchor
+/// field is null for the absence arm. The key-account digest is null on the closed arm only for an
+/// unsealed genesis, whose key was never minted; the operation and envelope fields follow the anchor
+/// and are null for a genesis. The two account-value digests are what a later compare-removal has to
+/// reproduce, and each is bound to its own account name, so a digest taken for the anchor cannot
+/// authorize removing the key, and a key that appears after a proof that saw none is refused rather
+/// than removed.
 /// </remarks>
 internal sealed record GrimoireOfflineTransitionFullResetTerminalProjectionV1(
     byte Version,
@@ -59,7 +63,6 @@ internal sealed record GrimoireOfflineTransitionFullResetTerminalProjectionV1(
 
 internal sealed partial class GrimoireOfflineTransitionJournalAnchorStore
 {
-
     private const string TerminalEvidenceDomain =
         "Arcanum.FullInstallationReset.GrimoireTransitionTerminal.v1";
 
@@ -88,7 +91,6 @@ internal sealed partial class GrimoireOfflineTransitionJournalAnchorStore
         GrimoireOfflineTransitionJournalLocation location,
         Guid installationId)
     {
-
         ArgumentNullException.ThrowIfNull(heldInstallationLock);
 
         ArgumentNullException.ThrowIfNull(location);
@@ -97,9 +99,7 @@ internal sealed partial class GrimoireOfflineTransitionJournalAnchorStore
 
         if (installationId == Guid.Empty)
         {
-
             return NotTerminal();
-
         }
 
         // The file goes first. An anchor that says Closed while the journal it closed is still on disk
@@ -110,34 +110,27 @@ internal sealed partial class GrimoireOfflineTransitionJournalAnchorStore
 
         if (absent.IsFailure)
         {
-
             return NotTerminal();
-
         }
 
         Result<GrimoireOfflineTransitionAnchorV1?> anchorRead = Read(location);
 
         if (anchorRead.IsFailure)
         {
-
             return Result<GrimoireOfflineTransitionFullResetTerminalProjectionV1>.Failure(
                 anchorRead.Error);
-
         }
 
         Result<TerminalAccountDigests> accounts = ReadTerminalAccountDigests(location);
 
         if (accounts.IsFailure)
         {
-
             return Result<GrimoireOfflineTransitionFullResetTerminalProjectionV1>.Failure(
                 accounts.Error);
-
         }
 
         if (anchorRead.Value is not { } anchor)
         {
-
             return accounts.Value.Anchor is null && accounts.Value.JournalKey is null
                 ? ProjectTerminal(
                     GrimoireOfflineTransitionFullResetTerminalArm.NeverTransitionedAbsence,
@@ -146,13 +139,17 @@ internal sealed partial class GrimoireOfflineTransitionJournalAnchorStore
                     anchor: null,
                     accounts.Value)
                 : NotTerminal();
-
         }
+
+        // The one closed anchor that may stand without its key is the unsealed genesis: Begin and
+        // recovery both accept it, and refusing it here would block every reset that runs no nested
+        // transition first behind a genesis that never sealed anything.
+        bool unsealedGenesis = anchor is { SlotEpoch: 0, State: GrimoireOfflineTransitionAnchorState.Closed };
 
         return anchor.State is GrimoireOfflineTransitionAnchorState.Closed
             && anchor.InstallationId == installationId
             && accounts.Value.Anchor is not null
-            && accounts.Value.JournalKey is not null
+            && (accounts.Value.JournalKey is not null || unsealedGenesis)
                 ? ProjectTerminal(
                     GrimoireOfflineTransitionFullResetTerminalArm.ClosedAnchor,
                     location,
@@ -160,7 +157,6 @@ internal sealed partial class GrimoireOfflineTransitionJournalAnchorStore
                     anchor,
                     accounts.Value)
                 : NotTerminal();
-
     }
 
     /// <summary>
@@ -198,7 +194,6 @@ internal sealed partial class GrimoireOfflineTransitionJournalAnchorStore
         ArcanumMaintenanceLock heldInstallationLock,
         GrimoireOfflineTransitionJournalLocation location)
     {
-
         ArgumentNullException.ThrowIfNull(heldInstallationLock);
 
         ArgumentNullException.ThrowIfNull(location);
@@ -212,7 +207,6 @@ internal sealed partial class GrimoireOfflineTransitionJournalAnchorStore
             : accounts.Value.Anchor is null && accounts.Value.JournalKey is null
                 ? Result.Success()
                 : Result.Failure(NotTerminal().Error);
-
     }
 
     /// <summary>
@@ -230,7 +224,6 @@ internal sealed partial class GrimoireOfflineTransitionJournalAnchorStore
         string account,
         CovenantDigest projectedValueDigest)
     {
-
         ArgumentNullException.ThrowIfNull(heldInstallationLock);
 
         ArgumentNullException.ThrowIfNull(location);
@@ -241,9 +234,7 @@ internal sealed partial class GrimoireOfflineTransitionJournalAnchorStore
 
         if (before.IsFailure)
         {
-
             return Result.Failure(before.Error);
-
         }
 
         // Absence is read before the projection is examined, and that order matters twice over. A slot
@@ -252,21 +243,16 @@ internal sealed partial class GrimoireOfflineTransitionJournalAnchorStore
         // and neither is a reason to refuse.
         if (before.Value is null)
         {
-
             return Result.Success();
-
         }
 
         if (!projectedValueDigest.IsValid || before.Value != projectedValueDigest)
         {
-
             return NotTerminal().Error;
-
         }
 
         try
         {
-
             OsCredentialStoreResult deleted = _credentials.Delete(
                 ArcanumCredentialIdentity.Service,
                 account);
@@ -274,11 +260,8 @@ internal sealed partial class GrimoireOfflineTransitionJournalAnchorStore
             if (deleted.Status is not OsCredentialStoreStatus.Ok
                 and not OsCredentialStoreStatus.NotFound)
             {
-
                 return Unavailable().Error;
-
             }
-
         }
         catch (Exception exception) when (
             exception is IOException
@@ -286,9 +269,7 @@ internal sealed partial class GrimoireOfflineTransitionJournalAnchorStore
                 or InvalidOperationException
                 or NotSupportedException)
         {
-
             return Unavailable().Error;
-
         }
 
         Result<CovenantDigest?> after = ReadTerminalAccountDigest(account);
@@ -298,13 +279,11 @@ internal sealed partial class GrimoireOfflineTransitionJournalAnchorStore
             : after.Value is null
                 ? Result.Success()
                 : NotTerminal().Error;
-
     }
 
     /// <summary>The account-bound digest a later compare-removal reproduces before it deletes.</summary>
     internal static CovenantDigest TerminalAccountValueDigest(string account, string value)
     {
-
         ArgumentException.ThrowIfNullOrWhiteSpace(account);
 
         ArgumentNullException.ThrowIfNull(value);
@@ -320,14 +299,12 @@ internal sealed partial class GrimoireOfflineTransitionJournalAnchorStore
         WriteLengthPrefixed(preimage, Encoding.UTF8.GetBytes(value));
 
         return new CovenantDigest(SHA256.HashData(preimage.ToArray()));
-
     }
 
     /// <summary>The two accounts this slot owns, derived from the profile namespace and nowhere else.</summary>
     internal static (string AnchorAccount, string KeyAccount) TerminalAccounts(
         BackupRestoreProfileNamespace profileNamespace)
     {
-
         ArgumentNullException.ThrowIfNull(profileNamespace);
 
         return (
@@ -335,7 +312,6 @@ internal sealed partial class GrimoireOfflineTransitionJournalAnchorStore
                 profileNamespace.AccountSuffix),
             ArcanumCredentialIdentity.GrimoireTransitionJournalKeyAccount(
                 profileNamespace.AccountSuffix));
-
     }
 
     private static Result<GrimoireOfflineTransitionFullResetTerminalProjectionV1> ProjectTerminal(
@@ -380,7 +356,6 @@ internal sealed partial class GrimoireOfflineTransitionJournalAnchorStore
         GrimoireOfflineTransitionAnchorV1? anchor,
         TerminalAccountDigests accounts)
     {
-
         using MemoryStream preimage = new();
 
         preimage.Write(Encoding.ASCII.GetBytes(TerminalEvidenceDomain));
@@ -406,13 +381,11 @@ internal sealed partial class GrimoireOfflineTransitionJournalAnchorStore
         WriteOptionalDigest(preimage, accounts.Anchor);
 
         return new CovenantDigest(SHA256.HashData(preimage.ToArray()));
-
     }
 
     private Result<TerminalAccountDigests> ReadTerminalAccountDigests(
         GrimoireOfflineTransitionJournalLocation location)
     {
-
         (string anchorAccount, string keyAccount) = TerminalAccounts(location.ProfileNamespace);
 
         Result<CovenantDigest?> anchor = ReadTerminalAccountDigest(anchorAccount);
@@ -425,19 +398,15 @@ internal sealed partial class GrimoireOfflineTransitionJournalAnchorStore
                 ? Result<TerminalAccountDigests>.Failure(journalKey.Error)
                 : Result<TerminalAccountDigests>.Success(
                     new TerminalAccountDigests(journalKey.Value, anchor.Value));
-
     }
 
     private Result<CovenantDigest?> ReadTerminalAccountDigest(string account)
     {
-
         OsCredentialStoreResult result;
 
         try
         {
-
             result = _credentials.TryGet(ArcanumCredentialIdentity.Service, account);
-
         }
         catch (Exception exception) when (
             exception is IOException
@@ -445,22 +414,17 @@ internal sealed partial class GrimoireOfflineTransitionJournalAnchorStore
                 or InvalidOperationException
                 or NotSupportedException)
         {
-
             return Unavailable<CovenantDigest?>();
-
         }
 
         if (result.Status is OsCredentialStoreStatus.NotFound)
         {
-
             return Result<CovenantDigest?>.Success(null);
-
         }
 
         return result.Status is not OsCredentialStoreStatus.Ok || result.Value is not { } value
             ? Unavailable<CovenantDigest?>()
             : Result<CovenantDigest?>.Success(TerminalAccountValueDigest(account, value));
-
     }
 
     private static Result<GrimoireOfflineTransitionFullResetTerminalProjectionV1> NotTerminal() =>
@@ -470,64 +434,49 @@ internal sealed partial class GrimoireOfflineTransitionJournalAnchorStore
 
     private static void WriteGuid(MemoryStream target, Guid value)
     {
-
         Span<byte> buffer = stackalloc byte[16];
 
         _ = value.TryWriteBytes(buffer, bigEndian: true, out _);
 
         target.Write(buffer);
-
     }
 
     private static void WriteOptionalGuid(MemoryStream target, Guid? value)
     {
-
         target.WriteByte(value is null ? AbsentField : PresentField);
 
         if (value is { } present)
         {
-
             WriteGuid(target, present);
-
         }
-
     }
 
     private static void WriteOptionalUInt64(MemoryStream target, ulong? value)
     {
-
         target.WriteByte(value is null ? AbsentField : PresentField);
 
         if (value is { } present)
         {
-
             Span<byte> buffer = stackalloc byte[8];
 
             BinaryPrimitives.WriteUInt64BigEndian(buffer, present);
 
             target.Write(buffer);
-
         }
-
     }
 
     private static void WriteOptionalDigest(MemoryStream target, CovenantDigest? value)
     {
-
         target.WriteByte(value is null ? AbsentField : PresentField);
 
         if (value is { } present)
         {
-
             target.Write(present.Bytes);
-
         }
-
     }
 
     private static void WriteLengthPrefixed(MemoryStream target, byte[] value)
     {
-
         Span<byte> length = stackalloc byte[4];
 
         BinaryPrimitives.WriteUInt32BigEndian(length, (uint)value.Length);
@@ -535,11 +484,9 @@ internal sealed partial class GrimoireOfflineTransitionJournalAnchorStore
         target.Write(length);
 
         target.Write(value);
-
     }
 
     private sealed record TerminalAccountDigests(
         CovenantDigest? JournalKey,
         CovenantDigest? Anchor);
-
 }

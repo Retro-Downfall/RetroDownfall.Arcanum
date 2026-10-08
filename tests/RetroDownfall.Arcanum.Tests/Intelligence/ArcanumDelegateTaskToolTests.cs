@@ -4,17 +4,16 @@ using RetroDownfall.Arcanum.Api.Intelligence.Subagents;
 using RetroDownfall.Arcanum.Api.Intelligence.Tools;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Intelligence;
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Intelligence;
 
 public sealed class ArcanumDelegateTaskToolTests
 {
-
     [Fact]
 
     public async Task InvokeAsync_IntersectsDelegatedAttachmentIdsWithMaterializedParentAllowlist()
     {
-
         Guid allowedAttachmentId = Guid.NewGuid();
 
         Guid undelegatedAttachmentId = Guid.NewGuid();
@@ -51,7 +50,7 @@ public sealed class ArcanumDelegateTaskToolTests
                     content = "secret",
                     attachment_id = undelegatedAttachmentId,
                 },
-            });
+            }, AdHocJson.Options);
 
         object? output = await tool.InvokeAsync(
             new AIFunctionArguments(
@@ -66,7 +65,6 @@ public sealed class ArcanumDelegateTaskToolTests
         Assert.Equal("Subagent task failed: Explicit files were not delegated by the parent attachment policy.", output);
 
         Assert.Null(runner.Request);
-
     }
 
     [Fact]
@@ -84,7 +82,7 @@ public sealed class ArcanumDelegateTaskToolTests
             new[]
             {
                 new { path = "src/A.cs", content = "sealed class A {}" },
-            });
+            }, AdHocJson.Options);
         AIFunctionArguments arguments = new(
             new Dictionary<string, object?>
             {
@@ -125,7 +123,7 @@ public sealed class ArcanumDelegateTaskToolTests
                     path = $"src/File{index:D2}.cs",
                     content = $"sealed class File{index:D2} {{}}",
                 })
-                .ToArray());
+                .ToArray(), AdHocJson.Options);
 
         object? output = await tool.InvokeAsync(
             new AIFunctionArguments(
@@ -140,7 +138,6 @@ public sealed class ArcanumDelegateTaskToolTests
         Assert.Equal("reviewed", output);
 
         Assert.Equal(40, runner.Request!.Files.Count);
-
     }
 
     [Fact]

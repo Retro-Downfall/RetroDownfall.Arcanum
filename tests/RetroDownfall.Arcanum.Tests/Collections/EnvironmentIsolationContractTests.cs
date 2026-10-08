@@ -2,12 +2,12 @@ using System.Reflection;
 using System.Reflection.Emit;
 
 using RetroDownfall.Arcanum.Tests.Fixtures;
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Collections;
 
 internal static class ProcessEnvironmentCollectionName
 {
-
     internal const string Value = "ProcessEnvironment";
 }
 
@@ -29,7 +29,6 @@ internal static class ProcessEnvironmentCollectionName
 [Collection(ProcessEnvironmentCollectionName.Value)]
 public sealed class EnvironmentIsolationContractTests
 {
-
     private const BindingFlags DeclaredMembers =
         BindingFlags.Instance
         | BindingFlags.Static
@@ -55,6 +54,22 @@ public sealed class EnvironmentIsolationContractTests
     private static readonly Lazy<IReadOnlyList<Type>> ProcessGlobalSeamMutatingTestClasses =
         new(LoadProcessGlobalSeamMutatingTestClasses);
 
+    private const string TestHomeVariable = "ARCANUM_TEST_HOME";
+
+    private const string DotnetEnvironmentVariable = "DOTNET_ENVIRONMENT";
+
+    private const string AspNetCoreEnvironmentVariable = "ASPNETCORE_ENVIRONMENT";
+
+    private const string TestingEnvironmentName = "Testing";
+
+    private static readonly Lazy<IReadOnlyList<Type>> GlobalConsoleMutatingTestClasses =
+        new(LoadGlobalConsoleMutatingTestClasses);
+
+    private static readonly Lazy<IReadOnlyList<Type>> WorkspacePathPolicyUsingTestClasses =
+        new(LoadWorkspacePathPolicyUsingTestClasses);
+
+    private static readonly Lazy<IReadOnlyList<TestHomeUse>> TestHomeUses = new(LoadTestHomeUses);
+
     /// <summary>
     /// Covers constructor-injected fixtures, plain fields, and — because the compiler lifts async
     /// locals and captured variables into nested state-machine and closure types — classes that
@@ -63,19 +78,16 @@ public sealed class EnvironmentIsolationContractTests
     [Fact]
     public void Every_test_class_touching_the_web_application_factory_is_serialized()
     {
-
         IReadOnlyDictionary<string, bool> serialized = CollectionParallelism.Value;
 
         List<string> offenders = [];
 
         foreach (Type type in FactoryDependents.Value)
         {
-
             string? collection = AttributeName<CollectionAttribute>(type);
 
             if (collection is null)
             {
-
                 offenders.Add($"{type.FullName} declares no [Collection]");
 
                 continue;
@@ -84,7 +96,6 @@ public sealed class EnvironmentIsolationContractTests
             if (!serialized.TryGetValue(collection, out bool disablesParallelization)
                 || !disablesParallelization)
             {
-
                 offenders.Add(
                     $"{type.FullName} is in collection '{collection}', which is not "
                     + "DisableParallelization");
@@ -109,19 +120,16 @@ public sealed class EnvironmentIsolationContractTests
     [Fact]
     public void Every_test_class_that_mutates_the_process_environment_is_serialized()
     {
-
         IReadOnlyDictionary<string, bool> serialized = CollectionParallelism.Value;
 
         List<string> offenders = [];
 
         foreach (Type type in EnvironmentMutatingTestClasses.Value)
         {
-
             string? collection = AttributeName<CollectionAttribute>(type);
 
             if (collection is null)
             {
-
                 offenders.Add($"{type.FullName} declares no [Collection]");
 
                 continue;
@@ -130,7 +138,6 @@ public sealed class EnvironmentIsolationContractTests
             if (!serialized.TryGetValue(collection, out bool disablesParallelization)
                 || !disablesParallelization)
             {
-
                 offenders.Add(
                     $"{type.FullName} is in collection '{collection}', which is not "
                     + "DisableParallelization");
@@ -147,6 +154,121 @@ public sealed class EnvironmentIsolationContractTests
     }
 
     /// <summary>
+    /// <c>Console.SetOut</c>/<c>SetError</c>/<c>SetIn</c> and Spectre's
+    /// <c>AnsiConsole.Console</c> are process-wide, so a class that swaps one while a parallel class
+    /// writes the console loses or steals output. The CLI harness swaps all of them, so the scan
+    /// closes over it the same way the environment scan closes over its helpers. The rule is
+    /// serialization, not one named collection: <c>GlobalConsole</c> is the home for CLI command
+    /// tests, but any <c>DisableParallelization</c> collection (the <c>ProcessEnvironment</c> one
+    /// that <c>CliErrorOutputTests</c> and <c>StaticSerilogBridgeTests</c> already share) cannot
+    /// race a console writer either, because those collections never overlap one another.
+    /// </summary>
+    [Fact]
+    public void Every_test_class_that_swaps_the_global_console_runs_in_a_serialized_collection()
+    {
+        IReadOnlyDictionary<string, bool> serialized = CollectionParallelism.Value;
+
+        List<string> offenders = [];
+
+        foreach (Type type in GlobalConsoleMutatingTestClasses.Value)
+        {
+            string? collection = AttributeName<CollectionAttribute>(type);
+
+            if (collection is null)
+            {
+                offenders.Add($"{type.FullName} declares no [Collection]");
+
+                continue;
+            }
+
+            if (!serialized.TryGetValue(collection, out bool disablesParallelization)
+                || !disablesParallelization)
+            {
+                offenders.Add(
+                    $"{type.FullName} is in collection '{collection}', which is not "
+                    + "DisableParallelization");
+            }
+        }
+
+        Assert.True(
+            offenders.Count == 0,
+            "Console.SetOut/SetError/SetIn and AnsiConsole.Console are process-global, so every test "
+            + "class that assigns one, directly or through the CLI test harness, must run in a "
+            + "DisableParallelization collection ('GlobalConsole' for CLI command tests): "
+            + string.Join("; ", offenders));
+    }
+
+    /// <summary>
+    /// <c>WorkspacePathPolicy</c> keeps process-global test seams (ordinal-ignore-case comparison, the
+    /// containment observer) that its covering tests install and reset. A test that merely uses the policy
+    /// or <c>PhysicalFileSystemWriter</c> (or its resolver) is exactly the neighbour such a seam leaks into, so every class
+    /// that reaches either, directly or through a helper, joins the one serialized
+    /// <c>WorkspacePathPolicy</c> collection instead of relying on each author to notice.
+    /// </summary>
+    [Fact]
+    public void Every_test_class_that_uses_WorkspacePathPolicy_or_PhysicalFileSystemWriter_is_in_the_WorkspacePathPolicy_collection()
+    {
+        List<string> offenders = [];
+
+        foreach (Type type in WorkspacePathPolicyUsingTestClasses.Value)
+        {
+            string? collection = AttributeName<CollectionAttribute>(type);
+
+            if (!string.Equals(collection, WorkspacePathPolicyCollectionName, StringComparison.Ordinal))
+            {
+                offenders.Add($"{type.FullName} is in {(collection is null ? "no collection" : $"collection '{collection}'")}");
+            }
+        }
+
+        Assert.True(
+            offenders.Count == 0,
+            $"Every test class that uses WorkspacePathPolicy or PhysicalFileSystemWriter must declare [Collection(\"{WorkspacePathPolicyCollectionName}\")]: "
+            + string.Join("; ", offenders));
+    }
+
+    /// <summary>
+    /// Guards the scan above: an IL walk that stopped matching the policy and writer call sites would
+    /// report no offenders and pass vacuously forever.
+    /// </summary>
+    [Fact]
+    public void The_workspace_path_policy_scan_finds_direct_and_writer_using_test_classes()
+    {
+        string[] found =
+        [
+            .. WorkspacePathPolicyUsingTestClasses.Value
+                .Select(static type => type.Name),
+        ];
+
+        Assert.Contains("WorkspacePathPolicySymlinkTests", found);
+
+        Assert.Contains("PhysicalFileSystemWriterTests", found);
+
+        Assert.Contains("WorkspacePathResolverTests", found);
+    }
+
+    /// <summary>
+    /// Guards the console scan: an IL walk that stopped matching the swap call sites would report
+    /// no offenders and pass vacuously forever.
+    /// </summary>
+    [Fact]
+    public void The_global_console_scan_finds_direct_and_harness_driven_console_swappers()
+    {
+        string[] found =
+        [
+            .. GlobalConsoleMutatingTestClasses.Value
+                .Select(static type => type.Name),
+        ];
+
+        // Direct AnsiConsole.Console assignment, and Console.SetOut/SetIn.
+        Assert.Contains("MemoryStatusCovenantCommandTests", found);
+
+        Assert.Contains("RunInputReaderTests", found);
+
+        // Reaches the swap only through CliTestHarness.
+        Assert.Contains("WorkspaceCommandTests", found);
+    }
+
+    /// <summary>
     /// The same invariant for every other process-global seam.
     ///
     /// Environment variables were the only shared resource anything enforced, but they are not the
@@ -159,19 +281,16 @@ public sealed class EnvironmentIsolationContractTests
     [Fact]
     public void Every_test_class_that_mutates_a_process_global_seam_is_serialized()
     {
-
         IReadOnlyDictionary<string, bool> serialized = CollectionParallelism.Value;
 
         List<string> offenders = [];
 
         foreach (Type type in ProcessGlobalSeamMutatingTestClasses.Value)
         {
-
             string? collection = AttributeName<CollectionAttribute>(type);
 
             if (collection is null)
             {
-
                 offenders.Add($"{type.FullName} declares no [Collection]");
 
                 continue;
@@ -180,7 +299,6 @@ public sealed class EnvironmentIsolationContractTests
             if (!serialized.TryGetValue(collection, out bool disablesParallelization)
                 || !disablesParallelization)
             {
-
                 offenders.Add(
                     $"{type.FullName} is in collection '{collection}', which is not "
                     + "DisableParallelization");
@@ -202,7 +320,6 @@ public sealed class EnvironmentIsolationContractTests
     [Fact]
     public void The_process_global_seam_scan_finds_the_known_seam_using_test_classes()
     {
-
         string[] found =
         [
             .. ProcessGlobalSeamMutatingTestClasses.Value
@@ -214,13 +331,12 @@ public sealed class EnvironmentIsolationContractTests
         Assert.Contains("UploadedFileRepositoryTests", found);
 
         Assert.Contains("DataRetentionServiceTests", found);
-
     }
 
     /// <summary>
     /// The control above only pins the property-setter shape. Production exposes just as many
     /// method-shaped seams — <c>SessionAttachmentToolAmbient.SetUtcTicksNowForTests</c>,
-    /// <c>WorkspacePathPolicy.SetSymlinkResolverForTests</c>,
+    /// <c>WorkspacePathPolicy.SetUseOrdinalIgnoreCasePathComparisonForTests</c>,
     /// <c>OutboundUrlGuard.SetPinnedAddressRewriterForTests</c> — and a predicate that recognises
     /// only <c>set_</c> leaves every caller of those unguarded while still passing the control
     /// above. Pin the second shape separately so neither branch can rot unnoticed.
@@ -228,7 +344,6 @@ public sealed class EnvironmentIsolationContractTests
     [Fact]
     public void The_process_global_seam_scan_finds_the_method_shaped_seam_using_test_classes()
     {
-
         string[] found =
         [
             .. ProcessGlobalSeamMutatingTestClasses.Value
@@ -240,7 +355,6 @@ public sealed class EnvironmentIsolationContractTests
         Assert.Contains("WorkspacePathPolicySymlinkTests", found);
 
         Assert.Contains("OutboundUrlGuardEgressConnectTests", found);
-
     }
 
     /// <summary>
@@ -251,7 +365,6 @@ public sealed class EnvironmentIsolationContractTests
     [Fact]
     public void The_environment_mutation_scan_finds_the_known_mutating_test_classes()
     {
-
         string[] found = EnvironmentMutatingTestClasses.Value
             .Select(static type => type.FullName ?? type.Name)
             .ToArray();
@@ -278,6 +391,84 @@ public sealed class EnvironmentIsolationContractTests
             typeof(RetroDownfall.Arcanum.Tests.Cli.FileBatchCommandTests).FullName,
             found);
     }
+
+    /// <summary>
+    /// <c>ArcanumPaths</c> honours <c>ARCANUM_TEST_HOME</c> only while a host environment reads
+    /// <c>Testing</c>; outside it the variable is deliberately ignored and every path resolves to
+    /// the developer's real profile directory. A test class that sets the variable alone therefore
+    /// writes the real profile while looking isolated. The class must either go through the shared
+    /// <see cref="ArcanumTestHomeScope"/>, which sets both, or set a Testing environment itself.
+    /// </summary>
+    [Fact]
+    public void Every_test_class_that_sets_ARCANUM_TEST_HOME_also_sets_a_Testing_environment()
+    {
+        List<string> offenders =
+        [
+            .. TestHomeUses.Value
+                .Where(static use => use.SetsTestHome && !use.EstablishesTestingEnvironment)
+                .Select(static use => use.TestClass.FullName ?? use.TestClass.Name),
+        ];
+
+        Assert.True(
+            offenders.Count == 0,
+            "ARCANUM_TEST_HOME is ignored unless DOTNET_ENVIRONMENT or ASPNETCORE_ENVIRONMENT is "
+            + "'Testing', so these classes write the developer's real profile directory. Use "
+            + $"{nameof(ArcanumTestHomeScope)} or set a Testing environment in the same class: "
+            + string.Join("; ", offenders));
+    }
+
+    /// <summary>
+    /// Guards the scan above: an IL walk that stopped resolving <c>ldstr</c> operands would report
+    /// no offenders and pass vacuously forever.
+    /// </summary>
+    [Fact]
+    public void The_test_home_scan_finds_classes_that_set_the_variable_and_classes_using_the_scope()
+    {
+        TestHomeUse writer = Assert.Single(
+            TestHomeUses.Value,
+            static use => use.TestClass
+                == typeof(RetroDownfall.Arcanum.Tests.Configuration.ConfigurationWriterTests));
+
+        Assert.True(writer.SetsTestHome);
+
+        Assert.True(writer.EstablishesTestingEnvironment);
+
+        Assert.Contains(
+            TestHomeUses.Value,
+            static use => use.UsesSharedScope);
+    }
+
+    /// <summary>
+    /// A class that names <c>DOTNET_ENVIRONMENT</c>/<c>ASPNETCORE_ENVIRONMENT</c> only to read it,
+    /// to clear it, or to give it another value, or that mentions <c>Testing</c> for some other
+    /// variable, does not make <c>ArcanumPaths</c> honour <c>ARCANUM_TEST_HOME</c>, so a literal of
+    /// either kind alone must not satisfy the Testing rule above.
+    /// </summary>
+    [Theory]
+    [InlineData(typeof(HostEnvironmentReader))]
+    [InlineData(typeof(HostEnvironmentClearer))]
+    [InlineData(typeof(DevelopmentHostEnvironmentWriter))]
+    [InlineData(typeof(TestingForAnotherVariable))]
+    public void The_Testing_scan_ignores_classes_that_only_read_clear_or_reassign_the_host_environment(
+        Type fixture) =>
+        Assert.False(
+            ReadHostEnvironmentLiterals(fixture).SetsTesting,
+            $"{fixture.Name} does not set a Testing host environment");
+
+    /// <summary>
+    /// Guards the scan above from rejecting everything. The split shape is the one real fixtures
+    /// use when a helper takes the value as a parameter (<c>ArcanumPathsTestingOverrideTests</c>,
+    /// <c>LoggingBootstrapperTests</c>): the variable name and <c>Testing</c> meet only at class
+    /// level, so a per-method pairing would wrongly condemn them.
+    /// </summary>
+    [Theory]
+    [InlineData(typeof(TestingHostEnvironmentWriter))]
+    [InlineData(typeof(SplitTestingHostEnvironmentWriter))]
+    public void The_Testing_scan_accepts_a_class_that_names_the_host_environment_and_Testing(
+        Type fixture) =>
+        Assert.True(
+            ReadHostEnvironmentLiterals(fixture).SetsTesting,
+            $"{fixture.Name} sets a Testing host environment");
 
     /// <summary>
     /// The archived-source packaging test performs a real Native AOT publish. Its five-minute
@@ -331,7 +522,6 @@ public sealed class EnvironmentIsolationContractTests
     [Fact]
     public void Collections_that_mutate_the_process_environment_disable_parallelization()
     {
-
         IReadOnlyDictionary<string, bool> serialized = CollectionParallelism.Value;
 
         List<string> required = [ProcessEnvironmentCollectionName.Value];
@@ -346,7 +536,6 @@ public sealed class EnvironmentIsolationContractTests
 
         foreach (string collection in required.Distinct(StringComparer.Ordinal))
         {
-
             Assert.True(
                 serialized.TryGetValue(collection, out bool disablesParallelization)
                     && disablesParallelization,
@@ -357,7 +546,6 @@ public sealed class EnvironmentIsolationContractTests
 
     private static IReadOnlyList<Type> LoadAssemblyTypes()
     {
-
         try
         {
             return typeof(ArcanumWebApplicationFactory).Assembly.GetTypes();
@@ -370,19 +558,16 @@ public sealed class EnvironmentIsolationContractTests
 
     private static IReadOnlyDictionary<string, bool> LoadCollectionParallelism()
     {
-
         Dictionary<string, bool> collections = new(StringComparer.Ordinal);
 
         foreach (Type type in AssemblyTypes.Value)
         {
-
             CollectionDefinitionAttribute? definition =
                 type.GetCustomAttribute<CollectionDefinitionAttribute>();
 
             if (definition is null
                 || AttributeName<CollectionDefinitionAttribute>(type) is not { } name)
             {
-
                 continue;
             }
 
@@ -394,16 +579,13 @@ public sealed class EnvironmentIsolationContractTests
 
     private static IReadOnlyDictionary<short, OpCode> LoadOpCodesByValue()
     {
-
         Dictionary<short, OpCode> lookup = [];
 
         foreach (FieldInfo field in typeof(OpCodes).GetFields(
             BindingFlags.Public | BindingFlags.Static))
         {
-
             if (field.GetValue(null) is OpCode opCode)
             {
-
                 lookup[opCode.Value] = opCode;
             }
         }
@@ -423,8 +605,195 @@ public sealed class EnvironmentIsolationContractTests
             // walk cannot see through; treat it as mutating so its users are covered here too.
             typeof(ArcanumWebApplicationFactory));
 
+    // IL-only fixtures for the Testing-scan control tests. Nothing calls them; they sit inside this
+    // class so every other scan attributes them to it, and it already runs serialized.
+    internal static class HostEnvironmentRecorder
+    {
+        internal static void Record(
+            string name,
+            string? value)
+        {
+            _ = name;
+
+            _ = value;
+        }
+    }
+
+    internal static class HostEnvironmentReader
+    {
+        internal static string? Read() =>
+            global::System.Environment.GetEnvironmentVariable("DOTNET_ENVIRONMENT");
+    }
+
+    internal static class HostEnvironmentClearer
+    {
+        internal static void Clear() =>
+            HostEnvironmentRecorder.Record("ASPNETCORE_ENVIRONMENT", null);
+    }
+
+    internal static class DevelopmentHostEnvironmentWriter
+    {
+        internal static void Write() =>
+            HostEnvironmentRecorder.Record("DOTNET_ENVIRONMENT", "Development");
+    }
+
+    internal static class TestingForAnotherVariable
+    {
+        internal static void Write() =>
+            HostEnvironmentRecorder.Record("SOME_OTHER_ENVIRONMENT", "Testing");
+    }
+
+    internal static class TestingHostEnvironmentWriter
+    {
+        internal static void Write() =>
+            HostEnvironmentRecorder.Record("ASPNETCORE_ENVIRONMENT", "Testing");
+    }
+
+    internal static class SplitTestingHostEnvironmentWriter
+    {
+        internal static void Write() =>
+            Assign("Testing");
+
+        private static void Assign(
+            string value) =>
+            HostEnvironmentRecorder.Record("DOTNET_ENVIRONMENT", value);
+    }
+
+    /// <summary>
+    /// One outermost test class's relationship with the test-home variables, read from the string
+    /// literals and call sites of its own IL and that of its nested closure and state-machine types.
+    /// </summary>
+    private sealed record TestHomeUse(
+        Type TestClass,
+        bool SetsTestHome,
+        bool UsesSharedScope,
+        bool EstablishesTestingEnvironment);
+
+    private static IReadOnlyList<TestHomeUse> LoadTestHomeUses()
+    {
+        Dictionary<Type, (bool Home, HostEnvironmentLiterals Literals, bool Scope)> byClass = [];
+
+        foreach (Type type in AssemblyTypes.Value)
+        {
+            Type outermost = OutermostDeclaring(type);
+
+            if (outermost == typeof(EnvironmentIsolationContractTests)
+                || outermost == typeof(ArcanumTestHomeScope)
+                || !IsTestClass(outermost))
+            {
+                continue;
+            }
+
+            (bool home, HostEnvironmentLiterals literals, bool scope) = byClass.GetValueOrDefault(outermost);
+
+            foreach (MethodBase method in DeclaredMethods(type))
+            {
+                home |= LoadedStrings(method)
+                    .Any(static literal => string.Equals(
+                        literal,
+                        TestHomeVariable,
+                        StringComparison.Ordinal));
+
+                scope |= CalledMethods(method)
+                    .Any(static called => called.DeclaringType == typeof(ArcanumTestHomeScope));
+            }
+
+            literals = literals.Merge(ReadHostEnvironmentLiterals(type));
+
+            byClass[outermost] = (home, literals, scope);
+        }
+
+        return
+        [
+            .. byClass
+                .Where(static entry => entry.Value.Home || entry.Value.Scope)
+                .OrderBy(static entry => entry.Key.FullName, StringComparer.Ordinal)
+                .Select(entry => new TestHomeUse(
+                    entry.Key,
+                    // A literal alone is not an assignment: a class can name the variable to strip
+                    // it from a child process environment or to print it from a shell fixture. It
+                    // only mutates this process when its IL also reaches an environment write.
+                    entry.Value.Home && EnvironmentMutatingTestClasses.Value.Contains(entry.Key),
+                    entry.Value.Scope,
+                    // The web-application factory sets Testing itself before any test runs.
+                    entry.Value.Scope
+                        || entry.Value.Literals.SetsTesting
+                        || FactoryDependents.Value.Contains(entry.Key))),
+        ];
+    }
+
+    /// <summary>
+    /// What one type's string literals say about the host environment: whether it names
+    /// <c>DOTNET_ENVIRONMENT</c>/<c>ASPNETCORE_ENVIRONMENT</c>, and whether it names
+    /// <c>Testing</c>. A class sets a Testing host environment only when both appear, so merely
+    /// naming the variable (to read it, clear it, or give it another value) does not count. Real
+    /// fixtures pass the value through helper parameters, so the two literals are paired across the
+    /// whole class, nested closure and state-machine types included, rather than within one method.
+    /// This is literal pairing, not data-flow analysis: a class that names Testing for an unrelated
+    /// reason and also touches the variable passes, which the rule accepts rather than fail the
+    /// parameterised helpers.
+    /// </summary>
+    private readonly record struct HostEnvironmentLiterals(
+        bool Variable,
+        bool Testing)
+    {
+        internal bool SetsTesting => Variable && Testing;
+
+        internal HostEnvironmentLiterals Merge(
+            HostEnvironmentLiterals other) =>
+            new(Variable || other.Variable, Testing || other.Testing);
+    }
+
+    private static HostEnvironmentLiterals ReadHostEnvironmentLiterals(
+        Type type)
+    {
+        bool variable = false;
+
+        bool testing = false;
+
+        foreach (string literal in DeclaredMethods(type).SelectMany(LoadedStrings))
+        {
+            variable |=
+                string.Equals(literal, DotnetEnvironmentVariable, StringComparison.Ordinal)
+                || string.Equals(literal, AspNetCoreEnvironmentVariable, StringComparison.Ordinal);
+
+            testing |= string.Equals(literal, TestingEnvironmentName, StringComparison.Ordinal);
+        }
+
+        return new HostEnvironmentLiterals(variable, testing);
+    }
+
     private static IReadOnlyList<Type> LoadProcessGlobalSeamMutatingTestClasses() =>
         LoadMutatingTestClasses(IsProcessGlobalSeamMutation);
+
+    private static IReadOnlyList<Type> LoadGlobalConsoleMutatingTestClasses() =>
+        LoadMutatingTestClasses(IsGlobalConsoleMutation);
+
+    private const string WorkspacePathPolicyCollectionName = "WorkspacePathPolicy";
+
+    private static IReadOnlyList<Type> LoadWorkspacePathPolicyUsingTestClasses() =>
+        LoadMutatingTestClasses(IsWorkspacePathPolicyUse);
+
+    /// <summary>
+    /// Any call into <c>WorkspacePathPolicy</c>, <c>PhysicalFileSystemWriter</c> or the
+    /// <c>WorkspacePathResolver</c> that routes every API path through the policy, including constructors.
+    /// </summary>
+    private static bool IsWorkspacePathPolicyUse(
+        MethodBase method) =>
+        method.DeclaringType == typeof(RetroDownfall.Arcanum.Infrastructure.Security.WorkspacePathPolicy)
+        || method.DeclaringType == typeof(RetroDownfall.Arcanum.Infrastructure.Workspaces.PhysicalFileSystemWriter)
+        || method.DeclaringType == typeof(RetroDownfall.Arcanum.Infrastructure.Workspaces.WorkspacePathResolver);
+
+    /// <summary>
+    /// Assignment to the process-wide console: the three <see cref="Console"/> stream swaps and the
+    /// Spectre <c>AnsiConsole.Console</c> property every command renders through.
+    /// </summary>
+    private static bool IsGlobalConsoleMutation(
+        MethodBase method) =>
+        (method.DeclaringType == typeof(Console)
+            && method.Name is nameof(Console.SetOut) or nameof(Console.SetError) or nameof(Console.SetIn))
+        || (string.Equals(method.DeclaringType?.FullName, "Spectre.Console.AnsiConsole", StringComparison.Ordinal)
+            && string.Equals(method.Name, "set_Console", StringComparison.Ordinal));
 
     /// <summary>
     /// Walks every method in the assembly for a call matching <paramref name="mutates"/>, then
@@ -435,27 +804,22 @@ public sealed class EnvironmentIsolationContractTests
         Func<MethodBase, bool> mutates,
         params Type[] seeds)
     {
-
         Dictionary<Type, HashSet<Type>> callees = [];
 
         HashSet<Type> mutating = [.. seeds];
 
         foreach (Type type in AssemblyTypes.Value)
         {
-
             HashSet<Type> referenced = [];
 
             bool found = false;
 
             foreach (MethodBase method in DeclaredMethods(type))
             {
-
                 foreach (MethodBase called in CalledMethods(method))
                 {
-
                     if (mutates(called))
                     {
-
                         found = true;
 
                         continue;
@@ -464,7 +828,6 @@ public sealed class EnvironmentIsolationContractTests
                     if (called.DeclaringType is { } declaring
                         && declaring.Assembly == type.Assembly)
                     {
-
                         _ = referenced.Add(declaring);
                     }
                 }
@@ -474,7 +837,6 @@ public sealed class EnvironmentIsolationContractTests
 
             if (found)
             {
-
                 _ = mutating.Add(type);
             }
         }
@@ -483,15 +845,12 @@ public sealed class EnvironmentIsolationContractTests
 
         while (grew)
         {
-
             grew = false;
 
             foreach ((Type type, HashSet<Type> referenced) in callees)
             {
-
                 if (mutating.Contains(type) || !referenced.Any(mutating.Contains))
                 {
-
                     continue;
                 }
 
@@ -512,7 +871,6 @@ public sealed class EnvironmentIsolationContractTests
     private static IEnumerable<MethodBase> DeclaredMethods(
         Type type)
     {
-
         MethodBase[] methods;
 
         try
@@ -526,7 +884,6 @@ public sealed class EnvironmentIsolationContractTests
 
         foreach (MethodBase method in methods)
         {
-
             yield return method;
         }
     }
@@ -539,19 +896,14 @@ public sealed class EnvironmentIsolationContractTests
     private static IEnumerable<MethodBase> CalledMethods(
         MethodBase method)
     {
-
-        byte[]? il;
-
         Module module = method.Module;
 
-        Type[]? typeArguments;
+        Type[]? typeArguments = null;
 
-        Type[]? methodArguments;
+        Type[]? methodArguments = null;
 
         try
         {
-            il = method.GetMethodBody()?.GetILAsByteArray();
-
             typeArguments = method.DeclaringType?.IsGenericType == true
                 ? method.DeclaringType.GetGenericArguments()
                 : null;
@@ -559,6 +911,76 @@ public sealed class EnvironmentIsolationContractTests
             methodArguments = method.IsGenericMethodDefinition
                 ? method.GetGenericArguments()
                 : null;
+        }
+        catch (Exception exception) when (exception is NotSupportedException
+            or InvalidOperationException
+            or TypeLoadException)
+        {
+            yield break;
+        }
+
+        foreach ((OpCode opCode, int operand) in Instructions(method))
+        {
+            if (opCode.OperandType is not OperandType.InlineMethod)
+            {
+                continue;
+            }
+
+            MethodBase? called = ResolveMethod(module, operand, typeArguments, methodArguments);
+
+            if (called is not null)
+            {
+                yield return called;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Every string literal a method loads. The C# compiler inlines <c>const string</c> values as
+    /// <c>ldstr</c>, so a name spelled once as a constant and used in another method still shows up
+    /// in the declaring class.
+    /// </summary>
+    private static IEnumerable<string> LoadedStrings(
+        MethodBase method)
+    {
+        Module module = method.Module;
+
+        foreach ((OpCode opCode, int operand) in Instructions(method))
+        {
+            if (opCode.OperandType is not OperandType.InlineString)
+            {
+                continue;
+            }
+
+            string? literal;
+
+            try
+            {
+                literal = module.ResolveString(operand);
+            }
+            catch (Exception exception) when (exception is ArgumentException
+                or BadImageFormatException)
+            {
+                continue;
+            }
+
+            yield return literal;
+        }
+    }
+
+    /// <summary>
+    /// The opcode stream of a method body, with the 32-bit operand of every token-carrying
+    /// instruction. Shared by the call-site and string-literal walks so neither re-implements the
+    /// operand-length bookkeeping.
+    /// </summary>
+    private static IEnumerable<(OpCode OpCode, int Operand)> Instructions(
+        MethodBase method)
+    {
+        byte[]? il;
+
+        try
+        {
+            il = method.GetMethodBody()?.GetILAsByteArray();
         }
         catch (Exception exception) when (exception is BadImageFormatException
             or NotSupportedException
@@ -570,7 +992,6 @@ public sealed class EnvironmentIsolationContractTests
 
         if (il is null)
         {
-
             yield break;
         }
 
@@ -580,17 +1001,14 @@ public sealed class EnvironmentIsolationContractTests
 
         while (offset < il.Length)
         {
-
             short code = il[offset];
 
             offset++;
 
             if (code == 0xFE)
             {
-
                 if (offset >= il.Length)
                 {
-
                     yield break;
                 }
 
@@ -601,31 +1019,19 @@ public sealed class EnvironmentIsolationContractTests
 
             if (!lookup.TryGetValue(code, out OpCode opCode))
             {
-
                 yield break;
             }
 
-            if (opCode.OperandType is OperandType.InlineMethod && offset + 4 <= il.Length)
+            if (opCode.OperandType is OperandType.InlineMethod or OperandType.InlineString
+                && offset + 4 <= il.Length)
             {
-
-                MethodBase? called = ResolveMethod(
-                    module,
-                    BitConverter.ToInt32(il, offset),
-                    typeArguments,
-                    methodArguments);
-
-                if (called is not null)
-                {
-
-                    yield return called;
-                }
+                yield return (opCode, BitConverter.ToInt32(il, offset));
             }
 
             int operandSize = OperandSize(opCode, il, offset);
 
             if (operandSize < 0)
             {
-
                 yield break;
             }
 
@@ -666,7 +1072,6 @@ public sealed class EnvironmentIsolationContractTests
         Type[]? typeArguments,
         Type[]? methodArguments)
     {
-
         try
         {
             return module.ResolveMethod(token, typeArguments, methodArguments);
@@ -718,45 +1123,35 @@ public sealed class EnvironmentIsolationContractTests
     /// </summary>
     private static bool IsProcessGlobalSeamMutation(MethodBase method)
     {
-
         if (method.DeclaringType is not { } declaring)
         {
-
             return false;
-
         }
 
         // Production assemblies only: a test helper's own static seam is not shared with the code
         // under test, and the tests' own assembly is where the callers legitimately live.
         if (declaring.Assembly == typeof(EnvironmentIsolationContractTests).Assembly)
         {
-
             return false;
-
         }
 
         if (string.Equals(declaring.FullName, "Serilog.Log", StringComparison.Ordinal)
             && string.Equals(method.Name, "set_Logger", StringComparison.Ordinal))
         {
-
             return true;
-
         }
 
         if (!method.IsStatic
             || (!method.Name.EndsWith("ForTests", StringComparison.Ordinal)
                 && !method.Name.EndsWith("ForTesting", StringComparison.Ordinal)))
         {
-
             return false;
-
         }
 
         // Only the assigning shape: `…ForTests` also names pure read-only helpers that expose an
         // internal calculation to a test, and those mutate nothing.
         return method.Name.StartsWith("set_", StringComparison.Ordinal)
             || method.Name.StartsWith("Set", StringComparison.Ordinal);
-
     }
 
     private static bool IsTestClass(
@@ -789,14 +1184,12 @@ public sealed class EnvironmentIsolationContractTests
         Type type)
         where TAttribute : Attribute
     {
-
         CustomAttributeData? data = type
             .GetCustomAttributesData()
             .FirstOrDefault(static item => item.AttributeType == typeof(TAttribute));
 
         if (data is null || data.ConstructorArguments.Count == 0)
         {
-
             return null;
         }
 
@@ -806,10 +1199,8 @@ public sealed class EnvironmentIsolationContractTests
     private static bool ReferencesFactory(
         Type type)
     {
-
         if (type == typeof(ArcanumWebApplicationFactory))
         {
-
             return false;
         }
 
@@ -835,12 +1226,10 @@ public sealed class EnvironmentIsolationContractTests
     private static Type OutermostDeclaring(
         Type type)
     {
-
         Type outermost = type;
 
         while (outermost.DeclaringType is { } declaring)
         {
-
             outermost = declaring;
         }
 

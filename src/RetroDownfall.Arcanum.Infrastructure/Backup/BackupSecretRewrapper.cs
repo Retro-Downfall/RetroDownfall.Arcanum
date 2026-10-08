@@ -1,3 +1,5 @@
+using System.Diagnostics.CodeAnalysis;
+
 using System.Security.Cryptography;
 
 using System.Text;
@@ -5,6 +7,8 @@ using System.Text;
 using System.Text.Json;
 
 using RetroDownfall.Arcanum.Core.Backup;
+
+using RetroDownfall.Arcanum.Core.Primitives;
 
 using RetroDownfall.Arcanum.Core.Security;
 
@@ -16,21 +20,75 @@ internal sealed record BackupSecretRewrapResult(
     bool MasterApiKeyWritten,
     BackupVerifyIssue[] Issues)
 {
-
     public static BackupSecretRewrapResult Failed(BackupVerifyIssue issue) =>
         new(
             GrimoireSecretWritten: false,
             FileEncryptionKeysWritten: 0,
             MasterApiKeyWritten: false,
             [issue]);
+}
 
+/// <summary>
+/// One of the destination's secrets as it stood before the restore: its value, proof that it did not
+/// exist, or neither.
+/// </summary>
+/// <remarks>
+/// Absence is a value of its own because a rollback has to undo a write over nothing by deleting
+/// what the restore created. Only <see cref="SecretStoreReadStatus.Ok"/> and
+/// <see cref="SecretStoreReadStatus.Missing"/> are proof of anything; a corrupted or unreadable read
+/// says nothing about what is there, so it is neither reinstated nor deleted.
+/// </remarks>
+/// <param name="Description">Names the secret in messages, e.g. "the master API key".</param>
+internal sealed record BackupCapturedSecret(
+    string Description,
+    SecretStoreReadStatus Status,
+    string? Value)
+{
+    public bool IsPresent => Status == SecretStoreReadStatus.Ok && Value is not null;
+
+    public bool IsAbsent => Status == SecretStoreReadStatus.Missing;
+
+    /// <summary>True when a rollback can return this secret to its prior state, one way or the other.</summary>
+    public bool IsReinstatable => IsPresent || IsAbsent;
+
+    public static BackupCapturedSecret From(string description, SecretStoreReadResult read) =>
+        new(
+            description,
+            read.Status,
+            read.Status == SecretStoreReadStatus.Ok ? read.Value : null);
 }
 
 /// <summary>The destination's own secret material, captured so a rollback can reinstate it.</summary>
 internal sealed record BackupSecretSnapshot(
-    string? GrimoireSecret,
-    string? FileEncryptionSecret,
-    string? MasterApiKey);
+    BackupCapturedSecret GrimoireSecret,
+    BackupCapturedSecret FileEncryptionSecret,
+    BackupCapturedSecret MasterApiKey)
+{
+    /// <summary>
+    /// The first secret a replacement restore will overwrite whose prior state a rollback could not
+    /// reinstate, or <see langword="null"/> when every one of them can be.
+    /// </summary>
+    /// <remarks>
+    /// Only a secret the restore writes matters, because only a written secret is ever reinstated. The
+    /// Grimoire secret is always written. The master API key is written only on explicit request, and
+    /// the key ring only when the archive carries file-encryption keys — which is known once the archive
+    /// is extracted, so the caller asks again then rather than refusing over a ring it would never touch.
+    /// </remarks>
+    public BackupCapturedSecret? FirstUnreinstatable(bool restoreMasterApiKey, bool writesFileEncryptionKeys)
+    {
+        if (!GrimoireSecret.IsReinstatable)
+        {
+            return GrimoireSecret;
+        }
+
+        if (writesFileEncryptionKeys && !FileEncryptionSecret.IsReinstatable)
+        {
+            return FileEncryptionSecret;
+        }
+
+        return restoreMasterApiKey && !MasterApiKey.IsReinstatable ? MasterApiKey : null;
+    }
+}
 
 /// <summary>
 /// Rebuilds machine-local secret protection from a backup's portable recovery payload.
@@ -45,42 +103,50 @@ internal sealed record BackupSecretSnapshot(
 /// </remarks>
 internal sealed class BackupSecretRewrapper(ISecretStore secretStore)
 {
-
     private const string KeyRingHeader = "ARCANUM-KEYRING-1";
 
     private const long MaximumRecoveryBytes = 8L * 1024 * 1024;
+
+    private const string GrimoireSecretDescription = "the Grimoire encryption secret";
+
+    private const string FileEncryptionSecretDescription = "the file-encryption key ring";
+
+    private const string MasterApiKeyDescription = "the master API key";
+
+    // What this instance has written, or tried to: a write that threw may still have landed in part,
+    // so the flag is raised before the call. A rollback reinstates exactly these and nothing else.
+    private bool _grimoireSecretWritten;
+
+    private bool _fileEncryptionSecretWritten;
+
+    private bool _masterApiKeyWritten;
 
     public async Task<BackupSecretRewrapResult> RewrapAsync(
         string portableRecoveryPath,
         bool restoreMasterApiKey,
         CancellationToken cancellationToken)
     {
-
         ArgumentException.ThrowIfNullOrWhiteSpace(portableRecoveryPath);
 
         string fullPath = Path.GetFullPath(portableRecoveryPath);
 
         if (!File.Exists(fullPath))
         {
-
             return BackupSecretRewrapResult.Failed(
                 new BackupVerifyIssue(
                     "backup.restore_recovery_material_missing",
                     "The archive does not carry the portable recovery material required to rebuild "
                     + "local secret protection.",
                     BackupArchivePaths.PortableRecoveryKeys));
-
         }
 
         if (new FileInfo(fullPath).Length > MaximumRecoveryBytes)
         {
-
             return BackupSecretRewrapResult.Failed(
                 new BackupVerifyIssue(
                     "backup.restore_recovery_material_invalid",
                     "The portable recovery material is larger than the supported bound.",
                     BackupArchivePaths.PortableRecoveryKeys));
-
         }
 
         byte[] bytes = await File.ReadAllBytesAsync(fullPath, cancellationToken).ConfigureAwait(false);
@@ -89,48 +155,34 @@ internal sealed class BackupSecretRewrapper(ISecretStore secretStore)
 
         try
         {
-
             try
             {
-
                 recovery = JsonSerializer.Deserialize(
                     bytes,
                     BackupJsonContext.Default.PortableBackupRecoveryMaterial);
-
             }
             catch (Exception exception) when (
                 exception is JsonException or NotSupportedException)
             {
-
                 return InvalidMaterial();
-
             }
 
-            if (recovery is null
-                || recovery.Version != 1
-                || recovery.GrimoireEncryptionSecretUtf8.Length == 0)
+            if (!IsUsable(recovery, out string? keyRing, out int keyCount))
             {
-
                 return InvalidMaterial();
-
-            }
-
-            if (!TryBuildKeyRing(recovery, out string? keyRing, out int keyCount))
-            {
-
-                return InvalidMaterial();
-
             }
 
             string grimoireSecret = Encoding.UTF8.GetString(recovery.GrimoireEncryptionSecretUtf8);
+
+            _grimoireSecretWritten = true;
 
             await secretStore.SaveGrimoireEncryptionSecretAsync(grimoireSecret).ConfigureAwait(false);
 
             if (keyRing is not null)
             {
+                _fileEncryptionSecretWritten = true;
 
                 await secretStore.SaveFileEncryptionSecretAsync(keyRing).ConfigureAwait(false);
-
             }
 
             List<BackupVerifyIssue> issues = [];
@@ -139,28 +191,24 @@ internal sealed class BackupSecretRewrapper(ISecretStore secretStore)
 
             if (restoreMasterApiKey)
             {
-
                 if (recovery.MasterApiKeyUtf8 is { Length: > 0 } masterBytes)
                 {
+                    _masterApiKeyWritten = true;
 
                     await secretStore
                         .SaveApiKeyAsync(Encoding.UTF8.GetString(masterBytes))
                         .ConfigureAwait(false);
 
                     masterWritten = true;
-
                 }
                 else
                 {
-
                     issues.Add(new BackupVerifyIssue(
                         "backup.restore_master_api_key_absent",
                         "Restoring the master API key was requested, but the archive does not carry "
                         + "one. Set a key on this machine with `arcanum key set`.",
                         BackupArchivePaths.MasterApiKey));
-
                 }
-
             }
 
             return new BackupSecretRewrapResult(
@@ -168,17 +216,80 @@ internal sealed class BackupSecretRewrapper(ISecretStore secretStore)
                 keyCount,
                 masterWritten,
                 [.. issues]);
-
         }
         finally
         {
-
             recovery?.Dispose();
 
             CryptographicOperations.ZeroMemory(bytes);
+        }
+    }
 
+    /// <summary>
+    /// Whether <see cref="RewrapAsync"/> would write this machine's file-encryption key ring from this
+    /// payload, which only a usable payload that carries keys does.
+    /// </summary>
+    /// <remarks>
+    /// Asked before the commit, so a replacement refuses over an unreadable key ring only when it would
+    /// actually overwrite that ring. A payload the rewrap would reject writes nothing at all, so it
+    /// answers false here and is refused by the rewrap itself, which reverses the commit.
+    /// </remarks>
+    public async Task<bool> WritesFileEncryptionKeysAsync(
+        string portableRecoveryPath,
+        CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(portableRecoveryPath);
+
+        string fullPath = Path.GetFullPath(portableRecoveryPath);
+
+        if (!File.Exists(fullPath) || new FileInfo(fullPath).Length > MaximumRecoveryBytes)
+        {
+            return false;
         }
 
+        byte[] bytes = await File.ReadAllBytesAsync(fullPath, cancellationToken).ConfigureAwait(false);
+
+        PortableBackupRecoveryMaterial? recovery = null;
+
+        try
+        {
+            try
+            {
+                recovery = JsonSerializer.Deserialize(
+                    bytes,
+                    BackupJsonContext.Default.PortableBackupRecoveryMaterial);
+            }
+            catch (Exception exception) when (
+                exception is JsonException or NotSupportedException)
+            {
+                return false;
+            }
+
+            return IsUsable(recovery, out string? keyRing, out _) && keyRing is not null;
+        }
+        finally
+        {
+            recovery?.Dispose();
+
+            CryptographicOperations.ZeroMemory(bytes);
+        }
+    }
+
+    /// <summary>
+    /// The one test of whether a parsed payload can be rewrapped at all, and the key ring it renders.
+    /// </summary>
+    private static bool IsUsable(
+        [NotNullWhen(true)] PortableBackupRecoveryMaterial? recovery,
+        out string? keyRing,
+        out int keyCount)
+    {
+        keyRing = null;
+
+        keyCount = 0;
+
+        return recovery is { Version: 1 }
+            && recovery.GrimoireEncryptionSecretUtf8.Length > 0
+            && TryBuildKeyRing(recovery, out keyRing, out keyCount);
     }
 
     /// <summary>
@@ -190,16 +301,13 @@ internal sealed class BackupSecretRewrapper(ISecretStore secretStore)
         out string? keyRing,
         out int keyCount)
     {
-
         keyRing = null;
 
         keyCount = 0;
 
         if (recovery.FileEncryptionKeys.Length == 0)
         {
-
             return recovery.ActiveFileEncryptionKeyId is null;
-
         }
 
         HashSet<string> seen = new(StringComparer.Ordinal);
@@ -215,14 +323,11 @@ internal sealed class BackupSecretRewrapper(ISecretStore secretStore)
 
         foreach (PortableBackupFileKey key in recovery.FileEncryptionKeys)
         {
-
             if (key.KeyBytes.Length != 32
                 || !string.Equals(ComputeKeyId(key.KeyBytes), key.KeyId, StringComparison.Ordinal)
                 || !seen.Add(key.KeyId))
             {
-
                 return false;
-
             }
 
             _ = builder
@@ -230,14 +335,11 @@ internal sealed class BackupSecretRewrapper(ISecretStore secretStore)
                 .Append('=')
                 .Append(Convert.ToBase64String(key.KeyBytes))
                 .Append('\n');
-
         }
 
         if (!seen.Contains(active))
         {
-
             return false;
-
         }
 
         keyRing = builder.ToString();
@@ -245,12 +347,10 @@ internal sealed class BackupSecretRewrapper(ISecretStore secretStore)
         keyCount = recovery.FileEncryptionKeys.Length;
 
         return true;
-
     }
 
     private static string ComputeKeyId(ReadOnlySpan<byte> key)
     {
-
         Span<byte> digest = stackalloc byte[32];
 
         SHA256.HashData(key, digest);
@@ -260,7 +360,6 @@ internal sealed class BackupSecretRewrapper(ISecretStore secretStore)
         CryptographicOperations.ZeroMemory(digest);
 
         return id;
-
     }
 
     /// <summary>
@@ -272,21 +371,18 @@ internal sealed class BackupSecretRewrapper(ISecretStore secretStore)
         string portableRecoveryPath,
         CancellationToken cancellationToken)
     {
-
         ArgumentException.ThrowIfNullOrWhiteSpace(portableRecoveryPath);
 
         string fullPath = Path.GetFullPath(portableRecoveryPath);
 
         if (!File.Exists(fullPath) || new FileInfo(fullPath).Length > MaximumRecoveryBytes)
         {
-
             return BackupSecretRewrapResult.Failed(
                 new BackupVerifyIssue(
                     "backup.restore_recovery_material_missing",
                     "The archive does not carry the portable recovery material required to read its "
                     + "encrypted attachment bytes.",
                     BackupArchivePaths.PortableRecoveryKeys));
-
         }
 
         byte[] bytes = await File.ReadAllBytesAsync(fullPath, cancellationToken).ConfigureAwait(false);
@@ -295,62 +391,51 @@ internal sealed class BackupSecretRewrapper(ISecretStore secretStore)
 
         try
         {
-
             try
             {
-
                 recovery = JsonSerializer.Deserialize(
                     bytes,
                     BackupJsonContext.Default.PortableBackupRecoveryMaterial);
-
             }
             catch (Exception exception) when (
                 exception is JsonException or NotSupportedException)
             {
-
                 return InvalidMaterial();
-
             }
 
             if (recovery is null || recovery.Version != 1)
             {
-
                 return InvalidMaterial();
-
             }
 
             if (recovery.FileEncryptionKeys.Length == 0)
             {
-
                 return new BackupSecretRewrapResult(
                     GrimoireSecretWritten: false,
                     FileEncryptionKeysWritten: 0,
                     MasterApiKeyWritten: false,
                     []);
-
             }
 
             SecretStoreReadResult existing = await secretStore
                 .GetFileEncryptionSecretReadResultAsync()
                 .ConfigureAwait(false);
 
-            if (existing.Status == SecretStoreReadStatus.Corrupted)
+            if (existing.Status is SecretStoreReadStatus.Corrupted or SecretStoreReadStatus.Unreadable)
             {
-
                 return BackupSecretRewrapResult.Failed(
                     new BackupVerifyIssue(
                         "backup.restore_key_ring_unreadable",
                         "This machine's file-encryption key ring could not be read, so imported keys "
                         + "cannot be merged into it."));
-
             }
 
             if (!TryMergeRing(existing.Value, recovery, out string? merged, out int added))
             {
-
                 return InvalidMaterial();
-
             }
+
+            _fileEncryptionSecretWritten = true;
 
             await secretStore.SaveFileEncryptionSecretAsync(merged).ConfigureAwait(false);
 
@@ -359,17 +444,13 @@ internal sealed class BackupSecretRewrapper(ISecretStore secretStore)
                 added,
                 MasterApiKeyWritten: false,
                 []);
-
         }
         finally
         {
-
             recovery?.Dispose();
 
             CryptographicOperations.ZeroMemory(bytes);
-
         }
-
     }
 
     private static bool TryMergeRing(
@@ -378,7 +459,6 @@ internal sealed class BackupSecretRewrapper(ISecretStore secretStore)
         out string merged,
         out int added)
     {
-
         merged = string.Empty;
 
         added = 0;
@@ -389,7 +469,6 @@ internal sealed class BackupSecretRewrapper(ISecretStore secretStore)
 
         if (!string.IsNullOrEmpty(existingEncoded))
         {
-
             // The canonical encoding is LF-delimited, but a ring persisted by an older Windows build
             // used Environment.NewLine and both FileEncryptionKeyProvider and
             // BackupSecretSnapshotReader deliberately still load it — so this must too. A machine
@@ -400,7 +479,6 @@ internal sealed class BackupSecretRewrapper(ISecretStore secretStore)
             if (existingEncoded.StartsWith(KeyRingHeader + "\n", StringComparison.Ordinal)
                 || existingEncoded.StartsWith(KeyRingHeader + "\r\n", StringComparison.Ordinal))
             {
-
                 string[] lines = existingEncoded
                     .Split('\n', StringSplitOptions.RemoveEmptyEntries)
                     .Select(static line => line.TrimEnd('\r'))
@@ -409,55 +487,41 @@ internal sealed class BackupSecretRewrapper(ISecretStore secretStore)
 
                 if (lines.Length < 2 || !lines[1].StartsWith("active=", StringComparison.Ordinal))
                 {
-
                     return false;
-
                 }
 
                 active = lines[1]["active=".Length..];
 
                 foreach (string line in lines[2..])
                 {
-
                     int separator = line.IndexOf('=', StringComparison.Ordinal);
 
                     if (separator <= 0)
                     {
-
                         return false;
-
                     }
 
                     keys[line[..separator]] = line[(separator + 1)..];
-
                 }
-
             }
             else
             {
-
                 byte[] legacy;
 
                 try
                 {
-
                     legacy = Convert.FromBase64String(existingEncoded);
-
                 }
                 catch (FormatException)
                 {
-
                     return false;
-
                 }
 
                 if (legacy.Length != 32)
                 {
-
                     CryptographicOperations.ZeroMemory(legacy);
 
                     return false;
-
                 }
 
                 active = ComputeKeyId(legacy);
@@ -465,42 +529,32 @@ internal sealed class BackupSecretRewrapper(ISecretStore secretStore)
                 keys[active] = Convert.ToBase64String(legacy);
 
                 CryptographicOperations.ZeroMemory(legacy);
-
             }
-
         }
 
         foreach (PortableBackupFileKey key in recovery.FileEncryptionKeys)
         {
-
             if (key.KeyBytes.Length != 32
                 || !string.Equals(ComputeKeyId(key.KeyBytes), key.KeyId, StringComparison.Ordinal))
             {
-
                 return false;
-
             }
 
             if (keys.ContainsKey(key.KeyId))
             {
-
                 continue;
-
             }
 
             keys[key.KeyId] = Convert.ToBase64String(key.KeyBytes);
 
             added++;
-
         }
 
         active ??= recovery.ActiveFileEncryptionKeyId ?? recovery.FileEncryptionKeys[0].KeyId;
 
         if (!keys.ContainsKey(active))
         {
-
             return false;
-
         }
 
         StringBuilder builder = new();
@@ -513,15 +567,12 @@ internal sealed class BackupSecretRewrapper(ISecretStore secretStore)
                      static pair => pair.Key,
                      StringComparer.Ordinal))
         {
-
             _ = builder.Append(keyId).Append('=').Append(encoded).Append('\n');
-
         }
 
         merged = builder.ToString();
 
         return true;
-
     }
 
     /// <summary>
@@ -531,7 +582,6 @@ internal sealed class BackupSecretRewrapper(ISecretStore secretStore)
     /// </summary>
     public async Task<BackupSecretSnapshot> CaptureAsync()
     {
-
         SecretStoreReadResult grimoire = await secretStore
             .GetGrimoireEncryptionSecretReadResultAsync()
             .ConfigureAwait(false);
@@ -545,56 +595,96 @@ internal sealed class BackupSecretRewrapper(ISecretStore secretStore)
             .ConfigureAwait(false);
 
         return new BackupSecretSnapshot(
-            grimoire.Status == SecretStoreReadStatus.Ok ? grimoire.Value : null,
-            fileKeys.Status == SecretStoreReadStatus.Ok ? fileKeys.Value : null,
-            apiKey.Status == SecretStoreReadStatus.Ok ? apiKey.Value : null);
-
+            BackupCapturedSecret.From(GrimoireSecretDescription, grimoire),
+            BackupCapturedSecret.From(FileEncryptionSecretDescription, fileKeys),
+            BackupCapturedSecret.From(MasterApiKeyDescription, apiKey));
     }
 
-    /// <summary>Best-effort reinstatement of a captured snapshot during rollback.</summary>
-    public async Task RestoreAsync(BackupSecretSnapshot snapshot)
+    /// <summary>
+    /// Returns every secret this instance wrote to its captured state: the prior value where there
+    /// was one, and no secret at all where the capture proved there was none.
+    /// </summary>
+    /// <remarks>
+    /// Every secret is attempted even after one fails, so a single failure costs only that secret,
+    /// and the failure names each secret that was not reinstated. A secret whose prior state the
+    /// capture could not read is reported rather than guessed at: it is never deleted, because an
+    /// unreadable credential may still exist.
+    /// </remarks>
+    public async Task<Result> RestoreAsync(BackupSecretSnapshot snapshot)
     {
-
         ArgumentNullException.ThrowIfNull(snapshot);
 
+        List<string> failures = [];
+
+        if (_grimoireSecretWritten)
+        {
+            await ReinstateAsync(
+                    snapshot.GrimoireSecret,
+                    secretStore.SaveGrimoireEncryptionSecretAsync,
+                    secretStore.DeleteGrimoireEncryptionSecretAsync,
+                    failures)
+                .ConfigureAwait(false);
+        }
+
+        if (_fileEncryptionSecretWritten)
+        {
+            await ReinstateAsync(
+                    snapshot.FileEncryptionSecret,
+                    secretStore.SaveFileEncryptionSecretAsync,
+                    secretStore.DeleteFileEncryptionSecretAsync,
+                    failures)
+                .ConfigureAwait(false);
+        }
+
+        if (_masterApiKeyWritten)
+        {
+            await ReinstateAsync(
+                    snapshot.MasterApiKey,
+                    secretStore.SaveApiKeyAsync,
+                    secretStore.DeleteApiKeyAsync,
+                    failures)
+                .ConfigureAwait(false);
+        }
+
+        return failures.Count == 0
+            ? Result.Success()
+            : Result.Failure(new Error(
+                "backup.restore_secret_reinstatement_failed",
+                "The prior installation's local secrets could not all be reinstated: "
+                + string.Join("; ", failures)
+                + "."));
+    }
+
+    private static async Task ReinstateAsync(
+        BackupCapturedSecret prior,
+        Func<string, Task> save,
+        Func<Task> delete,
+        List<string> failures)
+    {
         try
         {
-
-            if (snapshot.GrimoireSecret is not null)
+            if (prior.IsPresent)
             {
-
-                await secretStore
-                    .SaveGrimoireEncryptionSecretAsync(snapshot.GrimoireSecret)
-                    .ConfigureAwait(false);
-
+                await save(prior.Value!).ConfigureAwait(false);
             }
-
-            if (snapshot.FileEncryptionSecret is not null)
+            else if (prior.IsAbsent)
             {
-
-                await secretStore
-                    .SaveFileEncryptionSecretAsync(snapshot.FileEncryptionSecret)
-                    .ConfigureAwait(false);
-
+                await delete().ConfigureAwait(false);
             }
-
-            if (snapshot.MasterApiKey is not null)
+            else
             {
-
-                await secretStore.SaveApiKeyAsync(snapshot.MasterApiKey).ConfigureAwait(false);
-
+                failures.Add($"{prior.Description} (its prior state could not be read: {prior.Status})");
             }
-
         }
         catch (Exception exception) when (
             exception is IOException
                 or UnauthorizedAccessException
                 or NotSupportedException
+                or InvalidOperationException
                 or CryptographicException)
         {
-
+            failures.Add($"{prior.Description} ({exception.GetType().Name})");
         }
-
     }
 
     private static BackupSecretRewrapResult InvalidMaterial() =>
@@ -603,5 +693,4 @@ internal sealed class BackupSecretRewrapper(ISecretStore secretStore)
                 "backup.restore_recovery_material_invalid",
                 "The portable recovery material is missing, unsupported, or internally inconsistent.",
                 BackupArchivePaths.PortableRecoveryKeys));
-
 }

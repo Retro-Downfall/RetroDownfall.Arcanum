@@ -10,11 +10,9 @@ namespace RetroDownfall.Arcanum.Cli.Infrastructure;
 
 internal static partial class CliCommandTree
 {
-
     private static Command BuildPreset(IServiceProvider services)
     {
-
-        PresetCommands handler = services.GetRequiredService<PresetCommands>();
+        DeferredHandler<PresetCommands> handler = new(services);
 
         Command preset = new(
             "preset",
@@ -26,7 +24,7 @@ internal static partial class CliCommandTree
 
         list.SetAction(
             async (ParseResult _, CancellationToken cancellationToken) =>
-                await handler.List(cancellationToken).ConfigureAwait(false));
+                await handler.Value.List(cancellationToken).ConfigureAwait(false));
 
         Command show = new(
             "show",
@@ -38,7 +36,7 @@ internal static partial class CliCommandTree
 
         show.SetAction(
             async (ParseResult parseResult, CancellationToken cancellationToken) =>
-                await handler.Show(
+                await handler.Value.Show(
                         parseResult.GetValue(showName)!,
                         cancellationToken)
                     .ConfigureAwait(false));
@@ -53,7 +51,7 @@ internal static partial class CliCommandTree
 
         diff.SetAction(
             async (ParseResult parseResult, CancellationToken cancellationToken) =>
-                await handler.Diff(
+                await handler.Value.Diff(
                         parseResult.GetValue(diffName)!,
                         cancellationToken)
                     .ConfigureAwait(false));
@@ -68,7 +66,7 @@ internal static partial class CliCommandTree
 
         apply.SetAction(
             async (ParseResult parseResult, CancellationToken cancellationToken) =>
-                await handler.Apply(
+                await handler.Value.Apply(
                         parseResult.GetValue(applyName)!,
                         cancellationToken)
                     .ConfigureAwait(false));
@@ -79,7 +77,7 @@ internal static partial class CliCommandTree
 
         reset.SetAction(
             async (ParseResult _, CancellationToken cancellationToken) =>
-                await handler.Reset(cancellationToken).ConfigureAwait(false));
+                await handler.Value.Reset(cancellationToken).ConfigureAwait(false));
 
         preset.Add(list);
 
@@ -92,15 +90,11 @@ internal static partial class CliCommandTree
         preset.Add(reset);
 
         return preset;
-
     }
 
     private static Argument<string> PresetNameArgument() =>
         new("name")
         {
-
             Description = "Preset ID or display name.",
-
         };
-
 }

@@ -80,16 +80,7 @@ internal sealed class InstallationResetActiveRecordKeyProvider(IOsCredentialStor
                 ArcanumCredentialIdentity.Service,
                 Account(profileNamespace));
         }
-        catch (Exception exception) when (
-            exception is IOException
-                or UnauthorizedAccessException
-                or InvalidOperationException
-                or NotSupportedException
-                or DllNotFoundException
-                or EntryPointNotFoundException
-                or BadImageFormatException
-                or System.Runtime.InteropServices.MarshalDirectiveException
-                or TypeLoadException)
+        catch (Exception exception) when (InstallationResetCredentialStoreFailures.IsFailure(exception))
         {
             return PresenceUnavailable();
         }
@@ -221,11 +212,7 @@ internal sealed class InstallationResetActiveRecordKeyProvider(IOsCredentialStor
         {
             removed = _credentials.Delete(ArcanumCredentialIdentity.Service, account);
         }
-        catch (Exception exception) when (
-            exception is IOException
-                or UnauthorizedAccessException
-                or InvalidOperationException
-                or NotSupportedException)
+        catch (Exception exception) when (InstallationResetCredentialStoreFailures.IsFailure(exception))
         {
             return new Error(
                 ErrorCodes.Covenant.Unavailable,
@@ -246,11 +233,7 @@ internal sealed class InstallationResetActiveRecordKeyProvider(IOsCredentialStor
         {
             verified = _credentials.TryGet(ArcanumCredentialIdentity.Service, account);
         }
-        catch (Exception exception) when (
-            exception is IOException
-                or UnauthorizedAccessException
-                or InvalidOperationException
-                or NotSupportedException)
+        catch (Exception exception) when (InstallationResetCredentialStoreFailures.IsFailure(exception))
         {
             return new Error(
                 ErrorCodes.Covenant.Unavailable,
@@ -281,11 +264,7 @@ internal sealed class InstallationResetActiveRecordKeyProvider(IOsCredentialStor
         {
             return _credentials.Set(ArcanumCredentialIdentity.Service, account, value);
         }
-        catch (Exception exception) when (
-            exception is IOException
-                or UnauthorizedAccessException
-                or InvalidOperationException
-                or NotSupportedException)
+        catch (Exception exception) when (InstallationResetCredentialStoreFailures.IsFailure(exception))
         {
             return OsCredentialStoreResult.Failed(exception.Message);
         }
@@ -299,11 +278,7 @@ internal sealed class InstallationResetActiveRecordKeyProvider(IOsCredentialStor
         {
             result = _credentials.TryGet(ArcanumCredentialIdentity.Service, account);
         }
-        catch (Exception exception) when (
-            exception is IOException
-                or UnauthorizedAccessException
-                or InvalidOperationException
-                or NotSupportedException)
+        catch (Exception exception) when (InstallationResetCredentialStoreFailures.IsFailure(exception))
         {
             return new Error(
                 ErrorCodes.Covenant.Unavailable,

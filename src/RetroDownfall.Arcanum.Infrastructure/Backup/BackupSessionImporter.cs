@@ -268,8 +268,10 @@ internal static class BackupSessionImporter
         // The caller of the store owns the lease, so the disposition is spent here — exactly once —
         // and the finalizer runs only after it succeeds. A failed disposition leaves the journal
         // pending and the owner adoptable, which is strictly safer than recording a terminal phase.
+        // The import already ran or failed under the caller's token, and what it durably did is what this
+        // disposition reports, so completing it takes none.
         Result disposed = await transferLease
-            .CompleteAsync(completion.Disposition, completion.Finalizer, cancellationToken)
+            .CompleteAsync(completion.Disposition, completion.Finalizer, CancellationToken.None)
             .ConfigureAwait(false);
 
         return completion.Result.IsFailure

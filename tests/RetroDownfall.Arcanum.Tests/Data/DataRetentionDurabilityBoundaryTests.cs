@@ -446,6 +446,205 @@ public sealed partial class DataRetentionServiceTests
         await ReopenRetentionGateAsync(harness.Inner, Assert.IsAssignableFrom<IGrimoireClosingOwner>(closing));
     }
 
+    /// <summary>
+    /// A hosted prune that fails after a candidate's effect has committed leaves its row for durable
+    /// recovery rather than terminally failed, and says the effect may exist.
+    /// </summary>
+    /// <remarks>
+    /// The Completed transition throws after the one candidate has been pruned, so the failure escapes to
+    /// the generic arm. That arm used to record the row <c>Failed</c> and say the operation "failed before
+    /// a candidate effect began", which is false and leaves nothing to reconcile what did happen.
+    /// </remarks>
+    [SkippableFact]
+    public async Task HostedPruneThatFailsAfterACandidateCompletedRequiresReconciliation()
+    {
+        RequireSqlCipher();
+
+        HostedPruneHarness harness = await CreateHostedPruneHarnessAsync(
+            wrapStore: static store => new HeartbeatCountingOperationStore(store)
+            {
+                BeforeTransition = static state =>
+                {
+                    if (state is LongRunningOperationState.Completed)
+                    {
+                        throw new InvalidOperationException("injected completion failure");
+                    }
+                },
+            });
+
+        DataRetentionHostedSweepOutcome outcome = await RunHostedPruneAsync(harness);
+
+        Assert.Equal(DataRetentionHostedSweepDisposition.Concluded, outcome.Disposition);
+
+        Result<DataRetentionApplyResult> result = Assert.IsType<Result<DataRetentionApplyResult>>(outcome.Result);
+
+        Assert.True(result.IsFailure);
+
+        Assert.DoesNotContain("before a candidate effect began", result.Error.Message, StringComparison.Ordinal);
+
+        Assert.False(File.Exists(harness.Path));
+
+        LongRunningOperation operation = Assert.Single(
+            await harness.Store.ListAsync(
+                new LongRunningOperationQuery(Kind: LongRunningOperationKinds.DataRetentionPrune)));
+
+        Assert.Equal(LongRunningOperationState.ReconciliationRequired, operation.State);
+
+        Assert.Equal(DataRetentionService.RetentionRecoveryTerminalCode, operation.TerminalErrorCode);
+    }
+
+    /// <summary>
+    /// A hosted prune that fails after its first checkpoint, with no candidate effect behind it, is still
+    /// left for durable recovery: the checkpoint on the row is the evidence that effects may exist.
+    /// </summary>
+    /// <remarks>
+    /// The pass saves its first checkpoint before it reaches any candidate, so a failure anywhere after
+    /// that save is settled by the row's checkpoint, not by what the pass removed. Here nothing is eligible
+    /// at all, so the pass removes nothing and only the checkpoint can say "reconcile"; recovery restarts
+    /// idempotently, so the conservative answer costs one more pass.
+    /// </remarks>
+    [SkippableFact]
+    public async Task HostedPruneThatFailsAfterItsFirstCheckpointRequiresReconciliation()
+    {
+        RequireSqlCipher();
+
+        HostedPruneHarness harness = await CreateHostedPruneHarnessAsync(
+            wrapStore: static store => new HeartbeatCountingOperationStore(store)
+            {
+                BeforeTransition = static state =>
+                {
+                    if (state is LongRunningOperationState.Completed)
+                    {
+                        throw new InvalidOperationException("injected completion failure");
+                    }
+                },
+            });
+
+        await ExecuteAsync("DELETE FROM \"UploadedFiles\"");
+
+        File.Delete(harness.Path);
+
+        DataRetentionHostedSweepOutcome outcome = await RunHostedPruneAsync(harness);
+
+        Result<DataRetentionApplyResult> result = Assert.IsType<Result<DataRetentionApplyResult>>(outcome.Result);
+
+        Assert.True(result.IsFailure);
+
+        LongRunningOperation operation = Assert.Single(
+            await harness.Store.ListAsync(
+                new LongRunningOperationQuery(Kind: LongRunningOperationKinds.DataRetentionPrune)));
+
+        Assert.NotEqual(0, operation.CheckpointVersion);
+
+        Assert.Equal(LongRunningOperationState.ReconciliationRequired, operation.State);
+
+        Assert.Equal(DataRetentionService.RetentionRecoveryTerminalCode, operation.TerminalErrorCode);
+    }
+
+    /// <summary>
+    /// A hosted prune that fails before its first checkpoint, with nothing on the row to say an effect
+    /// began, is terminally failed and says so.
+    /// </summary>
+    [SkippableFact]
+    public async Task HostedPruneThatFailsBeforeItsFirstCheckpointIsFailedTerminally()
+    {
+        RequireSqlCipher();
+
+        HostedPruneHarness harness = await CreateHostedPruneHarnessAsync(
+            wrapStore: static store => new HeartbeatCountingOperationStore(store)
+            {
+                BeforeSaveCheckpoint = static expected =>
+                {
+                    if (expected == 0)
+                    {
+                        throw new InvalidOperationException("injected first checkpoint failure");
+                    }
+                },
+            });
+
+        DataRetentionHostedSweepOutcome outcome = await RunHostedPruneAsync(harness);
+
+        Result<DataRetentionApplyResult> result = Assert.IsType<Result<DataRetentionApplyResult>>(outcome.Result);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Contains("before a candidate effect began", result.Error.Message, StringComparison.Ordinal);
+
+        Assert.True(File.Exists(harness.Path));
+
+        LongRunningOperation operation = Assert.Single(
+            await harness.Store.ListAsync(
+                new LongRunningOperationQuery(Kind: LongRunningOperationKinds.DataRetentionPrune)));
+
+        Assert.Equal(0, operation.CheckpointVersion);
+
+        Assert.Equal(LongRunningOperationState.Failed, operation.State);
+    }
+
+    /// <summary>
+    /// A hosted prune whose effect evidence cannot be read is treated as one whose effects may exist, and is
+    /// left for durable recovery rather than terminally failed.
+    /// </summary>
+    /// <remarks>
+    /// The failure is the one that would otherwise be terminal: the first checkpoint save throws, so the
+    /// row carries no checkpoint. The read that would show that throws too, and "could not read" is not
+    /// "nothing happened".
+    /// </remarks>
+    [SkippableFact]
+    public async Task HostedPruneWhoseEffectEvidenceCannotBeReadRequiresReconciliation()
+    {
+        RequireSqlCipher();
+
+        bool checkpointFailed = false;
+
+        bool evidenceReadFailed = false;
+
+        HostedPruneHarness harness = await CreateHostedPruneHarnessAsync(
+            wrapStore: store => new HeartbeatCountingOperationStore(store)
+            {
+                BeforeSaveCheckpoint = expected =>
+                {
+                    if (expected == 0)
+                    {
+                        checkpointFailed = true;
+
+                        throw new InvalidOperationException("injected first checkpoint failure");
+                    }
+                },
+                BeforeGetAsync = (_, _) =>
+                {
+                    if (checkpointFailed && !evidenceReadFailed)
+                    {
+                        evidenceReadFailed = true;
+
+                        throw new IOException("injected evidence read failure");
+                    }
+
+                    return Task.CompletedTask;
+                },
+            });
+
+        DataRetentionHostedSweepOutcome outcome = await RunHostedPruneAsync(harness);
+
+        Result<DataRetentionApplyResult> result = Assert.IsType<Result<DataRetentionApplyResult>>(outcome.Result);
+
+        Assert.True(result.IsFailure);
+
+        Assert.True(evidenceReadFailed, "The settle never read the row's effect evidence.");
+
+        Assert.DoesNotContain("before a candidate effect began", result.Error.Message, StringComparison.Ordinal);
+
+        LongRunningOperation operation = Assert.Single(
+            await harness.Store.ListAsync(
+                new LongRunningOperationQuery(Kind: LongRunningOperationKinds.DataRetentionPrune)));
+
+        Assert.Equal(0, operation.CheckpointVersion);
+
+        Assert.Equal(LongRunningOperationState.ReconciliationRequired, operation.State);
+
+        Assert.Equal(DataRetentionService.RetentionRecoveryTerminalCode, operation.TerminalErrorCode);
+    }
+
     [SkippableFact]
     public async Task HostedPruneRejectsAWorkLeaseForAnotherProducerBeforeStartingAnOperation()
     {
@@ -712,7 +911,7 @@ public sealed partial class DataRetentionServiceTests
 
         await ExecuteAsync(
             "UPDATE LongRunningOperations SET Kind = @kind WHERE lower(replace(Id, '-', '')) = @id",
-            ("@kind", LongRunningOperationKinds.WorkspaceIndex),
+            ("@kind", LongRunningOperationKinds.BlobEncryptionMigration),
             ("@id", continuation.OperationId.ToString("N")));
 
         LongRunningOperation before = Assert.IsType<LongRunningOperation>(
@@ -943,7 +1142,8 @@ public sealed partial class DataRetentionServiceTests
     }
 
     private async Task<HostedPruneHarness> CreateHostedPruneHarnessAsync(
-        TimeProvider? timeProvider = null)
+        TimeProvider? timeProvider = null,
+        Func<LongRunningOperationStore, ILongRunningOperationStore>? wrapStore = null)
     {
         Guid fileId = Guid.NewGuid();
 
@@ -975,7 +1175,7 @@ public sealed partial class DataRetentionServiceTests
             settings,
             static (_, _) => Task.CompletedTask,
             logger,
-            store,
+            wrapStore is null ? store : wrapStore(store),
             clock,
             ownership,
             resumption);

@@ -38,13 +38,11 @@ namespace RetroDownfall.Arcanum.Api.Data;
 
 internal static class DataRetentionEndpoints
 {
-
     private const string FactoryResetConfirmation = "factory-reset";
 
     public static RouteGroupBuilder MapDataRetentionEndpoints(
         this RouteGroupBuilder apiGroup)
     {
-
         apiGroup.MapGet(
             "/data/status",
             async (
@@ -52,7 +50,6 @@ internal static class DataRetentionEndpoints
                 HttpContext httpContext,
                 CancellationToken cancellationToken) =>
             {
-
                 DataRetentionStatus status = await service
                     .GetStatusAsync(cancellationToken)
                     .ConfigureAwait(false);
@@ -61,7 +58,6 @@ internal static class DataRetentionEndpoints
                     httpContext,
                     status,
                     ArcanumJsonContext.Default.ApiResponseDataRetentionStatus);
-
             })
             .WithName("GetDataRetentionStatus");
 
@@ -84,10 +80,8 @@ internal static class DataRetentionEndpoints
                 HttpContext httpContext,
                 CancellationToken cancellationToken) =>
             {
-
                 if (request is null)
                 {
-
                     return Failure(
                         httpContext,
                         new Error(
@@ -95,7 +89,6 @@ internal static class DataRetentionEndpoints
                             "A retention rule update is required."),
                         StatusCodes.Status400BadRequest,
                         ArcanumJsonContext.Default.ApiResponseRetentionSettings);
-
                 }
 
                 Result<RetentionSettings> update = await policyStore
@@ -104,7 +97,6 @@ internal static class DataRetentionEndpoints
 
                 if (update.IsFailure)
                 {
-
                     return Failure(
                         httpContext,
                         new Error(
@@ -116,14 +108,12 @@ internal static class DataRetentionEndpoints
                             ? StatusCodes.Status400BadRequest
                             : StatusCodes.Status500InternalServerError,
                         ArcanumJsonContext.Default.ApiResponseRetentionSettings);
-
                 }
 
                 return Success(
                     httpContext,
                     update.Value,
                     ArcanumJsonContext.Default.ApiResponseRetentionSettings);
-
             })
             .WithName("UpdateDataRetentionRule");
 
@@ -135,11 +125,9 @@ internal static class DataRetentionEndpoints
                 HttpContext httpContext,
                 CancellationToken cancellationToken) =>
             {
-
                 if (request is null
                     || request.Operation != DataRetentionOperation.Prune)
                 {
-
                     return Failure(
                         httpContext,
                         new Error(
@@ -147,7 +135,6 @@ internal static class DataRetentionEndpoints
                             "The prune planning route accepts only the Prune operation."),
                         StatusCodes.Status400BadRequest,
                         ArcanumJsonContext.Default.ApiResponseDataRetentionPlan);
-
                 }
 
                 DataRetentionPlan plan = await service
@@ -158,7 +145,6 @@ internal static class DataRetentionEndpoints
                     httpContext,
                     plan,
                     ArcanumJsonContext.Default.ApiResponseDataRetentionPlan);
-
             })
             .WithName("PlanDataRetentionPrune");
 
@@ -170,11 +156,9 @@ internal static class DataRetentionEndpoints
                 HttpContext httpContext,
                 CancellationToken cancellationToken) =>
             {
-
                 if (request?.Request is null
                     || request.Request.Operation != DataRetentionOperation.Prune)
                 {
-
                     return Failure(
                         httpContext,
                         new Error(
@@ -182,7 +166,6 @@ internal static class DataRetentionEndpoints
                             "The prune execution route accepts only the Prune operation."),
                         StatusCodes.Status400BadRequest,
                         ArcanumJsonContext.Default.ApiResponseDataRetentionApplyResult);
-
                 }
 
                 return await Apply(
@@ -191,7 +174,6 @@ internal static class DataRetentionEndpoints
                         httpContext,
                         cancellationToken)
                     .ConfigureAwait(false);
-
             })
             .WithName("ApplyDataRetentionPrune");
 
@@ -268,10 +250,8 @@ internal static class DataRetentionEndpoints
                 HttpContext httpContext,
                 CancellationToken cancellationToken) =>
             {
-
                 if (request is null)
                 {
-
                     return Failure(
                         httpContext,
                         new Error(
@@ -279,7 +259,6 @@ internal static class DataRetentionEndpoints
                             "An explicit memory reset scope is required."),
                         StatusCodes.Status400BadRequest,
                         ArcanumJsonContext.Default.ApiResponseDataRetentionPlan);
-
                 }
 
                 Result<DataRetentionPlanAdmission> admission = await service
@@ -301,7 +280,6 @@ internal static class DataRetentionEndpoints
                         admission.Error,
                         ResolveStatusCode(admission.Error.Code),
                         ArcanumJsonContext.Default.ApiResponseDataRetentionPlan);
-
             })
             .WithName("PlanDataRetentionMemoryReset")
             .RequireCovenantOperatorAuthority(CovenantAuthorityRequirement.LifecycleManage);
@@ -314,10 +292,8 @@ internal static class DataRetentionEndpoints
                 HttpContext httpContext,
                 CancellationToken cancellationToken) =>
             {
-
                 if (!IsLoopbackPeer(httpContext))
                 {
-
                     return Failure(
                         httpContext,
                         new Error(
@@ -325,12 +301,10 @@ internal static class DataRetentionEndpoints
                             "Factory reset planning is available only to loopback peers."),
                         StatusCodes.Status403Forbidden,
                         ArcanumJsonContext.Default.ApiResponseDataRetentionPlan);
-
                 }
 
                 DataRetentionRequest? dataRequest = request switch
                 {
-
                     { Scope: InstallationResetDataScope.Global, Workspace: null } =>
                         new DataRetentionRequest(
                             DataRetentionOperation.FactoryReset),
@@ -344,12 +318,10 @@ internal static class DataRetentionEndpoints
                             Workspace: workspace),
 
                     _ => null,
-
                 };
 
                 if (dataRequest is null)
                 {
-
                     return Failure(
                         httpContext,
                         new Error(
@@ -357,7 +329,6 @@ internal static class DataRetentionEndpoints
                             "Global planning forbids a workspace binding, and workspace planning requires one."),
                         StatusCodes.Status400BadRequest,
                         ArcanumJsonContext.Default.ApiResponseDataRetentionPlan);
-
                 }
 
                 Result<DataRetentionPlanAdmission> admission = await service
@@ -377,7 +348,6 @@ internal static class DataRetentionEndpoints
                         admission.Error,
                         ResolveStatusCode(admission.Error.Code),
                         ArcanumJsonContext.Default.ApiResponseDataRetentionPlan);
-
             })
             .WithName("PlanFactoryResetDataRetention")
             .RequireCovenantOperatorAuthority(CovenantAuthorityRequirement.LifecycleManage);
@@ -390,13 +360,11 @@ internal static class DataRetentionEndpoints
                 HttpContext httpContext,
                 CancellationToken cancellationToken) =>
             {
-
                 if (!string.Equals(
                         request?.Confirmation,
                         FactoryResetConfirmation,
                         StringComparison.Ordinal))
                 {
-
                     return Failure(
                         httpContext,
                         new Error(
@@ -404,7 +372,6 @@ internal static class DataRetentionEndpoints
                             "Factory reset requires the exact confirmation 'factory-reset'."),
                         StatusCodes.Status400BadRequest,
                         ArcanumJsonContext.Default.ApiResponseDataRetentionApplyResult);
-
                 }
 
                 FactoryResetRequest confirmedRequest = request!;
@@ -412,7 +379,6 @@ internal static class DataRetentionEndpoints
                 if ((confirmedRequest.ExpectedPlanId is null)
                     != (confirmedRequest.RequestedOperationId is null))
                 {
-
                     return Failure(
                         httpContext,
                         new Error(
@@ -420,12 +386,10 @@ internal static class DataRetentionEndpoints
                             "A factory reset's expected plan and requested operation identity must be supplied together."),
                         StatusCodes.Status400BadRequest,
                         ArcanumJsonContext.Default.ApiResponseDataRetentionApplyResult);
-
                 }
 
                 if (confirmedRequest.InstallationResetHandoff is { } handoff)
                 {
-
                     Result validated = ValidateInstallationResetHandoff(
                         confirmedRequest,
                         handoff,
@@ -435,13 +399,11 @@ internal static class DataRetentionEndpoints
 
                     if (validated.IsFailure)
                     {
-
                         return Failure(
                             httpContext,
                             validated.Error,
                             ResolveStatusCode(validated.Error.Code),
                             ArcanumJsonContext.Default.ApiResponseDataRetentionApplyResult);
-
                     }
 
                     return await ApplyInstallationResetHandoffAsync(
@@ -451,7 +413,6 @@ internal static class DataRetentionEndpoints
                             httpContext,
                             cancellationToken)
                         .ConfigureAwait(false);
-
                 }
 
                 return await Apply(
@@ -464,14 +425,12 @@ internal static class DataRetentionEndpoints
                         httpContext,
                         cancellationToken)
                     .ConfigureAwait(false);
-
             })
             .WithName("FactoryResetDataRetention")
             .WithMetadata(InstallationResetRecoveryApiRouteMetadata.FactoryReset)
             .RequireCovenantOperatorAuthority(CovenantAuthorityRequirement.LifecycleManage);
 
         return apiGroup;
-
     }
 
     private static async Task<IResult> ApplyInstallationResetHandoffAsync(
@@ -481,7 +440,6 @@ internal static class DataRetentionEndpoints
         HttpContext httpContext,
         CancellationToken cancellationToken)
     {
-
         IInstallationResetMaintenanceLockAccessor accessor = httpContext.RequestServices
             .GetRequiredService<IInstallationResetMaintenanceLockAccessor>();
 
@@ -490,13 +448,11 @@ internal static class DataRetentionEndpoints
 
         if (borrowed.IsFailure)
         {
-
             return Failure(
                 httpContext,
                 borrowed.Error,
                 ResolveStatusCode(borrowed.Error.Code),
                 ArcanumJsonContext.Default.ApiResponseDataRetentionApplyResult);
-
         }
 
         IInstallationResetHostHandoffCoordinator coordinator = httpContext.RequestServices
@@ -508,13 +464,11 @@ internal static class DataRetentionEndpoints
 
         if (begun.IsFailure)
         {
-
             return Failure(
                 httpContext,
                 begun.Error,
                 ResolveStatusCode(begun.Error.Code),
                 ArcanumJsonContext.Default.ApiResponseDataRetentionApplyResult);
-
         }
 
         DataRetentionApplyRequest applyRequest = new(
@@ -528,13 +482,11 @@ internal static class DataRetentionEndpoints
 
         if (applied.IsFailure)
         {
-
             if (string.Equals(
                     applied.Error.Code,
                     ErrorCodes.Data.PlanChanged,
                     StringComparison.Ordinal))
             {
-
                 Result retired = await coordinator
                     .RetirePreEffectAsync(
                         handoff,
@@ -544,15 +496,12 @@ internal static class DataRetentionEndpoints
 
                 if (retired.IsFailure)
                 {
-
                     return Failure(
                         httpContext,
                         retired.Error,
                         ResolveStatusCode(retired.Error.Code),
                         ArcanumJsonContext.Default.ApiResponseDataRetentionApplyResult);
-
                 }
-
             }
 
             return Failure(
@@ -560,7 +509,6 @@ internal static class DataRetentionEndpoints
                 applied.Error,
                 ResolveStatusCode(applied.Error.Code),
                 ArcanumJsonContext.Default.ApiResponseDataRetentionApplyResult);
-
         }
 
         Result recorded = await coordinator
@@ -581,7 +529,6 @@ internal static class DataRetentionEndpoints
                 recorded.Error,
                 ResolveStatusCode(recorded.Error.Code),
                 ArcanumJsonContext.Default.ApiResponseDataRetentionApplyResult);
-
     }
 
     private static Result ValidateInstallationResetHandoff(
@@ -589,7 +536,6 @@ internal static class DataRetentionEndpoints
         InstallationResetHostHandoff handoff,
         InstallationResetRecoveryApiIdentity? activeRecovery)
     {
-
         InstallationResetAcceptedBinding? binding = handoff.AcceptedBinding;
 
         bool scopeValid = handoff.Scope switch
@@ -645,18 +591,15 @@ internal static class DataRetentionEndpoints
             : Result.Failure(new Error(
                 ErrorCodes.Data.InvalidRequest,
                 "The installation reset host handoff does not match the confirmed reset binding."));
-
     }
 
-    private static bool IsLoopbackPeer(HttpContext httpContext)
-    {
-
-        IPAddress? remoteAddress = httpContext.Connection.RemoteIpAddress;
-
-        return remoteAddress is not null
-            && IPAddress.IsLoopback(remoteAddress);
-
-    }
+    /// <summary>
+    /// Factory-reset planning is for a local operator only, judged the way every other loopback-only gate
+    /// judges it: the socket the request arrived on and the effective peer after any forwarded-headers
+    /// rewriting must both be loopback. Testing the effective address alone let a same-host proxy that
+    /// forwarded a remote client's request (or a forged forwarded header) pass for a local caller.
+    /// </summary>
+    private static bool IsLoopbackPeer(HttpContext httpContext) => ArcanumTransportPeer.IsLoopback(httpContext);
 
     private static async Task<IResult> Apply(
         IDataRetentionService service,
@@ -664,7 +607,6 @@ internal static class DataRetentionEndpoints
         HttpContext httpContext,
         CancellationToken cancellationToken)
     {
-
         Result<DataRetentionApplyResult> result = await service
             .ApplyAsync(request, cancellationToken)
             .ConfigureAwait(false);
@@ -679,7 +621,6 @@ internal static class DataRetentionEndpoints
                 result.Error,
                 ResolveStatusCode(result.Error.Code),
                 ArcanumJsonContext.Default.ApiResponseDataRetentionApplyResult);
-
     }
 
     private static IResult PlanSuccess(
@@ -687,20 +628,16 @@ internal static class DataRetentionEndpoints
         DataRetentionPlanAdmission admission,
         bool requiresReadLease)
     {
-
         if (admission.ReadLease is { } lease)
         {
-
             return new CovenantProtectedJsonResult<DataRetentionPlan>(
                 lease,
                 Result<DataRetentionPlan>.Success(admission.Plan),
                 ArcanumJsonContext.Default.ApiResponseDataRetentionPlan);
-
         }
 
         if (requiresReadLease)
         {
-
             Error error = new(
                 ErrorCodes.Covenant.MaintenanceFailed,
                 "The required Covenant planning capability is unavailable.");
@@ -710,20 +647,17 @@ internal static class DataRetentionEndpoints
                 error,
                 ResolveStatusCode(error.Code),
                 ArcanumJsonContext.Default.ApiResponseDataRetentionPlan);
-
         }
 
         return Success(
             httpContext,
             admission.Plan,
             ArcanumJsonContext.Default.ApiResponseDataRetentionPlan);
-
     }
 
     private static int ResolveStatusCode(string errorCode) =>
         errorCode switch
         {
-
             ErrorCodes.Data.InvalidRequest
                 or ErrorCodes.Data.ConfirmationRequired =>
                 StatusCodes.Status400BadRequest,
@@ -742,7 +676,6 @@ internal static class DataRetentionEndpoints
                 StatusCodes.Status500InternalServerError,
 
             _ => ArcanumErrorMapper.ResolveStatusCode(errorCode),
-
         };
 
     private static IResult Success<T>(
@@ -750,7 +683,6 @@ internal static class DataRetentionEndpoints
         T data,
         JsonTypeInfo<ApiResponse<T>> typeInfo)
     {
-
         string traceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
 
         ApiResponse<T> response = ApiResponse<T>.FromResult(
@@ -758,7 +690,6 @@ internal static class DataRetentionEndpoints
             traceId);
 
         return Results.Json(response, typeInfo);
-
     }
 
     private static IResult Failure<T>(
@@ -767,7 +698,6 @@ internal static class DataRetentionEndpoints
         int statusCode,
         JsonTypeInfo<ApiResponse<T>> typeInfo)
     {
-
         string traceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
 
         ApiResponse<T> response = ApiResponse<T>.FromResult(
@@ -778,7 +708,5 @@ internal static class DataRetentionEndpoints
             response,
             typeInfo,
             statusCode: statusCode);
-
     }
-
 }

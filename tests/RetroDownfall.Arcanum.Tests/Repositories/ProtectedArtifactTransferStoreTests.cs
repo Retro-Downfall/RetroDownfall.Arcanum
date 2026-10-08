@@ -26,7 +26,6 @@ namespace RetroDownfall.Arcanum.Tests.Repositories;
 /// </remarks>
 public sealed class ProtectedArtifactTransferStoreTests : IAsyncLifetime, IDisposable
 {
-
     private static readonly string[] SourceObjects =
     [
         "Sessions",
@@ -59,6 +58,13 @@ public sealed class ProtectedArtifactTransferStoreTests : IAsyncLifetime, IDispo
         "artifact_sensitivity_guard_delete",
         "artifact_sensitivity_guard_update",
 
+        // The Session tree an AssistantEntry erasure drops in the same transaction as the Entry. These
+        // are Core tables, so every Grimoire the kernel can run against has them; a destination that
+        // omitted them would make the erasure fail on a table no installation lacks.
+        "tapestry_generations",
+        "tapestry_nodes",
+        "tapestry_node_embeddings",
+
         // What a summary written for an imported Session has to land in. Same reason as above: the
         // store is the only production writer that gives "Sessions"."Id" a lowercase identity, so a
         // Session it created is the only one a derived-artifact write can be exercised against
@@ -86,7 +92,6 @@ public sealed class ProtectedArtifactTransferStoreTests : IAsyncLifetime, IDispo
 
     public async Task InitializeAsync()
     {
-
         _source = await CovenantSchemaScratchDatabase.CreateAsync(CancellationToken.None);
 
         await _source.InstallCoreObjectsAsync(SourceObjects, CancellationToken.None);
@@ -104,7 +109,6 @@ public sealed class ProtectedArtifactTransferStoreTests : IAsyncLifetime, IDispo
             TimeProvider.System);
 
         await SeedSourceSessionAsync();
-
     }
 
     /// <summary>
@@ -123,7 +127,6 @@ public sealed class ProtectedArtifactTransferStoreTests : IAsyncLifetime, IDispo
     [Fact]
     public async Task An_archive_written_by_the_object_relational_writer_is_found_and_imported()
     {
-
         // The precondition, pinned rather than assumed. Without it a fixture that drifted back to the
         // lowercase spelling would leave this case passing while proving nothing.
         string stored = await StoredSessionIdAsync(_source, _sourceSessionId);
@@ -145,13 +148,11 @@ public sealed class ProtectedArtifactTransferStoreTests : IAsyncLifetime, IDispo
         Assert.Equal(1, await CountDestinationAsync("SessionAttachments"));
 
         Assert.Equal(1, await CountDestinationAsync("assistant_entry_finalizations"));
-
     }
 
     [Fact]
     public async Task A_substituted_effect_digest_is_refused_before_any_destination_write()
     {
-
         Guid operationId = Guid.NewGuid();
 
         ImportedSessionTransferRequest genuine = await BuildRequestAsync(operationId, null);
@@ -176,13 +177,11 @@ public sealed class ProtectedArtifactTransferStoreTests : IAsyncLifetime, IDispo
 
         Assert.Equal(0, await CountDestinationAsync("Sessions"));
         Assert.Equal(0, await CountDestinationAsync("protected_session_transfer_intents"));
-
     }
 
     [Fact]
     public async Task A_source_session_carrying_a_covenant_label_can_never_be_transferred()
     {
-
         await AddSensitivityLabelAsync();
 
         ImportedSessionTransferRequest request = await BuildRequestAsync(Guid.NewGuid(), null);
@@ -196,13 +195,11 @@ public sealed class ProtectedArtifactTransferStoreTests : IAsyncLifetime, IDispo
         // The refusal is the store's own scan over the source's label rows, so a caller that omitted
         // the tainted artifact from its manifest still cannot get the graph committed.
         Assert.Equal(0, await CountDestinationAsync("Sessions"));
-
     }
 
     [Fact]
     public async Task A_manifest_that_does_not_match_the_source_graph_is_refused()
     {
-
         Guid operationId = Guid.NewGuid();
 
         ImportedSessionTransferRequest genuine = await BuildRequestAsync(operationId, null);
@@ -240,13 +237,11 @@ public sealed class ProtectedArtifactTransferStoreTests : IAsyncLifetime, IDispo
         Assert.Equal(ErrorCodes.Covenant.IntegrityFailure, completion.Result.Error.Code);
 
         Assert.Equal(0, await CountDestinationAsync("Sessions"));
-
     }
 
     [Fact]
     public async Task A_campaign_mapped_import_requires_a_lease_that_closes_that_exact_scope()
     {
-
         Guid destinationCampaign = Guid.NewGuid();
 
         ImportedSessionTransferRequest request = await BuildRequestAsync(
@@ -262,13 +257,11 @@ public sealed class ProtectedArtifactTransferStoreTests : IAsyncLifetime, IDispo
         Assert.Equal(ErrorCodes.Covenant.InvalidScope, completion.Result.Error.Code);
 
         Assert.Equal(0, await CountDestinationAsync("Sessions"));
-
     }
 
     [Fact]
     public async Task A_committed_import_writes_the_graph_and_its_imported_guards()
     {
-
         Guid destinationCampaign = Guid.NewGuid();
 
         ImportedSessionTransferRequest request = await BuildRequestAsync(
@@ -318,7 +311,6 @@ public sealed class ProtectedArtifactTransferStoreTests : IAsyncLifetime, IDispo
             CancellationToken.None)).IsSuccess);
 
         Assert.Equal(5, await DestinationPhaseAsync());
-
     }
 
     /// <summary>
@@ -333,7 +325,6 @@ public sealed class ProtectedArtifactTransferStoreTests : IAsyncLifetime, IDispo
     [Fact]
     public async Task An_import_never_writes_its_blobs_under_the_source_sessions_owner_segment()
     {
-
         ImportedSessionTransferRequest request = await BuildRequestAsync(Guid.NewGuid(), null);
 
         ProtectedSessionTransferCompletion<ImportedSessionCommitReceipt> completion =
@@ -358,13 +349,11 @@ public sealed class ProtectedArtifactTransferStoreTests : IAsyncLifetime, IDispo
             await _destination.ScalarStringAsync(
                 "SELECT \"RelativePath\" FROM \"SessionAttachments\";",
                 CancellationToken.None));
-
     }
 
     [Fact]
     public async Task An_import_copies_no_turn_claim_and_fabricates_no_replay_authority()
     {
-
         ImportedSessionTransferRequest request = await BuildRequestAsync(Guid.NewGuid(), null);
 
         ProtectedSessionTransferCompletion<ImportedSessionCommitReceipt> completion =
@@ -379,13 +368,11 @@ public sealed class ProtectedArtifactTransferStoreTests : IAsyncLifetime, IDispo
             await _destination.ScalarLongAsync(
                 "SELECT COUNT(*) FROM assistant_entry_finalizations WHERE FinalReceiptDigest IS NOT NULL;",
                 CancellationToken.None));
-
     }
 
     [Fact]
     public async Task A_repeated_import_is_idempotent_by_its_operation_identity()
     {
-
         ImportedSessionTransferRequest request = await BuildRequestAsync(Guid.NewGuid(), null);
 
         Assert.True((await CommitAsync(request)).Result.IsSuccess);
@@ -400,13 +387,11 @@ public sealed class ProtectedArtifactTransferStoreTests : IAsyncLifetime, IDispo
         // One destination Session, not two. Idempotency is keyed only to the import operation.
         Assert.Equal(1, await CountDestinationAsync("Sessions"));
         Assert.Equal(1, await CountDestinationAsync("protected_session_transfer_intents"));
-
     }
 
     [Fact]
     public async Task The_same_operation_identity_cannot_be_reused_for_a_different_destination()
     {
-
         Guid operationId = Guid.NewGuid();
 
         ImportedSessionTransferRequest first = await BuildRequestAsync(operationId, null);
@@ -422,13 +407,11 @@ public sealed class ProtectedArtifactTransferStoreTests : IAsyncLifetime, IDispo
         Assert.Equal(ErrorCodes.Security.IdempotencyConflict, conflict.Result.Error.Code);
 
         Assert.Equal(1, await CountDestinationAsync("Sessions"));
-
     }
 
     [Fact]
     public async Task The_transfer_finalizer_runs_once_and_only_for_a_reopening_disposition()
     {
-
         ImportedSessionTransferRequest request = await BuildRequestAsync(Guid.NewGuid(), null);
 
         ProtectedSessionTransferCompletion<ImportedSessionCommitReceipt> completion =
@@ -441,7 +424,6 @@ public sealed class ProtectedArtifactTransferStoreTests : IAsyncLifetime, IDispo
             CancellationToken.None)).IsFailure);
 
         Assert.Equal(4, await DestinationPhaseAsync());
-
     }
 
     /// <summary>
@@ -461,7 +443,6 @@ public sealed class ProtectedArtifactTransferStoreTests : IAsyncLifetime, IDispo
     [Fact]
     public async Task An_imported_entry_is_erased_by_the_protected_artifact_erasure_kernel()
     {
-
         ImportedSessionTransferRequest request = await BuildRequestAsync(Guid.NewGuid(), null);
 
         Assert.True((await CommitAsync(request)).Result.IsSuccess);
@@ -547,7 +528,6 @@ public sealed class ProtectedArtifactTransferStoreTests : IAsyncLifetime, IDispo
             0,
             (await ledger.ReadSessionProjectionAsync(imported.SessionId, CancellationToken.None))
                 .Value.TaintedArtifactCount);
-
     }
 
     /// <summary>
@@ -566,7 +546,6 @@ public sealed class ProtectedArtifactTransferStoreTests : IAsyncLifetime, IDispo
     [Fact]
     public async Task A_label_on_an_imported_sessions_artifact_reaches_that_sessions_projection()
     {
-
         ImportedSessionTransferRequest request = await BuildRequestAsync(Guid.NewGuid(), null);
 
         Assert.True((await CommitAsync(request)).Result.IsSuccess);
@@ -598,7 +577,6 @@ public sealed class ProtectedArtifactTransferStoreTests : IAsyncLifetime, IDispo
         Assert.True(projection.Value.IsTainted);
 
         Assert.Equal(1, projection.Value.TaintedArtifactCount);
-
     }
 
     /// <summary>
@@ -619,7 +597,6 @@ public sealed class ProtectedArtifactTransferStoreTests : IAsyncLifetime, IDispo
     [Fact]
     public async Task An_imported_session_carrying_a_covenant_label_can_never_be_transferred_onward()
     {
-
         Assert.True((await CommitAsync(await BuildRequestAsync(Guid.NewGuid(), null))).Result.IsSuccess);
 
         ImportedArtifact imported = await ReadImportedArtifactAsync();
@@ -658,7 +635,6 @@ public sealed class ProtectedArtifactTransferStoreTests : IAsyncLifetime, IDispo
         Assert.Equal(
             0,
             await onward.ScalarLongAsync("SELECT COUNT(*) FROM \"Entries\";", CancellationToken.None));
-
     }
 
     /// <summary>
@@ -672,7 +648,6 @@ public sealed class ProtectedArtifactTransferStoreTests : IAsyncLifetime, IDispo
     [Fact]
     public async Task An_unlabelled_imported_session_transfers_onward()
     {
-
         Assert.True((await CommitAsync(await BuildRequestAsync(Guid.NewGuid(), null))).Result.IsSuccess);
 
         ImportedArtifact imported = await ReadImportedArtifactAsync();
@@ -695,7 +670,6 @@ public sealed class ProtectedArtifactTransferStoreTests : IAsyncLifetime, IDispo
         Assert.Equal(
             1,
             await onward.ScalarLongAsync("SELECT COUNT(*) FROM \"Sessions\";", CancellationToken.None));
-
     }
 
     /// <summary>
@@ -712,7 +686,6 @@ public sealed class ProtectedArtifactTransferStoreTests : IAsyncLifetime, IDispo
     [Fact]
     public async Task A_summary_written_for_an_imported_session_reaches_the_session_row()
     {
-
         Assert.True((await CommitAsync(await BuildRequestAsync(Guid.NewGuid(), null))).Result.IsSuccess);
 
         ImportedArtifact imported = await ReadImportedArtifactAsync();
@@ -757,31 +730,23 @@ public sealed class ProtectedArtifactTransferStoreTests : IAsyncLifetime, IDispo
             await _destination.ScalarStringAsync(
                 "SELECT SessionId FROM session_summary_state;",
                 CancellationToken.None));
-
     }
 
     public async Task DisposeAsync()
     {
-
         if (_source is not null)
         {
-
             await _source.DisposeAsync();
-
         }
 
         if (_destination is not null)
         {
-
             await _destination.DisposeAsync();
-
         }
-
     }
 
     public void Dispose()
     {
-
         try
         {
             Directory.Delete(_root, recursive: true);
@@ -790,7 +755,6 @@ public sealed class ProtectedArtifactTransferStoreTests : IAsyncLifetime, IDispo
         {
             // A leftover scratch directory is not worth failing a suite over.
         }
-
     }
 
     private static CovenantDigest Digest(byte seed) => new([.. Enumerable.Repeat(seed, 32)]);
@@ -830,7 +794,6 @@ public sealed class ProtectedArtifactTransferStoreTests : IAsyncLifetime, IDispo
     /// </remarks>
     private async Task<ImportedArtifact> ReadImportedArtifactAsync()
     {
-
         string? sessionId = await _destination.ScalarStringAsync(
             "SELECT \"Id\" FROM \"Sessions\";",
             CancellationToken.None);
@@ -851,33 +814,26 @@ public sealed class ProtectedArtifactTransferStoreTests : IAsyncLifetime, IDispo
             sessionId,
             Guid.Parse(sessionId, CultureInfo.InvariantCulture),
             Guid.Parse(entryId, CultureInfo.InvariantCulture));
-
     }
 
     /// <summary>A third database, to carry a Session onward out of the one this suite imports into.</summary>
     private static async Task<CovenantSchemaScratchDatabase> CreateOnwardDestinationAsync()
     {
-
         CovenantSchemaScratchDatabase onward =
             await CovenantSchemaScratchDatabase.CreateAsync(CancellationToken.None);
 
         try
         {
-
             await onward.InstallCoreObjectsAsync(DestinationObjects, CancellationToken.None);
 
             return onward;
-
         }
         catch
         {
-
             await onward.DisposeAsync();
 
             throw;
-
         }
-
     }
 
     private Task<ProtectedSessionTransferCompletion<ImportedSessionCommitReceipt>> CommitAsync(
@@ -893,7 +849,6 @@ public sealed class ProtectedArtifactTransferStoreTests : IAsyncLifetime, IDispo
         string destinationAttachments,
         ProtectedTransferScope? scope = null)
     {
-
         ProtectedTransferScope resolved = scope
             ?? (request.CampaignMapping is { } mapping
                 ? ProtectedTransferScope.ForCampaign(mapping.DestinationCampaignId)
@@ -918,7 +873,6 @@ public sealed class ProtectedArtifactTransferStoreTests : IAsyncLifetime, IDispo
             transferLease,
             new ProtectedSessionImportDestination(destination.Connection, destinationAttachments),
             CancellationToken.None);
-
     }
 
     private Task<ImportedSessionTransferRequest> BuildRequestAsync(
@@ -936,7 +890,6 @@ public sealed class ProtectedArtifactTransferStoreTests : IAsyncLifetime, IDispo
         CovenantSchemaScratchDatabase source,
         Guid sourceSessionId)
     {
-
         Guid destinationSessionId = Guid.NewGuid();
 
         CovenantDigest sourceEvidence = Digest(0x11);
@@ -971,7 +924,6 @@ public sealed class ProtectedArtifactTransferStoreTests : IAsyncLifetime, IDispo
             mapping,
             binding,
             effect);
-
     }
 
     /// <summary>
@@ -987,7 +939,6 @@ public sealed class ProtectedArtifactTransferStoreTests : IAsyncLifetime, IDispo
         CovenantSchemaScratchDatabase source,
         Guid sourceSessionId)
     {
-
         long attachments = await OwnedCountAsync(
             source,
             $"SELECT COUNT(*) FROM \"SessionAttachments\" WHERE {CovenantIdentitySql.Keyed("\"SessionId\"", "$id")};",
@@ -1006,7 +957,6 @@ public sealed class ProtectedArtifactTransferStoreTests : IAsyncLifetime, IDispo
                 $"SELECT COUNT(*) FROM assistant_entry_finalizations WHERE {CovenantIdentitySql.Keyed("SessionId", "$id")} AND OutcomeCode = 1;",
                 sourceSessionId),
             0);
-
     }
 
     private static async Task<long> OwnedCountAsync(
@@ -1014,7 +964,6 @@ public sealed class ProtectedArtifactTransferStoreTests : IAsyncLifetime, IDispo
         string sql,
         Guid sessionId)
     {
-
         await using SqliteCommand command = database.Connection.CreateCommand();
 
         command.CommandText = sql;
@@ -1028,7 +977,6 @@ public sealed class ProtectedArtifactTransferStoreTests : IAsyncLifetime, IDispo
         return Convert.ToInt64(
             await command.ExecuteScalarAsync(CancellationToken.None),
             CultureInfo.InvariantCulture);
-
     }
 
     /// <summary>
@@ -1038,7 +986,6 @@ public sealed class ProtectedArtifactTransferStoreTests : IAsyncLifetime, IDispo
         CovenantSchemaScratchDatabase database,
         Guid sessionId)
     {
-
         await using SqliteCommand command = database.Connection.CreateCommand();
 
         command.CommandText =
@@ -1048,7 +995,6 @@ public sealed class ProtectedArtifactTransferStoreTests : IAsyncLifetime, IDispo
 
         return await command.ExecuteScalarAsync(CancellationToken.None) as string
             ?? throw new InvalidOperationException($"No Session row carries the identity {sessionId}.");
-
     }
 
     /// <summary>
@@ -1058,7 +1004,6 @@ public sealed class ProtectedArtifactTransferStoreTests : IAsyncLifetime, IDispo
         CovenantSchemaScratchDatabase source,
         Guid sourceSessionId)
     {
-
         // Normalised for the reason OwnedCountAsync states: the child tables of one Session do not
         // agree on how that Session is spelled, so no single bound literal reaches all three.
         string session = CovenantIdentitySql.Key(sourceSessionId);
@@ -1067,7 +1012,6 @@ public sealed class ProtectedArtifactTransferStoreTests : IAsyncLifetime, IDispo
 
         await using (SqliteCommand entries = source.Connection.CreateCommand())
         {
-
             entries.CommandText =
                 $"SELECT \"Id\", \"Sequence\" FROM \"Entries\" WHERE "
                 + $"{CovenantIdentitySql.Keyed("\"SessionId\"", "$id")} ORDER BY \"Sequence\", \"Id\";";
@@ -1078,17 +1022,13 @@ public sealed class ProtectedArtifactTransferStoreTests : IAsyncLifetime, IDispo
 
             while (await reader.ReadAsync(CancellationToken.None))
             {
-
                 items.Add(System.Text.Encoding.UTF8.GetBytes(
                     $"entry:{reader.GetString(0)}:{reader.GetInt32(1)}"));
-
             }
-
         }
 
         await using (SqliteCommand attachments = source.Connection.CreateCommand())
         {
-
             attachments.CommandText = $"""
                 SELECT "RelativePath", "ContentSha256", "ByteLength"
                 FROM "SessionAttachments"
@@ -1102,18 +1042,14 @@ public sealed class ProtectedArtifactTransferStoreTests : IAsyncLifetime, IDispo
 
             while (await reader.ReadAsync(CancellationToken.None))
             {
-
                 items.Add(System.Text.Encoding.UTF8.GetBytes(
                     $"attachment:{reader.GetString(0)}:"
                     + $"{Convert.ToHexString(Convert.FromHexString(reader.GetString(1)))}:{reader.GetInt64(2)}"));
-
             }
-
         }
 
         await using (SqliteCommand finalizations = source.Connection.CreateCommand())
         {
-
             finalizations.CommandText = $"""
                 SELECT AssistantEntryId FROM assistant_entry_finalizations
                 WHERE {CovenantIdentitySql.Keyed("SessionId", "$id")} AND OutcomeCode = 1
@@ -1127,15 +1063,11 @@ public sealed class ProtectedArtifactTransferStoreTests : IAsyncLifetime, IDispo
 
             while (await reader.ReadAsync(CancellationToken.None))
             {
-
                 items.Add(System.Text.Encoding.UTF8.GetBytes($"finalization:{reader.GetString(0)}"));
-
             }
-
         }
 
         return ProtectedSessionTransferDigests.Manifest([.. items]);
-
     }
 
     /// <summary>
@@ -1161,7 +1093,6 @@ public sealed class ProtectedArtifactTransferStoreTests : IAsyncLifetime, IDispo
     /// </remarks>
     private async Task SeedSourceSessionAsync()
     {
-
         string session = _sourceSessionId.ToString("D").ToUpperInvariant();
 
         string now = DateTimeOffset.UnixEpoch.UtcDateTime.ToString(
@@ -1244,12 +1175,10 @@ public sealed class ProtectedArtifactTransferStoreTests : IAsyncLifetime, IDispo
         _ = finalization.Parameters.AddWithValue("$now", now);
 
         _ = await finalization.ExecuteNonQueryAsync(CancellationToken.None);
-
     }
 
     private async Task AddSensitivityLabelAsync()
     {
-
         await using SqliteCommand command = _source.Connection.CreateCommand();
 
         command.CommandText = """
@@ -1289,7 +1218,6 @@ public sealed class ProtectedArtifactTransferStoreTests : IAsyncLifetime, IDispo
                 CultureInfo.InvariantCulture));
 
         _ = await command.ExecuteNonQueryAsync(CancellationToken.None);
-
     }
 
     private Task<long> CountDestinationAsync(string table) =>
@@ -1318,7 +1246,6 @@ public sealed class ProtectedArtifactTransferStoreTests : IAsyncLifetime, IDispo
         CovenantExclusiveRecoveryOwner owner,
         CovenantOperationScope scope) : ICovenantExclusiveLeaseRegistration
     {
-
         public CovenantOperationLeaseSnapshot Snapshot { get; } = new(
             Guid.NewGuid(),
             1,
@@ -1349,7 +1276,5 @@ public sealed class ProtectedArtifactTransferStoreTests : IAsyncLifetime, IDispo
             ValueTask.FromResult(Result.Success());
 
         public ValueTask ReleaseAsync() => ValueTask.CompletedTask;
-
     }
-
 }

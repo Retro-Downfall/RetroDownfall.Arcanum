@@ -1,6 +1,4 @@
-using System.Text;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
-using RetroDownfall.Arcanum.Core.Primitives;
 using Spectre.Console;
 using Spectre.Console.Rendering;
 
@@ -12,32 +10,34 @@ internal sealed class CliStreamContent
 
     public const string ReasoningTruncationMarker = "\n… [reasoning truncated]";
 
-    private readonly StringBuilder _answer = new();
-    private readonly StringBuilder _reasoning = new();
-    private readonly int _maxReasoningChars;
+    private readonly BoundedStreamingTextBuffer _reasoning;
 
-    private bool _reasoningTruncated;
+    private long _answerLength;
+
+    private char _lastAnswerChar;
 
     private bool _answerLineBreakWritten;
 
     public CliStreamContent(int maxReasoningChars = DefaultMaxReasoningChars)
     {
-        _maxReasoningChars = Math.Max(ReasoningTruncationMarker.Length, maxReasoningChars);
+        _reasoning = new BoundedStreamingTextBuffer(maxReasoningChars, ReasoningTruncationMarker);
     }
 
-    public string AnswerText => _answer.ToString();
+    /// <summary>
+    /// How many characters of answer have streamed so far. The text itself is not kept: it has already
+    /// been written to stdout token by token, so holding a second copy for the whole turn would make a
+    /// long answer cost its own length in memory for no reader.
+    /// </summary>
+    public long AnswerLength => _answerLength;
 
-    public int AnswerLength => _answer.Length;
-
-    public string ReasoningText => _reasoning.ToString();
+    public string ReasoningText => _reasoning.Snapshot();
 
     /// <summary>
-    /// Whether the answer written so far left the caret part-way along a row. The accumulated answer
-    /// is byte-for-byte what the raw stream wrote to stdout, so it is also the record of where that
-    /// stream left the cursor.
+    /// Whether the answer written so far left the caret part-way along a row. The last character the raw
+    /// stream wrote to stdout is all that record needs.
     /// </summary>
     public bool AnswerEndsMidLine =>
-        !_answerLineBreakWritten && _answer.Length > 0 && _answer[^1] != '\n';
+        !_answerLineBreakWritten && _answerLength > 0 && _lastAnswerChar != '\n';
 
     /// <summary>Records a newline written to the answer stream on the answer's behalf.</summary>
     public void NoteAnswerLineBreak() => _answerLineBreakWritten = true;
@@ -46,7 +46,8 @@ internal sealed class CliStreamContent
     {
         if (!string.IsNullOrEmpty(text))
         {
-            _ = _answer.Append(text);
+            _answerLength += text.Length;
+            _lastAnswerChar = text[^1];
             _answerLineBreakWritten = false;
         }
     }
@@ -60,54 +61,11 @@ internal sealed class CliStreamContent
             return false;
         }
 
-        AppendBoundedReasoning(reasoning.Text);
+        _reasoning.Append(reasoning.Text);
         return true;
     }
 
-    public string DrainReasoning()
-    {
-        string text = _reasoning.ToString();
-        _reasoning.Clear();
-        _reasoningTruncated = false;
-        return text;
-    }
-
-    private void AppendBoundedReasoning(string text)
-    {
-        if (_reasoningTruncated)
-        {
-            return;
-        }
-
-        if (_reasoning.Length + text.Length <= _maxReasoningChars)
-        {
-            _ = _reasoning.Append(text);
-            return;
-        }
-
-        int contentLimit = _maxReasoningChars - ReasoningTruncationMarker.Length;
-        if (_reasoning.Length > contentLimit)
-        {
-            _reasoning.Length = contentLimit;
-        }
-
-        int available = contentLimit - _reasoning.Length;
-        if (available > 0)
-        {
-            _ = _reasoning.Append(text.AsSpan(0, Utf8Truncation.SafeCharSliceLength(text, available)));
-        }
-
-        // Both cuts above land on a raw UTF-16 code unit, which can fall between the halves of a
-        // surrogate pair. Drop an orphaned high surrogate so the astral-plane glyph is dropped whole
-        // rather than rendering as a replacement character before the marker (DESIGN §16.7).
-        if (_reasoning.Length > 0 && char.IsHighSurrogate(_reasoning[^1]))
-        {
-            _reasoning.Length--;
-        }
-
-        _ = _reasoning.Append(ReasoningTruncationMarker);
-        _reasoningTruncated = true;
-    }
+    public string DrainReasoning() => _reasoning.Drain();
 }
 
 internal static class EphemeralReasoningRenderer
@@ -118,7 +76,12 @@ internal static class EphemeralReasoningRenderer
     {
         ArgumentNullException.ThrowIfNull(palette);
 
-        return new Panel(new Markup(palette.MutedMarkup(Markup.Escape(text ?? string.Empty))))
+        // Reasoning is model output and the panel goes to a terminal, which acts on control characters
+        // instead of showing them. The panel is presentation — it renders on stderr, and the raw answer
+        // stream on stdout is never routed through here — so it is stripped wherever it is drawn.
+        string safeText = TerminalTextSanitizer.SanitizeBlock(text);
+
+        return new Panel(new Markup(palette.MutedMarkup(Markup.Escape(safeText))))
         {
             Header = new PanelHeader(palette.MutedMarkup(Markup.Escape(Header))),
             Border = BoxBorder.Rounded,

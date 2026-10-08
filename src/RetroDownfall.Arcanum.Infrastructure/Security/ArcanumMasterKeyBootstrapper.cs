@@ -25,7 +25,7 @@ public static class ArcanumMasterKeyBootstrapper
 
         services.AddDataProtection()
             .SetApplicationName("ArcanumCore")
-            .PersistKeysToFileSystem(DataProtectionKeyPaths.EnsureDirectory());
+            .PersistKeysToOwnerOnlyKeyRing();
 
         services.AddSingleton<IApiKeyDigestCache, ApiKeyDigestCache>();
 
@@ -93,7 +93,11 @@ public static class ArcanumMasterKeyBootstrapper
             return null;
         }
 
-        SecretStoreReadResult existing = await store.GetApiKeyReadResultAsync().ConfigureAwait(false);
+        // The shipping store's startup read adopts a mirror it serves over a failed OS read (DESIGN
+        // §11.2 item 4); any other read, by any other caller, never does.
+        SecretStoreReadResult existing = store is OsKeychainSecretStore keychain
+            ? await keychain.ReadMasterApiKeyAtStartupAsync(cancellationToken).ConfigureAwait(false)
+            : await store.GetApiKeyReadResultAsync().ConfigureAwait(false);
 
         if (existing.Status == SecretStoreReadStatus.Ok)
         {
@@ -115,6 +119,17 @@ public static class ArcanumMasterKeyBootstrapper
                 wasGenerated: false);
         }
 
+        if (existing.Status == SecretStoreReadStatus.Unreadable)
+        {
+            // Unreadable says nothing about whether a key is in the store, so unlike an explicitly
+            // corrupt read it never authorizes a mint — not even with no Grimoire database.
+            Log.Fatal(
+                "Master API key storage could not be read; refusing to generate a replacement. "
+                + "Fix the store's ownership and permissions, then restart.");
+
+            ThrowIfCorruptedWithExistingGrimoire(existing, grimoireExists: true);
+        }
+
         if (existing.Status == SecretStoreReadStatus.Corrupted)
         {
             bool databaseExists = grimoireExists();
@@ -132,9 +147,8 @@ public static class ArcanumMasterKeyBootstrapper
             // ours. The read that produced Corrupted may itself have been the OS failure, in which case
             // the live credential's existence is unknown — and SaveApiKeyAsync would overwrite it, or on
             // a failed write delete it outright. Probe once and fail closed unless the answer is clear.
-            OsCredentialStoreResult probe = osStore.TryGet(
-                ArcanumCredentialIdentity.Service,
-                ArcanumCredentialIdentity.MasterApiKeyAccount);
+            OsCredentialStoreResult probe = await ProbeOsKeyStorageAsync(store, osStore, cancellationToken)
+                .ConfigureAwait(false);
 
             ThrowIfOsKeyStorageMayHoldTheLiveKey(probe, osStore);
 
@@ -163,6 +177,43 @@ public static class ArcanumMasterKeyBootstrapper
             wasGenerated: true);
     }
 
+    /// <summary>
+    /// The shipping store answers through its own bounded master-key read, joining the outstanding one:
+    /// when the startup read timed out on a parked prompt the probe fails at once instead of raising a
+    /// second prompt beside it. Any other store is probed directly under the same bound
+    /// (<see cref="MirroredOsCredential.DefaultOsReadTimeout"/>). Either way a parked platform call
+    /// cannot wedge startup, and a probe that does not answer is a failure from a reachable backend, so
+    /// regeneration is refused.
+    /// </summary>
+    private static async Task<OsCredentialStoreResult> ProbeOsKeyStorageAsync(
+        ISecretStore store,
+        IOsCredentialStore osStore,
+        CancellationToken cancellationToken)
+    {
+        if (store is OsKeychainSecretStore keychain)
+        {
+            return await keychain.ProbeMasterApiKeyOsStorageAsync(cancellationToken).ConfigureAwait(false);
+        }
+
+        Task<OsCredentialStoreResult> probe = Task.Run(
+            () => osStore.TryGet(
+                ArcanumCredentialIdentity.Service,
+                ArcanumCredentialIdentity.MasterApiKeyAccount),
+            CancellationToken.None);
+
+        try
+        {
+            return await probe
+                .WaitAsync(MirroredOsCredential.DefaultOsReadTimeout, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (TimeoutException)
+        {
+            return OsCredentialStoreResult.Failed(
+                "OS key storage did not answer the master API key probe in time.");
+        }
+    }
+
     private static void SeedDigestCache(
         string apiKey,
         IApiKeyDigestCache digestCache)
@@ -185,11 +236,24 @@ public static class ArcanumMasterKeyBootstrapper
         }
     }
 
+    /// <summary>
+    /// Fails closed when the master-key store holds something it cannot use while there is data that
+    /// depends on it. An unreadable store always fails closed, with retry guidance rather than the
+    /// corrupt-store recovery text, because its content is unknown rather than known bad.
+    /// </summary>
     internal static void ThrowIfCorruptedWithExistingGrimoire(
         SecretStoreReadResult result,
         bool grimoireExists)
     {
         ArgumentNullException.ThrowIfNull(result);
+
+        if (result.Status == SecretStoreReadStatus.Unreadable)
+        {
+            throw new MasterApiKeyUnavailableException(
+                "The master API key store exists but could not be read. Make it a regular file owned "
+                + "by the current user with owner-only permissions, then restart Arcanum; no "
+                + "replacement key was generated.");
+        }
 
         if (result.Status == SecretStoreReadStatus.Corrupted && grimoireExists)
         {

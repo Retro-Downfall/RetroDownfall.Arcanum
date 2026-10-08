@@ -13,7 +13,6 @@ namespace RetroDownfall.Arcanum.Core.Weave.Tapestry;
 /// </summary>
 public interface ITapestryStore
 {
-
     /// <summary>
     /// Enumerates every corpus that currently has indexable rows, respecting the code-owned
     /// per-corpus participation flags. A corpus whose source feature never indexed anything yields
@@ -26,20 +25,39 @@ public interface ITapestryStore
         CancellationToken cancellationToken);
 
     /// <summary>
-    /// Enumerates one scope's leaf sources in stable id order, carrying each source feature's
-    /// already-imprinted embedding when one exists at <paramref name="expectedDimensions"/> so a
-    /// rebuild re-embeds only what it must.
-    ///
-    /// Pass <paramref name="includeEmbeddings"/> as <c>false</c> to skip the embedding join entirely and
-    /// leave every <see cref="TapestryLeafSource.ExistingEmbedding"/> null. The corpus fingerprint that decides
-    /// whether a rebuild is needed at all consumes only source ids and content hashes, so reading and
-    /// decoding a vector per leaf to answer "has anything changed?" is pure waste on the overwhelmingly
-    /// common unchanged path.
+    /// What one scope's corpus is, answered from the content hashes the store keeps beside each leaf
+    /// rather than from the leaves' text: how many there are and the fingerprint of their ids and hashes.
+    /// This is the question every sweep tick asks of every scope, and on a scope nobody has touched it
+    /// reads no chunk text at all.
     /// </summary>
-    Task<IReadOnlyList<TapestryLeafSource>> EnumerateLeafSourcesAsync(
+    /// <remarks>
+    /// A leaf's hash is stored the first time anything asks for it and dropped the moment the leaf's row
+    /// is inserted, edited or deleted, so a stored hash always describes the text it sits beside; a scope
+    /// whose hashes are not stored yet (the first sweep after an upgrade, or new rows) has just those
+    /// leaves read, hashed and stored, a page at a time. A scope holding more than
+    /// <paramref name="maxLeaves"/> rows is reported as such without reading or hashing any of them. The
+    /// fingerprint is <c>TapestryHash.OfCorpus</c> over the leaf ids and their hashes.
+    /// </remarks>
+    Task<TapestryCorpusIdentity> GetCorpusIdentityAsync(
+        TapestryScope scope,
+        int maxLeaves,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Streams one scope's leaf sources in stable id order, a page at a time, carrying each source
+    /// feature's already-imprinted embedding when one exists at <paramref name="expectedDimensions"/> so a
+    /// rebuild re-embeds only what it must.
+    /// </summary>
+    /// <remarks>
+    /// The scope's ids are listed first and each page then reads only its own leaves' text and vectors, so
+    /// no read holds the whole corpus and a caller that stops early never loads the rest. A leaf whose row
+    /// disappears between the listing and its page is simply absent; one inserted after the listing waits
+    /// for the next sweep. A leaf's hash is computed from the text this read returned, which is what the
+    /// generation then records as its corpus.
+    /// </remarks>
+    IAsyncEnumerable<IReadOnlyList<TapestryLeafSource>> EnumerateLeafPagesAsync(
         TapestryScope scope,
         int expectedDimensions,
-        bool includeEmbeddings,
         CancellationToken cancellationToken);
 
     /// <summary>The single published generation for a scope, or <c>null</c> when none is complete.</summary>
@@ -169,5 +187,4 @@ public interface ITapestryStore
 
     /// <summary>Total published node count, optionally narrowed to one session's trees.</summary>
     Task<int> CountPublishedNodesAsync(Guid? sessionId, CancellationToken cancellationToken);
-
 }

@@ -1,12 +1,12 @@
 using Microsoft.Data.Sqlite;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 using RetroDownfall.Arcanum.Secrets.Security;
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Fixtures;
 
 internal sealed class RestartableArcanumProfileFixture : IAsyncDisposable
 {
-
     private int _initialSeedClaimed;
 
     private readonly object _disposalSync = new();
@@ -14,6 +14,10 @@ internal sealed class RestartableArcanumProfileFixture : IAsyncDisposable
     private readonly Action _clearPools;
 
     private readonly Action _disposeGrimoire;
+
+    private readonly Action<string>? _deleteTempHome;
+
+    private readonly Action<string>? _report;
 
     private readonly InMemoryOsCredentialStore _credentialStore;
 
@@ -23,9 +27,10 @@ internal sealed class RestartableArcanumProfileFixture : IAsyncDisposable
 
     internal RestartableArcanumProfileFixture(
         Action? clearPools = null,
-        Action? disposeGrimoire = null)
+        Action? disposeGrimoire = null,
+        Action<string>? deleteTempHome = null,
+        Action<string>? report = null)
     {
-
         TempHome = Path.Combine(
             Path.GetTempPath(),
             "arcanum-tests",
@@ -35,18 +40,14 @@ internal sealed class RestartableArcanumProfileFixture : IAsyncDisposable
 
         if (GrimoireFixture.SqlCipherAvailable)
         {
-
             Grimoire = new GrimoireFixture();
-
         }
 
         GrimoireDbPassphraseSource passphraseSource = new();
 
         if (Grimoire is not null)
         {
-
             passphraseSource.SetPassphrase(Grimoire.Passphrase);
-
         }
 
         _passphraseSource = passphraseSource;
@@ -61,6 +62,9 @@ internal sealed class RestartableArcanumProfileFixture : IAsyncDisposable
 
         _disposeGrimoire = disposeGrimoire ?? (() => Grimoire?.Dispose());
 
+        _deleteTempHome = deleteTempHome;
+
+        _report = report;
     }
 
     internal string TempHome { get; }
@@ -78,92 +82,55 @@ internal sealed class RestartableArcanumProfileFixture : IAsyncDisposable
 
     public ValueTask DisposeAsync()
     {
-
         lock (_disposalSync)
         {
-
             if (_disposed)
             {
-
                 return ValueTask.CompletedTask;
-
             }
 
             try
             {
-
                 try
                 {
-
                     _clearPools();
-
                 }
                 finally
                 {
-
                     _disposeGrimoire();
-
                 }
-
             }
             finally
             {
-
                 try
                 {
-
-                    try
-                    {
-
-                        if (Directory.Exists(TempHome))
-                        {
-
-                            Directory.Delete(TempHome, recursive: true);
-
-                        }
-
-                    }
-                    catch
-                    {
-
-                    }
-
+                    _ = TestDirectoryCleanup.TryDelete(
+                        TempHome,
+                        nameof(RestartableArcanumProfileFixture),
+                        _report,
+                        _deleteTempHome);
                 }
                 finally
                 {
-
                     try
                     {
-
                         _credentialStore.Clear();
-
                     }
                     finally
                     {
-
                         try
                         {
-
                             _passphraseSource.Clear();
-
                         }
                         finally
                         {
-
                             _disposed = true;
-
                         }
-
                     }
-
                 }
-
             }
-
         }
 
         return ValueTask.CompletedTask;
-
     }
-
 }

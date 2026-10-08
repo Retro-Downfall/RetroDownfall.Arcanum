@@ -7,32 +7,40 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data;
 internal sealed class SessionContextPinStore(ArcanumDbContext db, TimeProvider timeProvider)
     : ISessionContextPinStore
 {
-    public async Task<IReadOnlyList<SessionContextPinRecord>> ListAsync(
+    public Task<IReadOnlyList<SessionContextPinRecord>> ListAsync(
         Guid sessionId,
-        CancellationToken cancellationToken = default)
-    {
-        await EnsureOpenAsync(cancellationToken).ConfigureAwait(false);
-        await using SqliteCommand command = CreateCommand();
-        command.CommandText = """
-            SELECT "Id", "SessionId", "Kind", "TargetIdentifier", "DisplayLabel",
-                   "ContentVersion", "CreatedAt", "UpdatedAt"
-            FROM "SessionContextPins"
-            WHERE "SessionId" = $sessionId
-            ORDER BY "CreatedAt", "Id";
-            """;
-        command.Parameters.AddWithValue("$sessionId", sessionId);
+        CancellationToken cancellationToken = default) =>
+        SqliteBusyRetry.ExecuteAsync<IReadOnlyList<SessionContextPinRecord>>(
+            async () =>
+            {
+                await EnsureOpenAsync(cancellationToken).ConfigureAwait(false);
 
-        List<SessionContextPinRecord> rows = [];
-        await using SqliteDataReader reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
-        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
-        {
-            rows.Add(Read(reader));
-        }
+                await using SqliteCommand command = CreateCommand();
 
-        return rows;
-    }
+                command.CommandText = """
+                    SELECT "Id", "SessionId", "Kind", "TargetIdentifier", "DisplayLabel",
+                           "ContentVersion", "CreatedAt", "UpdatedAt"
+                    FROM "SessionContextPins"
+                    WHERE "SessionId" = $sessionId
+                    ORDER BY "CreatedAt", "Id";
+                    """;
 
-    public async Task<SessionContextPinRecord> UpsertAsync(
+                command.Parameters.AddWithValue("$sessionId", sessionId);
+
+                List<SessionContextPinRecord> rows = [];
+
+                await using SqliteDataReader reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+
+                while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+                {
+                    rows.Add(Read(reader));
+                }
+
+                return rows;
+            },
+            cancellationToken);
+
+    public Task<SessionContextPinRecord> UpsertAsync(
         Guid sessionId,
         SessionContextPinKind kind,
         string targetIdentifier,
@@ -42,47 +50,75 @@ internal sealed class SessionContextPinStore(ArcanumDbContext db, TimeProvider t
     {
         Guid id = Guid.NewGuid();
         DateTimeOffset now = timeProvider.GetUtcNow();
-        await EnsureOpenAsync(cancellationToken).ConfigureAwait(false);
-        await using SqliteCommand command = CreateCommand();
-        command.CommandText = """
-            INSERT INTO "SessionContextPins"
-                ("Id", "SessionId", "Kind", "TargetIdentifier", "DisplayLabel",
-                 "ContentVersion", "CreatedAt", "UpdatedAt")
-            VALUES ($id, $sessionId, $kind, $target, $label, $version, $now, $now)
-            ON CONFLICT ("SessionId", "Kind", "TargetIdentifier") DO UPDATE SET
-                "DisplayLabel" = excluded."DisplayLabel",
-                "ContentVersion" = excluded."ContentVersion",
-                "UpdatedAt" = excluded."UpdatedAt"
-            RETURNING "Id", "SessionId", "Kind", "TargetIdentifier", "DisplayLabel",
-                      "ContentVersion", "CreatedAt", "UpdatedAt";
-            """;
-        command.Parameters.AddWithValue("$id", id);
-        command.Parameters.AddWithValue("$sessionId", sessionId);
-        command.Parameters.AddWithValue("$kind", (int)kind);
-        command.Parameters.AddWithValue("$target", targetIdentifier);
-        command.Parameters.AddWithValue("$label", displayLabel);
-        command.Parameters.AddWithValue("$version", (object?)contentVersion ?? DBNull.Value);
-        command.Parameters.AddWithValue("$now", UtcInstantText.Format(now));
-        await using SqliteDataReader reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
-        _ = await reader.ReadAsync(cancellationToken).ConfigureAwait(false);
-        return Read(reader);
+
+        // One INSERT ... ON CONFLICT ... RETURNING statement, so a retried attempt after SQLITE_BUSY either never ran
+        // or ran to completion and returns the same row.
+        return SqliteBusyRetry.ExecuteAsync(
+            async () =>
+            {
+                await EnsureOpenAsync(cancellationToken).ConfigureAwait(false);
+
+                await using SqliteCommand command = CreateCommand();
+
+                command.CommandText = """
+                    INSERT INTO "SessionContextPins"
+                        ("Id", "SessionId", "Kind", "TargetIdentifier", "DisplayLabel",
+                         "ContentVersion", "CreatedAt", "UpdatedAt")
+                    VALUES ($id, $sessionId, $kind, $target, $label, $version, $now, $now)
+                    ON CONFLICT ("SessionId", "Kind", "TargetIdentifier") DO UPDATE SET
+                        "DisplayLabel" = excluded."DisplayLabel",
+                        "ContentVersion" = excluded."ContentVersion",
+                        "UpdatedAt" = excluded."UpdatedAt"
+                    RETURNING "Id", "SessionId", "Kind", "TargetIdentifier", "DisplayLabel",
+                              "ContentVersion", "CreatedAt", "UpdatedAt";
+                    """;
+
+                command.Parameters.AddWithValue("$id", id);
+
+                command.Parameters.AddWithValue("$sessionId", sessionId);
+
+                command.Parameters.AddWithValue("$kind", (int)kind);
+
+                command.Parameters.AddWithValue("$target", targetIdentifier);
+
+                command.Parameters.AddWithValue("$label", displayLabel);
+
+                command.Parameters.AddWithValue("$version", (object?)contentVersion ?? DBNull.Value);
+
+                command.Parameters.AddWithValue("$now", UtcInstantText.Format(now));
+
+                await using SqliteDataReader reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+
+                _ = await reader.ReadAsync(cancellationToken).ConfigureAwait(false);
+
+                return Read(reader);
+            },
+            cancellationToken);
     }
 
-    public async Task<bool> DeleteAsync(
+    public Task<bool> DeleteAsync(
         Guid sessionId,
         Guid pinId,
-        CancellationToken cancellationToken = default)
-    {
-        await EnsureOpenAsync(cancellationToken).ConfigureAwait(false);
-        await using SqliteCommand command = CreateCommand();
-        command.CommandText = """
-            DELETE FROM "SessionContextPins"
-            WHERE "SessionId" = $sessionId AND "Id" = $id;
-            """;
-        command.Parameters.AddWithValue("$sessionId", sessionId);
-        command.Parameters.AddWithValue("$id", pinId);
-        return await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) > 0;
-    }
+        CancellationToken cancellationToken = default) =>
+        SqliteBusyRetry.ExecuteAsync(
+            async () =>
+            {
+                await EnsureOpenAsync(cancellationToken).ConfigureAwait(false);
+
+                await using SqliteCommand command = CreateCommand();
+
+                command.CommandText = """
+                    DELETE FROM "SessionContextPins"
+                    WHERE "SessionId" = $sessionId AND "Id" = $id;
+                    """;
+
+                command.Parameters.AddWithValue("$sessionId", sessionId);
+
+                command.Parameters.AddWithValue("$id", pinId);
+
+                return await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) > 0;
+            },
+            cancellationToken);
 
     private SqliteCommand CreateCommand() =>
         (SqliteCommand)db.Database.GetDbConnection().CreateCommand();

@@ -21,13 +21,10 @@ namespace RetroDownfall.Arcanum.Api.Health;
 
 internal static class HealthEndpoints
 {
-
     public static RouteGroupBuilder MapHealthEndpoints(this RouteGroupBuilder apiGroup)
     {
-
         apiGroup.MapGet("/health", async (ArcanumHealthChecker healthChecker, HttpContext httpContext, CancellationToken cancellationToken) =>
         {
-
             string traceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
 
             HealthReportDto report = await healthChecker
@@ -43,7 +40,6 @@ internal static class HealthEndpoints
                 : StatusCodes.Status200OK;
 
             return Results.Json(response, ArcanumJsonContext.Default.ApiResponseHealthReportDto, statusCode: statusCode);
-
         })
         .WithName("GetHealth")
         .WithMetadata(InstallationResetRecoveryApiRouteMetadata.GetHealth)
@@ -51,7 +47,6 @@ internal static class HealthEndpoints
 
         apiGroup.MapGet("/grimoire/stats", async (GrimoireStatsService statsService, HttpContext httpContext, CancellationToken cancellationToken) =>
         {
-
             string traceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
 
             GrimoireStatsDto stats = await statsService.GetStatsAsync(cancellationToken).ConfigureAwait(false);
@@ -61,7 +56,6 @@ internal static class HealthEndpoints
             ApiResponse<GrimoireStatsDto> response = ApiResponse<GrimoireStatsDto>.FromResult(statsResult, traceId);
 
             return Results.Ok(response);
-
         })
         .WithName("GetGrimoireStats");
 
@@ -70,7 +64,6 @@ internal static class HealthEndpoints
             WeaveIndexAvailability weaveIndexAvailability,
             HttpContext httpContext) =>
         {
-
             string traceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
 
             DateTimeOffset startTime;
@@ -78,26 +71,20 @@ internal static class HealthEndpoints
 
             try
             {
-
                 using Process process = Process.GetCurrentProcess();
 
                 startTime = new DateTimeOffset(process.StartTime.ToUniversalTime(), TimeSpan.Zero);
                 uptime = DateTimeOffset.UtcNow - startTime;
-
             }
             catch (InvalidOperationException) // process has already exited
             {
-
                 startTime = DateTimeOffset.UtcNow;
                 uptime = TimeSpan.Zero;
-
             }
             catch (PlatformNotSupportedException)
             {
-
                 startTime = DateTimeOffset.UtcNow;
                 uptime = TimeSpan.Zero;
-
             }
 
             bool listenAny = ArcanumEnvironment.IsHostAnyEnabled(settings.Value.Host.ListenAny);
@@ -118,6 +105,8 @@ internal static class HealthEndpoints
 
             ConclaveA2AStatus conclave = ConclaveA2AStatus.Resolve(settings.Value);
 
+            IntelligenceSettings intelligence = settings.Value.ResolveIntelligence();
+
             InstanceMetadataDto metadata = new(
                 Version: GetInformationalVersion(),
                 OsDescription: RuntimeInformation.OSDescription,
@@ -130,10 +119,7 @@ internal static class HealthEndpoints
                 ConfigPath: Path.Combine(ArcanumPaths.GrimoireDirectory, "arcanum.json"),
                 Port: ArcanumSettingClamps.HostPort(settings.Value.Host.Port),
                 ListenAny: listenAny,
-                LoreSystemEnabled: false,
-                ArchiveSearchEnabled: settings.Value.ResolveIntelligence().EnableArchiveSearch,
-                ContextCompressionEnabled: true,
-                TokenTrackingEnabled: true,
+                ArchiveSearchEnabled: intelligence.EnableArchiveSearch,
                 HttpsEnabled: httpsEnabled,
                 HttpsPort: httpsPort,
                 HttpsUrl: httpsUrl,
@@ -166,20 +152,15 @@ internal static class HealthEndpoints
 
     private static string GetInformationalVersion()
     {
-
         string version = RetroDownfall.Arcanum.Core.ArcanumBuildInfo.InformationalVersion;
 
         int plus = version.IndexOf('+');
 
         if (plus >= 0)
         {
-
             version = version[..plus];
-
         }
 
         return version;
-
     }
-
 }

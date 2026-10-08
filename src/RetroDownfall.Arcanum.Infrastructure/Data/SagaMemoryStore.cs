@@ -183,6 +183,40 @@ internal sealed partial class SagaMemoryStore(
                         };
                     }
 
+                    // Extraction commits each candidate before it moves the page cursor, so a fault on a later
+                    // candidate makes the retry review a page whose earlier conclusions are already stored.
+                    // The check is per owning Session and derived scope: the same conclusion reached in another
+                    // Session stays its own row, so resetting one Session never takes another's memory with it.
+                    // The content identity AnnalContentDigest.ForSagaMemory binds is SHA-256 over the exact
+                    // UTF-8 bytes, which is exact BINARY equality, so the check compares Content directly
+                    // instead of hashing every candidate row.
+                    if (sessionId is { } owningSession)
+                    {
+                        await using DbCommand duplicateCheckCmd = connection.CreateCommand();
+
+                        duplicateCheckCmd.Transaction = transaction;
+
+                        duplicateCheckCmd.CommandText =
+                            "SELECT 1 FROM saga_memories"
+                            + " WHERE SessionId = @sessionId AND ScopeKindCode = @scopeKindCode"
+                            + " AND CampaignId IS @scopeCampaignId AND Content = @content LIMIT 1";
+
+                        AddParameter(duplicateCheckCmd, "@sessionId", owningSession.ToString());
+
+                        AddParameter(duplicateCheckCmd, "@scopeKindCode", (int)scopeKind);
+
+                        AddParameter(duplicateCheckCmd, "@scopeCampaignId", (object?)scopeCampaignId ?? DBNull.Value);
+
+                        AddParameter(duplicateCheckCmd, "@content", content);
+
+                        if (await duplicateCheckCmd.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is not null)
+                        {
+                            await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+
+                            return SagaMemoryWriteOutcome.AlreadyPresent;
+                        }
+                    }
+
                     await using DbCommand memoryCmd = connection.CreateCommand();
 
                     memoryCmd.Transaction = transaction;

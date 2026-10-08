@@ -16,7 +16,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
 
 internal sealed partial class ArcanumInternalToolServer
 {
-
     private async Task<McpToolsCallResultWire> ExecuteCommandAsync(
         JsonElement arguments,
         CancellationToken cancellationToken)
@@ -129,8 +128,8 @@ internal sealed partial class ArcanumInternalToolServer
             .GetEffectiveResourceLimitsForWorkspaceAsync(_workspaceRoot, cancellationToken)
             .ConfigureAwait(false);
 
-        // 0 is the documented "unlimited" spelling shared with MaxCpuSeconds/MaxMemoryMb/
-        // MaxFileDescriptors; every other value is the operator's configured wall-clock ceiling.
+        // 0 is the documented "unlimited" spelling shared with MaxCpuSeconds/MaxFileDescriptors;
+        // every other value is the operator's configured wall-clock ceiling.
         TimeSpan processTimeout = resourceLimits.ProcessTimeoutSeconds > 0
             ? TimeSpan.FromSeconds(resourceLimits.ProcessTimeoutSeconds)
             : Timeout.InfiniteTimeSpan;
@@ -151,22 +150,18 @@ internal sealed partial class ArcanumInternalToolServer
 
         try
         {
-
             outputSpillDirectory = _commandOutputArtifacts.SpillDirectory;
-
         }
         catch (Exception ex)
             when (ex is IOException
                   or UnauthorizedAccessException)
         {
-
             _logger?.LogError(
                 "execute_command: private complete-output storage allocation failed ({ExceptionType}).",
                 ex.GetType().Name);
 
             return ToolError(
                 "execute_command: private complete-output storage could not be allocated, so the process was not started.");
-
         }
 
         // The ARCANUM_ prefix scrub only covers the derived default names. Every one of these variables
@@ -192,11 +187,9 @@ internal sealed partial class ArcanumInternalToolServer
 
         if (runResult.Outcome != CappedChildProcessOutcome.Completed)
         {
-
             _commandOutputArtifacts.Discard(
                 runResult.Stdout,
                 runResult.Stderr);
-
         }
 
         switch (runResult.Outcome)
@@ -217,6 +210,15 @@ internal sealed partial class ArcanumInternalToolServer
 
                 return ToolError(
                     "execute_command: the invocation was blocked because OS-level resource limits could not be applied.");
+
+            case CappedChildProcessOutcome.MemoryMonitorStopped:
+
+                _logger?.LogError(
+                    runResult.FaultException,
+                    "execute_command: the memory monitor stopped while the command was running; the process tree was killed.");
+
+                return ToolError(
+                    ChildProcessMemoryMonitorMessages.Describe("execute_command"));
 
             case CappedChildProcessOutcome.ResourceLimitExceeded:
 
@@ -301,23 +303,22 @@ internal sealed partial class ArcanumInternalToolServer
             default:
 
                 return ToolError("execute_command: failed to start the process.");
-
         }
 
         long perStreamCapBytes = runResult.PerStreamCapBytes;
 
         CommandOutputArtifactRegistration? completeOutput = null;
 
-        if (runResult.Stdout.Truncated || runResult.Stderr.Truncated)
+        // A pipe the drain gave up on (a descendant still held it after the command exited) has no
+        // complete output to retain; the stream that did finish is retained on its own.
+        if (runResult.Stdout is { Truncated: true, ReadAbandoned: false }
+            || runResult.Stderr is { Truncated: true, ReadAbandoned: false })
         {
-
             try
             {
-
                 completeOutput = _commandOutputArtifacts.Register(
                     runResult.Stdout,
                     runResult.Stderr);
-
             }
             catch (Exception ex)
                 when (ex is IOException
@@ -325,7 +326,6 @@ internal sealed partial class ArcanumInternalToolServer
                       or InvalidOperationException
                       or ObjectDisposedException)
             {
-
                 _commandOutputArtifacts.Discard(
                     runResult.Stdout,
                     runResult.Stderr);
@@ -336,9 +336,7 @@ internal sealed partial class ArcanumInternalToolServer
 
                 return ToolError(
                     "execute_command: complete output could not be retained, so the invocation failed without silently discarding diagnostics.");
-
             }
-
         }
 
         StringBuilder text = new();
@@ -347,7 +345,11 @@ internal sealed partial class ArcanumInternalToolServer
 
         text.Append(runResult.Stdout.Text).Append('\n');
 
-        if (runResult.Stdout.Truncated)
+        if (runResult.Stdout.ReadAbandoned)
+        {
+            text.Append(AbandonedStreamNotice("stdout")).Append('\n');
+        }
+        else if (runResult.Stdout.Truncated)
         {
             text.Append($"[preview ended after {perStreamCapBytes} bytes; complete stdout is available below]").Append('\n');
         }
@@ -356,7 +358,11 @@ internal sealed partial class ArcanumInternalToolServer
 
         text.Append(runResult.Stderr.Text).Append('\n');
 
-        if (runResult.Stderr.Truncated)
+        if (runResult.Stderr.ReadAbandoned)
+        {
+            text.Append(AbandonedStreamNotice("stderr")).Append('\n');
+        }
+        else if (runResult.Stderr.Truncated)
         {
             text.Append($"[preview ended after {perStreamCapBytes} bytes; complete stderr is available below]").Append('\n');
         }
@@ -367,7 +373,6 @@ internal sealed partial class ArcanumInternalToolServer
 
         if (completeOutput is not null)
         {
-
             text.Append('\n');
 
             text.Append("--- complete output handle ---").Append('\n');
@@ -380,7 +385,6 @@ internal sealed partial class ArcanumInternalToolServer
 
             text.Append(
                 "Use read_command_output with this handle, a listed stream, offset 0, then each returned nextOffset. The handle expires when this connection closes.");
-
         }
 
         return new McpToolsCallResultWire
@@ -393,48 +397,42 @@ internal sealed partial class ArcanumInternalToolServer
         };
     }
 
+    private static string AbandonedStreamNotice(string streamName) =>
+        $"[{streamName} not captured: the command exited but a process it left running still held the pipe open, so the output was abandoned]";
+
     private async Task<McpToolsCallResultWire> ExecuteReadCommandOutputAsync(
         JsonElement arguments,
         CancellationToken cancellationToken)
     {
-
         if (!_allowHostProcessTools)
         {
-
             return ToolError(
                 Core.Security.HostProcessToolPolicy.DeniedMessage);
-
         }
 
         McpToolsCallResultWire? gate = TryRequireWorkspaceRoot();
 
         if (gate is not null)
         {
-
             return gate;
-
         }
 
         ReadCommandOutputParams? args;
 
         try
         {
-
             args = JsonSerializer.Deserialize(
                 arguments,
                 _json.ReadCommandOutputParams);
-
         }
         catch (JsonException ex)
         {
-
             _logger?.LogError(
                 ex,
                 "read_command_output argument deserialization failed.");
 
             return ToolError(
                 "Invalid arguments for read_command_output.");
-
         }
 
         if (args is null
@@ -444,10 +442,8 @@ internal sealed partial class ArcanumInternalToolServer
                 "N",
                 out _))
         {
-
             return ToolError(
                 "read_command_output requires the opaque 'handle' returned by execute_command.");
-
         }
 
         string streamName;
@@ -457,25 +453,19 @@ internal sealed partial class ArcanumInternalToolServer
                 "stdout",
                 StringComparison.OrdinalIgnoreCase))
         {
-
             streamName = "stdout";
-
         }
         else if (string.Equals(
                      args.Stream,
                      "stderr",
                      StringComparison.OrdinalIgnoreCase))
         {
-
             streamName = "stderr";
-
         }
         else
         {
-
             return ToolError(
                 "read_command_output stream must be 'stdout' or 'stderr'.");
-
         }
 
         int maximumPageBytes = GetMaxCommandOutputPageBytes();
@@ -487,15 +477,12 @@ internal sealed partial class ArcanumInternalToolServer
 
         if (pageBytes < 4 || pageBytes > maximumPageBytes)
         {
-
             return ToolError(
                 $"read_command_output maxBytes must be between 4 and {maximumPageBytes}; the upper bound preserves the existing JSON-RPC line boundary. Continue with additional pages for any remaining output.");
-
         }
 
         try
         {
-
             CommandOutputArtifactPage page = await _commandOutputArtifacts
                 .ReadPageAsync(
                     args.Handle,
@@ -507,7 +494,6 @@ internal sealed partial class ArcanumInternalToolServer
 
             CommandOutputPageResultWire wire = new()
             {
-
                 Handle = args.Handle,
 
                 Stream = streamName,
@@ -521,7 +507,6 @@ internal sealed partial class ArcanumInternalToolServer
                 TotalBytes = page.TotalBytes,
 
                 Complete = page.NextOffset is null,
-
             };
 
             string text = JsonSerializer.Serialize(
@@ -530,64 +515,51 @@ internal sealed partial class ArcanumInternalToolServer
 
             return new McpToolsCallResultWire
             {
-
                 Content =
                 [
                     new McpToolContentTextWire
                     {
-
                         Text = text,
-
                     },
                 ],
 
                 IsError = false,
-
             };
-
         }
         catch (OperationCanceledException)
             when (cancellationToken.IsCancellationRequested)
         {
-
             return ToolError(
                 "read_command_output: canceled.");
-
         }
         catch (Exception ex)
             when (ex is InvalidDataException
                   or ArgumentOutOfRangeException
                   or KeyNotFoundException)
         {
-
             _logger?.LogWarning(
                 "read_command_output could not read the requested page: {ExceptionType}",
                 ex.GetType().Name);
 
             return ToolError(
                 "read_command_output: " + ex.Message);
-
         }
         catch (Exception ex)
             when (ex is IOException
                   or UnauthorizedAccessException
                   or ObjectDisposedException)
         {
-
             _logger?.LogWarning(
                 "read_command_output artifact access failed: {ExceptionType}",
                 ex.GetType().Name);
 
             return ToolError(
                 "read_command_output: the private artifact could not be read.");
-
         }
-
     }
 
     private int GetMaxCommandOutputPageBytes()
     {
-
         const int envelopeReserveBytes = 4096;
 
         const int worstCaseNestedJsonExpansion = 8;
@@ -611,7 +583,6 @@ internal sealed partial class ArcanumInternalToolServer
                 payloadBoundary,
                 nestedJsonBoundary)
             / worstCaseNestedJsonExpansion);
-
     }
 
     private static IReadOnlyList<string> ResolveCommandArgumentTokens(string[]? argumentList, string? argumentsString)

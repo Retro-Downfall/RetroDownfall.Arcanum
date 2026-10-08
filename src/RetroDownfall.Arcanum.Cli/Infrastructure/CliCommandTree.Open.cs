@@ -10,7 +10,6 @@ namespace RetroDownfall.Arcanum.Cli.Infrastructure;
 
 internal static partial class CliCommandTree
 {
-
     private static Command BuildCenter(IServiceProvider services) =>
         CommandCenterCommand(services);
 
@@ -21,8 +20,7 @@ internal static partial class CliCommandTree
     /// </summary>
     private static Command CommandCenterCommand(IServiceProvider services)
     {
-
-        OpenCommands handler = services.GetRequiredService<OpenCommands>();
+        DeferredHandler<OpenCommands> handler = new(services);
 
         Command center = new(
             "center",
@@ -30,18 +28,14 @@ internal static partial class CliCommandTree
 
         Option<bool> continueSession = new("--continue", "-c")
         {
-
             Description = "Reopen the most recent Session. Cannot be combined with --resume.",
-
         };
 
         Option<string?> resume = new("--resume", "-r")
         {
-
             Arity = ArgumentArity.ZeroOrOne,
 
             Description = "Reopen a Session by GUID, exact title, or unique title prefix; omit the value for an interactive picker.",
-
         };
 
         center.Add(continueSession);
@@ -50,7 +44,7 @@ internal static partial class CliCommandTree
 
         center.SetAction(
             async (ParseResult result, CancellationToken cancellationToken) =>
-                await handler
+                await handler.Value
                     .Center(
                         result.GetValue(continueSession),
                         result.GetResult(resume) is not null,
@@ -59,13 +53,11 @@ internal static partial class CliCommandTree
                     .ConfigureAwait(false));
 
         return center;
-
     }
 
     private static Command BuildOpen(IServiceProvider services)
     {
-
-        OpenCommands handler = services.GetRequiredService<OpenCommands>();
+        DeferredHandler<OpenCommands> handler = new(services);
 
         Command open = new(
             "open",
@@ -77,27 +69,27 @@ internal static partial class CliCommandTree
             "theforge",
             "Open The Forge.");
 
-        theForge.SetAction((ParseResult _) => handler.TheForge());
+        theForge.SetAction((ParseResult _) => handler.Value.TheForge());
 
         Command compendium = new(
             "compendium",
             "Open Compendium at configuration settings.");
 
-        compendium.SetAction((ParseResult _) => handler.Compendium());
+        compendium.SetAction((ParseResult _) => handler.Value.Compendium());
 
         Command session = ResourceCommand(
             "session",
             "Open The Forge Workbench at a Session.",
             "session",
             "Session GUID, exact title, or unique title prefix.",
-            handler.Session);
+            (first, cancellationToken) => handler.Value.Session(first, cancellationToken));
 
         Command campaign = ResourceCommand(
             "campaign",
             "Open The Forge Atelier at a Campaign.",
             "campaign",
             "Campaign GUID, exact name, or unique name prefix.",
-            handler.Campaign);
+            (first, cancellationToken) => handler.Value.Campaign(first, cancellationToken));
 
         Command spell = new(
             "spell",
@@ -109,10 +101,8 @@ internal static partial class CliCommandTree
 
         Option<string?> spellWorkspace = new("--workspace")
         {
-
             Description =
                 "Server Workspace ID, exact name, unique prefix, or server-host path.",
-
         };
 
         spell.Add(spellSelector);
@@ -121,7 +111,7 @@ internal static partial class CliCommandTree
 
         spell.SetAction(
             async (ParseResult result, CancellationToken cancellationToken) =>
-                await handler
+                await handler.Value
                     .Spell(
                         result.GetValue(spellSelector),
                         ActiveWorkspace(
@@ -135,14 +125,14 @@ internal static partial class CliCommandTree
             "Open The Forge Workbench at a Prompt.",
             "prompt",
             "Prompt GUID, exact name, or unique name prefix.",
-            handler.Prompt);
+            (first, cancellationToken) => handler.Value.Prompt(first, cancellationToken));
 
         Command apprentice = ResourceCommand(
             "apprentice",
             "Open The Forge War Table at an Apprentice.",
             "apprentice",
             "Apprentice GUID, exact name, or unique name prefix.",
-            handler.Apprentice);
+            (first, cancellationToken) => handler.Value.Apprentice(first, cancellationToken));
 
         open.Add(center);
 
@@ -161,7 +151,6 @@ internal static partial class CliCommandTree
         open.Add(apprentice);
 
         return open;
-
     }
 
     private static Command ResourceCommand(
@@ -171,7 +160,6 @@ internal static partial class CliCommandTree
         string argumentDescription,
         Func<string?, CancellationToken, Task<int>> action)
     {
-
         Command command = new(name, description);
 
         Argument<string?> selector = OptionalSelector(
@@ -188,7 +176,6 @@ internal static partial class CliCommandTree
                     .ConfigureAwait(false));
 
         return command;
-
     }
 
     private static Argument<string?> OptionalSelector(
@@ -196,11 +183,8 @@ internal static partial class CliCommandTree
         string description) =>
         new(name)
         {
-
             Arity = ArgumentArity.ZeroOrOne,
 
             Description = description + " Omit for the interactive picker.",
-
         };
-
 }

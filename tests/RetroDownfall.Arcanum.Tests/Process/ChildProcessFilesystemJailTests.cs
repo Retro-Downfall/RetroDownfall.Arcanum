@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Reflection;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using RetroDownfall.Arcanum.Api.Intelligence.Tools;
 using RetroDownfall.Arcanum.Infrastructure.ProcessExecution;
@@ -17,7 +18,6 @@ namespace RetroDownfall.Arcanum.Tests.Process;
 [Collection("ProcessEnvironment")]
 public sealed class ChildProcessFilesystemJailTests : IDisposable
 {
-
     private string _workspace;
 
     private string _outsideDir;
@@ -26,7 +26,6 @@ public sealed class ChildProcessFilesystemJailTests : IDisposable
 
     public ChildProcessFilesystemJailTests()
     {
-
         _workspace = Directory.CreateDirectory(
             Path.Combine(Path.GetTempPath(), "arcanum-fsjail-ws-" + Guid.NewGuid().ToString("N"))).FullName;
 
@@ -44,22 +43,18 @@ public sealed class ChildProcessFilesystemJailTests : IDisposable
         File.WriteAllText(Path.Combine(_workspace, "inside.txt"), "workspace-ok");
 
         File.WriteAllText(Path.Combine(_outsideDir, "secret.txt"), "outside-secret");
-
     }
 
     public void Dispose()
     {
-
         TryDelete(_workspace);
 
         TryDelete(_outsideDir);
-
     }
 
     [Fact]
     public void MacOsProfile_DoesNotGrantWholeVolumeRead()
     {
-
         const string workspace = "/Users/arcanum-test/workspace";
 
         const string temp = "/private/tmp/arcanum-sb-test-invocation";
@@ -116,13 +111,231 @@ public sealed class ChildProcessFilesystemJailTests : IDisposable
                   (literal "/usr/bin/shortcuts")
                   (literal "/bin/launchctl"))
                 """));
+    }
 
+    [Fact]
+    public void Profile_scopes_signal_to_the_sandbox()
+    {
+        string profile = MacOsSandboxExecProfileBuilder.Build(
+            ["/Users/arcanum-test/workspace"],
+            ["/usr", "/bin", "/System"],
+            "/private/tmp/arcanum-sb-test-invocation");
+
+        // A bare (allow signal) lets a model-directed child signal any process the operator owns, so a
+        // jailed `kill` or `pkill` reaches the operator's editor, terminal and browser. The runner kills
+        // descendants from outside the sandbox, which no sandbox rule governs, so nothing needs the
+        // unrestricted grant.
+        Assert.DoesNotContain("(allow signal)", profile, StringComparison.Ordinal);
+
+        Assert.Contains("(allow signal (target self))", profile, StringComparison.Ordinal);
+
+        Assert.Contains("(allow signal (target same-sandbox))", profile, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Root_normalization_drops_every_root_that_is_neither_a_directory_nor_a_file()
+    {
+        // Every jail — the Seatbelt profile and the Windows broker payload — is built from this list.
+        // A missing root is inert in a Seatbelt profile but makes the broker's grant throw, failing the
+        // run with exit 73 and no output, so it is dropped on every platform rather than passed on.
+        string missingDirectory = Path.Combine(_workspace, "missing-" + Guid.NewGuid().ToString("N"));
+        string missingFile = Path.Combine(missingDirectory, "tool.txt");
+        string file = Path.Combine(_workspace, "inside.txt");
+
+        List<string> roots = ChildProcessFilesystemJail.NormalizeExistingRoots(
+            [missingDirectory, _workspace, missingFile, _outsideDir, file, "   "]);
+
+        // An existing file stands for its directory, which is already present, so it adds nothing.
+        Assert.Equal([_workspace, _outsideDir], roots);
+    }
+
+    [SkippableFact]
+    public void Prepare_failure_with_escape_hatch_leaves_environment_untouched()
+    {
+        Skip.IfNot(
+            OperatingSystem.IsMacOS() && File.Exists("/usr/bin/sandbox-exec"),
+            "The macOS prepare path creates the per-run temp directory before it can fail.");
+
+        ProcessStartInfo startInfo = new()
+        {
+            FileName = "/bin/echo",
+            WorkingDirectory = _workspace,
+            UseShellExecute = false,
+        };
+
+        startInfo.Environment["TMPDIR"] = "/operator/original-tmpdir";
+
+        startInfo.Environment["TEMP"] = "/operator/original-temp";
+
+        _ = startInfo.Environment.Remove("TMP");
+
+        // A whole-volume read-write root is the one thing the profile builder refuses, and it refuses
+        // only after the runner has already pointed TMPDIR/TMP/TEMP at the per-run temp directory.
+        ChildProcessSandboxRequest request = new()
+        {
+            ReadWriteRoots = ["/"],
+
+            ReadExecuteRoots = [],
+
+            AllowUnsandboxed = true,
+
+            WindowsPathBoundaryRequired = false,
+
+            ToolName = "execute_command",
+        };
+
+        ChildProcessSandboxApplyResult apply = ChildProcessFilesystemJail.Apply(
+            startInfo,
+            request,
+            NullLogger.Instance);
+
+        // The operator escape runs the child with no jail, and the failed prepare already deleted the
+        // temp directory those variables named. The child must see the environment it would have had.
+        Assert.Equal(ChildProcessSandboxApplyStatus.EscapedByOperator, apply.Status);
+
+        Assert.Equal("/operator/original-tmpdir", startInfo.Environment["TMPDIR"]);
+
+        Assert.Equal("/operator/original-temp", startInfo.Environment["TEMP"]);
+
+        Assert.False(startInfo.Environment.ContainsKey("TMP"));
+    }
+
+    [SkippableFact]
+    public void Windows_prepare_failure_with_escape_hatch_leaves_environment_untouched()
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), "The Windows broker prepare path only runs on Windows.");
+
+        ProcessStartInfo startInfo = new()
+        {
+            FileName = "cmd.exe",
+            UseShellExecute = false,
+        };
+
+        startInfo.Environment["TMP"] = @"C:\operator\original-tmp";
+
+        startInfo.Environment["TEMP"] = @"C:\operator\original-temp";
+
+        ChildProcessSandboxRequest request = new()
+        {
+            ReadWriteRoots = [_workspace],
+
+            ReadExecuteRoots = [],
+
+            AllowUnsandboxed = true,
+
+            ToolName = "execute_command",
+        };
+
+        // A broker executable that does not exist fails the prepare after TMP/TEMP were redirected to the
+        // per-run temp directory (and the directory was deleted again in the catch).
+        using IDisposable brokerOverride = ChildProcessFilesystemJail.UseWindowsBrokerExecutableForTests(
+            Path.Combine(_outsideDir, "missing-broker.exe"));
+
+        TestCapturingLogger<ChildProcessFilesystemJailTests> logger = new();
+
+        ChildProcessSandboxApplyResult apply = ChildProcessFilesystemJail.Apply(
+            startInfo,
+            request,
+            logger);
+
+        Assert.Equal(ChildProcessSandboxApplyStatus.EscapedByOperator, apply.Status);
+
+        // The escape is also what an early refusal produces — a workspace the AppContainer policy will not
+        // accept is turned away before TMP/TEMP are touched — and then the assertions below hold for
+        // nothing. The prepare failure's own log line is what shows the run got past the redirect and
+        // into the catch that restores the entries.
+        Assert.Contains(
+            logger.Entries,
+            entry => entry.Level == LogLevel.Error
+                && entry.Message.Contains("Failed to prepare Windows AppContainer broker", StringComparison.Ordinal));
+
+        Assert.Equal(@"C:\operator\original-tmp", startInfo.Environment["TMP"]);
+
+        Assert.Equal(@"C:\operator\original-temp", startInfo.Environment["TEMP"]);
+    }
+
+    [SkippableFact]
+    public async Task MacOsSandbox_DeniesSignalsToProcessesOutsideTheSandbox()
+    {
+        Skip.IfNot(
+            OperatingSystem.IsMacOS() && IsMacOsSandboxExecRunnable(),
+            "Seatbelt signal scoping requires a host where sandbox-exec can apply a profile.");
+
+        using global::System.Diagnostics.Process outsider = new();
+
+        outsider.StartInfo = new ProcessStartInfo("/bin/sleep", "60")
+        {
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+        };
+
+        _ = outsider.Start();
+
+        try
+        {
+            ProcessStartInfo psi = new()
+            {
+                FileName = "/bin/sh",
+
+                UseShellExecute = false,
+
+                RedirectStandardOutput = true,
+
+                RedirectStandardError = true,
+
+                CreateNoWindow = true,
+
+                WorkingDirectory = _workspace,
+            };
+
+            // Signal 0 only asks whether the signal would be permitted. The jailed child may signal
+            // its own descendant (a build tool stopping a worker) but not a process outside the jail.
+            psi.ArgumentList.Add("-c");
+
+            psi.ArgumentList.Add(
+                "sleep 30 & own=$!; "
+                + "if kill -0 \"$own\" 2>/dev/null; then echo own-ok; else echo own-denied; fi; "
+                + $"if kill -0 {outsider.Id} 2>/dev/null; then echo outside-ok; else echo outside-denied; fi; "
+                + "kill \"$own\" 2>/dev/null");
+
+            ChildProcessSandboxRequest request = ChildProcessSandboxRoots.ForExecuteCommand(
+                _workspace,
+                sanctumAllowedPaths: null,
+                allowUnsandboxed: false,
+                windowsPathBoundaryRequired: false);
+
+            CappedChildProcessRunResult result = await CappedChildProcessRunner.RunAsync(
+                psi,
+                ChildProcessEnvironmentProfile.ToolExec,
+                64 * 1024,
+                TimeSpan.FromSeconds(20),
+                resourceLimits: null,
+                resourceLimiter: null,
+                CancellationToken.None,
+                request,
+                NullLogger.Instance);
+
+            Assert.Equal(CappedChildProcessOutcome.Completed, result.Outcome);
+
+            Assert.Contains("own-ok", result.Stdout.Text, StringComparison.Ordinal);
+
+            Assert.Contains("outside-denied", result.Stdout.Text, StringComparison.Ordinal);
+
+            Assert.DoesNotContain("outside-ok", result.Stdout.Text, StringComparison.Ordinal);
+        }
+        finally
+        {
+            if (!outsider.HasExited)
+            {
+                outsider.Kill(entireProcessTree: true);
+            }
+        }
     }
 
     [SkippableFact]
     public void MacOsApply_carries_no_follow_owned_cleanup_artifacts()
     {
-
         Skip.IfNot(
             OperatingSystem.IsMacOS(),
             "macOS sandbox profile artifacts are platform-specific.");
@@ -180,13 +393,11 @@ public sealed class ChildProcessFilesystemJailTests : IDisposable
                 ChildProcessFilesystemJail.CleanupTempPaths(
                     result.OwnedArtifactsToCleanup));
         }
-
     }
 
     [SkippableFact]
     public void LinuxFilesystemJail_IsUnavailableByDefault_AndDoesNotInvokeHelper()
     {
-
         Skip.IfNot(OperatingSystem.IsLinux(), "The Linux-unavailable-by-default jail path is Linux-only.");
 
         ProcessStartInfo psi = new()
@@ -226,13 +437,11 @@ public sealed class ChildProcessFilesystemJailTests : IDisposable
             ChildProcessFilesystemJail.HelperArg,
             psi.ArgumentList,
             StringComparer.Ordinal);
-
     }
 
     [SkippableFact]
     public async Task LinuxFilesystemJail_EscapeHatchRunsUnsandboxedWithWarning()
     {
-
         Skip.IfNot(OperatingSystem.IsLinux(), "The Linux escape-hatch jail path is Linux-only.");
 
         ProcessStartInfo psi = new()
@@ -278,35 +487,29 @@ public sealed class ChildProcessFilesystemJailTests : IDisposable
         Assert.Equal(CappedChildProcessOutcome.Completed, result.Outcome);
 
         Assert.Contains("linux-escape-ok", result.Stdout.Text, StringComparison.Ordinal);
-
     }
 
     [Fact]
     public void A_host_that_declared_nothing_cannot_broker()
     {
-
         // Apply's Windows branch is unreachable off Windows, but the capability it consults is not: this
         // case and the two below hold the guard's decision on every platform, so a regression in it cannot
         // wait for a Windows lane to be noticed — which is how the leak these replace reached CI.
         Assert.False(SandboxExecHelper.DeclarationBindsToThisProcess(null));
-
     }
 
     [Fact]
     public void A_declaration_from_an_assembly_that_is_not_the_entry_point_cannot_broker()
     {
-
         // Loaded in this process, and the very assembly the broker lives in, yet re-executing this process
         // would not start it — which is the whole difference the guard exists to see.
         Assert.False(
             SandboxExecHelper.DeclarationBindsToThisProcess(typeof(ChildProcessFilesystemJail).Assembly));
-
     }
 
     [Fact]
     public void A_declaration_from_the_entry_assembly_can_broker()
     {
-
         // The positive direction, proved without declaring anything: whichever assembly owns this process's
         // entry point is by definition the one a re-execution would start. Calling TryHandle to prove this
         // would write the process-wide declaration and re-create the leak for every test that follows.
@@ -315,13 +518,11 @@ public sealed class ChildProcessFilesystemJailTests : IDisposable
         Assert.NotNull(entryAssembly);
 
         Assert.True(SandboxExecHelper.DeclarationBindsToThisProcess(entryAssembly));
-
     }
 
     [SkippableFact]
     public async Task Hosting_another_programs_entry_point_leaves_this_process_unable_to_broker()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         // WebApplicationFactory builds its host by executing DevHost's entry point, so every web test in
@@ -333,13 +534,11 @@ public sealed class ChildProcessFilesystemJailTests : IDisposable
         _ = factory.Services;
 
         Assert.False(SandboxExecHelper.IsBrokerCapableHost);
-
     }
 
     [SkippableFact]
     public void WindowsFilesystemJail_FailsClosed_WhenTheHostCannotBroker()
     {
-
         // Apply dispatches on the running OS, so ApplyWindows is unreachable anywhere else. Skipping is
         // visible in the run report; the earlier "assert two enum constants differ" stand-in was not.
         Skip.IfNot(
@@ -381,13 +580,11 @@ public sealed class ChildProcessFilesystemJailTests : IDisposable
         Assert.Equal(ChildProcessSandboxApplyStatus.Unavailable, apply.Status);
 
         Assert.Equal("cmd.exe", psi.FileName);
-
     }
 
     [SkippableFact]
     public void WindowsFilesystemJail_DeniesWhenSanctumPathBoundaryOn()
     {
-
         Skip.IfNot(
             OperatingSystem.IsWindows(),
             "ApplyWindows is only reached on Windows.");
@@ -421,13 +618,11 @@ public sealed class ChildProcessFilesystemJailTests : IDisposable
             NullLogger.Instance);
 
         Assert.Equal(ChildProcessSandboxApplyStatus.Unavailable, apply.Status);
-
     }
 
     [SkippableFact]
     public async Task Windows_path_boundary_required_without_a_broker_refuses_the_child()
     {
-
         Skip.IfNot(
             OperatingSystem.IsWindows(),
             "ApplyWindows is only reached on Windows.");
@@ -481,13 +676,11 @@ public sealed class ChildProcessFilesystemJailTests : IDisposable
         Assert.DoesNotContain("Hub.Error", result.FilesystemSandboxDenialMessage ?? "", StringComparison.Ordinal);
 
         Assert.DoesNotContain("internal error", result.FilesystemSandboxDenialMessage ?? "", StringComparison.OrdinalIgnoreCase);
-
     }
 
     [SkippableFact]
     public async Task MacOsSandbox_DeniesOutsideHomeSecret_WhenSandboxExecAvailable()
     {
-
         Skip.IfNot(
             OperatingSystem.IsMacOS() && IsMacOsSandboxExecRunnable(),
             "Seatbelt denial requires a host where sandbox-exec can apply a profile.");
@@ -540,13 +733,11 @@ public sealed class ChildProcessFilesystemJailTests : IDisposable
             || combined.Contains("Permission denied", StringComparison.OrdinalIgnoreCase)
             || combined.Contains("denied", StringComparison.OrdinalIgnoreCase),
             $"Expected outside denial; exit={result.ExitCode} out={result.Stdout.Text} err={result.Stderr.Text}");
-
     }
 
     [SkippableFact]
     public async Task MacOsSandbox_DeniesSymlinkEscapeFromWorkspace()
     {
-
         Skip.IfNot(
             OperatingSystem.IsMacOS() && IsMacOsSandboxExecRunnable(),
             "Seatbelt denial requires a host where sandbox-exec can apply a profile.");
@@ -557,9 +748,7 @@ public sealed class ChildProcessFilesystemJailTests : IDisposable
 
         if (File.Exists(linkPath))
         {
-
             File.Delete(linkPath);
-
         }
 
         File.CreateSymbolicLink(linkPath, target);
@@ -610,13 +799,11 @@ public sealed class ChildProcessFilesystemJailTests : IDisposable
             || combined.Contains("Permission denied", StringComparison.OrdinalIgnoreCase)
             || combined.Contains("denied", StringComparison.OrdinalIgnoreCase),
             $"Expected symlink-escape denial; exit={result.ExitCode} out={result.Stdout.Text} err={result.Stderr.Text}");
-
     }
 
     [SkippableFact]
     public async Task MacOsSandbox_DeniesLaunchServicesBrokerEscape()
     {
-
         Skip.IfNot(
             OperatingSystem.IsMacOS() && IsMacOsSandboxExecRunnable(),
             "Seatbelt denial requires a host where sandbox-exec can apply a profile.");
@@ -625,9 +812,7 @@ public sealed class ChildProcessFilesystemJailTests : IDisposable
         // recognizes the guard clause protecting the Unix-only File.SetUnixFileMode call below.
         if (!(OperatingSystem.IsMacOS() && IsMacOsSandboxExecRunnable()))
         {
-
             return;
-
         }
 
         string marker = Path.Combine(
@@ -704,13 +889,11 @@ public sealed class ChildProcessFilesystemJailTests : IDisposable
         Assert.False(
             File.Exists(marker),
             $"LaunchServices escaped the sandbox. stdout=[{result.Stdout.Text}] stderr=[{result.Stderr.Text}]");
-
     }
 
     [SkippableFact]
     public async Task MacOsSandbox_AllowsWorkspaceReadWrite()
     {
-
         Skip.IfNot(
             OperatingSystem.IsMacOS() && IsMacOsSandboxExecRunnable(),
             "Seatbelt acceptance requires a host where sandbox-exec can apply a profile.");
@@ -719,9 +902,7 @@ public sealed class ChildProcessFilesystemJailTests : IDisposable
         // recognizes the guard clause protecting the Unix-only File.SetUnixFileMode call below.
         if (!(OperatingSystem.IsMacOS() && IsMacOsSandboxExecRunnable()))
         {
-
             return;
-
         }
 
         string script = Path.Combine(_workspace, "rw.sh");
@@ -787,13 +968,11 @@ public sealed class ChildProcessFilesystemJailTests : IDisposable
         Assert.Contains("tmpok", result.Stdout.Text, StringComparison.Ordinal);
 
         Assert.Contains("tmpdir=", result.Stdout.Text, StringComparison.Ordinal);
-
     }
 
     [SkippableFact]
     public async Task MacOsSandbox_AllowsSpellScriptReadExecuteButNotWrite()
     {
-
         Skip.IfNot(
             OperatingSystem.IsMacOS() && IsMacOsSandboxExecRunnable(),
             "Seatbelt acceptance requires a host where sandbox-exec can apply a profile.");
@@ -802,9 +981,7 @@ public sealed class ChildProcessFilesystemJailTests : IDisposable
         // recognizes the guard clause protecting the Unix-only File.SetUnixFileMode call below.
         if (!(OperatingSystem.IsMacOS() && IsMacOsSandboxExecRunnable()))
         {
-
             return;
-
         }
 
         string globalScripts = Path.GetFullPath(
@@ -814,7 +991,6 @@ public sealed class ChildProcessFilesystemJailTests : IDisposable
 
         try
         {
-
             string scriptPath = Path.Combine(globalScripts, "rwprobe.sh");
 
             string writeTarget = Path.Combine(globalScripts, "should-not-write.txt");
@@ -845,21 +1021,16 @@ public sealed class ChildProcessFilesystemJailTests : IDisposable
             Assert.DoesNotContain("WRITE_OK", result, StringComparison.Ordinal);
 
             Assert.False(File.Exists(Path.Combine(globalScripts, "should-not-write.txt")));
-
         }
         finally
         {
-
             TryDelete(Path.GetDirectoryName(globalScripts)!);
-
         }
-
     }
 
     [SkippableFact]
     public async Task MacOS_metacharacters_in_args_are_argv_safe()
     {
-
         Skip.IfNot(
             OperatingSystem.IsMacOS() && IsMacOsSandboxExecRunnable(),
             "Seatbelt acceptance requires a host where sandbox-exec can apply a profile.");
@@ -907,13 +1078,11 @@ public sealed class ChildProcessFilesystemJailTests : IDisposable
         Assert.Contains("hello $(whoami); rm -rf /", result.Stdout.Text, StringComparison.Ordinal);
 
         Assert.Contains("path with spaces", result.Stdout.Text, StringComparison.Ordinal);
-
     }
 
     [SkippableFact]
     public async Task Workspace_spell_script_runs_under_jail()
     {
-
         Skip.IfNot(
             OperatingSystem.IsMacOS() && IsMacOsSandboxExecRunnable(),
             "Seatbelt acceptance requires a host where sandbox-exec can apply a profile.");
@@ -922,9 +1091,7 @@ public sealed class ChildProcessFilesystemJailTests : IDisposable
         // recognizes the guard clause protecting the Unix-only File.SetUnixFileMode call below.
         if (!(OperatingSystem.IsMacOS() && IsMacOsSandboxExecRunnable()))
         {
-
             return;
-
         }
 
         string scriptPath = Path.Combine(_scriptsRoot, "hello.sh");
@@ -949,13 +1116,11 @@ public sealed class ChildProcessFilesystemJailTests : IDisposable
         Assert.Contains("spell-ok", result, StringComparison.Ordinal);
 
         Assert.Contains("--- exit code ---", result, StringComparison.Ordinal);
-
     }
 
     [Fact]
     public async Task Escape_hatch_runs_when_sandbox_unavailable()
     {
-
         ProcessStartInfo psi = new()
         {
             FileName = OperatingSystem.IsWindows() ? "cmd.exe" : "/bin/echo",
@@ -971,19 +1136,15 @@ public sealed class ChildProcessFilesystemJailTests : IDisposable
 
         if (OperatingSystem.IsWindows())
         {
-
             psi.ArgumentList.Add("/c");
 
             psi.ArgumentList.Add("echo");
 
             psi.ArgumentList.Add("hatch-ok");
-
         }
         else
         {
-
             psi.ArgumentList.Add("hatch-ok");
-
         }
 
         ChildProcessSandboxRequest request = new()
@@ -1023,13 +1184,11 @@ public sealed class ChildProcessFilesystemJailTests : IDisposable
         Assert.Equal(CappedChildProcessOutcome.Completed, result.Outcome);
 
         Assert.Contains("hatch-ok", result.Stdout.Text, StringComparison.Ordinal);
-
     }
 
     [Fact]
     public async Task Missing_sandbox_without_escape_hatch_fail_closes()
     {
-
         ProcessStartInfo psi = new()
         {
             FileName = OperatingSystem.IsWindows() ? "cmd.exe" : "/bin/echo",
@@ -1082,13 +1241,11 @@ public sealed class ChildProcessFilesystemJailTests : IDisposable
             ChildProcessSandboxMessages.NotNetworkIsolationNote,
             result.FilesystemSandboxDenialMessage!,
             StringComparison.Ordinal);
-
     }
 
     [SkippableFact]
     public async Task Linux_default_fail_closed_returns_expected_denial_end_to_end()
     {
-
         Skip.IfNot(OperatingSystem.IsLinux(), "The Linux default-deny fail-closed path is Linux-only.");
 
         ProcessStartInfo psi = new()
@@ -1129,7 +1286,6 @@ public sealed class ChildProcessFilesystemJailTests : IDisposable
             StringComparison.Ordinal);
 
         Assert.DoesNotContain("Hub.Error", result.FilesystemSandboxDenialMessage ?? "", StringComparison.Ordinal);
-
     }
 
     /// <summary>
@@ -1138,17 +1294,13 @@ public sealed class ChildProcessFilesystemJailTests : IDisposable
     /// </summary>
     private static bool IsMacOsSandboxExecRunnable()
     {
-
         if (!OperatingSystem.IsMacOS() || !File.Exists("/usr/bin/sandbox-exec"))
         {
-
             return false;
-
         }
 
         try
         {
-
             using global::System.Diagnostics.Process probe = new();
 
             probe.StartInfo = new ProcessStartInfo
@@ -1168,9 +1320,7 @@ public sealed class ChildProcessFilesystemJailTests : IDisposable
 
             if (!probe.Start())
             {
-
                 return false;
-
             }
 
             string err = probe.StandardError.ReadToEnd();
@@ -1178,61 +1328,34 @@ public sealed class ChildProcessFilesystemJailTests : IDisposable
             probe.WaitForExit(5000);
 
             return probe.ExitCode == 0 && !err.Contains("Operation not permitted", StringComparison.OrdinalIgnoreCase);
-
         }
         catch
         {
-
             return false;
-
         }
-
     }
 
     private static string ResolveDir(string path)
     {
-
         try
         {
-
             string? resolved = Directory.ResolveLinkTarget(path, returnFinalTarget: true)?.FullName;
 
             if (!string.IsNullOrEmpty(resolved))
             {
-
                 return Path.GetFullPath(resolved);
-
             }
-
         }
-        catch
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-
+            // A link that cannot be resolved is compared by its own path instead.
         }
 
         return Path.GetFullPath(path);
-
     }
 
     private static void TryDelete(string path)
     {
-
-        try
-        {
-
-            if (Directory.Exists(path))
-            {
-
-                Directory.Delete(path, recursive: true);
-
-            }
-
-        }
-        catch
-        {
-
-        }
-
+        _ = TestDirectoryCleanup.TryDelete(path, nameof(ChildProcessFilesystemJailTests));
     }
-
 }

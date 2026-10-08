@@ -74,15 +74,15 @@ public sealed class SagaErasureEndpointTests
 
         (HttpClient client, MemoryErasureRouteDriver driver) = Connect(factory);
 
-        (_, Guid sessionA) = await BoundSessionAsync(factory, client, "a");
+        (Guid campaignA, Guid sessionA) = await BoundSessionAsync(factory, client, "a");
 
         (_, Guid sessionB) = await BoundSessionAsync(factory, client, "b");
 
         string target = await MemoryErasureRouteDriver.InsertSagaAsync(factory, T, sessionA);
 
-        string firstTwin = await MemoryErasureRouteDriver.InsertSagaAsync(factory, T, sessionA);
+        string firstTwin = await InsertTwinAsync(factory, campaignA, T);
 
-        string secondTwin = await MemoryErasureRouteDriver.InsertSagaAsync(factory, T, sessionA);
+        string secondTwin = await InsertTwinAsync(factory, campaignA, T);
 
         string otherText = await MemoryErasureRouteDriver.InsertSagaAsync(factory, Other, sessionA);
 
@@ -283,13 +283,13 @@ public sealed class SagaErasureEndpointTests
 
         (HttpClient client, MemoryErasureRouteDriver driver) = Connect(factory);
 
-        (_, Guid sessionA) = await BoundSessionAsync(factory, client, "a");
+        (Guid campaignA, Guid sessionA) = await BoundSessionAsync(factory, client, "a");
 
         string target = await MemoryErasureRouteDriver.InsertSagaAsync(factory, T, sessionA);
 
-        _ = await MemoryErasureRouteDriver.InsertSagaAsync(factory, T, sessionA);
+        _ = await InsertTwinAsync(factory, campaignA, T);
 
-        _ = await MemoryErasureRouteDriver.InsertSagaAsync(factory, T, sessionA);
+        _ = await InsertTwinAsync(factory, campaignA, T);
 
         SagaErasePrepareRequest prepare = await PrepareRequestAsync(client, target, Guid.NewGuid());
 
@@ -297,7 +297,7 @@ public sealed class SagaErasureEndpointTests
 
         Assert.Equal(3, preflight.Plan.ErasedItemCount);
 
-        _ = await MemoryErasureRouteDriver.InsertSagaAsync(factory, T, sessionA);
+        _ = await InsertTwinAsync(factory, campaignA, T);
 
         await AssertApplyRefusedAsync(driver, Apply(prepare, preflight), HttpStatusCode.Conflict, ErrorCodes.MemoryErasure.StalePlan);
 
@@ -459,6 +459,35 @@ public sealed class SagaErasureEndpointTests
         Assert.Equal(1, await MemoryErasureRouteDriver.FingerprintCountAsync(factory, MemoryReviewStore.Saga));
 
         await AssertNoOrphanClaimsAsync(factory);
+    }
+
+    /// <summary>
+    /// Replay needs no <em>valid</em> token but still needs a present one: the handler refuses an empty
+    /// <c>preflightToken</c> as an invalid body before the service can look the receipt up, and the API
+    /// document says exactly that.
+    /// </summary>
+    [SkippableTheory]
+    [InlineData("")]
+    [InlineData("   ")]
+    public async Task A_repeated_apply_with_an_empty_token_is_refused_even_though_the_receipt_exists(string token)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using ArcanumWebApplicationFactory factory = MemoryErasureRouteDriver.Host(new InMemoryOsCredentialStore());
+
+        (_, MemoryErasureRouteDriver driver) = Connect(factory);
+
+        string target = await MemoryErasureRouteDriver.InsertSagaAsync(factory, T);
+
+        MemoryErasureRoundTrip<SagaEraseRequest> erased = await driver.EraseSagaAsync(target);
+
+        await AssertApplyRefusedAsync(
+            driver,
+            erased.Apply with { PreflightToken = token },
+            HttpStatusCode.BadRequest,
+            ErrorCodes.Validation.InvalidBody);
+
+        Assert.Equal(1, await MemoryErasureRouteDriver.FingerprintCountAsync(factory, MemoryReviewStore.Saga));
     }
 
     [SkippableFact]
@@ -838,13 +867,13 @@ public sealed class SagaErasureEndpointTests
 
         (HttpClient client, MemoryErasureRouteDriver driver) = Connect(factory);
 
-        (_, Guid session) = await BoundSessionAsync(factory, client, "twins");
+        (Guid campaign, Guid session) = await BoundSessionAsync(factory, client, "twins");
 
         List<string> ids = [];
 
         for (int index = 0; index < twins; index++)
         {
-            ids.Add(await MemoryErasureRouteDriver.InsertSagaAsync(factory, T, session));
+            ids.Add(await InsertTwinAsync(factory, campaign, T));
         }
 
         string lone = await MemoryErasureRouteDriver.InsertSagaAsync(factory, Other, session);
@@ -1220,11 +1249,11 @@ public sealed class SagaErasureEndpointTests
 
         string target = await MemoryErasureRouteDriver.InsertSagaAsync(factory, T, sessionA);
 
-        string lowerDashed = await MemoryErasureRouteDriver.InsertSagaAsync(factory, T, sessionA);
+        string lowerDashed = await InsertTwinAsync(factory, campaignA, T);
 
-        string upperUndashed = await MemoryErasureRouteDriver.InsertSagaAsync(factory, T, sessionA);
+        string upperUndashed = await InsertTwinAsync(factory, campaignA, T);
 
-        string lowerUndashed = await MemoryErasureRouteDriver.InsertSagaAsync(factory, T, sessionA);
+        string lowerUndashed = await InsertTwinAsync(factory, campaignA, T);
 
         await RewriteCampaignSpellingAsync(factory, lowerDashed, campaignA.ToString("D"));
 
@@ -1269,7 +1298,7 @@ public sealed class SagaErasureEndpointTests
 
         string target = await MemoryErasureRouteDriver.InsertSagaAsync(factory, T, sessionA);
 
-        string hidden = await MemoryErasureRouteDriver.InsertSagaAsync(factory, T, sessionA);
+        string hidden = await InsertTwinAsync(factory, campaignA, T);
 
         Assert.Equal(campaignA, Guid.Parse(mixedCase));
 
@@ -1313,11 +1342,11 @@ public sealed class SagaErasureEndpointTests
 
         (HttpClient client, MemoryErasureRouteDriver driver) = Connect(factory);
 
-        (_, Guid sessionA) = await BoundSessionAsync(factory, client, "a");
+        (Guid campaignA, Guid sessionA) = await BoundSessionAsync(factory, client, "a");
 
         string target = await MemoryErasureRouteDriver.InsertSagaAsync(factory, T, sessionA);
 
-        string twin = await MemoryErasureRouteDriver.InsertSagaAsync(factory, T, sessionA);
+        string twin = await InsertTwinAsync(factory, campaignA, T);
 
         await ExecuteAsync(
             factory,
@@ -1699,21 +1728,48 @@ public sealed class SagaErasureEndpointTests
             registered,
             ArcanumJsonContext.Default.ApiResponseCampaignDto);
 
+        return (campaign.Id, await SessionBoundToAsync(factory, campaign.Id, $"Erasure session {suffix}"));
+    }
+
+    private static async Task<Guid> SessionBoundToAsync(
+        ArcanumWebApplicationFactory factory,
+        Guid campaignId,
+        string title)
+    {
         using IServiceScope scope = factory.Services.CreateScope();
 
         Result<Guid> session = await scope.ServiceProvider.GetRequiredService<ISessionTurnBeginStore>().CreateBoundSessionAsync(
             CanonicalCampaignContext.Create(
-                SessionCampaignBinding.ForCampaign(campaign.Id),
+                SessionCampaignBinding.ForCampaign(campaignId),
                 campaignAvailabilityGeneration: 1,
                 pathIdentityPolicyVersion: 1,
                 pathIdentityRevision: null,
                 rootIdentityDigest: null),
-            $"Erasure session {suffix}",
+            title,
             CancellationToken.None);
 
         Assert.True(session.IsSuccess, session.IsFailure ? session.Error.Message : null);
 
-        return (campaign.Id, session.Value);
+        return session.Value;
+    }
+
+    /// <summary>
+    /// Writes one more memory of <paramref name="content"/> into the Campaign's scope through the store's
+    /// own insert, from a Session of its own bound to that Campaign.
+    /// </summary>
+    /// <remarks>
+    /// The insert answers <c>AlreadyPresent</c> for content its owning Session already holds in that scope,
+    /// so a Session cannot hold a twin of its own memory; the same conclusion reached in another Session of
+    /// the Campaign is the twin an erase has to find. Every twin comes from a fresh Session for that reason.
+    /// </remarks>
+    private static async Task<string> InsertTwinAsync(
+        ArcanumWebApplicationFactory factory,
+        Guid campaignId,
+        string content)
+    {
+        Guid session = await SessionBoundToAsync(factory, campaignId, $"Erasure twin {Guid.NewGuid():N}");
+
+        return await MemoryErasureRouteDriver.InsertSagaAsync(factory, content, session);
     }
 
     /// <summary>

@@ -8,8 +8,14 @@ namespace RetroDownfall.Arcanum.Core.Primitives;
 /// </summary>
 public sealed record JsonSchemaDefinition
 {
-
     public string Type { get; init; } = string.Empty;
+
+    /// <summary>
+    /// The other non-null members of a <c>type</c> array (<c>["string", "integer"]</c> keeps
+    /// <c>string</c> in <see cref="Type"/> and <c>integer</c> here). A value satisfies the schema when
+    /// it matches <see cref="Type"/> or any alternative; <c>null</c> is carried by <see cref="IsNullable"/>.
+    /// </summary>
+    public List<string> AlternativeTypes { get; init; } = [];
 
     public bool IsNullable { get; init; }
 
@@ -22,5 +28,4 @@ public sealed record JsonSchemaDefinition
     public List<JsonElement> Enum { get; init; } = [];
 
     public bool? AdditionalProperties { get; init; }
-
 }

@@ -12,6 +12,7 @@ using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 using RetroDownfall.Arcanum.Infrastructure.Storage;
 using RetroDownfall.Arcanum.Tests.Fixtures;
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Data;
 
@@ -445,7 +446,7 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
             byte[] bytes = Encoding.UTF8.GetBytes("workspace source");
             string sourcePath = Path.Combine(workspace, "source.txt");
             await File.WriteAllBytesAsync(sourcePath, bytes);
-            AttachmentSourceResolver resolver = new(new TestWorkspaceContext(workspace));
+            AttachmentSourceResolver resolver = new(new TestWorkspaceContext(workspace), new EmptyWorkspaceRegistry());
             SessionAttachmentStore store = new(
                 _db!,
                 Options.Create(_settings),
@@ -500,7 +501,7 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
 
             await File.WriteAllBytesAsync(sourcePath, before);
 
-            AttachmentSourceResolver resolver = new(new TestWorkspaceContext(workspace));
+            AttachmentSourceResolver resolver = new(new TestWorkspaceContext(workspace), new EmptyWorkspaceRegistry());
 
             SessionAttachmentStore store = new(
                 _db!,
@@ -571,7 +572,7 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
             string sourcePath = Path.Combine(workspace, "notes.txt");
             byte[] original = Encoding.UTF8.GetBytes("original");
             await File.WriteAllBytesAsync(sourcePath, original);
-            AttachmentSourceResolver resolver = new(new TestWorkspaceContext(workspace));
+            AttachmentSourceResolver resolver = new(new TestWorkspaceContext(workspace), new EmptyWorkspaceRegistry());
             SessionAttachmentStore store = new(
                 _db!, Options.Create(_settings), _attachmentsRoot, CreateEncryptedBlobStore(), sourceResolver: resolver);
             SessionAttachmentRecord first = await store.PersistNewFromSourceAsync(
@@ -613,7 +614,7 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
             string sourcePath = Path.Combine(workspace, "notes.txt");
             byte[] original = Encoding.UTF8.GetBytes("unchanged");
             await File.WriteAllBytesAsync(sourcePath, original);
-            AttachmentSourceResolver resolver = new(new TestWorkspaceContext(workspace));
+            AttachmentSourceResolver resolver = new(new TestWorkspaceContext(workspace), new EmptyWorkspaceRegistry());
             SessionAttachmentStore store = new(
                 _db!, Options.Create(_settings), _attachmentsRoot, CreateEncryptedBlobStore(), sourceResolver: resolver);
             SessionAttachmentRecord first = await store.PersistNewFromSourceAsync(
@@ -1621,6 +1622,45 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
     }
 
     [SkippableFact]
+    public async Task PersistNewAsync_over_the_session_byte_limit_throws_AttachmentLimitExceededException()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        SessionAttachmentStore store = CreateStore(new ArcanumSettings());
+
+        store.SessionByteLimitForTesting = 10;
+
+        Guid sessionId = Guid.NewGuid();
+
+        _ = await store.PersistNewAsync(
+            sessionId,
+            null,
+            null,
+            "first.txt",
+            "first.txt",
+            Encoding.UTF8.GetBytes("123456"),
+            "text/plain",
+            SessionAttachmentKind.Text);
+
+        // The typed refusal is what the HTTP routes report as Attachment.LimitExceeded; it still is an
+        // InvalidOperationException for every caller that predates the type.
+        AttachmentLimitExceededException refused = await Assert.ThrowsAsync<AttachmentLimitExceededException>(() =>
+            store.PersistNewAsync(
+                sessionId,
+                null,
+                null,
+                "second.txt",
+                "second.txt",
+                Encoding.UTF8.GetBytes("123456"),
+                "text/plain",
+                SessionAttachmentKind.Text));
+
+        Assert.IsAssignableFrom<InvalidOperationException>(refused);
+
+        Assert.Null(await store.GetByLogicalAsync(sessionId, "second.txt", version: null));
+    }
+
+    [SkippableFact]
     public async Task PersistNewAsync_accepts_versions_beyond_the_former_count_ceiling()
     {
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
@@ -2167,6 +2207,79 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
         }
     }
 
+    /// <summary>
+    /// A fork's copy that is unlinked after it was made is refused when its row is inserted, and the source is left
+    /// exactly as it was.
+    /// </summary>
+    /// <remarks>
+    /// A fork's copies are not in the promotion in-flight set the orphan sweep consults, so a sweep that races a
+    /// fork can unlink a copy that predates its snapshot. What keeps that from publishing a row for missing bytes
+    /// is the revalidation of the captured blob identity inside the insert, which this pins: the fork fails, no
+    /// row is written for it, and the source attachment still reads back.
+    /// </remarks>
+    [SkippableFact]
+    public async Task InsertForkRowsInAmbientTransactionAsync_refuses_a_copy_unlinked_after_it_was_made_and_leaves_the_source_intact()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sourceSessionId = Guid.NewGuid();
+
+        Guid forkSessionId = Guid.NewGuid();
+
+        await EnsureSessionAsync(sourceSessionId, "fork-lost-source");
+
+        await EnsureSessionAsync(forkSessionId, "fork-lost-destination");
+
+        byte[] bytes = Encoding.UTF8.GetBytes("fork lost copy bytes");
+
+        SessionAttachmentRecord source = await _store!.PersistNewAsync(
+            sourceSessionId,
+            pendingTurnId: null,
+            entryId: null,
+            "lost-copy.txt",
+            "lost-copy.txt",
+            bytes,
+            "text/plain",
+            SessionAttachmentKind.Text);
+
+        SessionAttachmentForkCopyPlan plan = new(source, Guid.NewGuid(), NewEntryId: null);
+
+        await _store.CopyBytesForForkAsync(forkSessionId, [plan]);
+
+        string copy = Assert.Single(
+            Directory.EnumerateFiles(
+                Path.Combine(_attachmentsRoot, forkSessionId.ToString("N")),
+                "*",
+                SearchOption.AllDirectories));
+
+        // What the orphan sweep does to a copy it takes for unreferenced.
+        File.Delete(copy);
+
+        try
+        {
+            using IDisposable gate = await _store.AcquireSessionGateAsync(forkSessionId);
+
+            await using IDbContextTransaction transaction = await _db!.Database.BeginTransactionAsync();
+
+            IOException refused = await Assert.ThrowsAsync<IOException>(
+                () => _store.InsertForkRowsInAmbientTransactionAsync(forkSessionId, [plan]));
+
+            Assert.Contains("missing or replaced bytes", refused.Message, StringComparison.Ordinal);
+
+            await transaction.RollbackAsync();
+
+            Assert.Empty(await _store.ListBoundAsync(forkSessionId));
+
+            SessionAttachmentRecord intact = Assert.Single(await _store.ListBoundAsync(sourceSessionId));
+
+            Assert.Equal(bytes, (await _store.ReadBytesAsync(intact)).ToArray());
+        }
+        finally
+        {
+            _ = _store.TryDeleteSessionDirectory(forkSessionId);
+        }
+    }
+
     [SkippableFact]
 
     public async Task InsertForkRowsInAmbientTransactionAsync_AcquiresWriterBeforeBlobValidation()
@@ -2593,6 +2706,139 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
             + "ciphertext for an attachment write still in flight.");
 
         Assert.False(File.Exists(abandoned), "the sweep left a genuinely unreferenced file behind.");
+    }
+
+    [SkippableFact]
+    public async Task ReconcileAsync_spares_a_promoted_copy_whose_row_has_not_committed_yet()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = Guid.NewGuid();
+
+        await EnsureSessionAsync(sessionId, "promote-versus-sweep");
+
+        string pendingTurnId = "promote-sweep-" + Guid.NewGuid().ToString("N");
+
+        byte[] bytes = Encoding.UTF8.GetBytes("promoted-while-the-sweep-ran");
+
+        SessionAttachmentRecord pending = await _store!.PersistNewAsync(
+            sessionId: null,
+            pendingTurnId,
+            entryId: null,
+            "notes.txt",
+            "notes.txt",
+            bytes,
+            "text/plain",
+            SessionAttachmentKind.Text);
+
+        await using ArcanumDbContext promoterDb = _fixture.CreateContext(_dbPath);
+
+        SessionAttachmentStore promoter = new(
+            promoterDb,
+            Options.Create(_settings),
+            _attachmentsRoot,
+            CreateEncryptedBlobStore());
+
+        TaskCompletionSource copyLanded = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        TaskCompletionSource releasePromotion = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        // The copy is on disk and the row that will claim it is not yet committed. The copy is aged so the sweep's
+        // "written after my snapshot" guard cannot be what spares it: a promotion that stalled between its copy and
+        // its commit leaves exactly this file.
+        promoter.AfterBytesCommittedBeforeDbForTesting = async cancellationToken =>
+        {
+            foreach (string copy in Directory.EnumerateFiles(
+                         Path.Combine(_attachmentsRoot, sessionId.ToString("N")),
+                         "*",
+                         SearchOption.AllDirectories))
+            {
+                File.SetLastWriteTimeUtc(copy, DateTime.UtcNow - TimeSpan.FromHours(1));
+            }
+
+            copyLanded.TrySetResult();
+
+            await releasePromotion.Task.WaitAsync(cancellationToken);
+        };
+
+        Task promotion = Task.Run(() => promoter.PromotePendingAsync(pendingTurnId, sessionId, entryId: null));
+
+        try
+        {
+            await copyLanded.Task.WaitAsync(TimeSpan.FromSeconds(30));
+
+            await _store.ReconcileAsync(TimeSpan.FromDays(365));
+        }
+        finally
+        {
+            releasePromotion.TrySetResult();
+        }
+
+        await promotion.WaitAsync(TimeSpan.FromSeconds(30));
+
+        SessionAttachmentRecord? bound = await _store.GetByIdAsync(pending.Id);
+
+        Assert.NotNull(bound);
+
+        Assert.Equal(SessionAttachmentState.Bound, bound!.State);
+
+        Assert.True(
+            File.Exists(Path.Combine(_attachmentsRoot, bound.RelativePath)),
+            "the sweep unlinked the promoted copy before its row committed, and the promotion then deleted the original.");
+
+        Assert.Equal(bytes, (await _store.ReadBytesAsync(bound)).ToArray());
+    }
+
+    [SkippableFact]
+    public async Task PromotePendingAsync_refuses_to_commit_when_a_promoted_copy_is_gone_and_keeps_the_original()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = Guid.NewGuid();
+
+        await EnsureSessionAsync(sessionId, "promote-lost-copy");
+
+        string pendingTurnId = "promote-lost-" + Guid.NewGuid().ToString("N");
+
+        byte[] bytes = Encoding.UTF8.GetBytes("copy-removed-before-commit");
+
+        SessionAttachmentRecord pending = await _store!.PersistNewAsync(
+            sessionId: null,
+            pendingTurnId,
+            entryId: null,
+            "notes.txt",
+            "notes.txt",
+            bytes,
+            "text/plain",
+            SessionAttachmentKind.Text);
+
+        _store.AfterBytesCommittedBeforeDbForTesting = _ =>
+        {
+            foreach (string copy in Directory.EnumerateFiles(
+                         Path.Combine(_attachmentsRoot, sessionId.ToString("N")),
+                         "*",
+                         SearchOption.AllDirectories))
+            {
+                File.Delete(copy);
+            }
+
+            return Task.CompletedTask;
+        };
+
+        _ = await Assert.ThrowsAsync<IOException>(
+            () => _store.PromotePendingAsync(pendingTurnId, sessionId, entryId: null));
+
+        _store.AfterBytesCommittedBeforeDbForTesting = null;
+
+        SessionAttachmentRecord? still = await _store.GetByIdAsync(pending.Id);
+
+        Assert.NotNull(still);
+
+        Assert.Equal(SessionAttachmentState.Pending, still!.State);
+
+        Assert.True(File.Exists(Path.Combine(_attachmentsRoot, still.RelativePath)));
+
+        Assert.Equal(bytes, (await _store.ReadBytesAsync(still)).ToArray());
     }
 
     private sealed class TestWorkspaceContext(string workspacePath) : IHostWorkspaceContext

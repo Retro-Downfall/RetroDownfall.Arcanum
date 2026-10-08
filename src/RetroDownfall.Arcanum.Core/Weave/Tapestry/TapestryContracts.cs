@@ -12,7 +12,6 @@ namespace RetroDownfall.Arcanum.Core.Weave.Tapestry;
 /// </summary>
 public enum TapestryScopeKind
 {
-
     /// <summary>One registered workspace's indexed code chunks (<c>workspace_file_chunks</c>).</summary>
     Workspace,
 
@@ -21,29 +20,24 @@ public enum TapestryScopeKind
 
     /// <summary>One session's Grimoire <c>Entries</c>.</summary>
     Session,
-
 }
 
 /// <summary>Leaf nodes mirror an existing corpus row; summary nodes are abstractive and model-authored.</summary>
 public enum TapestryNodeKind
 {
-
     Leaf,
 
     Summary,
-
 }
 
 /// <summary>The durable row a leaf node references by stable id rather than copying.</summary>
 public enum TapestryLeafSourceKind
 {
-
     WorkspaceFileChunk,
 
     SessionAttachmentChunk,
 
     Entry,
-
 }
 
 /// <summary>
@@ -53,19 +47,16 @@ public enum TapestryLeafSourceKind
 /// </summary>
 public enum TapestryGenerationStatus
 {
-
     Building,
 
     Complete,
 
     Superseded,
-
 }
 
 /// <summary>Why recursion stopped. Persisted so a multi-root tree is never misreported as rooted.</summary>
 public enum TapestryTerminalReason
 {
-
     /// <summary>The whole remaining layer fit one summary request, so a single root was written.</summary>
     SingleRoot,
 
@@ -74,7 +65,6 @@ public enum TapestryTerminalReason
 
     /// <summary>The corpus was small enough that the leaf layer is also the terminal layer.</summary>
     LeafOnly,
-
 }
 
 /// <summary>
@@ -83,7 +73,6 @@ public enum TapestryTerminalReason
 /// </summary>
 public enum TapestryPartitionReason
 {
-
     /// <summary>Raw K-Means membership, unmodified.</summary>
     None,
 
@@ -98,7 +87,6 @@ public enum TapestryPartitionReason
 
     /// <summary>A single-child cluster was carried directly to the next layer without a new summary.</summary>
     SingletonCarry,
-
 }
 
 /// <summary>
@@ -109,17 +97,35 @@ public enum TapestryPartitionReason
 [JsonConverter(typeof(JsonStringEnumConverter<TapestryRetrievalMode>))]
 public enum TapestryRetrievalMode
 {
-
     /// <summary>Leaf and summary nodes are searched as one flat pool. The default.</summary>
     CollapsedTree,
 
     /// <summary>Descends level by level from the terminal layer, expanding only the selected nodes' children.</summary>
     TreeTraversal,
-
 }
 
-/// <summary>One tree's corpus identity.</summary>
-public readonly record struct TapestryScope(TapestryScopeKind Kind, string Id);
+/// <summary>
+/// One tree's corpus identity.
+/// </summary>
+/// <remarks>
+/// <see cref="Id"/> is the exact spelling the corpus the tree was woven from carries, because the
+/// store keys a generation by the identity the sweep read and compares it byte for byte. The two
+/// Session kinds therefore spell the same Session differently: the Session history tree reads
+/// <c>Entries.SessionId</c>, which is guaranteed uppercase dashed, and the attachment tree reads
+/// <c>session_attachment_chunks.SessionId</c>, which is deliberately lowercase. <see cref="ForSession"/>
+/// and <see cref="ForSessionAttachment"/> are the one place that per-kind spelling is written down, so a
+/// reader building the scope for a turn cannot disagree with the sweep that keyed it.
+/// </remarks>
+public readonly record struct TapestryScope(TapestryScopeKind Kind, string Id)
+{
+    /// <summary>The Session history scope: the uppercase dashed spelling <c>Entries.SessionId</c> holds.</summary>
+    public static TapestryScope ForSession(Guid sessionId) =>
+        new(TapestryScopeKind.Session, sessionId.ToString("D").ToUpperInvariant());
+
+    /// <summary>The attachment scope: the lowercase dashed spelling <c>session_attachment_chunks.SessionId</c> holds.</summary>
+    public static TapestryScope ForSessionAttachment(Guid sessionId) =>
+        new(TapestryScopeKind.SessionAttachment, sessionId.ToString("D"));
+}
 
 /// <summary>
 /// One immutable build of one scope's tree. Algorithm/settings/model provenance is stored with the
@@ -179,6 +185,26 @@ public sealed record TapestryLeafSource(
     string ContentHash,
     float[]? ExistingEmbedding);
 
+/// <summary>
+/// What one scope's corpus is, without its text: how many leaves it holds and the fingerprint of their ids
+/// and content hashes. <see cref="ExceedsCeiling"/> means the scope held more rows than the ceiling the
+/// caller passed, in which case no content was read, <see cref="Fingerprint"/> is empty and
+/// <see cref="LeafCount"/> is only the number of rows seen before the count stopped.
+/// </summary>
+public sealed record TapestryCorpusIdentity(int LeafCount, string Fingerprint, bool ExceedsCeiling);
+
+/// <summary>Code-owned bounds on what one Tapestry build will take on (DESIGN §21.11).</summary>
+public static class TapestryLimits
+{
+    /// <summary>
+    /// The most leaves one scope may hold and still be woven. A rebuild keeps every leaf's text and vector
+    /// in memory to cluster them and pays for roughly one summary call per eight leaves, so a scope larger
+    /// than this is reported as <see cref="TapestryWeaveStatus.TooLarge"/> instead of being loaded. At the
+    /// default 768 dimensions a full scope's vectors alone are about 150 MB, before the text.
+    /// </summary>
+    public const int MaxLeavesPerScope = 50_000;
+}
+
 /// <summary>A prior generation's summary node offered for reuse when its identity matches exactly.</summary>
 public sealed record TapestrySummaryReuseCandidate(
     string ChildMembershipHash,
@@ -193,7 +219,6 @@ public sealed record TapestrySummaryReuseCandidate(
 /// </summary>
 public static class TapestryStorageKeys
 {
-
     /// <summary>The vec0 acceleration table. Divination strips the suffix for the managed fallback.</summary>
     public const string VectorTable = "tapestry_node_embeddings_vec";
 
@@ -218,13 +243,11 @@ public static class TapestryStorageKeys
 
     public static string ParentScopeKey(string generationId, string? parentNodeId) =>
         $"{generationId}#{(string.IsNullOrEmpty(parentNodeId) ? RootParentMarker : parentNodeId)}";
-
 }
 
 /// <summary>Why one scope's weave attempt ended.</summary>
 public enum TapestryWeaveStatus
 {
-
     /// <summary>The current generation already matches the corpus, settings, algorithm, recipe, and model.</summary>
     UpToDate,
 
@@ -243,6 +266,26 @@ public enum TapestryWeaveStatus
     /// <summary>The build failed; the staging generation was abandoned and the prior one stays current.</summary>
     Failed,
 
+    /// <summary>
+    /// The same build (corpus, settings and summary model) failed recently, so nothing was started or
+    /// spent; it is retried after an exponentially growing wait, or sooner if any of the three change.
+    /// </summary>
+    BackingOff,
+
+    /// <summary>
+    /// The scope holds more leaves than <see cref="TapestryLimits.MaxLeavesPerScope"/>, so nothing was
+    /// read, embedded or summarized; the prior generation, if any, stays current and the scope is looked
+    /// at again on the next sweep.
+    /// </summary>
+    TooLarge,
+
+    /// <summary>
+    /// The corpus changed between the moment its leaves were read and the moment the staging generation
+    /// existed, so what was read may include text that has since been erased. Nothing was embedded,
+    /// summarized or published; the prior generation, if any, stays current and the next sweep starts over
+    /// from the corpus as it now is.
+    /// </summary>
+    CorpusChanged,
 }
 
 /// <summary>The result of one scope's weave attempt, including what the build actually spent.</summary>
@@ -313,7 +356,6 @@ public sealed record TapestryContextNode(
 /// </summary>
 public static class TapestryHash
 {
-
     /// <summary>
     /// Bumped whenever the summarization prompt or its output contract changes. Part of a summary
     /// node's reuse identity: an older recipe's prose is never silently carried into a new shape.
@@ -342,7 +384,6 @@ public static class TapestryHash
     /// </remarks>
     public static string OfParts(IEnumerable<string> parts)
     {
-
         ArgumentNullException.ThrowIfNull(parts);
 
         using IncrementalHash hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
@@ -353,30 +394,24 @@ public static class TapestryHash
 
         try
         {
-
             foreach (string part in parts)
             {
-
                 int required = Encoding.UTF8.GetByteCount(part);
 
                 Span<byte> buffer = inline;
 
                 if (required > buffer.Length)
                 {
-
                     if (rented is not null && rented.Length < required)
                     {
-
                         ArrayPool<byte>.Shared.Return(rented);
 
                         rented = null;
-
                     }
 
                     rented ??= ArrayPool<byte>.Shared.Rent(required);
 
                     buffer = rented;
-
                 }
 
                 int written = Encoding.UTF8.GetBytes(part, buffer);
@@ -384,38 +419,46 @@ public static class TapestryHash
                 hash.AppendData(buffer[..written]);
 
                 hash.AppendData(PartSeparator);
-
             }
-
         }
         finally
         {
-
             if (rented is not null)
             {
-
                 ArrayPool<byte>.Shared.Return(rented);
-
             }
-
         }
 
         return Convert.ToHexStringLower(hash.GetHashAndReset());
-
     }
+
+    /// <summary>
+    /// The embedding provider and model that produced a tree's vectors, as one opaque value. Vectors
+    /// are only comparable with vectors of the same model, and two models can share a width, so the
+    /// dimension alone cannot tell a tree built under one from a tree built under the other.
+    /// </summary>
+    public static string OfEmbeddingModel(string? provider, string? model) =>
+        OfParts([provider?.Trim() ?? string.Empty, model?.Trim() ?? string.Empty]);
 
     /// <summary>
     /// A summary node's reuse identity: the exact sorted child-membership plus the recipe, model, and
     /// input hashes. Reuse requires all of them to match — deterministic clustering does not make
     /// model prose reproducible, so identity is the only safe basis for skipping a summary call.
     /// </summary>
+    /// <remarks>
+    /// <paramref name="embeddingModel"/> is part of the identity because a reused summary brings its
+    /// embedding with it: one written under a different embedding model sits in a different vector
+    /// space than the leaves and summaries around it, at the same width and with nothing to flag it.
+    /// </remarks>
     public static string OfChildMembership(
         IEnumerable<string> childContentHashes,
         string summaryRecipeVersion,
-        string? summaryModel)
+        string? summaryModel,
+        string embeddingModel)
     {
-
         ArgumentNullException.ThrowIfNull(childContentHashes);
+
+        ArgumentNullException.ThrowIfNull(embeddingModel);
 
         List<string> sorted = [.. childContentHashes];
 
@@ -425,9 +468,9 @@ public static class TapestryHash
         [
             summaryRecipeVersion,
             summaryModel ?? string.Empty,
+            embeddingModel,
             .. sorted,
         ]);
-
     }
 
     /// <summary>
@@ -437,7 +480,18 @@ public static class TapestryHash
     /// </summary>
     public static string OfCorpus(IEnumerable<TapestryLeafSource> leaves)
     {
+        ArgumentNullException.ThrowIfNull(leaves);
 
+        return OfCorpus(leaves.Select(static leaf => (leaf.SourceId, leaf.ContentHash)));
+    }
+
+    /// <summary>
+    /// The same fingerprint from leaf ids and content hashes alone, which is all it ever consumed. This is
+    /// the form the store computes from the hashes it keeps beside the corpus, so a scope that has not
+    /// changed is recognised without reading a single row of text.
+    /// </summary>
+    public static string OfCorpus(IEnumerable<(string SourceId, string ContentHash)> leaves)
+    {
         ArgumentNullException.ThrowIfNull(leaves);
 
         List<string> identities = [.. leaves.Select(static leaf => $"{leaf.SourceId}\u001f{leaf.ContentHash}")];
@@ -445,21 +499,30 @@ public static class TapestryHash
         identities.Sort(StringComparer.Ordinal);
 
         return OfParts(identities);
-
     }
 
     /// <summary>
     /// The tree-shaping settings a generation was built under. A change here invalidates the
     /// generation exactly like an algorithm-version change.
     /// </summary>
+    /// <remarks>
+    /// <paramref name="embeddingModel"/> (from <see cref="OfEmbeddingModel"/>) is in the fingerprint
+    /// alongside <paramref name="dimensions"/>: swapping the embedding model at the same width leaves
+    /// every stored vector the right length and the wrong space, so only the model's identity can
+    /// invalidate the tree.
+    /// </remarks>
     public static string OfSettings(
         int maxTreeDepth,
         int targetChildrenPerSummary,
         int maxChildrenPerSummary,
         int maxClustersPerLayer,
         int maxSummaryTokens,
-        int dimensions) =>
-        OfParts(
+        int dimensions,
+        string embeddingModel)
+    {
+        ArgumentNullException.ThrowIfNull(embeddingModel);
+
+        return OfParts(
         [
             maxTreeDepth.ToString(CultureInfo.InvariantCulture),
             targetChildrenPerSummary.ToString(CultureInfo.InvariantCulture),
@@ -467,6 +530,7 @@ public static class TapestryHash
             maxClustersPerLayer.ToString(CultureInfo.InvariantCulture),
             maxSummaryTokens.ToString(CultureInfo.InvariantCulture),
             dimensions.ToString(CultureInfo.InvariantCulture),
+            embeddingModel,
         ]);
-
+    }
 }

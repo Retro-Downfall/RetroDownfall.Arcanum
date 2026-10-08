@@ -8,7 +8,6 @@ namespace RetroDownfall.Arcanum.Secrets.Security;
 /// </summary>
 public static class ArcanumCredentialIdentity
 {
-
     /// <summary>OS credential service / target name (Keychain service, Cred target namespace, libsecret schema).</summary>
     public const string Service = "arcanum";
 
@@ -138,12 +137,9 @@ public static class ArcanumCredentialIdentity
     /// </summary>
     internal static bool IsInstallationResetActiveAccount(string account)
     {
-
         if (account is null)
         {
-
             return false;
-
         }
 
         foreach (string prefix in (string[])
@@ -152,30 +148,22 @@ public static class ArcanumCredentialIdentity
                      InstallationResetActiveAnchorAccountPrefix,
                  ])
         {
-
             if (account.Length == prefix.Length + ProfileNamespaceSuffixLength
                 && account.StartsWith(prefix, StringComparison.Ordinal)
                 && IsCanonicalProfileNamespaceSuffix(account[prefix.Length..]))
             {
-
                 return true;
-
             }
-
         }
 
         return false;
-
     }
 
     internal static bool IsGrimoireTransitionJournalAccount(string? account)
     {
-
         if (account is null)
         {
-
             return false;
-
         }
 
         foreach (string prefix in (string[])
@@ -184,20 +172,15 @@ public static class ArcanumCredentialIdentity
                      GrimoireTransitionJournalAnchorAccountPrefix,
                  ])
         {
-
             if (account.Length == prefix.Length + ProfileNamespaceSuffixLength
                 && account.StartsWith(prefix, StringComparison.Ordinal)
                 && IsCanonicalProfileNamespaceSuffix(account[prefix.Length..]))
             {
-
                 return true;
-
             }
-
         }
 
         return false;
-
     }
 
     /// <summary>
@@ -210,12 +193,9 @@ public static class ArcanumCredentialIdentity
     /// </remarks>
     public static bool IsBackupRestoreJournalAccount(string? account)
     {
-
         if (account is null)
         {
-
             return false;
-
         }
 
         foreach (string prefix in (string[])
@@ -225,20 +205,15 @@ public static class ArcanumCredentialIdentity
                      BackupRestoreJournalAnchorAccountPrefix,
                  ])
         {
-
             if (account.Length == prefix.Length + ProfileNamespaceSuffixLength
                 && account.StartsWith(prefix, StringComparison.Ordinal)
                 && IsCanonicalProfileNamespaceSuffix(account[prefix.Length..]))
             {
-
                 return true;
-
             }
-
         }
 
         return false;
-
     }
 
     /// <summary>
@@ -251,28 +226,20 @@ public static class ArcanumCredentialIdentity
     /// </remarks>
     public static bool IsCanonicalProfileNamespaceSuffix(string? suffix)
     {
-
         if (suffix is null || suffix.Length != ProfileNamespaceSuffixLength)
         {
-
             return false;
-
         }
 
         foreach (char value in suffix)
         {
-
             if (value is not (>= '0' and <= '9') and not (>= 'a' and <= 'f'))
             {
-
                 return false;
-
             }
-
         }
 
         return true;
-
     }
 
     private static string RequireProfileNamespaceSuffix(string profileNamespaceDigestHex) =>
@@ -325,12 +292,9 @@ public static class ArcanumCredentialIdentity
     /// </summary>
     public static string NormalizeProviderName(string? providerName)
     {
-
         if (string.IsNullOrWhiteSpace(providerName))
         {
-
             return UnnamedProvider;
-
         }
 
         StringBuilder normalized = new(providerName.Length);
@@ -339,7 +303,6 @@ public static class ArcanumCredentialIdentity
 
         foreach (char value in providerName)
         {
-
             bool asciiLetter =
                 value is >= 'A' and <= 'Z'
                 || value is >= 'a' and <= 'z';
@@ -348,12 +311,9 @@ public static class ArcanumCredentialIdentity
 
             if (asciiLetter || asciiDigit)
             {
-
                 if (pendingSeparator && normalized.Length > 0)
                 {
-
                     _ = normalized.Append('_');
-
                 }
 
                 _ = normalized.Append(
@@ -362,21 +322,15 @@ public static class ArcanumCredentialIdentity
                         : value);
 
                 pendingSeparator = false;
-
             }
             else
             {
-
                 pendingSeparator = normalized.Length > 0;
-
             }
-
         }
 
         return normalized.Length == 0
             ? UnnamedProvider
             : normalized.ToString();
-
     }
-
 }

@@ -46,10 +46,46 @@ internal static partial class SecureDirectoryNameEnumerator
         return true;
     }
 
+    /// <summary>
+    /// Where a <c>readdir</c> entry keeps its name, and on macOS its name length, for the given platform.
+    /// </summary>
+    /// <param name="nameLengthOffset">The offset of the 16-bit name length, or -1 when the name is read up to its terminator.</param>
+    internal static bool TryGetUnixDirentLayout(
+        bool isMacOS,
+        Architecture architecture,
+        out int nameOffset,
+        out int nameLengthOffset)
+    {
+        if (isMacOS)
+        {
+            nameOffset = 21;
+            nameLengthOffset = 18;
+
+            // Only arm64 is read. The plain readdir symbol on macOS x64 returns the legacy 32-bit-inode
+            // dirent, whose length and name sit at different offsets than the 64-bit-inode layout above;
+            // x64 is not a shipping RID, so it fails closed as FileHandleIdentity's stat reader does.
+            return architecture is Architecture.Arm64;
+        }
+
+        nameOffset = 19;
+        nameLengthOffset = -1;
+
+        return architecture is Architecture.X64 or Architecture.Arm64;
+    }
+
     private static List<string>? EnumerateUnix(
         SafeFileHandle directory,
         CancellationToken cancellationToken)
     {
+        if (!TryGetUnixDirentLayout(
+                OperatingSystem.IsMacOS(),
+                RuntimeInformation.ProcessArchitecture,
+                out int nameOffset,
+                out int nameLengthOffset))
+        {
+            return null;
+        }
+
         bool referenceAdded = false;
         int duplicate = -1;
 
@@ -75,6 +111,11 @@ internal static partial class SecureDirectoryNameEnumerator
 
             try
             {
+                // dup shares the open file description, hence the directory offset, with the caller's
+                // handle. Without a rewind a second enumeration of the same capability starts where the
+                // last one ended and silently reports a populated directory as empty.
+                RewindDirectoryUnix(stream);
+
                 List<string> names = [];
                 while (true)
                 {
@@ -86,9 +127,8 @@ internal static partial class SecureDirectoryNameEnumerator
                         return Marshal.GetLastPInvokeError() == 0 ? names : null;
                     }
 
-                    int nameOffset = OperatingSystem.IsMacOS() ? 21 : 19;
-                    int length = OperatingSystem.IsMacOS()
-                        ? Marshal.ReadInt16(entry, 18)
+                    int length = nameLengthOffset >= 0
+                        ? Marshal.ReadInt16(entry, nameLengthOffset)
                         : NullTerminatedNameLength(entry, nameOffset);
                     if (length is <= 0 or > 255)
                     {
@@ -256,6 +296,9 @@ internal static partial class SecureDirectoryNameEnumerator
 
     [LibraryImport("libc", EntryPoint = "readdir", SetLastError = true)]
     private static partial IntPtr ReadDirectoryUnix(IntPtr directory);
+
+    [LibraryImport("libc", EntryPoint = "rewinddir")]
+    private static partial void RewindDirectoryUnix(IntPtr directory);
 
     [LibraryImport("libc", EntryPoint = "closedir", SetLastError = true)]
     private static partial int CloseDirectoryUnix(IntPtr directory);

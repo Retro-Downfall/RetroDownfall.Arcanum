@@ -31,6 +31,7 @@ jobs:
     name: Add the update to the standing epic
     if: github.event.pull_request.user.login == 'dependabot[bot]'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       issues: write
     steps:

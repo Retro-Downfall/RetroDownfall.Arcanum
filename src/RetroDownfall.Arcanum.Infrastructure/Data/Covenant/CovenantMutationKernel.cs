@@ -15,10 +15,12 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 /// transaction. No overload accepts a separate authenticated command or a loose compiled artifact,
 /// because a second parameter is a second thing that can disagree with the first.
 ///
-/// <para>Ordering inside a batch matters. Receipt replay resolves first, so an exact retry returns
-/// its committed answer even after the head has moved on; only then do compare-and-swap, lifecycle,
-/// and epoch checks run. Reversing that order would turn a successful retry into a revision
-/// conflict.</para>
+/// <para>Ordering inside a batch matters. Receipt replay resolves first, for every intent, so an exact
+/// retry returns its committed answer even after the head has moved on, the Campaign registry epoch has
+/// advanced, or the scope has filled its receipt ceiling; only then do the generation and epoch checks,
+/// the capacity check (over the intents still to be written), and each intent's compare-and-swap and
+/// lifecycle checks run. Reversing that order would turn a successful retry into a stale snapshot, a
+/// capacity refusal, or a revision conflict.</para>
 ///
 /// <para>The kernel never opens, commits, rolls back, or retries a transaction. A failure returns a
 /// typed error and leaves the caller's transaction to be rolled back as a whole, which is what makes
@@ -61,6 +63,41 @@ internal sealed class CovenantMutationKernel(CovenantQuotaGuard quotas, IMemoryE
             return state.Error;
         }
 
+        // Receipt replay resolves for every intent before any batch-level comparison. An exact retry
+        // has nothing left to apply, so a registry epoch that moved since the first attempt, or a scope
+        // that has since filled its receipt ceiling, says nothing about it: refusing it would turn a
+        // client that lost its response into one that cannot learn a mutation already committed. A
+        // receipt cannot outlive the dataset or the key it names, because a reset and an entry erasure
+        // both remove it, so skipping the comparisons for a replay never resurrects erased state. The
+        // comparisons below are for what is still to be written.
+        CovenantMutationReceipt?[] replayed = new CovenantMutationReceipt?[batch.Intents.Length];
+
+        for (int index = 0; index < replayed.Length; index++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            Result<CovenantMutationReceipt?> resolved = await TryReplayAsync(
+                    transaction,
+                    batch.Intents[index],
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+            if (resolved.IsFailure)
+            {
+                return resolved.Error;
+            }
+
+            replayed[index] = resolved.Value;
+        }
+
+        // A batch with no intents has nothing to replay, which is not the same as every intent being a
+        // replay: `All` is vacuously true over an empty array, and answering from it would skip the
+        // comparisons below for a batch that is stale and has simply been handed nothing to write.
+        if (replayed.Length > 0 && replayed.All(static receipt => receipt is not null))
+        {
+            return replayed.Select(static receipt => receipt!).ToList();
+        }
+
         if (state.Value.DatasetGeneration != batch.DatasetGeneration)
         {
             return new Error(
@@ -94,7 +131,9 @@ internal sealed class CovenantMutationKernel(CovenantQuotaGuard quotas, IMemoryE
 
         // One capacity check per scope for the whole batch, before anything is appended. Checking
         // per intent would let two intents in the same batch each see room that only one can take.
+        // Only the intents still to be written are charged: a replayed one adds no row.
         foreach (IGrouping<(CovenantScope Kind, Guid Campaign), CovenantMutationIntent> group in batch.Intents
+            .Where((_, index) => replayed[index] is null)
             .GroupBy(static intent => (
                 intent.Target.Scope.Kind,
                 intent.Target.Scope.CampaignId ?? Guid.Empty)))
@@ -119,19 +158,13 @@ internal sealed class CovenantMutationKernel(CovenantQuotaGuard quotas, IMemoryE
 
         long searchSequence = 0;
 
-        foreach (CovenantMutationIntent intent in batch.Intents)
+        for (int index = 0; index < batch.Intents.Length; index++)
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            Result<CovenantMutationReceipt?> replayed = await TryReplayAsync(transaction, intent, cancellationToken)
-                .ConfigureAwait(false);
+            CovenantMutationIntent intent = batch.Intents[index];
 
-            if (replayed.IsFailure)
-            {
-                return replayed.Error;
-            }
-
-            if (replayed.Value is { } existing)
+            if (replayed[index] is { } existing)
             {
                 receipts.Add(existing);
 

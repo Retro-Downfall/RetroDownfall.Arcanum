@@ -10,6 +10,12 @@ using Microsoft.Extensions.DependencyInjection;
 
 using Microsoft.Extensions.DependencyInjection.Extensions;
 
+using RetroDownfall.Arcanum.Api.Intelligence;
+
+using RetroDownfall.Arcanum.Api.Intelligence.OpenAi;
+
+using RetroDownfall.Arcanum.Cli.Commands;
+
 using RetroDownfall.Arcanum.Cli.Infrastructure;
 
 using RetroDownfall.Arcanum.Core.Security;
@@ -299,6 +305,222 @@ public sealed class FileBatchCommandTests
         Assert.Contains("invalid", result.Error, StringComparison.OrdinalIgnoreCase);
     }
 
+    /// <summary>
+    /// R-341: the preflight judges a record's method by the host's own rule, so it cannot refuse a line
+    /// the host would process. The host compares the method without regard to case, so a lower-case
+    /// <c>post</c> passes both, and a method that is not POST fails both.
+    /// </summary>
+    [Theory]
+
+    [InlineData("POST", true)]
+
+    [InlineData("post", true)]
+
+    [InlineData("Post", true)]
+
+    [InlineData("PUT", false)]
+
+    [InlineData("GET", false)]
+
+    public async Task Batch_preflight_applies_the_hosts_method_rule(
+        string method,
+        bool accepted)
+    {
+        string path = WriteJsonl(
+            $"{{\"custom_id\":\"a\",\"method\":\"{method}\",\"url\":\"/v1/chat/completions\",\"body\":{{}}}}\n");
+
+        try
+        {
+            FileBatchCommands.BatchPreflightResult result = await FileBatchCommands.ValidateBatchJsonlAsync(
+                path,
+                BatchJsonlRules.MaxRecordBytes,
+                CancellationToken.None);
+
+            Assert.Equal(accepted, result.Success);
+
+            if (!accepted)
+            {
+                Assert.Contains("line 1", result.Message, StringComparison.Ordinal);
+
+                Assert.Contains("method must be POST", result.Message, StringComparison.Ordinal);
+            }
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    /// <summary>
+    /// R-341: a record is measured in the bytes the host measures. An emoji is four UTF-8 bytes, so a
+    /// line made of them that fits the limit exactly is accepted rather than counted as six bytes each and
+    /// refused at two thirds of the host's limit.
+    /// </summary>
+    [Fact]
+
+    public async Task Batch_preflight_counts_a_surrogate_pair_as_four_bytes()
+    {
+        string line =
+            "{\"custom_id\":\"a\",\"method\":\"POST\",\"url\":\"/v1/chat/completions\",\"body\":{\"p\":\""
+            + string.Concat(Enumerable.Repeat("\U0001F600", 64))
+            + "\"}}";
+
+        long exactBytes = Encoding.UTF8.GetByteCount(line);
+
+        string path = WriteJsonl(line + "\n");
+
+        try
+        {
+            FileBatchCommands.BatchPreflightResult atTheLimit = await FileBatchCommands.ValidateBatchJsonlAsync(
+                path,
+                maxRecordBytes: exactBytes,
+                CancellationToken.None);
+
+            Assert.True(atTheLimit.Success, atTheLimit.Message);
+
+            FileBatchCommands.BatchPreflightResult oneByteOver = await FileBatchCommands.ValidateBatchJsonlAsync(
+                path,
+                maxRecordBytes: exactBytes - 1,
+                CancellationToken.None);
+
+            Assert.False(oneByteOver.Success);
+
+            Assert.Contains("line 1", oneByteOver.Message, StringComparison.Ordinal);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    /// <summary>
+    /// R-341: cancellation is observed inside a very long line, not only between lines, so Ctrl+C does not
+    /// wait for a 64 MiB record to finish scanning.
+    /// </summary>
+    [Fact]
+
+    public void Batch_preflight_observes_cancellation_inside_a_long_line()
+    {
+        using CancellationTokenSource cancellation = new();
+
+        using CancelsAfterReadsStream stream = new(cancellation, readsBeforeCancel: 2);
+
+        using StreamReader reader = new(stream, Encoding.UTF8);
+
+        _ = Assert.ThrowsAny<OperationCanceledException>(
+            () => FileBatchCommands.ReadBoundedLine(
+                reader,
+                maxRecordBytes: long.MaxValue,
+                cancellation.Token));
+
+        Assert.True(stream.Reads >= 2);
+    }
+
+    /// <summary>
+    /// A long run of non-newline bytes (a quarter of a megabyte, then end of input) that cancels a token
+    /// once it has been read a few times, so a scan that ignores the token ends instead of hanging.
+    /// </summary>
+    private sealed class CancelsAfterReadsStream(
+        CancellationTokenSource cancellation,
+        int readsBeforeCancel) : Stream
+    {
+        private const int MaxReads = 64;
+
+        public int Reads { get; private set; }
+
+        public override bool CanRead => true;
+
+        public override bool CanSeek => false;
+
+        public override bool CanWrite => false;
+
+        public override long Length => throw new NotSupportedException();
+
+        public override long Position
+        {
+            get => throw new NotSupportedException();
+            set => throw new NotSupportedException();
+        }
+
+        public override int Read(byte[] buffer, int offset, int count)
+        {
+            if (Reads >= MaxReads)
+            {
+                return 0;
+            }
+
+            Reads++;
+
+            if (Reads >= readsBeforeCancel)
+            {
+                cancellation.Cancel();
+            }
+
+            Array.Fill(buffer, (byte)'a', offset, count);
+
+            return count;
+        }
+
+        public override void Flush()
+        {
+        }
+
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+
+        public override void SetLength(long value) => throw new NotSupportedException();
+
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+    }
+
+    [Fact]
+
+    public async Task Batch_preflight_refuses_a_record_over_the_per_record_limit()
+    {
+        string path = WriteJsonl(
+            "{\"custom_id\":\"a\",\"method\":\"POST\",\"url\":\"/v1/chat/completions\",\"body\":{\"pad\":\""
+            + new string('y', 400)
+            + "\"}}\n");
+
+        try
+        {
+            FileBatchCommands.BatchPreflightResult result = await FileBatchCommands.ValidateBatchJsonlAsync(
+                path,
+                maxRecordBytes: 128,
+                CancellationToken.None);
+
+            Assert.False(result.Success);
+
+            Assert.Contains("line 1", result.Message, StringComparison.Ordinal);
+
+            Assert.Contains("128-byte", result.Message, StringComparison.Ordinal);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
+
+    public async Task Batch_preflight_accepts_records_at_or_under_the_limit()
+    {
+        string path = WriteJsonl(ValidJsonl);
+
+        try
+        {
+            FileBatchCommands.BatchPreflightResult result = await FileBatchCommands.ValidateBatchJsonlAsync(
+                path,
+                maxRecordBytes: 4096,
+                CancellationToken.None);
+
+            Assert.True(result.Success, result.Message);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
     [Fact]
 
     public void Batch_preflight_reports_the_malformed_jsonl_line_number()
@@ -436,6 +658,74 @@ public sealed class FileBatchCommandTests
         {
             Directory.Delete(directory, recursive: true);
         }
+    }
+
+    /// <summary>
+    /// A destination the runtime cannot normalise (an embedded NUL here; a reserved character on
+    /// Windows) used to escape the command's own <c>Path.GetFullPath</c> as an unhandled exception and
+    /// exit 1 as "An unexpected CLI error occurred." It is a destination the operator can fix, so it is
+    /// the same typed <c>Files.WriteFailed</c> the client reports for a bad destination, and nothing is
+    /// downloaded.
+    /// </summary>
+    [Fact]
+
+    public void File_download_to_a_path_that_cannot_be_normalised_reports_a_write_failure()
+    {
+        RecordingHandler handler = new(_ => JsonResponse(FileJson));
+
+        CliTestResult result = RunCommand(
+            handler,
+            ["file", "download", FileId, "--output", "bad\0name.jsonl"]);
+
+        Assert.Equal(1, result.ExitCode);
+
+        Assert.Contains("Files.WriteFailed", result.Error, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("unexpected CLI error", result.Error, StringComparison.Ordinal);
+
+        Assert.DoesNotContain(
+            handler.Requests,
+            static request => request.Path.EndsWith("/content", StringComparison.Ordinal));
+    }
+
+    [Fact]
+
+    public void Batch_output_to_a_path_that_cannot_be_normalised_reports_a_write_failure()
+    {
+        RecordingHandler handler = new(_ => JsonResponse(BatchJsonWithArtifacts("file-33333333333333333333333333333333", null)));
+
+        CliTestResult result = RunCommand(
+            handler,
+            ["batch", "output", BatchId, "--output", "bad\0name.jsonl"]);
+
+        Assert.Equal(1, result.ExitCode);
+
+        Assert.Contains("Files.WriteFailed", result.Error, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("unexpected CLI error", result.Error, StringComparison.Ordinal);
+
+        Assert.DoesNotContain(
+            handler.Requests,
+            static request => request.Path.EndsWith("/content", StringComparison.Ordinal));
+    }
+
+    [Fact]
+
+    public void File_upload_of_a_path_that_cannot_be_normalised_reports_it_as_not_found()
+    {
+        RecordingHandler handler = new();
+
+        CliTestResult result = RunCommand(
+            handler,
+            ["file", "upload", "bad\0name.jsonl"]);
+
+        Assert.Equal(1, result.ExitCode);
+
+        Assert.Contains("Local file not found", result.Error, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("unexpected CLI error", result.Error, StringComparison.Ordinal);
+
+        Assert.Empty(handler.Requests);
     }
 
     [Fact]

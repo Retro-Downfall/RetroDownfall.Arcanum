@@ -288,7 +288,7 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
 
         _ = await store.CreateAsync(
             new LongRunningOperationCreateRequest(
-                Kind: LongRunningOperationKinds.WorkspaceIndex,
+                Kind: LongRunningOperationKinds.BlobEncryptionMigration,
                 RecoveryPolicy: LongRunningOperationRecoveryPolicy.RestartIdempotently,
                 PublicSummary: "Reference spelling test.",
                 CreatedAt: now,
@@ -465,7 +465,7 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
 
         LongRunningOperation unrelated = await firstStore.CreateAsync(
             new LongRunningOperationCreateRequest(
-                LongRunningOperationKinds.WorkspaceIndex,
+                LongRunningOperationKinds.BlobEncryptionMigration,
                 LongRunningOperationRecoveryPolicy.RestartIdempotently,
                 "Index an unrelated workspace.",
                 now));
@@ -839,6 +839,76 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
         Assert.True(renewed);
     }
 
+    /// <summary>
+    /// The anonymous A2A callback route resolves its config id through this filter, so the SQL has to
+    /// compare the stored reference exactly and combine with the kind and state filters — the ledger test
+    /// reaches it only through the ledger, which would also pass if every row came back.
+    /// </summary>
+    [SkippableFact]
+    public async Task ListAsync_CheckpointReference_returns_only_the_rows_carrying_exactly_that_reference()
+    {
+        RequireSqlCipher();
+
+        LongRunningOperationStore store = Store(_db!);
+
+        DateTimeOffset now = new(2026, 10, 5, 12, 0, 0, TimeSpan.Zero);
+
+        LongRunningOperation wanted = await CreateAsync(store, now);
+
+        LongRunningOperation other = await CreateAsync(store, now.AddSeconds(1));
+
+        LongRunningOperation unreferenced = await CreateAsync(store, now.AddSeconds(2));
+
+        foreach ((LongRunningOperation operation, string reference) in new[]
+                 {
+                     (wanted, "a2a-callback:wanted"),
+                     (other, "a2a-callback:other"),
+                 })
+        {
+            _ = await store.TryAcquireLeaseAsync(operation.Id, "worker", now, now.AddMinutes(1));
+
+            Assert.True(await store.SaveCheckpointAsync(
+                operation.Id,
+                "worker",
+                expectedCheckpointVersion: 0,
+                checkpointVersion: 1,
+                checkpointPayload: [1],
+                checkpointReference: reference,
+                publicSummary: "Awaiting a callback.",
+                now.AddSeconds(5)));
+        }
+
+        LongRunningOperation match = Assert.Single(await store.ListAsync(
+            new LongRunningOperationQuery(CheckpointReference: "a2a-callback:wanted")));
+
+        Assert.Equal(wanted.Id, match.Id);
+
+        // An exact comparison: a prefix, another case and a reference nobody wrote match nothing.
+        Assert.Empty(await store.ListAsync(new LongRunningOperationQuery(CheckpointReference: "a2a-callback:")));
+
+        Assert.Empty(await store.ListAsync(new LongRunningOperationQuery(CheckpointReference: "A2A-CALLBACK:WANTED")));
+
+        Assert.Empty(await store.ListAsync(new LongRunningOperationQuery(CheckpointReference: "a2a-callback:missing")));
+
+        // The reference narrows alongside the other filters rather than replacing them.
+        Assert.Single(await store.ListAsync(new LongRunningOperationQuery(
+            LongRunningOperationKinds.BlobEncryptionMigration,
+            CheckpointReference: "a2a-callback:wanted")));
+
+        Assert.Empty(await store.ListAsync(new LongRunningOperationQuery(
+            LongRunningOperationKinds.A2AOutboundSending,
+            CheckpointReference: "a2a-callback:wanted")));
+
+        // No reference — null or empty — is no filter, rows without a reference included.
+        Assert.Equal(
+            3,
+            (await store.ListAsync(new LongRunningOperationQuery(CheckpointReference: string.Empty))).Count);
+
+        Assert.Contains(
+            await store.ListAsync(new LongRunningOperationQuery()),
+            operation => operation.Id == unreferenced.Id);
+    }
+
     [SkippableFact]
     public async Task SaveCheckpointAsync_IsMonotonicAndRejectsDuplicateVersion()
     {
@@ -1194,9 +1264,9 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
         LongRunningOperation parent = await CreateAsync(store, now);
 
         LongRunningOperation child = await store.CreateAsync(new LongRunningOperationCreateRequest(
-            Kind: LongRunningOperationKinds.Apprentice,
-            RecoveryPolicy: LongRunningOperationRecoveryPolicy.ResumeFromCheckpoint,
-            PublicSummary: "Child apprentice recovery.",
+            Kind: LongRunningOperationKinds.Subagent,
+            RecoveryPolicy: LongRunningOperationRecoveryPolicy.AbandonSafely,
+            PublicSummary: "Child subagent recovery.",
             CreatedAt: now.AddSeconds(1),
             RootOperationId: parent.Id,
             ParentOperationId: parent.Id,
@@ -1229,7 +1299,7 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
             "dead-host",
             now.AddMinutes(-5),
             now.AddMinutes(-4));
-        CompletingRecoveryHandler handler = new(LongRunningOperationKinds.WorkspaceIndex);
+        CompletingRecoveryHandler handler = new(LongRunningOperationKinds.BlobEncryptionMigration);
         LongRunningOperationReconciler reconciler = new(
             store,
             [handler],
@@ -1274,7 +1344,7 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
                 now.AddMinutes(-4));
         }
 
-        CompletingRecoveryHandler handler = new(LongRunningOperationKinds.WorkspaceIndex);
+        CompletingRecoveryHandler handler = new(LongRunningOperationKinds.BlobEncryptionMigration);
 
         LongRunningOperationReconciler reconciler = new(
             store,
@@ -1317,7 +1387,7 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
             checkpointReference: null,
             publicSummary: "Safe checkpoint summary.",
             now.AddMinutes(-4));
-        ThrowingRecoveryHandler handler = new(LongRunningOperationKinds.WorkspaceIndex, supportedCheckpointVersion: 1);
+        ThrowingRecoveryHandler handler = new(LongRunningOperationKinds.BlobEncryptionMigration, supportedCheckpointVersion: 1);
         LongRunningOperationReconciler reconciler = new(
             store,
             [handler],
@@ -1344,7 +1414,7 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
             "dead-host",
             now.AddMinutes(-3),
             now.AddMinutes(-2));
-        ThrowingRecoveryHandler corruptHandler = new(LongRunningOperationKinds.WorkspaceIndex, supportedCheckpointVersion: 0);
+        ThrowingRecoveryHandler corruptHandler = new(LongRunningOperationKinds.BlobEncryptionMigration, supportedCheckpointVersion: 0);
         LongRunningOperationReconciler corruptReconciler = new(
             store,
             [corruptHandler],
@@ -1519,29 +1589,6 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
     }
 
     [SkippableFact]
-    public async Task BudgetReservationRecovery_ReleasesStrandedReservationIdempotently()
-    {
-        RequireSqlCipher();
-        LongRunningOperationStore store = Store(_db!);
-        Guid reservationId = Guid.NewGuid();
-        LongRunningOperation operation = await store.CreateAsync(new LongRunningOperationCreateRequest(
-            LongRunningOperationKinds.BudgetReservation,
-            LongRunningOperationRecoveryPolicy.ReconcileAndComplete,
-            "Release stranded reservation.",
-            DateTimeOffset.UtcNow,
-            BudgetReservationId: reservationId));
-        RecordingBudgetReservationService reservations = new();
-        BudgetReservationRecoveryHandler handler = new(reservations);
-
-        LongRunningOperationRecoveryResult first = await handler.RecoverAsync(operation, default);
-        LongRunningOperationRecoveryResult duplicate = await handler.RecoverAsync(operation, default);
-
-        Assert.Equal(LongRunningOperationState.Completed, first.State);
-        Assert.Equal(LongRunningOperationState.Completed, duplicate.State);
-        Assert.Equal([reservationId, reservationId], reservations.Released);
-    }
-
-    [SkippableFact]
     public async Task Classified_recovery_claim_is_one_exact_compare_exchange_returning_the_claimed_row()
     {
         RequireSqlCipher();
@@ -1564,7 +1611,7 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
         foreach (LongRunningOperationRecoveryFingerprint drifted in new[]
         {
             fingerprint with { Revision = fingerprint.Revision + 1 },
-            fingerprint with { Kind = LongRunningOperationKinds.Batch },
+            fingerprint with { Kind = LongRunningOperationKinds.Subagent },
             fingerprint with { CheckpointVersion = fingerprint.CheckpointVersion + 1 },
         })
         {
@@ -1650,7 +1697,7 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
         LongRunningOperationStore store,
         DateTimeOffset createdAt) =>
         store.CreateAsync(new LongRunningOperationCreateRequest(
-            Kind: LongRunningOperationKinds.WorkspaceIndex,
+            Kind: LongRunningOperationKinds.BlobEncryptionMigration,
             RecoveryPolicy: LongRunningOperationRecoveryPolicy.RestartIdempotently,
             PublicSummary: "Indexing workspace.",
             CreatedAt: createdAt));
@@ -1722,46 +1769,5 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
             CallCount++;
             throw new InvalidDataException("checkpoint could not be decoded");
         }
-    }
-
-    private sealed class RecordingBudgetReservationService : IBudgetReservationService
-    {
-        public List<Guid> Released { get; } = [];
-
-        public Task<Result<BudgetReservation>> ReserveAsync(
-            BudgetReservationRequest request,
-            CancellationToken cancellationToken = default) =>
-            throw new NotSupportedException();
-
-        public Task<Result> AdjustAsync(
-            Guid reservationId,
-            decimal reservedUsd,
-            CancellationToken cancellationToken = default) =>
-            throw new NotSupportedException();
-
-        public Task ReconcileAsync(
-            Guid reservationId,
-            decimal actualCostUsd,
-            CancellationToken cancellationToken = default) =>
-            throw new NotSupportedException();
-
-        public Task ReleaseAsync(
-            Guid reservationId,
-            CancellationToken cancellationToken = default)
-        {
-            Released.Add(reservationId);
-            return Task.CompletedTask;
-        }
-
-        public Task<decimal> GetTodayCommittedSpendAsync(CancellationToken cancellationToken = default) =>
-            Task.FromResult(0m);
-
-        public Task<decimal> GetTodayOutstandingReservationsAsync(CancellationToken cancellationToken = default) =>
-            Task.FromResult(0m);
-
-        public Task<int> SweepExpiredAsync(
-            DateTimeOffset utcNow,
-            CancellationToken cancellationToken = default) =>
-            Task.FromResult(0);
     }
 }

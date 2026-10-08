@@ -20,18 +20,15 @@ namespace RetroDownfall.Arcanum.Secrets.Security;
 /// </remarks>
 internal sealed class CredentialSecretBuffer : IDisposable
 {
-
     private nint _pointer;
 
     private readonly int _byteCount;
 
     private CredentialSecretBuffer(nint pointer, int byteCount)
     {
-
         _pointer = pointer;
 
         _byteCount = byteCount;
-
     }
 
     /// <summary>The unmanaged block holding the encoded secret. <see cref="nint.Zero"/> once disposed.</summary>
@@ -43,7 +40,6 @@ internal sealed class CredentialSecretBuffer : IDisposable
     /// <summary>Encodes <paramref name="secret"/> as UTF-16 and copies it into unmanaged memory.</summary>
     internal static CredentialSecretBuffer FromUtf16(string secret)
     {
-
         ArgumentNullException.ThrowIfNull(secret);
 
         byte[] encoded = Encoding.Unicode.GetBytes(secret);
@@ -54,27 +50,20 @@ internal sealed class CredentialSecretBuffer : IDisposable
 
         try
         {
-
             Marshal.Copy(encoded, 0, pointer, encoded.Length);
-
         }
         catch
         {
-
             Marshal.FreeHGlobal(pointer);
 
             throw;
-
         }
         finally
         {
-
             Array.Clear(encoded);
-
         }
 
         return new CredentialSecretBuffer(pointer, encoded.Length);
-
     }
 
     /// <summary>Overwrites the secret in place. Exposed so a test can observe the zeroing Dispose performs.</summary>
@@ -82,14 +71,11 @@ internal sealed class CredentialSecretBuffer : IDisposable
 
     public void Dispose()
     {
-
         nint pointer = _pointer;
 
         if (pointer == nint.Zero)
         {
-
             return;
-
         }
 
         Zero();
@@ -97,26 +83,18 @@ internal sealed class CredentialSecretBuffer : IDisposable
         _pointer = nint.Zero;
 
         Marshal.FreeHGlobal(pointer);
-
     }
 
     private void Zero()
     {
-
         if (_pointer == nint.Zero || _byteCount <= 0)
         {
-
             return;
-
         }
 
         unsafe
         {
-
             new Span<byte>((void*)_pointer, _byteCount).Clear();
-
         }
-
     }
-
 }

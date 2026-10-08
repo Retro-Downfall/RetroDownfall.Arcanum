@@ -140,39 +140,11 @@ public sealed class ApprenticeCheckpointDelegationChainTests
                 0,
                 "needs a Dungeon Master",
                 false,
-                CancellationToken.None,
             ])!;
 
         await task.WaitAsync(TimeSpan.FromSeconds(15));
 
         Assert.Equal(InboundChain, ChainOf(repo.Get(apprenticeId)));
-    }
-
-    [Fact]
-    public async Task ResumeCrashRecoveryAsync_PreservesDelegationChainWhileEscalatingInterruptedPlanning()
-    {
-        Guid apprenticeId = Guid.NewGuid();
-
-        Apprentice apprentice = DelegatedApprentice(apprenticeId, ApprenticeStatus.Planning);
-
-        RecordingApprenticeRepository repo = new(apprentice);
-
-        ApprenticeService service = CreateService(repo);
-
-        MethodInfo? method = typeof(ApprenticeService)
-            .GetMethod("ResumeCrashRecoveryAsync", BindingFlags.NonPublic | BindingFlags.Instance);
-
-        Assert.NotNull(method);
-
-        Task task = (Task)method!.Invoke(service, new object?[] { CancellationToken.None })!;
-
-        await task.WaitAsync(TimeSpan.FromSeconds(15));
-
-        Apprentice persisted = repo.Get(apprenticeId);
-
-        Assert.Equal(ApprenticeStatus.Escalated.ToString(), persisted.Status);
-
-        Assert.Equal(InboundChain, ChainOf(persisted));
     }
 
     /// <summary>
@@ -243,13 +215,11 @@ public sealed class ApprenticeCheckpointDelegationChainTests
             service,
             [
                 repo,
-                apprentice,
-                ApprenticeRepository.DeserializePlan(apprentice.Plan),
                 0,
+                apprentice.Plan,
                 "step one done",
                 12L,
                 apprenticeId,
-                CancellationToken.None,
             ])!;
 
         await task.WaitAsync(TimeSpan.FromSeconds(15));
@@ -354,19 +324,57 @@ public sealed class ApprenticeCheckpointDelegationChainTests
             return Task.FromResult(apprentice);
         }
 
+        public async Task<bool> UpdateProgressAsync(
+            Apprentice apprentice,
+            string expectedPlan,
+            int expectedCurrentStep,
+            CancellationToken cancellationToken = default)
+        {
+            _ = await UpdateAsync(apprentice, cancellationToken);
+
+            return true;
+        }
+
+        public Task<bool> BindSessionAsync(Guid id, Guid sessionId, CancellationToken cancellationToken = default)
+        {
+            if (!_store.TryGetValue(id, out Apprentice? stored) || stored.SessionId is not null)
+            {
+                return Task.FromResult(false);
+            }
+            stored.SessionId = sessionId;
+
+            return Task.FromResult(true);
+        }
+
+        public async Task<bool> TryUpdateAsync(
+            Apprentice apprentice,
+            IReadOnlyCollection<string> expectedStatuses,
+            int expectedCurrentStep,
+            CancellationToken cancellationToken = default)
+        {
+            _ = await UpdateAsync(apprentice, cancellationToken);
+
+            return true;
+        }
+
+        public Task<bool> TryUpdateStatusAsync(
+            Guid id,
+            string status,
+            IReadOnlyCollection<string> expectedStatuses,
+            CancellationToken cancellationToken = default)
+        {
+            if (!_store.TryGetValue(id, out Apprentice? stored)
+                || !expectedStatuses.Contains(stored.Status, StringComparer.Ordinal))
+            {
+                return Task.FromResult(false);
+            }
+            stored.Status = status;
+
+            return Task.FromResult(true);
+        }
+
         public Task<IReadOnlyList<Apprentice>> GetResumableAsync(CancellationToken cancellationToken = default) =>
             Task.FromResult<IReadOnlyList<Apprentice>>([]);
-
-        public Task<IReadOnlyList<Apprentice>> GetInterruptedPlanningAsync(CancellationToken cancellationToken = default)
-        {
-            string planning = ApprenticeStatus.Planning.ToString();
-
-            IReadOnlyList<Apprentice> interrupted = _store.Values
-                .Where(a => string.Equals(a.Status, planning, StringComparison.Ordinal))
-                .ToList();
-
-            return Task.FromResult(interrupted);
-        }
 
         public Task<bool> DeleteAsync(Guid id, CancellationToken cancellationToken = default) =>
             Task.FromResult(_store.Remove(id));

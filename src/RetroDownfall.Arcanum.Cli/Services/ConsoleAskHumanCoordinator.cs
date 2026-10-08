@@ -305,7 +305,8 @@ internal sealed class ConsoleAskHumanCoordinator
     private async Task RunInteractiveRaceAsync(PendingHitl pending, CancellationToken cancellationToken)
     {
         string promptMarkup =
-            $"\n{_palette.HeadingBoldMarkup(Markup.Escape("Mage asks:"))} {Markup.Escape(pending.Question)} ";
+            $"\n{_palette.HeadingBoldMarkup(Markup.Escape("Mage asks:"))} "
+            + $"{Markup.Escape(TerminalTextSanitizer.SanitizeLine(pending.Question))} ";
 
         using CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         Task<string?> inputTask = _readLineAsync(promptMarkup, false, linked.Token);

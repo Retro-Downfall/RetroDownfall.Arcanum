@@ -6,22 +6,18 @@ namespace RetroDownfall.Arcanum.Core.Storage;
 [JsonConverter(typeof(JsonStringEnumConverter<SessionAttachmentKind>))]
 public enum SessionAttachmentKind
 {
-
     Text,
 
     Image,
 
     Binary,
-
 }
 
 public enum SessionAttachmentState
 {
-
     Pending,
 
     Bound,
-
 }
 
 public enum AttachmentSourceKind
@@ -148,9 +144,18 @@ public sealed record SessionAttachmentRefreshPersistence(
     SessionAttachmentRecord Record,
     bool NewVersionCreated);
 
+/// <summary>
+/// The row <see cref="ISessionAttachmentStore.PersistNewWithOutcomeAsync"/> returned and whether this
+/// call created it. <see cref="NewVersionCreated"/> is <see langword="false"/> when an identical latest
+/// version already existed and was reused, so a caller that rolls back its own work never removes a
+/// row it did not create.
+/// </summary>
+public sealed record SessionAttachmentPersistence(
+    SessionAttachmentRecord Record,
+    bool NewVersionCreated);
+
 public interface ISessionAttachmentStore
 {
-
     Task<SessionAttachmentRecord> PersistNewAsync(
         Guid? sessionId,
         string? pendingTurnId,
@@ -160,6 +165,33 @@ public interface ISessionAttachmentStore
         ReadOnlyMemory<byte> bytes,
         string mimeType,
         SessionAttachmentKind kind,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Persists exactly as <see cref="PersistNewAsync"/> and also reports whether this call created the
+    /// row. Required of every store: a store that cannot tell must report
+    /// <see cref="SessionAttachmentPersistence.NewVersionCreated"/> as <see langword="false"/>, so a
+    /// caller never deletes rows on its behalf.
+    /// </summary>
+    Task<SessionAttachmentPersistence> PersistNewWithOutcomeAsync(
+        Guid? sessionId,
+        string? pendingTurnId,
+        Guid? entryId,
+        string logicalNameHint,
+        string originalFileName,
+        ReadOnlyMemory<byte> bytes,
+        string mimeType,
+        SessionAttachmentKind kind,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Removes a row (and its blob) that <see cref="PersistNewWithOutcomeAsync"/> reported as created,
+    /// so a turn that fails after persisting leaves nothing behind. Returns <see langword="true"/> only
+    /// when the row was removed; a row that has since been promoted or rewritten is left alone. Required
+    /// of every store, so an implementer cannot silently opt out of the rollback.
+    /// </summary>
+    Task<bool> DeleteCreatedAttachmentAsync(
+        SessionAttachmentRecord created,
         CancellationToken cancellationToken = default);
 
     Task<SessionAttachmentRecord> PersistNewFromSourceAsync(
@@ -220,7 +252,6 @@ public interface ISessionAttachmentStore
         int pageSize = 128,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
-
         int effectivePageSize = Math.Clamp(pageSize, 1, 512);
 
         IReadOnlyList<SessionAttachmentRecord> rows = await ListBoundAsync(
@@ -229,16 +260,13 @@ public interface ISessionAttachmentStore
 
         for (int offset = 0; offset < rows.Count; offset += effectivePageSize)
         {
-
             cancellationToken.ThrowIfCancellationRequested();
 
             yield return rows
                 .Skip(offset)
                 .Take(effectivePageSize)
                 .ToArray();
-
         }
-
     }
 
     /// <summary>
@@ -263,12 +291,10 @@ public interface ISessionAttachmentStore
         IReadOnlyList<string> logicalKeys,
         CancellationToken cancellationToken = default)
     {
-
         ArgumentNullException.ThrowIfNull(logicalKeys);
 
         if (logicalKeys.Count == 0)
         {
-
             return [];
         }
 
@@ -286,13 +312,11 @@ public interface ISessionAttachmentStore
 
         foreach (string logicalKey in logicalKeys)
         {
-
             if (emitted.Add(logicalKey)
                 && byLogicalKey.TryGetValue(
                     logicalKey,
                     out SessionAttachmentRecord? row))
             {
-
                 selected.Add(row);
             }
         }
@@ -301,7 +325,6 @@ public interface ISessionAttachmentStore
     }
 
     Task<IReadOnlyList<SessionAttachmentRecord>> RevalidateBoundSourcesAsync(
-
         Guid sessionId,
 
         CancellationToken cancellationToken = default) =>
@@ -392,5 +415,4 @@ public interface ISessionAttachmentStore
         Guid forkSessionId,
         IReadOnlyList<SessionAttachmentForkCopyPlan> plans,
         CancellationToken cancellationToken = default);
-
 }

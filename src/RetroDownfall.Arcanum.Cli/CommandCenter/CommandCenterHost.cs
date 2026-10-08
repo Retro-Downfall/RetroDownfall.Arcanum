@@ -67,7 +67,83 @@ internal sealed class CommandCenterHost(
     internal const string StartFailureMessage =
         "Command Center failed to start. Try `arcanum run` or another direct command.";
 
-    private PendingConfirm? _pendingConfirm;
+    /// <summary>
+    /// Diagnostic for a Command Center that started and then failed while it was running, kept apart from
+    /// <see cref="StartFailureMessage"/> so a session that was working is not reported as one that never opened.
+    /// </summary>
+    internal const string RuntimeFailureMessage =
+        "Command Center stopped unexpectedly. Try `arcanum run` or another direct command.";
+
+    /// <summary>
+    /// The diagnostic for a failure code <see cref="CommandCenterApp.Run"/> returned, or
+    /// <see langword="null"/> when the code is an ordinary exit code.
+    /// </summary>
+    internal static string? DescribeAppRunFailure(int appRunCode, int detectedCols, int detectedRows) =>
+        appRunCode switch
+        {
+            CommandCenterApp.TooSmall => DescribeTerminalTooSmall(detectedCols, detectedRows),
+            CommandCenterApp.StartFailed => StartFailureMessage,
+            CommandCenterApp.CrashedAfterStart => RuntimeFailureMessage,
+            _ => null,
+        };
+
+    /// <summary>
+    /// Runs the terminal UI's main loop with the lifecycle around it that has to hold whatever happens.
+    /// </summary>
+    /// <remarks>
+    /// <paramref name="externalToken"/> is the process-level token (SIGTERM or SIGHUP): cancelling it asks
+    /// the loop to stop through <paramref name="invokeOnUiThread"/>, because Terminal.Gui only accepts a
+    /// stop request on its own thread. The <c>finally</c> cancels <paramref name="runCancellation"/> and
+    /// runs <paramref name="cleanup"/> on every exit, including a loop that throws, so the UI pump, the
+    /// thinking timer and the human-prompt callbacks never outlive the terminal UI that owned them.
+    /// </remarks>
+    internal static void RunTerminalLoop(
+        CancellationToken externalToken,
+        CancellationTokenSource runCancellation,
+        Action<Action> invokeOnUiThread,
+        Action requestStop,
+        Action runLoop,
+        Action cleanup)
+    {
+        ArgumentNullException.ThrowIfNull(runCancellation);
+        ArgumentNullException.ThrowIfNull(invokeOnUiThread);
+        ArgumentNullException.ThrowIfNull(requestStop);
+        ArgumentNullException.ThrowIfNull(runLoop);
+        ArgumentNullException.ThrowIfNull(cleanup);
+
+        try
+        {
+            // Cancelled between start-up and the loop: a stop request sent before the loop exists would
+            // be dropped, so do not enter it at all.
+            if (externalToken.IsCancellationRequested)
+            {
+                return;
+            }
+
+            using CancellationTokenRegistration stopOnCancel = externalToken.Register(() =>
+            {
+                try
+                {
+                    invokeOnUiThread(requestStop);
+                }
+                catch (Exception)
+                {
+                    // The loop is already ending or ended, and the canceller (a signal handler) has
+                    // nowhere to put an exception.
+                }
+            });
+
+            runLoop();
+        }
+        finally
+        {
+            runCancellation.Cancel();
+            cleanup();
+        }
+    }
+
+    // Written by gated actions on thread-pool threads and read by key handlers on the UI thread.
+    private volatile PendingConfirm? _pendingConfirm;
 
     private readonly SemaphoreSlim _actionGate = new(1, 1);
 
@@ -103,35 +179,17 @@ internal sealed class CommandCenterHost(
         Channel<CommandCenterUiUpdate> uiChannel = Channel.CreateUnbounded<CommandCenterUiUpdate>(
             new UnboundedChannelOptions { SingleReader = true, SingleWriter = false });
 
+        // One token for the whole run. The caller's token (SIGTERM or SIGHUP through the launch, or an
+        // `open` command) feeds it, and so does Ctrl+C while start-up is still running.
+        using CancellationTokenSource runCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        CancellationToken hostToken = runCancellation.Token;
+
         try
         {
-            ServeLaunchResult launch = await serveLauncher
-                .EnsureRunningAsync(cancellationToken)
-                .ConfigureAwait(false);
-            state.ServeLaunch = launch;
-            state.HealthSummary = launch.Guidance;
-
-            if (!ServeOwnershipPolicy.CanProceed(launch))
+            int? startupExitCode = await StartUpAsync(state, startupSessionId, runCancellation).ConfigureAwait(false);
+            if (startupExitCode is { } earlyExitCode)
             {
-                consoleDispatcher.WriteDiagnostic(
-                    launch.Guidance
-                        ?? "Arcanum could not start or authenticate its local server.");
-
-                return (int)ServeOwnershipPolicy.FailureExitCode(launch);
-            }
-
-            await dispatcher.RefreshMcpAsync(state, cancellationToken).ConfigureAwait(false);
-            if (startupSessionId is { } sessionId)
-            {
-                _ = await sessionWorkspace
-                    .ResumeSessionAsync(state, sessionId, cancellationToken)
-                    .ConfigureAwait(false);
-            }
-            else
-            {
-                await sessionWorkspace
-                    .RestoreStartupSessionAsync(state, cancellationToken)
-                    .ConfigureAwait(false);
+                return earlyExitCode;
             }
 
             int tgCode = commandCenterApp.Run(
@@ -208,39 +266,18 @@ internal sealed class CommandCenterHost(
                         });
                     });
 
-                using CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                using CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(hostToken);
                 CancellationToken runToken = linked.Token;
 
                 attachmentDriftMonitor.Start(state, uiChannel.Writer, runToken);
 
                 Task pump = Task.Run(
-                    async () =>
-                    {
-                        try
-                        {
-                            List<CommandCenterUiUpdateKind> queued = new();
-                            await foreach (CommandCenterUiUpdate update in uiChannel.Reader.ReadAllAsync(runToken).ConfigureAwait(false))
-                            {
-                                // Drain whatever else arrived while the UI thread was busy and collapse
-                                // it, so a burst of streaming flushes costs one pane rebuild, not one
-                                // per flush.
-                                queued.Clear();
-                                queued.Add(update.Kind);
-                                while (uiChannel.Reader.TryRead(out CommandCenterUiUpdate? pending))
-                                {
-                                    queued.Add(pending.Kind);
-                                }
-
-                                foreach (CommandCenterUiUpdateKind kind in CommandCenterUiUpdatePump.Coalesce(queued))
-                                {
-                                    app.Invoke(() => window.ApplyState(state, kind: kind));
-                                }
-                            }
-                        }
-                        catch (OperationCanceledException)
-                        {
-                        }
-                    },
+                    () => CommandCenterUiUpdatePump.RunAsync(
+                        uiChannel.Reader,
+                        work => app.Invoke(work),
+                        kind => window.ApplyState(state, kind: kind),
+                        logger,
+                        runToken),
                     runToken);
 
                 void SubmitFromInput()
@@ -510,7 +547,7 @@ internal sealed class CommandCenterHost(
                     if (chord.IsEnter && chord.IsCtrl)
                     {
                         e.Handled = true;
-                        CancellationToken submitToken = state.TurnCts?.Token ?? linked.Token;
+                        CancellationToken submitToken = state.TurnTokenOr(linked.Token);
                         _ = SubmitHumanPromptAsync(state, window, app, uiChannel.Writer, submitToken);
                         return;
                     }
@@ -596,42 +633,55 @@ internal sealed class CommandCenterHost(
 
                 StartThinkingTimer(app, window, state);
                 window.FocusInput(app);
-                app.Run(window);
 
-                StopThinkingTimer();
-                linked.Cancel();
-                humanPromptCoordinator.SetUiCallbacks(null, null, null);
-                uiChannel.Writer.TryComplete();
-                try
+                RunTerminalLoop(
+                    hostToken,
+                    linked,
+                    invokeOnUiThread: action => app.Invoke(action),
+                    requestStop: () => app.RequestStop(),
+                    runLoop: () => app.Run(window),
+                    cleanup: () =>
+                    {
+                        StopThinkingTimer();
+                        humanPromptCoordinator.SetUiCallbacks(null, null, null);
+                        uiChannel.Writer.TryComplete();
+                        try
+                        {
+                            pump.GetAwaiter().GetResult();
+                        }
+                        catch (OperationCanceledException)
+                        {
+                            // The pump ends by cancellation once the run token is cancelled.
+                        }
+                        catch (Exception ex)
+                        {
+                            // Nothing else observes the pump, so its fault is reported here.
+                            logger.LogError(ex, "The Command Center UI update pump failed.");
+                        }
+                    });
+
+                // The loop ended because the process was asked to stop, not because the operator quit.
+                if (hostToken.IsCancellationRequested && !state.RequestExit)
                 {
-                    pump.GetAwaiter().GetResult();
-                }
-                catch
-                {
+                    state.ExitCode = (int)CliExitCode.Cancelled;
                 }
 
                 return state.ExitCode;
             },
                 state.MonochromeTheme);
 
-            if (tgCode == -2)
+            if (DescribeAppRunFailure(
+                    tgCode,
+                    commandCenterApp.LastDetectedCols,
+                    commandCenterApp.LastDetectedRows) is { } failureMessage)
             {
-                Console.Error.WriteLine(
-                    DescribeTerminalTooSmall(
-                        commandCenterApp.LastDetectedCols,
-                        commandCenterApp.LastDetectedRows));
-                return 1;
-            }
-
-            if (tgCode == -1)
-            {
-                Console.Error.WriteLine(StartFailureMessage);
+                Console.Error.WriteLine(failureMessage);
                 return 1;
             }
 
             return state.RequestExit ? state.ExitCode : tgCode;
         }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        catch (OperationCanceledException) when (hostToken.IsCancellationRequested)
         {
             // Ctrl+C during startup (auto-serve readiness, MCP refresh, session restore) is a
             // cancellation, not a host failure: the CLI contract fixes it at 130 for every verb.
@@ -651,6 +701,70 @@ internal sealed class CommandCenterHost(
             await StopHostIfWeStartedItAsync(state).ConfigureAwait(false);
 
             _actionGate.Dispose();
+        }
+    }
+
+    /// <summary>
+    /// Everything that happens before the terminal UI opens: the auto-serve launch, the MCP refresh and
+    /// the session restore. Returns an exit code when start-up ends the run (the server cannot be used),
+    /// and <see langword="null"/> when the UI should open.
+    /// </summary>
+    /// <remarks>
+    /// Until the terminal UI owns the console, Ctrl+C is a signal rather than a key, so it cancels the
+    /// run and start-up unwinds to exit 130 with the usual cleanup. The handler is removed before the UI
+    /// opens: from then on Ctrl+C is the UI's own cancel-turn key.
+    /// </remarks>
+    private async Task<int?> StartUpAsync(
+        CommandCenterState state,
+        Guid? startupSessionId,
+        CancellationTokenSource runCancellation)
+    {
+        CancellationToken cancellationToken = runCancellation.Token;
+
+        CommandCenterStartUpInterrupt interrupt = new(() => runCancellation.Cancel());
+
+        // Cancel stays false for a later interrupt, so the default action ends a process whose start-up
+        // never looks at its token.
+        void OnInterrupt(object? sender, ConsoleCancelEventArgs e) => e.Cancel = interrupt.Absorb();
+
+        Console.CancelKeyPress += OnInterrupt;
+
+        try
+        {
+            ServeLaunchResult launch = await serveLauncher
+                .EnsureRunningAsync(cancellationToken)
+                .ConfigureAwait(false);
+            state.ServeLaunch = launch;
+            state.HealthSummary = launch.Guidance;
+
+            if (!ServeOwnershipPolicy.CanProceed(launch))
+            {
+                consoleDispatcher.WriteDiagnostic(
+                    launch.Guidance
+                        ?? "Arcanum could not start or authenticate its local server.");
+
+                return (int)ServeOwnershipPolicy.FailureExitCode(launch);
+            }
+
+            await dispatcher.RefreshMcpAsync(state, cancellationToken).ConfigureAwait(false);
+            if (startupSessionId is { } sessionId)
+            {
+                _ = await sessionWorkspace
+                    .ResumeSessionAsync(state, sessionId, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            else
+            {
+                await sessionWorkspace
+                    .RestoreStartupSessionAsync(state, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+
+            return null;
+        }
+        finally
+        {
+            Console.CancelKeyPress -= OnInterrupt;
         }
     }
 
@@ -689,7 +803,28 @@ internal sealed class CommandCenterHost(
         }
     }
 
-    private async Task RunGatedAsync(
+    /// <summary>
+    /// Runs a gated action that decides from window state: <paramref name="capture"/> runs first, before
+    /// the gate is awaited, so it runs on the caller's thread — the UI thread, when called from a key
+    /// handler — however long the gate stays contended. <paramref name="action"/> then receives the
+    /// captured values and never touches a view to learn them.
+    /// </summary>
+    internal async Task RunGatedAsync<TInput>(
+        CommandCenterState state,
+        ChannelWriter<CommandCenterUiUpdate> ui,
+        CancellationToken cancellationToken,
+        Func<TInput> capture,
+        Func<TInput, Task> action)
+    {
+        ArgumentNullException.ThrowIfNull(capture);
+        ArgumentNullException.ThrowIfNull(action);
+
+        TInput input = capture();
+
+        await RunGatedAsync(state, ui, cancellationToken, () => action(input)).ConfigureAwait(false);
+    }
+
+    internal async Task RunGatedAsync(
         CommandCenterState state,
         ChannelWriter<CommandCenterUiUpdate> ui,
         CancellationToken cancellationToken,
@@ -750,7 +885,7 @@ internal sealed class CommandCenterHost(
                     || state.Overlay == CommandCenterOverlayKind.HumanPrompt)
                 {
                     // Bind submit to turn CTS so CancelTurn cancels in-flight submit.
-                    CancellationToken submitToken = state.TurnCts?.Token ?? linked.Token;
+                    CancellationToken submitToken = state.TurnTokenOr(linked.Token);
                     _ = SubmitHumanPromptAsync(state, window, app, ui, submitToken);
                 }
                 else
@@ -770,7 +905,7 @@ internal sealed class CommandCenterHost(
 
             case CommandCenterAction.CancelTurn:
                 // Cancel only — Host owns TurnCts disposal. Cancelling TurnCts aborts in-flight submit.
-                state.TurnCts?.Cancel();
+                _ = state.TryCancelTurn();
                 _ = humanPromptCoordinator.TryCloseActive(HumanPromptCloseReason.Cancelled);
                 break;
 
@@ -847,7 +982,8 @@ internal sealed class CommandCenterHost(
                         state,
                         ui,
                         linked.Token,
-                        () => RequestNewSessionCoreAsync(state, window, app, ui, linked.Token))
+                        capture: () => SessionActionWindowState.Capture(window, state),
+                        action: input => RequestNewSessionCoreAsync(state, window, app, ui, input, linked.Token))
                     .ConfigureAwait(false);
                 break;
 
@@ -968,7 +1104,8 @@ internal sealed class CommandCenterHost(
                         state,
                         ui,
                         linked.Token,
-                        () => ResumeSelectedCoreAsync(state, window, app, ui, linked.Token))
+                        capture: () => SessionActionWindowState.Capture(window, state),
+                        action: input => ResumeSelectedCoreAsync(state, window, app, ui, input, linked.Token))
                     .ConfigureAwait(false);
                 break;
 
@@ -1214,6 +1351,7 @@ internal sealed class CommandCenterHost(
         CommandCenterWindow window,
         IApplication app,
         ChannelWriter<CommandCenterUiUpdate> ui,
+        SessionActionWindowState input,
         CancellationToken cancellationToken)
     {
         if (CommandCenterSessionMutationGuard.TryDenySessionMutationWhileGenerating(state, out CommandCenterUiUpdate? deny))
@@ -1226,22 +1364,21 @@ internal sealed class CommandCenterHost(
         if (state.FocusRegion == CommandCenterFocusRegion.Transcript
             && state.Overlay == CommandCenterOverlayKind.None)
         {
-            int index = window.GetSelectedLogIndex();
-            if (SessionIdLineParser.TryExtractNear(window.GetLogLinesSnapshot(), index, out Guid logId))
+            if (SessionIdLineParser.TryExtractNear(input.LogLines, input.SelectedLogIndex, out Guid logId))
             {
-                await ResumeWithConfirmCoreAsync(state, window, app, ui, logId, cancellationToken)
+                await ResumeWithConfirmCoreAsync(state, window, app, ui, logId, input.ComposerHasText, cancellationToken)
                     .ConfigureAwait(false);
                 return;
             }
         }
 
-        Guid? id = window.GetSelectedSessionId(state);
-        if (id is null)
+        if (input.SelectedSessionId is not { } id)
         {
             return;
         }
 
-        await ResumeWithConfirmCoreAsync(state, window, app, ui, id.Value, cancellationToken).ConfigureAwait(false);
+        await ResumeWithConfirmCoreAsync(state, window, app, ui, id, input.ComposerHasText, cancellationToken)
+            .ConfigureAwait(false);
     }
 
     private async Task ResumeWithConfirmCoreAsync(
@@ -1250,6 +1387,7 @@ internal sealed class CommandCenterHost(
         IApplication app,
         ChannelWriter<CommandCenterUiUpdate> ui,
         Guid sessionId,
+        bool composerHasText,
         CancellationToken cancellationToken)
     {
         if (CommandCenterSessionMutationGuard.TryDenySessionMutationWhileGenerating(state, out CommandCenterUiUpdate? deny))
@@ -1258,7 +1396,7 @@ internal sealed class CommandCenterHost(
             return;
         }
 
-        if (window.ComposerHasText)
+        if (composerHasText)
         {
             _pendingConfirm = new PendingConfirm(PendingConfirmKind.ResumeSession, sessionId);
             ShowDiscardConfirm(state, window, app);
@@ -1324,6 +1462,7 @@ internal sealed class CommandCenterHost(
         CommandCenterWindow window,
         IApplication app,
         ChannelWriter<CommandCenterUiUpdate> ui,
+        SessionActionWindowState input,
         CancellationToken cancellationToken)
     {
         if (CommandCenterSessionMutationGuard.TryDenySessionMutationWhileGenerating(state, out CommandCenterUiUpdate? deny))
@@ -1332,7 +1471,7 @@ internal sealed class CommandCenterHost(
             return;
         }
 
-        if (window.ComposerHasText)
+        if (input.ComposerHasText)
         {
             _pendingConfirm = new PendingConfirm(PendingConfirmKind.NewSession, null);
             ShowDiscardConfirm(state, window, app);
@@ -1603,7 +1742,8 @@ internal sealed class CommandCenterHost(
                         state,
                         ui,
                         linked.Token,
-                        () => RequestNewSessionCoreAsync(state, window, app, ui, linked.Token))
+                        capture: () => SessionActionWindowState.Capture(window, state),
+                        action: input => RequestNewSessionCoreAsync(state, window, app, ui, input, linked.Token))
                     .ConfigureAwait(false);
                 break;
             case "Open Sessions":

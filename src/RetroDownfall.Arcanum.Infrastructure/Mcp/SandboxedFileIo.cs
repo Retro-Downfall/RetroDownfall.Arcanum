@@ -8,6 +8,8 @@ using RetroDownfall.Arcanum.Infrastructure.Security;
 
 using RetroDownfall.Arcanum.Infrastructure.Storage;
 
+using RetroDownfall.Arcanum.Infrastructure.Workspaces;
+
 namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
 
 /// <summary>
@@ -15,11 +17,33 @@ namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
 /// </summary>
 internal static class SandboxedFileIo
 {
-
     /// <summary>
     /// Emits the UTF-8 preamble, used only to carry an existing destination BOM across an overwrite.
     /// </summary>
     private static readonly UTF8Encoding PreambleUtf8 = new(encoderShouldEmitUTF8Identifier: true);
+
+    /// <summary>
+    /// Deterministic test hook invoked with the parent directory right after the write path creates it
+    /// and before it revalidates containment, so a test can swap the parent for a real escaping link at
+    /// exactly that point. It observes; it does not replace any check.
+    /// </summary>
+    internal static Action<string>? AfterCreateParentDirectoryForTests { get; set; }
+
+    private static readonly AsyncLocal<Action<string>?> BeforeDestinationPreambleReadOverride = new();
+
+    /// <summary>
+    /// Deterministic test hook invoked with the destination path inside the preamble probe's read guard,
+    /// after the handle-checked open and before the first byte is read, so a test can raise the read
+    /// fault a failing device would. Flow-local, like <see cref="SecureFileReader.AfterOpenForTests"/>:
+    /// every overwrite in the process probes here, so a process-global hook would fire inside unrelated
+    /// tests running in parallel. It observes; it does not replace any check.
+    /// </summary>
+    internal static Action<string>? BeforeDestinationPreambleReadForTests
+    {
+        get => BeforeDestinationPreambleReadOverride.Value;
+
+        set => BeforeDestinationPreambleReadOverride.Value = value;
+    }
 
     internal static bool TryOpenForRead(
         string workspaceRoot,
@@ -27,27 +51,15 @@ internal static class SandboxedFileIo
         [NotNullWhen(true)] out FileStream? stream,
         [NotNullWhen(false)] out McpToolsCallResultWire? error)
     {
-
         stream = null;
 
         error = null;
 
-        if (!WorkspacePathPolicy.RevalidatePathBeforeIo(workspaceRoot, absolutePath))
-        {
-
-            error = ToolError(PathEscapesSandboxMessage);
-
-            return false;
-
-        }
-
         if (!WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(workspaceRoot, absolutePath, out string? resolvedFinalPath))
         {
-
             error = ToolError(PathEscapesSandboxMessage);
 
             return false;
-
         }
 
         string identityPath = Path.GetFullPath(resolvedFinalPath ?? absolutePath);
@@ -57,11 +69,9 @@ internal static class SandboxedFileIo
                 out FileHandleMetadata expectedMetadata)
             || expectedMetadata.Kind != FileSystemObjectKind.RegularFile)
         {
-
             error = ToolError(PathEscapesSandboxMessage);
 
             return false;
-
         }
 
         // Distinct from the containment rejection above: a hard-linked file is genuinely inside the
@@ -69,11 +79,9 @@ internal static class SandboxedFileIo
         // remediation the model can act on -- no spelling of this path has a hard link count of 1.
         if (expectedMetadata.HardLinkCount != 1)
         {
-
             error = ToolError(HardLinkAliasingMessage);
 
             return false;
-
         }
 
         SecureFileOpenStatus openStatus =
@@ -85,11 +93,9 @@ internal static class SandboxedFileIo
 
         if (openStatus is not SecureFileOpenStatus.Success)
         {
-
             error = OpenError(openStatus);
 
             return false;
-
         }
 
         FileStream openedStream = stream!;
@@ -100,66 +106,78 @@ internal static class SandboxedFileIo
                 expectedMetadata.Identity,
                 out error))
         {
-
             openedStream.Dispose();
 
             stream = null;
 
             return false;
-
         }
 
         stream = openedStream;
 
         return true;
-
     }
 
+    /// <param name="expectedExistingContent">
+    /// For a read-modify-write caller: the baseline reported by <see cref="TryReadAllTextForEditAsync"/>. The
+    /// write is refused, leaving the destination untouched, when the destination is no longer exactly those
+    /// bytes. The preamble probe below is a separate re-read and never supplies this baseline.
+    /// </param>
+    /// <param name="allowProtectedPathWrites">
+    /// The operator's <c>Arcanum:Workspaces:AllowProtectedPathWrites</c> opt-out. Default <c>false</c>: a write
+    /// whose spelling or canonical location is under <c>.git</c> or <c>.arcanum</c> is refused.
+    /// </param>
     internal static async Task<(bool Success, McpToolsCallResultWire? Error)> TryWriteAllTextAtomicallyAsync(
         string workspaceRoot,
         string absolutePath,
         string content,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        FileContentBaseline? expectedExistingContent = null,
+        bool allowProtectedPathWrites = false)
     {
-
         if (!WorkspacePathPolicy.RevalidatePathBeforeIo(workspaceRoot, absolutePath))
         {
-
             return (false, ToolError(PathEscapesSandboxMessage));
+        }
 
+        // Git metadata and the .arcanum marker directory are not writable through a model-driven
+        // tool unless the operator opted out (Arcanum:Workspaces:AllowProtectedPathWrites): a planted
+        // .git/hooks entry runs with the operator's full identity on their next git command. Checked
+        // before any directory is created so a refusal leaves nothing behind.
+        if (!allowProtectedPathWrites
+            && WorkspaceProtectedPaths.IsProtectedPath(workspaceRoot, absolutePath))
+        {
+            return (false, ToolError(ProtectedPathMessage));
         }
 
         string? parentDir = Path.GetDirectoryName(absolutePath);
 
         if (!string.IsNullOrEmpty(parentDir))
         {
-
             try
             {
-
                 Directory.CreateDirectory(parentDir);
 
+                AfterCreateParentDirectoryForTests?.Invoke(parentDir);
             }
             catch (UnauthorizedAccessException)
             {
-
                 return (false, ToolError("Access denied creating directory."));
-
             }
             catch (IOException)
             {
-
-                return (false, ToolError("An I/O error occurred creating directory. See server logs."));
-
+                return (
+                    false,
+                    ToolError(
+                        WorkspacePathPolicy.HasEntryBlockingDirectoryCreation(workspaceRoot, parentDir)
+                            ? BlockedParentDirectoryMessage
+                            : "An I/O error occurred creating directory. See server logs."));
             }
-
         }
 
         if (!WorkspacePathPolicy.RevalidatePathBeforeIo(workspaceRoot, absolutePath))
         {
-
             return (false, ToolError(PathEscapesSandboxMessage));
-
         }
 
         string directory = parentDir ?? workspaceRoot;
@@ -185,13 +203,11 @@ internal static class SandboxedFileIo
 
         try
         {
-
             AtomicReplaceStatus replaceStatus = await AtomicFile.ReplaceAsync(
                 absolutePath,
                 tempPath,
                 async (stream, ct) =>
                 {
-
                     await using StreamWriter writer = new(
                         stream,
                         encoding: preserveDestinationPreamble ? PreambleUtf8 : null,
@@ -201,7 +217,6 @@ internal static class SandboxedFileIo
                     await writer.WriteAsync(content.AsMemory(), ct).ConfigureAwait(false);
 
                     await writer.FlushAsync(ct).ConfigureAwait(false);
-
                 },
                 cancellationToken,
                 // W3.4 Group C #7: revalidate the destination path lexically, then capture the temp
@@ -216,43 +231,39 @@ internal static class SandboxedFileIo
                         && FileHandleIdentityInterop.TryGetPathIdentity(tempPath, out expectedIdentity),
                 // W3.4 Group C #7: post-move handle-identity check, mirroring the read path. Open
                 // the destination and verify its handle identity matches the temp file's pre-move
-                // identity. TryRevalidateOpenedHandle also re-checks the opened path is under the
-                // workspace (resolving symlinks), so a swapped destination is rejected here even if
-                // the move followed a symlink (platform-dependent).
+                // identity. TryRevalidateOpenedHandle also checks that the kernel's path for the
+                // opened handle is under the workspace, so a swapped destination is rejected here even
+                // if the move followed a symlink (platform-dependent).
                 afterReplace: () =>
-                    TryVerifyMovedDestination(workspaceRoot, absolutePath, expectedIdentity, out _)).ConfigureAwait(false);
+                    TryVerifyMovedDestination(workspaceRoot, absolutePath, expectedIdentity, out _),
+                expectedDestinationContent: expectedExistingContent).ConfigureAwait(false);
 
             if (replaceStatus == AtomicReplaceStatus.Succeeded)
             {
-
                 return (true, null);
-
             }
 
             if (replaceStatus == AtomicReplaceStatus.ReplacedButUnverified)
             {
-
                 return (false, ToolError(
                     "Write replaced the file but post-move verification failed; destination left unverified."));
-
             }
 
-            return (false, ToolError(PathEscapesSandboxMessage));
-
+            return (
+                false,
+                ToolError(
+                    replaceStatus == AtomicReplaceStatus.Aborted && expectedExistingContent is not null
+                        ? FileContentBaseline.ChangedAfterReadMessage
+                        : PathEscapesSandboxMessage));
         }
         catch (UnauthorizedAccessException)
         {
-
             return (false, ToolError("Access denied writing."));
-
         }
         catch (IOException)
         {
-
             return (false, ToolError("An I/O error occurred writing. See server logs."));
-
         }
-
     }
 
     /// <summary>
@@ -268,42 +279,32 @@ internal static class SandboxedFileIo
     /// </remarks>
     private static bool DestinationStartsWithUtf8Preamble(string workspaceRoot, string absolutePath)
     {
-
         if (!File.Exists(absolutePath))
         {
-
             return false;
-
         }
 
         if (!TryOpenForRead(workspaceRoot, absolutePath, out FileStream? stream, out _))
         {
-
             return false;
-
         }
 
         using (stream)
         {
-
             Span<byte> head = stackalloc byte[3];
 
             try
             {
+                BeforeDestinationPreambleReadForTests?.Invoke(absolutePath);
 
                 return stream.ReadAtLeast(head, head.Length, throwOnEndOfStream: false) == head.Length
                     && head.SequenceEqual(Encoding.UTF8.Preamble);
-
             }
             catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
             {
-
                 return false;
-
             }
-
         }
-
     }
 
     internal static async Task<(string? Content, McpToolsCallResultWire? Error)> TryReadAllTextAsync(
@@ -312,28 +313,48 @@ internal static class SandboxedFileIo
         int maxBytes,
         CancellationToken cancellationToken)
     {
+        (string? content, McpToolsCallResultWire? error, _) =
+            await TryReadAllTextForEditAsync(
+                    workspaceRoot,
+                    absolutePath,
+                    maxBytes,
+                    cancellationToken,
+                    captureBaseline: false)
+                .ConfigureAwait(false);
 
+        return (content, error);
+    }
+
+    /// <summary>
+    /// <see cref="TryReadAllTextAsync"/> that also reports the length and SHA-256 of the exact bytes read, so
+    /// the caller's later write can prove the destination is still what the edit was computed from.
+    /// </summary>
+    internal static async Task<(string? Content, McpToolsCallResultWire? Error, FileContentBaseline? Baseline)> TryReadAllTextForEditAsync(
+        string workspaceRoot,
+        string absolutePath,
+        int maxBytes,
+        CancellationToken cancellationToken,
+        bool captureBaseline = true)
+    {
         if (!TryOpenForRead(workspaceRoot, absolutePath, out FileStream? stream, out McpToolsCallResultWire? error))
         {
-
-            return (null, error);
-
+            return (null, error, null);
         }
 
         await using (FileStream openedStream = stream!)
         {
-
             SecureUtf8FileReadResult readResult =
                 await SecureFileReader.ReadUtf8TextAsync(
                         openedStream,
                         maxBytes,
-                        cancellationToken)
+                        cancellationToken,
+                        captureBaseline)
                     .ConfigureAwait(false);
 
             if (readResult.Status is not SecureFileReadStatus.Success
                 || readResult.Text is null)
             {
-                return (null, ReadError(readResult.Status));
+                return (null, ReadError(readResult.Status), null);
             }
 
             if (!TryRevalidateOpenedHandle(
@@ -342,13 +363,11 @@ internal static class SandboxedFileIo
                     readResult.Metadata.Identity,
                     out McpToolsCallResultWire? revalidationError))
             {
-                return (null, revalidationError);
+                return (null, revalidationError, null);
             }
 
-            return (readResult.Text, null);
-
+            return (readResult.Text, null, readResult.Baseline);
         }
-
     }
 
     internal static bool TryRevalidateOpenedHandle(
@@ -357,44 +376,15 @@ internal static class SandboxedFileIo
         FileHandleIdentity expectedIdentity,
         [NotNullWhen(false)] out McpToolsCallResultWire? error)
     {
-
         error = null;
 
-        string openedPath = stream.Name;
-
-        if (string.IsNullOrWhiteSpace(openedPath))
+        // The kernel's path for the open handle, never stream.Name: the name is only the string the
+        // stream was opened with, and re-checking it would repeat the pre-open check verbatim.
+        if (!WorkspacePathPolicy.IsOpenedHandleUnderWorkspace(workspaceRoot, stream.SafeFileHandle))
         {
-
             error = ToolError(PathEscapesSandboxMessage);
 
             return false;
-
-        }
-
-        string fullPath;
-
-        try
-        {
-
-            fullPath = Path.GetFullPath(openedPath);
-
-        }
-        catch (Exception)
-        {
-
-            error = ToolError(PathEscapesSandboxMessage);
-
-            return false;
-
-        }
-
-        if (!WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(workspaceRoot, fullPath, out _))
-        {
-
-            error = ToolError(PathEscapesSandboxMessage);
-
-            return false;
-
         }
 
         if (!SecureFileReader.TryValidateRegularFileHandle(
@@ -402,15 +392,12 @@ internal static class SandboxedFileIo
                 expectedIdentity,
                 out _))
         {
-
             error = ToolError(PathEscapesSandboxMessage);
 
             return false;
-
         }
 
         return true;
-
     }
 
     // W3.4 Group C #7: opens the just-moved destination and reuses TryRevalidateOpenedHandle
@@ -424,14 +411,12 @@ internal static class SandboxedFileIo
         FileHandleIdentity expectedIdentity,
         [NotNullWhen(false)] out McpToolsCallResultWire? error)
     {
-
         error = null;
 
         FileStream verifyStream;
 
         try
         {
-
             verifyStream = new FileStream(
                 absolutePath,
                 FileMode.Open,
@@ -439,35 +424,33 @@ internal static class SandboxedFileIo
                 FileShare.ReadWrite | FileShare.Delete,
                 bufferSize: 4096,
                 FileOptions.Asynchronous | FileOptions.SequentialScan);
-
         }
         catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException or UnauthorizedAccessException or IOException)
         {
-
             error = ToolError(PathEscapesSandboxMessage);
 
             return false;
-
         }
 
         using (verifyStream)
         {
-
             if (!TryRevalidateOpenedHandle(workspaceRoot, verifyStream, expectedIdentity, out error))
             {
-
                 return false;
-
             }
-
         }
 
         return true;
-
     }
 
     private const string PathEscapesSandboxMessage =
         "That path would leave the workspace sandbox, so the operation was not performed. Please use a path relative to the workspace root.";
+
+    private const string ProtectedPathMessage =
+        "That path is protected workspace metadata (.git or .arcanum) and cannot be written through the file tools, so the operation was not performed.";
+
+    private const string BlockedParentDirectoryMessage =
+        "A folder on that path is an existing file or a symbolic link that does not lead to a directory (for example, a link whose target does not exist), so the folder cannot be created and nothing was written. Write through the real directory path instead.";
 
     private const string HardLinkAliasingMessage =
         "This file has more than one hard link and cannot be read or written through the sandbox.";
@@ -509,5 +492,4 @@ internal static class SandboxedFileIo
             ],
             IsError = true,
         };
-
 }

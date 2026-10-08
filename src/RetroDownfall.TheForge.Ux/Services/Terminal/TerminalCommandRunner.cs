@@ -23,9 +23,7 @@ public sealed class TerminalCommandRunner : ITerminalCommandRunner
 
     public TerminalCommandRunner(ITerminalShellResolver shellResolver)
     {
-
         _shellResolver = shellResolver;
-
     }
 
     public async Task<TerminalCommandResult> RunAsync(
@@ -34,12 +32,9 @@ public sealed class TerminalCommandRunner : ITerminalCommandRunner
         IProgress<TerminalOutputEvent>? progress,
         CancellationToken cancellationToken)
     {
-
         if (string.IsNullOrWhiteSpace(command))
         {
-
             return TerminalCommandResult.Failed("Command is empty.");
-
         }
 
         TerminalShellSpec shell = _shellResolver.Resolve();
@@ -50,25 +45,20 @@ public sealed class TerminalCommandRunner : ITerminalCommandRunner
 
         try
         {
-
             process = Process.Start(startInfo)
                 ?? throw new InvalidOperationException("Process.Start returned null.");
-
         }
         catch (Exception ex)
         {
-
             string message = $"Failed to start shell '{shell.FileName}': {ex.Message}";
 
             progress?.Report(new TerminalOutputEvent(message, TerminalOutputKind.StandardError));
 
             return TerminalCommandResult.Failed(message);
-
         }
 
         using (process)
         {
-
             StreamReader stdoutReader = process.StandardOutput;
 
             StreamReader stderrReader = process.StandardError;
@@ -89,45 +79,33 @@ public sealed class TerminalCommandRunner : ITerminalCommandRunner
 
             try
             {
-
                 await process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
-
             }
             catch (OperationCanceledException)
             {
-
                 cancelled = true;
 
                 TerminalProcessTreeKiller.TryKillEntireTree(process);
 
                 try
                 {
-
                     await process.WaitForExitAsync(CancellationToken.None).ConfigureAwait(false);
-
                 }
                 catch (Exception)
                 {
-
                     // Best-effort wait after kill.
-
                 }
-
             }
 
             await DrainReadersAsync(stdoutReader, stderrReader, stdoutTask, stderrTask).ConfigureAwait(false);
 
             if (cancelled || cancellationToken.IsCancellationRequested)
             {
-
                 return TerminalCommandResult.CancelledResult();
-
             }
 
             return TerminalCommandResult.Completed(process.ExitCode);
-
         }
-
     }
 
     internal static ProcessStartInfo BuildStartInfo(
@@ -135,7 +113,6 @@ public sealed class TerminalCommandRunner : ITerminalCommandRunner
         string command,
         string workingDirectory)
     {
-
         ProcessStartInfo startInfo = new()
         {
             FileName = shell.FileName,
@@ -153,24 +130,19 @@ public sealed class TerminalCommandRunner : ITerminalCommandRunner
         // command reaches the shell exactly as typed. Arguments and ArgumentList are mutually exclusive.
         if (IsCommandPromptShell(shell.FileName))
         {
-
             startInfo.Arguments = BuildCommandPromptArguments(shell.ArgumentPrefix, command);
 
             return startInfo;
-
         }
 
         foreach (string arg in shell.ArgumentPrefix)
         {
-
             startInfo.ArgumentList.Add(arg);
-
         }
 
         startInfo.ArgumentList.Add(command);
 
         return startInfo;
-
     }
 
     private static bool IsCommandPromptShell(string fileName) =>
@@ -181,27 +153,21 @@ public sealed class TerminalCommandRunner : ITerminalCommandRunner
 
     private static string BuildCommandPromptArguments(IReadOnlyList<string> argumentPrefix, string command)
     {
-
         StringBuilder builder = new();
 
         foreach (string arg in argumentPrefix)
         {
-
             if (string.Equals(arg, "/C", StringComparison.OrdinalIgnoreCase))
             {
-
                 builder.Append("/S ");
-
             }
 
             builder.Append(arg).Append(' ');
-
         }
 
         builder.Append('"').Append(command).Append('"');
 
         return builder.ToString();
-
     }
 
     /// <summary>
@@ -215,40 +181,28 @@ public sealed class TerminalCommandRunner : ITerminalCommandRunner
         Task stdoutTask,
         Task stderrTask)
     {
-
         try
         {
-
             await Task.WhenAll(stdoutTask, stderrTask).WaitAsync(ReaderDrainTimeout).ConfigureAwait(false);
-
         }
         catch (TimeoutException)
         {
-
             CloseQuietly(stdoutReader);
 
             CloseQuietly(stderrReader);
-
         }
-
     }
 
     private static void CloseQuietly(StreamReader reader)
     {
-
         try
         {
-
             reader.Close();
-
         }
         catch (Exception)
         {
-
             // Best-effort: the stream may already be torn down.
-
         }
-
     }
 
     internal static async Task ReadLinesAsync(
@@ -257,23 +211,23 @@ public sealed class TerminalCommandRunner : ITerminalCommandRunner
         IProgress<TerminalOutputEvent>? progress,
         CancellationToken cancellationToken)
     {
-
         try
         {
-            BoundedTextLineReader lineReader = new(reader, MaxOutputLineChars);
+            // Decode the pipe as it arrives: a StreamReader holds a line whose bytes end on its buffer
+            // boundary until the command prints more. Closing the StreamReader still closes this stream.
+            BoundedTextLineReader lineReader = new(
+                new StreamingTextReader(reader.BaseStream, reader.CurrentEncoding),
+                MaxOutputLineChars);
 
             while (true)
             {
-
                 BoundedTextLineReadResult read = await lineReader
                     .ReadLineAsync(cancellationToken)
                     .ConfigureAwait(false);
 
                 if (!read.HasLine)
                 {
-
                     break;
-
                 }
 
                 string line = read.IsTooLong
@@ -281,29 +235,19 @@ public sealed class TerminalCommandRunner : ITerminalCommandRunner
                     : read.Line;
 
                 progress?.Report(new TerminalOutputEvent(line, kind));
-
             }
-
         }
         catch (OperationCanceledException)
         {
-
             // Reader cancelled with process teardown.
-
         }
         catch (ObjectDisposedException)
         {
-
             // Stream closed after kill.
-
         }
         catch (IOException)
         {
-
             // Stream broken after kill.
-
         }
-
     }
-
 }

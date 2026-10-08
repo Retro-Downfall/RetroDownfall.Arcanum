@@ -103,7 +103,7 @@ public sealed class LexiconErasureTests(GrimoireFixture fixture)
 
         Assert.True(await SentinelBlocksAsync(connection) > 0);
 
-        await InstallAsync(connection, GrimoireSchemaVersionChains.Default, 13);
+        await InstallAsync(connection, GrimoireSchemaVersionChains.Default, GrimoireSchemaVersionChains.CoreSchemaVersion);
 
         (_, MemoryErasureResultDto result) = await harness.EraseAsync((await ShowAsync(lexicon, Global, "Mill Warden")).Target);
 

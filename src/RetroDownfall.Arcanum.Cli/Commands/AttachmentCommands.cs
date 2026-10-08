@@ -37,7 +37,6 @@ internal sealed class AttachmentCommands(
     CliStandardInput standardInput,
     IAttachmentRevealLauncher attachmentRevealLauncher)
 {
-
     private const string PrivacyDisclosure =
         "Attachment privacy: snapshots are encrypted at rest, and live references are resolved and refreshed only by the server. "
         + "Attachment bytes are never written to the terminal. Export creates a plaintext local file. "
@@ -47,7 +46,6 @@ internal sealed class AttachmentCommands(
         string? sessionIdentifier,
         CancellationToken cancellationToken)
     {
-
         SessionResolution session = await ResolveSessionAsync(
                 sessionIdentifier,
                 cancellationToken)
@@ -55,9 +53,7 @@ internal sealed class AttachmentCommands(
 
         if (!session.Success)
         {
-
-            return session.Cancelled ? 0 : 1;
-
+            return session.Cancelled ? 0 : session.FailureExitCode;
         }
 
         Result<SessionAttachmentDto[]> result = await apiClient
@@ -66,9 +62,7 @@ internal sealed class AttachmentCommands(
 
         if (result.IsFailure)
         {
-
             return WriteError(result.Error);
-
         }
 
         SessionAttachmentDto[] latest = LatestVersions(result.Value);
@@ -76,7 +70,6 @@ internal sealed class AttachmentCommands(
         WriteRows(session.Id, latest);
 
         return 0;
-
     }
 
     public async Task<int> Add(
@@ -86,7 +79,6 @@ internal sealed class AttachmentCommands(
         string? sessionIdentifier,
         CancellationToken cancellationToken)
     {
-
         SessionResolution session = await ResolveSessionAsync(
                 sessionIdentifier,
                 cancellationToken)
@@ -94,9 +86,7 @@ internal sealed class AttachmentCommands(
 
         if (!session.Success)
         {
-
-            return session.Cancelled ? 0 : 1;
-
+            return session.Cancelled ? 0 : session.FailureExitCode;
         }
 
         string fileName;
@@ -107,7 +97,6 @@ internal sealed class AttachmentCommands(
 
         if (string.Equals(path, "-", StringComparison.Ordinal))
         {
-
             fileName = SafeFilename(
                 name,
                 StdinFilenameForMime(mimeType));
@@ -115,36 +104,28 @@ internal sealed class AttachmentCommands(
             effectiveMime = EffectiveMimeType(mimeType, fileName);
 
             stream = await OpenStandardInputAsync(cancellationToken).ConfigureAwait(false);
-
         }
         else
         {
-
             string fullPath;
 
             try
             {
-
                 fullPath = Path.GetFullPath(path);
-
             }
             catch (Exception exception) when (
                 exception is ArgumentException or NotSupportedException or PathTooLongException)
             {
-
                 dispatcher.WriteDiagnostic("The local attachment path is invalid.");
 
                 return 1;
-
             }
 
             if (!File.Exists(fullPath))
             {
-
                 dispatcher.WriteDiagnostic($"Local attachment not found: {fullPath}");
 
                 return 1;
-
             }
 
             fileName = SafeFilename(name, Path.GetFileName(fullPath));
@@ -153,7 +134,6 @@ internal sealed class AttachmentCommands(
 
             try
             {
-
                 stream = new FileStream(
                     fullPath,
                     FileMode.Open,
@@ -161,23 +141,18 @@ internal sealed class AttachmentCommands(
                     FileShare.Read,
                     bufferSize: 81_920,
                     options: FileOptions.Asynchronous | FileOptions.SequentialScan);
-
             }
             catch (Exception exception) when (
                 exception is IOException or UnauthorizedAccessException)
             {
-
                 dispatcher.WriteDiagnostic("The local attachment could not be opened for reading.");
 
                 return 1;
-
             }
-
         }
 
         await using (stream.ConfigureAwait(false))
         {
-
             Result<SessionAttachmentDto> result = await apiClient
                 .UploadSessionAttachmentAsync(
                     session.Id,
@@ -189,17 +164,13 @@ internal sealed class AttachmentCommands(
 
             if (result.IsFailure)
             {
-
                 return WriteError(result.Error);
-
             }
 
             WriteRow(session.Id, result.Value);
 
             return 0;
-
         }
-
     }
 
     public async Task<int> Reference(
@@ -209,7 +180,6 @@ internal sealed class AttachmentCommands(
         string? sessionIdentifier,
         CancellationToken cancellationToken)
     {
-
         SessionResolution session = await ResolveSessionAsync(
                 sessionIdentifier,
                 cancellationToken)
@@ -217,9 +187,7 @@ internal sealed class AttachmentCommands(
 
         if (!session.Success)
         {
-
-            return session.Cancelled ? 0 : 1;
-
+            return session.Cancelled ? 0 : session.FailureExitCode;
         }
 
         WorkspaceResolution workspaceResolution = await ResolveWorkspaceAsync(
@@ -229,9 +197,7 @@ internal sealed class AttachmentCommands(
 
         if (!workspaceResolution.Success)
         {
-
-            return workspaceResolution.Cancelled ? 0 : 1;
-
+            return workspaceResolution.Cancelled ? 0 : workspaceResolution.FailureExitCode;
         }
 
         CreateSessionAttachmentReferenceRequest request = new(
@@ -248,15 +214,12 @@ internal sealed class AttachmentCommands(
 
         if (result.IsFailure)
         {
-
             return WriteError(result.Error);
-
         }
 
         WriteRow(session.Id, result.Value);
 
         return 0;
-
     }
 
     public async Task<int> Show(
@@ -265,14 +228,11 @@ internal sealed class AttachmentCommands(
         string? sessionIdentifier,
         CancellationToken cancellationToken)
     {
-
         if (privacy)
         {
-
             dispatcher.WritePayload(PrivacyDisclosure);
 
             return 0;
-
         }
 
         AttachmentResolution resolution = await ResolveAttachmentAsync(
@@ -283,15 +243,12 @@ internal sealed class AttachmentCommands(
 
         if (!resolution.Success)
         {
-
-            return resolution.Cancelled ? 0 : 1;
-
+            return resolution.Cancelled ? 0 : resolution.FailureExitCode;
         }
 
         WriteRow(resolution.SessionId, resolution.Value!);
 
         return 0;
-
     }
 
     public async Task<int> Versions(
@@ -299,7 +256,6 @@ internal sealed class AttachmentCommands(
         string? sessionIdentifier,
         CancellationToken cancellationToken)
     {
-
         AttachmentResolution resolution = await ResolveAttachmentAsync(
                 sessionIdentifier,
                 attachmentIdentifier,
@@ -308,9 +264,7 @@ internal sealed class AttachmentCommands(
 
         if (!resolution.Success)
         {
-
-            return resolution.Cancelled ? 0 : 1;
-
+            return resolution.Cancelled ? 0 : resolution.FailureExitCode;
         }
 
         SessionAttachmentDto[] versions = resolution.AllRows
@@ -325,7 +279,6 @@ internal sealed class AttachmentCommands(
         WriteRows(resolution.SessionId, versions);
 
         return 0;
-
     }
 
     public async Task<int> Refresh(
@@ -333,7 +286,6 @@ internal sealed class AttachmentCommands(
         string? sessionIdentifier,
         CancellationToken cancellationToken)
     {
-
         AttachmentResolution resolution = await ResolveAttachmentAsync(
                 sessionIdentifier,
                 attachmentIdentifier,
@@ -342,9 +294,7 @@ internal sealed class AttachmentCommands(
 
         if (!resolution.Success)
         {
-
-            return resolution.Cancelled ? 0 : 1;
-
+            return resolution.Cancelled ? 0 : resolution.FailureExitCode;
         }
 
         Result<AttachmentRefreshEvent> result = await apiClient
@@ -356,30 +306,23 @@ internal sealed class AttachmentCommands(
 
         if (result.IsFailure)
         {
-
             return WriteError(result.Error);
-
         }
 
         if (invocationContext.Options.Json)
         {
-
             dispatcher.WriteJson(
                 result.Value,
                 ArcanumJsonContext.Default.AttachmentRefreshEvent);
-
         }
         else
         {
-
             dispatcher.WritePayload(
                 $"Refreshed {result.Value.LogicalKey} to v{result.Value.Version.ToString(CultureInfo.InvariantCulture)} "
                 + $"({result.Value.ByteLength.ToString(CultureInfo.InvariantCulture)} bytes).");
-
         }
 
         return 0;
-
     }
 
     public async Task<int> Pin(
@@ -387,7 +330,6 @@ internal sealed class AttachmentCommands(
         string? sessionIdentifier,
         CancellationToken cancellationToken)
     {
-
         AttachmentResolution resolution = await ResolveAttachmentAsync(
                 sessionIdentifier,
                 attachmentIdentifier,
@@ -396,9 +338,7 @@ internal sealed class AttachmentCommands(
 
         if (!resolution.Success)
         {
-
-            return resolution.Cancelled ? 0 : 1;
-
+            return resolution.Cancelled ? 0 : resolution.FailureExitCode;
         }
 
         SessionAttachmentDto attachment = resolution.Value!;
@@ -418,15 +358,12 @@ internal sealed class AttachmentCommands(
 
         if (result.IsFailure)
         {
-
             return WriteError(result.Error);
-
         }
 
         WritePin(result.Value, "Pinned");
 
         return 0;
-
     }
 
     public async Task<int> Unpin(
@@ -434,7 +371,6 @@ internal sealed class AttachmentCommands(
         string? sessionIdentifier,
         CancellationToken cancellationToken)
     {
-
         AttachmentResolution resolution = await ResolveAttachmentAsync(
                 sessionIdentifier,
                 attachmentIdentifier,
@@ -443,9 +379,7 @@ internal sealed class AttachmentCommands(
 
         if (!resolution.Success)
         {
-
-            return resolution.Cancelled ? 0 : 1;
-
+            return resolution.Cancelled ? 0 : resolution.FailureExitCode;
         }
 
         string target = resolution.Value!.Id.ToString("D");
@@ -458,9 +392,7 @@ internal sealed class AttachmentCommands(
 
         if (pins.IsFailure)
         {
-
             return WriteError(pins.Error);
-
         }
 
         SessionContextPinDto? pin = pins.Value.FirstOrDefault(row =>
@@ -472,11 +404,9 @@ internal sealed class AttachmentCommands(
 
         if (pin is null)
         {
-
             dispatcher.WritePayload($"Attachment {target} is not pinned.");
 
             return 0;
-
         }
 
         Result result = await apiClient
@@ -488,15 +418,12 @@ internal sealed class AttachmentCommands(
 
         if (result.IsFailure)
         {
-
             return WriteError(result.Error);
-
         }
 
         WritePin(pin, "Unpinned");
 
         return 0;
-
     }
 
     public async Task<int> Export(
@@ -505,7 +432,6 @@ internal sealed class AttachmentCommands(
         string? sessionIdentifier,
         CancellationToken cancellationToken)
     {
-
         AttachmentResolution resolution = await ResolveAttachmentAsync(
                 sessionIdentifier,
                 attachmentIdentifier,
@@ -514,19 +440,15 @@ internal sealed class AttachmentCommands(
 
         if (!resolution.Success)
         {
-
-            return resolution.Cancelled ? 0 : 1;
-
+            return resolution.Cancelled ? 0 : resolution.FailureExitCode;
         }
 
         if (string.Equals(output?.Trim(), "-", StringComparison.Ordinal))
         {
-
             dispatcher.WriteDiagnostic(
                 "Attachment export never writes bytes to stdout; provide a file path with --output.");
 
             return 1;
-
         }
 
         SessionAttachmentDto attachment = resolution.Value!;
@@ -535,38 +457,29 @@ internal sealed class AttachmentCommands(
 
         try
         {
-
             destination = Path.GetFullPath(
                 string.IsNullOrWhiteSpace(output)
                     ? SafeFilename(attachment.OriginalFileName, attachment.Id.ToString("D") + ".bin")
                     : output);
-
         }
         catch (Exception exception) when (
             exception is ArgumentException or NotSupportedException or PathTooLongException)
         {
-
             dispatcher.WriteDiagnostic("The attachment export destination is invalid.");
 
             return 1;
-
         }
 
         bool overwrite = File.Exists(destination);
 
-        if (overwrite
-            && !await confirmationPrompt
-                .PromptForConfirmationAsync(
-                    $"Overwrite existing file {destination}?",
-                    cancellationToken)
+        if (!await CliOutputFile
+                .ConfirmOverwriteAsync(confirmationPrompt, destination, cancellationToken)
                 .ConfigureAwait(false))
         {
-
             dispatcher.WriteDiagnostic(
                 "Attachment export cancelled; the existing file was not changed.");
 
             return 0;
-
         }
 
         Result<long> download = await apiClient
@@ -580,9 +493,7 @@ internal sealed class AttachmentCommands(
 
         if (download.IsFailure)
         {
-
             return WriteError(download.Error);
-
         }
 
         FileDownloadPayload payload = new(
@@ -592,23 +503,18 @@ internal sealed class AttachmentCommands(
 
         if (invocationContext.Options.Json)
         {
-
             dispatcher.WriteJson(
                 payload,
                 CliJsonContext.Default.FileDownloadPayload);
-
         }
         else
         {
-
             dispatcher.WritePayload(
                 $"Exported {attachment.LogicalKey} v{attachment.Version.ToString(CultureInfo.InvariantCulture)} "
                 + $"to {destination} ({download.Value.ToString(CultureInfo.InvariantCulture)} bytes).");
-
         }
 
         return 0;
-
     }
 
     public async Task<int> Reveal(
@@ -616,7 +522,6 @@ internal sealed class AttachmentCommands(
         string? sessionIdentifier,
         CancellationToken cancellationToken)
     {
-
         AttachmentResolution resolution = await ResolveAttachmentAsync(
                 sessionIdentifier,
                 attachmentIdentifier,
@@ -625,32 +530,26 @@ internal sealed class AttachmentCommands(
 
         if (!resolution.Success)
         {
-
-            return resolution.Cancelled ? 0 : 1;
-
+            return resolution.Cancelled ? 0 : resolution.FailureExitCode;
         }
 
         if (!TryResolveStoredPath(
                 resolution.Value!.RelativePath,
                 out string? absolutePath))
         {
-
             dispatcher.WriteDiagnostic(
                 "Attachment reveal refused an unsafe stored relative path returned by the API.");
 
             return 1;
-
         }
 
         if (!HasEncryptedBlobEnvelope(absolutePath!))
         {
-
             dispatcher.WriteDiagnostic(
                 "The server attachment artifact is not locally available as an ARCABLOB envelope. "
                 + "Use 'arcanum attachment export' to download it instead.");
 
             return 1;
-
         }
 
         string message = attachmentRevealLauncher.TryReveal(
@@ -659,29 +558,23 @@ internal sealed class AttachmentCommands(
 
         if (!started)
         {
-
             dispatcher.WriteDiagnostic(message);
 
             return 1;
-
         }
 
         dispatcher.WritePayload(message);
 
         return 0;
-
     }
 
     private async Task<SessionResolution> ResolveSessionAsync(
         string? identifier,
         CancellationToken cancellationToken)
     {
-
         if (Guid.TryParse(identifier, out Guid id))
         {
-
             return SessionResolution.Resolved(id);
-
         }
 
         ResourceSelectionResult<SessionSummaryDto> selection = await resourceCatalog
@@ -691,35 +584,27 @@ internal sealed class AttachmentCommands(
         if (selection.Status == ResourceSelectionStatus.Selected
             && selection.Value is not null)
         {
-
             return SessionResolution.Resolved(selection.Value.Id);
-
         }
 
         if (selection.Status == ResourceSelectionStatus.Cancelled)
         {
-
             return SessionResolution.Cancel();
-
         }
 
         dispatcher.WriteDiagnostic(
             selection.Error ?? "A session could not be selected.");
 
-        return SessionResolution.Failure();
-
+        return SessionResolution.Failure(selection.ErrorCode);
     }
 
     private async Task<WorkspaceResolution> ResolveWorkspaceAsync(
         string? identifier,
         CancellationToken cancellationToken)
     {
-
         if (string.IsNullOrWhiteSpace(identifier))
         {
-
             return WorkspaceResolution.Resolved(null);
-
         }
 
         ResourceSelectionResult<WorkspaceInfo> selection = await resourceCatalog
@@ -729,23 +614,18 @@ internal sealed class AttachmentCommands(
         if (selection.Status == ResourceSelectionStatus.Selected
             && selection.Value is not null)
         {
-
             return WorkspaceResolution.Resolved(selection.Value.Id);
-
         }
 
         if (selection.Status == ResourceSelectionStatus.Cancelled)
         {
-
             return WorkspaceResolution.Cancel();
-
         }
 
         dispatcher.WriteDiagnostic(
             selection.Error ?? "A workspace could not be selected.");
 
-        return WorkspaceResolution.Failure();
-
+        return WorkspaceResolution.Failure(selection.ErrorCode);
     }
 
     private async Task<AttachmentResolution> ResolveAttachmentAsync(
@@ -753,7 +633,6 @@ internal sealed class AttachmentCommands(
         string? attachmentIdentifier,
         CancellationToken cancellationToken)
     {
-
         SessionResolution session = await ResolveSessionAsync(
                 sessionIdentifier,
                 cancellationToken)
@@ -761,11 +640,9 @@ internal sealed class AttachmentCommands(
 
         if (!session.Success)
         {
-
             return session.Cancelled
                 ? AttachmentResolution.Cancel()
-                : AttachmentResolution.Failure();
-
+                : AttachmentResolution.Failure(session.ErrorCode);
         }
 
         Result<SessionAttachmentDto[]> result = await apiClient
@@ -774,32 +651,26 @@ internal sealed class AttachmentCommands(
 
         if (result.IsFailure)
         {
-
             _ = WriteError(result.Error);
 
-            return AttachmentResolution.Failure();
-
+            return AttachmentResolution.Failure(result.Error.Code);
         }
 
         SessionAttachmentDto[] all = result.Value;
 
         if (Guid.TryParse(attachmentIdentifier, out Guid attachmentId))
         {
-
             SessionAttachmentDto? exact = all.FirstOrDefault(row => row.Id == attachmentId);
 
             if (exact is null)
             {
-
                 dispatcher.WriteDiagnostic(
                     $"No attachment with id {attachmentId:D} belongs to session {session.Id:D}.");
 
                 return AttachmentResolution.Failure();
-
             }
 
             return AttachmentResolution.Resolved(session.Id, exact, all);
-
         }
 
         SessionAttachmentDto[] latest = LatestVersions(all);
@@ -840,110 +711,87 @@ internal sealed class AttachmentCommands(
         if (selection.Status == ResourceSelectionStatus.Selected
             && selection.Value is not null)
         {
-
             return AttachmentResolution.Resolved(
                 session.Id,
                 selection.Value,
                 all);
-
         }
 
         if (selection.Status == ResourceSelectionStatus.Cancelled)
         {
-
             return AttachmentResolution.Cancel();
-
         }
 
         dispatcher.WriteDiagnostic(
             selection.Error ?? "An attachment could not be selected.");
 
-        return AttachmentResolution.Failure();
-
+        return AttachmentResolution.Failure(selection.ErrorCode);
     }
 
     private void WriteRows(
         Guid sessionId,
         SessionAttachmentDto[] rows)
     {
-
         if (invocationContext.Options.Json)
         {
-
             dispatcher.WriteJson(
                 rows,
                 ArcanumJsonContext.Default.SessionAttachmentDtoArray);
 
             return;
-
         }
 
         if (rows.Length == 0)
         {
-
             dispatcher.WritePayload($"Session {sessionId:D} has no attachments.");
 
             return;
-
         }
 
         foreach (SessionAttachmentDto row in rows)
         {
-
             dispatcher.WritePayload(FormatAttachment(sessionId, row));
-
         }
-
     }
 
     private void WriteRow(
         Guid sessionId,
         SessionAttachmentDto row)
     {
-
         if (invocationContext.Options.Json)
         {
-
             dispatcher.WriteJson(
                 row,
                 ArcanumJsonContext.Default.SessionAttachmentDto);
 
             return;
-
         }
 
         dispatcher.WritePayload(FormatAttachment(sessionId, row));
-
     }
 
     private void WritePin(
         SessionContextPinDto pin,
         string verb)
     {
-
         if (invocationContext.Options.Json)
         {
-
             dispatcher.WriteJson(
                 pin,
                 ArcanumJsonContext.Default.SessionContextPinDto);
 
             return;
-
         }
 
         dispatcher.WritePayload(
             $"{verb} attachment {pin.TargetIdentifier} in session {pin.SessionId:D}.");
-
     }
 
     private int WriteError(Error error)
     {
-
         dispatcher.WriteDiagnostic($"{error.Code}: {error.Message}");
 
-        return 1;
-
+        return CliFailureExit.ExitCode(error);
     }
 
     private static SessionAttachmentDto[] LatestVersions(
@@ -962,7 +810,6 @@ internal sealed class AttachmentCommands(
         Guid sessionId,
         SessionAttachmentDto row)
     {
-
         string result =
             $"Session={row.SessionId ?? sessionId:D}  "
             + $"Id={row.Id:D}  "
@@ -981,13 +828,10 @@ internal sealed class AttachmentCommands(
 
         if (reason is not null)
         {
-
             result += "  Reason=" + reason;
-
         }
 
         return result;
-
     }
 
     private static string AttachmentSummary(SessionAttachmentDto row) =>
@@ -1006,12 +850,9 @@ internal sealed class AttachmentCommands(
 
     private static string? SanitizeDiagnosticReason(string? reason)
     {
-
         if (string.IsNullOrWhiteSpace(reason))
         {
-
             return null;
-
         }
 
         string normalized = SanitizeDisplayText(reason);
@@ -1031,12 +872,10 @@ internal sealed class AttachmentCommands(
         return sanitized.Length <= 240
             ? sanitized
             : sanitized[..237] + "...";
-
     }
 
     private static string SanitizeDisplayText(string value)
     {
-
         string sanitized = new(value
             .Select(static character => char.IsControl(character)
                 ? ' '
@@ -1046,19 +885,15 @@ internal sealed class AttachmentCommands(
         return sanitized.Length <= 512
             ? sanitized
             : sanitized[..509] + "...";
-
     }
 
     private static string EffectiveMimeType(
         string? requested,
         string fileName)
     {
-
         if (!string.IsNullOrWhiteSpace(requested))
         {
-
             return requested.Trim();
-
         }
 
         return Path.GetExtension(fileName).ToLowerInvariant() switch
@@ -1075,17 +910,13 @@ internal sealed class AttachmentCommands(
             ".webp" => "image/webp",
             _ => "application/octet-stream",
         };
-
     }
 
     private static string StdinFilenameForMime(string? mimeType)
     {
-
         if (string.IsNullOrWhiteSpace(mimeType))
         {
-
             return "stdin.txt";
-
         }
 
         string mediaType = mimeType
@@ -1094,9 +925,7 @@ internal sealed class AttachmentCommands(
 
         if (mediaType.StartsWith("text/", StringComparison.Ordinal))
         {
-
             return "stdin.txt";
-
         }
 
         return mediaType switch
@@ -1112,14 +941,12 @@ internal sealed class AttachmentCommands(
             "image/webp" => "stdin.webp",
             _ => "stdin.bin",
         };
-
     }
 
     private static string SafeFilename(
         string? requested,
         string fallback)
     {
-
         string candidate = string.IsNullOrWhiteSpace(requested)
             ? fallback
             : requested;
@@ -1129,9 +956,7 @@ internal sealed class AttachmentCommands(
         if (string.IsNullOrWhiteSpace(leaf)
             || leaf is "." or "..")
         {
-
             leaf = fallback;
-
         }
 
         char[] invalid = Path.GetInvalidFileNameChars();
@@ -1149,16 +974,13 @@ internal sealed class AttachmentCommands(
             || sanitized is "." or ".."
             ? "attachment.bin"
             : sanitized;
-
     }
 
     private async Task<Stream> OpenStandardInputAsync(
         CancellationToken cancellationToken)
     {
-
         if (!ReferenceEquals(Console.In, standardInput.ConfiguredReader))
         {
-
             string text = await Console.In
                 .ReadToEndAsync(cancellationToken)
                 .ConfigureAwait(false);
@@ -1166,31 +988,25 @@ internal sealed class AttachmentCommands(
             return new MemoryStream(
                 System.Text.Encoding.UTF8.GetBytes(text),
                 writable: false);
-
         }
 
         return Console.OpenStandardInput();
-
     }
 
     private static bool TryResolveStoredPath(
         string relativePath,
         out string? absolutePath)
     {
-
         absolutePath = null;
 
         if (string.IsNullOrWhiteSpace(relativePath)
             || Path.IsPathRooted(relativePath))
         {
-
             return false;
-
         }
 
         try
         {
-
             string root = Path.GetFullPath(ArcanumPaths.AttachmentsDirectory);
 
             string candidate = Path.GetFullPath(
@@ -1204,32 +1020,24 @@ internal sealed class AttachmentCommands(
                     StringComparison.Ordinal)
                 || Path.IsPathRooted(relative))
             {
-
                 return false;
-
             }
 
             absolutePath = candidate;
 
             return true;
-
         }
         catch (Exception exception) when (
             exception is ArgumentException or NotSupportedException or PathTooLongException)
         {
-
             return false;
-
         }
-
     }
 
     private static bool HasEncryptedBlobEnvelope(string absolutePath)
     {
-
         try
         {
-
             Span<byte> magic = stackalloc byte[8];
 
             using FileStream stream = new(
@@ -1240,28 +1048,24 @@ internal sealed class AttachmentCommands(
 
             return stream.Read(magic) == magic.Length
                 && magic.SequenceEqual("ARCABLOB"u8);
-
         }
         catch (IOException)
         {
-
             return false;
-
         }
         catch (UnauthorizedAccessException)
         {
-
             return false;
-
         }
-
     }
 
     private readonly record struct SessionResolution(
         bool Success,
         bool Cancelled,
-        Guid Id)
+        Guid Id,
+        string? ErrorCode = null)
     {
+        public int FailureExitCode => CliFailureExit.ExitCode(ErrorCode);
 
         public static SessionResolution Resolved(Guid id) =>
             new(true, false, id);
@@ -1269,16 +1073,17 @@ internal sealed class AttachmentCommands(
         public static SessionResolution Cancel() =>
             new(false, true, default);
 
-        public static SessionResolution Failure() =>
-            new(false, false, default);
-
+        public static SessionResolution Failure(string? errorCode = null) =>
+            new(false, false, default, errorCode);
     }
 
     private readonly record struct WorkspaceResolution(
         bool Success,
         bool Cancelled,
-        string? Id)
+        string? Id,
+        string? ErrorCode = null)
     {
+        public int FailureExitCode => CliFailureExit.ExitCode(ErrorCode);
 
         public static WorkspaceResolution Resolved(string? id) =>
             new(true, false, id);
@@ -1286,9 +1091,8 @@ internal sealed class AttachmentCommands(
         public static WorkspaceResolution Cancel() =>
             new(false, true, null);
 
-        public static WorkspaceResolution Failure() =>
-            new(false, false, null);
-
+        public static WorkspaceResolution Failure(string? errorCode = null) =>
+            new(false, false, null, errorCode);
     }
 
     private sealed record AttachmentResolution(
@@ -1296,8 +1100,10 @@ internal sealed class AttachmentCommands(
         bool Cancelled,
         Guid SessionId,
         SessionAttachmentDto? Value,
-        SessionAttachmentDto[] AllRows)
+        SessionAttachmentDto[] AllRows,
+        string? ErrorCode = null)
     {
+        public int FailureExitCode => CliFailureExit.ExitCode(ErrorCode);
 
         public static AttachmentResolution Resolved(
             Guid sessionId,
@@ -1308,11 +1114,9 @@ internal sealed class AttachmentCommands(
         public static AttachmentResolution Cancel() =>
             new(false, true, default, null, []);
 
-        public static AttachmentResolution Failure() =>
-            new(false, false, default, null, []);
-
+        public static AttachmentResolution Failure(string? errorCode = null) =>
+            new(false, false, default, null, [], errorCode);
     }
-
 }
 
 internal sealed record CliStandardInput(TextReader ConfiguredReader);

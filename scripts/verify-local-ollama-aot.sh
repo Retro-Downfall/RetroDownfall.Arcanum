@@ -233,6 +233,9 @@ reject_warnings "$BUILD_LOG"
 rm -f "$QUALIFICATION_RECEIPT"
 
 echo "==> Running isolated Native AOT + Ollama qualification (cold turns may take up to 3 minutes)"
+# The one selected test spends up to two 3-minute host starts and three 3-minute cold model turns
+# plus its own 45-second steps, so the suite-wide 15 minute hang bound would kill a slow but live
+# local model. Thirty minutes still names and kills a test host that has stopped making progress.
 ARCANUM_RUN_LOCAL_OLLAMA_AOT_QUALIFICATION=1 \
 ARCANUM_PUBLISHED_EXECUTABLE="$EXECUTABLE_FOR_TEST" \
 ARCANUM_OLLAMA_QUALIFICATION_IMAGE="$IMAGE_FOR_TEST" \
@@ -241,6 +244,8 @@ ARCANUM_OLLAMA_QUALIFICATION_ENDPOINT="$ENDPOINT" \
 ARCANUM_OLLAMA_QUALIFICATION_RECEIPT="$QUALIFICATION_RECEIPT_FOR_TEST" \
 dotnet test "$TEST_PROJECT" \
   -c "$CONFIGURATION" \
+  --blame-hang-timeout 30m \
+  --blame-hang-dump-type none \
   --filter 'FullyQualifiedName=RetroDownfall.Arcanum.Tests.Packaging.PublishedArcanumOllamaQualificationTests.Published_native_aot_preserves_corrected_file_context_and_runs_vision_across_restart' \
   --artifacts-path "$WORK/test-artifacts" \
   --disable-build-servers \

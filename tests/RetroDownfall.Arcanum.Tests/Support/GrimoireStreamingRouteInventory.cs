@@ -22,7 +22,6 @@ namespace RetroDownfall.Arcanum.Tests.Support;
 /// </remarks>
 internal enum StreamingConstructKind : byte
 {
-
     /// <summary>A call to the shared SSE writer's response preparation — one per SSE route.</summary>
     SseWriterInvocation = 1,
 
@@ -37,7 +36,6 @@ internal enum StreamingConstructKind : byte
 
     /// <summary>A streaming surface mapped by a third-party package rather than authored here.</summary>
     ThirdPartyStreamingMap = 5,
-
 }
 
 /// <summary>
@@ -45,7 +43,6 @@ internal enum StreamingConstructKind : byte
 /// </summary>
 internal enum StreamingEntryProofKind : byte
 {
-
     /// <summary>A shared writer, which serves whichever routes call it and has no route of its own.</summary>
     SharedWriterDeclaration = 1,
 
@@ -57,7 +54,6 @@ internal enum StreamingEntryProofKind : byte
 
     /// <summary>Framed by a third-party package whose writer this codebase does not own.</summary>
     ThirdPartyFraming = 4,
-
 }
 
 /// <summary>One authored streaming construct, normalized so a catalog can name it exactly.</summary>
@@ -88,7 +84,6 @@ internal sealed record StreamingCatalogEntry(
 
 internal enum StreamingInventoryFailureCode : byte
 {
-
     UncataloguedDiscovery = 1,
 
     StaleCatalogEntry = 2,
@@ -104,7 +99,6 @@ internal enum StreamingInventoryFailureCode : byte
     QuiesceableRouteNotDeclared = 7,
 
     ProofOnQuiesceableEntry = 8,
-
 }
 
 internal sealed record StreamingInventoryFailure(
@@ -135,7 +129,6 @@ internal readonly record struct StreamingSource(string RelativePath, string Text
 /// </remarks>
 internal static class GrimoireStreamingRouteScanner
 {
-
     /// <summary>The complete positive quiesceable set, as the parent design declares it.</summary>
     internal static readonly string[] DeclaredQuiesceableRoutes =
     [
@@ -156,7 +149,6 @@ internal static class GrimoireStreamingRouteScanner
     /// </remarks>
     internal static IReadOnlyList<StreamingSource> ProductionSources()
     {
-
         string repositoryRoot = NativeSqlCipherTestPaths.RepositoryRoot();
 
         List<StreamingSource> sources = [];
@@ -166,24 +158,19 @@ internal static class GrimoireStreamingRouteScanner
             "*.cs",
             SearchOption.AllDirectories))
         {
-
             // Generated intermediates are build output, not authored production code.
             if (file.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}", StringComparison.Ordinal)
                 || file.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}", StringComparison.Ordinal))
             {
-
                 continue;
-
             }
 
             sources.Add(new StreamingSource(
                 Path.GetRelativePath(repositoryRoot, file).Replace('\\', '/'),
                 File.ReadAllText(file)));
-
         }
 
         return sources;
-
     }
 
     private static readonly string[] StreamingMediaTypes =
@@ -194,16 +181,13 @@ internal static class GrimoireStreamingRouteScanner
 
     internal static IReadOnlyList<StreamingIdentity> Discover(IEnumerable<StreamingSource> sources)
     {
-
         List<StreamingIdentity> identities = [];
 
         foreach ((StreamingSource source, CompilationUnitSyntax root) in Parse(sources))
         {
-
             foreach (InvocationExpressionSyntax invocation in root.DescendantNodes()
                 .OfType<InvocationExpressionSyntax>())
             {
-
                 StreamingConstructKind? kind = TerminalName(invocation.Expression) switch
                 {
                     "PrepareResponse" => StreamingConstructKind.SseWriterInvocation,
@@ -220,78 +204,60 @@ internal static class GrimoireStreamingRouteScanner
 
                 if (kind is { } discovered)
                 {
-
                     identities.Add(Identity(source.RelativePath, invocation, discovered));
-
                 }
-
             }
 
             foreach (AssignmentExpressionSyntax assignment in root.DescendantNodes()
                 .OfType<AssignmentExpressionSyntax>())
             {
-
                 if (TerminalName(assignment.Left) != "ContentType"
                     || assignment.Right is not LiteralExpressionSyntax literal
                     || literal.Token.ValueText is not { } media
                     || !StreamingMediaTypes.Any(candidate =>
                         media.StartsWith(candidate, StringComparison.Ordinal)))
                 {
-
                     continue;
-
                 }
 
                 identities.Add(Identity(
                     source.RelativePath,
                     assignment,
                     StreamingConstructKind.StreamingContentTypeAssignment));
-
             }
-
         }
 
         return identities;
-
     }
 
     internal static IReadOnlyList<StreamingInventoryFailure> Validate(
         IReadOnlyList<StreamingIdentity> discoveries,
         IReadOnlyList<StreamingCatalogEntry> catalog)
     {
-
         List<StreamingInventoryFailure> failures = [];
 
         foreach (IGrouping<StreamingIdentity, StreamingIdentity> duplicate in
             discoveries.GroupBy(static identity => identity))
         {
-
             if (duplicate.Count() > 1)
             {
-
                 failures.Add(new(
                     StreamingInventoryFailureCode.DuplicateDiscovery,
                     duplicate.Key,
                     "The syntax scanner resolved this construct more than once."));
-
             }
-
         }
 
         foreach (IGrouping<StreamingIdentity, StreamingCatalogEntry> duplicate in
             catalog.GroupBy(static entry => entry.Identity))
         {
-
             if (duplicate.Count() > 1)
             {
-
                 failures.Add(new(
                     StreamingInventoryFailureCode.DuplicateCatalogEntry,
                     duplicate.Key,
                     "The catalog contains this construct more than once."));
-
             }
-
         }
 
         HashSet<StreamingIdentity> discovered = [.. discoveries];
@@ -300,78 +266,61 @@ internal static class GrimoireStreamingRouteScanner
 
         foreach (StreamingIdentity discovery in discovered.Except(catalogued))
         {
-
             failures.Add(new(
                 StreamingInventoryFailureCode.UncataloguedDiscovery,
                 discovery,
                 "The syntax scanner found a streaming construct with no exact catalog entry."));
-
         }
 
         foreach (StreamingIdentity entry in catalogued.Except(discovered))
         {
-
             failures.Add(new(
                 StreamingInventoryFailureCode.StaleCatalogEntry,
                 entry,
                 "The catalog names a streaming construct the syntax scanner no longer finds."));
-
         }
 
         foreach (StreamingCatalogEntry entry in catalog)
         {
-
             if (HasWildcardIdentity(entry.Identity))
             {
-
                 failures.Add(new(
                     StreamingInventoryFailureCode.WildcardIdentity,
                     entry.Identity,
                     "A catalog identity must name one exact authored construct, not a wildcard."));
-
             }
 
             if (entry.Class == GrimoireStreamClass.GrimoireQuiesceableStream)
             {
-
                 if (!DeclaredQuiesceableRoutes.Contains(entry.RoutePattern, StringComparer.Ordinal))
                 {
-
                     failures.Add(new(
                         StreamingInventoryFailureCode.QuiesceableRouteNotDeclared,
                         entry.Identity,
                         "Only the five routes the parent design declares may be quiesceable."));
-
                 }
 
                 if (entry.Proof is not null)
                 {
-
                     failures.Add(new(
                         StreamingInventoryFailureCode.ProofOnQuiesceableEntry,
                         entry.Identity,
                         "A quiesceable stream needs no proof; the proof records why a stream is drained."));
-
                 }
 
                 continue;
-
             }
 
             if (entry.Proof is null)
             {
-
                 failures.Add(new(
                     StreamingInventoryFailureCode.MissingDrainProof,
                     entry.Identity,
                     "Every stream that is drained rather than quiesced must record why."));
-
             }
-
         }
 
         return failures;
-
     }
 
     /// <summary>
@@ -386,7 +335,6 @@ internal static class GrimoireStreamingRouteScanner
     /// </remarks>
     internal static IReadOnlyList<StreamingCatalogEntry> Catalog() =>
     [
-
         // ── The five declared quiesceable SSE routes ────────────────────────────────────────────
         new(
             new("src/RetroDownfall.Arcanum.Api/Streaming/EventEndpoints.cs", "EventEndpoints", "MapEventEndpoints(1)", StreamingConstructKind.SseWriterInvocation, "/events/daemon", "SseStreamWriter.PrepareResponse(httpContext)"),
@@ -432,7 +380,6 @@ internal static class GrimoireStreamingRouteScanner
             GrimoireStreamAuthority.LiveGrimoire,
             GrimoireStreamClass.GrimoireQuiesceableStream,
             null),
-
 
         // ── The billable inference streams ──────────────────────────────────────────────────────
         new(
@@ -480,7 +427,6 @@ internal static class GrimoireStreamingRouteScanner
             GrimoireStreamClass.BillableDrain,
             StreamingEntryProofKind.ProviderAlreadyBilling),
 
-
         // ── The finite byte-body downloads ──────────────────────────────────────────────────────
         new(
             new("src/RetroDownfall.Arcanum.Api/Tower/SessionEndpoints.cs", "SessionEndpoints", "MapSessionEndpoints(1)", StreamingConstructKind.ByteStreamResult, "/sessions/{id:guid}/attachments/{attachmentId:guid}/content", "Results.Stream(plaintext,mimeType,fileDownloadName:downloadName,enableRangeProcessing:false)"),
@@ -500,7 +446,6 @@ internal static class GrimoireStreamingRouteScanner
             GrimoireStreamClass.FiniteDrain,
             StreamingEntryProofKind.EndsWithoutAProducer),
 
-
         // ── The third-party streaming surface ───────────────────────────────────────────────────
         new(
             new("src/RetroDownfall.Arcanum.Api/A2A/A2AServerEndpoints.cs", "A2AServerEndpoints", "MapA2AServer(2)", StreamingConstructKind.ThirdPartyStreamingMap, "<none>", "apiGroup.MapA2A(server,relative)"),
@@ -510,7 +455,6 @@ internal static class GrimoireStreamingRouteScanner
             GrimoireStreamAuthority.LiveGrimoire,
             GrimoireStreamClass.BillableDrain,
             StreamingEntryProofKind.ThirdPartyFraming),
-
 
         // ── The two shared writers' own declarations ────────────────────────────────────────────
         new(
@@ -523,14 +467,13 @@ internal static class GrimoireStreamingRouteScanner
             StreamingEntryProofKind.SharedWriterDeclaration),
 
         new(
-            new("src/RetroDownfall.Arcanum.Api/Tower/InferenceExecuteWriter.cs", "InferenceExecuteWriter", "WriteStreamAsync(6)", StreamingConstructKind.StreamingContentTypeAssignment, "<none>", "httpContext.Response.ContentType=\"application/x-ndjson; charset=utf-8\""),
+            new("src/RetroDownfall.Arcanum.Api/Tower/InferenceExecuteWriter.cs", "InferenceExecuteWriter", "WriteStreamAsync(7)", StreamingConstructKind.StreamingContentTypeAssignment, "<none>", "httpContext.Response.ContentType=\"application/x-ndjson; charset=utf-8\""),
             "<shared writer>",
             "<shared writer>",
             "NDJSON",
             GrimoireStreamAuthority.NoGrimoireAuthority,
             GrimoireStreamClass.FiniteDrain,
             StreamingEntryProofKind.SharedWriterDeclaration),
-
     ];
 
     private static bool HasWildcardIdentity(StreamingIdentity identity) =>
@@ -564,30 +507,22 @@ internal static class GrimoireStreamingRouteScanner
     /// </remarks>
     private static string EnclosingRouteLiteral(SyntaxNode node)
     {
-
         foreach (InvocationExpressionSyntax invocation in node.AncestorsAndSelf()
             .OfType<InvocationExpressionSyntax>())
         {
-
             if (!TerminalName(invocation.Expression).StartsWith("Map", StringComparison.Ordinal))
             {
-
                 continue;
-
             }
 
             if (invocation.ArgumentList.Arguments is [{ Expression: LiteralExpressionSyntax literal }, ..]
                 && literal.Token.ValueText is { Length: > 0 } route)
             {
-
                 return route;
-
             }
-
         }
 
         return "<none>";
-
     }
 
     private static SyntaxNode ReceiverOf(SyntaxNode expression) =>
@@ -595,7 +530,6 @@ internal static class GrimoireStreamingRouteScanner
 
     private static string EnclosingType(SyntaxNode node)
     {
-
         string[] types =
         [
             .. node.Ancestors().OfType<TypeDeclarationSyntax>()
@@ -604,21 +538,17 @@ internal static class GrimoireStreamingRouteScanner
         ];
 
         return types.Length == 0 ? "<global>" : string.Join('.', types);
-
     }
 
     private static string EnclosingMember(SyntaxNode node)
     {
-
         LocalFunctionStatementSyntax? localFunction = node.AncestorsAndSelf()
             .OfType<LocalFunctionStatementSyntax>()
             .FirstOrDefault();
 
         if (localFunction is not null)
         {
-
             return localFunction.Identifier.ValueText + "(" + localFunction.ParameterList.Parameters.Count + ")";
-
         }
 
         MethodDeclarationSyntax? method = node.AncestorsAndSelf().OfType<MethodDeclarationSyntax>().FirstOrDefault();
@@ -626,7 +556,6 @@ internal static class GrimoireStreamingRouteScanner
         return method is not null
             ? method.Identifier.ValueText + "(" + method.ParameterList.Parameters.Count + ")"
             : "<global>";
-
     }
 
     private static string TerminalName(SyntaxNode node) => node switch
@@ -655,5 +584,4 @@ internal static class GrimoireStreamingRouteScanner
             CSharpSyntaxTree.ParseText(source.Text, new CSharpParseOptions(LanguageVersion.Preview))
                 .GetCompilationUnitRoot())),
     ];
-
 }

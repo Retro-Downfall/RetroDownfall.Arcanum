@@ -12,6 +12,8 @@ using RetroDownfall.Arcanum.Api.Serialization;
 
 using RetroDownfall.Arcanum.Core.Primitives;
 
+using RetroDownfall.Arcanum.Infrastructure.Security;
+
 namespace RetroDownfall.Arcanum.Cli.Services;
 
 /// <summary>
@@ -23,6 +25,17 @@ public sealed class FileBatchApiClient(
     ArcanumApiCredentialLease credentialLease)
 {
     private const long MaxJsonResponseBytes = 64 * 1024 * 1024;
+
+    /// <summary>
+    /// How long a short call may wait for the host to start answering; the same deadline the
+    /// short-call client carries everywhere else (DESIGN 2.1). An upload and a download are not short
+    /// calls and are never subject to it.
+    /// </summary>
+    internal TimeSpan RequestResponseHeadersTimeout { get; init; } =
+        ArcanumApiClient.DefaultRequestResponseHeadersTimeout;
+
+    /// <summary>The clock the response-headers deadline runs on; see <see cref="ArcanumApiClient.HeadersDeadlineClock"/>.</summary>
+    internal TimeProvider HeadersDeadlineClock { get; init; } = TimeProvider.System;
 
     public Task<Result<OpenAiFileListResponse>> ListFilesAsync(
         string? purpose,
@@ -65,7 +78,10 @@ public sealed class FileBatchApiClient(
                 cancellationToken,
                 new Error(
                     "Files.ReadFailed",
-                    "The local upload file could not be read."))
+                    "The local upload file could not be read."),
+                // The answer arrives only after the whole file has been sent and stored, which takes
+                // as long as the file is large: not a short call, so no headers deadline.
+                ArcanumApiClient.StreamingHttpClientName)
             .ConfigureAwait(false);
     }
 
@@ -131,25 +147,61 @@ public sealed class FileBatchApiClient(
         CancellationToken cancellationToken) =>
         PostBatchMutationAsync(batchId, "reset", cancellationToken);
 
+    /// <summary>
+    /// What a download reports for a destination the runtime cannot normalise, from the client and
+    /// from the commands that normalise the destination first, so both say the same thing.
+    /// </summary>
+    internal static readonly Error InvalidDestinationError =
+        new("Files.WriteFailed", "The download destination is not a valid path.");
+
+    /// <summary>
+    /// Normalises <paramref name="path"/> without letting a path the runtime rejects (an embedded NUL,
+    /// a reserved character or a length the platform refuses) escape as an unhandled exception.
+    /// </summary>
+    internal static bool TryGetFullPath(string path, out string fullPath)
+    {
+        try
+        {
+            fullPath = Path.GetFullPath(path);
+
+            return true;
+        }
+        catch (Exception exception) when (
+            exception is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            fullPath = path;
+
+            return false;
+        }
+    }
+
     public async Task<Result<long>> DownloadFileAsync(
         string fileId,
         string destinationPath,
         bool overwrite,
         CancellationToken cancellationToken)
     {
-        string fullDestination = Path.GetFullPath(destinationPath);
-
-        string directory = Path.GetDirectoryName(fullDestination)
-            ?? throw new IOException("The download destination has no parent directory.");
-
-        Directory.CreateDirectory(directory);
-
-        string temporaryPath = Path.Combine(
-            directory,
-            $".{Path.GetFileName(fullDestination)}.{Guid.NewGuid():N}.download");
+        string temporaryPath = string.Empty;
 
         try
         {
+            // Preparing the destination is part of the download: a parent that cannot be created or a
+            // path that cannot be normalised is a write failure the operator can act on, and it must
+            // be reported as one rather than escape this method as an unhandled exception.
+            if (!TryGetFullPath(destinationPath, out string fullDestination))
+            {
+                return Result<long>.Failure(InvalidDestinationError);
+            }
+
+            string directory = Path.GetDirectoryName(fullDestination)
+                ?? throw new IOException("The download destination has no parent directory.");
+
+            Directory.CreateDirectory(directory);
+
+            temporaryPath = Path.Combine(
+                directory,
+                $".{Path.GetFileName(fullDestination)}.{Guid.NewGuid():N}.download");
+
             HttpClient client = httpClientFactory.CreateClient(ArcanumApiClient.StreamingHttpClientName);
 
             using ArcanumAuthenticatedHttpResponse sent =
@@ -184,13 +236,9 @@ public sealed class FileBatchApiClient(
 
             long bytes = 0;
 
-            await using (FileStream destination = new(
-                             temporaryPath,
-                             FileMode.CreateNew,
-                             FileAccess.Write,
-                             FileShare.None,
-                             bufferSize: 81_920,
-                             options: FileOptions.Asynchronous | FileOptions.SequentialScan))
+            // The staging file holds decrypted content, so it is owner-only before the first byte is
+            // written, not narrowed after the move.
+            await using (FileStream destination = SecureFilePermissions.CreateOwnerOnlyTempFile(temporaryPath))
             {
                 byte[] buffer = new byte[81_920];
 
@@ -208,7 +256,19 @@ public sealed class FileBatchApiClient(
                 await destination.FlushAsync(cancellationToken).ConfigureAwait(false);
             }
 
-            File.Move(temporaryPath, fullDestination, overwrite);
+            try
+            {
+                File.Move(temporaryPath, fullDestination, overwrite);
+            }
+            catch (IOException) when (!overwrite && File.Exists(fullDestination))
+            {
+                // The command asks for no-overwrite only when the file was absent a moment ago, so a
+                // refusal here means it appeared in between. Say so instead of blaming the write.
+                return Result<long>.Failure(
+                    new Error(
+                        "Files.DestinationExists",
+                        "The destination file already exists and was not replaced."));
+            }
 
             temporaryPath = string.Empty;
 
@@ -253,17 +313,24 @@ public sealed class FileBatchApiClient(
             ArcanumJsonContext.Default.OpenAiBatchObject,
             cancellationToken);
 
+    /// <summary>
+    /// Sends one request and reads its bounded JSON answer. The short-call client (the default) carries
+    /// the response-headers deadline, so a hung host fails the call as <c>Connection.Timeout</c>; a
+    /// caller whose answer takes as long as its work, such as an upload, passes the unbounded
+    /// streaming client instead.
+    /// </summary>
     private async Task<Result<T>> SendJsonAsync<T>(
         HttpMethod method,
         string path,
         Func<HttpContent?>? content,
         JsonTypeInfo<T> responseType,
         CancellationToken cancellationToken,
-        Error? requestContentError = null)
+        Error? requestContentError = null,
+        string httpClientName = ArcanumApiClient.RequestHttpClientName)
     {
         try
         {
-            HttpClient client = httpClientFactory.CreateClient(ArcanumApiClient.RequestHttpClientName);
+            HttpClient client = httpClientFactory.CreateClient(httpClientName);
 
             using ArcanumAuthenticatedHttpResponse sent =
                 await ArcanumAuthenticatedHttpSender.SendAsync(
@@ -275,7 +342,10 @@ public sealed class FileBatchApiClient(
                     },
                     HttpCompletionOption.ResponseHeadersRead,
                     canReplayAfterUnauthorized: true,
-                    cancellationToken)
+                    ArcanumAuthenticatedHttpSender.PresenceProbeTimeout,
+                    cancellationToken,
+                    ArcanumApiClient.ResponseHeadersDeadlineFor(httpClientName, RequestResponseHeadersTimeout),
+                    HeadersDeadlineClock)
                 .ConfigureAwait(false);
 
             if (!sent.IsAuthenticated)

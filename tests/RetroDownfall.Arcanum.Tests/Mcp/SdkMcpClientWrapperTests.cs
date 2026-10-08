@@ -141,6 +141,29 @@ public sealed class SdkMcpClientWrapperTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task GetToolsAsync_oversized_tool_description_error_names_the_tool_and_size()
+    {
+        // 9,000 bytes is over the 8 KiB per-description bound but far under the catalog budget.
+        PagingToolsListServer server = new(descriptionBytes: 9_000, maxPages: 1);
+
+        using CancellationTokenSource serverLifetime = new();
+
+        await using SdkMcpClientWrapper client = await CreatePagingClientAsync(
+            server,
+            maxToolsTotalBytes: 1_048_576,
+            serverLifetime.Token);
+
+        InvalidDataException error = await Assert.ThrowsAsync<InvalidDataException>(() => client.GetToolsAsync());
+
+        await serverLifetime.CancelAsync();
+
+        // The operator sees one start failure for the whole server; it has to say which tool tripped it.
+        Assert.Contains("paged_tool_1_0", error.Message, StringComparison.Ordinal);
+
+        Assert.Contains("9000", error.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task GetToolsAsync_stops_paging_once_a_server_keeps_handing_back_pages_that_carry_no_tools()
     {
         PagingToolsListServer server = new(descriptionBytes: 2000, maxPages: 5000, toolsPerPage: 0);
@@ -186,6 +209,148 @@ public sealed class SdkMcpClientWrapperTests : IAsyncLifetime
         await serverLifetime.CancelAsync();
 
         Assert.InRange(server.PagesServed, 1, 256);
+    }
+
+    [Fact]
+    public async Task InitializeAsync_throws_TimeoutException_when_server_never_answers_initialize()
+    {
+        Channel<string> toServer = Channel.CreateUnbounded<string>();
+
+        Channel<string> fromServer = Channel.CreateUnbounded<string>();
+
+        using CancellationTokenSource serverLifetime = new();
+
+        // A wedged server: it reads whatever the client sends and never writes a byte back.
+        _ = Task.Run(
+            async () =>
+            {
+                try
+                {
+                    await foreach (string _ in toServer.Reader.ReadAllAsync(serverLifetime.Token))
+                    {
+                    }
+                }
+                catch (OperationCanceledException)
+                {
+                }
+            },
+            CancellationToken.None);
+
+        ChannelClientTransport clientTransport = new(
+            toServer.Writer,
+            fromServer.Reader,
+            maxJsonRpcLineBytes: 2_097_152);
+
+        await using SdkMcpClientWrapper client = new(
+            clientTransport,
+            new McpClientOptions
+            {
+                ClientInfo = new Implementation { Name = "arcanum-tests", Version = "1.0.0" },
+            },
+            initializationTimeout: TimeSpan.FromMilliseconds(200),
+            toolOutputCapBytes: 65536,
+            maxToolsTotalBytes: 1_048_576,
+            elicitationSink: new McpElicitationSink());
+
+        // The wrapper's own handshake deadline expiring is a start failure, not a caller cancellation:
+        // surfacing it as OperationCanceledException made the manager treat a hung server as an
+        // aborted start and skip the restart backoff.
+        TimeoutException timeout = await Assert.ThrowsAsync<TimeoutException>(
+            () => client.InitializeAsync().WaitAsync(TimeSpan.FromSeconds(30)));
+
+        Assert.Contains("initialize", timeout.Message, StringComparison.OrdinalIgnoreCase);
+
+        await serverLifetime.CancelAsync();
+    }
+
+    [Fact]
+    public async Task InitializeAsync_reports_the_sdk_handshake_deadline_the_same_way_when_it_fires_first()
+    {
+        Channel<string> toServer = Channel.CreateUnbounded<string>();
+
+        Channel<string> fromServer = Channel.CreateUnbounded<string>();
+
+        ChannelClientTransport clientTransport = new(
+            toServer.Writer,
+            fromServer.Reader,
+            maxJsonRpcLineBytes: 2_097_152);
+
+        await using SdkMcpClientWrapper client = new(
+            clientTransport,
+            new McpClientOptions
+            {
+                ClientInfo = new Implementation { Name = "arcanum-tests", Version = "1.0.0" },
+                InitializationTimeout = TimeSpan.FromMilliseconds(200),
+            },
+            initializationTimeout: TimeSpan.FromSeconds(60),
+            toolOutputCapBytes: 65536,
+            maxToolsTotalBytes: 1_048_576,
+            elicitationSink: new McpElicitationSink());
+
+        // Both deadlines come from the same configured interval, so under load the SDK's own timer can
+        // win; the failure the manager sees (and the message it records) must not depend on which did.
+        TimeoutException timeout = await Assert.ThrowsAsync<TimeoutException>(
+            () => client.InitializeAsync().WaitAsync(TimeSpan.FromSeconds(30)));
+
+        Assert.Contains("initialize handshake", timeout.Message, StringComparison.Ordinal);
+
+        Assert.Null(timeout.InnerException);
+    }
+
+    [Fact]
+    public async Task InitializeAsync_does_not_relabel_a_timeout_from_below_the_handshake_as_a_handshake_deadline()
+    {
+        await using SdkMcpClientWrapper client = new(
+            new TimingOutTransport("the transport gave up connecting to the endpoint"),
+            new McpClientOptions
+            {
+                ClientInfo = new Implementation { Name = "arcanum-tests", Version = "1.0.0" },
+            },
+            initializationTimeout: TimeSpan.FromSeconds(60),
+            toolOutputCapBytes: 65536,
+            maxToolsTotalBytes: 1_048_576,
+            elicitationSink: new McpElicitationSink());
+
+        // Only the handshake deadlines (the wrapper's own, or the SDK's) mean "did not complete the
+        // initialize handshake". A TimeoutException raised by the transport is a different failure, and the
+        // restart-backoff message the manager records has to name the real cause, not the handshake.
+        TimeoutException timeout = await Assert.ThrowsAsync<TimeoutException>(
+            () => client.InitializeAsync().WaitAsync(TimeSpan.FromSeconds(30)));
+
+        Assert.Equal("the transport gave up connecting to the endpoint", timeout.Message);
+    }
+
+    [Fact]
+    public async Task InitializeAsync_still_propagates_caller_cancellation_as_cancellation()
+    {
+        Channel<string> toServer = Channel.CreateUnbounded<string>();
+
+        Channel<string> fromServer = Channel.CreateUnbounded<string>();
+
+        ChannelClientTransport clientTransport = new(
+            toServer.Writer,
+            fromServer.Reader,
+            maxJsonRpcLineBytes: 2_097_152);
+
+        await using SdkMcpClientWrapper client = new(
+            clientTransport,
+            new McpClientOptions
+            {
+                ClientInfo = new Implementation { Name = "arcanum-tests", Version = "1.0.0" },
+            },
+            initializationTimeout: TimeSpan.FromSeconds(30),
+            toolOutputCapBytes: 65536,
+            maxToolsTotalBytes: 1_048_576,
+            elicitationSink: new McpElicitationSink());
+
+        using CancellationTokenSource caller = new();
+
+        Task initialization = client.InitializeAsync(caller.Token);
+
+        await caller.CancelAsync();
+
+        _ = await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => initialization.WaitAsync(TimeSpan.FromSeconds(30)));
     }
 
     private async Task<SdkMcpClientWrapper> CreatePagingClientAsync(
@@ -431,7 +596,6 @@ public sealed class SdkMcpClientWrapperTests : IAsyncLifetime
         public Task<ResourceLimits> GetEffectiveResourceLimitsForWorkspaceAsync(string? workspaceRoot, CancellationToken ct = default) =>
             Task.FromResult(new ResourceLimits());
 
-        
         public Task<SanctumChildProcessBoundary?> GetChildProcessBoundaryForWorkspaceAsync(
             string? workspaceRoot,
             CancellationToken ct = default) =>
@@ -445,5 +609,13 @@ public Task RecordResourceLimitBreachAsync(
             string? actualValue,
             CancellationToken ct = default) =>
             Task.CompletedTask;
+    }
+
+    private sealed class TimingOutTransport(string message) : IClientTransport
+    {
+        public string Name => "timing-out";
+
+        public Task<ITransport> ConnectAsync(CancellationToken cancellationToken = default) =>
+            throw new TimeoutException(message);
     }
 }

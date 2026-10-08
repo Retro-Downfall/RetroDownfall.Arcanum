@@ -12,7 +12,6 @@ namespace RetroDownfall.Arcanum.Api.Intelligence.TurnEngine.Projections;
 /// </summary>
 internal sealed class IntelligenceEventProjection
 {
-
     private readonly ChannelWriter<IntelligenceEvent> _writer;
 
     private bool _reasoningEmitted;
@@ -112,10 +111,10 @@ internal sealed class IntelligenceEventProjection
                     IntelligenceEventType.Warded,
                     approval.ToolName,
                     WardId: approval.WardId,
-                    WardToolName: approval.ToolName,
-                    WardArguments: TryReadWardArguments(approval.ArgumentsJson),
+                    ToolName: approval.ToolName,
+                    Arguments: TryReadWardArguments(approval.ArgumentsJson),
                     Timestamp: approval.Correlation.Timestamp,
-                    WardOrigin: approval.Origin),
+                    Origin: approval.Origin),
             ],
 
             ApprovalResolved resolved =>
@@ -124,11 +123,11 @@ internal sealed class IntelligenceEventProjection
                     IntelligenceEventType.WardResolved,
                     resolved.ToolName,
                     WardId: resolved.WardId,
-                    WardToolName: resolved.ToolName,
-                    WardAllowed: resolved.Allowed,
-                    WardReason: resolved.Reason,
+                    ToolName: resolved.ToolName,
+                    Allowed: resolved.Allowed,
+                    Reason: resolved.Reason,
                     Timestamp: resolved.Correlation.Timestamp,
-                    WardOrigin: resolved.Origin),
+                    Origin: resolved.Origin),
             ],
 
             HumanInputRequested human =>
@@ -212,7 +211,6 @@ internal sealed class IntelligenceEventProjection
     /// </summary>
     private static JsonElement? TryReadWardArguments(string? argumentsJson)
     {
-
         if (string.IsNullOrWhiteSpace(argumentsJson))
         {
             return null;
@@ -220,19 +218,14 @@ internal sealed class IntelligenceEventProjection
 
         try
         {
-
             using JsonDocument document = JsonDocument.Parse(argumentsJson);
 
             return document.RootElement.Clone();
-
         }
         catch (JsonException)
         {
-
             return null;
-
         }
-
     }
 
     private static IEnumerable<IntelligenceEvent> MapCompleted(
@@ -260,5 +253,4 @@ internal sealed class IntelligenceEventProjection
             Warnings = completed.Warnings,
         };
     }
-
 }

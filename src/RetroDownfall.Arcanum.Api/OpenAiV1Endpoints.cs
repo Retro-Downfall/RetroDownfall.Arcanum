@@ -137,10 +137,13 @@ internal static partial class OpenAiV1Endpoints
         OpenAiChatRequest? body;
 
         // ReadFromJsonAsync throws InvalidOperationException — not JsonException — for a missing or
-        // non-JSON Content-Type, and Kestrel throws BadHttpRequestException once WithLargeRequestBody's
-        // 16 MiB ceiling is exceeded. Uncaught, both escape to ArcanumExceptionHandler and turn a routine
-        // client mistake into a 500 api_error/inference_failed with an Error-level stack trace.
-        if (!httpContext.Request.HasJsonContentType())
+        // non-JSON Content-Type and for a charset it cannot decode, both of which are answered by the check
+        // below before the read; nothing after it catches InvalidOperationException, because with the media
+        // type and charset proven one that still escapes is the server's own fault. Kestrel throws
+        // BadHttpRequestException once WithLargeRequestBody's 16 MiB ceiling is exceeded; uncaught it would
+        // turn a routine client mistake into a 500 api_error/inference_failed with an Error-level stack
+        // trace.
+        if (!ApiRequestJson.HasReadableJsonContentType(httpContext.Request))
         {
             return CreateUnsupportedMediaTypeErrorResult();
         }
@@ -159,10 +162,6 @@ internal static partial class OpenAiV1Endpoints
                 code: "invalid_json",
                 param: null,
                 statusCode: StatusCodes.Status400BadRequest);
-        }
-        catch (InvalidOperationException)
-        {
-            return CreateUnsupportedMediaTypeErrorResult();
         }
         catch (BadHttpRequestException exception)
         {
@@ -1254,6 +1253,16 @@ internal static partial class OpenAiV1Endpoints
 
     internal static IResult CreateRequestBodyReadErrorResult(int statusCode)
     {
+        if (statusCode == StatusCodes.Status415UnsupportedMediaType)
+        {
+            return JsonError(
+                ApiRequestJson.UnacceptedMediaTypeMessage,
+                "invalid_request_error",
+                code: "unsupported_media_type",
+                param: null,
+                statusCode: StatusCodes.Status415UnsupportedMediaType);
+        }
+
         bool payloadTooLarge = statusCode == StatusCodes.Status413PayloadTooLarge;
 
         return JsonError(

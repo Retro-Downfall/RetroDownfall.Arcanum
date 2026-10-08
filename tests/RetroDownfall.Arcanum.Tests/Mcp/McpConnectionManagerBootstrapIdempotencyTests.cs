@@ -114,7 +114,8 @@ public sealed class McpConnectionManagerBootstrapIdempotencyTests : IAsyncLifeti
             _events,
             new AlwaysTrustedWorkspaceStore(),
             new FakeHttpClientFactory(),
-            _settings);
+            _settings,
+            NullLoggerFactory.Instance);
 
         _innerAdmission = new GrimoireConnectionAdmissionGate(TimeProvider.System);
 
@@ -2106,7 +2107,7 @@ public sealed class McpConnectionManagerBootstrapIdempotencyTests : IAsyncLifeti
 
             Result bounded = await ordinaryStop.WaitAsync(TimeSpan.FromSeconds(60));
 
-            Assert.Equal("Mcp.ClientDisposalIncomplete", bounded.Error.Code);
+            Assert.Equal(ErrorCodes.Mcp.ClientDisposalIncomplete, bounded.Error.Code);
 
             Assert.False(ordinaryClient.Completed.Task.IsCompleted);
 
@@ -2362,15 +2363,15 @@ public sealed class McpConnectionManagerBootstrapIdempotencyTests : IAsyncLifeti
 
         Assert.Equal(warded.WardId, resolved.WardId);
 
-        Assert.Equal(toolName, warded.WardToolName);
+        Assert.Equal(toolName, warded.ToolName);
 
-        Assert.Equal(toolName, resolved.WardToolName);
+        Assert.Equal(toolName, resolved.ToolName);
 
-        Assert.Equal(WardResolutionOrigin.Ungated, warded.WardOrigin);
+        Assert.Equal(WardResolutionOrigin.Ungated, warded.Origin);
 
-        Assert.Equal(WardResolutionOrigin.Ungated, resolved.WardOrigin);
+        Assert.Equal(WardResolutionOrigin.Ungated, resolved.Origin);
 
-        Assert.True(resolved.WardAllowed);
+        Assert.True(resolved.Allowed);
     }
 
     private async Task<AIFunction> GetToolAsync(
@@ -2510,7 +2511,8 @@ public sealed class McpConnectionManagerBootstrapIdempotencyTests : IAsyncLifeti
             eventBus ?? new FakeEventBus(),
             new AlwaysTrustedWorkspaceStore(),
             new FakeHttpClientFactory(httpHandler),
-            settings);
+            settings,
+            NullLoggerFactory.Instance);
     }
 
     private static async Task WaitUntilAsync(
@@ -2697,7 +2699,7 @@ public sealed class McpConnectionManagerBootstrapIdempotencyTests : IAsyncLifeti
             CancellationToken cancellationToken = default) =>
             Task.FromResult(new TrustedMcpWorkspaceSnapshot(null, IsApproved: true));
 
-        public Task TrustAsync(string workspaceRootPath, CancellationToken cancellationToken = default) =>
+        public Task TrustAsync(string workspaceRootPath, string? expectedSourceDigest = null, CancellationToken cancellationToken = default) =>
             Task.CompletedTask;
     }
 

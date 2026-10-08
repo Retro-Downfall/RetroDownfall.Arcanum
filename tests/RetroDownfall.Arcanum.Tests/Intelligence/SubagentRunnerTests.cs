@@ -4,11 +4,13 @@ using Microsoft.Extensions.Logging;
 
 using Microsoft.Extensions.Logging.Abstractions;
 
-using RetroDownfall.Arcanum.Api.Intelligence.OpenAi;
+using RetroDownfall.Arcanum.Api.Intelligence;
 
 using RetroDownfall.Arcanum.Api.Intelligence.Subagents;
 
 using RetroDownfall.Arcanum.Api.Intelligence.TurnEngine;
+
+using RetroDownfall.Arcanum.Core.Configuration;
 
 using RetroDownfall.Arcanum.Core.Intelligence;
 
@@ -17,8 +19,6 @@ using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Operations;
 
 using RetroDownfall.Arcanum.Core.Primitives;
-
-using RetroDownfall.Arcanum.Core.Telemetry;
 
 using RetroDownfall.Arcanum.Tests.Support;
 
@@ -62,11 +62,9 @@ public sealed class SubagentRunnerTests
                     "child summary",
                     new ChatCompletionUsage(10, 5, 15))));
         FakeOperationCoordinator operations = new();
-        CapturingTelemetry telemetry = new();
         SubagentRunner runner = new(
             new Lazy<ITurnExecutionFacade>(() => facade),
             operations,
-            telemetry,
             TimeProvider.System,
             NullLogger<SubagentRunner>.Instance);
         AttachedFileDto explicitFile = new("src/A.cs", "sealed class A {}");
@@ -119,7 +117,6 @@ public sealed class SubagentRunnerTests
         Assert.Equal(result.RunId, operations.StartRequest?.RunId);
         Assert.Equal(1, operations.CompleteCalls);
         Assert.Equal(0, operations.FailCalls);
-        Assert.Equal(SubagentRunOutcome.Completed, telemetry.Event?.Outcome);
     }
 
     [Fact]
@@ -146,11 +143,9 @@ public sealed class SubagentRunnerTests
             },
         };
         FakeOperationCoordinator operations = new();
-        CapturingTelemetry telemetry = new();
         SubagentRunner runner = new(
             new Lazy<ITurnExecutionFacade>(() => facade),
             operations,
-            telemetry,
             TimeProvider.System,
             NullLogger<SubagentRunner>.Instance);
 
@@ -170,8 +165,6 @@ public sealed class SubagentRunnerTests
         Assert.Equal(0, operations.CompleteCalls);
         Assert.Equal(1, operations.FailCalls);
         Assert.Equal(SubagentFailureCodes.BudgetExhausted, operations.FailureCode);
-        Assert.Equal(SubagentRunOutcome.BudgetExhausted, telemetry.Event?.Outcome);
-        Assert.Equal(1_001, telemetry.Event?.Tokens);
     }
 
     /// <summary>
@@ -192,11 +185,9 @@ public sealed class SubagentRunnerTests
             Gate = childGate.Task,
         };
         FakeOperationCoordinator operations = new();
-        CapturingTelemetry telemetry = new();
         SubagentRunner runner = new(
             new Lazy<ITurnExecutionFacade>(() => facade),
             operations,
-            telemetry,
             time,
             NullLogger<SubagentRunner>.Instance);
 
@@ -237,7 +228,6 @@ public sealed class SubagentRunnerTests
 
         // The heartbeats bumped the stored revision; Complete has to address the current one.
         Assert.Equal(1L + operations.HeartbeatCalls, operations.LastCompleteRevision);
-        Assert.Equal(SubagentRunOutcome.Completed, telemetry.Event?.Outcome);
     }
 
     /// <summary>
@@ -264,12 +254,10 @@ public sealed class SubagentRunnerTests
             HeartbeatFailure = new InvalidOperationException(
                 "A second operation was started on this context instance before a previous operation completed."),
         };
-        CapturingTelemetry telemetry = new();
         TestCapturingLogger<SubagentRunner> logger = new();
         SubagentRunner runner = new(
             new Lazy<ITurnExecutionFacade>(() => facade),
             operations,
-            telemetry,
             time,
             logger);
 
@@ -301,7 +289,6 @@ public sealed class SubagentRunnerTests
         // A heartbeat that threw committed nothing, so the row is still on the revision the last
         // accepted transition left it at and the terminal transition must address that one.
         Assert.Equal(1L, operations.LastCompleteRevision);
-        Assert.Equal(SubagentRunOutcome.Completed, telemetry.Event?.Outcome);
 
         // Renewal stopping early is a diagnosable event, not a silent one.
         Assert.Contains(
@@ -331,11 +318,9 @@ public sealed class SubagentRunnerTests
         {
             HeartbeatFailure = new InvalidOperationException("connection is already open"),
         };
-        CapturingTelemetry telemetry = new();
         SubagentRunner runner = new(
             new Lazy<ITurnExecutionFacade>(() => facade),
             operations,
-            telemetry,
             time,
             NullLogger<SubagentRunner>.Instance);
 
@@ -359,7 +344,6 @@ public sealed class SubagentRunnerTests
         _ = await Assert.ThrowsAnyAsync<OperationCanceledException>(
             () => run.WaitAsync(TimeSpan.FromSeconds(10)));
 
-        Assert.Equal(SubagentRunOutcome.Cancelled, telemetry.Event?.Outcome);
         Assert.Equal(SubagentFailureCodes.Cancelled, operations.FailureCode);
     }
 
@@ -374,11 +358,9 @@ public sealed class SubagentRunnerTests
             Result<PromptTurnResult>.Success(
                 new PromptTurnResult("child summary", null)));
         FakeOperationCoordinator operations = new() { RefuseComplete = true };
-        CapturingTelemetry telemetry = new();
         SubagentRunner runner = new(
             new Lazy<ITurnExecutionFacade>(() => facade),
             operations,
-            telemetry,
             TimeProvider.System,
             NullLogger<SubagentRunner>.Instance);
 
@@ -398,6 +380,99 @@ public sealed class SubagentRunnerTests
         Assert.Equal(SubagentFailureCodes.ChildFailed, operations.FailureCode);
     }
 
+    /// <summary>
+    /// A child turn that faults outside the provider/engine paths (which log downstream) used to be
+    /// collapsed into <c>Subagent.ChildFailed</c> with nothing in the log. The failure is now
+    /// logged, as exception type only because the message can echo child prompt or file content.
+    /// </summary>
+    [Fact]
+    public async Task RunAsync_WhenChildThrowsUnexpectedly_LogsAndFailsTheOperation()
+    {
+        const string marker = "child-secret-marker";
+        CapturingTurnFacade facade = new(
+            Result<PromptTurnResult>.Success(new PromptTurnResult("unused", null)))
+        {
+            Failure = new InvalidOperationException(marker),
+        };
+        FakeOperationCoordinator operations = new();
+        TestCapturingLogger<SubagentRunner> logger = new();
+        SubagentRunner runner = new(
+            new Lazy<ITurnExecutionFacade>(() => facade),
+            operations,
+            TimeProvider.System,
+            logger);
+
+        SubagentRunResult result = await runner.RunAsync(
+            new SubagentRunRequest("Faulting task.", null, [], MaxTokens: 1_000, MaxCostUsd: null),
+            CancellationToken.None);
+
+        Assert.False(result.Success);
+        Assert.Equal(SubagentFailureCodes.ChildFailed, result.FailureCode);
+        Assert.Equal(1, operations.FailCalls);
+        Assert.Equal(SubagentFailureCodes.ChildFailed, operations.FailureCode);
+
+        TestLogEntry entry = Assert.Single(logger.Entries, e => e.Level == LogLevel.Warning);
+
+        Assert.Contains(result.RunId.ToString(), entry.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains(nameof(InvalidOperationException), entry.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain(marker, entry.Message, StringComparison.Ordinal);
+        Assert.Null(entry.Exception);
+    }
+
+    /// <summary>
+    /// R-008: the child turn starts inside the parent's <c>delegate_task</c> call, where the parent
+    /// turn's accounting is now re-established. The child must not see it: a child that adopted the
+    /// parent's handle would settle the parent's run and reservation when it completed.
+    /// </summary>
+    /// <remarks>
+    /// Restoration is not asserted here. <see cref="SubagentRunner.RunAsync"/> is an async method, and
+    /// an <c>AsyncLocal</c> it writes never flows back to its caller, so the caller sees the parent's
+    /// handle afterwards whether or not the suspension was undone. The restore is pinned where it is
+    /// observable, in one flow: <c>TurnAccountingHandleTests.AmbientSuspend_HidesTheHandleAndWriterThenRestoresThem</c>.
+    /// </remarks>
+    [Fact]
+    public async Task RunAsync_HidesTheParentTurnsAccountingFromTheChild()
+    {
+        TurnAccountingHandle parent = (await TurnAccountingHandle.BeginAsync(
+                turnRunWriter: null,
+                budgetReservations: null,
+                new PricingSettings(),
+                "test-model",
+                sessionId: null,
+                surface: "test",
+                purpose: "chat",
+                requestId: "parent",
+                CancellationToken.None))
+            .Value;
+
+        bool childSawAccounting = true;
+
+        CapturingTurnFacade facade = new(
+            Result<PromptTurnResult>.Success(
+                new PromptTurnResult(
+                    "child summary",
+                    new ChatCompletionUsage(10, 5, 15))))
+        {
+            OnExecute = () => childSawAccounting = TurnAccountingAmbient.Current is not null,
+        };
+        SubagentRunner runner = new(
+            new Lazy<ITurnExecutionFacade>(() => facade),
+            new FakeOperationCoordinator(),
+            TimeProvider.System,
+            NullLogger<SubagentRunner>.Instance);
+
+        using (TurnAccountingAmbient.Push(parent, writer: null))
+        {
+            SubagentRunResult result = await runner.RunAsync(
+                new SubagentRunRequest("child task", "test-model", [], MaxTokens: 1_000, MaxCostUsd: null),
+                CancellationToken.None);
+
+            Assert.True(result.Success);
+        }
+
+        Assert.False(childSawAccounting);
+    }
+
     private sealed class CapturingTurnFacade(
         Result<PromptTurnResult> result) : ITurnExecutionFacade
     {
@@ -410,6 +485,9 @@ public sealed class SubagentRunnerTests
 
         public Action? OnExecute { get; init; }
 
+        /// <summary>Thrown from the child turn to model an unexpected fault.</summary>
+        public Exception? Failure { get; init; }
+
         /// <summary>Held open to model a child turn that outlives the durable lease.</summary>
         public Task? Gate { get; init; }
 
@@ -418,17 +496,20 @@ public sealed class SubagentRunnerTests
         public async Task<Result<PromptTurnResult>> ExecuteBufferedAsync(
             PingRequest request,
             ArcanumInvocationContext invocationContext,
-            bool hasIdempotencyKey,
             CancellationToken executionToken,
             InferenceAuditContext? auditContext = null)
         {
-            _ = hasIdempotencyKey;
             _ = auditContext;
             executionToken.ThrowIfCancellationRequested();
             Request = request;
             InvocationContext = invocationContext;
             OnExecute?.Invoke();
             _ = _entered.TrySetResult();
+
+            if (Failure is not null)
+            {
+                throw Failure;
+            }
 
             if (Gate is not null)
             {
@@ -441,18 +522,8 @@ public sealed class SubagentRunnerTests
         public IAsyncEnumerable<IntelligenceEvent> ExecuteIntelligenceStreamAsync(
             PingRequest request,
             ArcanumInvocationContext invocationContext,
-            bool hasIdempotencyKey,
             CancellationToken executionToken,
             InferenceAuditContext? auditContext = null) =>
-            throw new NotSupportedException();
-
-        public IAsyncEnumerable<OpenAiChatChunk> ExecuteOpenAiSseAsync(
-            PingRequest request,
-            ArcanumInvocationContext invocationContext,
-            bool hasIdempotencyKey,
-            string completionId,
-            string model,
-            CancellationToken executionToken) =>
             throw new NotSupportedException();
     }
 
@@ -764,13 +835,5 @@ public sealed class SubagentRunnerTests
                 return ValueTask.CompletedTask;
             }
         }
-    }
-
-    private sealed class CapturingTelemetry : ISubagentTelemetrySink
-    {
-        public SubagentTelemetryEvent? Event { get; private set; }
-
-        public void RecordSubagentRun(SubagentTelemetryEvent telemetryEvent) =>
-            Event = telemetryEvent;
     }
 }

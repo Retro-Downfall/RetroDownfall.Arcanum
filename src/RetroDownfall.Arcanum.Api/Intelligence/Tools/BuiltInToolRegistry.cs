@@ -6,6 +6,7 @@ using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence.WebResearch;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 using RetroDownfall.Arcanum.Infrastructure.Intelligence.WebResearch;
 
@@ -23,6 +24,8 @@ public sealed class BuiltInToolRegistry : IBuiltInToolRegistry
 
     private readonly IWebResearchProviderCatalog _webResearchProviders;
 
+    private readonly IDnsResolver _dnsResolver;
+
     private readonly ILogger<ArcanumBrowseWebTool>? _browseWebLogger;
 
     private readonly ILogger<ArcanumWebSearchTool>? _webSearchLogger;
@@ -38,10 +41,8 @@ public sealed class BuiltInToolRegistry : IBuiltInToolRegistry
         : this(
             httpClientFactory,
             settings,
-            CreateCompatibilityCatalog(httpClientFactory, settings),
+            new SystemDnsResolver(),
             browseWebLogger,
-            webSearchLogger: null,
-            readUrlLogger: null,
             logger: null)
     {
     }
@@ -54,7 +55,23 @@ public sealed class BuiltInToolRegistry : IBuiltInToolRegistry
         : this(
             httpClientFactory,
             settings,
-            CreateCompatibilityCatalog(httpClientFactory, settings),
+            new SystemDnsResolver(),
+            browseWebLogger,
+            logger)
+    {
+    }
+
+    private BuiltInToolRegistry(
+        IHttpClientFactory httpClientFactory,
+        IOptionsSnapshot<ArcanumSettings> settings,
+        IDnsResolver dnsResolver,
+        ILogger<ArcanumBrowseWebTool>? browseWebLogger,
+        ILogger<BuiltInToolRegistry>? logger)
+        : this(
+            httpClientFactory,
+            settings,
+            CreateCompatibilityCatalog(httpClientFactory, settings, dnsResolver),
+            dnsResolver,
             browseWebLogger,
             webSearchLogger: null,
             readUrlLogger: null,
@@ -66,6 +83,7 @@ public sealed class BuiltInToolRegistry : IBuiltInToolRegistry
         IHttpClientFactory httpClientFactory,
         IOptionsSnapshot<ArcanumSettings> settings,
         IWebResearchProviderCatalog webResearchProviders,
+        IDnsResolver dnsResolver,
         ILogger<ArcanumBrowseWebTool>? browseWebLogger,
         ILogger<ArcanumWebSearchTool>? webSearchLogger,
         ILogger<ArcanumReadUrlTool>? readUrlLogger,
@@ -76,6 +94,8 @@ public sealed class BuiltInToolRegistry : IBuiltInToolRegistry
         _settings = settings;
 
         _webResearchProviders = webResearchProviders;
+
+        _dnsResolver = dnsResolver;
 
         _browseWebLogger = browseWebLogger;
 
@@ -192,7 +212,9 @@ public sealed class BuiltInToolRegistry : IBuiltInToolRegistry
             return new ArcanumBrowseWebTool(
                 _httpClientFactory,
                 _settings,
-                _browseWebLogger);
+                _browseWebLogger,
+                TimeProvider.System,
+                _dnsResolver);
         }
 
         if (string.Equals(toolName, ArcanumWebSearchTool.ToolName, StringComparison.Ordinal)
@@ -218,7 +240,8 @@ public sealed class BuiltInToolRegistry : IBuiltInToolRegistry
 
     private static IWebResearchProviderCatalog CreateCompatibilityCatalog(
         IHttpClientFactory httpClientFactory,
-        IOptionsSnapshot<ArcanumSettings> settings) =>
+        IOptionsSnapshot<ArcanumSettings> settings,
+        IDnsResolver dnsResolver) =>
         new WebResearchProviderCatalog(
             [
                 new PerplexityWebProvider(
@@ -227,7 +250,7 @@ public sealed class BuiltInToolRegistry : IBuiltInToolRegistry
                 new LocalHttpWebProvider(
                     httpClientFactory,
                     new WebPageContentExtractor(),
-                    new SystemDnsResolver()),
+                    dnsResolver),
             ]);
 
     private sealed class EnvironmentOnlyWebResearchApiKeyResolver(

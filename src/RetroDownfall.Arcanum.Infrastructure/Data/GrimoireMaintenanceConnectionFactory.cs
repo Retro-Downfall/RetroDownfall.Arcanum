@@ -12,7 +12,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data;
 internal sealed class GrimoireMaintenanceConnectionFactory
     : IGrimoireMaintenanceConnectionFactory
 {
-
     private readonly IGrimoireDbPassphraseSource _passphraseSource;
 
     private readonly ICovenantSqliteConnectionInitializer _initializer;
@@ -24,7 +23,6 @@ internal sealed class GrimoireMaintenanceConnectionFactory
         ICovenantSqliteConnectionInitializer initializer,
         ISqliteNativeRuntime nativeRuntime)
     {
-
         ArgumentNullException.ThrowIfNull(passphraseSource);
 
         ArgumentNullException.ThrowIfNull(initializer);
@@ -36,7 +34,6 @@ internal sealed class GrimoireMaintenanceConnectionFactory
         _initializer = initializer;
 
         _nativeRuntime = nativeRuntime;
-
     }
 
     /// <summary>Opens the closed period's connection for the one transaction that empties the Covenant family.</summary>
@@ -156,7 +153,6 @@ internal sealed class GrimoireMaintenanceConnectionFactory
         IGrimoireMaintenanceIoLane lane,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(capability);
 
         ArgumentNullException.ThrowIfNull(lane);
@@ -169,38 +165,31 @@ internal sealed class GrimoireMaintenanceConnectionFactory
 
         if (consumed.IsFailure)
         {
-
             return Refused(
                 "The journal maintenance capability does not authorize this Grimoire open.");
-
         }
 
         IGrimoireTrackedMaintenanceHandle handle = consumed.Value;
 
         try
         {
-
             _nativeRuntime.Initialize();
-
         }
         catch (Exception)
         {
-
             ReportNotOpened(handle);
 
             return Refused("The journal maintenance native runtime is unavailable.");
-
         }
 
         SqliteConnection? connection = null;
 
         try
         {
-
             SqliteConnectionStringBuilder builder = new()
             {
                 DataSource = purpose is CovenantMaintenanceConnectionPurpose.ReopenVerification
-                    ? $"file:{capability.CanonicalPath}?immutable=1"
+                    ? ImmutableFileUri(capability.CanonicalPath)
                     : capability.CanonicalPath,
 
                 Password = _passphraseSource.Passphrase,
@@ -213,55 +202,43 @@ internal sealed class GrimoireMaintenanceConnectionFactory
             };
 
             connection = new SqliteConnection(builder.ToString());
-
         }
         catch (OperationCanceledException)
         {
-
             if (connection is not null)
             {
-
                 await connection.DisposeAsync().ConfigureAwait(false);
-
             }
 
             ReportNotOpened(handle);
 
             throw;
-
         }
         catch (Exception)
         {
-
             if (connection is not null)
             {
-
                 await connection.DisposeAsync().ConfigureAwait(false);
-
             }
 
             ReportNotOpened(handle);
 
             return Refused("The journal maintenance provider could not be constructed.");
-
         }
 
         Result started = handle.ReportOpenStarted();
 
         if (started.IsFailure)
         {
-
             await connection.DisposeAsync().ConfigureAwait(false);
 
             ReportNotOpened(handle);
 
             return Refused("The journal maintenance open could not start.");
-
         }
 
         try
         {
-
             await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
 
             await _initializer.InitializeAsync(
@@ -269,31 +246,49 @@ internal sealed class GrimoireMaintenanceConnectionFactory
                     InitializerModeOf(purpose),
                     cancellationToken)
                 .ConfigureAwait(false);
-
         }
         catch (OperationCanceledException)
         {
-
             await CloseAndDisposeAsync(connection).ConfigureAwait(false);
 
             ReportPhysicallyClosed(handle);
 
             throw;
-
         }
         catch (Exception)
         {
-
             await CloseAndDisposeAsync(connection).ConfigureAwait(false);
 
             ReportPhysicallyClosed(handle);
 
             return Refused("The journal maintenance connection could not be opened and initialized.");
-
         }
 
         return Result<IGrimoireMaintenanceConnectionLease>.Success(new Lease(connection, handle));
+    }
 
+    /// <summary>
+    /// The SQLite URI filename for an immutable read of <paramref name="canonicalPath"/>.
+    /// </summary>
+    /// <remarks>
+    /// Every path segment is percent-encoded, because SQLite reads <c>?</c> as the start of the query, <c>#</c> as
+    /// the start of a fragment and <c>%</c> as an escape, and a canonical path may legally hold all three. SQLite
+    /// decodes the escapes back, including the drive colon of a Windows path. <paramref name="directorySeparator"/>
+    /// is the platform's unless a test names the other platform's.
+    /// </remarks>
+    internal static string ImmutableFileUri(string canonicalPath, char directorySeparator = '\0')
+    {
+        char separator = directorySeparator == '\0' ? Path.DirectorySeparatorChar : directorySeparator;
+
+        string normalized = separator == '/'
+            ? canonicalPath
+            : canonicalPath.Replace(separator, '/');
+
+        string encoded = string.Join('/', normalized.Split('/').Select(Uri.EscapeDataString));
+
+        return normalized.StartsWith('/')
+            ? $"file://{encoded}?immutable=1"
+            : $"file:///{encoded}?immutable=1";
     }
 
     /// <summary>
@@ -309,7 +304,6 @@ internal sealed class GrimoireMaintenanceConnectionFactory
         CovenantMaintenanceConnectionPurpose purpose) =>
         purpose switch
         {
-
             CovenantMaintenanceConnectionPurpose.IntegrityVerification
                 or CovenantMaintenanceConnectionPurpose.ReopenVerification
                 or CovenantMaintenanceConnectionPurpose.InventorySnapshot =>
@@ -320,49 +314,36 @@ internal sealed class GrimoireMaintenanceConnectionFactory
                 CovenantSqliteConnectionMode.ReadWrite,
 
             _ => CovenantSqliteConnectionMode.ExclusiveMaintenance,
-
         };
 
     private static async ValueTask CloseAndDisposeAsync(SqliteConnection connection)
     {
-
         if (connection.State != ConnectionState.Closed)
         {
-
             await connection.CloseAsync().ConfigureAwait(false);
-
         }
 
         await connection.DisposeAsync().ConfigureAwait(false);
-
     }
 
     private static void ReportNotOpened(IGrimoireTrackedMaintenanceHandle handle)
     {
-
         Result reported = handle.ReportNotOpened();
 
         if (reported.IsFailure)
         {
-
             throw new InvalidOperationException(reported.Error.Message);
-
         }
-
     }
 
     private static void ReportPhysicallyClosed(IGrimoireTrackedMaintenanceHandle handle)
     {
-
         Result reported = handle.ReportPhysicallyClosed();
 
         if (reported.IsFailure)
         {
-
             throw new InvalidOperationException(reported.Error.Message);
-
         }
-
     }
 
     private static Error Refused(string message) =>
@@ -372,19 +353,15 @@ internal sealed class GrimoireMaintenanceConnectionFactory
         SqliteConnection connection,
         IGrimoireTrackedMaintenanceHandle handle) : IGrimoireMaintenanceConnectionLease
     {
-
         private int _disposed;
 
         public SqliteConnection Connection { get; } = connection;
 
         public async ValueTask DisposeAsync()
         {
-
             if (Interlocked.Exchange(ref _disposed, 1) != 0)
             {
-
                 return;
-
             }
 
             await CloseAndDisposeAsync(Connection).ConfigureAwait(false);
@@ -392,9 +369,6 @@ internal sealed class GrimoireMaintenanceConnectionFactory
             ReportPhysicallyClosed(handle);
 
             GC.SuppressFinalize(this);
-
         }
-
     }
-
 }

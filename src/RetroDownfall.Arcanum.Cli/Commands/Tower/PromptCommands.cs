@@ -19,9 +19,8 @@ public sealed class PromptCommands(
     IThemePalette themePalette,
     IConfirmationPrompt confirmationPrompt,
     IOptions<ArcanumSettings> settings,
-    ICliResourceCatalog? resourceCatalog = null)
+    ICliResourceCatalog resourceCatalog)
 {
-
     private void WriteError(Error error) =>
         CliErrorOutput.WriteMarkupLine(
             themePalette.ErrorMarkup(CliFailureExit.Annotate(error, settings.Value.Host)));
@@ -29,7 +28,7 @@ public sealed class PromptCommands(
     /// <summary>
     /// List prompts (GET /api/prompts).
     /// </summary>
-    /// <param name="campaignId">--campaignId, Filter by campaign GUID.</param>
+    /// <param name="campaignId">--campaign-id, Filter by campaign GUID.</param>
     /// <param name="query">-q, Free-text query.</param>
     /// <param name="tag">Filter by tag.</param>
     public async Task<int> List(
@@ -38,25 +37,32 @@ public sealed class PromptCommands(
         string? tag = null,
         CancellationToken cancellationToken = default)
     {
-
         Guid? parsedCampaignId = null;
 
         if (!string.IsNullOrWhiteSpace(campaignId))
         {
-
             if (!CliArgReader.TryParseGuid(campaignId, out Guid parsed))
             {
-                CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--campaignId must be a valid GUID.")));
+                CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--campaign-id must be a valid GUID.")));
 
                 return (int)CliExitCode.ConfigurationError;
             }
 
             parsedCampaignId = parsed;
-
         }
 
-        Result<ListPageResult<PromptSummaryDto>> result = await apiClient
-            .GetPromptsAsync(parsedCampaignId, query, tag, cancellationToken: cancellationToken)
+        // Every prompt, not the first page the host bounds the answer to.
+        Result<HostListing<PromptSummaryDto>> result = await HostPageWalker
+            .ReadAsync<PromptSummaryDto, int>(
+                "prompt list",
+                singlePage: false,
+                async (offset, token) => HostPageWalker.ByOffset(
+                    await apiClient
+                        .GetPromptsAsync(parsedCampaignId, query, tag, offset: offset, cancellationToken: token)
+                        .ConfigureAwait(false),
+                    offset),
+                cancellationToken,
+                firstPageCursor: 0)
             .ConfigureAwait(false);
 
         if (result.IsFailure)
@@ -80,13 +86,11 @@ public sealed class PromptCommands(
 
         foreach (PromptSummaryDto prompt in prompts)
         {
-
             table.AddRow(
                 new Markup(themePalette.TextMarkup(Markup.Escape(prompt.Name))),
                 new Markup(themePalette.TextMarkup(Markup.Escape(prompt.Version))),
                 new Markup(themePalette.MutedMarkup(Markup.Escape(prompt.CampaignId?.ToString("D") ?? "-"))),
                 new Markup(themePalette.MutedMarkup(Markup.Escape(prompt.Tags.Length == 0 ? "-" : string.Join(", ", prompt.Tags)))));
-
         }
 
         AnsiConsole.Write(table);
@@ -97,7 +101,6 @@ public sealed class PromptCommands(
         }
 
         return 0;
-
     }
 
     /// <summary>
@@ -109,12 +112,6 @@ public sealed class PromptCommands(
         Guid promptId;
         if (!CliArgReader.TryParseGuid(id, out promptId))
         {
-            if (resourceCatalog is null)
-            {
-                CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("<ID> must be a valid GUID.")));
-                return 1;
-            }
-
             ResourceSelectionResult<PromptSummaryDto> selection = await resourceCatalog
                 .SelectPromptAsync(id, cancellationToken)
                 .ConfigureAwait(false);
@@ -126,7 +123,7 @@ public sealed class PromptCommands(
             if (selection.Status == ResourceSelectionStatus.Error)
             {
                 CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape(selection.Error!)));
-                return 1;
+                return CliFailureExit.ExitCode(selection.ErrorCode);
             }
 
             promptId = selection.Value!.Id;
@@ -189,31 +186,27 @@ public sealed class PromptCommands(
         AnsiConsole.Write(panel);
 
         return 0;
-
     }
 
     /// <summary>
     /// List versions of a prompt by name (GET /api/prompts/by-name/{name}/versions).
     /// </summary>
     /// <param name="name">Prompt name.</param>
-    /// <param name="campaignId">--campaignId, Filter by campaign GUID.</param>
+    /// <param name="campaignId">--campaign-id, Filter by campaign GUID.</param>
     public async Task<int> Versions(string name, string? campaignId = null, CancellationToken cancellationToken = default)
     {
-
         Guid? parsedCampaignId = null;
 
         if (!string.IsNullOrWhiteSpace(campaignId))
         {
-
             if (!CliArgReader.TryParseGuid(campaignId, out Guid parsed))
             {
-                CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--campaignId must be a valid GUID.")));
+                CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--campaign-id must be a valid GUID.")));
 
                 return (int)CliExitCode.ConfigurationError;
             }
 
             parsedCampaignId = parsed;
-
         }
 
         Result<PromptVersionDto[]> result = await apiClient
@@ -235,17 +228,14 @@ public sealed class PromptCommands(
 
         foreach (PromptVersionDto version in result.Value)
         {
-
             table.AddRow(
                 new Markup(themePalette.TextMarkup(Markup.Escape(version.Version))),
                 new Markup(themePalette.MutedMarkup(Markup.Escape(version.UpdatedAt.ToString("u")))));
-
         }
 
         AnsiConsole.Write(table);
 
         return 0;
-
     }
 
     /// <summary>
@@ -254,7 +244,7 @@ public sealed class PromptCommands(
     /// <param name="name">Prompt name.</param>
     /// <param name="version">Prompt version label.</param>
     /// <param name="template">Prompt template: inline text, or @filename to read from a file.</param>
-    /// <param name="campaignId">--campaignId, Campaign GUID to associate with.</param>
+    /// <param name="campaignId">--campaign-id, Campaign GUID to associate with.</param>
     /// <param name="description">Prompt description.</param>
     /// <param name="tag">Tag; pass multiple times for several tags.</param>
     public async Task<int> Create(
@@ -266,7 +256,6 @@ public sealed class PromptCommands(
         string[]? tag = null,
         CancellationToken cancellationToken = default)
     {
-
         if (string.IsNullOrWhiteSpace(name))
         {
             CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--name is required.")));
@@ -299,16 +288,14 @@ public sealed class PromptCommands(
 
         if (!string.IsNullOrWhiteSpace(campaignId))
         {
-
             if (!CliArgReader.TryParseGuid(campaignId, out Guid parsed))
             {
-                CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--campaignId must be a valid GUID.")));
+                CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--campaign-id must be a valid GUID.")));
 
                 return (int)CliExitCode.ConfigurationError;
             }
 
             parsedCampaignId = parsed;
-
         }
 
         CreatePromptRequest request = new(
@@ -341,7 +328,6 @@ public sealed class PromptCommands(
                 Markup.Escape($"{result.Value.Name} v{result.Value.Version} ({result.Value.Id:D})")));
 
         return 0;
-
     }
 
     /// <summary>
@@ -356,15 +342,20 @@ public sealed class PromptCommands(
         string[]? tag = null,
         CancellationToken cancellationToken = default)
     {
+        if (string.IsNullOrEmpty(template) && (tag is null || tag.Length == 0))
+        {
+            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("Nothing to update; pass --template or --tag.")));
 
-        (bool resolved, bool cancelled, Guid promptId) = await ResolvePromptIdAsync(id, cancellationToken).ConfigureAwait(false);
-        if (!resolved) return cancelled ? 0 : 1;
+            return (int)CliExitCode.ConfigurationError;
+        }
+
+        (bool resolved, bool cancelled, Guid promptId, int resolveExitCode) = await ResolvePromptIdAsync(id, cancellationToken).ConfigureAwait(false);
+        if (!resolved) return cancelled ? 0 : resolveExitCode;
 
         string? resolvedTemplate = null;
 
         if (!string.IsNullOrEmpty(template))
         {
-
             if (!CliArgReader.TryReadInlineOrFile(template, out string readTemplate, out string? templateError))
             {
                 CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape(templateError!)));
@@ -373,7 +364,6 @@ public sealed class PromptCommands(
             }
 
             resolvedTemplate = readTemplate;
-
         }
 
         UpdatePromptRequest request = new(
@@ -403,7 +393,6 @@ public sealed class PromptCommands(
             themePalette.HighlightLabelMarkup(Markup.Escape("Prompt updated:"), Markup.Escape(result.Value.Name)));
 
         return 0;
-
     }
 
     /// <summary>
@@ -412,9 +401,8 @@ public sealed class PromptCommands(
     /// <param name="id">Prompt GUID.</param>
     public async Task<int> Delete(string? id, CancellationToken cancellationToken)
     {
-
-        (bool resolved, bool cancelled, Guid promptId) = await ResolvePromptIdAsync(id, cancellationToken).ConfigureAwait(false);
-        if (!resolved) return cancelled ? 0 : 1;
+        (bool resolved, bool cancelled, Guid promptId, int resolveExitCode) = await ResolvePromptIdAsync(id, cancellationToken).ConfigureAwait(false);
+        if (!resolved) return cancelled ? 0 : resolveExitCode;
 
         if (!await confirmationPrompt
                 .PromptForConfirmationAsync($"Delete prompt {promptId:D}?", cancellationToken)
@@ -437,7 +425,6 @@ public sealed class PromptCommands(
         AnsiConsole.MarkupLine(themePalette.MutedMarkup(Markup.Escape("Prompt removed.")));
 
         return 0;
-
     }
 
     /// <summary>
@@ -447,9 +434,8 @@ public sealed class PromptCommands(
     /// <param name="param">Template parameter as key=value; pass multiple times for several parameters.</param>
     public async Task<int> Render(string? id, string[]? param = null, CancellationToken cancellationToken = default)
     {
-
-        (bool resolved, bool cancelled, Guid promptId) = await ResolvePromptIdAsync(id, cancellationToken).ConfigureAwait(false);
-        if (!resolved) return cancelled ? 0 : 1;
+        (bool resolved, bool cancelled, Guid promptId, int resolveExitCode) = await ResolvePromptIdAsync(id, cancellationToken).ConfigureAwait(false);
+        if (!resolved) return cancelled ? 0 : resolveExitCode;
 
         if (!CliArgReader.TryParseKeyValuePairs(param, out Dictionary<string, string> parameters, out string? paramError))
         {
@@ -472,7 +458,6 @@ public sealed class PromptCommands(
         await Console.Out.WriteLineAsync(result.Value.RenderedText).ConfigureAwait(false);
 
         return 0;
-
     }
 
     /// <summary>
@@ -481,9 +466,8 @@ public sealed class PromptCommands(
     /// <param name="id">Prompt GUID.</param>
     public async Task<int> Test(string? id, CancellationToken cancellationToken)
     {
-
-        (bool resolved, bool cancelled, Guid promptId) = await ResolvePromptIdAsync(id, cancellationToken).ConfigureAwait(false);
-        if (!resolved) return cancelled ? 0 : 1;
+        (bool resolved, bool cancelled, Guid promptId, int resolveExitCode) = await ResolvePromptIdAsync(id, cancellationToken).ConfigureAwait(false);
+        if (!resolved) return cancelled ? 0 : resolveExitCode;
 
         TestPromptRequest request = new(
             WorkingDirectory: Environment.CurrentDirectory,
@@ -504,7 +488,6 @@ public sealed class PromptCommands(
         await Console.Out.WriteLineAsync(result.Value.AssembledText).ConfigureAwait(false);
 
         return 0;
-
     }
 
     /// <summary>
@@ -513,7 +496,7 @@ public sealed class PromptCommands(
     /// <param name="id">Prompt GUID.</param>
     /// <param name="input">User message for the prompt turn: inline text, or @filename to read from a file.</param>
     /// <param name="param">Template parameter as key=value; pass multiple times for several parameters.</param>
-    /// <param name="sessionId">--sessionId, Session GUID to bind context from.</param>
+    /// <param name="sessionId">--session-id, Session GUID to bind context from.</param>
     public async Task<int> Execute(
         string? id,
         string? input = null,
@@ -521,9 +504,8 @@ public sealed class PromptCommands(
         string? sessionId = null,
         CancellationToken cancellationToken = default)
     {
-
-        (bool resolved, bool cancelled, Guid promptId) = await ResolvePromptIdAsync(id, cancellationToken).ConfigureAwait(false);
-        if (!resolved) return cancelled ? 0 : 1;
+        (bool resolved, bool cancelled, Guid promptId, int resolveExitCode) = await ResolvePromptIdAsync(id, cancellationToken).ConfigureAwait(false);
+        if (!resolved) return cancelled ? 0 : resolveExitCode;
 
         if (string.IsNullOrEmpty(input))
         {
@@ -550,16 +532,14 @@ public sealed class PromptCommands(
 
         if (!string.IsNullOrWhiteSpace(sessionId))
         {
-
             if (!CliArgReader.TryParseGuid(sessionId, out Guid parsed))
             {
-                CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--sessionId must be a valid GUID.")));
+                CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--session-id must be a valid GUID.")));
 
                 return (int)CliExitCode.ConfigurationError;
             }
 
             parsedSessionId = parsed;
-
         }
 
         PromptExecuteRequest request = new(
@@ -579,7 +559,6 @@ public sealed class PromptCommands(
         await ExecuteResultRendering.WriteExecuteResultAsync(result.Value, themePalette).ConfigureAwait(false);
 
         return 0;
-
     }
 
     /// <summary>
@@ -596,9 +575,8 @@ public sealed class PromptCommands(
         string? campaign = null,
         CancellationToken cancellationToken = default)
     {
-
-        (bool resolved, bool cancelled, Guid promptId) = await ResolvePromptIdAsync(id, cancellationToken).ConfigureAwait(false);
-        if (!resolved) return cancelled ? 0 : 1;
+        (bool resolved, bool cancelled, Guid promptId, int resolveExitCode) = await ResolvePromptIdAsync(id, cancellationToken).ConfigureAwait(false);
+        if (!resolved) return cancelled ? 0 : resolveExitCode;
 
         if (string.IsNullOrWhiteSpace(newName) || string.IsNullOrWhiteSpace(newVersion))
         {
@@ -611,7 +589,6 @@ public sealed class PromptCommands(
 
         if (!string.IsNullOrWhiteSpace(campaign))
         {
-
             if (!CliArgReader.TryParseGuid(campaign, out Guid parsedCampaignId2))
             {
                 CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--campaign must be a valid GUID.")));
@@ -620,7 +597,6 @@ public sealed class PromptCommands(
             }
 
             parsedCampaignId = parsedCampaignId2;
-
         }
 
         ClonePromptRequest request = new(newName.Trim(), newVersion.Trim(), parsedCampaignId);
@@ -679,7 +655,6 @@ public sealed class PromptCommands(
         AnsiConsole.Write(panel);
 
         return 0;
-
     }
 
     /// <summary>
@@ -689,9 +664,17 @@ public sealed class PromptCommands(
     /// <param name="output">Write exported JSON to this file instead of stdout.</param>
     public async Task<int> Export(string? id, string? output = null, CancellationToken cancellationToken = default)
     {
+        (bool resolved, bool cancelled, Guid promptId, int resolveExitCode) = await ResolvePromptIdAsync(id, cancellationToken).ConfigureAwait(false);
+        if (!resolved) return cancelled ? 0 : resolveExitCode;
 
-        (bool resolved, bool cancelled, Guid promptId) = await ResolvePromptIdAsync(id, cancellationToken).ConfigureAwait(false);
-        if (!resolved) return cancelled ? 0 : 1;
+        ExportDestination destination = await CliOutputFile
+            .PlanExportAsync(output, confirmationPrompt, themePalette, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (!destination.Proceed)
+        {
+            return destination.ExitCode;
+        }
 
         Result<PromptExportDto> result = await apiClient.ExportPromptAsync(promptId, cancellationToken).ConfigureAwait(false);
 
@@ -706,49 +689,28 @@ public sealed class PromptCommands(
             result.Value,
             RetroDownfall.Arcanum.Api.Serialization.ArcanumJsonContext.Default.PromptExportDto);
 
-        if (string.IsNullOrWhiteSpace(output))
-        {
-            await Console.Out.WriteLineAsync(json).ConfigureAwait(false);
-        }
-        else
-        {
-            try
-            {
-                await File.WriteAllTextAsync(output, json, cancellationToken).ConfigureAwait(false);
-            }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException)
-            {
-                CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape($"Could not write '{output}': {ex.Message}")));
-
-                return 1;
-            }
-
-            AnsiConsole.MarkupLine(
-                themePalette.HighlightLabelMarkup(Markup.Escape("Prompt exported to:"), Markup.Escape(output)));
-        }
-
-        return 0;
-
+        return await CliOutputFile
+            .WriteExportAsync(
+                json,
+                destination,
+                "Prompt exported to:",
+                themePalette,
+                cancellationToken)
+            .ConfigureAwait(false);
     }
 
     /// <summary>
     /// Import a prompt from portable JSON (POST /api/prompts/import).
     /// </summary>
     /// <param name="file">Path to a prompt export JSON file.</param>
-    /// <param name="campaignId">--campaignId, Campaign GUID to associate the import with.</param>
-    private async Task<(bool Resolved, bool Cancelled, Guid Id)> ResolvePromptIdAsync(
+    /// <param name="campaignId">--campaign-id, Campaign GUID to associate the import with.</param>
+    private async Task<(bool Resolved, bool Cancelled, Guid Id, int ExitCode)> ResolvePromptIdAsync(
         string? identifier,
         CancellationToken cancellationToken)
     {
         if (CliArgReader.TryParseGuid(identifier, out Guid id))
         {
-            return (true, false, id);
-        }
-
-        if (resourceCatalog is null)
-        {
-            CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("<ID> must be a valid GUID.")));
-            return (false, false, default);
+            return (true, false, id, 0);
         }
 
         ResourceSelectionResult<PromptSummaryDto> selection = await resourceCatalog
@@ -756,21 +718,20 @@ public sealed class PromptCommands(
             .ConfigureAwait(false);
         if (selection.Status == ResourceSelectionStatus.Cancelled)
         {
-            return (false, true, default);
+            return (false, true, default, 0);
         }
 
         if (selection.Status == ResourceSelectionStatus.Error)
         {
             CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape(selection.Error!)));
-            return (false, false, default);
+            return (false, false, default, CliFailureExit.ExitCode(selection.ErrorCode));
         }
 
-        return (true, false, selection.Value!.Id);
+        return (true, false, selection.Value!.Id, 0);
     }
 
     public async Task<int> Import(string? file = null, string? campaignId = null, CancellationToken cancellationToken = default)
     {
-
         if (string.IsNullOrWhiteSpace(file))
         {
             CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--file is required.")));
@@ -782,9 +743,23 @@ public sealed class PromptCommands(
 
         try
         {
-            json = await File.ReadAllTextAsync(file, cancellationToken).ConfigureAwait(false);
+            CappedTextRead read = await CappedInputReader
+                .ReadFileAsync(file, CappedInputReader.MaxAuthoredBytes, cancellationToken)
+                .ConfigureAwait(false);
+
+            if (read.TooLarge)
+            {
+                CliErrorOutput.WriteMarkupLine(
+                    themePalette.ErrorMarkup(
+                        Markup.Escape(
+                            CappedInputReader.TooLargeMessage($"File '{file}'", CappedInputReader.MaxAuthoredBytes))));
+
+                return 1;
+            }
+
+            json = read.Text;
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
         {
             CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape($"Could not read file '{file}': {ex.Message}")));
 
@@ -815,16 +790,14 @@ public sealed class PromptCommands(
 
         if (!string.IsNullOrWhiteSpace(campaignId))
         {
-
             if (!CliArgReader.TryParseGuid(campaignId, out Guid parsed))
             {
-                CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--campaignId must be a valid GUID.")));
+                CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("--campaign-id must be a valid GUID.")));
 
                 return (int)CliExitCode.ConfigurationError;
             }
 
             parsedCampaignId = parsed;
-
         }
 
         PromptImportRequest request = new(payload, parsedCampaignId);
@@ -844,7 +817,5 @@ public sealed class PromptCommands(
                 Markup.Escape($"{result.Value.Name} v{result.Value.Version}")));
 
         return 0;
-
     }
-
 }

@@ -13,6 +13,7 @@ using RetroDownfall.Arcanum.Infrastructure.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.InstallationReset;
 using RetroDownfall.Arcanum.Infrastructure.Security;
+using RetroDownfall.Arcanum.Infrastructure.Tower;
 using RetroDownfall.Arcanum.Secrets.Security;
 using RetroDownfall.Arcanum.Tests.Fixtures;
 
@@ -30,7 +31,6 @@ namespace RetroDownfall.Arcanum.Tests.Backup;
 /// </remarks>
 public sealed class CovenantRestoreStagingTests : IDisposable
 {
-
     private const string Passphrase = "covenant restore staging passphrase";
 
     private readonly string _root = Path.Combine(
@@ -45,7 +45,6 @@ public sealed class CovenantRestoreStagingTests : IDisposable
 
     public CovenantRestoreStagingTests()
     {
-
         _installation = Path.Combine(_root, "profile", "arcanum");
 
         _archives = Path.Combine(_root, "archives");
@@ -53,25 +52,19 @@ public sealed class CovenantRestoreStagingTests : IDisposable
         Directory.CreateDirectory(_installation);
 
         Directory.CreateDirectory(_archives);
-
     }
 
     public void Dispose()
     {
-
         if (Directory.Exists(_root))
         {
-
             Directory.Delete(_root, recursive: true);
-
         }
-
     }
 
     [Fact]
     public async Task A_restore_closes_admission_under_one_owner_and_reopens_it_exactly_once()
     {
-
         Harness harness = await CreateHarnessAsync();
 
         BackupRestoreResult result = await harness.RestoreAsync();
@@ -91,13 +84,323 @@ public sealed class CovenantRestoreStagingTests : IDisposable
         Assert.Equal(
             harness.Gate.LastOwner,
             harness.Markers.LastReconcileRequest?.Owner);
+    }
 
+    /// <summary>
+    /// R-167: the reconcile is the last thing a restore may be cancelled out of. After it, the disposition
+    /// and the finalizer that completes the marker children are the same decision, and a token that fires
+    /// between them must neither strand the children nor make the service un-swap a restore that was proven
+    /// committed. The finalizer here honours its token the way the real journal finalizer does.
+    /// </summary>
+    [Fact]
+    public async Task A_token_cancelled_after_reconcile_still_spends_the_disposition_and_completes_the_children()
+    {
+        Harness harness = await CreateHarnessAsync();
+
+        using CancellationTokenSource cancellation = new();
+
+        TokenHonouringFinalizer finalizer = new();
+
+        harness.Markers.Finalizer = finalizer;
+
+        harness.Markers.AfterReconcile = cancellation.Cancel;
+
+        BackupRestoreResult result = await harness.RestoreAsync(cancellation.Token);
+
+        Assert.Equal(BackupRestoreStatus.Completed, result.Status);
+
+        Assert.Empty(result.Issues);
+
+        // One disposition, spent once, and the children it was spent for were completed.
+        Assert.Equal([CovenantExclusiveLeaseDisposition.CommitAndReopen], harness.Gate.Dispositions);
+
+        Assert.True(finalizer.Completed);
+
+        Assert.Equal(harness.Gate.LastOwner?.OperationId, harness.Markers.ReleasedOwnerOperationId);
+    }
+
+    private sealed class TokenHonouringFinalizer : ICovenantExclusivePostDispositionFinalizer
+    {
+        internal bool Completed { get; private set; }
+
+        public ValueTask<Result> FinalizeAfterSuccessfulDispositionAsync(
+            CovenantExclusiveLeaseDisposition disposition,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            Completed = true;
+
+            return ValueTask.FromResult(Result.Success());
+        }
+    }
+
+    /// <summary>
+    /// R-167: the same invariant as the cancellation arm, for any other failure. Once the disposition is
+    /// spent, admission has reopened over the replacement and the marker children are complete, so a fault
+    /// in what is left (here one just before the journal's Cleanup record, which that record's own
+    /// bookkeeping does not absorb) must not put the prior installation back under a system that has begun
+    /// to use the restored one.
+    /// </summary>
+    [Fact]
+    public async Task A_failure_after_the_disposition_is_spent_does_not_reverse_the_restore()
+    {
+        Harness harness = await CreateHarnessAsync();
+
+        string archivedGeneration = await harness.ReadDatasetGenerationAsync();
+
+        harness.Options = harness.Options with
+        {
+            FailBeforePhase = BackupRestorePhase.Cleanup,
+        };
+
+        BackupRestoreResult result = await harness.RestoreAsync();
+
+        // The destination is committed and something after it failed: an operator is told, and nothing
+        // is described as rolled back.
+        Assert.Equal(BackupRestoreStatus.ReconciliationRequired, result.Status);
+
+        Assert.Equal("backup.restore_completion_failed", Assert.Single(result.Issues).Code);
+
+        // The archive was read and the reconciliation had already run before the step that failed, so
+        // what they found is reported rather than dropped with the failure.
+        Assert.NotNull(result.Manifest);
+
+        Assert.NotNull(result.Reconciliation);
+
+        // One disposition, the commit, and no abort after it.
+        Assert.Equal([CovenantExclusiveLeaseDisposition.CommitAndReopen], harness.Gate.Dispositions);
+
+        // The restored generation is still the live one. A reversal would have put the archived
+        // generation back.
+        Assert.NotEqual(archivedGeneration, await harness.ReadDatasetGenerationAsync());
+
+        Assert.Empty(harness.StagingRoots());
+    }
+
+    /// <summary>
+    /// A fault between the spent disposition and the anchor's close keeps staging, because the anchor
+    /// still commits to the journal inside it.
+    /// </summary>
+    /// <remarks>
+    /// The disposition alone used to count as final, so the cleanup deleted staging — the V2 journal
+    /// with it — while the anchor that names that journal was still active. The next start would then
+    /// find an active anchor committing to a journal that no longer exists, which it can only refuse.
+    /// </remarks>
+    [Fact]
+    public async Task A_fault_after_the_disposition_but_before_the_anchor_closes_keeps_staging()
+    {
+        Harness harness = await CreateHarnessAsync();
+
+        string archivedGeneration = await harness.ReadDatasetGenerationAsync();
+
+        harness.Markers.ReleaseFault = new InvalidOperationException("injected release fault");
+
+        BackupRestoreResult result = await harness.RestoreAsync();
+
+        Assert.Equal(BackupRestoreStatus.ReconciliationRequired, result.Status);
+
+        Assert.Equal("backup.restore_completion_failed", Assert.Single(result.Issues).Code);
+
+        Assert.Equal([CovenantExclusiveLeaseDisposition.CommitAndReopen], harness.Gate.Dispositions);
+
+        // Committed, so not reversed.
+        Assert.NotEqual(archivedGeneration, await harness.ReadDatasetGenerationAsync());
+
+        string staging = Assert.Single(harness.StagingRoots());
+
+        Assert.True(File.Exists(Path.Combine(staging, BackupRestoreJournalAnchorStore.JournalFileName)));
+    }
+
+    /// <summary>
+    /// R-167: the cancellation arm's own guard. A token that fires after the disposition is spent, here
+    /// just before the journal's Cleanup record, used to reach a handler that put the prior installation
+    /// back whenever the commit had succeeded. The disposition is the line: once it is spent the restore is
+    /// finished, the cancellation is rethrown as it is, and nothing is reversed.
+    /// </summary>
+    [Fact]
+    public async Task A_cancellation_after_the_disposition_is_spent_does_not_reverse_the_restore()
+    {
+        Harness harness = await CreateHarnessAsync();
+
+        string archivedGeneration = await harness.ReadDatasetGenerationAsync();
+
+        using CancellationTokenSource cancellation = new();
+
+        harness.OnBeforePhase = phase =>
+        {
+            if (phase == BackupRestorePhase.Cleanup)
+            {
+                cancellation.Cancel();
+
+                cancellation.Token.ThrowIfCancellationRequested();
+            }
+        };
+
+        _ = await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => harness.RestoreAsync(cancellation.Token));
+
+        // One disposition, the commit, and no abort or rollback after it.
+        Assert.Equal([CovenantExclusiveLeaseDisposition.CommitAndReopen], harness.Gate.Dispositions);
+
+        // The restored generation is still the live one. A reversal would have put the archived one back.
+        Assert.NotEqual(archivedGeneration, await harness.ReadDatasetGenerationAsync());
+    }
+
+    /// <summary>
+    /// R-175: the inventory owns its opened roots until preparation takes them. When staging fails before
+    /// preparation is reached (here the operator's token fires as the inventory is handed over, so the first
+    /// staged read is cancelled), nothing else ever releases them, so the coordinator does.
+    /// </summary>
+    [Fact]
+    public async Task Staging_that_fails_before_preparation_releases_the_inventorys_root_authorities()
+    {
+        Harness harness = await CreateHarnessAsync();
+
+        using CancellationTokenSource cancellation = new();
+
+        string directory = Directory.CreateTempSubdirectory("restore-inventory-root-").FullName;
+
+        try
+        {
+            PhysicalCampaignRootOpener opener = new(new FixedRootIdentityKey());
+
+            CovenantDigest identity = opener.IdentifyExact(directory)!.Value;
+
+            Guid campaignId = Guid.NewGuid();
+
+            Result<CampaignPathMarkerRootAuthority> opened = await CampaignPathMarkerRootAuthority.Instance.OpenAsync(
+                opener,
+                campaignId,
+                1,
+                identity,
+                directory,
+                CancellationToken.None);
+
+            Assert.True(opened.IsSuccess);
+
+            CampaignPathMarkerRootAuthority authority = opened.Value;
+
+            harness.Markers.InventoryFactory = () =>
+            {
+                cancellation.Cancel();
+
+                return new CampaignPathRestoreCleanupInventory(
+                    [
+                        new CampaignPathRestoreCleanupSeed(
+                            campaignId,
+                            1,
+                            identity,
+                            directory,
+                            new CampaignPathCleanupRootObservation.Opened(authority)),
+                    ]);
+            };
+
+            _ = await Assert.ThrowsAnyAsync<OperationCanceledException>(
+                () => harness.RestoreAsync(cancellation.Token));
+
+            // Released: a disposed authority refuses the one question it exists to answer.
+            _ = await Assert.ThrowsAsync<ObjectDisposedException>(
+                async () => await authority.OpenMarkerOrProveAbsentNoFollowAsync(CancellationToken.None));
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    private sealed class FixedRootIdentityKey : ICampaignRootIdentityKeyProvider
+    {
+        private static readonly byte[] Key = Convert.FromHexString(
+            "000102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F");
+
+        public bool TryCopyRootIdentityKey(Span<byte> destination)
+        {
+            if (destination.Length < Key.Length)
+            {
+                return false;
+            }
+
+            Key.CopyTo(destination);
+
+            return true;
+        }
+    }
+
+    /// <summary>
+    /// The window the previous test cannot reach: the gate has applied <c>CommitAndReopen</c> and admission
+    /// is open, but the marker finalizer's own commit has not landed, so the session has not yet recorded
+    /// the disposition. A full disk there is a <c>SqliteException</c> that used to surface in the service's
+    /// general catch with the disposition unrecorded, and the catch then put the prior installation back
+    /// under a system already running on the replacement.
+    /// </summary>
+    [Fact]
+    public async Task A_finalizer_fault_after_the_gate_has_reopened_does_not_reverse_the_restore()
+    {
+        Harness harness = await CreateHarnessAsync();
+
+        string archivedGeneration = await harness.ReadDatasetGenerationAsync();
+
+        harness.Markers.Finalizer = new RetroDownfall.Arcanum.Tests.Covenant.FaultingPostDispositionFinalizer(
+            new SqliteException("database or disk is full", 13));
+
+        BackupRestoreResult result = await harness.RestoreAsync();
+
+        // The replacement is committed and something after the disposition failed: an operator is told,
+        // and nothing is described as rolled back.
+        Assert.Equal(BackupRestoreStatus.ReconciliationRequired, result.Status);
+
+        Assert.Equal(
+            ErrorCodes.Covenant.ManualRecoveryRequired,
+            Assert.Single(result.Issues).Code);
+
+        // The record claims nothing about admission, which this failure leaves open, and never calls the
+        // restore rolled back.
+        Assert.DoesNotContain(
+            result.Phases,
+            phase => phase.Detail.Contains("stays closed", StringComparison.Ordinal));
+
+        // One disposition, the commit, and no rollback or abort after it.
+        Assert.Equal([CovenantExclusiveLeaseDisposition.CommitAndReopen], harness.Gate.Dispositions);
+
+        // The restored generation is still the live one. A reversal would have put the archived one back.
+        Assert.NotEqual(archivedGeneration, await harness.ReadDatasetGenerationAsync());
+
+        // The children are not complete, so the journal and staging stay for the next start to resume.
+        Assert.NotEmpty(harness.StagingRoots());
+    }
+
+    /// <summary>
+    /// The same window read by the service's cancellation arm instead of its general one: a finalizer that
+    /// surfaces a cancellation while the operator's token is cancelled used to reach a handler that puts the
+    /// prior installation back whenever the disposition is unrecorded, and then rethrew the cancellation.
+    /// </summary>
+    [Fact]
+    public async Task A_cancellation_from_the_finalizer_after_the_gate_has_reopened_does_not_reverse_the_restore()
+    {
+        Harness harness = await CreateHarnessAsync();
+
+        string archivedGeneration = await harness.ReadDatasetGenerationAsync();
+
+        using CancellationTokenSource cancellation = new();
+
+        harness.Markers.Finalizer = new RetroDownfall.Arcanum.Tests.Covenant.FaultingPostDispositionFinalizer(
+            new OperationCanceledException(cancellation.Token));
+
+        harness.Markers.AfterReconcile = cancellation.Cancel;
+
+        BackupRestoreResult result = await harness.RestoreAsync(cancellation.Token);
+
+        Assert.Equal(BackupRestoreStatus.ReconciliationRequired, result.Status);
+
+        Assert.Equal([CovenantExclusiveLeaseDisposition.CommitAndReopen], harness.Gate.Dispositions);
+
+        Assert.NotEqual(archivedGeneration, await harness.ReadDatasetGenerationAsync());
     }
 
     [Fact]
     public async Task A_zero_marker_inventory_publishes_the_frozen_empty_child_vector_before_displacement()
     {
-
         Harness harness = await CreateHarnessAsync();
 
         BackupRestoreResult result = await harness.RestoreAsync();
@@ -120,13 +423,11 @@ public sealed class CovenantRestoreStagingTests : IDisposable
         Assert.Equal(
             checkpoint.IntentVectorDigest,
             harness.Markers.LastReconcileRequest?.IntentVectorDigest);
-
     }
 
     [Fact]
     public async Task The_journal_carries_no_checkpoint_until_the_staged_children_have_committed()
     {
-
         Harness harness = await CreateHarnessAsync();
 
         Assert.Equal(BackupRestoreStatus.Completed, (await harness.RestoreAsync()).Status);
@@ -136,13 +437,11 @@ public sealed class CovenantRestoreStagingTests : IDisposable
         Assert.Null(harness.FirstPublishedCheckpoint);
 
         Assert.NotNull(harness.CheckpointAtDisplacement);
-
     }
 
     [Fact]
     public async Task The_restored_generation_carries_fresh_identities_and_no_resolved_Campaign_path()
     {
-
         Harness harness = await CreateHarnessAsync();
 
         string archivedGeneration = await harness.ReadDatasetGenerationAsync();
@@ -159,20 +458,16 @@ public sealed class CovenantRestoreStagingTests : IDisposable
             await harness.ScalarAsync(
                 "SELECT COUNT(*) FROM covenant_state WHERE AppliedDatasetGeneration IS NULL "
                 + "AND RebuildStateCode = 2;"));
-
     }
 
     [Fact]
     public async Task An_abort_before_the_swap_reopens_admission_and_leaves_the_installation_alone()
     {
-
         Harness harness = await CreateHarnessAsync();
 
         harness.Options = harness.Options with
         {
-
             FailBeforePhase = BackupRestorePhase.Commit,
-
         };
 
         BackupRestoreResult result = await harness.RestoreAsync();
@@ -185,13 +480,49 @@ public sealed class CovenantRestoreStagingTests : IDisposable
             harness.Gate.Dispositions);
 
         Assert.Equal(0, harness.Markers.ReconcileCalls);
+    }
 
+    /// <summary>
+    /// A fault no catch names, escaping the commit after its first rename, is not proof that nothing was
+    /// displaced: admission stays closed and staging, with the displaced installation in it, is kept.
+    /// </summary>
+    /// <remarks>
+    /// The commit had recorded no outcome, so the abort was told the restore never began its renames. It
+    /// spent <c>RollbackAndReopen</c> over a live root holding the unfinished replacement, closed the
+    /// anchor, and the cleanup then deleted staging with the prior installation inside it.
+    /// </remarks>
+    [Fact]
+    public async Task A_fault_no_catch_names_inside_the_commit_keeps_admission_closed_and_staging()
+    {
+        Harness harness = await CreateHarnessAsync();
+
+        string existingBackup = Path.Combine(_installation, "backups", "older.arcbackup");
+
+        Directory.CreateDirectory(Path.GetDirectoryName(existingBackup)!);
+
+        await File.WriteAllTextAsync(existingBackup, "older");
+
+        harness.Options = harness.Options with
+        {
+            FailBeforePreservedEntry = "backups",
+        };
+
+        _ = await Assert.ThrowsAsync<ArgumentException>(() => harness.RestoreAsync());
+
+        // Disposed without a disposition, which is exactly KeepClosed.
+        Assert.Empty(harness.Gate.Dispositions);
+
+        string staging = Assert.Single(harness.StagingRoots());
+
+        Assert.Equal(
+            "older",
+            await File.ReadAllTextAsync(
+                Path.Combine(staging, BackupRestoreJournal.DisplacedDirectoryName, "backups", "older.arcbackup")));
     }
 
     [Fact]
     public async Task An_unprovable_marker_child_after_the_swap_keeps_admission_closed()
     {
-
         Harness harness = await CreateHarnessAsync();
 
         harness.Markers.Failure = new Error(
@@ -211,7 +542,6 @@ public sealed class CovenantRestoreStagingTests : IDisposable
         Assert.Empty(harness.Gate.Dispositions);
 
         Assert.Equal(1, harness.Gate.Releases);
-
     }
 
     /// <summary>
@@ -236,20 +566,17 @@ public sealed class CovenantRestoreStagingTests : IDisposable
     [Fact]
     public async Task A_staged_refusal_under_a_cancelled_token_still_reports_the_refusal()
     {
-
         Harness harness = await CreateHarnessAsync();
 
         using CancellationTokenSource cancellation = new();
 
         harness.Markers.PrepareRefusal = () =>
         {
-
             cancellation.Cancel();
 
             return new Error(
                 ErrorCodes.Covenant.ManualRecoveryRequired,
                 "The staged marker children could not be prepared.");
-
         };
 
         BackupRestoreResult result = await harness.RestoreAsync(cancellation.Token);
@@ -259,7 +586,6 @@ public sealed class CovenantRestoreStagingTests : IDisposable
         Assert.Equal(
             ErrorCodes.Covenant.ManualRecoveryRequired,
             Assert.Single(result.Issues).Code);
-
     }
 
     [Fact]
@@ -269,7 +595,6 @@ public sealed class CovenantRestoreStagingTests : IDisposable
     /// </summary>
     public async Task A_restore_that_never_enabled_the_gate_acquires_no_covenant_owner()
     {
-
         Harness harness = await CreateHarnessAsync(covenant: false);
 
         BackupRestoreResult result = await harness.RestoreAsync();
@@ -279,13 +604,11 @@ public sealed class CovenantRestoreStagingTests : IDisposable
         Assert.Equal(BackupRestoreStatus.Completed, result.Status);
 
         Assert.Equal(0, harness.Gate.ExclusiveAcquisitions);
-
     }
 
     [Fact]
     public async Task The_default_mode_refuses_an_archive_that_carries_protected_state()
     {
-
         Harness harness = await CreateHarnessAsync(seedProtectedState: true);
 
         BackupRestoreResult result = await harness.RestoreAsync();
@@ -308,22 +631,18 @@ public sealed class CovenantRestoreStagingTests : IDisposable
 
         // And the installation the operator still has is the one they started with.
         Assert.Equal(1, await harness.CountAsync("artifact_sensitivity"));
-
     }
 
     [Fact]
     public async Task A_destructive_protected_state_mode_refuses_without_its_own_confirmation()
     {
-
         Harness harness = await CreateHarnessAsync(seedProtectedState: true);
 
         harness.Options = harness.Options with
         {
-
             ProtectedStateMode = BackupProtectedStateMode.PurgeProtectedState,
 
             ProtectedStateConfirmed = false,
-
         };
 
         BackupRestoreResult result = await harness.RestoreAsync();
@@ -337,18 +656,15 @@ public sealed class CovenantRestoreStagingTests : IDisposable
         Assert.Equal(0, harness.Gate.ExclusiveAcquisitions);
 
         Assert.Empty(harness.StagingRoots());
-
     }
 
     [Fact]
     public async Task A_protected_state_mode_refuses_a_restore_that_displaces_nothing()
     {
-
         Harness harness = await CreateHarnessAsync(seedProtectedState: true);
 
         harness.Options = harness.Options with
         {
-
             ConflictMode = BackupRestoreConflictMode.NewProfileRoot,
 
             DestinationRoot = Path.Combine(_root, "second-profile"),
@@ -356,7 +672,6 @@ public sealed class CovenantRestoreStagingTests : IDisposable
             ProtectedStateMode = BackupProtectedStateMode.PurgeProtectedState,
 
             ProtectedStateConfirmed = true,
-
         };
 
         BackupRestoreResult result = await harness.RestoreAsync();
@@ -366,22 +681,18 @@ public sealed class CovenantRestoreStagingTests : IDisposable
         Assert.Contains(
             BackupRestoreProtectedStatePolicy.ModeNotApplicableCode,
             result.Issues.Select(static issue => issue.Code));
-
     }
 
     [Fact]
     public async Task A_protected_state_mode_refuses_rather_than_pretending_the_gate_is_on()
     {
-
         Harness harness = await CreateHarnessAsync(covenant: false, seedProtectedState: true);
 
         harness.Options = harness.Options with
         {
-
             ProtectedStateMode = BackupProtectedStateMode.PurgeProtectedState,
 
             ProtectedStateConfirmed = true,
-
         };
 
         BackupRestoreResult result = await harness.RestoreAsync();
@@ -391,34 +702,28 @@ public sealed class CovenantRestoreStagingTests : IDisposable
         Assert.Contains(
             BackupRestoreProtectedStatePolicy.CovenantRequiredCode,
             result.Issues.Select(static issue => issue.Code));
-
     }
 
     [Fact]
     public async Task The_default_still_completes_over_an_archive_that_carries_nothing_protected()
     {
-
         // The pre-Covenant contract: an archive with no Covenant rows and no labels restores exactly as
         // it always did, under the default mode and with no protected-state decision to make.
         Harness harness = await CreateHarnessAsync();
 
         Assert.Equal(BackupRestoreStatus.Completed, (await harness.RestoreAsync()).Status);
-
     }
 
     [Fact]
     public async Task A_clean_source_may_have_its_protected_state_preserved()
     {
-
         Harness harness = await CreateHarnessAsync(seedProtectedState: true);
 
         harness.Options = harness.Options with
         {
-
             ProtectedStateMode = BackupProtectedStateMode.RestoreProtectedState,
 
             ProtectedStateConfirmed = true,
-
         };
 
         BackupRestoreResult result = await harness.RestoreAsync();
@@ -430,13 +735,11 @@ public sealed class CovenantRestoreStagingTests : IDisposable
         Assert.Equal(1, await harness.CountAsync("artifact_sensitivity"));
 
         Assert.Equal(1, await harness.CountAsync("covenant_key_epochs"));
-
     }
 
     [Fact]
     public async Task A_source_tainted_archive_carrying_protected_state_fails_closed()
     {
-
         Harness harness = await CreateHarnessAsync(seedProtectedState: true, sourceTainted: true);
 
         foreach (BackupProtectedStateMode mode in new[]
@@ -445,14 +748,11 @@ public sealed class CovenantRestoreStagingTests : IDisposable
                      BackupProtectedStateMode.RestoreProtectedState,
                  })
         {
-
             harness.Options = harness.Options with
             {
-
                 ProtectedStateMode = mode,
 
                 ProtectedStateConfirmed = true,
-
             };
 
             BackupRestoreResult result = await harness.RestoreAsync();
@@ -468,24 +768,19 @@ public sealed class CovenantRestoreStagingTests : IDisposable
             Assert.Equal(0, harness.Gate.ExclusiveAcquisitions);
 
             Assert.Empty(harness.StagingRoots());
-
         }
-
     }
 
     [Fact]
     public async Task A_separately_confirmed_purge_is_the_only_continuation_for_a_tainted_archive()
     {
-
         Harness harness = await CreateHarnessAsync(seedProtectedState: true, sourceTainted: true);
 
         harness.Options = harness.Options with
         {
-
             ProtectedStateMode = BackupProtectedStateMode.PurgeProtectedState,
 
             ProtectedStateConfirmed = true,
-
         };
 
         BackupRestoreResult result = await harness.RestoreAsync();
@@ -509,22 +804,18 @@ public sealed class CovenantRestoreStagingTests : IDisposable
             3,
             await harness.ScalarAsync(
                 "SELECT HostToolsStateCode FROM covenant_authority_state WHERE StateKey = 1;"));
-
     }
 
     [Fact]
     public async Task The_plan_reports_the_mode_and_the_receipt_backed_possible_attempt_count()
     {
-
         Harness harness = await CreateHarnessAsync(seedProtectedState: true);
 
         harness.Options = harness.Options with
         {
-
             ProtectedStateMode = BackupProtectedStateMode.PurgeProtectedState,
 
             ProtectedStateConfirmed = true,
-
         };
 
         BackupRestorePlan plan = await harness.PlanAsync();
@@ -544,7 +835,6 @@ public sealed class CovenantRestoreStagingTests : IDisposable
         // A rehearsal creates nothing, which is what lets a command write the disclosure before it
         // prompts.
         Assert.Empty(harness.StagingRoots());
-
     }
 
     /// <summary>
@@ -556,16 +846,13 @@ public sealed class CovenantRestoreStagingTests : IDisposable
     [Fact]
     public async Task The_plan_blocks_rather_than_reporting_no_exposure_when_the_destination_disclosure_cannot_be_read()
     {
-
         Harness harness = await CreateHarnessAsync(seedProtectedState: true);
 
         harness.Options = harness.Options with
         {
-
             ProtectedStateMode = BackupProtectedStateMode.PurgeProtectedState,
 
             ProtectedStateConfirmed = true,
-
         };
 
         await harness.ExecuteOnInstallationAsync(
@@ -589,7 +876,6 @@ public sealed class CovenantRestoreStagingTests : IDisposable
         Assert.Contains(result.Issues, static issue => issue.Code == BackupRestoreErasureCodes.VerificationFailed);
 
         Assert.Empty(harness.StagingRoots());
-
     }
 
     private async Task<Harness> CreateHarnessAsync(
@@ -597,13 +883,11 @@ public sealed class CovenantRestoreStagingTests : IDisposable
         bool seedProtectedState = false,
         bool sourceTainted = false)
     {
-
         Harness harness = new(_installation, _archives, _credentials, covenant);
 
         await harness.BuildAsync(seedProtectedState, sourceTainted);
 
         return harness;
-
     }
 
     /// <summary>
@@ -615,12 +899,14 @@ public sealed class CovenantRestoreStagingTests : IDisposable
         InMemoryOsCredentialStore credentials,
         bool covenant)
     {
-
         internal RecordingExclusiveGate Gate { get; } = new();
 
         internal RecordingRestoreMarkerLifecycle Markers { get; } = new();
 
         internal HarnessOptions Options { get; set; } = new(null);
+
+        /// <summary>Runs before a phase in addition to <see cref="HarnessOptions.FailBeforePhase"/>.</summary>
+        internal Action<BackupRestorePhase>? OnBeforePhase { get; set; }
 
         internal List<BackupRestoreMarkerCleanupCheckpointV1?> Published { get; } = [];
 
@@ -637,7 +923,6 @@ public sealed class CovenantRestoreStagingTests : IDisposable
             bool seedProtectedState = false,
             bool sourceTainted = false)
         {
-
             SecureFilePermissions.EnsureOwnerOnlyDirectoryExists(installation);
 
             await File.WriteAllTextAsync(
@@ -668,16 +953,13 @@ public sealed class CovenantRestoreStagingTests : IDisposable
 
             if (sourceTainted)
             {
-
                 // The archive now carries the taint; the destination is put back to clean. That is the
                 // shape acceptance criterion four is about: a tainted source facing a clean destination.
                 await ExecuteOnInstallationAsync(
                     "UPDATE covenant_authority_state SET HostToolsStateCode = 1, "
                     + "TaintTimeMasterVersion = NULL, TaintFingerprint = NULL, TransitionId = NULL "
                     + "WHERE StateKey = 1;");
-
             }
-
         }
 
         internal async Task<BackupRestorePlan> PlanAsync() =>
@@ -686,13 +968,11 @@ public sealed class CovenantRestoreStagingTests : IDisposable
         /// <summary>Every restore staging root still sitting beside the live installation.</summary>
         internal string[] StagingRoots()
         {
-
             string parent = Path.GetDirectoryName(Path.TrimEndingDirectorySeparator(installation))!;
 
             return Directory.Exists(parent)
                 ? [.. Directory.EnumerateDirectories(parent, BackupRestoreJournal.StagingPrefix + "*")]
                 : [];
-
         }
 
         internal async Task<BackupRestoreResult> RestoreAsync(
@@ -711,10 +991,8 @@ public sealed class CovenantRestoreStagingTests : IDisposable
 
         private BackupRestoreService CreateService()
         {
-
             BackupRestoreServiceOptions options = new()
             {
-
                 RestoreStaging = covenant
                     ? new CovenantRestoreStagingServices(
                         Gate,
@@ -727,24 +1005,29 @@ public sealed class CovenantRestoreStagingTests : IDisposable
 
                 BeforePhaseForTests = phase =>
                 {
-
                     if (phase == BackupRestorePhase.Commit)
                     {
-
                         CheckpointAtDisplacement = Markers.LastPreparedCheckpoint;
-
                     }
+
+                    OnBeforePhase?.Invoke(phase);
 
                     if (Options.FailBeforePhase == phase)
                     {
-
                         throw new InvalidOperationException(
                             "The harness failed this restore at " + phase + ".");
-
                     }
-
                 },
 
+                // A type no catch in the restore names, so the fault escapes the commit itself.
+                BeforePreservedEntryMoveForTests = name =>
+                {
+                    if (Options.FailBeforePreservedEntry == name)
+                    {
+                        throw new ArgumentException(
+                            "The harness failed this restore while preserving " + name + ".");
+                    }
+                },
             };
 
             Markers.Published = Published;
@@ -758,7 +1041,6 @@ public sealed class CovenantRestoreStagingTests : IDisposable
                 GrimoireSchemaTestInstaller.Create(),
                 new MemoryErasureKeyring(credentials),
                 options);
-
         }
 
         internal async Task<string> ReadDatasetGenerationAsync() =>
@@ -769,7 +1051,6 @@ public sealed class CovenantRestoreStagingTests : IDisposable
 
         internal async Task<long> ScalarAsync(string sql)
         {
-
             await using SqliteConnection connection = await OpenAsync();
 
             await using SqliteCommand command = connection.CreateCommand();
@@ -781,12 +1062,10 @@ public sealed class CovenantRestoreStagingTests : IDisposable
             return value is null or DBNull
                 ? 0
                 : Convert.ToInt64(value, System.Globalization.CultureInfo.InvariantCulture);
-
         }
 
         private async Task<string?> ScalarStringAsync(string sql)
         {
-
             await using SqliteConnection connection = await OpenAsync();
 
             await using SqliteCommand command = connection.CreateCommand();
@@ -798,7 +1077,6 @@ public sealed class CovenantRestoreStagingTests : IDisposable
             return value is null or DBNull
                 ? null
                 : Convert.ToString(value, System.Globalization.CultureInfo.InvariantCulture);
-
         }
 
         private Task<SqliteConnection> OpenAsync() =>
@@ -825,7 +1103,6 @@ public sealed class CovenantRestoreStagingTests : IDisposable
 
         internal async Task ExecuteOnInstallationAsync(string sql)
         {
-
             await using SqliteConnection connection = await BackupRestoreDatabaseWorker.OpenAsync(
                 Path.Combine(installation, "arcanum.db"),
                 GrimoireSecret,
@@ -833,7 +1110,6 @@ public sealed class CovenantRestoreStagingTests : IDisposable
                 CancellationToken.None);
 
             await ExecuteAsync(connection, sql);
-
         }
 
         /// <summary>
@@ -842,7 +1118,6 @@ public sealed class CovenantRestoreStagingTests : IDisposable
         /// </summary>
         private async Task BuildDatabaseAsync(bool seedProtectedState, bool sourceTainted)
         {
-
             string database = Path.Combine(installation, "arcanum.db");
 
             GrimoireKdfSidecar sidecar = GrimoireKdfSidecar.Create(GrimoireKeyDerivation.KdfVersion2);
@@ -862,13 +1137,11 @@ public sealed class CovenantRestoreStagingTests : IDisposable
             await using SqliteConnection connection = await GrimoireSchemaTestInstaller.OpenAsync(
                 new SqliteConnectionStringBuilder
                 {
-
                     DataSource = database,
 
                     Password = passphrase,
 
                     Pooling = false,
-
                 }.ToString(),
                 CancellationToken.None);
 
@@ -896,9 +1169,7 @@ public sealed class CovenantRestoreStagingTests : IDisposable
 
             if (!seedProtectedState)
             {
-
                 return;
-
             }
 
             // One canonical row, one accelerator projection, and one sensitivity label: the three shapes
@@ -962,7 +1233,6 @@ public sealed class CovenantRestoreStagingTests : IDisposable
 
             if (sourceTainted)
             {
-
                 await ExecuteAsync(
                     connection,
                     """
@@ -973,22 +1243,17 @@ public sealed class CovenantRestoreStagingTests : IDisposable
                         TransitionId = 'CCCCCCCC-DDDD-4EEE-8FFF-111111111111'
                     WHERE StateKey = 1;
                     """);
-
             }
-
         }
 
         private static async Task ExecuteAsync(SqliteConnection connection, string sql)
         {
-
             await using SqliteCommand command = connection.CreateCommand();
 
             command.CommandText = sql;
 
             _ = await command.ExecuteNonQueryAsync(CancellationToken.None);
-
         }
-
     }
 
     internal sealed record HarnessOptions(
@@ -996,11 +1261,11 @@ public sealed class CovenantRestoreStagingTests : IDisposable
         BackupRestoreConflictMode ConflictMode = BackupRestoreConflictMode.ReplaceInstallation,
         string? DestinationRoot = null,
         BackupProtectedStateMode ProtectedStateMode = BackupProtectedStateMode.Reject,
-        bool ProtectedStateConfirmed = false);
+        bool ProtectedStateConfirmed = false,
+        string? FailBeforePreservedEntry = null);
 
     private sealed class HarnessSecretReader(string grimoireSecret) : IBackupSecretSnapshotReader
     {
-
         public Task<SecretStoreReadResult> ReadGrimoireSecretAsync() =>
             Task.FromResult(SecretStoreReadResult.Ok(grimoireSecret));
 
@@ -1010,12 +1275,10 @@ public sealed class CovenantRestoreStagingTests : IDisposable
 
         public Task<SecretStoreReadResult> ReadMasterApiKeyAsync() =>
             Task.FromResult(SecretStoreReadResult.Missing());
-
     }
 
     private sealed class HarnessSecretStore(string grimoireSecret) : ISecretStore
     {
-
         private string? _grimoire = grimoireSecret;
 
         private string? _fileKeys;
@@ -1030,22 +1293,18 @@ public sealed class CovenantRestoreStagingTests : IDisposable
 
         public Task SaveApiKeyAsync(string apiKey)
         {
-
             _apiKey = apiKey;
 
             return Task.CompletedTask;
-
         }
 
         public Task<string?> GetGrimoireEncryptionSecretAsync() => Task.FromResult(_grimoire);
 
         public Task SaveGrimoireEncryptionSecretAsync(string encryptionSecret)
         {
-
             _grimoire = encryptionSecret;
 
             return Task.CompletedTask;
-
         }
 
         public Task<SecretStoreReadResult> GetFileEncryptionSecretReadResultAsync() =>
@@ -1056,13 +1315,31 @@ public sealed class CovenantRestoreStagingTests : IDisposable
 
         public Task SaveFileEncryptionSecretAsync(string encryptionSecret)
         {
-
             _fileKeys = encryptionSecret;
 
             return Task.CompletedTask;
-
         }
 
+        public Task DeleteApiKeyAsync()
+        {
+            _apiKey = null;
+
+            return Task.CompletedTask;
+        }
+
+        public Task DeleteGrimoireEncryptionSecretAsync()
+        {
+            _grimoire = null;
+
+            return Task.CompletedTask;
+        }
+
+        public Task DeleteFileEncryptionSecretAsync()
+        {
+            _fileKeys = null;
+
+            return Task.CompletedTask;
+        }
     }
 
     /// <summary>
@@ -1075,7 +1352,6 @@ public sealed class CovenantRestoreStagingTests : IDisposable
     /// </remarks>
     internal sealed class RecordingExclusiveGate : ICovenantOperationGate
     {
-
         internal int ExclusiveAcquisitions { get; private set; }
 
         internal int Releases { get; private set; }
@@ -1088,7 +1364,6 @@ public sealed class CovenantRestoreStagingTests : IDisposable
             CovenantExclusiveRecoveryOwner owner,
             CancellationToken cancellationToken)
         {
-
             ExclusiveAcquisitions++;
 
             LastOwner = owner;
@@ -1096,7 +1371,6 @@ public sealed class CovenantRestoreStagingTests : IDisposable
             return ValueTask.FromResult(
                 Result<CovenantExclusiveLease>.Success(
                     new CovenantExclusiveLease(new Registration(this, owner))));
-
         }
 
         public ValueTask<Result<CovenantExclusiveLease>> ResumeOrAcquireExclusiveAsync(
@@ -1177,7 +1451,6 @@ public sealed class CovenantRestoreStagingTests : IDisposable
             RecordingExclusiveGate gate,
             CovenantExclusiveRecoveryOwner owner) : ICovenantExclusiveLeaseRegistration
         {
-
             public CovenantOperationLeaseSnapshot Snapshot { get; } = new(
                 Guid.NewGuid(),
                 RuntimeAuthorityGeneration: 1,
@@ -1204,26 +1477,20 @@ public sealed class CovenantRestoreStagingTests : IDisposable
 
             public ValueTask ReleaseAsync()
             {
-
                 gate.Releases++;
 
                 return ValueTask.CompletedTask;
-
             }
 
             public ValueTask<Result> CompleteAsync(
                 CovenantExclusiveLeaseDisposition disposition,
                 CancellationToken cancellationToken)
             {
-
                 gate.Dispositions.Add(disposition);
 
                 return ValueTask.FromResult(Result.Success());
-
             }
-
         }
-
     }
 
     /// <summary>
@@ -1236,7 +1503,6 @@ public sealed class CovenantRestoreStagingTests : IDisposable
     /// </remarks>
     internal sealed class RecordingRestoreMarkerLifecycle : ICampaignPathMarkerLifecycle
     {
-
         public Task<Result<CampaignPathFullInstallationResetInventory>>
             InventoryFullInstallationResetCleanupAsync(
                 Guid ownerOperationId,
@@ -1280,13 +1546,24 @@ public sealed class CovenantRestoreStagingTests : IDisposable
 
         internal List<BackupRestoreMarkerCleanupCheckpointV1?>? Published { get; set; }
 
+        /// <summary>The finalizer a committed reconcile hands back, or the no-op one.</summary>
+        internal ICovenantExclusivePostDispositionFinalizer Finalizer { get; set; } =
+            CovenantNoOpPostDispositionFinalizer.Instance;
+
+        /// <summary>Runs once the reconcile has answered and before the caller sees the answer.</summary>
+        internal Action? AfterReconcile { get; set; }
+
+        /// <summary>Builds the inventory the restore is handed, or <see langword="null"/> for an empty one.</summary>
+        internal Func<CampaignPathRestoreCleanupInventory>? InventoryFactory { get; set; }
+
         public Task<Result<CampaignPathRestoreCleanupInventory>> InventoryRestoreCleanupAsync(
             CovenantExclusiveRecoveryOwner owner,
             CancellationToken cancellationToken) =>
             Task.FromResult(
                 Result<CampaignPathRestoreCleanupInventory>.Success(
-                    new CampaignPathRestoreCleanupInventory(
-                        ImmutableArray<CampaignPathRestoreCleanupSeed>.Empty)));
+                    InventoryFactory?.Invoke()
+                        ?? new CampaignPathRestoreCleanupInventory(
+                            ImmutableArray<CampaignPathRestoreCleanupSeed>.Empty)));
 
         /// <summary>
         /// Answers the staged preparation with something other than a receipt, at the exact moment the
@@ -1307,13 +1584,10 @@ public sealed class CovenantRestoreStagingTests : IDisposable
                 SqliteTransaction stagedTransaction,
                 CancellationToken cancellationToken)
         {
-
             if (PrepareRefusal is { } refusal)
             {
-
                 return Task.FromResult(
                     Result<CampaignPathRestoreCleanupPreparationReceipt>.Failure(refusal()));
-
             }
 
             CampaignPathRestoreCleanupPreparationReceipt receipt = new(
@@ -1335,7 +1609,6 @@ public sealed class CovenantRestoreStagingTests : IDisposable
 
             return Task.FromResult(
                 Result<CampaignPathRestoreCleanupPreparationReceipt>.Success(receipt));
-
         }
 
         public Task<Result<CampaignPathMarkerGateCompletion>> ReconcileGateOwnedAsync(
@@ -1343,31 +1616,39 @@ public sealed class CovenantRestoreStagingTests : IDisposable
             ICovenantExclusiveOperationLease exclusiveLease,
             CancellationToken cancellationToken)
         {
-
             ReconcileCalls++;
 
             LastReconcileRequest = request;
 
-            return Task.FromResult(
+            Task<Result<CampaignPathMarkerGateCompletion>> answer = Task.FromResult(
                 Failure is { } failure
                     ? Result<CampaignPathMarkerGateCompletion>.Failure(failure)
                     : Result<CampaignPathMarkerGateCompletion>.Success(
                         new CampaignPathMarkerGateCompletion(
                             CampaignPathMarkerAggregateOutcome.Committed,
                             CovenantExclusiveLeaseDisposition.CommitAndReopen,
-                            CovenantNoOpPostDispositionFinalizer.Instance)));
+                            Finalizer)));
 
+            AfterReconcile?.Invoke();
+
+            return answer;
         }
+
+        /// <summary>Thrown from the next root release instead of releasing, when set.</summary>
+        internal Exception? ReleaseFault { get; set; }
 
         public ValueTask ReleaseRetainedRootsAsync(Guid ownerOperationId)
         {
+            if (ReleaseFault is { } fault)
+            {
+                ReleaseFault = null;
+
+                throw fault;
+            }
 
             ReleasedOwnerOperationId = ownerOperationId;
 
             return ValueTask.CompletedTask;
-
         }
-
     }
-
 }

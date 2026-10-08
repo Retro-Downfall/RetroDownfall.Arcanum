@@ -24,10 +24,9 @@ public sealed class CliReasoningRenderingTests
             Reasoning: new ReasoningContentSegment("more", ReasoningOutputMode.Summary))));
         content.AppendAnswer("answer");
 
-        Assert.Equal("final answer", content.AnswerText);
+        // Only the answer's own characters are counted; reasoning never adds to them.
+        Assert.Equal("final answer".Length, content.AnswerLength);
         Assert.Equal("thinkmore", content.ReasoningText);
-        Assert.DoesNotContain("think", content.AnswerText, StringComparison.Ordinal);
-        Assert.DoesNotContain("more", content.AnswerText, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -42,6 +41,27 @@ public sealed class CliReasoningRenderingTests
         Assert.Contains("client-safe summary", console.Output, StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// Reasoning text is model output, and the panel is written to a terminal: an escape sequence in it
+    /// would be executed rather than shown. The panel is presentation (it renders on stderr; the answer
+    /// stream on stdout stays byte-exact), so it is stripped wherever it is drawn.
+    /// </summary>
+    [Fact]
+    public void Reasoning_panel_strips_control_characters()
+    {
+        TestConsole console = new TestConsole().Width(100);
+
+        console.Write(EphemeralReasoningRenderer.Build(
+            "see\u001b]52;c;AAAA\u0007 and\u001b[31m red\u009b\u007f\rdone",
+            CreateTheme()));
+
+        Assert.DoesNotContain('\u001b', console.Output);
+        Assert.DoesNotContain('\u0007', console.Output);
+        Assert.DoesNotContain('\u009b', console.Output);
+        Assert.DoesNotContain('\u007f', console.Output);
+        Assert.Contains("see and reddone", console.Output, StringComparison.Ordinal);
+    }
+
     [Fact]
     public void Reasoning_renderer_escapes_spectre_markup()
     {
@@ -52,30 +72,48 @@ public sealed class CliReasoningRenderingTests
         Assert.Contains("[red]unsafe[/]", console.Output, StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// The CLI accumulated the whole answer only to learn whether its last character was a newline, so a
+    /// long answer held every byte it streamed for the lifetime of the turn. The bound is on allocation:
+    /// ten megabytes of answer must leave no retained copy behind.
+    /// </summary>
     [Fact]
-    public void Streaming_render_cadence_coalesces_high_delta_chunks_and_flushes_final_partial()
+    public void Answer_accumulation_is_bounded()
     {
-        long elapsedMilliseconds = 0;
-        StreamingRenderCadence cadence = new(() => elapsedMilliseconds);
+        CliStreamContent content = new();
+        string chunk = new('a', 1024);
+        const int chunkCount = 10 * 1024;
 
-        for (int i = 0; i < 31; i++)
+        long before = GC.GetAllocatedBytesForCurrentThread();
+        for (int i = 0; i < chunkCount; i++)
         {
-            cadence.NoteChunk();
-            Assert.False(cadence.ShouldRefresh(force: false));
+            content.AppendAnswer(chunk);
         }
 
-        cadence.NoteChunk();
-        Assert.True(cadence.ShouldRefresh(force: false));
-        cadence.MarkRefreshed();
+        long allocated = GC.GetAllocatedBytesForCurrentThread() - before;
 
-        cadence.NoteChunk();
-        Assert.False(cadence.ShouldRefresh(force: false));
-        elapsedMilliseconds = 75;
-        Assert.True(cadence.ShouldRefresh(force: false));
-        cadence.MarkRefreshed();
+        Assert.Equal(10L * 1024 * 1024, content.AnswerLength);
+        Assert.True(content.AnswerEndsMidLine);
+        Assert.True(
+            allocated < 1024 * 1024,
+            $"Appending 10 MB of answer allocated {allocated:N0} bytes; the answer must not be retained.");
+    }
 
-        cadence.NoteChunk();
-        Assert.True(cadence.ShouldRefresh(force: true));
+    [Fact]
+    public void The_answer_ends_mid_line_only_when_its_last_character_is_not_a_newline()
+    {
+        CliStreamContent content = new();
+
+        Assert.False(content.AnswerEndsMidLine);
+
+        content.AppendAnswer("a line\n");
+        Assert.False(content.AnswerEndsMidLine);
+
+        content.AppendAnswer("and a partial");
+        Assert.True(content.AnswerEndsMidLine);
+
+        content.NoteAnswerLineBreak();
+        Assert.False(content.AnswerEndsMidLine);
     }
 
     [Fact]
@@ -88,7 +126,7 @@ public sealed class CliReasoningRenderingTests
             "not explicitly client-safe")));
 
         Assert.Equal(string.Empty, content.ReasoningText);
-        Assert.Equal(string.Empty, content.AnswerText);
+        Assert.Equal(0, content.AnswerLength);
     }
 
     [Fact]
@@ -108,7 +146,7 @@ public sealed class CliReasoningRenderingTests
 
         Assert.True(content.ReasoningText.Length <= 64);
         Assert.EndsWith(CliStreamContent.ReasoningTruncationMarker, content.ReasoningText, StringComparison.Ordinal);
-        Assert.Equal(string.Empty, content.AnswerText);
+        Assert.Equal(0, content.AnswerLength);
     }
 
     /// <summary>

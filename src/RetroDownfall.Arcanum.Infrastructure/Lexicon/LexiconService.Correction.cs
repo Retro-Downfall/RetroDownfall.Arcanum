@@ -93,9 +93,7 @@ internal sealed partial class LexiconService
                                 "The Lexicon artifact revision is exhausted."));
                         }
 
-                        DateTimeOffset now = DateTimeOffset.UtcNow;
-
-                        now = now > state.Row.Entry.UpdatedAt ? now : state.Row.Entry.UpdatedAt.AddTicks(1);
+                        DateTimeOffset now = NextRecordedAt(state.Row.Entry.UpdatedAt, state.Head);
 
                         await EnsureCurationBaselineAsync(connection, state, now, cancellationToken).ConfigureAwait(false);
 
@@ -269,6 +267,33 @@ internal sealed partial class LexiconService
         RequireIntegrity(await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) == 1);
     }
 
+    /// <summary>
+    /// The instant one Lexicon write records its Annals version at: now, but never at or before the entry's
+    /// last update or the version it follows, so a version is always recorded strictly after the one it
+    /// supersedes. One helper for upsert, correction and every lifecycle change.
+    /// </summary>
+    private DateTimeOffset NextRecordedAt(DateTimeOffset? entryUpdatedAt, AnnalClaimVersion? head)
+    {
+        DateTimeOffset now = _timeProvider.GetUtcNow();
+
+        DateTimeOffset floor = entryUpdatedAt ?? DateTimeOffset.MinValue;
+
+        if (head is not null && head.RecordedAtUtc > floor)
+        {
+            floor = head.RecordedAtUtc;
+        }
+
+        return now > floor ? now : floor.AddTicks(1);
+    }
+
+    /// <summary>
+    /// Appends the baseline version a curation write supersedes when the head is not already a structured
+    /// snapshot.
+    /// </summary>
+    /// <remarks>
+    /// The baseline is recorded at <paramref name="recordedAt"/>, the same instant as the version the write
+    /// then appends: the two are one write's restatement and operation, not two beliefs held in turn.
+    /// </remarks>
     private static async Task EnsureCurationBaselineAsync(
         DbConnection connection, CurationState state, DateTimeOffset recordedAt, CancellationToken cancellationToken)
     {

@@ -5,6 +5,7 @@ using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 using RetroDownfall.Arcanum.Secrets.Security;
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Security;
 
@@ -80,6 +81,36 @@ public sealed class WebResearchCredentialStoreTests : IDisposable
             "pplx-secret-value",
             Encoding.UTF8.GetString(protectedBytes),
             StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The mirror follows the OS credential: a web-research key rotated in the OS store by another
+    /// tool must not leave the superseded key in the mirror to be served at the next locked-keychain
+    /// read.
+    /// </summary>
+    [Fact]
+    public async Task An_out_of_band_os_rotation_is_followed_by_the_mirror()
+    {
+        SwitchableReadOsCredentialStore os = new();
+
+        using WebResearchCredentialStore store = CreateStore(os);
+
+        await store.SavePerplexityApiKeyAsync("superseded-pplx-secret");
+
+        _ = os.Set(
+            ArcanumCredentialIdentity.Service,
+            ArcanumCredentialIdentity.PerplexityApiKeyAccount,
+            "rotated-pplx-secret");
+
+        Assert.Equal("rotated-pplx-secret", (await store.GetPerplexityApiKeyReadResultAsync()).Value);
+
+        os.FailReads = true;
+
+        SecretStoreReadResult locked = await store.GetPerplexityApiKeyReadResultAsync();
+
+        Assert.Equal(SecretStoreReadStatus.Ok, locked.Status);
+
+        Assert.Equal("rotated-pplx-secret", locked.Value);
     }
 
     [Fact]
@@ -251,10 +282,12 @@ public sealed class WebResearchCredentialStoreTests : IDisposable
         await Assert.ThrowsAsync<InvalidOperationException>(
             () => store.SavePerplexityApiKeyAsync("pplx-new"));
 
+        // The refused save wrote no mirror. (The read below then synchronizes one from the surviving
+        // OS credential, because every mirror follows its OS copy.)
+        Assert.False(File.Exists(ArcanumPaths.PerplexityApiKeyStoreFile));
         Assert.Equal(
             "pplx-old",
             (await store.GetPerplexityApiKeyReadResultAsync()).Value);
-        Assert.False(File.Exists(ArcanumPaths.PerplexityApiKeyStoreFile));
     }
 
     [Fact]
@@ -276,24 +309,22 @@ public sealed class WebResearchCredentialStoreTests : IDisposable
     [Fact]
     public async Task Oversized_fallback_is_reported_without_unbounded_read()
     {
-
         string path = ArcanumPaths.PerplexityApiKeyStoreFile;
 
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
 
         await using (FileStream stream = new(path, FileMode.CreateNew, FileAccess.Write, FileShare.None))
         {
-
             stream.SetLength(WebResearchCredentialStore.MaxProtectedSecretBytes + 1L);
-
         }
 
         using WebResearchCredentialStore store = CreateStore(new UnavailableStore());
 
         SecretStoreReadResult result = await store.GetPerplexityApiKeyReadResultAsync();
 
-        Assert.Equal(SecretStoreReadStatus.Corrupted, result.Status);
-
+        // Over the ceiling is refused without reading it, so its content is unknown: unreadable,
+        // not corrupt.
+        Assert.Equal(SecretStoreReadStatus.Unreadable, result.Status);
     }
 
     [Fact]

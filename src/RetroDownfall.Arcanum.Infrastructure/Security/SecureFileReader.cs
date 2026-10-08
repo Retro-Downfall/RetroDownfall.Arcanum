@@ -74,7 +74,8 @@ internal readonly record struct SecureUtf8FileReadResult(
     SecureFileReadStatus Status,
     string? Text,
     int ByteLength,
-    FileHandleMetadata Metadata);
+    FileHandleMetadata Metadata,
+    FileContentBaseline? Baseline = null);
 
 /// <summary>
 /// Opens a path once with link-following disabled, proves the opened handle is an
@@ -87,11 +88,36 @@ internal static partial class SecureFileReader
     private static readonly UTF8Encoding StrictUtf8 =
         new(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
 
+    private static readonly AsyncLocal<Action<string>?> AfterOpenOverride = new();
+
+    private static readonly AsyncLocal<Action<string>?> AfterRegularFileOpenedOverride = new();
+
     /// <summary>
-    /// Deterministic test seam invoked after the validated handle is open and before
-    /// the first bounded read.
+    /// Deterministic test seam invoked after the validated handle is open and before the first
+    /// bounded read, for the current async flow only: every secret mirror read passes through here, so
+    /// a process-global hook would fire inside unrelated tests running in parallel. A flow that started
+    /// before the seam was set does not see it: the in-process MCP server handles each call on the flow
+    /// its read loop captured at start, so a test arms the seam before it starts the server.
     /// </summary>
-    internal static Action<string>? AfterOpenForTests { get; set; }
+    internal static Action<string>? AfterOpenForTests
+    {
+        get => AfterOpenOverride.Value;
+
+        set => AfterOpenOverride.Value = value;
+    }
+
+    /// <summary>
+    /// Deterministic test seam invoked with the requested path each time
+    /// <see cref="TryOpenRegularFile"/> returns an open handle; it lets a test count how many times a
+    /// flow reads one file. Flow-local for the same reason as <see cref="AfterOpenForTests"/>: every
+    /// secure open in the process passes through it.
+    /// </summary>
+    internal static Action<string>? AfterRegularFileOpenedForTests
+    {
+        get => AfterRegularFileOpenedOverride.Value;
+
+        set => AfterRegularFileOpenedOverride.Value = value;
+    }
 
     internal static SecureFileOpenStatus TryOpenRegularFile(
         string path,
@@ -154,6 +180,8 @@ internal static partial class SecureFileReader
                     isAsync: OperatingSystem.IsWindows());
 
                 handle = null;
+
+                AfterRegularFileOpenedForTests?.Invoke(path);
 
                 return SecureFileOpenStatus.Success;
             }
@@ -408,10 +436,15 @@ internal static partial class SecureFileReader
         return DecodeUtf8(bytes);
     }
 
+    /// <param name="captureBaseline">
+    /// Also report the length and SHA-256 of the exact bytes read (BOM included), for a read-modify-write
+    /// caller that must prove the destination is unchanged before it replaces it.
+    /// </param>
     internal static async Task<SecureUtf8FileReadResult> ReadUtf8TextAsync(
         FileStream stream,
         int maxBytes,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool captureBaseline = false)
     {
         using SecureFileReadResult bytes = await ReadBytesAsync(
                 stream,
@@ -419,11 +452,12 @@ internal static partial class SecureFileReader
                 cancellationToken)
             .ConfigureAwait(false);
 
-        return DecodeUtf8(bytes);
+        return DecodeUtf8(bytes, captureBaseline);
     }
 
     private static SecureUtf8FileReadResult DecodeUtf8(
-        SecureFileReadResult bytes)
+        SecureFileReadResult bytes,
+        bool captureBaseline = false)
     {
         if (bytes.Status is not SecureFileReadStatus.Success)
         {
@@ -449,7 +483,10 @@ internal static partial class SecureFileReader
                 SecureFileReadStatus.Success,
                 StrictUtf8.GetString(textBytes),
                 bytes.Bytes.Length,
-                bytes.Metadata);
+                bytes.Metadata,
+                captureBaseline
+                    ? FileContentBaseline.Of(bytes.Bytes.Span)
+                    : null);
         }
         catch (DecoderFallbackException)
         {
@@ -465,7 +502,11 @@ internal static partial class SecureFileReader
         SecureFileReadStatus status) =>
         new(status, null, 0, default);
 
-    private static SecureFileReadStatus MapOpenStatus(
+    /// <summary>
+    /// The read status a failed <see cref="TryOpenRegularFile"/> reports, for a caller that opens the handle
+    /// itself and then reads it through <see cref="ReadUtf8TextAsync(FileStream, int, CancellationToken, bool)"/>.
+    /// </summary>
+    internal static SecureFileReadStatus MapOpenStatus(
         SecureFileOpenStatus status) =>
         (SecureFileReadStatus)status;
 

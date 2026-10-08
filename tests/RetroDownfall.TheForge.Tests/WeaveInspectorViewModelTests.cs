@@ -19,7 +19,6 @@ namespace RetroDownfall.TheForge.Tests;
 
 public class WeaveInspectorViewModelTests
 {
-
     private static readonly Guid SessionId = Guid.Parse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb");
 
     private static readonly WorkspaceInfo Workspace = new("ws-1", "My Workspace", "/tmp/ws-1", WorkspaceType.Custom, DateTimeOffset.UtcNow);
@@ -27,7 +26,6 @@ public class WeaveInspectorViewModelTests
     [Fact]
     public async Task Refresh_LoadsWorkspacesStatusAndChunks()
     {
-
         WorkspaceIndexStatusDto status = NewStatus(totalFiles: 3, totalChunks: 12, indexingEnabled: true);
 
         WorkspaceFileChunkDto chunk = NewChunk("src/A.cs", "chunk-a-0", 0, 2);
@@ -66,13 +64,11 @@ public class WeaveInspectorViewModelTests
         Assert.Equal(12, viewModel.ChunkTotal);
 
         Assert.True(viewModel.ChunkHasMore);
-
     }
 
     [Fact]
     public async Task LoadChunks_AppliesFilterAndNextPageAdvancesOffset()
     {
-
         WorkspaceFileChunkPage firstPage = new([NewChunk("src/A.cs", "c0", 0, 1)], 2, 50, 0, true, null);
 
         WorkspaceFileChunkPage secondPage = new([NewChunk("src/A.cs", "c1", 0, 1)], 2, 50, 50, false, null);
@@ -105,13 +101,11 @@ public class WeaveInspectorViewModelTests
         Assert.Equal(50, inspector.LastChunksOffset);
 
         Assert.False(viewModel.ChunkHasMore);
-
     }
 
     [Fact]
     public async Task LoadChunksForFile_SetsFilterResetsOffsetAndFocusesIndexTab()
     {
-
         WorkspaceFileChunkPage page = new([NewChunk("src/Found.cs", "c0", 0, 1)], 1, 50, 0, false, "src/Found.cs");
 
         FakeWeaveInspectorDataSource inspector = new()
@@ -138,13 +132,11 @@ public class WeaveInspectorViewModelTests
         Assert.Equal(0, viewModel.ActiveTabIndex);
 
         Assert.Equal("src/Found.cs", inspector.LastChunksRelativePath);
-
     }
 
     [Fact]
     public async Task Reindex_WhenSuccessful_SurfacesTriggeredAndWhispersSuccess()
     {
-
         FakeWorkspaceExplorerDataSource workspace = new()
         {
             Workspaces = [Workspace],
@@ -165,13 +157,11 @@ public class WeaveInspectorViewModelTests
         Assert.Contains("Re-index triggered", viewModel.StatusText, StringComparison.Ordinal);
 
         Assert.Contains((WhisperSeverity.Success, "Re-index triggered.", (string?)null), whispers.Calls);
-
     }
 
     [Fact]
     public async Task Reindex_FeatureDisabled_SetsWorkspaceFeatureDisabled()
     {
-
         FakeWorkspaceExplorerDataSource workspace = new()
         {
             Workspaces = [Workspace],
@@ -186,13 +176,11 @@ public class WeaveInspectorViewModelTests
         await viewModel.ReindexAsync(CancellationToken.None);
 
         Assert.True(viewModel.WorkspaceFeatureDisabled);
-
     }
 
     [Fact]
     public async Task ResetEmbeddings_WhenConfirmed_CallsDataSourceWithWorkspaceFileScopeAndRefreshes()
     {
-
         EmbeddingsResetResult reset = new(new Dictionary<string, int>
         {
             ["workspace_file_chunks"] = 12,
@@ -236,13 +224,11 @@ public class WeaveInspectorViewModelTests
         Assert.Equal(1, inspector.StatusCallCount);
 
         Assert.Empty(viewModel.Chunks);
-
     }
 
     [Fact]
     public async Task ResetEmbeddings_WhenCancelled_DoesNotCallDataSource()
     {
-
         FakeWeaveInspectorDataSource inspector = new();
 
         FakeWorkspaceExplorerDataSource workspace = new() { Workspaces = [Workspace] };
@@ -258,13 +244,11 @@ public class WeaveInspectorViewModelTests
         Assert.Equal(0, inspector.ResetCallCount);
 
         Assert.Equal("Reset cancelled.", viewModel.StatusText);
-
     }
 
     [Fact]
     public async Task SearchWorkspace_PopulatesResults()
     {
-
         WorkspaceSearchResult hit = new("src/A.cs", 0, 2, 0.9f, "preview");
 
         FakeWorkspaceExplorerDataSource workspace = new()
@@ -287,13 +271,11 @@ public class WeaveInspectorViewModelTests
         Assert.Equal("src/A.cs", viewModel.WorkspaceResults[0].RelativePath);
 
         Assert.Equal("find me", workspace.LastWorkspaceDivineQuery);
-
     }
 
     [Fact]
     public async Task SearchSaga_DisplaysSimilaritiesPerMemory()
     {
-
         SagaMemoryDto m1 = new("m1", "alpha", DateTimeOffset.UtcNow, null, null, null);
 
         SagaMemoryDto m2 = new("m2", "beta", DateTimeOffset.UtcNow, null, null, null);
@@ -314,13 +296,11 @@ public class WeaveInspectorViewModelTests
         Assert.Equal(0.91f, viewModel.SagaResults[0].Similarity);
 
         Assert.Equal(0.42f, viewModel.SagaResults[1].Similarity);
-
     }
 
     [Fact]
     public async Task SearchSessions_PopulatesResults()
     {
-
         SemanticSessionSearchResult hit = new(SessionId, "Forge chat", Guid.NewGuid(), "user", "hi", 0.7f, DateTimeOffset.UtcNow);
 
         FakeDivinationDataSource divination = new()
@@ -339,13 +319,11 @@ public class WeaveInspectorViewModelTests
         Assert.Equal(SessionId, viewModel.SessionResults[0].SessionId);
 
         Assert.Equal("hi", divination.LastSessionQuery);
-
     }
 
     [Fact]
     public void OpenSessionResult_OpensDocumentInTome()
     {
-
         SemanticSessionSearchResult hit = new(SessionId, "Forge chat", Guid.NewGuid(), "user", "preview", 0.75f, DateTimeOffset.UtcNow);
 
         NavigationService navigation = new();
@@ -359,13 +337,11 @@ public class WeaveInspectorViewModelTests
         viewModel.OpenSessionResultCommand.Execute(hit);
 
         Assert.Equal((DocumentKind.Session, SessionId.ToString("D")), opened);
-
     }
 
     [Fact]
     public void VectorMode_ReflectsConnectionMetaAndShowsManagedBanner()
     {
-
         FakeArcanumConnection connection = new()
         {
             LastMeta = NewMeta(embeddingsEnabled: true, vectorMode: "managed"),
@@ -378,13 +354,11 @@ public class WeaveInspectorViewModelTests
         Assert.True(viewModel.ShowManagedWeaveBanner);
 
         Assert.True(viewModel.EmbeddingsEnabled);
-
     }
 
     [Fact]
     public async Task RefreshSagaStats_PopulatesStats()
     {
-
         SagaStats stats = new(7, 3, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow);
 
         FakeSagaArchiveDataSource saga = new()
@@ -401,7 +375,6 @@ public class WeaveInspectorViewModelTests
         Assert.Equal(7, viewModel.SagaStats!.TotalCount);
 
         Assert.Contains("7 memories", viewModel.SagaStatsText, StringComparison.Ordinal);
-
     }
 
     private static WeaveInspectorViewModel NewViewModel(
@@ -457,10 +430,7 @@ public class WeaveInspectorViewModelTests
             ConfigPath: "/tmp/arcanum.json",
             Port: 5000,
             ListenAny: false,
-            LoreSystemEnabled: true,
             ArchiveSearchEnabled: true,
-            ContextCompressionEnabled: true,
-            TokenTrackingEnabled: true,
             HttpsEnabled: false,
             HttpsPort: 0,
             HttpsUrl: null,
@@ -481,7 +451,6 @@ public class WeaveInspectorViewModelTests
 
     private sealed class FakeWeaveInspectorDataSource : IWeaveInspectorDataSource
     {
-
         public DataSourceResult<WorkspaceIndexStatusDto> StatusResult { get; set; } =
             new(null, true, null, null);
 
@@ -505,16 +474,13 @@ public class WeaveInspectorViewModelTests
 
         public Task<DataSourceResult<WorkspaceIndexStatusDto>> GetIndexStatusAsync(string workspaceId, CancellationToken cancellationToken)
         {
-
             StatusCallCount++;
 
             return Task.FromResult(StatusResult);
-
         }
 
         public Task<DataSourceResult<WorkspaceFileChunkPage>> GetChunksAsync(string workspaceId, string? relativePath, int limit, int offset, CancellationToken cancellationToken)
         {
-
             LastChunksRelativePath = relativePath;
 
             LastChunksLimit = limit;
@@ -522,25 +488,20 @@ public class WeaveInspectorViewModelTests
             LastChunksOffset = offset;
 
             return Task.FromResult(ChunksResult);
-
         }
 
         public Task<DataSourceResult<EmbeddingsResetResult>> ResetEmbeddingsAsync(string scope, CancellationToken cancellationToken)
         {
-
             LastResetScope = scope;
 
             ResetCallCount++;
 
             return Task.FromResult(ResetResult);
-
         }
-
     }
 
     private sealed class FakeWorkspaceExplorerDataSource : IWorkspaceExplorerDataSource
     {
-
         public WorkspaceInfo[] Workspaces { get; set; } = [];
 
         public DataSourceResult<bool> IndexResult { get; set; } = new(true, true, null, null);
@@ -557,20 +518,16 @@ public class WeaveInspectorViewModelTests
 
         public Task<DataSourceResult<bool>> IndexWorkspaceAsync(string workspaceId, CancellationToken cancellationToken)
         {
-
             LastIndexWorkspaceId = workspaceId;
 
             return Task.FromResult(IndexResult);
-
         }
 
         public Task<DataSourceResult<WorkspaceSearchResult[]>> DivineWorkspaceFilesAsync(string workspaceId, WorkspaceSemanticSearchRequest request, CancellationToken cancellationToken)
         {
-
             LastWorkspaceDivineQuery = request.Query;
 
             return Task.FromResult(WorkspaceDivineResult);
-
         }
 
         public Task<DataSourceResult<FileListResult>> ListFilesAsync(string workspaceId, string? relativePath, bool? recursive, string? searchPattern, CancellationToken cancellationToken) =>
@@ -593,12 +550,10 @@ public class WeaveInspectorViewModelTests
 
         public Task<DataSourceResult<DirectoryCreateResult>> CreateDirectoryAsync(string workspaceId, string relativePath, CancellationToken cancellationToken) =>
             Task.FromResult(new DataSourceResult<DirectoryCreateResult>(null, true, null, null));
-
     }
 
     private sealed class FakeDivinationDataSource : IDivinationDataSource
     {
-
         public DataSourceResult<SemanticSearchResult> SessionsResult { get; set; } =
             new(null, true, null, null);
 
@@ -606,11 +561,9 @@ public class WeaveInspectorViewModelTests
 
         public Task<DataSourceResult<SemanticSearchResult>> DivineSessionsAsync(SemanticSearchRequest request, CancellationToken cancellationToken)
         {
-
             LastSessionQuery = request.Query;
 
             return Task.FromResult(SessionsResult);
-
         }
 
         public Task<DataSourceResult<WorkspaceSearchResult[]>> DivineWorkspaceFilesAsync(string workspaceId, WorkspaceSemanticSearchRequest request, CancellationToken cancellationToken) =>
@@ -618,12 +571,10 @@ public class WeaveInspectorViewModelTests
 
         public Task<DataSourceResult<SagaSearchResult>> DivineSagaAsync(SagaSearchRequest request, CancellationToken cancellationToken) =>
             Task.FromResult(new DataSourceResult<SagaSearchResult>(null, true, null, null));
-
     }
 
     private sealed class FakeSagaArchiveDataSource : ISagaArchiveDataSource
     {
-
         public DataSourceResult<SagaSearchResult> DivineResult { get; set; } =
             new(null, true, null, null);
 
@@ -644,32 +595,26 @@ public class WeaveInspectorViewModelTests
 
         public Task<DataSourceResult<SagaStats>> GetStatsAsync(CancellationToken cancellationToken) =>
             Task.FromResult(StatsResult);
-
     }
 
     private sealed class ControllableConfirmationDialog(bool accept) : IConfirmationDialogService
     {
-
         public int CallCount { get; private set; }
 
         public bool LastConfirmIsDefault { get; private set; } = true;
 
         public Task<bool> ConfirmAsync(string title, string message, CancellationToken cancellationToken, bool confirmIsDefault = true)
         {
-
             CallCount++;
 
             LastConfirmIsDefault = confirmIsDefault;
 
             return Task.FromResult(accept);
-
         }
-
     }
 
     private sealed class FakeArcanumConnection : IArcanumConnection
     {
-
         public ConnectionState State { get; set; } = ConnectionState.Disconnected;
 
         public HealthReportDto? LastReport { get; set; }
@@ -678,18 +623,14 @@ public class WeaveInspectorViewModelTests
 
         public InstanceMetadataDto? LastMeta
         {
-
             get => _lastMeta;
 
             set
             {
-
                 _lastMeta = value;
 
                 PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(LastMeta)));
-
             }
-
         }
 
         public string? LastErrorCode { get; set; }
@@ -705,7 +646,5 @@ public class WeaveInspectorViewModelTests
         public void Disconnect()
         {
         }
-
     }
-
 }

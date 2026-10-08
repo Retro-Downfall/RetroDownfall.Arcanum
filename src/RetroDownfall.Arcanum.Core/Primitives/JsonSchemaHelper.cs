@@ -9,7 +9,6 @@ namespace RetroDownfall.Arcanum.Core.Primitives;
 /// </summary>
 public static class JsonSchemaHelper
 {
-
     /// <summary>
     /// Parses a JSON Schema document into a <see cref="JsonSchemaDefinition"/>.
     /// </summary>
@@ -21,25 +20,19 @@ public static class JsonSchemaHelper
     /// </returns>
     public static Result<JsonSchemaDefinition> Parse(JsonDocument schema, int maxDepth = 10)
     {
-
         int clampedDepth = Math.Clamp(maxDepth, 1, 50);
 
         try
         {
-
             JsonSchemaDefinition definition = ParseElement(schema.RootElement, clampedDepth, currentDepth: 0);
 
             return Result<JsonSchemaDefinition>.Success(definition);
-
         }
         catch (SchemaException ex)
         {
-
             return Result<JsonSchemaDefinition>.Failure(
                 new Error(ErrorCodes.StructuredOutput.SchemaInvalid, ex.Message));
-
         }
-
     }
 
     /// <summary>
@@ -58,19 +51,15 @@ public static class JsonSchemaHelper
     /// <returns>A <see cref="ValidationResult"/> with validation errors, if any.</returns>
     public static ValidationResult Validate(string json, JsonSchemaDefinition schema, int maxDepth = 10)
     {
-
         if (string.IsNullOrWhiteSpace(json))
         {
-
             return new ValidationResult(false, ["JSON payload is empty."]);
-
         }
 
         int clampedDepth = Math.Clamp(maxDepth, 1, 50);
 
         try
         {
-
             using JsonDocument document = JsonDocument.Parse(json);
 
             List<string> errors = [];
@@ -79,217 +68,166 @@ public static class JsonSchemaHelper
 
             if (errors.Count >= MaxReportedErrors)
             {
-
                 errors.Add($"Validation stopped after {MaxReportedErrors} errors; the payload may have more.");
-
             }
 
             return new ValidationResult(errors.Count == 0, errors);
-
         }
         catch (JsonException ex)
         {
-
             return new ValidationResult(false, [$"JSON parse error: {ex.Message}"]);
-
         }
         catch (SchemaException ex)
         {
-
             return new ValidationResult(false, [ex.Message]);
-
         }
         catch (Exception ex) when (ex is FormatException or OverflowException)
         {
             // Defence in depth: numeric accessors on JsonElement throw for out-of-range literals.
             // Validate documents a ValidationResult return, so no numeric helper may escape it.
             return new ValidationResult(false, [$"JSON value error: {ex.Message}"]);
-
         }
-
     }
 
     private static JsonSchemaDefinition ParseElement(JsonElement element, int maxDepth, int currentDepth)
     {
-
         if (currentDepth > maxDepth)
         {
-
             throw new SchemaException("schema exceeds maximum nesting depth");
-
         }
 
         if (element.ValueKind != JsonValueKind.Object)
         {
-
             throw new SchemaException("schema root must be a JSON object");
-
         }
 
-        (string type, bool isNullable) = ExtractType(element);
+        (string type, bool isNullable, List<string> alternativeTypes) = ExtractType(element);
 
         JsonSchemaDefinition definition = new()
         {
-
             Type = type,
 
-            IsNullable = isNullable
+            IsNullable = isNullable,
 
+            AlternativeTypes = alternativeTypes
         };
 
         if (element.TryGetProperty("properties", out JsonElement propertiesElement)
             && propertiesElement.ValueKind == JsonValueKind.Object)
         {
-
             foreach (JsonProperty property in propertiesElement.EnumerateObject())
             {
-
                 definition.Properties[property.Name] =
                     ParseElement(property.Value, maxDepth, currentDepth + 1);
-
             }
-
         }
 
         if (element.TryGetProperty("required", out JsonElement requiredElement)
             && requiredElement.ValueKind == JsonValueKind.Array)
         {
-
             foreach (JsonElement required in requiredElement.EnumerateArray())
             {
-
                 if (required.ValueKind == JsonValueKind.String)
                 {
-
                     string? name = required.GetString();
 
                     if (!string.IsNullOrWhiteSpace(name))
                     {
-
                         definition.Required.Add(name);
-
                     }
-
                 }
-
             }
-
         }
 
         if (element.TryGetProperty("items", out JsonElement itemsElement)
             && itemsElement.ValueKind == JsonValueKind.Object)
         {
-
             definition = definition with
             {
-
                 Items = ParseElement(itemsElement, maxDepth, currentDepth + 1)
-
             };
-
         }
 
         if (element.TryGetProperty("enum", out JsonElement enumElement)
             && enumElement.ValueKind == JsonValueKind.Array)
         {
-
             foreach (JsonElement enumValue in enumElement.EnumerateArray())
             {
-
                 definition.Enum.Add(enumValue.Clone());
-
             }
-
         }
 
         if (element.TryGetProperty("additionalProperties", out JsonElement additionalPropertiesElement))
         {
-
             if (additionalPropertiesElement.ValueKind == JsonValueKind.False)
             {
-
                 definition = definition with { AdditionalProperties = false };
-
             }
             else if (additionalPropertiesElement.ValueKind == JsonValueKind.True)
             {
-
                 definition = definition with { AdditionalProperties = true };
-
             }
-
         }
 
         return definition;
-
     }
 
-    private static (string Type, bool IsNullable) ExtractType(JsonElement element)
+    private static (string Type, bool IsNullable, List<string> AlternativeTypes) ExtractType(JsonElement element)
     {
-
         if (!element.TryGetProperty("type", out JsonElement typeElement))
         {
-
-            return (string.Empty, false);
-
+            return (string.Empty, false, []);
         }
 
         if (typeElement.ValueKind == JsonValueKind.String)
         {
-
             string value = typeElement.GetString()?.ToLowerInvariant() ?? string.Empty;
 
-            return (value, false);
-
+            return (value, false, []);
         }
 
-        if (typeElement.ValueKind == JsonValueKind.Array)
+        // A malformed declaration is refused rather than rewritten: dropping a non-string union
+        // member or reading a number, object, boolean, null or empty array as "object" would validate
+        // against a schema the author never wrote, and no caller could see what was declared.
+        if (typeElement.ValueKind != JsonValueKind.Array)
         {
-
-            bool hasNull = false;
-
-            string? firstNonNull = null;
-
-            foreach (JsonElement type in typeElement.EnumerateArray())
-            {
-
-                if (type.ValueKind != JsonValueKind.String)
-                {
-                    continue;
-                }
-
-                string? value = type.GetString()?.ToLowerInvariant();
-
-                if (value is null)
-                {
-                    continue;
-                }
-
-                if (value == "null")
-                {
-                    hasNull = true;
-                }
-                else if (firstNonNull is null)
-                {
-                    firstNonNull = value;
-                }
-
-            }
-
-            if (firstNonNull is not null)
-            {
-                return (firstNonNull, hasNull);
-            }
-
-            if (hasNull)
-            {
-                return ("null", false);
-            }
-
+            throw new SchemaException("schema 'type' must be a string or an array of strings");
         }
 
-        return ("object", false);
+        bool hasNull = false;
 
+        List<string> nonNullTypes = [];
+
+        foreach (JsonElement type in typeElement.EnumerateArray())
+        {
+            if (type.ValueKind != JsonValueKind.String)
+            {
+                throw new SchemaException("schema 'type' array members must be strings");
+            }
+
+            string value = type.GetString()!.ToLowerInvariant();
+
+            if (value == "null")
+            {
+                hasNull = true;
+            }
+            else if (!nonNullTypes.Contains(value))
+            {
+                nonNullTypes.Add(value);
+            }
+        }
+
+        if (nonNullTypes.Count > 0)
+        {
+            return (nonNullTypes[0], hasNull, nonNullTypes.GetRange(1, nonNullTypes.Count - 1));
+        }
+
+        if (hasNull)
+        {
+            return ("null", false, []);
+        }
+
+        throw new SchemaException("schema 'type' array must not be empty");
     }
 
     private static void ValidateElement(
@@ -300,72 +238,56 @@ public static class JsonSchemaHelper
         int currentDepth,
         List<string> errors)
     {
-
         if (currentDepth > maxDepth)
         {
-
             throw new SchemaException("JSON payload exceeds maximum nesting depth");
-
         }
 
         // Every recursion into an element goes through here, so one guard bounds the whole walk.
         if (errors.Count >= MaxReportedErrors)
         {
-
             return;
-
         }
 
         if (element.ValueKind == JsonValueKind.Null && schema.IsNullable)
         {
-
             return;
-
         }
 
-        if (!string.IsNullOrEmpty(schema.Type) && !IsTypeMatch(element, schema.Type))
+        if (!string.IsNullOrEmpty(schema.Type)
+            && !IsTypeMatch(element, schema.Type)
+            && !schema.AlternativeTypes.Any(alternative => IsTypeMatch(element, alternative)))
         {
+            string expected = string.Join(" or ", schema.AlternativeTypes.Prepend(schema.Type).Select(type => $"'{type}'"));
 
-            errors.Add($"{path}: expected type '{schema.Type}' but got '{GetJsonValueKindName(element.ValueKind)}'.");
+            errors.Add($"{path}: expected type {expected} but got '{GetJsonValueKindName(element.ValueKind)}'.");
 
             return;
-
         }
 
         if (schema.Enum.Count > 0)
         {
-
             foreach (JsonElement enumValue in schema.Enum)
             {
-
                 if (JsonElementsEqual(element, enumValue))
                 {
-
                     return;
-
                 }
-
             }
 
             errors.Add($"{path}: value does not match any enum value.");
 
             return;
-
         }
 
         if (element.ValueKind == JsonValueKind.Object)
         {
-
             ValidateObject(element, schema, path, maxDepth, currentDepth, errors);
-
         }
         else if (element.ValueKind == JsonValueKind.Array)
         {
-
             ValidateArray(element, schema, path, maxDepth, currentDepth, errors);
-
         }
-
     }
 
     private static void ValidateObject(
@@ -376,17 +298,14 @@ public static class JsonSchemaHelper
         int currentDepth,
         List<string> errors)
     {
-
         HashSet<string> seenProperties = [];
 
         foreach (JsonProperty property in element.EnumerateObject())
         {
-
             seenProperties.Add(property.Name);
 
             if (schema.Properties.TryGetValue(property.Name, out JsonSchemaDefinition? propertySchema))
             {
-
                 ValidateElement(
                     property.Value,
                     propertySchema,
@@ -394,7 +313,6 @@ public static class JsonSchemaHelper
                     maxDepth,
                     currentDepth + 1,
                     errors);
-
             }
             // Neither branch below recurses, so the one guard in ValidateElement never sees them:
             // an object contributes one error per unexpected property and one per missing required
@@ -402,11 +320,8 @@ public static class JsonSchemaHelper
             // additionalProperties and with the caller's schema for required.
             else if (schema.AdditionalProperties == false && errors.Count < MaxReportedErrors)
             {
-
                 errors.Add($"{path}: additional property '{property.Name}' is not allowed.");
-
             }
-
         }
 
         // The enumeration above is never cut short, so seenProperties is complete even when the
@@ -414,23 +329,16 @@ public static class JsonSchemaHelper
         // fact carry as missing, telling the model to add a field it already sent.
         foreach (string required in schema.Required)
         {
-
             if (errors.Count >= MaxReportedErrors)
             {
-
                 break;
-
             }
 
             if (!seenProperties.Contains(required))
             {
-
                 errors.Add($"{path}: required property '{required}' is missing.");
-
             }
-
         }
-
     }
 
     private static void ValidateArray(
@@ -441,33 +349,27 @@ public static class JsonSchemaHelper
         int currentDepth,
         List<string> errors)
     {
-
         if (schema.Items is null)
         {
-
             return;
-
         }
 
         int index = 0;
 
         foreach (JsonElement item in element.EnumerateArray())
         {
-
             ValidateElement(item, schema.Items, $"{path}[{index}]", maxDepth, currentDepth + 1, errors);
 
             index++;
-
         }
-
     }
 
     private static bool IsTypeMatch(JsonElement element, string expectedType)
     {
-
+        // An unrecognized name matches nothing. Matching everything turned a union carrying one
+        // unknown member into "accept any value", since a union passes when any member matches.
         return expectedType.ToLowerInvariant() switch
         {
-
             "object" => element.ValueKind == JsonValueKind.Object,
             "array" => element.ValueKind == JsonValueKind.Array,
             "string" => element.ValueKind == JsonValueKind.String,
@@ -475,15 +377,12 @@ public static class JsonSchemaHelper
             "integer" => element.ValueKind == JsonValueKind.Number && element.TryGetInt64(out _),
             "boolean" => element.ValueKind is JsonValueKind.True or JsonValueKind.False,
             "null" => element.ValueKind == JsonValueKind.Null,
-            _ => true
-
+            _ => false
         };
-
     }
 
     private static string GetJsonValueKindName(JsonValueKind kind) => kind switch
     {
-
         JsonValueKind.Object => "object",
         JsonValueKind.Array => "array",
         JsonValueKind.String => "string",
@@ -492,30 +391,23 @@ public static class JsonSchemaHelper
         JsonValueKind.Null => "null",
         JsonValueKind.Undefined => "undefined",
         _ => kind.ToString().ToLowerInvariant()
-
     };
 
     private static bool JsonElementsEqual(JsonElement left, JsonElement right)
     {
-
         if (left.ValueKind != right.ValueKind)
         {
-
             return false;
-
         }
 
         return left.ValueKind switch
         {
-
             JsonValueKind.String => left.GetString() == right.GetString(),
             JsonValueKind.Number => NumbersEqual(left, right),
             JsonValueKind.True or JsonValueKind.False => true,
             JsonValueKind.Null => true,
             _ => left.GetRawText() == right.GetRawText()
-
         };
-
     }
 
     /// <summary>
@@ -526,28 +418,20 @@ public static class JsonSchemaHelper
     /// </summary>
     private static bool NumbersEqual(JsonElement left, JsonElement right)
     {
-
         if (left.TryGetDecimal(out decimal leftValue) && right.TryGetDecimal(out decimal rightValue))
         {
-
             return leftValue == rightValue;
-
         }
 
         return string.Equals(left.GetRawText(), right.GetRawText(), StringComparison.Ordinal);
-
     }
 
     private sealed class SchemaException : Exception
     {
-
         public SchemaException(string message) : base(message)
         {
-
         }
-
     }
-
 }
 
 /// <summary>

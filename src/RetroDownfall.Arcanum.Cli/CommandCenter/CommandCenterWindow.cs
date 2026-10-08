@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using System.Drawing;
+using RetroDownfall.Arcanum.Cli.UX;
 using Terminal.Gui.App;
 using Terminal.Gui.Drawing;
 using Terminal.Gui.ViewBase;
@@ -11,7 +12,7 @@ namespace RetroDownfall.Arcanum.Cli.CommandCenter;
 /// Terminal.Gui view tree for Command Center v2: header, left sessions, transcript, composer, footer.
 /// Absolute frames so Warp SIGWINCH resizes refill the screen.
 /// </summary>
-internal sealed class CommandCenterWindow : Window
+internal sealed class CommandCenterWindow : Window, ICommandCenterSessionActionWindow
 {
     private const int SidebarWidth = 28;
 
@@ -890,6 +891,12 @@ internal sealed class CommandCenterWindow : Window
 
     public void ShowOverlay(CommandCenterOverlayKind kind, IReadOnlyList<string> lines, string title, bool showFilter)
     {
+        // Overlay rows are built from text the Command Center did not write (a Session title, an MCP
+        // server name from a repository's own config), and the terminal acts on control sequences
+        // instead of showing them, so every row and the title are stripped on the way in.
+        lines = [.. lines.Select(TerminalTextSanitizer.SanitizeLine)];
+        title = TerminalTextSanitizer.SanitizeLine(title);
+
         _overlayKind = kind;
         _overlayHumanPrompt = false;
         OverlayAnswer.Visible = false;
@@ -979,6 +986,13 @@ internal sealed class CommandCenterWindow : Window
     {
         ArgumentNullException.ThrowIfNull(question);
         ArgumentNullException.ThrowIfNull(promptId);
+
+        // The question is model text. Line breaks are kept (a question may run to several lines), but
+        // nothing a terminal would act on survives. The prompt id is only displayed here: the id the
+        // answer is sent back with is the request's own, never this copy.
+        question = TerminalTextSanitizer.SanitizeBlock(question);
+        promptId = TerminalTextSanitizer.SanitizeLine(promptId);
+        statusMessage = statusMessage is null ? null : TerminalTextSanitizer.SanitizeLine(statusMessage);
 
         _overlayKind = CommandCenterOverlayKind.HumanPrompt;
         _overlayHumanPrompt = true;

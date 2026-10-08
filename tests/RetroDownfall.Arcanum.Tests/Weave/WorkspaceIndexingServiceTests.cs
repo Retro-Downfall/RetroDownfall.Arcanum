@@ -397,6 +397,36 @@ public sealed partial class WorkspaceIndexingServiceTests : IAsyncLifetime
         Assert.DoesNotContain("node_modules/pkg/index.js".Replace('/', Path.DirectorySeparatorChar), indexedPaths);
     }
 
+    /// <summary>
+    /// The full walk and the watcher intake apply one eligibility rule, so the walk leaves out exactly
+    /// the dot-prefixed files and directories a watcher event for the same paths is refused for.
+    /// </summary>
+    [SkippableFact]
+    public async Task IndexWorkspaceAsync_SkipsDotPrefixedFilesAndDirectories()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        _workspace.WriteFile("src/Foo.cs", "public class Foo {}");
+
+        _workspace.WriteFile(".secrets/token.json", """{"token":"hidden"}""");
+
+        _workspace.WriteFile(".env.json", """{"key":"hidden"}""");
+
+        _workspace.WriteFile("src/.cache/data.json", """{"cached":"hidden"}""");
+
+        FakeWeaveService weave = new();
+
+        WorkspaceIndexingService service = CreateService(weave, out EmbeddingSettings embeddings);
+
+        await service.IndexWorkspaceAsync(_workspace.Root, embeddings, CancellationToken.None);
+
+        Assert.Equal(
+            ["src/Foo.cs".Replace('/', Path.DirectorySeparatorChar)],
+            await GetIndexedRelativePathsAsync());
+
+        Assert.DoesNotContain(weave.EmbeddedTexts, static text => text.Contains("hidden", StringComparison.Ordinal));
+    }
+
     [SkippableFact]
     public async Task IndexWorkspaceAsync_FileDeletedSinceLastIndex_RemovesOrphanedChunks()
     {
@@ -641,6 +671,157 @@ public sealed partial class WorkspaceIndexingServiceTests : IAsyncLifetime
         {
             File.Delete(outsideFile);
         }
+    }
+
+    /// <summary>
+    /// The eligibility rule judges what a file is, not only what it is called: a visibly named link whose
+    /// target sits inside the workspace but behind a dot-prefixed name (a file, or a whole directory) must not
+    /// carry that target's content to the embedding provider under the link's name.
+    /// </summary>
+    [SkippableFact]
+    public async Task IndexWorkspaceAsync_NeverEmbedsAHiddenTargetThroughAVisibleSymlink()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Skip.If(
+            !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux(),
+            "Symlinks are created without elevation on Unix hosts only.");
+
+        const string secret = "credential-reached-through-a-link";
+
+        string hiddenFile = _workspace.WriteFile(".env.json", $$"""{"key":"{{secret}}"}""");
+
+        string hiddenDirectory = Path.GetDirectoryName(_workspace.WriteFile(".secrets/token.json", $$"""{"token":"{{secret}}"}"""))!;
+
+        File.CreateSymbolicLink(Path.Combine(_workspace.Root, "settings.json"), hiddenFile);
+
+        File.CreateSymbolicLink(Path.Combine(_workspace.Root, "shared"), hiddenDirectory);
+
+        _workspace.WriteFile("src/Foo.cs", "public class Foo {}");
+
+        FakeWeaveService weave = new();
+
+        WorkspaceIndexingService service = CreateService(weave, out EmbeddingSettings embeddings);
+
+        Assert.True(await service.IndexWorkspaceAsync(_workspace.Root, embeddings, CancellationToken.None));
+
+        Assert.Equal(
+            ["src/Foo.cs".Replace('/', Path.DirectorySeparatorChar)],
+            await GetIndexedRelativePathsAsync());
+
+        Assert.DoesNotContain(weave.EmbeddedTexts, static text => text.Contains(secret, StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// A file already indexed under a visible name that is replaced by a link to hidden content has its stored
+    /// chunks removed, by the watcher event and by the walk alike, and the hidden content is never embedded.
+    /// </summary>
+    [SkippableFact]
+    public async Task WatcherSymlinkToHiddenTarget_RemovesPreviouslyIndexedContent()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Skip.If(
+            !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux(),
+            "Symlinks are created without elevation on Unix hosts only.");
+
+        const string secret = "credential-swapped-in-through-a-link";
+
+        string visible = _workspace.WriteFile("settings.json", """{"theme":"light"}""");
+
+        string hiddenFile = _workspace.WriteFile(".env.json", $$"""{"key":"{{secret}}"}""");
+
+        FakeWorkspaceFileWatcherFactory watchers = new();
+
+        FakeWeaveService weave = new();
+
+        WorkspaceIndexingService service = CreateService(weave, out EmbeddingSettings embeddings, watcherFactory: watchers);
+
+        Assert.True(await service.IndexWorkspaceAsync(_workspace.Root, embeddings, CancellationToken.None));
+
+        Assert.Equal(["settings.json"], await GetIndexedRelativePathsAsync());
+
+        File.Delete(visible);
+
+        File.CreateSymbolicLink(visible, hiddenFile);
+
+        service.RegisterWorkspace(_workspace.Root);
+
+        watchers.Single.TriggerChanged(visible);
+
+        await ProcessPendingWatcherEventsAsync(service, _workspace.Root, CancellationToken.None);
+
+        Assert.Empty(await GetIndexedRelativePathsAsync());
+
+        Assert.DoesNotContain(weave.EmbeddedTexts, static text => text.Contains(secret, StringComparison.Ordinal));
+
+        // The same swap noticed only by a later full reconciliation leaves nothing behind either.
+        File.Delete(visible);
+
+        File.WriteAllText(visible, """{"theme":"dark"}""");
+
+        Assert.True(await service.IndexWorkspaceAsync(_workspace.Root, embeddings, CancellationToken.None));
+
+        Assert.Equal(["settings.json"], await GetIndexedRelativePathsAsync());
+
+        File.Delete(visible);
+
+        File.CreateSymbolicLink(visible, hiddenFile);
+
+        Assert.True(await service.IndexWorkspaceAsync(_workspace.Root, embeddings, CancellationToken.None));
+
+        Assert.Empty(await GetIndexedRelativePathsAsync());
+
+        Assert.DoesNotContain(weave.EmbeddedTexts, static text => text.Contains(secret, StringComparison.Ordinal));
+
+        await service.DisposeAsync();
+    }
+
+    /// <summary>
+    /// A file with nothing in it to embed (an empty one) has no chunk row to carry a change
+    /// signature, so every reconciliation meets it as changed. It must neither spend the per-checkpoint file
+    /// budget nor count as the progress that earns a follow-up unit: counted, a handful of empty files
+    /// ahead of the real ones would be re-visited by every continuation and the remainder never reached.
+    /// </summary>
+    [SkippableFact]
+    public async Task Budget_is_never_spent_on_files_with_nothing_to_index()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        _workspace.WriteFile("empty-one.txt", string.Empty);
+
+        _workspace.WriteFile("empty-two.txt", string.Empty);
+
+        _workspace.WriteFile("empty-three.txt", string.Empty);
+
+        _workspace.WriteFile("real-one.txt", "one");
+
+        _workspace.WriteFile("real-two.txt", "two");
+
+        FakeWeaveService weave = new();
+
+        WorkspaceIndexingService service = CreateService(weave, out _);
+
+        service.MaxFilesToIndexOverrideForTests = 1;
+
+        Assert.True(service.QueueIndexNow(_workspace.Root).IsSuccess);
+
+        await DrainWorkspaceSchedulerAsync(service);
+
+        Assert.Equal(
+            ["real-one.txt", "real-two.txt"],
+            (await GetIndexedRelativePathsAsync()).OrderBy(static path => path, StringComparer.Ordinal).ToArray());
+
+        // Settled: the files that hold nothing do not keep a follow-up alive.
+        int embeddingCalls = weave.EmbedBatchCallCount;
+
+        await Task.Delay(TimeSpan.FromMilliseconds(500));
+
+        Assert.Equal(embeddingCalls, weave.EmbedBatchCallCount);
+
+        Assert.Equal(new WorkspaceIndexingService.WorkspaceSchedulerSnapshot(0, 0, false), service.GetSchedulerSnapshot());
+
+        await service.DisposeAsync();
     }
 
     [SkippableFact]
@@ -1060,6 +1241,103 @@ public sealed partial class WorkspaceIndexingServiceTests : IAsyncLifetime
         }
     }
 
+    /// <summary>
+    /// A directory moved into an ignored or dot-prefixed location produces one event for the directory
+    /// itself, and the intake drops its new path. Nothing then names the files stored under the old path,
+    /// so the removal of the old path has to take its whole subtree with it rather than wait for the next
+    /// reconciliation. A sibling that merely shares the old name as a prefix must survive.
+    /// </summary>
+    [SkippableFact]
+    public async Task WatcherRename_of_a_directory_into_an_ignored_location_removes_its_stored_subtree()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        _workspace.WriteFile("src/old/a.md", "alpha");
+
+        _workspace.WriteFile("src/old/deep/b.md", "beta");
+
+        _workspace.WriteFile("src/older/c.md", "gamma");
+
+        FakeWorkspaceFileWatcherFactory watchers = new();
+
+        ObservingScopeFactory scopes = new(BuildScopeFactory());
+
+        WorkspaceIndexingService service = CreateService(new FakeWeaveService(), out EmbeddingSettings embeddings, watcherFactory: watchers, scopeFactory: scopes);
+
+        Assert.True(await service.IndexWorkspaceAsync(_workspace.Root, embeddings, CancellationToken.None));
+
+        Assert.Equal(3, (await GetIndexedRelativePathsAsync()).Count);
+
+        string oldDirectory = Path.Combine(_workspace.Root, "src", "old");
+
+        string ignoredParent = _workspace.CreateSubdir(".old");
+
+        string movedDirectory = Path.Combine(ignoredParent, "old");
+
+        Directory.Move(oldDirectory, movedDirectory);
+
+        service.RegisterWorkspace(_workspace.Root);
+
+        watchers.Single.TriggerRenamed(oldDirectory, movedDirectory);
+
+        await ProcessPendingWatcherEventsAsync(service, _workspace.Root, CancellationToken.None);
+
+        // Only the incremental unit ran: the stale rows went with the event, not with a reconciliation.
+        Assert.Equal(2, scopes.ScopeCount);
+
+        Assert.Equal(
+            ["src/older/c.md".Replace('/', Path.DirectorySeparatorChar)],
+            await GetIndexedRelativePathsAsync());
+
+        await service.DisposeAsync();
+    }
+
+    /// <summary>
+    /// A directory moved out of the workspace (to the Trash, or by a rename whose destination no watcher
+    /// covers) produces one Deleted event for the directory and none for the files under it, so the
+    /// intake has to keep that event for the drain to remove the stored subtree.
+    /// </summary>
+    [SkippableFact]
+    public async Task WatcherDelete_of_a_directory_removes_its_stored_subtree()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        _workspace.WriteFile("src/old/a.md", "alpha");
+
+        _workspace.WriteFile("src/old/deep/b.md", "beta");
+
+        _workspace.WriteFile("src/older/c.md", "gamma");
+
+        FakeWorkspaceFileWatcherFactory watchers = new();
+
+        ObservingScopeFactory scopes = new(BuildScopeFactory());
+
+        WorkspaceIndexingService service = CreateService(new FakeWeaveService(), out EmbeddingSettings embeddings, watcherFactory: watchers, scopeFactory: scopes);
+
+        Assert.True(await service.IndexWorkspaceAsync(_workspace.Root, embeddings, CancellationToken.None));
+
+        Assert.Equal(3, (await GetIndexedRelativePathsAsync()).Count);
+
+        string oldDirectory = Path.Combine(_workspace.Root, "src", "old");
+
+        Directory.Delete(oldDirectory, recursive: true);
+
+        service.RegisterWorkspace(_workspace.Root);
+
+        watchers.Single.TriggerDirectoryDeleted(oldDirectory);
+
+        await ProcessPendingWatcherEventsAsync(service, _workspace.Root, CancellationToken.None);
+
+        // Only the incremental unit ran: the stale rows went with the event, not with a reconciliation.
+        Assert.Equal(2, scopes.ScopeCount);
+
+        Assert.Equal(
+            ["src/older/c.md".Replace('/', Path.DirectorySeparatorChar)],
+            await GetIndexedRelativePathsAsync());
+
+        await service.DisposeAsync();
+    }
+
     [SkippableFact]
     public async Task WatcherEvents_IgnoreExcludedFoldersAndIndexLargeFiles()
     {
@@ -1085,7 +1363,175 @@ public sealed partial class WorkspaceIndexingServiceTests : IAsyncLifetime
 
         Assert.True(weave.EmbedBatchCallCount > 0);
 
-        Assert.Contains("large.txt", await GetIndexedRelativePathsAsync());
+        List<string> indexedPaths = await GetIndexedRelativePathsAsync();
+
+        Assert.Contains("large.txt", indexedPaths);
+
+        // The OS separator keeps this from passing vacuously on Windows, where the stored relative path
+        // uses a backslash.
+        Assert.DoesNotContain("node_modules/pkg/index.js".Replace('/', Path.DirectorySeparatorChar), indexedPaths);
+
+        Assert.Equal(0, await CountChunkRowsUnderIgnoredSegmentAsync("node_modules"));
+
+        Assert.DoesNotContain(weave.EmbeddedTexts, static text => text.Contains("console.log('ignored')", StringComparison.Ordinal));
+
+        await service.DisposeAsync();
+    }
+
+    /// <summary>
+    /// The full walk skips Hidden and System entries (every dot-file and dot-directory on Unix), so the
+    /// incremental path must too: a watcher event is a latency hint, never a way to embed content the
+    /// walk would never have sent to the embedding provider.
+    /// </summary>
+    [SkippableFact]
+    public async Task WatcherEvents_DoNotIndexHiddenFilesTheFullWalkSkips()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        const string secret = "hidden-credential-do-not-embed";
+
+        string hiddenDirectoryFile = _workspace.WriteFile(".secrets/token.json", $$"""{"token":"{{secret}}"}""");
+
+        string hiddenLeaf = _workspace.WriteFile(".env.json", $$"""{"key":"{{secret}}"}""");
+
+        string hiddenNestedDirectoryFile = _workspace.WriteFile("src/.cache/nested/data.json", $$"""{"cached":"{{secret}}"}""");
+
+        string visible = _workspace.WriteFile("src/visible.json", """{"visible":true}""");
+
+        FakeWorkspaceFileWatcherFactory watchers = new();
+
+        FakeWeaveService weave = new();
+
+        WorkspaceIndexingService service = CreateService(weave, out _, watcherFactory: watchers);
+
+        service.RegisterWorkspace(_workspace.Root);
+
+        watchers.Single.TriggerCreated(hiddenDirectoryFile);
+
+        watchers.Single.TriggerCreated(hiddenLeaf);
+
+        watchers.Single.TriggerChanged(hiddenLeaf);
+
+        watchers.Single.TriggerCreated(hiddenNestedDirectoryFile);
+
+        await ProcessPendingWatcherEventsAsync(service, _workspace.Root, CancellationToken.None);
+
+        Assert.Empty(await GetIndexedRelativePathsAsync());
+
+        Assert.DoesNotContain(weave.EmbeddedTexts, static text => text.Contains(secret, StringComparison.Ordinal));
+
+        // The same pipeline still indexes an eligible sibling, so the assertions above are not vacuous.
+        watchers.Single.TriggerCreated(visible);
+
+        await ProcessPendingWatcherEventsAsync(service, _workspace.Root, CancellationToken.None);
+
+        Assert.Equal(
+            ["src/visible.json".Replace('/', Path.DirectorySeparatorChar)],
+            await GetIndexedRelativePathsAsync());
+
+        Assert.DoesNotContain(weave.EmbeddedTexts, static text => text.Contains(secret, StringComparison.Ordinal));
+
+        await service.DisposeAsync();
+    }
+
+    /// <summary>
+    /// The attribute half of the rule on the incremental path: a hidden directory and a hidden file whose
+    /// names carry no leading dot are caught only by reading attributes, because the lexical rule cannot see
+    /// them. Windows hides by attribute rather than by name, and macOS carries the same flag (<c>UF_HIDDEN</c>),
+    /// so this runs on both; it skips where the platform cannot keep the attribute (Linux). The seam tests in
+    /// <c>WorkspaceIndexEligibilityTests</c> pin the predicate; this pins that the drain actually consults it.
+    /// </summary>
+    [SkippableFact]
+    public async Task WatcherEvents_DoNotIndexEntriesMarkedHiddenByAttribute()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Skip.IfNot(
+            OperatingSystem.IsWindows() || OperatingSystem.IsMacOS(),
+            "A Hidden attribute that is not a leading dot exists only on Windows and macOS.");
+
+        string hiddenDirectoryFile = _workspace.WriteFile("private/note.md", "hidden-by-attribute directory content");
+
+        string hiddenLeaf = _workspace.WriteFile("draft.md", "hidden-by-attribute file content");
+
+        string visible = _workspace.WriteFile("public.md", "visible content");
+
+        string hiddenDirectory = Path.GetDirectoryName(hiddenDirectoryFile)!;
+
+        File.SetAttributes(hiddenDirectory, File.GetAttributes(hiddenDirectory) | FileAttributes.Hidden);
+
+        File.SetAttributes(hiddenLeaf, File.GetAttributes(hiddenLeaf) | FileAttributes.Hidden);
+
+        Skip.IfNot(
+            (File.GetAttributes(hiddenDirectory) & FileAttributes.Hidden) != 0 && (File.GetAttributes(hiddenLeaf) & FileAttributes.Hidden) != 0,
+            "This filesystem did not keep the Hidden attribute that was set.");
+
+        FakeWorkspaceFileWatcherFactory watchers = new();
+
+        FakeWeaveService weave = new();
+
+        WorkspaceIndexingService service = CreateService(weave, out _, watcherFactory: watchers);
+
+        service.RegisterWorkspace(_workspace.Root);
+
+        watchers.Single.TriggerCreated(hiddenDirectoryFile);
+
+        watchers.Single.TriggerCreated(hiddenLeaf);
+
+        watchers.Single.TriggerCreated(visible);
+
+        await ProcessPendingWatcherEventsAsync(service, _workspace.Root, CancellationToken.None);
+
+        Assert.Equal(["public.md"], await GetIndexedRelativePathsAsync());
+
+        Assert.DoesNotContain(weave.EmbeddedTexts, static text => text.Contains("hidden-by-attribute", StringComparison.Ordinal));
+
+        await service.DisposeAsync();
+    }
+
+    /// <summary>
+    /// The Windows lane of the dot rule: Windows does not hide a dot-named entry, so an entry such as
+    /// <c>.github/workflows</c> carries no Hidden attribute there and only the lexical rule can exclude it,
+    /// from the full walk and from a watcher event alike. Not run on macOS or Linux, where a dot-named entry
+    /// is hidden by the filesystem's own convention as well; the predicate is pinned there without any
+    /// attribute by <c>WorkspaceIndexEligibilityTests</c>.
+    /// </summary>
+    [SkippableFact]
+    public async Task Dot_prefixed_entries_that_Windows_does_not_hide_are_still_never_indexed()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Skip.IfNot(OperatingSystem.IsWindows(), "Windows does not treat a leading dot as hidden; the lane exists to prove the rule does.");
+
+        string workflow = _workspace.WriteFile(".github/workflows/ci.md", "dot-directory-not-hidden-by-windows");
+
+        string dotLeaf = _workspace.WriteFile(".notes.md", "dot-leaf-not-hidden-by-windows");
+
+        _workspace.WriteFile("README.md", "visible readme");
+
+        Assert.Equal(0, (int)(File.GetAttributes(dotLeaf) & FileAttributes.Hidden));
+
+        FakeWorkspaceFileWatcherFactory watchers = new();
+
+        FakeWeaveService weave = new();
+
+        WorkspaceIndexingService service = CreateService(weave, out EmbeddingSettings embeddings, watcherFactory: watchers);
+
+        Assert.True(await service.IndexWorkspaceAsync(_workspace.Root, embeddings, CancellationToken.None));
+
+        Assert.Equal(["README.md"], await GetIndexedRelativePathsAsync());
+
+        service.RegisterWorkspace(_workspace.Root);
+
+        watchers.Single.TriggerCreated(workflow);
+
+        watchers.Single.TriggerChanged(dotLeaf);
+
+        await ProcessPendingWatcherEventsAsync(service, _workspace.Root, CancellationToken.None);
+
+        Assert.Equal(["README.md"], await GetIndexedRelativePathsAsync());
+
+        Assert.DoesNotContain(weave.EmbeddedTexts, static text => text.Contains("not-hidden-by-windows", StringComparison.Ordinal));
 
         await service.DisposeAsync();
     }
@@ -1335,6 +1781,30 @@ public sealed partial class WorkspaceIndexingServiceTests : IAsyncLifetime
         }
 
         return results;
+    }
+
+    private async Task<int> CountChunkRowsUnderIgnoredSegmentAsync(string segment)
+    {
+        DbConnection connection = _db!.Database.GetDbConnection();
+
+        if (connection.State != ConnectionState.Open)
+        {
+            await connection.OpenAsync();
+        }
+
+        await using DbCommand cmd = connection.CreateCommand();
+
+        cmd.CommandText = """SELECT COUNT(*) FROM "workspace_file_chunks" WHERE instr("RelativePath", @segment) > 0;""";
+
+        DbParameter param = cmd.CreateParameter();
+
+        param.ParameterName = "@segment";
+
+        param.Value = segment;
+
+        cmd.Parameters.Add(param);
+
+        return Convert.ToInt32(await cmd.ExecuteScalarAsync());
     }
 
     private async Task<List<string>> GetChunkContentsAsync(string relativePath)
@@ -1659,8 +2129,9 @@ public sealed partial class WorkspaceIndexingServiceTests : IAsyncLifetime
 
         public string WorkspacePath => workspacePath;
 
+        // The platform watcher reports whether an event names a directory; the fake reads it from disk.
         public void TriggerCreated(string path) =>
-            onChange(new WorkspaceFileChange(workspacePath, WorkspaceFileChangeKind.Created, path));
+            onChange(new WorkspaceFileChange(workspacePath, WorkspaceFileChangeKind.Created, path, IsDirectory: Directory.Exists(path)));
 
         public void TriggerChanged(string path) =>
             onChange(new WorkspaceFileChange(workspacePath, WorkspaceFileChangeKind.Changed, path));
@@ -1668,8 +2139,12 @@ public sealed partial class WorkspaceIndexingServiceTests : IAsyncLifetime
         public void TriggerDeleted(string path) =>
             onChange(new WorkspaceFileChange(workspacePath, WorkspaceFileChangeKind.Deleted, path));
 
+        // The directory-name watcher's Deleted event: the disk no longer says what the path was.
+        public void TriggerDirectoryDeleted(string path) =>
+            onChange(new WorkspaceFileChange(workspacePath, WorkspaceFileChangeKind.Deleted, path, IsDirectory: true));
+
         public void TriggerRenamed(string oldPath, string path) =>
-            onChange(new WorkspaceFileChange(workspacePath, WorkspaceFileChangeKind.Renamed, path, oldPath));
+            onChange(new WorkspaceFileChange(workspacePath, WorkspaceFileChangeKind.Renamed, path, oldPath, IsDirectory: Directory.Exists(path)));
 
         public void TriggerError(Exception exception) => onError(exception);
 

@@ -1,16 +1,15 @@
 using RetroDownfall.Arcanum.Api.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence;
+using RetroDownfall.Arcanum.Core.Storage;
 
 namespace RetroDownfall.Arcanum.Tests.Intelligence;
 
 public sealed class ContextMaterializationLedgerTests
 {
-
     [Fact]
 
     public void AttachmentProvenance_IsPublishedOnlyAfterSuccessfulMaterialization()
     {
-
         Guid sessionId = Guid.NewGuid();
 
         Guid attachmentId = Guid.NewGuid();
@@ -64,14 +63,12 @@ public sealed class ContextMaterializationLedgerTests
         Assert.True(AttachmentMemoryGateAmbient.TryResolve(attachmentId, out AttachmentMemoryProvenance resolved));
 
         Assert.Equal(provenance, resolved);
-
     }
 
     [Fact]
 
     public void ExplicitWholeAttachment_SuppressesSemanticChunksFromSameVersion()
     {
-
         Guid sessionId = Guid.NewGuid();
 
         ContextMaterializationLedger ledger = CreateLedger(sessionId);
@@ -101,14 +98,12 @@ public sealed class ContextMaterializationLedgerTests
         Assert.False(semanticEntry.Accepted);
 
         Assert.Equal(ContextMaterializationRejection.ExplicitSourceAlreadyMaterialized, semanticEntry.Rejection);
-
     }
 
     [Fact]
 
     public void IdenticalBytesAndRange_AreInjectedOnlyOnceAcrossSourcePaths()
     {
-
         Guid sessionId = Guid.NewGuid();
 
         ContextMaterializationLedger ledger = CreateLedger(sessionId);
@@ -146,14 +141,12 @@ public sealed class ContextMaterializationLedgerTests
         Assert.True(recorded.Injected);
 
         Assert.Equal(0, recorded.ProviderRound);
-
     }
 
     [Fact]
 
     public void IdenticalCurrentTurnParts_AreAllAcceptedAsExplicitOperatorInput()
     {
-
         Guid sessionId = Guid.NewGuid();
 
         ContextMaterializationLedger ledger = CreateLedger(sessionId);
@@ -181,14 +174,12 @@ public sealed class ContextMaterializationLedgerTests
         Assert.True(second.Accepted);
 
         Assert.Equal(2, ledger.Entries.Count);
-
     }
 
     [Fact]
 
     public void RefreshedCurrentVersion_RemovesStaleSemanticVersion()
     {
-
         Guid sessionId = Guid.NewGuid();
 
         ContextMaterializationLedger ledger = CreateLedger(sessionId);
@@ -234,14 +225,12 @@ public sealed class ContextMaterializationLedgerTests
         Assert.False(staleAfterRefresh.Accepted);
 
         Assert.Equal(ContextMaterializationRejection.StaleVersion, staleAfterRefresh.Rejection);
-
     }
 
     [Fact]
 
     public void ModelRequestedWholeAttachment_RemovesSameVersionSemanticChunks()
     {
-
         Guid sessionId = Guid.NewGuid();
 
         ContextMaterializationLedger ledger = CreateLedger(sessionId);
@@ -263,14 +252,12 @@ public sealed class ContextMaterializationLedgerTests
         Assert.True(attached.Accepted);
 
         Assert.Equal(ContextMaterializationSourceKind.AttachSessionFile, Assert.Single(ledger.Entries).SourceKind);
-
     }
 
     [Fact]
 
     public void ExplicitLiveWorkspaceSource_SuppressesEquivalentWorkspaceRagChunks()
     {
-
         Guid sessionId = Guid.NewGuid();
 
         ContextMaterializationLedger ledger = CreateLedger(sessionId);
@@ -291,14 +278,12 @@ public sealed class ContextMaterializationLedgerTests
         Assert.Equal(
             ContextMaterializationRejection.ExplicitSourceAlreadyMaterialized,
             semantic.Rejection);
-
     }
 
     [Fact]
 
     public void SemanticBounds_LimitChunksAttachmentsBytesAndTokens()
     {
-
         Guid sessionId = Guid.NewGuid();
 
         ContextMaterializationLedger ledger = new(
@@ -338,14 +323,12 @@ public sealed class ContextMaterializationLedgerTests
         Assert.Equal(ContextMaterializationRejection.RetrievedByteLimit, tooManyBytes.Rejection);
 
         Assert.Equal(ContextMaterializationRejection.RetrievedTokenLimit, tooManyTokens.Rejection);
-
     }
 
     [Fact]
 
     public void ContextPressure_DropsLowestPrioritySemanticSourcesBeforeExplicitContent()
     {
-
         Guid sessionId = Guid.NewGuid();
 
         ContextMaterializationLedger ledger = CreateLedger(sessionId);
@@ -396,14 +379,12 @@ public sealed class ContextMaterializationLedgerTests
         Assert.Equal(3, ledger.DroppedWorkspaceRagTokens);
 
         Assert.Equal(ContextMaterializationSourceKind.CurrentTurnAttachment, Assert.Single(ledger.Entries).SourceKind);
-
     }
 
     [Fact]
 
     public void SessionIsolationAndFailedMaterialization_DoNotPolluteLedger()
     {
-
         Guid sessionId = Guid.NewGuid();
 
         ContextMaterializationLedger ledger = CreateLedger(sessionId);
@@ -431,14 +412,12 @@ public sealed class ContextMaterializationLedgerTests
         Assert.Equal(ContextMaterializationRejection.MaterializationFailed, failed.Rejection);
 
         Assert.Empty(ledger.Entries);
-
     }
 
     [Fact]
 
     public void IdenticalSequences_ProduceBufferedStreamingParity()
     {
-
         Guid sessionId = Guid.NewGuid();
 
         ContextMaterializationLedger buffered = CreateLedger(sessionId);
@@ -459,15 +438,12 @@ public sealed class ContextMaterializationLedgerTests
 
         foreach (ContextMaterializationCandidate candidate in sequence)
         {
-
             _ = buffered.Accept(candidate, materialized: true);
 
             _ = streaming.Accept(candidate, materialized: true);
-
         }
 
         Assert.Equal(buffered.Entries, streaming.Entries);
-
     }
 
     /// <summary>
@@ -479,7 +455,6 @@ public sealed class ContextMaterializationLedgerTests
 
     public void RescindContextPressureDrop_UncountsADropThatFreedNothing()
     {
-
         Guid sessionId = Guid.NewGuid();
 
         ContextMaterializationLedger ledger = CreateLedger(sessionId);
@@ -501,7 +476,6 @@ public sealed class ContextMaterializationLedgerTests
         // The entry stays surrendered — it is not in the rendered prompt, so it is not context either,
         // and the cascade has to be able to move past it.
         Assert.Empty(ledger.Entries);
-
     }
 
     /// <summary>
@@ -513,7 +487,6 @@ public sealed class ContextMaterializationLedgerTests
 
     public void CascadeSemanticDrops_SkipsPastAnEntryTheRenderedPromptDoesNotHold()
     {
-
         Guid sessionId = Guid.NewGuid();
 
         ContextMaterializationLedger ledger = CreateLedger(sessionId);
@@ -535,22 +508,18 @@ public sealed class ContextMaterializationLedgerTests
         // rendered prompt matches it; only the attachment chunk actually leaves the payload.
         bool OnDropped(ContextMaterializationEntry removed)
         {
-
             offered.Add(removed.SourceKind);
 
             return removed.SourceKind == ContextMaterializationSourceKind.AttachmentRag;
-
         }
 
         int budgetChecks = 0;
 
         bool IsOverBudget()
         {
-
             budgetChecks++;
 
             return !offered.Contains(ContextMaterializationSourceKind.AttachmentRag);
-
         }
 
         WizardIntelligenceProvider.CascadeSemanticDrops(ledger, OnDropped, IsOverBudget);
@@ -572,7 +541,96 @@ public sealed class ContextMaterializationLedgerTests
         // new information, so an ineffective drop must not trigger one: the entry check, then one
         // re-check after the drop that actually landed.
         Assert.Equal(2, budgetChecks);
+    }
 
+    /// <summary>
+    /// R-008: a turn begun inside another turn's tool call leaves the enclosing turn's attachment state
+    /// in place.
+    /// </summary>
+    /// <remarks>
+    /// A <c>delegate_task</c> child turn begins inside its parent's tool call, where the parent's turn is
+    /// re-established. If beginning the child disposed whatever turn was ambient, the parent's
+    /// per-Session entry would go, and the in-process server — which runs on its own task and finds the
+    /// gate only through that entry — would see no materialized attachment content for the rest of the
+    /// parent's turn, so its <c>scribe_lexicon</c> provenance gate would fail open.
+    /// </remarks>
+    [Fact]
+    public async Task BeginningANestedTurn_LeavesTheEnclosingTurnsSessionStateResolvable()
+    {
+        Guid parentSessionId = Guid.NewGuid();
+
+        Guid attachmentId = Guid.NewGuid();
+
+        ContextMaterializationLedger parentLedger = CreateLedger(parentSessionId);
+
+        ContextMaterializationLedgerAmbient.Turn parent = ContextMaterializationLedgerAmbient.Begin(parentLedger);
+
+        try
+        {
+            ContextMaterializationEntry accepted = parentLedger.Accept(
+                Candidate(
+                    parentSessionId,
+                    ContextMaterializationSourceKind.ExplicitAttachmentReference,
+                    attachmentId.ToString("N"),
+                    versionOrdinal: 1) with
+                {
+                    AttachmentProvenance = new AttachmentMemoryProvenance(
+                        parentSessionId,
+                        attachmentId,
+                        "design-notes",
+                        1,
+                        "sha256-value",
+                        DateTimeOffset.Parse("2026-08-01T12:00:00Z"),
+                        "SessionAttachment",
+                        AttachmentSourceAvailability.Available),
+                },
+                materialized: true);
+
+            Assert.True(accepted.Accepted);
+
+            // The parent's tool call: its turn is re-established, then a child turn begins and ends.
+            ContextMaterializationLedgerAmbient.Enter(parent);
+
+            ContextMaterializationLedgerAmbient.Turn child = ContextMaterializationLedgerAmbient.Begin(
+                new ContextMaterializationLedger(
+                    sessionId: null,
+                    new ContextMaterializationLimits(
+                        MaxRetrievedChunks: 20,
+                        MaxRetrievedAttachments: 8,
+                        MaxRetrievedBytes: 1024,
+                        MaxRetrievedTokens: 256)));
+
+            ContextMaterializationLedgerAmbient.End(child);
+
+            Assert.True(AttachmentMemoryGateAmbient.HasSessionStateForTests(parentSessionId));
+
+            Assert.True(await ResolveOnServerFlowAsync(parentSessionId, attachmentId));
+
+            Assert.Contains(parent.AttachmentMemory.Snapshot(), source => source.AttachmentId == attachmentId);
+        }
+        finally
+        {
+            ContextMaterializationLedgerAmbient.End(parent);
+        }
+
+        Assert.False(AttachmentMemoryGateAmbient.HasSessionStateForTests(parentSessionId));
+    }
+
+    /// <summary>
+    /// Resolves an attachment the way the in-process tool server does: on a task that inherits no
+    /// ambient, with only the Session the request was bound to.
+    /// </summary>
+    private static Task<bool> ResolveOnServerFlowAsync(Guid sessionId, Guid attachmentId)
+    {
+        using (ExecutionContext.SuppressFlow())
+        {
+            return Task.Run(() =>
+            {
+                SessionAttachmentToolAmbient.CurrentSessionId = sessionId;
+
+                return AttachmentMemoryGateAmbient.TryResolve(attachmentId, out _);
+            });
+        }
     }
 
     private static ContextMaterializationLedger CreateLedger(Guid sessionId) =>
@@ -627,5 +685,4 @@ public sealed class ContextMaterializationLedgerTests
             EstimatedTokens: tokens,
             MaterializedBytes: bytes,
             Trust: ContextMaterializationTrust.UntrustedData);
-
 }

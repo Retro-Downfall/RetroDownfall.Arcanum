@@ -29,6 +29,8 @@ public sealed class WorkspaceCheckCapabilityReporter
 
     private readonly TimeSpan _probeTimeout;
 
+    private readonly Func<bool> _mandatoryJailAvailability;
+
     private CacheEntry? _cache;
 
     private RefreshEntry? _refresh;
@@ -42,7 +44,8 @@ public sealed class WorkspaceCheckCapabilityReporter
             TimeProvider.System,
             DefaultFreshFor,
             DefaultAsyncWait,
-            DefaultProbeTimeout)
+            DefaultProbeTimeout,
+            mandatoryJailAvailability: null)
     {
     }
 
@@ -56,7 +59,8 @@ public sealed class WorkspaceCheckCapabilityReporter
         TimeProvider timeProvider,
         TimeSpan freshFor,
         TimeSpan asyncWait,
-        TimeSpan probeTimeout)
+        TimeSpan probeTimeout,
+        Func<bool>? mandatoryJailAvailability)
     {
         ArgumentNullException.ThrowIfNull(settings);
         ArgumentNullException.ThrowIfNull(timeProvider);
@@ -81,6 +85,8 @@ public sealed class WorkspaceCheckCapabilityReporter
         _freshFor = freshFor;
         _asyncWait = asyncWait;
         _probeTimeout = probeTimeout;
+        _mandatoryJailAvailability = mandatoryJailAvailability
+            ?? WorkspaceCheckExecutionPolicy.IsMandatoryJailAvailableForCurrentHost;
     }
 
     public bool IsCurrentlyEligible => GetStatus().IsAvailable;
@@ -357,9 +363,8 @@ public sealed class WorkspaceCheckCapabilityReporter
         WorkspaceCheckSettings check =
             current.ResolveWorkspaceChecks();
         string platform = WorkspaceCheckExecutionPolicy.DetectPlatform();
-        bool jailAvailable =
-            WorkspaceCheckExecutionPolicy
-                .IsMandatoryJailAvailableForCurrentHost();
+        bool jailAvailable = check.Enabled
+            && _mandatoryJailAvailability();
         WorkspaceCheckExecutionStatus platformStatus =
             WorkspaceCheckExecutionPolicy.Resolve(
                 platform,
@@ -369,7 +374,6 @@ public sealed class WorkspaceCheckCapabilityReporter
 
         if (!platformStatus.IsEligible)
         {
-
             return Map(platformStatus);
         }
 
@@ -392,7 +396,6 @@ public sealed class WorkspaceCheckCapabilityReporter
         if (!executableStatus.IsEligible
             || executable.Snapshot is null)
         {
-
             return new WorkspaceCheckCapabilityStatus(
                 false,
                 check.Enabled,
@@ -402,7 +405,6 @@ public sealed class WorkspaceCheckCapabilityReporter
         if (!string.IsNullOrWhiteSpace(workspaceRoot)
             && Directory.Exists(workspaceRoot))
         {
-
             WorkspaceCheckSdkResolution sdk =
                 WorkspaceCheckSdkResolver.Resolve(
                     workspaceRoot,
@@ -410,19 +412,16 @@ public sealed class WorkspaceCheckCapabilityReporter
 
             if (!sdk.Success)
             {
-
                 return new WorkspaceCheckCapabilityStatus(
                     false,
                     true,
                     sdk.Message
                     ?? "The workspace-selected SDK is unavailable or untrusted.");
             }
-
         }
 
         if (WorkspaceCheckLaunchChainPolicy.Capture() is null)
         {
-
             return new WorkspaceCheckCapabilityStatus(
                 false,
                 true,
@@ -435,7 +434,6 @@ public sealed class WorkspaceCheckCapabilityReporter
         if (OperatingSystem.IsMacOS()
             && !MacOsDotNetIpcRoots.AreAvailable())
         {
-
             return new WorkspaceCheckCapabilityStatus(
                 false,
                 true,
@@ -456,18 +454,15 @@ public sealed class WorkspaceCheckCapabilityReporter
         string? requestedWorkspace,
         string? configuredWorkspace)
     {
-
         if (!string.IsNullOrWhiteSpace(requestedWorkspace)
             && Directory.Exists(requestedWorkspace))
         {
-
             return Path.GetFullPath(requestedWorkspace);
         }
 
         if (!string.IsNullOrWhiteSpace(configuredWorkspace)
             && Directory.Exists(configuredWorkspace))
         {
-
             return Path.GetFullPath(configuredWorkspace);
         }
 

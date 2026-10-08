@@ -10,6 +10,7 @@ using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Api.Security;
 using RetroDownfall.Arcanum.Infrastructure.A2A;
+using RetroDownfall.Arcanum.Infrastructure.Data;
 
 namespace RetroDownfall.Arcanum.Api.A2A;
 
@@ -33,38 +34,46 @@ namespace RetroDownfall.Arcanum.Api.A2A;
 [ExcludeFromCodeCoverage] // Reason: thin HTTP glue; behavior covered via A2ASendingCallbackRegistry and A2A callback tests.
 internal static class A2ACallbackEndpoints
 {
+    /// <summary>The callback route's endpoint name, which the Host-header scope recognises it by.</summary>
+    internal const string RouteName = "PostA2ASendingCallback";
+
+    /// <summary>
+    /// Whether the callback route exists for these settings: Conclave and the A2A surface on, and
+    /// push notifications enabled. The one definition the route mapping, the per-call gate and the
+    /// Host-header allow-list (which answers the callback's configured name) all read.
+    /// </summary>
+    internal static bool IsSurfaceEnabled(ArcanumSettings settings)
+    {
+        ConclaveA2ASettings a2a = settings.ResolveA2A();
+
+        return settings.ResolveConclave().Enabled && a2a.Enabled && a2a.PushNotificationsEnabled;
+    }
 
     public static IEndpointRouteBuilder MapA2ACallbacks(
         this IEndpointRouteBuilder app,
         ArcanumSettings startupSettings,
         string? rateLimiterPolicyName)
     {
+        if (!IsSurfaceEnabled(startupSettings))
+        {
+            return app;
+        }
 
         ConclaveA2ASettings a2a = startupSettings.ResolveA2A();
-
-        if (!startupSettings.ResolveConclave().Enabled || !a2a.Enabled || !a2a.PushNotificationsEnabled)
-        {
-
-            return app;
-
-        }
 
         RouteHandlerBuilder route = app.MapPost(
             $"{A2AClientService.ResolveCallbackPath(a2a)}/{{configId}}",
             HandleAsync)
-        .WithName("PostA2ASendingCallback")
+        .WithName(RouteName)
         .WithMetadata(InstallationResetRecoveryHiddenRouteMetadata.Instance)
         .AllowAnonymous();
 
         if (!string.IsNullOrWhiteSpace(rateLimiterPolicyName))
         {
-
             route.RequireRateLimiting(rateLimiterPolicyName);
-
         }
 
         return app;
-
     }
 
     private static async Task<IResult> HandleAsync(
@@ -76,25 +85,17 @@ internal static class A2ACallbackEndpoints
         HttpContext context,
         CancellationToken cancellationToken)
     {
-
-        ConclaveA2ASettings current = settings.CurrentValue.ResolveA2A();
-
-        if (!settings.CurrentValue.ResolveConclave().Enabled
-            || !current.Enabled
-            || !current.PushNotificationsEnabled)
+        if (!IsSurfaceEnabled(settings.CurrentValue))
         {
-
             // Routes are mapped from the boot snapshot but gated per call, like every other Conclave
             // surface: turning the feature off mid-run closes the door immediately.
             return Results.NotFound();
-
         }
 
         string token = context.Request.Headers[A2APushNotificationHeaders.NotificationToken].ToString();
 
         switch (callbacks.TrySignal(configId, token))
         {
-
             case A2ACallbackOutcome.Delivered:
 
                 return Results.Accepted();
@@ -114,9 +115,7 @@ internal static class A2ACallbackEndpoints
                         loggerFactory.CreateLogger(typeof(A2ACallbackEndpoints)),
                         cancellationToken)
                     .ConfigureAwait(false);
-
         }
-
     }
 
     /// <summary>
@@ -126,59 +125,70 @@ internal static class A2ACallbackEndpoints
     /// The cost is recorded as <em>unknown</em> rather than fetched: this process never observed the
     /// remote task, and inventing a figure — or a zero — is exactly what issue #60 removed. The Sending
     /// shows up as unpriced delegated work, which is the honest description of it.
+    /// <para>The production ledger is best-effort and answers most of its own store faults: a lookup it
+    /// cannot complete is "no durable record" (404 here), and a settlement it cannot finish is logged and
+    /// leaves the row open, so a retried callback finds it and settles it then. The arms below are for a
+    /// ledger fault that does escape.</para>
     /// </remarks>
-    private static async Task<IResult> SettleFromLedgerAsync(
+    internal static async Task<IResult> SettleFromLedgerAsync(
         string configId,
         string? token,
         IServiceScopeFactory scopeFactory,
         ILogger logger,
         CancellationToken cancellationToken)
     {
+        await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
+
+        if (scope.ServiceProvider.GetService<IA2ASendingLedger>() is not { } ledger)
+        {
+            return Results.NotFound();
+        }
+
+        A2AOutboundCallback? recorded;
 
         try
         {
-
-            await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
-
-            if (scope.ServiceProvider.GetService<IA2ASendingLedger>() is not { } ledger)
-            {
-
-                return Results.NotFound();
-
-            }
-
-            A2AOutboundCallback? recorded = await ledger
+            recorded = await ledger
                 .FindOutboundCallbackAsync(configId, cancellationToken)
                 .ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException and not GrimoireMaintenanceUnavailableException)
+        {
+            // Nothing has been authenticated yet, so the answer must be the one an unknown config id gets: a
+            // lookup that failed for one id's row and not another's would otherwise tell a stranger which ids
+            // exist. A maintenance window propagates instead, to the same 503 every request gets, which says
+            // nothing about this id.
+            logger.LogWarning(ex, "A2A: could not look up the Sending behind a callback.");
 
-            if (recorded is not { } callback || !A2ACallbackToken.Matches(token, callback.TokenHash))
-            {
+            return Results.NotFound();
+        }
 
-                return Results.NotFound();
+        if (recorded is not { } callback || !A2ACallbackToken.Matches(token, callback.TokenHash))
+        {
+            return Results.NotFound();
+        }
 
-            }
-
+        try
+        {
             await ledger
                 .SettleOutboundAsync(callback.Ledger, A2ARemoteCost.Unknown, cancellationToken)
                 .ConfigureAwait(false);
-
-            logger.LogInformation(
-                "A2A: settled outbound Sending for remote task {TaskId} from a callback that arrived after "
-                + "the process which dispatched it had gone.",
-                callback.TaskId);
-
-            return Results.Accepted();
-
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (Exception ex) when (ex is not OperationCanceledException and not GrimoireMaintenanceUnavailableException)
         {
-
+            // The caller proved the Sending's secret, so it may learn that the ledger could not settle it. A
+            // peer treats 404 as terminal and stops retrying, and this Sending is still owed its settlement;
+            // 503 asks it to come back.
             logger.LogWarning(ex, "A2A: could not settle a Sending from callback config {ConfigId}.", configId);
 
-            return Results.NotFound();
-
+            return Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
         }
 
-    }
+        logger.LogInformation(
+            "A2A: settled outbound Sending for remote task {TaskId} from a callback that arrived after "
+            + "the process which dispatched it had gone.",
+            callback.TaskId);
 
+        return Results.Accepted();
+    }
 }

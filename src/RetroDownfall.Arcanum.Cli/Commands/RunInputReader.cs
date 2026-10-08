@@ -88,6 +88,20 @@ internal sealed class RunInputReader : IRunInputReader
                     diagnostics: []);
             }
 
+            // -p and a structured run are non-interactive by declaration, exactly as RunCommand, the
+            // confirmation prompt and secret input already treat them: a pty-attached wrapper that
+            // omitted the prompt words gets the empty-input refusal, not a line read that never ends.
+            if (CliInvocationContext.Current is { Print: true } or { Json: true })
+            {
+                return Success(
+                    string.Empty,
+                    pipedContent: null,
+                    pipedUtf8Bytes: 0,
+                    inputRedirected: false,
+                    prompted: false,
+                    diagnostics: []);
+            }
+
             _dispatcher.WriteDiagnostic("Prompt:");
 
             string? entered = await activeInput

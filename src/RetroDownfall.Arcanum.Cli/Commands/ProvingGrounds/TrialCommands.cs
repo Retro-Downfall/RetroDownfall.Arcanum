@@ -13,7 +13,6 @@ namespace RetroDownfall.Arcanum.Cli.Commands.ProvingGrounds;
 /// </summary>
 public sealed class TrialCommands(ArcanumApiClient apiClient, IThemePalette themePalette)
 {
-
     /// <summary>
     /// Run a Trial with Inquisitors (POST /api/proving-grounds/trials/run).
     /// </summary>
@@ -34,7 +33,6 @@ public sealed class TrialCommands(ArcanumApiClient apiClient, IThemePalette them
         string[]? var = null,
         CancellationToken cancellationToken = default)
     {
-
         TrialTargetKind? targetKind = target?.Trim().ToLowerInvariant() switch
         {
             "spell" => TrialTargetKind.Spell,
@@ -62,7 +60,6 @@ public sealed class TrialCommands(ArcanumApiClient apiClient, IThemePalette them
 
         foreach (string raw in inquisitor ?? [])
         {
-
             if (!CliArgReader.TryReadInlineOrFile(raw, out string json, out string? readError))
             {
                 CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape(readError!)));
@@ -91,7 +88,6 @@ public sealed class TrialCommands(ArcanumApiClient apiClient, IThemePalette them
             }
 
             inquisitors.Add(parsedInquisitor);
-
         }
 
         if (!CliArgReader.TryParseKeyValuePairs(var, out Dictionary<string, string> variables, out string? varError))
@@ -116,18 +112,16 @@ public sealed class TrialCommands(ArcanumApiClient apiClient, IThemePalette them
         {
             CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
 
-            return 1;
+            return CliFailureExit.ExitCode(result.Error);
         }
 
         WriteTrialResult(result.Value, themePalette);
 
         return result.Value.Passed ? 0 : 1;
-
     }
 
     private static void WriteTrialResult(TrialResult trial, IThemePalette themePalette)
     {
-
         string passedText = trial.Passed ? "\u2713 Passed" : "\u2717 Failed";
 
         Table summary = new();
@@ -165,7 +159,6 @@ public sealed class TrialCommands(ArcanumApiClient apiClient, IThemePalette them
 
         if (trial.Verdicts.Count > 0)
         {
-
             Table verdictsTable = new();
 
             verdictsTable.AddColumn(themePalette.HeadingTableColumn(Markup.Escape("Kind")));
@@ -176,15 +169,12 @@ public sealed class TrialCommands(ArcanumApiClient apiClient, IThemePalette them
 
             foreach (InquisitorVerdict verdict in trial.Verdicts)
             {
-
                 string verdictLabel = verdict.Label is null ? verdict.Kind : $"{verdict.Kind} ({verdict.Label})";
 
                 AddVerdictRow(verdictsTable, themePalette, verdictLabel, verdict.Passed, verdict.Detail);
-
             }
 
             AnsiConsole.Write(verdictsTable);
-
         }
 
         const int outputPreviewChars = 500;
@@ -196,12 +186,10 @@ public sealed class TrialCommands(ArcanumApiClient apiClient, IThemePalette them
         AnsiConsole.MarkupLine(themePalette.MutedMarkup(Markup.Escape("Output:")));
 
         AnsiConsole.WriteLine(outputPreview);
-
     }
 
     private static void AddVerdictRow(Table table, IThemePalette themePalette, string kind, bool passed, string detail)
     {
-
         table.AddRow(
             new Markup(themePalette.TextMarkup(Markup.Escape(kind))),
             new Markup(
@@ -209,7 +197,5 @@ public sealed class TrialCommands(ArcanumApiClient apiClient, IThemePalette them
                     ? themePalette.HighlightMarkup(Markup.Escape("yes"))
                     : themePalette.ErrorMarkup(Markup.Escape("no"))),
             new Markup(themePalette.TextMarkup(Markup.Escape(detail))));
-
     }
-
 }

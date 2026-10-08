@@ -3,21 +3,20 @@ using System.Text;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
-using Microsoft.Extensions.Options;
+using RetroDownfall.Arcanum.Api.Primitives;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.Tower;
-using RetroDownfall.Arcanum.Infrastructure.Repositories;
 using RetroDownfall.Arcanum.Infrastructure.Security;
+using RetroDownfall.Arcanum.Infrastructure.Storage;
 using RetroDownfall.Arcanum.Infrastructure.Workspaces;
 
 namespace RetroDownfall.Arcanum.Api.Tower;
 
 internal static class CodexEndpoints
 {
-
     /// <summary>
     /// A campaign root is frequently an untrusted repository the operator cloned, and a repository can
     /// ship <c>CODEX.md</c> as a symbolic link. Both the read and the write follow that link, so the
@@ -27,11 +26,19 @@ internal static class CodexEndpoints
         ErrorCodes.Codex.PathNotContained,
         "The CODEX.md path resolves outside its campaign or Grimoire directory.");
 
+    /// <summary>
+    /// A write is never made through a <c>CODEX.md</c> that is itself a link, even one whose target is inside
+    /// the root: the write replaces the entry, which would quietly end whatever the link shared.
+    /// </summary>
+    private static readonly Error CodexIsALink = new(
+        ErrorCodes.Workspace.SymbolicLinkEscape,
+        "CODEX.md is a symbolic link or a file with more than one hard link, and is not written through. Delete it (DELETE removes the link, not its target) or write the file it points to.");
+
     public static RouteGroupBuilder MapCodexEndpoints(this RouteGroupBuilder apiGroup)
     {
         apiGroup.MapGet(
             "/campaigns/{id:guid}/codex",
-            async (Guid id, ICampaignRepository repo, IOptionsSnapshot<ArcanumSettings> settings, HttpContext ctx) =>
+            async (Guid id, ICampaignRepository repo, HttpContext ctx) =>
             {
                 string traceId = Activity.Current?.Id ?? ctx.TraceIdentifier;
 
@@ -51,7 +58,6 @@ internal static class CodexEndpoints
                 Result<CodexContentDto> codex = await ReadCodexDtoAsync(
                     campaign.Path,
                     Path.Combine(campaign.Path, "CODEX.md"),
-                    settings,
                     ctx.RequestAborted)
                     .ConfigureAwait(false);
 
@@ -65,7 +71,6 @@ internal static class CodexEndpoints
                 Guid id,
                 CodexPutRequest? body,
                 ICampaignRepository repo,
-                IOptionsSnapshot<ArcanumSettings> settings,
                 HttpContext ctx) =>
             {
                 string traceId = Activity.Current?.Id ?? ctx.TraceIdentifier;
@@ -97,7 +102,6 @@ internal static class CodexEndpoints
                     campaign.Path,
                     codexPath,
                     body.Content,
-                    settings,
                     traceId,
                     ctx.RequestAborted)
                     .ConfigureAwait(false);
@@ -110,7 +114,6 @@ internal static class CodexEndpoints
                 Result<CodexContentDto> codex = await ReadCodexDtoAsync(
                     campaign.Path,
                     codexPath,
-                    settings,
                     ctx.RequestAborted)
                     .ConfigureAwait(false);
 
@@ -123,12 +126,12 @@ internal static class CodexEndpoints
             "/campaigns/{id:guid}/codex",
             async (Guid id, ICampaignRepository repo, HttpContext ctx) =>
             {
+                string traceId = Activity.Current?.Id ?? ctx.TraceIdentifier;
+
                 Campaign? campaign = await repo.GetByIdAsync(id, ctx.RequestAborted).ConfigureAwait(false);
 
                 if (campaign is null)
                 {
-                    string traceId = Activity.Current?.Id ?? ctx.TraceIdentifier;
-
                     return Results.Json(
                         ApiResponse<CodexContentDto>.FromResult(
                             Result<CodexContentDto>.Failure(new Error(ErrorCodes.Campaign.NotFound, "No campaign exists with that identifier.")),
@@ -137,20 +140,13 @@ internal static class CodexEndpoints
                         statusCode: StatusCodes.Status404NotFound);
                 }
 
-                string codexPath = Path.Combine(campaign.Path, "CODEX.md");
-
-                if (File.Exists(codexPath))
-                {
-                    File.Delete(codexPath);
-                }
-
-                return Results.NoContent();
+                return DeleteCodex(campaign.Path, Path.Combine(campaign.Path, "CODEX.md"), traceId);
             })
         .WithName("DeleteCampaignCodex");
 
         apiGroup.MapGet(
             "/codex",
-            async (HttpContext ctx, IOptionsSnapshot<ArcanumSettings> settings) =>
+            async (HttpContext ctx) =>
             {
                 string traceId = Activity.Current?.Id ?? ctx.TraceIdentifier;
 
@@ -159,7 +155,6 @@ internal static class CodexEndpoints
                 Result<CodexContentDto> codex = await ReadCodexDtoAsync(
                     ArcanumPaths.GrimoireDirectory,
                     globalPath,
-                    settings,
                     ctx.RequestAborted)
                     .ConfigureAwait(false);
 
@@ -169,7 +164,7 @@ internal static class CodexEndpoints
 
         apiGroup.MapPut(
             "/codex",
-            async (CodexPutRequest? body, IOptionsSnapshot<ArcanumSettings> settings, HttpContext ctx) =>
+            async (CodexPutRequest? body, HttpContext ctx) =>
             {
                 string traceId = Activity.Current?.Id ?? ctx.TraceIdentifier;
 
@@ -187,7 +182,6 @@ internal static class CodexEndpoints
                     ArcanumPaths.GrimoireDirectory,
                     globalPath,
                     body.Content,
-                    settings,
                     traceId,
                     ctx.RequestAborted)
                     .ConfigureAwait(false);
@@ -200,7 +194,6 @@ internal static class CodexEndpoints
                 Result<CodexContentDto> codex = await ReadCodexDtoAsync(
                     ArcanumPaths.GrimoireDirectory,
                     globalPath,
-                    settings,
                     ctx.RequestAborted)
                     .ConfigureAwait(false);
 
@@ -211,16 +204,14 @@ internal static class CodexEndpoints
 
         apiGroup.MapDelete(
             "/codex",
-            () =>
+            (HttpContext ctx) =>
             {
-                string globalPath = Path.Combine(ArcanumPaths.GrimoireDirectory, "CODEX.md");
+                string traceId = Activity.Current?.Id ?? ctx.TraceIdentifier;
 
-                if (File.Exists(globalPath))
-                {
-                    File.Delete(globalPath);
-                }
-
-                return Results.NoContent();
+                return DeleteCodex(
+                    ArcanumPaths.GrimoireDirectory,
+                    Path.Combine(ArcanumPaths.GrimoireDirectory, "CODEX.md"),
+                    traceId);
             })
         .WithName("DeleteGlobalCodex");
 
@@ -270,7 +261,6 @@ internal static class CodexEndpoints
     internal static async Task<Result<CodexContentDto>> ReadCodexDtoAsync(
         string containmentRoot,
         string path,
-        IOptionsSnapshot<ArcanumSettings> settings,
         CancellationToken cancellationToken)
     {
         string fullPath = Path.GetFullPath(path);
@@ -280,7 +270,7 @@ internal static class CodexEndpoints
             return Result<CodexContentDto>.Failure(CodexPathNotContained);
         }
 
-        long maxBytes = ArcanumSettingClamps.EffectiveCodexMaxSizeBytes(settings.Value);
+        long maxBytes = ArcanumSettingClamps.EffectiveCodexMaxSizeBytes();
 
         string? content = await CodexReader.ReadCodexFileAsync(fullPath, maxBytes, cancellationToken).ConfigureAwait(false);
 
@@ -289,22 +279,64 @@ internal static class CodexEndpoints
         return Result<CodexContentDto>.Success(new CodexContentDto(fullPath, content ?? string.Empty, exists));
     }
 
+    /// <summary>
+    /// Removes the <c>CODEX.md</c> entry itself. A link in the leaf is unlinked, never followed, which is the
+    /// documented behaviour and the one way an operator removes a hostile link through the API; the
+    /// directory the entry lives in must still resolve under <paramref name="containmentRoot"/>, because
+    /// unlinking through a linked directory removes a file somewhere else.
+    /// </summary>
+    internal static IResult DeleteCodex(string containmentRoot, string path, string traceId)
+    {
+        string fullPath = Path.GetFullPath(path);
+
+        string? parent = Path.GetDirectoryName(fullPath);
+
+        if (string.IsNullOrWhiteSpace(parent) || !IsCodexPathContained(containmentRoot, parent))
+        {
+            return CodexFailure(CodexPathNotContained, traceId);
+        }
+
+        try
+        {
+            // File.Delete is a no-op for an absent entry and removes a link without touching its target; the
+            // File.Exists pre-check this replaces answered false for a dangling link and so left it in place.
+            File.Delete(fullPath);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return CodexFailure(
+                new Error(ErrorCodes.Workspace.DeleteFailed, "The CODEX.md could not be removed."),
+                traceId);
+        }
+
+        return Results.NoContent();
+    }
+
     internal static async Task<IResult?> WriteCodexAsync(
         string containmentRoot,
         string path,
-        string content,
-        IOptionsSnapshot<ArcanumSettings> settings,
+        string? content,
         string traceId,
         CancellationToken cancellationToken)
     {
-        // W3.5: use the EFFECTIVE codex cap (min of the codex cap and Workspaces:MaxFileReadSizeBytes)
-        // so the write bound matches the read path — otherwise PUT could accept content the codex
-        // GET / inference read path then refuses.
-        long maxBytes = ArcanumSettingClamps.EffectiveCodexMaxSizeBytes(settings.Value);
+        if (content is null)
+        {
+            // System.Text.Json does not enforce constructor-parameter nullability, so a body of `{}` or
+            // `{"content":null}` deserializes to a request whose content is null.
+            return CodexFailure(
+                new Error(ErrorCodes.Validation.InvalidBody, "Request body must include the CODEX content."),
+                traceId);
+        }
 
-        int contentByteCount = Encoding.UTF8.GetByteCount(content);
+        // W3.5: use the EFFECTIVE codex cap (min of the clamped codex cap and the code-owned
+        // workspace read cap, ArcanumRuntimeDefaults.WorkspaceMaxFileReadSizeBytes) so the write
+        // bound matches the read path — otherwise PUT could accept content the codex GET /
+        // inference read path then refuses. No setting is consulted.
+        long maxBytes = ArcanumSettingClamps.EffectiveCodexMaxSizeBytes();
 
-        if (contentByteCount > maxBytes)
+        byte[] contentBytes = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false).GetBytes(content);
+
+        if (contentBytes.Length > maxBytes)
         {
             return Results.BadRequest(
                 ApiResponse<CodexContentDto>.FromResult(
@@ -315,26 +347,94 @@ internal static class CodexEndpoints
 
         string fullPath = Path.GetFullPath(path);
 
-        string? parent = Path.GetDirectoryName(fullPath);
-
-        if (!string.IsNullOrWhiteSpace(parent))
-        {
-            Directory.CreateDirectory(parent);
-        }
-
+        // Containment first: a directory made before the check, through a linked component, is a directory
+        // made outside the root by a request that was then refused.
         if (!IsCodexPathContained(containmentRoot, fullPath))
         {
-            return Results.Json(
-                ApiResponse<CodexContentDto>.FromResult(
-                    Result<CodexContentDto>.Failure(CodexPathNotContained),
-                    traceId),
-                ArcanumJsonContext.Default.ApiResponseCodexContentDto,
-                statusCode: StatusCodes.Status400BadRequest);
+            return CodexFailure(CodexPathNotContained, traceId);
         }
 
-        await File.WriteAllTextAsync(fullPath, content, cancellationToken).ConfigureAwait(false);
+        string? directory = Path.GetDirectoryName(fullPath);
 
-        return null;
+        if (string.IsNullOrWhiteSpace(directory))
+        {
+            return CodexFailure(CodexPathNotContained, traceId);
+        }
+
+        // A request that is already gone may stop here; once the write begins it runs to the end.
+        cancellationToken.ThrowIfCancellationRequested();
+
+        try
+        {
+            Directory.CreateDirectory(directory);
+
+            // Same-directory temporary file, then an atomic replace. Writing the destination in place on the
+            // request's token truncated it before the first byte and left a half-written codex when the
+            // client went away; the destination is now either the old file or the new one. The replace takes
+            // no token for the same reason: after the first byte is written the work is not the caller's to
+            // abandon.
+            string tempPath = Path.Combine(directory, $".arcanum-{Guid.NewGuid():N}.tmp");
+
+            AtomicReplaceStatus status = await AtomicFile.ReplaceAsync(
+                    fullPath,
+                    tempPath,
+                    async (stream, token) => await stream.WriteAsync(contentBytes, token).ConfigureAwait(false),
+                    CancellationToken.None,
+                    beforeReplace: () => IsCodexPathContained(containmentRoot, fullPath))
+                .ConfigureAwait(false);
+
+            return status switch
+            {
+                AtomicReplaceStatus.Succeeded => null,
+
+                // The replace refuses a destination that is itself a link -- a symbolic link, wherever it
+                // points, or a file with more than one hard link -- because replacing the entry would silently
+                // stop sharing the content the link shared. That is not an escape from the root, so it is not
+                // reported as one.
+                AtomicReplaceStatus.Aborted when IsLinkedCodex(fullPath) => CodexFailure(CodexIsALink, traceId),
+
+                // The gate above refuses a destination that moved outside the root since the check.
+                AtomicReplaceStatus.Aborted => CodexFailure(CodexPathNotContained, traceId),
+
+                _ => CodexFailure(
+                    new Error(ErrorCodes.Workspace.WriteFailed, "The CODEX.md could not be written."),
+                    traceId),
+            };
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return CodexFailure(
+                new Error(ErrorCodes.Workspace.WriteFailed, "The CODEX.md could not be written."),
+                traceId);
+        }
     }
 
+    /// <summary>
+    /// Whether the <c>CODEX.md</c> entry is a symbolic link or a file with more than one hard link, the two
+    /// shapes the atomic replace refuses to write through.
+    /// </summary>
+    private static bool IsLinkedCodex(string path)
+    {
+        try
+        {
+            if (new FileInfo(path).LinkTarget is not null)
+            {
+                return true;
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return false;
+        }
+
+        return FileHandleIdentityInterop.TryGetPathMetadataNoFollow(path, out FileHandleMetadata metadata)
+            && metadata.Kind == FileSystemObjectKind.RegularFile
+            && metadata.HardLinkCount > 1;
+    }
+
+    private static IResult CodexFailure(Error error, string traceId) =>
+        Results.Json(
+            ApiResponse<CodexContentDto>.FromResult(Result<CodexContentDto>.Failure(error), traceId),
+            ArcanumJsonContext.Default.ApiResponseCodexContentDto,
+            statusCode: ArcanumErrorMapper.ResolveStatusCode(error.Code));
 }

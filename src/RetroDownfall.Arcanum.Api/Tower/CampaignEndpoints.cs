@@ -17,12 +17,13 @@ using RetroDownfall.Arcanum.Core.Workspaces;
 using RetroDownfall.Arcanum.Core.Serialization;
 using RetroDownfall.Arcanum.Infrastructure.Intelligence.Spells;
 using RetroDownfall.Arcanum.Infrastructure.Repositories;
+using RetroDownfall.Arcanum.Infrastructure.Security;
+using RetroDownfall.Arcanum.Infrastructure.Workspaces;
 
 namespace RetroDownfall.Arcanum.Api.Tower;
 
 internal static class CampaignEndpoints
 {
-
     public static RouteGroupBuilder MapCampaignEndpoints(this RouteGroupBuilder apiGroup)
     {
         apiGroup.MapGet(
@@ -341,6 +342,8 @@ internal static class CampaignEndpoints
                 Guid id,
                 string? q,
                 string? tag,
+                int? limit,
+                int? offset,
                 ICampaignRepository repo,
                 IPromptRepository promptRepo,
                 HttpContext ctx) =>
@@ -361,8 +364,14 @@ internal static class CampaignEndpoints
 
                 bool hasClientFilters = !string.IsNullOrWhiteSpace(q) || !string.IsNullOrWhiteSpace(tag);
 
+                // A client-side q/tag filter thins one page, so it always reads the first 10,000 rows and its
+                // offsets would not address the underlying sequence; only an unfiltered read pages.
                 ListPageResult<Prompt> page = await promptRepo
-                    .ListAsync(id, ArcanumSettingClamps.ListQueryLimit(10_000), cancellationToken: ctx.RequestAborted)
+                    .ListAsync(
+                        id,
+                        ArcanumSettingClamps.ListQueryLimit(hasClientFilters ? 10_000 : limit ?? 10_000),
+                        hasClientFilters ? 0 : Math.Max(0, offset ?? 0),
+                        ctx.RequestAborted)
                     .ConfigureAwait(false);
 
                 IEnumerable<PromptSummaryDto> filtered = page.Items.Select(PromptMapping.ToSummaryDto);
@@ -474,18 +483,60 @@ internal static class CampaignEndpoints
 
                 string strategy = string.IsNullOrWhiteSpace(request?.Strategy) ? "merge" : request.Strategy.Trim();
 
+                bool replacePrompts = string.Equals(strategy, "replace", StringComparison.OrdinalIgnoreCase);
+
+                // Any other value used to fall through as a merge, so a typo such as "replce" quietly did
+                // the opposite of what the caller asked. Refusing it up front also keeps it ahead of every
+                // read and write below.
+                if (!replacePrompts && !string.Equals(strategy, "merge", StringComparison.OrdinalIgnoreCase))
+                {
+                    return ImportFailed(traceId, "strategy must be 'merge' or 'replace'.");
+                }
+
                 CampaignExportDto? payload = request?.Payload;
 
                 if (payload is null)
                 {
-                    string diskPath = Path.Combine(campaign.Path, ".arcanum", "campaign.json");
+                    string diskPath = Path.GetFullPath(Path.Combine(campaign.Path, ".arcanum", "campaign.json"));
 
-                    if (!File.Exists(diskPath))
+                    // A campaign root is frequently a repository the operator cloned, so neither the file nor
+                    // the .arcanum directory above it is trusted to be what it looks like. The path is
+                    // contained first, which resolves a link standing in for the directory, and the read
+                    // then opens the leaf once without following a link, proves it is an unaliased regular
+                    // file, and stops at the bundle cap. Both refusals look the same to the caller; a file
+                    // that is simply absent is reported as before.
+                    if (!WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(campaign.Path, diskPath, out _))
+                    {
+                        return ImportFailed(traceId, "campaign.json must be a regular file inside the campaign directory.");
+                    }
+
+                    SecureUtf8FileReadResult read = await SecureFileReader
+                        .ReadUtf8TextAsync(diskPath, MaxOnDiskImportBundleBytes, ctx.RequestAborted)
+                        .ConfigureAwait(false);
+
+                    if (read.Status is SecureFileReadStatus.NotFound)
                     {
                         return ImportFailed(traceId, "No import payload and no campaign.json on disk.");
                     }
 
-                    string json = await File.ReadAllTextAsync(diskPath, ctx.RequestAborted).ConfigureAwait(false);
+                    if (read.Status is SecureFileReadStatus.TooLarge)
+                    {
+                        return ImportFailed(
+                            traceId,
+                            $"campaign.json exceeds the {MaxOnDiskImportBundleBytes}-byte limit on an on-disk import bundle.");
+                    }
+
+                    if (read.Status is SecureFileReadStatus.Rejected)
+                    {
+                        return ImportFailed(traceId, "campaign.json must be a regular file inside the campaign directory.");
+                    }
+
+                    if (read.Status is not SecureFileReadStatus.Success || read.Text is null)
+                    {
+                        return ImportFailed(traceId, "Could not read campaign.json.");
+                    }
+
+                    string json = read.Text;
 
                     try
                     {
@@ -524,6 +575,31 @@ internal static class CampaignEndpoints
                     return ImportFailed(traceId, "Import payload must not contain null spell or prompt entries.");
                 }
 
+                // Every prompt entry is checked here too, ahead of any write. A prompt that lacks a name, a
+                // version or a template, or two entries that share a (name, version), used to be discovered
+                // only after the "replace" sweep had deleted the Campaign's prompts, and then reported as a
+                // warning on a 200.
+                HashSet<(string Name, string Version)> promptKeys = new(prompts.Count);
+
+                foreach (PromptExportDto promptExport in prompts)
+                {
+                    Result<PromptExportDto> promptValidity = PromptImportHelper.Validate(promptExport);
+
+                    if (promptValidity.IsFailure)
+                    {
+                        return ImportFailed(
+                            traceId,
+                            $"Prompt '{promptExport.Name}/{promptExport.Version}' is not importable: {promptValidity.Error.Message}");
+                    }
+
+                    if (!promptKeys.Add((promptExport.Name.Trim(), promptExport.Version.Trim())))
+                    {
+                        return ImportFailed(
+                            traceId,
+                            $"Prompt '{promptExport.Name.Trim()}/{promptExport.Version.Trim()}' appears more than once in the bundle.");
+                    }
+                }
+
                 // Parse every embedded spell metadata string up front for the same reason: a bundle
                 // whose spell metadata is unparsable is a bad bundle, and discovering that partway
                 // through would leave the Campaign half-replaced behind a 400.
@@ -555,14 +631,38 @@ internal static class CampaignEndpoints
 
                 var warnings = new List<string>();
 
-                if (string.Equals(strategy, "replace", StringComparison.OrdinalIgnoreCase))
+                // Only the prompt swap is atomic. The settings, the spells and merged prompts are written after
+                // it, each on its own, so once the first write has committed the rest of the import runs on
+                // CancellationToken.None: a caller that disconnected after the swap must not leave the
+                // Campaign's prompts replaced and its settings and spells not.
+                CancellationToken writeToken = ctx.RequestAborted;
+
+                if (replacePrompts)
                 {
-                    foreach (Prompt p in (await promptRepo
-                        .ListAsync(id, ArcanumSettingClamps.ListQueryLimit(10_000), cancellationToken: ctx.RequestAborted)
-                        .ConfigureAwait(false)).Items)
+                    // One transaction deletes every prompt the Campaign holds, however many, and writes the
+                    // bundle's: the previous set survives any failure, and a bundle prompt may reuse the name
+                    // and version of one it replaces. The bundle was validated in full above, so the
+                    // existing-duplicate pre-check the merge path relies on is deliberately not repeated here.
+                    Result<int> replaced = await promptRepo
+                        .ReplaceCampaignPromptsAsync(
+                            id,
+                            [.. prompts.Select(promptExport => PromptImportHelper.BuildPrompt(promptExport, id))],
+                            writeToken)
+                        .ConfigureAwait(false);
+
+                    if (replaced.IsFailure)
                     {
-                        await promptRepo.DeleteAsync(p.Id, ctx.RequestAborted).ConfigureAwait(false);
+                        return Results.Json(
+                            ApiResponse<CampaignImportResultDto>.FromResult(
+                                Result<CampaignImportResultDto>.Failure(replaced.Error),
+                                traceId),
+                            ArcanumJsonContext.Default.ApiResponseCampaignImportResultDto,
+                            statusCode: ArcanumErrorMapper.ResolveStatusCodeDefaultBadRequest(replaced.Error.Code));
                     }
+
+                    promptsImported = replaced.Value;
+
+                    writeToken = CancellationToken.None;
                 }
 
                 if (payload.Campaign.Settings is not null)
@@ -571,7 +671,9 @@ internal static class CampaignEndpoints
 
                     campaign.UpdatedAt = DateTimeOffset.UtcNow;
 
-                    await repo.UpdateAsync(campaign, ctx.RequestAborted).ConfigureAwait(false);
+                    await repo.UpdateAsync(campaign, writeToken).ConfigureAwait(false);
+
+                    writeToken = CancellationToken.None;
                 }
 
                 for (int i = 0; i < spells.Count; i++)
@@ -586,11 +688,13 @@ internal static class CampaignEndpoints
                         campaign.Path,
                         id);
 
-                    Result<SpellSummary> importResult = await spellRepo.ImportAsync(importReq, ctx.RequestAborted).ConfigureAwait(false);
+                    Result<SpellSummary> importResult = await spellRepo.ImportAsync(importReq, writeToken).ConfigureAwait(false);
 
                     if (importResult.IsSuccess)
                     {
                         spellsImported++;
+
+                        writeToken = CancellationToken.None;
                     }
                     else
                     {
@@ -598,15 +702,18 @@ internal static class CampaignEndpoints
                     }
                 }
 
-                foreach (PromptExportDto promptExport in prompts)
+                // The replace strategy already wrote the bundle's prompts above.
+                foreach (PromptExportDto promptExport in replacePrompts ? Array.Empty<PromptExportDto>() : prompts)
                 {
                     Result<PromptSummaryDto> importResult = await PromptImportHelper
-                        .ImportAsync(promptRepo, new PromptImportRequest(promptExport, id), ctx.RequestAborted)
+                        .ImportAsync(promptRepo, new PromptImportRequest(promptExport, id), writeToken)
                         .ConfigureAwait(false);
 
                     if (importResult.IsSuccess)
                     {
                         promptsImported++;
+
+                        writeToken = CancellationToken.None;
                     }
                     else
                     {
@@ -624,6 +731,13 @@ internal static class CampaignEndpoints
 
         return apiGroup;
     }
+
+    /// <summary>
+    /// The largest <c>.arcanum/campaign.json</c> an import will read from disk: the same 16 MiB the import
+    /// route accepts as a request body, so a bundle that could be posted can also be read from the
+    /// campaign directory, and nothing larger is read into memory.
+    /// </summary>
+    private const int MaxOnDiskImportBundleBytes = 16 * 1024 * 1024;
 
     /// <summary>
     /// The one 400 shape <c>POST /api/campaigns/{id}/import</c> answers with when the bundle itself
@@ -656,14 +770,12 @@ internal static class CampaignEndpoints
         ISpellRepository spellRepo,
         HttpContext ctx)
     {
-
         string traceId = Activity.Current?.Id ?? ctx.TraceIdentifier;
 
         ICovenantExportPolicy? policy = ctx.RequestServices.GetService<ICovenantExportPolicy>();
 
         if (policy is null)
         {
-
             return await BuildCampaignExportAsync(
                 id,
                 exclusions: null,
@@ -672,7 +784,6 @@ internal static class CampaignEndpoints
                 spellRepo,
                 ctx,
                 traceId).ConfigureAwait(false);
-
         }
 
         Result<CovenantExportAdmission> admission = await policy
@@ -681,21 +792,18 @@ internal static class CampaignEndpoints
 
         if (admission.IsFailure)
         {
-
             return Results.Json(
                 ApiResponse<CampaignExportDto>.FromResult(
                     Result<CampaignExportDto>.Failure(admission.Error),
                     traceId),
                 ArcanumJsonContext.Default.ApiResponseCampaignExportDto,
                 statusCode: ArcanumErrorMapper.ResolveStatusCodeDefaultBadRequest(admission.Error.Code));
-
         }
 
         ICovenantSnapshotReadLease? owned = admission.Value.ReadLease;
 
         if (owned is null)
         {
-
             return await BuildCampaignExportAsync(
                 id,
                 exclusions: null,
@@ -704,12 +812,10 @@ internal static class CampaignEndpoints
                 spellRepo,
                 ctx,
                 traceId).ConfigureAwait(false);
-
         }
 
         try
         {
-
             Result<CovenantCampaignExportExclusions> exclusions = await policy
                 .InventoryCampaignExclusionsAsync(id, owned, ctx.RequestAborted)
                 .ConfigureAwait(false);
@@ -734,20 +840,14 @@ internal static class CampaignEndpoints
             owned = null;
 
             return response;
-
         }
         finally
         {
-
             if (owned is not null)
             {
-
                 await owned.DisposeAsync().ConfigureAwait(false);
-
             }
-
         }
-
     }
 
     private static async Task<IResult> BuildCampaignExportAsync(
@@ -759,7 +859,6 @@ internal static class CampaignEndpoints
         HttpContext ctx,
         string traceId)
     {
-
         Result<CampaignExportDto> result = await ComposeCampaignExportAsync(
             id,
             exclusions,
@@ -774,7 +873,6 @@ internal static class CampaignEndpoints
                 ApiResponse<CampaignExportDto>.FromResult(result, traceId),
                 ArcanumJsonContext.Default.ApiResponseCampaignExportDto,
                 statusCode: ArcanumErrorMapper.ResolveStatusCodeDefaultBadRequest(result.Error.Code));
-
     }
 
     /// <summary>
@@ -790,20 +888,21 @@ internal static class CampaignEndpoints
         ISpellRepository spellRepo,
         HttpContext ctx)
     {
-
         Campaign? campaign = await repo.GetByIdAsync(id, ctx.RequestAborted).ConfigureAwait(false);
 
         if (campaign is null)
         {
-
             return Result<CampaignExportDto>.Failure(
                 new Error(ErrorCodes.Campaign.NotFound, "No campaign exists with that identifier."));
-
         }
 
         SpellSummary[] summaries = await spellRepo.ListAsync(campaign.Path, ctx.RequestAborted).ConfigureAwait(false);
 
         var exportSpells = new List<CampaignExportSpellDto>();
+
+        // A spell the export lists but cannot carry is named rather than dropped silently, and each carried
+        // spell keeps the scripts its own export left out, so a partial bundle never reads as complete.
+        var omittedSpells = new List<string>();
 
         foreach (SpellSummary summary in summaries)
         {
@@ -818,6 +917,8 @@ internal static class CampaignEndpoints
 
             if (exported is null)
             {
+                omittedSpells.Add(summary.Name);
+
                 continue;
             }
 
@@ -829,7 +930,8 @@ internal static class CampaignEndpoints
                 summary.Name,
                 spellJson,
                 exported.FullContent,
-                exported.Scripts.Select(s => new CampaignExportScriptDto(s.FileName, s.Base64Content)).ToList()));
+                exported.Scripts.Select(s => new CampaignExportScriptDto(s.FileName, s.Base64Content)).ToList(),
+                OmittedScripts: exported.OmittedScripts ?? []));
         }
 
         ListPageResult<Prompt> promptPage = await promptRepo
@@ -842,8 +944,8 @@ internal static class CampaignEndpoints
             CampaignPathPolicy.ToDto(campaign),
             exportSpells,
             promptExports,
-            exclusions));
-
+            exclusions,
+            omittedSpells));
     }
 
     private static IResult MapCampaignError(Error error, string traceId)
@@ -852,12 +954,10 @@ internal static class CampaignEndpoints
 
         if (string.Equals(error.Code, ErrorCodes.Campaign.PathNotAllowed, StringComparison.Ordinal))
         {
-
             return Results.Json(
                 response,
                 ArcanumJsonContext.Default.ApiResponseCampaignDto,
                 statusCode: ArcanumErrorMapper.ResolveStatusCode(error.Code));
-
         }
 
         return Results.Json(
@@ -865,5 +965,4 @@ internal static class CampaignEndpoints
             ArcanumJsonContext.Default.ApiResponseCampaignDto,
             statusCode: ArcanumErrorMapper.ResolveStatusCodeDefaultBadRequest(error.Code));
     }
-
 }

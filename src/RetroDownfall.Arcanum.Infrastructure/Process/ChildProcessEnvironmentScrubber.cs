@@ -5,7 +5,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.ProcessExecution;
 
 internal static class ChildProcessEnvironmentScrubber
 {
-
     /// <param name="operatorDeclaredSecretNames">
     /// The variable names the operator has configured Arcanum's own secrets into — the list
     /// <c>FamiliarSecretEnvironmentNames.Collect</c> builds. The <c>ARCANUM_</c> prefix scrub covers
@@ -17,10 +16,8 @@ internal static class ChildProcessEnvironmentScrubber
         ChildProcessEnvironmentProfile profile,
         IReadOnlyCollection<string>? operatorDeclaredSecretNames = null)
     {
-
         switch (profile)
         {
-
             case ChildProcessEnvironmentProfile.ToolExec:
 
                 RemoveArcanumSecretVariables(startInfo.Environment);
@@ -72,9 +69,7 @@ internal static class ChildProcessEnvironmentScrubber
                 // WorkspaceCheckEnvironmentBuilder already cleared and reconstructed the entire
                 // environment. Do not reintroduce or copy anything from the host here.
                 break;
-
         }
-
     }
 
     internal static IReadOnlyDictionary<string, string>? BuildMcpChildEnvironment(
@@ -83,13 +78,11 @@ internal static class ChildProcessEnvironmentScrubber
         IReadOnlySet<string>? inheritAllowlist = null,
         Func<string, string?>? hostEnvironmentReader = null)
     {
-
         return McpSecurityLimits.ScrubProcessEnvironment(
             source,
             stripUserEnvironment,
             inheritAllowlist,
             hostEnvironmentReader);
-
     }
 
     /// <summary>
@@ -99,23 +92,17 @@ internal static class ChildProcessEnvironmentScrubber
     /// </summary>
     internal static void RemoveArcanumSecretVariables(IDictionary<string, string?> environment)
     {
-
         ArgumentNullException.ThrowIfNull(environment);
 
         string[] keys = environment.Keys.ToArray();
 
         foreach (string key in keys)
         {
-
             if (key.StartsWith("ARCANUM_", StringComparison.OrdinalIgnoreCase))
             {
-
                 environment.Remove(key);
-
             }
-
         }
-
     }
 
     /// <summary>
@@ -134,51 +121,37 @@ internal static class ChildProcessEnvironmentScrubber
         IDictionary<string, string?> environment,
         IReadOnlyCollection<string>? declaredNames)
     {
-
         ArgumentNullException.ThrowIfNull(environment);
 
         if (declaredNames is null || declaredNames.Count == 0)
         {
-
             return;
-
         }
 
         HashSet<string> denied = new(StringComparer.OrdinalIgnoreCase);
 
         foreach (string name in declaredNames)
         {
-
             if (!string.IsNullOrWhiteSpace(name))
             {
-
                 _ = denied.Add(name.Trim());
-
             }
-
         }
 
         if (denied.Count == 0)
         {
-
             return;
-
         }
 
         string[] keys = environment.Keys.ToArray();
 
         foreach (string key in keys)
         {
-
             if (denied.Contains(key))
             {
-
                 environment.Remove(key);
-
             }
-
         }
-
     }
 
     /// <summary>
@@ -193,30 +166,21 @@ internal static class ChildProcessEnvironmentScrubber
     /// </summary>
     internal static void RemoveHijackableEnvironmentVariables(IDictionary<string, string?> environment)
     {
-
         ArgumentNullException.ThrowIfNull(environment);
 
         string[] keys = environment.Keys.ToArray();
 
         foreach (string key in keys)
         {
-
             if (key.Equals("PATH", StringComparison.OrdinalIgnoreCase))
             {
-
                 continue;
-
             }
 
             if (McpSecurityLimits.IsBlockedEnvironmentVariable(key))
             {
-
                 environment.Remove(key);
-
             }
-
         }
-
     }
-
 }

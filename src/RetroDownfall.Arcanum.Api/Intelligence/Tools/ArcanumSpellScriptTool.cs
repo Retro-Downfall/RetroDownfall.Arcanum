@@ -42,7 +42,7 @@ public sealed class ArcanumSpellScriptTool : AIFunction
           "type": "object",
           "properties": {
             "script_name": { "type": "string", "description": "File name only of a script under the active spell or resonant dependency scripts/ folder (e.g. analyze.py)." },
-            "arguments": { "type": "string", "description": "Optional extra arguments for the script, space-separated; use quotes for tokens containing spaces." }
+            "arguments": { "type": "string", "description": "Optional extra arguments for the script, space-separated. Double quote characters group a token that contains spaces and are not passed to the script; there is no escape for a literal double quote." }
           },
           "required": ["script_name"],
           "additionalProperties": false
@@ -249,15 +249,22 @@ public sealed class ArcanumSpellScriptTool : AIFunction
 
         try
         {
-
             ResolveLinkTargetFaultForTests?.Invoke(candidate);
 
             string? resolvedScript = File.ResolveLinkTarget(candidate, returnFinalTarget: true)?.FullName;
 
             if (!string.IsNullOrEmpty(resolvedScript))
             {
-
                 candidate = Path.GetFullPath(resolvedScript);
+
+                // The interpreter is derived from the file that will actually run, so a link whose own
+                // name is allowed but whose target is not must be refused here, not rebuilt below.
+                string resolvedExtension = Path.GetExtension(candidate);
+
+                if (!IsAllowedScriptExtension(resolvedExtension))
+                {
+                    return $"run_spell_script: unsupported script type '{resolvedExtension}'. Allowed extensions: .py, .js, .sh, .ps1.";
+                }
 
                 // Rebuild so argv carries the realpath Seatbelt/Landlock will match.
                 psi = BuildProcessStartInfo(
@@ -272,9 +279,7 @@ public sealed class ArcanumSpellScriptTool : AIFunction
                                        ?? scriptsRootFull;
 
                 psi.WorkingDirectory = Path.GetFullPath(resolvedRoot);
-
             }
-
         }
         // Matches the exception set WorkspacePathPolicy.TryResolveFinalSymlinkTarget already treats as a
         // fail-closed resolution failure one call earlier (a genuine ELOOP cycle, a permission failure,
@@ -284,39 +289,33 @@ public sealed class ArcanumSpellScriptTool : AIFunction
         catch (Exception ex)
             when (ex is IOException or UnauthorizedAccessException or ArgumentException or PathTooLongException or NotSupportedException)
         {
-
             _logger?.LogWarning(
                 ex,
                 "run_spell_script: could not resolve the real path for {ScriptName}.",
                 scriptName);
 
             return "run_spell_script: could not resolve the script's real path; request rejected.";
+        }
+        // BuildProcessStartInfo throws for an extension with no interpreter. The allow-list checks above
+        // make that unreachable; if one ever slips past them the call is refused, never faulted.
+        catch (InvalidOperationException ex)
+        {
+            _logger?.LogWarning(
+                ex,
+                "run_spell_script: no interpreter for {ScriptName}.",
+                scriptName);
 
+            return "run_spell_script: unsupported script type; request rejected.";
         }
 
-        try
+        if (!File.Exists(candidate))
         {
-
-            if (!File.Exists(candidate))
-            {
-
-                return $"run_spell_script: script not found: '{scriptName}'.";
-
-            }
-
-            if (!WorkspacePathPolicy.RevalidatePathBeforeIo(scriptsRootFull, candidate))
-            {
-
-                return "run_spell_script: resolved path leaves the spell scripts directory; request rejected.";
-
-            }
-
+            return $"run_spell_script: script not found: '{scriptName}'.";
         }
-        catch (OperationCanceledException)
+
+        if (!WorkspacePathPolicy.RevalidatePathBeforeIo(scriptsRootFull, candidate))
         {
-
-            return "run_spell_script: canceled before start completed.";
-
+            return "run_spell_script: resolved path leaves the spell scripts directory; request rejected.";
         }
 
         ResourceLimits? resourceLimits = _sanctumGuard is null
@@ -361,7 +360,6 @@ public sealed class ArcanumSpellScriptTool : AIFunction
 
         switch (runResult.Outcome)
         {
-
             case CappedChildProcessOutcome.FilesystemSandboxUnavailable:
 
             case CappedChildProcessOutcome.FilesystemSandboxDeniedByWindowsSanctum:
@@ -376,6 +374,14 @@ public sealed class ArcanumSpellScriptTool : AIFunction
                     runResult.ResourceLimitApplyError);
 
                 return "run_spell_script: the invocation was blocked because OS-level resource limits could not be applied.";
+
+            case CappedChildProcessOutcome.MemoryMonitorStopped:
+
+                _logger?.LogError(
+                    runResult.FaultException,
+                    "run_spell_script: the memory monitor stopped while the script was running; the process tree was killed.");
+
+                return ChildProcessMemoryMonitorMessages.Describe("run_spell_script");
 
             case CappedChildProcessOutcome.ResourceLimitExceeded when _sanctumGuard is not null:
 
@@ -428,7 +434,6 @@ public sealed class ArcanumSpellScriptTool : AIFunction
             default:
 
                 return "run_spell_script: failed to start the script process.";
-
         }
 
         long perStreamCap = runResult.PerStreamCapBytes;
@@ -441,9 +446,7 @@ public sealed class ArcanumSpellScriptTool : AIFunction
 
         if (runResult.Stdout.Truncated)
         {
-
             text.Append($"[truncated: exceeded {perStreamCap} bytes]").Append('\n');
-
         }
 
         text.Append("--- stderr ---").Append('\n');
@@ -452,9 +455,7 @@ public sealed class ArcanumSpellScriptTool : AIFunction
 
         if (runResult.Stderr.Truncated)
         {
-
             text.Append($"[truncated: exceeded {perStreamCap} bytes]").Append('\n');
-
         }
 
         text.Append("--- exit code ---\n");
@@ -529,9 +530,7 @@ public sealed class ArcanumSpellScriptTool : AIFunction
 
             if (!OperatingSystem.IsWindows())
             {
-
                 psi.ArgumentList.Add("python3");
-
             }
 
             psi.ArgumentList.Add(scriptFullPath);
@@ -544,9 +543,7 @@ public sealed class ArcanumSpellScriptTool : AIFunction
 
             if (!OperatingSystem.IsWindows())
             {
-
                 psi.ArgumentList.Add("node");
-
             }
 
             psi.ArgumentList.Add(scriptFullPath);

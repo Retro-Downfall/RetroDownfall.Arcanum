@@ -110,9 +110,255 @@ public sealed class SagaCommandTests
 
         Assert.Contains($"sessionId={sessionId:D}", query, StringComparison.Ordinal);
 
-        Assert.Contains("limit=10", query, StringComparison.Ordinal);
+        // One row beyond the requested ten, so the listing can tell a full page from a prefix.
+        Assert.Contains("limit=11", query, StringComparison.Ordinal);
 
         Assert.Contains("offset=5", query, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The host returns a bare array with no page marker, so the listing asks for one row beyond what it
+    /// shows: an extra row is the host's proof that the page was a prefix, and the notice names the
+    /// offset that continues it.
+    /// </summary>
+    [Fact]
+    public void List_reports_when_a_prefix_was_shown()
+    {
+        RecordingHandler handler = new(request =>
+        {
+            int requested = int.Parse(
+                System.Web.HttpUtility.ParseQueryString(request.RequestUri!.Query)["limit"]!,
+                System.Globalization.CultureInfo.InvariantCulture);
+
+            SagaMemoryDto[] rows = Enumerable
+                .Range(1, Math.Min(requested, 5))
+                .Select(static index => new SagaMemoryDto($"mem-{index:D4}", $"payload{index}", DateTimeOffset.UnixEpoch, null, null, null))
+                .ToArray();
+
+            return CreateResponse(
+                new ApiResponse<SagaMemoryDto[]>(rows, true, null),
+                ArcanumJsonContext.Default.ApiResponseSagaMemoryDtoArray);
+        });
+
+        CliTestResult result = RunCommand(handler, ["saga", "list", "--limit", "3"]);
+
+        Assert.Equal(0, result.ExitCode);
+
+        HttpRequestMessage request = Assert.Single(handler.Requests);
+
+        Assert.Contains("limit=4", request.RequestUri!.Query, StringComparison.Ordinal);
+
+        Assert.Contains("payload3", result.Output, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("payload4", result.Output, StringComparison.Ordinal);
+
+        Assert.Contains("--offset 3", result.Error, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void List_says_nothing_when_the_page_was_the_whole_listing()
+    {
+        RecordingHandler handler = new(_ => CreateResponse(
+            new ApiResponse<SagaMemoryDto[]>(
+                [new SagaMemoryDto("mem-0001", "payload1", DateTimeOffset.UnixEpoch, null, null, null)],
+                true,
+                null),
+            ArcanumJsonContext.Default.ApiResponseSagaMemoryDtoArray));
+
+        CliTestResult result = RunCommand(handler, ["saga", "list", "--limit", "3"]);
+
+        Assert.Equal(0, result.ExitCode);
+
+        Assert.DoesNotContain("--offset", result.Error, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Without <c>--limit</c> the listing is every memory, as it is for every other list: the host bounds
+    /// each request and returns a bare array, so the listing reads pages until one is short.
+    /// </summary>
+    [Fact]
+    public void List_without_a_limit_follows_the_host_to_the_last_memory()
+    {
+        List<string> queries = [];
+
+        RecordingHandler handler = new(request =>
+        {
+            System.Collections.Specialized.NameValueCollection query = System.Web.HttpUtility.ParseQueryString(request.RequestUri!.Query);
+
+            queries.Add(request.RequestUri.Query);
+
+            int limit = int.Parse(query["limit"]!, System.Globalization.CultureInfo.InvariantCulture);
+
+            int offset = int.Parse(query["offset"]!, System.Globalization.CultureInfo.InvariantCulture);
+
+            SagaMemoryDto[] rows = Enumerable
+                .Range(offset + 1, Math.Max(0, Math.Min(limit, 250 - offset)))
+                .Select(static index => new SagaMemoryDto($"mem-{index:D4}", $"payload{index}", DateTimeOffset.UnixEpoch, null, null, null))
+                .ToArray();
+
+            return CreateResponse(
+                new ApiResponse<SagaMemoryDto[]>(rows, true, null),
+                ArcanumJsonContext.Default.ApiResponseSagaMemoryDtoArray);
+        });
+
+        CliTestResult result = RunCommand(handler, ["saga", "list"]);
+
+        Assert.Equal(0, result.ExitCode);
+
+        Assert.Equal(3, queries.Count);
+
+        Assert.Contains("offset=100", queries[1], StringComparison.Ordinal);
+
+        Assert.Contains("offset=200", queries[2], StringComparison.Ordinal);
+
+        Assert.Contains("payload1 ", result.Output + " ", StringComparison.Ordinal);
+
+        Assert.Contains("payload250", result.Output, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("--offset", result.Error, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// A host that returns the same rows whatever the offset would be followed for ever; it is refused
+    /// with the shared no-progress fault, and no partial listing is printed.
+    /// </summary>
+    [Fact]
+    public void List_without_a_limit_refuses_a_host_that_ignores_the_offset()
+    {
+        int requests = 0;
+
+        RecordingHandler handler = new(_ =>
+        {
+            requests++;
+
+            if (requests > 12)
+            {
+                return new HttpResponseMessage(HttpStatusCode.InternalServerError);
+            }
+
+            SagaMemoryDto[] rows = Enumerable
+                .Range(1, 100)
+                .Select(static index => new SagaMemoryDto($"mem-{index:D4}", $"payload{index}", DateTimeOffset.UnixEpoch, null, null, null))
+                .ToArray();
+
+            return CreateResponse(
+                new ApiResponse<SagaMemoryDto[]>(rows, true, null),
+                ArcanumJsonContext.Default.ApiResponseSagaMemoryDtoArray);
+        });
+
+        CliTestResult result = RunCommand(handler, ["saga", "list"]);
+
+        Assert.Equal(1, result.ExitCode);
+
+        Assert.Equal(2, requests);
+
+        Assert.Contains("Api.PaginationNoProgress", result.Error, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("payload1", result.Output, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// <c>--offset</c> alone starts the listing at that row and still follows it to its end.
+    /// </summary>
+    [Fact]
+    public void List_without_a_limit_starts_at_the_offset_it_was_given()
+    {
+        List<string> queries = [];
+
+        RecordingHandler handler = new(request =>
+        {
+            queries.Add(request.RequestUri!.Query);
+
+            return CreateResponse(
+                new ApiResponse<SagaMemoryDto[]>(
+                    [new SagaMemoryDto("mem-0051", "payload51", DateTimeOffset.UnixEpoch, null, null, null)],
+                    true,
+                    null),
+                ArcanumJsonContext.Default.ApiResponseSagaMemoryDtoArray);
+        });
+
+        CliTestResult result = RunCommand(handler, ["saga", "list", "--offset", "50"]);
+
+        Assert.Equal(0, result.ExitCode);
+
+        string only = Assert.Single(queries);
+
+        Assert.Contains("offset=50", only, StringComparison.Ordinal);
+
+        Assert.Contains("limit=100", only, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// A fully populated row has a 32-character identifier, a 15-character state and four more columns, and
+    /// the harness renders at 80 columns. The identifier and the state stay whole and the content stays
+    /// readable beside them; the columns that cannot fit are left out and a stderr line names them, instead
+    /// of every column being squeezed to a few characters under truncated headings.
+    /// </summary>
+    [Fact]
+    public void List_stays_readable_at_80_columns_with_a_fully_populated_row()
+    {
+        const string FullId = "0a1b2c3d4e5f60718293a4b5c6d7e8f9";
+
+        SagaMemoryDto memory = new(
+            FullId,
+            "The operator prefers dark mode in every editor and terminal they use daily.",
+            new DateTimeOffset(2026, 7, 2, 12, 0, 0, TimeSpan.Zero),
+            Guid.Parse("66666666-6666-4666-8666-666666666666"),
+            null,
+            "extraction",
+            null,
+            SagaMemoryScopeKind.Campaign,
+            Guid.Parse("77777777-7777-4777-8777-777777777777"),
+            new DateTimeOffset(2026, 7, 2, 12, 0, 0, TimeSpan.Zero),
+            new DateTimeOffset(2026, 7, 2, 12, 0, 0, TimeSpan.Zero));
+
+        RecordingHandler handler = new(_ => CreateResponse(
+            new ApiResponse<SagaMemoryDto[]>([memory], true, null),
+            ArcanumJsonContext.Default.ApiResponseSagaMemoryDtoArray));
+
+        CliTestResult result = RunCommand(handler, ["saga", "list"]);
+
+        Assert.Equal(0, result.ExitCode);
+
+        string[] lines = result.Output.ReplaceLineEndings("\n").Split('\n');
+
+        Assert.Single(lines, line => line.Contains(FullId, StringComparison.Ordinal));
+
+        Assert.Equal("retired, pinned", StateCell(lines, FullId));
+
+        Assert.DoesNotContain("…", result.Output, StringComparison.Ordinal);
+
+        Assert.All(lines, line => Assert.True(line.Length <= 80, $"A line of {line.Length} columns overflows the 80-column terminal: {line}"));
+
+        foreach (string word in new[] { "operator", "prefers", "editor", "terminal", "daily" })
+        {
+            Assert.Contains(word, result.Output, StringComparison.Ordinal);
+        }
+
+        Assert.Contains("Not shown at 80 columns: Source, Session, Created, Scope.", result.Error, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The listing is where an operator reads the identifier to hand to <c>saga delete</c>, so it
+    /// prints the whole identifier rather than a fragment no verb accepts.
+    /// </summary>
+    [Fact]
+    public void List_prints_the_full_memory_identifier()
+    {
+        const string FullId = "0a1b2c3d4e5f60718293a4b5c6d7e8f9";
+
+        RecordingHandler handler = new(_ => CreateResponse(
+            new ApiResponse<SagaMemoryDto[]>(
+                [new SagaMemoryDto(FullId, "payload1", DateTimeOffset.UnixEpoch, null, null, null)],
+                true,
+                null),
+            ArcanumJsonContext.Default.ApiResponseSagaMemoryDtoArray));
+
+        CliTestResult result = RunCommand(handler, ["saga", "list"]);
+
+        Assert.Equal(0, result.ExitCode);
+
+        Assert.Contains(FullId, result.Output, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -285,6 +531,28 @@ public sealed class SagaCommandTests
 
     private static byte[] ReadRequestBody(HttpRequestMessage request) =>
         request.Content!.ReadAsByteArrayAsync().GetAwaiter().GetResult();
+
+    /// <summary>
+    /// A Saga memory is written by extraction from model output, and Markup escaping does not remove the
+    /// control sequences a terminal acts on, so the table strips them.
+    /// </summary>
+    [Fact]
+    public void Saga_divine_strips_terminal_controls_from_memory_content()
+    {
+        SagaMemoryDto memory = new("mem-1", "ok\u001b]52;c;QUFBQQ==\u0007title\u001b[2J\u009b", DateTimeOffset.UtcNow, null, null, "extraction");
+
+        RecordingHandler handler = new(_ => CreateResponse(
+            new ApiResponse<SagaSearchResult>(new SagaSearchResult([memory], [0.5f]), true, null),
+            ArcanumJsonContext.Default.ApiResponseSagaSearchResult));
+
+        CliTestResult result = RunCommand(handler, ["saga", "divine", "hello"]);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Contains("oktitle", result.Output, StringComparison.Ordinal);
+        Assert.DoesNotContain('\u001b', result.Output);
+        Assert.DoesNotContain('\u0007', result.Output);
+        Assert.DoesNotContain('\u009b', result.Output);
+    }
 
     private static CliTestResult RunCommand(RecordingHandler handler, string[] args)
     {

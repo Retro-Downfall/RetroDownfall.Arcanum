@@ -9,7 +9,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.Security;
 
 public sealed class WardGate : IWard
 {
-
     private const string TimeoutReason = "The ward held until timeout — action was not allowed";
 
     private const string CapacityReason = "Maximum active wards reached — action was not allowed";
@@ -72,7 +71,6 @@ public sealed class WardGate : IWard
 
         if (!_activeWards.TryEnter(maxActiveWards, out IDisposable? wardLease))
         {
-
             // Denied before any resource beyond the capacity probe itself was allocated for
             // this call: no CancellationTokenSource has been minted yet (it is allocated below,
             // only once admission succeeds), and the caller's JsonDocument is released here
@@ -84,7 +82,6 @@ public sealed class WardGate : IWard
                 CapacityReason,
                 _timeProvider.GetUtcNow(),
                 WardResolutionOrigin.AutoDenied);
-
         }
 
         var entryCts = new CancellationTokenSource();
@@ -101,7 +98,6 @@ public sealed class WardGate : IWard
 
         if (!_pending.TryAdd(wardId, entry))
         {
-
             wardLease!.Dispose();
 
             DisposeEntry(entry);
@@ -109,7 +105,6 @@ public sealed class WardGate : IWard
             entryCts.Dispose();
 
             throw new InvalidOperationException($"A ward with id '{wardId}' is already active.");
-
         }
 
         await using CancellationTokenRegistration callerRegistration = cancellationToken.Register(() =>
@@ -150,14 +145,11 @@ public sealed class WardGate : IWard
 
         lock (_resolutionGate)
         {
-
             if (!_pending.TryRemove(wardId, out entry!))
             {
-
                 return _resolved.ContainsKey(wardId)
                     ? ResolveStatus.AlreadyResolved
                     : ResolveStatus.NotFound;
-
             }
 
             resolution = new WardResolution(
@@ -167,7 +159,6 @@ public sealed class WardGate : IWard
                 WardResolutionOrigin.Human);
 
             _resolved[wardId] = resolution;
-
         }
 
         entry.CapacityLease.Dispose();
@@ -200,25 +191,20 @@ public sealed class WardGate : IWard
 
         lock (_resolutionGate)
         {
-
             // A live ward already has a waiter that owns the outcome; overwriting its tombstone here
             // would strand that waiter. Fail closed instead of racing the interactive path.
             if (_pending.ContainsKey(wardId))
             {
-
                 return new WardResolution(
                     false,
                     ContendedAutomaticResolutionReason,
                     _timeProvider.GetUtcNow(),
                     WardResolutionOrigin.AutoDenied);
-
             }
 
             if (_resolved.TryGetValue(wardId, out WardResolution? existing))
             {
-
                 return existing;
-
             }
 
             WardResolution resolution = new(allowed, reason, _timeProvider.GetUtcNow(), origin);
@@ -226,7 +212,6 @@ public sealed class WardGate : IWard
             _resolved[wardId] = resolution;
 
             return resolution;
-
         }
     }
 
@@ -247,18 +232,13 @@ public sealed class WardGate : IWard
 
     private static void TryCancelEntry(CancellationTokenSource cts)
     {
-
         try
         {
-
             cts.Cancel();
-
         }
         catch (ObjectDisposedException)
         {
-
         }
-
     }
 
     // Dispose the pooled native memory behind WardEntry.Arguments when the
@@ -268,9 +248,7 @@ public sealed class WardGate : IWard
     // null (ward placed without a payload), so guard the disposal.
     private static void DisposeEntry(WardEntry entry)
     {
-
         entry.Arguments?.Dispose();
-
     }
 
     private async Task RunTimeoutAsync(string wardId, TimeSpan timeout, CancellationToken cancellationToken)
@@ -297,7 +275,6 @@ public sealed class WardGate : IWard
 
         lock (_resolutionGate)
         {
-
             if (!_pending.TryRemove(wardId, out removed!))
             {
                 return false;
@@ -310,7 +287,6 @@ public sealed class WardGate : IWard
                 WardResolutionOrigin.TimedOut);
 
             _resolved[wardId] = resolution;
-
         }
 
         removed.CapacityLease.Dispose();
@@ -349,5 +325,4 @@ public sealed class WardGate : IWard
         string? SessionId,
         DateTimeOffset PlacedAt,
         DateTimeOffset ExpiresAt);
-
 }

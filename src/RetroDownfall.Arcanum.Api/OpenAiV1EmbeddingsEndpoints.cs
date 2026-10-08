@@ -27,7 +27,6 @@ namespace RetroDownfall.Arcanum.Api;
 /// </summary>
 internal static partial class OpenAiV1Endpoints
 {
-
     internal static void MapOpenAiV1Embeddings(this RouteGroupBuilder v1)
     {
         _ = v1.MapPost("/embeddings", HandleEmbeddingsAsync)
@@ -47,7 +46,6 @@ internal static partial class OpenAiV1Endpoints
         ILoggerFactory loggerFactory,
         CancellationToken cancellationToken)
     {
-
         ArcanumSettings arc = settings.Value;
 
         EmbeddingSettings embeddings = arc.ResolveEmbeddings();
@@ -65,8 +63,7 @@ internal static partial class OpenAiV1Endpoints
         // where it landed before: only an actual non-JSON body is a 415.
         if (httpContext.Features.Get<IHttpRequestBodyDetectionFeature>()?.CanHaveBody ?? true)
         {
-
-            if (!httpContext.Request.HasJsonContentType())
+            if (!ApiRequestJson.HasReadableJsonContentType(httpContext.Request))
             {
                 return CreateUnsupportedMediaTypeErrorResult();
             }
@@ -90,27 +87,20 @@ internal static partial class OpenAiV1Endpoints
                     param: null,
                     statusCode: StatusCodes.Status400BadRequest);
             }
-            catch (InvalidOperationException)
-            {
-                return CreateUnsupportedMediaTypeErrorResult();
-            }
             catch (BadHttpRequestException exception)
             {
                 return CreateRequestBodyReadErrorResult(exception.StatusCode);
             }
-
         }
 
         if (body is null || body.Input is null)
         {
-
             return JsonError(
                 "Missing required parameter: 'input'.",
                 "invalid_request_error",
                 "missing_required_parameter",
                 "input",
                 StatusCodes.Status400BadRequest);
-
         }
 
         string encodingFormat = string.IsNullOrWhiteSpace(body.EncodingFormat)
@@ -119,42 +109,36 @@ internal static partial class OpenAiV1Endpoints
 
         if (encodingFormat is not ("float" or "base64"))
         {
-
             return JsonError(
                 $"'encoding_format' must be 'float' or 'base64' (got '{body.EncodingFormat}').",
                 "invalid_request_error",
                 "invalid_value",
                 "encoding_format",
                 StatusCodes.Status400BadRequest);
-
         }
 
         // Availability gate first: with embeddings disabled/misconfigured there is no configured
         // model to compare against, so every request fails the same way regardless of `model`.
         if (!weave.IsAvailable)
         {
-
             return JsonError(
                 "Embeddings are disabled or not fully configured on this server (Arcanum:Features:Embeddings, Arcanum:Integrations:Embeddings:Provider, and Arcanum:Integrations:Embeddings:Model).",
                 "server_error",
                 "embedding_provider_unavailable",
                 param: null,
                 StatusCodes.Status503ServiceUnavailable);
-
         }
 
         string configuredModel = embeddings.Model ?? string.Empty;
 
         if (!string.IsNullOrWhiteSpace(body.Model) && !string.Equals(body.Model, configuredModel, StringComparison.OrdinalIgnoreCase))
         {
-
             return JsonError(
                 $"The model '{body.Model}' does not match this server's configured embedding model.",
                 "invalid_request_error",
                 "model_not_found",
                 "model",
                 StatusCodes.Status404NotFound);
-
         }
 
         string echoModel = string.IsNullOrWhiteSpace(body.Model) ? configuredModel : body.Model;
@@ -168,14 +152,12 @@ internal static partial class OpenAiV1Endpoints
 
         if (inputs.Length == 0 || Array.Exists(inputs, string.IsNullOrEmpty))
         {
-
             return JsonError(
                 "'input' must not be empty, and must not contain empty strings.",
                 "invalid_request_error",
                 "invalid_value",
                 "input",
                 StatusCodes.Status400BadRequest);
-
         }
 
         int maxInputChars = ArcanumSettingClamps.EmbeddingsMaxEmbeddingInputChars(embeddings.MaxEmbeddingInputChars);
@@ -184,26 +166,21 @@ internal static partial class OpenAiV1Endpoints
 
         foreach (string text in inputs)
         {
-
             totalInputChars += text.Length;
-
         }
 
         if (totalInputChars > maxInputChars)
         {
-
             return JsonError(
                 $"Total 'input' size ({totalInputChars} chars) exceeds the internal limit ({maxInputChars} chars).",
                 "invalid_request_error",
                 "invalid_value",
                 "input",
                 StatusCodes.Status400BadRequest);
-
         }
 
         if (body.Dimensions.HasValue)
         {
-
             // Most embedding providers/models do not support server-side dimension truncation;
             // Arcanum does not attempt to slice the returned vector, to avoid silently corrupting
             // the vector's L2 norm (naive truncation is not equivalent to a model retrained/
@@ -211,7 +188,6 @@ internal static partial class OpenAiV1Endpoints
             logger.LogWarning(
                 "POST /v1/embeddings requested 'dimensions: {Dimensions}', but Arcanum does not support provider-side dimension truncation; the full embedding vector is returned.",
                 body.Dimensions.Value);
-
         }
 
         int chunkSizeChars = ArcanumSettingClamps.EmbeddingsChunkSizeChars(embeddings.ChunkSizeChars);
@@ -224,44 +200,29 @@ internal static partial class OpenAiV1Endpoints
 
         for (int i = 0; i < inputs.Length; i++)
         {
-
             if (inputs[i].Length > chunkSizeChars)
             {
-
                 continue;
-
             }
 
             shortIndexes.Add(i);
 
             shortTexts.Add(inputs[i]);
-
         }
 
         if (shortTexts.Count > 0)
         {
-
             Result<Embedding<float>[]> batchResult = await weave.EmbedBatchAsync(shortTexts, cancellationToken).ConfigureAwait(false);
 
             if (batchResult.IsFailure)
             {
-
                 return WeaveErrorToOpenAiResult(batchResult.Error);
-
             }
 
-            // OpenAI-compatible providers are not guaranteed to answer with one vector per input
-            // (and Microsoft.Extensions.AI does not enforce it), so a short array must fail as a
-            // sanitized 503 rather than indexing off the end of the batch.
-            if (batchResult.Value.Length != shortTexts.Count)
-            {
-
-                return WeaveErrorToOpenAiResult(new Error(
-                    ErrorCodes.Embeddings.ProviderUnavailable,
-                    "The embedding provider returned a mismatched number of vectors."));
-
-            }
-
+            // IWeaveService.EmbedBatchAsync answers exactly one vector per input or fails, so a
+            // provider that returns a short array has already become the 503 above and the slots
+            // below can be indexed positionally.
+            //
             // Ragged widths never throw on this path — each vector lands in its own slot — so an
             // unguarded ragged batch is emitted as one 200 whose data[] rows have different vector
             // lengths, which violates the OpenAI embeddings contract with no signal at all.
@@ -269,43 +230,32 @@ internal static partial class OpenAiV1Endpoints
 
             if (Array.Exists(batchResult.Value, embedding => embedding.Vector.Length != shortWidth))
             {
-
                 return WeaveErrorToOpenAiResult(new Error(
                     ErrorCodes.Embeddings.ProviderUnavailable,
                     "The embedding provider returned vectors of inconsistent dimensions."));
-
             }
 
             for (int i = 0; i < shortIndexes.Count; i++)
             {
-
                 resultVectors[shortIndexes[i]] = batchResult.Value[i].Vector.ToArray();
-
             }
-
         }
 
         for (int i = 0; i < inputs.Length; i++)
         {
-
             if (resultVectors[i] is not null)
             {
-
                 continue;
-
             }
 
             Result<float[]> longResult = await EmbedLongInputAsync(inputs[i], weave, cancellationToken).ConfigureAwait(false);
 
             if (longResult.IsFailure)
             {
-
                 return WeaveErrorToOpenAiResult(longResult.Error);
-
             }
 
             resultVectors[i] = longResult.Value;
-
         }
 
         // The two guards above each police one round trip: the short-input batch, and the chunk batch
@@ -320,18 +270,15 @@ internal static partial class OpenAiV1Endpoints
 
         if (Array.Exists(resultVectors, vector => vector!.Length != responseWidth))
         {
-
             return WeaveErrorToOpenAiResult(new Error(
                 ErrorCodes.Embeddings.ProviderUnavailable,
                 "The embedding provider returned vectors of inconsistent dimensions."));
-
         }
 
         List<OpenAiEmbeddingData> data = new(inputs.Length);
 
         for (int i = 0; i < inputs.Length; i++)
         {
-
             float[] vector = resultVectors[i]!;
 
             OpenAiEmbeddingVector wireVector = encodingFormat == "base64"
@@ -339,16 +286,13 @@ internal static partial class OpenAiV1Endpoints
                 : OpenAiEmbeddingVector.FromFloats(vector);
 
             data.Add(new OpenAiEmbeddingData("embedding", i, wireVector));
-
         }
 
         int totalTokens = 0;
 
         foreach (string text in inputs)
         {
-
             totalTokens += tokenizer.CountTokens(text);
-
         }
 
         OpenAiEmbeddingResponse response = new(
@@ -358,7 +302,6 @@ internal static partial class OpenAiV1Endpoints
             new OpenAiEmbeddingUsage(totalTokens, totalTokens));
 
         return Results.Json(response, ArcanumJsonContext.Default.OpenAiEmbeddingResponse);
-
     }
 
     /// <summary>
@@ -370,32 +313,24 @@ internal static partial class OpenAiV1Endpoints
     /// </summary>
     private static string[] ResolveInputTexts(OpenAiEmbeddingInput input, Tokenizer tokenizer)
     {
-
         if (input.Strings is { } strings)
         {
-
             return strings;
-
         }
 
         if (input.TokenArrays is { } tokenArrays)
         {
-
             string[] decoded = new string[tokenArrays.Length];
 
             for (int i = 0; i < tokenArrays.Length; i++)
             {
-
                 decoded[i] = tokenizer.Decode(tokenArrays[i]) ?? string.Empty;
-
             }
 
             return decoded;
-
         }
 
         return [];
-
     }
 
     /// <summary>
@@ -411,47 +346,44 @@ internal static partial class OpenAiV1Endpoints
         IWeaveService weave,
         CancellationToken cancellationToken)
     {
-
         Result<(string Chunk, int Offset)[]> chunked = await weave.ChunkAsync(text, cancellationToken).ConfigureAwait(false);
 
         if (chunked.IsFailure)
         {
-
             return Result<float[]>.Failure(chunked.Error);
+        }
 
+        // The shipped chunker answers at least one chunk for any non-empty text, and this method only
+        // runs for text longer than the chunk size. A custom IWeaveService that breaks that contract
+        // would otherwise reach the width read below with an empty array and surface as an unhandled
+        // 500, so it is the same provider fault as any other malformed answer.
+        if (chunked.Value.Length == 0)
+        {
+            return Result<float[]>.Failure(new Error(
+                ErrorCodes.Embeddings.ProviderUnavailable,
+                "The embedding provider returned no chunks for the input."));
         }
 
         string[] chunkTexts = new string[chunked.Value.Length];
 
         for (int i = 0; i < chunked.Value.Length; i++)
         {
-
             chunkTexts[i] = chunked.Value[i].Chunk;
-
         }
 
         Result<Embedding<float>[]> batch = await weave.EmbedBatchAsync(chunkTexts, cancellationToken).ConfigureAwait(false);
 
         if (batch.IsFailure)
         {
-
             return Result<float[]>.Failure(batch.Error);
-
         }
 
-        // A chunk batch that comes back short would silently mean-pool fewer chunks than the
-        // document actually has (an empty one would throw), so treat any count mismatch as a
-        // provider failure instead.
-        if (batch.Value.Length == 0 || batch.Value.Length != chunkTexts.Length)
-        {
-
-            return Result<float[]>.Failure(new Error(
-                ErrorCodes.Embeddings.ProviderUnavailable,
-                "The embedding provider returned a mismatched number of vectors."));
-
-        }
-
-        // The same distrust applied to the vector count applies to the vector width. WeaveService
+        // IWeaveService.EmbedBatchAsync answers exactly one vector per chunk or fails, so a chunk
+        // batch that came back short never reaches the mean-pool below (it would silently pool
+        // fewer chunks than the document has), and the empty-chunk case was refused above, so the
+        // first vector read below always exists.
+        //
+        // The vector width is a separate matter and still needs checking here. WeaveService
         // issues one round trip per BatchSize sub-batch, so a load-balanced or mid-rollout provider
         // pool can answer one document with vectors of two widths while each HTTP response is
         // well-formed. MeanPoolAndNormalize pins its dimension count to the first vector: a narrower
@@ -462,74 +394,57 @@ internal static partial class OpenAiV1Endpoints
 
         if (Array.Exists(batch.Value, embedding => embedding.Vector.Length != width))
         {
-
             return Result<float[]>.Failure(new Error(
                 ErrorCodes.Embeddings.ProviderUnavailable,
                 "The embedding provider returned vectors of inconsistent dimensions."));
-
         }
 
         return Result<float[]>.Success(MeanPoolAndNormalize(batch.Value));
-
     }
 
     private static float[] MeanPoolAndNormalize(Embedding<float>[] embeddings)
     {
-
         int dimensions = embeddings[0].Vector.Length;
 
         double[] sum = new double[dimensions];
 
         foreach (Embedding<float> embedding in embeddings)
         {
-
             ReadOnlySpan<float> vector = embedding.Vector.Span;
 
             for (int i = 0; i < dimensions; i++)
             {
-
                 sum[i] += vector[i];
-
             }
-
         }
 
         float[] mean = new float[dimensions];
 
         for (int i = 0; i < dimensions; i++)
         {
-
             mean[i] = (float)(sum[i] / embeddings.Length);
-
         }
 
         double normSquared = 0;
 
         foreach (float value in mean)
         {
-
             normSquared += (double)value * value;
-
         }
 
         if (normSquared <= 0)
         {
-
             return mean;
-
         }
 
         double norm = Math.Sqrt(normSquared);
 
         for (int i = 0; i < dimensions; i++)
         {
-
             mean[i] = (float)(mean[i] / norm);
-
         }
 
         return mean;
-
     }
 
     /// <summary>
@@ -545,5 +460,4 @@ internal static partial class OpenAiV1Endpoints
             "embedding_provider_unavailable",
             param: null,
             StatusCodes.Status503ServiceUnavailable);
-
 }

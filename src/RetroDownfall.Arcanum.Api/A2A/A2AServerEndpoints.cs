@@ -30,15 +30,17 @@ namespace RetroDownfall.Arcanum.Api.A2A;
 /// <see cref="ArcanumA2AAgentHandler"/> itself still re-checks <c>IOptionsMonitor</c> per call, matching
 /// every other Conclave gate.
 /// <para>
-/// The feature gates (<c>Arcanum:Features:Conclave</c> plus <c>Arcanum:Features:A2AServer</c>) are the only
-/// opt-in. There is deliberately <em>no</em> edition gate: A2A is off by default, but an operator who turns it
-/// on gets a working server on any edition rather than a silently dead surface (issue #12).
+/// <c>Arcanum:Features:A2AServer</c> is the only opt-in: <c>ResolveA2A</c> turns it into both the A2A
+/// <c>Enabled</c> and <c>ServerEnabled</c> flags this mapping checks, and <c>ResolveConclave</c> derives the
+/// Conclave gate from it, so <c>Arcanum:Features:Conclave</c> need not be set beside it (and setting only
+/// <c>Conclave</c> or only <c>A2AClient</c> maps no server). There is deliberately <em>no</em> edition gate:
+/// A2A is off by default, but an operator who turns it on gets a working server on any edition rather than
+/// a silently dead surface (issue #12).
 /// </para>
 /// </remarks>
 [ExcludeFromCodeCoverage] // Reason: thin HTTP mapping/serialization glue; behavior covered via ArcanumA2AAgentHandler and A2A integration tests.
 internal static class A2AServerEndpoints
 {
-
     private const string ApiGroupPrefix = A2APathPolicy.ApiGroupPrefix;
 
     /// <summary>
@@ -62,14 +64,11 @@ internal static class A2AServerEndpoints
 
     public static RouteGroupBuilder MapA2AServer(this RouteGroupBuilder apiGroup, ArcanumSettings startupSettings)
     {
-
         ConclaveA2ASettings a2a = startupSettings.ResolveA2A();
 
         if (!startupSettings.ResolveConclave().Enabled || !a2a.Enabled || !a2a.ServerEnabled)
         {
-
             return apiGroup;
-
         }
 
         string serverPath = ResolveServerPath(a2a.ServerPath);
@@ -78,9 +77,7 @@ internal static class A2AServerEndpoints
 
         if (relative.Length == 0)
         {
-
             relative = "/";
-
         }
 
         A2AServer server = ((IEndpointRouteBuilder)apiGroup).ServiceProvider.GetRequiredService<A2AServer>();
@@ -96,21 +93,17 @@ internal static class A2AServerEndpoints
             $"{relative}/agent-card",
             (IOptionsMonitor<ArcanumSettings> settings, HttpContext ctx) =>
             {
-
                 AgentCard card = BuildAgentCard(settings.CurrentValue, ctx, serverPath);
 
                 return Results.Json(card, agentCardTypeInfo);
-
             })
         .WithName("GetArcanumAgentCard");
 
         return apiGroup;
-
     }
 
     internal static AgentCard BuildAgentCard(ArcanumSettings settings, HttpContext context, string serverPath)
     {
-
         ConclaveA2ASettings a2a = settings.ResolveA2A();
 
         string interfaceUrl = $"{context.Request.Scheme}://{context.Request.Host}{serverPath}";
@@ -159,7 +152,5 @@ internal static class A2AServerEndpoints
                 },
             },
         };
-
     }
-
 }

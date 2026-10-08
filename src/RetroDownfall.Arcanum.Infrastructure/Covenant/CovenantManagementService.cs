@@ -36,7 +36,6 @@ internal sealed class CovenantManagementService(
     ICovenantSearchIndex? searchIndex = null,
     CovenantSearchQueryCompiler? searchCompiler = null) : ICovenantManagementService
 {
-
     /// <summary>How long a page cursor stays usable.</summary>
     /// <remarks>
     /// The cursor binds a dataset generation and a canonical sequence, so a stale one is refused on
@@ -49,27 +48,22 @@ internal sealed class CovenantManagementService(
         ICovenantSnapshotReadLease readLease,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(request);
 
         Result validated = request.Validate();
 
         if (validated.IsFailure)
         {
-
             return validated.Error;
-
         }
 
         CovenantDigest filterDigest = FilterDigest(request);
 
-        Result<CovenantListKeyset?> after = ResolveListCursor(request.Cursor, filterDigest);
+        Result<CovenantListCursorBody?> after = ResolveListCursor(request.Cursor, filterDigest);
 
         if (after.IsFailure)
         {
-
             return after.Error;
-
         }
 
         Result<CovenantListPage> page = await store
@@ -80,15 +74,33 @@ internal sealed class CovenantManagementService(
                     request.Lane,
                     request.Lifecycle,
                     request.EffectiveLimit,
-                    after.Value),
+                    after.Value?.Keyset),
                 readLease,
                 cancellationToken)
             .ConfigureAwait(false);
 
-        return page.IsFailure
-            ? page.Error
-            : Project(page.Value, request.EffectiveForCampaignId, filterDigest);
+        if (page.IsFailure)
+        {
+            return page.Error;
+        }
 
+        // The cursor binds the dataset it was issued against, and the page was read from whatever the
+        // dataset is now. A continuation across a change would splice two result sets.
+        if (after.Value is { } continuation)
+        {
+            Result continued = CheckContinuation(CovenantCursorBodyValidator.Validate(
+                continuation,
+                filterDigest,
+                SnapshotOf(page.Value),
+                codec.KeySnapshot.MasterKeyVersion));
+
+            if (continued.IsFailure)
+            {
+                return continued.Error;
+            }
+        }
+
+        return Project(page.Value, request.EffectiveForCampaignId, filterDigest);
     }
 
     public async ValueTask<Result<CovenantPageDto>> QueryAsync(
@@ -173,34 +185,9 @@ internal sealed class CovenantManagementService(
             }
         }
 
-        List<CovenantHeadDto> items = [];
-
-        foreach (CovenantSearchHit hit in page.Hits)
-        {
-            CovenantOperationScope scope = hit.Scope is CovenantScope.Global
-                ? CovenantOperationScope.Global
-                : CovenantOperationScope.ForCampaign(hit.CampaignId!.Value);
-
-            Result<CovenantDetail> detail = await store
-                .ReadDetailAsync(new CovenantDetailQuery(scope, hit.NormalizedKey), readLease, cancellationToken)
-                .ConfigureAwait(false);
-
-            if (detail.IsFailure)
-            {
-                return detail.Error;
-            }
-
-            CovenantHeadItem? head = hit.Lane is CovenantLane.Confirmed
-                ? detail.Value.ConfirmedHead
-                : detail.Value.ProposedHead;
-
-            if (head is null || head.VersionId != hit.VersionId)
-            {
-                return new Error(ErrorCodes.Covenant.StaleCursor, "The Covenant changed while the search page was read.");
-            }
-
-            items.Add(Head(head, request.EffectiveForCampaignId));
-        }
+        // The heads arrive with the hits, read in the snapshot that ranked them, so the page is one
+        // dataset and a first page has nothing to be stale against.
+        List<CovenantHeadDto> items = [.. page.Hits.Select(hit => Head(hit.Head, request.EffectiveForCampaignId))];
 
         return new CovenantPageDto(
             [.. items],
@@ -234,16 +221,13 @@ internal sealed class CovenantManagementService(
         ICovenantSnapshotReadLease readLease,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(request);
 
         Result validated = request.Validate();
 
         if (validated.IsFailure)
         {
-
             return validated.Error;
-
         }
 
         CovenantOperationScope scope = request.Scope is CovenantScope.Global || request.CampaignId is not { } id
@@ -259,9 +243,7 @@ internal sealed class CovenantManagementService(
 
         if (detail.IsFailure)
         {
-
             return detail.Error;
-
         }
 
         return new CovenantDetailDto(
@@ -280,7 +262,6 @@ internal sealed class CovenantManagementService(
             ProposedSources: null,
             detail.Value.ConfirmedCuration,
             detail.Value.ProposedCuration);
-
     }
 
     public async ValueTask<Result<CovenantVersionPageDto>> VersionsAsync(
@@ -288,41 +269,48 @@ internal sealed class CovenantManagementService(
         ICovenantSnapshotReadLease readLease,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(request);
 
         Result validated = request.Validate();
 
         if (validated.IsFailure)
         {
-
             return validated.Error;
-
         }
 
         CovenantDigest filterDigest = VersionFilterDigest(request);
 
-        Result<CovenantVersionKeyset?> after = ResolveVersionCursor(request.Cursor, filterDigest);
+        Result<CovenantVersionCursorBody?> after = ResolveVersionCursor(request.Cursor, filterDigest);
 
         if (after.IsFailure)
         {
-
             return after.Error;
-
         }
 
         Result<CovenantVersionPage> page = await store
             .ReadVersionPageAsync(
-                new CovenantVersionQuery(request.EntryId, request.Lane, request.EffectiveLimit, after.Value),
+                new CovenantVersionQuery(request.EntryId, request.Lane, request.EffectiveLimit, after.Value?.Keyset),
                 readLease,
                 cancellationToken)
             .ConfigureAwait(false);
 
         if (page.IsFailure)
         {
-
             return page.Error;
+        }
 
+        if (after.Value is { } continuation)
+        {
+            Result continued = CheckContinuation(CovenantCursorBodyValidator.Validate(
+                continuation,
+                filterDigest,
+                SnapshotOf(page.Value),
+                codec.KeySnapshot.MasterKeyVersion));
+
+            if (continued.IsFailure)
+            {
+                return continued.Error;
+            }
         }
 
         return new CovenantVersionPageDto(
@@ -330,7 +318,6 @@ internal sealed class CovenantManagementService(
             NextCursor(page.Value, filterDigest),
             Hex(filterDigest),
             page.Value.Truncated);
-
     }
 
     public async ValueTask<Result<CovenantSourcesDto>> SourcesAsync(
@@ -338,16 +325,13 @@ internal sealed class CovenantManagementService(
         ICovenantSnapshotReadLease readLease,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(request);
 
         Result validated = request.Validate();
 
         if (validated.IsFailure)
         {
-
             return validated.Error;
-
         }
 
         Result<CovenantSourcePage> page = await store
@@ -355,7 +339,6 @@ internal sealed class CovenantManagementService(
             .ConfigureAwait(false);
 
         return page.IsFailure ? page.Error : Sources(page.Value);
-
     }
 
     /// <summary>
@@ -378,7 +361,6 @@ internal sealed class CovenantManagementService(
         CovenantExplainRequest request,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(request);
 
         Result validated = request.Validate();
@@ -389,11 +371,9 @@ internal sealed class CovenantManagementService(
 
         if (resolved.IsFailure)
         {
-
             return CovenantLeasedServiceResult<CovenantExplainDto>.Create(
                 Result<CovenantExplainDto>.Failure(resolved.Error),
                 NullLease.Instance);
-
         }
 
         CanonicalCampaignContext campaign = resolved.Value;
@@ -404,36 +384,56 @@ internal sealed class CovenantManagementService(
 
         if (lease.IsFailure)
         {
-
             return CovenantLeasedServiceResult<CovenantExplainDto>.Create(
                 Result<CovenantExplainDto>.Failure(lease.Error),
                 NullLease.Instance);
-
         }
 
-        CovenantAvailabilitySnapshot health = availability.Current;
+        // From here the registration is the only owner of the lease until Create hands it to the
+        // response writer, which disposes it exactly once. Anything that unwinds before that point —
+        // the request token cancelling the snapshot read, a storage fault, a linker that throws —
+        // would otherwise leave a live registration no later exclusive acquisition can ever drain.
+        bool transferred = false;
 
-        Result<CovenantTurnSnapshot> snapshot = await store
-            .ReadTurnSnapshotAsync(campaign, lease.Value, cancellationToken)
-            .ConfigureAwait(false);
-
-        if (snapshot.IsFailure)
+        try
         {
+            CovenantAvailabilitySnapshot health = availability.Current;
 
-            return CovenantLeasedServiceResult<CovenantExplainDto>.Create(
-                Result<CovenantExplainDto>.Failure(snapshot.Error),
-                lease.Value);
+            Result<CovenantTurnSnapshot> snapshot = await store
+                .ReadTurnSnapshotAsync(campaign, lease.Value, cancellationToken)
+                .ConfigureAwait(false);
 
+            CovenantLeasedServiceResult<CovenantExplainDto> leased;
+
+            if (snapshot.IsFailure)
+            {
+                leased = CovenantLeasedServiceResult<CovenantExplainDto>.Create(
+                    Result<CovenantExplainDto>.Failure(snapshot.Error),
+                    lease.Value);
+            }
+            else
+            {
+                Result<CovenantTurnPlan> plan = linker.Link(snapshot.Value);
+
+                leased = CovenantLeasedServiceResult<CovenantExplainDto>.Create(
+                    plan.IsFailure
+                        ? Result<CovenantExplainDto>.Failure(plan.Error)
+                        : Result<CovenantExplainDto>.Success(Explain(request, health, plan.Value)),
+                    lease.Value);
+            }
+
+            // Set only once Create has returned: it can throw, and a lease it did not take is still ours.
+            transferred = true;
+
+            return leased;
         }
-
-        Result<CovenantTurnPlan> plan = linker.Link(snapshot.Value);
-
-        return CovenantLeasedServiceResult<CovenantExplainDto>.Create(
-            plan.IsFailure
-                ? Result<CovenantExplainDto>.Failure(plan.Error)
-                : Result<CovenantExplainDto>.Success(Explain(request, health, plan.Value)),
-            lease.Value);
-
+        finally
+        {
+            if (!transferred)
+            {
+                await lease.Value.DisposeAsync().ConfigureAwait(false);
+            }
+        }
     }
 
     /// <summary>
@@ -456,12 +456,9 @@ internal sealed class CovenantManagementService(
         Guid? campaignId,
         CancellationToken cancellationToken)
     {
-
         if (campaignId is not { } named)
         {
-
             return Result<CanonicalCampaignContext>.Success(CanonicalCampaignContext.GlobalOnly);
-
         }
 
         Result<long?> generation = await campaigns
@@ -476,7 +473,6 @@ internal sealed class CovenantManagementService(
                 workspace: null,
                 workingDirectorySupplied: false,
                 generation.Value);
-
     }
 
     /// <summary>
@@ -507,7 +503,6 @@ internal sealed class CovenantManagementService(
     /// </remarks>
     public async ValueTask<Result<CovenantStatusDto>> StatusAsync(CancellationToken cancellationToken)
     {
-
         CovenantAvailabilitySnapshot snapshot = availability.Current;
 
         CovenantScopeCensus census = CovenantScopeCensus.Empty;
@@ -520,14 +515,12 @@ internal sealed class CovenantManagementService(
         // operator they held nothing when the truth was that search was slower.
         if (snapshot.FeatureEnabled)
         {
-
             Result<CovenantInstallationReadLease> lease = await gate
                 .AcquireInstallationReadAsync(cancellationToken)
                 .ConfigureAwait(false);
 
             if (lease.IsSuccess)
             {
-
                 await using CovenantInstallationReadLease owned = lease.Value;
 
                 Result<CovenantScopeCensus> read = await store
@@ -536,21 +529,15 @@ internal sealed class CovenantManagementService(
 
                 if (read.IsSuccess)
                 {
-
                     census = read.Value;
 
                     state = CovenantCensusReadState.Read;
-
                 }
                 else
                 {
-
                     state = CovenantCensusReadState.Failed;
-
                 }
-
             }
-
         }
 
         return new CovenantStatusDto(
@@ -583,7 +570,6 @@ internal sealed class CovenantManagementService(
             // canonical tier has a worse problem than one whose search is slow, and reporting only the
             // canonical code would leave an accelerator failure with no code at all.
             snapshot.CanonicalDiagnosticCode ?? snapshot.AcceleratorDiagnosticCode);
-
     }
 
     /// <summary>
@@ -804,43 +790,82 @@ internal sealed class CovenantManagementService(
                 codec.KeySnapshot.MasterKeyVersion,
                 keyset)));
 
+    /// <summary>
+    /// The dataset facts a canonical list page was read under, in the shape the cursor validator compares.
+    /// </summary>
+    private static CovenantSearchSourceSnapshot SnapshotOf(CovenantListPage page) =>
+        new(
+            page.DatasetGeneration,
+            page.CanonicalSearchSequence,
+            page.CoreCampaignDeletionSequence,
+            AppliedDatasetGeneration: null,
+            AppliedSearchSequence: null,
+            AppliedCampaignDeletionSequence: null,
+            AcceleratorEpoch: 0);
+
+    /// <summary>
+    /// The same, for a version page, whose cursors never bind a Campaign deletion sequence.
+    /// </summary>
+    private static CovenantSearchSourceSnapshot SnapshotOf(CovenantVersionPage page) =>
+        new(
+            page.DatasetGeneration,
+            page.CanonicalSearchSequence,
+            CoreCampaignDeletionSequence: 0,
+            AppliedDatasetGeneration: null,
+            AppliedSearchSequence: null,
+            AppliedCampaignDeletionSequence: null,
+            AcceleratorEpoch: 0);
+
+    /// <summary>
+    /// Maps the validator's verdict onto the error a continuation reports.
+    /// </summary>
+    /// <remarks>
+    /// Stale is a cursor this installation issued whose dataset has since moved, which the operator
+    /// answers by asking for a first page. Invalid is one that names a different key version or
+    /// endpoint than this installation would have issued.
+    /// </remarks>
+    private static Result CheckContinuation(CovenantCursorRejection rejection) =>
+        rejection switch
+        {
+            CovenantCursorRejection.None => Result.Success(),
+
+            CovenantCursorRejection.Stale => new Error(
+                ErrorCodes.Covenant.StaleCursor,
+                "The Covenant changed after this cursor was issued."),
+
+            _ => new Error(
+                ErrorCodes.Covenant.InvalidCursor,
+                "This Covenant cursor could not be read."),
+        };
+
     private string? Issue(byte[] body)
     {
-
         Result<string> token = codec.Encode(CovenantEnvelopePurpose.Cursor, body, CursorLifetime);
 
         // A page that could not mint its continuation reports no continuation rather than an
         // unauthenticated one. The operator sees a short page; nobody sees a forgeable cursor.
         return token.IsSuccess ? token.Value : null;
-
     }
 
-    private Result<CovenantListKeyset?> ResolveListCursor(string? cursor, CovenantDigest filterDigest)
+    private Result<CovenantListCursorBody?> ResolveListCursor(string? cursor, CovenantDigest filterDigest)
     {
-
         if (string.IsNullOrEmpty(cursor))
         {
-
-            return Result<CovenantListKeyset?>.Success(null);
-
+            return Result<CovenantListCursorBody?>.Success(null);
         }
 
         Result<CovenantEnvelopeBody> envelope = codec.Decode(CovenantEnvelopePurpose.Cursor, cursor);
 
         if (envelope.IsFailure)
         {
-
             return envelope.Error;
-
         }
 
         Result<CovenantListCursorBody> body = CovenantCursorBodyCodec.TryDecodeList(envelope.Value.Payload);
 
         if (body.IsFailure)
         {
-
             return body.Error;
-
         }
 
         // A cursor carried onto a different query is a different question, and answering its second
@@ -849,27 +874,21 @@ internal sealed class CovenantManagementService(
             ? new Error(
                 ErrorCodes.Covenant.StaleCursor,
                 "This Covenant cursor belongs to a different query.")
-            : Result<CovenantListKeyset?>.Success(body.Value.Keyset);
-
+            : Result<CovenantListCursorBody?>.Success(body.Value);
     }
 
-    private Result<CovenantVersionKeyset?> ResolveVersionCursor(string? cursor, CovenantDigest filterDigest)
+    private Result<CovenantVersionCursorBody?> ResolveVersionCursor(string? cursor, CovenantDigest filterDigest)
     {
-
         if (string.IsNullOrEmpty(cursor))
         {
-
-            return Result<CovenantVersionKeyset?>.Success(null);
-
+            return Result<CovenantVersionCursorBody?>.Success(null);
         }
 
         Result<CovenantEnvelopeBody> envelope = codec.Decode(CovenantEnvelopePurpose.Cursor, cursor);
 
         if (envelope.IsFailure)
         {
-
             return envelope.Error;
-
         }
 
         Result<CovenantVersionCursorBody> body =
@@ -877,17 +896,14 @@ internal sealed class CovenantManagementService(
 
         if (body.IsFailure)
         {
-
             return body.Error;
-
         }
 
         return body.Value.FilterDigest != filterDigest
             ? new Error(
                 ErrorCodes.Covenant.StaleCursor,
                 "This Covenant cursor belongs to a different query.")
-            : Result<CovenantVersionKeyset?>.Success(body.Value.Keyset);
-
+            : Result<CovenantVersionCursorBody?>.Success(body.Value);
     }
 
     /// <summary>
@@ -1073,7 +1089,6 @@ internal sealed class CovenantManagementService(
     /// </remarks>
     private sealed class NullLease : ICovenantOperationLease
     {
-
         internal static NullLease Instance { get; } = new();
 
         public CovenantOperationLeaseSnapshot Snapshot => throw new InvalidOperationException(
@@ -1085,7 +1100,5 @@ internal sealed class CovenantManagementService(
             ValueTask.FromResult(Result.Success());
 
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
-
     }
-
 }

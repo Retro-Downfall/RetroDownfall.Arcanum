@@ -19,10 +19,14 @@ if (SandboxExecHelper.TryHandle(args, typeof(Program)))
 
 WebApplicationBuilder builder = WebApplication.CreateSlimBuilder();
 
-if (!string.Equals(builder.Environment.EnvironmentName, "Development", StringComparison.OrdinalIgnoreCase)
-    && !string.Equals(builder.Environment.EnvironmentName, "Testing", StringComparison.OrdinalIgnoreCase))
+if (Program.RefusalForEnvironment(builder.Environment.EnvironmentName) is { } environmentRefusal)
 {
-    Console.Error.WriteLine($"Arcanum DevHost is intended for Development or Testing environments. Current environment: {builder.Environment.EnvironmentName}.");
+    // Refused, not warned about: this host prints the master API key it generates, and a development
+    // convenience that starts anywhere is one that leaks that key into whatever captures a service's output.
+    // Exit code 2 is the CLI's invalid-configuration code.
+    Console.Error.WriteLine(environmentRefusal);
+
+    return 2;
 }
 
 TaskScheduler.UnobservedTaskException += static (_, e) =>
@@ -55,6 +59,10 @@ builder.WebHost.ConfigureKestrel(
 builder.Logging.ClearProviders();
 
 builder.Services.AddArcanumApiServices(builder.Configuration);
+
+// This host binds loopback above whatever Arcanum:Host:ListenAny and ARCANUM_HOST_ANY say, so it keeps the
+// loopback Host-header allow-list whatever they say too.
+builder.Services.AddArcanumLoopbackHostFiltering();
 
 WebApplication app = builder.Build();
 

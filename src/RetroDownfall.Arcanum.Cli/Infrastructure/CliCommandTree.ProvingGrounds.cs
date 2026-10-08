@@ -6,10 +6,9 @@ namespace RetroDownfall.Arcanum.Cli.Infrastructure;
 
 internal static partial class CliCommandTree
 {
-
     private static Command BuildTrial(IServiceProvider sp)
     {
-        TrialCommands handler = sp.GetRequiredService<TrialCommands>();
+        DeferredHandler<TrialCommands> handler = new(sp);
         Command trial = new("trial", "Run Trials against spells, prompts, or Apprentice goals (requires arcanum serve).");
 
         Command run = new("run", "Run a Trial with Inquisitors.");
@@ -23,7 +22,7 @@ internal static partial class CliCommandTree
         run.Add(runTarget); run.Add(runTargetValue); run.Add(runModel); run.Add(runWorkspace);
         run.Add(runName); run.Add(runInquisitor); run.Add(runVar);
         run.SetAction(async (ParseResult pr, CancellationToken ct) =>
-            await handler.Run(
+            await handler.Value.Run(
                 pr.GetValue(runTarget),
                 pr.GetValue(runTargetValue),
                 ActiveModel(sp, pr.GetValue(runModel)),
@@ -36,5 +35,4 @@ internal static partial class CliCommandTree
 
         return trial;
     }
-
 }

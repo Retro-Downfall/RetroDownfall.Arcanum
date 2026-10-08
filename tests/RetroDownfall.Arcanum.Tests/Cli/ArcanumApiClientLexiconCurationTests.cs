@@ -16,6 +16,7 @@ using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Cli;
 
+[Collection("GlobalConsole")]
 public sealed class ArcanumApiClientLexiconCurationTests
 {
     [Theory]

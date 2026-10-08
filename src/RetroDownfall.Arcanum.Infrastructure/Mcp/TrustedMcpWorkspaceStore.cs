@@ -9,7 +9,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
 
 public sealed class TrustedMcpWorkspaceStore : ITrustedMcpWorkspaceStore, IDisposable
 {
-
     internal const int MaxTrustDocumentBytes = 8 * 1024 * 1024;
 
     internal const int MaxNormalizedWorkspacePathChars = 4096;
@@ -33,7 +32,6 @@ public sealed class TrustedMcpWorkspaceStore : ITrustedMcpWorkspaceStore, IDispo
         string workspaceRootPath,
         CancellationToken cancellationToken = default)
     {
-
         TrustedMcpWorkspaceSnapshot snapshot =
             await GetSnapshotAsync(workspaceRootPath, cancellationToken)
                 .ConfigureAwait(false);
@@ -46,7 +44,6 @@ public sealed class TrustedMcpWorkspaceStore : ITrustedMcpWorkspaceStore, IDispo
         string sourceDigest,
         CancellationToken cancellationToken = default)
     {
-
         if (!IsValidSha256Hex(sourceDigest))
         {
             return false;
@@ -57,14 +54,12 @@ public sealed class TrustedMcpWorkspaceStore : ITrustedMcpWorkspaceStore, IDispo
                 .ConfigureAwait(false);
 
         return snapshot.Authorizes(sourceDigest);
-
     }
 
     public async Task<TrustedMcpWorkspaceSnapshot> GetSnapshotAsync(
         string workspaceRootPath,
         CancellationToken cancellationToken = default)
     {
-
         cancellationToken.ThrowIfCancellationRequested();
 
         if (!TryNormalizeWorkspaceRoot(workspaceRootPath, out string normalized))
@@ -89,7 +84,6 @@ public sealed class TrustedMcpWorkspaceStore : ITrustedMcpWorkspaceStore, IDispo
             .ConfigureAwait(false);
 
         return new TrustedMcpWorkspaceSnapshot(currentDigest, approved);
-
     }
 
     public async Task<bool> IsApprovedDigestAsync(
@@ -97,7 +91,6 @@ public sealed class TrustedMcpWorkspaceStore : ITrustedMcpWorkspaceStore, IDispo
         string sourceDigest,
         CancellationToken cancellationToken = default)
     {
-
         cancellationToken.ThrowIfCancellationRequested();
 
         if (!TryNormalizeWorkspaceRoot(workspaceRootPath, out string normalized)
@@ -111,14 +104,13 @@ public sealed class TrustedMcpWorkspaceStore : ITrustedMcpWorkspaceStore, IDispo
                 sourceDigest,
                 cancellationToken)
             .ConfigureAwait(false);
-
     }
 
     public async Task TrustAsync(
         string workspaceRootPath,
+        string? expectedSourceDigest = null,
         CancellationToken cancellationToken = default)
     {
-
         cancellationToken.ThrowIfCancellationRequested();
 
         string normalized;
@@ -170,6 +162,18 @@ public sealed class TrustedMcpWorkspaceStore : ITrustedMcpWorkspaceStore, IDispo
                 "Workspace mcp.json could not be validated as a safe regular file.");
         }
 
+        // The operator approved the bytes whose digest they were shown. Comparing against the digest of the
+        // bytes read just now, and recording that same digest below, leaves no window in which the file can
+        // change between what was approved and what trust is bound to.
+        if (expectedSourceDigest is not null
+            && !string.Equals(
+                expectedSourceDigest,
+                digestResult.Digest,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            throw new McpWorkspaceConfigChangedException();
+        }
+
         await _storeLock.WaitAsync(cancellationToken).ConfigureAwait(false);
 
         try
@@ -184,12 +188,10 @@ public sealed class TrustedMcpWorkspaceStore : ITrustedMcpWorkspaceStore, IDispo
         {
             _storeLock.Release();
         }
-
     }
 
     internal static string NormalizeWorkspaceRoot(string workspaceRootPath)
     {
-
         ArgumentException.ThrowIfNullOrWhiteSpace(workspaceRootPath);
 
         string trimmed = workspaceRootPath.Trim();
@@ -211,7 +213,6 @@ public sealed class TrustedMcpWorkspaceStore : ITrustedMcpWorkspaceStore, IDispo
         }
 
         return normalized;
-
     }
 
     private async Task<bool> IsApprovedDigestNormalizedAsync(
@@ -219,7 +220,6 @@ public sealed class TrustedMcpWorkspaceStore : ITrustedMcpWorkspaceStore, IDispo
         string sourceDigest,
         CancellationToken cancellationToken)
     {
-
         await _storeLock.WaitAsync(cancellationToken).ConfigureAwait(false);
 
         try
@@ -272,7 +272,6 @@ public sealed class TrustedMcpWorkspaceStore : ITrustedMcpWorkspaceStore, IDispo
         {
             _storeLock.Release();
         }
-
     }
 
     private async Task SaveApprovalUnlockedAsync(
@@ -280,7 +279,6 @@ public sealed class TrustedMcpWorkspaceStore : ITrustedMcpWorkspaceStore, IDispo
         string sourceDigest,
         CancellationToken cancellationToken)
     {
-
         TrustedMcpWorkspaceDocument? lastDocument = null;
 
         long lastPageIndex = 0;
@@ -381,14 +379,12 @@ public sealed class TrustedMcpWorkspaceStore : ITrustedMcpWorkspaceStore, IDispo
                 "One MCP workspace approval exceeds the per-document storage boundary. Shorten the workspace path and retry.",
                 ex);
         }
-
     }
 
     private async Task<TrustedStoreLoadResult> LoadPageUnlockedAsync(
         string pagePath,
         CancellationToken cancellationToken)
     {
-
         SecureFileReadResult readResult;
 
         try
@@ -432,7 +428,6 @@ public sealed class TrustedMcpWorkspaceStore : ITrustedMcpWorkspaceStore, IDispo
                 return TrustedStoreLoadResult.Invalid;
             }
         }
-
     }
 
     private async Task SavePageUnlockedAsync(
@@ -440,7 +435,6 @@ public sealed class TrustedMcpWorkspaceStore : ITrustedMcpWorkspaceStore, IDispo
         TrustedMcpWorkspaceDocument document,
         CancellationToken cancellationToken)
     {
-
         if (!IsValidDocument(document))
         {
             throw InvalidStoreException();
@@ -521,12 +515,10 @@ public sealed class TrustedMcpWorkspaceStore : ITrustedMcpWorkspaceStore, IDispo
                 "Could not safely update the MCP approval store. Verify storage permissions and retry.",
                 ex);
         }
-
     }
 
     private static string GetPagePath(long pageIndex)
     {
-
         if (pageIndex == 0)
         {
             return StorePath;
@@ -535,14 +527,12 @@ public sealed class TrustedMcpWorkspaceStore : ITrustedMcpWorkspaceStore, IDispo
         return Path.Combine(
             ArcanumPaths.GrimoireDirectory,
             $"trusted-mcp-workspaces.page-{pageIndex:D8}.json");
-
     }
 
     private static async Task<string?> TryComputeCurrentDigestAsync(
         string normalizedWorkspaceRoot,
         CancellationToken cancellationToken)
     {
-
         try
         {
             McpFileDigestResult result =
@@ -559,14 +549,12 @@ public sealed class TrustedMcpWorkspaceStore : ITrustedMcpWorkspaceStore, IDispo
         {
             return null;
         }
-
     }
 
     private static async Task<McpFileDigestResult> ReadCurrentDigestAsync(
         string normalizedWorkspaceRoot,
         CancellationToken cancellationToken)
     {
-
         string mcpPath = Path.Combine(normalizedWorkspaceRoot, "mcp.json");
 
         SecureFileReadResult readResult = await SecureFileReader
@@ -583,18 +571,16 @@ public sealed class TrustedMcpWorkspaceStore : ITrustedMcpWorkspaceStore, IDispo
                 SecureFileReadStatus.NotFound => McpFileDigestResult.NotFound,
                 SecureFileReadStatus.TooLarge => McpFileDigestResult.TooLarge,
                 SecureFileReadStatus.Success => McpFileDigestResult.Success(
-                    Convert.ToHexString(SHA256.HashData(readResult.Bytes.Span))),
+                    McpConfigDigest.Compute(readResult.Bytes.Span)),
                 _ => McpFileDigestResult.Invalid,
             };
         }
-
     }
 
     private static bool TryNormalizeWorkspaceRoot(
         string workspaceRootPath,
         out string normalized)
     {
-
         try
         {
             normalized = NormalizeWorkspaceRoot(workspaceRootPath);
@@ -610,12 +596,10 @@ public sealed class TrustedMcpWorkspaceStore : ITrustedMcpWorkspaceStore, IDispo
 
             return false;
         }
-
     }
 
     private static bool IsValidDocument(TrustedMcpWorkspaceDocument document)
     {
-
         if (document.Entries is null)
         {
             return false;
@@ -631,12 +615,10 @@ public sealed class TrustedMcpWorkspaceStore : ITrustedMcpWorkspaceStore, IDispo
         }
 
         return true;
-
     }
 
     private static bool IsNormalizedStoredPath(string path)
     {
-
         if (string.IsNullOrWhiteSpace(path)
             || path.Length > MaxNormalizedWorkspacePathChars)
         {
@@ -657,12 +639,10 @@ public sealed class TrustedMcpWorkspaceStore : ITrustedMcpWorkspaceStore, IDispo
         {
             return false;
         }
-
     }
 
     private static bool IsValidSha256Hex(string? digest)
     {
-
         if (digest is null || digest.Length != Sha256HexLength)
         {
             return false;
@@ -677,7 +657,6 @@ public sealed class TrustedMcpWorkspaceStore : ITrustedMcpWorkspaceStore, IDispo
         }
 
         return true;
-
     }
 
     private static TrustedMcpWorkspaceStoreException InvalidStoreException() =>
@@ -690,7 +669,6 @@ public sealed class TrustedMcpWorkspaceStore : ITrustedMcpWorkspaceStore, IDispo
         bool Exists,
         TrustedMcpWorkspaceDocument? Document)
     {
-
         public static TrustedStoreLoadResult Invalid { get; } =
             new(false, false, null);
 
@@ -700,7 +678,6 @@ public sealed class TrustedMcpWorkspaceStore : ITrustedMcpWorkspaceStore, IDispo
         public static TrustedStoreLoadResult Valid(
             TrustedMcpWorkspaceDocument document) =>
             new(true, true, document);
-
     }
 
     private sealed class TrustDocumentTooLargeException : Exception
@@ -711,7 +688,6 @@ public sealed class TrustedMcpWorkspaceStore : ITrustedMcpWorkspaceStore, IDispo
         McpFileDigestStatus Status,
         string? Digest)
     {
-
         public static McpFileDigestResult NotFound { get; } =
             new(McpFileDigestStatus.NotFound, null);
 
@@ -723,7 +699,6 @@ public sealed class TrustedMcpWorkspaceStore : ITrustedMcpWorkspaceStore, IDispo
 
         public static McpFileDigestResult Success(string digest) =>
             new(McpFileDigestStatus.Success, digest);
-
     }
 
     private enum McpFileDigestStatus
@@ -733,12 +708,10 @@ public sealed class TrustedMcpWorkspaceStore : ITrustedMcpWorkspaceStore, IDispo
         TooLarge,
         Invalid,
     }
-
 }
 
 internal sealed class TrustedMcpWorkspaceStoreException : InvalidOperationException
 {
-
     public TrustedMcpWorkspaceStoreException(string message)
         : base(message)
     {
@@ -750,5 +723,4 @@ internal sealed class TrustedMcpWorkspaceStoreException : InvalidOperationExcept
         : base(message, innerException)
     {
     }
-
 }

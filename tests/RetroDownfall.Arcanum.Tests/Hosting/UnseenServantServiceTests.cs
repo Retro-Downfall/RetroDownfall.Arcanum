@@ -1,4 +1,6 @@
 using System.Collections.Concurrent;
+using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
 
 namespace RetroDownfall.Arcanum.Tests.Hosting;
@@ -173,5 +175,82 @@ public sealed class UnseenServantServiceTests
         Assert.True(published.IsCompleted);
 
         Assert.Same(replacement, activeJobTasks[taskId]);
+    }
+
+    /// <summary>
+    /// The save outlives shutdown on purpose (R-182), so it must be bounded: a store that never answers cannot hold
+    /// host shutdown, and the job's own result stands without the watermark.
+    /// </summary>
+    [Fact]
+    public async Task A_watermark_save_that_never_finishes_is_abandoned_at_its_bound_and_logged()
+    {
+        await using UnseenServantAdmissionHarness harness = new();
+
+        _ = await harness.ConfigureDueJobAsync();
+
+        harness.Service.WatermarkSaveTimeout = TimeSpan.FromMilliseconds(100);
+
+        harness.OnStep = async (step, token) =>
+        {
+            if (step == "watermark")
+            {
+                // A store that never answers; only the bound's cancellation ends this.
+                await Task.Delay(Timeout.InfiniteTimeSpan, token);
+            }
+        };
+
+        harness.Dispatch(CancellationToken.None);
+
+        await Task.WhenAll(harness.ActiveTasks).WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.Empty(harness.Store.Rows);
+
+        Assert.Contains(
+            harness.Logger.Entries,
+            static entry => entry.Level == Microsoft.Extensions.Logging.LogLevel.Warning
+                && entry.Message.Contains("Failed to persist Unseen Servant watermark", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void The_production_watermark_save_bound_is_five_seconds()
+    {
+        Assert.Equal(TimeSpan.FromSeconds(5), UnseenServantService.DefaultWatermarkSaveTimeout);
+    }
+
+    [Fact]
+    public async Task Watermark_is_saved_when_shutdown_is_requested_immediately_after_the_job_completes()
+    {
+        await using UnseenServantAdmissionHarness harness = new();
+
+        UnseenServantJob job = await harness.ConfigureDueJobAsync();
+
+        using CancellationTokenSource shutdown = new();
+
+        harness.OnStep = (step, token) =>
+        {
+            if (step.StartsWith("runner:", StringComparison.Ordinal))
+            {
+                // The job body has done its external work; the host stops one instruction later.
+                shutdown.Cancel();
+            }
+
+            if (step == "watermark")
+            {
+                // A real store observes the token it is given.
+                token.ThrowIfCancellationRequested();
+            }
+
+            return Task.CompletedTask;
+        };
+
+        harness.Dispatch(shutdown.Token);
+
+        await Task.WhenAll(harness.ActiveTasks).WaitAsync(TimeSpan.FromSeconds(10));
+
+        UnseenServantWatermark saved = Assert.Single(harness.Store.Rows);
+
+        Assert.Equal(UnseenServantJobTracker.JobTrackingKey(job), saved.JobKey);
+
+        Assert.Equal(harness.Clock.GetUtcNow(), saved.LastRunAt);
     }
 }

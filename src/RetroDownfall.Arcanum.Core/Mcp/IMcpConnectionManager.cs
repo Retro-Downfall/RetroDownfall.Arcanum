@@ -9,7 +9,6 @@ namespace RetroDownfall.Arcanum.Core.Mcp;
 /// </summary>
 public interface IMcpConnectionManager
 {
-
     /// <summary>
     /// Loads the global server registry and starts <see cref="McpServerInfo.AlwaysOn"/> global entries.
     /// </summary>
@@ -50,6 +49,15 @@ public interface IMcpConnectionManager
     /// <summary>
     /// Records operator approval for the workspace-local <c>mcp.json</c> at <paramref name="workingDirectory"/>.
     /// </summary>
-    Task<Result> TrustWorkspaceAsync(string workingDirectory, CancellationToken cancellationToken = default);
-
+    /// <param name="workingDirectory">The workspace root.</param>
+    /// <param name="expectedConfigDigest">
+    /// The <see cref="McpWorkspaceTrustPreview.ConfigDigest"/> of the preview the operator approved, or
+    /// <see langword="null"/> to trust whatever the file holds when it is read. When supplied, a file whose
+    /// digest differs is refused with <c>Mcp.ConfigChanged</c> and nothing is recorded.
+    /// </param>
+    /// <param name="cancellationToken">Cancels the request.</param>
+    Task<Result> TrustWorkspaceAsync(
+        string workingDirectory,
+        string? expectedConfigDigest = null,
+        CancellationToken cancellationToken = default);
 }

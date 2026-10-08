@@ -5,22 +5,18 @@ namespace RetroDownfall.Arcanum.Core.Conclave;
 
 public static class ApprenticePlanParser
 {
-
     // Physical payload guard: cap raw plan text before parsing so a runaway response cannot force
     // an unbounded JSON allocation. The number of steps is not independently limited.
     public const int MaxResponseChars = 256 * 1024;
 
     public static List<PlanStep> ParsePlan(string responseText)
     {
-
         ArgumentNullException.ThrowIfNull(responseText);
 
         if (responseText.Length > MaxResponseChars)
         {
-
             throw new InvalidOperationException(
                 $"Plan generation response is {responseText.Length} characters; the maximum allowed is {MaxResponseChars}.");
-
         }
 
         string trimmed = StripMarkdownFences(responseText.Trim());
@@ -29,55 +25,48 @@ public static class ApprenticePlanParser
 
         try
         {
-
             steps = JsonSerializer.Deserialize(trimmed, ArcanumCoreJsonContext.Default.ListPlanStep);
-
         }
         catch (JsonException ex)
         {
-
             // W3.6: surface malformed plan JSON as a domain error (consistent with the empty/oversize
             // cases and the sibling TryParseRevisedPlan), not a raw JsonException for callers to know to catch.
             throw new InvalidOperationException("Plan generation returned malformed JSON.", ex);
-
         }
 
         if (steps is null || steps.Count == 0)
         {
-
             throw new InvalidOperationException("Plan generation returned an empty or invalid JSON array.");
-
         }
 
         List<PlanStep> normalized = new(steps.Count);
 
         for (int i = 0; i < steps.Count; i++)
         {
+            PlanStep? step = steps[i];
 
-            PlanStep step = steps[i];
+            if (step is null)
+            {
+                throw new InvalidOperationException("Plan generation returned a null plan step.");
+            }
 
             normalized.Add(step with
             {
                 Index = step.Index > 0 ? step.Index : i + 1,
                 Status = string.IsNullOrWhiteSpace(step.Status) ? "pending" : step.Status,
             });
-
         }
 
         return normalized;
-
     }
 
     public static bool TryParseRevisedPlan(string responseText, out List<PlanStep>? steps)
     {
-
         steps = null;
 
         if (string.IsNullOrWhiteSpace(responseText))
         {
-
             return false;
-
         }
 
         if (responseText.Length > MaxResponseChars)
@@ -89,82 +78,67 @@ public static class ApprenticePlanParser
 
         if (string.Equals(trimmed, "NO_CHANGE", StringComparison.OrdinalIgnoreCase))
         {
-
             return false;
-
         }
 
         try
         {
-
             List<PlanStep>? parsed = JsonSerializer.Deserialize(trimmed, ArcanumCoreJsonContext.Default.ListPlanStep);
 
             if (parsed is null || parsed.Count == 0)
             {
-
                 return false;
-
             }
 
             List<PlanStep> normalized = new(parsed.Count);
 
             for (int i = 0; i < parsed.Count; i++)
             {
+                PlanStep? step = parsed[i];
 
-                PlanStep step = parsed[i];
+                if (step is null)
+                {
+                    return false;
+                }
 
                 normalized.Add(step with
                 {
                     Index = step.Index > 0 ? step.Index : i + 1,
                     Status = string.IsNullOrWhiteSpace(step.Status) ? "pending" : step.Status,
                 });
-
             }
 
             steps = normalized;
 
             return true;
-
         }
         catch (JsonException)
         {
-
             return false;
-
         }
-
     }
 
     private static string StripMarkdownFences(string text)
     {
-
         if (!text.StartsWith("```", StringComparison.Ordinal))
         {
-
             return text;
-
         }
 
         int firstNewline = text.IndexOf('\n');
 
         if (firstNewline < 0)
         {
-
             return text;
-
         }
 
         int closingFence = text.LastIndexOf("```", StringComparison.Ordinal);
 
         if (closingFence <= firstNewline)
         {
-
             return text;
-
         }
 
         return text[(firstNewline + 1)..closingFence].Trim();
-
     }
-
 }

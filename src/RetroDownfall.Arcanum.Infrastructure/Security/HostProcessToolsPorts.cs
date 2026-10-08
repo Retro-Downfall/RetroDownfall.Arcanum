@@ -21,11 +21,9 @@ internal sealed record HostProcessToolsAuthorityRow(
     ulong? TaintMasterKeyVersion,
     CovenantDigest? TaintFingerprint)
 {
-
     /// <summary>The row as the pure joiner is allowed to see it.</summary>
     internal HostProcessToolsDatabaseMarkerEvidence ToEvidence() =>
         new(InstallationIdentity, State, TransitionId, TaintMasterKeyVersion, TaintFingerprint);
-
 }
 
 /// <summary>How much Covenant-owned or protected state the installation still holds.</summary>
@@ -33,9 +31,7 @@ internal sealed record HostProcessToolsProtectedInventory(
     long CanonicalRowCount,
     long ProtectedArtifactCount)
 {
-
     internal bool IsEmpty => CanonicalRowCount == 0 && ProtectedArtifactCount == 0;
-
 }
 
 /// <summary>The durable authority side of the transition.</summary>
@@ -45,7 +41,6 @@ internal sealed record HostProcessToolsProtectedInventory(
 /// </remarks>
 internal interface IHostProcessToolsAuthorityStore
 {
-
     Task<Result<HostProcessToolsAuthorityRow>> ReadAsync(CancellationToken cancellationToken);
 
     /// <summary>
@@ -81,7 +76,6 @@ internal interface IHostProcessToolsAuthorityStore
         HostProcessToolsAuthorityRow expected,
         Guid transitionId,
         CancellationToken cancellationToken);
-
 }
 
 /// <summary>What one attempt to write the dedicated operating-system slot proved.</summary>
@@ -92,19 +86,16 @@ internal interface IHostProcessToolsAuthorityStore
 /// </remarks>
 internal enum HostProcessToolsMarkerWriteStatus : byte
 {
-
     Written = 1,
 
     Uncertain = 2,
 
     Refused = 3,
-
 }
 
 /// <summary>Why a marker read did not produce evidence.</summary>
 internal enum HostProcessToolsMarkerReadStatus : byte
 {
-
     Present = 1,
 
     Absent = 2,
@@ -112,7 +103,6 @@ internal enum HostProcessToolsMarkerReadStatus : byte
     Unavailable = 3,
 
     Malformed = 4,
-
 }
 
 /// <summary>One marker read, with evidence exactly when the status is present.</summary>
@@ -128,7 +118,6 @@ internal sealed record HostProcessToolsMarkerReadResult(
 /// </remarks>
 internal interface IHostProcessToolsMarkerStore
 {
-
     HostProcessToolsMarkerReadResult Read();
 
     HostProcessToolsMarkerWriteStatus Write(
@@ -136,7 +125,6 @@ internal interface IHostProcessToolsMarkerStore
         Guid transitionId,
         ulong taintMasterKeyVersion,
         CovenantDigest taintFingerprint);
-
 }
 
 /// <summary>The trusted process facts the transition validates before doing anything.</summary>
@@ -153,15 +141,11 @@ internal sealed record HostProcessToolsTransitionEnvironment(
 /// </remarks>
 internal interface IHostProcessToolsEnvironmentProbe
 {
-
     HostProcessToolsTransitionEnvironment Read();
-
 }
 
 /// <summary>Proves the host is stopped by taking the installation lock for the whole transition.</summary>
 internal interface IHostProcessToolsInstallationLockSource
 {
-
     IDisposable? TryAcquire();
-
 }

@@ -8,6 +8,8 @@ using RetroDownfall.Arcanum.Api.Mcp;
 
 using RetroDownfall.Arcanum.Api.Serialization;
 
+using RetroDownfall.Arcanum.Cli.Infrastructure;
+
 using RetroDownfall.Arcanum.Cli.Services;
 
 using RetroDownfall.Arcanum.Cli.UX;
@@ -18,6 +20,8 @@ using RetroDownfall.Arcanum.Core.Mcp;
 
 using RetroDownfall.Arcanum.Core.Primitives;
 
+using RetroDownfall.Arcanum.Core.Workspaces;
+
 using Spectre.Console;
 
 namespace RetroDownfall.Arcanum.Cli.Commands.Configuration;
@@ -27,13 +31,21 @@ public sealed class McpCommands(
     ICliEnvironment environment,
     IResourcePicker picker,
     IRecentResourceStore recentStore,
-    IThemePalette themePalette)
+    IThemePalette themePalette,
+    IConsoleDispatcher dispatcher,
+    IConfirmationPrompt confirmationPrompt,
+    ICliResourceCatalog resourceCatalog)
 {
-
     public async Task<int> List(
         string? workingDirectory,
         CancellationToken cancellationToken)
     {
+        WorkspaceScope scope = await ResolveWorkspaceAsync(workingDirectory, cancellationToken).ConfigureAwait(false);
+
+        if (scope.ExitCode is { } stopped)
+        {
+            return stopped;
+        }
 
         Result<IReadOnlyList<McpServerInfo>> result = await apiClient
             .GetMcpServersAsync(cancellationToken)
@@ -41,24 +53,14 @@ public sealed class McpCommands(
 
         if (result.IsFailure)
         {
-
             return WriteError(result.Error);
-
         }
 
         IEnumerable<McpServerInfo> servers = result.Value;
 
-        if (!string.IsNullOrWhiteSpace(workingDirectory))
+        if (scope.Path is { } workspacePath)
         {
-
-            string normalized = NormalizeWorkspace(workingDirectory);
-
-            servers = servers.Where(
-                server => string.Equals(
-                    NormalizeWorkspace(server.WorkingDirectory),
-                    normalized,
-                    StringComparison.Ordinal));
-
+            servers = servers.Where(server => InWorkspaceScope(server, workspacePath));
         }
 
         Table table = new();
@@ -71,7 +73,6 @@ public sealed class McpCommands(
 
         foreach (McpServerInfo server in servers)
         {
-
             table.AddRow(
                 new Markup(themePalette.TextMarkup(Markup.Escape(server.Name))),
                 new Markup(themePalette.HighlightMarkup("Scope")),
@@ -81,11 +82,6 @@ public sealed class McpCommands(
                 new Markup(string.Empty),
                 new Markup(themePalette.HighlightMarkup("Transport")),
                 new Markup(themePalette.MutedMarkup(Markup.Escape(server.Transport.ToString()))));
-
-            table.AddRow(
-                new Markup(string.Empty),
-                new Markup(themePalette.HighlightMarkup("Trust")),
-                new Markup(themePalette.MutedMarkup(Trust(server))));
 
             table.AddRow(
                 new Markup(string.Empty),
@@ -101,13 +97,11 @@ public sealed class McpCommands(
                 new Markup(string.Empty),
                 new Markup(themePalette.HighlightMarkup("Last error")),
                 new Markup(themePalette.MutedMarkup(Markup.Escape(server.ErrorMessage ?? "-"))));
-
         }
 
         AnsiConsole.Write(table);
 
         return 0;
-
     }
 
     public async Task<int> Show(
@@ -115,24 +109,26 @@ public sealed class McpCommands(
         string? workingDirectory,
         CancellationToken cancellationToken)
     {
+        WorkspaceScope scope = await ResolveWorkspaceAsync(workingDirectory, cancellationToken).ConfigureAwait(false);
+
+        if (scope.ExitCode is { } stopped)
+        {
+            return stopped;
+        }
 
         ResourceSelectionResult<McpServerInfo> selection = await SelectServerAsync(
             identifier,
-            workingDirectory,
+            scope.Path,
             cancellationToken).ConfigureAwait(false);
 
         if (selection.Status == ResourceSelectionStatus.Cancelled)
         {
-
             return 0;
-
         }
 
         if (selection.Status == ResourceSelectionStatus.Error)
         {
-
-            return WriteError(selection.Error!);
-
+            return WriteError(selection.Error!, selection.ErrorCode);
         }
 
         McpServerInfo selected = selection.Value!;
@@ -146,15 +142,12 @@ public sealed class McpCommands(
 
         if (result.IsFailure)
         {
-
             return WriteError(result.Error);
-
         }
 
         WriteServer(result.Value);
 
         return 0;
-
     }
 
     public Task<int> Start(
@@ -194,18 +187,22 @@ public sealed class McpCommands(
         string? workingDirectory,
         CancellationToken cancellationToken)
     {
+        WorkspaceScope scope = await ResolveWorkspaceAsync(workingDirectory, cancellationToken).ConfigureAwait(false);
+
+        if (scope.ExitCode is { } stopped)
+        {
+            return stopped;
+        }
 
         Result<string> result = await apiClient
             .ReloadMcpAsync(
-                new OptionalWorkspaceRequest(workingDirectory),
+                new OptionalWorkspaceRequest(scope.Path),
                 cancellationToken)
             .ConfigureAwait(false);
 
         if (result.IsFailure)
         {
-
             return WriteError(result.Error);
-
         }
 
         AnsiConsole.MarkupLine(
@@ -214,29 +211,74 @@ public sealed class McpCommands(
                 Markup.Escape(result.Value)));
 
         return 0;
-
     }
 
     public async Task<int> Trust(
         string? workingDirectory,
         CancellationToken cancellationToken)
     {
+        WorkspaceScope scope = await ResolveWorkspaceAsync(workingDirectory, cancellationToken).ConfigureAwait(false);
 
-        string workspace = string.IsNullOrWhiteSpace(workingDirectory)
-            ? Environment.CurrentDirectory
-            : workingDirectory.Trim();
+        if (scope.ExitCode is { } stopped)
+        {
+            return stopped;
+        }
+
+        string workspace = scope.Path ?? Environment.CurrentDirectory;
+
+        // Trust lets the file's commands run, so the operator sees what the file names before the host
+        // binds trust to its bytes. The preview is the host's own reading of its own copy (a host on another
+        // machine is previewed, not the working directory here), and the approval below carries the digest
+        // of exactly those bytes, so the host refuses if the file is no longer what was shown. Nothing
+        // reaches the trust route unless they approve it.
+        Result<McpWorkspaceTrustPreview> preview = await apiClient
+            .PreviewMcpWorkspaceTrustAsync(
+                new OptionalWorkspaceRequest(workspace),
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        if (preview.IsFailure)
+        {
+            return WriteError(preview.Error);
+        }
+
+        foreach (string line in preview.Value.Lines)
+        {
+            dispatcher.WriteDiagnostic(line);
+        }
+
+        // Approval has to be for text the operator was shown. A field the preview had to cut short could
+        // carry the part that matters past the cut, so it is never approved, not even with --yes.
+        if (preview.Value.Truncated)
+        {
+            dispatcher.WriteDiagnostic(
+                "A field in this mcp.json is too long to show in full, so it cannot be reviewed. "
+                + "Nothing was trusted: shorten the field so the whole command is visible, then run "
+                + "'arcanum mcp trust' again.");
+
+            return (int)CliExitCode.ConfigurationError;
+        }
+
+        if (!await confirmationPrompt
+                .PromptForConfirmationAsync(
+                    $"Trust the MCP configuration in {preview.Value.Workspace}? Its servers will be allowed to run the commands listed above.",
+                    cancellationToken)
+                .ConfigureAwait(false))
+        {
+            dispatcher.WriteDiagnostic("Workspace MCP trust cancelled; nothing was changed.");
+
+            return 0;
+        }
 
         Result<bool> result = await apiClient
             .TrustMcpWorkspaceAsync(
-                new OptionalWorkspaceRequest(workspace),
+                new McpTrustWorkspaceRequest(workspace, preview.Value.ConfigDigest),
                 cancellationToken)
             .ConfigureAwait(false);
 
         if (result.IsFailure)
         {
-
             return WriteError(result.Error);
-
         }
 
         AnsiConsole.MarkupLine(
@@ -249,7 +291,6 @@ public sealed class McpCommands(
                 "Trust is bound to the current mcp.json bytes; changed configuration must be trusted again."));
 
         return 0;
-
     }
 
     public async Task<int> Tools(
@@ -257,24 +298,26 @@ public sealed class McpCommands(
         string? workingDirectory,
         CancellationToken cancellationToken)
     {
+        WorkspaceScope scope = await ResolveWorkspaceAsync(workingDirectory, cancellationToken).ConfigureAwait(false);
+
+        if (scope.ExitCode is { } stopped)
+        {
+            return stopped;
+        }
 
         ResourceSelectionResult<McpServerInfo> selection = await SelectServerAsync(
             identifier,
-            workingDirectory,
+            scope.Path,
             cancellationToken).ConfigureAwait(false);
 
         if (selection.Status == ResourceSelectionStatus.Cancelled)
         {
-
             return 0;
-
         }
 
         if (selection.Status == ResourceSelectionStatus.Error)
         {
-
-            return WriteError(selection.Error!);
-
+            return WriteError(selection.Error!, selection.ErrorCode);
         }
 
         McpServerInfo server = selection.Value!;
@@ -289,18 +332,15 @@ public sealed class McpCommands(
 
         foreach (string tool in server.Tools.Order(StringComparer.Ordinal))
         {
-
             table.AddRow(
                 Markup.Escape(server.Name),
                 Markup.Escape(tool),
                 Scope(server));
-
         }
 
         AnsiConsole.Write(table);
 
         return 0;
-
     }
 
     public async Task<int> Invoke(
@@ -310,16 +350,13 @@ public sealed class McpCommands(
         string? workingDirectory,
         CancellationToken cancellationToken)
     {
-
         if (string.Equals(
                 serverIdentifier?.Trim(),
                 DiagnosticMcpInvocationService.InternalServerName,
                 StringComparison.OrdinalIgnoreCase))
         {
-
             return WriteError(
                 "The internal arcanum-internal server is not a diagnostic MCP target. Diagnostic MCP invocation is external-only; use 'arcanum tool invoke' for eligible built-in tools, while reserved internal names continue through the Master tool execution pipeline.");
-
         }
 
         if (!ToolArgumentReader.TryRead(
@@ -327,29 +364,28 @@ public sealed class McpCommands(
                 out JsonElement arguments,
                 out string? argumentError))
         {
-
             return WriteError(argumentError!);
-
         }
+
+        WorkspaceScope scope = await ResolveWorkspaceAsync(workingDirectory, cancellationToken).ConfigureAwait(false);
+
+        if (scope.ExitCode is { } stopped)
+        {
+            return stopped;
+        }
+
+        workingDirectory = scope.Path;
 
         if (DiagnosticMcpInvocationService.BlockedToolNames.Contains(
                 toolIdentifier.Trim()))
         {
-
             Result<McpToolInvokeResponse> blocked = await apiClient
                 .InvokeDiagnosticMcpToolAsync(
-                    new McpToolInvokeRequest
-                    {
-
-                        ToolName = toolIdentifier.Trim(),
-
-                        Arguments = arguments,
-
-                        ServerName = serverIdentifier,
-
-                        WorkingDirectory = workingDirectory,
-
-                    },
+                    new McpToolInvokeRequest(
+                        toolIdentifier.Trim(),
+                        arguments,
+                        serverIdentifier,
+                        workingDirectory),
                     cancellationToken)
                 .ConfigureAwait(false);
 
@@ -357,7 +393,6 @@ public sealed class McpCommands(
                 ? WriteError(blocked.Error)
                 : WriteError(
                     "The server unexpectedly allowed a reserved Master-pipeline tool through diagnostic invocation.");
-
         }
 
         Result<WorkspaceArsenalDto> arsenal = await apiClient
@@ -368,9 +403,7 @@ public sealed class McpCommands(
 
         if (arsenal.IsFailure)
         {
-
             return WriteError(arsenal.Error);
-
         }
 
         McpServerStatusDto[] externalServers = arsenal.Value.McpServers
@@ -383,7 +416,6 @@ public sealed class McpCommands(
 
         if (!string.IsNullOrWhiteSpace(serverIdentifier))
         {
-
             ResourceSelectionResult<McpServerStatusDto> serverSelection =
                 await SelectDiagnosticServerAsync(
                     externalServers,
@@ -392,20 +424,15 @@ public sealed class McpCommands(
 
             if (serverSelection.Status == ResourceSelectionStatus.Cancelled)
             {
-
                 return 0;
-
             }
 
             if (serverSelection.Status == ResourceSelectionStatus.Error)
             {
-
-                return WriteError(serverSelection.Error!);
-
+                return WriteError(serverSelection.Error!, serverSelection.ErrorCode);
             }
 
             externalServers = [serverSelection.Value!];
-
         }
 
         DiagnosticTool[] tools = externalServers
@@ -427,42 +454,29 @@ public sealed class McpCommands(
 
         if (toolSelection.Status == ResourceSelectionStatus.Cancelled)
         {
-
             return 0;
-
         }
 
         if (toolSelection.Status == ResourceSelectionStatus.Error)
         {
-
-            return WriteError(toolSelection.Error!);
-
+            return WriteError(toolSelection.Error!, toolSelection.ErrorCode);
         }
 
         DiagnosticTool selected = toolSelection.Value!;
 
         Result<McpToolInvokeResponse> result = await apiClient
             .InvokeDiagnosticMcpToolAsync(
-                new McpToolInvokeRequest
-                {
-
-                    ToolName = selected.Name,
-
-                    Arguments = arguments,
-
-                    ServerName = selected.ServerName,
-
-                    WorkingDirectory = workingDirectory,
-
-                },
+                new McpToolInvokeRequest(
+                    selected.Name,
+                    arguments,
+                    selected.ServerName,
+                    workingDirectory),
                 cancellationToken)
             .ConfigureAwait(false);
 
         if (result.IsFailure)
         {
-
             return WriteError(result.Error);
-
         }
 
         McpToolInvokeResponse response = result.Value;
@@ -471,12 +485,13 @@ public sealed class McpCommands(
         // profile width, putting literal newlines inside JSON string literals.
         Console.Out.WriteLine(response.Result.GetRawText());
 
-        AnsiConsole.MarkupLine(
+        // The summary is a diagnostic, so it goes to stderr: stdout is the raw result and must stay one
+        // parseable document when redirected, and "truncated" is the only signal the result was cut.
+        CliErrorOutput.WriteMarkupLine(
             themePalette.MutedMarkup(
                 $"Diagnostic MCP: {Markup.Escape(response.ToolName)} on {Markup.Escape(response.ServerName)}; {response.DurationMs.ToString(CultureInfo.InvariantCulture)}ms; truncated: {(response.Truncated ? "yes" : "no")}."));
 
         return 0;
-
     }
 
     private async Task<int> ChangeLifecycle(
@@ -486,24 +501,26 @@ public sealed class McpCommands(
         Func<string, string?, CancellationToken, Task<Result<bool>>> action,
         CancellationToken cancellationToken)
     {
+        WorkspaceScope scope = await ResolveWorkspaceAsync(workingDirectory, cancellationToken).ConfigureAwait(false);
+
+        if (scope.ExitCode is { } stopped)
+        {
+            return stopped;
+        }
 
         ResourceSelectionResult<McpServerInfo> selection = await SelectServerAsync(
             identifier,
-            workingDirectory,
+            scope.Path,
             cancellationToken).ConfigureAwait(false);
 
         if (selection.Status == ResourceSelectionStatus.Cancelled)
         {
-
             return 0;
-
         }
 
         if (selection.Status == ResourceSelectionStatus.Error)
         {
-
-            return WriteError(selection.Error!);
-
+            return WriteError(selection.Error!, selection.ErrorCode);
         }
 
         McpServerInfo server = selection.Value!;
@@ -515,9 +532,7 @@ public sealed class McpCommands(
 
         if (result.IsFailure)
         {
-
             return WriteError(result.Error);
-
         }
 
         AnsiConsole.MarkupLine(
@@ -526,7 +541,6 @@ public sealed class McpCommands(
                 Markup.Escape(server.Name)));
 
         return 0;
-
     }
 
     private Task<ResourceSelectionResult<McpServerInfo>> SelectServerAsync(
@@ -534,7 +548,6 @@ public sealed class McpCommands(
         string? workingDirectory,
         CancellationToken cancellationToken)
     {
-
         ResourceDescriptor<McpServerInfo> descriptor = new(
             "MCP server",
             ["Name", "Scope", "State", "Transport", "Tools"],
@@ -543,7 +556,6 @@ public sealed class McpCommands(
             static server => $"scope {Scope(server)}, state {server.State}, transport {server.Transport}, {server.Tools.Length} tools",
             static server =>
             [
-
                 server.Name,
 
                 Scope(server),
@@ -553,7 +565,6 @@ public sealed class McpCommands(
                 server.Transport.ToString(),
 
                 server.Tools.Length.ToString(CultureInfo.InvariantCulture),
-
             ]);
 
         return new ResourceSelector<McpServerInfo>(picker, recentStore)
@@ -565,40 +576,27 @@ public sealed class McpCommands(
                     descriptor,
                     async (_, ct) =>
                     {
-
                         Result<IReadOnlyList<McpServerInfo>> result = await apiClient
                             .GetMcpServersAsync(ct)
                             .ConfigureAwait(false);
 
                         if (result.IsFailure)
                         {
-
                             return Result<ResourcePage<McpServerInfo>>.Failure(result.Error);
-
                         }
 
                         IEnumerable<McpServerInfo> servers = result.Value;
 
                         if (!string.IsNullOrWhiteSpace(workingDirectory))
                         {
-
-                            string normalized = NormalizeWorkspace(workingDirectory);
-
-                            servers = servers.Where(
-                                server => string.Equals(
-                                    NormalizeWorkspace(server.WorkingDirectory),
-                                    normalized,
-                                    StringComparison.Ordinal));
-
+                            servers = servers.Where(server => InWorkspaceScope(server, workingDirectory));
                         }
 
                         return Result<ResourcePage<McpServerInfo>>.Success(
                             new ResourcePage<McpServerInfo>(servers.ToArray(), null));
-
                     },
                     PickAmbiguousIdentifiers: true),
                 cancellationToken);
-
     }
 
     private Task<ResourceSelectionResult<McpServerStatusDto>> SelectDiagnosticServerAsync(
@@ -619,13 +617,11 @@ public sealed class McpCommands(
                         static server => $"state {server.Status}, {server.ToolCount} tools",
                         static server =>
                         [
-
                             server.ServerName,
 
                             server.Status,
 
                             server.ToolCount.ToString(CultureInfo.InvariantCulture),
-
                         ]),
                     (_, _) => Task.FromResult(
                         Result<ResourcePage<McpServerStatusDto>>.Success(
@@ -658,7 +654,6 @@ public sealed class McpCommands(
 
     private void WriteServer(McpServerInfo server)
     {
-
         Table table = new Table().Border(TableBorder.None).HideHeaders();
 
         table.AddColumn(string.Empty);
@@ -671,14 +666,10 @@ public sealed class McpCommands(
 
         if (!string.IsNullOrWhiteSpace(server.WorkingDirectory))
         {
-
             table.AddRow("Workspace:", Markup.Escape(server.WorkingDirectory));
-
         }
 
         table.AddRow("Transport:", Markup.Escape(server.Transport.ToString()));
-
-        table.AddRow("Trust:", Trust(server));
 
         table.AddRow("Lifecycle:", Markup.Escape(server.State.ToString()));
 
@@ -696,7 +687,6 @@ public sealed class McpCommands(
         table.AddRow("Last error:", Markup.Escape(server.ErrorMessage ?? "-"));
 
         AnsiConsole.Write(table);
-
     }
 
     private static string Scope(McpServerInfo server) =>
@@ -709,31 +699,88 @@ public sealed class McpCommands(
             ? "global"
             : NormalizeWorkspace(server.WorkingDirectory);
 
-    private static string Trust(McpServerInfo server) =>
-        string.IsNullOrWhiteSpace(server.WorkingDirectory)
-            ? "not required"
-            : "trusted";
-
     private static string NormalizeWorkspace(string? path)
         => string.IsNullOrWhiteSpace(path)
             ? string.Empty
             : path.Trim();
 
-    private int WriteError(Error error) =>
-        WriteError($"{error.Code}: {error.Message}");
+    /// <summary>
+    /// Whether a server belongs to a workspace's view: a global server (no working directory) applies to
+    /// every workspace, and a workspace server applies to the one it was configured in.
+    /// </summary>
+    private static bool InWorkspaceScope(McpServerInfo server, string workspacePath) =>
+        string.IsNullOrWhiteSpace(server.WorkingDirectory)
+        || McpWorkspacePath.Same(server.WorkingDirectory, workspacePath);
 
-    private int WriteError(string error)
+    /// <summary>
+    /// Whether a workspace selector is a path rather than a registered workspace's ID or name. A server-owned
+    /// path of either platform's spelling is a path, so it reaches the host in its own separators.
+    /// </summary>
+    private static bool LooksLikePath(string selector) =>
+        selector.Contains('/', StringComparison.Ordinal)
+        || selector.Contains('\\', StringComparison.Ordinal);
+
+    /// <summary>
+    /// Turns a <c>--workspace</c> value into the server path the host scopes by: a path is canonicalised
+    /// (made absolute against this process's current directory, with dot segments and extra separators
+    /// removed), and a workspace ID or name is resolved through the registry, as every other
+    /// workspace-taking verb does.
+    /// </summary>
+    private async Task<WorkspaceScope> ResolveWorkspaceAsync(
+        string? selector,
+        CancellationToken cancellationToken)
     {
+        if (string.IsNullOrWhiteSpace(selector))
+        {
+            return new WorkspaceScope(null, null);
+        }
 
+        string trimmed = selector.Trim();
+
+        if (LooksLikePath(trimmed))
+        {
+            return new WorkspaceScope(McpWorkspacePath.Canonicalise(trimmed), null);
+        }
+
+        ResourceSelectionResult<WorkspaceInfo> selection = await resourceCatalog
+            .SelectWorkspaceAsync(trimmed, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (selection.Status == ResourceSelectionStatus.Cancelled)
+        {
+            return new WorkspaceScope(null, 0);
+        }
+
+        if (selection.Status == ResourceSelectionStatus.Error)
+        {
+            return new WorkspaceScope(
+                null,
+                WriteError(
+                    string.IsNullOrWhiteSpace(selection.Error) ? "Workspace selection failed." : selection.Error,
+                    selection.ErrorCode));
+        }
+
+        return new WorkspaceScope(selection.Value!.Path, null);
+    }
+
+    private sealed record WorkspaceScope(string? Path, int? ExitCode);
+
+    private int WriteError(Error error)
+    {
+        _ = WriteError($"{error.Code}: {error.Message}");
+
+        return CliFailureExit.ExitCode(error);
+    }
+
+    private int WriteError(string error, string? errorCode = null)
+    {
         CliErrorOutput.WriteMarkupLine(
             themePalette.ErrorMarkup(Markup.Escape(error)));
 
-        return 1;
-
+        return CliFailureExit.ExitCode(errorCode);
     }
 
     private sealed record DiagnosticTool(
         string Name,
         string ServerName);
-
 }

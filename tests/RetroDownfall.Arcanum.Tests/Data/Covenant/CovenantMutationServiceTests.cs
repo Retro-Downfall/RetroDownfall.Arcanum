@@ -31,7 +31,6 @@ namespace RetroDownfall.Arcanum.Tests.Data.Covenant;
 [Trait("Category", "Integration")]
 public sealed class CovenantMutationServiceTests
 {
-
     private static CancellationToken Token => CancellationToken.None;
 
     private const string Installation = "3F6C1A20-77B4-4E19-9C2D-8A5E0B14D763";
@@ -41,7 +40,6 @@ public sealed class CovenantMutationServiceTests
     [Fact]
     public async Task A_prepared_set_commits_and_becomes_the_confirmed_head()
     {
-
         await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
 
         CovenantMutationService service = Service(fixture);
@@ -100,13 +98,11 @@ public sealed class CovenantMutationServiceTests
         Assert.Equal(1, committed.Value.ResultingLaneRevision);
 
         Assert.Equal(1L, await CountAsync(fixture, "SELECT COUNT(*) FROM covenant_heads;"));
-
     }
 
     [Fact]
     public async Task An_exact_retry_replays_the_committed_answer_rather_than_writing_twice()
     {
-
         await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
 
         CovenantMutationService service = Service(fixture);
@@ -135,13 +131,11 @@ public sealed class CovenantMutationServiceTests
         Assert.Equal(first.Value.ResultingLaneRevision, second.Value.ResultingLaneRevision);
 
         Assert.Equal(1L, await CountAsync(fixture, "SELECT COUNT(*) FROM covenant_versions;"));
-
     }
 
     [Fact]
     public async Task Reusing_one_mutation_identity_for_different_content_is_an_idempotency_conflict()
     {
-
         await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
 
         CovenantMutationService service = Service(fixture);
@@ -165,13 +159,11 @@ public sealed class CovenantMutationServiceTests
         Assert.True(reused.IsFailure);
 
         Assert.Equal(ErrorCodes.Security.IdempotencyConflict, reused.Error.Code);
-
     }
 
     [Fact]
     public async Task A_token_prepared_for_one_key_cannot_commit_another()
     {
-
         await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
 
         CovenantMutationService service = Service(fixture);
@@ -193,13 +185,11 @@ public sealed class CovenantMutationServiceTests
         Assert.True(swapped.IsFailure);
 
         Assert.Equal(ErrorCodes.Covenant.ForbiddenAuthority, swapped.Error.Code);
-
     }
 
     [Fact]
     public async Task A_commit_with_no_token_at_all_is_refused()
     {
-
         await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
 
         CovenantMutationService service = Service(fixture);
@@ -223,13 +213,11 @@ public sealed class CovenantMutationServiceTests
             Token);
 
         Assert.True(refused.IsFailure);
-
     }
 
     [Fact]
     public async Task A_campaign_mutation_commits_on_an_installation_whose_registry_has_advanced()
     {
-
         await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
 
         // Every Campaign an installation has ever created advanced this epoch, and a Campaign-scoped
@@ -252,7 +240,6 @@ public sealed class CovenantMutationServiceTests
 
         await using (CovenantReadLease read = (await gate.AcquireReadAsync(scope, Token)).Value)
         {
-
             Result<CovenantMutationPreflightDto> prepared = await service.PrepareSetAsync(
                 new CovenantSetPrepareRequest(
                     CovenantScope.Campaign,
@@ -268,7 +255,6 @@ public sealed class CovenantMutationServiceTests
             Assert.True(prepared.IsSuccess, prepared.IsFailure ? prepared.Error.Message : string.Empty);
 
             preflight = prepared.Value.PreflightToken;
-
         }
 
         await using CovenantWriteLease write = (await gate.AcquireWriteAsync(scope, Token)).Value;
@@ -289,13 +275,11 @@ public sealed class CovenantMutationServiceTests
         Assert.True(committed.IsSuccess, committed.IsFailure ? committed.Error.Message : string.Empty);
 
         Assert.Equal(CovenantMutationOutcome.Applied, committed.Value.Outcome);
-
     }
 
     [Fact]
     public async Task A_global_mutation_still_goes_stale_when_a_campaign_appears_before_it_commits()
     {
-
         await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
 
         CovenantMutationService service = Service(fixture);
@@ -320,13 +304,11 @@ public sealed class CovenantMutationServiceTests
         // The kernel answers StaleSnapshot from four separate guards, so the shared code alone would
         // stay green if the registry comparison were deleted and some other epoch happened to move.
         Assert.Contains("Campaign registry epoch", committed.Error.Message, StringComparison.Ordinal);
-
     }
 
     [Fact]
     public async Task A_preflight_survives_a_clock_that_ticks_between_the_body_and_its_envelope()
     {
-
         await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
 
         // The preflight body repeats the envelope's timestamps so a caller cannot extend a token's
@@ -357,7 +339,6 @@ public sealed class CovenantMutationServiceTests
         Result<CovenantMutationResultDto> committed = await service.SetAsync(request, write, Token);
 
         Assert.True(committed.IsSuccess, committed.IsFailure ? committed.Error.Message : string.Empty);
-
     }
 
     [Theory]
@@ -365,7 +346,6 @@ public sealed class CovenantMutationServiceTests
     [InlineData(CovenantScope.Campaign)]
     public async Task A_prepared_set_commits_against_the_real_envelope_codec(CovenantScope scope)
     {
-
         await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
 
         await fixture.AddCampaignAsync(CovenantOperationGateFixture.CampaignOne, "First", Token);
@@ -419,20 +399,16 @@ public sealed class CovenantMutationServiceTests
         // read authority; a Campaign one measures under the scoped lease that covers exactly its own.
         if (campaignId is null)
         {
-
             await using CovenantInstallationReadLease read =
                 (await gate.AcquireInstallationReadAsync(Token)).Value;
 
             preflight = await PrepareAsync(service, read, scope, campaignId, Key, Content, mutationId);
-
         }
         else
         {
-
             await using CovenantReadLease read = (await gate.AcquireReadAsync(operationScope, Token)).Value;
 
             preflight = await PrepareAsync(service, read, scope, campaignId, Key, Content, mutationId);
-
         }
 
         await using CovenantWriteLease write = (await gate.AcquireWriteAsync(operationScope, Token)).Value;
@@ -453,7 +429,6 @@ public sealed class CovenantMutationServiceTests
         Assert.True(committed.IsSuccess, committed.IsFailure ? committed.Error.Message : string.Empty);
 
         Assert.Equal(CovenantMutationOutcome.Applied, committed.Value.Outcome);
-
     }
 
     /// <summary>
@@ -464,7 +439,6 @@ public sealed class CovenantMutationServiceTests
     [Fact]
     public async Task A_curation_replay_after_the_token_expired_returns_the_committed_receipt_under_the_real_codec()
     {
-
         await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
 
         using CovenantEnvelopeMasterKeyProvider keys = new();
@@ -494,7 +468,6 @@ public sealed class CovenantMutationServiceTests
         Assert.Equal(first.Value.ResultingVersionId, replayed.Value.ResultingVersionId);
 
         Assert.True(replayed.Value.IsPinned);
-
     }
 
     /// <summary>
@@ -504,7 +477,6 @@ public sealed class CovenantMutationServiceTests
     [Fact]
     public async Task A_curation_replay_with_changed_fields_is_an_idempotency_conflict_after_expiry()
     {
-
         await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
 
         using CovenantEnvelopeMasterKeyProvider keys = new();
@@ -533,7 +505,6 @@ public sealed class CovenantMutationServiceTests
         Assert.Equal("Security.IdempotencyConflict", conflicted.Error.Code);
 
         Assert.Equal(1L, await CountAsync(fixture, "SELECT COUNT(*) FROM covenant_curation_receipts;"));
-
     }
 
     /// <summary>
@@ -543,7 +514,6 @@ public sealed class CovenantMutationServiceTests
     [Fact]
     public async Task A_curation_replay_reports_the_current_state_after_the_key_epoch_moved()
     {
-
         await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
 
         using CovenantEnvelopeMasterKeyProvider keys = new();
@@ -579,7 +549,6 @@ public sealed class CovenantMutationServiceTests
         Assert.True(replayed.Value.IsPinned);
 
         Assert.Equal(first.Value.ResultingVersionId, replayed.Value.ResultingVersionId);
-
     }
 
     /// <summary>Composes the service on the production keyed codec and the service's own clock.</summary>
@@ -588,7 +557,6 @@ public sealed class CovenantMutationServiceTests
         CovenantEnvelopeMasterKeyProvider keys,
         SteppingTimeProvider clock)
     {
-
         Assert.True(CovenantEnvelopeRuntimeTestHarness.Initialize(
             keys,
             Encoding.UTF8.GetBytes("covenant-mutation-service-master-key"),
@@ -609,7 +577,6 @@ public sealed class CovenantMutationServiceTests
             new StubAuthority(),
             clock,
             DetachedAvailabilityRepublisher.Create());
-
     }
 
     /// <summary>Prepares one Global curation change and builds the commit that carries its token.</summary>
@@ -618,7 +585,6 @@ public sealed class CovenantMutationServiceTests
         CovenantOperationGate gate,
         CovenantCurationKind kind)
     {
-
         Guid mutationId = Guid.CreateVersion7();
 
         await using CovenantInstallationReadLease read =
@@ -647,7 +613,6 @@ public sealed class CovenantMutationServiceTests
             ExpectedRevision: 0,
             mutationId,
             prepared.Value.PreflightToken);
-
     }
 
     private static async Task<Result<CovenantCurationResultDto>> CurateAsync(
@@ -655,12 +620,10 @@ public sealed class CovenantMutationServiceTests
         CovenantOperationGate gate,
         CovenantCurationRequest request)
     {
-
         await using CovenantWriteLease write =
             (await gate.AcquireWriteAsync(CovenantOperationScope.Global, Token)).Value;
 
         return await service.CurateAsync(request, write, Token);
-
     }
 
     /// <summary>Writes the Global key through the production prepare-and-commit path.</summary>
@@ -670,14 +633,12 @@ public sealed class CovenantMutationServiceTests
         string content,
         long expectedRevision)
     {
-
         Guid mutationId = Guid.CreateVersion7();
 
         string preflight;
 
         await using (CovenantInstallationReadLease read = (await gate.AcquireInstallationReadAsync(Token)).Value)
         {
-
             Result<CovenantMutationPreflightDto> prepared = await service.PrepareSetAsync(
                 new CovenantSetPrepareRequest(
                     CovenantScope.Global,
@@ -693,7 +654,6 @@ public sealed class CovenantMutationServiceTests
             Assert.True(prepared.IsSuccess, prepared.IsFailure ? prepared.Error.Message : string.Empty);
 
             preflight = prepared.Value.PreflightToken;
-
         }
 
         await using CovenantWriteLease write =
@@ -713,7 +673,6 @@ public sealed class CovenantMutationServiceTests
             Token);
 
         Assert.True(committed.IsSuccess, committed.IsFailure ? committed.Error.Message : string.Empty);
-
     }
 
     private static async Task<string> PrepareAsync(
@@ -725,7 +684,6 @@ public sealed class CovenantMutationServiceTests
         string content,
         Guid mutationId)
     {
-
         Result<CovenantMutationPreflightDto> prepared = await service.PrepareSetAsync(
             new CovenantSetPrepareRequest(
                 scope,
@@ -741,7 +699,6 @@ public sealed class CovenantMutationServiceTests
         Assert.True(prepared.IsSuccess, prepared.IsFailure ? prepared.Error.Message : string.Empty);
 
         return prepared.Value.PreflightToken;
-
     }
 
     private static async Task<CovenantSetRequest> PrepareThenBuildAsync(
@@ -750,7 +707,6 @@ public sealed class CovenantMutationServiceTests
         Guid mutationId,
         CancellationToken cancellationToken)
     {
-
         await using CovenantInstallationReadLease read =
             (await gate.AcquireInstallationReadAsync(cancellationToken)).Value;
 
@@ -777,7 +733,99 @@ public sealed class CovenantMutationServiceTests
             mutationId,
             Reactivate: false,
             prepared.Value.PreflightToken);
+    }
 
+    /// <summary>
+    /// R-174: a correction's target rendered hash is a body field, so a value that is not a 64-character
+    /// hexadecimal digest is a malformed body. It was reported as <c>Covenant.InvalidScope</c>, a code
+    /// that names a scope the request never got wrong.
+    /// </summary>
+    [Theory]
+    [InlineData("")]
+    [InlineData("not-a-digest")]
+    [InlineData("zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz")]
+    public async Task Correction_with_a_malformed_rendered_hash_is_refused_as_invalid_body(string renderedHash)
+    {
+        await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
+
+        CovenantMutationService service = Service(fixture);
+
+        CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate();
+
+        await using CovenantInstallationReadLease read =
+            (await gate.AcquireInstallationReadAsync(Token)).Value;
+
+        Result<CovenantMutationPreflightDto> prepared = await service.PrepareCorrectAsync(
+            new CovenantCorrectPrepareRequest(
+                CovenantScope.Global,
+                null,
+                "preference.builds",
+                "Run build commands from the repository root.",
+                Guid.CreateVersion7(),
+                CovenantLane.Confirmed,
+                ExpectedRevision: 1,
+                renderedHash,
+                Guid.CreateVersion7()),
+            read,
+            Token);
+
+        Assert.True(prepared.IsFailure);
+
+        Assert.Equal(ErrorCodes.Validation.InvalidBody, prepared.Error.Code);
+
+        await using CovenantWriteLease write =
+            (await gate.AcquireWriteAsync(CovenantOperationScope.Global, Token)).Value;
+
+        Result<CovenantMutationResultDto> committed = await service.CorrectAsync(
+            new CovenantCorrectRequest(
+                CovenantScope.Global,
+                null,
+                "preference.builds",
+                "Run build commands from the repository root.",
+                Guid.CreateVersion7(),
+                CovenantLane.Confirmed,
+                ExpectedRevision: 1,
+                renderedHash,
+                Guid.CreateVersion7(),
+                "preflight-token"),
+            write,
+            Token);
+
+        Assert.True(committed.IsFailure);
+
+        Assert.Equal(ErrorCodes.Validation.InvalidBody, committed.Error.Code);
+    }
+
+    /// <summary>
+    /// R-174: the wire validation refuses every malformed rendered hash before the service is reached, so
+    /// the service's own refusal is a second line that no request through the validated entry points can
+    /// exercise, and reverting it left the test above green. It is pinned directly: the same body-field
+    /// code for every value that is not a 64-character hexadecimal digest, and a digest for one that is.
+    /// </summary>
+    [Theory]
+    [InlineData("")]
+    [InlineData("not-a-digest")]
+    [InlineData("abcd")]
+    [InlineData("zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz")]
+    public void A_rendered_hash_that_reaches_the_service_unvalidated_is_still_an_invalid_body(string renderedHash)
+    {
+        Result<CovenantDigest> parsed = CovenantMutationService.ParseDigest(renderedHash);
+
+        Assert.True(parsed.IsFailure);
+
+        Assert.Equal(ErrorCodes.Validation.InvalidBody, parsed.Error.Code);
+    }
+
+    [Fact]
+    public void A_well_formed_rendered_hash_parses_to_its_digest()
+    {
+        string hex = string.Concat(Enumerable.Repeat("ab", 32));
+
+        Result<CovenantDigest> parsed = CovenantMutationService.ParseDigest(hex);
+
+        Assert.True(parsed.IsSuccess);
+
+        Assert.Equal(Convert.FromHexString(hex), parsed.Value.Bytes.ToArray());
     }
 
     private static CovenantMutationService Service(CovenantCanonicalFixture fixture) =>
@@ -794,13 +842,11 @@ public sealed class CovenantMutationServiceTests
 
     private static async Task<long> CountAsync(CovenantCanonicalFixture fixture, string sql)
     {
-
         await using Microsoft.Data.Sqlite.SqliteCommand command = fixture.Connection.CreateCommand();
 
         command.CommandText = sql;
 
         return Convert.ToInt64(await command.ExecuteScalarAsync(Token), System.Globalization.CultureInfo.InvariantCulture);
-
     }
 
     /// <summary>
@@ -813,7 +859,6 @@ public sealed class CovenantMutationServiceTests
     /// </remarks>
     private sealed class StubEnvelopeCodec : ICovenantEnvelopeCodec
     {
-
         private readonly Dictionary<string, CovenantEnvelopeBody> _issued = new(StringComparer.Ordinal);
 
         public CovenantEnvelopeKeySnapshot KeySnapshot { get; } = new(1, 1, 1, Guid.NewGuid().ToString("D"), Guid.NewGuid());
@@ -824,7 +869,6 @@ public sealed class CovenantMutationServiceTests
             TimeSpan lifetime,
             DateTimeOffset? issuedAtUtc = null)
         {
-
             string token = Convert.ToHexStringLower(Guid.NewGuid().ToByteArray());
 
             // Honoured, not ignored: a stand-in that stamped its own clock would let the body and
@@ -841,7 +885,6 @@ public sealed class CovenantMutationServiceTests
                 payload.ToArray());
 
             return Result<string>.Success(token);
-
         }
 
         public Result<CovenantEnvelopeBody> Decode(
@@ -853,25 +896,21 @@ public sealed class CovenantMutationServiceTests
                 : Result<CovenantEnvelopeBody>.Failure(new Error(
                     ErrorCodes.Covenant.ForbiddenAuthority,
                     "This Covenant token is not valid for this purpose."));
-
     }
 
     /// <summary>A clock that advances a full second on every read, so no two reads can coincide.</summary>
     private sealed class SteppingTimeProvider : TimeProvider
     {
-
         private long _ticks = DateTimeOffset.UnixEpoch.UtcTicks + TimeSpan.TicksPerDay;
 
         public override DateTimeOffset GetUtcNow() =>
             new(Interlocked.Add(ref _ticks, TimeSpan.TicksPerSecond), TimeSpan.Zero);
 
         internal void Advance(TimeSpan amount) => _ = Interlocked.Add(ref _ticks, amount.Ticks);
-
     }
 
     private sealed class StubAuthority : ICovenantAuthoritySnapshotProvider
     {
-
         public CovenantAuthoritySnapshot? Current { get; } = new(
             1,
             Guid.Parse("11111111-2222-3333-4444-555555555555").ToString("D"),
@@ -880,7 +919,5 @@ public sealed class CovenantMutationServiceTests
             RecoveryEnvelopeEpoch: 1,
             CovenantHostToolsState.Clean,
             null);
-
     }
-
 }

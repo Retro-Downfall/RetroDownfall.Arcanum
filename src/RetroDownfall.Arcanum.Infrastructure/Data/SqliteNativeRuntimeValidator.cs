@@ -4,8 +4,9 @@ using Microsoft.Data.Sqlite;
 namespace RetroDownfall.Arcanum.Infrastructure.Data;
 
 /// <summary>
-/// Proves the loaded SQLCipher library actually behaves the way the manifest claims, before the
-/// Grimoire is opened.
+/// Proves the loaded SQLCipher library actually behaves the way the manifest claims. It is a
+/// test-time gate: no host code calls it, so it is not a start-up check and a mismatch does not
+/// stop a running host (docs/Arcanum.DESIGN.md section 5.4, "Runtime proof").
 /// </summary>
 /// <remarks>
 /// A library can load, report the right version string, and still not encrypt — a build with the
@@ -14,11 +15,10 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data;
 /// reopens it with the right key, proves a wrong key is refused, exercises FTS5 secure-delete, and
 /// confirms extension loading is unavailable.
 ///
-/// On any mismatch the Grimoire is unavailable. There is no second library to try.
+/// A mismatch fails the test that called it. There is no second library to try.
 /// </remarks>
 internal sealed class SqliteNativeRuntimeValidator
 {
-
     /// <summary>
     /// Compile options whose absence changes Covenant's security or search behavior. Compared
     /// against <c>PRAGMA compile_options</c>, which reports them without the <c>SQLITE_</c> prefix.
@@ -47,31 +47,24 @@ internal sealed class SqliteNativeRuntimeValidator
         string scratchDirectory,
         CancellationToken cancellationToken)
     {
-
         ArgumentException.ThrowIfNullOrWhiteSpace(scratchDirectory);
 
         SqliteNativeRuntimeManifest manifest;
 
         try
         {
-
             _nativeRuntime.Initialize();
 
             manifest = SqliteNativeRuntimeManifest.Load();
-
         }
         catch (SqliteNativeRuntimeUnavailableException)
         {
-
             return SqliteNativeRuntimeValidationResult.Failure("Grimoire.NativeRuntimeUnavailable");
-
         }
         catch (InvalidOperationException)
         {
-
             return SqliteNativeRuntimeValidationResult.Failure(
                 SqliteNativeRuntimeManifest.InvalidManifestErrorCode);
-
         }
 
         bool assetHashMatched = manifest.TryVerifyDeliveredAsset(out _);
@@ -84,7 +77,6 @@ internal sealed class SqliteNativeRuntimeValidator
 
         try
         {
-
             string sqliteVersion;
 
             string cipherVersion;
@@ -97,7 +89,6 @@ internal sealed class SqliteNativeRuntimeValidator
 
             await using (SqliteConnection connection = Open(scratch.Path_, key))
             {
-
                 await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
 
                 sqliteVersion = await ScalarAsync(connection, "SELECT sqlite_version();", cancellationToken)
@@ -129,7 +120,6 @@ internal sealed class SqliteNativeRuntimeValidator
 
                 await ExecuteAsync(connection, "PRAGMA wal_checkpoint(TRUNCATE);", cancellationToken)
                     .ConfigureAwait(false);
-
             }
 
             // Pooling is off, but the provider still caches at the native layer; clearing makes the
@@ -138,28 +128,21 @@ internal sealed class SqliteNativeRuntimeValidator
 
             if (!string.Equals(sqliteVersion, manifest.SqliteVersion, StringComparison.Ordinal))
             {
-
                 return SqliteNativeRuntimeValidationResult.Failure("Grimoire.NativeRuntimeVersionMismatch");
-
             }
 
             if (!string.Equals(cipherVersion, manifest.CipherVersion, StringComparison.Ordinal))
             {
-
                 return SqliteNativeRuntimeValidationResult.Failure("Grimoire.NativeRuntimeCipherMismatch");
-
             }
 
             if (!string.Equals(cipherProvider, manifest.CipherProvider, StringComparison.OrdinalIgnoreCase))
             {
-
                 return SqliteNativeRuntimeValidationResult.Failure("Grimoire.NativeRuntimeCipherProviderMismatch");
-
             }
 
             if (missingCompileOptions.Count > 0)
             {
-
                 return new SqliteNativeRuntimeValidationResult
                 {
                     IsValid = false,
@@ -168,7 +151,6 @@ internal sealed class SqliteNativeRuntimeValidator
 
                     MissingCompileOptions = missingCompileOptions,
                 };
-
             }
 
             bool codecRoundTrip = await CodecRoundTripsAsync(scratch.Path_, key, cancellationToken)
@@ -225,21 +207,15 @@ internal sealed class SqliteNativeRuntimeValidator
 
                 AssetHashMatched = assetHashMatched,
             };
-
         }
         catch (SqliteException)
         {
-
             return SqliteNativeRuntimeValidationResult.Failure("Grimoire.NativeRuntimeValidationFailed");
-
         }
         finally
         {
-
             SqliteConnection.ClearAllPools();
-
         }
-
     }
 
     private static string FirstFailure(
@@ -272,7 +248,6 @@ internal sealed class SqliteNativeRuntimeValidator
         string key,
         CancellationToken cancellationToken)
     {
-
         await using SqliteConnection connection = Open(path, key);
 
         await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
@@ -283,7 +258,6 @@ internal sealed class SqliteNativeRuntimeValidator
             cancellationToken).ConfigureAwait(false);
 
         return string.Equals(value, "arcanum", StringComparison.Ordinal);
-
     }
 
     private static async Task<bool> CipherIntegrityPassesAsync(
@@ -291,7 +265,6 @@ internal sealed class SqliteNativeRuntimeValidator
         string key,
         CancellationToken cancellationToken)
     {
-
         await using SqliteConnection connection = Open(path, key);
 
         await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
@@ -307,18 +280,13 @@ internal sealed class SqliteNativeRuntimeValidator
         // empty result is the pass condition and any row must say ok.
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-
             if (!string.Equals(reader.GetString(0), "ok", StringComparison.OrdinalIgnoreCase))
             {
-
                 return false;
-
             }
-
         }
 
         return true;
-
     }
 
     /// <summary>
@@ -329,10 +297,8 @@ internal sealed class SqliteNativeRuntimeValidator
         string wrongKey,
         CancellationToken cancellationToken)
     {
-
         try
         {
-
             await using SqliteConnection connection = Open(path, wrongKey);
 
             await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
@@ -343,15 +309,11 @@ internal sealed class SqliteNativeRuntimeValidator
                 cancellationToken).ConfigureAwait(false);
 
             return false;
-
         }
         catch (SqliteException)
         {
-
             return true;
-
         }
-
     }
 
     /// <summary>
@@ -364,7 +326,6 @@ internal sealed class SqliteNativeRuntimeValidator
         string key,
         CancellationToken cancellationToken)
     {
-
         await using SqliteConnection connection = Open(path, key);
 
         await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
@@ -421,7 +382,6 @@ internal sealed class SqliteNativeRuntimeValidator
 
         return string.Equals(remaining, "0", StringComparison.Ordinal)
             && string.Equals(kept, "1", StringComparison.Ordinal);
-
     }
 
     /// <summary>
@@ -434,10 +394,8 @@ internal sealed class SqliteNativeRuntimeValidator
         string key,
         CancellationToken cancellationToken)
     {
-
         try
         {
-
             await using SqliteConnection connection = Open(path, key);
 
             await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
@@ -448,27 +406,21 @@ internal sealed class SqliteNativeRuntimeValidator
                 cancellationToken).ConfigureAwait(false);
 
             return false;
-
         }
         catch (SqliteException)
         {
-
             return true;
-
         }
-
     }
 
     private static async Task<List<string>> MissingCompileOptionsAsync(
         SqliteConnection connection,
         CancellationToken cancellationToken)
     {
-
         HashSet<string> reported = new(StringComparer.Ordinal);
 
         await using (SqliteCommand command = connection.CreateCommand())
         {
-
             command.CommandText = "PRAGMA compile_options;";
 
             await using SqliteDataReader reader = await command.ExecuteReaderAsync(cancellationToken)
@@ -476,15 +428,11 @@ internal sealed class SqliteNativeRuntimeValidator
 
             while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             {
-
                 _ = reported.Add(reader.GetString(0));
-
             }
-
         }
 
         return [.. RequiredPragmaCompileOptions.Where(option => !reported.Contains(option))];
-
     }
 
     /// <summary>
@@ -506,13 +454,11 @@ internal sealed class SqliteNativeRuntimeValidator
         string sql,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = connection.CreateCommand();
 
         command.CommandText = sql;
 
         _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
     }
 
     private static async Task<string?> ScalarAsync(
@@ -520,7 +466,6 @@ internal sealed class SqliteNativeRuntimeValidator
         string sql,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = connection.CreateCommand();
 
         command.CommandText = sql;
@@ -528,7 +473,5 @@ internal sealed class SqliteNativeRuntimeValidator
         object? value = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
 
         return value is null or DBNull ? null : Convert.ToString(value);
-
     }
-
 }

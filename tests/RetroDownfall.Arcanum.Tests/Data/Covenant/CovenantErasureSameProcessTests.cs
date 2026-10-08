@@ -52,11 +52,9 @@ namespace RetroDownfall.Arcanum.Tests.Data.Covenant;
 [Trait("Category", "Integration")]
 public sealed class CovenantErasureSameProcessTests
 {
-
     [SkippableFact]
     public async Task Factory_named_operation_creates_server_identity_and_commits_requested_checkpoint_proof()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         await using SameProcessHarness harness = await SameProcessHarness.CreateAsync();
@@ -117,13 +115,11 @@ public sealed class CovenantErasureSameProcessTests
         Assert.Equal(operation.Id, harness.RouteGate.ExclusiveOwner?.OperationId);
 
         Assert.NotEqual(requested, harness.RouteGate.ExclusiveOwner?.OperationId);
-
     }
 
     [SkippableFact]
     public async Task Factory_named_completed_replay_precedes_inventory_and_does_not_erase_again()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         await using SameProcessHarness harness = await SameProcessHarness.CreateAsync();
@@ -171,13 +167,11 @@ public sealed class CovenantErasureSameProcessTests
         Assert.Equal(0, harness.RouteGate.InstallationReadAcquisitions);
 
         Assert.Null(harness.RouteGate.ExclusiveOwner);
-
     }
 
     [SkippableFact]
     public async Task Factory_named_replay_with_a_different_plan_is_an_idempotency_conflict()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         await using SameProcessHarness harness = await SameProcessHarness.CreateAsync();
@@ -209,7 +203,6 @@ public sealed class CovenantErasureSameProcessTests
         Assert.Equal(ErrorCodes.Security.IdempotencyConflict, conflict.Error.Code);
 
         Assert.Equal(first.Value.OperationId, (await harness.ReadFactoryOperationAsync()).Id);
-
     }
 
     [SkippableTheory]
@@ -217,16 +210,13 @@ public sealed class CovenantErasureSameProcessTests
     [InlineData(true)]
     public async Task Factory_maintains_lease_before_checkpoint(bool named)
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         CoordinatorPause checkpointPause = new();
 
         RouteStoreFaults faults = new(RouteStoreFault.None)
         {
-
             FactoryCheckpointPause = checkpointPause,
-
         };
 
         await using SameProcessHarness harness = await SameProcessHarness.CreateAsync(
@@ -247,7 +237,6 @@ public sealed class CovenantErasureSameProcessTests
 
         try
         {
-
             await checkpointPause.WaitUntilPausedAsync();
 
             LongRunningOperation durable = await harness.ReadFactoryOperationAsync();
@@ -271,23 +260,18 @@ public sealed class CovenantErasureSameProcessTests
             Assert.False(adoption.Acquired);
 
             Assert.Equal(1, await harness.CountOrdinarySessionsAsync());
-
         }
         finally
         {
-
             checkpointPause.Release();
-
         }
 
         _ = await applying.WaitAsync(TimeSpan.FromSeconds(45));
-
     }
 
     [SkippableFact]
     public async Task Healthy_factory_erasure_composes_protected_and_ordinary_cleanup_with_exact_public_result()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         ConnectionStateObserver connections = new();
@@ -340,7 +324,6 @@ public sealed class CovenantErasureSameProcessTests
         Assert.Equal(DataRetentionFactoryTransitionLaunchV2.CurrentVersion, operation.CheckpointVersion);
 
         Assert.Equal(LongRunningOperationState.Completed, operation.State);
-
     }
 
     /// <summary>
@@ -365,7 +348,6 @@ public sealed class CovenantErasureSameProcessTests
     [SkippableFact]
     public async Task Factory_erasure_completes_while_a_non_Covenant_scope_holds_the_Grimoire_open()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         await using SameProcessHarness harness = await SameProcessHarness.CreateAsync();
@@ -397,7 +379,6 @@ public sealed class CovenantErasureSameProcessTests
         // The drain is what closed it, and asserting that is the difference between an erasure that
         // survived this handle and one that happened to run before the scope opened it.
         Assert.Equal(ConnectionState.Closed, held.Database.GetDbConnection().State);
-
     }
 
     /// <summary>
@@ -420,7 +401,6 @@ public sealed class CovenantErasureSameProcessTests
     [SkippableFact]
     public async Task Factory_erasure_completes_while_its_own_request_holds_the_admission_lease()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         await using SameProcessHarness harness = await SameProcessHarness.CreateAsync();
@@ -440,7 +420,6 @@ public sealed class CovenantErasureSameProcessTests
             result.IsFailure
                 ? $"{result.Error.Code}: {result.Error.Message}{harness.CoordinatorDiagnostics()}"
                 : null);
-
     }
 
     /// <summary>
@@ -461,7 +440,6 @@ public sealed class CovenantErasureSameProcessTests
     [SkippableFact]
     public async Task Factory_erasure_that_cannot_drain_reopens_ordinary_admission()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         await using SameProcessHarness harness = await SameProcessHarness.CreateAsync();
@@ -497,13 +475,11 @@ public sealed class CovenantErasureSameProcessTests
         await afterwards!.DisposeAsync();
 
         await blocking!.DisposeAsync();
-
     }
 
     [SkippableFact]
     public async Task Factory_catalog_change_after_planning_refuses_before_exclusive_or_any_effect()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         RouteStoreFaults faults = new(RouteStoreFault.None);
@@ -541,7 +517,6 @@ public sealed class CovenantErasureSameProcessTests
         LongRunningOperation operation = await harness.ReadFactoryOperationAsync();
 
         Assert.Equal(0, operation.CheckpointVersion);
-
     }
 
     // The sole drainable diagnostic may reach the closed guard. A stranded run must survive
@@ -654,7 +629,6 @@ public sealed class CovenantErasureSameProcessTests
     [SkippableFact]
     public async Task Factory_coordinator_failure_blocks_ordinary_deletion()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         RouteOperationWriteObserver operationWrites = new();
@@ -666,11 +640,9 @@ public sealed class CovenantErasureSameProcessTests
             operationWrites: operationWrites,
             serviceOverrides: services =>
             {
-
                 services.RemoveAll<IManagedLogMutationGate>();
 
                 services.AddSingleton<IManagedLogMutationGate>(cleanupGate);
-
             });
 
         SameProcessBefore before = await harness.SeedAndCaptureAsync();
@@ -703,13 +675,11 @@ public sealed class CovenantErasureSameProcessTests
         Assert.Equal(1, operationWrites.AccessesAfterAttentionWrite);
 
         Assert.Equal(0, cleanupGate.Acquisitions);
-
     }
 
     [SkippableFact]
     public async Task Factory_ordinary_cleanup_remains_inside_provider_and_writer_exclusion()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         CoordinatorPause pause = new();
@@ -752,13 +722,11 @@ public sealed class CovenantErasureSameProcessTests
             result.IsFailure
                 ? $"{result.Error.Code}: {result.Error.Message}{harness.CoordinatorDiagnostics()}"
                 : null);
-
     }
 
     [SkippableFact]
     public async Task Factory_daemon_history_blocks_while_running_and_clears_after_terminal()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         InMemoryDaemonExecutionRepository repository = new(
@@ -780,7 +748,6 @@ public sealed class CovenantErasureSameProcessTests
         await using SameProcessHarness harness = await SameProcessHarness.CreateAsync(
             serviceOverrides: services =>
             {
-
                 services.RemoveAll<IDaemonExecutionRepository>();
 
                 services.RemoveAll<IDaemonExecutionMutationGate>();
@@ -788,7 +755,6 @@ public sealed class CovenantErasureSameProcessTests
                 services.AddSingleton<IDaemonExecutionRepository>(repository);
 
                 services.AddSingleton<IDaemonExecutionMutationGate>(repository);
-
             });
 
         SameProcessBefore before = await harness.SeedAndCaptureAsync();
@@ -805,6 +771,17 @@ public sealed class CovenantErasureSameProcessTests
         Assert.NotNull(await repository.GetAsync(running, CancellationToken.None));
 
         _ = await repository.CancelAsync(running, CancellationToken.None);
+
+        // Cancellation is cooperative: until the runner reports the body drained, the execution still owns
+        // its daemon's single-flight slot, so it stays an active conflict and is not deletable.
+        DataRetentionPlan draining = await harness.PlanFactoryAsync();
+
+        Assert.Contains(
+            draining.Conflicts,
+            conflict => conflict.Code == "Data.DaemonExecutionActive"
+                && conflict.ResourceId == running);
+
+        await repository.ReportDrainedAsync(running, CancellationToken.None);
 
         DataRetentionPlan ready = await harness.PlanFactoryAsync();
 
@@ -823,13 +800,11 @@ public sealed class CovenantErasureSameProcessTests
         Assert.True(applied.Value.Reconciled);
 
         Assert.Empty(await repository.GetHistoryAsync(null, CancellationToken.None));
-
     }
 
     [SkippableFact]
     public async Task Factory_daemon_start_waits_for_ordinary_cleanup_gate()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         InMemoryDaemonExecutionRepository repository = new(
@@ -841,7 +816,6 @@ public sealed class CovenantErasureSameProcessTests
         await using SameProcessHarness harness = await SameProcessHarness.CreateAsync(
             serviceOverrides: services =>
             {
-
                 services.RemoveAll<IDaemonExecutionRepository>();
 
                 services.RemoveAll<IDaemonExecutionMutationGate>();
@@ -849,7 +823,6 @@ public sealed class CovenantErasureSameProcessTests
                 services.AddSingleton<IDaemonExecutionRepository>(repository);
 
                 services.AddSingleton<IDaemonExecutionMutationGate>(gate);
-
             });
 
         SameProcessBefore before = await harness.SeedAndCaptureAsync();
@@ -884,7 +857,6 @@ public sealed class CovenantErasureSameProcessTests
                 : null);
 
         Assert.NotNull(await repository.GetAsync(executionId, CancellationToken.None));
-
     }
 
     [SkippableTheory]
@@ -893,7 +865,6 @@ public sealed class CovenantErasureSameProcessTests
     public async Task Factory_new_daemon_conflict_at_apply_boundary_terminalizes_before_deletion(
         int activateOnHistoryCall)
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         DataRetentionDaemonHistoryTests.ActivatingDaemonRepository repository = new(
@@ -903,13 +874,11 @@ public sealed class CovenantErasureSameProcessTests
         await using SameProcessHarness harness = await SameProcessHarness.CreateAsync(
             serviceOverrides: services =>
             {
-
                 services.RemoveAll<IDaemonExecutionRepository>();
 
                 services.RemoveAll<IDaemonExecutionMutationGate>();
 
                 services.AddSingleton<IDaemonExecutionRepository>(repository);
-
             });
 
         SameProcessBefore before = await harness.SeedAndCaptureAsync();
@@ -940,7 +909,6 @@ public sealed class CovenantErasureSameProcessTests
         Assert.Equal(LongRunningOperationState.Failed, marker.State);
 
         Assert.Equal(ErrorCodes.Data.Conflict, marker.TerminalErrorCode);
-
     }
 
     [SkippableTheory]
@@ -949,7 +917,6 @@ public sealed class CovenantErasureSameProcessTests
     public async Task Factory_when_managed_log_publication_wins_deletes_the_counted_append(
         bool guardrail)
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         using DataRetentionServiceTests.CoordinatedManagedLogMutationGate gate = new();
@@ -957,11 +924,9 @@ public sealed class CovenantErasureSameProcessTests
         await using SameProcessHarness harness = await SameProcessHarness.CreateAsync(
             serviceOverrides: services =>
             {
-
                 services.RemoveAll<IManagedLogMutationGate>();
 
                 services.AddSingleton<IManagedLogMutationGate>(gate);
-
             });
 
         SameProcessBefore before = await harness.SeedAndCaptureAsync();
@@ -1018,7 +983,6 @@ public sealed class CovenantErasureSameProcessTests
         Assert.Equal(1, result.Value.FilesDeleted);
 
         Assert.False(File.Exists(publishedPath));
-
     }
 
     [SkippableTheory]
@@ -1027,7 +991,6 @@ public sealed class CovenantErasureSameProcessTests
     public async Task Factory_when_reset_wins_waiting_managed_log_publishes_after_reset(
         bool guardrail)
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         using DataRetentionServiceTests.CoordinatedManagedLogMutationGate gate = new();
@@ -1035,11 +998,9 @@ public sealed class CovenantErasureSameProcessTests
         await using SameProcessHarness harness = await SameProcessHarness.CreateAsync(
             serviceOverrides: services =>
             {
-
                 services.RemoveAll<IManagedLogMutationGate>();
 
                 services.AddSingleton<IManagedLogMutationGate>(gate);
-
             });
 
         SameProcessBefore before = await harness.SeedAndCaptureAsync();
@@ -1094,7 +1055,6 @@ public sealed class CovenantErasureSameProcessTests
         LongRunningOperation marker = await harness.ReadFactoryOperationAsync();
 
         Assert.Equal(LongRunningOperationState.Completed, marker.State);
-
     }
 
     private static Task PublishManagedLogAsync(
@@ -1103,12 +1063,10 @@ public sealed class CovenantErasureSameProcessTests
         string logsRoot,
         IManagedLogMutationGate gate)
     {
-
         TestOptionsMonitor<ArcanumSettings> options = new(settings);
 
         if (guardrail)
         {
-
             GuardrailAuditLogger auditLogger = new(
                 options,
                 NullLogger<GuardrailAuditLogger>.Instance,
@@ -1124,7 +1082,6 @@ public sealed class CovenantErasureSameProcessTests
                 Model: "test-model");
 
             return auditLogger.LogAsync(record, CancellationToken.None);
-
         }
 
         InferenceAuditLogger inferenceLogger = new(
@@ -1152,62 +1109,44 @@ public sealed class CovenantErasureSameProcessTests
             CampaignId: null);
 
         return inferenceLogger.LogAsync(inferenceRecord, CancellationToken.None);
-
     }
 
     private static ArcanumSettings CreateManagedLogSettings() =>
         new()
         {
-
             Features = new FeatureSettings
             {
-
                 Guardrails = true,
-
             },
 
             Host = new HostSettings
             {
-
                 AuditLog = new HostAuditPolicySettings
                 {
-
                     Enabled = true,
-
                 },
-
             },
 
             Security = new SecuritySettings
             {
-
                 Guardrails = new GuardrailsPolicySettings
                 {
-
                     AuditLog = new GuardrailsAuditPolicySettings
                     {
-
                         Enabled = true,
-
                     },
-
                 },
-
             },
 
             Retention = new RetentionSettings
             {
-
                 AutomaticSweepsEnabled = false,
-
             },
-
         };
 
     [SkippableFact]
     public async Task Direct_retention_reset_checkpoints_the_exact_owner_before_gate_entry_and_returns_content_free_success()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         await using SameProcessHarness harness = await SameProcessHarness.CreateAsync();
@@ -1224,7 +1163,6 @@ public sealed class CovenantErasureSameProcessTests
 
         try
         {
-
             Task first = await Task.WhenAny(resetTask, revocation)
                 .WaitAsync(TimeSpan.FromSeconds(10));
 
@@ -1252,13 +1190,10 @@ public sealed class CovenantErasureSameProcessTests
             Assert.Equal(1, harness.RouteGate.InstallationReadAcquisitions);
 
             Assert.Equal(0, harness.RouteGate.InstallationReadsAtExclusiveAdmission);
-
         }
         finally
         {
-
             await before.ReadLease.DisposeAsync();
-
         }
 
         Result<DataRetentionApplyResult> reset = await resetTask.WaitAsync(TimeSpan.FromSeconds(45));
@@ -1286,13 +1221,11 @@ public sealed class CovenantErasureSameProcessTests
         Assert.Equal(reset.Value.OperationId, completed.Id);
 
         Assert.Equal(LongRunningOperationState.Completed, completed.State);
-
     }
 
     [SkippableFact]
     public async Task Direct_retention_reset_drain_failure_preserves_rows_artifacts_and_managed_file_state()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         await using SameProcessHarness harness = await SameProcessHarness.CreateAsync(
@@ -1323,7 +1256,6 @@ public sealed class CovenantErasureSameProcessTests
         Assert.Equal(CovenantOfflineTransitionLaunchV4.CurrentVersion, operation.CheckpointVersion);
 
         await before.ReadLease.DisposeAsync();
-
     }
 
     /// <remarks>
@@ -1352,7 +1284,6 @@ public sealed class CovenantErasureSameProcessTests
         string expectedError,
         string expectedDurableError)
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         RouteOperationWriteObserver? operationWrites = failure is RouteFailure.KeepClosed
@@ -1395,13 +1326,11 @@ public sealed class CovenantErasureSameProcessTests
         Assert.True(describesCovenantErasure);
 
         Assert.True(checkpoint.IsSuccess, checkpoint.Error.Message);
-
     }
 
     [SkippableFact]
     public async Task Direct_retention_reset_KeepClosed_retains_Grimoire_admission_closure()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         RouteOperationWriteObserver operationWrites = new();
@@ -1447,22 +1376,16 @@ public sealed class CovenantErasureSameProcessTests
 
         try
         {
-
             Assert.False(requestAdmitted);
 
             Assert.Null(requestLease);
-
         }
         finally
         {
-
             if (requestLease is not null)
             {
-
                 await requestLease.DisposeAsync();
-
             }
-
         }
 
         bool workAdmitted = admission.TryAcquireWorkLease(
@@ -1471,22 +1394,16 @@ public sealed class CovenantErasureSameProcessTests
 
         try
         {
-
             Assert.False(workAdmitted);
 
             Assert.Null(workLease);
-
         }
         finally
         {
-
             if (workLease is not null)
             {
-
                 await workLease.DisposeAsync();
-
             }
-
         }
 
         using SqliteConnection connection = new();
@@ -1569,13 +1486,11 @@ public sealed class CovenantErasureSameProcessTests
             payload.Binding.ExpectedDatabaseOperationRevision);
 
         Assert.Null(payload.Binding.ParentReceiptBindingDigest);
-
     }
 
     [SkippableFact]
     public async Task Direct_retention_reset_rejects_the_original_expected_plan_mismatch_before_starting_an_operation()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         await using SameProcessHarness harness = await SameProcessHarness.CreateAsync();
@@ -1589,13 +1504,11 @@ public sealed class CovenantErasureSameProcessTests
         Assert.Null(harness.RouteGate.ExclusiveOwner);
 
         Assert.Empty(await harness.ReadResetOperationsAsync());
-
     }
 
     [SkippableFact]
     public async Task Direct_retention_reset_caller_cancellation_after_proof_still_terminalizes_the_reopened_operation()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         using CancellationTokenSource caller = new();
@@ -1621,13 +1534,11 @@ public sealed class CovenantErasureSameProcessTests
         LongRunningOperation operation = await harness.ReadResetOperationAsync();
 
         Assert.Equal(LongRunningOperationState.Completed, operation.State);
-
     }
 
     [SkippableFact]
     public async Task Direct_retention_reset_rejects_an_installation_coverage_lease_of_the_wrong_kind()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         await using SameProcessHarness harness = await SameProcessHarness.CreateAsync();
@@ -1645,13 +1556,11 @@ public sealed class CovenantErasureSameProcessTests
         Assert.Null(harness.RouteGate.ExclusiveOwner);
 
         Assert.Empty(await harness.ReadResetOperationsAsync());
-
     }
 
     [SkippableFact]
     public async Task Direct_retention_reset_stops_renewing_its_durable_lease_once_the_journal_opens()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         CoordinatorPause pause = new();
@@ -1674,7 +1583,6 @@ public sealed class CovenantErasureSameProcessTests
 
         try
         {
-
             // Deliberately given time to renew, and asserted not to have. The heartbeat used to run
             // for the whole erasure; it stops before the journal opens now, because a renewal advances
             // the row's revision and the journal binds itself to the exact revision the launch
@@ -1688,13 +1596,10 @@ public sealed class CovenantErasureSameProcessTests
             await Task.Delay(TimeSpan.FromMilliseconds(600), TimeProvider.System);
 
             Assert.Equal(planning, faults.RenewalAttempts);
-
         }
         finally
         {
-
             pause.Release();
-
         }
 
         Result<DataRetentionApplyResult> reset = await resetTask.WaitAsync(TimeSpan.FromSeconds(45));
@@ -1702,13 +1607,11 @@ public sealed class CovenantErasureSameProcessTests
         Assert.True(reset.IsFailure);
 
         Assert.Equal(ErrorCodes.Covenant.IntegrityFailure, reset.Error.Code);
-
     }
 
     [SkippableFact]
     public async Task Direct_retention_reset_cancellation_does_not_park_an_owner_adopted_by_recovery()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         RouteStoreFaults faults = new(RouteStoreFault.AdoptBeforeCheckpointCancellation);
@@ -1725,7 +1628,6 @@ public sealed class CovenantErasureSameProcessTests
         Assert.Equal(LongRunningOperationState.Running, operation.State);
 
         Assert.Equal(RouteStoreFaults.AdoptedOwner, operation.LeaseOwner);
-
     }
 
     [SkippableTheory]
@@ -1739,7 +1641,6 @@ public sealed class CovenantErasureSameProcessTests
         LongRunningOperationState expectedState,
         int expectedCheckpointVersion)
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         await using SameProcessHarness harness = await SameProcessHarness.CreateAsync(
@@ -1760,13 +1661,11 @@ public sealed class CovenantErasureSameProcessTests
         Assert.Equal(ErrorCodes.Covenant.MaintenanceFailed, operation.TerminalErrorCode);
 
         Assert.Equal(expectedCheckpointVersion, operation.CheckpointVersion);
-
     }
 
     [SkippableFact]
     public async Task Direct_retention_reset_normalizes_planning_lease_release_failure_after_checkpoint()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         await using SameProcessHarness harness = await SameProcessHarness.CreateAsync();
@@ -1788,13 +1687,11 @@ public sealed class CovenantErasureSameProcessTests
         Assert.Equal(LongRunningOperationState.ReconciliationRequired, operation.State);
 
         Assert.Equal(CovenantOfflineTransitionLaunchV4.CurrentVersion, operation.CheckpointVersion);
-
     }
 
     [SkippableFact]
     public async Task Direct_retention_reset_retries_completed_cas_after_committed_reopen()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         RouteStoreFaults faults = new(RouteStoreFault.FailFirstCompletedTransition);
@@ -1816,13 +1713,11 @@ public sealed class CovenantErasureSameProcessTests
         LongRunningOperation operation = await harness.ReadResetOperationAsync();
 
         Assert.Equal(LongRunningOperationState.Completed, operation.State);
-
     }
 
     [SkippableFact]
     public async Task Failed_terminal_reconciliation_keeps_Grimoire_closed_with_authenticated_attention()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         RouteStoreFaults faults = new(RouteStoreFault.FailAllCompletedTransitions);
@@ -1927,7 +1822,6 @@ public sealed class CovenantErasureSameProcessTests
         Assert.Null(journal.Current.Payload.Lifecycle.ReconciliationEvidence.DatabaseTerminalWinnerDigest);
 
         // Restart/adoption convergence of this retained suffix is qualified separately in Task 7.
-
     }
 
     /// <summary>
@@ -1943,7 +1837,6 @@ public sealed class CovenantErasureSameProcessTests
     [SkippableFact]
     public async Task Direct_retention_reset_attempts_no_lease_renewal_once_the_coordinator_runs()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         CoordinatorPause pause = new();
@@ -1965,18 +1858,14 @@ public sealed class CovenantErasureSameProcessTests
 
         try
         {
-
             // Several heartbeat intervals of the fast maintainer, deliberately given the chance.
             await Task.Delay(TimeSpan.FromMilliseconds(600), TimeProvider.System);
 
             Assert.Equal(planning, faults.RenewalAttempts);
-
         }
         finally
         {
-
             pause.Release();
-
         }
 
         Result<DataRetentionApplyResult> reset = await resetTask.WaitAsync(TimeSpan.FromSeconds(45));
@@ -1992,7 +1881,237 @@ public sealed class CovenantErasureSameProcessTests
         LongRunningOperation operation = await harness.ReadResetOperationAsync();
 
         Assert.Equal(LongRunningOperationState.Completed, operation.State);
+    }
 
+    /// <summary>
+    /// The factory-erasure route attempts no lease renewal once the coordinator has the operation.
+    /// </summary>
+    /// <remarks>
+    /// The factory arm maintains its durable lease through re-planning, revalidation and the
+    /// checkpoint, and must end that maintained scope at launch publication exactly as the direct arm
+    /// does. A heartbeat still ticking inside the closed period renews against a shut admission and
+    /// advances the revision the journal bound itself to; the maintainer then either cancels the
+    /// in-flight erasure or lets it finish while the route reports an unexpected failure.
+    /// </remarks>
+    [SkippableFact]
+    public async Task Factory_route_attempts_no_lease_renewal_once_the_coordinator_runs()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        CoordinatorPause pause = new();
+
+        RouteStoreFaults faults = new(RouteStoreFault.None);
+
+        await using SameProcessHarness harness = await SameProcessHarness.CreateAsync(
+            coordinatorPause: pause,
+            fastLeaseHeartbeat: true,
+            storeFaults: faults);
+
+        SameProcessBefore before = await harness.SeedAndCaptureAsync();
+
+        await before.ReadLease.DisposeAsync();
+
+        _ = await harness.SeedOrdinarySessionAsync();
+
+        DataRetentionPlan confirmed = await harness.PlanFactoryAsync();
+
+        Task<Result<DataRetentionApplyResult>> applying = harness.ApplyFactoryAsync(confirmed.PlanId);
+
+        await pause.WaitUntilPausedAsync();
+
+        int planning = faults.RenewalAttempts;
+
+        try
+        {
+            // Several heartbeat intervals of the fast maintainer, deliberately given the chance.
+            await Task.Delay(TimeSpan.FromMilliseconds(600), TimeProvider.System);
+
+            Assert.Equal(planning, faults.RenewalAttempts);
+        }
+        finally
+        {
+            pause.Release();
+        }
+
+        Result<DataRetentionApplyResult> applied = await applying.WaitAsync(TimeSpan.FromSeconds(45));
+
+        Assert.True(
+            applied.IsSuccess,
+            applied.IsFailure
+                ? $"{applied.Error.Code}: {applied.Error.Message}{harness.CoordinatorDiagnostics()}"
+                : null);
+
+        Assert.Equal(planning, faults.RenewalAttempts);
+
+        Assert.Equal(confirmed.PlanId, applied.Value.PlanId);
+
+        LongRunningOperation operation = await harness.ReadFactoryOperationAsync();
+
+        Assert.Equal(LongRunningOperationState.Completed, operation.State);
+    }
+
+    /// <summary>
+    /// A factory continuation that loses its exact owner is reported as a lost lease, not as an
+    /// unexpected failure.
+    /// </summary>
+    /// <remarks>
+    /// The ordinary continuation proves it still owns the launch by reading the row back and throws
+    /// <see cref="DataRetentionLeaseLostException"/> when it does not; the coordinator rethrows it. The
+    /// route must keep the dedicated lease-lost handling around the coordinator now that the
+    /// coordinator runs outside the maintainer: a warning and a maintenance failure, never an error log
+    /// and never an owner-guarded durable write for an owner it has just been told it no longer is.
+    ///
+    /// <para>The row is handed to another owner while the continuation waits at its first gate, so the
+    /// refusal is the real read-back's own, inside the deletion transaction. The write goes through
+    /// the fixture's unpooled handle because ordinary admission is shut for the closed period.</para>
+    /// </remarks>
+    [SkippableFact]
+    public async Task Factory_route_reports_a_continuation_lease_loss_as_a_maintenance_failure()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        CoordinatorPause continuationPause = new();
+
+        RouteStoreFaults faults = new(RouteStoreFault.None);
+
+        TestCapturingLogger<DataRetentionService> retentionLog = new();
+
+        await using SameProcessHarness harness = await SameProcessHarness.CreateAsync(
+            factoryContinuationPause: continuationPause,
+            fastLeaseHeartbeat: true,
+            storeFaults: faults,
+            serviceOverrides: services =>
+            {
+                services.RemoveAll<ILogger<DataRetentionService>>();
+
+                services.AddSingleton<ILogger<DataRetentionService>>(retentionLog);
+            });
+
+        SameProcessBefore before = await harness.SeedAndCaptureAsync();
+
+        await before.ReadLease.DisposeAsync();
+
+        _ = await harness.SeedOrdinarySessionAsync();
+
+        DataRetentionPlan confirmed = await harness.PlanFactoryAsync();
+
+        Task<Result<DataRetentionApplyResult>> applying = harness.ApplyFactoryAsync(confirmed.PlanId);
+
+        await continuationPause.WaitUntilPausedAsync();
+
+        int closedPeriod = faults.RenewalAttempts;
+
+        try
+        {
+            await harness.ReplaceRunningFactoryLeaseOwnerAsync("review-replacement-owner");
+        }
+        finally
+        {
+            continuationPause.Release();
+        }
+
+        Result<DataRetentionApplyResult> applied = await applying.WaitAsync(TimeSpan.FromSeconds(45));
+
+        Assert.True(applied.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.MaintenanceFailed, applied.Error.Code);
+
+        Assert.DoesNotContain(
+            retentionLog.Entries,
+            static entry => entry.Level >= LogLevel.Error);
+
+        Assert.Contains(
+            retentionLog.Entries,
+            static entry => entry.Level == LogLevel.Warning
+                && entry.Exception is DataRetentionLeaseLostException
+                {
+                    Message: "Factory reset no longer owns the durable operation it was launched under.",
+                });
+
+        Assert.Equal(0, faults.MaintenanceFailureTransitionAttempts);
+
+        Assert.Equal(closedPeriod, faults.RenewalAttempts);
+    }
+
+    /// <summary>
+    /// The factory route hands the coordinator the launch row as it stands after the last lease
+    /// renewal, so a rollback before the first journal can still terminalize it.
+    /// </summary>
+    /// <remarks>
+    /// A heartbeat that lands after the launch row was read back but before the maintainer stops
+    /// advances the row's revision past the copy the route is holding. The coordinator's one
+    /// compare-exchange before a journal exists - the rollback of a refused quiesce - is made against
+    /// that copy, so a stale one turns a clean pre-effect rollback into a maintenance failure. The
+    /// hook holds the first read of the launched row open for three intervals of the fast heartbeat:
+    /// a maintainer that is still running renews inside that window, and one that has stopped never
+    /// does.
+    /// </remarks>
+    [SkippableFact]
+    public async Task Factory_route_rereads_the_launch_row_after_the_lease_maintainer_stops()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        RouteStoreFaults faults = new(RouteStoreFault.None);
+
+        int renewalsAtLaunchReload = -1;
+
+        faults.AfterFactoryLaunchReload = async () =>
+        {
+            int renewals = faults.RenewalAttempts;
+
+            renewalsAtLaunchReload = renewals;
+
+            using CancellationTokenSource window = new(TimeSpan.FromMilliseconds(1_500));
+
+            while (faults.RenewalAttempts == renewals && !window.IsCancellationRequested)
+            {
+                await Task.Delay(TimeSpan.FromMilliseconds(25), CancellationToken.None);
+            }
+        };
+
+        await using SameProcessHarness harness = await SameProcessHarness.CreateAsync(
+            fastLeaseHeartbeat: true,
+            storeFaults: faults,
+            serviceOverrides: static services =>
+            {
+                services.RemoveAll<ICovenantDisclosureWriterLifecycle>();
+
+                services.AddSingleton<ICovenantDisclosureWriterLifecycle>(
+                    static provider => new QuiesceRefusingDisclosureWriterLifecycle(
+                        provider.GetRequiredService<CovenantDisclosureWriter>()));
+            });
+
+        SameProcessBefore before = await harness.SeedAndCaptureAsync();
+
+        await before.ReadLease.DisposeAsync();
+
+        _ = await harness.SeedOrdinarySessionAsync();
+
+        DataRetentionPlan confirmed = await harness.PlanFactoryAsync();
+
+        Result<DataRetentionApplyResult> applied = await harness
+            .ApplyFactoryAsync(confirmed.PlanId)
+            .WaitAsync(TimeSpan.FromSeconds(45));
+
+        Assert.True(applied.IsFailure);
+
+        Assert.True(
+            applied.Error.Code == QuiesceRefusingDisclosureWriterLifecycle.RefusalCode,
+            $"{applied.Error.Code}: {applied.Error.Message}{harness.CoordinatorDiagnostics()}");
+
+        Assert.NotEqual(-1, renewalsAtLaunchReload);
+
+        Assert.Equal(renewalsAtLaunchReload, faults.RenewalAttempts);
+
+        LongRunningOperation operation = await harness.ReadFactoryOperationAsync();
+
+        Assert.Equal(LongRunningOperationState.Failed, operation.State);
+
+        Assert.Equal(
+            GrimoireOfflineTransitionDatabaseReconciler.PreEffectFailureCode,
+            operation.TerminalErrorCode);
+
+        Assert.Equal(1, await harness.CountOrdinarySessionsAsync());
     }
 
     /// <summary>
@@ -2023,7 +2142,6 @@ public sealed class CovenantErasureSameProcessTests
         CovenantResetPhase phase,
         string boundaryName)
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         CovenantErasureFaultBoundary boundary =
@@ -2094,42 +2212,33 @@ public sealed class CovenantErasureSameProcessTests
         Assert.Equal(
             provedRollbackBeforeFirstEffect ? routeBefore : ErasedRoute,
             await harness.CaptureRouteStateAsync());
-
     }
 
     public static TheoryData<CovenantResetPhase, string> PhaseCrashBoundaries
     {
         get
         {
-
             TheoryData<CovenantResetPhase, string> cases = [];
 
             foreach (CovenantResetPhase phase in Enum.GetValues<CovenantResetPhase>())
             {
-
                 // The launch phase is committed by the initiator before this coordinator runs, and
                 // the reopen verification happens after the ladder; neither passes through the phase
                 // publication protocol these boundaries live in.
                 if (phase is CovenantResetPhase.InventoryPrepared
                     or CovenantResetPhase.ReopenedVerified)
                 {
-
                     continue;
-
                 }
 
                 foreach (CovenantErasureFaultBoundary boundary
                     in Enum.GetValues<CovenantErasureFaultBoundary>())
                 {
-
                     cases.Add(phase, boundary.ToString());
-
                 }
-
             }
 
             return cases;
-
         }
     }
 
@@ -2843,7 +2952,6 @@ public sealed class CovenantErasureSameProcessTests
         CovenantResetPhase phase,
         CovenantErasureFaultBoundary boundary)
     {
-
         private int _fired;
 
         internal bool Fired => Volatile.Read(ref _fired) != 0;
@@ -2861,13 +2969,11 @@ public sealed class CovenantErasureSameProcessTests
                             ErrorCodes.Covenant.MaintenanceFailed,
                             $"Injected crash at {boundary} of {phase}."))
                     : Result.Success());
-
     }
 
     [SkippableFact]
     public async Task Successful_erasure_reopens_status_crud_inference_and_disclosure_on_the_fresh_dataset()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         await using SameProcessHarness harness = await SameProcessHarness.CreateAsync();
@@ -2884,7 +2990,6 @@ public sealed class CovenantErasureSameProcessTests
 
         try
         {
-
             Task first = await Task.WhenAny(resetTask, revocation)
                 .WaitAsync(TimeSpan.FromSeconds(10));
 
@@ -2893,13 +2998,10 @@ public sealed class CovenantErasureSameProcessTests
             Assert.True(before.ReadLease.Revocation.IsCancellationRequested);
 
             Assert.False(resetTask.IsCompleted);
-
         }
         finally
         {
-
             await before.ReadLease.DisposeAsync();
-
         }
 
         Result<CovenantErasureCompletion> reset = await resetTask.WaitAsync(TimeSpan.FromSeconds(45));
@@ -2939,12 +3041,10 @@ public sealed class CovenantErasureSameProcessTests
         await harness.AssertFreshInferenceContextAsync(before.OldContent);
 
         await harness.AssertFreshDisclosureWriteAsync();
-
     }
 
     private sealed class SameProcessHarness : IAsyncDisposable
     {
-
         private const string Owner = "task-9-same-process";
 
         private const string FreshKey = "task9.fresh";
@@ -2967,7 +3067,6 @@ public sealed class CovenantErasureSameProcessTests
             AsyncServiceScope operationScope,
             CovenantCanonicalErasureFixture fixture)
         {
-
             _factory = factory;
 
             _client = client;
@@ -2975,7 +3074,6 @@ public sealed class CovenantErasureSameProcessTests
             _operationScope = operationScope;
 
             _fixture = fixture;
-
         }
 
         internal IServiceProvider Services => _factory.Services;
@@ -2997,7 +3095,6 @@ public sealed class CovenantErasureSameProcessTests
         /// </remarks>
         internal string CoordinatorDiagnostics()
         {
-
             TestCapturingLogger<CovenantErasureCoordinator> captured =
                 Services.GetRequiredService<TestCapturingLogger<CovenantErasureCoordinator>>();
 
@@ -3009,7 +3106,6 @@ public sealed class CovenantErasureSameProcessTests
             ];
 
             return warnings.Length == 0 ? string.Empty : $" [{string.Join("; ", warnings)}]";
-
         }
 
         internal static async Task<SameProcessHarness> CreateAsync(
@@ -3025,22 +3121,16 @@ public sealed class CovenantErasureSameProcessTests
             CovenantErasureFaultSeam? faultSeam = null,
             Action<IServiceCollection>? serviceOverrides = null)
         {
-
             ArcanumWebApplicationFactory factory = new()
             {
-
                 SettingsOverride = static settings => settings with
                 {
-
                     Features = settings.Features with { Covenant = true },
-
                 },
-
             };
 
             factory.ServiceOverrides = services =>
             {
-
                 // Registered for every harness, not only the ones expected to refuse: the phase a
                 // refused erasure stopped at exists nowhere else, and a run that fails is exactly the
                 // run that cannot be re-armed afterwards.
@@ -3060,7 +3150,6 @@ public sealed class CovenantErasureSameProcessTests
 
                 if (faultSeam is not null)
                 {
-
                     // The whole coordinator is re-registered rather than a seam being injected into
                     // the composed one, because the seam is a constructor argument: production has no
                     // way to set one after the fact, and a test that invented one would be exercising
@@ -3090,12 +3179,10 @@ public sealed class CovenantErasureSameProcessTests
                             provider.GetRequiredService<
                                 TestCapturingLogger<CovenantErasureCoordinator>>(),
                             faultSeam));
-
                 }
 
                 if (storeFaults is not null || operationWrites is not null)
                 {
-
                     services.RemoveAll<ILongRunningOperationStore>();
 
                     services.AddScoped<ILongRunningOperationStore>(
@@ -3104,20 +3191,18 @@ public sealed class CovenantErasureSameProcessTests
                             provider.GetRequiredService<TimeProvider>(),
                             storeFaults ?? new RouteStoreFaults(RouteStoreFault.None),
                             operationWrites));
-
                 }
 
                 if (drainTimeout is { } timeout)
                 {
-
                     services.RemoveAll<CovenantOperationGate>();
 
                     services.AddSingleton(
                         provider => new CovenantOperationGate(
                             provider.GetRequiredService<CovenantRuntimeGenerationProvider>(),
                             provider.GetRequiredService<ICovenantCampaignScopeProbe>(),
+                            NullLogger<CovenantOperationGate>.Instance,
                             timeout));
-
                 }
 
                 services.RemoveAll<ICovenantOperationGate>();
@@ -3131,19 +3216,16 @@ public sealed class CovenantErasureSameProcessTests
 
                 if (fastLeaseHeartbeat)
                 {
-
                     services.AddScoped(
                         provider => new DataRetentionLeaseMaintainer(
                             provider.GetRequiredService<ILongRunningOperationStore>().RenewLeaseAsync,
                             provider.GetRequiredService<TimeProvider>(),
                             leaseDuration: DataRetentionLeaseMaintainer.DefaultLeaseDuration,
                             heartbeatInterval: TimeSpan.FromMilliseconds(500)));
-
                 }
 
                 if (coordinatorPause is not null)
                 {
-
                     services.RemoveAll<ICovenantErasureInventorySource>();
 
                     services.AddScoped<ICovenantErasureInventorySource>(
@@ -3154,7 +3236,6 @@ public sealed class CovenantErasureSameProcessTests
                                     routeFailure,
                                     provider.GetRequiredService<CovenantErasureInventorySource>())
                                 : provider.GetRequiredService<CovenantErasureInventorySource>()));
-
                 }
 
                 if (coordinatorPause is null
@@ -3162,38 +3243,31 @@ public sealed class CovenantErasureSameProcessTests
                         or RouteFailure.KeepClosed
                         or RouteFailure.CancelAfterProof))
                 {
-
                     services.RemoveAll<ICovenantErasureInventorySource>();
 
                     services.AddScoped<ICovenantErasureInventorySource>(
                         provider => new RouteFailureInventory(
                             routeFailure,
                             provider.GetRequiredService<CovenantErasureInventorySource>()));
-
                 }
 
                 if (factoryContinuationPause is not null)
                 {
-
                     services.RemoveAll<IManagedLogMutationGate>();
 
                     services.AddSingleton<IManagedLogMutationGate>(
                         _ => new PausingManagedLogMutationGate(factoryContinuationPause));
-
                 }
 
                 if (routeFailure is RouteFailure.KeepClosed)
                 {
-
                     services.RemoveAll<ICovenantErasureTransition>();
 
                     services.AddScoped<ICovenantErasureTransition>(
                         static _ => new RouteFailureTransition());
-
                 }
                 else if (routeFailure is RouteFailure.CancelAfterProof)
                 {
-
                     services.RemoveAll<ICovenantErasureTransition>();
 
                     services.AddScoped<ICovenantErasureTransition>(
@@ -3201,12 +3275,10 @@ public sealed class CovenantErasureSameProcessTests
                             cancelAfterProof
                                 ?? throw new InvalidOperationException(
                                     "The cancellation source is required.")));
-
                 }
 
                 if (connectionObserver is not null)
                 {
-
                     services.RemoveAll<ICovenantErasureTransition>();
 
                     services.AddScoped<ICovenantErasureTransition>(
@@ -3214,16 +3286,13 @@ public sealed class CovenantErasureSameProcessTests
                             provider.GetRequiredService<CovenantErasureTransition>(),
                             provider.GetRequiredService<ArcanumDbContext>(),
                             connectionObserver));
-
                 }
 
                 serviceOverrides?.Invoke(services);
-
             };
 
             try
             {
-
                 HttpClient client = factory.CreateAuthenticatedClient();
 
                 AsyncServiceScope operationScope = factory.Services.CreateAsyncScope();
@@ -3239,22 +3308,17 @@ public sealed class CovenantErasureSameProcessTests
                     CancellationToken.None);
 
                 return new SameProcessHarness(factory, client, operationScope, fixture);
-
             }
             catch
             {
-
                 await factory.DisposeAsync();
 
                 throw;
-
             }
-
         }
 
         internal async Task<Guid> SeedOrdinarySessionAsync()
         {
-
             await using AsyncServiceScope scope = Services.CreateAsyncScope();
 
             ArcanumDbContext database = scope.ServiceProvider.GetRequiredService<ArcanumDbContext>();
@@ -3264,7 +3328,6 @@ public sealed class CovenantErasureSameProcessTests
             database.Sessions.Add(
                 new Session
                 {
-
                     Id = sessionId,
 
                     Status = "archived",
@@ -3272,7 +3335,6 @@ public sealed class CovenantErasureSameProcessTests
                     CreatedAt = DateTimeOffset.UnixEpoch,
 
                     UpdatedAt = DateTimeOffset.UnixEpoch,
-
                 });
 
             await database.SaveChangesAsync();
@@ -3280,7 +3342,6 @@ public sealed class CovenantErasureSameProcessTests
             await database.Database.CloseConnectionAsync();
 
             return sessionId;
-
         }
 
         internal async Task SeedOrphanInferenceAsync()
@@ -3333,7 +3394,6 @@ public sealed class CovenantErasureSameProcessTests
 
         internal async Task<DataRetentionPlan> PlanFactoryAsync()
         {
-
             await using AsyncServiceScope scope = Services.CreateAsyncScope();
 
             return await scope.ServiceProvider
@@ -3341,7 +3401,6 @@ public sealed class CovenantErasureSameProcessTests
                 .PlanAsync(
                     new DataRetentionRequest(DataRetentionOperation.FactoryReset),
                     CancellationToken.None);
-
         }
 
         /// <summary>
@@ -3358,18 +3417,15 @@ public sealed class CovenantErasureSameProcessTests
             Guid? requestedOperationId = null,
             bool asAdmittedRequest = false)
         {
-
             await using AsyncServiceScope scope = Services.CreateAsyncScope();
 
             if (asAdmittedRequest)
             {
-
                 Assert.True(
                     scope.ServiceProvider
                         .GetRequiredService<GrimoireRequestAdmissionScope>()
                         .TryAdmit(GrimoireRequestKind.Finite),
                     "the harness could not take the request lease the middleware would have taken");
-
             }
 
             return await scope.ServiceProvider
@@ -3380,13 +3436,11 @@ public sealed class CovenantErasureSameProcessTests
                         expectedPlanId,
                         requestedOperationId),
                     CancellationToken.None);
-
         }
 
         internal async Task<LongRunningOperationRequestIdentity> ReadFactoryRequestIdentityAsync(
             Guid operationId)
         {
-
             await using AsyncServiceScope scope = Services.CreateAsyncScope();
 
             LongRunningOperationRequestIdentity? identity = await scope.ServiceProvider
@@ -3394,12 +3448,10 @@ public sealed class CovenantErasureSameProcessTests
                 .FindRequestIdentityAsync(operationId, CancellationToken.None);
 
             return Assert.IsType<LongRunningOperationRequestIdentity>(identity);
-
         }
 
         internal async Task<LongRunningOperation> ReadFactoryOperationAsync()
         {
-
             await using AsyncServiceScope scope = Services.CreateAsyncScope();
 
             IReadOnlyList<LongRunningOperation> operations = await scope.ServiceProvider
@@ -3411,14 +3463,45 @@ public sealed class CovenantErasureSameProcessTests
                     CancellationToken.None);
 
             return Assert.Single(operations);
+        }
 
+        /// <summary>
+        /// Hands the running factory launch row to another owner through the fixture's own unpooled
+        /// handle, which ordinary admission does not govern, and lets that handle go again.
+        /// </summary>
+        internal async Task ReplaceRunningFactoryLeaseOwnerAsync(string ownerId)
+        {
+            await _fixture.ReopenAsync(CancellationToken.None);
+
+            try
+            {
+                await using SqliteCommand command = _fixture.Connection.CreateCommand();
+
+                command.CommandText = """
+                    UPDATE LongRunningOperations
+                    SET LeaseOwner = $owner
+                    WHERE Kind = $kind
+                      AND State = $running
+                    """;
+
+                _ = command.Parameters.AddWithValue("$owner", ownerId);
+
+                _ = command.Parameters.AddWithValue("$kind", LongRunningOperationKinds.DataRetentionFactoryReset);
+
+                _ = command.Parameters.AddWithValue("$running", (int)LongRunningOperationState.Running);
+
+                Assert.Equal(1, await command.ExecuteNonQueryAsync());
+            }
+            finally
+            {
+                await _fixture.Connection.CloseAsync();
+            }
         }
 
         internal async Task<LongRunningOperationLeaseResult> TryAdoptFactoryAsync(
             Guid operationId,
             DateTimeOffset utcNow)
         {
-
             await using AsyncServiceScope scope = Services.CreateAsyncScope();
 
             return await scope.ServiceProvider
@@ -3429,7 +3512,6 @@ public sealed class CovenantErasureSameProcessTests
                     utcNow,
                     utcNow.AddMinutes(2),
                     CancellationToken.None);
-
         }
 
         internal Task DamageFactoryCatalogAsync(CancellationToken cancellationToken) =>
@@ -3439,18 +3521,15 @@ public sealed class CovenantErasureSameProcessTests
 
         internal async Task<long> CountCovenantEntriesAsync()
         {
-
             await _fixture.ReopenAsync(CancellationToken.None);
 
             return await _fixture.CountAsync(
                 "covenant_entries",
                 CancellationToken.None);
-
         }
 
         internal async Task<long> CountOrdinarySessionsAsync()
         {
-
             await using AsyncServiceScope scope = Services.CreateAsyncScope();
 
             ArcanumDbContext database = scope.ServiceProvider.GetRequiredService<ArcanumDbContext>();
@@ -3460,12 +3539,10 @@ public sealed class CovenantErasureSameProcessTests
             await database.Database.CloseConnectionAsync();
 
             return count;
-
         }
 
         internal async Task<DataRetentionPlan> PlanResetAsync()
         {
-
             await using AsyncServiceScope scope = Services.CreateAsyncScope();
 
             return await scope.ServiceProvider
@@ -3475,14 +3552,12 @@ public sealed class CovenantErasureSameProcessTests
                         DataRetentionOperation.ResetMemory,
                         MemoryScope: MemoryResetScope.Covenant),
                     CancellationToken.None);
-
         }
 
         internal async Task<Result<DataRetentionApplyResult>> ApplyResetAsync(
             string expectedPlanId,
             CancellationToken cancellationToken = default)
         {
-
             await using AsyncServiceScope scope = Services.CreateAsyncScope();
 
             return await scope.ServiceProvider
@@ -3494,22 +3569,18 @@ public sealed class CovenantErasureSameProcessTests
                             MemoryScope: MemoryResetScope.Covenant),
                         expectedPlanId),
                     cancellationToken);
-
         }
 
         internal async Task<LongRunningOperation> ReadResetOperationAsync()
         {
-
             IReadOnlyList<LongRunningOperation> operations = await ReadResetOperationsAsync();
 
             return Assert.Single(operations);
-
         }
 
         internal async Task<GrimoireOfflineTransitionPhaseSession> ReadAuthenticatedTransitionAsync(
             LongRunningOperation operation)
         {
-
             await using AsyncServiceScope scope = Services.CreateAsyncScope();
 
             Result<GrimoireOfflineTransitionPhaseSession> journal = await scope.ServiceProvider
@@ -3519,12 +3590,10 @@ public sealed class CovenantErasureSameProcessTests
             Assert.True(journal.IsSuccess, journal.Error.Message);
 
             return journal.Value;
-
         }
 
         internal async Task<IReadOnlyList<LongRunningOperation>> ReadResetOperationsAsync()
         {
-
             await using AsyncServiceScope scope = Services.CreateAsyncScope();
 
             return await scope.ServiceProvider
@@ -3534,30 +3603,23 @@ public sealed class CovenantErasureSameProcessTests
                         LongRunningOperationKinds.DataRetentionMutation,
                         Limit: 10),
                     CancellationToken.None);
-
         }
 
         internal async Task<LongRunningOperation> WaitForResetRevisionAfterAsync(long revision)
         {
-
             using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(5));
 
             while (true)
             {
-
                 LongRunningOperation operation = await ReadResetOperationAsync();
 
                 if (operation.Revision > revision)
                 {
-
                     return operation;
-
                 }
 
                 await Task.Delay(TimeSpan.FromMilliseconds(20), timeout.Token);
-
             }
-
         }
 
         internal async Task<LongRunningOperationRecoveryResult> AdoptAndRecoverResetAsync(
@@ -3655,7 +3717,6 @@ public sealed class CovenantErasureSameProcessTests
                 _ => LongRunningOperationRecoveryResult.RequiresAttention(
                     settled.TerminalErrorCode ?? ErrorCodes.Covenant.ManualRecoveryRequired),
             };
-
         }
 
         internal async Task<PreparedAuthenticatedRecovery> PrepareAuthenticatedResetAsync(
@@ -3867,19 +3928,16 @@ public sealed class CovenantErasureSameProcessTests
 
         internal async Task<CovenantRouteState> CaptureRouteStateAsync()
         {
-
             await _fixture.ReopenAsync(CancellationToken.None);
 
             return new CovenantRouteState(
                 await _fixture.CountAsync("covenant_entries", CancellationToken.None),
                 await _fixture.CountAsync("artifact_sensitivity", CancellationToken.None),
                 await _fixture.CountAsync("managed_file_write_intents", CancellationToken.None));
-
         }
 
         internal async Task<SameProcessBefore> SeedAndCaptureAsync()
         {
-
             await _fixture.SeedAcceptanceStateAsync(CancellationToken.None);
 
             CovenantRuntimeGenerationProvider runtime = Services
@@ -3925,7 +3983,6 @@ public sealed class CovenantErasureSameProcessTests
 
             foreach (CovenantEnvelopePurpose purpose in Enum.GetValues<CovenantEnvelopePurpose>())
             {
-
                 Result<string> encoded = codec.Encode(
                     purpose,
                     [(byte)purpose],
@@ -3936,7 +3993,6 @@ public sealed class CovenantErasureSameProcessTests
                     $"{purpose}: {encoded.Error.Code} {encoded.Error.Message}");
 
                 tokens.Add(purpose, encoded.Value);
-
             }
 
             IOperatorAuthorityContextIssuer issuer = Services
@@ -3968,12 +4024,10 @@ public sealed class CovenantErasureSameProcessTests
                 "be brief");
 
             return _before;
-
         }
 
         internal async Task<Result<CovenantErasureCompletion>> RunAsync()
         {
-
             SameProcessBefore before = _before
                 ?? throw new InvalidOperationException("The old generation must be captured before reset.");
 
@@ -4040,12 +4094,10 @@ public sealed class CovenantErasureSameProcessTests
                 checkpoint.Value,
                 Owner,
                 CancellationToken.None);
-
         }
 
         internal PausedTurn PauseBeforeLease(ArcanumInvocationContext invocation)
         {
-
             TaskCompletionSource<bool> paused = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
             TaskCompletionSource<bool> release = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -4053,7 +4105,6 @@ public sealed class CovenantErasureSameProcessTests
             Task<Result<CovenantTurnContext>> result = Task.Run(
                 async () =>
                 {
-
                     await using AsyncServiceScope scope = Services.CreateAsyncScope();
 
                     ICovenantContextProvider context = scope.ServiceProvider
@@ -4067,18 +4118,15 @@ public sealed class CovenantErasureSameProcessTests
                         invocation,
                         Guid.NewGuid(),
                         CancellationToken.None);
-
                 });
 
             return new PausedTurn(paused.Task, release, result);
-
         }
 
         internal async Task AssertEveryOldCapabilityRejectedAsync(
             SameProcessBefore before,
             Result<CovenantTurnContext> raced)
         {
-
             Assert.Same(before.Runtime, Services.GetRequiredService<CovenantRuntimeGenerationProvider>());
 
             Assert.Same(before.Root, Services.GetRequiredService<CovenantEnvelopeMasterKeyProvider>());
@@ -4097,7 +4145,6 @@ public sealed class CovenantErasureSameProcessTests
 
             foreach ((CovenantEnvelopePurpose purpose, string token) in before.Tokens)
             {
-
                 Assert.True(codec.Decode(purpose, token).IsFailure);
 
                 Result<string> issued = codec.Encode(
@@ -4108,7 +4155,6 @@ public sealed class CovenantErasureSameProcessTests
                 Assert.True(issued.IsSuccess, issued.Error.Message);
 
                 Assert.True(codec.Decode(purpose, issued.Value).IsSuccess);
-
             }
 
             IOperatorAuthorityContextIssuer issuer = Services
@@ -4132,12 +4178,10 @@ public sealed class CovenantErasureSameProcessTests
                 .AcquireReadAsync(CovenantOperationScope.Global, CancellationToken.None)).Value;
 
             Assert.Equal(Availability.Current.DatasetGeneration, fresh.Snapshot.DatasetGeneration);
-
         }
 
         internal async Task AssertFreshStatusAsync()
         {
-
             await using AsyncServiceScope scope = Services.CreateAsyncScope();
 
             DataRetentionStatus status = await scope.ServiceProvider
@@ -4158,12 +4202,10 @@ public sealed class CovenantErasureSameProcessTests
             Assert.Equal(4, covenant.PossibleDisclosures);
 
             Assert.Equal(CovenantDisclosureCountKind.Exact, covenant.DisclosureCountKind);
-
         }
 
         internal async Task AssertFreshCrudAsync()
         {
-
             await using AsyncServiceScope scope = Services.CreateAsyncScope();
 
             ICovenantOperationGate gate = Services.GetRequiredService<ICovenantOperationGate>();
@@ -4172,7 +4214,6 @@ public sealed class CovenantErasureSameProcessTests
                 CovenantOperationScope.Global,
                 CancellationToken.None)).Value)
             {
-
                 ICovenantConnectionSource connections = scope.ServiceProvider
                     .GetRequiredService<ICovenantConnectionSource>();
 
@@ -4217,7 +4258,6 @@ public sealed class CovenantErasureSameProcessTests
                 Assert.True(applied.IsSuccess, applied.Error.Message);
 
                 await transaction.CommitAsync(CancellationToken.None);
-
             }
 
             await using CovenantReadLease readLease = (await gate.AcquireReadAsync(
@@ -4240,12 +4280,10 @@ public sealed class CovenantErasureSameProcessTests
             Assert.Equal(
                 CovenantMutationFixture.Artifact(FreshKey, FreshContent).CompiledContent,
                 Encoding.UTF8.GetString(fresh.CompiledFragment.ToArray()));
-
         }
 
         internal async Task AssertFreshInferenceContextAsync(string oldContent)
         {
-
             IOperatorAuthorityContextIssuer issuer = Services
                 .GetRequiredService<IOperatorAuthorityContextIssuer>();
 
@@ -4266,12 +4304,10 @@ public sealed class CovenantErasureSameProcessTests
             Assert.Contains(FreshContent, context.PlanContent.GlobalConfirmed, StringComparison.Ordinal);
 
             Assert.DoesNotContain(oldContent, context.PlanContent.GlobalConfirmed, StringComparison.Ordinal);
-
         }
 
         internal async Task AssertFreshDisclosureWriteAsync()
         {
-
             Guid dataset = Availability.Current.DatasetGeneration
                 ?? throw new InvalidOperationException("The fresh Covenant dataset is empty.");
 
@@ -4284,12 +4320,10 @@ public sealed class CovenantErasureSameProcessTests
                     CancellationToken.None);
 
             Assert.True(acknowledged.IsSuccess, acknowledged.Error.Message);
-
         }
 
         public async ValueTask DisposeAsync()
         {
-
             await _fixture.DisposeAsync();
 
             await _operationScope.DisposeAsync();
@@ -4297,7 +4331,6 @@ public sealed class CovenantErasureSameProcessTests
             _client.Dispose();
 
             await _factory.DisposeAsync();
-
         }
 
         private static ArcanumInvocationContext CreateInvocation(CovenantReadAuthorityEpoch epoch) =>
@@ -4311,19 +4344,16 @@ public sealed class CovenantErasureSameProcessTests
 
         private static ProviderCallSensitivity Sensitivity(Guid dataset)
         {
-
             GenerationProvenance provenance = GenerationProvenance.CreateExact([dataset]);
 
             return new ProviderCallSensitivity(
                 ContentSensitivity.CovenantDerived,
                 provenance,
                 CovenantDigests.Sensitivity(provenance.ToDigestInput(ContentSensitivity.CovenantDerived)));
-
         }
 
         private static CovenantDisclosureDraft Draft(Guid dataset, byte effectSeed)
         {
-
             ProviderCallSensitivity sensitivity = Sensitivity(dataset);
 
             return new CovenantDisclosureDraft(
@@ -4339,7 +4369,6 @@ public sealed class CovenantErasureSameProcessTests
                 CovenantOperationGateFixture.Digest(0x52),
                 backupEvidenceDigest: null,
                 timestamp: 1_700_000_000_000L + effectSeed);
-
         }
 
         private static async Task<long> ScalarAsync(
@@ -4347,7 +4376,6 @@ public sealed class CovenantErasureSameProcessTests
             SqliteTransaction transaction,
             string sql)
         {
-
             await using SqliteCommand command = connection.CreateCommand();
 
             command.Transaction = transaction;
@@ -4357,9 +4385,7 @@ public sealed class CovenantErasureSameProcessTests
             object? value = await command.ExecuteScalarAsync(CancellationToken.None);
 
             return Convert.ToInt64(value, System.Globalization.CultureInfo.InvariantCulture);
-
         }
-
     }
 
     /// <summary>
@@ -4385,7 +4411,6 @@ public sealed class CovenantErasureSameProcessTests
 
     public enum RouteFailure
     {
-
         None,
 
         Rollback,
@@ -4393,12 +4418,10 @@ public sealed class CovenantErasureSameProcessTests
         KeepClosed,
 
         CancelAfterProof,
-
     }
 
     internal sealed class CoordinatorPause
     {
-
         private readonly TaskCompletionSource _paused = new(
             TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -4411,41 +4434,31 @@ public sealed class CovenantErasureSameProcessTests
 
         internal async Task WaitForReleaseAsync(CancellationToken cancellationToken)
         {
-
             _paused.TrySetResult();
 
             await _release.Task.WaitAsync(cancellationToken);
-
         }
-
     }
 
     internal sealed class ConnectionStateObserver
     {
-
         internal ConnectionState? StateAtHandleProof { get; set; }
-
     }
 
     private sealed class PausingManagedLogMutationGate(CoordinatorPause pause)
         : IManagedLogMutationGate
     {
-
         public async ValueTask<IAsyncDisposable> AcquireExclusiveAsync(
             CancellationToken cancellationToken = default)
         {
-
             await pause.WaitForReleaseAsync(cancellationToken);
 
             return NoopAsyncDisposable.Instance;
-
         }
-
     }
 
     private sealed class RecordingManagedLogMutationGate : IManagedLogMutationGate
     {
-
         private int _acquisitions;
 
         internal int Acquisitions => Volatile.Read(ref _acquisitions);
@@ -4453,22 +4466,17 @@ public sealed class CovenantErasureSameProcessTests
         public ValueTask<IAsyncDisposable> AcquireExclusiveAsync(
             CancellationToken cancellationToken = default)
         {
-
             Interlocked.Increment(ref _acquisitions);
 
             return ValueTask.FromResult<IAsyncDisposable>(NoopAsyncDisposable.Instance);
-
         }
-
     }
 
     private sealed class NoopAsyncDisposable : IAsyncDisposable
     {
-
         internal static NoopAsyncDisposable Instance { get; } = new();
 
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
-
     }
 
     private sealed class ConnectionObservingTransition(
@@ -4476,7 +4484,6 @@ public sealed class CovenantErasureSameProcessTests
         ArcanumDbContext database,
         ConnectionStateObserver observer) : ICovenantErasureTransition
     {
-
         public Task<Result<Guid>> ApplyCanonicalErasureAsync(
             CovenantExclusiveOperation operation,
             CovenantCanonicalDatasetTransition dataset,
@@ -4488,11 +4495,9 @@ public sealed class CovenantErasureSameProcessTests
             CovenantClosedPeriodAuthority authority,
             CancellationToken cancellationToken)
         {
-
             observer.StateAtHandleProof = database.Database.GetDbConnection().State;
 
             return inner.CloseHandlesAsync(authority, cancellationToken);
-
         }
 
         public Task<Result> TruncateWalAsync(CovenantClosedPeriodAuthority authority, CancellationToken cancellationToken) =>
@@ -4548,14 +4553,12 @@ public sealed class CovenantErasureSameProcessTests
             CovenantVerifiedCandidateState candidate,
             CancellationToken cancellationToken) =>
             inner.PublishCommittedAsync(lease, candidate, cancellationToken);
-
     }
 
     private sealed class PausingRouteInventory(
         CoordinatorPause pause,
         ICovenantErasureInventorySource inner) : ICovenantErasureInventorySource
     {
-
         public Task<Result<CovenantOfflineTransitionSourceState>> ReadOfflineTransitionSourceStateAsync(
             CancellationToken cancellationToken) =>
             inner.ReadOfflineTransitionSourceStateAsync(cancellationToken);
@@ -4566,13 +4569,11 @@ public sealed class CovenantErasureSameProcessTests
             CovenantClosedPeriodAuthority authority,
             CancellationToken cancellationToken)
         {
-
             await pause.WaitForReleaseAsync(cancellationToken);
 
             return await inner
                 .PreflightBeforeCanonicalAsync(operation, datasetGeneration, authority, cancellationToken)
                 .ConfigureAwait(false);
-
         }
 
         public Task<Result> PreflightRemainingManagedAsync(
@@ -4598,7 +4599,6 @@ public sealed class CovenantErasureSameProcessTests
             CovenantClosedPeriodAuthority authority,
             CancellationToken cancellationToken) =>
             inner.ReadDisclosureExposureAsync(authority, cancellationToken);
-
     }
 
     /// <summary>
@@ -4615,7 +4615,6 @@ public sealed class CovenantErasureSameProcessTests
         RouteFailure failure,
         ICovenantErasureInventorySource inner) : ICovenantErasureInventorySource
     {
-
         public Task<Result<CovenantOfflineTransitionSourceState>> ReadOfflineTransitionSourceStateAsync(
             CancellationToken cancellationToken) =>
             inner.ReadOfflineTransitionSourceStateAsync(cancellationToken);
@@ -4668,12 +4667,10 @@ public sealed class CovenantErasureSameProcessTests
             Task.FromResult(
                 Result<CovenantDisclosureExposure>.Success(
                     new CovenantDisclosureExposure(0, CovenantDisclosureCountKind.Exact)));
-
     }
 
     private sealed class RouteFailureTransition : ICovenantErasureTransition
     {
-
         public Task<Result<Guid>> ApplyCanonicalErasureAsync(
             CovenantExclusiveOperation operation,
             CovenantCanonicalDatasetTransition dataset,
@@ -4750,13 +4747,11 @@ public sealed class CovenantErasureSameProcessTests
             CovenantVerifiedCandidateState candidate,
             CancellationToken cancellationToken) =>
             throw new NotSupportedException();
-
     }
 
     private sealed class RouteCancellationTransition(CancellationTokenSource caller)
         : ICovenantErasureTransition
     {
-
         public Task<Result<Guid>> ApplyCanonicalErasureAsync(
             CovenantExclusiveOperation operation,
             CovenantCanonicalDatasetTransition dataset,
@@ -4823,7 +4818,6 @@ public sealed class CovenantErasureSameProcessTests
             CovenantClosedPeriodAuthority authority,
             CancellationToken cancellationToken)
         {
-
             caller.Cancel();
 
             return Task.FromResult(
@@ -4852,7 +4846,6 @@ public sealed class CovenantErasureSameProcessTests
                             CovenantHostToolsState.Clean,
                             null),
                         new CovenantCandidateCapabilityState(0, 0, false))));
-
         }
 
         public Task<Result> PublishCommittedAsync(
@@ -4860,12 +4853,10 @@ public sealed class CovenantErasureSameProcessTests
             CovenantVerifiedCandidateState candidate,
             CancellationToken cancellationToken) =>
             Task.FromResult(Result.Success());
-
     }
 
     private sealed class RecordingRouteGate(CovenantOperationGate inner) : ICovenantOperationGate
     {
-
         private int _installationReadAcquisitions;
 
         private int _liveInstallationReads;
@@ -4897,27 +4888,22 @@ public sealed class CovenantErasureSameProcessTests
 
         internal void ResetApplyObservations()
         {
-
             _ = Interlocked.Exchange(ref _installationReadAcquisitions, 0);
 
             ExclusiveOwner = null;
 
             InstallationReadsAtExclusiveAdmission = -1;
-
         }
 
         public async ValueTask<Result<CovenantInstallationReadLease>> AcquireInstallationReadAsync(
             CancellationToken cancellationToken)
         {
-
             Result<CovenantInstallationReadLease> acquired = await inner
                 .AcquireInstallationReadAsync(cancellationToken);
 
             if (acquired.IsFailure)
             {
-
                 return acquired;
-
             }
 
             _ = Interlocked.Increment(ref _installationReadAcquisitions);
@@ -4927,14 +4913,12 @@ public sealed class CovenantErasureSameProcessTests
             return Result<CovenantInstallationReadLease>.Success(
                 new CovenantInstallationReadLease(
                     new RecordingInstallationRegistration(this, acquired.Value)));
-
         }
 
         public async ValueTask<Result<CovenantExclusiveLease>> ResumeOrAcquireExclusiveAsync(
             CovenantExclusiveRecoveryOwner owner,
             CancellationToken cancellationToken)
         {
-
             ExclusiveOwner = owner;
 
             InstallationReadsAtExclusiveAdmission = Volatile.Read(ref _liveInstallationReads);
@@ -4943,7 +4927,6 @@ public sealed class CovenantErasureSameProcessTests
                 .ResumeOrAcquireExclusiveAsync(owner, cancellationToken);
 
             return acquired;
-
         }
 
         public ValueTask<Result<CovenantExclusiveLease>> AcquireExclusiveAsync(
@@ -5029,7 +5012,6 @@ public sealed class CovenantErasureSameProcessTests
             RecordingRouteGate owner,
             CovenantInstallationReadLease inner) : ICovenantLeaseRegistration
         {
-
             private int _released;
 
             public CovenantOperationLeaseSnapshot Snapshot =>
@@ -5044,12 +5026,9 @@ public sealed class CovenantErasureSameProcessTests
 
             public async ValueTask ReleaseAsync()
             {
-
                 if (Interlocked.Exchange(ref _released, 1) != 0)
                 {
-
                     return;
-
                 }
 
                 _ = Interlocked.Decrement(ref owner._liveInstallationReads);
@@ -5058,22 +5037,17 @@ public sealed class CovenantErasureSameProcessTests
 
                 if (owner.ThrowOnNextInstallationRelease)
                 {
-
                     owner.ThrowOnNextInstallationRelease = false;
 
                     throw new InvalidOperationException("Injected planning lease release failure.");
-
                 }
-
             }
-
         }
 
         private sealed class RecordingRecoveryExclusiveRegistration(
             RecordingRouteGate owner,
             CovenantExclusiveLease inner) : ICovenantExclusiveLeaseRegistration
         {
-
             public CovenantOperationLeaseSnapshot Snapshot => inner.Snapshot;
 
             public CancellationToken Revocation => inner.Revocation;
@@ -5104,14 +5078,11 @@ public sealed class CovenantErasureSameProcessTests
             }
 
             public ValueTask ReleaseAsync() => inner.DisposeAsync();
-
         }
-
     }
 
     public enum RouteStoreFault
     {
-
         None,
 
         AdoptBeforeCheckpointCancellation,
@@ -5123,12 +5094,10 @@ public sealed class CovenantErasureSameProcessTests
         FailFirstCompletedTransition,
 
         FailAllCompletedTransitions,
-
     }
 
     internal sealed class RouteStoreFaults(RouteStoreFault fault)
     {
-
         internal const string AdoptedOwner = "review-adopted-owner";
 
         private int _completedTransitionAttempts;
@@ -5139,7 +5108,21 @@ public sealed class CovenantErasureSameProcessTests
 
         private int _completedTransitionsDisarmed;
 
+        private int _maintenanceFailureTransitionAttempts;
+
         internal int CompletedTransitionAttempts => Volatile.Read(ref _completedTransitionAttempts);
+
+        /// <summary>Every durable transition this store was asked to record as a maintenance failure.</summary>
+        internal int MaintenanceFailureTransitionAttempts =>
+            Volatile.Read(ref _maintenanceFailureTransitionAttempts);
+
+        internal void RecordTransitionAttempt(string? terminalErrorCode)
+        {
+            if (string.Equals(terminalErrorCode, ErrorCodes.Covenant.MaintenanceFailed, StringComparison.Ordinal))
+            {
+                _ = Interlocked.Increment(ref _maintenanceFailureTransitionAttempts);
+            }
+        }
 
         /// <summary>Every durable lease renewal this store was asked for, whether or not it took.</summary>
         internal int RenewalAttempts => Volatile.Read(ref _renewalAttempts);
@@ -5147,6 +5130,20 @@ public sealed class CovenantErasureSameProcessTests
         internal int RecordRenewalAttempt() => Interlocked.Increment(ref _renewalAttempts);
 
         internal Func<CancellationToken, Task>? AfterFactoryStarted { get; set; }
+
+        private Func<Task>? _afterFactoryLaunchReload;
+
+        /// <summary>
+        /// Runs once, on the first read that returns the factory row carrying its launch checkpoint,
+        /// after that read and before the row is handed back.
+        /// </summary>
+        internal Func<Task>? AfterFactoryLaunchReload
+        {
+            set => _ = Interlocked.Exchange(ref _afterFactoryLaunchReload, value);
+        }
+
+        internal Func<Task>? TakeAfterFactoryLaunchReload() =>
+            Interlocked.Exchange(ref _afterFactoryLaunchReload, null);
 
         internal CoordinatorPause? FactoryCheckpointPause { get; init; }
 
@@ -5165,12 +5162,10 @@ public sealed class CovenantErasureSameProcessTests
 
         internal int RecordCompletedTransitionAttempt() =>
             Interlocked.Increment(ref _completedTransitionAttempts);
-
     }
 
     private sealed class RouteOperationWriteObserver
     {
-
         private readonly object _sync = new();
 
         private LongRunningOperation? _current;
@@ -5183,14 +5178,10 @@ public sealed class CovenantErasureSameProcessTests
         {
             get
             {
-
                 lock (_sync)
                 {
-
                     return _accessesAfterAttentionWrite;
-
                 }
-
             }
         }
 
@@ -5198,36 +5189,26 @@ public sealed class CovenantErasureSameProcessTests
         {
             get
             {
-
                 lock (_sync)
                 {
-
                     return _lastSuccessfulWrite
                         ?? throw new InvalidOperationException(
                             "No durable operation write was observed.");
-
                 }
-
             }
         }
 
         internal void RecordStarted(LongRunningOperation? operation)
         {
-
             if (operation is null)
             {
-
                 return;
-
             }
 
             lock (_sync)
             {
-
                 _current = Clone(operation);
-
             }
-
         }
 
         internal void RecordCheckpoint(
@@ -5238,10 +5219,8 @@ public sealed class CovenantErasureSameProcessTests
             string publicSummary,
             DateTimeOffset utcNow)
         {
-
             lock (_sync)
             {
-
                 LongRunningOperation current = RequireCurrent(operationId);
 
                 _current = current with
@@ -5255,9 +5234,7 @@ public sealed class CovenantErasureSameProcessTests
                 };
 
                 _lastSuccessfulWrite = Clone(_current);
-
             }
-
         }
 
         internal void RecordTransition(
@@ -5266,10 +5243,8 @@ public sealed class CovenantErasureSameProcessTests
             DateTimeOffset utcNow,
             string? terminalErrorCode)
         {
-
             lock (_sync)
             {
-
                 LongRunningOperation current = RequireCurrent(operationId);
 
                 bool completed = state is LongRunningOperationState.Completed
@@ -5290,26 +5265,18 @@ public sealed class CovenantErasureSameProcessTests
                 };
 
                 _lastSuccessfulWrite = Clone(_current);
-
             }
-
         }
 
         internal void RecordAccess()
         {
-
             lock (_sync)
             {
-
                 if (_current?.State is LongRunningOperationState.ReconciliationRequired)
                 {
-
                     _accessesAfterAttentionWrite++;
-
                 }
-
             }
-
         }
 
         private LongRunningOperation RequireCurrent(Guid operationId) =>
@@ -5320,7 +5287,6 @@ public sealed class CovenantErasureSameProcessTests
 
         private static LongRunningOperation Clone(LongRunningOperation operation) =>
             operation with { CheckpointPayload = operation.CheckpointPayload?.ToArray() };
-
     }
 
     private sealed class RouteOperationStore(
@@ -5329,7 +5295,6 @@ public sealed class CovenantErasureSameProcessTests
         RouteStoreFaults faults,
         RouteOperationWriteObserver? operationWrites) : ILongRunningOperationStore, IDisposable
     {
-
         public void Dispose() => inner.Dispose();
 
         public Task<LongRunningOperation> CreateAsync(
@@ -5350,7 +5315,6 @@ public sealed class CovenantErasureSameProcessTests
             DateTimeOffset leaseExpiresAt,
             CancellationToken cancellationToken = default)
         {
-
             LongRunningOperation? started = await inner.TryStartSingleFlightAsync(
                 request,
                 ownerId,
@@ -5367,26 +5331,36 @@ public sealed class CovenantErasureSameProcessTests
                     StringComparison.Ordinal)
                 && faults.AfterFactoryStarted is { } afterFactoryStarted)
             {
-
                 await afterFactoryStarted(cancellationToken);
-
             }
 
             return started;
-
         }
 
-        public Task<LongRunningOperation?> GetAsync(
+        public async Task<LongRunningOperation?> GetAsync(
             Guid operationId,
             CancellationToken cancellationToken = default)
         {
-
             operationWrites?.RecordAccess();
 
-            return faults.TakeThrowNextGet()
-                ? throw new InvalidOperationException("Injected post-checkpoint ledger read failure.")
-                : inner.GetAsync(operationId, cancellationToken);
+            if (faults.TakeThrowNextGet())
+            {
+                throw new InvalidOperationException("Injected post-checkpoint ledger read failure.");
+            }
 
+            LongRunningOperation? operation = await inner.GetAsync(operationId, cancellationToken);
+
+            if (operation is { CheckpointVersion: DataRetentionFactoryTransitionLaunchV2.CurrentVersion }
+                && string.Equals(
+                    operation.Kind,
+                    LongRunningOperationKinds.DataRetentionFactoryReset,
+                    StringComparison.Ordinal)
+                && faults.TakeAfterFactoryLaunchReload() is { } afterFactoryLaunchReload)
+            {
+                await afterFactoryLaunchReload();
+            }
+
+            return operation;
         }
 
         public Task<LongRunningOperationRequestIdentity?> FindRequestIdentityAsync(
@@ -5433,7 +5407,6 @@ public sealed class CovenantErasureSameProcessTests
             DateTimeOffset leaseExpiresAt,
             CancellationToken cancellationToken = default)
         {
-
             _ = faults.RecordRenewalAttempt();
 
             return await inner.RenewLeaseAsync(
@@ -5442,7 +5415,6 @@ public sealed class CovenantErasureSameProcessTests
                 utcNow,
                 leaseExpiresAt,
                 cancellationToken);
-
         }
 
         public async Task<bool> SaveCheckpointAsync(
@@ -5456,30 +5428,23 @@ public sealed class CovenantErasureSameProcessTests
             DateTimeOffset utcNow,
             CancellationToken cancellationToken = default)
         {
-
             if (expectedCheckpointVersion == 0
                 && checkpointVersion == DataRetentionFactoryTransitionLaunchV2.CurrentVersion
                 && faults.FactoryCheckpointPause is { } factoryCheckpointPause)
             {
-
                 await factoryCheckpointPause.WaitForReleaseAsync(cancellationToken);
-
             }
 
             if (expectedCheckpointVersion == 0
                 && checkpointVersion == CovenantOfflineTransitionLaunchV4.CurrentVersion)
             {
-
                 if (faults.Fault is RouteStoreFault.ThrowBeforeCheckpoint)
                 {
-
                     throw new InvalidOperationException("Injected pre-checkpoint failure.");
-
                 }
 
                 if (faults.Fault is RouteStoreFault.AdoptBeforeCheckpointCancellation)
                 {
-
                     LongRunningOperation current = Assert.IsType<LongRunningOperation>(
                         await inner.GetAsync(operationId, CancellationToken.None));
 
@@ -5502,9 +5467,7 @@ public sealed class CovenantErasureSameProcessTests
                     Assert.True(adopted.Acquired);
 
                     throw new OperationCanceledException(cancellationToken);
-
                 }
-
             }
 
             bool saved = await inner.SaveCheckpointAsync(
@@ -5520,7 +5483,6 @@ public sealed class CovenantErasureSameProcessTests
 
             if (saved)
             {
-
                 operationWrites?.RecordCheckpoint(
                     operationId,
                     checkpointVersion,
@@ -5528,7 +5490,6 @@ public sealed class CovenantErasureSameProcessTests
                     checkpointReference,
                     publicSummary,
                     utcNow);
-
             }
 
             if (saved
@@ -5536,13 +5497,10 @@ public sealed class CovenantErasureSameProcessTests
                 && checkpointVersion == CovenantOfflineTransitionLaunchV4.CurrentVersion
                 && faults.Fault is RouteStoreFault.ThrowAfterCheckpoint)
             {
-
                 faults.ArmThrowNextGet();
-
             }
 
             return saved;
-
         }
 
         public async Task<bool> TryTransitionAsync(
@@ -5554,6 +5512,7 @@ public sealed class CovenantErasureSameProcessTests
             string? terminalErrorCode = null,
             CancellationToken cancellationToken = default)
         {
+            faults.RecordTransitionAttempt(terminalErrorCode);
 
             if (state is LongRunningOperationState.Completed
                 && !faults.CompletedTransitionsDisarmed
@@ -5561,23 +5520,17 @@ public sealed class CovenantErasureSameProcessTests
                     || faults.Fault is RouteStoreFault.FailFirstCompletedTransition
                         && faults.RecordCompletedTransitionAttempt() == 1))
             {
-
                 if (faults.Fault is RouteStoreFault.FailAllCompletedTransitions)
                 {
-
                     _ = faults.RecordCompletedTransitionAttempt();
-
                 }
 
                 return false;
-
             }
 
             if (state is LongRunningOperationState.Completed)
             {
-
                 _ = faults.RecordCompletedTransitionAttempt();
-
             }
 
             bool transitioned = await inner.TryTransitionAsync(
@@ -5591,17 +5544,14 @@ public sealed class CovenantErasureSameProcessTests
 
             if (transitioned)
             {
-
                 operationWrites?.RecordTransition(
                     operationId,
                     state,
                     utcNow,
                     terminalErrorCode);
-
             }
 
             return transitioned;
-
         }
 
         public Task<bool> RequestCancellationAsync(
@@ -5621,7 +5571,6 @@ public sealed class CovenantErasureSameProcessTests
         public Task<IReadOnlyList<LongRunningOperationCount>> GetCountsAsync(
             CancellationToken cancellationToken = default) =>
             inner.GetCountsAsync(cancellationToken);
-
     }
 
     private sealed class PausedTurn(
@@ -5629,6 +5578,7 @@ public sealed class CovenantErasureSameProcessTests
         TaskCompletionSource<bool> release,
         Task<Result<CovenantTurnContext>> result) : IAsyncDisposable
     {
+        private static readonly TimeSpan SettleTimeout = TimeSpan.FromSeconds(5);
 
         private int _released;
 
@@ -5636,45 +5586,41 @@ public sealed class CovenantErasureSameProcessTests
 
         internal async Task<Result<CovenantTurnContext>> ReleaseAsync()
         {
-
             Release();
 
             return await result.WaitAsync(TimeSpan.FromSeconds(5));
-
         }
 
         public async ValueTask DisposeAsync()
         {
-
             Release();
 
-            try
+            // WhenAny never rethrows the turn's own fault: the owning assertion reports that, and
+            // disposal only guarantees the turn was released and given time to settle. A turn that does
+            // not settle is the one outcome nothing else would report, so it goes to the diagnostic
+            // sink, and the settle timer is cancelled as soon as the turn finishes.
+            using CancellationTokenSource settleTimer = new();
+
+            Task settleTimeout = Task.Delay(SettleTimeout, settleTimer.Token);
+
+            if (await Task.WhenAny(result, settleTimeout) == result)
             {
+                await settleTimer.CancelAsync();
 
-                _ = await result.WaitAsync(TimeSpan.FromSeconds(5));
-
-            }
-            catch
-            {
-
-                // The owning assertion reports the task failure; disposal only guarantees release.
-
+                return;
             }
 
+            TestDiagnostics.Report(
+                $"{nameof(PausedTurn)} was released but the paused turn had not settled after {SettleTimeout.TotalSeconds:0} s.");
         }
 
         private void Release()
         {
-
             if (Interlocked.Exchange(ref _released, 1) == 0)
             {
-
                 _ = release.TrySetResult(true);
-
             }
-
         }
-
     }
 
     private sealed record PreparedAuthenticatedRecovery(
@@ -5933,18 +5879,14 @@ public sealed class CovenantErasureSameProcessTests
                 CovenantExclusiveLeaseDisposition disposition,
                 CancellationToken cancellationToken)
             {
-
                 Result completed = await inner.CompleteAsync(disposition, cancellationToken);
 
                 if (completed.IsSuccess)
                 {
-
                     dispositions?.Record(disposition);
-
                 }
 
                 return completed;
-
             }
 
             public ValueTask DisposeAsync() => inner.DisposeAsync();
@@ -5953,7 +5895,6 @@ public sealed class CovenantErasureSameProcessTests
 
     private sealed class AuthenticatedPreSessionFailure
     {
-
         private string? _stage;
 
         private int _failures;
@@ -5970,15 +5911,12 @@ public sealed class CovenantErasureSameProcessTests
 
         internal bool Take(string stage)
         {
-
             if (!string.Equals(
                     Interlocked.CompareExchange(ref _stage, null, stage),
                     stage,
                     StringComparison.Ordinal))
             {
-
                 return false;
-
             }
 
             Interlocked.Increment(ref _failures);
@@ -5986,32 +5924,25 @@ public sealed class CovenantErasureSameProcessTests
             Interlocked.Exchange(ref _fired, 1);
 
             return true;
-
         }
 
         internal void RecordReopen()
         {
-
             if (Volatile.Read(ref _fired) != 0)
             {
-
                 Interlocked.Increment(ref _reopensAfterFailure);
-
             }
-
         }
 
         internal static Error InjectedFailure() => new(
             ErrorCodes.Covenant.ManualRecoveryRequired,
             "Injected authenticated pre-session recovery failure.");
-
     }
 
     private sealed class FailingAuthenticatedPhaseAuthority(
         IGrimoireOfflineTransitionPhaseAuthority inner,
         AuthenticatedPreSessionFailure failure) : IGrimoireOfflineTransitionPhaseAuthority
     {
-
         public Task<Result<GrimoireOfflineTransitionPhaseSession>> OpenOrResumeAsync(
             LongRunningOperation operation,
             CancellationToken cancellationToken) =>
@@ -6025,14 +5956,12 @@ public sealed class CovenantErasureSameProcessTests
                 ? Task.FromResult(Result<GrimoireOfflineTransitionPhaseSession>.Failure(
                     AuthenticatedPreSessionFailure.InjectedFailure()))
                 : inner.ResumeAuthenticatedAsync(operation, expected, cancellationToken);
-
     }
 
     private sealed class FailingAuthenticatedDisclosureWriterLifecycle(
         ICovenantDisclosureWriterLifecycle inner,
         AuthenticatedPreSessionFailure failure) : ICovenantDisclosureWriterLifecycle
     {
-
         public ValueTask<Result> QuiesceAsync(CancellationToken cancellationToken) =>
             failure.Take("quiesce")
                 ? ValueTask.FromResult(Result.Failure(
@@ -6041,13 +5970,29 @@ public sealed class CovenantErasureSameProcessTests
 
         public ValueTask<Result> ReopenAsync(CancellationToken cancellationToken)
         {
-
             failure.RecordReopen();
 
             return inner.ReopenAsync(cancellationToken);
-
         }
+    }
 
+    /// <summary>
+    /// Refuses the first quiesce: the one refusal a fresh erasure answers before any journal exists.
+    /// </summary>
+    private sealed class QuiesceRefusingDisclosureWriterLifecycle(
+        ICovenantDisclosureWriterLifecycle inner) : ICovenantDisclosureWriterLifecycle
+    {
+        internal const string RefusalCode = ErrorCodes.Covenant.IntegrityFailure;
+
+        private int _refused;
+
+        public ValueTask<Result> QuiesceAsync(CancellationToken cancellationToken) =>
+            Interlocked.Exchange(ref _refused, 1) == 0
+                ? ValueTask.FromResult(Result.Failure(new Error(RefusalCode, "Injected quiesce refusal.")))
+                : inner.QuiesceAsync(cancellationToken);
+
+        public ValueTask<Result> ReopenAsync(CancellationToken cancellationToken) =>
+            inner.ReopenAsync(cancellationToken);
     }
 
     private sealed class RecordingDisclosureWriterLifecycle : ICovenantDisclosureWriterLifecycle
@@ -6082,52 +6027,36 @@ public sealed class CovenantErasureSameProcessTests
 
     private sealed class RecoveryGrimoireDispositionObservations
     {
-
         private readonly object _sync = new();
 
         private readonly List<CovenantExclusiveLeaseDisposition> _successful = [];
 
         internal CovenantExclusiveLeaseDisposition[] Successful
         {
-
             get
             {
-
                 lock (_sync)
                 {
-
                     return [.. _successful];
-
                 }
-
             }
-
         }
 
         internal void Record(CovenantExclusiveLeaseDisposition disposition)
         {
-
             lock (_sync)
             {
-
                 _successful.Add(disposition);
-
             }
-
         }
 
         internal void Reset()
         {
-
             lock (_sync)
             {
-
                 _successful.Clear();
-
             }
-
         }
-
     }
 
     private sealed record SameProcessBefore(
@@ -6141,5 +6070,4 @@ public sealed class CovenantErasureSameProcessTests
         CovenantReadLease ReadLease,
         ArcanumInvocationContext OldInvocation,
         string OldContent);
-
 }

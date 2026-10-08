@@ -25,7 +25,6 @@ namespace RetroDownfall.Arcanum.Tests.GrimoireTransitions;
 [Collection(ProcessGlobalSeamCollectionName.Value)]
 public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDisposable
 {
-
     private readonly string _container = Path.Combine(
         Path.GetTempPath(),
         "arcanum-offline-transition-file-store-" + Guid.NewGuid().ToString("N"));
@@ -34,55 +33,42 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
 
     public GrimoireOfflineTransitionJournalFileStoreTests()
     {
-
         Directory.CreateDirectory(_container);
 
         if (!OperatingSystem.IsWindows())
         {
-
             File.SetUnixFileMode(
                 _container,
                 UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
-
         }
         else
         {
-
             SecureFilePermissions.EnsureOwnerOnlyDirectoryExists(_container);
-
         }
 
         _guarded = Path.Combine(_container, "arcanum");
 
         Directory.CreateDirectory(_guarded);
-
     }
 
     public void Dispose()
     {
-
         if (!OperatingSystem.IsWindows() && Directory.Exists(_container))
         {
-
             File.SetUnixFileMode(
                 _container,
                 UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
-
         }
 
         if (Directory.Exists(_container))
         {
-
             Directory.Delete(_container, recursive: true);
-
         }
-
     }
 
     [Fact]
     public void Location_is_the_maintenance_lock_sibling_with_the_exact_suffix()
     {
-
         GrimoireOfflineTransitionJournalLocation location = Location();
 
         string expectedLock = ArcanumMaintenanceLock.LockPathFor(_guarded);
@@ -110,13 +96,11 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
         Assert.Equal(Path.GetFileName(location.PreviousPath), location.PreviousLeaf);
 
         Assert.Equal(Path.GetFileName(location.RetiringPath), location.RetiringLeaf);
-
     }
 
     [Fact]
     public void Location_digest_changes_with_profile_parent_identity_or_leaf()
     {
-
         GrimoireOfflineTransitionJournalLocation baseline = Location();
 
         string siblingGuarded = Path.Combine(_container, "different-profile");
@@ -134,17 +118,13 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
 
         if (!OperatingSystem.IsWindows())
         {
-
             File.SetUnixFileMode(
                 otherContainer,
                 UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
-
         }
         else
         {
-
             SecureFilePermissions.EnsureOwnerOnlyDirectoryExists(otherContainer);
-
         }
 
         GrimoireOfflineTransitionJournalLocation differentParent = Value(
@@ -157,22 +137,18 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
         Assert.NotEqual(
             baseline.GuardedParentPhysicalIdentityDigest,
             differentParent.GuardedParentPhysicalIdentityDigest);
-
     }
 
     [SkippableFact]
     public void Location_refuses_insecure_or_foreign_existing_parent_posture()
     {
-
         Skip.IfNot(OperatingSystem.IsMacOS(), "This posture check is macOS-specific.");
 
         // Dead once Skip.IfNot above has run, but kept so the platform-compatibility analyzer still
         // recognizes the guard clause protecting the Unix-only calls below.
         if (!OperatingSystem.IsMacOS())
         {
-
             return;
-
         }
 
         GrimoireOfflineTransitionJournalFileStore store = new();
@@ -186,17 +162,13 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
 
         try
         {
-
             Assert.True(store.ResolveLocation(_guarded).IsFailure);
-
         }
         finally
         {
-
             File.SetUnixFileMode(
                 _container,
                 UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
-
         }
 
         string foreignGuarded = Path.Combine(
@@ -207,23 +179,17 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
 
         try
         {
-
             Assert.True(store.ResolveLocation(foreignGuarded).IsFailure);
-
         }
         finally
         {
-
             Directory.Delete(foreignGuarded);
-
         }
-
     }
 
     [Fact]
     public async Task Every_store_entry_point_rejects_tampered_location_commitments()
     {
-
         GrimoireOfflineTransitionJournalFileStore store = new();
 
         GrimoireOfflineTransitionJournalLocation location = Location(store);
@@ -275,17 +241,13 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
 
         foreach ((string name, GrimoireOfflineTransitionJournalLocation candidate) in tampered)
         {
-
             await AssertEveryEntryPointRejectsAsync(store, location, candidate, name);
-
         }
-
     }
 
     [Fact]
     public async Task Publication_orders_create_write_file_fsync_rename_permissions_parent_fsync()
     {
-
         List<string> events = [];
 
         GrimoireOfflineTransitionJournalFileStore store = new(events.Add);
@@ -334,7 +296,6 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
             beforeAtomicReplace: null,
             openPrimitives: currentLocation =>
             {
-
                 Result<GrimoireOfflineTransitionJournalFilePrimitives> opened =
                     GrimoireOfflineTransitionJournalFilePrimitives.Open(
                         Path.GetDirectoryName(currentLocation.JournalPath)!,
@@ -342,17 +303,14 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
 
                 if (opened.IsFailure)
                 {
-
                     return Result<IGrimoireOfflineTransitionJournalFilePrimitives>.Failure(
                         opened.Error);
-
                 }
 
                 retentionShape = new RetentionShapeRecordingPrimitives(opened.Value);
 
                 return Result<IGrimoireOfflineTransitionJournalFilePrimitives>.Success(
                     retentionShape);
-
             });
 
         Assert.True((await updating.ReplaceDurablyAsync(
@@ -388,13 +346,11 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
                 "file:residue-absence-proved",
             ],
             events);
-
     }
 
     [Fact]
     public async Task Secure_reread_returns_the_exact_published_identity_and_bytes()
     {
-
         List<string> events = [];
 
         GrimoireOfflineTransitionJournalFileStore store = new(events.Add);
@@ -431,13 +387,11 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
         read.Dispose();
 
         Assert.True(read.Bytes.IsEmpty);
-
     }
 
     [Fact]
     public async Task Evidence_read_refuses_relative_name_substitution_during_bounded_read()
     {
-
         GrimoireOfflineTransitionJournalFileStore store = new();
 
         GrimoireOfflineTransitionJournalLocation location = Location(store);
@@ -457,12 +411,9 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
 
         SecureFileReader.AfterOpenForTests = _ =>
         {
-
             if (Interlocked.Exchange(ref substituted, 1) != 0)
             {
-
                 return;
-
             }
 
             File.Move(location.JournalPath, preserved);
@@ -471,18 +422,14 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
 
             if (!OperatingSystem.IsWindows())
             {
-
                 File.SetUnixFileMode(
                     location.JournalPath,
                     UnixFileMode.UserRead | UnixFileMode.UserWrite);
-
             }
-
         };
 
         try
         {
-
             Result<GrimoireOfflineTransitionJournalFileRead?> read =
                 await store.ReadIfPresentAsync(location, CancellationToken.None);
 
@@ -495,21 +442,16 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
             Assert.Equal(
                 Bytes("substitute-evidence").ToArray(),
                 File.ReadAllBytes(location.JournalPath));
-
         }
         finally
         {
-
             SecureFileReader.AfterOpenForTests = null;
-
         }
-
     }
 
     [Fact]
     public async Task Publication_preserves_and_refuses_a_target_substituted_after_final_validation()
     {
-
         GrimoireOfflineTransitionJournalFileStore initial = new();
 
         GrimoireOfflineTransitionJournalLocation location = Value(initial.ResolveLocation(_guarded));
@@ -531,9 +473,7 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
                    GrimoireOfflineTransitionJournalFileRead>(
                    Value(await initial.ReadIfPresentAsync(location, CancellationToken.None))))
         {
-
             previousIdentity = previous.Metadata.Identity;
-
         }
 
         string preservedExpected = Path.Combine(_container, "preserved-expected-predecessor");
@@ -543,7 +483,6 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
         GrimoireOfflineTransitionJournalFileStore attacked = new(
             beforeAtomicReplace: () =>
             {
-
                 File.Move(location.JournalPath, preservedExpected);
 
                 File.WriteAllBytes(location.JournalPath, substituteBytes);
@@ -551,7 +490,6 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
                 Assert.True(SecureFilePermissions.TryApplyOwnerOnlyFileStrict(
                     location.JournalPath,
                     logFailure: false));
-
             });
 
         Result result = await attacked.ReplaceDurablyAsync(
@@ -576,13 +514,11 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
             evidence.Previous ?? Assert.IsType<GrimoireOfflineTransitionJournalFileRead>(evidence.Working);
 
         Assert.Equal(substituteBytes, displaced.Bytes.ToArray());
-
     }
 
     [Fact]
     public async Task Publication_crash_after_atomic_exchange_retains_authentic_predecessor_evidence()
     {
-
         GrimoireOfflineTransitionJournalFileStore initial = new();
 
         GrimoireOfflineTransitionJournalLocation location = Location(initial);
@@ -604,22 +540,16 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
                    GrimoireOfflineTransitionJournalFileRead>(
                    Value(await initial.ReadIfPresentAsync(location, CancellationToken.None))))
         {
-
             predecessorIdentity = predecessor.Metadata.Identity;
-
         }
 
         GrimoireOfflineTransitionJournalFileStore crashing = new(
             afterStep: step =>
             {
-
                 if (step == "file:atomic-replace")
                 {
-
                     throw new IOException("synthetic crash seam");
-
                 }
-
             });
 
         Result result = await crashing.ReplaceDurablyAsync(
@@ -644,13 +574,11 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
         Assert.Equal(predecessorBytes, retained.Bytes.ToArray());
 
         Assert.Equal(predecessorIdentity, retained.Metadata.Identity);
-
     }
 
     [Fact]
     public async Task Read_refuses_symlink_hardlink_non_owner_and_non_regular_evidence()
     {
-
         GrimoireOfflineTransitionJournalFileStore store = new();
 
         GrimoireOfflineTransitionJournalLocation location = Location(store);
@@ -681,7 +609,6 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
 
         if (!OperatingSystem.IsWindows())
         {
-
             File.SetUnixFileMode(
                 location.JournalPath,
                 UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.GroupRead);
@@ -689,25 +616,20 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
             await AssertUnsafeEvidenceAsync(store, location);
 
             File.Delete(location.JournalPath);
-
         }
         else
         {
-
             File.Delete(location.JournalPath);
-
         }
 
         Directory.CreateDirectory(location.JournalPath);
 
         await AssertUnsafeEvidenceAsync(store, location);
-
     }
 
     [Fact]
     public void Absence_refuses_case_alias_working_previous_retiring_legacy_temp_and_unreadable_parent_evidence()
     {
-
         GrimoireOfflineTransitionJournalFileStore store = new();
 
         GrimoireOfflineTransitionJournalLocation location = Location(store);
@@ -722,52 +644,40 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
                      location.JournalLeaf + ".unknown-residue",
                  ])
         {
-
             string path = Path.Combine(Path.GetDirectoryName(location.JournalPath)!, residue);
 
             File.WriteAllText(path, "residue");
 
             if (!OperatingSystem.IsWindows())
             {
-
                 File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite);
-
             }
 
             Assert.True(store.RequireNoEvidence(location).IsFailure);
 
             File.Delete(path);
-
         }
 
         if (!OperatingSystem.IsWindows())
         {
-
             File.SetUnixFileMode(_container, UnixFileMode.None);
 
             try
             {
-
                 Assert.True(store.RequireNoEvidence(location).IsFailure);
-
             }
             finally
             {
-
                 File.SetUnixFileMode(
                     _container,
                     UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
-
             }
-
         }
-
     }
 
     [Fact]
     public async Task Delete_moves_to_retiring_authenticates_compare_unlinks_and_proves_the_handle_unlinked()
     {
-
         List<string> events = [];
 
         GrimoireOfflineTransitionJournalFileStore store = new(events.Add);
@@ -791,9 +701,7 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
                    GrimoireOfflineTransitionJournalFileRead>(
                    Value(await store.ReadIfPresentAsync(location, CancellationToken.None))))
         {
-
             metadata = current.Metadata;
-
         }
 
         events.Clear();
@@ -819,13 +727,11 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
         Assert.False(File.Exists(location.PreviousPath));
 
         Assert.False(File.Exists(location.RetiringPath));
-
     }
 
     [Fact]
     public async Task Compare_unlink_detects_a_substitution_in_the_delegated_unlink_window()
     {
-
         GrimoireOfflineTransitionJournalFileStore initial = new();
 
         GrimoireOfflineTransitionJournalLocation location = Location(initial);
@@ -847,9 +753,7 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
                    GrimoireOfflineTransitionJournalFileRead>(
                    Value(await initial.ReadIfPresentAsync(location, CancellationToken.None))))
         {
-
             metadata = read.Metadata;
-
         }
 
         string displaced = location.RetiringPath + ".expected";
@@ -857,12 +761,9 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
         GrimoireOfflineTransitionJournalFileStore attacked = new(
             failBeforeStep: step =>
             {
-
                 if (step != "file:previous-unlinked")
                 {
-
                     return false;
-
                 }
 
                 File.Move(location.RetiringPath, displaced);
@@ -871,15 +772,12 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
 
                 if (!OperatingSystem.IsWindows())
                 {
-
                     File.SetUnixFileMode(
                         location.RetiringPath,
                         UnixFileMode.UserRead | UnixFileMode.UserWrite);
-
                 }
 
                 return false;
-
             });
 
         Result result = attacked.DeleteDurably(held, location, metadata, bytes);
@@ -891,13 +789,11 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
         Assert.True(File.Exists(displaced));
 
         Assert.True(File.Exists(location.RetiringPath));
-
     }
 
     [Fact]
     public async Task Delete_refuses_identity_substitution_before_the_delegated_unlink_window()
     {
-
         GrimoireOfflineTransitionJournalFileStore store = new();
 
         GrimoireOfflineTransitionJournalLocation location = Location(store);
@@ -927,13 +823,11 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
         Assert.True(store.DeleteDurably(held, location, substituted, bytes).IsFailure);
 
         Assert.True(File.Exists(location.JournalPath));
-
     }
 
     [Fact]
     public async Task Publication_failure_before_exchange_preserves_current_and_removes_exact_working_file()
     {
-
         GrimoireOfflineTransitionJournalFileStore initial = new();
 
         GrimoireOfflineTransitionJournalLocation location = Location(initial);
@@ -955,9 +849,7 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
                    GrimoireOfflineTransitionJournalFileRead>(
                    Value(await initial.ReadIfPresentAsync(location, CancellationToken.None))))
         {
-
             identity = current.Metadata.Identity;
-
         }
 
         GrimoireOfflineTransitionJournalFileStore failing = new(
@@ -979,13 +871,11 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
         Assert.False(File.Exists(location.PreviousPath));
 
         Assert.False(File.Exists(location.RetiringPath));
-
     }
 
     [Fact]
     public async Task Publication_failure_after_exchange_returns_recovery_required_and_preserves_all_evidence()
     {
-
         GrimoireOfflineTransitionJournalFileStore initial = new();
 
         GrimoireOfflineTransitionJournalLocation location = Location(initial);
@@ -1009,9 +899,7 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
                    GrimoireOfflineTransitionJournalFileRead>(
                    Value(await initial.ReadIfPresentAsync(location, CancellationToken.None))))
         {
-
             oldIdentity = old.Metadata.Identity;
-
         }
 
         GrimoireOfflineTransitionJournalFileStore failing = new(
@@ -1039,13 +927,11 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
         Assert.Equal(oldBytes, retained.Bytes.ToArray());
 
         Assert.Equal(oldIdentity, retained.Metadata.Identity);
-
     }
 
     [Fact]
     public async Task Publication_failures_at_parent_fsync_and_predecessor_retirement_boundaries_require_recovery()
     {
-
         (string Step, string? RetainedLeaf)[] boundaries =
         [
             ("file:parent-flushed", "previous"),
@@ -1057,7 +943,6 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
 
         foreach ((string step, string? retainedLeaf) in boundaries)
         {
-
             string guarded = Path.Combine(_container, "boundary-" + step.Replace(':', '-'));
 
             Directory.CreateDirectory(guarded);
@@ -1087,9 +972,7 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
                        GrimoireOfflineTransitionJournalFileRead>(
                        Value(await initial.ReadIfPresentAsync(location, CancellationToken.None))))
             {
-
                 oldIdentity = old.Metadata.Identity;
-
             }
 
             GrimoireOfflineTransitionJournalFileStore failing = new(
@@ -1120,46 +1003,35 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
 
             if (retainedLeaf is null)
             {
-
                 Assert.Null(evidence.Working);
 
                 Assert.Null(evidence.Previous);
 
                 Assert.Null(evidence.Retiring);
-
             }
             else
             {
-
                 Assert.NotNull(retained);
 
                 Assert.Equal(oldBytes, retained.Bytes.ToArray());
 
                 Assert.Equal(oldIdentity, retained.Metadata.Identity);
-
             }
-
         }
-
     }
 
     [Fact]
     public async Task Cancellation_requested_after_first_publication_lands_does_not_convert_success_to_recovery_required()
     {
-
         using CancellationTokenSource cts = new();
 
         GrimoireOfflineTransitionJournalFileStore cancelling = new(
             afterStep: step =>
             {
-
                 if (step == "file:atomic-replace")
                 {
-
                     cts.Cancel();
-
                 }
-
             });
 
         GrimoireOfflineTransitionJournalLocation location = Location(cancelling);
@@ -1187,13 +1059,11 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
         Assert.Null(evidence.Previous);
 
         Assert.Null(evidence.Retiring);
-
     }
 
     [Fact]
     public async Task Cancellation_requested_after_the_exchange_lands_does_not_convert_success_to_recovery_required()
     {
-
         GrimoireOfflineTransitionJournalFileStore initial = new();
 
         GrimoireOfflineTransitionJournalLocation location = Location(initial);
@@ -1215,9 +1085,7 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
                    GrimoireOfflineTransitionJournalFileRead>(
                    Value(await initial.ReadIfPresentAsync(location, CancellationToken.None))))
         {
-
             firstIdentity = first.Metadata.Identity;
-
         }
 
         using CancellationTokenSource cts = new();
@@ -1225,14 +1093,10 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
         GrimoireOfflineTransitionJournalFileStore cancelling = new(
             afterStep: step =>
             {
-
                 if (step == "file:atomic-replace")
                 {
-
                     cts.Cancel();
-
                 }
-
             });
 
         byte[] secondBytes = Bytes("cancel-after-exchange-second").ToArray();
@@ -1256,13 +1120,11 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
         Assert.Null(evidence.Previous);
 
         Assert.Null(evidence.Retiring);
-
     }
 
     [Fact]
     public async Task Cancellation_requested_after_the_retirement_unlink_lands_does_not_convert_success_to_recovery_required()
     {
-
         GrimoireOfflineTransitionJournalFileStore initial = new();
 
         GrimoireOfflineTransitionJournalLocation location = Location(initial);
@@ -1284,9 +1146,7 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
                    GrimoireOfflineTransitionJournalFileRead>(
                    Value(await initial.ReadIfPresentAsync(location, CancellationToken.None))))
         {
-
             metadata = current.Metadata;
-
         }
 
         using CancellationTokenSource cts = new();
@@ -1294,14 +1154,10 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
         GrimoireOfflineTransitionJournalFileStore cancelling = new(
             afterStep: step =>
             {
-
                 if (step == "file:delete-parent-flushed")
                 {
-
                     cts.Cancel();
-
                 }
-
             });
 
         Result result = await cancelling.CompleteRetirementAsync(
@@ -1325,13 +1181,11 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
         Assert.Null(evidence.Previous);
 
         Assert.Null(evidence.Retiring);
-
     }
 
     [Fact]
     public async Task Resume_after_a_crash_before_permissions_verification_returns_recovery_required_rather_than_throwing()
     {
-
         (ArcanumMaintenanceLock held, GrimoireOfflineTransitionJournalLocation location,
                 FileHandleMetadata expectedCurrent, byte[] expectedCurrentBytes,
                 FileHandleMetadata expectedNext, byte[] expectedNextBytes) =
@@ -1339,7 +1193,6 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
 
         using (held)
         {
-
             GrimoireOfflineTransitionJournalFileStore resuming = new(
                 failBeforeStep: step => step == "file:permissions-verified");
 
@@ -1355,15 +1208,12 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
             Assert.True(result.IsFailure);
 
             Assert.Equal(ErrorCodes.Data.RecoveryRequired, result.Error.Code);
-
         }
-
     }
 
     [Fact]
     public async Task Resume_reports_recovery_required_when_enumeration_fails_with_an_io_exception()
     {
-
         (ArcanumMaintenanceLock held, GrimoireOfflineTransitionJournalLocation location,
                 FileHandleMetadata expectedCurrent, byte[] expectedCurrentBytes,
                 FileHandleMetadata expectedNext, byte[] expectedNextBytes) =
@@ -1371,14 +1221,12 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
 
         using (held)
         {
-
             GrimoireOfflineTransitionJournalFileStore resuming = new(
                 afterStep: null,
                 failBeforeStep: null,
                 beforeAtomicReplace: null,
                 openPrimitives: currentLocation =>
                 {
-
                     Result<GrimoireOfflineTransitionJournalFilePrimitives> opened =
                         GrimoireOfflineTransitionJournalFilePrimitives.Open(
                             Path.GetDirectoryName(currentLocation.JournalPath)!,
@@ -1386,15 +1234,12 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
 
                     if (opened.IsFailure)
                     {
-
                         return Result<IGrimoireOfflineTransitionJournalFilePrimitives>.Failure(
                             opened.Error);
-
                     }
 
                     return Result<IGrimoireOfflineTransitionJournalFilePrimitives>.Success(
                         new ThrowingEnumerationPrimitives(opened.Value));
-
                 });
 
             Result result = await resuming.ResumeWorkingPublicationAsync(
@@ -1409,15 +1254,12 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
             Assert.True(result.IsFailure);
 
             Assert.Equal(ErrorCodes.Data.RecoveryRequired, result.Error.Code);
-
         }
-
     }
 
     [Fact]
     public async Task Normalize_working_predecessor_with_a_pre_cancelled_token_returns_recovery_required_rather_than_throwing()
     {
-
         (ArcanumMaintenanceLock held, GrimoireOfflineTransitionJournalLocation location,
                 FileHandleMetadata expectedCurrent, byte[] expectedCurrentBytes,
                 FileHandleMetadata expectedNext, byte[] expectedNextBytes) =
@@ -1425,7 +1267,6 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
 
         using (held)
         {
-
             using CancellationTokenSource cancelled = new();
 
             cancelled.Cancel();
@@ -1444,9 +1285,7 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
             Assert.True(result.IsFailure);
 
             Assert.Equal(ErrorCodes.Data.RecoveryRequired, result.Error.Code);
-
         }
-
     }
 
     /// <summary>
@@ -1465,7 +1304,6 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
         FileHandleMetadata Working,
         byte[] WorkingBytes)> ArrangeCanonicalBesideWorkingAsync()
     {
-
         GrimoireOfflineTransitionJournalFileStore initial = new();
 
         GrimoireOfflineTransitionJournalLocation location = Location(initial);
@@ -1487,23 +1325,17 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
                    GrimoireOfflineTransitionJournalFileRead>(
                    Value(await initial.ReadIfPresentAsync(location, CancellationToken.None))))
         {
-
             currentIdentity = current.Metadata.Identity;
-
         }
 
         GrimoireOfflineTransitionJournalFileStore crashing = new(
             afterStep: step =>
             {
-
                 if (step == "file:temporary-flushed")
                 {
-
                     throw new InvalidOperationException(
                         "synthetic hard crash leaving working beside canonical");
-
                 }
-
             });
 
         byte[] nextBytes = Bytes("resume-next-" + Guid.NewGuid().ToString("N")).ToArray();
@@ -1529,7 +1361,6 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
             crashed.Canonical.Bytes.ToArray(),
             crashed.Working.Metadata,
             crashed.Working.Bytes.ToArray());
-
     }
 
     /// <summary>
@@ -1542,16 +1373,13 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
     [SkippableFact]
     public void Working_file_creation_delivers_owner_only_mode_before_the_fchmod_repair()
     {
-
         Skip.If(
             OperatingSystem.IsWindows(),
             "Unix-only: exercises the openat exclusive-create path fchmod repairs afterwards.");
 
         if (OperatingSystem.IsWindows())
         {
-
             return;
-
         }
 
         GrimoireOfflineTransitionJournalLocation location = Location();
@@ -1565,7 +1393,6 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
 
         try
         {
-
             SecureFileOpenStatus status = primitives.OpenChild(
                 "openat-mode-probe",
                 createExclusive: true,
@@ -1574,7 +1401,6 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
 
             using (handle)
             {
-
                 Assert.Equal(SecureFileOpenStatus.Success, status);
 
                 Assert.NotNull(handle);
@@ -1584,17 +1410,12 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
                 Assert.True(
                     observed == (UnixFileMode.UserRead | UnixFileMode.UserWrite),
                     "observed pre-fchmod mode: " + observed);
-
             }
-
         }
         finally
         {
-
             UmaskUnix(previousUmask);
-
         }
-
     }
 
     [DllImport("libc", EntryPoint = "umask")]
@@ -1610,7 +1431,6 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
     [Fact]
     public async Task Publication_invokes_the_working_flush_before_the_atomic_replace_and_the_parent_flush_after()
     {
-
         RecordingJournalFilePrimitives? recording = null;
 
         GrimoireOfflineTransitionJournalFileStore store = new(
@@ -1619,7 +1439,6 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
             beforeAtomicReplace: null,
             openPrimitives: currentLocation =>
             {
-
                 Result<GrimoireOfflineTransitionJournalFilePrimitives> opened =
                     GrimoireOfflineTransitionJournalFilePrimitives.Open(
                         Path.GetDirectoryName(currentLocation.JournalPath)!,
@@ -1627,16 +1446,13 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
 
                 if (opened.IsFailure)
                 {
-
                     return Result<IGrimoireOfflineTransitionJournalFilePrimitives>.Failure(
                         opened.Error);
-
                 }
 
                 recording = new RecordingJournalFilePrimitives(opened.Value);
 
                 return Result<IGrimoireOfflineTransitionJournalFilePrimitives>.Success(recording);
-
             });
 
         GrimoireOfflineTransitionJournalLocation location = Location(store);
@@ -1657,13 +1473,11 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
         Assert.NotNull(recording);
 
         Assert.Equal((string[])["working", "replace", "parent"], recording.BarrierCalls);
-
     }
 
     [Fact]
     public async Task Publication_fails_closed_when_the_working_flush_barrier_reports_failure()
     {
-
         RecordingJournalFilePrimitives? recording = null;
 
         GrimoireOfflineTransitionJournalFileStore store = new(
@@ -1672,7 +1486,6 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
             beforeAtomicReplace: null,
             openPrimitives: currentLocation =>
             {
-
                 Result<GrimoireOfflineTransitionJournalFilePrimitives> opened =
                     GrimoireOfflineTransitionJournalFilePrimitives.Open(
                         Path.GetDirectoryName(currentLocation.JournalPath)!,
@@ -1680,10 +1493,8 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
 
                 if (opened.IsFailure)
                 {
-
                     return Result<IGrimoireOfflineTransitionJournalFilePrimitives>.Failure(
                         opened.Error);
-
                 }
 
                 recording = new RecordingJournalFilePrimitives(opened.Value)
@@ -1694,7 +1505,6 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
                 };
 
                 return Result<IGrimoireOfflineTransitionJournalFilePrimitives>.Success(recording);
-
             });
 
         GrimoireOfflineTransitionJournalLocation location = Location(store);
@@ -1715,13 +1525,11 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
         Assert.False(File.Exists(location.WorkingPath));
 
         Assert.False(File.Exists(location.JournalPath));
-
     }
 
     [Fact]
     public async Task Publication_fails_closed_when_the_parent_flush_barrier_reports_failure()
     {
-
         RecordingJournalFilePrimitives? recording = null;
 
         GrimoireOfflineTransitionJournalFileStore store = new(
@@ -1730,7 +1538,6 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
             beforeAtomicReplace: null,
             openPrimitives: currentLocation =>
             {
-
                 Result<GrimoireOfflineTransitionJournalFilePrimitives> opened =
                     GrimoireOfflineTransitionJournalFilePrimitives.Open(
                         Path.GetDirectoryName(currentLocation.JournalPath)!,
@@ -1738,10 +1545,8 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
 
                 if (opened.IsFailure)
                 {
-
                     return Result<IGrimoireOfflineTransitionJournalFilePrimitives>.Failure(
                         opened.Error);
-
                 }
 
                 recording = new RecordingJournalFilePrimitives(opened.Value)
@@ -1752,7 +1557,6 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
                 };
 
                 return Result<IGrimoireOfflineTransitionJournalFilePrimitives>.Success(recording);
-
             });
 
         GrimoireOfflineTransitionJournalLocation location = Location(store);
@@ -1771,7 +1575,6 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
         Assert.True(result.IsFailure);
 
         Assert.Equal(ErrorCodes.Data.RecoveryRequired, result.Error.Code);
-
     }
 
     /// <summary>
@@ -1789,7 +1592,6 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
     [Fact]
     public async Task Publication_bounds_the_number_of_directory_enumerations_per_revision()
     {
-
         GrimoireOfflineTransitionJournalFileStore initial = new();
 
         GrimoireOfflineTransitionJournalLocation location = Location(initial);
@@ -1811,9 +1613,7 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
                    GrimoireOfflineTransitionJournalFileRead>(
                    Value(await initial.ReadIfPresentAsync(location, CancellationToken.None))))
         {
-
             firstIdentity = first.Metadata.Identity;
-
         }
 
         RecordingJournalFilePrimitives? recording = null;
@@ -1824,7 +1624,6 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
             beforeAtomicReplace: null,
             openPrimitives: currentLocation =>
             {
-
                 Result<GrimoireOfflineTransitionJournalFilePrimitives> opened =
                     GrimoireOfflineTransitionJournalFilePrimitives.Open(
                         Path.GetDirectoryName(currentLocation.JournalPath)!,
@@ -1832,16 +1631,13 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
 
                 if (opened.IsFailure)
                 {
-
                     return Result<IGrimoireOfflineTransitionJournalFilePrimitives>.Failure(
                         opened.Error);
-
                 }
 
                 recording = new RecordingJournalFilePrimitives(opened.Value);
 
                 return Result<IGrimoireOfflineTransitionJournalFilePrimitives>.Success(recording);
-
             });
 
         byte[] secondBytes = Bytes("enumeration-bound-second").ToArray();
@@ -1858,7 +1654,6 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
         Assert.True(
             recording.EnumerateExactChildrenCallCount <= 16,
             $"observed {recording.EnumerateExactChildrenCallCount} EnumerateExactChildren calls for one revision");
-
     }
 
     /// <summary>
@@ -1871,7 +1666,6 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
     [Fact]
     public async Task Deletion_does_not_repeat_the_absence_proof_without_an_intervening_state_change()
     {
-
         GrimoireOfflineTransitionJournalFileStore initial = new();
 
         GrimoireOfflineTransitionJournalLocation location = Location(initial);
@@ -1893,9 +1687,7 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
                    GrimoireOfflineTransitionJournalFileRead>(
                    Value(await initial.ReadIfPresentAsync(location, CancellationToken.None))))
         {
-
             metadata = current.Metadata;
-
         }
 
         RecordingJournalFilePrimitives? recording = null;
@@ -1906,7 +1698,6 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
             beforeAtomicReplace: null,
             openPrimitives: currentLocation =>
             {
-
                 Result<GrimoireOfflineTransitionJournalFilePrimitives> opened =
                     GrimoireOfflineTransitionJournalFilePrimitives.Open(
                         Path.GetDirectoryName(currentLocation.JournalPath)!,
@@ -1914,16 +1705,13 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
 
                 if (opened.IsFailure)
                 {
-
                     return Result<IGrimoireOfflineTransitionJournalFilePrimitives>.Failure(
                         opened.Error);
-
                 }
 
                 recording = new RecordingJournalFilePrimitives(opened.Value);
 
                 return Result<IGrimoireOfflineTransitionJournalFilePrimitives>.Success(recording);
-
             });
 
         Assert.True(deleting.DeleteDurably(held, location, metadata, bytes).IsSuccess);
@@ -1931,7 +1719,6 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
         Assert.NotNull(recording);
 
         Assert.Equal(5, recording.EnumerateExactChildrenCallCount);
-
     }
 
     /// <summary>
@@ -1944,7 +1731,6 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
     [SkippableFact]
     public async Task Windows_delete_durably_succeeds_after_publication()
     {
-
         Skip.If(
             !OperatingSystem.IsWindows(),
             "Windows-only: settles whether NTFS reports the retained handle's link count as zero "
@@ -1952,9 +1738,7 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
 
         if (!OperatingSystem.IsWindows())
         {
-
             return;
-
         }
 
         GrimoireOfflineTransitionJournalFileStore store = new();
@@ -1978,15 +1762,12 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
                    GrimoireOfflineTransitionJournalFileRead>(
                    Value(await store.ReadIfPresentAsync(location, CancellationToken.None))))
         {
-
             metadata = current.Metadata;
-
         }
 
         Result result = store.DeleteDurably(held, location, metadata, bytes);
 
         Assert.True(result.IsSuccess, result.IsFailure ? result.Error.Code : "success");
-
     }
 
     /// <summary>
@@ -1997,16 +1778,13 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
     [SkippableFact]
     public void Windows_compare_unlink_removes_the_name_while_the_retained_evidence_handle_stays_readable()
     {
-
         Skip.If(
             !OperatingSystem.IsWindows(),
             "Windows-only: exercises POSIX unlink through a separately retained evidence handle.");
 
         if (!OperatingSystem.IsWindows())
         {
-
             return;
-
         }
 
         GrimoireOfflineTransitionJournalLocation location = Location();
@@ -2063,13 +1841,11 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
         retainedStream.ReadExactly(actualBytes);
 
         Assert.Equal(expectedBytes, actualBytes);
-
     }
 
     [Fact]
     public void Windows_desired_access_and_share_mode_constants_are_exact()
     {
-
         const uint fileShareDelete = 0x00000004;
 
         const uint fileTraverse = 0x00000020;
@@ -2121,7 +1897,6 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
                 & (writeDac | writeOwner));
 
         Assert.False(GrimoireOfflineTransitionJournalFilePrimitives.WindowsChildStreamsAreAsync);
-
     }
 
     [Theory]
@@ -2144,15 +1919,13 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
         int observedNameCount,
         bool expected)
     {
-
         Assert.Equal(
             expected,
-            GrimoireOfflineTransitionJournalFilePrimitives
+            SecureDirectoryNameEnumerator
                 .IsWindowsDirectoryEnumerationComplete(
                     status,
                     initialQuery,
                     observedNameCount));
-
     }
 
     /// <summary>
@@ -2164,16 +1937,13 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
     [SkippableFact]
     public void Windows_real_primitives_reinspect_then_publish_a_new_working_file()
     {
-
         Skip.If(
             !OperatingSystem.IsWindows(),
             "Windows-only: exercises repeated NT directory queries and handle-relative rename.");
 
         if (!OperatingSystem.IsWindows())
         {
-
             return;
-
         }
 
         GrimoireOfflineTransitionJournalLocation location = Location();
@@ -2208,9 +1978,7 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
 
         using (GrimoireOfflineTransitionJournalChildEnumeration initial = initialResult.Value)
         {
-
             Assert.Empty(initial.ExactChildren);
-
         }
 
         Result<GrimoireOfflineTransitionJournalOpenedFile> createdResult =
@@ -2239,7 +2007,6 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
 
         using (GrimoireOfflineTransitionJournalChildEnumeration postCreate = postCreateResult.Value)
         {
-
             Assert.Contains(location.WorkingLeaf, postCreate.Names);
 
             Assert.True(
@@ -2254,7 +2021,6 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
                     created.Metadata.Identity,
                     reopened.Metadata.Identity),
                 "post-create enumeration reopened a different working-file identity");
-
         }
 
         Result published = primitives.PublishFirstNoReplace(
@@ -2264,7 +2030,6 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
         Assert.True(
             published.IsSuccess,
             published.IsFailure ? "publish: " + published.Error.Code : "publish: success");
-
     }
 
     /// <summary>
@@ -2275,16 +2040,13 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
     [SkippableFact]
     public void Windows_no_replace_rename_preserves_both_files_when_destination_exists()
     {
-
         Skip.If(
             !OperatingSystem.IsWindows(),
             "Windows-only: exercises the NT rename primitive's no-replace collision contract.");
 
         if (!OperatingSystem.IsWindows())
         {
-
             return;
-
         }
 
         GrimoireOfflineTransitionJournalLocation location = Location();
@@ -2309,13 +2071,11 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
         using (GrimoireOfflineTransitionJournalOpenedFile source = Value(
                    primitives.CreateWorkingExclusive(location.WorkingLeaf)))
         {
-
             source.GetStream(FileAccess.ReadWrite).Write(sourceBytes);
 
             Assert.True(primitives.FlushWorking(source).IsSuccess);
 
             sourceIdentity = source.Metadata.Identity;
-
         }
 
         FileHandleIdentity destinationIdentity;
@@ -2323,13 +2083,11 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
         using (GrimoireOfflineTransitionJournalOpenedFile destination = Value(
                    primitives.CreateWorkingExclusive(location.JournalLeaf)))
         {
-
             destination.GetStream(FileAccess.ReadWrite).Write(destinationBytes);
 
             Assert.True(primitives.FlushWorking(destination).IsSuccess);
 
             destinationIdentity = destination.Metadata.Identity;
-
         }
 
         Result collision = primitives.PublishFirstNoReplace(
@@ -2373,7 +2131,6 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
         destinationAfterStream.ReadExactly(actualDestinationBytes);
 
         Assert.Equal(destinationBytes, actualDestinationBytes);
-
     }
 
     /// <summary>
@@ -2388,16 +2145,13 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
     [SkippableFact]
     public async Task Windows_exchange_through_the_real_primitives_retains_authentic_predecessor_identity()
     {
-
         Skip.If(
             !OperatingSystem.IsWindows(),
             "Windows-only: exercises the Windows atomic-exchange mechanism against the real kernel.");
 
         if (!OperatingSystem.IsWindows())
         {
-
             return;
-
         }
 
         GrimoireOfflineTransitionJournalFileStore initial = new();
@@ -2421,9 +2175,7 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
                    GrimoireOfflineTransitionJournalFileRead>(
                    Value(await initial.ReadIfPresentAsync(location, CancellationToken.None))))
         {
-
             firstIdentity = first.Metadata.Identity;
-
         }
 
         RetentionShapeRecordingPrimitives? recorded = null;
@@ -2434,7 +2186,6 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
             beforeAtomicReplace: null,
             openPrimitives: currentLocation =>
             {
-
                 Result<GrimoireOfflineTransitionJournalFilePrimitives> opened =
                     GrimoireOfflineTransitionJournalFilePrimitives.Open(
                         Path.GetDirectoryName(currentLocation.JournalPath)!,
@@ -2442,16 +2193,13 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
 
                 if (opened.IsFailure)
                 {
-
                     return Result<IGrimoireOfflineTransitionJournalFilePrimitives>.Failure(
                         opened.Error);
-
                 }
 
                 recorded = new RetentionShapeRecordingPrimitives(opened.Value);
 
                 return Result<IGrimoireOfflineTransitionJournalFilePrimitives>.Success(recorded);
-
             });
 
         byte[] secondBytes = Bytes("windows-real-exchange-second").ToArray();
@@ -2481,8 +2229,207 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
         Assert.Null(evidence.Previous);
 
         Assert.Null(evidence.Retiring);
-
     }
+
+    /// <summary>
+    /// The Windows exchange is two no-replace renames, so the second can fail after the first moved the
+    /// canonical file aside. This drives the production composition the Windows arm calls over the real
+    /// primitives of whichever host runs it, failing only the second rename, and requires the canonical
+    /// file back in place with the working file cleaned up as a pre-publication failure that keeps the
+    /// exchange's own retryable <c>Covenant.Unavailable</c>, so a caller can tell a clean rollback from
+    /// evidence that needs recovery.
+    /// </summary>
+    [Fact]
+    public async Task Windows_exchange_second_rename_failure_restores_canonical()
+    {
+        GrimoireOfflineTransitionJournalFileStore initial = new();
+
+        GrimoireOfflineTransitionJournalLocation location = Location(initial);
+
+        using ArcanumMaintenanceLock held = HeldLock();
+
+        byte[] firstBytes = Bytes("two-rename-first").ToArray();
+
+        FileHandleIdentity firstIdentity = await PublishFirstAsync(initial, held, location, firstBytes);
+
+        TwoRenameExchangePrimitives? renaming = null;
+
+        GrimoireOfflineTransitionJournalFileStore store = TwoRenameStore(
+            opened => renaming = new TwoRenameExchangePrimitives(
+                opened,
+                (location.WorkingLeaf, location.JournalLeaf)));
+
+        Result replaced = await store.ReplaceDurablyAsync(
+            held,
+            location,
+            Bytes("two-rename-second"),
+            firstIdentity,
+            CancellationToken.None);
+
+        Assert.True(replaced.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.Unavailable, replaced.Error.Code);
+
+        Assert.NotNull(renaming);
+
+        Assert.Equal(
+            (IEnumerable<(string, string)>)
+            [
+                (location.JournalLeaf, location.PreviousLeaf),
+                (location.WorkingLeaf, location.JournalLeaf),
+                (location.PreviousLeaf, location.JournalLeaf),
+            ],
+            renaming.Renames);
+
+        using GrimoireOfflineTransitionJournalEvidence evidence = Value(
+            await initial.InspectEvidenceAsync(location, CancellationToken.None));
+
+        Assert.NotNull(evidence.Canonical);
+
+        Assert.True(FileHandleIdentity.IdentitiesMatch(firstIdentity, evidence.Canonical.Metadata.Identity));
+
+        Assert.Equal(firstBytes, evidence.Canonical.Bytes.ToArray());
+
+        Assert.Null(evidence.Working);
+
+        Assert.Null(evidence.Previous);
+
+        Assert.Null(evidence.Retiring);
+    }
+
+    /// <summary>
+    /// When the rollback rename fails too, the working file is the newer revision recovery may still
+    /// adopt, so the store must leave it beside the retained predecessor instead of unlinking it.
+    /// </summary>
+    [Fact]
+    public async Task Windows_exchange_rollback_failure_keeps_previous_and_working_for_recovery()
+    {
+        GrimoireOfflineTransitionJournalFileStore initial = new();
+
+        GrimoireOfflineTransitionJournalLocation location = Location(initial);
+
+        using ArcanumMaintenanceLock held = HeldLock();
+
+        byte[] firstBytes = Bytes("two-rename-first").ToArray();
+
+        byte[] secondBytes = Bytes("two-rename-second").ToArray();
+
+        FileHandleIdentity firstIdentity = await PublishFirstAsync(initial, held, location, firstBytes);
+
+        GrimoireOfflineTransitionJournalFileStore store = TwoRenameStore(
+            opened => new TwoRenameExchangePrimitives(
+                opened,
+                (location.WorkingLeaf, location.JournalLeaf),
+                (location.PreviousLeaf, location.JournalLeaf)));
+
+        Result replaced = await store.ReplaceDurablyAsync(
+            held,
+            location,
+            secondBytes,
+            firstIdentity,
+            CancellationToken.None);
+
+        Assert.True(replaced.IsFailure);
+
+        Assert.Equal(ErrorCodes.Data.RecoveryRequired, replaced.Error.Code);
+
+        using GrimoireOfflineTransitionJournalEvidence evidence = Value(
+            await initial.InspectEvidenceAsync(location, CancellationToken.None));
+
+        Assert.Null(evidence.Canonical);
+
+        Assert.NotNull(evidence.Previous);
+
+        Assert.True(FileHandleIdentity.IdentitiesMatch(firstIdentity, evidence.Previous.Metadata.Identity));
+
+        Assert.Equal(firstBytes, evidence.Previous.Bytes.ToArray());
+
+        Assert.NotNull(evidence.Working);
+
+        Assert.Equal(secondBytes, evidence.Working.Bytes.ToArray());
+
+        Assert.Null(evidence.Retiring);
+    }
+
+    /// <summary>
+    /// The Windows lane runs the real two-rename exchange end to end with its rollback composition and
+    /// proves a healthy second publication still lands with the predecessor retired.
+    /// </summary>
+    [SkippableFact]
+    public async Task Windows_exchange_by_no_replace_renames_publishes_through_the_real_primitives()
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), "Windows-only: the two-rename exchange is the Windows arm.");
+
+        GrimoireOfflineTransitionJournalFileStore initial = new();
+
+        GrimoireOfflineTransitionJournalLocation location = Location(initial);
+
+        using ArcanumMaintenanceLock held = HeldLock();
+
+        FileHandleIdentity firstIdentity = await PublishFirstAsync(
+            initial,
+            held,
+            location,
+            Bytes("windows-two-rename-first").ToArray());
+
+        byte[] secondBytes = Bytes("windows-two-rename-second").ToArray();
+
+        Assert.True((await initial.ReplaceDurablyAsync(
+            held,
+            location,
+            secondBytes,
+            firstIdentity,
+            CancellationToken.None)).IsSuccess);
+
+        using GrimoireOfflineTransitionJournalEvidence evidence = Value(
+            await initial.InspectEvidenceAsync(location, CancellationToken.None));
+
+        Assert.Equal(secondBytes, evidence.Canonical?.Bytes.ToArray());
+
+        Assert.Null(evidence.Working);
+
+        Assert.Null(evidence.Previous);
+
+        Assert.Null(evidence.Retiring);
+    }
+
+    private static async Task<FileHandleIdentity> PublishFirstAsync(
+        GrimoireOfflineTransitionJournalFileStore store,
+        ArcanumMaintenanceLock held,
+        GrimoireOfflineTransitionJournalLocation location,
+        byte[] bytes)
+    {
+        Assert.True((await store.ReplaceDurablyAsync(
+            held,
+            location,
+            bytes,
+            expectedCurrentIdentity: null,
+            CancellationToken.None)).IsSuccess);
+
+        using GrimoireOfflineTransitionJournalFileRead first = Assert.IsType<
+            GrimoireOfflineTransitionJournalFileRead>(
+            Value(await store.ReadIfPresentAsync(location, CancellationToken.None)));
+
+        return first.Metadata.Identity;
+    }
+
+    private static GrimoireOfflineTransitionJournalFileStore TwoRenameStore(
+        Func<IGrimoireOfflineTransitionJournalFilePrimitives, TwoRenameExchangePrimitives> wrap) =>
+        new(
+            afterStep: null,
+            failBeforeStep: null,
+            beforeAtomicReplace: null,
+            openPrimitives: currentLocation =>
+            {
+                Result<GrimoireOfflineTransitionJournalFilePrimitives> opened =
+                    GrimoireOfflineTransitionJournalFilePrimitives.Open(
+                        Path.GetDirectoryName(currentLocation.JournalPath)!,
+                        currentLocation.GuardedParentPhysicalIdentityDigest);
+
+                return opened.IsFailure
+                    ? Result<IGrimoireOfflineTransitionJournalFilePrimitives>.Failure(opened.Error)
+                    : Result<IGrimoireOfflineTransitionJournalFilePrimitives>.Success(wrap(opened.Value));
+            });
 
     /// <summary>
     /// Weakening a published file's ACL is otherwise untested on the platform the owner-only
@@ -2492,16 +2439,13 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
     [SkippableFact]
     public async Task Windows_read_fails_closed_when_the_published_file_acl_is_weakened()
     {
-
         Skip.If(
             !OperatingSystem.IsWindows(),
             "Windows-only: exercises VerifyWindowsOwnerOnlyHandle's DACL refusal against a real ACL.");
 
         if (!OperatingSystem.IsWindows())
         {
-
             return;
-
         }
 
         GrimoireOfflineTransitionJournalFileStore store = new();
@@ -2529,13 +2473,11 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
         Assert.True(read.IsFailure);
 
         Assert.Equal(ErrorCodes.Data.RecoveryRequired, read.Error.Code);
-
     }
 
     [SupportedOSPlatform("windows")]
     private static void GrantWindowsWorldRead(string path)
     {
-
         FileInfo file = new(path);
 
         FileSecurity security = file.GetAccessControl();
@@ -2546,13 +2488,11 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
             AccessControlType.Allow));
 
         file.SetAccessControl(security);
-
     }
 
     [Fact]
     public async Task Deletion_and_retirement_never_leave_a_generic_cleanup_quarantine_artifact()
     {
-
         GrimoireOfflineTransitionJournalFileStore store = new();
 
         GrimoireOfflineTransitionJournalLocation location = Location(store);
@@ -2574,9 +2514,7 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
                    GrimoireOfflineTransitionJournalFileRead>(
                    Value(await store.ReadIfPresentAsync(location, CancellationToken.None))))
         {
-
             metadata = current.Metadata;
-
         }
 
         Assert.True(store.DeleteDurably(held, location, metadata, bytes).IsSuccess);
@@ -2585,21 +2523,17 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
 
         foreach (string entry in Directory.EnumerateFileSystemEntries(parent, "*", SearchOption.AllDirectories))
         {
-
             Assert.DoesNotContain(
                 "arcanum-cleanup",
                 Path.GetFileName(entry),
                 StringComparison.OrdinalIgnoreCase);
-
         }
-
     }
 
     private static async Task AssertUnsafeEvidenceAsync(
         GrimoireOfflineTransitionJournalFileStore store,
         GrimoireOfflineTransitionJournalLocation location)
     {
-
         Result<GrimoireOfflineTransitionJournalFileRead?> read =
             await store.ReadIfPresentAsync(location, CancellationToken.None);
 
@@ -2609,7 +2543,6 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
             await store.InspectEvidenceAsync(location, CancellationToken.None);
 
         Assert.True(evidence.IsFailure);
-
     }
 
     private async Task AssertEveryEntryPointRejectsAsync(
@@ -2618,7 +2551,6 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
         GrimoireOfflineTransitionJournalLocation tampered,
         string field)
     {
-
         Assert.True(store.RequireNoEvidence(tampered).IsFailure, field + ": require-none");
 
         Assert.True((await store.InspectEvidenceAsync(
@@ -2653,7 +2585,6 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
         Assert.False(File.Exists(authentic.PreviousPath), field + ": previous mutation");
 
         Assert.False(File.Exists(authentic.RetiringPath), field + ": retiring mutation");
-
     }
 
     private GrimoireOfflineTransitionJournalLocation Location(
@@ -2685,7 +2616,6 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
         IGrimoireOfflineTransitionJournalFilePrimitives inner)
         : IGrimoireOfflineTransitionJournalFilePrimitives
     {
-
         internal (string Journal, string Working, string Previous)? ExchangeArguments { get; private set; }
 
         internal bool PostCallIdentitiesMatched { get; private set; }
@@ -2703,7 +2633,6 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
             string workingLeaf,
             string previousLeaf)
         {
-
             ExchangeArguments = (journalLeaf, workingLeaf, previousLeaf);
 
             Result<GrimoireOfflineTransitionJournalChildEnumeration> beforeResult =
@@ -2711,10 +2640,8 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
 
             if (beforeResult.IsFailure)
             {
-
                 return Result<GrimoireOfflineTransitionExchangeResult>.Failure(
                     beforeResult.Error);
-
             }
 
             using GrimoireOfflineTransitionJournalChildEnumeration before = beforeResult.Value;
@@ -2726,11 +2653,9 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
                     workingLeaf,
                     out GrimoireOfflineTransitionJournalOpenedFile? replacement))
             {
-
                 return new Error(
                     ErrorCodes.Data.RecoveryRequired,
                     "The deterministic Windows exchange layout could not capture both inputs.");
-
             }
 
             FileHandleIdentity oldJournalIdentity = oldJournal.Metadata.Identity;
@@ -2742,23 +2667,17 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
 
             if (exchanged.IsFailure)
             {
-
                 return exchanged;
-
             }
 
             if (exchanged.Value.Retention is GrimoireOfflineTransitionPreviousRetention.Working)
             {
-
                 Result moved = inner.MoveNoReplace(workingLeaf, previousLeaf);
 
                 if (moved.IsFailure)
                 {
-
                     return Result<GrimoireOfflineTransitionExchangeResult>.Failure(moved.Error);
-
                 }
-
             }
 
             Result<GrimoireOfflineTransitionJournalChildEnumeration> afterResult =
@@ -2766,10 +2685,8 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
 
             if (afterResult.IsFailure)
             {
-
                 return Result<GrimoireOfflineTransitionExchangeResult>.Failure(
                     afterResult.Error);
-
             }
 
             using GrimoireOfflineTransitionJournalChildEnumeration after = afterResult.Value;
@@ -2791,7 +2708,6 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
 
             return new GrimoireOfflineTransitionExchangeResult(
                 GrimoireOfflineTransitionPreviousRetention.Previous);
-
         }
 
         public Result MoveNoReplace(string sourceLeaf, string destinationLeaf) =>
@@ -2814,7 +2730,6 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
         public Result FlushParent() => inner.FlushParent();
 
         public void Dispose() => inner.Dispose();
-
     }
 
     /// <summary>
@@ -2828,7 +2743,6 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
     private sealed class RecordingJournalFilePrimitives(IGrimoireOfflineTransitionJournalFilePrimitives inner)
         : IGrimoireOfflineTransitionJournalFilePrimitives
     {
-
         internal List<string> BarrierCalls { get; } = [];
 
         internal int EnumerateExactChildrenCallCount { get; private set; }
@@ -2844,11 +2758,9 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
 
         public Result PublishFirstNoReplace(string journalLeaf, string workingLeaf)
         {
-
             BarrierCalls.Add("replace");
 
             return inner.PublishFirstNoReplace(journalLeaf, workingLeaf);
-
         }
 
         public Result<GrimoireOfflineTransitionExchangeResult> ExchangeRetainingPrevious(
@@ -2856,11 +2768,9 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
             string workingLeaf,
             string previousLeaf)
         {
-
             BarrierCalls.Add("replace");
 
             return inner.ExchangeRetainingPrevious(journalLeaf, workingLeaf, previousLeaf);
-
         }
 
         public Result MoveNoReplace(string sourceLeaf, string destinationLeaf) =>
@@ -2877,39 +2787,89 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
         public Result<GrimoireOfflineTransitionJournalChildEnumeration> EnumerateExactChildren(
             IReadOnlyList<string> exactLeaves)
         {
-
             EnumerateExactChildrenCallCount++;
 
             return inner.EnumerateExactChildren(exactLeaves);
-
         }
 
         public Result FlushWorking(GrimoireOfflineTransitionJournalOpenedFile file)
         {
-
             BarrierCalls.Add("working");
 
             return FlushWorkingOverride?.Invoke() ?? inner.FlushWorking(file);
-
         }
 
         public Result FlushParent()
         {
-
             BarrierCalls.Add("parent");
 
             return FlushParentOverride?.Invoke() ?? inner.FlushParent();
-
         }
 
         public void Dispose() => inner.Dispose();
+    }
 
+    /// <summary>
+    /// Stands in for the Windows primitives on any host: its exchange is the production two-rename
+    /// composition the Windows arm calls, running over this decorator's own <see cref="MoveNoReplace"/>,
+    /// which records every rename and fails exactly the named source/destination pairs.
+    /// </summary>
+    private sealed class TwoRenameExchangePrimitives(
+        IGrimoireOfflineTransitionJournalFilePrimitives inner,
+        params (string Source, string Destination)[] failingRenames)
+        : IGrimoireOfflineTransitionJournalFilePrimitives
+    {
+        internal List<(string Source, string Destination)> Renames { get; } = [];
+
+        public FileHandleMetadata ParentMetadata => inner.ParentMetadata;
+
+        public Result<GrimoireOfflineTransitionJournalOpenedFile> CreateWorkingExclusive(
+            string workingLeaf) => inner.CreateWorkingExclusive(workingLeaf);
+
+        public Result PublishFirstNoReplace(string journalLeaf, string workingLeaf) =>
+            inner.PublishFirstNoReplace(journalLeaf, workingLeaf);
+
+        public Result<GrimoireOfflineTransitionExchangeResult> ExchangeRetainingPrevious(
+            string journalLeaf,
+            string workingLeaf,
+            string previousLeaf) =>
+            GrimoireOfflineTransitionJournalFilePrimitives.ExchangeByNoReplaceRenames(
+                this,
+                journalLeaf,
+                workingLeaf,
+                previousLeaf);
+
+        public Result MoveNoReplace(string sourceLeaf, string destinationLeaf)
+        {
+            Renames.Add((sourceLeaf, destinationLeaf));
+
+            return failingRenames.Contains((sourceLeaf, destinationLeaf))
+                ? new Error(ErrorCodes.Covenant.Unavailable, "Injected rename failure.")
+                : inner.MoveNoReplace(sourceLeaf, destinationLeaf);
+        }
+
+        public Result ApplyOwnerOnlyAndVerify(
+            GrimoireOfflineTransitionJournalOpenedFile expected,
+            string relativeLeaf) => inner.ApplyOwnerOnlyAndVerify(expected, relativeLeaf);
+
+        public Result CompareUnlink(
+            GrimoireOfflineTransitionJournalOpenedFile expected,
+            string relativeLeaf) => inner.CompareUnlink(expected, relativeLeaf);
+
+        public Result<GrimoireOfflineTransitionJournalChildEnumeration> EnumerateExactChildren(
+            IReadOnlyList<string> exactLeaves) => inner.EnumerateExactChildren(exactLeaves);
+
+        public Result FlushWorking(GrimoireOfflineTransitionJournalOpenedFile file) =>
+            inner.FlushWorking(file);
+
+        public Result FlushParent() => inner.FlushParent();
+
+        public void Dispose() => inner.Dispose();
     }
 
     private sealed class ThrowingEnumerationPrimitives(IGrimoireOfflineTransitionJournalFilePrimitives inner)
         : IGrimoireOfflineTransitionJournalFilePrimitives
     {
-
         public FileHandleMetadata ParentMetadata => inner.ParentMetadata;
 
         public Result<GrimoireOfflineTransitionJournalOpenedFile> CreateWorkingExclusive(
@@ -2945,7 +2905,5 @@ public sealed partial class GrimoireOfflineTransitionJournalFileStoreTests : IDi
         public Result FlushParent() => inner.FlushParent();
 
         public void Dispose() => inner.Dispose();
-
     }
-
 }

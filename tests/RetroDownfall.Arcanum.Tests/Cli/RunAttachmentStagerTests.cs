@@ -6,6 +6,8 @@ using Microsoft.Extensions.Options;
 
 using RetroDownfall.Arcanum.Cli.Commands;
 
+using RetroDownfall.Arcanum.Tests.Cli.CommandCenter;
+
 using RetroDownfall.Arcanum.Core.Configuration;
 
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
@@ -14,7 +16,6 @@ namespace RetroDownfall.Arcanum.Tests.Cli;
 
 public sealed class RunAttachmentStagerTests : IDisposable
 {
-
     private readonly string _tempDirectory = Path.Combine(
         Path.GetTempPath(),
         "arcanum-tests",
@@ -24,34 +25,26 @@ public sealed class RunAttachmentStagerTests : IDisposable
 
     public RunAttachmentStagerTests()
     {
-
         _workspace = Path.Combine(_tempDirectory, "workspace");
 
         Directory.CreateDirectory(_workspace);
-
     }
 
     public void Dispose()
     {
-
         try
         {
-
             Directory.Delete(_tempDirectory, recursive: true);
-
         }
         catch (IOException)
         {
-
         }
-
     }
 
     [Fact]
 
     public async Task StageAsync_resolves_repeated_relative_and_explicit_absolute_text_paths_without_extension_allowlist()
     {
-
         string relativePath = WriteText(_workspace, "notes.unusual", "relative text");
 
         string absolutePath = WriteText(_tempDirectory, "outside.data", "absolute text");
@@ -83,14 +76,12 @@ public sealed class RunAttachmentStagerTests : IDisposable
         Assert.All(
             result.Metadata,
             metadata => Assert.Matches("^[0-9a-f]{64}$", metadata.Sha256));
-
     }
 
     [Fact]
 
     public async Task StageAsync_splits_multibyte_text_on_utf8_boundaries_without_losing_content()
     {
-
         string content = new string('a', RunAttachmentStager.MaxAttachedFileChunkBytes - 1)
             + "\U0001F600"
             + new string('b', 64);
@@ -122,14 +113,12 @@ public sealed class RunAttachmentStagerTests : IDisposable
                 && char.IsHighSurrogate(file.Content[^1]));
 
         Assert.Equal(2, result.Metadata.Single().ChunkCount);
-
     }
 
     [Fact]
 
     public async Task StageAsync_preserves_exact_ten_mebibyte_piped_content_in_server_sized_chunks()
     {
-
         string content = new('p', RunInputReader.MaxRedirectedInputBytes);
 
         RunAttachmentStageResult result = await CreateStager().StageAsync(
@@ -159,14 +148,12 @@ public sealed class RunAttachmentStagerTests : IDisposable
         Assert.Equal(
             Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(content))).ToLowerInvariant(),
             metadata.Sha256);
-
     }
 
     [Fact]
 
     public async Task StageAsync_stages_images_through_existing_scrying_pipeline_and_hashes_staged_bytes()
     {
-
         byte[] png = PngBytes(64);
 
         string path = Path.Combine(_workspace, "focus.png");
@@ -194,7 +181,6 @@ public sealed class RunAttachmentStagerTests : IDisposable
         Assert.Equal(
             Convert.ToHexString(SHA256.HashData(png)).ToLowerInvariant(),
             metadata.Sha256);
-
     }
 
     [Theory]
@@ -207,7 +193,6 @@ public sealed class RunAttachmentStagerTests : IDisposable
 
     public async Task StageAsync_strictly_rejects_invalid_or_missing_explicit_with_values(string value)
     {
-
         RunAttachmentStageResult result = await CreateStager().StageAsync(
             [value],
             _workspace,
@@ -221,14 +206,12 @@ public sealed class RunAttachmentStagerTests : IDisposable
         Assert.Empty(result.ScryingFoci);
 
         Assert.False(string.IsNullOrWhiteSpace(result.Error));
-
     }
 
     [Fact]
 
     public async Task StageAsync_accepts_text_file_above_stdin_limit_when_within_server_aggregate()
     {
-
         string path = Path.Combine(_workspace, "oversized.txt");
 
         await File.WriteAllTextAsync(
@@ -250,14 +233,12 @@ public sealed class RunAttachmentStagerTests : IDisposable
             RunInputReader.MaxRedirectedInputBytes + 1,
             result.AttachedFiles.Sum(
                 static file => System.Text.Encoding.UTF8.GetByteCount(file.Content)));
-
     }
 
     [Fact]
 
     public async Task StageAsync_rejects_invalid_utf8_text_without_partial_output()
     {
-
         string path = Path.Combine(_workspace, "invalid.bin");
 
         await File.WriteAllBytesAsync(
@@ -276,14 +257,12 @@ public sealed class RunAttachmentStagerTests : IDisposable
         Assert.Empty(result.AttachedFiles);
 
         Assert.Contains("valid UTF-8", result.Error, StringComparison.OrdinalIgnoreCase);
-
     }
 
     [Fact]
 
     public async Task StageAsync_propagates_existing_scrying_image_size_failure_without_partial_output()
     {
-
         string path = Path.Combine(_workspace, "oversized.png");
 
         await File.WriteAllBytesAsync(
@@ -302,14 +281,12 @@ public sealed class RunAttachmentStagerTests : IDisposable
         Assert.Empty(result.ScryingFoci);
 
         Assert.Contains("maximum size", result.Error, StringComparison.OrdinalIgnoreCase);
-
     }
 
     [Fact]
 
     public async Task StageAsync_rejects_excess_image_before_staging_it_without_partial_output()
     {
-
         int maximumImages = ArcanumSettingClamps.ScryingMaxImagesPerRequest(
             ArcanumRuntimeDefaults.Scrying.MaxImagesPerRequest);
 
@@ -317,7 +294,6 @@ public sealed class RunAttachmentStagerTests : IDisposable
 
         for (int index = 0; index < maximumImages; index++)
         {
-
             string name = $"focus-{index:D2}.png";
 
             await File.WriteAllBytesAsync(
@@ -326,7 +302,6 @@ public sealed class RunAttachmentStagerTests : IDisposable
                 CancellationToken.None);
 
             values.Add("@" + name);
-
         }
 
         string excessName = "focus-excess.png";
@@ -363,27 +338,23 @@ public sealed class RunAttachmentStagerTests : IDisposable
             "maximum size",
             result.Error,
             StringComparison.OrdinalIgnoreCase);
-
     }
 
     [Fact]
 
     public async Task StageAsync_accepts_files_beyond_the_former_count_ceiling()
     {
-
         const int formerFileCountCeiling = 32;
 
         List<string> values = [];
 
         for (int index = 0; index <= formerFileCountCeiling; index++)
         {
-
             string name = $"file-{index:D2}.txt";
 
             _ = WriteText(_workspace, name, "x");
 
             values.Add("@" + name);
-
         }
 
         RunAttachmentStageResult result = await CreateStager().StageAsync(
@@ -395,7 +366,112 @@ public sealed class RunAttachmentStagerTests : IDisposable
         Assert.True(result.IsSuccess, result.Error);
 
         Assert.Equal(formerFileCountCeiling + 1, result.AttachedFiles.Count);
+    }
 
+    /// <summary>
+    /// A FIFO reports a length of 0 and <c>File.Exists</c> says true for it, and opening it for reading
+    /// blocks until a writer appears, which nothing can interrupt. <c>run --with</c> refuses it, as the
+    /// Command Center does, before opening it: a text name and an image name take the same path.
+    /// </summary>
+    [SkippableTheory]
+
+    [InlineData("trace.log")]
+
+    [InlineData("diagram.png")]
+
+    public async Task StageAsync_refuses_a_fifo_instead_of_blocking_on_it(string name)
+    {
+        Skip.If(OperatingSystem.IsWindows(), "mkfifo is POSIX-only.");
+
+        string fifo = Path.Combine(_workspace, name);
+
+        Skip.IfNot(PosixFifo.TryCreate(fifo), "mkfifo is unavailable on this host.");
+
+        RunAttachmentStager stager = CreateStager();
+
+        RunAttachmentStageResult result = await Task
+            .Run(() => stager.StageAsync([$"@{name}"], _workspace, pipedContent: null, CancellationToken.None))
+            .WaitAsync(TimeSpan.FromSeconds(30));
+
+        Assert.False(result.IsSuccess);
+
+        Assert.Contains("not a regular file", result.Error, StringComparison.Ordinal);
+
+        Assert.Contains($"@{name}".TrimStart('@'), result.Error, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The stat that refuses a FIFO and the open that reads the file are two steps, and the path can change
+    /// between them. The text read must therefore never wait for a writer itself: it opens without blocking
+    /// and judges what it opened, so a path swapped for a FIFO after the stat is refused instead of parking
+    /// the command in open(2), where cancellation cannot reach it.
+    /// </summary>
+    [SkippableFact]
+    public async Task Reading_a_text_path_that_became_a_fifo_after_the_stat_is_refused_without_waiting_for_a_writer()
+    {
+        Skip.If(OperatingSystem.IsWindows(), "mkfifo is POSIX-only.");
+
+        string fifo = Path.Combine(_workspace, "swapped.txt");
+
+        Skip.IfNot(PosixFifo.TryCreate(fifo), "mkfifo is unavailable on this host.");
+
+        Task<RunAttachmentStager.TextSourceRead> read = Task.Run(
+            () => RunAttachmentStager.ReadTextFileAsync(fifo, CancellationToken.None));
+
+        try
+        {
+            RunAttachmentStager.TextSourceRead result = await read.WaitAsync(TimeSpan.FromSeconds(30));
+
+            Assert.False(result.IsSuccess);
+
+            Assert.Contains("not a regular file", result.Error, StringComparison.Ordinal);
+        }
+        finally
+        {
+            ReleaseBlockedReader(read, fifo);
+        }
+    }
+
+    /// <summary>
+    /// The image read takes the same open, for <c>run --with</c> and the Command Center alike: a path that
+    /// became a FIFO after the stat is refused by its handle rather than waited on.
+    /// </summary>
+    [SkippableFact]
+    public async Task Staging_an_image_path_that_became_a_fifo_after_the_stat_is_refused_without_waiting_for_a_writer()
+    {
+        Skip.If(OperatingSystem.IsWindows(), "mkfifo is POSIX-only.");
+
+        string fifo = Path.Combine(_workspace, "swapped.png");
+
+        Skip.IfNot(PosixFifo.TryCreate(fifo), "mkfifo is unavailable on this host.");
+
+        Task<ScryingFocusStager.StagingResult> staging = Task.Run(
+            () => ScryingFocusStager.Stage(fifo, 1024 * 1024, ["image/png"], CancellationToken.None));
+
+        try
+        {
+            ScryingFocusStager.StagingResult result = await staging.WaitAsync(TimeSpan.FromSeconds(30));
+
+            Assert.False(result.IsSuccess);
+
+            Assert.Contains("not a regular file", result.Error, StringComparison.Ordinal);
+        }
+        finally
+        {
+            ReleaseBlockedReader(staging, fifo);
+        }
+    }
+
+    /// <summary>
+    /// A read parked in open(2) is the defect these pin. Pair a writer with it so the test host does not
+    /// keep a blocked thread for the rest of the run.
+    /// </summary>
+    private static void ReleaseBlockedReader(Task read, string fifo)
+    {
+        if (!read.IsCompleted)
+        {
+            using FileStream writer = new(fifo, FileMode.Open, FileAccess.Write);
+        }
     }
 
     private static RunAttachmentStager CreateStager() =>
@@ -406,18 +482,15 @@ public sealed class RunAttachmentStagerTests : IDisposable
         string name,
         string content)
     {
-
         string path = Path.Combine(directory, name);
 
         File.WriteAllText(path, content, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
 
         return path;
-
     }
 
     private static byte[] PngBytes(int length)
     {
-
         byte[] bytes = new byte[Math.Max(8, length)];
 
         bytes[0] = 0x89;
@@ -437,7 +510,5 @@ public sealed class RunAttachmentStagerTests : IDisposable
         bytes[7] = 0x0A;
 
         return bytes;
-
     }
-
 }

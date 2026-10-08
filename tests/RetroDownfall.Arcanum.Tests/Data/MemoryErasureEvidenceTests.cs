@@ -65,6 +65,162 @@ public sealed class MemoryErasureEvidenceTests : IClassFixture<GrimoireFixture>,
         }
     }
 
+    /// <summary>
+    /// A probe repeated on a catalog nothing has changed runs one statement, not the table check and the
+    /// Core version read again; and a write between probes is seen.
+    /// </summary>
+    /// <remarks>
+    /// Every guard probe used to ask both questions each time, which is two statements before the one
+    /// that answers. The positive answer is reused only while the catalog's change stamp is unchanged,
+    /// so a Core version recorded below 13 on this same connection after a positive probe still answers
+    /// "no evidence".
+    /// </remarks>
+    [SkippableFact]
+    public async Task A_repeated_probe_on_an_unchanged_catalog_runs_one_statement()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await Connection.OpenAsync(Token);
+
+        Assert.True(await MemoryErasureEvidence.IsInstalledAsync(Connection, null, Token));
+
+        Assert.Equal(1, await CountStatementsAsync(
+            async () => Assert.True(await MemoryErasureEvidence.IsInstalledAsync(Connection, null, Token))));
+
+        await ExecuteAsync(
+            Connection,
+            "UPDATE grimoire_feature_schemas SET SchemaVersion = 12 WHERE FamilyCode = 0 AND TransactionTierCode = 0;");
+
+        Assert.False(await MemoryErasureEvidence.IsInstalledAsync(Connection, null, Token));
+    }
+
+    /// <summary>
+    /// A positive probe taken inside a transaction that is then rolled back is not reused afterwards.
+    /// </summary>
+    /// <remarks>
+    /// The transaction moves only the recorded Core version, so the schema cookie never changes; a
+    /// rollback restores the version but not the connection's change count, which only ever grows; and
+    /// the data version ignores the connection's own work. A positive answer kept under the stamp read
+    /// inside the transaction would therefore still match after the rollback, against a catalog whose
+    /// recorded version is back below 13.
+    /// </remarks>
+    [SkippableFact]
+    public async Task A_positive_probe_inside_a_rolled_back_transaction_is_not_reused()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await Connection.OpenAsync(Token);
+
+        await ExecuteAsync(
+            Connection,
+            "UPDATE grimoire_feature_schemas SET SchemaVersion = 12 WHERE FamilyCode = 0 AND TransactionTierCode = 0;");
+
+        Assert.False(await MemoryErasureEvidence.IsInstalledAsync(Connection, null, Token));
+
+        await using (SqliteTransaction transaction = Connection.BeginTransaction(deferred: false))
+        {
+            await using (SqliteCommand restore = Connection.CreateCommand())
+            {
+                restore.Transaction = transaction;
+
+                restore.CommandText =
+                    "UPDATE grimoire_feature_schemas SET SchemaVersion = $version WHERE FamilyCode = 0 AND TransactionTierCode = 0;";
+
+                _ = restore.Parameters.AddWithValue("$version", GrimoireSchemaVersionChains.CoreSchemaVersion);
+
+                _ = await restore.ExecuteNonQueryAsync(Token);
+            }
+
+            Assert.True(await MemoryErasureEvidence.IsInstalledAsync(Connection, transaction, Token));
+
+            await transaction.RollbackAsync(Token);
+        }
+
+        Assert.False(await MemoryErasureEvidence.IsInstalledAsync(Connection, null, Token));
+    }
+
+    /// <summary>
+    /// A positive probe is not reused after another connection commits a change to the recorded version.
+    /// </summary>
+    /// <remarks>
+    /// That commit changes neither this connection's schema cookie nor its change count; only the data
+    /// version tells this connection that someone else wrote.
+    /// </remarks>
+    [SkippableFact]
+    public async Task A_positive_probe_is_not_reused_after_another_connection_commits()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await Connection.OpenAsync(Token);
+
+        Assert.True(await MemoryErasureEvidence.IsInstalledAsync(Connection, null, Token));
+
+        await using (ArcanumDbContext other = _fixture.CreateContext(_dbPath))
+        {
+            SqliteConnection otherConnection = (SqliteConnection)other.Database.GetDbConnection();
+
+            await otherConnection.OpenAsync(Token);
+
+            await ExecuteAsync(
+                otherConnection,
+                "UPDATE grimoire_feature_schemas SET SchemaVersion = 12 WHERE FamilyCode = 0 AND TransactionTierCode = 0;");
+        }
+
+        Assert.False(await MemoryErasureEvidence.IsInstalledAsync(Connection, null, Token));
+    }
+
+    /// <summary>
+    /// A positive probe is not reused after this connection changes the schema without writing a row.
+    /// </summary>
+    /// <remarks>
+    /// Dropping the fingerprint table is DDL: it counts toward no change total and, on this connection,
+    /// moves no data version. Only the schema cookie sees it.
+    /// </remarks>
+    [SkippableFact]
+    public async Task A_positive_probe_is_not_reused_after_the_schema_changes()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await Connection.OpenAsync(Token);
+
+        Assert.True(await MemoryErasureEvidence.IsInstalledAsync(Connection, null, Token));
+
+        await ExecuteAsync(Connection, "DROP TABLE memory_erasure_fingerprints;");
+
+        Assert.False(await MemoryErasureEvidence.IsInstalledAsync(Connection, null, Token));
+    }
+
+    /// <summary>
+    /// The top-level statements a probe runs. SQLite also traces the nested statement behind a
+    /// table-valued pragma, as a <c>--</c> comment line, and those are not separate round trips.
+    /// </summary>
+    private async Task<int> CountStatementsAsync(Func<Task> probe)
+    {
+        int statements = 0;
+
+        SQLitePCL.raw.sqlite3_trace(
+            Connection.Handle,
+            (SQLitePCL.strdelegate_trace)((_, statement) =>
+            {
+                if (!statement.StartsWith("--", StringComparison.Ordinal))
+                {
+                    statements++;
+                }
+            }),
+            null);
+
+        try
+        {
+            await probe();
+        }
+        finally
+        {
+            SQLitePCL.raw.sqlite3_trace(Connection.Handle, (SQLitePCL.delegate_trace?)null, null);
+        }
+
+        return statements;
+    }
+
     [SkippableFact]
     public async Task Fingerprint_rows_round_trip_by_primary_key_and_store()
     {

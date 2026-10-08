@@ -13,17 +13,12 @@ namespace RetroDownfall.Arcanum.Infrastructure.Resilience;
 /// </summary>
 internal sealed class ProviderHealthProbe(
     IHttpClientFactory httpFactory,
-    IProviderApiKeyResolver? apiKeyResolver = null) : IProviderHealthProbe
+    IProviderApiKeyResolver apiKeyResolver) : IProviderHealthProbe
 {
-
     public const string HttpClientName = "ProviderHealthProbe";
-
-    private readonly IProviderApiKeyResolver _apiKeyResolver =
-        apiKeyResolver ?? EnvironmentOnlyProviderApiKeyResolver.Instance;
 
     public async Task<bool> ProbeAsync(ProviderSettings provider, CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(provider);
 
         // A Familiar is healthy when its binary is where the operator said it would be. Deliberately
@@ -32,18 +27,14 @@ internal sealed class ProviderHealthProbe(
         // operator asks on demand and which returns actionable remediation rather than a boolean.
         if (FamiliarProviders.IsFamiliar(provider))
         {
-
             return FamiliarExecutableResolver.TryResolve(FamiliarProviders.ResolveCommand(provider), out _);
-
         }
 
         // Defensive only — config validation owns invalid-endpoint messaging. Empty endpoints must
         // not construct a relative "/models" URL or throw from the background probe.
         if (string.IsNullOrWhiteSpace(provider.Endpoint))
         {
-
             return false;
-
         }
 
         string baseUrl = provider.Endpoint.Trim().TrimEnd('/');
@@ -59,13 +50,12 @@ internal sealed class ProviderHealthProbe(
 
         try
         {
-
             // IHttpClientFactory.CreateClient returns a fresh HttpClient instance per call (backed by
             // a pooled handler), so setting a per-provider Authorization header here is safe even
             // though this named client is shared across concurrent probes for different providers.
             HttpClient client = httpFactory.CreateClient(HttpClientName);
 
-            string? resolvedApiKey = await _apiKeyResolver
+            string? resolvedApiKey = await apiKeyResolver
                 .ResolveAsync(provider, timeoutCts.Token)
                 .ConfigureAwait(false);
 
@@ -85,15 +75,16 @@ internal sealed class ProviderHealthProbe(
                 .ConfigureAwait(false);
 
             return response.IsSuccessStatusCode;
-
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            // The caller stopping (host shutdown) says nothing about the provider; only the probe's own
+            // timeout and transport failures are observations.
+            throw;
         }
         catch (Exception)
         {
-
             return false;
-
         }
-
     }
-
 }

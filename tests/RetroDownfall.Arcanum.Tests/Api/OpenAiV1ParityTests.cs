@@ -8,26 +8,23 @@ using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Tests.Fixtures;
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Api;
 
 [Collection("ApiHost")]
 public sealed class OpenAiV1ParityTests
 {
-
     private readonly ArcanumWebApplicationFactory _factory;
 
     public OpenAiV1ParityTests(ArcanumWebApplicationFactory factory)
     {
-
         _factory = factory;
-
     }
 
     [SkippableFact]
     public async Task PostChatCompletions_Buffered_SurfacesServerToolCalls()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         _factory.FakeIntelligence.NextFailure = null;
@@ -81,13 +78,11 @@ public sealed class OpenAiV1ParityTests
         Assert.Equal("{}", toolCall.Function.Arguments);
 
         Assert.Equal("stop", body.Choices[0].FinishReason);
-
     }
 
     [SkippableFact]
     public async Task PostChatCompletions_Buffered_MapsFinishReason()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         _factory.FakeIntelligence.NextText = "truncated";
@@ -118,13 +113,11 @@ public sealed class OpenAiV1ParityTests
         Assert.NotNull(body);
 
         Assert.Equal("length", body.Choices[0].FinishReason);
-
     }
 
     [SkippableFact]
     public async Task PostChatCompletions_PreInferenceFailure_ReturnsOpenAiEnvelope()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         _factory.FakeIntelligence.NextFailure = new Error("Hub.Model", "model resolution failed");
@@ -157,13 +150,11 @@ public sealed class OpenAiV1ParityTests
         Assert.Equal("api_error", body.Error.Type);
 
         _factory.FakeIntelligence.NextFailure = null;
-
     }
 
     [SkippableFact]
     public async Task PostChatCompletions_Buffered_PassesAuditContextWithRequestType()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         _factory.FakeIntelligence.NextFailure = null;
@@ -194,13 +185,11 @@ public sealed class OpenAiV1ParityTests
         Assert.NotNull(auditContext);
 
         Assert.Equal("v1-completion", auditContext.RequestType);
-
     }
 
     [SkippableFact]
     public async Task PostChatCompletions_Streaming_PassesAuditContextWithRequestType()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         _factory.FakeIntelligence.NextFailure = null;
@@ -236,13 +225,11 @@ public sealed class OpenAiV1ParityTests
         Assert.NotNull(auditContext);
 
         Assert.Equal("v1-completion", auditContext.RequestType);
-
     }
 
     [SkippableFact]
     public async Task PostChatCompletions_Streaming_IncludeUsageFalse_EndsWithChoiceOnlyTerminalChunk()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         ChatCompletionUsage usage = new(11, 7, 18, CachedTokens: 3, ReasoningTokens: 2);
@@ -291,13 +278,11 @@ public sealed class OpenAiV1ParityTests
         Assert.EndsWith("data: [DONE]\n\n", sseBody.Replace("\r\n", "\n", StringComparison.Ordinal), StringComparison.Ordinal);
 
         _factory.FakeIntelligence.NextStreamEvents = null;
-
     }
 
     [SkippableFact]
     public async Task PostChatCompletions_Streaming_IncludeUsageTrue_EmitsSeparateChoicesEmptyUsageChunk()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         ChatCompletionUsage usage = new(11, 7, 18, CachedTokens: 3, ReasoningTokens: 2);
@@ -348,13 +333,11 @@ public sealed class OpenAiV1ParityTests
         Assert.EndsWith("data: [DONE]\n\n", sseBody.Replace("\r\n", "\n", StringComparison.Ordinal), StringComparison.Ordinal);
 
         _factory.FakeIntelligence.NextStreamEvents = null;
-
     }
 
     [SkippableFact]
     public async Task PostChatCompletions_Streaming_EmitsToolCallDeltasWithChunkedArguments()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         _factory.FakeIntelligence.NextFailure = null;
@@ -369,7 +352,7 @@ public sealed class OpenAiV1ParityTests
         {
             command = "ls -la",
             note = new string('x', 80),
-        });
+        }, AdHocJson.Options);
 
         _factory.FakeIntelligence.NextStreamToolCalls =
         [
@@ -426,13 +409,11 @@ public sealed class OpenAiV1ParityTests
         // Subsequent deltas carry only `function.arguments` — no id/type/name repeated.
         Assert.All(toolCallDeltas.Skip(1), d =>
         {
-
             Assert.Null(d.Id);
 
             Assert.Null(d.Type);
 
             Assert.Null(d.Function?.Name);
-
         });
 
         Assert.All(
@@ -444,13 +425,86 @@ public sealed class OpenAiV1ParityTests
         Assert.Equal(longArguments, reassembledArguments);
 
         _factory.FakeIntelligence.NextStreamToolCalls = null;
+    }
 
+    /// <summary>
+    /// The hub numbers tool calls per round, so two calls from a multi-round loop can both arrive with
+    /// <c>Index: 0</c>. The /v1 stream numbers them for the whole response instead: an OpenAI SDK
+    /// accumulates deltas by <c>index</c>, and two distinct calls under one index would be merged into one.
+    /// </summary>
+    [SkippableFact]
+    public async Task PostChatCompletions_Streaming_ToolCallIndexesAreMonotonicAcrossCalls()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        _factory.FakeIntelligence.NextFailure = null;
+
+        _factory.FakeIntelligence.NextToolCalls = null;
+
+        _factory.FakeIntelligence.NextText = "final answer";
+
+        _factory.FakeIntelligence.NextFinishReason = "stop";
+
+        const string firstArguments = "{\"first\":true}";
+
+        const string secondArguments = "{\"second\":true}";
+
+        _factory.FakeIntelligence.NextStreamToolCalls =
+        [
+            new IntelligenceToolCallEvent("call-one", "note_tool", firstArguments, Index: 0),
+            new IntelligenceToolCallEvent("call-two", "note_tool", secondArguments, Index: 0),
+        ];
+
+        HttpClient client = _factory.CreateAuthenticatedClient();
+
+        string payload = """
+            {
+              "model": "mistral:latest",
+              "stream": true,
+              "messages": [
+                { "role": "user", "content": "note twice" }
+              ]
+            }
+            """;
+
+        try
+        {
+            HttpResponseMessage response = await client.PostAsync(
+                "/v1/chat/completions",
+                new StringContent(payload, Encoding.UTF8, "application/json"));
+
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+            List<OpenAiStreamToolCall> toolCallDeltas = ParseSseChunks(await response.Content.ReadAsStringAsync())
+                .SelectMany(static c => c.Choices)
+                .Select(static c => c.Delta.ToolCalls)
+                .Where(static tc => tc is { Length: > 0 })
+                .SelectMany(static tc => tc!)
+                .ToList();
+
+            Assert.Equal([0, 1], toolCallDeltas.Select(static delta => delta.Index).Distinct().Order());
+
+            string[] ids = [.. toolCallDeltas.Where(static delta => delta.Id is not null).Select(static delta => delta.Id!)];
+
+            Assert.Equal(2, ids.Distinct().Count());
+
+            Assert.Equal(
+                firstArguments,
+                string.Concat(toolCallDeltas.Where(static delta => delta.Index == 0).Select(static delta => delta.Function?.Arguments)));
+
+            Assert.Equal(
+                secondArguments,
+                string.Concat(toolCallDeltas.Where(static delta => delta.Index == 1).Select(static delta => delta.Function?.Arguments)));
+        }
+        finally
+        {
+            _factory.FakeIntelligence.NextStreamToolCalls = null;
+        }
     }
 
     [SkippableFact]
     public async Task PostChatCompletions_Streaming_NeverSplitsAToolCallArgumentSurrogatePair()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         _factory.FakeIntelligence.NextFailure = null;
@@ -512,13 +566,11 @@ public sealed class OpenAiV1ParityTests
         Assert.DoesNotContain('�', reassembled);
 
         _factory.FakeIntelligence.NextStreamToolCalls = null;
-
     }
 
     [SkippableFact]
     public async Task PostChatCompletions_ReplaysClientSuppliedToolCallTranscript()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         _factory.FakeIntelligence.NextFailure = null;
@@ -594,7 +646,6 @@ public sealed class OpenAiV1ParityTests
         Assert.Equal("call_abc123def456abc123def456", toolMessage.ToolCallId);
 
         Assert.Equal("2026-07-06T00:00:00Z", toolMessage.Content);
-
     }
 
     /// <summary>
@@ -607,7 +658,6 @@ public sealed class OpenAiV1ParityTests
     [SkippableFact]
     public async Task PostChatCompletions_Streaming_HandlesConcurrentRequestsWithToolCalls()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         _factory.FakeIntelligence.NextFailure = null;
@@ -637,16 +687,13 @@ public sealed class OpenAiV1ParityTests
 
         async Task<bool> RunOneAsync()
         {
-
             using HttpResponseMessage response = await client.PostAsync(
                 "/v1/chat/completions",
                 new StringContent(payload, Encoding.UTF8, "application/json"));
 
             if (response.StatusCode != HttpStatusCode.OK)
             {
-
                 return false;
-
             }
 
             string body = await response.Content.ReadAsStringAsync();
@@ -658,7 +705,6 @@ public sealed class OpenAiV1ParityTests
             bool sawDone = body.Contains("[DONE]", StringComparison.Ordinal);
 
             return sawToolCall && sawDone;
-
         }
 
         Stopwatch stopwatch = Stopwatch.StartNew();
@@ -678,13 +724,11 @@ public sealed class OpenAiV1ParityTests
             $"Concurrent streaming took {stopwatch.Elapsed}, expected well under 30s for {concurrency} in-memory TestServer requests.");
 
         _factory.FakeIntelligence.NextStreamToolCalls = null;
-
     }
 
     [SkippableFact]
     public async Task PostChatCompletions_WithIdempotencyKey_SecondRequestReplaysWithoutReExecuting()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         _factory.FakeIntelligence.NextFailure = null;
@@ -714,7 +758,6 @@ public sealed class OpenAiV1ParityTests
 
         async Task<HttpResponseMessage> SendAsync()
         {
-
             HttpRequestMessage req = new(HttpMethod.Post, "/v1/chat/completions")
             {
                 Content = new StringContent(payload, Encoding.UTF8, "application/json"),
@@ -723,7 +766,6 @@ public sealed class OpenAiV1ParityTests
             req.Headers.Add("Idempotency-Key", key);
 
             return await client.SendAsync(req);
-
         }
 
         HttpResponseMessage firstResponse = await SendAsync();
@@ -745,48 +787,36 @@ public sealed class OpenAiV1ParityTests
         Assert.Equal(firstBody, secondBody);
 
         Assert.Equal(before + 1, _factory.FakeIntelligence.ExecutePromptCallCount);
-
     }
 
     private static List<OpenAiChatChunk> ParseSseChunks(string sseBody)
     {
-
         List<OpenAiChatChunk> chunks = [];
 
         foreach (string rawLine in sseBody.Split('\n'))
         {
-
             string line = rawLine.TrimEnd('\r');
 
             if (!line.StartsWith("data: ", StringComparison.Ordinal))
             {
-
                 continue;
-
             }
 
             string payload = line["data: ".Length..];
 
             if (payload == "[DONE]")
             {
-
                 continue;
-
             }
 
             OpenAiChatChunk? chunk = JsonSerializer.Deserialize(payload, ArcanumJsonContext.Default.OpenAiChatChunk);
 
             if (chunk is not null)
             {
-
                 chunks.Add(chunk);
-
             }
-
         }
 
         return chunks;
-
     }
-
 }

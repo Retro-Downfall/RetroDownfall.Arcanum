@@ -204,6 +204,81 @@ public sealed class LoremasterTests
                 && message.Exception is IOException);
     }
 
+    /// <summary>
+    /// The summary is billed the moment the provider returns it, so a shutdown that arrives before the
+    /// rollup write must not discard it: the write runs on a token the host cannot cancel, and the
+    /// watermark moves with the summary instead of the next sweep paying for the same batch again.
+    /// </summary>
+    [Fact]
+    public async Task Rollup_is_persisted_when_shutdown_is_requested_after_the_provider_returns()
+    {
+        LoremasterHarness harness = new();
+
+        await harness.Service.StartAsync(CancellationToken.None);
+
+        await harness.NextStepAsync("sweep");
+
+        await harness.NextStepAsync("scope-dispose");
+
+        Checkpoint rollup = new();
+
+        harness.OnStepAsync = (step, token) => step == "rollup"
+            ? rollup.PauseAsync(token)
+            : Task.CompletedTask;
+
+        Assert.True(harness.Queue.TryQueue(harness.Repository.Session.Id));
+
+        await rollup.Reached.WaitAsync(TimeSpan.FromSeconds(10));
+
+        Task stopping = harness.Service.StopAsync(CancellationToken.None);
+
+        rollup.Release();
+
+        await stopping.WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.Equal(1, harness.Intelligence.Calls);
+
+        Assert.Equal(1, harness.Repository.Rollups);
+
+        Assert.Equal(harness.Repository.Session.Id, harness.Repository.LastRollupSessionId);
+    }
+
+    /// <summary>
+    /// The model that summarizes a transcript on an unattended timer has nothing it could be talked into
+    /// calling: an Entry can carry hostile text (a fetched page, a tool result), and a hub-native tool such
+    /// as <c>read_url</c> would carry it out of the installation. <c>DisableMcpTools</c> alone stops only
+    /// the MCP block of the tool set, so the call also sets <c>DisableAllTools</c>.
+    /// </summary>
+    [Fact]
+    public async Task The_summary_call_advertises_no_tools_to_the_model_that_reads_the_transcript()
+    {
+        LoremasterHarness harness = new();
+
+        await harness.Service.StartAsync(CancellationToken.None);
+
+        await harness.NextStepAsync("sweep");
+
+        await harness.NextStepAsync("scope-dispose");
+
+        Assert.True(harness.Queue.TryQueue(harness.Repository.Session.Id));
+
+        await harness.NextStepAsync("rollup");
+
+        await harness.NextStepAsync("scope-dispose");
+
+        await harness.Service.StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(10));
+
+        PingRequest request = Assert.IsType<PingRequest>(harness.Intelligence.LastRequest);
+
+        Assert.True(request.DisableAllTools);
+
+        Assert.True(request.DisableMcpTools);
+
+        Assert.True(request.UnattendedMode);
+
+        Assert.True(request.SkipSpellRouting);
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -921,6 +996,26 @@ public sealed class LoremasterTests
 
         internal Exception? RollupException { get; set; }
 
+        /// <summary>
+        /// A fresh header each read, as the store's own header read returns, so the service under test can
+        /// never write through to the harness's Session.
+        /// </summary>
+        private static Session HeaderCopy(Session session) => new()
+        {
+            Id = session.Id,
+            CampaignId = session.CampaignId,
+            Title = session.Title,
+            Status = session.Status,
+            CreatedAt = session.CreatedAt,
+            UpdatedAt = session.UpdatedAt,
+            Summary = session.Summary,
+            LastSummarizedMessageAt = session.LastSummarizedMessageAt,
+            TotalTokensUsed = session.TotalTokensUsed,
+            TotalCostUsd = session.TotalCostUsd,
+            UnsummarizedEntryCount = session.UnsummarizedEntryCount,
+            ForkedFromSessionId = session.ForkedFromSessionId,
+        };
+
         public async Task<List<Guid>> GetSessionsNeedingSummarizationAsync(
             int threshold,
             DateTime idleCutoff,
@@ -939,7 +1034,7 @@ public sealed class LoremasterTests
 
             await harness.StepAsync("header", cancellationToken);
 
-            return ReturnSession && id == Session.Id ? Session.CloneHeader() : null;
+            return ReturnSession && id == Session.Id ? HeaderCopy(Session) : null;
         }
 
         public async Task<List<Entry>> GetUnsummarizedEntriesAsync(
@@ -1111,6 +1206,9 @@ public sealed class LoremasterTests
     {
         internal int Calls { get; private set; }
 
+        /// <summary>The request the most recent call carried, so a test can read the flags the summary set.</summary>
+        internal PingRequest? LastRequest { get; private set; }
+
         internal Result<PromptTurnResult> NextResult { get; set; } =
             Result<PromptTurnResult>.Success(new PromptTurnResult("summary", null));
 
@@ -1123,6 +1221,8 @@ public sealed class LoremasterTests
             InferenceAuditContext? auditContext = null)
         {
             Calls++;
+
+            LastRequest = request;
 
             await harness.StepAsync("provider", cancellationToken);
 

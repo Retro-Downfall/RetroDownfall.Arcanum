@@ -120,6 +120,25 @@ public sealed class WorkspaceCommandTests
             body.Path);
     }
 
+    [Theory]
+    [InlineData("1")]
+    [InlineData("99")]
+    [InlineData("campaign,data")]
+    public void Workspace_register_rejects_a_numeric_or_joined_type_without_calling_the_api(string type)
+    {
+        RecordingHandler handler = new();
+
+        CliTestResult result = RunCommand(
+            handler,
+            ["workspace", "register", "/srv/projects/demo", "--type", type]);
+
+        Assert.Equal((int)CliExitCode.ConfigurationError, result.ExitCode);
+
+        Assert.Empty(handler.Requests);
+
+        Assert.Contains("--type", result.Error, StringComparison.Ordinal);
+    }
+
     [Fact]
 
     public void Workspace_register_rejects_an_undocumented_type_without_calling_the_api()
@@ -421,6 +440,72 @@ public sealed class WorkspaceCommandTests
         Assert.Contains("server host", result.Output, StringComparison.OrdinalIgnoreCase);
     }
 
+    /// <summary>
+    /// A page that reports more campaigns without naming an offset is followed from the rows already read,
+    /// as every other listing follows it, rather than ending the walk with a partial answer that looks
+    /// complete: the campaign this directory belongs to is on the second page.
+    /// </summary>
+    [Fact]
+    public void Workspace_current_follows_a_campaign_page_that_reports_more_without_naming_an_offset()
+    {
+        string currentDirectory = Path.GetFullPath(global::System.Environment.CurrentDirectory);
+
+        CampaignDto elsewhere = new(
+            Guid.Parse("22222222-2222-2222-2222-222222222222"),
+            "elsewhere-campaign",
+            Path.Combine(currentDirectory, "not-this-one"),
+            WorkspaceType.Campaign,
+            null,
+            CampaignSettings.CreateDefault(),
+            DateTimeOffset.Parse("2026-07-31T12:00:00Z"),
+            DateTimeOffset.Parse("2026-07-31T12:00:00Z"));
+
+        CampaignDto here = elsewhere with
+        {
+            Id = Guid.Parse("33333333-3333-3333-3333-333333333333"),
+            Name = "second-page-campaign",
+            Path = currentDirectory,
+        };
+
+        List<string> queries = [];
+
+        RecordingHandler handler = new(request =>
+        {
+            if (request.RequestUri!.AbsolutePath == "/api/workspaces")
+            {
+                return CreateResponse(
+                    new ApiResponse<WorkspaceInfo[]>([], true, null),
+                    ArcanumJsonContext.Default.ApiResponseWorkspaceInfoArray);
+            }
+
+            queries.Add(request.RequestUri.Query);
+
+            if (queries.Count > 6)
+            {
+                return new HttpResponseMessage(HttpStatusCode.InternalServerError);
+            }
+
+            bool secondPage = request.RequestUri.Query.Contains("offset=1", StringComparison.Ordinal);
+
+            return CreateResponse(
+                new ApiResponse<ListPageResult<CampaignDto>>(
+                    secondPage
+                        ? new ListPageResult<CampaignDto>([here], false)
+                        : new ListPageResult<CampaignDto>([elsewhere], true),
+                    true,
+                    null),
+                ArcanumJsonContext.Default.ApiResponseListPageResultCampaignDto);
+        });
+
+        CliTestResult result = RunCommand(handler, ["workspace", "current"]);
+
+        Assert.Equal(0, result.ExitCode);
+
+        Assert.Equal(2, queries.Count);
+
+        Assert.Contains("second-page-campaign", result.Output, StringComparison.Ordinal);
+    }
+
     [Fact]
 
     public void Workspace_current_offers_campaign_registration_when_only_workspace_matches()
@@ -544,6 +629,64 @@ public sealed class WorkspaceCommandTests
         Assert.NotEqual(0, result.ExitCode);
 
         Assert.Equal(1, calls);
+    }
+
+    /// <summary>
+    /// A workspace path and a chunk preview are repository content, which the operator did not write and
+    /// which may carry the control sequences a terminal acts on; Markup escaping does not remove them, so
+    /// the search and chunk tables strip them.
+    /// </summary>
+    [Theory]
+    [InlineData("search")]
+    [InlineData("chunks")]
+    public void Workspace_search_and_chunks_strip_terminal_controls_from_paths_and_previews(string verb)
+    {
+        RecordingHandler handler = new(request =>
+        {
+            string path = request.RequestUri!.AbsolutePath;
+            if (path.EndsWith("/files/divine", StringComparison.Ordinal))
+            {
+                return CreateResponse(
+                    new ApiResponse<WorkspaceSearchResult[]>(
+                        [new WorkspaceSearchResult("ok\u001b]52;c;QUFBQQ==\u0007title\u001b[2J\u009b", 0, 1, 0.5f, "ok\u001b]52;c;QUFBQQ==\u0007title\u001b[2J\u009b")],
+                        true,
+                        null),
+                    ArcanumJsonContext.Default.ApiResponseWorkspaceSearchResultArray);
+            }
+
+            if (path.EndsWith("/files/chunks", StringComparison.Ordinal))
+            {
+                WorkspaceFileChunkDto chunk = new(
+                    "chunk-1",
+                    "ok\u001b]52;c;QUFBQQ==\u0007title\u001b[2J\u009b",
+                    0,
+                    1,
+                    "ok\u001b]52;c;QUFBQQ==\u0007title\u001b[2J\u009b",
+                    0,
+                    10,
+                    DateTimeOffset.UnixEpoch,
+                    DateTimeOffset.UnixEpoch);
+                return CreateResponse(
+                    new ApiResponse<WorkspaceFileChunkPage>(
+                        new WorkspaceFileChunkPage([chunk], 1, 50, 0, false, null),
+                        true,
+                        null),
+                    ArcanumJsonContext.Default.ApiResponseWorkspaceFileChunkPage);
+            }
+
+            return CreateWorkspaceApiResponse(request);
+        });
+        string[] args = verb == "search"
+            ? ["workspace", "search", "find entry", "--workspace", "ws-demo"]
+            : ["workspace", "chunks", "ws-demo"];
+
+        CliTestResult result = RunCommand(handler, args);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Contains("oktitle", result.Output, StringComparison.Ordinal);
+        Assert.DoesNotContain('\u001b', result.Output);
+        Assert.DoesNotContain('\u0007', result.Output);
+        Assert.DoesNotContain('\u009b', result.Output);
     }
 
     private static void AssertRoute(

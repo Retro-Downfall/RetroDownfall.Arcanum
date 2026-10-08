@@ -14,7 +14,6 @@ namespace RetroDownfall.Arcanum.Tests.Data;
 [Trait("Category", "Integration")]
 public sealed class BudgetAlertRepositoryTests : IAsyncLifetime
 {
-
     private readonly GrimoireFixture _fixture;
 
     private string _dbPath = string.Empty;
@@ -23,49 +22,38 @@ public sealed class BudgetAlertRepositoryTests : IAsyncLifetime
 
     public BudgetAlertRepositoryTests(GrimoireFixture fixture)
     {
-
         _fixture = fixture;
-
     }
 
     public async Task InitializeAsync()
     {
-
         _dbPath = _fixture.CopyDatabase();
 
         _db = _fixture.CreateContext(_dbPath);
 
         await _db.Database.CloseConnectionAsync();
-
     }
 
     public async Task DisposeAsync()
     {
-
         if (_db is not null)
         {
-
             SqliteConnection connection = (SqliteConnection)_db.Database.GetDbConnection();
 
             await _db.DisposeAsync();
 
             SqliteConnection.ClearPool(connection);
-
         }
 
         if (File.Exists(_dbPath))
         {
-
             File.Delete(_dbPath);
-
         }
-
     }
 
     [SkippableFact]
     public async Task HasAlertedTodayAsync_from_closed_context_returns_false_without_matching_row()
     {
-
         RequireSqlCipher();
 
         BudgetAlertRepository repository = CreateRepository();
@@ -75,13 +63,11 @@ public sealed class BudgetAlertRepositoryTests : IAsyncLifetime
         bool alerted = await repository.HasAlertedTodayAsync(80);
 
         Assert.False(alerted);
-
     }
 
     [SkippableFact]
     public async Task RecordAlertAsync_persists_values_and_makes_threshold_visible_today()
     {
-
         RequireSqlCipher();
 
         BudgetAlertRepository repository = CreateRepository();
@@ -126,13 +112,11 @@ public sealed class BudgetAlertRepositoryTests : IAsyncLifetime
         Assert.Equal(20.50m, Convert.ToDecimal(reader.GetValue(3), CultureInfo.InvariantCulture));
 
         Assert.False(await reader.ReadAsync());
-
     }
 
     [SkippableFact]
     public async Task RecordAlertAsync_duplicate_threshold_today_returns_false_logs_and_keeps_one_row()
     {
-
         RequireSqlCipher();
 
         CapturingLogger logger = new();
@@ -150,13 +134,11 @@ public sealed class BudgetAlertRepositoryTests : IAsyncLifetime
         Assert.Contains("90", warning, StringComparison.Ordinal);
 
         Assert.Contains("already recorded today", warning, StringComparison.Ordinal);
-
     }
 
     [SkippableFact]
     public async Task RecordAlertAsync_nonconstraint_database_error_propagates()
     {
-
         RequireSqlCipher();
 
         await _db!.Database.ExecuteSqlRawAsync("""DROP TABLE "BudgetAlerts";""");
@@ -169,7 +151,34 @@ public sealed class BudgetAlertRepositoryTests : IAsyncLifetime
         Assert.NotEqual(19, exception.SqliteErrorCode);
 
         Assert.Contains("BudgetAlerts", exception.Message, StringComparison.Ordinal);
+    }
 
+    [SkippableFact]
+    public async Task RecordAlertAsync_non_unique_constraint_failure_propagates_instead_of_reading_as_a_duplicate()
+    {
+        RequireSqlCipher();
+
+        await _db!.Database.ExecuteSqlRawAsync(
+            """
+            CREATE TRIGGER "RejectBudgetAlertInsert"
+            BEFORE INSERT ON "BudgetAlerts"
+            BEGIN
+                SELECT RAISE(ABORT, 'simulated non-unique constraint failure');
+            END;
+            """);
+
+        CapturingLogger logger = new();
+
+        BudgetAlertRepository repository = CreateRepository(logger);
+
+        SqliteException exception = await Assert.ThrowsAsync<SqliteException>(
+            () => repository.RecordAlertAsync(60, 6m, 10m));
+
+        Assert.Equal(19, exception.SqliteErrorCode);
+
+        Assert.Contains("simulated non-unique constraint failure", exception.Message, StringComparison.Ordinal);
+
+        Assert.Empty(logger.Warnings);
     }
 
     private static void RequireSqlCipher() =>
@@ -180,7 +189,6 @@ public sealed class BudgetAlertRepositoryTests : IAsyncLifetime
 
     private async Task<long> CountAlertsAsync(int threshold)
     {
-
         await _db!.Database.CloseConnectionAsync();
 
         await using ArcanumDbContext verificationDb = _fixture.CreateContext(_dbPath);
@@ -204,12 +212,10 @@ public sealed class BudgetAlertRepositoryTests : IAsyncLifetime
         object? result = await command.ExecuteScalarAsync();
 
         return Assert.IsType<long>(result);
-
     }
 
     private sealed class CapturingLogger : ILogger<BudgetAlertRepository>
     {
-
         public List<string> Warnings { get; } = [];
 
         public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
@@ -223,16 +229,10 @@ public sealed class BudgetAlertRepositoryTests : IAsyncLifetime
             Exception? exception,
             Func<TState, Exception?, string> formatter)
         {
-
             if (logLevel == LogLevel.Warning)
             {
-
                 Warnings.Add(formatter(state, exception));
-
             }
-
         }
-
     }
-
 }

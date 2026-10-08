@@ -1,7 +1,6 @@
 using System.Data;
 using System.Data.Common;
 using System.Globalization;
-using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using RetroDownfall.Arcanum.Core.Storage;
@@ -12,7 +11,8 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data;
 /// Raw-SQL persistence for <c>BudgetAlerts</c> rows, reusing the scoped <see cref="ArcanumDbContext"/>'s
 /// connection. The declarative <c>BudgetAlerts</c> table is deliberately not part of the compiled EF
 /// model. A unique index on (<c>Threshold</c>, <c>date(AlertedAt)</c>) prevents duplicate per-day alerts;
-/// <see cref="RecordAlertAsync"/> swallows the resulting <c>SQLITE_CONSTRAINT</c> and returns <see langword="false"/>.
+/// <see cref="RecordAlertAsync"/> swallows the resulting unique-constraint violation (and only that) and returns
+/// <see langword="false"/>.
 /// </summary>
 internal sealed class BudgetAlertRepository(ArcanumDbContext db, ILogger<BudgetAlertRepository> logger) : IBudgetAlertRepository
 {
@@ -53,7 +53,7 @@ internal sealed class BudgetAlertRepository(ArcanumDbContext db, ILogger<BudgetA
                 return true;
             }, cancellationToken).ConfigureAwait(false);
         }
-        catch (DbException ex) when (IsConstraintViolation(ex))
+        catch (DbException ex) when (SqliteUniqueConstraintViolation.Is(ex))
         {
             logger.LogWarning(
                 "Budget alert for threshold {Threshold} already recorded today; skipping duplicate.",
@@ -110,15 +110,5 @@ internal sealed class BudgetAlertRepository(ArcanumDbContext db, ILogger<BudgetA
         parameter.Value = value;
 
         cmd.Parameters.Add(parameter);
-    }
-
-    private static bool IsConstraintViolation(DbException ex)
-    {
-        if (ex is SqliteException sqliteException)
-        {
-            return sqliteException.SqliteErrorCode == 19; // SQLITE_CONSTRAINT
-        }
-
-        return false;
     }
 }

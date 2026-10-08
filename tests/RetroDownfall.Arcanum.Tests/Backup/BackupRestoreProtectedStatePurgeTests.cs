@@ -26,7 +26,6 @@ namespace RetroDownfall.Arcanum.Tests.Backup;
 /// </remarks>
 public sealed class BackupRestoreProtectedStatePurgeTests : IAsyncLifetime
 {
-
     private static readonly string[] CoreObjects =
     [
         "covenant_authority_state",
@@ -84,7 +83,6 @@ public sealed class BackupRestoreProtectedStatePurgeTests : IAsyncLifetime
 
     public async Task InitializeAsync()
     {
-
         _staged = await CovenantSchemaScratchDatabase.CreateAsync(CancellationToken.None);
 
         await _staged.InstallCoreObjectsAsync(CoreObjects, CancellationToken.None);
@@ -92,25 +90,19 @@ public sealed class BackupRestoreProtectedStatePurgeTests : IAsyncLifetime
         await _staged.InstallCanonicalAsync(CancellationToken.None);
 
         await _staged.InstallAcceleratorAsync(CancellationToken.None);
-
     }
 
     public async Task DisposeAsync()
     {
-
         if (_staged is not null)
         {
-
             await _staged.DisposeAsync();
-
         }
-
     }
 
     [Fact]
     public async Task An_empty_Covenant_tier_inventories_as_carrying_no_protected_state()
     {
-
         await SeedAuthorityAsync(CovenantHostToolsState.Clean);
 
         BackupRestoreProtectedStateInventory inventory = await InspectAsync();
@@ -126,13 +118,11 @@ public sealed class BackupRestoreProtectedStatePurgeTests : IAsyncLifetime
         Assert.False(inventory.SourceAuthorityTainted);
 
         Assert.False(inventory.CarriesProtectedState);
-
     }
 
     [Fact]
     public async Task Canonical_rows_labels_and_source_taint_are_counted_independently()
     {
-
         await SeedAuthorityAsync(CovenantHostToolsState.HostToolsTainted);
 
         await SeedCanonicalFamilyAsync();
@@ -150,23 +140,19 @@ public sealed class BackupRestoreProtectedStatePurgeTests : IAsyncLifetime
         Assert.True(inventory.SourceAuthorityTainted);
 
         Assert.True(inventory.CarriesProtectedState);
-
     }
 
     [Fact]
     public async Task A_pending_taint_counts_as_a_source_that_cannot_prove_it_is_clean()
     {
-
         await SeedAuthorityAsync(CovenantHostToolsState.PendingHostToolsTaint);
 
         Assert.True((await InspectAsync()).SourceAuthorityTainted);
-
     }
 
     [Fact]
     public async Task An_absent_Covenant_tier_inventories_as_none()
     {
-
         // A snapshot from a build that predates the Covenant tables carries nothing and must not be
         // read as a refusal: absence is a real answer.
         await using CovenantSchemaScratchDatabase bare =
@@ -178,13 +164,11 @@ public sealed class BackupRestoreProtectedStatePurgeTests : IAsyncLifetime
             .InspectAsync(bare.Connection, CancellationToken.None);
 
         Assert.Equal(BackupRestoreProtectedStateInventory.None, inventory);
-
     }
 
     [Fact]
     public async Task A_purge_removes_the_whole_Covenant_family_before_replacement()
     {
-
         await SeedAuthorityAsync(CovenantHostToolsState.Clean);
 
         await SeedCanonicalFamilyAsync();
@@ -208,9 +192,7 @@ public sealed class BackupRestoreProtectedStatePurgeTests : IAsyncLifetime
                      "covenant_search_documents",
                  })
         {
-
             Assert.Equal(0, await CountAsync(table));
-
         }
 
         // The full-text index goes with the projection it mirrors. Leaving it would keep the authored and
@@ -228,7 +210,6 @@ public sealed class BackupRestoreProtectedStatePurgeTests : IAsyncLifetime
         Assert.Equal(3UL, purge.CanonicalRows);
 
         Assert.Equal(1UL, purge.AcceleratorRows);
-
     }
 
     /// <summary>
@@ -239,7 +220,6 @@ public sealed class BackupRestoreProtectedStatePurgeTests : IAsyncLifetime
     [Fact]
     public async Task A_purge_removes_a_keys_curation_together_with_its_epoch_row()
     {
-
         await SeedAuthorityAsync(CovenantHostToolsState.Clean);
 
         await SeedCanonicalFamilyAsync();
@@ -263,9 +243,7 @@ public sealed class BackupRestoreProtectedStatePurgeTests : IAsyncLifetime
         // added later is covered here without this file naming it.
         foreach (string table in CovenantCanonicalContentTables.InDeletionOrder)
         {
-
             Assert.Equal(0, await CountAsync(table));
-
         }
 
         BackupRestoreProtectedStatePurgeReceipt purge =
@@ -273,13 +251,11 @@ public sealed class BackupRestoreProtectedStatePurgeTests : IAsyncLifetime
 
         // The three rows the family seed writes, and the pin's version, head and receipt.
         Assert.Equal(6UL, purge.CanonicalRows);
-
     }
 
     [Fact]
     public async Task A_purge_empties_a_referenced_entry_graph_child_first()
     {
-
         // Foreign keys are on, and immediate constraints are checked at the end of every statement, so
         // clearing the family in the wrong order fails outright rather than leaving a mixture: a version
         // references its entry and a provenance row references its version.
@@ -308,13 +284,11 @@ public sealed class BackupRestoreProtectedStatePurgeTests : IAsyncLifetime
             3UL,
             Assert.IsType<BackupRestoreProtectedStatePurgeReceipt>(receipt.Value.ProtectedStatePurge)
                 .CanonicalRows);
-
     }
 
     [Fact]
     public async Task A_purge_removes_every_protected_artifact_and_its_label()
     {
-
         await SeedAuthorityAsync(CovenantHostToolsState.Clean);
 
         await SeedProtectedSummaryAsync();
@@ -348,13 +322,11 @@ public sealed class BackupRestoreProtectedStatePurgeTests : IAsyncLifetime
         Assert.Equal(1UL, purge.RemovedLabels);
 
         Assert.Equal(0UL, receipt.Value.RetainedLabels);
-
     }
 
     [Fact]
     public async Task A_label_whose_content_row_is_already_gone_counts_no_removed_artifact()
     {
-
         await SeedAuthorityAsync(CovenantHostToolsState.Clean);
 
         // A label with no artifact row behind it: the label goes, and nothing may be reported as the
@@ -372,13 +344,11 @@ public sealed class BackupRestoreProtectedStatePurgeTests : IAsyncLifetime
         Assert.Equal(1UL, purge.RemovedLabels);
 
         Assert.Equal(0UL, purge.RemovedArtifacts);
-
     }
 
     [Fact]
     public async Task A_label_whose_identity_normalises_to_nothing_is_refused_after_the_transaction_rolls_back()
     {
-
         await SeedAuthorityAsync(CovenantHostToolsState.Clean);
 
         await SeedProtectedSummaryAsync();
@@ -409,7 +379,6 @@ public sealed class BackupRestoreProtectedStatePurgeTests : IAsyncLifetime
             await _staged.ScalarLongAsync(
                 "SELECT COUNT(*) FROM \"Sessions\" WHERE \"Summary\" IS NOT NULL;",
                 CancellationToken.None));
-
     }
 
     /// <summary>
@@ -424,7 +393,6 @@ public sealed class BackupRestoreProtectedStatePurgeTests : IAsyncLifetime
     [Fact]
     public async Task A_label_whose_identity_normalises_to_nothing_is_refused_before_anything_is_deleted()
     {
-
         await SeedAuthorityAsync(CovenantHostToolsState.Clean);
 
         await SeedProtectedSummaryAsync();
@@ -458,13 +426,11 @@ public sealed class BackupRestoreProtectedStatePurgeTests : IAsyncLifetime
         Assert.Equal(1, await CountInAsync(transaction, "\"Sessions\" WHERE \"Summary\" IS NOT NULL"));
 
         await transaction.RollbackAsync(CancellationToken.None);
-
     }
 
     [Fact]
     public async Task A_purged_Session_still_bars_a_cached_replay()
     {
-
         await SeedAuthorityAsync(CovenantHostToolsState.Clean);
 
         await SeedProtectedSummaryAsync();
@@ -486,13 +452,11 @@ public sealed class BackupRestoreProtectedStatePurgeTests : IAsyncLifetime
                 "SELECT MaximumSensitivityCode FROM session_sensitivity_state WHERE SessionId = '"
                 + SessionId + "';",
                 CancellationToken.None));
-
     }
 
     [Fact]
     public async Task A_purge_preserves_the_destinations_taint_and_its_joined_disclosure_evidence()
     {
-
         // The archive is clean and carries protected state; the destination is tainted. Joining must
         // keep the destination's taint, and purging must not launder it away either.
         await SeedAuthorityAsync(CovenantHostToolsState.Clean);
@@ -537,13 +501,11 @@ public sealed class BackupRestoreProtectedStatePurgeTests : IAsyncLifetime
                 CancellationToken.None));
 
         Assert.Equal(1, await CountAsync("external_disclosure_receipts"));
-
     }
 
     [Fact]
     public async Task A_purge_over_an_empty_family_reports_zero_rather_than_taking_another_path()
     {
-
         await SeedAuthorityAsync(CovenantHostToolsState.Clean);
 
         Result<BackupCovenantRestoreReconciliationReceipt> receipt =
@@ -561,13 +523,11 @@ public sealed class BackupRestoreProtectedStatePurgeTests : IAsyncLifetime
         Assert.Equal(0UL, purge.RemovedLabels);
 
         Assert.Equal(0UL, purge.RemovedArtifacts);
-
     }
 
     [Fact]
     public async Task A_preserving_reconciliation_leaves_the_family_and_the_labels_where_they_are()
     {
-
         await SeedAuthorityAsync(CovenantHostToolsState.Clean);
 
         await SeedCanonicalFamilyAsync();
@@ -592,13 +552,11 @@ public sealed class BackupRestoreProtectedStatePurgeTests : IAsyncLifetime
         // The reissue still drains the outbox for a dataset that is about to stop existing, which is
         // pre-existing behaviour and not a purge.
         Assert.Equal(0, await CountAsync("covenant_search_outbox"));
-
     }
 
     [Fact]
     public void Every_persisted_artifact_kind_has_a_purge_policy_the_staged_purge_can_resolve()
     {
-
         // The purge fails the whole restore on a label whose kind it cannot classify, because removing
         // the label alone would leave Covenant-derived content with nothing admitting it is protected.
         // That branch is unreachable today rather than untested: the column CHECK admits exactly codes
@@ -618,13 +576,11 @@ public sealed class BackupRestoreProtectedStatePurgeTests : IAsyncLifetime
         Assert.Equal(
             [.. Enum.GetValues<SensitiveArtifactKind>().Select(static kind => (byte)kind).Order()],
             [.. CovenantSensitiveArtifactPurgePolicy.All.Select(static rule => rule.Code).Order()]);
-
     }
 
     [Fact]
     public async Task A_purge_makes_no_filesystem_call_for_a_managed_file_label()
     {
-
         await SeedAuthorityAsync(CovenantHostToolsState.Clean);
 
         string missing = Path.Combine(
@@ -635,7 +591,6 @@ public sealed class BackupRestoreProtectedStatePurgeTests : IAsyncLifetime
 
         try
         {
-
             await SeedLabelAsync(
                 "dddddddd-4444-4444-8444-dddddddddddd",
                 "eeeeeeee-5555-4555-8555-eeeeeeeeeeee",
@@ -652,15 +607,101 @@ public sealed class BackupRestoreProtectedStatePurgeTests : IAsyncLifetime
             // The row described a file on a different machine. Removing the label is the whole effect;
             // touching the path would be acting on authority this installation does not have.
             Assert.True(File.Exists(missing));
-
         }
         finally
         {
-
             File.Delete(missing);
-
         }
+    }
 
+    /// <summary>
+    /// A restored archive that carries a Session's Tapestry must not keep a summary of an Entry the staged
+    /// purge just removed, and the staged purge is the only supported continuation for such an archive.
+    /// </summary>
+    /// <remarks>
+    /// The tree is keyed the way the Entries are spelled in the archive (lowercase, the form an import writes),
+    /// while the label ledger spells the Session uppercase, so the drop only finds it if it compares the
+    /// identity normalised. The same Session's attachment tree and another Session's tree are not derived
+    /// from the erased Entry and stay.
+    /// </remarks>
+    [Fact]
+    public async Task A_purged_assistant_entry_takes_the_owning_sessions_tapestry_with_it()
+    {
+        await SeedAuthorityAsync(CovenantHostToolsState.Clean);
+
+        await SeedAssistantEntryWithTapestryAsync(labelSessionId: LedgerSessionId);
+
+        Result<BackupCovenantRestoreReconciliationReceipt> receipt =
+            await ReconcileAsync(purgeProtectedState: true);
+
+        Assert.True(receipt.IsSuccess, Describe(receipt));
+
+        Assert.Equal(0, await CountAsync("\"Entries\""));
+
+        Assert.Equal(
+            0,
+            await CountAsync("tapestry_generations WHERE GenerationId = 'session-generation'"));
+
+        Assert.Equal(0, await CountAsync("tapestry_nodes WHERE GenerationId = 'session-generation'"));
+
+        Assert.Equal(0, await CountAsync("tapestry_node_embeddings WHERE NodeId = 'session-generation-node'"));
+
+        Assert.Equal(
+            1,
+            await CountAsync("tapestry_generations WHERE GenerationId = 'attachment-generation'"));
+
+        Assert.Equal(
+            1,
+            await CountAsync("tapestry_generations WHERE GenerationId = 'other-session-generation'"));
+
+        Assert.Equal(1, await CountAsync("tapestry_nodes WHERE GenerationId = 'other-session-generation'"));
+    }
+
+    /// <summary>
+    /// A label whose Session column is empty cannot name the tree to drop, so the Entry row it protects is
+    /// asked instead, before the plan deletes it.
+    /// </summary>
+    [Fact]
+    public async Task A_purged_assistant_entry_whose_label_names_no_session_still_drops_the_sessions_tapestry()
+    {
+        await SeedAuthorityAsync(CovenantHostToolsState.Clean);
+
+        await SeedAssistantEntryWithTapestryAsync(labelSessionId: null);
+
+        Result<BackupCovenantRestoreReconciliationReceipt> receipt =
+            await ReconcileAsync(purgeProtectedState: true);
+
+        Assert.True(receipt.IsSuccess, Describe(receipt));
+
+        Assert.Equal(0, await CountAsync("\"Entries\""));
+
+        Assert.Equal(
+            0,
+            await CountAsync("tapestry_generations WHERE GenerationId = 'session-generation'"));
+
+        Assert.Equal(
+            1,
+            await CountAsync("tapestry_generations WHERE GenerationId = 'other-session-generation'"));
+    }
+
+    /// <summary>A staged archive from a build that predates the Tapestry has no tree to drop, and must not be refused.</summary>
+    [Fact]
+    public async Task A_purged_assistant_entry_in_an_archive_without_a_tapestry_is_not_refused()
+    {
+        await SeedAuthorityAsync(CovenantHostToolsState.Clean);
+
+        await SeedAssistantEntryWithTapestryAsync(labelSessionId: LedgerSessionId);
+
+        await _staged.ExecuteAsync(
+            "DROP TABLE tapestry_node_embeddings; DROP TABLE tapestry_nodes; DROP TABLE tapestry_generations;",
+            CancellationToken.None);
+
+        Result<BackupCovenantRestoreReconciliationReceipt> receipt =
+            await ReconcileAsync(purgeProtectedState: true);
+
+        Assert.True(receipt.IsSuccess, Describe(receipt));
+
+        Assert.Equal(0, await CountAsync("\"Entries\""));
     }
 
     private static string Describe<T>(Result<T> result) =>
@@ -690,13 +731,11 @@ public sealed class BackupRestoreProtectedStatePurgeTests : IAsyncLifetime
 
     private static byte[] Bloom(byte marker)
     {
-
         byte[] bloom = new byte[CovenantLimits.DisclosureEvidenceBloomBytes];
 
         bloom[0] = marker;
 
         return bloom;
-
     }
 
     private static string Iso() =>
@@ -713,7 +752,6 @@ public sealed class BackupRestoreProtectedStatePurgeTests : IAsyncLifetime
     /// <summary>Counts rows as the open transaction sees them, which a rollback has not yet undone.</summary>
     private async Task<long> CountInAsync(SqliteTransaction transaction, string tableAndFilter)
     {
-
         await using SqliteCommand command = _staged.Connection.CreateCommand();
 
         command.Transaction = transaction;
@@ -723,7 +761,6 @@ public sealed class BackupRestoreProtectedStatePurgeTests : IAsyncLifetime
         return Convert.ToInt64(
             await command.ExecuteScalarAsync(CancellationToken.None),
             System.Globalization.CultureInfo.InvariantCulture);
-
     }
 
     private async Task<Result<BackupCovenantRestoreReconciliationReceipt>> ReconcileAsync(
@@ -731,7 +768,6 @@ public sealed class BackupRestoreProtectedStatePurgeTests : IAsyncLifetime
         CovenantAuthorityStateRow? destinationAuthority = null,
         IReadOnlyList<CovenantDisclosureState>? disclosure = null)
     {
-
         await using SqliteTransaction transaction =
             (SqliteTransaction)await _staged.Connection.BeginTransactionAsync(CancellationToken.None);
 
@@ -749,17 +785,14 @@ public sealed class BackupRestoreProtectedStatePurgeTests : IAsyncLifetime
 
         if (receipt.IsFailure)
         {
-
             await transaction.RollbackAsync(CancellationToken.None);
 
             return receipt;
-
         }
 
         await transaction.CommitAsync(CancellationToken.None);
 
         return receipt;
-
     }
 
     /// <summary>
@@ -768,7 +801,6 @@ public sealed class BackupRestoreProtectedStatePurgeTests : IAsyncLifetime
     /// </summary>
     private async Task JoinDisclosureAsTheEvidenceStepDoesAsync(IReadOnlyList<CovenantDisclosureState> disclosure)
     {
-
         await using SqliteTransaction transaction =
             (SqliteTransaction)await _staged.Connection.BeginTransactionAsync(CancellationToken.None);
 
@@ -782,12 +814,10 @@ public sealed class BackupRestoreProtectedStatePurgeTests : IAsyncLifetime
         Assert.True(joined.IsSuccess, joined.IsFailure ? joined.Error.Message : null);
 
         await transaction.CommitAsync(CancellationToken.None);
-
     }
 
     private async Task SeedAuthorityAsync(CovenantHostToolsState state)
     {
-
         await using SqliteCommand command = _staged.Connection.CreateCommand();
 
         command.CommandText = """
@@ -822,7 +852,6 @@ public sealed class BackupRestoreProtectedStatePurgeTests : IAsyncLifetime
         _ = command.Parameters.AddWithValue("$now", Iso());
 
         _ = await command.ExecuteNonQueryAsync(CancellationToken.None);
-
     }
 
     /// <summary>
@@ -835,7 +864,6 @@ public sealed class BackupRestoreProtectedStatePurgeTests : IAsyncLifetime
     /// </remarks>
     private async Task SeedCanonicalFamilyAsync()
     {
-
         await _staged.ExecuteAsync(
             """
             INSERT INTO covenant_search_outbox (
@@ -874,7 +902,6 @@ public sealed class BackupRestoreProtectedStatePurgeTests : IAsyncLifetime
             FROM covenant_state;
             """,
             CancellationToken.None);
-
     }
 
     /// <summary>
@@ -886,7 +913,6 @@ public sealed class BackupRestoreProtectedStatePurgeTests : IAsyncLifetime
     /// </remarks>
     private async Task SeedCurationAsync()
     {
-
         await _staged.ExecuteAsync(
             """
             INSERT INTO covenant_curation_versions (
@@ -910,7 +936,6 @@ public sealed class BackupRestoreProtectedStatePurgeTests : IAsyncLifetime
                     '2026-01-01T00:00:00.0000000Z');
             """,
             CancellationToken.None);
-
     }
 
     /// <summary>
@@ -924,7 +949,6 @@ public sealed class BackupRestoreProtectedStatePurgeTests : IAsyncLifetime
     /// </remarks>
     private async Task SeedEntryGraphAsync()
     {
-
         await _staged.ExecuteAsync(
             """
             INSERT INTO covenant_entries (
@@ -954,7 +978,6 @@ public sealed class BackupRestoreProtectedStatePurgeTests : IAsyncLifetime
             VALUES ('version-1', 0, 'attachment-1', 'attachment-1:1', 'notes.md', zeroblob(32), 1);
             """,
             CancellationToken.None);
-
     }
 
     /// <summary>
@@ -963,10 +986,8 @@ public sealed class BackupRestoreProtectedStatePurgeTests : IAsyncLifetime
     /// </summary>
     private async Task SeedProtectedSummaryAsync()
     {
-
         await using (SqliteCommand session = _staged.Connection.CreateCommand())
         {
-
             session.CommandText = """
                 INSERT INTO "Sessions" ("Id", "Status", "Summary", "CreatedAt", "UpdatedAt")
                 VALUES ($id, 'active', 'a protected summary', $now, $now);
@@ -977,12 +998,10 @@ public sealed class BackupRestoreProtectedStatePurgeTests : IAsyncLifetime
             _ = session.Parameters.AddWithValue("$now", Iso());
 
             _ = await session.ExecuteNonQueryAsync(CancellationToken.None);
-
         }
 
         await using (SqliteCommand artifact = _staged.Connection.CreateCommand())
         {
-
             artifact.CommandText = """
                 INSERT INTO session_summary_artifacts (
                     ArtifactId, SessionId, Revision, ContentDigest, SensitivityCode,
@@ -997,12 +1016,10 @@ public sealed class BackupRestoreProtectedStatePurgeTests : IAsyncLifetime
             _ = artifact.Parameters.AddWithValue("$now", Iso());
 
             _ = await artifact.ExecuteNonQueryAsync(CancellationToken.None);
-
         }
 
         await using (SqliteCommand pointer = _staged.Connection.CreateCommand())
         {
-
             pointer.CommandText = """
                 INSERT INTO session_summary_state (
                     SessionId, CurrentArtifactId, Revision, UpdatedAtUtc)
@@ -1016,12 +1033,10 @@ public sealed class BackupRestoreProtectedStatePurgeTests : IAsyncLifetime
             _ = pointer.Parameters.AddWithValue("$now", Iso());
 
             _ = await pointer.ExecuteNonQueryAsync(CancellationToken.None);
-
         }
 
         await using (SqliteCommand projection = _staged.Connection.CreateCommand())
         {
-
             projection.CommandText = """
                 INSERT INTO session_sensitivity_state (
                     SessionId, TaintedArtifactCount, MaximumSensitivityCode,
@@ -1034,12 +1049,74 @@ public sealed class BackupRestoreProtectedStatePurgeTests : IAsyncLifetime
             _ = projection.Parameters.AddWithValue("$now", Iso());
 
             _ = await projection.ExecuteNonQueryAsync(CancellationToken.None);
-
         }
 
         await SeedLabelAsync(SummaryLabelId, SummaryArtifactId, SensitiveArtifactKind.Summary, LedgerSessionId);
-
     }
+
+    private const string EntryArtifactId = "ffffffff-6666-4666-8666-ffffffffffff";
+
+    private const string OtherSessionId = "1b2c3d4e-5f6a-4b7c-9d0e-1f2a3b4c5d6e";
+
+    /// <summary>
+    /// Seeds one labelled assistant Entry whose Session also has a Tapestry: its Session tree, its attachment
+    /// tree and another Session's tree, each with a node and a node embedding.
+    /// </summary>
+    private async Task SeedAssistantEntryWithTapestryAsync(string? labelSessionId)
+    {
+        await _staged.InstallCoreObjectsAsync(
+            [
+                "Entries",
+                "entry_embeddings",
+                "tapestry_generations",
+                "tapestry_nodes",
+                "tapestry_node_embeddings",
+            ],
+            CancellationToken.None);
+
+        await _staged.ExecuteAsync(
+            $"""
+             INSERT INTO "Sessions" ("Id", "Status", "CreatedAt", "UpdatedAt")
+             VALUES ('{SessionId}', 'active', '{Iso()}', '{Iso()}'),
+                    ('{OtherSessionId}', 'active', '{Iso()}', '{Iso()}');
+             INSERT INTO "Entries" ("Id", "SessionId", "Role", "Content", "ModelUsed", "CreatedAt", "Sequence")
+             VALUES ('{EntryArtifactId}', '{SessionId}', 2, 'words the purge erases', 'model', '{Iso()}', 1);
+             """,
+            CancellationToken.None);
+
+        // The Session tree is keyed by the spelling Entries.SessionId holds in this archive: lowercase.
+        await SeedTapestryGenerationAsync("Session", SessionId, "session-generation");
+
+        await SeedTapestryGenerationAsync("SessionAttachment", SessionId, "attachment-generation");
+
+        await SeedTapestryGenerationAsync("Session", OtherSessionId, "other-session-generation");
+
+        await SeedLabelAsync(
+            "99999999-7777-4777-8777-999999999999",
+            EntryArtifactId.ToUpperInvariant(),
+            SensitiveArtifactKind.AssistantEntry,
+            labelSessionId);
+    }
+
+    private Task SeedTapestryGenerationAsync(string scopeKind, string scopeId, string generationId) =>
+        _staged.ExecuteAsync(
+            $"""
+             INSERT INTO tapestry_generations
+                 (GenerationId, ScopeKind, ScopeId, Status, AlgorithmVersion, SettingsFingerprint,
+                  SummaryRecipeVersion, EmbeddingDimension, CorpusFingerprint, LayerCount, NodeCount,
+                  RootNodeCount, TerminalReason, StartedAt, CompletedAt)
+             VALUES ('{generationId}', '{scopeKind}', '{scopeId}', 'Complete', 'algorithm', 'settings',
+                     'recipe', 1, 'corpus', 1, 1, 1, 'LeafOnly', '{Iso()}', '{Iso()}');
+             INSERT INTO tapestry_nodes
+                 (NodeId, GenerationId, ScopeKind, ScopeId, Layer, ParentScopeKey, NodeKind, SourceLabel,
+                  Content, ContentHash, EmbeddingDimension, CreatedAt)
+             VALUES ('{generationId}-node', '{generationId}', '{scopeKind}', '{scopeId}', 1,
+                     '{generationId}#root', 'Summary', 'summary', 'a summary of the erased words', 'hash', 1,
+                     '{Iso()}');
+             INSERT INTO tapestry_node_embeddings (NodeId, Embedding, Dim)
+             VALUES ('{generationId}-node', x'00', 1);
+             """,
+            CancellationToken.None);
 
     private async Task SeedLabelAsync(
         string labelId,
@@ -1047,7 +1124,6 @@ public sealed class BackupRestoreProtectedStatePurgeTests : IAsyncLifetime
         SensitiveArtifactKind kind,
         string? sessionId)
     {
-
         await using SqliteCommand command = _staged.Connection.CreateCommand();
 
         command.CommandText = """
@@ -1074,12 +1150,10 @@ public sealed class BackupRestoreProtectedStatePurgeTests : IAsyncLifetime
         _ = command.Parameters.AddWithValue("$now", Iso());
 
         _ = await command.ExecuteNonQueryAsync(CancellationToken.None);
-
     }
 
     private async Task SeedDisclosureReceiptAsync()
     {
-
         await using SqliteCommand command = _staged.Connection.CreateCommand();
 
         command.CommandText = """
@@ -1101,7 +1175,5 @@ public sealed class BackupRestoreProtectedStatePurgeTests : IAsyncLifetime
         _ = command.Parameters.AddWithValue("$now", Iso());
 
         _ = await command.ExecuteNonQueryAsync(CancellationToken.None);
-
     }
-
 }

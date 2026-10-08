@@ -11,7 +11,6 @@ namespace RetroDownfall.Arcanum.Tests.Cli.CommandCenter;
 /// </summary>
 public sealed class CommandCenterWindowOverlayTests
 {
-
     /// <summary>
     /// Terminal.Gui refuses focus to a view whose SuperView cannot focus, so an unfocusable overlay
     /// pane makes the <c>ask_human</c> answer editor impossible to type into — every printable key
@@ -20,13 +19,57 @@ public sealed class CommandCenterWindowOverlayTests
     [Fact]
     internal void The_ask_human_answer_editor_takes_focus_when_the_prompt_opens()
     {
-
         using var window = new CommandCenterWindow();
 
         window.ShowHumanPromptOverlay("What port should I use?", "prompt-1", statusMessage: null);
 
         Assert.True(window.OverlayAnswer.HasFocus);
+    }
 
+    /// <summary>
+    /// The question is model text, and the overlay hands it to a terminal. Whatever the model put in it,
+    /// the overlay shows only what a terminal would display rather than act on.
+    /// </summary>
+    [Fact]
+    internal void The_ask_human_overlay_shows_the_question_without_terminal_control_sequences()
+    {
+        using var window = new CommandCenterWindow();
+
+        window.ShowHumanPromptOverlay(
+            "Which port?\u001b]52;c;AAAA\u0007 now\u001b[2J",
+            "prompt\u001b[31m-1",
+            statusMessage: "waiting\u001b]0;pwned\u0007");
+
+        string shown = string.Join('\n', window.GetOverlayLinesSnapshot()) + "\n" + window.OverlayBody.Text;
+
+        Assert.DoesNotContain('\u001b', shown);
+        Assert.DoesNotContain('\u0007', shown);
+        Assert.Contains("Which port? now", shown, StringComparison.Ordinal);
+        Assert.Contains("prompt-1", shown, StringComparison.Ordinal);
+        Assert.Contains("waiting", shown, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Every overlay list or body is built from text the Command Center did not write (a Session title,
+    /// an MCP server name from a repository's own config), so the overlay is where it is stripped.
+    /// </summary>
+    [Fact]
+    internal void Overlay_rows_and_title_are_stripped_of_terminal_control_sequences()
+    {
+        using var window = new CommandCenterWindow();
+
+        window.ShowOverlay(
+            CommandCenterOverlayKind.Help,
+            ["server\u001b]52;c;AAAA\u0007-one", "tool\u001b[2J-two"],
+            "Servers\u001b]0;pwned\u0007",
+            showFilter: false);
+
+        string shown = string.Join('\n', window.GetOverlayLinesSnapshot()) + "\n" + window.OverlayBody.Text;
+
+        Assert.DoesNotContain('\u001b', shown);
+        Assert.DoesNotContain('\u0007', shown);
+        Assert.Contains("server-one", shown, StringComparison.Ordinal);
+        Assert.Equal("Servers", window.OverlayPane.Title);
     }
 
     /// <summary>
@@ -37,7 +80,6 @@ public sealed class CommandCenterWindowOverlayTests
     [Fact]
     internal void The_model_drop_down_type_ahead_field_takes_focus_when_it_opens()
     {
-
         using var window = new CommandCenterWindow();
 
         var state = new CommandCenterState(new SessionLogBuffer())
@@ -51,7 +93,6 @@ public sealed class CommandCenterWindowOverlayTests
         window.ShowModelPickerOverlay(state);
 
         Assert.True(window.OverlayFilter.HasFocus);
-
     }
 
     /// <summary>
@@ -62,7 +103,6 @@ public sealed class CommandCenterWindowOverlayTests
     [Fact]
     internal void Filtering_the_session_picker_re_renders_it_after_the_focus_dot_is_added()
     {
-
         using var window = new CommandCenterWindow();
 
         var state = new CommandCenterState(new SessionLogBuffer())
@@ -85,7 +125,6 @@ public sealed class CommandCenterWindowOverlayTests
         string only = Assert.Single(window.GetOverlayLinesSnapshot());
 
         Assert.Contains("api", only, StringComparison.Ordinal);
-
     }
 
     /// <summary>
@@ -96,7 +135,6 @@ public sealed class CommandCenterWindowOverlayTests
     [Fact]
     internal void The_header_model_drop_down_takes_focus_when_the_region_is_selected()
     {
-
         using var window = new CommandCenterWindow();
 
         window.ApplyAbsoluteLayout(120, 40);
@@ -108,7 +146,6 @@ public sealed class CommandCenterWindowOverlayTests
         Assert.True(window.ModelSelector.HasFocus);
 
         Assert.Equal(CommandCenterFocusRegion.Model, window.ResolveFocusedRegion());
-
     }
 
     /// <summary>
@@ -120,7 +157,6 @@ public sealed class CommandCenterWindowOverlayTests
     [Fact]
     internal void The_transcript_list_takes_focus_when_the_region_is_selected()
     {
-
         using var window = new CommandCenterWindow();
 
         window.ApplyAbsoluteLayout(120, 40);
@@ -130,7 +166,6 @@ public sealed class CommandCenterWindowOverlayTests
         Assert.True(window.LogView.HasFocus);
 
         Assert.Equal(CommandCenterFocusRegion.Transcript, window.ResolveFocusedRegion());
-
     }
 
     /// <summary>
@@ -140,7 +175,6 @@ public sealed class CommandCenterWindowOverlayTests
     [Fact]
     internal void The_incantations_list_takes_focus_when_the_region_is_selected()
     {
-
         using var window = new CommandCenterWindow();
 
         window.ApplyAbsoluteLayout(120, 40);
@@ -150,7 +184,6 @@ public sealed class CommandCenterWindowOverlayTests
         Assert.True(window.IncantationsView.HasFocus);
 
         Assert.Equal(CommandCenterFocusRegion.Incantations, window.ResolveFocusedRegion());
-
     }
 
     /// <summary>
@@ -160,7 +193,6 @@ public sealed class CommandCenterWindowOverlayTests
     [Fact]
     internal void The_composer_still_holds_focus_at_startup()
     {
-
         using var window = new CommandCenterWindow();
 
         window.ApplyAbsoluteLayout(120, 40);
@@ -170,7 +202,6 @@ public sealed class CommandCenterWindowOverlayTests
         Assert.True(window.Input.HasFocus);
 
         Assert.Equal(CommandCenterFocusRegion.Composer, window.ResolveFocusedRegion());
-
     }
 
     /// <summary>
@@ -180,7 +211,6 @@ public sealed class CommandCenterWindowOverlayTests
     [Fact]
     internal void A_sidebar_refresh_does_not_index_a_shorter_overlay_out_of_range()
     {
-
         using var window = new CommandCenterWindow();
 
         SessionListItem[] many = BuildSessions(6);
@@ -202,7 +232,6 @@ public sealed class CommandCenterWindowOverlayTests
         window.ApplyState(state, kind: CommandCenterUiUpdateKind.RefreshSidebar);
 
         Assert.Equal(0, window.GetOverlaySelectedIndex());
-
     }
 
     /// <summary>
@@ -212,7 +241,6 @@ public sealed class CommandCenterWindowOverlayTests
     [Fact]
     internal void A_sidebar_refresh_does_not_re_point_the_model_drop_down()
     {
-
         using var window = new CommandCenterWindow();
 
         SessionListItem[] many = BuildSessions(6);
@@ -241,7 +269,6 @@ public sealed class CommandCenterWindowOverlayTests
         window.ApplyState(state, kind: CommandCenterUiUpdateKind.RefreshSidebar);
 
         Assert.Equal(0, window.GetOverlaySelectedIndex());
-
     }
 
     /// <summary>
@@ -251,7 +278,6 @@ public sealed class CommandCenterWindowOverlayTests
     [Fact]
     internal void The_command_palette_shows_which_row_enter_will_run()
     {
-
         using var window = new CommandCenterWindow();
 
         window.ShowOverlay(
@@ -263,7 +289,6 @@ public sealed class CommandCenterWindowOverlayTests
         Assert.True(window.OverlayList.Visible);
 
         Assert.Equal(0, window.GetOverlaySelectedIndex());
-
     }
 
     /// <summary>
@@ -273,7 +298,6 @@ public sealed class CommandCenterWindowOverlayTests
     [Fact]
     internal void Every_command_palette_entry_is_reachable_regardless_of_the_session_count()
     {
-
         using var window = new CommandCenterWindow();
 
         window.ShowOverlay(
@@ -293,7 +317,6 @@ public sealed class CommandCenterWindowOverlayTests
         window.MovePaletteSelection(-9);
 
         Assert.Equal(0, window.GetOverlaySelectedIndex());
-
     }
 
     private static SessionListItem[] BuildSessions(int count) =>
@@ -327,5 +350,4 @@ public sealed class CommandCenterWindowOverlayTests
             DateTimeOffset.UnixEpoch,
             4),
     ];
-
 }

@@ -23,21 +23,17 @@ namespace RetroDownfall.Arcanum.Tests.Api;
 [Collection("ApiHost")]
 public sealed class DiagnosticMcpInvocationEndpointTests : IDisposable
 {
-
     private readonly string? _originalEdition =
         global::System.Environment.GetEnvironmentVariable(ArcanumEnvironment.EditionEnvVar);
 
     public DiagnosticMcpInvocationEndpointTests()
     {
-
         global::System.Environment.SetEnvironmentVariable(ArcanumEnvironment.EditionEnvVar, null);
-
     }
 
     [SkippableFact]
     public async Task PostInvoke_NonDevelopmentEdition_ReturnsDiagnosticDisabled()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         EndpointMcpConnectionManager manager = new();
@@ -57,13 +53,11 @@ public sealed class DiagnosticMcpInvocationEndpointTests : IDisposable
         Assert.False(string.IsNullOrWhiteSpace(body.TraceId));
         Assert.Equal(0, manager.StatusQueryCount);
         Assert.Equal(0, manager.Tool.InvocationCount);
-
     }
 
     [SkippableFact]
     public async Task PostInvoke_DevelopmentEdition_ServiceFailureMapsToBadRequest()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         EndpointMcpConnectionManager manager = new();
@@ -83,13 +77,11 @@ public sealed class DiagnosticMcpInvocationEndpointTests : IDisposable
         Assert.False(string.IsNullOrWhiteSpace(body.TraceId));
         Assert.Equal(0, manager.StatusQueryCount);
         Assert.Equal(0, manager.Tool.InvocationCount);
-
     }
 
     [SkippableFact]
     public async Task PostInvoke_DevelopmentEdition_ReturnsExternalToolOutcome()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         EndpointMcpConnectionManager manager = new();
@@ -121,7 +113,6 @@ public sealed class DiagnosticMcpInvocationEndpointTests : IDisposable
         Assert.Equal(factory.TempHome, manager.LastStatusWorkspace);
         Assert.Equal(factory.TempHome, manager.LastToolWorkspace);
         Assert.Equal(1, manager.Tool.InvocationCount);
-
     }
 
     private static ArcanumWebApplicationFactory CreateFactory(
@@ -132,10 +123,8 @@ public sealed class DiagnosticMcpInvocationEndpointTests : IDisposable
             SettingsOverride = settings => settings with { Edition = edition },
             ServiceOverrides = services =>
             {
-
                 services.RemoveAll<IMcpConnectionManager>();
                 services.AddSingleton<IMcpConnectionManager>(manager);
-
             },
         };
 
@@ -146,28 +135,23 @@ public sealed class DiagnosticMcpInvocationEndpointTests : IDisposable
 
     private static async Task<ApiResponse<McpToolInvokeResponse>> ReadBodyAsync(HttpResponseMessage response)
     {
-
         string json = await response.Content.ReadAsStringAsync();
         ApiResponse<McpToolInvokeResponse>? body = JsonSerializer.Deserialize(
             json,
             ArcanumJsonContext.Default.ApiResponseMcpToolInvokeResponse);
         Assert.NotNull(body);
         return body;
-
     }
 
     public void Dispose()
     {
-
         global::System.Environment.SetEnvironmentVariable(
             ArcanumEnvironment.EditionEnvVar,
             _originalEdition);
-
     }
 
     private sealed class EndpointMcpConnectionManager : IMcpConnectionManager
     {
-
         public EchoFunction Tool { get; } = new();
 
         public int StatusQueryCount { get; private set; }
@@ -218,7 +202,6 @@ public sealed class DiagnosticMcpInvocationEndpointTests : IDisposable
             string? workingDirectory,
             CancellationToken cancellationToken = default)
         {
-
             LastToolWorkspace = workingDirectory;
             AIFunction? result =
                 string.Equals(serverName, "external", StringComparison.Ordinal)
@@ -226,21 +209,18 @@ public sealed class DiagnosticMcpInvocationEndpointTests : IDisposable
                     ? Tool
                     : null;
             return Task.FromResult(result);
-
         }
 
         public Task<List<McpServerStatusDto>> GetServerStatusesAsync(
             string workingDirectory,
             CancellationToken cancellationToken = default)
         {
-
             StatusQueryCount++;
             LastStatusWorkspace = workingDirectory;
             return Task.FromResult(new List<McpServerStatusDto>
             {
                 new("external", "running", 1, [Tool.Name], ErrorMessage: null),
             });
-
         }
 
         public Task ReloadAsync(
@@ -250,14 +230,13 @@ public sealed class DiagnosticMcpInvocationEndpointTests : IDisposable
 
         public Task<Result> TrustWorkspaceAsync(
             string workingDirectory,
+            string? expectedConfigDigest = null,
             CancellationToken cancellationToken = default) =>
             Task.FromResult(Result.Success());
-
     }
 
     private sealed class EchoFunction : AIFunction
     {
-
         public override string Name => "echo";
 
         public override string Description => "Returns a deterministic JSON response.";
@@ -268,12 +247,8 @@ public sealed class DiagnosticMcpInvocationEndpointTests : IDisposable
             AIFunctionArguments arguments,
             CancellationToken cancellationToken)
         {
-
             InvocationCount++;
             return ValueTask.FromResult<object?>("""{"answer":42}""");
-
         }
-
     }
-
 }

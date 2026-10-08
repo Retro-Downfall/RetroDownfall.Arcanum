@@ -86,16 +86,57 @@ public sealed class DoctorCommand(
                 cancellationToken)
             .ConfigureAwait(false);
 
+        // Results are collected into a list the caller owns, so a Ctrl+C that lands between two repairs,
+        // or while the exclusive lease is being released, cannot take the already-applied ones with it.
+        List<DoctorRepairResult> appliedResults = [];
+
+        bool cancelled = false;
+
+        // True once the loop has gone through every selected repair without being stopped, so a Ctrl+C
+        // that lands afterwards (while the exclusive lease is released) is not described as a stop that
+        // left repairs unrun.
+        bool everyRepairFinished = false;
+
         if (report.IsSuccess && mutates)
         {
-            IReadOnlyList<DoctorRepairResult> applied = await initialization
-                .RunExclusiveAsync(
-                    (_, token) => ApplyRequestedRepairsAsync(request, fixPermissions, token),
-                    cancellationToken)
-                .ConfigureAwait(false);
+            try
+            {
+                cancelled = await initialization
+                    .RunExclusiveAsync(
+                        async (_, token) =>
+                        {
+                            bool stopped = await ApplyRequestedRepairsAsync(
+                                    request,
+                                    fixPermissions,
+                                    appliedResults,
+                                    token)
+                                .ConfigureAwait(false);
+
+                            everyRepairFinished = !stopped;
+
+                            return stopped;
+                        },
+                        cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                cancelled = true;
+            }
 
             report = Result<DoctorReport>.Success(
-                MergeAppliedRepairs(report.Value, applied, fixPermissions, request.Strict));
+                MergeAppliedRepairs(report.Value, appliedResults, fixPermissions, request.Strict));
+
+            if (cancelled)
+            {
+                consoleDispatcher.WriteDiagnostic(
+                    everyRepairFinished
+                        ? "Cancelled while the installation lock was being released, after every requested "
+                            + "repair had finished; the report shows what changed."
+                        : $"Cancelled. {appliedResults.Count(static repair => repair.State == DoctorRepairState.Applied)} "
+                            + "repair(s) had been applied before the stop and the rest were not run; the report "
+                            + "shows what changed. Re-run 'arcanum doctor' to see what remains.");
+            }
         }
 
         if (report.IsFailure)
@@ -119,20 +160,30 @@ public sealed class DoctorCommand(
                 report.Value,
                 ArcanumJsonContext.Default.DoctorReport);
 
-            return healthy ? (int)CliExitCode.Success : (int)CliExitCode.GenericError;
+            return cancelled
+                ? (int)CliExitCode.Cancelled
+                : healthy ? (int)CliExitCode.Success : (int)CliExitCode.GenericError;
         }
 
-        return await RunHumanAsync(request, report.Value, healthy, cancellationToken).ConfigureAwait(false);
+        // The report is rendered after the repairs ran, so the render does not take the caller's token:
+        // a cancelled token would stop the operator hearing what already changed.
+        int humanExitCode = await RunHumanAsync(request, report.Value, healthy, CancellationToken.None)
+            .ConfigureAwait(false);
+
+        return cancelled ? (int)CliExitCode.Cancelled : humanExitCode;
     }
 
     /// <summary>
     /// Revalidates each requested mutation under exclusive installation ownership, then applies only
     /// repairs whose plan still reports work. Unrelated diagnostics stay outside the lock so the
-    /// maintenance-lock check never mistakes this command's own lease for an external owner.
+    /// maintenance-lock check never mistakes this command's own lease for an external owner. Each result is
+    /// added to <paramref name="results"/> as soon as its repair finishes; cancellation stops the loop
+    /// rather than discarding what was done, and the method answers whether it stopped for that reason.
     /// </summary>
-    private async Task<IReadOnlyList<DoctorRepairResult>> ApplyRequestedRepairsAsync(
+    private async Task<bool> ApplyRequestedRepairsAsync(
         DoctorRunRequest request,
         bool fixPermissions,
+        List<DoctorRepairResult> results,
         CancellationToken cancellationToken)
     {
         List<IDoctorRepair> selected = request.Apply
@@ -154,25 +205,59 @@ public sealed class DoctorCommand(
             }
         }
 
-        List<DoctorRepairResult> results = [];
-
         foreach (IDoctorRepair repair in selected)
         {
-            cancellationToken.ThrowIfCancellationRequested();
+            if (cancellationToken.IsCancellationRequested)
+            {
+                return true;
+            }
 
-            DoctorRepairResult revalidated = await RunRepairPhaseAsync(
-                    repair,
-                    apply: false,
-                    cancellationToken)
-                .ConfigureAwait(false);
+            DoctorRepairResult revalidated;
 
-            results.Add(revalidated.State == DoctorRepairState.Planned
-                ? await RunRepairPhaseAsync(repair, apply: true, cancellationToken)
-                    .ConfigureAwait(false)
-                : revalidated);
+            try
+            {
+                revalidated = await RunRepairPhaseAsync(
+                        repair,
+                        apply: false,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                // Revalidation changes nothing, so this repair simply stays the plan it was.
+                return true;
+            }
+
+            if (revalidated.State != DoctorRepairState.Planned)
+            {
+                results.Add(revalidated);
+
+                continue;
+            }
+
+            try
+            {
+                results.Add(
+                    await RunRepairPhaseAsync(repair, apply: true, cancellationToken)
+                        .ConfigureAwait(false));
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                // Cancelled with this repair in flight: part of it may have run, and saying nothing
+                // would let the operator believe it had not.
+                results.Add(
+                    new DoctorRepairResult(
+                        repair.Id,
+                        DoctorRepairState.Failed,
+                        "Cancelled while the repair was running; some of its steps may have been applied.",
+                        [],
+                        nameof(OperationCanceledException)));
+
+                return true;
+            }
         }
 
-        return results;
+        return false;
     }
 
     private static async Task<DoctorRepairResult> RunRepairPhaseAsync(
@@ -215,11 +300,15 @@ public sealed class DoctorCommand(
 
         foreach (DoctorRepairResult planned in report.Repairs ?? [])
         {
+            // The permissions repair is moved to the end of the report once it has a result. When it never
+            // got one (a stop landed before the loop reached it) its plan stays where it was, rather than
+            // the repair vanishing from the report.
             if (fixPermissions
                 && string.Equals(
                     planned.RepairId,
                     PermissionApplyOwnerOnlyRepair.RepairId,
-                    StringComparison.Ordinal))
+                    StringComparison.Ordinal)
+                && replacements.ContainsKey(planned.RepairId))
             {
                 continue;
             }
@@ -829,7 +918,7 @@ public sealed class DoctorCommand(
             missingExplicit == 0 && corrupt == 0 ? "ok" : "warn",
             $"{present}/{references.Count} credential(s) resolve from an environment reference or "
             + $"the secure store; {missingExplicit} explicit reference(s) are missing; "
-            + $"{corrupt} stored credential(s) are corrupt; values are never shown.");
+            + $"{corrupt} stored credential(s) are corrupt or unreadable; values are never shown.");
     }
 
     /// <summary>
@@ -877,13 +966,15 @@ public sealed class DoctorCommand(
                 environmentVariable,
                 stored.Status == SecretStoreReadStatus.Ok,
                 explicitReference,
-                stored.Status == SecretStoreReadStatus.Corrupted,
+                stored.Status is SecretStoreReadStatus.Corrupted or SecretStoreReadStatus.Unreadable,
                 stored.Status switch
                 {
                     SecretStoreReadStatus.Ok => "set in the secure store (value not shown)",
                     SecretStoreReadStatus.Corrupted =>
                         "stored but undecryptable; re-run 'arcanum setup' or "
                         + $"'arcanum key provider set {label}'",
+                    SecretStoreReadStatus.Unreadable =>
+                        "stored but unreadable; make the mirror file an owner-only regular file and retry",
                     _ => "not set",
                 }));
         }
@@ -917,13 +1008,15 @@ public sealed class DoctorCommand(
                     environmentVariable,
                     stored.Status == SecretStoreReadStatus.Ok,
                     !string.IsNullOrWhiteSpace(webResearch.CredentialEnvironmentVariable),
-                    stored.Status == SecretStoreReadStatus.Corrupted,
+                    stored.Status is SecretStoreReadStatus.Corrupted or SecretStoreReadStatus.Unreadable,
                     stored.Status switch
                     {
                         SecretStoreReadStatus.Ok => "set in the secure store (value not shown)",
                         SecretStoreReadStatus.Corrupted =>
                             "stored but undecryptable; re-run 'arcanum setup' or "
                             + "'arcanum key provider set perplexity'",
+                        SecretStoreReadStatus.Unreadable =>
+                            "stored but unreadable; make the mirror file an owner-only regular file and retry",
                         _ => "not set",
                     }));
             }

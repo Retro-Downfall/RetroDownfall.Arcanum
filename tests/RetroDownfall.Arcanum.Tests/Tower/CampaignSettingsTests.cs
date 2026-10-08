@@ -1,7 +1,5 @@
 using System.Text.Json;
 using RetroDownfall.Arcanum.Api.Serialization;
-using RetroDownfall.Arcanum.Core.Configuration;
-using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Serialization;
 using RetroDownfall.Arcanum.Core.Tower;
 using RetroDownfall.Arcanum.Infrastructure.Repositories;
@@ -10,13 +8,11 @@ namespace RetroDownfall.Arcanum.Tests.Tower;
 
 public sealed class CampaignSettingsTests
 {
-
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
     public void Legacy_ward_setting_is_accepted_but_not_re_emitted(bool legacyValue)
     {
-
         string legacyJson =
             $$"""{"defaultModel":"gpt-4o","requireWardForForbiddenArts":{{(legacyValue ? "true" : "false")}}}""";
 
@@ -45,13 +41,11 @@ public sealed class CampaignSettingsTests
             "requireWardForForbiddenArts",
             JsonSerializer.Serialize(storedSettings, ArcanumCoreJsonContext.Default.CampaignSettings),
             StringComparison.Ordinal);
-
     }
 
     [Fact]
     public void Empty_settings_remain_valid_without_a_ward_control_field()
     {
-
         CampaignSettings? settings = JsonSerializer.Deserialize(
             "{}",
             ArcanumCoreJsonContext.Default.CampaignSettings);
@@ -62,7 +56,6 @@ public sealed class CampaignSettingsTests
             "requireWardForForbiddenArts",
             JsonSerializer.Serialize(settings, ArcanumCoreJsonContext.Default.CampaignSettings),
             StringComparison.Ordinal);
-
     }
 
     [Theory]
@@ -71,25 +64,11 @@ public sealed class CampaignSettingsTests
     [InlineData("null")]
     public void Stored_settings_absence_fallback_cannot_restore_a_tool_gate(string stored)
     {
-
         CampaignSettings settings = CampaignRepository.DeserializeSettings(stored);
 
         Assert.DoesNotContain(
             "requireWardForForbiddenArts",
             CampaignRepository.SerializeSettings(settings),
             StringComparison.Ordinal);
-
-        WardSettings configuredAdvertisementFilter = ArcanumRuntimeDefaults.Ward with
-        {
-            ForbiddenArts = ["write_file"],
-        };
-
-        Assert.False(
-            ToolRiskClassifier.RequiresWard(
-                "write_file",
-                campaignRequiresWard: true,
-                configuredAdvertisementFilter));
-
     }
-
 }

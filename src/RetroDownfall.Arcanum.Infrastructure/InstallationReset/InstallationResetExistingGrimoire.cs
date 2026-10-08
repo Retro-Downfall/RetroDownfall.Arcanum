@@ -4,6 +4,8 @@ using Microsoft.Data.Sqlite;
 
 using Microsoft.EntityFrameworkCore;
 
+using Microsoft.Extensions.DependencyInjection;
+
 using Microsoft.Extensions.Logging;
 
 using Microsoft.Extensions.Options;
@@ -31,8 +33,14 @@ using RetroDownfall.Arcanum.Infrastructure.Security;
 
 namespace RetroDownfall.Arcanum.Infrastructure.InstallationReset;
 
+/// <param name="secretStoreProvider">
+/// Resolved at first use on purpose. Creating the secret store creates the Data Protection key
+/// ring, and the planning and lockless-refusal paths have to work on an installation that has no
+/// Grimoire without leaving a directory behind; the store is resolved only once an existing
+/// database is about to be opened.
+/// </param>
 internal sealed class InstallationResetExistingGrimoire(
-    DataProtectionSecretStore secretStore,
+    IServiceProvider secretStoreProvider,
     ArcanumSettings settings,
     TimeProvider timeProvider,
     ILoggerFactory loggerFactory,
@@ -176,7 +184,8 @@ internal sealed class InstallationResetExistingGrimoire(
                 return await retention.ApplyAsync(request, token)
                     .ConfigureAwait(false);
             },
-            cancellationToken);
+            cancellationToken,
+            actionMayChangeState: true);
     }
 
     public Task<Result<InstallationResetWorkspaceResolution>> ResolveAsync(
@@ -317,7 +326,8 @@ internal sealed class InstallationResetExistingGrimoire(
             ArcanumDbContext,
             CancellationToken,
             Task<Result<T>>> action,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool actionMayChangeState = false)
     {
         ArgumentNullException.ThrowIfNull(issuer);
 
@@ -330,12 +340,18 @@ internal sealed class InstallationResetExistingGrimoire(
             return Unavailable<T>();
         }
 
+        // Set the moment the action is about to run. Everything before it - reading the sidecar and the
+        // secret, minting the authority, opening the lease - has changed nothing, so a failure there is
+        // an honest "inventory unavailable". Everything from it on may have committed.
+        bool actionStarted = false;
+
         try
         {
             GrimoireKdfSidecar sidecar = GrimoireKdfSidecarFile.Read(
                 databasePath);
 
-            SecretStoreReadResult secret = await secretStore
+            SecretStoreReadResult secret = await secretStoreProvider
+                .GetRequiredService<DataProtectionSecretStore>()
                 .GetGrimoireEncryptionSecretReadResultAsync()
                 .ConfigureAwait(false);
 
@@ -384,7 +400,7 @@ internal sealed class InstallationResetExistingGrimoire(
 
             await using ArcanumDbContext context = new(
                 options,
-                secretStore,
+                secretStoreProvider.GetRequiredService<DataProtectionSecretStore>(),
                 passphraseSource);
 
             LongRunningOperationStore operations = new(
@@ -407,6 +423,8 @@ internal sealed class InstallationResetExistingGrimoire(
                     new ArtifactSensitivityLedger(covenantConnections),
                     loggerFactory.CreateLogger<CovenantLabeledArtifactGuard>()));
 
+            actionStarted = true;
+
             return await action(
                 retention,
                 operations,
@@ -426,7 +444,13 @@ internal sealed class InstallationResetExistingGrimoire(
                 or SqliteException
                 or CryptographicException)
         {
-            return Unavailable<T>();
+            // An action that can change state and then fails is not "inventory unavailable": that code
+            // is the caller's signal that nothing ran, and the installation reset service retires its
+            // record on it. A resumed Workspace reset deletes inside the action, then reads the
+            // operation row back and finishes it, so any of those reads can fail after the deletion.
+            return actionStarted && actionMayChangeState
+                ? OutcomeUnconfirmed<T>()
+                : Unavailable<T>();
         }
     }
 
@@ -876,6 +900,11 @@ internal sealed class InstallationResetExistingGrimoire(
         Result<T>.Failure(new Error(
             ErrorCodes.Data.InventoryUnavailable,
             "The existing Grimoire could not be opened without creating or repairing state."));
+
+    private static Result<T> OutcomeUnconfirmed<T>() =>
+        Result<T>.Failure(new Error(
+            ErrorCodes.Data.RecoveryRequired,
+            "The canonical data reset outcome could not be confirmed and requires recovery."));
 
     private static Result<HostProcessToolsDatabaseMarkerEvidence>
         HostProcessToolsEvidenceUnavailable() =>

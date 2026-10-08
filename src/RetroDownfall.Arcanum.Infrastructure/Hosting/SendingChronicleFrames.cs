@@ -1,6 +1,7 @@
 using System.Text.Json;
 
 using RetroDownfall.Arcanum.Core.Conclave;
+using RetroDownfall.Arcanum.Infrastructure.Mcp;
 using RetroDownfall.Arcanum.Infrastructure.Mcp.Protocol;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Hosting;
@@ -15,7 +16,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.Hosting;
 /// </remarks>
 internal static class SendingChronicleFrames
 {
-
     private const string Outbound = "outbound";
 
     /// <summary>
@@ -27,29 +27,22 @@ internal static class SendingChronicleFrames
         string resultText,
         DateTimeOffset fallbackNow)
     {
-
         DispatchSendingResultWire? payload;
 
         try
         {
-
             payload = JsonSerializer.Deserialize(
                 resultText.Trim(),
                 McpJsonSerializerContext.Default.DispatchSendingResultWire);
-
         }
         catch (JsonException)
         {
-
             return [];
-
         }
 
         if (payload is null)
         {
-
             return [];
-
         }
 
         // Distinct instants, not one shared `now`: collapsing them onto a single timestamp made remote
@@ -80,7 +73,7 @@ internal static class SendingChronicleFrames
                 Timestamp = settledAt,
                 Description = payload.AgentUrl,
                 Summary = payload.TaskId,
-                Result = payload.Response,
+                Result = Unframed(payload.Response),
                 DurationMs = remoteDurationMs,
                 SendingDirection = Outbound,
                 SendingState = payload.ContinuationTaskId is null
@@ -99,7 +92,7 @@ internal static class SendingChronicleFrames
                 Timestamp = settledAt,
                 Description = payload.AgentUrl,
                 Summary = payload.TaskId,
-                Error = payload.Error,
+                Error = Unframed(payload.Error),
                 DurationMs = remoteDurationMs,
                 SendingDirection = Outbound,
                 RemoteCostKnown = payload.CostKnown,
@@ -108,7 +101,12 @@ internal static class SendingChronicleFrames
             };
 
         return [dispatched, terminal];
-
     }
 
+    // The tool result frames the peer's text for the model, which is the only reader that frame is for. The
+    // Chronicle is operator-facing, so it carries the text itself; a failure Arcanum authored itself (a
+    // transport error, say) would otherwise read as "untrusted content from <peer>". Text that is not one
+    // of the server's own frames passes through untouched.
+    private static string? Unframed(string? text) =>
+        text is null ? null : ArcanumInternalToolServer.UnframeUntrustedRemoteText(text);
 }

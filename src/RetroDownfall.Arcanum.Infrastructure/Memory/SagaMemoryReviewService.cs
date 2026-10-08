@@ -7,6 +7,7 @@ using System.Text;
 
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Microsoft.Extensions.AI;
 
@@ -31,7 +32,8 @@ internal sealed class SagaMemoryReviewService(
     IOptionsMonitor<ArcanumSettings> options,
     IMemoryErasureKeyProvider erasureKeys,
     IOperatorAuthorityContextIssuer releaseAuthority,
-    TimeProvider timeProvider) : ISagaMemoryReviewService
+    TimeProvider timeProvider,
+    ILogger<SagaMemoryReviewService> logger) : ISagaMemoryReviewService
 {
     private static readonly Error InvalidToken = new(
         ErrorCodes.MemoryReview.InvalidToken,
@@ -52,6 +54,10 @@ internal sealed class SagaMemoryReviewService(
     private static readonly Error RequestReuse = new(
         ErrorCodes.MemoryReview.RequestReuse,
         "This memory-review request identity already belongs to a different decision set.");
+
+    private static readonly Error WriteFailed = new(
+        ErrorCodes.Saga.WriteFailed,
+        "The Saga review decisions could not be persisted. Nothing was written.");
 
     public async Task<Result<SagaReviewPageDto>> ListAsync(
         SagaReviewListRequest request,
@@ -407,6 +413,41 @@ internal sealed class SagaMemoryReviewService(
     {
         ArgumentNullException.ThrowIfNull(request);
 
+        try
+        {
+            return await ApplyCoreAsync(request, cancellationToken).ConfigureAwait(false);
+        }
+        catch (InvalidDataException failure)
+        {
+            // Persisted state the review depends on is missing (a head update that produced no review
+            // event, a marker that cannot be reread). A retry cannot succeed, which is the one thing the
+            // operator needs to know and the write-failed answer would hide. The transaction already
+            // rolled back, and the line is as content-free as the other arm.
+            logger.LogError(
+                "Saga memory review apply found damaged review state: {FailureType}.",
+                failure.GetType());
+
+            return Result<MemoryReviewBulkResultDto>.Failure(IntegrityFailure);
+        }
+        catch (Exception failure) when (failure is not OperationCanceledException
+            and not GrimoireMaintenanceUnavailableException)
+        {
+            // A storage fault inside the transaction already rolled it back. Mapped here, the way Lexicon
+            // maps its own, so the host reports this store's code instead of a bare 500. Logged by type
+            // and error code only: a driver message can carry what it was trying to write.
+            logger.LogError(
+                "Saga memory review apply failed: {FailureType} (SQLite error {SqliteErrorCode}).",
+                failure.GetType(),
+                (failure as SqliteException)?.SqliteErrorCode);
+
+            return Result<MemoryReviewBulkResultDto>.Failure(WriteFailed);
+        }
+    }
+
+    private async Task<Result<MemoryReviewBulkResultDto>> ApplyCoreAsync(
+        SagaReviewBulkApplyRequest request,
+        CancellationToken cancellationToken)
+    {
         Result validation = request.Validate();
 
         if (validation.IsFailure)
@@ -737,7 +778,7 @@ internal sealed class SagaMemoryReviewService(
             case MemoryReviewAction.Correct:
                 if (ReplacesNothing(target, decision))
                 {
-                    outcome = nameof(SagaCurationOutcomeKind.Unchanged);
+                    outcome = MemoryReviewOutcomes.Unchanged;
 
                     break;
                 }
@@ -793,7 +834,7 @@ internal sealed class SagaMemoryReviewService(
                 }
                 else
                 {
-                    outcome = nameof(SagaCurationOutcomeKind.AlreadyRetired);
+                    outcome = MemoryReviewOutcomes.AlreadyRetired;
                 }
 
                 break;
@@ -1045,23 +1086,14 @@ internal sealed class SagaMemoryReviewService(
             : Convert.ToInt64(value, CultureInfo.InvariantCulture);
     }
 
-    private static string Outcome(MemoryReviewAction action) =>
-        action switch
-        {
-            MemoryReviewAction.Confirm => "Confirmed",
-            MemoryReviewAction.Correct => "Corrected",
-            MemoryReviewAction.Retire => "Retired",
-            MemoryReviewAction.Pin => "Pinned",
-            MemoryReviewAction.Unpin => "Unpinned",
-            _ => throw new ArgumentOutOfRangeException(nameof(action)),
-        };
+    private static string Outcome(MemoryReviewAction action) => MemoryReviewOutcomes.Applied(action);
 
     private static bool IsExpectedOutcome(MemoryReviewAction action, string outcome) =>
         string.Equals(outcome, Outcome(action), StringComparison.Ordinal)
         || action == MemoryReviewAction.Correct
-            && string.Equals(outcome, nameof(SagaCurationOutcomeKind.Unchanged), StringComparison.Ordinal)
+            && string.Equals(outcome, MemoryReviewOutcomes.Unchanged, StringComparison.Ordinal)
         || action == MemoryReviewAction.Retire
-            && string.Equals(outcome, nameof(SagaCurationOutcomeKind.AlreadyRetired), StringComparison.Ordinal);
+            && string.Equals(outcome, MemoryReviewOutcomes.AlreadyRetired, StringComparison.Ordinal);
 
     private static async Task<long> ComputeReviewedThroughAsync(
         DbConnection connection,
@@ -1538,6 +1570,15 @@ internal sealed class SagaMemoryReviewService(
                 Replayed: true));
     }
 
+    /// <summary>The one statement that finds every receipt of one request, as the service runs it.</summary>
+    internal const string ReceiptLookupSql =
+        """
+        SELECT DecisionId, ReviewEventSequence, RequestIdempotencyDigest, ResponseReceiptDigest
+        FROM annal_review_decision_receipts
+        WHERE DecisionId >= @prefix AND DecisionId < @prefixUpper
+        ORDER BY DecisionId
+        """;
+
     private static async Task<List<StoredReceipt>> ReadReceiptsAsync(
         DbConnection connection,
         DbTransaction? transaction,
@@ -1548,17 +1589,11 @@ internal sealed class SagaMemoryReviewService(
 
         command.Transaction = transaction;
 
-        command.CommandText =
-            """
-            SELECT DecisionId, ReviewEventSequence, RequestIdempotencyDigest, ResponseReceiptDigest
-            FROM annal_review_decision_receipts
-            WHERE substr(DecisionId, 1, length(@prefix)) = @prefix
-            ORDER BY DecisionId
-            """;
+        command.CommandText = ReceiptLookupSql;
 
-        string prefix = requestId.ToString("N", CultureInfo.InvariantCulture) + ":";
+        AddParameter(command, "@prefix", MemoryReviewReceiptKeys.Prefix(requestId));
 
-        AddParameter(command, "@prefix", prefix);
+        AddParameter(command, "@prefixUpper", MemoryReviewReceiptKeys.UpperBound(requestId));
 
         List<StoredReceipt> receipts = [];
 

@@ -350,6 +350,160 @@ public sealed class CampaignCommandTests
     }
 
     /// <summary>
+    /// R-327: <c>export --output</c> over an existing file asks first, like <c>file download</c>, and a
+    /// refusal leaves the file untouched.
+    /// </summary>
+    [Fact]
+    public void Export_prompts_before_overwriting_an_existing_output_file()
+    {
+        string output = Path.Combine(
+            Path.GetTempPath(),
+            $"arcanum-campaign-export-{Guid.NewGuid():N}.json");
+
+        File.WriteAllText(output, "original");
+
+        try
+        {
+            RecordingPrompt prompt = new(answer: false);
+
+            RecordingHandler handler = new(_ => CampaignExportResponse());
+
+            CliTestResult result = RunCommand(
+                handler,
+                ["campaign", "export", SampleId.ToString(), "--output", output],
+                configureServices: services => UsePrompt(services, prompt));
+
+            Assert.Equal(0, result.ExitCode);
+
+            // The overwrite question is settled before the export is fetched, so a refusal costs no request.
+            Assert.Empty(handler.Requests);
+
+            Assert.Equal("original", File.ReadAllText(output));
+
+            string question = Assert.Single(prompt.Questions);
+
+            Assert.Contains(Path.GetFullPath(output), question, StringComparison.Ordinal);
+        }
+        finally
+        {
+            File.Delete(output);
+        }
+    }
+
+    [Fact]
+    public void Export_replaces_an_existing_output_file_once_confirmed_and_leaves_no_temporary_sibling()
+    {
+        string directory = Path.Combine(
+            Path.GetTempPath(),
+            $"arcanum-campaign-export-dir-{Guid.NewGuid():N}");
+
+        Directory.CreateDirectory(directory);
+
+        string output = Path.Combine(directory, "campaign.json");
+
+        File.WriteAllText(output, "original");
+
+        try
+        {
+            CliTestResult result = RunCommand(
+                new RecordingHandler(_ => CampaignExportResponse()),
+                ["--yes", "campaign", "export", SampleId.ToString(), "--output", output]);
+
+            Assert.Equal(0, result.ExitCode);
+
+            Assert.Contains("\"campaign\"", File.ReadAllText(output), StringComparison.OrdinalIgnoreCase);
+
+            Assert.Equal(
+                ["campaign.json"],
+                Directory.GetFileSystemEntries(directory).Select(Path.GetFileName));
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    /// <summary>
+    /// R-327: an <c>--output</c> that cannot be written is found before the export is fetched, with the same
+    /// exit code and wording as a write that fails afterwards.
+    /// </summary>
+    [Fact]
+    public void Export_to_an_unwritable_destination_fails_before_the_export_is_fetched()
+    {
+        string output = Path.Combine(
+            Path.GetTempPath(),
+            $"arcanum-campaign-export-missing-{Guid.NewGuid():N}",
+            "campaign.json");
+
+        RecordingHandler handler = new(_ => CampaignExportResponse());
+
+        CliTestResult result = RunCommand(
+            handler,
+            ["campaign", "export", SampleId.ToString(), "--output", output]);
+
+        Assert.Equal(1, result.ExitCode);
+
+        Assert.Empty(handler.Requests);
+
+        Assert.Contains("Could not write", result.Error, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Export_over_an_existing_file_refuses_a_non_interactive_run_without_yes()
+    {
+        string output = Path.Combine(
+            Path.GetTempPath(),
+            $"arcanum-campaign-export-json-{Guid.NewGuid():N}.json");
+
+        File.WriteAllText(output, "original");
+
+        try
+        {
+            CliTestResult result = RunCommand(
+                new RecordingHandler(_ => CampaignExportResponse()),
+                ["--json", "campaign", "export", SampleId.ToString(), "--output", output]);
+
+            Assert.Equal((int)CliExitCode.ConfigurationError, result.ExitCode);
+
+            Assert.Equal("original", File.ReadAllText(output));
+
+            Assert.Contains("--yes", result.Error, StringComparison.Ordinal);
+        }
+        finally
+        {
+            File.Delete(output);
+        }
+    }
+
+    private static HttpResponseMessage CampaignExportResponse()
+    {
+        CampaignDto campaign = new(SampleId, "Demo", "/tmp/demo", WorkspaceType.Campaign, null, CampaignSettings.CreateDefault(), DateTimeOffset.UtcNow, DateTimeOffset.UtcNow);
+
+        return CreateResponse(
+            new ApiResponse<CampaignExportDto>(new CampaignExportDto(campaign, [], []), true, null),
+            ArcanumJsonContext.Default.ApiResponseCampaignExportDto);
+    }
+
+    private static void UsePrompt(ServiceCollection services, IConfirmationPrompt prompt)
+    {
+        services.RemoveAll<IConfirmationPrompt>();
+
+        services.AddSingleton(prompt);
+    }
+
+    private sealed class RecordingPrompt(bool answer) : IConfirmationPrompt
+    {
+        public List<string> Questions { get; } = [];
+
+        public Task<bool> PromptForConfirmationAsync(string question, CancellationToken cancellationToken)
+        {
+            Questions.Add(question);
+
+            return Task.FromResult(answer);
+        }
+    }
+
+    /// <summary>
     /// Every direct command answers <c>--json</c> with exactly one JSON document on stdout. These two
     /// listings rendered a Spectre table in every mode, so an automation caller received a box-drawn
     /// grid where its parser expected a document — and, with the table laid out at the redirected
@@ -387,6 +541,102 @@ public sealed class CampaignCommandTests
         Assert.Equal(session.Id, Assert.Single(emitted).Id);
     }
 
+    /// <summary>
+    /// A Session title is model-authored, and Markup escaping does not remove the control sequences a
+    /// terminal acts on, so the table strips them.
+    /// </summary>
+    [Fact]
+    public void Campaign_sessions_strips_terminal_controls_from_titles()
+    {
+        SessionSummaryDto session = new(
+            SampleId,
+            SampleId,
+            "ok\u001b]52;c;QUFBQQ==\u0007title\u001b[2J\u009b",
+            "active",
+            3,
+            DateTimeOffset.UnixEpoch,
+            DateTimeOffset.UnixEpoch);
+
+        RecordingHandler handler = new(_ => CreateResponse(
+            new ApiResponse<SessionQueryResult>(
+                new SessionQueryResult([session], null, false),
+                true,
+                null),
+            ArcanumJsonContext.Default.ApiResponseSessionQueryResult));
+
+        CliTestResult result = RunCommand(handler, ["campaign", "sessions", SampleId.ToString()]);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Contains("oktitle", result.Output, StringComparison.Ordinal);
+        Assert.DoesNotContain('\u001b', result.Output);
+        Assert.DoesNotContain('\u0007', result.Output);
+    }
+
+    /// <summary>
+    /// <c>--json</c> writes one host page as a bare array. When the host holds more, a script must be told
+    /// so, and told where the next page starts: otherwise a partial listing reads as a complete one. The
+    /// notice goes to stderr so the stdout document stays one array.
+    /// </summary>
+    [Fact]
+    public void Campaign_sessions_under_json_says_on_stderr_when_more_sessions_remain()
+    {
+        DateTimeOffset cursor = new(2026, 9, 1, 12, 0, 0, TimeSpan.Zero);
+        SessionSummaryDto session = new(
+            SampleId,
+            SampleId,
+            "Session title",
+            "active",
+            3,
+            DateTimeOffset.UnixEpoch,
+            cursor.AddMinutes(5));
+
+        RecordingHandler handler = new(_ => CreateResponse(
+            new ApiResponse<SessionQueryResult>(
+                new SessionQueryResult([session], cursor, true),
+                true,
+                null),
+            ArcanumJsonContext.Default.ApiResponseSessionQueryResult));
+
+        CliTestResult result = RunCommand(handler, ["--json", "campaign", "sessions", SampleId.ToString()]);
+
+        Assert.Equal(0, result.ExitCode);
+        SessionSummaryDto[]? emitted = JsonSerializer.Deserialize(
+            result.Output,
+            ArcanumJsonContext.Default.SessionSummaryDtoArray);
+        Assert.NotNull(emitted);
+        Assert.Single(emitted);
+        Assert.Contains("--before-updated-at", result.Error, StringComparison.Ordinal);
+        Assert.Contains(cursor.ToString("O"), result.Error, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// A complete listing under <c>--json</c> says nothing on stderr.
+    /// </summary>
+    [Fact]
+    public void Campaign_sessions_under_json_is_silent_on_stderr_when_the_page_is_complete()
+    {
+        SessionSummaryDto session = new(
+            SampleId,
+            SampleId,
+            "Session title",
+            "active",
+            3,
+            DateTimeOffset.UnixEpoch,
+            DateTimeOffset.UnixEpoch);
+
+        RecordingHandler handler = new(_ => CreateResponse(
+            new ApiResponse<SessionQueryResult>(
+                new SessionQueryResult([session], null, false),
+                true,
+                null),
+            ArcanumJsonContext.Default.ApiResponseSessionQueryResult));
+
+        CliTestResult result = RunCommand(handler, ["--json", "campaign", "sessions", SampleId.ToString()]);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.DoesNotContain("--before-updated-at", result.Error, StringComparison.Ordinal);
+    }
+
     [Fact]
     public void Campaign_prompts_under_json_emits_one_document_rather_than_a_table()
     {
@@ -417,6 +667,109 @@ public sealed class CampaignCommandTests
         Assert.NotNull(emitted);
 
         Assert.Equal(prompt.Name, Assert.Single(emitted).Name);
+    }
+
+    /// <summary>
+    /// The host serves campaigns one page at a time and names the rest in <c>nextOffset</c>. A list that
+    /// stopped at the first page looked complete on the registry an operator reads before deleting.
+    /// </summary>
+    [Fact]
+    public void List_follows_hasMore_until_exhausted()
+    {
+        CampaignDto first = new(SampleId, "First-page-campaign", "/tmp/one", WorkspaceType.Campaign, null, CampaignSettings.CreateDefault(), DateTimeOffset.UtcNow, DateTimeOffset.UtcNow);
+
+        CampaignDto second = new(Guid.NewGuid(), "Second-page-campaign", "/tmp/two", WorkspaceType.Campaign, null, CampaignSettings.CreateDefault(), DateTimeOffset.UtcNow, DateTimeOffset.UtcNow);
+
+        RecordingHandler handler = new(request => CreateResponse(
+            new ApiResponse<ListPageResult<CampaignDto>>(
+                request.RequestUri!.Query.Contains("offset=1", StringComparison.Ordinal)
+                    ? new ListPageResult<CampaignDto>([second], false)
+                    : new ListPageResult<CampaignDto>([first], true, NextOffset: 1),
+                true,
+                null),
+            ArcanumJsonContext.Default.ApiResponseListPageResultCampaignDto));
+
+        CliTestResult result = RunCommand(handler, ["campaign", "list"]);
+
+        Assert.Equal(0, result.ExitCode);
+
+        Assert.Equal(2, handler.Requests.Count);
+
+        Assert.Contains("offset=1", handler.Requests[1].RequestUri!.Query, StringComparison.Ordinal);
+
+        Assert.Contains("First-page-campaign", result.Output, StringComparison.Ordinal);
+
+        Assert.Contains("Second-page-campaign", result.Output, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void List_fails_without_a_partial_table_when_the_host_repeats_its_offset()
+    {
+        CampaignDto row = new(SampleId, "Looping-campaign", "/tmp/one", WorkspaceType.Campaign, null, CampaignSettings.CreateDefault(), DateTimeOffset.UtcNow, DateTimeOffset.UtcNow);
+
+        RecordingHandler handler = new(_ => CreateResponse(
+            new ApiResponse<ListPageResult<CampaignDto>>(
+                new ListPageResult<CampaignDto>([row], true, NextOffset: 1),
+                true,
+                null),
+            ArcanumJsonContext.Default.ApiResponseListPageResultCampaignDto));
+
+        CliTestResult result = RunCommand(handler, ["campaign", "list"]);
+
+        Assert.Equal((int)CliExitCode.GenericError, result.ExitCode);
+
+        Assert.Contains("Api.PaginationNoProgress", result.Error, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("Looping-campaign", result.Output, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Prompts_follows_hasMore_until_exhausted()
+    {
+        PromptSummaryDto first = new(Guid.NewGuid(), SampleId, "first-page-prompt", "1", null, [], DateTimeOffset.UtcNow);
+
+        PromptSummaryDto second = new(Guid.NewGuid(), SampleId, "second-page-prompt", "1", null, [], DateTimeOffset.UtcNow);
+
+        RecordingHandler handler = new(request => CreateResponse(
+            new ApiResponse<ListPageResult<PromptSummaryDto>>(
+                request.RequestUri!.Query.Contains("offset=1", StringComparison.Ordinal)
+                    ? new ListPageResult<PromptSummaryDto>([second], false)
+                    : new ListPageResult<PromptSummaryDto>([first], true, NextOffset: 1),
+                true,
+                null),
+            ArcanumJsonContext.Default.ApiResponseListPageResultPromptSummaryDto));
+
+        CliTestResult result = RunCommand(handler, ["--json", "campaign", "prompts", SampleId.ToString()]);
+
+        Assert.Equal(0, result.ExitCode);
+
+        Assert.Equal(2, handler.Requests.Count);
+
+        Assert.Equal($"/api/campaigns/{SampleId:D}/prompts", handler.Requests[1].RequestUri!.AbsolutePath);
+
+        Assert.Contains("offset=1", handler.Requests[1].RequestUri!.Query, StringComparison.Ordinal);
+
+        using JsonDocument document = JsonDocument.Parse(result.Output);
+
+        Assert.Equal(2, document.RootElement.GetArrayLength());
+    }
+
+    /// <summary>
+    /// An update that names nothing to change is not a success: it used to send an empty update and print
+    /// "Campaign updated", so a mistyped or forgotten option looked applied.
+    /// </summary>
+    [Fact]
+    public void Update_without_any_field_exits_2_and_sends_nothing()
+    {
+        RecordingHandler handler = new();
+
+        CliTestResult result = RunCommand(handler, ["campaign", "update", SampleId.ToString()]);
+
+        Assert.Equal((int)CliExitCode.ConfigurationError, result.ExitCode);
+
+        Assert.Empty(handler.Requests);
+
+        Assert.Contains("--name", result.Error, StringComparison.Ordinal);
     }
 
     private static CliTestResult RunCommand(

@@ -8,7 +8,6 @@ namespace RetroDownfall.Arcanum.Cli.Infrastructure;
 
 internal static partial class CliCommandTree
 {
-
     /// <summary>
     /// Builds the completion family. The surface map is captured lazily from the same root the
     /// parser uses, so a generated script can never describe a tree the binary does not have.
@@ -17,8 +16,7 @@ internal static partial class CliCommandTree
         IServiceProvider serviceProvider,
         Func<CliSurfaceMap> surface)
     {
-
-        CompletionCommands handler = serviceProvider.GetRequiredService<CompletionCommands>();
+        DeferredHandler<CompletionCommands> handler = new(serviceProvider);
 
         Command completion = new(
             "completion",
@@ -33,7 +31,7 @@ internal static partial class CliCommandTree
         completion.Add(shell);
 
         completion.SetAction((ParseResult result) =>
-            handler.Generate(result.GetValue(shell), surface()));
+            handler.Value.Generate(result.GetValue(shell), surface()));
 
         Command install = new(
             "install",
@@ -43,9 +41,7 @@ internal static partial class CliCommandTree
 
         Option<string?> target = new("--target")
         {
-
             Description = "Explicit destination path; defaults to the shell's conventional per-user completion location.",
-
         };
 
         install.Add(installShell);
@@ -54,7 +50,7 @@ internal static partial class CliCommandTree
 
         install.SetAction(
             async (ParseResult result, CancellationToken cancellationToken) =>
-                await handler
+                await handler.Value
                     .InstallAsync(
                         result.GetValue(installShell)!,
                         result.GetValue(target),
@@ -71,16 +67,12 @@ internal static partial class CliCommandTree
             "resolve",
             "Resolve one safe dynamic completion source for the generated shell scripts.")
         {
-
             Hidden = true,
-
         };
 
         Argument<string> provider = new("provider")
         {
-
             Description = "Completion source id emitted by the generated script.",
-
         };
 
         provider.AcceptOnlyFromAmong(CliCompletionProviders.All);
@@ -89,48 +81,39 @@ internal static partial class CliCommandTree
 
         resolve.SetAction(
             async (ParseResult result, CancellationToken cancellationToken) =>
-                await handler
+                await handler.Value
                     .ResolveAsync(result.GetValue(provider)!, cancellationToken)
                     .ConfigureAwait(false));
 
         completion.Add(resolve);
 
         return completion;
-
     }
 
     private static Argument<string> ShellArgument()
     {
-
         Argument<string> shell = new("shell")
         {
-
             Description = "Target shell: bash, zsh, fish, or powershell.",
-
         };
 
         shell.AcceptOnlyFromAmong(CliCompletionShells.Names);
 
         return shell;
-
     }
 
     private static Argument<string?> OptionalShellArgument()
     {
-
         Argument<string?> shell = new("shell")
         {
-
             Arity = ArgumentArity.ZeroOrOne,
 
             Description = "Target shell: bash, zsh, fish, or powershell.",
-
         };
 
         shell.AcceptOnlyFromAmong(CliCompletionShells.Names);
 
         return shell;
-
     }
 
     /// <summary>
@@ -140,8 +123,7 @@ internal static partial class CliCommandTree
     /// </summary>
     private static Command BuildHelpTopics(IServiceProvider serviceProvider)
     {
-
-        HelpTopicCommands handler = serviceProvider.GetRequiredService<HelpTopicCommands>();
+        DeferredHandler<HelpTopicCommands> handler = new(serviceProvider);
 
         Command help = new(
             "help",
@@ -149,11 +131,9 @@ internal static partial class CliCommandTree
 
         Argument<string?> topic = new("topic")
         {
-
             Arity = ArgumentArity.ZeroOrOne,
 
             Description = $"Topic name; omit to list every topic. Available: {string.Join(", ", HelpTopics.Names)}.",
-
         };
 
         topic.AcceptOnlyFromAmong(HelpTopics.Names);
@@ -161,10 +141,8 @@ internal static partial class CliCommandTree
         help.Add(topic);
 
         help.SetAction((ParseResult result) =>
-            handler.Show(result.GetValue(topic)));
+            handler.Value.Show(result.GetValue(topic)));
 
         return help;
-
     }
-
 }

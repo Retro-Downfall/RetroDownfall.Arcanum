@@ -1,6 +1,12 @@
+using System.Reflection;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using System.Xml.Linq;
+
+using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
 
 using Xunit;
 
@@ -32,7 +38,7 @@ public sealed class ContinuousIntegrationWorkflowTests
 
             Assert.False(lane.IsConditional);
 
-            Assert.Contains("dotnet-version: \"10.0.401\"", lane.Body, StringComparison.Ordinal);
+            Assert.Contains(PinnedSdkInput, lane.Body, StringComparison.Ordinal);
 
             Assert.Contains("--configuration Release", lane.Body, StringComparison.Ordinal);
 
@@ -171,6 +177,13 @@ public sealed class ContinuousIntegrationWorkflowTests
             "Platform.WindowsJobObjectSessionTests",
             "Process.WindowsAppContainerPolicyTests",
             "Process.WindowsAppContainerRestoreJournalTests",
+            "Process.WindowsAppContainerBrokerTests",
+            "Process.WindowsAppContainerAclTests",
+            "Process.WindowsBrokerTargetResolverTests",
+            "Process.ChildProcessSandboxRootsTests",
+            "Process.WindowsAppContainerJobAssignmentTests",
+            "Process.WindowsAppContainerBrokerExitTests",
+            "Process.WindowsAppContainerRootLockBudgetTests",
             "Process.ChildProcessBoundaryBehaviorTests",
             "Process.ChildProcessFilesystemJailTests",
             "Familiars.FamiliarExecutableResolverTests",
@@ -194,6 +207,41 @@ public sealed class ContinuousIntegrationWorkflowTests
             "Storage.AtomicFileTests.ReplaceAsync_rejects_existing_file_with_multiple_hard_links",
             "Mcp.FileHandleIdentityTests.TryGetPathMetadata_hard_link_reports_multiple_links",
             "Configuration.ConfigurationPresetPersistenceTests.Journal_cleanup_reports_a_denied_delete_instead_of_throwing",
+            "Cli.CliOutputFileTests.Replacing_an_existing_file_keeps_its_attributes_on_Windows",
+            "Cli.ConfigCommandTests.Cancelling_the_edit_terminates_the_spawned_editor_on_Windows",
+            "Data.GrimoireMaintenanceConnectionFactoryTests.OpenJournalCandidateReopenAsync_OpensAWindowsPathContainingSpacePercentHashAndDriveColon",
+            "Fixtures.TestDirectoryCleanupTests.TryDelete_reports_a_tree_Windows_cannot_delete_because_a_file_is_still_open",
+            "Api.WorkspaceIndexAliasEndpointTests.Indexed_alias_is_visible_without_changing_persisted_identity_or_crossing_workspace_scope",
+            "Backup.BackupCreateRecoveryHandlerTests.Windows_a_planned_checkpoint_with_an_empty_directory_readable_by_everyone_is_preserved",
+            "Backup.BackupInventoryPlannerTests.Windows_treats_a_trailing_dot_name_as_the_same_destination",
+            "Cli.CommandCenter.CommandCenterTurnAttachmentBuilderTests.Windows_a_reparse_point_that_names_no_other_location_stages",
+            "Cli.CommandCenter.CommandCenterTurnAttachmentBuilderTests.Windows_a_symbolic_link_to_a_regular_file_stages",
+            "Cli.CommandCenter.CommandCenterTurnAttachmentBuilderTests.Windows_an_ordinary_file_stages_by_at_token_and_by_attach",
+            "Cli.CommandCenter.CommandCenterTurnAttachmentBuilderTests.Windows_the_open_reads_an_ordinary_file_and_refuses_a_directory",
+            "Cli.McpWorkspacePathTests.On_Windows_a_real_path_in_another_case_and_separator_is_the_same_location",
+            "Cli.RecentResourceStoreTests.CreateStagingFile_leaves_an_empty_staging_file_owner_only_on_windows",
+            "GrimoireTransitions.GrimoireOfflineTransitionJournalFileStoreTests.Windows_exchange_by_no_replace_renames_publishes_through_the_real_primitives",
+            "Hosting.DaemonManagerTests.Windows_real_runner_install_reports_a_missing_sc_exe_as_a_start_failure_not_an_elevation_problem",
+            "Hosting.DaemonManagerTests.Windows_real_runner_install_without_an_account_refuses_without_starting_sc_exe",
+            "Hosting.DaemonManagerTests.Windows_real_runner_reports_a_start_failure_for_a_missing_sc_exe_as_a_fatal_error",
+            "Hosting.DaemonManagerTests.Windows_real_sc_exe_answers_a_query_for_a_missing_service_with_1060",
+            "Hosting.DaemonProcessRunnerTests.Windows_HungChild_AndItsGrandchild_AreKilledAtTimeout",
+            "Hosting.PidFileOwnershipTests.Windows_look_up_answers_for_the_system_process_whether_or_not_it_can_be_opened",
+            "Hosting.PidFileServiceTests.Windows_a_claim_over_a_file_with_a_pending_delete_is_retried_not_thrown",
+            "Mcp.FileHandleIdentityTests.Windows_handle_identity_is_resolved_from_FileIdInfo",
+            "Mcp.WorkspacePathPolicySymlinkTests.IsPathUnderWorkspaceWithSymlinkCheck_OnWindows_RejectsLinkWhoseTextualInterpretationEscapes",
+            "Security.DataProtectionSecretStoreTests.Windows_secret_save_leaves_the_directory_and_mirror_owner_only",
+            "Security.FileEncryptionRuntimeCompositionTests.Windows_key_ring_directory_is_created_owner_only",
+            "Security.GrimoireKdfSidecarTests.Write_preserves_the_original_failure_when_windows_refuses_the_temp_cleanup",
+            "Security.HostProcessToolsMarkerNativeCapabilityContractTests.The_windows_arm_opens_compare_deletes_and_proves_the_real_fixed_slot_absent",
+            "Security.HttpsCertificateLoaderTests.LoadPem_OnWindows_ProducesSchannelBindableCertificate",
+            "Security.HttpsCertificateLoaderTests.LoadPfx_OnWindows_ProducesSchannelBindableCertificate",
+            "Security.SecureFilePermissionsTests.CreateOwnerOnlyTempFile_is_owner_only_from_the_create_on_windows",
+            "Storage.EncryptedBlobStoreTests.Windows_streaming_writer_replaces_destination_held_open_by_reader",
+            "Weave.WorkspaceIndexingServiceTests.Dot_prefixed_entries_that_Windows_does_not_hide_are_still_never_indexed",
+            "Workspaces.PhysicalFileSystemWriterTests.Windows_lane_alias_spellings_of_protected_metadata_are_refused_and_plant_nothing",
+            "Workspaces.WorkspaceProtectedPathsTests.Windows_lane_stream_suffix_and_numbered_short_name_aliases_are_protected_on_the_host_platform",
+            "Workspaces.WorkspaceProtectedPathsTests.Windows_lane_trailing_dot_git_alias_is_protected_on_the_host_platform",
         ];
 
         string expected = string.Join('|', classes.Select(static name => "FullyQualifiedName~RetroDownfall.Arcanum.Tests." + name)
@@ -206,6 +254,466 @@ public sealed class ContinuousIntegrationWorkflowTests
         Assert.Contains("ARCANUM_TEST_OS_CREDENTIAL_STORE: true", lane.Body, StringComparison.Ordinal);
 
         Assert.Contains("FullyQualifiedName=RetroDownfall.Compendium.Ux.Tests.Compendium.ConfigurationStoreSmokeTests.WriteAsync_hardens_the_destination_that_arrived_with_loose_permissions", lane.Body, StringComparison.Ordinal);
+
+        // WindowsAppContainerBrokerTests re-executes a published apphost (the xunit host cannot be the
+        // broker) and skips when ARCANUM_PUBLISHED_EXECUTABLE is unset, so a lane that selects the class
+        // without publishing one reports a green skip. The variable is exported before the suite starts.
+        string rid = jobId == "windows-arm64-suite" ? "win-arm64" : "win-x64";
+
+        int publish = lane.Body.IndexOf("dotnet publish src/RetroDownfall.Arcanum.Cli/RetroDownfall.Arcanum.Cli.csproj", StringComparison.Ordinal);
+
+        int export = lane.Body.IndexOf("ARCANUM_PUBLISHED_EXECUTABLE=", StringComparison.Ordinal);
+
+        int suite = lane.Body.IndexOf("dotnet test tests/RetroDownfall.Arcanum.Tests/RetroDownfall.Arcanum.Tests.csproj", StringComparison.Ordinal);
+
+        Assert.True(publish >= 0, $"{jobId} selects the AppContainer broker smoke without publishing the apphost it re-executes.");
+
+        Assert.True(
+            PublishCommandNamesRuntimeIdentifier(lane.Body, publish, rid),
+            $"{jobId} publishes the apphost without `-r {rid}` on the publish command itself, so the broker smoke would re-execute the wrong architecture.");
+
+        Assert.True(export > publish, $"{jobId} must export ARCANUM_PUBLISHED_EXECUTABLE after publishing the apphost.");
+
+        Assert.True(suite > export, $"{jobId} must export ARCANUM_PUBLISHED_EXECUTABLE before the Arcanum suite starts.");
+    }
+
+    /// <summary>
+    /// The runtime identifier has to be an argument of the publish command. Checking the rest of the
+    /// lane body instead would pass a publish that lost or mis-set its <c>-r</c> as long as any later
+    /// step happened to repeat the same text.
+    /// </summary>
+    [Fact]
+    public void The_publish_runtime_identifier_check_reads_only_the_publish_command()
+    {
+        const string publishCommand = "dotnet publish src/RetroDownfall.Arcanum.Cli/RetroDownfall.Arcanum.Cli.csproj -c Release";
+
+        string laneWithRid = $"{publishCommand} -r win-x64 --self-contained true -o out\nexport ARCANUM_PUBLISHED_EXECUTABLE=out/a.exe\n";
+
+        Assert.True(PublishCommandNamesRuntimeIdentifier(laneWithRid, laneWithRid.IndexOf("dotnet publish", StringComparison.Ordinal), "win-x64"));
+
+        string laneWithoutRid = $"{publishCommand} --self-contained true -o out\n# built with -r win-x64\n";
+
+        Assert.False(
+            PublishCommandNamesRuntimeIdentifier(laneWithoutRid, laneWithoutRid.IndexOf("dotnet publish", StringComparison.Ordinal), "win-x64"),
+            "A later line that repeats the text must not satisfy the publish command.");
+
+        string laneWithWrongRid = $"{publishCommand} -r win-x64abc --self-contained true\n";
+
+        Assert.False(
+            PublishCommandNamesRuntimeIdentifier(laneWithWrongRid, laneWithWrongRid.IndexOf("dotnet publish", StringComparison.Ordinal), "win-x64"),
+            "A runtime identifier that only starts with the expected one is a different identifier.");
+
+        string laneWithContinuations = "dotnet publish src/App.csproj `\n  -c Release `\n  -r win-arm64 `\n  -o out\n";
+
+        Assert.True(PublishCommandNamesRuntimeIdentifier(laneWithContinuations, 0, "win-arm64"));
+    }
+
+    /// <summary>
+    /// Whether the command that starts at <paramref name="publishIndex"/> carries <c>-r {rid}</c> as
+    /// a whole argument. The command ends at the first line that is not continued with a trailing
+    /// backtick (PowerShell) or backslash (shell).
+    /// </summary>
+    private static bool PublishCommandNamesRuntimeIdentifier(string laneBody, int publishIndex, string rid)
+    {
+        string command = laneBody[publishIndex..]
+            .Replace("\r\n", "\n", StringComparison.Ordinal)
+            .Replace("`\n", " ", StringComparison.Ordinal)
+            .Replace("\\\n", " ", StringComparison.Ordinal);
+
+        int end = command.IndexOf('\n', StringComparison.Ordinal);
+
+        if (end >= 0)
+        {
+            command = command[..end];
+        }
+
+        return Regex.IsMatch(
+            command,
+            $@"(?<=\s)-r {Regex.Escape(rid)}(?=\s|$)",
+            RegexOptions.CultureInvariant,
+            TimeSpan.FromSeconds(5));
+    }
+
+    private const string ArcanumTestNamespacePrefix = "RetroDownfall.Arcanum.Tests.";
+
+    private const string CompendiumTestNamespacePrefix = "RetroDownfall.Compendium.Ux.Tests.";
+
+    private static readonly Regex TestFilterEntry = new(
+        @"FullyQualifiedName(?<operator>[=~])(?<name>[A-Za-z0-9_.]+)",
+        RegexOptions.CultureInvariant,
+        TimeSpan.FromSeconds(5));
+
+    /// <summary>
+    /// A <c>dotnet test --filter</c> alternative that matches nothing is not an error, so renaming a
+    /// method the Windows lane names by exact <c>FullyQualifiedName=</c> leaves the lane green while
+    /// it silently runs one test fewer. The workflow-text test above compares the workflow to a copy
+    /// of itself and cannot see that; this one resolves every exact entry in <c>ci.yml</c> against
+    /// the real test code. A Windows ACL, reparse-point, or hard-link security test can otherwise
+    /// drop out of the only Windows evidence with no signal.
+    /// </summary>
+    [Fact]
+    public void Every_exact_windows_filter_names_an_existing_test_method()
+    {
+        string repositoryRoot = FindRepositoryRoot();
+
+        string[] exactNames = FilterEntries(repositoryRoot, "=")
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+
+        Assert.NotEmpty(exactNames);
+
+        IReadOnlyList<TestMethodIdentity> arcanum = ArcanumTestMethods();
+
+        IReadOnlyList<TestMethodIdentity> compendium = CompendiumTestMethods(repositoryRoot);
+
+        List<string> offenders = [];
+
+        foreach (string name in exactNames)
+        {
+            IReadOnlyList<TestMethodIdentity> candidates = name.StartsWith(ArcanumTestNamespacePrefix, StringComparison.Ordinal)
+                ? arcanum
+                : name.StartsWith(CompendiumTestNamespacePrefix, StringComparison.Ordinal)
+                    ? compendium
+                    : [];
+
+            int matches = candidates.Count(candidate => string.Equals(candidate.FullName, name, StringComparison.Ordinal));
+
+            if (matches != 1)
+            {
+                offenders.Add($"{name} resolves to {matches} test method(s)");
+            }
+        }
+
+        Assert.True(
+            offenders.Count == 0,
+            "ci.yml selects a test by exact name that no longer resolves to exactly one [Fact], "
+            + "[SkippableFact], or [Theory], so the lane silently runs without it. Update the "
+            + "workflow and the test together:"
+            + global::System.Environment.NewLine
+            + string.Join(global::System.Environment.NewLine, offenders));
+    }
+
+    /// <summary>
+    /// The class-level counterpart: a <c>FullyQualifiedName~</c> entry whose class or method was
+    /// renamed matches nothing, and the Windows lane (or the macOS workspace-check lane) then runs
+    /// without the whole class.
+    /// </summary>
+    [Fact]
+    public void Every_contains_filter_in_ci_matches_at_least_one_test_method()
+    {
+        string repositoryRoot = FindRepositoryRoot();
+
+        string[] containsNames = FilterEntries(repositoryRoot, "~")
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+
+        Assert.NotEmpty(containsNames);
+
+        IReadOnlyList<TestMethodIdentity> arcanum = ArcanumTestMethods();
+
+        List<string> offenders = [];
+
+        foreach (string name in containsNames)
+        {
+            if (!arcanum.Any(candidate => candidate.FullName.Contains(name, StringComparison.Ordinal)))
+            {
+                offenders.Add(name);
+            }
+        }
+
+        Assert.True(
+            offenders.Count == 0,
+            "ci.yml selects tests by a name fragment that matches no test method, so the lane "
+            + "silently runs without them:"
+            + global::System.Environment.NewLine
+            + string.Join(global::System.Environment.NewLine, offenders));
+    }
+
+    /// <summary>
+    /// The converse of the two checks above. They prove every name the Windows lanes select still
+    /// resolves; nothing proved that a test which can only run on Windows is selected at all. A test
+    /// gated by <c>Skip.IfNot(OperatingSystem.IsWindows())</c> (or skipped for a case when the host
+    /// is not Windows) reports a green skip on macOS, so a Windows lane that does not select it means
+    /// no CI job ever executes it. Both Windows lanes must select every such test, by class or by
+    /// exact name.
+    /// </summary>
+    [Fact]
+    public void Every_windows_gated_test_is_selected_by_both_windows_lanes()
+    {
+        string repositoryRoot = FindRepositoryRoot();
+
+        IReadOnlyList<string> gated = WindowsGatedArcanumTestMethods(repositoryRoot);
+
+        Assert.NotEmpty(gated);
+
+        HashSet<string> known = ArcanumTestMethods()
+            .Select(static method => method.FullName)
+            .ToHashSet(StringComparer.Ordinal);
+
+        Assert.All(gated, name => Assert.Contains(name, known));
+
+        IReadOnlyList<WorkflowJob> jobs = ContinuousIntegrationJobs(repositoryRoot);
+
+        List<string> offenders = [];
+
+        foreach (string jobId in new[] { "windows-suite", "windows-arm64-suite" })
+        {
+            WorkflowJob lane = Assert.Single(jobs, job => job.Id == jobId);
+
+            string command = Assert.Single(lane.Body.Split('\n'), static line => line.Contains("Category!=HostedProducerAnalysis&(", StringComparison.Ordinal));
+
+            (string Operator, string Name)[] entries = TestFilterEntry.Matches(command)
+                .Select(static match => (match.Groups["operator"].Value, match.Groups["name"].Value))
+                .ToArray();
+
+            foreach (string name in gated)
+            {
+                bool selected = entries.Any(entry => entry.Operator == "="
+                    ? string.Equals(entry.Name, name, StringComparison.Ordinal)
+                    : name.Contains(entry.Name, StringComparison.Ordinal));
+
+                if (!selected)
+                {
+                    offenders.Add($"{jobId} does not select {name}");
+                }
+            }
+        }
+
+        Assert.True(
+            offenders.Count == 0,
+            "A test that only runs on Windows is selected by no Windows lane, so no CI job ever "
+            + "executes it. Add it to both Windows filters in ci.yml and to "
+            + nameof(Windows_runtime_selection_retains_native_security_and_operating_system_contracts)
+            + ":"
+            + global::System.Environment.NewLine
+            + string.Join(global::System.Environment.NewLine, offenders));
+    }
+
+    /// <summary>
+    /// The gate detector the test above relies on: it must see the single-line and the wrapped
+    /// <c>Skip.IfNot</c> forms and a per-case <c>Skip.If</c>, and must not mistake the opposite gate
+    /// (skip on Windows) or a mention inside a string for a Windows-only test.
+    /// </summary>
+    [Fact]
+    public void The_windows_gate_detector_recognises_only_windows_only_skips()
+    {
+        static bool Detects(string statement) =>
+            CSharpSyntaxTree.ParseText($"class C {{ void M() {{ {statement} }} }}")
+                .GetRoot()
+                .DescendantNodes()
+                .OfType<InvocationExpressionSyntax>()
+                .Any(IsWindowsOnlySkip);
+
+        Assert.True(Detects("Skip.IfNot(OperatingSystem.IsWindows(), \"reason\");"));
+
+        Assert.True(Detects("Skip.IfNot(\n    OperatingSystem.IsWindows(),\n    \"reason\");"));
+
+        Assert.True(Detects("Skip.IfNot(global::System.OperatingSystem.IsWindows());"));
+
+        Assert.True(Detects("Skip.If(alias == \"windows-case\" && !OperatingSystem.IsWindows(), \"reason\");"));
+
+        Assert.False(Detects("Skip.If(OperatingSystem.IsWindows(), \"POSIX only\");"));
+
+        Assert.False(Detects("Skip.If(\n    !OperatingSystem.IsMacOS()\n        && !OperatingSystem.IsLinux()\n        && !OperatingSystem.IsWindows(),\n    \"Unsupported operating system.\");"));
+
+        Assert.False(Detects("Skip.IfNot(OperatingSystem.IsMacOS(), \"macOS only\");"));
+
+        Assert.False(Detects("string text = \"Skip.IfNot(OperatingSystem.IsWindows())\";"));
+    }
+
+    /// <summary>
+    /// Every Arcanum test method whose body skips unless the host is Windows, named as
+    /// <c>dotnet test</c> names it (namespace, nested types joined by <c>+</c>, method).
+    /// </summary>
+    private static IReadOnlyList<string> WindowsGatedArcanumTestMethods(string repositoryRoot)
+    {
+        string directory = Path.Combine(repositoryRoot, "tests", "RetroDownfall.Arcanum.Tests");
+
+        Assert.True(Directory.Exists(directory), $"Missing Arcanum test project: {directory}");
+
+        string[] attributeNames = ["Fact", "SkippableFact", "Theory", "SkippableTheory"];
+
+        List<string> methods = [];
+
+        foreach (string file in Directory.EnumerateFiles(directory, "*.cs", SearchOption.AllDirectories))
+        {
+            if (file.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}", StringComparison.Ordinal)
+                || file.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            SyntaxNode root = CSharpSyntaxTree.ParseText(File.ReadAllText(file)).GetRoot();
+
+            foreach (MethodDeclarationSyntax method in root.DescendantNodes().OfType<MethodDeclarationSyntax>())
+            {
+                bool isTest = method.AttributeLists
+                    .SelectMany(static list => list.Attributes)
+                    .Any(attribute => attributeNames.Contains(attribute.Name.ToString().Replace("Attribute", string.Empty, StringComparison.Ordinal)));
+
+                if (!isTest || !method.DescendantNodes().OfType<InvocationExpressionSyntax>().Any(IsWindowsOnlySkip))
+                {
+                    continue;
+                }
+
+                string? declaredNamespace = method.Ancestors()
+                    .OfType<BaseNamespaceDeclarationSyntax>()
+                    .FirstOrDefault()
+                    ?.Name.ToString();
+
+                string[] types = method.Ancestors()
+                    .OfType<TypeDeclarationSyntax>()
+                    .Reverse()
+                    .Select(static type => type.Identifier.Text)
+                    .ToArray();
+
+                Assert.False(
+                    declaredNamespace is null || types.Length == 0,
+                    $"{file}: {method.Identifier.Text} is not declared in a namespace-qualified type.");
+
+                methods.Add($"{declaredNamespace}.{string.Join('+', types)}.{method.Identifier.Text}");
+            }
+        }
+
+        return methods;
+    }
+
+    /// <summary>
+    /// A <c>Skip.IfNot</c> whose condition is exactly <c>OperatingSystem.IsWindows()</c>, or a
+    /// <c>Skip.If</c> whose condition carries <c>!OperatingSystem.IsWindows()</c>.
+    /// </summary>
+    private static bool IsWindowsOnlySkip(InvocationExpressionSyntax invocation)
+    {
+        if (invocation.Expression is not MemberAccessExpressionSyntax { Expression: IdentifierNameSyntax { Identifier.Text: "Skip" } } access
+            || invocation.ArgumentList.Arguments.Count == 0)
+        {
+            return false;
+        }
+
+        ExpressionSyntax condition = invocation.ArgumentList.Arguments[0].Expression;
+
+        if (access.Name.Identifier.Text == "IfNot")
+        {
+            return string.Equals(OperatingSystemCheckText(condition), "OperatingSystem.IsWindows()", StringComparison.Ordinal);
+        }
+
+        if (access.Name.Identifier.Text != "If")
+        {
+            return false;
+        }
+
+        // Skip.If(a && b && ...) skips on every host where all conjuncts hold. With a conjunct of
+        // !OperatingSystem.IsWindows() and no other negated host check, only Windows can run it; a
+        // chain such as !IsMacOS() && !IsLinux() && !IsWindows() still runs on macOS.
+        List<string> conjuncts = [];
+
+        CollectConjuncts(condition, conjuncts);
+
+        string[] negatedHostChecks = conjuncts
+            .Where(static conjunct => conjunct.StartsWith("!OperatingSystem.Is", StringComparison.Ordinal))
+            .ToArray();
+
+        return negatedHostChecks is ["!OperatingSystem.IsWindows()"];
+    }
+
+    private static void CollectConjuncts(ExpressionSyntax expression, List<string> conjuncts)
+    {
+        while (expression is ParenthesizedExpressionSyntax parenthesized)
+        {
+            expression = parenthesized.Expression;
+        }
+
+        if (expression is BinaryExpressionSyntax binary && binary.IsKind(SyntaxKind.LogicalAndExpression))
+        {
+            CollectConjuncts(binary.Left, conjuncts);
+
+            CollectConjuncts(binary.Right, conjuncts);
+
+            return;
+        }
+
+        conjuncts.Add(OperatingSystemCheckText(expression));
+    }
+
+    private static string OperatingSystemCheckText(ExpressionSyntax expression) =>
+        string.Concat(expression.ToString().Where(static character => !char.IsWhiteSpace(character)))
+            .Replace("global::System.", string.Empty, StringComparison.Ordinal);
+
+    private sealed record TestMethodIdentity(string FullName);
+
+    private static IEnumerable<string> FilterEntries(string repositoryRoot, string filterOperator)
+    {
+        foreach (Match match in TestFilterEntry.Matches(WorkflowText(repositoryRoot)))
+        {
+            if (match.Groups["operator"].Value == filterOperator)
+            {
+                yield return match.Groups["name"].Value;
+            }
+        }
+    }
+
+    private static IReadOnlyList<TestMethodIdentity> ArcanumTestMethods() =>
+        typeof(ContinuousIntegrationWorkflowTests).Assembly
+            .GetTypes()
+            .Where(static type => type.FullName is not null)
+            .SelectMany(static type => type
+                .GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.Static | BindingFlags.DeclaredOnly)
+                .Where(static method => method.IsDefined(typeof(FactAttribute), inherit: true))
+                .Select(method => new TestMethodIdentity($"{type.FullName}.{method.Name}")))
+            .ToArray();
+
+    /// <summary>
+    /// The Compendium suite is a separate assembly this project does not reference, so its test
+    /// methods are read from source: every method carrying a fact or theory attribute inside a
+    /// namespace-qualified class under the Compendium test project.
+    /// </summary>
+    private static IReadOnlyList<TestMethodIdentity> CompendiumTestMethods(string repositoryRoot)
+    {
+        string directory = Path.Combine(repositoryRoot, "tests", "RetroDownfall.Compendium.Tests");
+
+        Assert.True(Directory.Exists(directory), $"Missing Compendium test project: {directory}");
+
+        string[] attributeNames = ["Fact", "SkippableFact", "Theory", "SkippableTheory"];
+
+        List<TestMethodIdentity> methods = [];
+
+        foreach (string file in Directory.EnumerateFiles(directory, "*.cs", SearchOption.AllDirectories))
+        {
+            if (file.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}", StringComparison.Ordinal)
+                || file.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            SyntaxNode root = CSharpSyntaxTree.ParseText(File.ReadAllText(file)).GetRoot();
+
+            foreach (ClassDeclarationSyntax type in root.DescendantNodes().OfType<ClassDeclarationSyntax>())
+            {
+                string? declaredNamespace = type.Ancestors()
+                    .OfType<BaseNamespaceDeclarationSyntax>()
+                    .FirstOrDefault()
+                    ?.Name.ToString();
+
+                if (declaredNamespace is null)
+                {
+                    continue;
+                }
+
+                foreach (MethodDeclarationSyntax method in type.Members.OfType<MethodDeclarationSyntax>())
+                {
+                    bool isTest = method.AttributeLists
+                        .SelectMany(static list => list.Attributes)
+                        .Any(attribute => attributeNames.Contains(attribute.Name.ToString().Replace("Attribute", string.Empty, StringComparison.Ordinal)));
+
+                    if (isTest)
+                    {
+                        methods.Add(new TestMethodIdentity($"{declaredNamespace}.{type.Identifier.Text}.{method.Identifier.Text}"));
+                    }
+                }
+            }
+        }
+
+        return methods;
     }
 
     [Fact]
@@ -224,7 +732,7 @@ public sealed class ContinuousIntegrationWorkflowTests
 
         Assert.Contains("--filter \"Category!=Perf&(" + expected + ")\"", lane.Body, StringComparison.Ordinal);
 
-        Assert.Contains("dotnet-version: \"10.0.401\"", lane.Body, StringComparison.Ordinal);
+        Assert.Contains(PinnedSdkInput, lane.Body, StringComparison.Ordinal);
 
         Assert.Contains("Assert the SDK is native to win-arm64", lane.Body, StringComparison.Ordinal);
     }
@@ -245,7 +753,7 @@ public sealed class ContinuousIntegrationWorkflowTests
         const string project = "tests/RetroDownfall.Arcanum.GrimoireAdmission.Benchmarks/"
             + "RetroDownfall.Arcanum.GrimoireAdmission.Benchmarks.csproj";
 
-        int sdk = lane.Body.IndexOf("dotnet-version: \"10.0.401\"", StringComparison.Ordinal);
+        int sdk = lane.Body.IndexOf(PinnedSdkInput, StringComparison.Ordinal);
 
         int build = lane.Body.IndexOf("dotnet build " + project, StringComparison.Ordinal);
 
@@ -345,6 +853,58 @@ public sealed class ContinuousIntegrationWorkflowTests
             "A workflow job builds .NET on a runtime identifier whose hermetic SQLCipher asset is "
             + "not checked in and verified, so it fails with ARCSQLC002 before any test runs. Gate "
             + "the job on the manifest status so it returns automatically once the asset lands:"
+            + global::System.Environment.NewLine
+            + string.Join(global::System.Environment.NewLine, offenders));
+    }
+
+    private static readonly Regex GatedOnRuntimeIdentifier = new(
+        @"outputs\.(?<rid>(?:linux|osx|win)-[a-z0-9]+)",
+        RegexOptions.CultureInvariant,
+        TimeSpan.FromSeconds(5));
+
+    /// <summary>
+    /// A job gated on a runtime identifier the manifest does not ship can never run: the gate is
+    /// read from the manifest, so the job skips on every dispatch and reads as a dormant feature
+    /// instead of a deleted one. The private beta workflow kept a Linux packaging job in exactly that
+    /// state, beside a second and weaker Windows release path.
+    /// </summary>
+    [Fact]
+    public void No_workflow_job_is_gated_on_a_rid_absent_from_the_manifest()
+    {
+        string repositoryRoot = FindRepositoryRoot();
+
+        IReadOnlyList<string> shipped = ShippingRuntimeIdentifiers(repositoryRoot);
+
+        List<string> offenders = [];
+
+        foreach (string workflow in WorkflowFiles(repositoryRoot))
+        {
+            foreach (WorkflowJob job in JobsIn(workflow))
+            {
+                foreach (string line in job.Body.Split('\n'))
+                {
+                    if (WorkflowIndentOf(line) != 4 || !line.Trim().StartsWith("if:", StringComparison.Ordinal))
+                    {
+                        continue;
+                    }
+
+                    foreach (Match match in GatedOnRuntimeIdentifier.Matches(line))
+                    {
+                        string rid = match.Groups["rid"].Value;
+
+                        if (!shipped.Contains(rid, StringComparer.Ordinal))
+                        {
+                            offenders.Add($"{Path.GetFileName(workflow)}: {job.Id} is gated on {rid}");
+                        }
+                    }
+                }
+            }
+        }
+
+        Assert.True(
+            offenders.Count == 0,
+            "A workflow job is gated on a runtime identifier native-source-manifest.json does not "
+            + "ship, so it can never run. Delete it, or add the RID and its verified asset:"
             + global::System.Environment.NewLine
             + string.Join(global::System.Environment.NewLine, offenders));
     }
@@ -526,7 +1086,7 @@ public sealed class ContinuousIntegrationWorkflowTests
 
                 matching.Add(identity);
 
-                if (!job.Body.Contains("dotnet-version: \"10.0.401\"", StringComparison.Ordinal)
+                if (!job.Body.Contains(PinnedSdkInput, StringComparison.Ordinal)
                     || job.Body.Contains("ld64.lld", StringComparison.Ordinal)
                     || job.Body.Contains("brew install lld", StringComparison.Ordinal))
                 {
@@ -536,9 +1096,18 @@ public sealed class ContinuousIntegrationWorkflowTests
         }
 
         Assert.Contains("release-macos-arm64.yml: release-macos-arm64", matching);
+
+        // The pin every one of these lanes reads must itself be the serviced SDK that carries the Apple
+        // linker path, not merely some version.
+        using JsonDocument globalJson = JsonDocument.Parse(File.ReadAllText(Path.Combine(FindRepositoryRoot(), "global.json")));
+
+        Assert.True(
+            Version.Parse(globalJson.RootElement.GetProperty("sdk").GetProperty("version").GetString()!) >= new Version(10, 0, 401),
+            "global.json pins an SDK older than the serviced 10.0.401 that the macOS Native AOT lanes require.");
+
         Assert.True(
             offenders.Count == 0,
-            "A macOS Native AOT lane does not pin .NET SDK 10.0.401 with its compatible Apple "
+            "A macOS Native AOT lane does not read the pinned .NET SDK from global.json with its compatible Apple "
             + "linker, or still forces LLVM lld:"
             + global::System.Environment.NewLine
             + string.Join(global::System.Environment.NewLine, offenders));
@@ -651,43 +1220,195 @@ public sealed class ContinuousIntegrationWorkflowTests
     }
 
     /// <summary>
-    /// The reusable Windows workflow is also a release entry point. Its package step performs a
-    /// fresh Native AOT publish, so it must audit the same validated RID first instead of relying on
-    /// a possibly older pull-request run.
+    /// The longest a job may be allowed to run. A hung test, a notarization that never answers, or a
+    /// stuck runner otherwise holds the job for the platform default (six hours), which is a long
+    /// time to hold a signing keychain or a scarce macOS runner. The ceiling sits above the slowest
+    /// legitimate job (the macOS release: a Native AOT diagnostic audit, a Native AOT publish and
+    /// three notarizations).
+    /// </summary>
+    private const int MaximumJobTimeoutMinutes = 150;
+
+    [Fact]
+    public void Every_job_declares_a_job_level_timeout()
+    {
+        List<string> offenders = [];
+
+        foreach (string workflow in WorkflowFiles(FindRepositoryRoot()))
+        {
+            foreach (WorkflowJob job in JobsIn(workflow))
+            {
+                string[] lines = job.Body.Replace("\r\n", "\n", StringComparison.Ordinal).Split('\n');
+
+                // A job that calls a reusable workflow cannot carry timeout-minutes; the called
+                // workflow's own jobs do.
+                if (lines.Any(static line => WorkflowIndentOf(line) == 4 && line.Trim().StartsWith("uses:", StringComparison.Ordinal)))
+                {
+                    continue;
+                }
+
+                string? declared = lines
+                    .Where(static line => WorkflowIndentOf(line) == 4 && line.Trim().StartsWith("timeout-minutes:", StringComparison.Ordinal))
+                    .Select(static line => line.Trim()["timeout-minutes:".Length..].Trim())
+                    .FirstOrDefault();
+
+                if (declared is null
+                    || !int.TryParse(declared, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out int minutes)
+                    || minutes is < 1 or > MaximumJobTimeoutMinutes)
+                {
+                    offenders.Add($"{Path.GetFileName(workflow)}: {job.Id} (timeout-minutes: {declared ?? "absent"})");
+                }
+            }
+        }
+
+        Assert.True(
+            offenders.Count == 0,
+            $"A workflow job declares no job-level timeout-minutes between 1 and {MaximumJobTimeoutMinutes}, "
+            + "so a hang holds it for the platform default of six hours:"
+            + global::System.Environment.NewLine
+            + string.Join(global::System.Environment.NewLine, offenders));
+    }
+
+    private const string PinnedSdkInput = "global-json-file: global.json";
+
+    /// <summary>
+    /// One SDK for every workflow. The gating lanes pinned 10.0.401 by hand while the Windows shipping
+    /// builds floated on <c>10.0.x</c>, so a release could be built by an SDK no gate had ever run.
+    /// The repository's <c>global.json</c> is the single statement, and every <c>setup-dotnet</c>
+    /// step reads it, so raising the pin (in lockstep with the macOS portable-pack SHA table in
+    /// <c>Directory.Build.targets</c>) is one edit. The pin is exact (<c>rollForward: disable</c>):
+    /// <c>latestPatch</c> made the version a minimum, and a runner image carrying a newer 10.0.4xx
+    /// beside the one <c>setup-dotnet</c> installed would silently build with that one instead.
     /// </summary>
     [Fact]
-    public void Windows_release_audits_the_validated_native_rid_before_packaging()
+    public void Every_workflow_pins_the_same_dotnet_sdk_version()
     {
         string repositoryRoot = FindRepositoryRoot();
 
-        WorkflowJob package = Assert.Single(
-            JobsIn(Path.Combine(repositoryRoot, ".github", "workflows", "build-windows.yml")),
-            static job => job.Body.Contains("package-windows.ps1", StringComparison.Ordinal));
+        string globalJsonPath = Path.Combine(repositoryRoot, "global.json");
 
-        int nativeSdk = package.Body.IndexOf(
-            "Assert the SDK is native to the RID",
-            StringComparison.Ordinal);
-        int audit = package.Body.IndexOf(
-            "./scripts/verify-aot-il-warnings.sh \"$RID\"",
-            StringComparison.Ordinal);
-        int ripgrepInstall = package.Body.IndexOf(
-            "choco install ripgrep --version=15.2.0",
-            StringComparison.Ordinal);
-        int packaging = package.Body.IndexOf("package-windows.ps1", StringComparison.Ordinal);
+        Assert.True(File.Exists(globalJsonPath), "The repository has no global.json, so no single SDK version is pinned.");
 
-        Assert.True(nativeSdk >= 0, "The Windows release must validate its SDK architecture.");
+        using JsonDocument globalJson = JsonDocument.Parse(File.ReadAllText(globalJsonPath));
+
+        JsonElement sdk = globalJson.RootElement.GetProperty("sdk");
+
+        string version = sdk.GetProperty("version").GetString()!;
+
+        Assert.Matches(@"^10\.0\.\d{3}$", version);
+
+        Assert.Equal("disable", sdk.GetProperty("rollForward").GetString());
+
+        List<string> offenders = [];
+
+        int setups = 0;
+
+        foreach (string workflow in WorkflowFiles(repositoryRoot))
+        {
+            string[] lines = File.ReadAllLines(workflow);
+
+            for (int index = 0; index < lines.Length; index++)
+            {
+                if (!lines[index].TrimStart().StartsWith("uses: actions/setup-dotnet@", StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                setups++;
+
+                int indent = WorkflowIndentOf(lines[index]);
+
+                StringBuilder step = new();
+
+                for (int next = index + 1; next < lines.Length; next++)
+                {
+                    if (lines[next].Trim().Length > 0 && WorkflowIndentOf(lines[next]) < indent)
+                    {
+                        break;
+                    }
+
+                    step.AppendLine(lines[next]);
+                }
+
+                string body = step.ToString();
+
+                if (!body.Contains(PinnedSdkInput, StringComparison.Ordinal)
+                    || body.Contains("dotnet-version:", StringComparison.Ordinal))
+                {
+                    offenders.Add($"{Path.GetFileName(workflow)}:{index + 1}");
+                }
+            }
+        }
+
+        Assert.True(setups > 0, "No workflow sets .NET up, so there is nothing to pin.");
+
         Assert.True(
-            ripgrepInstall > nativeSdk,
-            "The Windows release must install ripgrep after validating its native SDK and before "
-            + "running the fail-closed AOT diagnostic profile.");
-        Assert.True(
-            audit > ripgrepInstall,
-            "The Windows release must run its AOT diagnostic profile only after installing ripgrep.");
-        Assert.True(
-            audit < packaging,
-            "The Windows release must clear its AOT diagnostic profile before creating archives.");
-        Assert.Contains("RID: ${{ inputs.rid }}", package.Body, StringComparison.Ordinal);
-        Assert.Contains("rg --version", package.Body, StringComparison.Ordinal);
+            offenders.Count == 0,
+            $"A setup-dotnet step does not read the SDK from `{PinnedSdkInput}` (or still names a "
+            + "literal dotnet-version), so that workflow can build with an SDK no gate ran:"
+            + global::System.Environment.NewLine
+            + string.Join(global::System.Environment.NewLine, offenders));
+    }
+
+    /// <summary>
+    /// Every workflow that publishes a shipping archive audits the detailed Native AOT diagnostics for
+    /// the exact RID first. The shipping publish deliberately suppresses dependency summary
+    /// diagnostics after that audit has classified them, so a release that skipped the audit would
+    /// accept a first-party IL warning that CI's host-RID lane never saw for this RID. Windows already
+    /// audited; the macOS release did not. The reusable Windows workflow is also a release entry
+    /// point whose package step performs a fresh Native AOT publish, so it audits the same validated
+    /// RID first instead of relying on a possibly older pull-request run: its SDK is proven native to
+    /// the RID, then ripgrep (which the fail-closed audit needs) is installed, then the audit runs.
+    /// </summary>
+    [Theory]
+
+    [InlineData("build-windows.yml", "./scripts/verify-aot-il-warnings.sh \"$RID\"", "package-windows.ps1", "Assert the SDK is native to the RID", "choco install ripgrep --version=15.2.0")]
+
+    [InlineData("release-macos-arm64.yml", "./scripts/verify-aot-il-warnings.sh osx-arm64", "build-arcanum.sh", "", "Install ripgrep for the warning-free publish gate")]
+
+    public void Every_release_workflow_audits_aot_diagnostics_before_it_packages(
+        string workflowFile,
+        string auditInvocation,
+        string packagingInvocation,
+        string validatedSdkStep,
+        string ripgrepInstall)
+    {
+        string path = Path.Combine(FindRepositoryRoot(), ".github", "workflows", workflowFile);
+
+        WorkflowJob job = Assert.Single(
+            JobsIn(path),
+            candidate => candidate.Body.Contains(packagingInvocation, StringComparison.Ordinal));
+
+        int audit = job.Body.IndexOf(auditInvocation, StringComparison.Ordinal);
+
+        int packaging = job.Body.IndexOf(packagingInvocation, StringComparison.Ordinal);
+
+        int ripgrep = job.Body.IndexOf(ripgrepInstall, StringComparison.Ordinal);
+
+        Assert.True(audit >= 0, $"{workflowFile} never runs `{auditInvocation}`, so a first-party AOT warning unique to the released RID ships unaudited.");
+
+        Assert.True(audit < packaging, $"{workflowFile} audits Native AOT diagnostics only after packaging has already published.");
+
+        Assert.True(ripgrep >= 0, $"{workflowFile} no longer installs ripgrep (`{ripgrepInstall}`), which the fail-closed audit needs.");
+
+        Assert.True(ripgrep < audit, $"{workflowFile} must install ripgrep before it runs the fail-closed AOT diagnostic profile.");
+
+        if (validatedSdkStep.Length > 0)
+        {
+            Assert.Contains("rg --version", job.Body, StringComparison.Ordinal);
+
+            int nativeSdk = job.Body.IndexOf(validatedSdkStep, StringComparison.Ordinal);
+
+            Assert.True(nativeSdk >= 0, $"{workflowFile} must validate its SDK architecture (`{validatedSdkStep}`).");
+
+            Assert.True(
+                nativeSdk < ripgrep,
+                $"{workflowFile} must validate its native SDK before installing ripgrep and running the audit.");
+        }
+
+        if (auditInvocation.Contains("$RID", StringComparison.Ordinal))
+        {
+            Assert.Contains("RID: ${{ inputs.rid }}", job.Body, StringComparison.Ordinal);
+        }
     }
 
     /// <summary>

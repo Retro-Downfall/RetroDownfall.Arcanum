@@ -16,21 +16,18 @@ namespace RetroDownfall.Arcanum.Infrastructure.Backup;
 /// </remarks>
 internal static class BackupArchiveMigrator
 {
-
     public static async Task<BackupMigrateResult> MigrateAsync(
         BackupArchiveCodec codec,
         BackupMigrateRequest request,
         ReadOnlyMemory<char> recoveryPassphrase,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(codec);
 
         ArgumentNullException.ThrowIfNull(request);
 
         if (string.IsNullOrWhiteSpace(request.ArchivePath) || !File.Exists(request.ArchivePath))
         {
-
             return Failed(
                 request,
                 0,
@@ -38,33 +35,33 @@ internal static class BackupArchiveMigrator
                     "backup.restore_archive_missing",
                     "The named backup archive does not exist.",
                     request.ArchivePath));
-
         }
 
         if (string.IsNullOrWhiteSpace(request.OutputPath))
         {
-
             return Failed(
                 request,
                 0,
                 new BackupVerifyIssue(
                     "backup.migrate_output_required",
                     "Migrating an archive requires an explicit --output path."));
-
         }
 
         string archivePath = Path.GetFullPath(request.ArchivePath);
 
         string outputPath = Path.GetFullPath(request.OutputPath);
 
-        if (string.Equals(
+        OutputIdentity identity = string.Equals(
                 archivePath,
                 outputPath,
                 OperatingSystem.IsWindows()
                     ? StringComparison.OrdinalIgnoreCase
-                    : StringComparison.Ordinal))
-        {
+                    : StringComparison.Ordinal)
+            ? OutputIdentity.TheSource
+            : CompareWithSource(archivePath, outputPath);
 
+        if (identity == OutputIdentity.TheSource)
+        {
             return Failed(
                 request,
                 0,
@@ -72,12 +69,21 @@ internal static class BackupArchiveMigrator
                     "backup.migrate_output_is_source",
                     "The migrated archive must be written to a different path than the source archive.",
                     outputPath));
+        }
 
+        if (identity == OutputIdentity.Unverifiable)
+        {
+            return Failed(
+                request,
+                0,
+                new BackupVerifyIssue(
+                    "backup.migrate_output_unverifiable",
+                    "The migrated archive destination exists, but it could not be confirmed to be a different file from the source archive, so nothing was written.",
+                    outputPath));
         }
 
         if (!request.Overwrite && File.Exists(outputPath))
         {
-
             return Failed(
                 request,
                 0,
@@ -85,7 +91,6 @@ internal static class BackupArchiveMigrator
                     "backup.migrate_output_exists",
                     "The migrated archive destination already exists. Pass --overwrite to replace it.",
                     outputPath));
-
         }
 
         int sourceFormat = await BackupArchiveHeaderPeek
@@ -94,9 +99,7 @@ internal static class BackupArchiveMigrator
 
         if (BackupRestoreFormatCatalog.Classify(sourceFormat) is BackupVerifyIssue unsupported)
         {
-
             return Failed(request, sourceFormat, unsupported);
-
         }
 
         string outputDirectory = Path.GetDirectoryName(outputPath)
@@ -109,7 +112,6 @@ internal static class BackupArchiveMigrator
 
         try
         {
-
             string extractRoot = Path.Combine(staging.Path, "extract");
 
             SecureFilePermissions.EnsureOwnerOnlyDirectoryExists(extractRoot);
@@ -123,9 +125,7 @@ internal static class BackupArchiveMigrator
 
             if (extraction.Manifest is null)
             {
-
                 return Failed(request, sourceFormat, extraction.Issues);
-
             }
 
             BackupArchiveSource[] sources =
@@ -153,7 +153,6 @@ internal static class BackupArchiveMigrator
                 new FileInfo(outputPath).Length,
                 written,
                 Issues: []);
-
         }
         catch (Exception exception) when (
             exception is InvalidDataException
@@ -161,7 +160,6 @@ internal static class BackupArchiveMigrator
                 or UnauthorizedAccessException
                 or NotSupportedException)
         {
-
             return Failed(
                 request,
                 sourceFormat,
@@ -170,15 +168,82 @@ internal static class BackupArchiveMigrator
                     "The archive could not be rewritten at the current format. The source archive is "
                     + "unchanged.",
                     archivePath));
-
         }
         finally
         {
-
             _ = staging.TryDelete();
+        }
+    }
 
+    /// <summary>
+    /// Whether an output that exists is the source: a case variant on a volume that folds case, a hard
+    /// link, or a symbolic link to it.
+    /// </summary>
+    /// <remarks>
+    /// Spelling cannot answer this. The default macOS volume folds case although the platform check
+    /// above treats paths as case-sensitive, and a hard link has a different name for the same
+    /// bytes, so the comparison is on the no-follow volume and file identity of what each path
+    /// finally resolves to. An output that does not exist cannot be the source.
+    ///
+    /// <para>An output that exists and whose identity cannot be established is neither assumed
+    /// different nor reported as the source: that is <see cref="OutputIdentity.Unverifiable"/>, which
+    /// refuses with its own code, because "different unless proven otherwise" is how a link to the
+    /// source would be written over by <c>--overwrite</c>.</para>
+    /// </remarks>
+    private static OutputIdentity CompareWithSource(
+        string archivePath,
+        string outputPath)
+    {
+        if (!File.Exists(outputPath))
+        {
+            return OutputIdentity.Different;
         }
 
+        if (!TryResolveFinalTarget(archivePath, out string archiveTarget)
+            || !TryResolveFinalTarget(outputPath, out string outputTarget)
+            || !FileHandleIdentityInterop.TryGetPathMetadataNoFollow(
+                archiveTarget,
+                out FileHandleMetadata archive)
+            || !FileHandleIdentityInterop.TryGetPathMetadataNoFollow(
+                outputTarget,
+                out FileHandleMetadata output))
+        {
+            return OutputIdentity.Unverifiable;
+        }
+
+        return FileHandleIdentity.IdentitiesMatch(archive.Identity, output.Identity)
+            ? OutputIdentity.TheSource
+            : OutputIdentity.Different;
+    }
+
+    private static bool TryResolveFinalTarget(
+        string path,
+        out string finalTarget)
+    {
+        try
+        {
+            finalTarget = new FileInfo(path).ResolveLinkTarget(returnFinalTarget: true)?.FullName
+                ?? path;
+
+            return true;
+        }
+        catch (Exception exception) when (
+            exception is IOException
+                or UnauthorizedAccessException)
+        {
+            finalTarget = path;
+
+            return false;
+        }
+    }
+
+    private enum OutputIdentity
+    {
+        Different,
+
+        TheSource,
+
+        Unverifiable,
     }
 
     private static BackupMigrateResult Failed(
@@ -194,5 +259,4 @@ internal static class BackupArchiveMigrator
             OutputBytes: 0,
             Manifest: null,
             issues);
-
 }

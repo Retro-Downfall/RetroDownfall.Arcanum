@@ -2,6 +2,8 @@ using System.Reflection;
 using System.Security.Cryptography;
 using System.Text;
 
+using Microsoft.Extensions.Logging.Abstractions;
+
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -14,7 +16,6 @@ namespace RetroDownfall.Arcanum.Tests.Security;
 
 public sealed class CovenantRuntimeGenerationProviderTests
 {
-
     private static readonly Guid Dataset = Guid.Parse("11111111-2222-4333-8444-555555555555");
 
     private static readonly Guid NextDataset = Guid.Parse("AAAAAAAA-BBBB-4CCC-8DDD-EEEEEEEEEEEE");
@@ -22,7 +23,6 @@ public sealed class CovenantRuntimeGenerationProviderTests
     [Fact]
     public void Codec_key_captures_bind_the_runtime_authority_generation()
     {
-
         Assert.NotNull(typeof(CovenantEnvelopeKeyReservation).GetProperty("RuntimeAuthorityGeneration"));
 
         Assert.NotNull(typeof(CovenantEnvelopeKeyCapture).GetProperty("RuntimeAuthorityGeneration"));
@@ -34,13 +34,11 @@ public sealed class CovenantRuntimeGenerationProviderTests
             .ToArray();
 
         Assert.Equal([typeof(long), typeof(CovenantEnvelopeKeyGenerationIdentity)], materializationParameters);
-
     }
 
     [Fact]
     public void Injectable_facades_expose_no_independent_live_generation_mutator()
     {
-
         Dictionary<Type, string[]> forbiddenByFacade = new()
         {
             [typeof(CovenantEnvelopeMasterKeyProvider)] =
@@ -58,22 +56,18 @@ public sealed class CovenantRuntimeGenerationProviderTests
 
         foreach ((Type facade, string[] forbidden) in forbiddenByFacade)
         {
-
             string[] declared = facade
                 .GetMethods(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly)
                 .Select(method => method.Name)
                 .ToArray();
 
             Assert.Empty(declared.Intersect(forbidden, StringComparer.Ordinal));
-
         }
-
     }
 
     [Fact]
     public void Initialization_and_availability_publication_project_one_composite_state()
     {
-
         using CovenantRuntimeGenerationProvider runtime = new();
 
         using CovenantEnvelopeMasterKeyProvider keys = new(runtime);
@@ -133,13 +127,11 @@ public sealed class CovenantRuntimeGenerationProviderTests
         Assert.Same(first.ActiveAuthority, second.ActiveAuthority);
 
         Assert.Same(next, second.Availability);
-
     }
 
     [Fact]
     public void Initialization_rejects_prepared_keys_bound_to_different_authority()
     {
-
         using CovenantRuntimeGenerationProvider runtime = new();
 
         using CovenantEnvelopeMasterKeyProvider keys = new(runtime);
@@ -177,13 +169,11 @@ public sealed class CovenantRuntimeGenerationProviderTests
         Assert.Equal(ErrorCodes.Covenant.IntegrityFailure, initialized.Error.Code);
 
         Assert.Same(expected, runtime.Current);
-
     }
 
     [Fact]
     public void Initialization_rejects_dataset_keys_bound_to_different_availability()
     {
-
         using CovenantRuntimeGenerationProvider runtime = new();
 
         using CovenantEnvelopeMasterKeyProvider keys = new(runtime);
@@ -203,9 +193,7 @@ public sealed class CovenantRuntimeGenerationProviderTests
 
         _ = runtime.PublishAvailability(current => current with
         {
-
             DatasetGeneration = NextDataset,
-
         });
 
         CovenantRuntimeGenerationState expected = runtime.Current;
@@ -228,13 +216,11 @@ public sealed class CovenantRuntimeGenerationProviderTests
         Assert.Equal(ErrorCodes.Covenant.IntegrityFailure, initialized.Error.Code);
 
         Assert.Same(expected, runtime.Current);
-
     }
 
     [Fact]
     public async Task Availability_only_publication_preserves_runtime_bound_contexts_epochs_and_leases()
     {
-
         using CovenantRuntimeGenerationProvider runtime = new();
 
         using CovenantEnvelopeMasterKeyProvider keys = new(runtime);
@@ -247,7 +233,10 @@ public sealed class CovenantRuntimeGenerationProviderTests
 
         OperatorAuthorityContextIssuer issuer = new(authority);
 
-        CovenantOperationGate gate = new(runtime, new NoCampaignProbe());
+        CovenantOperationGate gate = new(
+            runtime,
+            new NoCampaignProbe(),
+            NullLogger<CovenantOperationGate>.Instance);
 
         OperatorAuthorityContext context = issuer.Issue(
             CovenantAuthorityRequirement.CovenantManage).Value;
@@ -269,7 +258,6 @@ public sealed class CovenantRuntimeGenerationProviderTests
         Assert.True(epoch.Matches(authority.Current));
 
         Assert.True((await lease.RevalidateAsync(CancellationToken.None)).IsSuccess);
-
     }
 
     [Theory]
@@ -277,7 +265,6 @@ public sealed class CovenantRuntimeGenerationProviderTests
     [InlineData(true)]
     public void Dataset_publication_is_forbidden_after_authority_initialization(bool retireAuthority)
     {
-
         using CovenantRuntimeGenerationProvider runtime = new();
 
         using CovenantEnvelopeMasterKeyProvider keys = new(runtime);
@@ -288,14 +275,12 @@ public sealed class CovenantRuntimeGenerationProviderTests
 
         if (retireAuthority)
         {
-
             _ = runtime.RetireAuthorityGeneration(
                 runtime.Current.RuntimeAuthorityGeneration,
                 new CovenantExclusiveRecoveryOwner(
                     Guid.Parse("EEEEEEEE-1111-4222-8333-444444444444"),
                     CovenantExclusiveOperation.SchemaRepair,
                     new CovenantDigest([.. Enumerable.Repeat((byte)0x5A, CovenantLimits.DigestBytes)])));
-
         }
 
         CovenantRuntimeGenerationState expected = runtime.Current;
@@ -321,13 +306,11 @@ public sealed class CovenantRuntimeGenerationProviderTests
         Assert.Same(expected.Availability, runtime.Current.Availability);
 
         Assert.Equal(expected.RecoveryOwner, runtime.Current.RecoveryOwner);
-
     }
 
     [Fact]
     public void Pre_initialization_persisted_publication_can_establish_the_dataset()
     {
-
         using CovenantRuntimeGenerationProvider runtime = new();
 
         CovenantAvailability availability = new(runtime);
@@ -355,13 +338,11 @@ public sealed class CovenantRuntimeGenerationProviderTests
         Assert.Null(runtime.Current.Keys);
 
         Assert.Null(runtime.Current.AuthoritySlot);
-
     }
 
     [Fact]
     public void Final_publication_rejects_an_availability_tuple_that_disagrees_with_capability()
     {
-
         using CovenantRuntimeGenerationProvider runtime = new();
 
         using CovenantEnvelopeMasterKeyProvider keys = new(runtime);
@@ -383,11 +364,9 @@ public sealed class CovenantRuntimeGenerationProviderTests
 
         CovenantAvailabilitySnapshot disagreeing = built.Value with
         {
-
             FeatureEnabled = !transition.Capability.FeatureEnabled,
 
             CanonicalDiagnosticCode = "covenant.synthetic_mismatch",
-
         };
 
         Result<CovenantPreparedEnvelopeKeyGeneration> prepared = keys.PrepareRekey(transition);
@@ -403,13 +382,11 @@ public sealed class CovenantRuntimeGenerationProviderTests
         Assert.Equal(ErrorCodes.Covenant.IntegrityFailure, published.Error.Code);
 
         Assert.Same(expected, runtime.Current);
-
     }
 
     [Fact]
     public void Final_publication_rejects_prepared_keys_from_a_different_capability()
     {
-
         using CovenantRuntimeGenerationProvider runtime = new();
 
         using CovenantEnvelopeMasterKeyProvider keys = new(runtime);
@@ -452,7 +429,45 @@ public sealed class CovenantRuntimeGenerationProviderTests
         Assert.Equal(ErrorCodes.Covenant.IntegrityFailure, published.Error.Code);
 
         Assert.Same(expected, runtime.Current);
+    }
 
+    /// <summary>
+    /// Retirement observes its critical section through the same quarantined seam as publication, so an
+    /// observer that throws there cannot keep the live generation from being retired.
+    /// </summary>
+    [Fact]
+    public void Retirement_observer_failure_is_non_authoritative()
+    {
+        ThrowingPublicationCheckpoint checkpoint = new(CovenantRuntimePublicationStep.RetiredBeforeSwap);
+
+        using CovenantRuntimeGenerationProvider runtime = new(checkpoint);
+
+        using CovenantEnvelopeMasterKeyProvider keys = new(runtime);
+
+        CovenantAvailability availability = new(runtime);
+
+        Initialize(runtime, keys, availability.Current);
+
+        long observed = runtime.Current.RuntimeAuthorityGeneration;
+
+        checkpoint.Arm();
+
+        Result retired = runtime.RetireAuthorityGeneration(
+            observed,
+            new CovenantExclusiveRecoveryOwner(
+                Guid.Parse("EEEEEEEE-1111-4222-8333-444444444444"),
+                CovenantExclusiveOperation.SchemaRepair,
+                new CovenantDigest([.. Enumerable.Repeat((byte)0x5A, CovenantLimits.DigestBytes)])));
+
+        Assert.True(retired.IsSuccess);
+
+        Assert.Equal(1, checkpoint.FaultCount);
+
+        Assert.True(runtime.Current.AuthorityRetired);
+
+        Assert.Null(runtime.Current.Keys);
+
+        Assert.Equal(observed + 1, runtime.Current.RuntimeAuthorityGeneration);
     }
 
     [Theory]
@@ -460,7 +475,6 @@ public sealed class CovenantRuntimeGenerationProviderTests
     [InlineData((byte)CovenantRuntimePublicationStep.CommittedAfterSwap)]
     public void Committed_publication_observer_failure_is_non_authoritative(byte faultStepValue)
     {
-
         CovenantRuntimePublicationStep faultStep = (CovenantRuntimePublicationStep)faultStepValue;
 
         ThrowingPublicationCheckpoint checkpoint = new(faultStep);
@@ -534,7 +548,6 @@ public sealed class CovenantRuntimeGenerationProviderTests
 
         try
         {
-
             Assert.Equal(
                 CovenantEnvelopeKeyCopyStatus.NoGeneration,
                 predecessorKeys.TryCopyPurposeKey(
@@ -542,13 +555,10 @@ public sealed class CovenantRuntimeGenerationProviderTests
                     disposedKey,
                     predecessor.RuntimeAuthorityGeneration,
                     out _));
-
         }
         finally
         {
-
             CryptographicOperations.ZeroMemory(disposedKey);
-
         }
 
         Assert.True(codec.Decode(
@@ -563,7 +573,6 @@ public sealed class CovenantRuntimeGenerationProviderTests
         Assert.True(codec.Decode(
             CovenantEnvelopePurpose.Cursor,
             successorToken).IsSuccess);
-
     }
 
     [Theory]
@@ -571,7 +580,6 @@ public sealed class CovenantRuntimeGenerationProviderTests
     [InlineData((byte)CovenantRuntimePublicationStep.AvailabilityAfterSwap)]
     public void Availability_publication_observer_failure_is_non_authoritative(byte faultStepValue)
     {
-
         CovenantRuntimePublicationStep faultStep = (CovenantRuntimePublicationStep)faultStepValue;
 
         ThrowingPublicationCheckpoint checkpoint = new(faultStep);
@@ -615,7 +623,6 @@ public sealed class CovenantRuntimeGenerationProviderTests
         Assert.Equal(predecessor.AuthorityRetired, successor.AuthorityRetired);
 
         Assert.Equal(predecessor.RecoveryOwner, successor.RecoveryOwner);
-
     }
 
     private static void Initialize(
@@ -623,7 +630,6 @@ public sealed class CovenantRuntimeGenerationProviderTests
         CovenantEnvelopeMasterKeyProvider keys,
         CovenantAvailabilitySnapshot availability)
     {
-
         Result<CovenantPreparedEnvelopeKeyGeneration> prepared = keys.PrepareInitial(
             Encoding.UTF8.GetBytes("runtime-generation-master-material"),
             new CovenantEnvelopeBootstrapKeyInput(
@@ -639,7 +645,6 @@ public sealed class CovenantRuntimeGenerationProviderTests
 
         CovenantAvailabilitySnapshot bootAvailability = runtime.PublishAvailability(_ => availability with
         {
-
             FeatureEnabled = true,
 
             Canonical = CovenantCapabilityState.Healthy,
@@ -659,7 +664,6 @@ public sealed class CovenantRuntimeGenerationProviderTests
             FtsSynchronization = CovenantFtsSynchronizationState.Synchronized,
 
             RebuildRequired = false,
-
         });
 
         CovenantRuntimeGenerationState expected = runtime.Current;
@@ -676,7 +680,6 @@ public sealed class CovenantRuntimeGenerationProviderTests
                 HostToolsState: CovenantHostToolsState.Clean,
                 TransitionId: null),
             bootAvailability).IsSuccess);
-
     }
 
     private static CovenantCommittedAuthorityTransition Transition(
@@ -748,18 +751,15 @@ public sealed class CovenantRuntimeGenerationProviderTests
 
     private sealed class NoCampaignProbe : ICovenantCampaignScopeProbe
     {
-
         public ValueTask<Result<CovenantCampaignScopeState>> ResolveAsync(
             Guid campaignId,
             CancellationToken cancellationToken) =>
             ValueTask.FromResult<Result<CovenantCampaignScopeState>>(CovenantCampaignScopeState.Live);
-
     }
 
     private sealed class ThrowingPublicationCheckpoint(
         CovenantRuntimePublicationStep faultStep) : ICovenantRuntimePublicationCheckpoint
     {
-
         private int _armed;
 
         private int _faultCount;
@@ -770,20 +770,14 @@ public sealed class CovenantRuntimeGenerationProviderTests
 
         public void Reached(CovenantRuntimePublicationStep step)
         {
-
             if (Volatile.Read(ref _armed) == 0 || step != faultStep)
             {
-
                 return;
-
             }
 
             _ = Interlocked.Increment(ref _faultCount);
 
             throw new InvalidOperationException("Injected runtime publication observer failure.");
-
         }
-
     }
-
 }

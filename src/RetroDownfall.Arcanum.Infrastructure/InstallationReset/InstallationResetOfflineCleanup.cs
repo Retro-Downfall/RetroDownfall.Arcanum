@@ -412,7 +412,7 @@ internal sealed class InstallationResetOfflineCleanup : IInstallationResetOfflin
                 backups,
                 [
                     new InstallationResetIssueSummary(
-                        ErrorCodes.Data.RecoveryRequired,
+                        ErrorCodes.Data.ResetCancelled,
                         "Installation reset cleanup was cancelled after filesystem mutation."),
                 ]));
         }

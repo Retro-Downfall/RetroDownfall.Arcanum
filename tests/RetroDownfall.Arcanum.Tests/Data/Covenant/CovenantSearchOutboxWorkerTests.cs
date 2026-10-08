@@ -10,13 +10,11 @@ namespace RetroDownfall.Arcanum.Tests.Data.Covenant;
 /// </summary>
 public sealed class CovenantSearchOutboxWorkerTests
 {
-
     private static CancellationToken Token => CancellationToken.None;
 
     [Fact]
     public async Task An_empty_outbox_adopts_the_current_dataset_without_projecting_anything()
     {
-
         await using CovenantCanonicalFixture fixture = await CovenantSearchFixture.CreateAsync(Token);
 
         CovenantOutboxSyncOutcome outcome = await CovenantSearchFixture.SynchronizeAsync(fixture, Token);
@@ -28,18 +26,31 @@ public sealed class CovenantSearchOutboxWorkerTests
         Assert.Equal(
             await fixture.ReadDatasetGenerationAsync(Token),
             new Guid((byte[])(await ReadAsync(fixture, "SELECT AppliedDatasetGeneration FROM covenant_state;"))!));
-
     }
 
     [Fact]
-    public async Task A_contiguous_range_projects_every_head_and_consumes_its_rows()
+    public async Task Adopting_an_empty_projection_on_a_fresh_dataset_clears_the_rebuild_owed_state()
     {
-
         await using CovenantCanonicalFixture fixture = await CovenantSearchFixture.CreateAsync(Token);
 
-        for (int index = 0; index < 4; index++)
-        {
+        // A fresh installation records a full rebuild as owed, because nothing has built its projection.
+        Assert.Equal((long)CovenantFtsRebuildState.FullRebuildRequired, await RebuildStateAsync(fixture));
 
+        CovenantOutboxSyncOutcome outcome = await CovenantSearchFixture.SynchronizeAsync(fixture, Token);
+
+        Assert.False(outcome.RebuildRequired);
+
+        // The adopted projection is current at the canonical sequence, so nothing is owed any more.
+        Assert.Equal((long)CovenantFtsRebuildState.Idle, await RebuildStateAsync(fixture));
+    }
+
+    [Fact]
+    public async Task The_rebuild_owed_state_clears_only_when_the_applied_tuple_reaches_the_canonical_sequence()
+    {
+        await using CovenantCanonicalFixture fixture = await CovenantSearchFixture.CreateAsync(Token);
+
+        for (int index = 0; index < 3; index++)
+        {
             _ = await fixture.SeedHeadAsync(
                 CovenantScope.Global,
                 null,
@@ -48,7 +59,105 @@ public sealed class CovenantSearchOutboxWorkerTests
                 CovenantOperation.Set,
                 $"Body {index}.",
                 Token);
+        }
 
+        CovenantOutboxSyncOutcome first = await CovenantSearchFixture.SynchronizeAsync(fixture, Token, maxRows: 2);
+
+        Assert.Equal(2, first.AppliedSearchSequence);
+
+        // Adopted but still behind: the tuple is published, and the debt stays until it catches up.
+        Assert.Equal((long)CovenantFtsRebuildState.FullRebuildRequired, await RebuildStateAsync(fixture));
+
+        CovenantOutboxSyncOutcome second = await CovenantSearchFixture.SynchronizeAsync(fixture, Token, maxRows: 2);
+
+        Assert.Equal(3, second.AppliedSearchSequence);
+
+        Assert.Equal((long)CovenantFtsRebuildState.Idle, await RebuildStateAsync(fixture));
+    }
+
+    [Fact]
+    public async Task A_projection_an_earlier_build_adopted_loses_its_stale_rebuild_debt_on_the_next_pass()
+    {
+        await using CovenantCanonicalFixture fixture = await CovenantSearchFixture.CreateAsync(Token);
+
+        _ = await fixture.SeedHeadAsync(
+            CovenantScope.Global,
+            null,
+            "global.key",
+            CovenantLane.Confirmed,
+            CovenantOperation.Set,
+            "Body.",
+            Token);
+
+        _ = await CovenantSearchFixture.SynchronizeAsync(fixture, Token);
+
+        Assert.Equal((long)CovenantFtsRebuildState.Idle, await RebuildStateAsync(fixture));
+
+        // What a build from before the debt cleared on adoption left behind: a published tuple that is
+        // current at the canonical sequence, beside the full rebuild the installation recorded when it
+        // was created. Every operation that records that debt also forgets the applied tuple, so this
+        // pairing can only be a projection that was adopted and kept current.
+        await ExecuteAsync(fixture, "UPDATE covenant_state SET RebuildStateCode = 2 WHERE StateKey = 1;");
+
+        // Nothing is pending, so no delta will ever arrive to carry the correction. The pass itself must.
+        CovenantOutboxSyncOutcome outcome = await CovenantSearchFixture.SynchronizeAsync(fixture, Token);
+
+        Assert.False(outcome.RebuildRequired);
+
+        Assert.Equal(
+            await Scalar(fixture, "SELECT CanonicalSearchSequence FROM covenant_state;"),
+            outcome.AppliedSearchSequence);
+
+        Assert.Equal((long)CovenantFtsRebuildState.Idle, await RebuildStateAsync(fixture));
+    }
+
+    [Fact]
+    public async Task A_current_tuple_does_not_clear_a_rebuild_debt_while_a_rebuild_is_in_progress()
+    {
+        await using CovenantCanonicalFixture fixture = await CovenantSearchFixture.CreateAsync(Token);
+
+        _ = await CovenantSearchFixture.SynchronizeAsync(fixture, Token);
+
+        await ExecuteAsync(
+            fixture,
+            "UPDATE covenant_state SET RebuildStateCode = 3, RebuildTargetSequence = 0, RebuildCursor = 0 WHERE StateKey = 1;");
+
+        _ = await CovenantSearchFixture.SynchronizeAsync(fixture, Token);
+
+        // A rebuild clears itself by its own verification; the worker only ever clears the debt a fresh
+        // or reset installation recorded.
+        Assert.Equal((long)CovenantFtsRebuildState.Rebuilding, await RebuildStateAsync(fixture));
+    }
+
+    [Fact]
+    public async Task A_rebuild_in_progress_keeps_its_state_when_the_worker_publishes_a_tuple()
+    {
+        await using CovenantCanonicalFixture fixture = await CovenantSearchFixture.CreateAsync(Token);
+
+        await ExecuteAsync(
+            fixture,
+            "UPDATE covenant_state SET RebuildStateCode = 3, RebuildTargetSequence = 0, RebuildCursor = 0 WHERE StateKey = 1;");
+
+        _ = await CovenantSearchFixture.SynchronizeAsync(fixture, Token);
+
+        Assert.Equal((long)CovenantFtsRebuildState.Rebuilding, await RebuildStateAsync(fixture));
+    }
+
+    [Fact]
+    public async Task A_contiguous_range_projects_every_head_and_consumes_its_rows()
+    {
+        await using CovenantCanonicalFixture fixture = await CovenantSearchFixture.CreateAsync(Token);
+
+        for (int index = 0; index < 4; index++)
+        {
+            _ = await fixture.SeedHeadAsync(
+                CovenantScope.Global,
+                null,
+                $"global.key{index}",
+                CovenantLane.Confirmed,
+                CovenantOperation.Set,
+                $"Body {index}.",
+                Token);
         }
 
         CovenantOutboxSyncOutcome outcome = await CovenantSearchFixture.SynchronizeAsync(fixture, Token);
@@ -64,18 +173,15 @@ public sealed class CovenantSearchOutboxWorkerTests
         Assert.Equal(
             await Scalar(fixture, "SELECT CanonicalSearchSequence FROM covenant_state;"),
             await Scalar(fixture, "SELECT AppliedSearchSequence FROM covenant_state;"));
-
     }
 
     [Fact]
     public async Task A_bounded_batch_stops_on_a_sequence_boundary_and_resumes()
     {
-
         await using CovenantCanonicalFixture fixture = await CovenantSearchFixture.CreateAsync(Token);
 
         for (int index = 0; index < 5; index++)
         {
-
             _ = await fixture.SeedHeadAsync(
                 CovenantScope.Global,
                 null,
@@ -84,7 +190,6 @@ public sealed class CovenantSearchOutboxWorkerTests
                 CovenantOperation.Set,
                 $"Body {index}.",
                 Token);
-
         }
 
         // Two rows per pass: each seeded head is its own sequence, so the range stops at a boundary.
@@ -105,13 +210,11 @@ public sealed class CovenantSearchOutboxWorkerTests
         Assert.Equal(5, third.AppliedSearchSequence);
 
         Assert.Equal(5, await Count(fixture, "covenant_search_documents"));
-
     }
 
     [Fact]
     public async Task Repeated_deltas_for_one_head_coalesce_to_one_write()
     {
-
         await using CovenantCanonicalFixture fixture = await CovenantSearchFixture.CreateAsync(Token);
 
         SeededHead head = await fixture.SeedHeadAsync(
@@ -155,13 +258,11 @@ public sealed class CovenantSearchOutboxWorkerTests
         Assert.Equal(3, outcome.RowsConsumed);
 
         Assert.Equal(1, await Count(fixture, "covenant_search_documents"));
-
     }
 
     [Fact]
     public async Task A_deletion_delta_removes_its_projection_row()
     {
-
         await using CovenantCanonicalFixture fixture = await CovenantSearchFixture.CreateAsync(Token);
 
         SeededHead head = await fixture.SeedHeadAsync(
@@ -194,13 +295,11 @@ public sealed class CovenantSearchOutboxWorkerTests
         Assert.Equal(0, await Count(fixture, "covenant_search_documents"));
 
         Assert.Equal(0, await Count(fixture, "covenant_fts"));
-
     }
 
     [Fact]
     public async Task A_missing_desired_version_forces_a_rebuild_and_advances_nothing()
     {
-
         await using CovenantCanonicalFixture fixture = await CovenantSearchFixture.CreateAsync(Token);
 
         _ = await fixture.SeedHeadAsync(
@@ -226,13 +325,11 @@ public sealed class CovenantSearchOutboxWorkerTests
         Assert.Equal(0, outcome.RowsConsumed);
 
         Assert.Equal(1, await Count(fixture, "covenant_search_outbox"));
-
     }
 
     [Fact]
     public async Task A_changed_accelerator_epoch_refuses_the_batch()
     {
-
         await using CovenantCanonicalFixture fixture = await CovenantSearchFixture.CreateAsync(Token);
 
         _ = await fixture.SeedHeadAsync(
@@ -256,13 +353,11 @@ public sealed class CovenantSearchOutboxWorkerTests
         Assert.Equal(ErrorCodes.Covenant.StaleSnapshot, refused.Error.Code);
 
         Assert.Equal(1, await Count(fixture, "covenant_search_outbox"));
-
     }
 
     [Fact]
     public async Task A_canonical_mutation_succeeds_even_when_the_accelerator_is_absent()
     {
-
         // No accelerator tier at all: the canonical mutation still commits and still queues its delta.
         await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
 
@@ -283,8 +378,10 @@ public sealed class CovenantSearchOutboxWorkerTests
         Assert.True(applied.IsSuccess);
 
         Assert.Equal(1, await Count(fixture, "covenant_search_outbox"));
-
     }
+
+    private static Task<long> RebuildStateAsync(CovenantCanonicalFixture fixture) =>
+        Scalar(fixture, "SELECT RebuildStateCode FROM covenant_state;");
 
     private static async Task<long> Count(CovenantCanonicalFixture fixture, string table) =>
         await CovenantCapacityFixture.ScalarAsync(fixture, $"SELECT COUNT(*) FROM {table};", Token);
@@ -294,7 +391,6 @@ public sealed class CovenantSearchOutboxWorkerTests
 
     private static async Task<object?> ReadAsync(CovenantCanonicalFixture fixture, string sql)
     {
-
         await using Microsoft.Data.Sqlite.SqliteCommand command = fixture.Connection.CreateCommand();
 
         command.CommandText = sql;
@@ -302,18 +398,14 @@ public sealed class CovenantSearchOutboxWorkerTests
         object? value = await command.ExecuteScalarAsync(Token);
 
         return value is DBNull ? null : value;
-
     }
 
     private static async Task ExecuteAsync(CovenantCanonicalFixture fixture, string sql)
     {
-
         await using Microsoft.Data.Sqlite.SqliteCommand command = fixture.Connection.CreateCommand();
 
         command.CommandText = sql;
 
         _ = await command.ExecuteNonQueryAsync(Token);
-
     }
-
 }

@@ -12,13 +12,12 @@ namespace RetroDownfall.Arcanum.Tests.Cli;
 /// <c>--print</c>/<c>--output-format json</c> must behave like a redirected one — no prompt may
 /// block — and <c>--plain</c> is a colour flag that must keep the documented hidden prompt alive.
 /// </summary>
+[Collection("GlobalConsole")]
 public sealed class SensitiveValueInputTests
 {
-
     [Fact]
     public async Task Redirected_stdin_is_read_even_when_a_headless_marker_is_present()
     {
-
         FakeSensitiveValueConsole console = new(isInputRedirected: true, line: "secret-value");
 
         SensitiveValueRead read = await SensitiveValueInput.ReadAsync(
@@ -32,13 +31,11 @@ public sealed class SensitiveValueInputTests
         Assert.Equal("secret-value", read.Value);
 
         Assert.False(console.PromptWasShown);
-
     }
 
     [Fact]
     public async Task Print_on_a_terminal_refuses_instead_of_blocking_on_the_hidden_prompt()
     {
-
         FakeSensitiveValueConsole console = new(isInputRedirected: false, line: null);
 
         SensitiveValueRead read = await SensitiveValueInput.ReadAsync(
@@ -50,13 +47,11 @@ public sealed class SensitiveValueInputTests
         Assert.False(read.IsAvailable);
 
         Assert.False(console.PromptWasShown);
-
     }
 
     [Fact]
     public async Task Json_on_a_terminal_refuses_instead_of_blocking_on_the_hidden_prompt()
     {
-
         FakeSensitiveValueConsole console = new(isInputRedirected: false, line: null);
 
         SensitiveValueRead read = await SensitiveValueInput.ReadAsync(
@@ -68,18 +63,14 @@ public sealed class SensitiveValueInputTests
         Assert.False(read.IsAvailable);
 
         Assert.False(console.PromptWasShown);
-
     }
 
     [Fact]
     public async Task Plain_on_a_terminal_still_reaches_the_documented_hidden_prompt()
     {
-
         FakeSensitiveValueConsole console = new(isInputRedirected: false, line: null)
         {
-
             PromptResult = "typed-secret",
-
         };
 
         SensitiveValueRead read = await SensitiveValueInput.ReadAsync(
@@ -93,18 +84,14 @@ public sealed class SensitiveValueInputTests
         Assert.Equal("typed-secret", read.Value);
 
         Assert.True(console.PromptWasShown);
-
     }
 
     [Fact]
     public async Task A_plain_terminal_with_no_headless_marker_prompts()
     {
-
         FakeSensitiveValueConsole console = new(isInputRedirected: false, line: null)
         {
-
             PromptResult = "typed-secret",
-
         };
 
         SensitiveValueRead read = await SensitiveValueInput.ReadAsync(
@@ -118,13 +105,11 @@ public sealed class SensitiveValueInputTests
         Assert.Equal("typed-secret", read.Value);
 
         Assert.True(console.PromptWasShown);
-
     }
 
     [Fact]
     public void The_prompt_console_asserts_interaction_so_plain_does_not_kill_the_hidden_prompt()
     {
-
         AnsiConsoleSettings plain = SensitiveValueInput.CreatePromptSettings(
             new CliInvocationOptions(Json: false, Plain: true, Yes: false));
 
@@ -140,7 +125,45 @@ public sealed class SensitiveValueInputTests
         Assert.Equal(InteractionSupport.Yes, styled.Interactive);
 
         Assert.Equal(AnsiSupport.Detect, styled.Ansi);
+    }
 
+    /// <summary>
+    /// R-335: the hidden prompt's question is a diagnostic, so it goes to stderr like
+    /// <c>BackupPassphraseReader</c>'s. Written to stdout it lands in whatever the operator redirected
+    /// stdout into, and under <c>--json</c> it would be part of the document.
+    /// </summary>
+    [Fact]
+    public void CreatePromptSettings_writes_to_stderr()
+    {
+        TextWriter originalOut = Console.Out;
+
+        TextWriter originalError = Console.Error;
+
+        StringWriter stdout = new();
+
+        StringWriter stderr = new();
+
+        Console.SetOut(stdout);
+
+        Console.SetError(stderr);
+
+        try
+        {
+            AnsiConsoleSettings settings = SensitiveValueInput.CreatePromptSettings(
+                new CliInvocationOptions(Json: false, Plain: true, Yes: false));
+
+            AnsiConsole.Create(settings).WriteLine("Master API key:");
+
+            Assert.Contains("Master API key:", stderr.ToString(), StringComparison.Ordinal);
+
+            Assert.Empty(stdout.ToString());
+        }
+        finally
+        {
+            Console.SetOut(originalOut);
+
+            Console.SetError(originalError);
+        }
     }
 
     /// <summary>
@@ -149,12 +172,9 @@ public sealed class SensitiveValueInputTests
     [Fact]
     public async Task A_credential_typed_at_the_hidden_prompt_is_normalised_like_a_piped_one()
     {
-
         FakeSensitiveValueConsole prompted = new(isInputRedirected: false, line: null)
         {
-
             PromptResult = "  sk-typed-secret\t",
-
         };
 
         SensitiveValueRead promptRead = SensitiveValueInput.NormalizeCredential(
@@ -178,7 +198,6 @@ public sealed class SensitiveValueInputTests
         Assert.Equal("sk-typed-secret", promptRead.Value);
 
         Assert.Equal(promptRead.Value, pipedRead.Value);
-
     }
 
     /// <summary>
@@ -187,20 +206,17 @@ public sealed class SensitiveValueInputTests
     [Fact]
     public void Normalisation_leaves_an_unavailable_read_unavailable()
     {
-
         SensitiveValueRead normalized =
             SensitiveValueInput.NormalizeCredential(SensitiveValueRead.Unavailable);
 
         Assert.False(normalized.IsAvailable);
 
         Assert.Null(normalized.Value);
-
     }
 
     private sealed class FakeSensitiveValueConsole(bool isInputRedirected, string? line)
         : ISensitiveValueConsole
     {
-
         public bool PromptWasShown { get; private set; }
 
         public string PromptResult { get; init; } = string.Empty;
@@ -212,13 +228,12 @@ public sealed class SensitiveValueInputTests
 
         public string PromptHidden(string prompt, CliInvocationOptions options)
         {
-
             PromptWasShown = true;
 
             return PromptResult;
-
         }
 
+        public string PromptVisible(string prompt, string defaultValue, CliInvocationOptions options) =>
+            defaultValue;
     }
-
 }

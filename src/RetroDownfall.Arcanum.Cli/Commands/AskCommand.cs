@@ -22,16 +22,18 @@ public sealed class AskCommand(
     ICliEnvironment cliEnvironment,
     IOptions<ArcanumSettings> arcanumSettings,
     IArcanumServeLauncher serveLauncher,
-    ICliInferenceContextResolver contextResolver,
     IConsoleDispatcher dispatcher)
 {
     /// <summary>
-    /// Ask the Mage (multi-word prompt: all words after ask, or after --; multi-turn via cli-session; --new for a fresh thread).
+    /// Runs one agent turn over the streaming API for the <c>run</c> route (multi-turn via cli-session).
     /// </summary>
-    /// <param name="model">-m, The specific model to use for this inference request.</param>
-    /// <param name="new">-n, Start a new session thread, clearing the previous session.</param>
+    /// <remarks>
+    /// The route resolves the effective context once and hands it in, together with the already-staged
+    /// attachments and Scrying foci, so this method resolves nothing and stages nothing itself.
+    /// </remarks>
+    /// <param name="preparedContext">The already-resolved effective campaign, workspace, model and session.</param>
+    /// <param name="new">Start a new session thread, clearing the previous session.</param>
     /// <param name="unattended">Force unattended for this run (also true when <c>Arcanum:Security:Ward:UnattendedMode</c> is set). Omits <c>ask_human</c>; Ward records remain informational.</param>
-    /// <param name="campaign">-c, Campaign GUID to resolve the workspace from (400 Campaign.NotFound if unknown).</param>
     /// <param name="temperature">Sampling temperature 0-2 (lower = more deterministic).</param>
     /// <param name="topP">--top-p, Nucleus sampling cutoff 0-1.</param>
     /// <param name="maxTokens">Maximum output tokens for this turn.</param>
@@ -40,18 +42,13 @@ public sealed class AskCommand(
     /// <param name="responseFormat">Response format: text | json_object | json_schema.</param>
     /// <param name="presencePenalty">Presence penalty -2..2 (positive discourages repetition).</param>
     /// <param name="frequencyPenalty">Frequency penalty -2..2 (positive penalizes frequent tokens).</param>
-    /// <param name="image">Attach an image (Scrying focus) for this turn; repeatable. Requires a vision-capable model.</param>
     /// <param name="attachment">Bound session attachment GUID to reference; repeatable.</param>
-    /// <param name="preparedContext">Already-resolved effective context for an internal composed CLI route.</param>
-    /// <param name="prompt">The prompt text: all words after ask, or after --.</param>
+    /// <param name="prompt">The prompt text.</param>
     public async Task<int> Ask(
         CancellationToken cancellationToken,
-        string? model = null,
+        CliEffectiveContext preparedContext,
         bool @new = false,
         bool unattended = false,
-        string? campaign = null,
-        string? workspace = null,
-        string? sessionIdOption = null,
         string? temperature = null,
         string? topP = null,
         string? maxTokens = null,
@@ -60,26 +57,15 @@ public sealed class AskCommand(
         string? responseFormat = null,
         string? presencePenalty = null,
         string? frequencyPenalty = null,
-        string[]? image = null,
         string[]? attachment = null,
         IReadOnlyList<AttachedFileDto>? attachedFiles = null,
         IReadOnlyList<ScryingFocusDto>? preparedScryingFoci = null,
         string? overrideSpellName = null,
-        CliEffectiveContext? preparedContext = null,
         params string[] prompt)
     {
+        ArgumentNullException.ThrowIfNull(preparedContext);
+
         string promptText = BuildPrompt(prompt);
-
-        if (string.IsNullOrWhiteSpace(promptText))
-        {
-            CliErrorOutput.WriteMarkupLine(
-                palette.ErrorLabelMarkup(
-                    Markup.Escape("Error:"),
-                    Markup.Escape(
-                        "Prompt is required. Examples: arcanum ask What time is it? or arcanum ask -- local time")));
-
-            return 1;
-        }
 
         if (!AttachmentReferenceInput.TryParse(
                 attachment,
@@ -104,77 +90,6 @@ public sealed class AskCommand(
             preparedScryingFoci is { Count: > 0 }
                 ? [.. preparedScryingFoci]
                 : null;
-
-        if (image is { Length: > 0 } imagePaths)
-        {
-            long maxImageBytes = ArcanumSettingClamps.ScryingMaxImageBytes(
-                arcanumSettings.Value.ResolveScrying().MaxImageBytes);
-
-            string[] allowedMimeTypes =
-                arcanumSettings.Value.Security.AllowedImageMimeTypes ?? [];
-
-            List<ScryingFocusDto> foci =
-                scryingFoci is null
-                    ? new(imagePaths.Length)
-                    : new(scryingFoci);
-
-            foreach (string imagePath in imagePaths)
-            {
-                string fullPath;
-
-                try
-                {
-                    fullPath = Path.GetFullPath(imagePath);
-                }
-                catch (Exception ex) when (ex is ArgumentException or PathTooLongException or NotSupportedException)
-                {
-                    CliErrorOutput.WriteMarkupLine(
-                        palette.ErrorLabelMarkup(
-                            Markup.Escape("Error:"),
-                            Markup.Escape($"--image '{imagePath}' could not be resolved as a path ({ex.GetType().Name}).")));
-
-                    return 1;
-                }
-
-                if (!File.Exists(fullPath))
-                {
-                    CliErrorOutput.WriteMarkupLine(
-                        palette.ErrorLabelMarkup(
-                            Markup.Escape("Error:"),
-                            Markup.Escape($"--image '{fullPath}' not found.")));
-
-                    return 1;
-                }
-
-                ScryingFocusStager.StagingResult staged = ScryingFocusStager.Stage(fullPath, maxImageBytes, allowedMimeTypes);
-
-                if (staged.Error is not null)
-                {
-                    CliErrorOutput.WriteMarkupLine(
-                        palette.ErrorLabelMarkup(
-                            Markup.Escape($"--image '{Path.GetFileName(fullPath)}':"),
-                            Markup.Escape(staged.Error)));
-
-                    return 1;
-                }
-
-                foci.Add(staged.Focus!);
-
-                AnsiConsole.MarkupLine(
-                    $"{palette.HighlightMarkup(Markup.Escape("Scrying focus:"))} {palette.TextMarkup(Markup.Escape($"{Path.GetFileName(fullPath)} ({ScryingFocusStager.FormatByteCount(staged.FileSizeBytes ?? 0)})"))}");
-            }
-
-            scryingFoci = foci;
-        }
-
-        if (@new && !string.IsNullOrWhiteSpace(sessionIdOption))
-        {
-            CliErrorOutput.WriteMarkupLine(
-                palette.ErrorMarkup(
-                    Markup.Escape("--new and --session cannot be used together.")));
-
-            return 1;
-        }
 
         using CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
 
@@ -238,58 +153,14 @@ public sealed class AskCommand(
 
             string invocationDirectory = Environment.CurrentDirectory;
 
-            CliEffectiveContext effectiveContext;
-
-            if (preparedContext is not null)
-            {
-                effectiveContext = preparedContext;
-            }
-            else
-            {
-                CliInferenceContextResult contextResult = await contextResolver
-                    .ResolveAsync(
-                        new CliInferenceContextRequest(
-                            campaign,
-                            workspace,
-                            model,
-                            sessionIdOption,
-                            invocationDirectory,
-                            CliInvocationContext.Current.NoContext,
-                            @new),
-                        linked.Token)
-                    .ConfigureAwait(false);
-
-                if (!contextResult.IsSuccess)
-                {
-                    if (contextResult.IsCancelled)
-                    {
-                        return 0;
-                    }
-
-                    stderrConsole.MarkupLine(
-                        palette.ErrorMarkup(
-                            Markup.Escape(contextResult.Error ?? "CLI context could not be resolved.")));
-
-                    return 1;
-                }
-
-                effectiveContext = contextResult.Context!;
-
-                foreach (string warning in contextResult.Warnings)
-                {
-                    stderrConsole.MarkupLine(
-                        palette.ErrorMarkup(Markup.Escape("Warning: " + warning)));
-                }
-            }
-
-            string cwd = effectiveContext.Workspace.Value
+            string cwd = preparedContext.Workspace.Value
                 ?? invocationDirectory;
 
-            Guid? campaignId = effectiveContext.Campaign.Value;
+            Guid? campaignId = preparedContext.Campaign.Value;
 
-            Guid? sessionId = effectiveContext.Session.Value;
+            Guid? sessionId = preparedContext.Session.Value;
 
-            model = effectiveContext.Model.Value;
+            string? model = preparedContext.Model.Value;
 
             if (cliEnvironment.IsInteractive)
             {
@@ -314,7 +185,7 @@ public sealed class AskCommand(
                         Markup.Escape("Error:"),
                         Markup.Escape(synchronized.Error.Message)));
 
-                return 1;
+                return CliFailureExit.ExitCode(synchronized.Error);
             }
 
             ChronosyncReport chronosyncDelta = synchronized.Value;
@@ -366,7 +237,7 @@ public sealed class AskCommand(
                         CliStreamDiagnostic.WriteMarkupLine(
                             stderrConsole,
                             streamContent,
-                            palette.MutedMarkup(Markup.Escape(evt.Message)));
+                            palette.MutedMarkup(Markup.Escape(TerminalTextSanitizer.SanitizeLine(evt.Message))));
 
                         break;
 
@@ -424,7 +295,9 @@ public sealed class AskCommand(
                         CliStreamDiagnostic.WriteMarkupLine(
                             stderrConsole,
                             streamContent,
-                            palette.ErrorMarkup(Markup.Escape($"⚠ Tool {evt.Message} failed (tolerated)")));
+                            palette.ErrorMarkup(
+                                Markup.Escape(
+                                    $"⚠ Tool {TerminalTextSanitizer.SanitizeLine(evt.Message)} failed (tolerated)")));
 
                         break;
 
@@ -433,7 +306,7 @@ public sealed class AskCommand(
                         CliStreamDiagnostic.WriteMarkupLine(
                             stderrConsole,
                             streamContent,
-                            palette.MutedMarkup(Markup.Escape(evt.Data ?? evt.Message)));
+                            palette.MutedMarkup(Markup.Escape(TerminalTextSanitizer.SanitizeLine(evt.Data ?? evt.Message))));
 
                         break;
 
@@ -460,7 +333,9 @@ public sealed class AskCommand(
                     case IntelligenceEventType.Result:
 
                         _ = EphemeralReasoningRenderer.Flush(stderrConsole, streamContent, palette);
-                        finalText = streamContent.AnswerText;
+                        // The answer already reached stdout token by token; a Result frame only says the
+                        // turn finished. An empty string marks "finished" without holding a second copy.
+                        finalText = string.Empty;
 
                         break;
 
@@ -472,7 +347,7 @@ public sealed class AskCommand(
                             streamContent,
                             palette.ErrorLabelMarkup(
                                 Markup.Escape("Error:"),
-                                Markup.Escape(FormatStreamTransportError(evt.Message))));
+                                Markup.Escape(TerminalTextSanitizer.SanitizeLine(FormatStreamTransportError(evt.Message)))));
 
                         return 1;
                 }
@@ -518,7 +393,8 @@ public sealed class AskCommand(
 
             CliFailure failure = CliFailureMapper.Map(ex);
 
-            dispatcher.WriteVerbose(ex.Message);
+            // Type only, as for every other command: an upstream message can carry a secret or a path.
+            dispatcher.WriteVerbose($"Exception type: {ex.GetType().FullName}");
 
             stderrConsole.MarkupLine(
                 palette.ErrorLabelMarkup(Markup.Escape("Error:"), Markup.Escape(failure.SafeMessage)));
@@ -530,14 +406,9 @@ public sealed class AskCommand(
             Console.CancelKeyPress -= OnCancelKeyPress;
         }
 
-        if (finalText is null)
+        if (finalText is null && streamContent.AnswerLength > 0)
         {
-            string accumulated = streamContent.AnswerText;
-
-            if (!string.IsNullOrEmpty(accumulated))
-            {
-                finalText = accumulated;
-            }
+            finalText = string.Empty;
         }
 
         if (finalText is null)

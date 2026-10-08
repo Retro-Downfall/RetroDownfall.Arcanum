@@ -39,6 +39,8 @@ using RetroDownfall.Arcanum.Core.Storage.Entities;
 
 using RetroDownfall.Arcanum.Core.Weave;
 
+using RetroDownfall.Arcanum.Core.Weave.Tapestry;
+
 using RetroDownfall.Arcanum.Infrastructure.Data;
 
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
@@ -60,6 +62,55 @@ internal static class MemoryEndpoints
     /// bounded exactly like its neighbours.
     /// </remarks>
     internal const int SearchResultLimit = 10_000;
+
+    /// <summary>
+    /// Ceiling, in UTF-8 bytes of returned content, on what <c>POST /api/memory/search</c> reads and writes,
+    /// shared across every scope of one request as <see cref="SearchResultLimit"/> is.
+    /// </summary>
+    internal const long SearchResultByteBudget = 8L * 1024L * 1024L;
+
+    /// <summary>
+    /// The UTF-8 bytes of content one search has already taken, shared across its scopes.
+    /// </summary>
+    /// <remarks>
+    /// Checked after each row rather than before, so a search overshoots by at most the one row that crossed
+    /// the budget. A scope that stops reading because the budget is spent cannot know whether it left rows
+    /// behind without reading another one, so it reports <c>hasMore</c>: the answer is never "complete" while
+    /// a row may have been left unread.
+    /// </remarks>
+    private sealed class ResultByteBudget
+    {
+        private long _used;
+
+        private bool _stoppedEarly;
+
+        internal bool Exhausted => _used >= SearchResultByteBudget;
+
+        /// <summary>Charges <paramref name="content"/>; true means the budget is now spent and the scope must stop.</summary>
+        internal bool Charge(string content)
+        {
+            _used += System.Text.Encoding.UTF8.GetByteCount(content);
+
+            if (!Exhausted)
+            {
+                return false;
+            }
+
+            _stoppedEarly = true;
+
+            return true;
+        }
+
+        /// <summary>Whether the scope just searched stopped on the budget; reading it starts the next scope clean.</summary>
+        internal bool TakeStoppedEarly()
+        {
+            bool stopped = _stoppedEarly;
+
+            _stoppedEarly = false;
+
+            return stopped;
+        }
+    }
 
     private const string SessionRetention = "Session lifetime; archiving retains it and session purge removes it.";
 
@@ -448,9 +499,11 @@ internal static class MemoryEndpoints
 
         List<MemorySearchScopeStatusDto> scopes = [];
 
+        ResultByteBudget bytes = new();
+
         if (Includes(request.Scope, MemorySearchScope.Session))
         {
-            int slice = OpenSlice(MemorySearchScope.Session, results, budget, scopes);
+            int slice = OpenSlice(MemorySearchScope.Session, results, budget, scopes, bytes);
 
             if (slice > 0)
             {
@@ -460,15 +513,16 @@ internal static class MemoryEndpoints
                     request.SessionId,
                     results,
                     slice + 1,
+                    bytes,
                     context.RequestAborted).ConfigureAwait(false);
 
-                CloseSlice(MemorySearchScope.Session, results, budget, slice, scopes);
+                CloseSlice(MemorySearchScope.Session, results, budget, slice, scopes, bytes);
             }
         }
 
         if (Includes(request.Scope, MemorySearchScope.Attachments))
         {
-            int slice = OpenSlice(MemorySearchScope.Attachments, results, budget, scopes);
+            int slice = OpenSlice(MemorySearchScope.Attachments, results, budget, scopes, bytes);
 
             if (slice > 0)
             {
@@ -478,15 +532,16 @@ internal static class MemoryEndpoints
                     request.SessionId,
                     results,
                     slice + 1,
+                    bytes,
                     context.RequestAborted).ConfigureAwait(false);
 
-                CloseSlice(MemorySearchScope.Attachments, results, budget, slice, scopes);
+                CloseSlice(MemorySearchScope.Attachments, results, budget, slice, scopes, bytes);
             }
         }
 
         if (Includes(request.Scope, MemorySearchScope.Workspace))
         {
-            int slice = OpenSlice(MemorySearchScope.Workspace, results, budget, scopes);
+            int slice = OpenSlice(MemorySearchScope.Workspace, results, budget, scopes, bytes);
 
             if (slice > 0)
             {
@@ -496,15 +551,16 @@ internal static class MemoryEndpoints
                     request.WorkspaceId,
                     results,
                     slice + 1,
+                    bytes,
                     context.RequestAborted).ConfigureAwait(false);
 
-                CloseSlice(MemorySearchScope.Workspace, results, budget, slice, scopes);
+                CloseSlice(MemorySearchScope.Workspace, results, budget, slice, scopes, bytes);
             }
         }
 
         if (Includes(request.Scope, MemorySearchScope.Saga))
         {
-            int slice = OpenSlice(MemorySearchScope.Saga, results, budget, scopes);
+            int slice = OpenSlice(MemorySearchScope.Saga, results, budget, scopes, bytes);
 
             if (slice > 0)
             {
@@ -515,23 +571,24 @@ internal static class MemoryEndpoints
                     await ResolveScopeAsync(request.SessionId, context).ConfigureAwait(false),
                     results,
                     slice + 1,
+                    bytes,
                     context.RequestAborted).ConfigureAwait(false);
 
-                CloseSlice(MemorySearchScope.Saga, results, budget, slice, scopes);
+                CloseSlice(MemorySearchScope.Saga, results, budget, slice, scopes, bytes);
             }
         }
 
         if (Includes(request.Scope, MemorySearchScope.Lexicon))
         {
-            int slice = OpenSlice(MemorySearchScope.Lexicon, results, budget, scopes);
+            int slice = OpenSlice(MemorySearchScope.Lexicon, results, budget, scopes, bytes);
 
             if (slice > 0)
             {
                 return await RespondToLexiconInspectionAsync(lexicon, context, entries =>
                 {
-                    AddLexiconMatches(entries, query, results, slice + 1);
+                    AddLexiconMatches(entries, query, results, slice + 1, bytes);
 
-                    CloseSlice(MemorySearchScope.Lexicon, results, budget, slice, scopes);
+                    CloseSlice(MemorySearchScope.Lexicon, results, budget, slice, scopes, bytes);
 
                     return new MemorySearchResponse(query, request.Scope, [.. results], [.. scopes],
                         scopes.Exists(static scope => scope.HasMore));
@@ -563,9 +620,11 @@ internal static class MemoryEndpoints
         MemorySearchScope scope,
         List<MemorySearchResultDto> results,
         int budget,
-        List<MemorySearchScopeStatusDto> scopes)
+        List<MemorySearchScopeStatusDto> scopes,
+        ResultByteBudget bytes)
     {
-        int slice = budget - results.Count;
+        // A spent byte budget starves the scope exactly as a spent row budget does.
+        int slice = bytes.Exhausted ? 0 : budget - results.Count;
 
         if (slice <= 0)
         {
@@ -580,25 +639,36 @@ internal static class MemoryEndpoints
     /// from one that happened to fill its slice exactly. The extra row is trimmed here and never
     /// reaches the caller.
     /// </summary>
+    /// <remarks>
+    /// The trimmed row's content stays charged to the byte budget. That charge cannot starve a later
+    /// scope: a trimmed row exists only when this scope filled its whole slice, which leaves the row
+    /// budget at zero, so every later scope is already reported starved by rows whatever the bytes say.
+    /// Keeping the charge keeps the byte budget monotonic, which is what lets a spent budget, and the
+    /// stopped-early flag it raises, stay spent.
+    /// </remarks>
     private static void CloseSlice(
         MemorySearchScope scope,
         List<MemorySearchResultDto> results,
         int budget,
         int slice,
-        List<MemorySearchScopeStatusDto> scopes)
+        List<MemorySearchScopeStatusDto> scopes,
+        ResultByteBudget bytes)
     {
         int produced = results.Count - (budget - slice);
 
-        bool hasMore = produced > slice;
+        bool overflowed = produced > slice;
 
-        if (hasMore)
+        // Read whether or not the scope overflowed, so the flag never outlives the scope that raised it.
+        bool stoppedEarly = bytes.TakeStoppedEarly();
+
+        if (overflowed)
         {
             results.RemoveRange(budget, results.Count - budget);
 
             produced = slice;
         }
 
-        scopes.Add(new MemorySearchScopeStatusDto(scope, produced, hasMore));
+        scopes.Add(new MemorySearchScopeStatusDto(scope, produced, overflowed || stoppedEarly));
     }
 
     private static async Task<IResult> HandleLexiconListAsync(
@@ -941,8 +1011,8 @@ internal static class MemoryEndpoints
                   SELECT COUNT(*) FROM tapestry_nodes n
                   INNER JOIN tapestry_generations g ON g.GenerationId = n.GenerationId
                   WHERE g.Status = 'Complete'
-                    AND g.ScopeKind <> 'Workspace'
-                    AND g.ScopeId = @sessionId
+                    AND ((g.ScopeKind = 'Session' AND g.ScopeId = @tapestrySessionScopeId)
+                      OR (g.ScopeKind = 'SessionAttachment' AND g.ScopeId = @tapestryAttachmentScopeId))
                   """,
             sessionId,
             cancellationToken).ConfigureAwait(false);
@@ -1021,6 +1091,7 @@ internal static class MemoryEndpoints
         Guid? sessionId,
         List<MemorySearchResultDto> results,
         int limit,
+        ResultByteBudget bytes,
         CancellationToken cancellationToken)
     {
         await using DbCommand command = connection.CreateCommand();
@@ -1052,18 +1123,30 @@ internal static class MemoryEndpoints
         {
             string title = reader.GetString(4);
 
+            string content = reader.GetString(2);
+
             results.Add(new MemorySearchResultDto(
                 MemorySearchScope.Session,
                 $"Session entry ({(MessageRole)reader.GetInt32(3)})",
-                reader.GetString(2),
+                content,
                 $"Session {(title.Length == 0 ? reader.GetString(1) : title)}, entry {reader.GetString(0)}",
                 SessionRetention,
                 reader.GetString(0)));
 
             taken++;
+
+            if (bytes.Charge(content))
+            {
+                break;
+            }
         }
 
         await reader.DisposeAsync().ConfigureAwait(false);
+
+        if (bytes.Exhausted)
+        {
+            return;
+        }
 
         // The entry scan and the summary scan share this scope's slice of the budget; entries are the
         // narrower, more specific hit, so they are read first and the summaries take what is left.
@@ -1103,13 +1186,20 @@ internal static class MemoryEndpoints
 
             string title = summaryReader.GetString(1);
 
+            string summary = summaryReader.GetString(2);
+
             results.Add(new MemorySearchResultDto(
                 MemorySearchScope.Session,
                 "Campaign Summary",
-                summaryReader.GetString(2),
+                summary,
                 $"Session {(title.Length == 0 ? id : title)}, Summary field",
                 SessionRetention,
                 id));
+
+            if (bytes.Charge(summary))
+            {
+                break;
+            }
         }
 
         await GrimoireScopedConsumerTestSeam
@@ -1127,6 +1217,7 @@ internal static class MemoryEndpoints
         Guid? sessionId,
         List<MemorySearchResultDto> results,
         int limit,
+        ResultByteBudget bytes,
         CancellationToken cancellationToken)
     {
         await using DbCommand command = connection.CreateCommand();
@@ -1156,13 +1247,20 @@ internal static class MemoryEndpoints
 
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
+            string content = reader.GetString(7);
+
             results.Add(new MemorySearchResultDto(
                 MemorySearchScope.Attachments,
                 $"{reader.GetString(5)} chunk {reader.GetInt32(6)}",
-                reader.GetString(7),
+                content,
                 $"Session {reader.GetString(1)}, attachment {reader.GetString(2)}, logical key {reader.GetString(3)}, version {reader.GetInt32(4)}, content hash {reader.GetString(8)}",
                 AttachmentIndexRetention,
                 reader.GetString(0)));
+
+            if (bytes.Charge(content))
+            {
+                break;
+            }
         }
     }
 
@@ -1172,6 +1270,7 @@ internal static class MemoryEndpoints
         string? workspaceId,
         List<MemorySearchResultDto> results,
         int limit,
+        ResultByteBudget bytes,
         CancellationToken cancellationToken)
     {
         string? workspacePath = null;
@@ -1234,13 +1333,20 @@ internal static class MemoryEndpoints
         {
             string label = workspaceLabel ?? "indexed workspace";
 
+            string content = reader.GetString(4);
+
             results.Add(new MemorySearchResultDto(
                 MemorySearchScope.Workspace,
                 $"{reader.GetString(2)} lines {reader.GetInt32(5)}-{reader.GetInt32(6)}",
-                reader.GetString(4),
+                content,
                 $"Workspace {label}, relative file {reader.GetString(2)}, chunk {reader.GetInt32(3)}",
                 WorkspaceRetention,
                 reader.GetString(0)));
+
+            if (bytes.Charge(content))
+            {
+                break;
+            }
         }
     }
 
@@ -1251,6 +1357,7 @@ internal static class MemoryEndpoints
         MemoryScope scope,
         List<MemorySearchResultDto> results,
         int limit,
+        ResultByteBudget bytes,
         CancellationToken cancellationToken)
     {
         MemoryCampaignScopeDto reported = MemoryCampaignScopeReport.Describe(scope);
@@ -1322,6 +1429,11 @@ internal static class MemoryEndpoints
                     Saga: new MemorySagaTargetDto(memory.Id)),
                 SagaLifecycle: row.Lifecycle,
                 SagaEligibility: SagaRetrievalEligibilityClassifier.Classify(row, scope.IsEnforced)));
+
+            if (bytes.Charge(memory.Content))
+            {
+                break;
+            }
         }
     }
 
@@ -1329,7 +1441,8 @@ internal static class MemoryEndpoints
         IReadOnlyList<LexiconEntryDto> entries,
         string query,
         List<MemorySearchResultDto> results,
-        int limit)
+        int limit,
+        ResultByteBudget bytes)
     {
         int taken = 0;
 
@@ -1362,10 +1475,12 @@ internal static class MemoryEndpoints
                 provenance += $"; {sources}";
             }
 
+            string facts = string.Join("; ", entry.Facts);
+
             results.Add(new MemorySearchResultDto(
                 MemorySearchScope.Lexicon,
                 $"{entry.Name} [{entry.Type}]",
-                string.Join("; ", entry.Facts),
+                facts,
                 provenance,
                 LexiconRetention,
                 entry.Id.ToString("D"),
@@ -1380,6 +1495,11 @@ internal static class MemoryEndpoints
                             : new LexiconCurationScope(LexiconScopeKind.Global, null)))));
 
             taken++;
+
+            if (bytes.Charge(facts))
+            {
+                break;
+            }
         }
     }
 
@@ -1532,14 +1652,21 @@ internal static class MemoryEndpoints
     /// <c>@canonicalSessionId</c> is for a column that holds the uppercase dashed form the
     /// object-relational writer renders. <c>@sessionId</c> is for the columns that deliberately hold the
     /// lowercase one: <c>session_attachment_chunks.SessionId</c>, which the tapestry reads as its live
-    /// scope-id set, <c>saga_memories.SessionId</c>, and <c>tapestry_generations.ScopeId</c>, which is
-    /// filled from the first. One parameter served both groups until the attachment family moved, and
-    /// the bound-attachment count then compared a lowercase value against a canonical column and
-    /// reported zero.
+    /// scope-id set, and <c>saga_memories.SessionId</c>. One parameter served both groups until the
+    /// attachment family moved, and the bound-attachment count then compared a lowercase value against a
+    /// canonical column and reported zero.
+    ///
+    /// <para><c>tapestry_generations.ScopeId</c> belongs to neither group, because it is filled from the
+    /// corpus each scope kind was woven from: a <c>Session</c> tree reads <c>Entries.SessionId</c>, so its
+    /// scope id is canonical, and a <c>SessionAttachment</c> tree reads the chunk column, so its scope id
+    /// is lowercase. Its predicate therefore binds each kind to its own parameter,
+    /// <c>@tapestrySessionScopeId</c> and <c>@tapestryAttachmentScopeId</c>, and takes the value from
+    /// <see cref="TapestryScope.ForSession"/> and <see cref="TapestryScope.ForSessionAttachment"/>, the one
+    /// place each spelling is written, rather than spelling it a third time here.</para>
     ///
     /// <para>Every predicate that reads a canonical column now binds <c>@canonicalSessionId</c>: the
     /// entry, pinned-entry and campaign-summary counts, and both session-scoped search predicates, join
-    /// the bound-attachment count in doing so. Only the three columns named above stay bound to the
+    /// the bound-attachment count in doing so. Only the two columns named above stay bound to the
     /// deliberately-lowercase group.</para>
     ///
     /// <para>Both names are always added. A named parameter a statement never mentions is simply not
@@ -1557,6 +1684,13 @@ internal static class MemoryEndpoints
                 command,
                 "@canonicalSessionId",
                 sessionId.Value.ToString("D").ToUpperInvariant());
+
+            AddParameter(command, "@tapestrySessionScopeId", TapestryScope.ForSession(sessionId.Value).Id);
+
+            AddParameter(
+                command,
+                "@tapestryAttachmentScopeId",
+                TapestryScope.ForSessionAttachment(sessionId.Value).Id);
         }
     }
 

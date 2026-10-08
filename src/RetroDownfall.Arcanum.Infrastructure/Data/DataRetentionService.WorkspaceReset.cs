@@ -14,21 +14,17 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data;
 
 internal sealed partial class DataRetentionService
 {
-
     private async Task<DataRetentionPlan> BuildWorkspaceResetPlanAsync(
         DataRetentionRequest request,
         DataRetentionWorkspaceBinding binding,
         CancellationToken cancellationToken)
     {
-
         if (!TryGetCanonicalWorkspaceRoot(binding, out string workspaceRoot))
         {
-
             return InvalidWorkspaceResetPlan(
                 request,
                 binding,
                 "The workspace-reset binding must contain a Campaign ID and canonical workspace root.");
-
         }
 
         DbConnection connection = await OpenConnectionAsync(
@@ -41,12 +37,10 @@ internal sealed partial class DataRetentionService
                 workspaceRoot,
                 cancellationToken).ConfigureAwait(false))
         {
-
             return InvalidWorkspaceResetPlan(
                 request,
                 binding,
                 "The Campaign ID and workspace root do not identify the same registered Campaign.");
-
         }
 
         WorkspaceResetSnapshot snapshot = await ReadWorkspaceResetSnapshotAsync(
@@ -73,7 +67,6 @@ internal sealed partial class DataRetentionService
             WorkspaceResetCandidateIds(binding, workspaceRoot),
             requiresConfirmation: true,
             planAuthority: snapshot.ResourceFingerprint);
-
     }
 
     private async Task<DataRetentionApplyResult> ApplyWorkspaceResetAsync(
@@ -82,13 +75,10 @@ internal sealed partial class DataRetentionService
         DataRetentionWorkspaceBinding binding,
         CancellationToken cancellationToken)
     {
-
         if (!TryGetCanonicalWorkspaceRoot(binding, out string workspaceRoot))
         {
-
             throw new RetentionConflictException(
                 "The workspace-reset binding is no longer canonical.");
-
         }
 
         DbConnection connection = await OpenConnectionAsync(
@@ -104,7 +94,6 @@ internal sealed partial class DataRetentionService
 
         try
         {
-
             if (!await WorkspaceBindingExistsAsync(
                     connection,
                     transaction,
@@ -112,10 +101,8 @@ internal sealed partial class DataRetentionService
                     workspaceRoot,
                     cancellationToken).ConfigureAwait(false))
             {
-
                 throw new RetentionConflictException(
                     "The Campaign registration changed after preview; request a new dry-run before retrying.");
-
             }
 
             WorkspaceResetSnapshot current = await ReadWorkspaceResetSnapshotAsync(
@@ -149,10 +136,8 @@ internal sealed partial class DataRetentionService
                     plan.PlanId,
                     StringComparison.Ordinal))
             {
-
                 throw new RetentionConflictException(
                     "Workspace data changed after preview; request a new dry-run before retrying.");
-
             }
 
             if (await WorkspaceResetTableExistsAsync(
@@ -161,7 +146,6 @@ internal sealed partial class DataRetentionService
                     "tapestry_node_embeddings_vec",
                     cancellationToken).ConfigureAwait(false))
             {
-
                 derivedDeleted += await ExecuteAsync(
                     connection,
                     transaction,
@@ -174,7 +158,6 @@ internal sealed partial class DataRetentionService
                     """,
                     cancellationToken,
                     ("@root", workspaceRoot)).ConfigureAwait(false);
-
             }
 
             derivedDeleted += await ExecuteAsync(
@@ -210,7 +193,6 @@ internal sealed partial class DataRetentionService
                     "workspace_file_embeddings_vec",
                     cancellationToken).ConfigureAwait(false))
             {
-
                 derivedDeleted += await ExecuteAsync(
                     connection,
                     transaction,
@@ -223,7 +205,6 @@ internal sealed partial class DataRetentionService
                     """,
                     cancellationToken,
                     ("@root", workspaceRoot)).ConfigureAwait(false);
-
             }
 
             derivedDeleted += await ExecuteAsync(
@@ -254,22 +235,19 @@ internal sealed partial class DataRetentionService
                 ("@root", workspaceRoot)).ConfigureAwait(false);
 
             await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-
         }
         catch
         {
-
             await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
 
             throw;
-
         }
 
         WorkspaceResetSnapshot remaining = await ReadWorkspaceResetSnapshotAsync(
             connection,
             transaction: null,
             workspaceRoot,
-            cancellationToken).ConfigureAwait(false);
+            CancellationToken.None).ConfigureAwait(false);
 
         bool reconciled = remaining.TotalOwnedRows == 0;
 
@@ -283,7 +261,6 @@ internal sealed partial class DataRetentionService
             reconciled,
             plan.Blockers,
             plan.Conflicts);
-
     }
 
     private DataRetentionPlan InvalidWorkspaceResetPlan(
@@ -302,31 +279,24 @@ internal sealed partial class DataRetentionService
         DataRetentionWorkspaceBinding binding,
         out string canonicalRoot)
     {
-
         canonicalRoot = string.Empty;
 
         if (binding.CampaignId == Guid.Empty
             || string.IsNullOrWhiteSpace(binding.WorkspaceRoot))
         {
-
             return false;
-
         }
 
         try
         {
-
             canonicalRoot = Path.TrimEndingDirectorySeparator(
                 Path.GetFullPath(binding.WorkspaceRoot));
-
         }
         catch (Exception ex) when (ex is ArgumentException
                                    or NotSupportedException
                                    or PathTooLongException)
         {
-
             return false;
-
         }
 
         return string.Equals(
@@ -335,7 +305,6 @@ internal sealed partial class DataRetentionService
             OperatingSystem.IsWindows()
                 ? StringComparison.OrdinalIgnoreCase
                 : StringComparison.Ordinal);
-
     }
 
     private static async Task<bool> WorkspaceBindingExistsAsync(
@@ -345,7 +314,6 @@ internal sealed partial class DataRetentionService
         string workspaceRoot,
         CancellationToken cancellationToken)
     {
-
         await using DbCommand command = connection.CreateCommand();
 
         command.Transaction = transaction;
@@ -367,18 +335,15 @@ internal sealed partial class DataRetentionService
             cancellationToken).ConfigureAwait(false);
 
         return Convert.ToInt64(result, CultureInfo.InvariantCulture) != 0;
-
     }
 
     private static DataRetentionPlanItem[] WorkspaceResetPlanItems(
         WorkspaceResetSnapshot snapshot)
     {
-
         List<DataRetentionPlanItem> items = [];
 
         if (snapshot.WorkspaceContextRows > 0 || snapshot.WorkspaceChunkRows > 0)
         {
-
             items.Add(
                 new DataRetentionPlanItem(
                     RetentionDataClass.WorkspaceChunks,
@@ -386,7 +351,6 @@ internal sealed partial class DataRetentionService
                     0,
                     0,
                     snapshot.WorkspaceChunkRows));
-
         }
 
         long workspaceEmbeddingRows = snapshot.WorkspaceEmbeddingRows
@@ -394,7 +358,6 @@ internal sealed partial class DataRetentionService
 
         if (workspaceEmbeddingRows > 0)
         {
-
             items.Add(
                 new DataRetentionPlanItem(
                     RetentionDataClass.WorkspaceEmbeddings,
@@ -402,7 +365,6 @@ internal sealed partial class DataRetentionService
                     0,
                     0,
                     workspaceEmbeddingRows));
-
         }
 
         long tapestryRows = snapshot.TapestryGenerationRows
@@ -412,7 +374,6 @@ internal sealed partial class DataRetentionService
 
         if (tapestryRows > 0)
         {
-
             items.Add(
                 new DataRetentionPlanItem(
                     RetentionDataClass.Tapestry,
@@ -420,11 +381,9 @@ internal sealed partial class DataRetentionService
                     0,
                     0,
                     tapestryRows));
-
         }
 
         return [.. items.OrderBy(static item => item.DataClass)];
-
     }
 
     private static string[] WorkspaceResetCandidateIds(
@@ -441,7 +400,6 @@ internal sealed partial class DataRetentionService
         string workspaceRoot,
         CancellationToken cancellationToken)
     {
-
         long workspaceContexts = await WorkspaceResetCountAsync(
             connection,
             transaction,
@@ -595,7 +553,6 @@ internal sealed partial class DataRetentionService
 
         if (hasWorkspaceVectors)
         {
-
             await AppendWorkspaceResetFingerprintAsync(
                 resourceFingerprint,
                 connection,
@@ -610,7 +567,6 @@ internal sealed partial class DataRetentionService
                 """,
                 workspaceRoot,
                 cancellationToken).ConfigureAwait(false);
-
         }
 
         await AppendWorkspaceResetFingerprintAsync(
@@ -658,7 +614,6 @@ internal sealed partial class DataRetentionService
 
         if (hasTapestryVectors)
         {
-
             await AppendWorkspaceResetFingerprintAsync(
                 resourceFingerprint,
                 connection,
@@ -673,7 +628,6 @@ internal sealed partial class DataRetentionService
                 """,
                 workspaceRoot,
                 cancellationToken).ConfigureAwait(false);
-
         }
 
         return new WorkspaceResetSnapshot(
@@ -687,7 +641,6 @@ internal sealed partial class DataRetentionService
             tapestryVectors,
             crossScopeGenerationRows,
             Convert.ToHexString(resourceFingerprint.GetHashAndReset()));
-
     }
 
     private static async Task<long> WorkspaceResetCountAsync(
@@ -697,7 +650,6 @@ internal sealed partial class DataRetentionService
         string workspaceRoot,
         CancellationToken cancellationToken)
     {
-
         await using DbCommand command = connection.CreateCommand();
 
         command.Transaction = transaction;
@@ -710,7 +662,6 @@ internal sealed partial class DataRetentionService
             cancellationToken).ConfigureAwait(false);
 
         return Convert.ToInt64(result, CultureInfo.InvariantCulture);
-
     }
 
     private static async Task<bool> WorkspaceResetTableExistsAsync(
@@ -719,18 +670,15 @@ internal sealed partial class DataRetentionService
         string table,
         CancellationToken cancellationToken)
     {
-
         // A vector mirror is classified rather than probed, because a legacy virtual one also passes
         // the probe below and cannot be counted or deleted from here.
         if (SagaVectorMirror.IsMirrorName(table))
         {
-
             return await IsPlainVectorMirrorAsync(
                 connection,
                 transaction,
                 table,
                 cancellationToken).ConfigureAwait(false);
-
         }
 
         await using DbCommand command = connection.CreateCommand();
@@ -746,7 +694,6 @@ internal sealed partial class DataRetentionService
             cancellationToken).ConfigureAwait(false);
 
         return Convert.ToInt64(result, CultureInfo.InvariantCulture) != 0;
-
     }
 
     private static async Task AppendWorkspaceResetFingerprintAsync(
@@ -758,7 +705,6 @@ internal sealed partial class DataRetentionService
         string workspaceRoot,
         CancellationToken cancellationToken)
     {
-
         await using DbCommand command = connection.CreateCommand();
 
         command.Transaction = transaction;
@@ -772,13 +718,10 @@ internal sealed partial class DataRetentionService
 
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-
             fingerprint.AppendData(
                 Encoding.UTF8.GetBytes(
                     prefix + reader.GetString(0) + "\n"));
-
         }
-
     }
 
     private sealed record WorkspaceResetSnapshot(
@@ -793,7 +736,6 @@ internal sealed partial class DataRetentionService
         long CrossScopeGenerationRows,
         string ResourceFingerprint)
     {
-
         internal long TotalOwnedRows => WorkspaceContextRows
             + WorkspaceChunkRows
             + WorkspaceEmbeddingRows
@@ -802,7 +744,5 @@ internal sealed partial class DataRetentionService
             + TapestryNodeRows
             + TapestryEmbeddingRows
             + TapestryVectorRows;
-
     }
-
 }

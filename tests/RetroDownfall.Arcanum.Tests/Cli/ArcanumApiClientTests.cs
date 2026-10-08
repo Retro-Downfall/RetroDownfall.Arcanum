@@ -14,6 +14,8 @@ using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 
 using RetroDownfall.Arcanum.Core.Intelligence.Spells;
+using RetroDownfall.Arcanum.Core.Memory;
+using RetroDownfall.Arcanum.Core.Operations;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Tests.Support;
@@ -763,7 +765,7 @@ public sealed class ArcanumApiClientTests
     {
         // Any exception type not explicitly mapped (OperationCanceledException, HttpRequestException,
         // IOException) must still surface as a controlled Result.Failure — never propagate past the
-        // client to a command's caller / ConsoleAppFramework's generic top-level exception handler.
+        // client to a command's caller / the command pipeline's generic top-level exception handler.
         RecordingHandler handler = new(_ => throw new InvalidOperationException("handler misconfigured"));
 
         ArcanumApiClient client = CreateClient(handler, apiKey: "test-key");
@@ -778,7 +780,7 @@ public sealed class ArcanumApiClientTests
     }
 
     [Fact]
-    public async Task AskAsync_returns_timeout_when_bounded_client_exceeds_deadline()
+    public async Task A_short_call_returns_timeout_when_the_bounded_client_exceeds_its_deadline()
     {
         // Only the client's deadline can finish this request. A second success timer can win
         // when a suspended thread pool resumes with both timers already overdue.
@@ -793,15 +795,381 @@ public sealed class ArcanumApiClientTests
             apiKey: "test-key",
             requestTimeout: TimeSpan.FromMilliseconds(100));
 
-        PingRequest body = new("hello");
-
         // Preserve the fixture's original five-second bound as a hang guard, not a success path.
-        Result<string> result = await client.AskAsync(body, CancellationToken.None)
+        // A model turn is no longer the probe: it runs on the unbounded client, which the short-call
+        // client's own timeout never reaches.
+        Result<BudgetSummaryDto> result = await client.GetBudgetAsync(CancellationToken.None)
             .WaitAsync(TimeSpan.FromSeconds(5));
 
         Assert.True(result.IsFailure);
 
         Assert.Equal("Connection.Timeout", result.Error.Code);
+    }
+
+    /// <summary>
+    /// Neither HttpClient the CLI registers has a timeout, so the "timed out" paths below the sender
+    /// were unreachable and a hung local host wedged every short call. A request now carries its own
+    /// response-headers deadline, which maps to the same typed timeout. The clock is advanced by hand,
+    /// so the five-minute default is pinned to the second without the test waiting for it.
+    /// </summary>
+    [Fact]
+    public async Task Request_returns_timeout_error_when_host_never_responds_headers()
+    {
+        ManualTimerTimeProvider clock = new();
+
+        TaskCompletionSource<HttpResponseMessage> never = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        RecordingHandler handler = new((_, cancellationToken) =>
+            never.Task.WaitAsync(cancellationToken));
+
+        ArcanumApiClient client = CreateClientWithHeadersDeadline(
+            handler,
+            ArcanumApiClient.DefaultRequestResponseHeadersTimeout,
+            clock);
+
+        Task<Result<bool>> call = client.QuitServerAsync(CancellationToken.None);
+
+        await clock.FirstTimerCreated.WaitAsync(HangGuard);
+
+        clock.Advance(ArcanumApiClient.DefaultRequestResponseHeadersTimeout - TimeSpan.FromSeconds(1));
+
+        Assert.False(call.IsCompleted);
+
+        clock.Advance(TimeSpan.FromSeconds(1));
+
+        // Only the client's own deadline can finish this request; the outer bound is a hang guard.
+        Result<bool> result = await call.WaitAsync(HangGuard);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Connection.Timeout, result.Error.Code);
+
+        Assert.Single(handler.Requests);
+    }
+
+    /// <summary>
+    /// The deadline is for the response headers. A body that takes longer than the deadline to arrive
+    /// is a slow answer, not a hung host, and must not be cut off: the clock passes the deadline while
+    /// the body is still being read, and the call still succeeds because the deadline timer was
+    /// disposed with the headers instead of staying armed behind the body.
+    /// </summary>
+    [Fact]
+    public async Task Request_headers_deadline_does_not_bound_the_response_body()
+    {
+        ManualTimerTimeProvider clock = new();
+
+        byte[] json = JsonSerializer.SerializeToUtf8Bytes(
+            new ApiResponse<bool>(true, true, null),
+            ArcanumJsonContext.Default.ApiResponseBoolean);
+
+        GatedBodyStream body = new(json);
+
+        RecordingHandler handler = new(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StreamContent(body),
+        });
+
+        TimeSpan deadline = TimeSpan.FromMinutes(5);
+
+        ArcanumApiClient client = CreateClientWithHeadersDeadline(handler, deadline, clock);
+
+        Task<Result<bool>> call = client.QuitServerAsync(CancellationToken.None);
+
+        await body.ReadStarted.WaitAsync(HangGuard);
+
+        Assert.Equal(1, clock.TimersCreated);
+
+        Assert.Equal(0, clock.ActiveTimers);
+
+        clock.Advance(deadline + deadline);
+
+        Assert.False(call.IsCompleted);
+
+        body.Release();
+
+        Result<bool> result = await call.WaitAsync(HangGuard);
+
+        Assert.True(result.IsSuccess);
+
+        Assert.True(result.Value);
+    }
+
+    /// <summary>
+    /// Every memory-erasure call can wait on something that has no Arcanum-owned duration: an
+    /// operating-system keychain approval, or a write-ahead-log checkpoint that waits for readers. A
+    /// deadline would cut the call off while the host kept working and report an outcome as unknown,
+    /// so none of them carries one: no timer is armed, and a clock that passes the deadline does
+    /// nothing to the call.
+    /// </summary>
+    [Fact]
+    public async Task Memory_erasure_calls_are_not_bounded_by_the_headers_deadline()
+    {
+        ManualTimerTimeProvider clock = new();
+
+        byte[] json = JsonSerializer.SerializeToUtf8Bytes(
+            new ApiResponse<MemoryErasureStatusDto>(
+                new MemoryErasureStatusDto(MemoryErasureKeyStatus.Present, [], 0),
+                true,
+                null),
+            ArcanumJsonContext.Default.ApiResponseMemoryErasureStatusDto);
+
+        GatedBodyStream body = new(json);
+
+        RecordingHandler handler = new(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StreamContent(body),
+        });
+
+        ArcanumApiClient client = CreateClientWithHeadersDeadline(
+            handler,
+            TimeSpan.FromMinutes(5),
+            clock);
+
+        Task<Result<MemoryErasureStatusDto>> call = client.GetMemoryErasureStatusAsync(CancellationToken.None);
+
+        await body.ReadStarted.WaitAsync(HangGuard);
+
+        clock.Advance(TimeSpan.FromHours(1));
+
+        body.Release();
+
+        Result<MemoryErasureStatusDto> result = await call.WaitAsync(HangGuard);
+
+        Assert.True(result.IsSuccess);
+
+        Assert.Equal(0, clock.TimersCreated);
+    }
+
+    /// <summary>
+    /// An exported attachment is decrypted content, so its staging file must be owner-only before the
+    /// first byte lands in it rather than created with the umask's permissions and narrowed later,
+    /// the same as the file and batch downloads.
+    /// </summary>
+    [SkippableFact]
+    [System.Runtime.Versioning.UnsupportedOSPlatform("windows")]
+    public async Task DownloadSessionAttachmentAsync_stages_the_export_owner_only_before_the_first_write()
+    {
+        Skip.If(OperatingSystem.IsWindows(), "Unix mode bits are what this asserts against.");
+
+        string root = Path.Combine(Path.GetTempPath(), $"arcanum-attachment-export-{Guid.NewGuid():N}");
+
+        Directory.CreateDirectory(root);
+
+        try
+        {
+            ModePeekingStream body = new(root, [1, 2, 3]);
+
+            RecordingHandler handler = new(_ => new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StreamContent(body),
+            });
+
+            ArcanumApiClient client = CreateClient(handler, apiKey: "test-key");
+
+            Result<long> result = await client.DownloadSessionAttachmentAsync(
+                Guid.NewGuid(),
+                Guid.NewGuid(),
+                Path.Combine(root, "out.bin"),
+                overwrite: false,
+                CancellationToken.None);
+
+            Assert.True(result.IsSuccess);
+
+            Assert.True(body.ObservedStagingFile, "The staging file did not exist when the body was first read.");
+
+            const UnixFileMode GroupOrOtherAccess =
+                UnixFileMode.GroupRead | UnixFileMode.GroupWrite | UnixFileMode.GroupExecute
+                | UnixFileMode.OtherRead | UnixFileMode.OtherWrite | UnixFileMode.OtherExecute;
+
+            Assert.Equal((UnixFileMode)0, body.StagingMode & GroupOrOtherAccess);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    /// <summary>
+    /// Streams and operations that have no expected duration stay on the unbounded client: the
+    /// headers deadline belongs to the short-call client only.
+    /// </summary>
+    [Fact]
+    public async Task Streaming_requests_are_not_bounded_by_the_headers_deadline()
+    {
+        byte[] line = JsonSerializer.SerializeToUtf8Bytes(
+            new IntelligenceEvent(IntelligenceEventType.Token, "late"),
+            ArcanumJsonContext.Default.IntelligenceEvent);
+
+        RecordingHandler handler = new(async (_, cancellationToken) =>
+        {
+            await Task.Delay(TimeSpan.FromMilliseconds(400), cancellationToken);
+
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new ByteArrayContent([.. line, (byte)'\n']),
+            };
+        });
+
+        ArcanumApiClient client = CreateClientWithHeadersDeadline(
+            handler,
+            TimeSpan.FromMilliseconds(100));
+
+        List<IntelligenceEvent> events = [];
+
+        await foreach (IntelligenceEvent evt in client.AskStreamAsync(new PingRequest("hello"), CancellationToken.None))
+        {
+            events.Add(evt);
+        }
+
+        Assert.Equal(IntelligenceEventType.Token, events[0].Type);
+
+        Assert.DoesNotContain(
+            events,
+            static evt => string.Equals(evt.Message, ArcanumApiClient.StreamTimeoutMessage, StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// Session compaction waits on a model summary and a Sending waits for a remote agent to settle;
+    /// neither has an Arcanum-owned duration, so neither may sit behind the short-call deadline.
+    /// </summary>
+    [Fact]
+    public async Task Operations_without_an_expected_duration_are_not_bounded_by_the_headers_deadline()
+    {
+        byte[] json = JsonSerializer.SerializeToUtf8Bytes(
+            new ApiResponse<CompactResult>(null, false, new Error("Test.Marker", "reached the host")),
+            ArcanumJsonContext.Default.ApiResponseCompactResult);
+
+        RecordingHandler handler = new(async (_, cancellationToken) =>
+        {
+            await Task.Delay(TimeSpan.FromMilliseconds(400), cancellationToken);
+
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new ByteArrayContent(json),
+            };
+        });
+
+        ArcanumApiClient client = CreateClientWithHeadersDeadline(
+            handler,
+            TimeSpan.FromMilliseconds(100));
+
+        Result<CompactResult> compact = await client.CompactSessionAsync(Guid.NewGuid(), CancellationToken.None)
+            .WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.Equal("Test.Marker", compact.Error.Code);
+
+        Result<SendingDispatchDto> sending = await client
+            .DispatchSendingAsync(
+                "https://agent.example/a2a",
+                "goal",
+                name: null,
+                cancellationToken: CancellationToken.None)
+            .WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.NotEqual(ErrorCodes.Connection.Timeout, sending.Error.Code);
+
+        Assert.Equal(2, handler.Requests.Count);
+    }
+
+    /// <summary>
+    /// A model turn, a tool execution, a diagnostic MCP tool call and an operations sweep all answer
+    /// only when their work is done, and none of that work has an Arcanum-owned duration. A call that
+    /// took longer than the short-call deadline used to fail as <c>Connection.Timeout</c> (exit 3)
+    /// while the host kept working on it. A session attachment upload is held back the same way: its
+    /// headers arrive only after the whole body has been sent and stored.
+    /// </summary>
+    [Fact]
+    public async Task Calls_whose_work_has_no_expected_duration_are_not_bounded_by_the_headers_deadline()
+    {
+        byte[] json = JsonSerializer.SerializeToUtf8Bytes(
+            new ApiResponse<CompactResult>(null, false, new Error("Test.Marker", "reached the host")),
+            ArcanumJsonContext.Default.ApiResponseCompactResult);
+
+        RecordingHandler handler = new(async (_, cancellationToken) =>
+        {
+            await Task.Delay(TimeSpan.FromMilliseconds(400), cancellationToken);
+
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new ByteArrayContent(json),
+            };
+        });
+
+        ArcanumApiClient client = CreateClientWithHeadersDeadline(
+            handler,
+            TimeSpan.FromMilliseconds(100));
+
+        using JsonDocument noArguments = JsonDocument.Parse("{}");
+
+        (string Name, Func<Task<Error>> Call)[] calls =
+        [
+            (
+                nameof(ArcanumApiClient.AskAsync),
+                async () => (await client.AskAsync(new PingRequest("hello"), CancellationToken.None)).Error),
+            (
+                nameof(ArcanumApiClient.InvokeToolAsync),
+                async () => (await client.InvokeToolAsync(
+                    "workspace_check",
+                    noArguments.RootElement,
+                    CancellationToken.None)).Error),
+            (
+                nameof(ArcanumApiClient.InvokeDiagnosticMcpToolAsync),
+                async () => (await client.InvokeDiagnosticMcpToolAsync(
+                    new McpToolInvokeRequest("remote_tool", noArguments.RootElement),
+                    CancellationToken.None)).Error),
+            (
+                nameof(ArcanumApiClient.ReconcileOperationsAsync),
+                async () => (await client.ReconcileOperationsAsync(CancellationToken.None)).Error),
+            (
+                nameof(ArcanumApiClient.UploadSessionAttachmentAsync),
+                async () => (await client.UploadSessionAttachmentAsync(
+                    Guid.NewGuid(),
+                    new MemoryStream([1, 2, 3]),
+                    "notes.txt",
+                    "text/plain",
+                    CancellationToken.None)).Error),
+        ];
+
+        List<string> timedOut = [];
+
+        foreach ((string name, Func<Task<Error>> call) in calls)
+        {
+            Error error = await call().WaitAsync(TimeSpan.FromSeconds(10));
+
+            if (string.Equals(error.Code, ErrorCodes.Connection.Timeout, StringComparison.Ordinal))
+            {
+                timedOut.Add(name);
+            }
+        }
+
+        Assert.Empty(timedOut);
+
+        Assert.Equal(calls.Length, handler.Requests.Count);
+    }
+
+    /// <summary>
+    /// The state flip behind <c>operations retry</c> only resets one row; it is a short call and
+    /// stays behind the deadline, so a hung host still fails it instead of wedging the command.
+    /// </summary>
+    [Fact]
+    public async Task Resetting_one_operation_for_retry_stays_bounded_by_the_headers_deadline()
+    {
+        TaskCompletionSource<HttpResponseMessage> never = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        RecordingHandler handler = new((_, cancellationToken) =>
+            never.Task.WaitAsync(cancellationToken));
+
+        ArcanumApiClient client = CreateClientWithHeadersDeadline(
+            handler,
+            TimeSpan.FromMilliseconds(100));
+
+        Result<LongRunningOperationDto> result = await client
+            .RetryOperationAsync(Guid.NewGuid(), CancellationToken.None)
+            .WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.Equal(ErrorCodes.Connection.Timeout, result.Error.Code);
     }
 
     [Fact]
@@ -831,6 +1199,78 @@ public sealed class ArcanumApiClientTests
         Assert.Equal(IntelligenceEventType.Error, events[1].Type);
 
         Assert.Contains("lost before the stream completed", events[1].Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// The error body of a non-success stream response is read through the same transport as the
+    /// stream itself, so a host that drops while answering <c>500</c> must produce the shared
+    /// disconnect copy, not an exception that escapes the iterator as "An unexpected CLI error".
+    /// </summary>
+    [Fact]
+    public async Task AskStreamAsync_yields_disconnect_error_when_error_body_read_throws_IOException()
+    {
+        ArcanumApiClient client = CreateClient(
+            new FaultingErrorBodyHandler(),
+            apiKey: "test-key");
+
+        List<IntelligenceEvent> events = [];
+
+        await foreach (IntelligenceEvent evt in client.AskStreamAsync(new PingRequest("hello"), CancellationToken.None))
+        {
+            events.Add(evt);
+        }
+
+        IntelligenceEvent only = Assert.Single(events);
+
+        Assert.Equal(IntelligenceEventType.Error, only.Type);
+
+        Assert.Equal(ArcanumApiClient.StreamDisconnectMessage, only.Message);
+    }
+
+    [Fact]
+    public async Task StreamApprenticeChronicleAsync_yields_disconnect_error_when_error_body_read_throws_IOException()
+    {
+        ArcanumApiClient client = CreateClient(
+            new FaultingErrorBodyHandler(),
+            apiKey: "test-key");
+
+        List<ChronicleFrame> frames = [];
+
+        await foreach (ChronicleFrame frame in client.StreamApprenticeChronicleAsync(Guid.NewGuid(), CancellationToken.None))
+        {
+            frames.Add(frame);
+        }
+
+        ChronicleFrame only = Assert.Single(frames);
+
+        Assert.Equal("error", only.Type);
+
+        Assert.Equal(ArcanumApiClient.StreamDisconnectMessage, only.Message);
+    }
+
+    [Fact]
+    public async Task ResearchWebAsync_yields_a_disconnect_error_frame_when_error_body_read_throws_IOException()
+    {
+        ArcanumApiClient client = CreateClient(
+            new FaultingErrorBodyHandler(),
+            apiKey: "test-key");
+
+        List<WebResearchStreamFrame> frames = [];
+
+        await foreach (WebResearchStreamFrame frame in client.ResearchWebAsync(
+            new WebResearchWorkflowRequest { Question = "why" },
+            CancellationToken.None))
+        {
+            frames.Add(frame);
+        }
+
+        WebResearchStreamFrame only = Assert.Single(frames);
+
+        Assert.Equal(WebResearchStreamFrameType.Error, only.Type);
+
+        Assert.Equal(ErrorCodes.Connection.Unreachable, only.Code);
+
+        Assert.Equal(ArcanumApiClient.StreamDisconnectMessage, only.Message);
     }
 
     [Fact]
@@ -1363,6 +1803,25 @@ public sealed class ArcanumApiClientTests
             ArcanumApiCredentialLeaseTestFactory.Create(apiKey));
     }
 
+    private static ArcanumApiClient CreateClientWithHeadersDeadline(
+        HttpMessageHandler handler,
+        TimeSpan responseHeadersTimeout,
+        TimeProvider? clock = null)
+    {
+        FakeHttpClientFactory factory = new(handler, requestTimeout: null);
+
+        return new ArcanumApiClient(
+            factory,
+            ArcanumApiCredentialLeaseTestFactory.Create("test-key"))
+        {
+            RequestResponseHeadersTimeout = responseHeadersTimeout,
+            HeadersDeadlineClock = clock ?? TimeProvider.System,
+        };
+    }
+
+    /// <summary>Hang guard for every await on the deadline tests, never a behavioural bound.</summary>
+    private static readonly TimeSpan HangGuard = TimeSpan.FromSeconds(30);
+
     private static HttpResponseMessage CreatePromptResponse(ApiResponse<PromptResponseDto> envelope, HttpStatusCode status = HttpStatusCode.OK)
     {
         byte[] json = JsonSerializer.SerializeToUtf8Bytes(envelope, ArcanumJsonContext.Default.ApiResponsePromptResponseDto);
@@ -1478,6 +1937,52 @@ public sealed class ArcanumApiClientTests
 
             return await _responder(request, cancellationToken).ConfigureAwait(false);
         }
+    }
+
+    private sealed class FaultingErrorBodyHandler : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken) =>
+            Task.FromResult(new HttpResponseMessage(HttpStatusCode.InternalServerError)
+            {
+                Content = new StreamContent(new FaultingResponseStream()),
+            });
+    }
+
+    private sealed class FaultingResponseStream : Stream
+    {
+        public override bool CanRead => true;
+
+        public override bool CanSeek => false;
+
+        public override bool CanWrite => false;
+
+        public override long Length => throw new NotSupportedException();
+
+        public override long Position
+        {
+            get => throw new NotSupportedException();
+            set => throw new NotSupportedException();
+        }
+
+        public override void Flush()
+        {
+        }
+
+        public override int Read(byte[] buffer, int offset, int count) =>
+            throw new IOException("Simulated disconnect while the error body was being read.");
+
+        public override ValueTask<int> ReadAsync(
+            Memory<byte> buffer,
+            CancellationToken cancellationToken = default) =>
+            throw new IOException("Simulated disconnect while the error body was being read.");
+
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+
+        public override void SetLength(long value) => throw new NotSupportedException();
+
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
     }
 
     private sealed class DisconnectingStreamHandler(byte[] firstLineBytes) : HttpMessageHandler

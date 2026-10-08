@@ -10,11 +10,9 @@ namespace RetroDownfall.Arcanum.Cli.Infrastructure;
 
 internal static partial class CliCommandTree
 {
-
     private static Command BuildWatch(IServiceProvider serviceProvider)
     {
-
-        WatchCommands handler = serviceProvider.GetRequiredService<WatchCommands>();
+        DeferredHandler<WatchCommands> handler = new(serviceProvider);
 
         Command watch = new(
             "watch",
@@ -22,33 +20,27 @@ internal static partial class CliCommandTree
 
         Option<bool> reconnect = new("--reconnect")
         {
-
             Description = "Reconnect after an unexpected disconnect with capped exponential backoff; possible event gaps are always reported.",
 
             Recursive = true,
-
         };
 
         Option<string[]> eventType = new("--event-type")
         {
-
             AllowMultipleArgumentsPerToken = true,
 
             Description = "Show matching event types; repeat for multiple free-form, case-insensitive values.",
 
             Recursive = true,
-
         };
 
         Option<string[]> toolName = new("--tool")
         {
-
             AllowMultipleArgumentsPerToken = true,
 
             Description = "Show events for matching tool names; repeat for multiple free-form, case-insensitive values.",
 
             Recursive = true,
-
         };
 
         watch.Add(reconnect);
@@ -65,9 +57,7 @@ internal static partial class CliCommandTree
 
         Option<string?> since = new("--since")
         {
-
             Description = "Begin after this Session Entry GUID.",
-
         };
 
         session.Add(sessionIdentifier);
@@ -76,7 +66,7 @@ internal static partial class CliCommandTree
 
         session.SetAction(
             async (ParseResult result, CancellationToken cancellationToken) =>
-                await handler.Session(
+                await handler.Value.Session(
                     ActiveSession(serviceProvider, result.GetValue(sessionIdentifier)),
                     result.GetValue(since),
                     WatchOptions(
@@ -98,7 +88,7 @@ internal static partial class CliCommandTree
 
         apprentice.SetAction(
             async (ParseResult result, CancellationToken cancellationToken) =>
-                await handler.Apprentice(
+                await handler.Value.Apprentice(
                     result.GetValue(apprenticeIdentifier),
                     WatchOptions(
                         result,
@@ -113,23 +103,17 @@ internal static partial class CliCommandTree
 
         Option<string?> level = new("--level")
         {
-
             Description = "Minimum server log level (free-form; validated by the API).",
-
         };
 
         Option<string?> category = new("--category")
         {
-
             Description = "Match a log category, case-insensitively.",
-
         };
 
         Option<string?> search = new("--search")
         {
-
             Description = "Search log messages and categories, case-insensitively.",
-
         };
 
         logs.Add(level);
@@ -140,7 +124,7 @@ internal static partial class CliCommandTree
 
         logs.SetAction(
             async (ParseResult result, CancellationToken cancellationToken) =>
-                await handler.Logs(
+                await handler.Value.Logs(
                     result.GetValue(level),
                     result.GetValue(category),
                     result.GetValue(search),
@@ -157,7 +141,7 @@ internal static partial class CliCommandTree
 
         mcp.SetAction(
             async (ParseResult result, CancellationToken cancellationToken) =>
-                await handler.Mcp(
+                await handler.Value.Mcp(
                     WatchOptions(
                         result,
                         reconnect,
@@ -171,7 +155,7 @@ internal static partial class CliCommandTree
 
         daemons.SetAction(
             async (ParseResult result, CancellationToken cancellationToken) =>
-                await handler.Daemons(
+                await handler.Value.Daemons(
                     WatchOptions(
                         result,
                         reconnect,
@@ -185,16 +169,14 @@ internal static partial class CliCommandTree
 
         Option<int?> interval = new("--interval")
         {
-
             Description = "Seconds between health observations (default: 5; any positive integer).",
-
         };
 
         health.Add(interval);
 
         health.SetAction(
             async (ParseResult result, CancellationToken cancellationToken) =>
-                await handler.Health(
+                await handler.Value.Health(
                     result.GetValue(interval) ?? 5,
                     WatchOptions(
                         result,
@@ -206,7 +188,6 @@ internal static partial class CliCommandTree
         watch.Add(health);
 
         return watch;
-
     }
 
     private static WatchCommandOptions WatchOptions(
@@ -218,5 +199,4 @@ internal static partial class CliCommandTree
             result.GetValue(reconnect),
             result.GetValue(eventType) ?? [],
             result.GetValue(toolName) ?? []);
-
 }

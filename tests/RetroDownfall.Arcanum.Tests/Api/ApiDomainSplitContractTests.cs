@@ -7,6 +7,7 @@ using RetroDownfall.Arcanum.Api.Conclave;
 using RetroDownfall.Arcanum.Api.Primitives;
 using RetroDownfall.Arcanum.Api.Security;
 using RetroDownfall.Arcanum.Api.Tower;
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Api;
 
@@ -26,13 +27,11 @@ namespace RetroDownfall.Arcanum.Tests.Api;
 /// </remarks>
 public sealed class ApiDomainSplitContractTests
 {
-
     private const string RetiredNamespace = "RetroDownfall.Arcanum.Api.TheForge";
 
     [Fact]
     public void Api_declares_no_type_in_the_retired_namespace()
     {
-
         string[] strays = typeof(ArcanumErrorMapper).Assembly
             .GetTypes()
             .Where(static type => type.Namespace is string ns
@@ -43,13 +42,11 @@ public sealed class ApiDomainSplitContractTests
             .ToArray();
 
         Assert.Empty(strays);
-
     }
 
     [Fact]
     public void No_api_type_is_named_for_the_desktop_application()
     {
-
         string[] offenders = typeof(ArcanumErrorMapper).Assembly
             .GetTypes()
             .Where(static type => !type.Name.StartsWith('<'))
@@ -59,7 +56,6 @@ public sealed class ApiDomainSplitContractTests
             .ToArray();
 
         Assert.Empty(offenders);
-
     }
 
     /// <summary>
@@ -69,11 +65,9 @@ public sealed class ApiDomainSplitContractTests
     [Fact]
     public void Security_surfaces_are_not_filed_under_an_authoring_namespace()
     {
-
         Assert.Equal("RetroDownfall.Arcanum.Api.Security", typeof(WardEndpoints).Namespace);
 
         Assert.Equal("RetroDownfall.Arcanum.Api.Security", typeof(SanctumEndpoints).Namespace);
-
     }
 
     /// <summary>
@@ -83,15 +77,12 @@ public sealed class ApiDomainSplitContractTests
     [Fact]
     public void The_shared_error_mapper_is_not_filed_under_a_domain_namespace()
     {
-
         Assert.Equal("RetroDownfall.Arcanum.Api.Primitives", typeof(ArcanumErrorMapper).Namespace);
-
     }
 
     [Fact]
     public async Task Every_moved_endpoint_family_maps_the_routes_it_always_mapped()
     {
-
         string[] expected =
         [
             "DELETE /api/apprentices/{id:guid} DeleteApprentice",
@@ -216,20 +207,15 @@ public sealed class ApiDomainSplitContractTests
         string[] actual = graph.Routes();
 
         Assert.Equal(expected, actual);
-
     }
 
     private sealed class RouteGraph : IAsyncDisposable
     {
-
         private WebApplication _app = null!;
 
         internal static async Task<RouteGraph> CreateAsync()
         {
-
-            WebApplicationBuilder builder = WebApplication.CreateSlimBuilder();
-
-            builder.WebHost.UseTestServer();
+            WebApplicationBuilder builder = RouteGraphHost.CreateBuilder();
 
             RouteGraph graph = new();
 
@@ -268,7 +254,6 @@ public sealed class ApiDomainSplitContractTests
             await graph._app.StartAsync();
 
             return graph;
-
         }
 
         internal string[] Routes() =>
@@ -288,13 +273,9 @@ public sealed class ApiDomainSplitContractTests
 
         public async ValueTask DisposeAsync()
         {
-
             await _app.StopAsync();
 
             await _app.DisposeAsync();
-
         }
-
     }
-
 }

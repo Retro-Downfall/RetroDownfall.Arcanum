@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using Microsoft.Extensions.AI;
 using RetroDownfall.Arcanum.Api.Intelligence.Tools;
 using RetroDownfall.Arcanum.Core.Platform;
@@ -29,16 +30,13 @@ namespace RetroDownfall.Arcanum.Tests.Tools;
 [Collection("ProcessEnvironment")]
 public sealed class ProcessRunnerResourceLimitTests : IDisposable
 {
-
     private readonly string _scriptsRoot;
 
     public ProcessRunnerResourceLimitTests()
     {
-
         _scriptsRoot = Path.Combine(Path.GetTempPath(), "arcanum-resourcelimit-" + Guid.NewGuid().ToString("N"));
 
         Directory.CreateDirectory(_scriptsRoot);
-
     }
 
     /// <summary>
@@ -46,7 +44,6 @@ public sealed class ProcessRunnerResourceLimitTests : IDisposable
     /// </summary>
     private static void SkipUnlessEnforcementOptIn()
     {
-
         Skip.IfNot(
             string.Equals(
                 global::System.Environment.GetEnvironmentVariable("ARCANUM_TEST_RESOURCE_LIMIT_ENFORCEMENT"),
@@ -55,23 +52,17 @@ public sealed class ProcessRunnerResourceLimitTests : IDisposable
             "Set ARCANUM_TEST_RESOURCE_LIMIT_ENFORCEMENT=true to run the tests that spawn a runaway "
             + "child and wait for the kernel to kill it. Off by default: they load the machine and "
             + "depend on the enclosing rlimit/cgroup setup.");
-
     }
 
     public void Dispose()
     {
-
         try
         {
-
             Directory.Delete(_scriptsRoot, recursive: true);
-
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or DirectoryNotFoundException)
         {
-
         }
-
     }
 
     [Fact]
@@ -105,7 +96,6 @@ public sealed class ProcessRunnerResourceLimitTests : IDisposable
         Assert.Contains("ok", result, StringComparison.Ordinal);
 
         Assert.Empty(guard.RecordedBreaches);
-
     }
 
     [SkippableFact]
@@ -134,21 +124,28 @@ public sealed class ProcessRunnerResourceLimitTests : IDisposable
         Assert.Contains("exceeded the CPU time limit", result, StringComparison.Ordinal);
 
         Assert.Contains(guard.RecordedBreaches, b => b.Resource == ResourceLimitKind.Cpu);
-
     }
 
+    /// <summary>
+    /// The hog is a shell script that execs the system perl by absolute path. A <c>.py</c> hog ran
+    /// through <c>/usr/bin/env python3</c>, so it measured whichever interpreter the scrubbed PATH found
+    /// first — on a host whose first <c>python3</c> is a virtual environment that interpreter died during
+    /// startup (it cannot find its prefix under the scrubbed environment) and the test failed without ever
+    /// allocating anything, which says nothing about the memory ceiling.
+    /// </summary>
     [SkippableFact]
     public async Task Process_exceeding_memory_limit_is_terminated_and_breached()
     {
         SkipUnlessEnforcementOptIn();
 
+        Assert.True(File.Exists("/usr/bin/perl"), "The allocation probe needs the system perl at /usr/bin/perl.");
+
         using HostProcessToolsEscapeHatchScope _ = new();
 
         string script = await WriteScriptAsync(
-            "hog.py",
-            "data = []\n"
-            + "while True:\n"
-            + "    data.append(bytearray(1024 * 1024))\n");
+            "hog.sh",
+            "#!/bin/sh\n"
+            + "exec /usr/bin/perl -e 'my @data; while (1) { push @data, \"a\" x (1024 * 1024); }'\n");
 
         FakeSanctumGuard guard = new(new ResourceLimits { MaxCpuSeconds = 0, MaxMemoryMb = 32, MaxFileDescriptors = 0 });
 
@@ -167,13 +164,137 @@ public sealed class ProcessRunnerResourceLimitTests : IDisposable
         Assert.Contains("exceeded the memory limit", result, StringComparison.Ordinal);
 
         Assert.Contains(guard.RecordedBreaches, b => b.Resource == ResourceLimitKind.Memory);
+    }
 
+    /// <summary>
+    /// R-006: on macOS <c>ulimit -v</c> (RLIMIT_AS) is rejected every time, so the old prelude printed
+    /// <c>cannot modify limit</c> and exec'd the child with no memory ceiling at all. This runs
+    /// unconditionally on macOS (no opt-in) and passes only when a child that over-allocates is
+    /// actually killed and attributed to the memory limit. It cannot pass vacuously: the attribution
+    /// requires the runner's footprint monitor to have measured the child above the ceiling, and a
+    /// child that is never killed sleeps for 30 seconds and completes, failing the assertions.
+    /// </summary>
+    [SkippableFact]
+    public async Task MacOs_MemoryLimit_Is_Enforced_By_Footprint_Monitor()
+    {
+        Skip.IfNot(OperatingSystem.IsMacOS(), "The RLIMIT_AS gap and its footprint monitor are macOS behavior.");
+
+        Assert.True(File.Exists("/usr/bin/perl"), "macOS ships /usr/bin/perl; the allocation probe needs it.");
+
+        using HostProcessToolsEscapeHatchScope _ = new();
+
+        string script = await WriteScriptAsync(
+            "hog.sh",
+            "#!/bin/sh\n"
+            + "exec /usr/bin/perl -e '$| = 1; my $data = \"a\" x (256 * 1024 * 1024); print \"allocated\\n\"; sleep 30;'\n");
+
+        FakeSanctumGuard guard = new(new ResourceLimits
+        {
+            MaxCpuSeconds = 0,
+            MaxMemoryMb = 32,
+            MaxFileDescriptors = 0,
+            ProcessTimeoutSeconds = 120,
+        });
+
+        ArcanumSpellScriptTool tool = new(
+            [_scriptsRoot],
+            sanctumGuard: guard,
+            resourceLimiter: new ProcessResourceLimiter(),
+            campaignWorkspaceRoot: "/fake/workspace",
+            allowUnsandboxedToolChildren: true);
+
+        Stopwatch elapsed = Stopwatch.StartNew();
+
+        string? result = await tool.InvokeAsync(
+            new AIFunctionArguments(new Dictionary<string, object?> { ["script_name"] = Path.GetFileName(script) })) as string;
+
+        elapsed.Stop();
+
+        Assert.NotNull(result);
+
+        // Enforced: the denial names the memory limit and a Memory breach is recorded. The monitor is
+        // the only memory mechanism on macOS, so no "unenforced" report is expected here; a child that
+        // escaped the ceiling would instead complete after its 30-second sleep with "allocated".
+        Assert.Contains("exceeded the memory limit", result, StringComparison.Ordinal);
+
+        Assert.Contains(guard.RecordedBreaches, b => b.Resource == ResourceLimitKind.Memory);
+
+        Assert.DoesNotContain("--- exit code ---", result, StringComparison.Ordinal);
+
+        Assert.True(
+            elapsed.Elapsed < TimeSpan.FromSeconds(25),
+            $"The over-allocating child ran for {elapsed.Elapsed}; it was not killed at the ceiling.");
+    }
+
+    /// <summary>
+    /// R-006: a limit the shell cannot apply makes the prelude exit 126 before <c>exec</c>; the runner
+    /// must surface that as a resource-limit apply failure, never as the target's own result.
+    /// </summary>
+    [SkippableFact]
+    public async Task Pre_exec_limit_failure_is_reported_as_a_resource_limit_apply_failure()
+    {
+        Skip.If(OperatingSystem.IsWindows(), "The ulimit prelude is Unix behavior.");
+
+        using HostProcessToolsEscapeHatchScope _ = new();
+
+        string marker = Path.Combine(_scriptsRoot, "target-ran");
+
+        string script = await WriteScriptAsync("harmless.sh", $"#!/bin/sh\ntouch '{marker}'\necho ok\n");
+
+        FakeSanctumGuard guard = new(new ResourceLimits { MaxCpuSeconds = 30, MaxMemoryMb = 512, MaxFileDescriptors = 256 });
+
+        ArcanumSpellScriptTool tool = new(
+            [_scriptsRoot],
+            sanctumGuard: guard,
+            resourceLimiter: new HardDescriptorCeilingLimiter(new ProcessResourceLimiter(), hardDescriptorLimit: 64),
+            campaignWorkspaceRoot: "/fake/workspace",
+            allowUnsandboxedToolChildren: true);
+
+        string? result = await tool.InvokeAsync(
+            new AIFunctionArguments(new Dictionary<string, object?> { ["script_name"] = Path.GetFileName(script) })) as string;
+
+        Assert.NotNull(result);
+
+        Assert.Contains("resource limits could not be applied", result, StringComparison.Ordinal);
+
+        Assert.False(File.Exists(marker), "The target ran although its descriptor limit was refused.");
+    }
+
+    /// <summary>
+    /// A target that itself exits 126 after every limit applied is an ordinary completed run: only
+    /// the prelude's per-run marker may turn exit 126 into an apply failure.
+    /// </summary>
+    [SkippableFact]
+    public async Task Target_exit_126_is_not_mistaken_for_a_limit_apply_failure()
+    {
+        Skip.If(OperatingSystem.IsWindows(), "The ulimit prelude is Unix behavior.");
+
+        using HostProcessToolsEscapeHatchScope _ = new();
+
+        string script = await WriteScriptAsync("exit126.sh", "#!/bin/sh\necho ran >&2\nexit 126\n");
+
+        FakeSanctumGuard guard = new(new ResourceLimits { MaxCpuSeconds = 30, MaxMemoryMb = 512, MaxFileDescriptors = 256 });
+
+        ArcanumSpellScriptTool tool = new(
+            [_scriptsRoot],
+            sanctumGuard: guard,
+            resourceLimiter: new ProcessResourceLimiter(),
+            campaignWorkspaceRoot: "/fake/workspace",
+            allowUnsandboxedToolChildren: true);
+
+        string? result = await tool.InvokeAsync(
+            new AIFunctionArguments(new Dictionary<string, object?> { ["script_name"] = Path.GetFileName(script) })) as string;
+
+        Assert.NotNull(result);
+
+        Assert.Contains("--- exit code ---\n126", result, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("could not be applied", result, StringComparison.Ordinal);
     }
 
     [Fact]
     public async Task Denial_message_is_sanitized()
     {
-
         FakeSanctumGuard guard = new(new ResourceLimits());
 
         string message = await ResourceLimitDenialFormatter.RecordAndDescribeAsync(
@@ -202,32 +323,63 @@ public sealed class ProcessRunnerResourceLimitTests : IDisposable
         Assert.DoesNotContain("Exception", message, StringComparison.Ordinal);
 
         Assert.Single(guard.RecordedBreaches);
-
     }
 
     private async Task<string> WriteScriptAsync(string fileName, string contents)
     {
-
         string path = Path.Combine(_scriptsRoot, fileName);
 
         await File.WriteAllTextAsync(path, contents);
 
         if (!OperatingSystem.IsWindows())
         {
-
             File.SetUnixFileMode(
                 path,
                 UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
-
         }
 
         return path;
+    }
 
+    /// <summary>
+    /// Real limiter whose output is launched under a lowered hard descriptor limit, so the prelude's
+    /// own <c>ulimit -n</c> is refused by the kernel exactly as an over-ceiling value would be.
+    /// </summary>
+    private sealed class HardDescriptorCeilingLimiter(
+        IProcessResourceLimiter inner,
+        int hardDescriptorLimit) : IProcessResourceLimiter
+    {
+        public ProcessResourceLimiterResult Apply(ProcessStartInfo startInfo, ResourceLimits limits)
+        {
+            ProcessResourceLimiterResult result = inner.Apply(startInfo, limits);
+
+            string target = startInfo.FileName;
+
+            List<string> arguments = [.. startInfo.ArgumentList];
+
+            startInfo.ArgumentList.Clear();
+
+            startInfo.ArgumentList.Add("-c");
+
+            startInfo.ArgumentList.Add($"ulimit -n {hardDescriptorLimit} || exit 3; exec \"$@\"");
+
+            startInfo.ArgumentList.Add("sh");
+
+            startInfo.ArgumentList.Add(target);
+
+            foreach (string argument in arguments)
+            {
+                startInfo.ArgumentList.Add(argument);
+            }
+
+            startInfo.FileName = "/bin/sh";
+
+            return result;
+        }
     }
 
     private sealed class FakeSanctumGuard(ResourceLimits limits) : ISanctumGuard
     {
-
         internal List<(string? WorkspaceRoot, string ToolName, ResourceLimitKind Resource, string LimitValue, string? ActualValue)> RecordedBreaches { get; } = [];
 
         public Task<SanctumResult> ValidatePathAsync(
@@ -251,7 +403,6 @@ public sealed class ProcessRunnerResourceLimitTests : IDisposable
         public Task<ResourceLimits> GetEffectiveResourceLimitsForWorkspaceAsync(string? workspaceRoot, CancellationToken ct = default) =>
             Task.FromResult(limits);
 
-
         public Task<SanctumChildProcessBoundary?> GetChildProcessBoundaryForWorkspaceAsync(
             string? workspaceRoot,
             CancellationToken ct = default) =>
@@ -265,13 +416,9 @@ public sealed class ProcessRunnerResourceLimitTests : IDisposable
             string? actualValue,
             CancellationToken ct = default)
         {
-
             RecordedBreaches.Add((workspaceRoot, toolName, resource, limitValue, actualValue));
 
             return Task.CompletedTask;
-
         }
-
     }
-
 }

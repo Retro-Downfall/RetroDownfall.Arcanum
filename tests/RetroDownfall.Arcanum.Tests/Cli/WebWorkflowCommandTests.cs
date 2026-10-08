@@ -8,11 +8,15 @@ using Microsoft.Extensions.DependencyInjection;
 
 using Microsoft.Extensions.DependencyInjection.Extensions;
 
+using RetroDownfall.Arcanum.Cli.Commands;
+
 using RetroDownfall.Arcanum.Cli.Infrastructure;
 
 using RetroDownfall.Arcanum.Cli.Services;
 
 using RetroDownfall.Arcanum.Core.Security;
+
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Cli;
 
@@ -352,6 +356,243 @@ public sealed class WebWorkflowCommandTests
         }
     }
 
+    /// <summary>
+    /// R-067: the <c>--save</c> destination is validated before the (billed) request is sent, so a typo
+    /// in the directory costs nothing instead of discarding a finished answer.
+    /// </summary>
+    [Theory]
+
+    [InlineData("search")]
+
+    [InlineData("browse")]
+
+    [InlineData("research")]
+
+    public void Save_to_a_missing_directory_fails_before_calling_the_host(string command)
+    {
+        string path = Path.Combine(
+            Path.GetTempPath(),
+            $"arcanum-missing-{Guid.NewGuid():N}",
+            "answer.md");
+
+        RecordingHandler handler = new();
+
+        string[] arguments = command switch
+        {
+            "browse" => ["browse", "https://example.test/page", "--save", path],
+            _ => [command, "What changed?", "--save", path],
+        };
+
+        CliTestResult result = RunCommand(handler, arguments);
+
+        Assert.Equal((int)CliExitCode.ConfigurationError, result.ExitCode);
+
+        Assert.Empty(handler.Requests);
+
+        Assert.Contains("--save", result.Error, StringComparison.Ordinal);
+
+        Assert.False(File.Exists(path));
+    }
+
+    [Fact]
+
+    public void Research_with_unwritable_save_path_fails_before_calling_the_host()
+    {
+        // A directory is never a writable file destination on any supported platform.
+        string path = Path.Combine(
+            Path.GetTempPath(),
+            $"arcanum-save-dir-{Guid.NewGuid():N}");
+
+        Directory.CreateDirectory(path);
+
+        try
+        {
+            RecordingHandler handler = new();
+
+            CliTestResult result = RunCommand(
+                handler,
+                ["research", "What changed?", "--save", path]);
+
+            Assert.Equal((int)CliExitCode.ConfigurationError, result.ExitCode);
+
+            Assert.Empty(handler.Requests);
+
+            Assert.Contains("--save", result.Error, StringComparison.Ordinal);
+        }
+        finally
+        {
+            Directory.Delete(path);
+        }
+    }
+
+    [Fact]
+
+    public void Research_still_prints_the_answer_when_the_late_save_fails()
+    {
+        string path = Path.Combine(
+            Path.GetTempPath(),
+            $"arcanum-late-save-{Guid.NewGuid():N}.md");
+
+        try
+        {
+            // The destination is valid when the request goes out and unusable by the time the answer
+            // comes back: the host call creates a directory where the file was meant to go.
+            RecordingHandler handler = new(
+                _ =>
+                {
+                    Directory.CreateDirectory(path);
+
+                    return NdjsonResponse(
+                        """
+                        {"type":"result","result":{"answer":"Late answer survives.","citations":[],"provider":"perplexity","model":"sonar","truncated":false,"usage":{"totalTokens":4,"searchQueries":1}}}
+                        """);
+                });
+
+            CliTestResult result = RunCommand(
+                handler,
+                ["research", "What changed?", "--format", "markdown", "--save", path]);
+
+            Assert.Equal(1, result.ExitCode);
+
+            Assert.Contains("Late answer survives.", result.Output, StringComparison.Ordinal);
+
+            Assert.Contains("Could not save", result.Error, StringComparison.Ordinal);
+        }
+        finally
+        {
+            if (Directory.Exists(path))
+            {
+                Directory.Delete(path);
+            }
+        }
+    }
+
+    /// <summary>
+    /// R-327: <c>--save</c> over an existing file asks first, like every sibling verb that writes an
+    /// operator-named file, and a refusal sends nothing to the host.
+    /// </summary>
+    [Fact]
+
+    public void Save_asks_before_overwriting_an_existing_file_and_sends_nothing_when_declined()
+    {
+        string path = Path.Combine(
+            Path.GetTempPath(),
+            $"arcanum-overwrite-{Guid.NewGuid():N}.md");
+
+        File.WriteAllText(path, "original");
+
+        try
+        {
+            RecordingPrompt prompt = new(answer: false);
+
+            RecordingHandler handler = new();
+
+            CliTestResult result = RunCommand(
+                handler,
+                ["search", "saved facts", "--save", path],
+                prompt);
+
+            Assert.Equal(0, result.ExitCode);
+
+            Assert.Empty(handler.Requests);
+
+            Assert.Equal("original", File.ReadAllText(path));
+
+            string question = Assert.Single(prompt.Questions);
+
+            Assert.Contains(path, question, StringComparison.Ordinal);
+
+            Assert.Contains("Overwrite", question, StringComparison.Ordinal);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
+
+    public void Save_replaces_an_existing_file_atomically_once_confirmed()
+    {
+        string directory = Path.Combine(
+            Path.GetTempPath(),
+            $"arcanum-overwrite-dir-{Guid.NewGuid():N}");
+
+        Directory.CreateDirectory(directory);
+
+        string path = Path.Combine(directory, "answer.md");
+
+        File.WriteAllText(path, "original");
+
+        try
+        {
+            RecordingHandler handler = new(
+                _ => JsonResponse(
+                    """
+                    {
+                      "data": {
+                        "answer": "Replacement answer.",
+                        "citations": [],
+                        "provider": "perplexity",
+                        "model": "sonar",
+                        "truncated": false,
+                        "usage": { "totalTokens": 12, "searchQueries": 1 }
+                      },
+                      "isSuccess": true,
+                      "error": null,
+                      "traceId": "test"
+                    }
+                    """));
+
+            CliTestResult result = RunCommand(
+                handler,
+                ["search", "saved facts", "--save", path],
+                new RecordingPrompt(answer: true));
+
+            Assert.Equal(0, result.ExitCode);
+
+            Assert.Contains("Replacement answer.", File.ReadAllText(path), StringComparison.Ordinal);
+
+            Assert.Equal(["answer.md"], Directory.GetFileSystemEntries(directory).Select(Path.GetFileName));
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
+
+    public void Save_over_an_existing_file_refuses_a_non_interactive_run_without_yes()
+    {
+        string path = Path.Combine(
+            Path.GetTempPath(),
+            $"arcanum-overwrite-json-{Guid.NewGuid():N}.md");
+
+        File.WriteAllText(path, "original");
+
+        try
+        {
+            RecordingHandler handler = new();
+
+            CliTestResult result = RunCommand(
+                handler,
+                ["--json", "search", "saved facts", "--save", path]);
+
+            Assert.Equal((int)CliExitCode.ConfigurationError, result.ExitCode);
+
+            Assert.Empty(handler.Requests);
+
+            Assert.Equal("original", File.ReadAllText(path));
+
+            Assert.Contains("--yes", result.Error, StringComparison.Ordinal);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
     [Fact]
 
     public void Research_stream_keeps_progress_on_stderr_and_markdown_on_stdout()
@@ -433,7 +674,7 @@ public sealed class WebWorkflowCommandTests
             handler,
             ["research", "What changed?"]);
 
-        Assert.Equal(1, result.ExitCode);
+        Assert.Equal((int)CliExitCode.NetworkError, result.ExitCode);
 
         Assert.Contains(
             ArcanumApiClient.StreamUnreachableMessage,
@@ -444,6 +685,113 @@ public sealed class WebWorkflowCommandTests
             ArcanumApiClient.StreamDoctorHint,
             result.Error,
             StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// R-067: a Ctrl+C that lands after the billed answer came back must not discard it. The answer exists
+    /// only in memory at that point, so the save still happens and the answer is still printed, whatever
+    /// the state of the caller's token.
+    /// </summary>
+    [Fact]
+
+    public async Task A_cancel_that_lands_after_the_answer_still_saves_and_prints_it()
+    {
+        string path = Path.Combine(
+            Path.GetTempPath(),
+            $"arcanum-cancel-after-answer-{Guid.NewGuid():N}.md");
+
+        try
+        {
+            using CancellationTokenSource cancellation = new();
+
+            // The token is cancelled when the response is disposed, which is after the client has parsed
+            // the answer and before the command goes on to save it.
+            RecordingHandler handler = new(
+                _ => new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new CancelsWhenDisposedContent(
+                        """
+                        {"data":{"answer":"Paid for answer.","citations":[],"provider":"perplexity","model":"sonar","truncated":false,"usage":{"totalTokens":4,"searchQueries":1}},"isSuccess":true,"error":null,"traceId":"test"}
+                        """,
+                        cancellation),
+                });
+
+            using ArcanumApiCredentialLease credentials =
+                ArcanumApiCredentialLeaseTestFactory.Create("test-key");
+
+            ArcanumApiClient apiClient = new(new FakeHttpClientFactory(handler), credentials);
+
+            StringWriter output = new();
+
+            StringWriter error = new();
+
+            WebWorkflowCommands commands = new(
+                apiClient,
+                new ConsoleDispatcher(output, error, new CliInvocationOptions(Json: false, Plain: false, Yes: false)),
+                new RecordingPrompt(answer: true),
+                resources: null!);
+
+            int exitCode = await commands.Search(
+                "saved facts",
+                count: 3,
+                freshness: null,
+                includeDomains: [],
+                excludeDomains: [],
+                save: path,
+                attachToSession: null,
+                cancellation.Token);
+
+            Assert.True(cancellation.IsCancellationRequested);
+
+            Assert.Equal(0, exitCode);
+
+            Assert.Contains("Paid for answer.", File.ReadAllText(path), StringComparison.Ordinal);
+
+            Assert.Contains("Paid for answer.", output.ToString(), StringComparison.Ordinal);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    /// <summary>
+    /// R-067: a mistyped <c>--format</c> is found before the operator is asked whether to overwrite the
+    /// <c>--save</c> file, so the question is never put for a command that cannot run.
+    /// </summary>
+    [Fact]
+
+    public void Research_rejects_a_bad_format_before_asking_about_an_overwrite()
+    {
+        string path = Path.Combine(
+            Path.GetTempPath(),
+            $"arcanum-format-first-{Guid.NewGuid():N}.md");
+
+        File.WriteAllText(path, "original");
+
+        try
+        {
+            RecordingPrompt prompt = new(answer: true);
+
+            RecordingHandler handler = new();
+
+            CliTestResult result = RunCommand(
+                handler,
+                ["research", "What changed?", "--format", "bogus", "--save", path],
+                prompt);
+
+            Assert.Equal((int)CliExitCode.ConfigurationError, result.ExitCode);
+
+            Assert.Empty(prompt.Questions);
+
+            Assert.Empty(handler.Requests);
+
+            Assert.Equal("original", File.ReadAllText(path));
+        }
+        finally
+        {
+            File.Delete(path);
+        }
     }
 
     [Fact]
@@ -461,6 +809,24 @@ public sealed class WebWorkflowCommandTests
         Assert.Empty(handler.Requests);
 
         Assert.Contains("--format", result.Error, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// A JSON body that cancels a token when the response that carries it is disposed.
+    /// </summary>
+    private sealed class CancelsWhenDisposedContent(
+        string json,
+        CancellationTokenSource cancellation) : StringContent(json, Encoding.UTF8, "application/json")
+    {
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing)
+            {
+                cancellation.Cancel();
+            }
+
+            base.Dispose(disposing);
+        }
     }
 
     private static HttpResponseMessage JsonResponse(
@@ -483,7 +849,8 @@ public sealed class WebWorkflowCommandTests
 
     private static CliTestResult RunCommand(
         RecordingHandler handler,
-        string[] args)
+        string[] args,
+        IConfirmationPrompt? prompt = null)
     {
         ServiceCollection services = new();
 
@@ -505,7 +872,28 @@ public sealed class WebWorkflowCommandTests
             services,
             "test-key");
 
+        if (prompt is not null)
+        {
+            services.RemoveAll<IConfirmationPrompt>();
+
+            services.AddSingleton(prompt);
+        }
+
         return CliTestHarness.Run(services, args);
+    }
+
+    private sealed class RecordingPrompt(bool answer) : IConfirmationPrompt
+    {
+        public List<string> Questions { get; } = [];
+
+        public Task<bool> PromptForConfirmationAsync(
+            string question,
+            CancellationToken cancellationToken)
+        {
+            Questions.Add(question);
+
+            return Task.FromResult(answer);
+        }
     }
 
     private sealed class FakeSecretStore(string apiKey) : ISecretStore

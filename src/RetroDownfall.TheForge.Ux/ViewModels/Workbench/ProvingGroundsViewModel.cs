@@ -35,7 +35,6 @@ namespace RetroDownfall.TheForge.Ux.ViewModels.Workbench;
 /// </summary>
 public sealed partial class ProvingGroundsViewModel : ViewModelBase, IDisposable
 {
-
     public const string SingletonDocumentId = "proving-grounds";
 
     private readonly ITrialDataSource _dataSource;
@@ -106,7 +105,6 @@ public sealed partial class ProvingGroundsViewModel : ViewModelBase, IDisposable
         IArtifactFileDialogService fileDialog,
         ITheForgeLocalMutationRunner mutationRunner)
     {
-
         _dataSource = dataSource;
 
         _foundryFloor = foundryFloor;
@@ -132,7 +130,6 @@ public sealed partial class ProvingGroundsViewModel : ViewModelBase, IDisposable
         Inquisitors.CollectionChanged += OnDraftCollectionChanged;
 
         _ = LoadSuitesCommand.ExecuteAsync(null);
-
     }
 
     public override DocumentKind? Kind => DocumentKind.Trial;
@@ -177,10 +174,8 @@ public sealed partial class ProvingGroundsViewModel : ViewModelBase, IDisposable
         string? model,
         Dictionary<string, string>? variables)
     {
-
         if (IsDirty)
         {
-
             StatusText = "Clear or reset the draft before applying a prefill.";
 
             _whispers.Show(
@@ -188,14 +183,12 @@ public sealed partial class ProvingGroundsViewModel : ViewModelBase, IDisposable
                 "Proving Grounds has unsaved draft changes.");
 
             return false;
-
         }
 
         _suppressDirty = true;
 
         try
         {
-
             ClearDraftCore();
 
             TargetKind = kind;
@@ -208,18 +201,14 @@ public sealed partial class ProvingGroundsViewModel : ViewModelBase, IDisposable
 
             if (variables is not null)
             {
-
                 foreach (KeyValuePair<string, string> pair in variables)
                 {
-
                     TrialVariableRowViewModel row = new(pair.Key, pair.Value);
 
                     AttachVariable(row);
 
                     Variables.Add(row);
-
                 }
-
             }
 
             SyncPickerSelectionFromTarget();
@@ -229,21 +218,16 @@ public sealed partial class ProvingGroundsViewModel : ViewModelBase, IDisposable
             StatusText = "Prefill applied.";
 
             return true;
-
         }
         finally
         {
-
             _suppressDirty = false;
-
         }
-
     }
 
     [RelayCommand]
     public async Task LoadPickersAsync(CancellationToken cancellationToken)
     {
-
         DataSourceResult<IReadOnlyList<string>> spells =
             await _dataSource.ListSpellNamesAsync(Workspace, cancellationToken).ConfigureAwait(true);
 
@@ -251,14 +235,10 @@ public sealed partial class ProvingGroundsViewModel : ViewModelBase, IDisposable
 
         if (spells.Success && spells.Data is not null)
         {
-
             foreach (string name in spells.Data)
             {
-
                 SpellNames.Add(name);
-
             }
-
         }
 
         DataSourceResult<IReadOnlyList<PromptSummaryDto>> prompts =
@@ -268,24 +248,18 @@ public sealed partial class ProvingGroundsViewModel : ViewModelBase, IDisposable
 
         if (prompts.Success && prompts.Data is not null)
         {
-
             foreach (PromptSummaryDto prompt in prompts.Data)
             {
-
                 Prompts.Add(prompt);
-
             }
-
         }
 
         SyncPickerSelectionFromTarget();
-
     }
 
     [RelayCommand]
     private void AddVariable()
     {
-
         TrialVariableRowViewModel row = new(string.Empty, string.Empty);
 
         AttachVariable(row);
@@ -295,18 +269,14 @@ public sealed partial class ProvingGroundsViewModel : ViewModelBase, IDisposable
         SelectedVariable = row;
 
         MarkDirty();
-
     }
 
     [RelayCommand]
     private void RemoveVariable()
     {
-
         if (SelectedVariable is null)
         {
-
             return;
-
         }
 
         TrialVariableRowViewModel row = SelectedVariable;
@@ -318,42 +288,32 @@ public sealed partial class ProvingGroundsViewModel : ViewModelBase, IDisposable
         SelectedVariable = null;
 
         MarkDirty();
-
     }
 
     [RelayCommand]
     private void AddRegexInquisitor()
     {
-
         AddInquisitor(InquisitorDraftKind.Regex);
-
     }
 
     [RelayCommand]
     private void AddJsonSchemaInquisitor()
     {
-
         AddInquisitor(InquisitorDraftKind.JsonSchema);
-
     }
 
     [RelayCommand]
     private void AddSemanticInquisitor()
     {
-
         AddInquisitor(InquisitorDraftKind.Semantic);
-
     }
 
     [RelayCommand]
     private void RemoveInquisitor()
     {
-
         if (SelectedInquisitor is null)
         {
-
             return;
-
         }
 
         InquisitorDraftViewModel draft = SelectedInquisitor;
@@ -365,18 +325,14 @@ public sealed partial class ProvingGroundsViewModel : ViewModelBase, IDisposable
         SelectedInquisitor = null;
 
         MarkDirty();
-
     }
 
     [RelayCommand]
     public async Task RunAsync(CancellationToken cancellationToken)
     {
-
         if (IsBusy)
         {
-
             return;
-
         }
 
         ValidationMessage = null;
@@ -385,7 +341,6 @@ public sealed partial class ProvingGroundsViewModel : ViewModelBase, IDisposable
 
         if (!TryBuildTrial(out Trial? trial, out string? validationError) || trial is null)
         {
-
             ValidationMessage = validationError;
 
             StatusText = validationError;
@@ -393,7 +348,6 @@ public sealed partial class ProvingGroundsViewModel : ViewModelBase, IDisposable
             _whispers.Show(WhisperSeverity.Warning, validationError ?? "Trial is invalid.");
 
             return;
-
         }
 
         _runCts?.Cancel();
@@ -413,13 +367,11 @@ public sealed partial class ProvingGroundsViewModel : ViewModelBase, IDisposable
 
         try
         {
-
             DataSourceResult<TrialResult> result =
                 await _dataSource.RunAsync(trial, runToken).ConfigureAwait(true);
 
             if (!result.Success)
             {
-
                 LastResult = null;
 
                 OnPropertyChanged(nameof(HasResult));
@@ -438,7 +390,6 @@ public sealed partial class ProvingGroundsViewModel : ViewModelBase, IDisposable
                 _whispers.Show(WhisperSeverity.Error, "Trial run failed.");
 
                 return;
-
             }
 
             LastResult = result.Data;
@@ -451,7 +402,6 @@ public sealed partial class ProvingGroundsViewModel : ViewModelBase, IDisposable
 
             if (LastResult is null)
             {
-
                 LastError = "Trial returned no result.";
 
                 StatusText = LastError;
@@ -459,7 +409,6 @@ public sealed partial class ProvingGroundsViewModel : ViewModelBase, IDisposable
                 _whispers.Show(WhisperSeverity.Error, "Trial run failed.");
 
                 return;
-
             }
 
             StatusText = ResultSummary;
@@ -470,37 +419,28 @@ public sealed partial class ProvingGroundsViewModel : ViewModelBase, IDisposable
             _whispers.Show(
                 LastResult.Passed ? WhisperSeverity.Success : WhisperSeverity.Warning,
                 LastResult.Passed ? "Trial passed." : "Trial failed.");
-
         }
         catch (OperationCanceledException)
         {
-
             StatusText = "Trial cancelled.";
 
             _foundryFloor.AppendLine("Proving Grounds: Trial cancelled.");
-
         }
         finally
         {
-
             IsBusy = false;
-
         }
-
     }
 
     [RelayCommand]
     private void Cancel()
     {
-
         _runCts?.Cancel();
-
     }
 
     [RelayCommand]
     public async Task ResetAsync(CancellationToken cancellationToken)
     {
-
         bool confirmed = await _confirmationDialog
             .ConfirmAsync(
                 "Reset Proving Grounds",
@@ -510,36 +450,28 @@ public sealed partial class ProvingGroundsViewModel : ViewModelBase, IDisposable
 
         if (!confirmed)
         {
-
             return;
-
         }
 
         _suppressDirty = true;
 
         try
         {
-
             ClearDraftCore();
 
             IsDirty = false;
 
             StatusText = "Draft cleared.";
-
         }
         finally
         {
-
             _suppressDirty = false;
-
         }
-
     }
 
     /// <summary>Builds a <see cref="Trial"/> from the current draft, or returns validation failure.</summary>
     public bool TryBuildTrial(out Trial? trial, out string? error)
     {
-
         trial = null;
 
         error = null;
@@ -548,47 +480,37 @@ public sealed partial class ProvingGroundsViewModel : ViewModelBase, IDisposable
 
         if (string.IsNullOrWhiteSpace(target))
         {
-
             error = "Target is required.";
 
             return false;
-
         }
 
         if (Variables.Any(static v => string.IsNullOrWhiteSpace(v.Key)))
         {
-
             error = "Variable keys must be non-empty.";
 
             return false;
-
         }
 
         if (Inquisitors.Count == 0)
         {
-
             error = "Add at least one Inquisitor.";
 
             return false;
-
         }
 
         List<Inquisitor> built = [];
 
         foreach (InquisitorDraftViewModel draft in Inquisitors)
         {
-
             if (!draft.TryBuild(out Inquisitor? inquisitor, out string? draftError) || inquisitor is null)
             {
-
                 error = draftError;
 
                 return false;
-
             }
 
             built.Add(inquisitor);
-
         }
 
         Dictionary<string, string>? variables = Variables.Count == 0
@@ -605,7 +527,6 @@ public sealed partial class ProvingGroundsViewModel : ViewModelBase, IDisposable
             string.IsNullOrWhiteSpace(TrialName) ? null : TrialName.Trim());
 
         return true;
-
     }
 
     partial void OnTargetKindChanged(TrialTargetKind value) => MarkDirty();
@@ -620,35 +541,26 @@ public sealed partial class ProvingGroundsViewModel : ViewModelBase, IDisposable
 
     partial void OnSelectedSpellNameChanged(string? value)
     {
-
         if (_suppressDirty || TargetKind != TrialTargetKind.Spell || value is null)
         {
-
             return;
-
         }
 
         Target = value;
-
     }
 
     partial void OnSelectedPromptChanged(PromptSummaryDto? value)
     {
-
         if (_suppressDirty || TargetKind != TrialTargetKind.Prompt || value is null)
         {
-
             return;
-
         }
 
         Target = value.Id.ToString("D");
-
     }
 
     private void AddInquisitor(InquisitorDraftKind kind)
     {
-
         InquisitorDraftViewModel draft = new(kind);
 
         AttachInquisitor(draft);
@@ -658,26 +570,20 @@ public sealed partial class ProvingGroundsViewModel : ViewModelBase, IDisposable
         SelectedInquisitor = draft;
 
         MarkDirty();
-
     }
 
     private void ClearDraftCore()
     {
-
         foreach (TrialVariableRowViewModel row in Variables.ToArray())
         {
-
             DetachVariable(row);
-
         }
 
         Variables.Clear();
 
         foreach (InquisitorDraftViewModel draft in Inquisitors.ToArray())
         {
-
             DetachInquisitor(draft);
-
         }
 
         Inquisitors.Clear();
@@ -711,40 +617,29 @@ public sealed partial class ProvingGroundsViewModel : ViewModelBase, IDisposable
         OnPropertyChanged(nameof(ResultSummary));
 
         OnPropertyChanged(nameof(UsageSummary));
-
     }
 
     private void SyncPickerSelectionFromTarget()
     {
-
         _suppressDirty = true;
 
         try
         {
-
             if (TargetKind == TrialTargetKind.Spell)
             {
-
                 SelectedSpellName = SpellNames.FirstOrDefault(n =>
                     string.Equals(n, Target, StringComparison.OrdinalIgnoreCase));
-
             }
             else if (TargetKind == TrialTargetKind.Prompt
                      && Guid.TryParse(Target, out Guid promptId))
             {
-
                 SelectedPrompt = Prompts.FirstOrDefault(p => p.Id == promptId);
-
             }
-
         }
         finally
         {
-
             _suppressDirty = false;
-
         }
-
     }
 
     private void AttachVariable(TrialVariableRowViewModel row) =>
@@ -767,26 +662,19 @@ public sealed partial class ProvingGroundsViewModel : ViewModelBase, IDisposable
 
     private void MarkDirty()
     {
-
         if (_suppressDirty)
         {
-
             return;
-
         }
 
         IsDirty = true;
-
     }
 
     public void Dispose()
     {
-
         if (_disposed)
         {
-
             return;
-
         }
 
         _disposed = true;
@@ -801,36 +689,27 @@ public sealed partial class ProvingGroundsViewModel : ViewModelBase, IDisposable
 
         foreach (TrialVariableRowViewModel row in Variables)
         {
-
             DetachVariable(row);
-
         }
 
         foreach (InquisitorDraftViewModel draft in Inquisitors)
         {
-
             DetachInquisitor(draft);
-
         }
-
     }
-
 }
 
 public enum InquisitorDraftKind
 {
-
     Regex,
 
     JsonSchema,
 
     Semantic,
-
 }
 
 public sealed partial class TrialVariableRowViewModel : ObservableObject
 {
-
     [ObservableProperty]
     private string _key;
 
@@ -839,18 +718,14 @@ public sealed partial class TrialVariableRowViewModel : ObservableObject
 
     public TrialVariableRowViewModel(string key, string value)
     {
-
         _key = key;
 
         _value = value;
-
     }
-
 }
 
 public sealed partial class InquisitorDraftViewModel : ObservableObject
 {
-
     [ObservableProperty]
     private InquisitorDraftKind _kind;
 
@@ -877,69 +752,56 @@ public sealed partial class InquisitorDraftViewModel : ObservableObject
 
     public InquisitorDraftViewModel(InquisitorDraftKind kind)
     {
-
         _kind = kind;
-
     }
 
     public bool TryBuild(out Inquisitor? inquisitor, out string? error)
     {
-
         inquisitor = null;
 
         error = null;
 
         switch (Kind)
         {
-
             case InquisitorDraftKind.Regex:
             {
-
                 if (string.IsNullOrWhiteSpace(Pattern))
                 {
-
                     error = "Regex Inquisitor requires a pattern.";
 
                     return false;
-
                 }
 
                 try
                 {
-
-                    _ = new Regex(Pattern, IgnoreCase ? RegexOptions.IgnoreCase : RegexOptions.None);
-
+                    _ = new Regex(
+                        Pattern,
+                        IgnoreCase ? RegexOptions.IgnoreCase : RegexOptions.None,
+                        ProvingGroundsArbiter.RegexMatchTimeout);
                 }
                 catch (ArgumentException ex)
                 {
-
                     error = $"Invalid regex: {ex.Message}";
 
                     return false;
-
                 }
 
                 inquisitor = new RegexInquisitor(Pattern, ShouldMatch, IgnoreCase) { Label = BlankToNull(Label) };
 
                 return true;
-
             }
 
             case InquisitorDraftKind.JsonSchema:
             {
-
                 if (string.IsNullOrWhiteSpace(SchemaJson))
                 {
-
                     error = "JSON Schema Inquisitor requires schema JSON.";
 
                     return false;
-
                 }
 
                 try
                 {
-
                     using JsonDocument document = JsonDocument.Parse(SchemaJson);
 
                     inquisitor = new JsonSchemaInquisitor(document.RootElement.Clone())
@@ -948,29 +810,22 @@ public sealed partial class InquisitorDraftViewModel : ObservableObject
                     };
 
                     return true;
-
                 }
                 catch (JsonException ex)
                 {
-
                     error = $"Invalid JSON schema: {ex.Message}";
 
                     return false;
-
                 }
-
             }
 
             case InquisitorDraftKind.Semantic:
             {
-
                 if (string.IsNullOrWhiteSpace(Question))
                 {
-
                     error = "Semantic Inquisitor requires a question.";
 
                     return false;
-
                 }
 
                 inquisitor = new SemanticInquisitor(Question.Trim(), ExpectedAnswer)
@@ -979,7 +834,6 @@ public sealed partial class InquisitorDraftViewModel : ObservableObject
                 };
 
                 return true;
-
             }
 
             default:
@@ -987,12 +841,9 @@ public sealed partial class InquisitorDraftViewModel : ObservableObject
                 error = "Unknown Inquisitor kind.";
 
                 return false;
-
         }
-
     }
 
     private static string? BlankToNull(string? value) =>
         string.IsNullOrWhiteSpace(value) ? null : value.Trim();
-
 }

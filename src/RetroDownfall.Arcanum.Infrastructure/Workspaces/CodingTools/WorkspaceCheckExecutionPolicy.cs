@@ -29,12 +29,10 @@ internal static class WorkspaceCheckExecutionPolicy
         bool pinnedExecutableValid,
         bool mandatoryJailAvailable)
     {
-
         ArgumentException.ThrowIfNullOrWhiteSpace(platform);
 
         if (!enabled)
         {
-
             return new WorkspaceCheckExecutionStatus(
                 IsEligible: false,
                 IsHealthDegraded: false,
@@ -43,19 +41,16 @@ internal static class WorkspaceCheckExecutionPolicy
 
         if (string.Equals(platform, "Linux", StringComparison.OrdinalIgnoreCase))
         {
-
             return new WorkspaceCheckExecutionStatus(false, true, LinuxUnavailableReason);
         }
 
         if (string.Equals(platform, "Windows", StringComparison.OrdinalIgnoreCase))
         {
-
             return new WorkspaceCheckExecutionStatus(false, true, WindowsUnavailableReason);
         }
 
         if (!string.Equals(platform, "macOS", StringComparison.OrdinalIgnoreCase))
         {
-
             return new WorkspaceCheckExecutionStatus(
                 false,
                 true,
@@ -64,7 +59,6 @@ internal static class WorkspaceCheckExecutionPolicy
 
         if (!mandatoryJailAvailable)
         {
-
             return new WorkspaceCheckExecutionStatus(
                 false,
                 true,
@@ -73,7 +67,6 @@ internal static class WorkspaceCheckExecutionPolicy
 
         if (!pinnedExecutableValid)
         {
-
             return new WorkspaceCheckExecutionStatus(
                 false,
                 true,
@@ -86,60 +79,24 @@ internal static class WorkspaceCheckExecutionPolicy
             ExplicitRiskReason);
     }
 
-    /// <summary>Test hook: count of real sandbox-exec probe evaluations since the last reset. The
-    /// process-lifetime cache in <see cref="IsMandatoryJailAvailableForCurrentHost"/> keeps this at 1
-    /// across repeated calls.</summary>
-    internal static int MandatoryJailProbeCountForTests { get; private set; }
+    /// <summary>
+    /// How long a failed jail probe is remembered. Long enough that a host whose probe keeps failing (or
+    /// hangs to its two-second timeout) spawns it at most once per window instead of on every status,
+    /// tools/list and health call; short enough that a transient failure clears itself without a restart.
+    /// </summary>
+    internal static readonly TimeSpan JailProbeFailureRetryAfter = TimeSpan.FromSeconds(5);
 
-    private static readonly Lock s_mandatoryJailGate = new();
+    private static readonly MandatoryJailProbeCache s_mandatoryJailProbeCache =
+        new(ProbeMandatoryJail, JailProbeFailureRetryAfter, TimeProvider.System);
 
-    private static bool? s_mandatoryJailAvailable;
-
-    /// <summary>Test seam: restore the mandatory-jail probe cache and its counter to production
-    /// defaults. Call from test teardown to avoid cross-test leakage.</summary>
-    internal static void ResetTestSeams()
-    {
-
-        lock (s_mandatoryJailGate)
-        {
-
-            s_mandatoryJailAvailable = null;
-
-            MandatoryJailProbeCountForTests = 0;
-
-        }
-
-    }
-
-    internal static bool IsMandatoryJailAvailableForCurrentHost()
-    {
-
-        lock (s_mandatoryJailGate)
-        {
-
-            if (s_mandatoryJailAvailable is { } cached)
-            {
-
-                return cached;
-            }
-
-            MandatoryJailProbeCountForTests++;
-
-            s_mandatoryJailAvailable = ProbeMandatoryJail();
-
-            return s_mandatoryJailAvailable.Value;
-
-        }
-
-    }
+    internal static bool IsMandatoryJailAvailableForCurrentHost() =>
+        s_mandatoryJailProbeCache.IsAvailable();
 
     private static bool ProbeMandatoryJail()
     {
-
         if (!OperatingSystem.IsMacOS()
             || !File.Exists("/usr/bin/sandbox-exec"))
         {
-
             return false;
         }
 
@@ -158,10 +115,8 @@ internal static class WorkspaceCheckExecutionPolicy
         IReadOnlyList<string> arguments,
         TimeSpan timeout)
     {
-
         try
         {
-
             using System.Diagnostics.Process probe = new()
             {
                 StartInfo = new System.Diagnostics.ProcessStartInfo
@@ -176,13 +131,11 @@ internal static class WorkspaceCheckExecutionPolicy
 
             foreach (string argument in arguments)
             {
-
                 probe.StartInfo.ArgumentList.Add(argument);
             }
 
             if (!probe.Start())
             {
-
                 return false;
             }
 
@@ -191,17 +144,13 @@ internal static class WorkspaceCheckExecutionPolicy
                     1,
                     int.MaxValue)))
             {
-
                 try
                 {
-
                     probe.Kill(entireProcessTree: true);
                     _ = probe.WaitForExit(1_000);
-
                 }
                 catch (Exception)
                 {
-
                 }
 
                 return false;
@@ -215,32 +164,97 @@ internal static class WorkspaceCheckExecutionPolicy
                 or InvalidOperationException
                 or System.ComponentModel.Win32Exception)
         {
-
             return false;
         }
     }
 
     internal static string DetectPlatform()
     {
-
         if (OperatingSystem.IsMacOS())
         {
-
             return "macOS";
         }
 
         if (OperatingSystem.IsLinux())
         {
-
             return "Linux";
         }
 
         if (OperatingSystem.IsWindows())
         {
-
             return "Windows";
         }
 
         return "Unknown";
+    }
+}
+
+/// <summary>
+/// Caches a healthy mandatory-jail probe result (a <c>sandbox-exec</c> spawn) for the process lifetime.
+/// A failed result is remembered only for <paramref name="failureRetryAfter"/>: a transient failure (a
+/// timeout, a momentary resource shortage) must not report the jail as unavailable until the host
+/// restarts, but a host where the probe keeps failing must not re-spawn it, with its timeout, on every
+/// call either. Probing is single-flight under the gate: concurrent callers wait for the one probe in
+/// flight (at most its timeout, once per window) and share its answer, and every caller inside the window
+/// after a failure gets the remembered answer without any spawn.
+/// </summary>
+internal sealed class MandatoryJailProbeCache(
+    Func<bool> probe,
+    TimeSpan failureRetryAfter,
+    TimeProvider timeProvider)
+{
+    private readonly Lock _gate = new();
+
+    private bool _available;
+
+    private bool _hasFailure;
+
+    private long _failedAtTimestamp;
+
+    internal int ProbeCount { get; private set; }
+
+    internal bool IsAvailable()
+    {
+        lock (_gate)
+        {
+            if (_available)
+            {
+                return true;
+            }
+
+            if (_hasFailure
+                && timeProvider.GetElapsedTime(_failedAtTimestamp) < failureRetryAfter)
+            {
+                return false;
+            }
+
+            ProbeCount++;
+
+            _available = probe();
+
+            _hasFailure = !_available;
+
+            if (_hasFailure)
+            {
+                // Stamped after the probe returns, so a slow failing probe does not eat its own window.
+                _failedAtTimestamp = timeProvider.GetTimestamp();
+            }
+
+            return _available;
+        }
+    }
+
+    internal void Reset()
+    {
+        lock (_gate)
+        {
+            _available = false;
+
+            _hasFailure = false;
+
+            _failedAtTimestamp = 0;
+
+            ProbeCount = 0;
+        }
     }
 }

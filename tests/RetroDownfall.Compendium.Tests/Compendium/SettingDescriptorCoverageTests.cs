@@ -28,7 +28,59 @@ public sealed class SettingDescriptorCoverageTests
     [Fact]
     public void Editable_descriptor_count_matches_the_documented_total()
     {
-        Assert.Equal(162, SettingDescriptors.All.Count);
+        Assert.Equal(163, SettingDescriptors.All.Count);
+    }
+
+    /// <summary>
+    /// The configuration validator refuses an empty webhook-scheme list, because an empty list used to
+    /// suppress every alert without saying so. The editor is where an operator clears the field, so its
+    /// help has to say at least one entry is required rather than leave the refusal to be discovered.
+    /// </summary>
+    [Fact]
+    public void Webhook_scheme_help_says_at_least_one_entry_is_required()
+    {
+        SettingDescriptor descriptor = Assert.Single(
+            SettingDescriptors.All,
+            static item => item.Key == "integrations.commLink.allowedSchemes");
+
+        Assert.Contains("At least one is required", descriptor.Description, StringComparison.Ordinal);
+
+        Assert.Contains("empty list is a validation error", descriptor.Description, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The spell workspace roots gate more than file edits: running a spell or a prompt, ping, and a
+    /// prompt test's codex read all need a workspace under them, and an empty list refuses them all. Help
+    /// that says only "create, edit, or delete files" lets an operator leave it empty and then meet the
+    /// refusal on a run.
+    /// </summary>
+    [Fact]
+    public void Spell_workspace_roots_help_names_runs_and_says_empty_refuses_them()
+    {
+        SettingDescriptor descriptor = Assert.Single(
+            SettingDescriptors.All,
+            static item => item.Key == "security.spellWorkspaceRoots");
+
+        Assert.Contains("run spells and prompts", descriptor.Description, StringComparison.Ordinal);
+
+        Assert.Contains("Empty refuses them all", descriptor.Description, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The list does not govern where AI tools may write files (workspace containment and
+    /// <c>workspaces.enableFileWrite</c> do), so its label must not say it does: an operator who reads
+    /// "Folders AI can modify" lists one folder and believes AI file writes are confined to it.
+    /// </summary>
+    [Fact]
+    public void Spell_workspace_roots_label_names_spells_and_prompts_not_ai_file_writes()
+    {
+        SettingDescriptor descriptor = Assert.Single(
+            SettingDescriptors.All,
+            static item => item.Key == "security.spellWorkspaceRoots");
+
+        Assert.Equal("Spell and prompt workspace folders", descriptor.Label);
+
+        Assert.DoesNotContain("modify", descriptor.Label, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

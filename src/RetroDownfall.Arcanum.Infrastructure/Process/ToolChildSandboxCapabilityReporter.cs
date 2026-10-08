@@ -5,7 +5,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.ProcessExecution;
 /// </summary>
 public static class ToolChildSandboxCapabilityReporter
 {
-
     public const string LinuxBetaDenialMessage =
         "Linux filesystem jail is not active in this beta. Set Arcanum:Security:AllowUnsandboxedToolChildren=true to run without FS confinement, or use macOS for sandboxed command tools.";
 
@@ -17,7 +16,6 @@ public static class ToolChildSandboxCapabilityReporter
     /// </summary>
     public static class Platforms
     {
-
         public const string MacOs = "macOS";
 
         public const string Linux = "Linux";
@@ -25,7 +23,6 @@ public static class ToolChildSandboxCapabilityReporter
         public const string Windows = "Windows";
 
         public const string Unknown = "Unknown";
-
     }
 
     public static ToolChildSandboxStatus BuildForCurrentHost(bool escapeHatchEnabled) =>
@@ -44,12 +41,10 @@ public static class ToolChildSandboxCapabilityReporter
         bool macOsSandboxExecPresent = true,
         bool windowsAppContainerAvailable = true)
     {
-
         ArgumentException.ThrowIfNullOrWhiteSpace(platform);
 
         if (escapeHatchEnabled)
         {
-
             return new ToolChildSandboxStatus
             {
                 Platform = platform,
@@ -74,15 +69,12 @@ public static class ToolChildSandboxCapabilityReporter
 
                 IsHealthDegraded = true,
             };
-
         }
 
         if (string.Equals(platform, Platforms.MacOs, StringComparison.OrdinalIgnoreCase))
         {
-
             if (macOsSandboxExecPresent)
             {
-
                 return new ToolChildSandboxStatus
                 {
                     Platform = Platforms.MacOs,
@@ -107,7 +99,6 @@ public static class ToolChildSandboxCapabilityReporter
 
                     IsHealthDegraded = false,
                 };
-
             }
 
             return new ToolChildSandboxStatus
@@ -135,12 +126,10 @@ public static class ToolChildSandboxCapabilityReporter
 
                 IsHealthDegraded = true,
             };
-
         }
 
         if (string.Equals(platform, Platforms.Linux, StringComparison.OrdinalIgnoreCase))
         {
-
             return new ToolChildSandboxStatus
             {
                 Platform = Platforms.Linux,
@@ -161,7 +150,6 @@ public static class ToolChildSandboxCapabilityReporter
 
                 IsHealthDegraded = true,
             };
-
         }
 
         if (string.Equals(platform, Platforms.Windows, StringComparison.OrdinalIgnoreCase))
@@ -228,57 +216,41 @@ public static class ToolChildSandboxCapabilityReporter
 
             IsHealthDegraded = true,
         };
-
     }
 
     private static string DetectPlatform()
     {
-
         if (OperatingSystem.IsMacOS())
         {
-
             return Platforms.MacOs;
-
         }
 
         if (OperatingSystem.IsLinux())
         {
-
             return Platforms.Linux;
-
         }
 
         if (OperatingSystem.IsWindows())
         {
-
             return Platforms.Windows;
-
         }
 
         return Platforms.Unknown;
-
     }
 
     private static ToolChildResourceLimitsMode ResourceLimitsFor(string platform)
     {
-
         if (string.Equals(platform, Platforms.Windows, StringComparison.OrdinalIgnoreCase))
         {
-
             return ToolChildResourceLimitsMode.Active;
-
         }
 
         if (string.Equals(platform, Platforms.MacOs, StringComparison.OrdinalIgnoreCase)
             || string.Equals(platform, Platforms.Linux, StringComparison.OrdinalIgnoreCase))
         {
-
             return ToolChildResourceLimitsMode.Active;
-
         }
 
         return ToolChildResourceLimitsMode.NotAvailable;
-
     }
-
 }

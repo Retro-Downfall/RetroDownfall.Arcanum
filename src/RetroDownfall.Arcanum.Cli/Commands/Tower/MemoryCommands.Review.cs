@@ -105,7 +105,7 @@ public sealed partial class MemoryCommands
         string? cursor,
         CancellationToken cancellationToken)
     {
-        if (!Enum.TryParse(lane, ignoreCase: true, out CovenantLane parsedLane)
+        if (!CliEnumInput.TryParseName(lane, out CovenantLane parsedLane)
             || parsedLane is not (CovenantLane.Confirmed or CovenantLane.Proposed))
         {
             return ReviewInputError("--lane must be confirmed or proposed.");
@@ -258,17 +258,6 @@ public sealed partial class MemoryCommands
             && !await confirmationPrompt.PromptForConfirmationAsync(prompt, cancellationToken).ConfigureAwait(false))
         {
             dispatcher.WriteDiagnostic($"{prepared.Value.Store} bulk review cancelled; nothing was applied.");
-
-            if (CliInvocationContext.Current.Json)
-            {
-                dispatcher.WriteJson(
-                    new MemoryReviewCancellationPayload(
-                        prepared.Value.Store,
-                        prepared.Value.RequestId,
-                        prepared.Value.Action,
-                        Cancelled: true),
-                    CliJsonContext.Default.MemoryReviewCancellationPayload);
-            }
 
             return (int)CliExitCode.Success;
         }

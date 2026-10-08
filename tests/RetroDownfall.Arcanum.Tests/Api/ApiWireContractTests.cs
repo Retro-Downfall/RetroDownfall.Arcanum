@@ -1,6 +1,12 @@
 using System.Net;
 using System.Text;
 using System.Text.Json;
+using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Routing;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Options;
+using RetroDownfall.Arcanum.Api.Security;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Core.Chronosync;
 using RetroDownfall.Arcanum.Core.Configuration;
@@ -16,20 +22,16 @@ namespace RetroDownfall.Arcanum.Tests.Api;
 [Collection("ApiHost")]
 public sealed class ApiWireContractTests
 {
-
     private readonly ArcanumWebApplicationFactory _factory;
 
     public ApiWireContractTests(ArcanumWebApplicationFactory factory)
     {
-
         _factory = factory;
-
     }
 
     [SkippableFact]
     public async Task PostConfigValidate_MalformedJson_ReturnsEnveloped400()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         HttpClient client = _factory.CreateAuthenticatedClient();
@@ -51,13 +53,11 @@ public sealed class ApiWireContractTests
         Assert.NotNull(body.Error);
 
         Assert.Equal("Validation.InvalidBody", body.Error!.Value.Code);
-
     }
 
     [SkippableFact]
     public async Task PostCommLinkSend_NonJsonContentType_ReturnsEnveloped415NotHubUnhandled()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         HttpClient client = _factory.CreateAuthenticatedClient();
@@ -86,13 +86,11 @@ public sealed class ApiWireContractTests
         Assert.NotNull(body.Error);
 
         Assert.Equal("Validation.UnsupportedMediaType", body.Error!.Value.Code);
-
     }
 
     [SkippableFact]
     public async Task PutConfig_NonJsonContentType_ReturnsEnveloped415()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         HttpClient client = _factory.CreateAuthenticatedClient();
@@ -128,13 +126,11 @@ public sealed class ApiWireContractTests
         Assert.NotNull(body.Error);
 
         Assert.Equal("Validation.UnsupportedMediaType", body.Error!.Value.Code);
-
     }
 
     [SkippableFact]
     public async Task PostConfigValidate_NonJsonContentType_ReturnsEnveloped415()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         HttpClient client = _factory.CreateAuthenticatedClient();
@@ -159,13 +155,11 @@ public sealed class ApiWireContractTests
         Assert.NotNull(body.Error);
 
         Assert.Equal("Validation.UnsupportedMediaType", body.Error!.Value.Code);
-
     }
 
     [SkippableFact]
     public async Task PostSessions_MissingBody_ReturnsEnveloped400()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         HttpClient client = _factory.CreateAuthenticatedClient();
@@ -189,13 +183,11 @@ public sealed class ApiWireContractTests
         Assert.NotNull(body.Error);
 
         Assert.Equal("Validation.InvalidBody", body.Error!.Value.Code);
-
     }
 
     [SkippableFact]
     public async Task PostLore_MalformedJson_ReturnsEnveloped400()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         HttpClient client = _factory.CreateAuthenticatedClient();
@@ -219,13 +211,11 @@ public sealed class ApiWireContractTests
         Assert.NotNull(body.Error);
 
         Assert.Equal("Validation.InvalidBody", body.Error!.Value.Code);
-
     }
 
     [SkippableFact]
     public async Task GetPerceptionLook_WithAllowedRoot_ReturnsOkEnvelope()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         HttpClient client = _factory.CreateAuthenticatedClient();
@@ -247,13 +237,11 @@ public sealed class ApiWireContractTests
         Assert.True(body.IsSuccess);
 
         Assert.NotNull(body.Data);
-
     }
 
     [SkippableFact]
     public async Task PostPerceptionChronosync_persists_the_host_owned_baseline_and_returns_the_delta()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         HttpClient client = _factory.CreateAuthenticatedClient();
@@ -273,9 +261,7 @@ public sealed class ApiWireContractTests
 
         PatternSnapshot updated = baseline with
         {
-
             Threads = ["alpha", "beta"],
-
         };
 
         using HttpResponseMessage second = await PostChronosyncAsync(client, updated);
@@ -297,13 +283,11 @@ public sealed class ApiWireContractTests
         Assert.Equal(["beta"], report.NewThreads);
 
         Assert.Empty(report.MissingThreads);
-
     }
 
     [SkippableFact]
     public async Task GetPerceptionLook_OutsideAllowedRoots_DoesNotLeakDirectoryExistence()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         HttpClient client = _factory.CreateAuthenticatedClient();
@@ -317,7 +301,6 @@ public sealed class ApiWireContractTests
 
         try
         {
-
             HttpResponseMessage existingResponse = await client.GetAsync(
                 $"/api/perception/look?directory={Uri.EscapeDataString(existingOutside)}");
 
@@ -336,21 +319,16 @@ public sealed class ApiWireContractTests
             Assert.Equal(
                 "Perception.PathNotAllowed",
                 await ReadPerceptionErrorCodeAsync(missingResponse));
-
         }
         finally
         {
-
             Directory.Delete(existingOutside, recursive: true);
-
         }
-
     }
 
     [SkippableFact]
     public async Task GetPerceptionLook_MissingDirectoryInsideAllowedRoots_StillReturns400()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         HttpClient client = _factory.CreateAuthenticatedClient();
@@ -363,12 +341,10 @@ public sealed class ApiWireContractTests
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
 
         Assert.Equal("Perception.InvalidPath", await ReadPerceptionErrorCodeAsync(response));
-
     }
 
     private static async Task<string?> ReadPerceptionErrorCodeAsync(HttpResponseMessage response)
     {
-
         string json = await response.Content.ReadAsStringAsync();
 
         ApiResponse<PatternSnapshot>? body = JsonSerializer.Deserialize(
@@ -382,14 +358,12 @@ public sealed class ApiWireContractTests
         Assert.NotNull(body.Error);
 
         return body.Error!.Value.Code;
-
     }
 
     private static Task<HttpResponseMessage> PostChronosyncAsync(
         HttpClient client,
         PatternSnapshot snapshot)
     {
-
         byte[] payload = JsonSerializer.SerializeToUtf8Bytes(
             snapshot,
             ArcanumJsonContext.Default.PatternSnapshot);
@@ -400,13 +374,11 @@ public sealed class ApiWireContractTests
             new System.Net.Http.Headers.MediaTypeHeaderValue("application/json");
 
         return client.PostAsync("/api/perception/chronosync", content);
-
     }
 
     [SkippableFact]
     public async Task GetEventsLogs_WithAvailableGate_ReturnsEventStream()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         HttpClient client = _factory.CreateAuthenticatedClient();
@@ -418,7 +390,90 @@ public sealed class ApiWireContractTests
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
 
         Assert.StartsWith("text/event-stream", response.Content.Headers.ContentType?.MediaType);
-
     }
 
+    /// <summary>
+    /// A route that lets the framework bind its body answers a malformed or mistyped body with the
+    /// documented envelope.
+    /// </summary>
+    /// <remarks>
+    /// The framework's own default answers a binder failure with an empty 400/415 outside Development and
+    /// throws it into the exception handler inside it, where it used to become a logged 500
+    /// <c>Hub.Unhandled</c>. The host pins <c>ThrowOnBadRequest</c> on in every environment, so the answer no
+    /// longer depends on the environment; that pin is asserted by
+    /// <see cref="BoundBodyBinderFailures_AreThrownToTheExceptionHandler_InEveryEnvironment"/>, and this test
+    /// drives the envelope that follows from it. It once ran a second, Development-named leg, which read the
+    /// same pinned option and so proved nothing the first leg did not.
+    /// </remarks>
+    [SkippableFact]
+    public async Task PostPrompts_MalformedJson_And_NonJsonContentType_ReturnEnvelopedErrors()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        HttpClient client = _factory.CreateAuthenticatedClient();
+
+        using HttpResponseMessage malformed = await client.PostAsync(
+            "/api/prompts",
+            new StringContent("{not-json", Encoding.UTF8, "application/json"));
+
+        Assert.Equal(HttpStatusCode.BadRequest, malformed.StatusCode);
+
+        await AssertBoolEnvelopeAsync(malformed, "Validation.InvalidBody");
+
+        using HttpResponseMessage wrongType = await client.PostAsync(
+            "/api/prompts",
+            new StringContent("""{"name":"p","version":"1"}""", Encoding.UTF8, "text/plain"));
+
+        Assert.Equal(HttpStatusCode.UnsupportedMediaType, wrongType.StatusCode);
+
+        await AssertBoolEnvelopeAsync(wrongType, "Validation.UnsupportedMediaType");
+    }
+
+    /// <summary>
+    /// The framework's own default is environment-dependent; the host pins it so the answer is not.
+    /// </summary>
+    [SkippableFact]
+    public void BoundBodyBinderFailures_AreThrownToTheExceptionHandler_InEveryEnvironment()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Assert.False(_factory.Services.GetRequiredService<IHostEnvironment>().IsDevelopment());
+
+        Assert.True(_factory.Services.GetRequiredService<IOptions<RouteHandlerOptions>>().Value.ThrowOnBadRequest);
+    }
+
+    [SkippableTheory]
+    [InlineData("""{"prompt":"hi","toolPolicy":"mostlyTools"}""")]
+    [InlineData("""{"prompt":"hi","toolPolicy":7}""")]
+    public async Task SpellExecute_UnknownToolPolicy_Returns_InvalidBodyEnvelope(string payload)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        HttpClient client = _factory.CreateAuthenticatedClient();
+
+        using HttpResponseMessage response = await client.PostAsync(
+            "/api/spells/any-spell/execute",
+            new StringContent(payload, Encoding.UTF8, "application/json"));
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+
+        await AssertBoolEnvelopeAsync(response, "Validation.InvalidBody");
+    }
+
+    private static async Task AssertBoolEnvelopeAsync(HttpResponseMessage response, string expectedCode)
+    {
+        string json = await response.Content.ReadAsStringAsync();
+
+        Assert.DoesNotContain("Hub.Unhandled", json, StringComparison.Ordinal);
+
+        ApiResponse<bool>? body = JsonSerializer.Deserialize(json, ArcanumJsonContext.Default.ApiResponseBoolean);
+
+        Assert.NotNull(body);
+
+        Assert.False(body.IsSuccess);
+
+        Assert.Equal(expectedCode, body.Error?.Code);
+
+        Assert.False(string.IsNullOrEmpty(body.TraceId));
+    }
 }

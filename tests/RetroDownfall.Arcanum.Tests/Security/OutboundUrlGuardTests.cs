@@ -203,6 +203,66 @@ public sealed class OutboundUrlGuardTests
         Assert.Equal(!allowPrivateAndLoopback, blocked);
     }
 
+    [Theory]
+    [InlineData("::1")]
+    [InlineData("::1%1")]
+    [InlineData("0:0:0:0:0:0:0:1")]
+    public void IsBlockedAddress_Ipv6LoopbackSpellings_BlockedWhenUntrustedAllowedWhenTrusted(string literal)
+    {
+        IPAddress loopback = IPAddress.Parse(literal);
+
+        Assert.True(OutboundUrlGuard.IsBlockedAddress(loopback, allowPrivateAndLoopback: false));
+
+        Assert.False(OutboundUrlGuard.IsBlockedAddress(loopback, allowPrivateAndLoopback: true));
+    }
+
+    [Theory]
+    [InlineData("127.0.0.1", true)]
+    [InlineData("10.0.0.1", true)]
+    [InlineData("192.168.1.1", true)]
+    [InlineData("::1", true)]
+    [InlineData("fd00::1", true)]
+    [InlineData("169.254.169.254", true)]
+    [InlineData("8.8.8.8", false)]
+    [InlineData("2606:4700:4700::1111", false)]
+    public void IsBlockedForUntrustedEgress_AppliesTheUntrustedAddressPolicy(string literal, bool expected)
+    {
+        IPAddress address = IPAddress.Parse(literal);
+
+        Assert.Equal(expected, OutboundUrlGuard.IsBlockedForUntrustedEgress(address));
+
+        Assert.Equal(
+            OutboundUrlGuard.IsBlockedAddress(address, allowPrivateAndLoopback: false),
+            OutboundUrlGuard.IsBlockedForUntrustedEgress(address));
+    }
+
+    [Fact]
+    public void IsBlockedForUntrustedEgress_NullAddress_Throws()
+    {
+        ArgumentNullException exception = Assert.Throws<ArgumentNullException>(
+            () => OutboundUrlGuard.IsBlockedForUntrustedEgress(null!));
+
+        Assert.Equal("address", exception.ParamName);
+    }
+
+    [Fact]
+    public async Task ValidateProviderEndpointAsync_DefaultResolver_RefusesLinkLocalLiteralBeforeResolution()
+    {
+        Result result = await OutboundUrlGuard.ValidateProviderEndpointAsync("http://169.254.169.254/latest/");
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(OutboundUrlGuard.BlockedErrorCode, result.Error.Code);
+    }
+
+    [Fact]
+    public async Task ValidateProviderEndpointAsync_DefaultResolver_AllowsLoopbackLiteral()
+    {
+        Result result = await OutboundUrlGuard.ValidateProviderEndpointAsync("http://127.0.0.1:11434/v1");
+
+        Assert.True(result.IsSuccess);
+    }
+
     [Fact]
     public void IsBlockedAddress_Ipv6UniqueLocal_BlockedWhenUntrusted()
     {
@@ -291,6 +351,171 @@ public sealed class OutboundUrlGuardTests
         IPAddress publicAddress = IPAddress.Parse("2606:4700:4700::1111");
 
         Assert.False(OutboundUrlGuard.IsBlockedAddress(publicAddress, allowPrivateAndLoopback));
+    }
+
+    [Theory]
+    [InlineData("64:ff9b::a00:1", false)]
+    [InlineData("64:ff9b::7f00:1", false)]
+    [InlineData("64:ff9b::c0a8:101", false)]
+    [InlineData("64:ff9b::a9fe:a9fe", true)]
+    [InlineData("64:ff9b::6440:1", true)]
+    public void IsBlockedAddress_Nat64EmbeddedPrivateIpv4_Blocked(string literal, bool allowPrivateAndLoopback)
+    {
+        Assert.True(OutboundUrlGuard.IsBlockedAddress(IPAddress.Parse(literal), allowPrivateAndLoopback));
+    }
+
+    [Fact]
+    public void IsBlockedAddress_Nat64EmbeddedPrivateIpv4_FollowsTheIpv4PolicyForTrustedEgress()
+    {
+        IPAddress embeddedPrivate = IPAddress.Parse("64:ff9b::a00:1");
+
+        Assert.False(OutboundUrlGuard.IsBlockedAddress(embeddedPrivate, allowPrivateAndLoopback: true));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void IsBlockedAddress_Nat64EmbeddedPublicIpv4_NotBlocked(bool allowPrivateAndLoopback)
+    {
+        Assert.False(OutboundUrlGuard.IsBlockedAddress(IPAddress.Parse("64:ff9b::808:808"), allowPrivateAndLoopback));
+    }
+
+    [Theory]
+    [InlineData("2002:7f00:1::", false)]
+    [InlineData("2002:a00:1::1", false)]
+    [InlineData("2002:a9fe:a9fe::", true)]
+    public void IsBlockedAddress_6to4EmbeddedLoopback_Blocked(string literal, bool allowPrivateAndLoopback)
+    {
+        Assert.True(OutboundUrlGuard.IsBlockedAddress(IPAddress.Parse(literal), allowPrivateAndLoopback));
+    }
+
+    [Fact]
+    public void IsBlockedAddress_6to4EmbeddedPublicIpv4_NotBlocked()
+    {
+        Assert.False(OutboundUrlGuard.IsBlockedAddress(IPAddress.Parse("2002:808:808::1"), allowPrivateAndLoopback: false));
+    }
+
+    [Theory]
+    [InlineData("2001:0:5a5a:5a5a::f5ff:fffe", false)]
+    [InlineData("2001:0:a00:1::f7f7:f7f7", false)]
+    [InlineData("2001:0:808:808::5601:5601", true)]
+    public void IsBlockedAddress_TeredoEmbeddedPrivateIpv4_Blocked(string literal, bool allowPrivateAndLoopback)
+    {
+        Assert.True(OutboundUrlGuard.IsBlockedAddress(IPAddress.Parse(literal), allowPrivateAndLoopback));
+    }
+
+    [Fact]
+    public void IsBlockedAddress_TeredoWithPublicServerAndClient_NotBlocked()
+    {
+        Assert.False(OutboundUrlGuard.IsBlockedAddress(IPAddress.Parse("2001:0:808:808::f7f7:f7f7"), allowPrivateAndLoopback: false));
+    }
+
+    /// <summary>
+    /// The RFC 8215 local-use NAT64 prefix is a translator inside the local network, the IPv6 spelling
+    /// of reaching the IPv4 hosts behind it, so untrusted egress refuses the whole prefix as it refuses
+    /// RFC1918. Where the operator put the IPv4 address in it depends on the prefix length they chose.
+    /// </summary>
+    [Theory]
+    [InlineData("64:ff9b:1::808:808")]
+    [InlineData("64:ff9b:1::a00:1")]
+    [InlineData("64:ff9b:1:7f00:0:100::")]
+    public void IsBlockedAddress_LocalUseNat64_BlockedWhenUntrusted(string literal)
+    {
+        Assert.True(OutboundUrlGuard.IsBlockedAddress(IPAddress.Parse(literal), allowPrivateAndLoopback: false));
+    }
+
+    /// <summary>
+    /// Trusted egress keeps the local-use prefix, as it keeps RFC1918, but an IPv4 address embedded at any
+    /// of the RFC 6052 positions a local-use prefix can use still meets the IPv4 policy that trusted egress
+    /// never relaxes: link-local, CGNAT, multicast and reserved space.
+    /// </summary>
+    [Theory]
+    [InlineData("64:ff9b:1::a9fe:a9fe")]
+    [InlineData("64:ff9b:1:0:64:4000:100:0")]
+    [InlineData("64:ff9b:1:64:40:1::")]
+    [InlineData("64:ff9b:1:6440:0:100::")]
+    public void IsBlockedAddress_LocalUseNat64EmbeddedLinkLocalOrCgnat_BlockedWhenTrusted(string literal)
+    {
+        Assert.True(OutboundUrlGuard.IsBlockedAddress(IPAddress.Parse(literal), allowPrivateAndLoopback: true));
+    }
+
+    [Theory]
+    [InlineData("64:ff9b:1::808:808")]
+    [InlineData("64:ff9b:1::a00:1")]
+    public void IsBlockedAddress_LocalUseNat64_AllowedWhenTrusted(string literal)
+    {
+        Assert.False(OutboundUrlGuard.IsBlockedAddress(IPAddress.Parse(literal), allowPrivateAndLoopback: true));
+    }
+
+    /// <summary>
+    /// The deprecated IPv4-compatible form (<c>::a.b.c.d</c>) and the SIIT IPv4-translated form
+    /// (<c>::ffff:0:a.b.c.d</c>) both carry an IPv4 destination in their last 32 bits.
+    /// </summary>
+    [Theory]
+    [InlineData("::7f00:1", false)]
+    [InlineData("::a00:1", false)]
+    [InlineData("::a9fe:a9fe", true)]
+    [InlineData("::ffff:0:7f00:1", false)]
+    [InlineData("::ffff:0:c0a8:101", false)]
+    [InlineData("::ffff:0:6440:1", true)]
+    public void IsBlockedAddress_Ipv4CompatibleAndTranslatedEmbeddedPrivate_Blocked(string literal, bool allowPrivateAndLoopback)
+    {
+        Assert.True(OutboundUrlGuard.IsBlockedAddress(IPAddress.Parse(literal), allowPrivateAndLoopback));
+    }
+
+    [Theory]
+    [InlineData("::808:808")]
+    [InlineData("::ffff:0:808:808")]
+    public void IsBlockedAddress_Ipv4CompatibleAndTranslatedEmbeddedPublic_NotBlocked(string literal)
+    {
+        Assert.False(OutboundUrlGuard.IsBlockedAddress(IPAddress.Parse(literal), allowPrivateAndLoopback: false));
+    }
+
+    [Fact]
+    public void IsBlockedAddress_DocumentationIpv6PrefixIsNotTreatedAsTeredo()
+    {
+        Assert.False(OutboundUrlGuard.IsBlockedAddress(IPAddress.Parse("2001:db8::1"), allowPrivateAndLoopback: false));
+    }
+
+    [Theory]
+    [InlineData("ff02::1", false)]
+    [InlineData("ff02::1", true)]
+    [InlineData("ff0e::1234", false)]
+    [InlineData("ff0e::1234", true)]
+    [InlineData("224.0.0.1", false)]
+    [InlineData("224.0.0.1", true)]
+    [InlineData("239.255.255.250", true)]
+    [InlineData("240.0.0.1", true)]
+    [InlineData("255.255.255.255", false)]
+    [InlineData("255.255.255.255", true)]
+    public void IsBlockedAddress_Multicast_Blocked(string literal, bool allowPrivateAndLoopback)
+    {
+        Assert.True(OutboundUrlGuard.IsBlockedAddress(IPAddress.Parse(literal), allowPrivateAndLoopback));
+    }
+
+    [Theory]
+    [InlineData("192.0.0.8")]
+    [InlineData("198.18.0.1")]
+    [InlineData("198.19.255.254")]
+    public void IsBlockedAddress_BenchmarkAndProtocolAssignments_BlockedWhenUntrustedOnly(string literal)
+    {
+        IPAddress address = IPAddress.Parse(literal);
+
+        Assert.True(OutboundUrlGuard.IsBlockedAddress(address, allowPrivateAndLoopback: false));
+
+        Assert.False(OutboundUrlGuard.IsBlockedAddress(address, allowPrivateAndLoopback: true));
+    }
+
+    [Theory]
+    [InlineData("223.255.255.254")]
+    [InlineData("198.17.255.255")]
+    [InlineData("198.20.0.1")]
+    [InlineData("192.0.1.1")]
+    [InlineData("192.1.0.1")]
+    [InlineData("192.88.99.1")]
+    public void IsBlockedAddress_NeighboursOfTheSpecialPurposeRanges_NotBlocked(string literal)
+    {
+        Assert.False(OutboundUrlGuard.IsBlockedAddress(IPAddress.Parse(literal), allowPrivateAndLoopback: false));
     }
 
     [Fact]

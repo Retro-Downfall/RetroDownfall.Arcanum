@@ -723,6 +723,118 @@ public sealed class ShellCommandDispatcherTests
         Assert.DoesNotContain("/context unpin", text, StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// <c>/pin</c> names its kind, so a numeric ordinal, one that names no member and a comma-joined list
+    /// get the usage message rather than being cast into a kind the operator never typed.
+    /// </summary>
+    [Theory]
+    [InlineData("0")]
+    [InlineData("99")]
+    [InlineData("file,url")]
+    public async Task Pin_takes_a_kind_name_only(string kind)
+    {
+        ShellCommandDispatcher dispatcher = CreateDispatcher();
+
+        CommandCenterState state = new(new SessionLogBuffer());
+
+        state.ApplySessionMeta(
+            Guid.Parse("11111111-2222-3333-4444-555555555555"),
+            "S",
+            "Active",
+            1);
+
+        _ = await dispatcher.DispatchAsync($"/pin {kind} src/App.cs", state, CancellationToken.None);
+
+        string text = state.Log.RenderPlainText();
+
+        Assert.Contains("Usage: /pin <kind> <target>", text, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("Pinned", text, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// <c>/pin file</c> runs from the Terminal.Gui key handler with nothing awaited before the open, and a
+    /// FIFO passes <c>File.Exists</c>: opening it for reading waits for a writer, which freezes the UI loop
+    /// for good. A pin must refuse anything that is not a regular file, and must open without waiting.
+    /// </summary>
+    [SkippableFact]
+    public async Task Pin_file_refuses_a_fifo_without_waiting_for_a_writer()
+    {
+        Skip.If(OperatingSystem.IsWindows(), "mkfifo is POSIX-only.");
+
+        string root = Directory.CreateTempSubdirectory("arcanum-pin-fifo-").FullName;
+        string fifo = Path.Combine(root, "build.log");
+        Task<ShellDispatchResult>? dispatch = null;
+        try
+        {
+            Assert.True(PosixFifo.TryCreate(fifo), "mkfifo did not create the FIFO.");
+            RecordingPinHandler handler = new();
+            ShellCommandDispatcher dispatcher = CreateDispatcher(handler);
+            CommandCenterState state = new(new SessionLogBuffer()) { WorkingDirectory = root };
+            state.ApplySessionMeta(
+                Guid.Parse("11111111-2222-3333-4444-555555555555"),
+                "S",
+                "Active",
+                1);
+
+            dispatch = Task.Run(() => dispatcher.DispatchAsync("/pin file build.log", state, CancellationToken.None));
+            _ = await dispatch.WaitAsync(TimeSpan.FromSeconds(30));
+
+            string text = state.Log.RenderPlainText();
+            Assert.Contains("not a regular file", text, StringComparison.Ordinal);
+            Assert.DoesNotContain("Pinned", text, StringComparison.Ordinal);
+            Assert.Empty(handler.Bodies);
+        }
+        finally
+        {
+            if (dispatch is { IsCompleted: false })
+            {
+                // A pin parked in open(2) is the defect this pins. Pair a writer with it so the test host
+                // does not keep a blocked thread for the rest of the run.
+                using FileStream writer = new(fifo, FileMode.Open, FileAccess.Write);
+            }
+
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    /// <summary>
+    /// The pin's content version is the SHA-256 of the file, computed by streaming it rather than by
+    /// loading the whole file into memory first.
+    /// </summary>
+    [Fact]
+    public async Task Pin_file_sends_the_sha256_of_the_file_as_its_content_version()
+    {
+        string root = Directory.CreateTempSubdirectory("arcanum-pin-hash-").FullName;
+        try
+        {
+            byte[] content = new byte[300_000];
+            new Random(7).NextBytes(content);
+            await File.WriteAllBytesAsync(Path.Combine(root, "data.bin"), content);
+            RecordingPinHandler handler = new();
+            ShellCommandDispatcher dispatcher = CreateDispatcher(handler);
+            CommandCenterState state = new(new SessionLogBuffer()) { WorkingDirectory = root };
+            state.ApplySessionMeta(
+                Guid.Parse("11111111-2222-3333-4444-555555555555"),
+                "S",
+                "Active",
+                1);
+
+            _ = await dispatcher.DispatchAsync("/pin file data.bin", state, CancellationToken.None);
+
+            string body = Assert.Single(handler.Bodies);
+            using JsonDocument request = JsonDocument.Parse(body);
+            Assert.Equal(
+                Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(content)).ToLowerInvariant(),
+                request.RootElement.GetProperty("contentVersion").GetString());
+            Assert.Equal("data.bin", request.RootElement.GetProperty("targetIdentifier").GetString());
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
     private static ShellCommandDispatcher CreateDispatcher() =>
         CreateDispatcher(new FakeHandler());
 
@@ -790,6 +902,27 @@ public sealed class ShellCommandDispatcherTests
                     Content = new StringContent(
                         """{"success":false,"error":{"code":"Test.Down","message":"down"}}"""),
                 });
+    }
+
+    private sealed class RecordingPinHandler : HttpMessageHandler
+    {
+        public Collection<string> Bodies { get; } = [];
+
+        protected override async Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            if (request.Content is not null)
+            {
+                Bodies.Add(await request.Content.ReadAsStringAsync(cancellationToken));
+            }
+
+            return new HttpResponseMessage(System.Net.HttpStatusCode.ServiceUnavailable)
+            {
+                Content = new StringContent(
+                    """{"success":false,"error":{"code":"Test.Down","message":"down"}}"""),
+            };
+        }
     }
 
     private sealed class RecordingSpellCatalogHandler : HttpMessageHandler

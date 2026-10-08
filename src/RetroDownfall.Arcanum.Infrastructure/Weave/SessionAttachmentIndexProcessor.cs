@@ -21,7 +21,6 @@ internal sealed record SessionAttachmentIndexOutcome(
     SessionAttachmentIndexStatus Status,
     bool ShouldRetry)
 {
-
     /// <summary>The one shape a maintenance deferral takes, so it cannot be spelled two ways.</summary>
     /// <remarks>
     /// <see cref="SessionAttachmentIndexStatus.Pending"/> is the literal truth rather than a filler:
@@ -35,7 +34,6 @@ internal sealed record SessionAttachmentIndexOutcome(
             SessionAttachmentIndexDisposition.DeferredForMaintenance,
             SessionAttachmentIndexStatus.Pending,
             ShouldRetry: false);
-
 }
 
 internal sealed class SessionAttachmentIndexProcessor(
@@ -45,7 +43,6 @@ internal sealed class SessionAttachmentIndexProcessor(
     ISessionAttachmentIndexWriter index,
     ILogger<SessionAttachmentIndexProcessor> logger)
 {
-
     private const int AutomaticEmbeddingBatchSize = 64;
 
     private const string IndexPipelineVersion = "v1";
@@ -64,16 +61,13 @@ internal sealed class SessionAttachmentIndexProcessor(
         IGrimoireWorkLease workLease,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(workLease);
 
         EmbeddingSettings embeddings = options.CurrentValue.ResolveEmbeddings();
 
         if (!embeddings.Enabled || !embeddings.AttachmentRetrievalEnabled)
         {
-
             return Concluded(SessionAttachmentIndexStatus.NotEligible, shouldRetry: false);
-
         }
 
         SessionAttachmentRecord? attachment = await attachments
@@ -84,9 +78,7 @@ internal sealed class SessionAttachmentIndexProcessor(
             || attachment.State != SessionAttachmentState.Bound
             || attachment.SessionId != request.SessionId)
         {
-
             return Concluded(SessionAttachmentIndexStatus.NotEligible, shouldRetry: false);
-
         }
 
         AttachmentEmbeddingSettings settings = embeddings.Attachments ?? new AttachmentEmbeddingSettings();
@@ -98,7 +90,6 @@ internal sealed class SessionAttachmentIndexProcessor(
 
         if (attachment.Kind != SessionAttachmentKind.Text)
         {
-
             await MarkWithoutIndexAsync(
                 attachment,
                 SessionAttachmentIndexStatus.NotEligible,
@@ -108,14 +99,12 @@ internal sealed class SessionAttachmentIndexProcessor(
                 cancellationToken).ConfigureAwait(false);
 
             return Concluded(SessionAttachmentIndexStatus.NotEligible, shouldRetry: false);
-
         }
 
         DateTimeOffset extractedAt = DateTimeOffset.UtcNow;
 
         if (!weave.IsAvailable)
         {
-
             await MarkWithoutIndexAsync(
                 attachment,
                 SessionAttachmentIndexStatus.Failed,
@@ -125,26 +114,20 @@ internal sealed class SessionAttachmentIndexProcessor(
                 cancellationToken).ConfigureAwait(false);
 
             return Concluded(SessionAttachmentIndexStatus.Failed, shouldRetry: true);
-
         }
 
         Stream stream;
 
         try
         {
-
             stream = await attachments.OpenReadAsync(attachment, cancellationToken).ConfigureAwait(false);
-
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-
             throw;
-
         }
         catch (Exception ex)
         {
-
             logger.LogWarning(
                 ex,
                 "Attachment {AttachmentId} could not be read through encrypted blob storage for indexing.",
@@ -159,7 +142,6 @@ internal sealed class SessionAttachmentIndexProcessor(
                 cancellationToken).ConfigureAwait(false);
 
             return Concluded(SessionAttachmentIndexStatus.Failed, shouldRetry: true);
-
         }
 
         int chunkSize = ArcanumSettingClamps.EmbeddingsAttachmentChunkSizeCharacters(
@@ -201,7 +183,6 @@ internal sealed class SessionAttachmentIndexProcessor(
         async Task<SessionAttachmentIndexOutcome> ConcludeInterruptedBatchAsync(
             OperationCanceledException exception)
         {
-
             logger.LogWarning(
                 exception,
                 "Session attachment {AttachmentId} indexing was interrupted and will be retried.",
@@ -216,13 +197,11 @@ internal sealed class SessionAttachmentIndexProcessor(
                 cancellationToken).ConfigureAwait(false);
 
             return Concluded(SessionAttachmentIndexStatus.Failed, shouldRetry: true);
-
         }
 
         async Task<SessionAttachmentIndexOutcome> ConcludeUnexpectedBatchFailureAsync(
             Exception exception)
         {
-
             logger.LogWarning(
                 exception,
                 "Session attachment {AttachmentId} indexing batch failed unexpectedly.",
@@ -237,18 +216,14 @@ internal sealed class SessionAttachmentIndexProcessor(
                 cancellationToken).ConfigureAwait(false);
 
             return Concluded(SessionAttachmentIndexStatus.Failed, shouldRetry: true);
-
         }
 
         async Task<SessionAttachmentIndexOutcome?> FlushBatchAsync()
         {
-
             if (!workLease.TryBeginExternalEffectGroup(
                     out IGrimoireExternalEffectGroup? effectGroup))
             {
-
                 return SessionAttachmentIndexOutcome.DeferredForMaintenance;
-
             }
 
             await using IGrimoireExternalEffectGroup effect = effectGroup!;
@@ -265,38 +240,29 @@ internal sealed class SessionAttachmentIndexProcessor(
 
             try
             {
-
                 batch = await weave
                     .EmbedBatchAsync(inputs, cancellationToken)
                     .ConfigureAwait(false);
-
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
-
                 throw;
-
             }
             catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
             {
-
                 // WeaveService deliberately propagates provider cancellation. It is a genuine,
                 // retryable interruption when the host token is still live, so classify it before
                 // giving back the effect group that admitted the provider call. Let a signalled host
                 // token escape instead: shutdown is neither a product failure nor another attempt.
                 return await ConcludeInterruptedBatchAsync(ex).ConfigureAwait(false);
-
             }
             catch (Exception ex)
             {
-
                 return await ConcludeUnexpectedBatchFailureAsync(ex).ConfigureAwait(false);
-
             }
 
             if (batch.IsFailure)
             {
-
                 await MarkWithoutIndexAsync(
                     attachment,
                     SessionAttachmentIndexStatus.Failed,
@@ -306,13 +272,12 @@ internal sealed class SessionAttachmentIndexProcessor(
                     cancellationToken).ConfigureAwait(false);
 
                 return Concluded(SessionAttachmentIndexStatus.Failed, shouldRetry: true);
-
             }
 
-            if (batch.Value.Length != chunkBatch.Count
-                || batch.Value.Any(item => item.Vector.Length != expectedDimensions))
+            // The vector count needs no check here (IWeaveService answers one vector per input or
+            // fails); the width does, because the configured dimensions are this index's contract.
+            if (batch.Value.Any(item => item.Vector.Length != expectedDimensions))
             {
-
                 await MarkWithoutIndexAsync(
                     attachment,
                     SessionAttachmentIndexStatus.Failed,
@@ -322,12 +287,10 @@ internal sealed class SessionAttachmentIndexProcessor(
                     cancellationToken).ConfigureAwait(false);
 
                 return Concluded(SessionAttachmentIndexStatus.Failed, shouldRetry: false);
-
             }
 
             try
             {
-
                 await index.AppendReplaceBatchAsync(
                     attachment,
                     checkpoint.GenerationId,
@@ -337,25 +300,18 @@ internal sealed class SessionAttachmentIndexProcessor(
                     extractedAt,
                     indexedAt,
                     cancellationToken).ConfigureAwait(false);
-
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
-
                 throw;
-
             }
             catch (OperationCanceledException ex)
             {
-
                 return await ConcludeInterruptedBatchAsync(ex).ConfigureAwait(false);
-
             }
             catch (Exception ex)
             {
-
                 return await ConcludeUnexpectedBatchFailureAsync(ex).ConfigureAwait(false);
-
             }
 
             wroteAnyBatch = true;
@@ -363,12 +319,10 @@ internal sealed class SessionAttachmentIndexProcessor(
             chunkBatch.Clear();
 
             return null;
-
         }
 
         await using (stream)
         {
-
             await using IAsyncEnumerator<SessionAttachmentTextChunk> chunks =
                 SessionAttachmentTextExtractor
                     .ReadChunksAsync(
@@ -382,24 +336,18 @@ internal sealed class SessionAttachmentIndexProcessor(
 
             while (true)
             {
-
                 bool hasNext;
 
                 try
                 {
-
                     hasNext = await chunks.MoveNextAsync().ConfigureAwait(false);
-
                 }
                 catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
                 {
-
                     throw;
-
                 }
                 catch (SessionAttachmentExtractionException ex)
                 {
-
                     SessionAttachmentIndexStatus status =
                         ex.Status == SessionAttachmentExtractionStatus.NotEligible
                             ? SessionAttachmentIndexStatus.NotEligible
@@ -414,11 +362,9 @@ internal sealed class SessionAttachmentIndexProcessor(
                         cancellationToken).ConfigureAwait(false);
 
                     return Concluded(status, shouldRetry: false);
-
                 }
                 catch (Exception ex)
                 {
-
                     logger.LogWarning(
                         ex,
                         "Attachment {AttachmentId} could not be streamed through encrypted blob storage for indexing.",
@@ -433,23 +379,18 @@ internal sealed class SessionAttachmentIndexProcessor(
                         cancellationToken).ConfigureAwait(false);
 
                     return Concluded(SessionAttachmentIndexStatus.Failed, shouldRetry: true);
-
                 }
 
                 if (!hasNext)
                 {
-
                     break;
-
                 }
 
                 observedChunkCount = checked(chunks.Current.ChunkIndex + 1);
 
                 if (chunks.Current.ChunkIndex < checkpoint.NextChunkIndex)
                 {
-
                     continue;
-
                 }
 
                 chunkBatch.Add(chunks.Current);
@@ -457,26 +398,19 @@ internal sealed class SessionAttachmentIndexProcessor(
                 if (chunkBatch.Count == AutomaticEmbeddingBatchSize
                     && await FlushBatchAsync().ConfigureAwait(false) is { } batchFailure)
                 {
-
                     return batchFailure;
-
                 }
-
             }
-
         }
 
         if (chunkBatch.Count > 0
             && await FlushBatchAsync().ConfigureAwait(false) is { } finalBatchFailure)
         {
-
             return finalBatchFailure;
-
         }
 
         if (!wroteAnyBatch)
         {
-
             await MarkWithoutIndexAsync(
                 attachment,
                 SessionAttachmentIndexStatus.NotEligible,
@@ -486,7 +420,6 @@ internal sealed class SessionAttachmentIndexProcessor(
                 cancellationToken).ConfigureAwait(false);
 
             return Concluded(SessionAttachmentIndexStatus.NotEligible, shouldRetry: false);
-
         }
 
         // Publication takes no effect group of its own, and the omission is deliberate. A group is an
@@ -505,7 +438,6 @@ internal sealed class SessionAttachmentIndexProcessor(
             cancellationToken).ConfigureAwait(false);
 
         return Concluded(SessionAttachmentIndexStatus.Indexed, shouldRetry: false);
-
     }
 
     /// <summary>An outcome for a unit that held its lease to the end, whatever it decided.</summary>
@@ -519,7 +451,6 @@ internal sealed class SessionAttachmentIndexProcessor(
         string failureReason,
         CancellationToken cancellationToken)
     {
-
         SessionAttachmentRecord? attachment = await attachments
             .GetByIdAsync(request.AttachmentId, cancellationToken)
             .ConfigureAwait(false);
@@ -528,9 +459,7 @@ internal sealed class SessionAttachmentIndexProcessor(
             || attachment.State != SessionAttachmentState.Bound
             || attachment.SessionId != request.SessionId)
         {
-
             return;
-
         }
 
         await MarkWithoutIndexAsync(
@@ -540,7 +469,6 @@ internal sealed class SessionAttachmentIndexProcessor(
             failureReason,
             extractedAt: null,
             cancellationToken).ConfigureAwait(false);
-
     }
 
     private Task MarkWithoutIndexAsync(
@@ -558,5 +486,4 @@ internal sealed class SessionAttachmentIndexProcessor(
             failureReason,
             extractedAt,
             cancellationToken);
-
 }

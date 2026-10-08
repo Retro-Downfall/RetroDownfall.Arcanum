@@ -160,7 +160,7 @@ public sealed class SpellCastPreviewServiceTests : IAsyncLifetime
              body
              """);
 
-        string dependenciesJson = System.Text.Json.JsonSerializer.Serialize(dependencies);
+        string dependenciesJson = System.Text.Json.JsonSerializer.Serialize(dependencies, AdHocJson.Options);
 
         _workspace.WriteFile(
             $"spells/{spellName}/SKILL.json",
@@ -239,6 +239,7 @@ public sealed class SpellCastPreviewServiceTests : IAsyncLifetime
 
         public Task<Result> TrustWorkspaceAsync(
             string workingDirectory,
+            string? expectedConfigDigest = null,
             CancellationToken cancellationToken = default) =>
             Task.FromResult(Result.Success());
     }

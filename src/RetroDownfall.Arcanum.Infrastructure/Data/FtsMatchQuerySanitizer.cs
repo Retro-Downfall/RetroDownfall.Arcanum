@@ -1,10 +1,10 @@
+using System.Globalization;
 using System.Text;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Data;
 
 public static class FtsMatchQuerySanitizer
 {
-
     private static readonly HashSet<string> ReservedTokens = new(StringComparer.OrdinalIgnoreCase)
     {
         "AND",
@@ -13,99 +13,74 @@ public static class FtsMatchQuerySanitizer
         "NEAR",
     };
 
+    /// <summary>
+    /// Reduces free text to a space-separated list of FTS5 bare words that cannot be read as query syntax.
+    /// </summary>
+    /// <remarks>
+    /// Walks Unicode scalar values rather than UTF-16 code units, so a letter outside the Basic Multilingual Plane
+    /// stays whole instead of being split into two surrogate halves that each look like a separator. A token is made of
+    /// letters, digits, underscores and the combining marks that belong to them; a run of marks with nothing to
+    /// attach to is dropped, because it tokenizes to nothing.
+    /// </remarks>
     public static string Sanitize(string query)
     {
-
         StringBuilder builder = new(query.Length);
 
-        bool pendingSpace = false;
+        StringBuilder currentToken = new();
 
-        var currentToken = new StringBuilder();
+        bool tokenHasBase = false;
 
-        foreach (char c in query)
+        foreach (Rune rune in query.EnumerateRunes())
         {
-
-            if (char.IsLetterOrDigit(c) || c == '_')
+            if (IsBaseCharacter(rune))
             {
+                tokenHasBase = true;
 
-                if (pendingSpace && builder.Length > 0)
-                {
-
-                    AppendToken(builder, currentToken);
-
-                    pendingSpace = false;
-
-                }
-
-                pendingSpace = false;
-
-                _ = currentToken.Append(c);
-
+                _ = currentToken.Append(rune);
             }
-            else if (char.IsWhiteSpace(c))
+            else if (IsCombiningMark(rune))
             {
-
-                if (currentToken.Length > 0)
-                {
-
-                    AppendToken(builder, currentToken);
-
-                }
-
-                pendingSpace = builder.Length > 0;
-
+                _ = currentToken.Append(rune);
             }
             else
             {
+                AppendToken(builder, currentToken, tokenHasBase);
 
-                if (currentToken.Length > 0)
-                {
-
-                    AppendToken(builder, currentToken);
-
-                }
-
-                pendingSpace = builder.Length > 0;
-
+                tokenHasBase = false;
             }
-
         }
 
-        if (currentToken.Length > 0)
-        {
+        AppendToken(builder, currentToken, tokenHasBase);
 
-            AppendToken(builder, currentToken);
-
-        }
-
-        return builder.ToString().Trim();
-
+        return builder.ToString();
     }
 
-    private static void AppendToken(StringBuilder builder, StringBuilder currentToken)
-    {
+    private static bool IsBaseCharacter(Rune rune) =>
+        rune.Value == '_' || Rune.IsLetterOrDigit(rune);
 
+    private static bool IsCombiningMark(Rune rune) =>
+        Rune.GetUnicodeCategory(rune) is UnicodeCategory.NonSpacingMark
+            or UnicodeCategory.SpacingCombiningMark
+            or UnicodeCategory.EnclosingMark;
+
+    private static void AppendToken(StringBuilder builder, StringBuilder currentToken, bool tokenHasBase)
+    {
         string token = currentToken.ToString();
 
         currentToken.Clear();
 
-        if (token.Length == 0)
+        if (token.Length == 0 || !tokenHasBase)
         {
-
             return;
-
         }
 
         if (builder.Length > 0)
         {
-
             _ = builder.Append(' ');
-
         }
 
         if (ReservedTokens.Contains(token))
         {
-
             _ = builder.Append('"');
 
             _ = builder.Append(token);
@@ -113,12 +88,8 @@ public static class FtsMatchQuerySanitizer
             _ = builder.Append('"');
 
             return;
-
         }
 
         _ = builder.Append(token);
-
     }
-
 }
-

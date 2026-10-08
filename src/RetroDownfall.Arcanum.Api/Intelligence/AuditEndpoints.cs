@@ -21,16 +21,13 @@ namespace RetroDownfall.Arcanum.Api.Intelligence;
 [ExcludeFromCodeCoverage] // Reason: thin query-parameter parsing over IInferenceAuditLogger.QueryAsync; logic covered by InferenceAuditLoggerTests.
 internal static class AuditEndpoints
 {
-
     private const int DefaultPageSize = 100;
 
     private const int MaxPageSize = 1_000;
 
     internal static void MapAuditEndpoints(this RouteGroupBuilder apiGroup)
     {
-
         apiGroup.MapGet("/audit", HandleGetAuditAsync).WithName("GetInferenceAudit");
-
     }
 
     private static async Task<IResult> HandleGetAuditAsync(
@@ -44,46 +41,35 @@ internal static class AuditEndpoints
         HttpContext httpContext,
         CancellationToken cancellationToken)
     {
-
         string traceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
 
         DateTimeOffset? parsedFrom = null;
 
         if (!string.IsNullOrWhiteSpace(from))
         {
-
             if (!DateTimeOffset.TryParse(from, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out DateTimeOffset parsed))
             {
-
                 return ValidationError(traceId, $"'from' is not a valid date/time: '{from}'.");
-
             }
 
             parsedFrom = parsed;
-
         }
 
         DateTimeOffset? parsedTo = null;
 
         if (!string.IsNullOrWhiteSpace(to))
         {
-
             if (!DateTimeOffset.TryParse(to, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out DateTimeOffset parsed))
             {
-
                 return ValidationError(traceId, $"'to' is not a valid date/time: '{to}'.");
-
             }
 
             parsedTo = parsed;
-
         }
 
         if (parsedFrom.HasValue && parsedTo.HasValue && parsedFrom.Value > parsedTo.Value)
         {
-
             return ValidationError(traceId, "'from' must not be after 'to'.");
-
         }
 
         int effectiveLimit = Math.Clamp(limit ?? DefaultPageSize, 1, MaxPageSize);
@@ -101,16 +87,12 @@ internal static class AuditEndpoints
 
         if (page.IsFailure)
         {
-
             return ValidationError(traceId, page.Error.Message, page.Error.Code);
-
         }
 
         if (page.Value.NextCursor is not null)
         {
-
             httpContext.Response.Headers[ArcanumApiHeaders.AuditNextCursor] = page.Value.NextCursor;
-
         }
 
         IReadOnlyList<InferenceAuditRecord> records = page.Value.Records;
@@ -118,15 +100,13 @@ internal static class AuditEndpoints
         Result<InferenceAuditRecord[]> result = Result<InferenceAuditRecord[]>.Success([.. records]);
 
         return Results.Ok(ApiResponse<InferenceAuditRecord[]>.FromResult(result, traceId));
-
     }
 
     private static IResult ValidationError(
         string traceId,
         string message,
-        string errorCode = ErrorCodes.Validation.InvalidBody)
+        string errorCode = ErrorCodes.Validation.InvalidQuery)
     {
-
         Result<InferenceAuditRecord[]> invalid = Result<InferenceAuditRecord[]>.Failure(
             new Error(errorCode, message));
 
@@ -134,7 +114,5 @@ internal static class AuditEndpoints
             ApiResponse<InferenceAuditRecord[]>.FromResult(invalid, traceId),
             ArcanumJsonContext.Default.ApiResponseInferenceAuditRecordArray,
             statusCode: StatusCodes.Status400BadRequest);
-
     }
-
 }

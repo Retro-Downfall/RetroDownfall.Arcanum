@@ -1,12 +1,15 @@
 using Microsoft.Data.Sqlite;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Conclave;
+using RetroDownfall.Arcanum.Core.Storage.Entities;
 using RetroDownfall.Arcanum.Core.Tower;
 using RetroDownfall.Arcanum.Core.Workspaces;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Repositories;
 using RetroDownfall.Arcanum.Tests.Fixtures;
+using SQLitePCL;
 
 namespace RetroDownfall.Arcanum.Tests.Repositories;
 
@@ -186,9 +189,23 @@ public sealed class ApprenticeRepositoryTests : IAsyncLifetime
 
         Assert.Contains(resumable, a => a.Id == planning.Id);
 
-        IReadOnlyList<Apprentice> interrupted = await repository.GetInterruptedPlanningAsync(CancellationToken.None);
+        Apprentice queuedRestart = await repository.AddAsync(
+            new Apprentice
+            {
+                Id = Guid.NewGuid(),
+                Name = "Queued restart",
+                Goal = "Run the plan it already has",
+                Status = ApprenticeStatus.Planning.ToString(),
+                Plan = ApprenticeRepository.SerializePlan([new PlanStep { Index = 0, Description = "Known step" }]),
+                WorkspacePath = "/tmp/queued-restart",
+                CreatedAt = now,
+                UpdatedAt = now,
+            },
+            CancellationToken.None);
 
-        Assert.Empty(interrupted);
+        resumable = await repository.GetResumableAsync(CancellationToken.None);
+
+        Assert.Contains(resumable, a => a.Id == queuedRestart.Id);
 
         running.Status = ApprenticeStatus.Completed.ToString();
 
@@ -203,6 +220,280 @@ public sealed class ApprenticeRepositoryTests : IAsyncLifetime
         Assert.True(deleted);
 
         Assert.Null(await repository.GetByIdAsync(idle.Id, CancellationToken.None));
+    }
+
+    [SkippableFact]
+    public async Task UpdateProgressAsync_writes_execution_columns_and_leaves_an_operator_status_alone()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        ApprenticeRepository repository = new(_db!, NullLogger<ApprenticeRepository>.Instance);
+
+        Apprentice stored = await repository.AddAsync(
+            NewApprentice(ApprenticeStatus.Paused, currentStep: 0, errorMessage: "operator paused"),
+            CancellationToken.None);
+
+        Apprentice progressed = CopyOf(stored);
+
+        progressed.Status = ApprenticeStatus.Running.ToString();
+
+        progressed.ErrorMessage = null;
+
+        progressed.Plan = ApprenticeRepository.SerializePlan([new PlanStep { Index = 0, Status = "completed" }]);
+
+        progressed.CurrentStep = 1;
+
+        progressed.SessionId = await AddSessionAsync();
+
+        progressed.CheckpointData = ApprenticeRepository.SerializeCheckpoint(new ApprenticeCheckpoint { CurrentStep = 1 });
+
+        Assert.True(await repository.UpdateProgressAsync(progressed, stored.Plan, 0, CancellationToken.None));
+
+        Apprentice loaded = (await repository.GetByIdAsync(stored.Id, CancellationToken.None))!;
+
+        Assert.Equal(ApprenticeStatus.Paused.ToString(), loaded.Status);
+
+        Assert.Equal("operator paused", loaded.ErrorMessage);
+
+        Assert.Equal(progressed.Plan, loaded.Plan);
+
+        Assert.Equal(1, loaded.CurrentStep);
+
+        // The Session binding has a writer of its own and is never carried along by a progress write.
+        Assert.Null(loaded.SessionId);
+
+        Assert.Equal(progressed.CheckpointData, loaded.CheckpointData);
+
+        Assert.False(await repository.UpdateProgressAsync(
+            NewApprentice(ApprenticeStatus.Running, currentStep: 0),
+            stored.Plan,
+            0,
+            CancellationToken.None));
+    }
+
+    /// <summary>
+    /// A progress write is built on the plan and step its writer read. When another writer moved either first —
+    /// an operator's Reweave replacing the plan, or a step commit advancing the position — it writes nothing.
+    /// </summary>
+    [SkippableFact]
+    public async Task UpdateProgressAsync_writes_only_over_the_plan_and_step_it_was_built_on()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        ApprenticeRepository repository = new(_db!, NullLogger<ApprenticeRepository>.Instance);
+
+        Apprentice stored = await repository.AddAsync(
+            NewApprentice(ApprenticeStatus.Running, currentStep: 0),
+            CancellationToken.None);
+
+        string rewoven = ApprenticeRepository.SerializePlan([new PlanStep { Index = 1, Description = "Rewoven" }]);
+
+        Apprentice operatorReweave = CopyOf(stored);
+
+        operatorReweave.Plan = rewoven;
+
+        Assert.True(await repository.TryUpdateAsync(
+            operatorReweave,
+            [ApprenticeStatus.Running.ToString()],
+            0,
+            CancellationToken.None));
+
+        Apprentice staleCommit = CopyOf(stored);
+
+        staleCommit.Plan = ApprenticeRepository.SerializePlan([new PlanStep { Index = 0, Status = "completed" }]);
+
+        staleCommit.CurrentStep = 1;
+
+        Assert.False(await repository.UpdateProgressAsync(staleCommit, stored.Plan, 0, CancellationToken.None));
+
+        Assert.False(await repository.UpdateProgressAsync(staleCommit, rewoven, 1, CancellationToken.None));
+
+        Apprentice kept = (await repository.GetByIdAsync(stored.Id, CancellationToken.None))!;
+
+        Assert.Equal(rewoven, kept.Plan);
+
+        Assert.Equal(0, kept.CurrentStep);
+
+        Assert.True(await repository.UpdateProgressAsync(staleCommit, rewoven, 0, CancellationToken.None));
+
+        Assert.Equal(1, (await repository.GetByIdAsync(stored.Id, CancellationToken.None))!.CurrentStep);
+    }
+
+    [SkippableFact]
+    public async Task BindSessionAsync_binds_only_an_unbound_row_and_writes_nothing_else()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        ApprenticeRepository repository = new(_db!, NullLogger<ApprenticeRepository>.Instance);
+
+        Apprentice stored = await repository.AddAsync(
+            NewApprentice(ApprenticeStatus.Paused, currentStep: 0, errorMessage: "operator paused"),
+            CancellationToken.None);
+
+        Guid sessionId = await AddSessionAsync();
+
+        Assert.True(await repository.BindSessionAsync(stored.Id, sessionId, CancellationToken.None));
+
+        Apprentice bound = (await repository.GetByIdAsync(stored.Id, CancellationToken.None))!;
+
+        Assert.Equal(sessionId, bound.SessionId);
+
+        Assert.Equal(ApprenticeStatus.Paused.ToString(), bound.Status);
+
+        Assert.Equal("operator paused", bound.ErrorMessage);
+
+        Assert.Equal(stored.Plan, bound.Plan);
+
+        Assert.False(await repository.BindSessionAsync(stored.Id, await AddSessionAsync(), CancellationToken.None));
+
+        Assert.Equal(sessionId, (await repository.GetByIdAsync(stored.Id, CancellationToken.None))!.SessionId);
+
+        Assert.False(await repository.BindSessionAsync(Guid.NewGuid(), sessionId, CancellationToken.None));
+    }
+
+    [SkippableFact]
+    public async Task TryUpdateAsync_writes_only_while_status_and_current_step_are_unchanged()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        ApprenticeRepository repository = new(_db!, NullLogger<ApprenticeRepository>.Instance);
+
+        Apprentice stored = await repository.AddAsync(
+            NewApprentice(ApprenticeStatus.Cancelled, currentStep: 1),
+            CancellationToken.None);
+
+        Apprentice failed = CopyOf(stored);
+
+        failed.Status = ApprenticeStatus.Failed.ToString();
+
+        failed.ErrorMessage = "step failed";
+
+        string[] executing = [ApprenticeStatus.Running.ToString(), ApprenticeStatus.Planning.ToString()];
+
+        Assert.False(await repository.TryUpdateAsync(failed, executing, 1, CancellationToken.None));
+
+        Assert.False(await repository.TryUpdateAsync(
+            failed,
+            [ApprenticeStatus.Cancelled.ToString()],
+            0,
+            CancellationToken.None));
+
+        Apprentice unchanged = (await repository.GetByIdAsync(stored.Id, CancellationToken.None))!;
+
+        Assert.Equal(ApprenticeStatus.Cancelled.ToString(), unchanged.Status);
+
+        Assert.Null(unchanged.ErrorMessage);
+
+        Assert.True(await repository.TryUpdateAsync(
+            failed,
+            [ApprenticeStatus.Cancelled.ToString()],
+            1,
+            CancellationToken.None));
+
+        Apprentice written = (await repository.GetByIdAsync(stored.Id, CancellationToken.None))!;
+
+        Assert.Equal(ApprenticeStatus.Failed.ToString(), written.Status);
+
+        Assert.Equal("step failed", written.ErrorMessage);
+    }
+
+    [SkippableFact]
+    public async Task TryUpdateStatusAsync_sets_only_the_status_and_only_from_an_expected_status()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        ApprenticeRepository repository = new(_db!, NullLogger<ApprenticeRepository>.Instance);
+
+        Apprentice stored = await repository.AddAsync(
+            NewApprentice(ApprenticeStatus.Running, currentStep: 0),
+            CancellationToken.None);
+
+        // The execution commits a step after an operator's snapshot of the row was taken.
+        Apprentice progressed = CopyOf(stored);
+
+        progressed.CurrentStep = 1;
+
+        Assert.True(await repository.UpdateProgressAsync(progressed, stored.Plan, 0, CancellationToken.None));
+
+        Assert.False(await repository.TryUpdateStatusAsync(
+            stored.Id,
+            ApprenticeStatus.Paused.ToString(),
+            [ApprenticeStatus.Escalated.ToString()],
+            CancellationToken.None));
+
+        Assert.True(await repository.TryUpdateStatusAsync(
+            stored.Id,
+            ApprenticeStatus.Paused.ToString(),
+            [ApprenticeStatus.Running.ToString(), ApprenticeStatus.Planning.ToString()],
+            CancellationToken.None));
+
+        Apprentice paused = (await repository.GetByIdAsync(stored.Id, CancellationToken.None))!;
+
+        Assert.Equal(ApprenticeStatus.Paused.ToString(), paused.Status);
+
+        Assert.Equal(1, paused.CurrentStep);
+
+        Assert.False(await repository.TryUpdateStatusAsync(
+            Guid.NewGuid(),
+            ApprenticeStatus.Paused.ToString(),
+            [ApprenticeStatus.Running.ToString()],
+            CancellationToken.None));
+    }
+
+    private static Apprentice NewApprentice(
+        ApprenticeStatus status,
+        int currentStep,
+        string? errorMessage = null)
+    {
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+
+        return new Apprentice
+        {
+            Id = Guid.NewGuid(),
+            Name = "Conditional writer",
+            Goal = "Keep concurrent writers from reverting each other",
+            Plan = ApprenticeRepository.SerializePlan([new PlanStep { Index = 0 }]),
+            CurrentStep = currentStep,
+            Status = status.ToString(),
+            WorkspacePath = "/tmp/conditional",
+            ErrorMessage = errorMessage,
+            CreatedAt = now,
+            UpdatedAt = now,
+        };
+    }
+
+    private static Apprentice CopyOf(Apprentice source) => new()
+    {
+        Id = source.Id,
+        CampaignId = source.CampaignId,
+        Name = source.Name,
+        Goal = source.Goal,
+        Plan = source.Plan,
+        CurrentStep = source.CurrentStep,
+        Status = source.Status,
+        SessionId = source.SessionId,
+        WorkspacePath = source.WorkspacePath,
+        CheckpointData = source.CheckpointData,
+        ErrorMessage = source.ErrorMessage,
+        CreatedAt = source.CreatedAt,
+        UpdatedAt = source.UpdatedAt,
+    };
+
+    private async Task<Guid> AddSessionAsync()
+    {
+        Session session = new()
+        {
+            Id = Guid.NewGuid(),
+            Status = "active",
+            CreatedAt = DateTimeOffset.UtcNow,
+            UpdatedAt = DateTimeOffset.UtcNow,
+        };
+
+        _db!.Sessions.Add(session);
+
+        await _db.SaveChangesAsync();
+
+        return session.Id;
     }
 
     [SkippableFact]
@@ -389,6 +680,94 @@ public sealed class ApprenticeRepositoryTests : IAsyncLifetime
     }
 
     /// <summary>
+    /// A page that is entirely one timestamp widens to the whole tie group, because the bare-timestamp
+    /// cursor cannot express a position inside it. The bound is "more than" the ceiling: a group of
+    /// exactly <see cref="ApprenticeRepository.MaxTieGroupWidening"/> is returned whole, and the probe
+    /// for older rows still says another page exists.
+    /// </summary>
+    [SkippableFact]
+    public async Task ListAsync_widens_a_whole_page_tie_group_that_is_exactly_the_bound()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        DateTimeOffset tied = new(2026, 2, 1, 9, 0, 0, TimeSpan.Zero);
+
+        AddTiedApprentices(tied, ApprenticeRepository.MaxTieGroupWidening);
+
+        _db!.Apprentices.Add(TiedApprentice("older", tied.AddMinutes(-5)));
+
+        await _db.SaveChangesAsync(CancellationToken.None);
+
+        ApprenticeRepository repository = new(_db, NullLogger<ApprenticeRepository>.Instance);
+
+        ListPageResult<Apprentice> page = await repository.ListAsync(
+            campaignId: null,
+            status: null,
+            limit: 1,
+            beforeUpdatedAt: null,
+            CancellationToken.None);
+
+        Assert.Equal(ApprenticeRepository.MaxTieGroupWidening, page.Items.Count());
+
+        Assert.All(page.Items, apprentice => Assert.Equal(tied, apprentice.UpdatedAt));
+
+        Assert.True(page.HasMore);
+
+        Assert.Equal(tied, page.NextBeforeUpdatedAt);
+    }
+
+    /// <summary>
+    /// Past the bound the group is unservable through a bare-timestamp cursor. Clipping it would leave
+    /// the cursor on the boundary timestamp and strand the rest of the group behind the strict
+    /// <c>&lt;</c>, so the list fails loudly instead, naming the condition and how to narrow the query.
+    /// </summary>
+    [SkippableFact]
+    public async Task ListAsync_refuses_to_widen_past_the_tie_group_bound()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        DateTimeOffset tied = new(2026, 2, 2, 9, 0, 0, TimeSpan.Zero);
+
+        AddTiedApprentices(tied, ApprenticeRepository.MaxTieGroupWidening + 1);
+
+        await _db!.SaveChangesAsync(CancellationToken.None);
+
+        ApprenticeRepository repository = new(_db, NullLogger<ApprenticeRepository>.Instance);
+
+        InvalidOperationException error = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => repository.ListAsync(
+                campaignId: null,
+                status: null,
+                limit: 1,
+                beforeUpdatedAt: null,
+                CancellationToken.None));
+
+        Assert.Contains("share the timestamp", error.Message, StringComparison.Ordinal);
+
+        Assert.Contains("campaign or status filter", error.Message, StringComparison.Ordinal);
+    }
+
+    private void AddTiedApprentices(DateTimeOffset timestamp, int count)
+    {
+        for (int index = 0; index < count; index++)
+        {
+            _db!.Apprentices.Add(TiedApprentice("tied-" + index, timestamp));
+        }
+    }
+
+    private static Apprentice TiedApprentice(string name, DateTimeOffset timestamp) =>
+        new()
+        {
+            Id = Guid.NewGuid(),
+            Name = name,
+            Goal = "Share one timestamp",
+            Status = ApprenticeStatus.Idle.ToString(),
+            WorkspacePath = "/tmp/workspace",
+            CreatedAt = timestamp,
+            UpdatedAt = timestamp,
+        };
+
+    /// <summary>
     /// Ordering must be a total order, not merely "descending by UpdatedAt". With no identity
     /// tie-breaker the relative order of tied rows is undefined, so two identical queries can disagree
     /// and the keyset cursor cannot reason about the boundary at all.
@@ -435,6 +814,89 @@ public sealed class ApprenticeRepositoryTests : IAsyncLifetime
         Assert.Equal(
             first.Items.Select(static a => a.Id),
             second.Items.Select(static a => a.Id));
+    }
+
+    /// <summary>
+    /// A list page must be cut in SQL, not after loading every matching row. The Plan and
+    /// CheckpointData blobs of rows that are never returned are the expensive part, and an Apprentice
+    /// table has no retention rule that would keep it small.
+    /// </summary>
+    [SkippableFact]
+    public async Task ListAsync_reads_only_the_requested_page_from_storage()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        ApprenticeRepository repository = new(_db!, NullLogger<ApprenticeRepository>.Instance);
+
+        DateTimeOffset newest = new(2026, 1, 1, 12, 0, 0, TimeSpan.Zero);
+
+        List<Guid> newestFirst = [];
+
+        for (int index = 0; index < 12; index++)
+        {
+            Apprentice created = await repository.AddAsync(
+                new Apprentice
+                {
+                    Id = Guid.NewGuid(),
+                    Name = $"Page {index}",
+                    Goal = "Read only the page",
+                    Plan = new string('p', 20_000),
+                    CheckpointData = new string('c', 20_000),
+                    Status = ApprenticeStatus.Idle.ToString(),
+                    WorkspacePath = "/tmp/workspace",
+                    CreatedAt = newest.AddMinutes(-index),
+                    UpdatedAt = newest.AddMinutes(-index),
+                },
+                CancellationToken.None);
+
+            newestFirst.Add(created.Id);
+        }
+
+        SqliteConnection connection = (SqliteConnection)_db!.Database.GetDbConnection();
+
+        List<string> statements = [];
+
+        raw.sqlite3_trace(connection.Handle, (object _, string sql) => statements.Add(sql), null);
+
+        ListPageResult<Apprentice> page;
+
+        try
+        {
+            page = await repository.ListAsync(
+                campaignId: null,
+                status: null,
+                limit: 3,
+                beforeUpdatedAt: null,
+                CancellationToken.None);
+        }
+        finally
+        {
+            raw.sqlite3_trace(connection.Handle, (strdelegate_trace)null!, null);
+        }
+
+        Assert.Equal(newestFirst.Take(3), page.Items.Select(static item => item.Id));
+
+        Assert.True(page.HasMore);
+
+        string[] selects =
+        [
+            .. statements.Where(static sql =>
+                sql.Contains("FROM \"Apprentices\"", StringComparison.Ordinal)),
+        ];
+
+        Assert.NotEmpty(selects);
+
+        Assert.All(selects, static sql => Assert.Matches(@"\bLIMIT\b", sql));
+
+        // The cursor still works: the next page starts exactly where this one stopped.
+        ListPageResult<Apprentice> next = await repository.ListAsync(
+            campaignId: null,
+            status: null,
+            limit: 3,
+            beforeUpdatedAt: page.NextBeforeUpdatedAt,
+            CancellationToken.None);
+
+        Assert.Equal(newestFirst.Skip(3).Take(3), next.Items.Select(static item => item.Id));
     }
 
     private static Campaign Campaign(

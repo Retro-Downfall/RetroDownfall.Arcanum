@@ -39,6 +39,7 @@ public sealed class ArcanumErrorMapperTests
     [InlineData(ErrorCodes.Attachment.SourceUnavailable, StatusCodes.Status400BadRequest)]
     [InlineData(ErrorCodes.Attachment.TooLarge, StatusCodes.Status413PayloadTooLarge)]
     [InlineData(ErrorCodes.Attachment.LimitExceeded, StatusCodes.Status409Conflict)]
+    [InlineData(ErrorCodes.Session.PinNotFound, StatusCodes.Status404NotFound)]
     [InlineData(ErrorCodes.Grimoire.LoreNotFound, StatusCodes.Status404NotFound)]
     [InlineData(ErrorCodes.Apprentice.NotFound, StatusCodes.Status404NotFound)]
     [InlineData(ErrorCodes.Apprentice.Disabled, StatusCodes.Status400BadRequest)]
@@ -57,6 +58,9 @@ public sealed class ArcanumErrorMapperTests
     [InlineData(ErrorCodes.Workspace.NotFound, StatusCodes.Status404NotFound)]
     [InlineData(ErrorCodes.Workspace.NameEmpty, StatusCodes.Status400BadRequest)]
     [InlineData(ErrorCodes.Workspace.PathNotAllowed, StatusCodes.Status403Forbidden)]
+    // A PATCH whose target changed after the read is the caller's to re-read and retry, not a server fault.
+    [InlineData(ErrorCodes.Workspace.FileChanged, StatusCodes.Status409Conflict)]
+    [InlineData(ErrorCodes.Workspace.WriteFailed, StatusCodes.Status500InternalServerError)]
     [InlineData(ErrorCodes.Spell.NotFound, StatusCodes.Status404NotFound)]
     [InlineData(ErrorCodes.Spell.PathNotAllowed, StatusCodes.Status403Forbidden)]
     [InlineData(ErrorCodes.Spell.NoWorkspace, StatusCodes.Status400BadRequest)]
@@ -188,6 +192,12 @@ public sealed class ArcanumErrorMapperTests
     // A spell write that failed is an infrastructure fault, exactly like Workspace.WriteFailed, and
     // must reach the caller as one rather than as the caller's own 400.
     [InlineData(ErrorCodes.Spell.WriteFailed, StatusCodes.Status500InternalServerError)]
+    // The canonical Campaign/Session resolution failures the prompt and spell execute routes answer with
+    // their own status rather than a flat 400. A binding or path identity that cannot be read intact is
+    // the installation's state, retried once maintenance or repair has run, never the caller's request.
+    [InlineData(ErrorCodes.Session.CampaignBindingRequired, StatusCodes.Status409Conflict)]
+    [InlineData(ErrorCodes.Covenant.CampaignBindingConflict, StatusCodes.Status409Conflict)]
+    [InlineData(ErrorCodes.Covenant.IntegrityFailure, StatusCodes.Status503ServiceUnavailable)]
     [InlineData("Unknown.Code", StatusCodes.Status500InternalServerError)]
     public void ResolveStatusCode_MapsExpectedValue(string code, int expected)
     {
@@ -233,6 +243,24 @@ public sealed class ArcanumErrorMapperTests
     public void ResolveStatusCodeDefaultBadRequest_SpellWriteFailed_IsNotDowngradedTo400()
     {
         int actual = ArcanumErrorMapper.ResolveStatusCodeDefaultBadRequest(ErrorCodes.Spell.WriteFailed);
+
+        Assert.Equal(StatusCodes.Status500InternalServerError, actual);
+    }
+
+    /// <summary>
+    /// A memory-review <c>apply</c> whose transaction could not commit is a storage fault with nothing
+    /// written (API section 8.23), and answers <c>Saga.WriteFailed</c> or <c>Covenant.WriteFailed</c>; the
+    /// API reference lists both under the explicit failures the default-400 resolver never downgrades. The
+    /// review routes resolve through the bad-request default, which would otherwise present a failed write
+    /// as the caller's own malformed request, and a failed write is a server fault whichever route family
+    /// carries it.
+    /// </summary>
+    [Theory]
+    [InlineData(ErrorCodes.Saga.WriteFailed)]
+    [InlineData(ErrorCodes.Covenant.WriteFailed)]
+    public void ResolveStatusCodeDefaultBadRequest_ReviewApplyWriteFailures_AreNotDowngradedTo400(string code)
+    {
+        int actual = ArcanumErrorMapper.ResolveStatusCodeDefaultBadRequest(code);
 
         Assert.Equal(StatusCodes.Status500InternalServerError, actual);
     }

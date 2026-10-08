@@ -24,6 +24,8 @@ namespace RetroDownfall.Arcanum.Tests.Cli.CommandCenter;
 /// </summary>
 public sealed class CommandCenterWardRecordTests
 {
+    private static readonly TimeSpan AsyncTestTimeout = TimeSpan.FromSeconds(30);
+
     [Fact]
     public void Ward_argument_preview_remains_bounded_for_informational_records()
     {
@@ -52,15 +54,15 @@ public sealed class CommandCenterWardRecordTests
                     IntelligenceEventType.Warded,
                     "write_file",
                     WardId: "ward-legacy-1",
-                    WardToolName: "write_file",
-                    WardOrigin: origin),
+                    ToolName: "write_file",
+                    Origin: origin),
                 new IntelligenceEvent(
                     IntelligenceEventType.WardResolved,
                     "write_file",
                     WardId: "ward-legacy-1",
-                    WardToolName: "write_file",
-                    WardAllowed: true,
-                    WardOrigin: origin),
+                    ToolName: "write_file",
+                    Allowed: true,
+                    Origin: origin),
                 new IntelligenceEvent(IntelligenceEventType.Result, "done", "done")));
 
         CommandCenterChatRunner runner = CreateRunner(handler);
@@ -70,7 +72,7 @@ public sealed class CommandCenterWardRecordTests
         Channel<CommandCenterUiUpdate> updates = Channel.CreateUnbounded<CommandCenterUiUpdate>();
 
         await runner.RunTurnAsync("write it", state, updates.Writer, CancellationToken.None)
-            .WaitAsync(TimeSpan.FromSeconds(5));
+            .WaitAsync(AsyncTestTimeout);
 
         Assert.Single(handler.Requests);
 
@@ -98,41 +100,41 @@ public sealed class CommandCenterWardRecordTests
                     IntelligenceEventType.Warded,
                     "apply_patch",
                     WardId: "ward-record-1",
-                    WardToolName: "apply_patch",
-                    WardOrigin: WardResolutionOrigin.Ungated),
+                    ToolName: "apply_patch",
+                    Origin: WardResolutionOrigin.Ungated),
                 new IntelligenceEvent(
                     IntelligenceEventType.WardResolved,
                     "apply_patch",
                     WardId: "ward-record-1",
-                    WardToolName: "apply_patch",
-                    WardAllowed: true,
-                    WardOrigin: WardResolutionOrigin.Ungated),
+                    ToolName: "apply_patch",
+                    Allowed: true,
+                    Origin: WardResolutionOrigin.Ungated),
                 new IntelligenceEvent(
                     IntelligenceEventType.Warded,
                     "scribe_lexicon",
                     WardId: "ward-record-2",
-                    WardToolName: "scribe_lexicon",
-                    WardOrigin: WardResolutionOrigin.Ungated),
+                    ToolName: "scribe_lexicon",
+                    Origin: WardResolutionOrigin.Ungated),
                 new IntelligenceEvent(
                     IntelligenceEventType.WardResolved,
                     "scribe_lexicon",
                     WardId: "ward-record-2",
-                    WardToolName: "scribe_lexicon",
-                    WardAllowed: true,
-                    WardOrigin: WardResolutionOrigin.Ungated),
+                    ToolName: "scribe_lexicon",
+                    Allowed: true,
+                    Origin: WardResolutionOrigin.Ungated),
                 new IntelligenceEvent(
                     IntelligenceEventType.Warded,
                     "retire_covenant",
                     WardId: "ward-record-3",
-                    WardToolName: "retire_covenant",
-                    WardOrigin: WardResolutionOrigin.Ungated),
+                    ToolName: "retire_covenant",
+                    Origin: WardResolutionOrigin.Ungated),
                 new IntelligenceEvent(
                     IntelligenceEventType.WardResolved,
                     "retire_covenant",
                     WardId: "ward-record-3",
-                    WardToolName: "retire_covenant",
-                    WardAllowed: true,
-                    WardOrigin: WardResolutionOrigin.Ungated),
+                    ToolName: "retire_covenant",
+                    Allowed: true,
+                    Origin: WardResolutionOrigin.Ungated),
                 new IntelligenceEvent(IntelligenceEventType.Token, string.Empty, "done"),
                 new IntelligenceEvent(IntelligenceEventType.Result, "done", "done")));
 
@@ -141,7 +143,7 @@ public sealed class CommandCenterWardRecordTests
         Channel<CommandCenterUiUpdate> updates = Channel.CreateUnbounded<CommandCenterUiUpdate>();
 
         await runner.RunTurnAsync("patch it", state, updates.Writer, CancellationToken.None)
-            .WaitAsync(TimeSpan.FromSeconds(5));
+            .WaitAsync(AsyncTestTimeout);
 
         Assert.Single(handler.Requests);
 

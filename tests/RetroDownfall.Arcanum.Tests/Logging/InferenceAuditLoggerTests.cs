@@ -21,63 +21,50 @@ namespace RetroDownfall.Arcanum.Tests.Logging;
 /// </summary>
 public sealed class InferenceAuditLoggerTests : IDisposable
 {
-
     private readonly string _tempDirectory;
 
     public InferenceAuditLoggerTests()
     {
-
         _tempDirectory = Path.Combine(Path.GetTempPath(), "arcanum-audit-tests-" + Guid.NewGuid().ToString("N"));
 
         Directory.CreateDirectory(_tempDirectory);
-
     }
 
     public void Dispose()
     {
-
         try
         {
-
             Directory.Delete(_tempDirectory, recursive: true);
-
         }
         catch (IOException)
         {
-
             // Best-effort cleanup; harmless if a file handle briefly lingers on some platforms.
         }
-
     }
 
     [Fact]
     public async Task LogAsync_WhenDisabled_WritesNothing()
     {
-
         InferenceAuditLogger logger = CreateLogger(enabled: false);
 
         await logger.LogAsync(MakeRecord("ping"), CancellationToken.None);
 
         Assert.Empty(Directory.EnumerateFiles(_tempDirectory));
-
     }
 
     [Fact]
     public async Task QueryAsync_WhenDisabled_ReturnsEmpty()
     {
-
         InferenceAuditLogger logger = CreateLogger(enabled: false);
 
         IReadOnlyList<InferenceAuditRecord> results = await logger.QueryAsync(null, null, null, null, 100, CancellationToken.None);
 
         Assert.Empty(results);
-
     }
 
     [Fact]
     public async Task LogAsync_ThenQueryAsync_RoundTripsRecord()
     {
-
         InferenceAuditLogger logger = CreateLogger(enabled: true);
 
         InferenceAuditRecord record = MakeRecord("ping", model: "mistral:latest", sessionId: "abc-123");
@@ -95,23 +82,19 @@ public sealed class InferenceAuditLoggerTests : IDisposable
         Assert.Equal("abc-123", found.SessionId);
 
         Assert.Equal(record.TotalTokens, found.TotalTokens);
-
     }
 
     [Fact]
 
     public async Task QueryAsync_WithoutFrom_ReturnsRecordsOlderThanFormerLookbackCeiling()
     {
-
         InferenceAuditLogger logger = CreateLogger(enabled: true);
 
         DateTimeOffset oldTimestamp = DateTimeOffset.UtcNow.AddDays(-500);
 
         InferenceAuditRecord record = MakeRecord("old", sessionId: "old-session") with
         {
-
             Timestamp = oldTimestamp.ToString("O"),
-
         };
 
         string oldFile = Path.Combine(_tempDirectory, $"audit-{oldTimestamp:yyyyMMdd}.jsonl");
@@ -126,7 +109,6 @@ public sealed class InferenceAuditLoggerTests : IDisposable
         InferenceAuditRecord found = Assert.Single(results);
 
         Assert.Equal("old-session", found.SessionId);
-
     }
 
     [Fact]
@@ -224,7 +206,6 @@ public sealed class InferenceAuditLoggerTests : IDisposable
     [Fact]
     public async Task LogAsync_WritesFileWithOwnerOnlyPermissions()
     {
-
         InferenceAuditLogger logger = CreateLogger(enabled: true);
 
         await logger.LogAsync(MakeRecord("ping"), CancellationToken.None);
@@ -236,13 +217,11 @@ public sealed class InferenceAuditLoggerTests : IDisposable
         Assert.StartsWith("audit-", Path.GetFileName(files[0]), StringComparison.Ordinal);
 
         Assert.EndsWith(".jsonl", files[0], StringComparison.Ordinal);
-
     }
 
     [Fact]
     public async Task LogAsync_RedactsToolArguments_ByDefault()
     {
-
         InferenceAuditLogger logger = CreateLogger(enabled: true, redactToolArguments: true);
 
         InferenceAuditRecord record = MakeRecord("ping") with
@@ -263,13 +242,11 @@ public sealed class InferenceAuditLoggerTests : IDisposable
         // WizardIntelligenceProviderTests covers the config-driven redaction at that layer; this test
         // instead confirms round-tripping a record with populated arguments.
         Assert.NotNull(found.ToolArgumentsJson);
-
     }
 
     [Fact]
     public async Task QueryAsync_FiltersByModel()
     {
-
         InferenceAuditLogger logger = CreateLogger(enabled: true);
 
         await logger.LogAsync(MakeRecord("ping", model: "model-a"), CancellationToken.None);
@@ -281,13 +258,11 @@ public sealed class InferenceAuditLoggerTests : IDisposable
         InferenceAuditRecord found = Assert.Single(results);
 
         Assert.Equal("model-a", found.Model);
-
     }
 
     [Fact]
     public async Task QueryAsync_FiltersBySessionId()
     {
-
         InferenceAuditLogger logger = CreateLogger(enabled: true);
 
         await logger.LogAsync(MakeRecord("ping", sessionId: "session-1"), CancellationToken.None);
@@ -299,32 +274,26 @@ public sealed class InferenceAuditLoggerTests : IDisposable
         InferenceAuditRecord found = Assert.Single(results);
 
         Assert.Equal("session-2", found.SessionId);
-
     }
 
     [Fact]
     public async Task QueryAsync_RespectsLimit()
     {
-
         InferenceAuditLogger logger = CreateLogger(enabled: true);
 
         for (int i = 0; i < 5; i++)
         {
-
             await logger.LogAsync(MakeRecord("ping"), CancellationToken.None);
-
         }
 
         IReadOnlyList<InferenceAuditRecord> results = await logger.QueryAsync(null, null, null, null, 2, CancellationToken.None);
 
         Assert.Equal(2, results.Count);
-
     }
 
     [Fact]
     public async Task QueryPageAsync_Cursor_preserves_snapshot_when_new_records_are_appended()
     {
-
         InferenceAuditLogger logger = CreateLogger(enabled: true);
 
         InferenceAuditRecord oldest = MakeRecord("ping", sessionId: "oldest");
@@ -368,13 +337,11 @@ public sealed class InferenceAuditLoggerTests : IDisposable
         Assert.Equal("oldest", result.SessionId);
 
         Assert.Null(second.Value.NextCursor);
-
     }
 
     [Fact]
     public async Task QueryPageAsync_Rejects_cursor_from_a_different_filter()
     {
-
         InferenceAuditLogger logger = CreateLogger(enabled: true);
 
         await logger.LogAsync(MakeRecord("ping", model: "model-a"), CancellationToken.None);
@@ -406,13 +373,11 @@ public sealed class InferenceAuditLoggerTests : IDisposable
         Assert.True(mismatched.IsFailure);
 
         Assert.Equal("Validation.InvalidQuery", mismatched.Error.Code);
-
     }
 
     [Fact]
     public async Task QueryPageAsync_Rejects_cursor_when_its_file_was_replaced()
     {
-
         InferenceAuditLogger logger = CreateLogger(enabled: true);
 
         await logger.LogAsync(MakeRecord("ping", sessionId: "oldest"), CancellationToken.None);
@@ -448,13 +413,11 @@ public sealed class InferenceAuditLoggerTests : IDisposable
         Assert.True(replaced.IsFailure);
 
         Assert.Equal("Validation.InvalidQuery", replaced.Error.Code);
-
     }
 
     [Fact]
     public async Task ReverseJsonlReader_Returns_newest_record_without_reading_older_payload()
     {
-
         InferenceAuditRecord newest = MakeRecord("ping", sessionId: "newest");
 
         byte[] json = JsonSerializer.SerializeToUtf8Bytes(
@@ -482,11 +445,9 @@ public sealed class InferenceAuditLoggerTests : IDisposable
                                AuditJsonContext.Default.InferenceAuditRecord,
                                CancellationToken.None))
         {
-
             found = candidate.Value;
 
             break;
-
         }
 
         Assert.NotNull(found);
@@ -494,13 +455,11 @@ public sealed class InferenceAuditLoggerTests : IDisposable
         Assert.Equal("newest", found!.SessionId);
 
         Assert.InRange(stream.BytesRead, 1, 128 * 1024);
-
     }
 
     [Fact]
     public async Task QueryAsync_ReturnsNewestFirst()
     {
-
         InferenceAuditLogger logger = CreateLogger(enabled: true);
 
         await logger.LogAsync(MakeRecord("ping") with { SessionId = "first" }, CancellationToken.None);
@@ -514,13 +473,11 @@ public sealed class InferenceAuditLoggerTests : IDisposable
         Assert.Equal("second", results[0].SessionId);
 
         Assert.Equal("first", results[1].SessionId);
-
     }
 
     [Fact]
     public async Task LogAsync_SizeCapReached_DropsFurtherWrites()
     {
-
         InferenceAuditLogger logger = CreateLogger(enabled: true);
 
         string todayFile = Path.Combine(_tempDirectory, $"audit-{DateTime.UtcNow:yyyyMMdd}.jsonl");
@@ -539,13 +496,11 @@ public sealed class InferenceAuditLoggerTests : IDisposable
         long sizeAfter = new FileInfo(todayFile).Length;
 
         Assert.Equal(sizeBefore, sizeAfter);
-
     }
 
     [Fact]
     public async Task LogAsync_WhenUnifiedAutomaticSweepIsEnabled_DoesNotDeleteOldFiles()
     {
-
         InferenceAuditLogger logger = CreateLogger(
             enabled: true,
             automaticSweepsEnabled: true,
@@ -563,13 +518,11 @@ public sealed class InferenceAuditLoggerTests : IDisposable
         await logger.LogAsync(MakeRecord("ping"), CancellationToken.None);
 
         Assert.True(File.Exists(oldFile));
-
     }
 
     [Fact]
     public async Task LogAsync_DoesNotDeleteRecentFiles()
     {
-
         InferenceAuditLogger logger = CreateLogger(enabled: true, unifiedRetentionDays: 30);
 
         string recentDate = DateTime.UtcNow.AddDays(-2).ToString("yyyyMMdd");
@@ -581,13 +534,11 @@ public sealed class InferenceAuditLoggerTests : IDisposable
         await logger.LogAsync(MakeRecord("ping"), CancellationToken.None);
 
         Assert.True(File.Exists(recentFile));
-
     }
 
     [Fact]
     public async Task QueryAsync_SkipsMalformedLines_WithoutThrowing()
     {
-
         InferenceAuditLogger logger = CreateLogger(enabled: true);
 
         await logger.LogAsync(MakeRecord("ping", sessionId: "valid"), CancellationToken.None);
@@ -601,7 +552,6 @@ public sealed class InferenceAuditLoggerTests : IDisposable
         InferenceAuditRecord found = Assert.Single(results);
 
         Assert.Equal("valid", found.SessionId);
-
     }
 
     /// <summary>
@@ -613,7 +563,6 @@ public sealed class InferenceAuditLoggerTests : IDisposable
     [Fact]
     public async Task LogAsync_retries_directory_preparation_after_a_transient_failure()
     {
-
         string blockedDirectory = Path.Combine(_tempDirectory, "blocked");
 
         // A file where the audit directory belongs makes Directory.CreateDirectory throw.
@@ -643,7 +592,82 @@ public sealed class InferenceAuditLoggerTests : IDisposable
         Assert.True(Directory.Exists(blockedDirectory));
 
         Assert.NotEmpty(Directory.EnumerateFiles(blockedDirectory));
+    }
 
+    /// <summary>
+    /// An operator can point <c>FilePath</c> at a directory the host does not own (a shared log directory).
+    /// Preparing the day must not chmod it; only the audit file the writer creates is made owner-only.
+    /// </summary>
+    [SkippableFact]
+    [System.Runtime.Versioning.UnsupportedOSPlatform("windows")]
+    public async Task PrepareForNewDate_ConfiguredSharedDirectory_DoesNotChangeItsMode()
+    {
+        Skip.If(OperatingSystem.IsWindows(), "Unix mode bits are not observable on Windows.");
+
+        const UnixFileMode sharedMode =
+            UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute
+            | UnixFileMode.GroupRead | UnixFileMode.GroupExecute
+            | UnixFileMode.OtherRead | UnixFileMode.OtherExecute;
+
+        string shared = Directory.CreateDirectory(Path.Combine(_tempDirectory, "shared")).FullName;
+
+        File.SetUnixFileMode(shared, sharedMode);
+
+        InferenceAuditLogger logger = CreateLogger(enabled: true, directory: shared);
+
+        await logger.LogAsync(MakeRecord("ping"), CancellationToken.None);
+
+        Assert.Equal(sharedMode, File.GetUnixFileMode(shared));
+
+        string file = Assert.Single(Directory.EnumerateFiles(shared));
+
+        Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite, File.GetUnixFileMode(file));
+    }
+
+    [SkippableFact]
+    [System.Runtime.Versioning.UnsupportedOSPlatform("windows")]
+    public async Task LogAsync_CreatesAMissingAuditDirectoryOwnerOnly()
+    {
+        Skip.If(OperatingSystem.IsWindows(), "Unix mode bits are not observable on Windows.");
+
+        string owned = Path.Combine(_tempDirectory, "owned-audit");
+
+        InferenceAuditLogger logger = CreateLogger(enabled: true, directory: owned);
+
+        await logger.LogAsync(MakeRecord("ping"), CancellationToken.None);
+
+        Assert.Equal(
+            UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute,
+            File.GetUnixFileMode(owned));
+    }
+
+    /// <summary>
+    /// Every directory the writer has to create is its own, so each is owner-only from the moment it
+    /// exists: the intermediate parents too, not only the leaf, and never by a chmod after the fact.
+    /// </summary>
+    [SkippableFact]
+    [System.Runtime.Versioning.UnsupportedOSPlatform("windows")]
+    public async Task LogAsync_CreatesEveryMissingAuditDirectoryOwnerOnly()
+    {
+        Skip.If(OperatingSystem.IsWindows(), "Unix mode bits are not observable on Windows.");
+
+        const UnixFileMode ownerOnly = UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute;
+
+        string parent = Path.Combine(_tempDirectory, "owned-parent");
+
+        string owned = Path.Combine(parent, "nested", "audit");
+
+        InferenceAuditLogger logger = CreateLogger(enabled: true, directory: owned);
+
+        await logger.LogAsync(MakeRecord("ping"), CancellationToken.None);
+
+        Assert.Equal(ownerOnly, File.GetUnixFileMode(parent));
+
+        Assert.Equal(ownerOnly, File.GetUnixFileMode(Path.Combine(parent, "nested")));
+
+        Assert.Equal(ownerOnly, File.GetUnixFileMode(owned));
+
+        Assert.Single(Directory.EnumerateFiles(owned));
     }
 
     /// <summary>
@@ -654,7 +678,6 @@ public sealed class InferenceAuditLoggerTests : IDisposable
     [Fact]
     public void InferenceAuditLogger_DeclaresNoDatedLogFileDiscoveryOfItsOwn()
     {
-
         string[] declared = typeof(InferenceAuditLogger)
             .GetMethods(
                 BindingFlags.Public
@@ -667,7 +690,6 @@ public sealed class InferenceAuditLoggerTests : IDisposable
             .ToArray();
 
         Assert.Empty(declared);
-
     }
 
     private InferenceAuditLogger CreateLogger(
@@ -675,9 +697,9 @@ public sealed class InferenceAuditLoggerTests : IDisposable
         bool redactToolArguments = true,
         bool automaticSweepsEnabled = true,
         bool unifiedRetentionEnabled = true,
-        int unifiedRetentionDays = 7)
+        int unifiedRetentionDays = 7,
+        string? directory = null)
     {
-
         ArcanumSettings settings = new()
         {
             Host = new HostSettings
@@ -702,8 +724,7 @@ public sealed class InferenceAuditLoggerTests : IDisposable
         return new InferenceAuditLogger(
             new TestOptionsMonitor<ArcanumSettings>(settings),
             NullLogger<InferenceAuditLogger>.Instance,
-            Path.Combine(_tempDirectory, "audit.jsonl"));
-
+            Path.Combine(directory ?? _tempDirectory, "audit.jsonl"));
     }
 
     private static InferenceAuditRecord MakeRecord(
@@ -730,7 +751,6 @@ public sealed class InferenceAuditLoggerTests : IDisposable
 
     private sealed class ReadBudgetStream : Stream
     {
-
         private readonly MemoryStream _inner;
 
         private readonly long _maxBytesRead;
@@ -739,11 +759,9 @@ public sealed class InferenceAuditLoggerTests : IDisposable
             byte[] content,
             long maxBytesRead)
         {
-
             _inner = new MemoryStream(content, writable: false);
 
             _maxBytesRead = maxBytesRead;
-
         }
 
         internal long BytesRead { get; private set; }
@@ -758,16 +776,13 @@ public sealed class InferenceAuditLoggerTests : IDisposable
 
         public override long Position
         {
-
             get => _inner.Position;
 
             set => _inner.Position = value;
-
         }
 
         public override void Flush()
         {
-
         }
 
         public override int Read(
@@ -775,37 +790,31 @@ public sealed class InferenceAuditLoggerTests : IDisposable
             int offset,
             int count)
         {
-
             int read = _inner.Read(buffer, offset, count);
 
             Account(read);
 
             return read;
-
         }
 
         public override int Read(Span<byte> buffer)
         {
-
             int read = _inner.Read(buffer);
 
             Account(read);
 
             return read;
-
         }
 
         public override async ValueTask<int> ReadAsync(
             Memory<byte> buffer,
             CancellationToken cancellationToken = default)
         {
-
             int read = await _inner.ReadAsync(buffer, cancellationToken);
 
             Account(read);
 
             return read;
-
         }
 
         public override long Seek(
@@ -821,32 +830,22 @@ public sealed class InferenceAuditLoggerTests : IDisposable
 
         protected override void Dispose(bool disposing)
         {
-
             if (disposing)
             {
-
                 _inner.Dispose();
-
             }
 
             base.Dispose(disposing);
-
         }
 
         private void Account(int count)
         {
-
             BytesRead += count;
 
             if (BytesRead > _maxBytesRead)
             {
-
                 throw new IOException("The reverse reader exceeded its bounded read budget.");
-
             }
-
         }
-
     }
-
 }

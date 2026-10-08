@@ -12,17 +12,42 @@ namespace RetroDownfall.Arcanum.Cli.Commands.Daemon;
 /// <summary>
 /// Manage the Arcanum background daemon.
 /// </summary>
-public sealed class DaemonCommands(IDaemonManager daemonManager, ArcanumApiClient apiClient, IThemePalette themePalette)
+public sealed class DaemonCommands(
+    IDaemonManager daemonManager,
+    ArcanumApiClient apiClient,
+    IThemePalette themePalette,
+    IConsoleDispatcher dispatcher,
+    IDaemonServiceAccountPrompt accountPrompt)
 {
-
     /// <summary>
-    /// Install and start the Arcanum background daemon.
+    /// Install and start the Arcanum background daemon. A manager that needs a service account (the Windows one)
+    /// gets it from <see cref="IDaemonServiceAccountPrompt"/> first; an invocation with no way to ask stops with a
+    /// configuration error before anything is created.
     /// </summary>
     public async Task<int> Install(CancellationToken cancellationToken)
     {
-        AnsiConsole.MarkupLine(themePalette.MutedMarkup(Markup.Escape("Installing launchd agent\u2026")));
+        DaemonInstallRequest request = DaemonInstallRequest.ForInvokingUser;
 
-        Result result = await daemonManager.InstallAsync(cancellationToken).ConfigureAwait(false);
+        if (daemonManager.RequiresServiceAccount)
+        {
+            Result<DaemonServiceCredential> credential = await accountPrompt
+                .ReadAsync(cancellationToken)
+                .ConfigureAwait(false);
+
+            if (credential.IsFailure)
+            {
+                CliErrorOutput.WriteMarkupLine(
+                    themePalette.ErrorLabelMarkup(Markup.Escape("Error:"), credential.Error));
+
+                return (int)CliExitCode.ConfigurationError;
+            }
+
+            request = new DaemonInstallRequest(credential.Value);
+        }
+
+        dispatcher.WriteDiagnostic("Installing the background daemon\u2026");
+
+        Result result = await daemonManager.InstallAsync(request, cancellationToken).ConfigureAwait(false);
 
         if (result.IsFailure)
         {
@@ -41,7 +66,7 @@ public sealed class DaemonCommands(IDaemonManager daemonManager, ArcanumApiClien
     /// </summary>
     public async Task<int> Uninstall(CancellationToken cancellationToken)
     {
-        AnsiConsole.MarkupLine(themePalette.MutedMarkup(Markup.Escape("Removing launchd agent\u2026")));
+        dispatcher.WriteDiagnostic("Removing the background daemon\u2026");
 
         Result result = await daemonManager.UninstallAsync(cancellationToken).ConfigureAwait(false);
 
@@ -62,7 +87,7 @@ public sealed class DaemonCommands(IDaemonManager daemonManager, ArcanumApiClien
     /// </summary>
     public async Task<int> Status(CancellationToken cancellationToken)
     {
-        AnsiConsole.MarkupLine(themePalette.MutedMarkup(Markup.Escape("Checking launchd status\u2026")));
+        dispatcher.WriteDiagnostic("Checking the background daemon status\u2026");
 
         Result<string> result = await daemonManager.GetStatusAsync(cancellationToken).ConfigureAwait(false);
 
@@ -83,16 +108,14 @@ public sealed class DaemonCommands(IDaemonManager daemonManager, ArcanumApiClien
     /// </summary>
     public async Task<int> Jobs(CancellationToken cancellationToken)
     {
-
         Result<UnseenServantJobStatusDto[]> result =
             await apiClient.GetDaemonJobsAsync(cancellationToken).ConfigureAwait(false);
 
         if (result.IsFailure)
         {
-
             CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
 
-            return 1;
+            return CliFailureExit.ExitCode(result.Error);
         }
 
         UnseenServantJobStatusDto[] jobs = result.Value;
@@ -117,7 +140,6 @@ public sealed class DaemonCommands(IDaemonManager daemonManager, ArcanumApiClien
 
         foreach (UnseenServantJobStatusDto job in jobs)
         {
-
             string baseText = $"{job.BaseIntervalMinutes}";
 
             string baseCell = themePalette.TextMarkup(Markup.Escape(baseText));
@@ -155,7 +177,6 @@ public sealed class DaemonCommands(IDaemonManager daemonManager, ArcanumApiClien
 
         if (jobs.Length == 0)
         {
-
             AnsiConsole.MarkupLine(
                 themePalette.MutedMarkup(Markup.Escape("No Unseen Servant jobs are configured under Arcanum:Daemon:Jobs.")));
         }
@@ -170,16 +191,13 @@ public sealed class DaemonCommands(IDaemonManager daemonManager, ArcanumApiClien
     /// <param name="minutes">The new polling interval in minutes (&gt;= 1).</param>
     public async Task<int> Initiative(string jobName, int minutes, CancellationToken cancellationToken)
     {
-
         // W4.1: validate the interval client-side so an obviously-invalid value fails fast with a
         // clear message instead of round-tripping to the API.
         if (minutes < 1)
         {
-
             CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(Markup.Escape("Minutes must be a positive integer (>= 1).")));
 
             return (int)CliExitCode.ConfigurationError;
-
         }
 
         Result<UnseenServantJobStatusDto> result = await apiClient
@@ -188,11 +206,9 @@ public sealed class DaemonCommands(IDaemonManager daemonManager, ArcanumApiClien
 
         if (result.IsFailure)
         {
-
             CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
 
-            return 1;
-
+            return CliFailureExit.ExitCode(result.Error);
         }
 
         UnseenServantJobStatusDto dto = result.Value;
@@ -204,7 +220,6 @@ public sealed class DaemonCommands(IDaemonManager daemonManager, ArcanumApiClien
                     $"{dto.Name} \u2014 effective interval is now {dto.EffectiveIntervalMinutes} minute(s) (base {dto.BaseIntervalMinutes}).")));
 
         return 0;
-
     }
 
     /// <summary>
@@ -221,28 +236,23 @@ public sealed class DaemonCommands(IDaemonManager daemonManager, ArcanumApiClien
         string source = "cli:daemon alert",
         CancellationToken cancellationToken = default)
     {
-
         if (string.IsNullOrWhiteSpace(message))
         {
-
             CliErrorOutput.WriteMarkupLine(
                 themePalette.ErrorMarkup(
                     Markup.Escape("A non-empty message is required.")));
 
             return (int)CliExitCode.ConfigurationError;
-
         }
 
         if (!TryParseSeverity(severity, out CommLinkSeverity parsedSeverity))
         {
-
             CliErrorOutput.WriteMarkupLine(
                 themePalette.ErrorLabelMarkup(
                     Markup.Escape("--severity"),
                     Markup.Escape("must be one of: Info, Warning, Critical.")));
 
             return (int)CliExitCode.ConfigurationError;
-
         }
 
         CommLinkMessageRequestDto dto = new(
@@ -257,11 +267,9 @@ public sealed class DaemonCommands(IDaemonManager daemonManager, ArcanumApiClien
 
         if (result.IsFailure)
         {
-
             CliErrorOutput.WriteMarkupLine(themePalette.ErrorMarkup(result.Error));
 
-            return 1;
-
+            return CliFailureExit.ExitCode(result.Error);
         }
 
         AnsiConsole.MarkupLine(
@@ -270,7 +278,6 @@ public sealed class DaemonCommands(IDaemonManager daemonManager, ArcanumApiClien
                 Markup.Escape($"{dto.Title} ({dto.Severity}).")));
 
         return 0;
-
     }
 
     /// <summary>
@@ -282,16 +289,6 @@ public sealed class DaemonCommands(IDaemonManager daemonManager, ArcanumApiClien
         string severity,
         out CommLinkSeverity parsedSeverity)
     {
-
-        parsedSeverity = default;
-
-        string normalized = severity.Trim();
-
-        return normalized.Length > 0
-            && normalized.All(char.IsLetter)
-            && Enum.TryParse(normalized, ignoreCase: true, out parsedSeverity)
-            && Enum.IsDefined(parsedSeverity);
-
+        return CliEnumInput.TryParseName(severity, out parsedSeverity);
     }
-
 }

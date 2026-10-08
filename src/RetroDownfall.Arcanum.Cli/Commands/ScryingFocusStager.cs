@@ -1,5 +1,9 @@
 using System.Buffers;
 
+using System.Buffers.Binary;
+
+using RetroDownfall.Arcanum.Cli.Services;
+
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 
 namespace RetroDownfall.Arcanum.Cli.Commands;
@@ -13,7 +17,6 @@ namespace RetroDownfall.Arcanum.Cli.Commands;
 /// </summary>
 public static class ScryingFocusStager
 {
-
     private const int FileReadBufferBytes = 81920;
 
     private static readonly HashSet<string> ImageExtensions = new(StringComparer.OrdinalIgnoreCase)
@@ -52,7 +55,6 @@ public static class ScryingFocusStager
     /// </summary>
     public static StagingResult CheckSize(string fullPath, long maxImageBytes)
     {
-
         long length;
 
         try
@@ -77,7 +79,6 @@ public static class ScryingFocusStager
         }
 
         return new StagingResult(null, length, null);
-
     }
 
     /// <summary>
@@ -89,28 +90,27 @@ public static class ScryingFocusStager
     public static StagingResult Stage(
         string fullPath,
         long maxImageBytes,
-        string[] allowedMimeTypes) =>
+        string[] allowedMimeTypes,
+        CancellationToken cancellationToken = default) =>
         Stage(
             fullPath,
             maxImageBytes,
             allowedMimeTypes,
             static path => new FileInfo(path).Length,
-            static path => new FileStream(
-                path,
-                FileMode.Open,
-                FileAccess.Read,
-                FileShare.Read,
-                FileReadBufferBytes,
-                FileOptions.SequentialScan));
+            // The caller confirmed a regular file before this, but the path can change between that stat
+            // and this open: the open never waits on the path and judges the handle it got, so a path
+            // swapped for a FIFO is refused rather than blocking in open(2) where cancellation cannot reach.
+            static path => AttachableFile.OpenForRead(path, FileReadBufferBytes),
+            cancellationToken);
 
     internal static StagingResult Stage(
         string fullPath,
         long maxImageBytes,
         string[] allowedMimeTypes,
         Func<string, long> getFileLength,
-        Func<string, Stream> openRead)
+        Func<string, Stream> openRead,
+        CancellationToken cancellationToken = default)
     {
-
         long length;
 
         byte[] bytes;
@@ -140,9 +140,11 @@ public static class ScryingFocusStager
 
             try
             {
-
                 while (true)
                 {
+                    // The read is synchronous because its callers are, so cancellation is observed at
+                    // each chunk rather than inside a blocked read.
+                    cancellationToken.ThrowIfCancellationRequested();
 
                     long remainingBytes = maxImageBytes - observedBytes;
 
@@ -154,33 +156,25 @@ public static class ScryingFocusStager
 
                     if (read == 0)
                     {
-
                         break;
-
                     }
 
                     observedBytes += read;
 
                     if (observedBytes > maxImageBytes)
                     {
-
                         return new StagingResult(
                             null,
                             Math.Max(length, observedBytes),
                             $"Image exceeds the maximum size of {maxImageBytes} bytes.");
-
                     }
 
                     content.Write(buffer, 0, read);
-
                 }
-
             }
             finally
             {
-
                 ArrayPool<byte>.Shared.Return(buffer);
-
             }
 
             bytes = content.ToArray();
@@ -195,8 +189,20 @@ public static class ScryingFocusStager
         {
             return new StagingResult(null, null, ex.Message);
         }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException)
+        {
+            return new StagingResult(null, null, ex.Message);
+        }
 
-        string mimeType = DetectMimeType(bytes, Path.GetExtension(fullPath));
+        string? mimeType = DetectMimeType(bytes);
+
+        if (mimeType is null)
+        {
+            return new StagingResult(
+                null,
+                length,
+                "The file is not a supported image: its content carries no PNG, JPEG, GIF, WebP or BMP signature, whatever its name says.");
+        }
 
         if (!IsAllowedMimeType(mimeType, allowedMimeTypes))
         {
@@ -209,12 +215,10 @@ public static class ScryingFocusStager
         string base64 = Convert.ToBase64String(bytes);
 
         return new StagingResult(new ScryingFocusDto(base64, mimeType), length, null);
-
     }
 
     private static bool IsAllowedMimeType(string mimeType, string[] allowedMimeTypes)
     {
-
         foreach (string allowed in allowedMimeTypes)
         {
             if (string.Equals(allowed, mimeType, StringComparison.OrdinalIgnoreCase))
@@ -224,16 +228,16 @@ public static class ScryingFocusStager
         }
 
         return false;
-
     }
 
     /// <summary>
-    /// Detects MIME type primarily from magic bytes (thorough — catches a mislabeled extension);
-    /// falls back to the file extension when the leading bytes are inconclusive or too short.
+    /// Detects the MIME type from the file's leading bytes alone, or returns <see langword="null"/> when
+    /// they match no supported signature. The name is never evidence: every supported format has a
+    /// signature, so there is nothing for an extension to break a tie over, and trusting it let a text
+    /// file called <c>.png</c> through as <c>image/png</c>.
     /// </summary>
-    private static string DetectMimeType(byte[] bytes, string extension)
+    private static string? DetectMimeType(byte[] bytes)
     {
-
         if (bytes.Length >= 8
             && bytes[0] == 0x89 && bytes[1] == 0x50 && bytes[2] == 0x4E && bytes[3] == 0x47)
         {
@@ -259,26 +263,20 @@ public static class ScryingFocusStager
             return "image/webp";
         }
 
-        if (bytes.Length >= 2
-            && bytes[0] == 0x42 && bytes[1] == 0x4D)
+        // "BM" alone begins plenty of prose, so a bitmap also has to carry one of the DIB header sizes
+        // that follow its 14-byte file header.
+        if (bytes.Length >= 18
+            && bytes[0] == 0x42 && bytes[1] == 0x4D
+            && IsDibHeaderSize(BinaryPrimitives.ReadUInt32LittleEndian(bytes.AsSpan(14))))
         {
             return "image/bmp";
         }
 
-        return DetectMimeTypeFromExtension(extension);
-
+        return null;
     }
 
-    private static string DetectMimeTypeFromExtension(string extension) =>
-        extension.ToLowerInvariant() switch
-        {
-            ".png" => "image/png",
-            ".jpg" or ".jpeg" => "image/jpeg",
-            ".gif" => "image/gif",
-            ".webp" => "image/webp",
-            ".bmp" => "image/bmp",
-            _ => "application/octet-stream",
-        };
+    private static bool IsDibHeaderSize(uint size) =>
+        size is 12 or 16 or 40 or 52 or 56 or 64 or 108 or 124;
 
     /// <summary>Human-readable byte count for themed staging feedback lines.</summary>
     public static string FormatByteCount(long bytes)
@@ -295,5 +293,4 @@ public static class ScryingFocusStager
 
         return $"{bytes} B";
     }
-
 }

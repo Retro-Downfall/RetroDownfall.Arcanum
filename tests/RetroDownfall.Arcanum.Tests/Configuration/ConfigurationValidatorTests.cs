@@ -227,6 +227,49 @@ public sealed class ConfigurationValidatorTests
             static error => error.Detail.Contains("INVALID=NAME", StringComparison.Ordinal));
     }
 
+    /// <summary>
+    /// An empty scheme allowlist would suppress every webhook with only a log line, so it is rejected at
+    /// the configuration boundary instead of being papered over by a second default in the dispatcher.
+    /// </summary>
+    [Fact]
+    public void Validate_CommLinkAllowedSchemesMustNameAtLeastOneScheme()
+    {
+        ArcanumSettings settings = new()
+        {
+            Providers =
+            [
+                new ProviderSettings
+                {
+                    Name = "provider",
+                    Type = AiProviderKind.OpenAICompatible,
+                    Models = ["model"],
+                },
+            ],
+            Integrations = new IntegrationSettings
+            {
+                CommLink = new CommLinkIntegrationSettings(),
+            },
+        };
+
+        Assert.True(_validator.Validate(settings).IsSuccess);
+
+        foreach (string[] allowedSchemes in new[] { Array.Empty<string>(), [" ", string.Empty] })
+        {
+            settings.Integrations.CommLink.AllowedSchemes = allowedSchemes;
+
+            Result result = _validator.Validate(settings);
+
+            Assert.True(result.IsFailure);
+            Assert.Contains(
+                result.Error.Details!,
+                static error => error.Pointer == "integrations.commLink.allowedSchemes");
+        }
+
+        settings.Integrations.CommLink.AllowedSchemes = ["https"];
+
+        Assert.True(_validator.Validate(settings).IsSuccess);
+    }
+
     [Fact]
     public void Validate_InvalidCertificatePasswordEnvironmentVariable_ReturnsFailure()
     {

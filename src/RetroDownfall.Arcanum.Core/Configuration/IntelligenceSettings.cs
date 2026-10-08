@@ -1,13 +1,10 @@
 namespace RetroDownfall.Arcanum.Core.Configuration;
 
-using RetroDownfall.Arcanum.Core.Intelligence;
-
 /// <summary>
 /// Code-owned runtime projection for turn mechanics. This record is not a public configuration root.
 /// </summary>
 public sealed record IntelligenceSettings
 {
-
     public int SemanticRouterPreflightTimeoutSeconds { get; set; } = 15;
 
     public int SemanticRouterMaxTokens { get; set; } = 128;
@@ -43,8 +40,6 @@ public sealed record IntelligenceSettings
     public int ContextWindowCompressionThreshold { get; set; } = 85;
 
     public bool EnableContextCompression { get; set; } = true;
-
-    public bool EnableTokenTracking { get; set; } = true;
 
     /// <summary>
     /// Hard cap (bytes) on captured <c>stdout</c> and <c>stderr</c> for in-process MCP
@@ -95,8 +90,6 @@ public sealed record IntelligenceSettings
     /// </summary>
     public int UnknownImageTokenReserve { get; set; } = 2048;
 
-    public ReasoningEffortLevel? DefaultReasoningEffort { get; set; } = ReasoningEffortLevel.Medium;
-
     public int MaxOpenApiMessages { get; set; } = 1_000;
 
     public int MaxStatelessMessages { get; set; } = 100;
@@ -118,18 +111,8 @@ public sealed record IntelligenceSettings
     /// </summary>
     public int ReservedOutputTokens { get; set; } = 1024;
 
-    /// <summary>Enable structured turn planning with visible plan events.</summary>
-    public bool EnableStructuredTurnPlanning { get; init; } = true;
-
-    /// <summary>Enable repetition detection with clear termination results.</summary>
-    public bool EnableRepetitionDetection { get; init; } = true;
-
-    /// <summary>Enable progressive context maintenance before every provider call.</summary>
-    public bool EnableProgressiveContextMaintenance { get; init; } = true;
-
     /// <summary>
     /// When <c>true</c>, semantic spell-router preflight uses <see cref="ArcanumSettings.FastModel"/> when configured.
     /// </summary>
     public bool UseFastModelForSpellRouting { get; set; }
-
 }

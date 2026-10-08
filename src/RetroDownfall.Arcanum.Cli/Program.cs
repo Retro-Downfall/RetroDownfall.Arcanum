@@ -177,7 +177,9 @@ internal static class Program
 
         ServiceProvider provider = services.BuildServiceProvider();
 
-        return await CliApplicationFactory.RunAsync(args, provider).ConfigureAwait(false);
+        return await CliApplicationFactory
+            .RunAndDisposeProviderAsync(args, provider)
+            .ConfigureAwait(false);
     }
 }
 

@@ -27,7 +27,6 @@ namespace RetroDownfall.TheForge.Ux.ViewModels.Workbench;
 /// </summary>
 public sealed partial class ScriptoriumViewModel : ViewModelBase, IDisposable
 {
-
     private readonly IPromptEditorDataSource _dataSource;
 
     private readonly INavigationService _navigation;
@@ -164,9 +163,9 @@ public sealed partial class ScriptoriumViewModel : ViewModelBase, IDisposable
         IArtifactFileDialogService fileDialog,
         ITextInputDialogService textInputDialog,
         IWhispersService whispers,
-        ITheForgeLocalMutationRunner mutationRunner)
+        ITheForgeLocalMutationRunner mutationRunner,
+        IInferenceTraceStore traceStore)
     {
-
         PromptId = promptId;
 
         _dataSource = dataSource;
@@ -189,8 +188,9 @@ public sealed partial class ScriptoriumViewModel : ViewModelBase, IDisposable
 
         Trace = new InferenceTraceViewModel(
             mutationRunner,
+            traceStore,
+            fileDialog,
             openPromptTestPreview: () => StatusText = "Use the Test tab for assembled-context preview (no LLM cost).");
-
     }
 
     public override DocumentKind? Kind => DocumentKind.Prompt;
@@ -204,16 +204,12 @@ public sealed partial class ScriptoriumViewModel : ViewModelBase, IDisposable
     [RelayCommand]
     public async Task LoadAsync(CancellationToken cancellationToken)
     {
-
         if (!TryGuardUnsavedEdits("Reloading"))
         {
-
             return;
-
         }
 
         await LoadCoreAsync(cancellationToken).ConfigureAwait(true);
-
     }
 
     /// <summary>
@@ -223,12 +219,9 @@ public sealed partial class ScriptoriumViewModel : ViewModelBase, IDisposable
     /// </summary>
     private bool TryGuardUnsavedEdits(string action)
     {
-
         if (!IsEditorDirty)
         {
-
             return true;
-
         }
 
         LastError = $"{action} would discard unsaved editor changes — save the prompt or discard them first.";
@@ -238,19 +231,16 @@ public sealed partial class ScriptoriumViewModel : ViewModelBase, IDisposable
         _whispers.Show(WhisperSeverity.Warning, "The prompt editor has unsaved changes.");
 
         return false;
-
     }
 
     private async Task LoadCoreAsync(CancellationToken cancellationToken)
     {
-
         IsBusy = true;
 
         LastError = null;
 
         try
         {
-
             using CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(
                 cancellationToken,
                 _lifetimeCts.Token);
@@ -259,13 +249,11 @@ public sealed partial class ScriptoriumViewModel : ViewModelBase, IDisposable
 
             if (Prompt is null)
             {
-
                 LastError = "Failed to load prompt.";
 
                 _foundryFloor.AppendLine($"Scriptorium failed to load prompt {PromptId:D}.");
 
                 return;
-
             }
 
             Template = Prompt.Template ?? string.Empty;
@@ -297,26 +285,19 @@ public sealed partial class ScriptoriumViewModel : ViewModelBase, IDisposable
             CapturePersistedSnapshot();
 
             await LoadVersionsAsync(cancellationToken).ConfigureAwait(true);
-
         }
         finally
         {
-
             IsBusy = false;
-
         }
-
     }
 
     [RelayCommand]
     public async Task SaveAsync(CancellationToken cancellationToken)
     {
-
         if (Prompt is null)
         {
-
             return;
-
         }
 
         IsBusy = true;
@@ -325,36 +306,30 @@ public sealed partial class ScriptoriumViewModel : ViewModelBase, IDisposable
 
         try
         {
-
             using CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(
                 cancellationToken,
                 _lifetimeCts.Token);
 
             if (!TryParseJsonDocument(ParameterSchemaJson, out JsonDocument? parameterSchema, out string? schemaError))
             {
-
                 LastError = schemaError;
 
                 return;
-
             }
 
             if (!TryParseJsonDocument(DefaultParametersJson, out JsonDocument? defaultParameters, out string? defaultsError))
             {
-
                 parameterSchema?.Dispose();
 
                 LastError = defaultsError;
 
                 return;
-
             }
 
             (double? temperature, string? temperatureError) = ParseOptionalDouble(TemperatureText, "Temperature");
 
             if (temperatureError is not null)
             {
-
                 parameterSchema?.Dispose();
 
                 defaultParameters?.Dispose();
@@ -362,14 +337,12 @@ public sealed partial class ScriptoriumViewModel : ViewModelBase, IDisposable
                 LastError = temperatureError;
 
                 return;
-
             }
 
             (double? topP, string? topPError) = ParseOptionalDouble(TopPText, "TopP");
 
             if (topPError is not null)
             {
-
                 parameterSchema?.Dispose();
 
                 defaultParameters?.Dispose();
@@ -377,14 +350,12 @@ public sealed partial class ScriptoriumViewModel : ViewModelBase, IDisposable
                 LastError = topPError;
 
                 return;
-
             }
 
             (int? maxOutputTokens, string? maxTokensError) = ParseOptionalInt(MaxOutputTokensText, "MaxOutputTokens");
 
             if (maxTokensError is not null)
             {
-
                 parameterSchema?.Dispose();
 
                 defaultParameters?.Dispose();
@@ -392,7 +363,6 @@ public sealed partial class ScriptoriumViewModel : ViewModelBase, IDisposable
                 LastError = maxTokensError;
 
                 return;
-
             }
 
             // The PUT /api/prompts/{id} endpoint applies a field only when non-null, so null means
@@ -417,7 +387,6 @@ public sealed partial class ScriptoriumViewModel : ViewModelBase, IDisposable
 
             if (saved is null)
             {
-
                 LastError = "Save failed — the server rejected the request.";
 
                 _foundryFloor.AppendLine($"Scriptorium save failed for prompt {PromptId:D}.");
@@ -425,7 +394,6 @@ public sealed partial class ScriptoriumViewModel : ViewModelBase, IDisposable
                 _whispers.Show(WhisperSeverity.Error, "Prompt save failed.");
 
                 return;
-
             }
 
             Prompt = saved;
@@ -435,35 +403,26 @@ public sealed partial class ScriptoriumViewModel : ViewModelBase, IDisposable
             CapturePersistedSnapshot();
 
             _whispers.Show(WhisperSeverity.Success, "Prompt saved.");
-
         }
         finally
         {
-
             IsBusy = false;
-
         }
-
     }
 
     [RelayCommand]
     public async Task RenderAsync(CancellationToken cancellationToken)
     {
-
         if (Prompt is null)
         {
-
             return;
-
         }
 
         if (!TryParseParameters(ParametersText, out Dictionary<string, string>? parameters, out string? error))
         {
-
             LastError = error;
 
             return;
-
         }
 
         IsBusy = true;
@@ -472,7 +431,6 @@ public sealed partial class ScriptoriumViewModel : ViewModelBase, IDisposable
 
         try
         {
-
             using CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(
                 cancellationToken,
                 _lifetimeCts.Token);
@@ -483,13 +441,11 @@ public sealed partial class ScriptoriumViewModel : ViewModelBase, IDisposable
 
             if (result is null)
             {
-
                 LastError = "Render failed — the server rejected the request.";
 
                 _whispers.Show(WhisperSeverity.Error, "Prompt render failed.");
 
                 return;
-
             }
 
             RenderedText = result.RenderedText;
@@ -499,26 +455,19 @@ public sealed partial class ScriptoriumViewModel : ViewModelBase, IDisposable
             StatusText = "Rendered.";
 
             _whispers.Show(WhisperSeverity.Success, "Prompt rendered.");
-
         }
         finally
         {
-
             IsBusy = false;
-
         }
-
     }
 
     [RelayCommand]
     public async Task TestAsync(CancellationToken cancellationToken)
     {
-
         if (Prompt is null)
         {
-
             return;
-
         }
 
         IsBusy = true;
@@ -527,7 +476,6 @@ public sealed partial class ScriptoriumViewModel : ViewModelBase, IDisposable
 
         try
         {
-
             using CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(
                 cancellationToken,
                 _lifetimeCts.Token);
@@ -539,11 +487,9 @@ public sealed partial class ScriptoriumViewModel : ViewModelBase, IDisposable
 
             if (result is null)
             {
-
                 LastError = "Test failed — the server rejected the request.";
 
                 return;
-
             }
 
             TestAssembledText = result.AssembledText;
@@ -557,46 +503,35 @@ public sealed partial class ScriptoriumViewModel : ViewModelBase, IDisposable
             TestMcpServerCount = result.McpServerCount;
 
             StatusText = "Tested.";
-
         }
         finally
         {
-
             IsBusy = false;
-
         }
-
     }
 
     [RelayCommand]
     public async Task ExecuteAsync(CancellationToken cancellationToken)
     {
-
         if (Prompt is null)
         {
-
             return;
-
         }
 
         string userMessage = RunUserMessage.Trim();
 
         if (string.IsNullOrEmpty(userMessage))
         {
-
             LastError = "A user message is required to run a prompt.";
 
             return;
-
         }
 
         if (!TryParseParameters(ParametersText, out Dictionary<string, string>? parameters, out string? error))
         {
-
             LastError = error;
 
             return;
-
         }
 
         if (!TryParseRunOverrides(
@@ -611,11 +546,9 @@ public sealed partial class ScriptoriumViewModel : ViewModelBase, IDisposable
                 out float? runFrequencyPenalty,
                 out string? runError))
         {
-
             LastError = runError;
 
             return;
-
         }
 
         IsRunning = true;
@@ -636,7 +569,6 @@ public sealed partial class ScriptoriumViewModel : ViewModelBase, IDisposable
 
         try
         {
-
             PromptExecuteRequest request = new(
                 UserMessage: userMessage,
                 Parameters: parameters,
@@ -656,49 +588,36 @@ public sealed partial class ScriptoriumViewModel : ViewModelBase, IDisposable
 
             await foreach (IntelligenceEvent ev in _dataSource.ExecuteStreamAsync(Prompt.Id, request, runToken).ConfigureAwait(true))
             {
-
                 ApplyIntelligenceEvent(ev);
-
             }
-
         }
         catch (OperationCanceledException) when (runToken.IsCancellationRequested)
         {
-
             // Stop or tab close — leave partial output as-is.
-
         }
         catch (Exception ex)
         {
-
             LastError = ex.Message;
 
             _foundryFloor.AppendLine($"Scriptorium run error: {ex.Message}");
 
             _whispers.Show(WhisperSeverity.Error, "Run failed.");
-
         }
         finally
         {
-
             IsRunning = false;
-
         }
-
     }
 
     [RelayCommand]
     private void StopExecution()
     {
-
         _runCts?.Cancel();
-
     }
 
     [RelayCommand]
     private void OpenInProvingGrounds()
     {
-
         string? model = string.IsNullOrWhiteSpace(RunModel)
             ? (string.IsNullOrWhiteSpace(Model) ? null : Model.Trim())
             : RunModel.Trim();
@@ -708,18 +627,14 @@ public sealed partial class ScriptoriumViewModel : ViewModelBase, IDisposable
             PromptId.ToString("D"),
             Workspace: null,
             Model: model));
-
     }
 
     [RelayCommand]
     public async Task CloneAsync(CancellationToken cancellationToken)
     {
-
         if (Prompt is null)
         {
-
             return;
-
         }
 
         string? newName = await _textInputDialog
@@ -728,9 +643,7 @@ public sealed partial class ScriptoriumViewModel : ViewModelBase, IDisposable
 
         if (newName is null)
         {
-
             return;
-
         }
 
         string? newVersion = await _textInputDialog
@@ -739,18 +652,14 @@ public sealed partial class ScriptoriumViewModel : ViewModelBase, IDisposable
 
         if (newVersion is null)
         {
-
             return;
-
         }
 
         if (string.IsNullOrWhiteSpace(newName) || string.IsNullOrWhiteSpace(newVersion))
         {
-
             LastError = "Name and version are required to clone.";
 
             return;
-
         }
 
         IsBusy = true;
@@ -759,7 +668,6 @@ public sealed partial class ScriptoriumViewModel : ViewModelBase, IDisposable
 
         try
         {
-
             using CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(
                 cancellationToken,
                 _lifetimeCts.Token);
@@ -775,7 +683,6 @@ public sealed partial class ScriptoriumViewModel : ViewModelBase, IDisposable
 
             if (cloned is null)
             {
-
                 LastError = "Clone failed — the server rejected the request.";
 
                 _foundryFloor.AppendLine($"Scriptorium clone failed for prompt {PromptId:D}.");
@@ -783,7 +690,6 @@ public sealed partial class ScriptoriumViewModel : ViewModelBase, IDisposable
                 _whispers.Show(WhisperSeverity.Error, "Prompt clone failed.");
 
                 return;
-
             }
 
             _navigation.OpenDocument(DocumentKind.Prompt, cloned.Id.ToString("D"));
@@ -791,26 +697,19 @@ public sealed partial class ScriptoriumViewModel : ViewModelBase, IDisposable
             StatusText = "Cloned.";
 
             _whispers.Show(WhisperSeverity.Success, "Prompt cloned.");
-
         }
         finally
         {
-
             IsBusy = false;
-
         }
-
     }
 
     [RelayCommand]
     public async Task DeleteAsync(CancellationToken cancellationToken)
     {
-
         if (Prompt is null)
         {
-
             return;
-
         }
 
         bool confirmed = await _confirmationDialog
@@ -822,9 +721,7 @@ public sealed partial class ScriptoriumViewModel : ViewModelBase, IDisposable
 
         if (!confirmed)
         {
-
             return;
-
         }
 
         IsBusy = true;
@@ -833,7 +730,6 @@ public sealed partial class ScriptoriumViewModel : ViewModelBase, IDisposable
 
         try
         {
-
             using CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(
                 cancellationToken,
                 _lifetimeCts.Token);
@@ -842,7 +738,6 @@ public sealed partial class ScriptoriumViewModel : ViewModelBase, IDisposable
 
             if (!outcome.Success)
             {
-
                 LastError = outcome.ErrorMessage is { Length: > 0 } detail
                     ? $"Delete failed ({outcome.ErrorCode}): {detail}"
                     : "Delete failed — the server rejected the request.";
@@ -852,7 +747,6 @@ public sealed partial class ScriptoriumViewModel : ViewModelBase, IDisposable
                 _whispers.Show(WhisperSeverity.Error, "Prompt delete failed.");
 
                 return;
-
             }
 
             _navigation.CloseDocument(DocumentKind.Prompt, PromptId.ToString("D"));
@@ -862,34 +756,25 @@ public sealed partial class ScriptoriumViewModel : ViewModelBase, IDisposable
             _foundryFloor.AppendLine($"Deleted prompt {Prompt.Name} {Prompt.Version}.");
 
             _whispers.Show(WhisperSeverity.Success, "Prompt deleted.");
-
         }
         catch (OperationCanceledException)
         {
-
             // Closing the document mid-delete cancels the linked token. That is an ordinary outcome,
             // not a crash: unhandled it escapes onto the dispatcher from a fire-and-forget command.
             StatusText = "Delete cancelled.";
-
         }
         finally
         {
-
             IsBusy = false;
-
         }
-
     }
 
     [RelayCommand]
     public async Task ExportAsync(CancellationToken cancellationToken)
     {
-
         if (Prompt is null)
         {
-
             return;
-
         }
 
         string suggestedFileName = $"{Prompt.Name}-{Prompt.Version}.json";
@@ -900,9 +785,7 @@ public sealed partial class ScriptoriumViewModel : ViewModelBase, IDisposable
 
         if (path is null)
         {
-
             return;
-
         }
 
         IsBusy = true;
@@ -911,7 +794,6 @@ public sealed partial class ScriptoriumViewModel : ViewModelBase, IDisposable
 
         try
         {
-
             using CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(
                 cancellationToken,
                 _lifetimeCts.Token);
@@ -923,16 +805,13 @@ public sealed partial class ScriptoriumViewModel : ViewModelBase, IDisposable
                     path,
                     async admittedCancellationToken =>
                     {
-
                         export = await _dataSource
                             .ExportAsync(Prompt.Id, admittedCancellationToken)
                             .ConfigureAwait(true);
 
                         if (export is null)
                         {
-
                             return;
-
                         }
 
                         await ArtifactImportExportHelper
@@ -942,59 +821,47 @@ public sealed partial class ScriptoriumViewModel : ViewModelBase, IDisposable
                                 TheForgeJsonContext.Default.PromptExportDto,
                                 admittedCancellationToken)
                             .ConfigureAwait(true);
-
                     },
                     linked.Token)
                 .ConfigureAwait(true);
 
             if (export is null)
             {
-
                 LastError = "Export failed — the server rejected the request.";
 
                 _whispers.Show(WhisperSeverity.Error, "Prompt export failed.");
 
                 return;
-
             }
 
             StatusText = "Exported.";
 
             _whispers.Show(WhisperSeverity.Success, "Prompt exported.");
-
         }
         catch (Exception ex)
         {
-
             LastError = ex.Message;
 
             _foundryFloor.AppendLine($"Scriptorium export error: {ex.Message}");
 
             _whispers.Show(WhisperSeverity.Error, "Prompt export failed.");
-
         }
         finally
         {
-
             IsBusy = false;
-
         }
-
     }
 
     [RelayCommand]
     public async Task ImportAsync(CancellationToken cancellationToken)
     {
-
         string? path = await ArtifactImportExportHelper
             .PickOpenPathOrNullAsync(_fileDialog, cancellationToken)
             .ConfigureAwait(true);
 
         if (path is null)
         {
-
             return;
-
         }
 
         IsBusy = true;
@@ -1003,7 +870,6 @@ public sealed partial class ScriptoriumViewModel : ViewModelBase, IDisposable
 
         try
         {
-
             using CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(
                 cancellationToken,
                 _lifetimeCts.Token);
@@ -1014,7 +880,6 @@ public sealed partial class ScriptoriumViewModel : ViewModelBase, IDisposable
 
             if (payload is null)
             {
-
                 LastError = readError ?? "Failed to read prompt export JSON.";
 
                 _foundryFloor.AppendLine($"Scriptorium import read failed: {LastError}");
@@ -1022,7 +887,6 @@ public sealed partial class ScriptoriumViewModel : ViewModelBase, IDisposable
                 _whispers.Show(WhisperSeverity.Error, "Prompt import failed.");
 
                 return;
-
             }
 
             PromptImportRequest request = new(payload, Prompt?.CampaignId);
@@ -1033,7 +897,6 @@ public sealed partial class ScriptoriumViewModel : ViewModelBase, IDisposable
 
             if (!result.Success || result.Data is null)
             {
-
                 string detail = FormatImportError(result.ErrorCode, result.ErrorMessage, "Prompt import failed.");
 
                 LastError = detail;
@@ -1047,7 +910,6 @@ public sealed partial class ScriptoriumViewModel : ViewModelBase, IDisposable
                 _whispers.Show(WhisperSeverity.Error, whisper);
 
                 return;
-
             }
 
             StatusText = $"Imported {result.Data.Name} {result.Data.Version}.";
@@ -1057,57 +919,42 @@ public sealed partial class ScriptoriumViewModel : ViewModelBase, IDisposable
             _whispers.Show(WhisperSeverity.Success, "Prompt imported.");
 
             _navigation.OpenDocument(DocumentKind.Prompt, result.Data.Id.ToString());
-
         }
         catch (Exception ex)
         {
-
             LastError = ex.Message;
 
             _foundryFloor.AppendLine($"Scriptorium import error: {ex.Message}");
 
             _whispers.Show(WhisperSeverity.Error, "Prompt import failed.");
-
         }
         finally
         {
-
             IsBusy = false;
-
         }
-
     }
 
     private static string FormatImportError(string? code, string? message, string fallback)
     {
-
         if (!string.IsNullOrWhiteSpace(code) && !string.IsNullOrWhiteSpace(message))
         {
-
             return $"{code}: {message}";
-
         }
 
         if (!string.IsNullOrWhiteSpace(code))
         {
-
             return code;
-
         }
 
         return message ?? fallback;
-
     }
 
     [RelayCommand]
     public async Task LoadVersionsAsync(CancellationToken cancellationToken)
     {
-
         if (Prompt is null)
         {
-
             return;
-
         }
 
         IsBusy = true;
@@ -1116,7 +963,6 @@ public sealed partial class ScriptoriumViewModel : ViewModelBase, IDisposable
 
         try
         {
-
             using CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(
                 cancellationToken,
                 _lifetimeCts.Token);
@@ -1129,46 +975,33 @@ public sealed partial class ScriptoriumViewModel : ViewModelBase, IDisposable
 
             foreach (PromptVersionDto version in versions)
             {
-
                 Versions.Add(version);
-
             }
 
             StatusText = $"Loaded {versions.Count} version(s).";
-
         }
         finally
         {
-
             IsBusy = false;
-
         }
-
     }
 
     [RelayCommand]
     private void OpenVersion(PromptVersionDto? version)
     {
-
         if (version is null)
         {
-
             return;
-
         }
 
         _navigation.OpenDocument(DocumentKind.Prompt, version.Id.ToString("D"));
-
     }
 
     public void Dispose()
     {
-
         if (_disposed)
         {
-
             return;
-
         }
 
         _disposed = true;
@@ -1182,17 +1015,14 @@ public sealed partial class ScriptoriumViewModel : ViewModelBase, IDisposable
         _runCts?.Dispose();
 
         GC.SuppressFinalize(this);
-
     }
 
     private void ApplyIntelligenceEvent(IntelligenceEvent ev)
     {
-
         Trace.Capture(ev);
 
         switch (ev.Type)
         {
-
             case IntelligenceEventType.Token:
                 RunResultText += ev.Data ?? string.Empty;
                 break;
@@ -1215,18 +1045,14 @@ public sealed partial class ScriptoriumViewModel : ViewModelBase, IDisposable
 
                 if (Guid.TryParse(ev.Message, out Guid boundSessionId))
                 {
-
                     _navigation.OpenDocument(DocumentKind.Session, boundSessionId.ToString("D"));
-
                 }
                 break;
 
             default:
                 // Tool/ward/status events are not surfaced in this slice.
                 break;
-
         }
-
     }
 
     private bool TryParseRunOverrides(
@@ -1241,14 +1067,12 @@ public sealed partial class ScriptoriumViewModel : ViewModelBase, IDisposable
         out float? frequencyPenalty,
         out string? error)
     {
-
         model = string.IsNullOrWhiteSpace(RunModel) ? null : RunModel.Trim();
 
         (double? temperatureDouble, string? temperatureError) = ParseOptionalDouble(RunTemperatureText, "Run temperature");
 
         if (temperatureError is not null)
         {
-
             temperature = null;
 
             topP = null;
@@ -1268,7 +1092,6 @@ public sealed partial class ScriptoriumViewModel : ViewModelBase, IDisposable
             error = temperatureError;
 
             return false;
-
         }
 
         temperature = temperatureDouble is null ? null : (float)temperatureDouble.Value;
@@ -1277,7 +1100,6 @@ public sealed partial class ScriptoriumViewModel : ViewModelBase, IDisposable
 
         if (topPError is not null)
         {
-
             topP = null;
 
             maxOutputTokens = null;
@@ -1295,7 +1117,6 @@ public sealed partial class ScriptoriumViewModel : ViewModelBase, IDisposable
             error = topPError;
 
             return false;
-
         }
 
         topP = topPDouble is null ? null : (float)topPDouble.Value;
@@ -1304,7 +1125,6 @@ public sealed partial class ScriptoriumViewModel : ViewModelBase, IDisposable
 
         if (maxTokensError is not null)
         {
-
             maxOutputTokens = null;
 
             stop = null;
@@ -1320,7 +1140,6 @@ public sealed partial class ScriptoriumViewModel : ViewModelBase, IDisposable
             error = maxTokensError;
 
             return false;
-
         }
 
         maxOutputTokens = maxTokens;
@@ -1329,7 +1148,6 @@ public sealed partial class ScriptoriumViewModel : ViewModelBase, IDisposable
 
         if (seedError is not null)
         {
-
             stop = null;
 
             seed = null;
@@ -1343,7 +1161,6 @@ public sealed partial class ScriptoriumViewModel : ViewModelBase, IDisposable
             error = seedError;
 
             return false;
-
         }
 
         seed = parsedSeed;
@@ -1356,7 +1173,6 @@ public sealed partial class ScriptoriumViewModel : ViewModelBase, IDisposable
 
         if (presenceError is not null)
         {
-
             presencePenalty = null;
 
             frequencyPenalty = null;
@@ -1364,7 +1180,6 @@ public sealed partial class ScriptoriumViewModel : ViewModelBase, IDisposable
             error = presenceError;
 
             return false;
-
         }
 
         presencePenalty = presence;
@@ -1373,13 +1188,11 @@ public sealed partial class ScriptoriumViewModel : ViewModelBase, IDisposable
 
         if (frequencyError is not null)
         {
-
             frequencyPenalty = null;
 
             error = frequencyError;
 
             return false;
-
         }
 
         frequencyPenalty = frequency;
@@ -1387,138 +1200,102 @@ public sealed partial class ScriptoriumViewModel : ViewModelBase, IDisposable
         error = null;
 
         return true;
-
     }
 
     private static bool TryParseJsonDocument(string text, out JsonDocument? document, out string? error)
     {
-
         if (string.IsNullOrWhiteSpace(text))
         {
-
             document = JsonDocument.Parse("{}");
 
             error = null;
 
             return true;
-
         }
 
         try
         {
-
             document = JsonDocument.Parse(text);
 
             error = null;
 
             return true;
-
         }
         catch (JsonException ex)
         {
-
             document = null;
 
             error = $"Invalid JSON: {ex.Message}";
 
             return false;
-
         }
-
     }
 
     private static (double? Value, string? Error) ParseOptionalDouble(string text, string fieldName)
     {
-
         if (string.IsNullOrWhiteSpace(text))
         {
-
             return (null, null);
-
         }
 
         if (!double.TryParse(text.Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out double value))
         {
-
             return (null, $"{fieldName} is not a valid number.");
-
         }
 
         return (value, null);
-
     }
 
     private static (int? Value, string? Error) ParseOptionalInt(string text, string fieldName)
     {
-
         if (string.IsNullOrWhiteSpace(text))
         {
-
             return (null, null);
-
         }
 
         if (!int.TryParse(text.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out int value))
         {
-
             return (null, $"{fieldName} is not a valid integer.");
-
         }
 
         return (value, null);
-
     }
 
     private static (long? Value, string? Error) ParseOptionalLong(string text, string fieldName)
     {
-
         if (string.IsNullOrWhiteSpace(text))
         {
-
             return (null, null);
-
         }
 
         if (!long.TryParse(text.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out long value))
         {
-
             return (null, $"{fieldName} is not a valid integer.");
-
         }
 
         return (value, null);
-
     }
 
     private static (float? Value, string? Error) ParseOptionalFloat(string text, string fieldName)
     {
-
         if (string.IsNullOrWhiteSpace(text))
         {
-
             return (null, null);
-
         }
 
         if (!float.TryParse(text.Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out float value))
         {
-
             return (null, $"{fieldName} is not a valid number.");
-
         }
 
         return (value, null);
-
     }
 
     private static IReadOnlyList<string>? ParseStopList(string text)
     {
-
         if (string.IsNullOrWhiteSpace(text))
         {
-
             return null;
-
         }
 
         string[] stops = text
@@ -1527,7 +1304,6 @@ public sealed partial class ScriptoriumViewModel : ViewModelBase, IDisposable
             .ToArray();
 
         return stops.Length == 0 ? null : stops;
-
     }
 
     private static string[] ParseTags(string tagsText) =>
@@ -1538,43 +1314,35 @@ public sealed partial class ScriptoriumViewModel : ViewModelBase, IDisposable
 
     private static bool TryParseParameters(string text, out Dictionary<string, string>? parameters, out string? error)
     {
-
         parameters = new Dictionary<string, string>(StringComparer.Ordinal);
 
         error = null;
 
         if (string.IsNullOrWhiteSpace(text))
         {
-
             return true;
-
         }
 
         string[] lines = text.Split(new[] { "\r\n", "\n", "\r" }, StringSplitOptions.None);
 
         foreach (string line in lines)
         {
-
             string trimmed = line.Trim();
 
             if (trimmed.Length == 0)
             {
-
                 continue;
-
             }
 
             int eq = trimmed.IndexOf('=');
 
             if (eq <= 0)
             {
-
                 parameters = null;
 
                 error = $"Malformed parameter line (expected key=value): {trimmed}";
 
                 return false;
-
             }
 
             string key = trimmed[..eq].Trim();
@@ -1583,21 +1351,16 @@ public sealed partial class ScriptoriumViewModel : ViewModelBase, IDisposable
 
             if (key.Length == 0)
             {
-
                 parameters = null;
 
                 error = $"Malformed parameter line (empty key): {trimmed}";
 
                 return false;
-
             }
 
             parameters[key] = value;
-
         }
 
         return true;
-
     }
-
 }

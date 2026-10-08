@@ -607,7 +607,7 @@ public sealed class ArcanumApiCredentialLease : IDisposable
                         status,
                         status == SecretStoreReadStatus.Ok
                             ? CredentialMismatchGuidance
-                            : status == SecretStoreReadStatus.Corrupted
+                            : status is SecretStoreReadStatus.Corrupted or SecretStoreReadStatus.Unreadable
                                 ? UnreadableCredentialGuidance
                                 : MissingCredentialGuidance));
             }
@@ -1131,6 +1131,12 @@ public sealed class ArcanumApiCredentialLease : IDisposable
             || primary.Status == SecretStoreReadStatus.Corrupted)
         {
             return SecretStoreReadStatus.Corrupted;
+        }
+
+        if (mirror.Status == SecretStoreReadStatus.Unreadable
+            || primary.Status == SecretStoreReadStatus.Unreadable)
+        {
+            return SecretStoreReadStatus.Unreadable;
         }
 
         return SecretStoreReadStatus.Missing;

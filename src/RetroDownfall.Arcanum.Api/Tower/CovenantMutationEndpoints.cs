@@ -1,3 +1,5 @@
+using System.Diagnostics;
+
 using Microsoft.AspNetCore.Builder;
 
 using Microsoft.AspNetCore.Http;
@@ -33,10 +35,8 @@ namespace RetroDownfall.Arcanum.Api.Tower;
 /// </remarks>
 internal static class CovenantMutationEndpoints
 {
-
     public static RouteGroupBuilder MapCovenantMutationEndpoints(this RouteGroupBuilder apiGroup)
     {
-
         apiGroup.MapPost(
             "/memory/covenant/set/prepare",
             static async (
@@ -187,7 +187,6 @@ internal static class CovenantMutationEndpoints
             .RequireCovenantOperatorAuthority(CovenantAuthorityRequirement.CovenantManage);
 
         return apiGroup;
-
     }
 
     /// <summary>
@@ -210,25 +209,20 @@ internal static class CovenantMutationEndpoints
         CancellationToken cancellationToken)
         where TRequest : class
     {
-
         if (request is null)
         {
-
             return Refuse<CovenantMutationPreflightDto>(
                 httpContext,
                 new Error(ErrorCodes.Validation.InvalidBody, "A Covenant mutation request is required."),
                 ArcanumJsonContext.Default.ApiResponseCovenantMutationPreflightDto);
-
         }
 
         if (service is null || gate is null)
         {
-
             return Refuse<CovenantMutationPreflightDto>(
                 httpContext,
                 UnavailableError,
                 ArcanumJsonContext.Default.ApiResponseCovenantMutationPreflightDto);
-
         }
 
         Result<CovenantInstallationReadLease> lease = await gate
@@ -237,19 +231,16 @@ internal static class CovenantMutationEndpoints
 
         if (lease.IsFailure)
         {
-
             return Refuse<CovenantMutationPreflightDto>(
                 httpContext,
                 lease.Error,
                 ArcanumJsonContext.Default.ApiResponseCovenantMutationPreflightDto);
-
         }
 
         CovenantInstallationReadLease? owned = lease.Value;
 
         try
         {
-
             Result<CovenantMutationPreflightDto> prepared = await prepare(
                     service,
                     request,
@@ -267,20 +258,14 @@ internal static class CovenantMutationEndpoints
             owned = null;
 
             return response;
-
         }
         finally
         {
-
             if (owned is not null)
             {
-
                 await owned.DisposeAsync().ConfigureAwait(false);
-
             }
-
         }
-
     }
 
     private static async Task<IResult> CommitAsync<TRequest>(
@@ -295,25 +280,20 @@ internal static class CovenantMutationEndpoints
         CancellationToken cancellationToken)
         where TRequest : class
     {
-
         if (request is null || scope is not { } scopeKind)
         {
-
             return Refuse<CovenantMutationResultDto>(
                 httpContext,
                 new Error(ErrorCodes.Validation.InvalidBody, "A Covenant mutation request is required."),
                 ArcanumJsonContext.Default.ApiResponseCovenantMutationResultDto);
-
         }
 
         if (service is null || gate is null)
         {
-
             return Refuse<CovenantMutationResultDto>(
                 httpContext,
                 UnavailableError,
                 ArcanumJsonContext.Default.ApiResponseCovenantMutationResultDto);
-
         }
 
         CovenantOperationScope operationScope = scopeKind is CovenantScope.Global || campaignId is not { } id
@@ -326,19 +306,16 @@ internal static class CovenantMutationEndpoints
 
         if (lease.IsFailure)
         {
-
             return Refuse<CovenantMutationResultDto>(
                 httpContext,
                 lease.Error,
                 ArcanumJsonContext.Default.ApiResponseCovenantMutationResultDto);
-
         }
 
         CovenantWriteLease? owned = lease.Value;
 
         try
         {
-
             Result<CovenantMutationResultDto> committed = await commit(
                     service,
                     request,
@@ -354,20 +331,14 @@ internal static class CovenantMutationEndpoints
             owned = null;
 
             return response;
-
         }
         finally
         {
-
             if (owned is not null)
             {
-
                 await owned.DisposeAsync().ConfigureAwait(false);
-
             }
-
         }
-
     }
 
     /// <summary>
@@ -386,25 +357,20 @@ internal static class CovenantMutationEndpoints
         HttpContext httpContext,
         CancellationToken cancellationToken)
     {
-
         if (request is null)
         {
-
             return Refuse<CovenantCurationPreflightDto>(
                 httpContext,
                 new Error(ErrorCodes.Validation.InvalidBody, "A Covenant curation request is required."),
                 ArcanumJsonContext.Default.ApiResponseCovenantCurationPreflightDto);
-
         }
 
         if (service is null || gate is null)
         {
-
             return Refuse<CovenantCurationPreflightDto>(
                 httpContext,
                 UnavailableError,
                 ArcanumJsonContext.Default.ApiResponseCovenantCurationPreflightDto);
-
         }
 
         Result<CovenantInstallationReadLease> lease = await gate
@@ -413,19 +379,16 @@ internal static class CovenantMutationEndpoints
 
         if (lease.IsFailure)
         {
-
             return Refuse<CovenantCurationPreflightDto>(
                 httpContext,
                 lease.Error,
                 ArcanumJsonContext.Default.ApiResponseCovenantCurationPreflightDto);
-
         }
 
         CovenantInstallationReadLease? owned = lease.Value;
 
         try
         {
-
             Result<CovenantCurationPreflightDto> prepared = await service
                 .PrepareCurationAsync(request, owned, cancellationToken)
                 .ConfigureAwait(false);
@@ -440,20 +403,14 @@ internal static class CovenantMutationEndpoints
             owned = null;
 
             return response;
-
         }
         finally
         {
-
             if (owned is not null)
             {
-
                 await owned.DisposeAsync().ConfigureAwait(false);
-
             }
-
         }
-
     }
 
     private static async Task<IResult> CommitCurationAsync(
@@ -463,25 +420,20 @@ internal static class CovenantMutationEndpoints
         HttpContext httpContext,
         CancellationToken cancellationToken)
     {
-
         if (request is null)
         {
-
             return Refuse<CovenantCurationResultDto>(
                 httpContext,
                 new Error(ErrorCodes.Validation.InvalidBody, "A Covenant curation request is required."),
                 ArcanumJsonContext.Default.ApiResponseCovenantCurationResultDto);
-
         }
 
         if (service is null || gate is null)
         {
-
             return Refuse<CovenantCurationResultDto>(
                 httpContext,
                 UnavailableError,
                 ArcanumJsonContext.Default.ApiResponseCovenantCurationResultDto);
-
         }
 
         CovenantOperationScope operationScope =
@@ -495,19 +447,16 @@ internal static class CovenantMutationEndpoints
 
         if (lease.IsFailure)
         {
-
             return Refuse<CovenantCurationResultDto>(
                 httpContext,
                 lease.Error,
                 ArcanumJsonContext.Default.ApiResponseCovenantCurationResultDto);
-
         }
 
         CovenantWriteLease? owned = lease.Value;
 
         try
         {
-
             Result<CovenantCurationResultDto> committed = await service
                 .CurateAsync(request, owned, cancellationToken)
                 .ConfigureAwait(false);
@@ -520,20 +469,14 @@ internal static class CovenantMutationEndpoints
             owned = null;
 
             return response;
-
         }
         finally
         {
-
             if (owned is not null)
             {
-
                 await owned.DisposeAsync().ConfigureAwait(false);
-
             }
-
         }
-
     }
 
     /// <summary>
@@ -552,8 +495,7 @@ internal static class CovenantMutationEndpoints
         Error error,
         System.Text.Json.Serialization.Metadata.JsonTypeInfo<ApiResponse<T>> typeInfo) =>
         Results.Json(
-            ApiResponse<T>.FromResult(Result<T>.Failure(error), httpContext.TraceIdentifier),
+            ApiResponse<T>.FromResult(Result<T>.Failure(error), Activity.Current?.Id ?? httpContext.TraceIdentifier),
             typeInfo,
             statusCode: ArcanumErrorMapper.ResolveStatusCode(error.Code));
-
 }

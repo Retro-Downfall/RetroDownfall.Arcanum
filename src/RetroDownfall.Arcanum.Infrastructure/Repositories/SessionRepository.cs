@@ -761,6 +761,19 @@ internal sealed class SessionRepository(
         Guid? beforeId = null,
         CancellationToken ct = default)
     {
+        // The keyset cursor is a (createdAt, id) pair. Paging by offset when only one half arrives would
+        // answer with the newest entries as though the cursor had been honoured, so a half cursor is the
+        // caller's bug and is refused here as the route refuses it with a 400.
+        if (beforeCreatedAt is null && beforeId is not null)
+        {
+            throw new ArgumentException("A keyset cursor needs beforeCreatedAt as well as beforeId.", nameof(beforeCreatedAt));
+        }
+
+        if (beforeId is null && beforeCreatedAt is not null)
+        {
+            throw new ArgumentException("A keyset cursor needs beforeId as well as beforeCreatedAt.", nameof(beforeId));
+        }
+
         int clampedLimit = Math.Clamp(limit, 1, 1000);
 
         if (beforeCreatedAt is DateTimeOffset beforeAt && beforeId is Guid beforeEntryId)
@@ -796,26 +809,37 @@ internal sealed class SessionRepository(
     public Task<int> GetEntryCountAsync(Guid sessionId, CancellationToken ct) =>
         _entryPersistence.GetEntryCountAsync(sessionId, ct);
 
-    public async Task UpdateSessionAsync(Session session, CancellationToken ct)
+    public async Task<Session?> PatchSessionAsync(Guid id, SessionHeaderPatch patch, CancellationToken ct)
     {
+        ArgumentNullException.ThrowIfNull(patch);
+
         DateTimeOffset now = DateTimeOffset.UtcNow;
 
-        await ExecuteNonQueryAsync(
+        // Each column is either replaced by what the caller supplied or kept as stored, inside the one
+        // statement. A title is "supplied" by an explicit flag rather than by being non-null because a
+        // supplied null clears it.
+        await using SqliteCommand command = await GrimoireSqlCommandFactory.CreateAsync(
+            db,
             """
             UPDATE "Sessions"
-            SET "Title" = $title, "Status" = $status, "UpdatedAt" = $updatedAt
+            SET "Title" = CASE WHEN $setTitle = 1 THEN $title ELSE "Title" END,
+                "Status" = COALESCE($status, "Status"),
+                "UpdatedAt" = $updatedAt
             WHERE "Id" = $id;
             """,
-            command =>
-            {
-                GrimoireEntitySql.AddParameter(command, "$title", session.Title);
-                GrimoireEntitySql.AddParameter(command, "$status", session.Status);
-                GrimoireEntitySql.AddParameter(command, "$updatedAt", GrimoireEntitySql.Format(now));
-                GrimoireEntitySql.AddParameter(command, "$id", Format(session.Id));
-            },
             ct).ConfigureAwait(false);
 
-        session.UpdatedAt = now;
+        GrimoireEntitySql.AddParameter(command, "$setTitle", patch.SetTitle ? 1 : 0);
+        GrimoireEntitySql.AddParameter(command, "$title", patch.Title);
+        GrimoireEntitySql.AddParameter(command, "$status", patch.Status);
+        GrimoireEntitySql.AddParameter(command, "$updatedAt", GrimoireEntitySql.Format(now));
+        GrimoireEntitySql.AddParameter(command, "$id", Format(id));
+
+        int updated = await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+
+        return updated == 0
+            ? null
+            : await ReadSessionAsync(id, ct).ConfigureAwait(false);
     }
 
     public async Task ArchiveAsync(Guid id, CancellationToken ct)

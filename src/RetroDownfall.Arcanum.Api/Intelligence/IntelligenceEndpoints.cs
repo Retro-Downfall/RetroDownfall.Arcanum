@@ -7,9 +7,7 @@ using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
-using RetroDownfall.Arcanum.Api;
 using RetroDownfall.Arcanum.Api.Intelligence.Tools;
-using RetroDownfall.Arcanum.Api.Models;
 using RetroDownfall.Arcanum.Api.Security;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Api.Streaming;
@@ -22,10 +20,7 @@ using RetroDownfall.Arcanum.Core.Intelligence.WebResearch;
 using RetroDownfall.Arcanum.Core.Mcp;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Tower;
-using RetroDownfall.Arcanum.Core.Workspaces;
-using RetroDownfall.Arcanum.Infrastructure.Intelligence.Spells;
 using RetroDownfall.Arcanum.Infrastructure.Security;
-using RetroDownfall.Arcanum.Infrastructure.Repositories;
 using RetroDownfall.Arcanum.Infrastructure.Workspaces;
 using MeAiChatMessage = Microsoft.Extensions.AI.ChatMessage;
 
@@ -33,10 +28,8 @@ namespace RetroDownfall.Arcanum.Api.Intelligence;
 
 internal static class IntelligenceEndpoints
 {
-
     public static RouteGroupBuilder MapIntelligenceEndpoints(this RouteGroupBuilder apiGroup)
     {
-
         apiGroup.MapPost("/intelligence/ping", async (PingRequest? body, IArcanumIntelligenceProvider intelligence, ICampaignRepository campaignRepository, IOptionsSnapshot<ArcanumSettings> settings, HttpContext httpContext, CancellationToken cancellationToken) =>
         {
             if (body is null
@@ -145,12 +138,10 @@ internal static class IntelligenceEndpoints
 
                 if (body is null)
                 {
-
                     Result<bool> invalid = Result<bool>.Failure(
                         new Error(ErrorCodes.Validation.InvalidBody, ApiRequestJson.DefaultInvalidBodyMessage));
 
                     return Results.BadRequest(ApiResponse<bool>.FromResult(invalid, traceId));
-
                 }
 
                 if (string.IsNullOrWhiteSpace(body.PromptId)
@@ -205,37 +196,25 @@ internal static class IntelligenceEndpoints
             PingRequest? body;
 
             // ReadFromJsonAsync raises InvalidOperationException — not JsonException — for a missing
-            // or non-JSON Content-Type. Left uncaught it escapes to ArcanumExceptionHandler and a
-            // routine client mistake becomes a 500 Hub.Unhandled with an Error-level stack trace,
-            // where every ApiRequestJson-based endpoint answers the same mistake with 415.
-            if (!httpContext.Request.HasJsonContentType())
+            // or non-JSON Content-Type and for a charset it cannot decode, so both are answered by the check
+            // below, before the read, with the 415 every ApiRequestJson-based endpoint gives them. Nothing
+            // after the check catches InvalidOperationException: with the media type and charset proven,
+            // one that still escapes is the server's own fault.
+            if (!ApiRequestJson.HasReadableJsonContentType(httpContext.Request))
             {
-
                 await WriteUnsupportedMediaTypeAsync(httpContext, ct).ConfigureAwait(false);
 
                 return;
-
             }
 
             try
             {
-
                 body = await httpContext.Request
                     .ReadFromJsonAsync(ArcanumJsonContext.Default.PingRequest, ct)
                     .ConfigureAwait(false);
-
-            }
-            catch (InvalidOperationException)
-            {
-
-                await WriteUnsupportedMediaTypeAsync(httpContext, ct).ConfigureAwait(false);
-
-                return;
-
             }
             catch (JsonException)
             {
-
                 string badTraceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
 
                 httpContext.Response.StatusCode = StatusCodes.Status400BadRequest;
@@ -248,7 +227,6 @@ internal static class IntelligenceEndpoints
                     cancellationToken: ct).ConfigureAwait(false);
 
                 return;
-
             }
 
             if (body is null
@@ -319,7 +297,6 @@ internal static class IntelligenceEndpoints
                     pingStreamAuditContext,
                     resolvedRequest.Value.Campaign)
                 .ConfigureAwait(false);
-
         })
         .WithName("PostIntelligencePingStream")
         .WithMetadata(GrimoireStreamRouteMetadata.BillableDrain)
@@ -335,7 +312,7 @@ internal static class IntelligenceEndpoints
                 ? root
                 : null;
 
-            long maxSpellFileSizeBytes = ArcanumSettingClamps.EffectiveSpellMaxFileSizeBytes(settings.Value);
+            long maxSpellFileSizeBytes = ArcanumSettingClamps.EffectiveSpellMaxFileSizeBytes();
 
             int metadataScanCacheTtlSeconds = ArcanumSettingClamps.MetadataScanCacheTtlSeconds(
                 ArcanumRuntimeDefaults.Spells.MetadataScanCacheTtlSeconds);
@@ -348,7 +325,10 @@ internal static class IntelligenceEndpoints
 
             List<string> nativeTools = builtInTools.GetToolNames().ToList();
 
-            List<McpServerStatusDto> servers = await mcp.GetServerStatusesAsync(workingDirectory, ct).ConfigureAwait(false);
+            // The normalized root, never the raw request text: a working directory that did not
+            // normalize to a workspace is not one, and the MCP manager would otherwise resolve
+            // workspace-local server configuration from whatever the caller typed.
+            List<McpServerStatusDto> servers = await mcp.GetServerStatusesAsync(spellRoot ?? string.Empty, ct).ConfigureAwait(false);
 
             WorkspaceCheckCapabilityStatus checkStatus =
                 await workspaceCheckCapability
@@ -377,11 +357,9 @@ internal static class IntelligenceEndpoints
             .WithName("PostIntelligenceMana");
 
         apiGroup.MapPost(
-
             "/intelligence/context/inspect",
 
             async (
-
                 ContextPreviewRequest? body,
 
                 IContextPreviewService previewService,
@@ -395,29 +373,23 @@ internal static class IntelligenceEndpoints
                 CancellationToken cancellationToken) =>
 
             {
-
                 string traceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
 
                 if (body is null)
 
                 {
-
                     Result<ContextPreviewResult> invalid = Result<ContextPreviewResult>.Failure(
-
                         new Error(ErrorCodes.Validation.InvalidBody, "A context preview request is required."));
 
                     return Results.Json(
-
                         ApiResponse<ContextPreviewResult>.FromResult(invalid, traceId),
 
                         ArcanumJsonContext.Default.ApiResponseContextPreviewResult,
 
                         statusCode: StatusCodes.Status400BadRequest);
-
                 }
 
                 PingRequest previewTurn = new(
-
                     body.Prompt ?? string.Empty,
 
                     body.Model,
@@ -461,19 +433,15 @@ internal static class IntelligenceEndpoints
                 if (previewBounds.IsFailure)
 
                 {
-
                     Result<ContextPreviewResult> invalid = Result<ContextPreviewResult>.Failure(
-
                         previewBounds.Error);
 
                     return Results.Json(
-
                         ApiResponse<ContextPreviewResult>.FromResult(invalid, traceId),
 
                         ArcanumJsonContext.Default.ApiResponseContextPreviewResult,
 
                         statusCode: StatusCodes.Status400BadRequest);
-
                 }
 
                 Result<CanonicalPingTurn> resolvedTurn = await CanonicalPingResolution
@@ -485,27 +453,21 @@ internal static class IntelligenceEndpoints
                 if (resolvedTurn.IsFailure)
 
                 {
-
                     Result<ContextPreviewResult> unresolved = Result<ContextPreviewResult>.Failure(
-
                         resolvedTurn.Error);
 
                     return Results.Json(
-
                         ApiResponse<ContextPreviewResult>.FromResult(unresolved, traceId),
 
                         ArcanumJsonContext.Default.ApiResponseContextPreviewResult,
 
                         statusCode: ArcanumErrorMapper.ResolveStatusCode(resolvedTurn.Error.Code));
-
                 }
 
                 ContextPreviewRequest effectiveRequest = body with
 
                 {
-
                     WorkingDirectory = resolvedTurn.Value.Request.WorkingDirectory,
-
                 };
 
                 Result<ContextPreviewResult> preview = await previewService
@@ -528,13 +490,11 @@ internal static class IntelligenceEndpoints
                     ? Results.Ok(response)
 
                     : Results.Json(
-
                         response,
 
                         ArcanumJsonContext.Default.ApiResponseContextPreviewResult,
 
                         statusCode: ArcanumErrorMapper.ResolveStatusCode(preview.Error.Code));
-
             })
 
             .WithName("PostIntelligenceContextInspect")
@@ -551,7 +511,6 @@ internal static class IntelligenceEndpoints
         HttpContext httpContext,
         CancellationToken cancellationToken)
     {
-
         string traceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
 
         httpContext.Response.StatusCode = StatusCodes.Status415UnsupportedMediaType;
@@ -563,7 +522,6 @@ internal static class IntelligenceEndpoints
                 traceId),
             ArcanumJsonContext.Default.ApiResponseString,
             cancellationToken: cancellationToken).ConfigureAwait(false);
-
     }
 
     /// <summary>
@@ -582,7 +540,6 @@ internal static class IntelligenceEndpoints
         HttpContext httpContext,
         CancellationToken cancellationToken)
     {
-
         string traceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
 
         bool hasMessages = body?.Messages is { Count: > 0 };
@@ -591,7 +548,6 @@ internal static class IntelligenceEndpoints
 
         if (body is null || (!hasMessages && !hasPrompt))
         {
-
             Result<ManaCountResult> invalid = Result<ManaCountResult>.Failure(
                 new Error(ErrorCodes.Validation.InvalidBody, "Either 'messages' or 'prompt' is required."));
 
@@ -599,7 +555,6 @@ internal static class IntelligenceEndpoints
                 ApiResponse<ManaCountResult>.FromResult(invalid, traceId),
                 ArcanumJsonContext.Default.ApiResponseManaCountResult,
                 statusCode: StatusCodes.Status400BadRequest);
-
         }
 
         ArcanumSettings current = settings.Value;
@@ -689,7 +644,5 @@ internal static class IntelligenceEndpoints
         Result<ManaCountResult> ok = Result<ManaCountResult>.Success(result);
 
         return Results.Ok(ApiResponse<ManaCountResult>.FromResult(ok, traceId));
-
     }
-
 }

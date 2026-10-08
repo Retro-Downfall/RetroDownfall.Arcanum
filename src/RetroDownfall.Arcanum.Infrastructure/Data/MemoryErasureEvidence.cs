@@ -1,7 +1,11 @@
+using System.Runtime.CompilerServices;
+
 using Microsoft.Data.Sqlite;
 
 using RetroDownfall.Arcanum.Core.Memory;
 using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
+
+using SQLitePCL;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Data;
 
@@ -128,6 +132,9 @@ internal static class MemoryErasureEvidence
     private static readonly MemoryReviewStore[] Stores =
         [MemoryReviewStore.Covenant, MemoryReviewStore.Saga, MemoryReviewStore.Lexicon];
 
+    /// <summary>The positive installation answers, per native connection, with the stamp each was kept under.</summary>
+    private static readonly ConditionalWeakTable<sqlite3, InstalledCatalog> InstalledCatalogs = new();
+
     /// <summary>
     /// Whether the connection is inside a transaction, read from its own autocommit state, which a raw
     /// <c>BEGIN</c> changes as surely as a transaction object does.
@@ -137,7 +144,7 @@ internal static class MemoryErasureEvidence
         ArgumentNullException.ThrowIfNull(connection);
 
         return connection.State == System.Data.ConnectionState.Open
-            && SQLitePCL.raw.sqlite3_get_autocommit(connection.Handle) == 0;
+            && raw.sqlite3_get_autocommit(connection.Handle) == 0;
     }
 
     /// <summary>Whether this catalog can hold evidence: Core 13 or later, with the fingerprint table.</summary>
@@ -145,6 +152,20 @@ internal static class MemoryErasureEvidence
     /// The table is asked for first. A catalog without it holds no evidence whatever its metadata says,
     /// and a Covenant-only catalog carries no Core metadata to read at all. Only a catalog that has the
     /// table must say which Core version it is, and missing or malformed metadata there still throws.
+    ///
+    /// <para>A positive answer read outside any transaction is kept per native connection with the
+    /// catalog's change stamp, and reused while that stamp reads the same, so a repeated probe is one
+    /// statement rather than two. The stamp is the schema cookie (DDL, by this connection or any other),
+    /// the data version (a commit by another connection) and this connection's total change count (a row
+    /// this connection wrote, whether or not it was later committed). Read outside a transaction, the
+    /// answer describes committed state, and every statement that could change the fingerprint table or
+    /// the recorded Core version moves one of the three before the answer is reused.</para>
+    ///
+    /// <para>An answer read inside a transaction is returned but never kept. A rollback lowers neither the
+    /// change count nor the data version, so a stamp read inside a transaction that then rolled back could
+    /// read the same again after the rollback had undone the very version the answer vouched for. A
+    /// negative answer is never kept either: it is the cheap one, and the catalog it describes is the one
+    /// an upgrade is about to change.</para>
     /// </remarks>
     internal static async Task<bool> IsInstalledAsync(
         SqliteConnection connection,
@@ -152,6 +173,16 @@ internal static class MemoryErasureEvidence
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(connection);
+
+        CatalogStamp stamp = await ReadCatalogStampAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
+
+        sqlite3 handle = connection.Handle
+            ?? throw new InvalidOperationException("The connection has no open database handle.");
+
+        if (InstalledCatalogs.TryGetValue(handle, out InstalledCatalog? installed) && installed.Stamp == stamp)
+        {
+            return true;
+        }
 
         await using (SqliteCommand command = Command(
             connection,
@@ -164,8 +195,42 @@ internal static class MemoryErasureEvidence
             }
         }
 
-        return await GrimoireCoreSchemaVersion.ReadAsync(connection, cancellationToken, transaction).ConfigureAwait(false)
+        bool current = await GrimoireCoreSchemaVersion.ReadAsync(connection, cancellationToken, transaction).ConfigureAwait(false)
             >= CoreSchemaVersion;
+
+        if (current && !InTransaction(connection))
+        {
+            InstalledCatalogs.GetOrCreateValue(handle).Stamp = stamp;
+        }
+
+        return current;
+    }
+
+    /// <summary>The last stamp a positive installation answer was kept under, for one native connection.</summary>
+    /// <remarks>A native connection is used by one caller at a time, so the slot needs no lock.</remarks>
+    private sealed class InstalledCatalog
+    {
+        internal CatalogStamp? Stamp { get; set; }
+    }
+
+    /// <summary>What has to read the same for a positive installation answer to still hold.</summary>
+    private sealed record CatalogStamp(long SchemaCookie, long DataVersion, long TotalChanges);
+
+    private static async Task<CatalogStamp> ReadCatalogStampAsync(
+        SqliteConnection connection,
+        SqliteTransaction? transaction,
+        CancellationToken cancellationToken)
+    {
+        await using SqliteCommand command = Command(
+            connection,
+            transaction,
+            "SELECT (SELECT schema_version FROM pragma_schema_version), (SELECT data_version FROM pragma_data_version), total_changes();");
+
+        await using SqliteDataReader reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+
+        return await reader.ReadAsync(cancellationToken).ConfigureAwait(false)
+            ? new CatalogStamp(reader.GetInt64(0), reader.GetInt64(1), reader.GetInt64(2))
+            : throw new InvalidDataException("The catalog change stamp could not be read.");
     }
 
     /// <summary>Whether <paramref name="store"/> holds any fingerprint at all, under any key.</summary>

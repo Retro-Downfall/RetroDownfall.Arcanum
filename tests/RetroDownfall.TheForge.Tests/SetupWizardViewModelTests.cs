@@ -10,11 +10,9 @@ namespace RetroDownfall.TheForge.Tests;
 
 public class SetupWizardViewModelTests
 {
-
     [Fact]
     public async Task Next_FromBaseUrl_SavesAndAdvancesToApiKey()
     {
-
         FakeSetupWizardDataSource data = new() { CurrentBaseUrl = "http://localhost:5001" };
 
         SetupWizardViewModel vm = Create(data);
@@ -28,13 +26,11 @@ public class SetupWizardViewModelTests
         Assert.Equal("http://localhost:5002", data.SavedBaseUrl);
 
         Assert.Null(vm.ErrorText);
-
     }
 
     [Fact]
     public async Task Next_FromBaseUrl_RejectsInvalidUrl()
     {
-
         SetupWizardViewModel vm = Create(new FakeSetupWizardDataSource());
 
         vm.BaseUrl = "not-a-url";
@@ -44,13 +40,11 @@ public class SetupWizardViewModelTests
         Assert.Equal(SetupWizardStep.BaseUrl, vm.Step);
 
         Assert.Contains("http://", vm.ErrorText, StringComparison.OrdinalIgnoreCase);
-
     }
 
     [Fact]
     public async Task Next_FromApiKey_PersistsKeyAndClearsInput()
     {
-
         FakeSetupWizardDataSource data = new();
 
         SetupWizardViewModel vm = Create(data);
@@ -68,13 +62,11 @@ public class SetupWizardViewModelTests
         Assert.Equal(string.Empty, vm.ApiKeyInput);
 
         Assert.True(data.PasteDeclineCleared);
-
     }
 
     [Fact]
     public async Task Next_FromApiKey_WithoutKey_ShowsError()
     {
-
         SetupWizardViewModel vm = Create(new FakeSetupWizardDataSource());
 
         vm.Step = SetupWizardStep.ApiKey;
@@ -86,13 +78,11 @@ public class SetupWizardViewModelTests
         Assert.Equal(SetupWizardStep.ApiKey, vm.Step);
 
         Assert.Contains("API key", vm.ErrorText, StringComparison.OrdinalIgnoreCase);
-
     }
 
     [Fact]
     public async Task TestConnection_Success_AdvancesProvidersOnNext()
     {
-
         FakeSetupWizardDataSource data = new()
         {
             Health = new ApiResponse<HealthReportDto>(new HealthReportDto(HealthStatus.Healthy, []), true, null),
@@ -136,13 +126,11 @@ public class SetupWizardViewModelTests
         Assert.Equal(SetupWizardStep.Complete, vm.Step);
 
         Assert.True(vm.EmbeddingsEnabled);
-
     }
 
     [Fact]
     public void OpenCompendium_SurfacesLauncherMessage()
     {
-
         FakeCompendiumLauncher launcher = new() { LaunchSucceeded = false };
 
         SetupWizardViewModel vm = Create(new FakeSetupWizardDataSource(), launcher);
@@ -152,13 +140,11 @@ public class SetupWizardViewModelTests
         Assert.Equal(1, launcher.LaunchCount);
 
         Assert.Contains("arcanum.json", vm.CompendiumMessage, StringComparison.Ordinal);
-
     }
 
     [Fact]
     public void SkipEmbeddings_CompletesWizard()
     {
-
         SetupWizardViewModel vm = Create(new FakeSetupWizardDataSource());
 
         vm.Step = SetupWizardStep.Embeddings;
@@ -166,7 +152,6 @@ public class SetupWizardViewModelTests
         vm.SkipEmbeddingsCommand.Execute(null);
 
         Assert.Equal(SetupWizardStep.Complete, vm.Step);
-
     }
 
     private static SetupWizardViewModel Create(
@@ -189,9 +174,6 @@ public class SetupWizardViewModelTests
             false,
             false,
             false,
-            false,
-            false,
-            false,
             0,
             null,
             null,
@@ -211,7 +193,6 @@ public class SetupWizardViewModelTests
 
     private sealed class FakeSetupWizardDataSource : ISetupWizardDataSource
     {
-
         public string CurrentBaseUrl { get; set; } = "http://localhost:5001";
 
         public string? SavedBaseUrl { get; private set; }
@@ -240,13 +221,11 @@ public class SetupWizardViewModelTests
 
         public Task SaveBaseUrlAsync(string baseUrl, CancellationToken cancellationToken)
         {
-
             SavedBaseUrl = baseUrl;
 
             CurrentBaseUrl = baseUrl;
 
             return Task.CompletedTask;
-
         }
 
         public Task<string?> GetApiKeyAsync(CancellationToken cancellationToken) =>
@@ -254,11 +233,9 @@ public class SetupWizardViewModelTests
 
         public Task PersistApiKeyAsync(string apiKey, CancellationToken cancellationToken)
         {
-
             PersistedApiKey = apiKey;
 
             return Task.CompletedTask;
-
         }
 
         public void ClearApiKeyPasteDecline() => PasteDeclineCleared = true;
@@ -272,16 +249,12 @@ public class SetupWizardViewModelTests
 
         public Task<ApiResponse<InstanceMetadataDto>?> GetMetaAsync(CancellationToken cancellationToken)
         {
-
             if (Meta is { IsSuccess: true, Data: { } data })
             {
-
                 LastMeta = data;
-
             }
 
             return Task.FromResult(Meta);
-
         }
 
         public Task<ApiResponse<ArcanumSettings>?> GetConfigAsync(CancellationToken cancellationToken) =>
@@ -292,7 +265,5 @@ public class SetupWizardViewModelTests
 
         public Task<ApiResponse<ProviderInfoDto[]>?> ListProvidersAsync(CancellationToken cancellationToken) =>
             Task.FromResult(Providers);
-
     }
-
 }

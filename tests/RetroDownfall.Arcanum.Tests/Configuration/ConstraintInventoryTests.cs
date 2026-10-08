@@ -2,6 +2,10 @@ using System.Reflection;
 
 using System.Text.Json;
 
+using Microsoft.CodeAnalysis.CSharp;
+
+using Microsoft.CodeAnalysis.CSharp.Syntax;
+
 using RetroDownfall.Arcanum.Core.Configuration;
 
 namespace RetroDownfall.Arcanum.Tests.Configuration;
@@ -33,6 +37,121 @@ public sealed class ConstraintInventoryTests
 
         "Arbitrary product restriction",
     };
+
+    /// <summary>
+    /// Test names the inventory already carried on main that do not name a test in the tree. They are
+    /// a known backlog: the ratchet below fails when a new unresolved name appears, and when one of
+    /// these is corrected or removed without being taken off this list.
+    /// </summary>
+    private static readonly HashSet<string> UnresolvedTestNameBacklog = new(StringComparer.Ordinal)
+    {
+        "ChatLayoutRendererTests",
+
+        "DaemonSettingsTests",
+
+        "EmbeddingSettingsTests",
+
+        "EncryptedBlobDiagnosticsTests",
+
+        "FileConfigurationPresetPersistenceTests",
+
+        "IncantationPaneTests",
+
+        "InferenceAndToolsTests",
+
+        "InferenceAndToolsTests.Excess_human_prompt_reservation_waits_for_capacity_and_then_runs",
+
+        "MarkdigSpectreRendererTests",
+
+        "MarkdigSpectreRendererTests.Render_oversized_markdown_preserves_late_content_through_chunked_rendering",
+
+        "McpCommandTests",
+
+        "McpConnectionManagerTests",
+
+        "NativeWebToolsTests",
+
+        "OpenAiV1ChatCompletionsEndpointTests",
+
+        "PerplexityWebProviderTests",
+
+        "RequestBoundsTests",
+
+        "SessionContextPinMaterializerTests.Large_file_pin_streams_a_bounded_preview_and_full_hash",
+
+        "SseConnectionLimiterTests",
+
+        "WebResearchProviderTests",
+
+        "WebToolResultSerializerTests",
+
+        "WorkspaceCheckSdkResolverTests",
+    };
+
+    /// <summary>
+    /// Each constraint's <c>tests</c> list is where a reader goes to find the proof of its current value,
+    /// so a name there has to resolve to a test class, or to a method on one, somewhere in the test tree.
+    /// </summary>
+    [Fact]
+    public void Every_constraint_names_tests_that_exist_outside_the_known_backlog()
+    {
+        string testRoot = Path.Combine(FindRepositoryRoot(), "tests");
+
+        HashSet<string> testNames = new(StringComparer.Ordinal);
+
+        foreach (string file in Directory.EnumerateFiles(testRoot, "*.cs", SearchOption.AllDirectories))
+        {
+            if (Path.GetRelativePath(testRoot, file)
+                .Split(Path.DirectorySeparatorChar)
+                .Any(static part => part is "bin" or "obj"))
+            {
+                continue;
+            }
+
+            foreach (ClassDeclarationSyntax type in CSharpSyntaxTree
+                .ParseText(File.ReadAllText(file), new CSharpParseOptions(LanguageVersion.Preview))
+                .GetRoot()
+                .DescendantNodes()
+                .OfType<ClassDeclarationSyntax>())
+            {
+                string name = type.Identifier.Text;
+
+                testNames.Add(name);
+
+                foreach (MethodDeclarationSyntax method in type.Members.OfType<MethodDeclarationSyntax>())
+                {
+                    testNames.Add(name + "." + method.Identifier.Text);
+                }
+            }
+        }
+
+        using JsonDocument inventory = LoadInventory();
+
+        HashSet<string> named = new(StringComparer.Ordinal);
+
+        foreach (JsonElement constraint in inventory.RootElement.GetProperty("constraints").EnumerateArray())
+        {
+            named.UnionWith(RequiredStringArray(constraint, "tests"));
+        }
+
+        string[] unresolved = [.. named
+            .Where(name => !testNames.Contains(name))
+            .Order(StringComparer.Ordinal)];
+
+        string[] unexpected = [.. unresolved.Where(static name => !UnresolvedTestNameBacklog.Contains(name))];
+
+        string[] corrected = [.. UnresolvedTestNameBacklog
+            .Where(name => !unresolved.Contains(name, StringComparer.Ordinal))
+            .Order(StringComparer.Ordinal)];
+
+        Assert.True(
+            unexpected.Length == 0 && corrected.Length == 0,
+            "Constraint test names that resolve to no test: "
+            + string.Join(", ", unexpected)
+            + global::System.Environment.NewLine
+            + "Backlog names that now resolve or are no longer used (remove them from the backlog): "
+            + string.Join(", ", corrected));
+    }
 
     [Fact]
     public void Inventory_has_complete_classified_actionable_records()

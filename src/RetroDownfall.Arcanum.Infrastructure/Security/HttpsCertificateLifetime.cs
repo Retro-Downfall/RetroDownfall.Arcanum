@@ -12,23 +12,17 @@ namespace RetroDownfall.Arcanum.Infrastructure.Security;
 /// </summary>
 public static class HttpsCertificateLifetime
 {
-
     private static readonly List<X509Certificate2> Held = [];
 
     private static readonly object Gate = new();
 
     public static X509Certificate2 Hold(X509Certificate2 certificate)
     {
-
         lock (Gate)
         {
-
             Held.Add(certificate);
-
         }
 
         return certificate;
-
     }
-
 }

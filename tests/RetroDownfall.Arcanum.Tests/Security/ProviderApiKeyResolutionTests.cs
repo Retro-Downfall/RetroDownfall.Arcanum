@@ -21,7 +21,6 @@ namespace RetroDownfall.Arcanum.Tests.Security;
 [Collection("ProcessEnvironment")]
 public sealed class ProviderApiKeyResolutionTests : IDisposable
 {
-
     private const string CredentialVariable = "ARCANUM_TEST_PROVIDER_RESOLUTION_KEY";
 
     private readonly string? _originalCredential =
@@ -38,7 +37,6 @@ public sealed class ProviderApiKeyResolutionTests : IDisposable
     [Fact]
     public async Task Chat_client_factory_resolves_the_credential_through_the_shared_resolver()
     {
-
         ArcanumSettings settings = Settings();
 
         RecordingResolver resolver = new("stored-chat-secret");
@@ -55,24 +53,20 @@ public sealed class ProviderApiKeyResolutionTests : IDisposable
         Assert.Equal("gpt-test", lease.ResolvedModel);
 
         Assert.Equal(["alpha"], resolver.ResolvedProviders);
-
     }
 
     [Fact]
     public async Task Embedding_generator_factory_resolves_the_credential_through_the_shared_resolver()
     {
-
         ArcanumSettings settings = Settings();
 
         settings.Features.Embeddings = true;
 
         settings.Integrations.Embeddings = new EmbeddingIntegrationSettings
         {
-
             Provider = "alpha",
 
             Model = "embed-test",
-
         };
 
         RecordingResolver resolver = new("stored-embedding-secret");
@@ -88,13 +82,11 @@ public sealed class ProviderApiKeyResolutionTests : IDisposable
         Assert.NotNull(lease.Generator);
 
         Assert.Equal(["alpha"], resolver.ResolvedProviders);
-
     }
 
     [Fact]
     public async Task Provider_health_probe_sends_the_stored_credential_as_a_bearer_token()
     {
-
         CapturingHandler handler = new();
 
         ProviderHealthProbe probe = new(
@@ -110,13 +102,11 @@ public sealed class ProviderApiKeyResolutionTests : IDisposable
         Assert.Equal("Bearer", handler.Authorization?.Scheme);
 
         Assert.Equal("stored-probe-secret", handler.Authorization?.Parameter);
-
     }
 
     [Fact]
     public async Task Provider_health_probe_omits_authorization_for_keyless_providers()
     {
-
         CapturingHandler handler = new();
 
         ProviderHealthProbe probe = new(
@@ -126,13 +116,11 @@ public sealed class ProviderApiKeyResolutionTests : IDisposable
         _ = await probe.ProbeAsync(Settings().Providers[0], CancellationToken.None);
 
         Assert.Null(handler.Authorization);
-
     }
 
     [Fact]
     public async Task Health_report_counts_a_securely_stored_credential_without_disclosing_it()
     {
-
         const string Secret = "stored-health-secret-material";
 
         RecordingResolver resolver = new(Secret);
@@ -157,13 +145,11 @@ public sealed class ProviderApiKeyResolutionTests : IDisposable
         Assert.Empty(resolver.ResolvedProviders);
 
         Assert.Equal(["alpha"], resolver.PeekedProviders);
-
     }
 
     [Fact]
     public async Task Health_report_reports_no_credential_when_none_is_stored_or_referenced()
     {
-
         RecordingResolver resolver = new(null);
 
         HealthComponentDto component = await ArcanumHealthChecker.BuildProvidersComponentAsync(
@@ -180,20 +166,17 @@ public sealed class ProviderApiKeyResolutionTests : IDisposable
         Assert.Empty(resolver.ResolvedProviders);
 
         Assert.Equal(["alpha"], resolver.PeekedProviders);
-
     }
 
     private static ArcanumSettings Settings() =>
         new()
         {
-
             DefaultModel = "gpt-test",
 
             Providers =
             [
                 new ProviderSettings
                 {
-
                     Name = "alpha",
 
                     Type = AiProviderKind.OpenAICompatible,
@@ -203,15 +186,12 @@ public sealed class ProviderApiKeyResolutionTests : IDisposable
                     CredentialEnvironmentVariable = CredentialVariable,
 
                     Models = ["gpt-test", "embed-test"],
-
                 },
             ],
-
         };
 
     private sealed class RecordingResolver(string? apiKey) : IProviderApiKeyResolver
     {
-
         private readonly List<string> _resolved = [];
 
         private readonly List<string> _peeked = [];
@@ -224,29 +204,23 @@ public sealed class ProviderApiKeyResolutionTests : IDisposable
             ProviderSettings provider,
             CancellationToken cancellationToken = default)
         {
-
             _resolved.Add(provider.Name);
 
             return Task.FromResult(apiKey);
-
         }
 
         public Task<string?> PeekAsync(
             ProviderSettings provider,
             CancellationToken cancellationToken = default)
         {
-
             _peeked.Add(provider.Name);
 
             return Task.FromResult(apiKey);
-
         }
-
     }
 
     private sealed class AlwaysHealthyTracker : IProviderHealthTracker
     {
-
         public event Action<ProviderHealthStatus>? HealthChanged;
 
         public bool IsHealthy(string providerName) => true;
@@ -259,36 +233,33 @@ public sealed class ProviderApiKeyResolutionTests : IDisposable
             HealthChanged?.Invoke(
                 new ProviderHealthStatus(providerName, true, DateTimeOffset.UtcNow, 0));
 
-        public IReadOnlyList<ProviderHealthStatus> GetAllStatuses() => [];
+        public void Remove(string providerName)
 
+        {
+        }
+
+        public IReadOnlyList<ProviderHealthStatus> GetAllStatuses() => [];
     }
 
     private sealed class StubHttpClientFactory(HttpMessageHandler? handler = null) : IHttpClientFactory
     {
-
         public HttpClient CreateClient(string name) =>
             handler is null
                 ? new HttpClient()
                 : new HttpClient(handler, disposeHandler: false);
-
     }
 
     private sealed class CapturingHandler : HttpMessageHandler
     {
-
         public AuthenticationHeaderValue? Authorization { get; private set; }
 
         protected override Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
             CancellationToken cancellationToken)
         {
-
             Authorization = request.Headers.Authorization;
 
             return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK));
-
         }
-
     }
-
 }

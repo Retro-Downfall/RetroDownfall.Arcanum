@@ -36,7 +36,9 @@ internal static class ArcanumAuthenticatedHttpSender
         HttpCompletionOption completionOption,
         bool canReplayAfterUnauthorized,
         TimeSpan credentialTimeout,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        TimeSpan? responseHeadersTimeout = null,
+        TimeProvider? headersDeadlineClock = null)
     {
         ArgumentNullException.ThrowIfNull(client);
         ArgumentNullException.ThrowIfNull(credentialLease);
@@ -47,6 +49,13 @@ internal static class ArcanumAuthenticatedHttpSender
             throw new ArgumentOutOfRangeException(
                 nameof(credentialTimeout),
                 "The credential-resolution timeout must be positive.");
+        }
+
+        if (responseHeadersTimeout <= TimeSpan.Zero)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(responseHeadersTimeout),
+                "The response-headers timeout must be positive.");
         }
 
         RejectDefaultCredentialHeaders(client);
@@ -84,8 +93,22 @@ internal static class ArcanumAuthenticatedHttpSender
                     ArcanumApiHeaders.ProcessCapability,
                     capability);
 
+                // The deadline belongs to this one send, after the credential has been resolved, so a
+                // slow operating-system credential dialog is never counted against it; and it ends when
+                // the headers arrive, so a response body is never cut short by it. A deadline that
+                // lapses surfaces as an OperationCanceledException the caller's own token did not
+                // request, which every client maps to its typed timeout.
+                using HeadersDeadline? headersDeadline = HeadersDeadline.TryCreate(
+                    responseHeadersTimeout,
+                    headersDeadlineClock ?? TimeProvider.System,
+                    completionOption,
+                    cancellationToken);
+
                 response = await client
-                    .SendAsync(request, completionOption, cancellationToken)
+                    .SendAsync(
+                        request,
+                        completionOption,
+                        headersDeadline?.Token ?? cancellationToken)
                     .ConfigureAwait(false);
 
                 if (response.StatusCode != HttpStatusCode.Unauthorized)
@@ -224,6 +247,52 @@ internal static class ArcanumAuthenticatedHttpSender
         {
             throw new InvalidOperationException(
                 "The authenticated request authority does not match the verified local API presence authority.");
+        }
+    }
+
+    /// <summary>
+    /// A token that lapses one <see cref="TimeProvider"/> interval after the send starts. It exists
+    /// only for <see cref="HttpCompletionOption.ResponseHeadersRead"/>, the one completion option with a
+    /// "headers arrived" moment for the deadline to end at; any other completion option would bound
+    /// the body as well, so it gets no deadline. Disposing it, which the sender does the moment the
+    /// send returns, also disposes the timer, so no deadline is left armed behind a response whose body
+    /// is still being read.
+    /// </summary>
+    private sealed class HeadersDeadline : IDisposable
+    {
+        private readonly CancellationTokenSource _lapse;
+
+        private readonly CancellationTokenSource _linked;
+
+        private HeadersDeadline(
+            TimeSpan timeout,
+            TimeProvider clock,
+            CancellationToken cancellationToken)
+        {
+            // The framework's own timer-backed source, not a hand-rolled timer, so a lapse that races
+            // the dispose cannot throw on a thread-pool thread.
+            _lapse = new CancellationTokenSource(timeout, clock);
+
+            _linked = CancellationTokenSource.CreateLinkedTokenSource(_lapse.Token, cancellationToken);
+        }
+
+        public CancellationToken Token => _linked.Token;
+
+        internal static HeadersDeadline? TryCreate(
+            TimeSpan? responseHeadersTimeout,
+            TimeProvider clock,
+            HttpCompletionOption completionOption,
+            CancellationToken cancellationToken) =>
+            responseHeadersTimeout is { } timeout
+                && completionOption == HttpCompletionOption.ResponseHeadersRead
+                ? new HeadersDeadline(timeout, clock, cancellationToken)
+                : null;
+
+        public void Dispose()
+        {
+            _linked.Dispose();
+
+            _lapse.Dispose();
         }
     }
 

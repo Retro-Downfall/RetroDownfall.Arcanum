@@ -770,12 +770,15 @@ internal static class HostedGrimoireProducerInventory
         ["System.IO.FileInfo.LastWriteTimeUtc"] = (HostedProducerSiteKind)4,
         ["RetroDownfall.Arcanum.Infrastructure.Security.FileHandleIdentityInterop.CreateFile"] = HostedProducerSiteKind.FileSystemRead,
         ["RetroDownfall.Arcanum.Infrastructure.Security.FileHandleIdentityInterop.GetFileInformationByHandle"] = HostedProducerSiteKind.FileSystemRead,
+        ["RetroDownfall.Arcanum.Infrastructure.Security.FileHandleIdentityInterop.GetFileInformationByHandleEx"] = HostedProducerSiteKind.FileSystemRead,
         ["RetroDownfall.Arcanum.Infrastructure.Security.FileHandleIdentityInterop.NtOpenFile"] = HostedProducerSiteKind.FileSystemRead,
         ["RetroDownfall.Arcanum.Infrastructure.Security.FileHandleIdentityInterop.OpenAtUnix"] = HostedProducerSiteKind.FileSystemRead,
         ["RetroDownfall.Arcanum.Infrastructure.Security.FileHandleIdentityInterop.OpenUnix"] = HostedProducerSiteKind.FileSystemRead,
         ["RetroDownfall.Arcanum.Infrastructure.Security.FileHandleIdentityInterop.fstat"] = HostedProducerSiteKind.FileSystemRead,
         ["RetroDownfall.Arcanum.Infrastructure.Security.FileHandleIdentityInterop.lstat"] = HostedProducerSiteKind.FileSystemRead,
         ["RetroDownfall.Arcanum.Infrastructure.Security.FileHandleIdentityInterop.stat"] = HostedProducerSiteKind.FileSystemRead,
+        ["RetroDownfall.Arcanum.Infrastructure.Security.FileHandleIdentityInterop.ProcPidFdInfo"] = HostedProducerSiteKind.FileSystemRead,
+        ["RetroDownfall.Arcanum.Infrastructure.Security.FileHandleIdentityInterop.GetFinalPathNameByHandle"] = HostedProducerSiteKind.FileSystemRead,
         ["RetroDownfall.Arcanum.Infrastructure.Security.SecureFilePermissions.GetEffectiveUserIdNative"] = HostedProducerSiteKind.FileSystemRead,
         ["RetroDownfall.Arcanum.Core.Storage.IEncryptedBlobStore.WriteAsync"] = (HostedProducerSiteKind)5,
         ["RetroDownfall.Arcanum.Core.Storage.IEncryptedBlobStore.CreateWriterAsync"] = (HostedProducerSiteKind)5,
@@ -808,7 +811,6 @@ internal static class HostedGrimoireProducerInventory
         ["RetroDownfall.Arcanum.Infrastructure.Security.SecureFilePermissions.TryEnsureOwnerOnlyDirectoryExistsStrict"] = HostedProducerSiteKind.FileSystemEffect,
         ["RetroDownfall.Arcanum.Infrastructure.Security.SecureFilePermissions.TryApplyOwnerOnlyFileStrict"] = HostedProducerSiteKind.FileSystemEffect,
         ["RetroDownfall.Arcanum.Infrastructure.Security.SecureFilePermissions.CreateOwnerOnlyTempFile"] = HostedProducerSiteKind.FileSystemEffect,
-        ["RetroDownfall.Arcanum.Infrastructure.Security.SecureFilePermissions.ApplyOwnerOnlyToSensitivePaths"] = HostedProducerSiteKind.FileSystemEffect,
         ["RetroDownfall.Arcanum.Infrastructure.Security.SecureFilePermissions.TryApplyUnixFileMode"] = HostedProducerSiteKind.FileSystemEffect,
     };
 
@@ -844,6 +846,8 @@ internal static class HostedGrimoireProducerInventory
         "System.Int64.TryParse",
         "System.Net.IPAddress.TryParse",
         "System.Text.Encoding.TryGetBytes",
+        "System.Text.Rune.DecodeFromUtf16",
+        "System.Text.Rune.TryCreate",
         "System.Text.StringBuilder.AppendLine",
         "System.Text.Json.JsonElement.TryGetProperty",
         "System.Text.Json.Nodes.JsonValue.TryGetValue",
@@ -927,6 +931,7 @@ internal static class HostedGrimoireProducerInventory
         "System.Exception",
         "System.FormatException",
         "System.Globalization.CultureInfo",
+        "System.Globalization.StringInfo",
         "System.Guid",
         "System.IO.InvalidDataException",
         "System.IO.DirectoryNotFoundException",
@@ -976,6 +981,7 @@ internal static class HostedGrimoireProducerInventory
         "System.Text.RegularExpressions.Group",
         "System.Text.RegularExpressions.Match",
         "System.Text.RegularExpressions.Regex",
+        "System.Text.Rune",
         "System.Text.StringBuilder",
         "System.Text.UTF8Encoding",
         "System.Threading.Interlocked",
@@ -986,6 +992,7 @@ internal static class HostedGrimoireProducerInventory
         "System.TimeSpan",
         "System.UInt32",
         "System.UInt64",
+        "System.UnauthorizedAccessException",
         "System.Uri",
         "System.Version",
     };
@@ -1141,6 +1148,8 @@ internal static class HostedGrimoireProducerInventory
         "System.IO.FileSystemWatcher.NotifyFilter setter",
         "System.IO.RenamedEventArgs.OldFullPath",
         "System.IO.ErrorEventArgs.GetException",
+        "System.IO.StreamReader.BaseStream",
+        "System.IO.StreamReader.CurrentEncoding",
         "System.Lazy`1..ctor",
         "System.Lazy`1.IsValueCreated",
         "System.Linq.Enumerable.Empty",
@@ -1288,11 +1297,13 @@ internal static class HostedGrimoireProducerInventory
         "System.Threading.Tasks.Task`1.ConfigureAwait",
         "System.Threading.Tasks.Task`1.GetAwaiter",
         "System.Threading.Tasks.Task`1.WaitAsync",
+        "System.Threading.Thread.Sleep",
         "System.Threading.WaitHandle.WaitOne",
         "System.TimeProvider.GetTimestamp",
         "System.TimeProvider.GetUtcNow",
         "System.TimeProvider.System",
         "System.Type.Assembly",
+        "System.Type.FullName",
     };
 
     private static readonly IReadOnlySet<string> CompletionOwnedExternalAwaitables = new HashSet<string>(StringComparer.Ordinal)
@@ -1854,9 +1865,9 @@ internal static class HostedGrimoireProducerInventory
 
         ProducerGraph CreateGraph() => new(compilations, evaluationEnvironmentMaximumMembers, evaluationEnvironmentMaximumDepth, traversalMaximumDepth, maximumAnalyzedStatesPerRoot, auditRecoveryReachabilityParity);
 
-        return rootWorkers == 1
+        return HostedProducerRootWorkers.OnAnalysisStack(() => rootWorkers == 1
             ? CreateGraph().Discover(registrations, catalog, nonHostedCatalog, recoverySelectionProbe)
-            : ProducerGraph.DiscoverParallel(CreateGraph, registrations, catalog, nonHostedCatalog, recoverySelectionProbe, rootWorkers, reverseRootFamilies);
+            : ProducerGraph.DiscoverParallel(CreateGraph, registrations, catalog, nonHostedCatalog, recoverySelectionProbe, rootWorkers, reverseRootFamilies));
     }
 
     internal static HostedProducerExpressionDependencyProbe ProbeExpressionDependency(
@@ -5723,7 +5734,6 @@ internal static class HostedGrimoireProducerInventory
                 coordinator.recoveryMatrix = matrixOwner.recoveryMatrix;
 
                 coordinator.recoveryMatrixResolved = true;
-
             }
 
             coordinator.progressOccurrence = ++nextOccurrence;
@@ -19230,7 +19240,12 @@ internal static class HostedGrimoireProducerInventory
                                     && !IsEffectFreeExternalCallable(callback, member)
                                     && (bodies.Length == 0
                                         || callbackEvidence != TraversalEvidence.NoEvidence
-                                        || bodies.Any(HasAdmissionSeed)))
+                                        || bodies.Any(HasAdmissionSeed))
+                                    && !IsReviewedBoundedOsCredentialRead(
+                                        member,
+                                        callbackCall,
+                                        callbackEvidence,
+                                        bodies))
                                 {
                                     string reason = completion is null
                                         ? "no exact completion observation"
@@ -20397,6 +20412,72 @@ internal static class HostedGrimoireProducerInventory
                     "_activeJobTasks");
         }
 
+        /// <summary>
+        /// R-048's two bounded OS credential reads: <c>MirroredOsCredential.ReadOsAsync</c>, whose one
+        /// outstanding read every caller joins, and the master-key bootstrapper's direct probe of a store
+        /// that is not the shipping one. Each hands exactly one <c>IOsCredentialStore.TryGet</c> to
+        /// <c>Task.Run</c> and waits for it only through a timed <c>WaitAsync</c>, so a parked platform
+        /// prompt is abandoned rather than allowed to wedge startup, and the abandoned read finishes after
+        /// its caller. That is reviewed only because the read reaches no producer site: the shipping store
+        /// decorates its own interface, which leaves the callback's evidence inconclusive, never evidence.
+        /// A site reached inside the read, an admission seed, any other owner, a callback that is not
+        /// exactly that one call, or a read no timed wait bounds is not this proof.
+        /// </summary>
+        private bool IsReviewedBoundedOsCredentialRead(
+            AuthoredMember caller,
+            InvocationExpressionSyntax dispatch,
+            TraversalEvidence callbackEvidence,
+            AuthoredMember[] bodies)
+        {
+            if (callbackEvidence == TraversalEvidence.Evidence
+                || bodies.Length == 0
+                || bodies.Any(HasAdmissionSeed)
+                || caller.Model.GetSymbolInfo(dispatch).Symbol is not IMethodSymbol taskRun
+                || Normalize(taskRun) != "System.Threading.Tasks.Task.Run"
+                || dispatch.ArgumentList.Arguments is not
+                [
+                    {
+                        Expression: ParenthesizedLambdaExpressionSyntax
+                        {
+                            ParameterList.Parameters.Count: 0,
+                            Block: null,
+                            ExpressionBody: InvocationExpressionSyntax read,
+                        },
+                    },
+                    {
+                        Expression: MemberAccessExpressionSyntax cancellation,
+                    },
+                ]
+                || caller.Model.GetSymbolInfo(read).Symbol is not IMethodSymbol readMethod
+                || Normalize(readMethod) != "RetroDownfall.Arcanum.Secrets.Security.IOsCredentialStore.TryGet"
+                || read.ArgumentList.Arguments.Any(argument =>
+                    argument.RefKindKeyword.IsKind(SyntaxKind.OutKeyword)
+                    || IsDelegateExpression(caller.Model, argument.Expression))
+                || caller.Model.GetSymbolInfo(cancellation).Symbol
+                    is not IPropertySymbol { Name: "None" } none
+                || TypeKey(none.ContainingType) != "System.Threading.CancellationToken")
+            {
+                return false;
+            }
+
+            string type = TypeKey(caller.Symbol.ContainingType);
+
+            bool reviewedOwner = type == "RetroDownfall.Arcanum.Infrastructure.Security.MirroredOsCredential"
+                    && caller.Symbol.Name == "ReadOsAsync"
+                || type == "RetroDownfall.Arcanum.Infrastructure.Security.ArcanumMasterKeyBootstrapper"
+                    && caller.Symbol.Name == "ProbeOsKeyStorageAsync";
+
+            return reviewedOwner
+                && caller.Syntax.DescendantNodes()
+                    .OfType<InvocationExpressionSyntax>()
+                    .Any(call => caller.Model.GetSymbolInfo(call).Symbol
+                            is IMethodSymbol wait
+                        && Normalize(wait) is "System.Threading.Tasks.Task.WaitAsync"
+                            or "System.Threading.Tasks.Task`1.WaitAsync"
+                        && wait.Parameters.Any(static parameter =>
+                            TypeKey(parameter.Type) == "System.TimeSpan"));
+        }
+
         private bool IsReviewedTrackedTaskHandoff(
             AuthoredMember caller,
             InvocationExpressionSyntax dispatch)
@@ -20971,7 +21052,7 @@ internal static class HostedGrimoireProducerInventory
                 || type == "System.String"
                     && definition.Name == "Create"
                 || type == "System.Linq.ImmutableArrayExtensions"
-                    && definition.Name is "First" or "FirstOrDefault"
+                    && definition.Name is "Any" or "First" or "FirstOrDefault"
                 || type == "System.Threading.Tasks.Parallel"
                     && definition.Name is "For" or "ForEach" or "Invoke";
         }
@@ -23873,6 +23954,7 @@ internal static class HostedGrimoireProducerInventory
             return type is
                     "System.Collections.Concurrent.ConcurrentDictionary`2"
                         or "System.Collections.Generic.Dictionary`2"
+                        or "System.Collections.Generic.Dictionary`2.AlternateLookup`1"
                         or "System.Collections.Generic.IReadOnlyDictionary`2"
                 && method.Name == "TryGetValue"
                 && !method.Parameters.Any(static parameter =>
@@ -24465,6 +24547,21 @@ internal static class HostedGrimoireProducerInventory
 
                 if (symbol is IPropertySymbol property)
                 {
+                    if (PositionalRecordConstructorParameter(property) is
+                        {
+                            ContainingSymbol: IMethodSymbol primaryConstructor,
+                        } positional)
+                    {
+                        return HasAuthoredCallableMutation(property)
+                            ? default
+                            : ResolveParameter(positional, primaryConstructor, path);
+                    }
+
+                    if (!PropertyStorageIsOnlyWrittenThroughItself(property))
+                    {
+                        return default;
+                    }
+
                     bool initialized = property.DeclaringSyntaxReferences.Any(reference => reference.GetSyntax() is PropertyDeclarationSyntax { Initializer: not null });
 
                     return initialized || HasAuthoredCallableMutation(property) ? default : new(true, null, true, false);
@@ -24747,10 +24844,20 @@ internal static class HostedGrimoireProducerInventory
 
             authoredCallableMutationCorpusScans++;
 
-            bool mutated = AuthoredMembers.Any(member => member.Syntax.DescendantNodesAndSelf().Any(node => node switch
+            // Every authored tree is scanned, not only member bodies: a field or property initializer can write a
+            // seam through an object initializer or a with-expression. A deconstruction writes each element of
+            // its tuple target.
+            bool Writes(SemanticModel model, ExpressionSyntax target) => target switch
             {
-                AssignmentExpressionSyntax assignment => SymbolEqualityComparer.Default.Equals(member.Model.GetSymbolInfo(assignment.Left).Symbol, symbol),
-                ArgumentSyntax argument when argument.RefKindKeyword.Kind() is SyntaxKind.RefKeyword or SyntaxKind.OutKeyword => SymbolEqualityComparer.Default.Equals(member.Model.GetSymbolInfo(argument.Expression).Symbol, symbol),
+                TupleExpressionSyntax tuple => tuple.Arguments.Any(element => Writes(model, element.Expression)),
+                ParenthesizedExpressionSyntax parenthesized => Writes(model, parenthesized.Expression),
+                _ => SymbolEqualityComparer.Default.Equals(model.GetSymbolInfo(target).Symbol, symbol),
+            };
+
+            bool mutated = semanticModels.Any(pair => pair.Key.GetRoot().DescendantNodes().Any(node => node switch
+            {
+                AssignmentExpressionSyntax assignment => Writes(pair.Value, assignment.Left),
+                ArgumentSyntax argument when argument.RefKindKeyword.Kind() is SyntaxKind.RefKeyword or SyntaxKind.OutKeyword => SymbolEqualityComparer.Default.Equals(pair.Value.GetSymbolInfo(argument.Expression).Symbol, symbol),
                 _ => false,
             }));
 
@@ -24814,7 +24921,8 @@ internal static class HostedGrimoireProducerInventory
                 && callableType?.TypeKind == TypeKind.Delegate
                 && callableType.NullableAnnotation == NullableAnnotation.Annotated
                 && !initialized
-                && !HasAuthoredCallableMutation(symbol);
+                && !HasAuthoredCallableMutation(symbol)
+                && (symbol is not IPropertySymbol property || PropertyStorageIsOnlyWrittenThroughItself(property));
 
             if (absent)
             {
@@ -24833,6 +24941,146 @@ internal static class HostedGrimoireProducerInventory
             absentTestCallables[symbol] = absent;
 
             return absent;
+        }
+
+        // A delegate property no authored code assigns is proven never set only when assignments to it are the
+        // only writes that can change what it returns: an auto-property, or a getter that is exactly the Value
+        // of a private readonly framework AsyncLocal field of the declaring type that nothing outside the
+        // property names. An overridable or partial property is neither: the getter that runs is another
+        // declaration's.
+        private bool PropertyStorageIsOnlyWrittenThroughItself(IPropertySymbol property)
+        {
+            if (property.IsAbstract
+                || property.IsVirtual
+                || property.IsOverride
+                || property.IsExtern
+                || property.DeclaringSyntaxReferences is not [SyntaxReference reference]
+                || reference.GetSyntax() is not PropertyDeclarationSyntax declaration
+                || declaration.Modifiers.Any(SyntaxKind.PartialKeyword))
+            {
+                return false;
+            }
+
+            if (declaration.ExpressionBody is null
+                && declaration.AccessorList is { } accessors
+                && accessors.Accessors.All(static accessor =>
+                    accessor.Body is null
+                    && accessor.ExpressionBody is null))
+            {
+                return true;
+            }
+
+            ExpressionSyntax? getter = declaration.ExpressionBody?.Expression
+                ?? (declaration.AccessorList?.Accessors
+                        .Where(static accessor => accessor.IsKind(SyntaxKind.GetAccessorDeclaration))
+                        .ToArray() is [{ ExpressionBody.Expression: { } accessorGetter }]
+                    ? accessorGetter
+                    : null);
+
+            if (getter is not MemberAccessExpressionSyntax
+                {
+                    Expression: IdentifierNameSyntax storage,
+                    Name: IdentifierNameSyntax { Identifier.ValueText: "Value" },
+                } access
+                || !access.IsKind(SyntaxKind.SimpleMemberAccessExpression)
+                || !semanticModels.TryGetValue(declaration.SyntaxTree, out SemanticModel? model)
+                || model.GetSymbolInfo(storage).Symbol is not IFieldSymbol
+                {
+                    DeclaredAccessibility: Accessibility.Private,
+                    IsReadOnly: true,
+                } field
+                || !SymbolEqualityComparer.Default.Equals(field.ContainingType, property.ContainingType)
+                || !IsExactFrameworkType(
+                    field.Type,
+                    "System.Threading.AsyncLocal`1",
+                    typeof(AsyncLocal<>).Assembly.GetName())
+                || model.GetSymbolInfo(access).Symbol is not IPropertySymbol { Name: "Value" } valueProperty
+                || !SymbolEqualityComparer.Default.Equals(
+                    valueProperty.ContainingType.OriginalDefinition,
+                    field.Type.OriginalDefinition)
+                || field.DeclaringSyntaxReferences is not [SyntaxReference fieldReference]
+                || fieldReference.GetSyntax() is not VariableDeclaratorSyntax fieldDeclarator
+                || fieldDeclarator.Initializer?.Value is { } initializer
+                    && (initializer is not ImplicitObjectCreationExpressionSyntax
+                        {
+                            ArgumentList.Arguments.Count: 0,
+                            Initializer: null,
+                        }
+                        and not ObjectCreationExpressionSyntax
+                        {
+                            ArgumentList: null or { Arguments.Count: 0 },
+                            Initializer: null,
+                        }
+                        || !semanticModels.TryGetValue(initializer.SyntaxTree, out SemanticModel? initializerModel)
+                        || !SymbolEqualityComparer.Default.Equals(initializerModel.GetTypeInfo(initializer).Type, field.Type)))
+            {
+                return false;
+            }
+
+            foreach (SyntaxReference part in property.ContainingType.DeclaringSyntaxReferences)
+            {
+                foreach (IdentifierNameSyntax name in part.GetSyntax().DescendantNodes().OfType<IdentifierNameSyntax>())
+                {
+                    if (name.Identifier.ValueText != field.Name
+                        || name.SyntaxTree == declaration.SyntaxTree && declaration.Span.Contains(name.Span))
+                    {
+                        continue;
+                    }
+
+                    if (!semanticModels.TryGetValue(name.SyntaxTree, out SemanticModel? partModel))
+                    {
+                        return false;
+                    }
+
+                    SymbolInfo bound = partModel.GetSymbolInfo(name);
+
+                    if (SymbolEqualityComparer.Default.Equals(bound.Symbol, field)
+                        || bound.CandidateSymbols.Contains(field, SymbolEqualityComparer.Default))
+                    {
+                        return false;
+                    }
+                }
+            }
+
+            return true;
+        }
+
+        // A positional property of a sealed record class is declared by its primary-constructor parameter, and
+        // only that constructor, an initializer or a with-expression can set it; HasAuthoredCallableMutation sees
+        // the last two. Its value is therefore the primary-constructor argument at each authored construction. A
+        // record struct is excluded because its default value runs no constructor, and an unsealed record because
+        // a derived record constructs it through its own base clause, which no construction list here records.
+        private IParameterSymbol? PositionalRecordConstructorParameter(IPropertySymbol property)
+        {
+            if (property.IsStatic
+                || property.ContainingType is not
+                {
+                    TypeKind: TypeKind.Class,
+                    IsRecord: true,
+                    IsSealed: true,
+                }
+                || property.DeclaringSyntaxReferences is not [SyntaxReference reference]
+                || reference.GetSyntax() is not ParameterSyntax
+                {
+                    Parent: ParameterListSyntax
+                    {
+                        Parent: RecordDeclarationSyntax,
+                    },
+                } parameter
+                || !semanticModels.TryGetValue(parameter.SyntaxTree, out SemanticModel? model)
+                || model.GetDeclaredSymbol(parameter) is not IParameterSymbol
+                {
+                    ContainingSymbol: IMethodSymbol
+                    {
+                        MethodKind: MethodKind.Constructor,
+                    },
+                } constructorParameter
+                || !SymbolEqualityComparer.Default.Equals(constructorParameter.Type, property.Type))
+            {
+                return null;
+            }
+
+            return constructorParameter;
         }
 
         private bool ContainsPotentialProducerSite(AuthoredMember member) => ContainsPotentialProducerSite(member, []);
@@ -25813,7 +26061,6 @@ internal static class HostedGrimoireProducerInventory
                     {
                         Caller = stableCaller,
                     };
-
                 }
             }
 
@@ -25953,7 +26200,6 @@ internal static class HostedGrimoireProducerInventory
                     {
                         pending.Push((target, target.Syntax, current.Depth + 1));
                     }
-
                 }
 
                 foreach (InvocationExpressionSyntax call in current.Scope
@@ -31755,6 +32001,19 @@ internal static class HostedGrimoireProducerInventory
                     && AssemblyIdentityMatches(
                         definition.ContainingAssembly.Identity,
                         typeof(System.Diagnostics.Process).Assembly.GetName()),
+                "System.IO.FileSystemAclExtensions.Create" =>
+                    HasExactParameterTypes(
+                        definition,
+                        "System.IO.FileInfo",
+                        "System.IO.FileMode",
+                        "System.Security.AccessControl.FileSystemRights",
+                        "System.IO.FileShare",
+                        "System.Int32",
+                        "System.IO.FileOptions",
+                        "System.Security.AccessControl.FileSecurity")
+                    && FrameworkAssemblyIdentityMatches(
+                        definition.ContainingAssembly.Identity,
+                        typeof(System.IO.FileSystemAclExtensions).Assembly.GetName()),
                 "System.IO.File.OpenRead" =>
                     HasExactParameterTypes(definition, "System.String")
                     && FrameworkAssemblyIdentityMatches(
@@ -33979,6 +34238,14 @@ internal static class HostedGrimoireProducerInventory
                 return ExactCleanupProvenance(member, registeredType);
             }
 
+            if (expression is InvocationExpressionSyntax absentCall
+                && symbol is IMethodSymbol { MethodKind: MethodKind.DelegateInvoke }
+                && member.Model.GetSymbolInfo(DelegateReceiver(member, absentCall)).Symbol is { } absentSeam
+                && IsProvenAbsentCallable(absentSeam))
+            {
+                return new([], true, false);
+            }
+
             if (expression is InvocationExpressionSyntax call
                 && symbol is IMethodSymbol method
                 && ResolveCleanupInvocationTarget(
@@ -35798,7 +36065,6 @@ internal static class HostedGrimoireProducerInventory
                             ? MergeValueContext(assignmentMember, member)
                             : assignmentMember,
                         assignment.Right));
-
                 }
             }
 
@@ -37060,7 +37326,6 @@ internal static class HostedGrimoireProducerInventory
                     member,
                     expression,
                     context);
-
             }
             finally
             {
@@ -37303,6 +37568,14 @@ internal static class HostedGrimoireProducerInventory
                     context) is { } selectedFactoryValues)
             {
                 return selectedFactoryValues;
+            }
+
+            if (expression is InvocationExpressionSyntax absentCall
+                && symbol is IMethodSymbol { MethodKind: MethodKind.DelegateInvoke }
+                && member.Model.GetSymbolInfo(DelegateReceiver(member, absentCall)).Symbol is { } absentSeam
+                && IsProvenAbsentCallable(absentSeam))
+            {
+                return new([], true, false);
             }
 
             if (expression is InvocationExpressionSyntax call
@@ -39644,7 +39917,6 @@ internal static class HostedGrimoireProducerInventory
                         bound.Expression,
                         contract,
                         path);
-
                 }
 
                 if (symbol is IParameterSymbol parameter)
@@ -40793,7 +41065,6 @@ internal static class HostedGrimoireProducerInventory
             Compilation consumingCompilation,
             int depth)
         {
-
             if (depth >= ReceiverCleanupForwardingMaximumDepth
                 || ResolveConstructorContextTarget(activationConstructor, consumingCompilation) is not { } activation
                 || !SameBoundType(activation.Symbol.ContainingType, activation.Model.Compilation, assignedConstructor.ContainingType, consumingCompilation))
@@ -44491,7 +44762,7 @@ internal static class HostedGrimoireProducerInventory
 
             if (type is "System.IO.FileSystemInfo" or "System.IO.DriveInfo"
                 || type == "System.Diagnostics.Process"
-                    && property.Name is "ExitCode" or "HasExited" or "StandardError" or "StandardOutput"
+                    && property.Name is "ExitCode" or "HasExited" or "StandardError" or "StandardOutput" or "StartTime"
                 || type.StartsWith("System.Security.AccessControl.", StringComparison.Ordinal)
                     || type == "System.Security.Principal.WindowsIdentity")
             {
@@ -44537,7 +44808,8 @@ internal static class HostedGrimoireProducerInventory
                 || type == "Microsoft.EntityFrameworkCore.Infrastructure.DatabaseFacade"
                     && method.Name.StartsWith("BeginTransaction", StringComparison.Ordinal)
                 || type == "Microsoft.EntityFrameworkCore.RelationalDatabaseFacadeExtensions"
-                    && method.Name.StartsWith("OpenConnection", StringComparison.Ordinal)
+                    && (method.Name.StartsWith("OpenConnection", StringComparison.Ordinal)
+                        || method.Name is "CloseConnection" or "CloseConnectionAsync")
                 || type == "Microsoft.EntityFrameworkCore.Storage.IDbContextTransaction"
                     && method.Name is "Commit" or "CommitAsync" or "Rollback" or "RollbackAsync"
                 || type == "System.Data.Common.DbCommand"

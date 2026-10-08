@@ -50,12 +50,10 @@ namespace RetroDownfall.Arcanum.Tests.Api;
 
 public sealed class WebWorkflowEndpointTests
 {
-
     [SkippableFact]
 
     public async Task Search_propagates_bounded_filters_to_the_server_provider()
     {
-
         Skip.IfNot(
             GrimoireFixture.SqlCipherAvailable,
             GrimoireFixture.SqlCipherUnavailableReason);
@@ -72,7 +70,6 @@ public sealed class WebWorkflowEndpointTests
             "/api/web/search",
             new WebSearchWorkflowRequest
             {
-
                 Query = "current facts",
 
                 ResultCount = 3,
@@ -82,7 +79,6 @@ public sealed class WebWorkflowEndpointTests
                 IncludeDomains = ["example.test"],
 
                 ExcludeDomains = ["ads.example.test"],
-
             },
             ArcanumJsonContext.Default.WebSearchWorkflowRequest);
 
@@ -99,7 +95,6 @@ public sealed class WebWorkflowEndpointTests
         Assert.Equal(["example.test"], provider.LastSearchOptions.IncludeDomains);
 
         Assert.Equal(["ads.example.test"], provider.LastSearchOptions.ExcludeDomains);
-
     }
 
     /// <summary>
@@ -112,7 +107,6 @@ public sealed class WebWorkflowEndpointTests
     [InlineData("""{"query":"current facts","resultCount":3,"excludeDomains":null}""")]
     public async Task Search_explicit_null_domain_filters_do_not_fault_the_host(string body)
     {
-
         Skip.IfNot(
             GrimoireFixture.SqlCipherAvailable,
             GrimoireFixture.SqlCipherUnavailableReason);
@@ -138,14 +132,12 @@ public sealed class WebWorkflowEndpointTests
         Assert.NotNull(provider.LastSearchOptions.IncludeDomains);
 
         Assert.NotNull(provider.LastSearchOptions.ExcludeDomains);
-
     }
 
     [SkippableFact]
 
     public async Task Browse_explicit_null_render_mode_does_not_fault_the_host()
     {
-
         Skip.IfNot(
             GrimoireFixture.SqlCipherAvailable,
             GrimoireFixture.SqlCipherUnavailableReason);
@@ -164,7 +156,6 @@ public sealed class WebWorkflowEndpointTests
                 "application/json"));
 
         Assert.NotEqual(HttpStatusCode.InternalServerError, response.StatusCode);
-
     }
 
     /// <summary>
@@ -176,7 +167,6 @@ public sealed class WebWorkflowEndpointTests
 
     public async Task Search_rejects_an_unknown_attachment_target_before_provider_work()
     {
-
         Skip.IfNot(
             GrimoireFixture.SqlCipherAvailable,
             GrimoireFixture.SqlCipherUnavailableReason);
@@ -193,11 +183,9 @@ public sealed class WebWorkflowEndpointTests
             "/api/web/search",
             new WebSearchWorkflowRequest
             {
-
                 Query = "current facts",
 
                 AttachToSessionId = Guid.NewGuid(),
-
             },
             ArcanumJsonContext.Default.WebSearchWorkflowRequest);
 
@@ -207,14 +195,12 @@ public sealed class WebWorkflowEndpointTests
             StringComparison.Ordinal);
 
         Assert.Equal(0, provider.SearchCalls);
-
     }
 
     [SkippableFact]
 
     public async Task Browse_rejects_an_unknown_attachment_target_before_provider_work()
     {
-
         Skip.IfNot(
             GrimoireFixture.SqlCipherAvailable,
             GrimoireFixture.SqlCipherUnavailableReason);
@@ -231,11 +217,9 @@ public sealed class WebWorkflowEndpointTests
             "/api/web/browse",
             new WebBrowseWorkflowRequest
             {
-
                 Url = "https://example.test/page",
 
                 AttachToSessionId = Guid.NewGuid(),
-
             },
             ArcanumJsonContext.Default.WebBrowseWorkflowRequest);
 
@@ -245,7 +229,6 @@ public sealed class WebWorkflowEndpointTests
             StringComparison.Ordinal);
 
         Assert.Equal(0, provider.ReadCalls);
-
     }
 
     /// <summary>
@@ -256,7 +239,6 @@ public sealed class WebWorkflowEndpointTests
 
     public async Task Research_stream_disables_caching_and_proxy_buffering()
     {
-
         Skip.IfNot(
             GrimoireFixture.SqlCipherAvailable,
             GrimoireFixture.SqlCipherUnavailableReason);
@@ -269,20 +251,16 @@ public sealed class WebWorkflowEndpointTests
 
         using HttpRequestMessage request = new(HttpMethod.Post, "/api/web/research")
         {
-
             Content = JsonContent.Create(
                 new WebResearchWorkflowRequest
                 {
-
                     Question = "stream headers",
 
                     SourceTarget = 1,
 
                     TokenBudget = 512,
-
                 },
                 ArcanumJsonContext.Default.WebResearchWorkflowRequest),
-
         };
 
         using HttpResponseMessage response = await client.SendAsync(
@@ -292,14 +270,12 @@ public sealed class WebWorkflowEndpointTests
         Assert.Equal("no-cache", Assert.Single(response.Headers.CacheControl!.ToString().Split(", ")));
 
         Assert.Equal("no", Assert.Single(response.Headers.GetValues("X-Accel-Buffering")));
-
     }
 
     [SkippableFact]
 
     public async Task Browse_javascript_returns_actionable_degraded_behavior_without_fetching()
     {
-
         Skip.IfNot(
             GrimoireFixture.SqlCipherAvailable,
             GrimoireFixture.SqlCipherUnavailableReason);
@@ -316,11 +292,9 @@ public sealed class WebWorkflowEndpointTests
             "/api/web/browse",
             new WebBrowseWorkflowRequest
             {
-
                 Url = "https://example.test/app",
 
                 RenderMode = "javascript",
-
             },
             ArcanumJsonContext.Default.WebBrowseWorkflowRequest);
 
@@ -336,14 +310,12 @@ public sealed class WebWorkflowEndpointTests
         Assert.Contains("--render static", body, StringComparison.Ordinal);
 
         Assert.Equal(0, provider.ReadCalls);
-
     }
 
     [SkippableFact]
 
     public async Task Search_can_attach_final_markdown_to_an_existing_session()
     {
-
         Skip.IfNot(
             GrimoireFixture.SqlCipherAvailable,
             GrimoireFixture.SqlCipherUnavailableReason);
@@ -371,11 +343,9 @@ public sealed class WebWorkflowEndpointTests
             "/api/web/search",
             new WebSearchWorkflowRequest
             {
-
                 Query = "attach this",
 
                 AttachToSessionId = created.Data.Id,
-
             },
             ArcanumJsonContext.Default.WebSearchWorkflowRequest);
 
@@ -401,14 +371,12 @@ public sealed class WebWorkflowEndpointTests
         Assert.Equal("web-search.md", attachment.OriginalFileName);
 
         Assert.Equal("text/markdown", attachment.MimeType);
-
     }
 
     [SkippableFact]
 
     public async Task Research_is_progress_driven_and_session_continuable()
     {
-
         Skip.IfNot(
             GrimoireFixture.SqlCipherAvailable,
             GrimoireFixture.SqlCipherUnavailableReason);
@@ -424,7 +392,6 @@ public sealed class WebWorkflowEndpointTests
         HttpClient client = factory.CreateAuthenticatedClient();
 
         HttpResponseMessage createdSessionResponse = await client.PostAsJsonAsync(
-
             "/api/sessions",
 
             new CreateSessionRequest(null, "Research continuation"),
@@ -432,7 +399,6 @@ public sealed class WebWorkflowEndpointTests
             ArcanumJsonContext.Default.CreateSessionRequest);
 
         ApiResponse<SessionDetailDto>? createdSession = JsonSerializer.Deserialize(
-
             await createdSessionResponse.Content.ReadAsStringAsync(),
 
             ArcanumJsonContext.Default.ApiResponseSessionDetailDto);
@@ -470,13 +436,11 @@ public sealed class WebWorkflowEndpointTests
         Guid campaignId = Assert.IsType<Guid>(registeredCampaign?.Data?.Id);
 
         AttachedFileDto attachedFile = new(
-
             "research-notes.txt",
 
             "trusted operator context");
 
         ScryingFocusDto scryingFocus = new(
-
             Convert.ToBase64String([1, 2, 3]),
 
             "image/png");
@@ -485,11 +449,9 @@ public sealed class WebWorkflowEndpointTests
             HttpMethod.Post,
             "/api/web/research")
         {
-
             Content = JsonContent.Create(
                 new WebResearchWorkflowRequest
                 {
-
                     Question = "What changed?",
 
                     SourceTarget = 2,
@@ -521,10 +483,8 @@ public sealed class WebWorkflowEndpointTests
                     FrequencyPenalty = -0.1f,
 
                     UnattendedMode = true,
-
                 },
                 ArcanumJsonContext.Default.WebResearchWorkflowRequest),
-
         };
 
         using HttpResponseMessage response = await client.SendAsync(request);
@@ -587,23 +547,19 @@ public sealed class WebWorkflowEndpointTests
             "[1]",
             intelligence.Request.Prompt,
             StringComparison.Ordinal);
-
     }
 
     [SkippableFact]
 
     public async Task Research_continues_beyond_former_hop_limit_until_sources_are_exhausted()
     {
-
         Skip.IfNot(
             GrimoireFixture.SqlCipherAvailable,
             GrimoireFixture.SqlCipherUnavailableReason);
 
         StubWebProvider provider = new()
         {
-
             ChangingCitationRounds = 8,
-
         };
 
         await using ArcanumWebApplicationFactory factory = Factory(
@@ -616,18 +572,14 @@ public sealed class WebWorkflowEndpointTests
             HttpMethod.Post,
             "/api/web/research")
         {
-
             Content = JsonContent.Create(
                 new WebResearchWorkflowRequest
                 {
-
                     Question = "Keep gathering changing evidence",
 
                     TokenBudget = 1_200,
-
                 },
                 ArcanumJsonContext.Default.WebResearchWorkflowRequest),
-
         };
 
         using HttpResponseMessage response = await client.SendAsync(request);
@@ -649,7 +601,6 @@ public sealed class WebWorkflowEndpointTests
             "maximum hops",
             ndjson,
             StringComparison.OrdinalIgnoreCase);
-
     }
 
     [SkippableFact]
@@ -657,7 +608,6 @@ public sealed class WebWorkflowEndpointTests
     public async Task Research_rejects_invalid_synthesis_payload_before_provider_work()
 
     {
-
         Skip.IfNot(
             GrimoireFixture.SqlCipherAvailable,
             GrimoireFixture.SqlCipherUnavailableReason);
@@ -680,11 +630,9 @@ public sealed class WebWorkflowEndpointTests
             HttpMethod.Post,
             "/api/web/research")
         {
-
             Content = JsonContent.Create(
                 new WebResearchWorkflowRequest
                 {
-
                     Question = "Reject before search",
 
                     SourceTarget = 2,
@@ -693,16 +641,12 @@ public sealed class WebWorkflowEndpointTests
 
                     AttachedFiles =
                     [
-
                         new AttachedFileDto(
                             "oversized.txt",
                             oversized),
-
                     ],
-
                 },
                 ArcanumJsonContext.Default.WebResearchWorkflowRequest),
-
         };
 
         using HttpResponseMessage response = await client.SendAsync(request);
@@ -721,7 +665,6 @@ public sealed class WebWorkflowEndpointTests
         Assert.Equal(0, provider.ReadCalls);
 
         Assert.Null(intelligence.Request);
-
     }
 
     /// <summary>
@@ -733,7 +676,6 @@ public sealed class WebWorkflowEndpointTests
 
     public async Task Research_rejects_a_question_that_no_follow_up_pass_could_carry()
     {
-
         Skip.IfNot(
             GrimoireFixture.SqlCipherAvailable,
             GrimoireFixture.SqlCipherUnavailableReason);
@@ -752,20 +694,16 @@ public sealed class WebWorkflowEndpointTests
             HttpMethod.Post,
             "/api/web/research")
         {
-
             Content = JsonContent.Create(
                 new WebResearchWorkflowRequest
                 {
-
                     Question = new string('q', 3_950),
 
                     SourceTarget = 2,
 
                     TokenBudget = 1_200,
-
                 },
                 ArcanumJsonContext.Default.WebResearchWorkflowRequest),
-
         };
 
         using HttpResponseMessage response = await client.SendAsync(request);
@@ -778,14 +716,12 @@ public sealed class WebWorkflowEndpointTests
             StringComparison.Ordinal);
 
         Assert.Equal(0, provider.SearchCalls);
-
     }
 
     [SkippableFact]
 
     public async Task Research_rejects_unknown_synthesis_model_before_provider_work()
     {
-
         Skip.IfNot(
             GrimoireFixture.SqlCipherAvailable,
             GrimoireFixture.SqlCipherUnavailableReason);
@@ -804,11 +740,9 @@ public sealed class WebWorkflowEndpointTests
             HttpMethod.Post,
             "/api/web/research")
         {
-
             Content = JsonContent.Create(
                 new WebResearchWorkflowRequest
                 {
-
                     Question = "Reject before search",
 
                     SourceTarget = 2,
@@ -816,10 +750,8 @@ public sealed class WebWorkflowEndpointTests
                     TokenBudget = 1_200,
 
                     Model = "provider/unknown-model",
-
                 },
                 ArcanumJsonContext.Default.WebResearchWorkflowRequest),
-
         };
 
         using HttpResponseMessage response = await client.SendAsync(request);
@@ -835,7 +767,6 @@ public sealed class WebWorkflowEndpointTests
         Assert.Equal(0, provider.ReadCalls);
 
         Assert.Null(intelligence.Request);
-
     }
 
     [SkippableFact]
@@ -843,7 +774,6 @@ public sealed class WebWorkflowEndpointTests
     public async Task Research_rejects_disabled_result_attachment_before_provider_work()
 
     {
-
         Skip.IfNot(
             GrimoireFixture.SqlCipherAvailable,
             GrimoireFixture.SqlCipherUnavailableReason);
@@ -860,7 +790,6 @@ public sealed class WebWorkflowEndpointTests
         HttpClient client = factory.CreateAuthenticatedClient();
 
         HttpResponseMessage createdSessionResponse = await client.PostAsJsonAsync(
-
             "/api/sessions",
 
             new CreateSessionRequest(null, "Disabled attachment target"),
@@ -868,7 +797,6 @@ public sealed class WebWorkflowEndpointTests
             ArcanumJsonContext.Default.CreateSessionRequest);
 
         ApiResponse<SessionDetailDto>? createdSession = JsonSerializer.Deserialize(
-
             await createdSessionResponse.Content.ReadAsStringAsync(),
 
             ArcanumJsonContext.Default.ApiResponseSessionDetailDto);
@@ -879,11 +807,9 @@ public sealed class WebWorkflowEndpointTests
             HttpMethod.Post,
             "/api/web/research")
         {
-
             Content = JsonContent.Create(
                 new WebResearchWorkflowRequest
                 {
-
                     Question = "Reject disabled result attachment before search",
 
                     SourceTarget = 2,
@@ -891,10 +817,8 @@ public sealed class WebWorkflowEndpointTests
                     TokenBudget = 1_200,
 
                     AttachToSessionId = sessionId,
-
                 },
                 ArcanumJsonContext.Default.WebResearchWorkflowRequest),
-
         };
 
         using HttpResponseMessage response = await client.SendAsync(request);
@@ -915,7 +839,6 @@ public sealed class WebWorkflowEndpointTests
         Assert.Equal(0, provider.ReadCalls);
 
         Assert.Null(intelligence.Request);
-
     }
 
     /// <summary>
@@ -929,7 +852,6 @@ public sealed class WebWorkflowEndpointTests
     public async Task Research_orchestration_failure_ends_the_stream_with_a_sanitized_error_frame()
 
     {
-
         Skip.IfNot(
             GrimoireFixture.SqlCipherAvailable,
             GrimoireFixture.SqlCipherUnavailableReason);
@@ -948,20 +870,16 @@ public sealed class WebWorkflowEndpointTests
             HttpMethod.Post,
             "/api/web/research")
         {
-
             Content = JsonContent.Create(
                 new WebResearchWorkflowRequest
                 {
-
                     Question = "What changed?",
 
                     SourceTarget = 2,
 
                     TokenBudget = 1_200,
-
                 },
                 ArcanumJsonContext.Default.WebResearchWorkflowRequest),
-
         };
 
         using HttpResponseMessage response = await client.SendAsync(request);
@@ -985,7 +903,6 @@ public sealed class WebWorkflowEndpointTests
             "citation index exploded",
             ndjson,
             StringComparison.OrdinalIgnoreCase);
-
     }
 
     [SkippableFact]
@@ -993,7 +910,6 @@ public sealed class WebWorkflowEndpointTests
     public async Task Research_resolves_campaign_only_context_before_search_and_synthesis()
 
     {
-
         Skip.IfNot(
             GrimoireFixture.SqlCipherAvailable,
             GrimoireFixture.SqlCipherUnavailableReason);
@@ -1039,11 +955,9 @@ public sealed class WebWorkflowEndpointTests
             HttpMethod.Post,
             "/api/web/research")
         {
-
             Content = JsonContent.Create(
                 new WebResearchWorkflowRequest
                 {
-
                     Question = "Use Campaign context",
 
                     SourceTarget = 1,
@@ -1051,10 +965,8 @@ public sealed class WebWorkflowEndpointTests
                     TokenBudget = 1_200,
 
                     CampaignId = campaign.Data.Id,
-
                 },
                 ArcanumJsonContext.Default.WebResearchWorkflowRequest),
-
         };
 
         using HttpResponseMessage response = await client.SendAsync(request);
@@ -1070,7 +982,6 @@ public sealed class WebWorkflowEndpointTests
         Assert.Equal(campaign.Data.Id, intelligence.Request.CampaignId);
 
         Assert.Equal(campaignPath, intelligence.Request.WorkingDirectory);
-
     }
 
     /// <summary>
@@ -1083,7 +994,6 @@ public sealed class WebWorkflowEndpointTests
     public async Task Research_does_not_fetch_a_citation_the_campaign_sanctum_denies()
 
     {
-
         Skip.IfNot(
             GrimoireFixture.SqlCipherAvailable,
             GrimoireFixture.SqlCipherUnavailableReason);
@@ -1092,9 +1002,7 @@ public sealed class WebWorkflowEndpointTests
 
         StubSanctumGuard sanctum = new()
         {
-
             DeniedHosts = new(StringComparer.OrdinalIgnoreCase) { "example.test" },
-
         };
 
         await using ArcanumWebApplicationFactory factory = Factory(
@@ -1114,7 +1022,6 @@ public sealed class WebWorkflowEndpointTests
             sanctum.NetworkChecks,
             check => check.Url.Contains("example.test", StringComparison.OrdinalIgnoreCase)
                 && check.CampaignId == campaignId.ToString());
-
     }
 
     /// <summary>
@@ -1127,7 +1034,6 @@ public sealed class WebWorkflowEndpointTests
     public async Task Research_carries_the_campaign_egress_ward_into_every_citation_fetch()
 
     {
-
         Skip.IfNot(
             GrimoireFixture.SqlCipherAvailable,
             GrimoireFixture.SqlCipherUnavailableReason);
@@ -1136,9 +1042,7 @@ public sealed class WebWorkflowEndpointTests
 
         StubSanctumGuard sanctum = new()
         {
-
             DeniedHosts = new(StringComparer.OrdinalIgnoreCase) { "redirected.test" },
-
         };
 
         await using ArcanumWebApplicationFactory factory = Factory(
@@ -1167,7 +1071,6 @@ public sealed class WebWorkflowEndpointTests
             await provider.LastReadOptions.RedirectEgressWard(
                 new Uri("https://example.test/hop"),
                 CancellationToken.None));
-
     }
 
     /// <summary>
@@ -1179,7 +1082,6 @@ public sealed class WebWorkflowEndpointTests
     public async Task Research_without_a_campaign_fetches_citations_unwarded()
 
     {
-
         Skip.IfNot(
             GrimoireFixture.SqlCipherAvailable,
             GrimoireFixture.SqlCipherUnavailableReason);
@@ -1188,9 +1090,7 @@ public sealed class WebWorkflowEndpointTests
 
         StubSanctumGuard sanctum = new()
         {
-
             DeniedHosts = new(StringComparer.OrdinalIgnoreCase) { "example.test" },
-
         };
 
         await using ArcanumWebApplicationFactory factory = Factory(
@@ -1209,7 +1109,6 @@ public sealed class WebWorkflowEndpointTests
         Assert.NotNull(provider.LastReadOptions);
 
         Assert.Null(provider.LastReadOptions.RedirectEgressWard);
-
     }
 
     /// <summary>
@@ -1223,18 +1122,15 @@ public sealed class WebWorkflowEndpointTests
     public async Task Research_stops_fetching_once_the_synthesis_prompt_budget_is_covered()
 
     {
-
         Skip.IfNot(
             GrimoireFixture.SqlCipherAvailable,
             GrimoireFixture.SqlCipherUnavailableReason);
 
         StubWebProvider provider = new()
         {
-
             ChangingCitationRounds = 8,
 
             ReadMarkdown = new string('x', 20_000),
-
         };
 
         StubIntelligence intelligence = new();
@@ -1247,18 +1143,14 @@ public sealed class WebWorkflowEndpointTests
             HttpMethod.Post,
             "/api/web/research")
         {
-
             Content = JsonContent.Create(
                 new WebResearchWorkflowRequest
                 {
-
                     Question = "What changed?",
 
                     TokenBudget = 1_200,
-
                 },
                 ArcanumJsonContext.Default.WebResearchWorkflowRequest),
-
         };
 
         using HttpResponseMessage response = await client.SendAsync(request);
@@ -1281,7 +1173,86 @@ public sealed class WebWorkflowEndpointTests
         Assert.True(
             intelligence.Request.Prompt.Length <= 32_768,
             $"synthesis prompt was {intelligence.Request.Prompt.Length} characters.");
+    }
 
+    /// <summary>
+    /// A source the synthesis prompt could not carry is one the model never read, so it must not be
+    /// cited as if it had been. Several pages are fetched, the last lands past what the prompt can hold
+    /// (the fetch budget counts page text, not the framing around it), and the result's citations are
+    /// exactly the sources whose framed block is in the prompt the model received. Without the call-site
+    /// filter the dropped source is cited too.
+    /// </summary>
+    [SkippableFact]
+
+    public async Task Research_cites_only_the_sources_the_synthesis_prompt_carried()
+
+    {
+        Skip.IfNot(
+            GrimoireFixture.SqlCipherAvailable,
+            GrimoireFixture.SqlCipherUnavailableReason);
+
+        StubWebProvider provider = new()
+        {
+            ChangingCitationRounds = 5,
+
+            ReadMarkdown = new string('x', 8_100),
+        };
+
+        StubIntelligence intelligence = new();
+
+        await using ArcanumWebApplicationFactory factory = Factory(provider, intelligence);
+
+        HttpClient client = factory.CreateAuthenticatedClient();
+
+        using HttpRequestMessage request = new(
+            HttpMethod.Post,
+            "/api/web/research")
+        {
+            Content = JsonContent.Create(
+                new WebResearchWorkflowRequest
+                {
+                    Question = "What changed?",
+
+                    TokenBudget = 1_200,
+                },
+                ArcanumJsonContext.Default.WebResearchWorkflowRequest),
+        };
+
+        using HttpResponseMessage response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        string ndjson = await response.Content.ReadAsStringAsync();
+
+        WebResearchStreamFrame terminal = ndjson
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(static line => JsonSerializer.Deserialize(
+                line,
+                ArcanumJsonContext.Default.WebResearchStreamFrame)!)
+            .Last();
+
+        Assert.Equal(WebResearchStreamFrameType.Result, terminal.Type);
+
+        Assert.NotNull(terminal.Result);
+
+        Assert.NotNull(intelligence.Request);
+
+        int[] carried =
+        [
+            .. Enumerable.Range(1, provider.ReadCalls).Where(
+                index => intelligence.Request.Prompt.Contains($"Source [{index}]", StringComparison.Ordinal)),
+        ];
+
+        // The fixture only means something if the prompt dropped a source it had been handed.
+        Assert.NotEmpty(carried);
+
+        Assert.True(
+            carried.Length < provider.ReadCalls,
+            $"all {provider.ReadCalls} fetched sources fit in the synthesis prompt, so the citation filter is not exercised.");
+
+        Assert.Equal(
+            carried,
+            terminal.Result.Citations.Select(static citation => citation.Index).ToArray());
     }
 
     /// <summary>
@@ -1295,7 +1266,6 @@ public sealed class WebWorkflowEndpointTests
     public async Task Research_still_emits_the_billed_answer_when_attachment_fails_late()
 
     {
-
         Skip.IfNot(
             GrimoireFixture.SqlCipherAvailable,
             GrimoireFixture.SqlCipherUnavailableReason);
@@ -1326,11 +1296,9 @@ public sealed class WebWorkflowEndpointTests
             HttpMethod.Post,
             "/api/web/research")
         {
-
             Content = JsonContent.Create(
                 new WebResearchWorkflowRequest
                 {
-
                     Question = "What changed?",
 
                     SourceTarget = 1,
@@ -1338,10 +1306,8 @@ public sealed class WebWorkflowEndpointTests
                     TokenBudget = 1_200,
 
                     AttachToSessionId = session.Data.Id,
-
                 },
                 ArcanumJsonContext.Default.WebResearchWorkflowRequest),
-
         };
 
         using HttpResponseMessage response = await client.SendAsync(request);
@@ -1386,7 +1352,6 @@ public sealed class WebWorkflowEndpointTests
                 .GetProperty("result")
                 .TryGetProperty("attachmentError", out _),
             $"the research result frame carried an attachmentError property: {terminalLine}");
-
     }
 
     /// <summary>
@@ -1399,7 +1364,6 @@ public sealed class WebWorkflowEndpointTests
 
     public async Task Search_still_returns_the_billed_answer_when_attachment_fails_late()
     {
-
         Skip.IfNot(
             GrimoireFixture.SqlCipherAvailable,
             GrimoireFixture.SqlCipherUnavailableReason);
@@ -1417,13 +1381,11 @@ public sealed class WebWorkflowEndpointTests
             "/api/web/search",
             new WebSearchWorkflowRequest
             {
-
                 Query = "current facts",
 
                 ResultCount = 3,
 
                 AttachToSessionId = sessionId,
-
             },
             ArcanumJsonContext.Default.WebSearchWorkflowRequest);
 
@@ -1442,14 +1404,12 @@ public sealed class WebWorkflowEndpointTests
         Assert.Null(envelope.Data.AttachmentId);
 
         Assert.False(string.IsNullOrWhiteSpace(envelope.Data.AttachmentError));
-
     }
 
     [SkippableFact]
 
     public async Task Browse_still_returns_the_billed_page_when_attachment_fails_late()
     {
-
         Skip.IfNot(
             GrimoireFixture.SqlCipherAvailable,
             GrimoireFixture.SqlCipherUnavailableReason);
@@ -1467,11 +1427,9 @@ public sealed class WebWorkflowEndpointTests
             "/api/web/browse",
             new WebBrowseWorkflowRequest
             {
-
                 Url = "https://example.test/article",
 
                 AttachToSessionId = sessionId,
-
             },
             ArcanumJsonContext.Default.WebBrowseWorkflowRequest);
 
@@ -1490,12 +1448,10 @@ public sealed class WebWorkflowEndpointTests
         Assert.Null(envelope.Data.AttachmentId);
 
         Assert.False(string.IsNullOrWhiteSpace(envelope.Data.AttachmentError));
-
     }
 
     private static async Task<Guid> CreateSessionAsync(HttpClient client)
     {
-
         HttpResponseMessage created = await client.PostAsJsonAsync(
             "/api/sessions",
             new CreateSessionRequest(null, "Attachment target"),
@@ -1508,14 +1464,12 @@ public sealed class WebWorkflowEndpointTests
         Assert.NotNull(session?.Data);
 
         return session.Data.Id;
-
     }
 
     private static async Task<Guid> RegisterCampaignAsync(
         HttpClient client,
         ArcanumWebApplicationFactory factory)
     {
-
         string campaignPath = Path.Combine(
             factory.TempHome,
             $"research-campaign-{Guid.NewGuid():N}");
@@ -1544,23 +1498,19 @@ public sealed class WebWorkflowEndpointTests
         Assert.NotNull(campaign?.Data);
 
         return campaign.Data.Id;
-
     }
 
     private static async Task<string> ResearchAsync(
         HttpClient client,
         Guid? campaignId)
     {
-
         using HttpRequestMessage request = new(
             HttpMethod.Post,
             "/api/web/research")
         {
-
             Content = JsonContent.Create(
                 new WebResearchWorkflowRequest
                 {
-
                     Question = "What changed?",
 
                     SourceTarget = 1,
@@ -1568,10 +1518,8 @@ public sealed class WebWorkflowEndpointTests
                     TokenBudget = 1_200,
 
                     CampaignId = campaignId,
-
                 },
                 ArcanumJsonContext.Default.WebResearchWorkflowRequest),
-
         };
 
         using HttpResponseMessage response = await client.SendAsync(request);
@@ -1579,7 +1527,6 @@ public sealed class WebWorkflowEndpointTests
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
 
         return await response.Content.ReadAsStringAsync();
-
     }
 
     private static ArcanumWebApplicationFactory Factory(
@@ -1590,18 +1537,14 @@ public sealed class WebWorkflowEndpointTests
         int vanishSessionAfterCalls = 0) =>
         new()
         {
-
             SettingsOverride = settings => settings with
             {
-
                 DefaultModel = "vision-model",
 
                 Providers =
                 [
-
                     new ProviderSettings
                     {
-
                         Name = "test",
 
                         Type = AiProviderKind.OpenAICompatible,
@@ -1610,31 +1553,23 @@ public sealed class WebWorkflowEndpointTests
 
                         Models =
                         [
-
                             new ModelEntry(
                                 "vision-model",
                                 SupportsVision: true),
-
                         ],
-
                     },
-
                 ],
 
                 Features = settings.Features with
                 {
-
                     Attachments = attachmentsEnabled,
 
                     WebBrowsing = true,
-
                 },
-
             },
 
             ServiceOverrides = services =>
             {
-
                 services.RemoveAll<IWebResearchProviderCatalog>();
 
                 services.AddSingleton<IWebResearchProviderCatalog>(
@@ -1647,16 +1582,13 @@ public sealed class WebWorkflowEndpointTests
 
                 if (sanctum is not null)
                 {
-
                     services.RemoveAll<ISanctumGuard>();
 
                     services.AddScoped<ISanctumGuard>(_ => sanctum);
-
                 }
 
                 if (vanishSessionAfterCalls > 0)
                 {
-
                     services.RemoveAll<ISessionRepository>();
 
                     services.AddScoped<SessionRepository>();
@@ -1665,11 +1597,8 @@ public sealed class WebWorkflowEndpointTests
                         sp => new VanishingSessionRepository(
                             sp.GetRequiredService<SessionRepository>(),
                             vanishSessionAfterCalls));
-
                 }
-
             },
-
         };
 
     /// <summary>
@@ -1680,7 +1609,6 @@ public sealed class WebWorkflowEndpointTests
         ISessionRepository inner,
         int lookupsBeforeVanishing) : ISessionRepository
     {
-
         private int _lookups;
 
         public Task<Session?> GetByIdAsync(Guid id, CancellationToken ct) =>
@@ -1737,34 +1665,28 @@ public sealed class WebWorkflowEndpointTests
         public Task<int> GetEntryCountAsync(Guid sessionId, CancellationToken ct) =>
             inner.GetEntryCountAsync(sessionId, ct);
 
-        public Task UpdateSessionAsync(Session session, CancellationToken ct) =>
-            inner.UpdateSessionAsync(session, ct);
+        public Task<Session?> PatchSessionAsync(Guid id, SessionHeaderPatch patch, CancellationToken ct) =>
+            inner.PatchSessionAsync(id, patch, ct);
 
         public Task ArchiveAsync(Guid id, CancellationToken ct) =>
             inner.ArchiveAsync(id, ct);
-
     }
 
     private sealed class StubCatalog(
         IWebResearchProvider provider) : IWebResearchProviderCatalog
     {
-
         public bool TryGetProvider(
             string providerName,
             [NotNullWhen(true)] out IWebResearchProvider? resolved)
         {
-
             resolved = provider;
 
             return true;
-
         }
-
     }
 
     private sealed class StubWebProvider : IWebResearchProvider
     {
-
         public int ChangingCitationRounds { get; init; }
 
         /// <summary>1-based search call that throws instead of returning, or 0 to never throw.</summary>
@@ -1787,16 +1709,13 @@ public sealed class WebWorkflowEndpointTests
             WebSearchOptions options,
             CancellationToken cancellationToken = default)
         {
-
             SearchCalls++;
 
             LastSearchOptions = options;
 
             if (ThrowOnSearchCall == SearchCalls)
             {
-
                 throw new InvalidOperationException("citation index exploded");
-
             }
 
             int citationNumber = ChangingCitationRounds > 0
@@ -1817,7 +1736,6 @@ public sealed class WebWorkflowEndpointTests
                             TotalTokens: 10,
                             SearchQueries: 1,
                             CostUsd: 0.01m))));
-
         }
 
         public List<string> ReadUrls { get; } = [];
@@ -1832,7 +1750,6 @@ public sealed class WebWorkflowEndpointTests
             WebReadOptions options,
             CancellationToken cancellationToken = default)
         {
-
             ReadCalls++;
 
             ReadUrls.Add(url);
@@ -1846,9 +1763,7 @@ public sealed class WebWorkflowEndpointTests
                         ReadMarkdown ?? "Rendered evidence.",
                         url,
                         [])));
-
         }
-
     }
 
     /// <summary>
@@ -1857,7 +1772,6 @@ public sealed class WebWorkflowEndpointTests
     /// </summary>
     private sealed class StubSanctumGuard : ISanctumGuard
     {
-
         public List<(string CampaignId, string Url, string ToolName)> NetworkChecks { get; } = [];
 
         /// <summary>Hosts denied by this Sanctum; empty denies nothing.</summary>
@@ -1869,7 +1783,6 @@ public sealed class WebWorkflowEndpointTests
             string toolName,
             CancellationToken ct = default)
         {
-
             NetworkChecks.Add((campaignId, url, toolName));
 
             bool denied = Uri.TryCreate(url, UriKind.Absolute, out Uri? parsed)
@@ -1878,15 +1791,12 @@ public sealed class WebWorkflowEndpointTests
             return Task.FromResult(
                 new SanctumResult
                 {
-
                     Allowed = !denied,
 
                     DenyReason = denied
                         ? $"Host '{parsed!.Host}' is not in the Sanctum allowed domain list."
                         : null,
-
                 });
-
         }
 
         public Task<SanctumResult> ValidatePathAsync(
@@ -1921,12 +1831,10 @@ public sealed class WebWorkflowEndpointTests
             string? actualValue,
             CancellationToken ct = default) =>
             Task.CompletedTask;
-
     }
 
     private sealed class StubIntelligence : IArcanumIntelligenceProvider
     {
-
         public PingRequest? Request { get; private set; }
 
         public Task<Result<PromptTurnResult>> ExecutePromptAsync(
@@ -1935,7 +1843,6 @@ public sealed class WebWorkflowEndpointTests
             CancellationToken cancellationToken,
             InferenceAuditContext? auditContext = null)
         {
-
             Request = request;
 
             return Task.FromResult(
@@ -1943,7 +1850,6 @@ public sealed class WebWorkflowEndpointTests
                     new PromptTurnResult(
                         "Synthesized answer [1].",
                         new ChatCompletionUsage(20, 10, 30))));
-
         }
 
         public async IAsyncEnumerable<IntelligenceEvent> StreamPromptAsync(
@@ -1952,13 +1858,9 @@ public sealed class WebWorkflowEndpointTests
             [EnumeratorCancellation] CancellationToken cancellationToken,
             InferenceAuditContext? auditContext = null)
         {
-
             await Task.CompletedTask;
 
             yield break;
-
         }
-
     }
-
 }

@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Threading.Channels;
@@ -81,6 +82,125 @@ public sealed class McpOutboundLineGuardTests
             Assert.False(clientToServer.Reader.TryRead(out _), "Oversized notification was written to the server channel.");
         }
     }
+
+    private const int DelimiterCap = 256;
+
+    // The internal server measures the whole line it reads, newline delimiter included (the same rule
+    // ChannelClientTransport applies on the SDK path). A writer that measures the payload alone lets a
+    // payload of exactly the cap through, which the server then drops as one byte over, stranding the
+    // call until its own timeout. Each writer must therefore refuse a payload equal to the cap.
+    [Theory]
+    [InlineData("request")]
+    [InlineData("notification")]
+    [InlineData("opaque-request")]
+    public async Task Writers_reject_a_payload_equal_to_the_cap_because_the_delimiter_makes_the_line_one_byte_over(
+        string writer)
+    {
+        (InProcessMcpTransport transport, Channel<string> clientToServer) = CreateTransport();
+
+        await using (transport)
+        {
+            await transport.StartAsync();
+
+            McpLineSizeExceededException oversized = await Assert.ThrowsAsync<McpLineSizeExceededException>(
+                () => WriteAsync(transport, writer, payloadBytes: DelimiterCap));
+
+            Assert.Equal(DelimiterCap + 1, oversized.ActualUtf8Bytes);
+
+            Assert.False(clientToServer.Reader.TryRead(out _), "A line over the cap was written to the server channel.");
+        }
+    }
+
+    [Theory]
+    [InlineData("request")]
+    [InlineData("notification")]
+    [InlineData("opaque-request")]
+    public async Task Writers_accept_a_payload_whose_line_with_delimiter_fits_the_cap_exactly(string writer)
+    {
+        (InProcessMcpTransport transport, Channel<string> clientToServer) = CreateTransport();
+
+        await using (transport)
+        {
+            await transport.StartAsync();
+
+            await WriteAsync(transport, writer, payloadBytes: DelimiterCap - 1);
+
+            Assert.True(clientToServer.Reader.TryRead(out string? line));
+
+            Assert.Equal(DelimiterCap, Encoding.UTF8.GetByteCount(line));
+
+            Assert.EndsWith("\n", line, StringComparison.Ordinal);
+        }
+    }
+
+    private static (InProcessMcpTransport Transport, Channel<string> ClientToServer) CreateTransport()
+    {
+        BoundedChannelOptions lineOptions = new(16)
+        {
+            FullMode = BoundedChannelFullMode.Wait,
+            SingleWriter = true,
+            SingleReader = true,
+        };
+
+        Channel<string> clientToServer = Channel.CreateBounded<string>(lineOptions);
+
+        Channel<string> serverToClient = Channel.CreateBounded<string>(lineOptions);
+
+        return (
+            new InProcessMcpTransport(clientToServer.Writer, serverToClient.Reader, maxJsonRpcLineBytes: DelimiterCap),
+            clientToServer);
+    }
+
+    private static Task WriteAsync(InProcessMcpTransport transport, string writer, int payloadBytes) =>
+        writer switch
+        {
+            "notification" => transport.WriteNotificationAsync(NotificationWithPayloadBytes(payloadBytes)),
+            "opaque-request" => transport.WriteRequestWithOpaqueAmbientAsync(RequestWithPayloadBytes(payloadBytes)),
+            _ => transport.WriteRequestAsync(RequestWithPayloadBytes(payloadBytes)),
+        };
+
+    // A ping request whose serialized JSON, newline excluded, is exactly payloadBytes UTF-8 bytes.
+    private static JsonRpcRequest RequestWithPayloadBytes(int payloadBytes)
+    {
+        int baseline = SerializedBytes(PaddedRequest(0));
+
+        JsonRpcRequest request = PaddedRequest(payloadBytes - baseline);
+
+        Assert.Equal(payloadBytes, SerializedBytes(request));
+
+        return request;
+    }
+
+    private static JsonRpcNotification NotificationWithPayloadBytes(int payloadBytes)
+    {
+        int baseline = SerializedBytes(PaddedNotification(0));
+
+        JsonRpcNotification notification = PaddedNotification(payloadBytes - baseline);
+
+        Assert.Equal(payloadBytes, SerializedBytes(notification));
+
+        return notification;
+    }
+
+    private static JsonRpcRequest PaddedRequest(int padding) =>
+        new()
+        {
+            Method = "ping" + new string('p', padding),
+            Id = JsonSerializer.SerializeToElement("1", McpJsonSerializerContext.Default.String),
+        };
+
+    private static JsonRpcNotification PaddedNotification(int padding) =>
+        new()
+        {
+            Method = "notifications/ping" + new string('p', padding),
+        };
+
+    private static int SerializedBytes(JsonRpcRequest request) =>
+        Encoding.UTF8.GetByteCount(JsonSerializer.Serialize(request, McpJsonSerializerContext.Default.JsonRpcRequest));
+
+    private static int SerializedBytes(JsonRpcNotification notification) =>
+        Encoding.UTF8.GetByteCount(
+            JsonSerializer.Serialize(notification, McpJsonSerializerContext.Default.JsonRpcNotification));
 
     [Fact]
     public async Task WriteRequestAsync_undersized_line_is_written_normally()

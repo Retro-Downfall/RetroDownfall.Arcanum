@@ -7,6 +7,7 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Hosting;
 
 using RetroDownfall.Arcanum.Api.Security;
@@ -18,7 +19,14 @@ using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage.Entities;
 using RetroDownfall.Arcanum.Core.Tower;
 using RetroDownfall.Arcanum.Core.Workspaces;
+using RetroDownfall.Arcanum.Infrastructure.Covenant;
+using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Intelligence.Spells;
+using RetroDownfall.Arcanum.Core.Storage;
+using RetroDownfall.Arcanum.Tests.Covenant;
+using RetroDownfall.Arcanum.Tests.Data.Covenant;
+using RetroDownfall.Arcanum.Tests.Fixtures;
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Api;
 
@@ -33,7 +41,6 @@ namespace RetroDownfall.Arcanum.Tests.Api;
 /// </remarks>
 public sealed class CovenantPlaintextExportTests
 {
-
     private static readonly Guid SessionId = Guid.Parse("4E5F6071-8293-4A4B-8C5D-6E7F80918293");
 
     private static readonly Guid CampaignId = Guid.Parse("5F607182-93A4-4B5C-8D6E-7F8091A2B3C4");
@@ -45,7 +52,6 @@ public sealed class CovenantPlaintextExportTests
     [Fact]
     public async Task Plaintext_session_export_rejects_any_tainted_artifact_atomically()
     {
-
         await using ExportHost host = await ExportHost.CreateAsync(policy =>
             policy.SessionSensitivity = new CovenantSessionExportSensitivity(
                 SessionId,
@@ -70,7 +76,6 @@ public sealed class CovenantPlaintextExportTests
         Assert.Equal(ErrorCodes.Covenant.PlaintextExportRefused, body.Error!.Value.Code);
 
         Assert.Equal("no-store, private", response.Headers.CacheControl?.ToString());
-
     }
 
     /// <summary>
@@ -79,7 +84,6 @@ public sealed class CovenantPlaintextExportTests
     [Fact]
     public async Task A_clean_session_still_exports_under_the_conditional_arm()
     {
-
         await using ExportHost host = await ExportHost.CreateAsync();
 
         HttpResponseMessage response = await host.Client.GetAsync(
@@ -88,7 +92,6 @@ public sealed class CovenantPlaintextExportTests
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
 
         Assert.True(host.Sessions.ExportCalled);
-
     }
 
     /// <summary>
@@ -108,14 +111,12 @@ public sealed class CovenantPlaintextExportTests
     [InlineData("MARKDOWN")]
     public async Task Session_export_accepts_the_documented_format_vocabulary(string format)
     {
-
         await using ExportHost host = await ExportHost.CreateAsync();
 
         HttpResponseMessage response = await host.Client.GetAsync(
             $"/api/sessions/{SessionId:D}/export?format={format}");
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-
     }
 
     /// <summary>
@@ -127,7 +128,6 @@ public sealed class CovenantPlaintextExportTests
     [InlineData("")]
     public async Task Session_export_refuses_an_unknown_format_with_a_typed_code(string query)
     {
-
         await using ExportHost host = await ExportHost.CreateAsync();
 
         HttpResponseMessage response = await host.Client.GetAsync(
@@ -144,7 +144,6 @@ public sealed class CovenantPlaintextExportTests
         Assert.NotNull(body);
 
         Assert.Equal(ErrorCodes.Session.InvalidFormat, body.Error!.Value.Code);
-
     }
 
     /// <summary>
@@ -154,7 +153,6 @@ public sealed class CovenantPlaintextExportTests
     [Fact]
     public async Task Campaign_export_contains_no_covenant_or_tainted_artifact_fields()
     {
-
         await using ExportHost host = await ExportHost.CreateAsync(policy =>
             policy.CampaignExclusions = new CovenantCampaignExportExclusions(
                 CovenantEntryCount: 4,
@@ -181,11 +179,8 @@ public sealed class CovenantPlaintextExportTests
                      "normalizedKey",
                  })
         {
-
             Assert.DoesNotContain(forbidden, payload, StringComparison.OrdinalIgnoreCase);
-
         }
-
     }
 
     /// <summary>
@@ -195,7 +190,6 @@ public sealed class CovenantPlaintextExportTests
     [Fact]
     public async Task Campaign_export_reports_typed_covenant_and_tainted_exclusion_counts()
     {
-
         await using ExportHost host = await ExportHost.CreateAsync(policy =>
             policy.CampaignExclusions = new CovenantCampaignExportExclusions(
                 CovenantEntryCount: 4,
@@ -220,7 +214,89 @@ public sealed class CovenantPlaintextExportTests
         Assert.Equal(4, body.Data.Exclusions!.CovenantEntryCount);
 
         Assert.Equal(2, body.Data.Exclusions.TaintedArtifactCount);
+    }
 
+    /// <summary>
+    /// A bundle can be partial for reasons that have nothing to do with Covenant: a spell whose
+    /// <c>SPELL.md</c> fails the regular-file read exports as nothing, and a spell's oversized or linked
+    /// script is left out of its export. Per-spell export already names the scripts it leaves out; the
+    /// Campaign bundle says the same, and names the spells it could not carry, so an import of a partial
+    /// bundle is never mistaken for a complete transfer.
+    /// </summary>
+    [Fact]
+    public async Task Campaign_export_names_the_spells_and_scripts_the_bundle_leaves_out()
+    {
+        await using ExportHost host = await ExportHost.CreateAsync(configureSpells: spells =>
+        {
+            spells.Summaries.Add(new SpellSummary("carried", null, SpellSource.Workspace, []));
+
+            spells.Summaries.Add(new SpellSummary("unreadable", null, SpellSource.Workspace, []));
+
+            spells.Exports["carried"] = new SpellExportDto(
+                Metadata: null,
+                FullContent: "# Carried",
+                Scripts: [new SpellExportScriptDto("ok.sh", "ZWNobyBvaw==")],
+                OmittedScripts: ["too-big.sh"]);
+
+            spells.Exports["unreadable"] = null;
+        });
+
+        HttpResponseMessage response = await host.Client.PostAsync(
+            $"/api/campaigns/{CampaignId:D}/export",
+            content: null);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        string json = await response.Content.ReadAsStringAsync();
+
+        Assert.Contains("\"omittedScripts\":[\"too-big.sh\"]", json, StringComparison.Ordinal);
+
+        Assert.Contains("\"omittedSpells\":[\"unreadable\"]", json, StringComparison.Ordinal);
+
+        ApiResponse<CampaignExportDto>? body = JsonSerializer.Deserialize(
+            json,
+            ArcanumJsonContext.Default.ApiResponseCampaignExportDto);
+
+        Assert.NotNull(body);
+
+        CampaignExportSpellDto carried = Assert.Single(body.Data!.Spells);
+
+        Assert.Equal("carried", carried.Name);
+
+        Assert.Equal(["too-big.sh"], carried.OmittedScripts);
+
+        Assert.Equal(["unreadable"], body.Data.OmittedSpells);
+    }
+
+    /// <summary>
+    /// A complete bundle says so: the omission lists are present and empty rather than absent, so a
+    /// caller can tell a complete transfer from a server that does not report omissions.
+    /// </summary>
+    [Fact]
+    public async Task Campaign_export_reports_empty_omission_lists_for_a_complete_bundle()
+    {
+        await using ExportHost host = await ExportHost.CreateAsync(configureSpells: spells =>
+        {
+            spells.Summaries.Add(new SpellSummary("carried", null, SpellSource.Workspace, []));
+
+            spells.Exports["carried"] = new SpellExportDto(
+                Metadata: null,
+                FullContent: "# Carried",
+                Scripts: [],
+                OmittedScripts: []);
+        });
+
+        HttpResponseMessage response = await host.Client.PostAsync(
+            $"/api/campaigns/{CampaignId:D}/export",
+            content: null);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        string json = await response.Content.ReadAsStringAsync();
+
+        Assert.Contains("\"omittedScripts\":[]", json, StringComparison.Ordinal);
+
+        Assert.Contains("\"omittedSpells\":[]", json, StringComparison.Ordinal);
     }
 
     /// <summary>
@@ -231,7 +307,6 @@ public sealed class CovenantPlaintextExportTests
     [Fact]
     public async Task Session_and_campaign_export_hold_conditional_read_lease_through_archive_serialization()
     {
-
         await using ExportHost sessionHost = await ExportHost.CreateAsync();
 
         _ = await sessionHost.Client.GetAsync($"/api/sessions/{SessionId:D}/export?format=json");
@@ -243,7 +318,6 @@ public sealed class CovenantPlaintextExportTests
         _ = await campaignHost.Client.PostAsync($"/api/campaigns/{CampaignId:D}/export", content: null);
 
         AssertLeaseOutlivedTheBody(campaignHost);
-
     }
 
     /// <summary>
@@ -254,28 +328,23 @@ public sealed class CovenantPlaintextExportTests
     [Fact]
     public async Task Both_export_routes_declare_the_conditional_covenant_read_policy()
     {
-
         await using ExportHost host = await ExportHost.CreateAsync();
 
         foreach (string endpointName in new[] { "ExportSession", "ExportCampaign" })
         {
-
             RouteEndpoint endpoint = host.Endpoint(endpointName);
 
             Assert.NotNull(endpoint.Metadata.GetMetadata<CovenantConditionalReadRequirementMetadata>());
-
         }
-
     }
 
     /// <summary>
     /// With <c>Arcanum:Features:Covenant</c> off there is no arm, no lease, and no exclusion report,
-    /// and both routes are byte-for-byte what they were before this slice.
+    /// and a Session whose ledger holds nothing exports byte-for-byte as it did before this slice.
     /// </summary>
     [Fact]
     public async Task With_the_covenant_arm_absent_both_exports_behave_as_they_did_before()
     {
-
         await using ExportHost host = await ExportHost.CreateAsync(policy => policy.ArmPresent = false);
 
         HttpResponseMessage session = await host.Client.GetAsync(
@@ -297,7 +366,144 @@ public sealed class CovenantPlaintextExportTests
             "exclusions",
             await campaign.Content.ReadAsStringAsync(),
             StringComparison.OrdinalIgnoreCase);
+    }
 
+    /// <summary>
+    /// R-026: an absent arm is "the feature is off", not "this installation holds no Covenant
+    /// content". A Session whose ledger still names Covenant-derived artifacts is refused before the
+    /// export graph is read, exactly as it is with the feature on.
+    /// </summary>
+    [Fact]
+    public async Task A_tainted_session_is_refused_when_the_covenant_arm_is_absent()
+    {
+        await using ExportHost host = await ExportHost.CreateAsync(policy =>
+        {
+            policy.ArmPresent = false;
+
+            policy.AbsentArmSessionSensitivity = new CovenantSessionExportSensitivity(
+                SessionId,
+                TaintedArtifactCount: 1,
+                ContentSensitivity.CovenantDerived);
+        });
+
+        HttpResponseMessage response = await host.Client.GetAsync(
+            $"/api/sessions/{SessionId:D}/export?format=json");
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+
+        Assert.False(host.Sessions.ExportCalled);
+
+        ApiResponse<SessionExportResult>? body = JsonSerializer.Deserialize(
+            await response.Content.ReadAsStringAsync(),
+            ArcanumJsonContext.Default.ApiResponseSessionExportResult);
+
+        Assert.NotNull(body);
+
+        Assert.Equal(ErrorCodes.Covenant.PlaintextExportRefused, body.Error!.Value.Code);
+    }
+
+    /// <summary>
+    /// R-026 end to end: the route composed with the shipped policy and a real ledger, the feature off. The
+    /// route test above uses a stub policy and the policy tests assert only the decision, so neither proves
+    /// that the policy's answer is what stops the export graph from being read. A Session whose ledger names
+    /// Covenant content is refused with 403 before the export is read, a Session with no ledger rows exports
+    /// as it always did, and the Campaign bundle (settings, spells and prompts, never artifacts) carries no
+    /// tainted content and no exclusion report.
+    /// </summary>
+    [Fact]
+    public async Task The_shipped_policy_refuses_a_tainted_session_over_the_route_when_the_feature_is_off()
+    {
+        Guid cleanSession = Guid.Parse("60718293-A4B5-4C6D-8E7F-8091A2B3C4D5");
+
+        await using CovenantSchemaScratchDatabase database =
+            await CovenantSchemaScratchDatabase.CreateAsync(CancellationToken.None);
+
+        await database.InstallCanonicalAsync(CancellationToken.None);
+
+        await database.InstallCoreObjectsAsync(
+            ["Campaigns", "Sessions", "artifact_sensitivity", "session_sensitivity_state"],
+            CancellationToken.None);
+
+        foreach (Guid session in new[] { SessionId, cleanSession })
+        {
+            await using SqliteCommand seed = database.Connection.CreateCommand();
+
+            seed.CommandText = """
+                INSERT INTO "Sessions" ("Id", "Title", "CreatedAt", "UpdatedAt")
+                VALUES ($sessionId, 'export', $now, $now);
+                """;
+
+            _ = seed.Parameters.AddWithValue("$sessionId", session.ToString().ToUpperInvariant());
+
+            _ = seed.Parameters.AddWithValue("$now", "2026-08-17T00:00:00.0000000+00:00");
+
+            _ = await seed.ExecuteNonQueryAsync(CancellationToken.None);
+        }
+
+        ArtifactSensitivityLedger ledger = new(new FixedCovenantConnectionSource(database.Connection));
+
+        Result<LabeledArtifactWriteReceipt> labelled = await ledger.LabelAsync(
+            new DerivedArtifactWrite(
+                SensitiveArtifactKind.AssistantEntry,
+                Guid.NewGuid(),
+                SessionId,
+                CampaignId,
+                null,
+                1,
+                new CovenantDigest([.. Enumerable.Repeat((byte)3, 32)]),
+                ContentSensitivity.CovenantDerived,
+                GenerationProvenance.CreateExact([Guid.Parse("3D4E5F60-7182-4D9E-8FA0-3B4C5D6E7F80")])),
+            CancellationToken.None);
+
+        Assert.True(labelled.IsSuccess);
+
+        FakeCovenantAvailability availability = new();
+
+        availability.Mutate(static current => current with { FeatureEnabled = false });
+
+        CovenantExportPolicy policy = new(
+            availability,
+            CovenantOperationGateFixture.CreateGate(availability),
+            new FixedCovenantConnectionSource(database.Connection));
+
+        await using ExportHost host = await ExportHost.CreateAsync(realPolicy: policy);
+
+        HttpResponseMessage refused = await host.Client.GetAsync(
+            $"/api/sessions/{SessionId:D}/export?format=json");
+
+        Assert.Equal(HttpStatusCode.Forbidden, refused.StatusCode);
+
+        Assert.False(host.Sessions.ExportCalled);
+
+        ApiResponse<SessionExportResult>? body = JsonSerializer.Deserialize(
+            await refused.Content.ReadAsStringAsync(),
+            ArcanumJsonContext.Default.ApiResponseSessionExportResult);
+
+        Assert.NotNull(body);
+
+        Assert.Equal(ErrorCodes.Covenant.PlaintextExportRefused, body.Error!.Value.Code);
+
+        // A Session the ledger says nothing about is exported as it always was.
+        HttpResponseMessage clean = await host.Client.GetAsync(
+            $"/api/sessions/{cleanSession:D}/export?format=json");
+
+        Assert.Equal(HttpStatusCode.OK, clean.StatusCode);
+
+        Assert.True(host.Sessions.ExportCalled);
+
+        // The Campaign bundle names a tainted artifact of that Campaign nowhere: it never carries
+        // artifacts, and with the feature off it reports no exclusions either.
+        HttpResponseMessage campaign = await host.Client.PostAsync(
+            $"/api/campaigns/{CampaignId:D}/export",
+            content: null);
+
+        Assert.Equal(HttpStatusCode.OK, campaign.StatusCode);
+
+        string payload = await campaign.Content.ReadAsStringAsync();
+
+        Assert.DoesNotContain("exclusions", payload, StringComparison.OrdinalIgnoreCase);
+
+        Assert.DoesNotContain("sensitivity", payload, StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>
@@ -308,7 +514,6 @@ public sealed class CovenantPlaintextExportTests
     [Fact]
     public async Task An_unavailable_conditional_arm_refuses_both_exports_before_content()
     {
-
         await using ExportHost host = await ExportHost.CreateAsync(policy =>
             policy.AdmissionError = new Error(
                 ErrorCodes.Covenant.Unavailable,
@@ -328,12 +533,10 @@ public sealed class CovenantPlaintextExportTests
         Assert.Equal(HttpStatusCode.ServiceUnavailable, campaign.StatusCode);
 
         Assert.False(host.Campaigns.LookupCalled);
-
     }
 
     private static void AssertLeaseOutlivedTheBody(ExportHost host)
     {
-
         Assert.NotNull(host.Policy.Lease);
 
         int lastWrite = host.Events.LastIndexOf(ExportHost.ResponseWrite);
@@ -347,7 +550,6 @@ public sealed class CovenantPlaintextExportTests
         Assert.True(
             lastWrite < disposed,
             $"The lease was released before the last response byte: {string.Join(" -> ", host.Events)}");
-
     }
 
     /// <summary>
@@ -356,7 +558,6 @@ public sealed class CovenantPlaintextExportTests
     /// </summary>
     private sealed class ExportHost : IAsyncDisposable
     {
-
         internal const string ResponseWrite = "response-write";
 
         internal const string LeaseDisposed = "lease-disposed";
@@ -373,10 +574,16 @@ public sealed class CovenantPlaintextExportTests
 
         internal StubCampaignRepository Campaigns { get; } = new();
 
-        internal static async Task<ExportHost> CreateAsync(Action<StubExportPolicy>? configure = null)
-        {
+        internal StubSpellRepository Spells { get; } = new();
 
+        internal static async Task<ExportHost> CreateAsync(
+            Action<StubExportPolicy>? configure = null,
+            ICovenantExportPolicy? realPolicy = null,
+            Action<StubSpellRepository>? configureSpells = null)
+        {
             ExportHost host = new();
+
+            configureSpells?.Invoke(host.Spells);
 
             StubExportPolicy policy = new(host.Events);
 
@@ -394,35 +601,35 @@ public sealed class CovenantPlaintextExportTests
 
             builder.Services.AddSingleton<IPromptRepository>(new StubPromptRepository());
 
-            builder.Services.AddSingleton<ISpellRepository>(new StubSpellRepository());
+            builder.Services.AddSingleton<ISpellRepository>(host.Spells);
 
-            builder.Services.AddSingleton<ICovenantExportPolicy>(policy);
+            // The stub by default; a test that is about the shipped policy composed with the shipped route
+            // supplies that policy instead, and the stub is then unused.
+            builder.Services.AddSingleton<ICovenantExportPolicy>(realPolicy ?? policy);
 
             builder.Services.ConfigureHttpJsonOptions(static options =>
                 options.SerializerOptions.TypeInfoResolverChain.Insert(0, ArcanumJsonContext.Default));
+
+            // The session routes take more services than the export routes under test use; they are only
+            // declared here so endpoint building does not take them for request bodies.
+            RouteGraphHost.RegisterServiceContracts(builder.Services);
 
             WebApplication app = builder.Build();
 
             app.Use(async (HttpContext context, Func<Task> next) =>
             {
-
                 Stream original = context.Response.Body;
 
                 context.Response.Body = new RecordingStream(original, host.Events);
 
                 try
                 {
-
                     await next().ConfigureAwait(false);
-
                 }
                 finally
                 {
-
                     context.Response.Body = original;
-
                 }
-
             });
 
             RouteGroupBuilder api = app.MapGroup("/api");
@@ -438,7 +645,6 @@ public sealed class CovenantPlaintextExportTests
             host.Client = app.GetTestClient();
 
             return host;
-
         }
 
         internal RouteEndpoint Endpoint(string name) =>
@@ -453,19 +659,15 @@ public sealed class CovenantPlaintextExportTests
 
         public async ValueTask DisposeAsync()
         {
-
             Client?.Dispose();
 
             await _app.DisposeAsync();
-
         }
-
     }
 
     /// <summary>Records every write so a test can prove the lease outlived the last one.</summary>
     private sealed class RecordingStream(Stream inner, List<string> events) : Stream
     {
-
         public override bool CanRead => false;
 
         public override bool CanSeek => false;
@@ -494,22 +696,18 @@ public sealed class CovenantPlaintextExportTests
 
         public override void Write(byte[] buffer, int offset, int count)
         {
-
             events.Add(ExportHost.ResponseWrite);
 
             inner.Write(buffer, offset, count);
-
         }
 
         public override async ValueTask WriteAsync(
             ReadOnlyMemory<byte> buffer,
             CancellationToken cancellationToken = default)
         {
-
             events.Add(ExportHost.ResponseWrite);
 
             await inner.WriteAsync(buffer, cancellationToken).ConfigureAwait(false);
-
         }
 
         public override Task WriteAsync(
@@ -518,23 +716,21 @@ public sealed class CovenantPlaintextExportTests
             int count,
             CancellationToken cancellationToken)
         {
-
             events.Add(ExportHost.ResponseWrite);
 
             return inner.WriteAsync(buffer, offset, count, cancellationToken);
-
         }
-
     }
 
     private sealed class StubExportPolicy(List<string> events) : ICovenantExportPolicy
     {
-
         internal bool ArmPresent { get; set; } = true;
 
         internal Error? AdmissionError { get; set; }
 
         internal CovenantSessionExportSensitivity? SessionSensitivity { get; set; }
+
+        internal CovenantSessionExportSensitivity? AbsentArmSessionSensitivity { get; set; }
 
         internal CovenantCampaignExportExclusions? CampaignExclusions { get; set; }
 
@@ -544,27 +740,21 @@ public sealed class CovenantPlaintextExportTests
             CovenantOperationScope? scope,
             CancellationToken cancellationToken)
         {
-
             if (AdmissionError is { } error)
             {
-
                 return ValueTask.FromResult(Result<CovenantExportAdmission>.Failure(error));
-
             }
 
             if (!ArmPresent)
             {
-
                 return ValueTask.FromResult(
                     Result<CovenantExportAdmission>.Success(CovenantExportAdmission.Absent));
-
             }
 
             Lease = new RecordingLease(events, scope);
 
             return ValueTask.FromResult(
                 Result<CovenantExportAdmission>.Success(new CovenantExportAdmission(Lease)));
-
         }
 
         public Task<Result<CovenantSessionExportSensitivity>> InspectSessionAsync(
@@ -574,19 +764,23 @@ public sealed class CovenantPlaintextExportTests
             Task.FromResult(Result<CovenantSessionExportSensitivity>.Success(
                 SessionSensitivity ?? CovenantSessionExportSensitivity.Clean(sessionId)));
 
+        public Task<Result<CovenantSessionExportSensitivity>> InspectSessionWithoutLeaseAsync(
+            Guid sessionId,
+            CancellationToken cancellationToken) =>
+            Task.FromResult(Result<CovenantSessionExportSensitivity>.Success(
+                AbsentArmSessionSensitivity ?? CovenantSessionExportSensitivity.Clean(sessionId)));
+
         public Task<Result<CovenantCampaignExportExclusions>> InventoryCampaignExclusionsAsync(
             Guid campaignId,
             ICovenantSnapshotReadLease readLease,
             CancellationToken cancellationToken) =>
             Task.FromResult(Result<CovenantCampaignExportExclusions>.Success(
                 CampaignExclusions ?? new CovenantCampaignExportExclusions(0, 0)));
-
     }
 
     private sealed class RecordingLease(List<string> events, CovenantOperationScope? scope)
         : ICovenantSnapshotReadLease
     {
-
         public CovenantOperationLeaseSnapshot Snapshot { get; } = new(
             RegistrationId: Guid.Parse("60718293-A4B5-4C6D-8E7F-8091A2B3C4D5"),
             RuntimeAuthorityGeneration: 1,
@@ -615,25 +809,19 @@ public sealed class CovenantPlaintextExportTests
 
         public ValueTask DisposeAsync()
         {
-
             if (!Disposed)
             {
-
                 Disposed = true;
 
                 events.Add(ExportHost.LeaseDisposed);
-
             }
 
             return ValueTask.CompletedTask;
-
         }
-
     }
 
     private sealed class StubSessionRepository : ISessionRepository
     {
-
         internal bool ExportCalled { get; private set; }
 
         public Task<Result<SessionExportResult>> ExportAsync(
@@ -641,12 +829,10 @@ public sealed class CovenantPlaintextExportTests
             SessionExportFormat format,
             CancellationToken ct)
         {
-
             ExportCalled = true;
 
             return Task.FromResult(Result<SessionExportResult>.Success(
                 new SessionExportResult(id, "json", "{\"session\":{},\"entries\":[]}", "application/json")));
-
         }
 
         public Task<Session> CreateAsync(Guid? campaignId, string? title, CancellationToken ct) =>
@@ -690,22 +876,19 @@ public sealed class CovenantPlaintextExportTests
         public Task<int> GetEntryCountAsync(Guid sessionId, CancellationToken ct) =>
             throw new NotSupportedException();
 
-        public Task UpdateSessionAsync(Session session, CancellationToken ct) =>
+        public Task<Session?> PatchSessionAsync(Guid id, SessionHeaderPatch patch, CancellationToken ct) =>
             throw new NotSupportedException();
 
         public Task ArchiveAsync(Guid id, CancellationToken ct) =>
             throw new NotSupportedException();
-
     }
 
     private sealed class StubCampaignRepository : ICampaignRepository
     {
-
         internal bool LookupCalled { get; private set; }
 
         public Task<Campaign?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default)
         {
-
             LookupCalled = true;
 
             return Task.FromResult<Campaign?>(new Campaign
@@ -726,7 +909,6 @@ public sealed class CovenantPlaintextExportTests
 
                 UpdatedAt = DateTimeOffset.UnixEpoch,
             });
-
         }
 
         public Task<Campaign?> GetByPathAsync(string path, CancellationToken cancellationToken = default) =>
@@ -752,12 +934,10 @@ public sealed class CovenantPlaintextExportTests
 
         public Task<int> CountAsync(CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
-
     }
 
     private sealed class StubPromptRepository : IPromptRepository
     {
-
         public Task<ListPageResult<Prompt>> ListAsync(
             Guid? campaignId,
             int? limit = null,
@@ -779,22 +959,30 @@ public sealed class CovenantPlaintextExportTests
             Guid? campaignId,
             CancellationToken cancellationToken = default) => throw new NotSupportedException();
 
-        public Task<Prompt> AddAsync(Prompt prompt, CancellationToken cancellationToken = default) =>
+        public Task<Result<Prompt>> AddAsync(Prompt prompt, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
 
-        public Task<Prompt> UpdateAsync(Prompt prompt, CancellationToken cancellationToken = default) =>
+        public Task<Result<Prompt>> UpdateAsync(Prompt prompt, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
 
         public Task<bool> DeleteAsync(Guid id, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
 
+        public Task<Result<int>> ReplaceCampaignPromptsAsync(
+            Guid campaignId,
+            IReadOnlyList<Prompt> prompts,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
     }
 
     private sealed class StubSpellRepository : ISpellRepository
     {
+        internal List<SpellSummary> Summaries { get; } = [];
+
+        internal Dictionary<string, SpellExportDto?> Exports { get; } = new(StringComparer.Ordinal);
 
         public Task<SpellSummary[]> ListAsync(string? workingDirectory, CancellationToken ct) =>
-            Task.FromResult(Array.Empty<SpellSummary>());
+            Task.FromResult(Summaries.ToArray());
 
         public Task<SpellDetail?> GetAsync(string name, string? workingDirectory, CancellationToken ct) =>
             throw new NotSupportedException();
@@ -820,7 +1008,7 @@ public sealed class CovenantPlaintextExportTests
             CancellationToken ct) => throw new NotSupportedException();
 
         public Task<SpellExportDto?> ExportAsync(string name, string? workingDirectory, CancellationToken ct) =>
-            throw new NotSupportedException();
+            Task.FromResult(Exports[name]);
 
         public Task<Result<SpellSummary>> ImportAsync(SpellImportRequest request, CancellationToken ct) =>
             throw new NotSupportedException();
@@ -855,7 +1043,5 @@ public sealed class CovenantPlaintextExportTests
             string version,
             string? workingDirectory,
             CancellationToken ct) => throw new NotSupportedException();
-
     }
-
 }

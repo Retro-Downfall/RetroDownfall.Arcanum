@@ -32,9 +32,8 @@ public sealed class SessionCommands(
     IConfirmationPrompt confirmationPrompt,
     WatchCommands watchCommands,
     IOptions<ArcanumSettings> settings,
-    ICliResourceCatalog? resourceCatalog = null)
+    ICliResourceCatalog resourceCatalog)
 {
-
     public async Task<int> List(
         string? campaign,
         string? status,
@@ -45,14 +44,11 @@ public sealed class SessionCommands(
         int? limit,
         CancellationToken cancellationToken = default)
     {
-
         if (!TryParseOptionalGuid(campaign, "--campaign", out Guid? campaignId)
             || !TryParseOptionalDate(from, "--from", out DateTimeOffset? fromDate)
             || !TryParseOptionalDate(to, "--to", out DateTimeOffset? toDate))
         {
-
             return (int)CliExitCode.ConfigurationError;
-
         }
 
         SessionQueryRequest request = new(
@@ -64,26 +60,34 @@ public sealed class SessionCommands(
             To: toDate,
             Limit: limit);
 
-        Result<SessionQueryResult> result = await apiClient
-            .QuerySessionsAsync(request, cancellationToken)
+        // Without --limit the listing is every session: the host bounds each page and reports the
+        // rest, and a table that stopped at the first page would look complete. An operator-supplied
+        // --limit is one page of that size, and says so when the host holds more.
+        Result<HostListing<SessionSummaryDto>> result = await HostPageWalker
+            .ReadAsync<SessionSummaryDto, DateTimeOffset>(
+                "session list",
+                singlePage: limit is not null,
+                async (cursor, token) => HostPageWalker.BySessions(
+                    await apiClient
+                        .QuerySessionsAsync(request with { BeforeUpdatedAt = cursor }, token)
+                        .ConfigureAwait(false)),
+                cancellationToken)
             .ConfigureAwait(false);
 
-        if (!TryValue(result, out SessionQueryResult? page))
+        if (!TryValue(result, out HostListing<SessionSummaryDto>? page))
         {
-
             return CliFailureExit.ExitCode(result.Error);
-
         }
 
         if (CliInvocationContext.Current.Json)
         {
-
             dispatcher.WriteJson(
-                page!.Summaries,
+                page!.Items,
                 ArcanumJsonContext.Default.SessionSummaryDtoArray);
 
-            return 0;
+            WriteMoreAvailableNotice(page.MoreAvailable);
 
+            return 0;
         }
 
         Table table = new();
@@ -98,36 +102,45 @@ public sealed class SessionCommands(
 
         table.AddColumn(themePalette.HeadingTableColumn("Updated"));
 
-        foreach (SessionSummaryDto session in page!.Summaries)
+        foreach (SessionSummaryDto session in page!.Items)
         {
-
             table.AddRow(
-                new Markup(themePalette.TextMarkup(Markup.Escape(session.Title ?? "(untitled)"))),
+                new Markup(themePalette.TextMarkup(Markup.Escape(TerminalTextSanitizer.SanitizeLine(session.Title ?? "(untitled)")))),
                 new Markup(themePalette.MutedMarkup(Markup.Escape(session.CampaignId?.ToString("D") ?? "-"))),
                 new Markup(themePalette.TextMarkup(Markup.Escape(session.Status))),
                 new Markup(themePalette.MutedMarkup(session.EntryCount.ToString(CultureInfo.InvariantCulture))),
                 new Markup(themePalette.MutedMarkup(Markup.Escape(session.UpdatedAt.ToString("u", CultureInfo.InvariantCulture)))));
-
         }
 
         AnsiConsole.Write(table);
 
-        return 0;
+        WriteMoreAvailableNotice(page.MoreAvailable);
 
+        return 0;
+    }
+
+    /// <summary>
+    /// Says on stderr that a one-page listing left sessions behind; the stdout payload stays a clean table or document.
+    /// </summary>
+    private void WriteMoreAvailableNotice(bool moreAvailable)
+    {
+        if (moreAvailable)
+        {
+            CliErrorOutput.WriteMarkupLine(
+                themePalette.MutedMarkup(
+                    Markup.Escape("More sessions are available; omit --limit to list them all.")));
+        }
     }
 
     public async Task<int> Show(
         string? identifier,
         CancellationToken cancellationToken = default)
     {
-
         SessionResolution resolution = await ResolveSessionAsync(identifier, cancellationToken).ConfigureAwait(false);
 
         if (!resolution.Success)
         {
-
-            return resolution.Cancelled ? 0 : 1;
-
+            return resolution.Cancelled ? 0 : resolution.FailureExitCode;
         }
 
         Task<Result<SessionDetailDto>> detailTask = apiClient.GetSessionAsync(resolution.Id, cancellationToken);
@@ -143,9 +156,7 @@ public sealed class SessionCommands(
         if (!TryValue(detailResult, out SessionDetailDto? session)
             || !TryValue(attachmentsResult, out SessionAttachmentDto[]? attachments))
         {
-
             return CliFailureExit.ExitCode(detailResult.IsFailure ? detailResult.Error : attachmentsResult.Error);
-
         }
 
         SessionShowPayload payload = new(
@@ -164,11 +175,9 @@ public sealed class SessionCommands(
 
         if (CliInvocationContext.Current.Json)
         {
-
             dispatcher.WriteJson(payload, CliJsonContext.Default.SessionShowPayload);
 
             return 0;
-
         }
 
         Table table = new Table().Border(TableBorder.None).HideHeaders();
@@ -179,9 +188,9 @@ public sealed class SessionCommands(
 
         table.AddRow("Id:", Markup.Escape(payload.Id.ToString("D")));
 
-        table.AddRow("Title:", Markup.Escape(payload.Title ?? "(untitled)"));
+        table.AddRow("Title:", Markup.Escape(TerminalTextSanitizer.SanitizeLine(payload.Title ?? "(untitled)")));
 
-        table.AddRow("Status:", Markup.Escape(payload.Status));
+        table.AddRow("Status:", Markup.Escape(TerminalTextSanitizer.SanitizeLine(payload.Status)));
 
         table.AddRow("Campaign:", Markup.Escape(payload.CampaignId?.ToString("D") ?? "-"));
 
@@ -200,7 +209,6 @@ public sealed class SessionCommands(
         AnsiConsole.Write(table);
 
         return 0;
-
     }
 
     public async Task<int> Entries(
@@ -209,14 +217,11 @@ public sealed class SessionCommands(
         int? limit,
         CancellationToken cancellationToken = default)
     {
-
         SessionResolution resolution = await ResolveSessionAsync(identifier, cancellationToken).ConfigureAwait(false);
 
         if (!resolution.Success)
         {
-
-            return resolution.Cancelled ? 0 : 1;
-
+            return resolution.Cancelled ? 0 : resolution.FailureExitCode;
         }
 
         Result<EntryDto[]> result = await apiClient
@@ -225,13 +230,10 @@ public sealed class SessionCommands(
 
         if (!TryValue(result, out EntryDto[]? entries))
         {
-
             return CliFailureExit.ExitCode(result.Error);
-
         }
 
         return WriteEntries(entries!);
-
     }
 
     public async Task<int> Watch(
@@ -251,22 +253,17 @@ public sealed class SessionCommands(
         string? campaign,
         CancellationToken cancellationToken = default)
     {
-
         SessionResolution resolution = await ResolveSessionAsync(identifier, cancellationToken).ConfigureAwait(false);
 
         if (!resolution.Success)
         {
-
-            return resolution.Cancelled ? 0 : 1;
-
+            return resolution.Cancelled ? 0 : resolution.FailureExitCode;
         }
 
         if (!TryParseOptionalGuid(upToEntry, "--up-to-entry", out Guid? upToEntryId)
             || !TryParseOptionalGuid(campaign, "--campaign", out Guid? campaignId))
         {
-
             return (int)CliExitCode.ConfigurationError;
-
         }
 
         Result<SessionDetailDto> result = await apiClient
@@ -278,26 +275,19 @@ public sealed class SessionCommands(
 
         if (!TryValue(result, out SessionDetailDto? fork))
         {
-
             return CliFailureExit.ExitCode(result.Error);
-
         }
 
         if (CliInvocationContext.Current.Json)
         {
-
             dispatcher.WriteJson(fork!, ArcanumJsonContext.Default.SessionDetailDto);
-
         }
         else
         {
-
             dispatcher.WritePayload($"Forked session {fork!.Id:D}.");
-
         }
 
         return 0;
-
     }
 
     public async Task<int> Rename(
@@ -305,23 +295,18 @@ public sealed class SessionCommands(
         string? title,
         CancellationToken cancellationToken = default)
     {
-
         if (string.IsNullOrWhiteSpace(title))
         {
-
             WriteArgumentError("--title is required.");
 
             return (int)CliExitCode.ConfigurationError;
-
         }
 
         SessionResolution resolution = await ResolveSessionAsync(identifier, cancellationToken).ConfigureAwait(false);
 
         if (!resolution.Success)
         {
-
-            return resolution.Cancelled ? 0 : 1;
-
+            return resolution.Cancelled ? 0 : resolution.FailureExitCode;
         }
 
         Result<SessionDetailDto> result = await apiClient
@@ -333,40 +318,30 @@ public sealed class SessionCommands(
 
         if (!TryValue(result, out SessionDetailDto? renamed))
         {
-
             return CliFailureExit.ExitCode(result.Error);
-
         }
 
         if (CliInvocationContext.Current.Json)
         {
-
             dispatcher.WriteJson(renamed!, ArcanumJsonContext.Default.SessionDetailDto);
-
         }
         else
         {
-
             dispatcher.WritePayload($"Renamed session {renamed!.Id:D} to {renamed.Title}.");
-
         }
 
         return 0;
-
     }
 
     public async Task<int> Archive(
         string? identifier,
         CancellationToken cancellationToken = default)
     {
-
         SessionResolution resolution = await ResolveSessionAsync(identifier, cancellationToken).ConfigureAwait(false);
 
         if (!resolution.Success)
         {
-
-            return resolution.Cancelled ? 0 : 1;
-
+            return resolution.Cancelled ? 0 : resolution.FailureExitCode;
         }
 
         Result result = await apiClient
@@ -375,17 +350,14 @@ public sealed class SessionCommands(
 
         if (result.IsFailure)
         {
-
             WriteError(result.Error);
 
             return CliFailureExit.ExitCode(result.Error);
-
         }
 
         dispatcher.WritePayload($"Archived session {resolution.Id:D}.");
 
         return 0;
-
     }
 
     public async Task<int> Export(
@@ -393,38 +365,29 @@ public sealed class SessionCommands(
         string? format,
         CancellationToken cancellationToken = default)
     {
-
         SessionResolution resolution = await ResolveSessionAsync(identifier, cancellationToken).ConfigureAwait(false);
 
         if (!resolution.Success)
         {
-
-            return resolution.Cancelled ? 0 : 1;
-
+            return resolution.Cancelled ? 0 : resolution.FailureExitCode;
         }
 
         SessionExportFormat exportFormat;
 
         if (string.Equals(format, "markdown", StringComparison.OrdinalIgnoreCase))
         {
-
             exportFormat = SessionExportFormat.Markdown;
-
         }
         else if (string.IsNullOrWhiteSpace(format)
             || string.Equals(format, "json", StringComparison.OrdinalIgnoreCase))
         {
-
             exportFormat = SessionExportFormat.Json;
-
         }
         else
         {
-
             WriteArgumentError("--format must be 'json' or 'markdown'.");
 
             return (int)CliExitCode.ConfigurationError;
-
         }
 
         Result<SessionExportResult> result = await apiClient
@@ -433,71 +396,55 @@ public sealed class SessionCommands(
 
         if (!TryValue(result, out SessionExportResult? export))
         {
-
             return CliFailureExit.ExitCode(result.Error);
-
         }
 
         if (CliInvocationContext.Current.Json)
         {
-
             dispatcher.WriteJson(export!, ArcanumJsonContext.Default.SessionExportResult);
-
         }
         else
         {
-
             dispatcher.WritePayload(export!.Content);
-
         }
 
         return 0;
-
     }
 
     public async Task<int> Rest(
         string? identifier,
         CancellationToken cancellationToken = default)
     {
-
         SessionResolution resolution = await ResolveSessionAsync(identifier, cancellationToken).ConfigureAwait(false);
 
         if (!resolution.Success)
         {
-
-            return resolution.Cancelled ? 0 : 1;
-
+            return resolution.Cancelled ? 0 : resolution.FailureExitCode;
         }
 
         Result result = await apiClient.RestAsync(resolution.Id, cancellationToken).ConfigureAwait(false);
 
         if (result.IsFailure)
         {
-
             WriteError(result.Error);
 
             return CliFailureExit.ExitCode(result.Error);
-
         }
 
         dispatcher.WritePayload($"Queued Campaign Log consolidation for session {resolution.Id:D}.");
 
         return 0;
-
     }
 
     public async Task<int> Attachments(
         string? identifier,
         CancellationToken cancellationToken = default)
     {
-
         SessionResolution resolution = await ResolveSessionAsync(identifier, cancellationToken).ConfigureAwait(false);
 
         if (!resolution.Success)
         {
-
-            return resolution.Cancelled ? 0 : 1;
-
+            return resolution.Cancelled ? 0 : resolution.FailureExitCode;
         }
 
         Result<SessionAttachmentDto[]> result = await apiClient
@@ -506,20 +453,16 @@ public sealed class SessionCommands(
 
         if (!TryValue(result, out SessionAttachmentDto[]? attachments))
         {
-
             return CliFailureExit.ExitCode(result.Error);
-
         }
 
         if (CliInvocationContext.Current.Json)
         {
-
             dispatcher.WriteJson(
                 attachments!,
                 ArcanumJsonContext.Default.SessionAttachmentDtoArray);
 
             return 0;
-
         }
 
         Table table = new();
@@ -534,19 +477,16 @@ public sealed class SessionCommands(
 
         foreach (SessionAttachmentDto attachment in attachments!)
         {
-
             table.AddRow(
                 Markup.Escape(attachment.Id.ToString("D")),
                 Markup.Escape(attachment.OriginalFileName),
                 Markup.Escape(attachment.MimeType),
                 attachment.ByteLength.ToString(CultureInfo.InvariantCulture));
-
         }
 
         AnsiConsole.Write(table);
 
         return 0;
-
     }
 
     public Task<int> DeleteEntry(
@@ -586,14 +526,11 @@ public sealed class SessionCommands(
         string? identifier,
         CancellationToken cancellationToken = default)
     {
-
         SessionResolution resolution = await ResolveSessionAsync(identifier, cancellationToken).ConfigureAwait(false);
 
         if (!resolution.Success)
         {
-
-            return resolution.Cancelled ? 0 : 1;
-
+            return resolution.Cancelled ? 0 : resolution.FailureExitCode;
         }
 
         Result<CompactResult> result = await apiClient
@@ -602,20 +539,15 @@ public sealed class SessionCommands(
 
         if (!TryValue(result, out CompactResult? compact))
         {
-
             return CliFailureExit.ExitCode(result.Error);
-
         }
 
         if (CliInvocationContext.Current.Json)
         {
-
             dispatcher.WriteJson(compact!, ArcanumJsonContext.Default.CompactResult);
-
         }
         else
         {
-
             // A stop is reported beside the count rather than instead of it: the entries removed before
             // the stop are gone whether or not compaction finished.
             string stopped = compact!.StoppedBy is { } code
@@ -624,11 +556,9 @@ public sealed class SessionCommands(
 
             dispatcher.WritePayload(
                 $"Compacted session {resolution.Id:D}: {compact.TokensBefore} -> {compact.TokensAfter} tokens; {compact.EntriesRemoved} entries removed.{stopped}");
-
         }
 
         return 0;
-
     }
 
     /// <summary>
@@ -641,21 +571,16 @@ public sealed class SessionCommands(
         string? status = null,
         CancellationToken cancellationToken = default)
     {
-
         if (string.IsNullOrWhiteSpace(query))
         {
-
             WriteArgumentError("<QUERY> is required.");
 
             return (int)CliExitCode.ConfigurationError;
-
         }
 
         if (!TryParseOptionalGuid(campaign, "--campaign", out Guid? campaignId))
         {
-
             return (int)CliExitCode.ConfigurationError;
-
         }
 
         SemanticSearchRequest request = new(query.Trim(), campaignId, status, limit);
@@ -666,22 +591,18 @@ public sealed class SessionCommands(
 
         if (!TryValue(result, out SemanticSearchResult? searchResult))
         {
-
             return CliFailureExit.ExitCode(result.Error);
-
         }
 
         SemanticSessionSearchResult[] hits = searchResult!.Results;
 
         if (CliInvocationContext.Current.Json)
         {
-
             dispatcher.WriteJson(
                 searchResult,
                 ArcanumJsonContext.Default.SemanticSearchResult);
 
             return 0;
-
         }
 
         Table table = new();
@@ -700,30 +621,25 @@ public sealed class SessionCommands(
 
         foreach (SemanticSessionSearchResult hit in hits)
         {
-
             string similarity = (hit.Similarity * 100).ToString("F1", CultureInfo.InvariantCulture) + "%";
 
             table.AddRow(
                 Markup.Escape(hit.SessionId.ToString("D")[..8]),
-                Markup.Escape(string.IsNullOrWhiteSpace(hit.SessionTitle) ? "(untitled)" : hit.SessionTitle),
+                Markup.Escape(TerminalTextSanitizer.SanitizeLine(string.IsNullOrWhiteSpace(hit.SessionTitle) ? "(untitled)" : hit.SessionTitle)),
                 Markup.Escape(hit.EntryRole),
                 Markup.Escape(similarity),
                 Markup.Escape(hit.EntryCreatedAt.ToString("u", CultureInfo.InvariantCulture)),
-                Markup.Escape(hit.EntryContentPreview));
-
+                Markup.Escape(TerminalTextSanitizer.SanitizeLine(hit.EntryContentPreview)));
         }
 
         AnsiConsole.Write(table);
 
         if (hits.Length == 0)
         {
-
             AnsiConsole.MarkupLine(themePalette.MutedMarkup(Markup.Escape("No sessions matched.")));
-
         }
 
         return 0;
-
     }
 
     private async Task<int> MutateEntry(
@@ -733,14 +649,11 @@ public sealed class SessionCommands(
         Func<Guid, Guid, CancellationToken, Task<Result>> mutation,
         CancellationToken cancellationToken)
     {
-
         SessionResolution session = await ResolveSessionAsync(sessionIdentifier, cancellationToken).ConfigureAwait(false);
 
         if (!session.Success)
         {
-
-            return session.Cancelled ? 0 : 1;
-
+            return session.Cancelled ? 0 : session.FailureExitCode;
         }
 
         EntryResolution entry = await ResolveEntryAsync(
@@ -751,9 +664,7 @@ public sealed class SessionCommands(
 
         if (!entry.Success)
         {
-
-            return entry.Cancelled ? 0 : 1;
-
+            return entry.Cancelled ? 0 : entry.FailureExitCode;
         }
 
         if (string.Equals(action, "delete", StringComparison.Ordinal)
@@ -763,49 +674,32 @@ public sealed class SessionCommands(
                     cancellationToken)
                 .ConfigureAwait(false))
         {
-
             dispatcher.WriteDiagnostic("Entry deletion cancelled.");
 
             return 0;
-
         }
 
         Result result = await mutation(session.Id, entry.Id, cancellationToken).ConfigureAwait(false);
 
         if (result.IsFailure)
         {
-
             WriteError(result.Error);
 
             return CliFailureExit.ExitCode(result.Error);
-
         }
 
         dispatcher.WritePayload($"Entry {entry.Id:D} {action} operation completed.");
 
         return 0;
-
     }
 
     private async Task<SessionResolution> ResolveSessionAsync(
         string? identifier,
         CancellationToken cancellationToken)
     {
-
         if (Guid.TryParse(identifier, out Guid parsedId))
         {
-
             return new SessionResolution(true, false, parsedId);
-
-        }
-
-        if (resourceCatalog is null)
-        {
-
-            WriteArgumentError("<SESSION> must be a valid GUID.");
-
-            return default;
-
         }
 
         ResourceSelectionResult<SessionSummaryDto> selection = await resourceCatalog
@@ -814,22 +708,17 @@ public sealed class SessionCommands(
 
         if (selection.Status == ResourceSelectionStatus.Cancelled)
         {
-
             return new SessionResolution(false, true, default);
-
         }
 
         if (selection.Status == ResourceSelectionStatus.Error)
         {
-
             WriteArgumentError(selection.Error ?? "Session selection failed.");
 
-            return default;
-
+            return new SessionResolution(false, false, default, selection.ErrorCode);
         }
 
         return new SessionResolution(true, false, selection.Value!.Id);
-
     }
 
     private async Task<EntryResolution> ResolveEntryAsync(
@@ -837,21 +726,9 @@ public sealed class SessionCommands(
         string? identifier,
         CancellationToken cancellationToken)
     {
-
         if (Guid.TryParse(identifier, out Guid parsedId))
         {
-
             return new EntryResolution(true, false, parsedId);
-
-        }
-
-        if (resourceCatalog is null)
-        {
-
-            WriteArgumentError("<ENTRY> must be a valid GUID.");
-
-            return default;
-
         }
 
         ResourceSelectionResult<EntryDto> selection = await resourceCatalog
@@ -860,34 +737,26 @@ public sealed class SessionCommands(
 
         if (selection.Status == ResourceSelectionStatus.Cancelled)
         {
-
             return new EntryResolution(false, true, default);
-
         }
 
         if (selection.Status == ResourceSelectionStatus.Error)
         {
-
             WriteArgumentError(selection.Error ?? "Entry selection failed.");
 
-            return default;
-
+            return new EntryResolution(false, false, default, selection.ErrorCode);
         }
 
         return new EntryResolution(true, false, selection.Value!.Id);
-
     }
 
     private int WriteEntries(EntryDto[] entries)
     {
-
         if (CliInvocationContext.Current.Json)
         {
-
             dispatcher.WriteJson(entries, ArcanumJsonContext.Default.EntryDtoArray);
 
             return 0;
-
         }
 
         Table table = new();
@@ -904,40 +773,33 @@ public sealed class SessionCommands(
 
         foreach (EntryDto entry in entries)
         {
-
             table.AddRow(
                 Markup.Escape(entry.Id.ToString("D")),
                 Markup.Escape(entry.Role),
                 entry.IsPinned ? "yes" : "no",
                 Markup.Escape(entry.CreatedAt.ToString("u", CultureInfo.InvariantCulture)),
-                Markup.Escape(entry.Content.ReplaceLineEndings(" ")));
-
+                Markup.Escape(TerminalTextSanitizer.SanitizeLine(entry.Content.ReplaceLineEndings(" "))));
         }
 
         AnsiConsole.Write(table);
 
         return 0;
-
     }
 
     private bool TryValue<T>(Result<T> result, out T? value)
     {
-
         if (result.IsFailure)
         {
-
             WriteError(result.Error);
 
             value = default;
 
             return false;
-
         }
 
         value = result.Value;
 
         return true;
-
     }
 
     private void WriteError(Error error) =>
@@ -952,29 +814,23 @@ public sealed class SessionCommands(
         string option,
         out Guid? parsed)
     {
-
         parsed = null;
 
         if (string.IsNullOrWhiteSpace(value))
         {
-
             return true;
-
         }
 
         if (Guid.TryParse(value, out Guid id))
         {
-
             parsed = id;
 
             return true;
-
         }
 
         WriteArgumentError($"{option} must be a valid GUID.");
 
         return false;
-
     }
 
     private bool TryParseOptionalDate(
@@ -982,14 +838,11 @@ public sealed class SessionCommands(
         string option,
         out DateTimeOffset? parsed)
     {
-
         parsed = null;
 
         if (string.IsNullOrWhiteSpace(value))
         {
-
             return true;
-
         }
 
         if (DateTimeOffset.TryParse(
@@ -998,27 +851,31 @@ public sealed class SessionCommands(
                 DateTimeStyles.RoundtripKind,
                 out DateTimeOffset timestamp))
         {
-
             parsed = timestamp;
 
             return true;
-
         }
 
         WriteArgumentError($"{option} must be an ISO-8601 timestamp.");
 
         return false;
-
     }
 
     private readonly record struct SessionResolution(
         bool Success,
         bool Cancelled,
-        Guid Id);
+        Guid Id,
+        string? ErrorCode = null)
+    {
+        public int FailureExitCode => CliFailureExit.ExitCode(ErrorCode);
+    }
 
     private readonly record struct EntryResolution(
         bool Success,
         bool Cancelled,
-        Guid Id);
-
+        Guid Id,
+        string? ErrorCode = null)
+    {
+        public int FailureExitCode => CliFailureExit.ExitCode(ErrorCode);
+    }
 }

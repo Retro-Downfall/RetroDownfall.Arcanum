@@ -140,9 +140,111 @@ public sealed class CliContextMutationBoundaryTests
         Assert.Equal(1, boundary.Calls);
     }
 
-    private static ServiceCollection Services(
-        FakeContextStore store,
-        RecordingArcanumClientMutationBoundary boundary)
+    /// <summary>
+    /// A saved context written by a newer Arcanum reads as empty, so a clear (or any other mutation)
+    /// would have replaced it with an older build's document without a word. The mutation refuses,
+    /// says why, names the file, and leaves it byte for byte as it was.
+    /// </summary>
+    [Fact]
+    public async Task Context_clear_refuses_to_overwrite_a_newer_version_file_and_says_why()
+    {
+        string directory = Path.Combine(
+            Path.GetTempPath(),
+            "arcanum-context-newer-tests",
+            Guid.NewGuid().ToString("N"));
+
+        Directory.CreateDirectory(directory);
+
+        try
+        {
+            string path = Path.Combine(directory, "cli-context.json");
+
+            const string Newer = "{\"version\":2,\"model\":\"written-by-a-newer-arcanum\"}";
+
+            await File.WriteAllTextAsync(path, Newer);
+
+            CliContextStore store = new(path);
+
+            RecordingArcanumClientMutationBoundary boundary = new();
+
+            CliTestResult result = await CliTestHarness.RunAsync(
+                Services(store, boundary),
+                ["use", "clear"]);
+
+            Assert.NotEqual((int)CliExitCode.Success, result.ExitCode);
+
+            Assert.Contains("version 2", result.Error, StringComparison.Ordinal);
+
+            Assert.Contains(path, result.Error, StringComparison.Ordinal);
+
+            Assert.DoesNotContain("could not be changed safely", result.Error, StringComparison.Ordinal);
+
+            Assert.Equal(Newer, await File.ReadAllTextAsync(path));
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    /// <summary>
+    /// The selection itself succeeded, then the host went away before the write could revalidate it.
+    /// That is still "the host could not be reached", so it exits 3 like every other host call, and the
+    /// saved context stays as it was.
+    /// </summary>
+    [Fact]
+    public async Task A_host_that_goes_away_during_revalidation_exits_3_and_keeps_the_saved_context()
+    {
+        FakeContextStore store = new(
+            CliContextDocument.Empty with { Model = "retained-model" });
+
+        RecordingArcanumClientMutationBoundary boundary = new();
+
+        CliTestResult result = await CliTestHarness.RunAsync(
+            Services(store, boundary, new UnreachableHandler()),
+            ["use", "session", FakeResourceCatalog.SessionId.ToString("D")]);
+
+        Assert.Equal((int)CliExitCode.NetworkError, result.ExitCode);
+
+        Assert.Equal("retained-model", store.Load().Model);
+
+        Assert.Null(store.Load().SessionId);
+
+        Assert.Equal(0, store.ExclusiveSaves);
+    }
+
+    /// <summary>
+    /// The same for a campaign, whose revalidation builds its own refusal: it used to drop the
+    /// <c>Connection.*</c> code and exit 2, so a wrapper that retries on 3 never saw the retryable case.
+    /// </summary>
+    [Fact]
+    public async Task A_host_that_goes_away_during_campaign_revalidation_exits_3_and_keeps_the_saved_context()
+    {
+        FakeContextStore store = new(
+            CliContextDocument.Empty with { Model = "retained-model" });
+
+        RecordingArcanumClientMutationBoundary boundary = new();
+
+        CliTestResult result = await CliTestHarness.RunAsync(
+            Services(store, boundary, new UnreachableHandler()),
+            ["use", "campaign", FakeResourceCatalog.CampaignId.ToString("D")]);
+
+        Assert.True(
+            result.ExitCode == (int)CliExitCode.NetworkError,
+            $"exit {result.ExitCode}; stdout: {result.Output}; stderr: {result.Error}");
+
+        Assert.Equal("retained-model", store.Load().Model);
+
+        Assert.Null(store.Load().CampaignId);
+
+        Assert.Equal(0, store.ExclusiveSaves);
+    }
+
+    private static ServiceCollection Services<TStore>(
+        TStore store,
+        RecordingArcanumClientMutationBoundary boundary,
+        HttpMessageHandler? handler = null)
+        where TStore : class, ICliContextStore, ICliContextExclusiveWriter
     {
         ServiceCollection services = new();
 
@@ -167,7 +269,7 @@ public sealed class CliContextMutationBoundaryTests
 
         services.AddSingleton(
             new ArcanumApiClient(
-                new FakeHttpClientFactory(new SessionHandler()),
+                new FakeHttpClientFactory(handler ?? new SessionHandler()),
                 ArcanumApiCredentialLeaseTestFactory.Create("test-key")));
 
         services.RemoveAll<IArcanumClientMutationBoundary>();
@@ -175,6 +277,14 @@ public sealed class CliContextMutationBoundaryTests
         services.AddSingleton<IArcanumClientMutationBoundary>(boundary);
 
         return services;
+    }
+
+    private sealed class UnreachableHandler : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken) =>
+            throw new HttpRequestException("Connection refused");
     }
 
     private sealed class SessionHandler : HttpMessageHandler
@@ -310,9 +420,23 @@ public sealed class CliContextMutationBoundaryTests
                         DateTimeOffset.UnixEpoch,
                         DateTimeOffset.UnixEpoch)));
 
+        internal static Guid CampaignId { get; } =
+            Guid.Parse("25252525-2525-2525-2525-252525252525");
+
         public Task<ResourceSelectionResult<CampaignDto>> SelectCampaignAsync(
             string? identifier,
-            CancellationToken cancellationToken) => throw Unused();
+            CancellationToken cancellationToken) =>
+            Task.FromResult(
+                ResourceSelectionResult<CampaignDto>.Selected(
+                    new CampaignDto(
+                        CampaignId,
+                        "Selected campaign",
+                        "/srv/campaign",
+                        WorkspaceType.Campaign,
+                        null,
+                        CampaignSettings.CreateDefault(),
+                        DateTimeOffset.UnixEpoch,
+                        DateTimeOffset.UnixEpoch)));
 
         public Task<ResourceSelectionResult<EntryDto>> SelectSessionEntryAsync(
             Guid sessionId,

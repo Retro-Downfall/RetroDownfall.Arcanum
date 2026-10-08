@@ -32,14 +32,7 @@ public enum LongRunningOperationRecoveryPolicy
 /// </summary>
 public static class LongRunningOperationKinds
 {
-    public const string InferenceRun = "inference-run";
     public const string Subagent = "subagent";
-    public const string BudgetReservation = "budget-reservation";
-    public const string Batch = "batch";
-    public const string Apprentice = "apprentice";
-    public const string AttachmentPromotion = "attachment-promotion";
-    public const string WorkspaceIndex = "workspace-index";
-    public const string IdempotencyClaim = "idempotency-claim";
     public const string BlobEncryptionMigration = "blob-encryption-migration";
     public const string BlobEncryptionKeyRotation = "blob-encryption-key-rotation";
 
@@ -217,7 +210,6 @@ public sealed record LongRunningOperationRequestIdentity(
 /// </summary>
 public enum LongRunningOperationRequestIdentityOutcome
 {
-
     /// <summary>No operation existed under this identity, so one was created.</summary>
     Created = 0,
 
@@ -228,7 +220,6 @@ public enum LongRunningOperationRequestIdentityOutcome
     /// An operation exists under this identity with a different apply digest. Nothing was created.
     /// </summary>
     DigestConflict = 2,
-
 }
 
 /// <summary>
@@ -248,11 +239,17 @@ public sealed record LongRunningOperationRequestIdentityMatch(
     LongRunningOperation Operation,
     LongRunningOperationRequestIdentity Identity);
 
+/// <param name="CheckpointReference">
+/// When set, only rows whose stored checkpoint reference equals this value exactly. Lets a kind that
+/// keeps a lookup key in the reference answer "which row is this?" in SQLite instead of reading every
+/// row of the kind and comparing in memory.
+/// </param>
 public sealed record LongRunningOperationQuery(
     string? Kind = null,
     LongRunningOperationState? State = null,
     int Limit = 100,
-    int Offset = 0);
+    int Offset = 0,
+    string? CheckpointReference = null);
 
 public sealed record LongRunningOperationLeaseResult(
     bool Acquired,
