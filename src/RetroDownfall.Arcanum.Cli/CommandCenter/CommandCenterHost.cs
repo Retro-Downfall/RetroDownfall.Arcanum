@@ -452,14 +452,26 @@ internal sealed class CommandCenterHost(
                         return;
                     }
 
-                    // Anything else is the field's own edit; the list follows it through TextChanged.
+                    // Anything else is the field's own edit. KeyDown runs before the field inserts the key,
+                    // so the list follows the edit through TextChanged below instead of from here.
                 };
 
                 // TextField raises TextChanged as it inserts each key, so the list it filters is current
                 // before the next key is read: an Enter typed in the same burst as the filter runs the
-                // row the operator sees, not the row that was highlighted before the burst.
+                // row the operator sees. Work that must wait until the field has finished its edit is
+                // queued with AddTimeout, because app.Invoke runs at once when already on the UI thread.
                 window.OverlayFilter.TextChanged += (_, _) =>
-                    ApplyOverlayFilterText(state, window, work => app.Invoke(work));
+                    ApplyOverlayFilterText(
+                        state,
+                        window,
+                        work => _ = app.AddTimeout(
+                            TimeSpan.Zero,
+                            () =>
+                            {
+                                work();
+
+                                return false;
+                            }));
 
                 window.ModelSelector.KeyDown += (_, e) =>
                 {
@@ -1839,10 +1851,10 @@ internal sealed class CommandCenterHost(
     }
 
     /// <summary>
-    /// Opens the palette, or the slash menu, from the key handler that asked for it. Every caller is a
-    /// key handler on the UI thread, and the open is deliberately not deferred through
-    /// <c>app.Invoke</c>: the keys typed straight after <c>Ctrl+K</c> or <c>/</c> must land in the
-    /// palette's filter, and a deferred open lets them reach the composer first.
+    /// Opens the palette, or the slash menu, in the key handler that asked for it. Every caller is a
+    /// key handler on the UI thread, and the open happens in place rather than through anything that
+    /// can wait for a later main-loop turn: the keys typed straight after <c>Ctrl+K</c> or <c>/</c>
+    /// must land in the palette's filter, and an open that waits lets them reach the composer first.
     /// </summary>
     internal static void OpenPaletteNow(
         CommandCenterState state,
