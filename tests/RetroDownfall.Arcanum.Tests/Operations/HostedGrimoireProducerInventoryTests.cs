@@ -11478,6 +11478,36 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
                     StringComparison.Ordinal)));
     }
 
+    /// <summary>
+    /// A reset is a write. A flow-local link-target seam invoked through a pattern local, with the real
+    /// read on the other arm, is a proven-absent test callable only while no production code assigns it.
+    /// A reset method that assigns it <see langword="null"/>, which <c>WorkspacePathPolicy</c>'s
+    /// process-wide seam had, leaves the invocation an unproven callback whose target is not exact; either
+    /// way the real read stays a discovered site.
+    /// </summary>
+    [Theory]
+    [InlineData("", false)]
+    [InlineData("internal static void ResetTestSeams() { ReaderForTests = null; } ", true)]
+    public void AFlowLocalTestSeamIsProvenAbsentOnlyWhileProductionNeverAssignsIt(string reset, bool unproven)
+    {
+        string helper = "static class LinkReads { private static readonly AsyncLocal<Func<string, string?>?> ReaderOverride = new(); internal static Func<string, string?>? ReaderForTests { get => ReaderOverride.Value; set => ReaderOverride.Value = value; } "
+            + reset
+            + "internal static string? Read(string path, bool isDirectory) => ReaderForTests is { } reader ? reader(path) : isDirectory ? new System.IO.DirectoryInfo(path).LinkTarget : new System.IO.FileInfo(path).LinkTarget; }";
+
+        string source = "#nullable enable\n" + FixtureSource("_ = LinkReads.Read(\"path\", isDirectory: false);", helper);
+
+        Assert.Empty(Compile(source).GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        HostedProducerDiscovery<HostedProducerSite> result = Discover(source);
+
+        Assert.Equal(
+            unproven,
+            result.Diagnostics.Any(static diagnostic => diagnostic.Code == "HOSTED_CALLBACK_OWNERSHIP_UNPROVEN"
+                && diagnostic.Detail.StartsWith("System.Func`2.Invoke;", StringComparison.Ordinal)));
+
+        Assert.Contains(result.Items, static site => site.Callee.EndsWith(".LinkTarget", StringComparison.Ordinal));
+    }
+
     [Fact]
     public void WrongNamespaceWrapperIsRejected()
     {

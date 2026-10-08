@@ -55,6 +55,8 @@ internal static class WorkspacePathPolicy
     /// </summary>
     private static bool _useWindowsReparsePointClassificationForTests;
 
+    private static readonly AsyncLocal<Func<string, string?>?> LinkTargetReaderOverride = new();
+
     /// <summary>
     /// Observation-only test hook, invoked once per <see cref="IsPathUnderWorkspaceWithSymlinkCheck"/> call
     /// that passes the lexical check, with the normalized candidate. It cannot change the outcome.
@@ -62,12 +64,20 @@ internal static class WorkspacePathPolicy
     internal static Action<string>? ContainmentCheckObserverForTests { get; set; }
 
     /// <summary>
-    /// Test-only seam that replaces reading a reparse point's link target, given the path being classified.
-    /// It stands in for what the filesystem cannot be made to answer on demand: a read that fails, or a
-    /// target that disappears, between the <c>lstat</c> and the <c>readlink</c>, and target text no POSIX
-    /// link can hold. Production code leaves it <see langword="null"/>.
+    /// Test-only seam that replaces reading a reparse point's link target, given the path being classified,
+    /// for the current async flow only. It stands in for what the filesystem cannot be made to answer on
+    /// demand: a read that fails, or a target that disappears, between the <c>lstat</c> and the
+    /// <c>readlink</c>, and target text no POSIX link can hold. Flow-local, like
+    /// <see cref="SecureFileReader.AfterOpenForTests"/>, so it needs no reset: production code never
+    /// writes it, not even in <see cref="ResetTestSeams"/>, which is what lets the hosted-producer analysis
+    /// prove that a production walk never invokes it.
     /// </summary>
-    internal static Func<string, string?>? LinkTargetReaderForTests { get; set; }
+    internal static Func<string, string?>? LinkTargetReaderForTests
+    {
+        get => LinkTargetReaderOverride.Value;
+
+        set => LinkTargetReaderOverride.Value = value;
+    }
 
     /// <summary>
     /// Enables or disables Windows-style ordinal-ignore-case path comparison for tests.
@@ -87,14 +97,15 @@ internal static class WorkspacePathPolicy
     }
 
     /// <summary>
-    /// Restores all test seams to production defaults. Call from test teardown to avoid cross-test leakage.
+    /// Restores the process-wide test seams to production defaults. Call from test teardown to avoid
+    /// cross-test leakage. The flow-local <see cref="LinkTargetReaderForTests"/> is left alone: it never
+    /// outlives the flow that set it.
     /// </summary>
     internal static void ResetTestSeams()
     {
         _useOrdinalIgnoreCasePathComparisonForTests = false;
         _useWindowsReparsePointClassificationForTests = false;
         ContainmentCheckObserverForTests = null;
-        LinkTargetReaderForTests = null;
     }
 
     private static StringComparison PathComparison =>
