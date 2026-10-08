@@ -203,6 +203,66 @@ public sealed class OutboundUrlGuardTests
         Assert.Equal(!allowPrivateAndLoopback, blocked);
     }
 
+    [Theory]
+    [InlineData("::1")]
+    [InlineData("::1%1")]
+    [InlineData("0:0:0:0:0:0:0:1")]
+    public void IsBlockedAddress_Ipv6LoopbackSpellings_BlockedWhenUntrustedAllowedWhenTrusted(string literal)
+    {
+        IPAddress loopback = IPAddress.Parse(literal);
+
+        Assert.True(OutboundUrlGuard.IsBlockedAddress(loopback, allowPrivateAndLoopback: false));
+
+        Assert.False(OutboundUrlGuard.IsBlockedAddress(loopback, allowPrivateAndLoopback: true));
+    }
+
+    [Theory]
+    [InlineData("127.0.0.1", true)]
+    [InlineData("10.0.0.1", true)]
+    [InlineData("192.168.1.1", true)]
+    [InlineData("::1", true)]
+    [InlineData("fd00::1", true)]
+    [InlineData("169.254.169.254", true)]
+    [InlineData("8.8.8.8", false)]
+    [InlineData("2606:4700:4700::1111", false)]
+    public void IsBlockedForUntrustedEgress_AppliesTheUntrustedAddressPolicy(string literal, bool expected)
+    {
+        IPAddress address = IPAddress.Parse(literal);
+
+        Assert.Equal(expected, OutboundUrlGuard.IsBlockedForUntrustedEgress(address));
+
+        Assert.Equal(
+            OutboundUrlGuard.IsBlockedAddress(address, allowPrivateAndLoopback: false),
+            OutboundUrlGuard.IsBlockedForUntrustedEgress(address));
+    }
+
+    [Fact]
+    public void IsBlockedForUntrustedEgress_NullAddress_Throws()
+    {
+        ArgumentNullException exception = Assert.Throws<ArgumentNullException>(
+            () => OutboundUrlGuard.IsBlockedForUntrustedEgress(null!));
+
+        Assert.Equal("address", exception.ParamName);
+    }
+
+    [Fact]
+    public async Task ValidateProviderEndpointAsync_DefaultResolver_RefusesLinkLocalLiteralBeforeResolution()
+    {
+        Result result = await OutboundUrlGuard.ValidateProviderEndpointAsync("http://169.254.169.254/latest/");
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(OutboundUrlGuard.BlockedErrorCode, result.Error.Code);
+    }
+
+    [Fact]
+    public async Task ValidateProviderEndpointAsync_DefaultResolver_AllowsLoopbackLiteral()
+    {
+        Result result = await OutboundUrlGuard.ValidateProviderEndpointAsync("http://127.0.0.1:11434/v1");
+
+        Assert.True(result.IsSuccess);
+    }
+
     [Fact]
     public void IsBlockedAddress_Ipv6UniqueLocal_BlockedWhenUntrusted()
     {
@@ -451,6 +511,8 @@ public sealed class OutboundUrlGuardTests
     [InlineData("198.17.255.255")]
     [InlineData("198.20.0.1")]
     [InlineData("192.0.1.1")]
+    [InlineData("192.1.0.1")]
+    [InlineData("192.88.99.1")]
     public void IsBlockedAddress_NeighboursOfTheSpecialPurposeRanges_NotBlocked(string literal)
     {
         Assert.False(OutboundUrlGuard.IsBlockedAddress(IPAddress.Parse(literal), allowPrivateAndLoopback: false));

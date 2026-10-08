@@ -506,7 +506,8 @@ public static class OutboundUrlGuard
 
         // NAT64, 6to4, Teredo and the IPv4-compatible and IPv4-translated forms carry an IPv4 destination
         // inside the IPv6 address; a translator on the path would reach that IPv4 host, so the embedded
-        // address meets the same IPv4 policy.
+        // address meets the same IPv4 policy. The IPv6 loopback ::1 (with or without a scope id) is the
+        // IPv4-compatible spelling of 0.0.0.1, so untrusted egress refuses it here by the 0.0.0.0/8 rule.
         foreach (byte[] embedded in EmbeddedIPv4Addresses(ipv6Bytes))
         {
             if (IsBlockedIPv4(embedded, allowPrivateAndLoopback))
@@ -518,11 +519,6 @@ public static class OutboundUrlGuard
         if (allowPrivateAndLoopback)
         {
             return false;
-        }
-
-        if (IPAddress.IsLoopback(address))
-        {
-            return true;
         }
 
         if ((ipv6Bytes[0] & 0xFE) == 0xFC)
