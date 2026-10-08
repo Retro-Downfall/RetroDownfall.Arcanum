@@ -159,7 +159,6 @@ internal sealed class ShellCommandParser
             && parts.Length >= 2
             && parts[1].Equals("list", StringComparison.OrdinalIgnoreCase))
         {
-
             ShellCommandKind kind = head switch
             {
                 "campaign" => ShellCommandKind.CampaignList,
@@ -175,12 +174,10 @@ internal sealed class ShellCommandParser
             if (parts.Length == 3
                 && kind == ShellCommandKind.SpellList)
             {
-
                 return new ParsedShellCommand(
                     kind,
                     raw,
                     Argument: parts[2]);
-
             }
 
             if (parts.Length == 3
@@ -195,7 +192,6 @@ internal sealed class ShellCommandParser
                 kind == ShellCommandKind.SpellList
                     ? "Usage: /spell list [opaque-cursor]."
                     : $"Usage: /{head} list [nonnegative-offset].");
-
         }
 
         return head switch
@@ -218,6 +214,12 @@ internal sealed class ShellCommandParser
             "tools" => new ParsedShellCommand(ShellCommandKind.Tools, raw),
             "keys" => new ParsedShellCommand(ShellCommandKind.Keys, raw),
             "model" when parts.Length == 1 => new ParsedShellCommand(ShellCommandKind.Model, raw),
+            // Not a model name, and not an alias for `/model` either: Arcanum ships no alias layer, and
+            // with a Familiar configured `list` would otherwise reach the vendor as a model id.
+            "model" when parts.Length == 2 && parts[1].Equals("list", StringComparison.OrdinalIgnoreCase)
+                => Denied(
+                    raw,
+                    "`/model list` is not a model name. Use `/model` to list models, or `/model <name>` to choose one."),
             "model" => new ParsedShellCommand(
                 ShellCommandKind.ModelSelect,
                 raw,
@@ -276,11 +278,9 @@ internal sealed class ShellCommandParser
         if (sub is "refresh")
 
         {
-
             return parts.Length == 3
 
                 ? new ParsedShellCommand(
-
                     ShellCommandKind.AttachmentsRefresh,
 
                     raw,
@@ -288,7 +288,6 @@ internal sealed class ShellCommandParser
                     Argument: parts[2])
 
                 : Denied(raw, AttachmentsUsage);
-
         }
 
         if (sub is "add" or "reveal")
@@ -342,7 +341,6 @@ internal sealed class ShellCommandParser
     /// </summary>
     private static ParsedShellCommand Unknown(string raw)
     {
-
         string spelling = raw.TrimStart('/').Split(' ', StringSplitOptions.RemoveEmptyEntries) is [string head, ..]
             ? head.ToLowerInvariant()
             : string.Empty;
@@ -351,7 +349,6 @@ internal sealed class ShellCommandParser
             ShellCommandKind.Unknown,
             raw,
             DenialMessage: SlashCommandRegistry.DescribeUnknown(raw, spelling));
-
     }
 
     private static ParsedShellCommand Denied(string raw, string message) =>

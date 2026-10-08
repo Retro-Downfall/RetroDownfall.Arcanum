@@ -153,7 +153,7 @@ internal sealed class ShellCommandDispatcher(
             case ShellCommandKind.Model:
                 state.Log.Append(
                     SessionLogEntryKind.Command,
-                    await FormatModelsAsync(cancellationToken).ConfigureAwait(false));
+                    await FormatModelsAsync(state, cancellationToken).ConfigureAwait(false));
                 return ShellDispatchResult.Continue;
 
             case ShellCommandKind.ModelSelect:
@@ -1186,29 +1186,51 @@ internal sealed class ShellCommandDispatcher(
             return ShellDispatchResult.Continue;
         }
 
-        // The listing is used only to echo a provider's canonical casing back. It is deliberately not
-        // a gate: it omits models the operator hid, and a Familiar's catalogue belongs to the vendor
-        // rather than to arcanum.json, so refusing an unlisted name here would break both "hidden is
-        // not blocked" and "a new vendor model works with no configuration edit". The host resolves
-        // the name at turn time and says why if it cannot.
-        Result<ModelInfoDto[]> result = await apiClient
-            .GetModelsAsync(cancellationToken)
+        // The name is checked against GET /api/providers before it replaces the session model, and the
+        // check refuses only a name the host could not route either: a typo is caught here instead of
+        // failing the next turn with "The requested model is not configured". It keeps both exceptions
+        // that once made this path accept anything. A model on a Familiar's hide list is accepted,
+        // because hidden is not blocked; and with a Familiar configured any other name goes to it,
+        // because a Familiar's catalogue belongs to the vendor and a new model must work with no
+        // configuration edit. A refused name never touches state.Model, so the header label and the
+        // drop-down marker, which both read it, change only when a selection succeeds.
+        Result<ProviderInfoDto[]> providers = await apiClient
+            .GetProvidersAsync(cancellationToken)
             .ConfigureAwait(false);
 
-        ModelInfoDto? listed = result.IsSuccess
-            ? Array.Find(
-                result.Value!,
-                candidate => string.Equals(candidate.Model, model, StringComparison.OrdinalIgnoreCase))
-            : null;
+        string? current = CurrentModel(state);
 
-        string chosen = listed?.Model ?? model.Trim();
+        if (providers.IsFailure)
+        {
+            state.Log.Append(
+                SessionLogEntryKind.Error,
+                CommandCenterModelChoice.ProvidersUnavailable(model, providers.Error.Message, current));
 
-        state.Model = chosen;
+            return ShellDispatchResult.Continue;
+        }
 
-        state.Log.Append(SessionLogEntryKind.Status, $"Model set to {chosen} for this session.");
+        ModelChoiceDecision decision = CommandCenterModelChoice.Decide(providers.Value ?? [], model, current);
+
+        if (!decision.Accepted)
+        {
+            state.Log.Append(SessionLogEntryKind.Error, decision.Message);
+
+            return ShellDispatchResult.Continue;
+        }
+
+        state.Model = decision.Model;
+
+        state.Log.Append(SessionLogEntryKind.Status, decision.Message);
 
         return ShellDispatchResult.Continue;
     }
+
+    /// <summary>
+    /// The model this session's turns go to: its own selection, or else the configured default the
+    /// host falls back to.
+    /// </summary>
+    private string? CurrentModel(CommandCenterState state) =>
+        string.IsNullOrWhiteSpace(state.Model) ? settingsMonitor.CurrentValue.DefaultModel : state.Model;
 
     private async Task<ShellDispatchResult> ReloadMcpAsync(
         CommandCenterState state,
@@ -1392,23 +1414,37 @@ internal sealed class ShellCommandDispatcher(
         return ShellDispatchResult.Continue;
     }
 
-    private async Task<string> FormatModelsAsync(CancellationToken cancellationToken)
+    private async Task<string> FormatModelsAsync(CommandCenterState state, CancellationToken cancellationToken)
     {
         Result<ModelInfoDto[]> result = await apiClient.GetModelsAsync(cancellationToken).ConfigureAwait(false);
+
         if (result.IsFailure)
         {
             return result.Error.Message;
         }
 
         ModelInfoDto[] models = result.Value ?? [];
+
         if (models.Length == 0)
         {
             return "No models configured.";
         }
 
-        return string.Join(
-            Environment.NewLine,
-            models.Select(static m => $"- {m.Model} ({m.ProviderName})"));
+        string? current = CurrentModel(state)?.Trim();
+
+        List<string> lines = ["Models (● this session):"];
+
+        foreach (ModelInfoDto model in models)
+        {
+            // Compared without regard to case, the way the host resolves the session model.
+            bool active = !string.IsNullOrEmpty(current) && ProviderResolver.ModelNameMatches(model.Model, current);
+
+            lines.Add($"{(active ? CommandCenterModelPicker.ActiveMarker : " ")} {model.Model} ({model.ProviderName})");
+        }
+
+        lines.Add("Choose with /model <name>, or Shift+Tab to the model control and press Enter.");
+
+        return string.Join(Environment.NewLine, lines);
     }
 
     private async Task<string> FormatProvidersAsync(CancellationToken cancellationToken)

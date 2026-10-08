@@ -184,6 +184,34 @@ public sealed class CommandCenterModelPickerTests
         Assert.Null(CommandCenterModelPicker.Resolve([], 0));
     }
 
+    /// <summary>
+    /// The drop-down confirms a selection the way <c>/model</c> does, naming the provider, so the
+    /// selected row resolves to the whole item rather than only its model id.
+    /// </summary>
+    [Fact]
+    public void A_selected_row_resolves_to_its_model_and_provider()
+    {
+        IReadOnlyList<ModelPickerItem> items = CommandCenterModelPicker.Build(Models);
+
+        ModelPickerItem? item = CommandCenterModelPicker.ResolveItem(items, 2);
+
+        Assert.Equal(new ModelPickerItem("claude-sonnet", "ClaudeCode-subscription"), item);
+
+        Assert.Equal(
+            "Model set to claude-sonnet (ClaudeCode-subscription) for this session.",
+            CommandCenterModelChoice.Confirmation(item!.Model, item.ProviderName));
+    }
+
+    [Theory]
+    [InlineData(-1)]
+    [InlineData(3)]
+    public void An_out_of_range_selection_resolves_to_no_item(int selectedIndex)
+    {
+        Assert.Null(CommandCenterModelPicker.ResolveItem(CommandCenterModelPicker.Build(Models), selectedIndex));
+
+        Assert.Null(CommandCenterModelPicker.ResolveItem([], 0));
+    }
+
     [Theory]
     [InlineData(null, "(default)")]
     [InlineData("", "(default)")]

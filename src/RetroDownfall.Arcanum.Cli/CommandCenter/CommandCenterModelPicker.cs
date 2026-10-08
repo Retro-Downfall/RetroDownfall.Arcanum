@@ -20,7 +20,9 @@ internal sealed record ModelPickerItem(string Model, string ProviderName);
 /// <para>
 /// The list comes from <c>GET /api/models</c>, which is where the hide list is already applied — so
 /// a hidden model is absent here for the same reason it is absent everywhere else, and
-/// <c>/model &lt;name&gt;</c> still resolves it because that path does not read this list.
+/// <c>/model &lt;name&gt;</c> still accepts it because that path checks the name against
+/// <c>GET /api/providers</c>, which reports the hide list beside the offered models (see
+/// <see cref="CommandCenterModelChoice"/>).
 /// </para>
 /// </remarks>
 internal static class CommandCenterModelPicker
@@ -111,12 +113,19 @@ internal static class CommandCenterModelPicker
     }
 
     /// <summary>The model a selected row means, or null when the row is the empty-state line.</summary>
-    public static string? Resolve(IReadOnlyList<ModelPickerItem> items, int selectedIndex)
+    public static string? Resolve(IReadOnlyList<ModelPickerItem> items, int selectedIndex) =>
+        ResolveItem(items, selectedIndex)?.Model;
+
+    /// <summary>
+    /// The model and provider a selected row means, or null when the row is the empty-state line. The
+    /// provider is what lets the drop-down confirm a selection in the same words <c>/model</c> does.
+    /// </summary>
+    public static ModelPickerItem? ResolveItem(IReadOnlyList<ModelPickerItem> items, int selectedIndex)
     {
         ArgumentNullException.ThrowIfNull(items);
 
         return selectedIndex >= 0 && selectedIndex < items.Count
-            ? items[selectedIndex].Model
+            ? items[selectedIndex]
             : null;
     }
 
