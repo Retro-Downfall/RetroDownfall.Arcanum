@@ -29,6 +29,22 @@ internal static class SandboxedFileIo
     /// </summary>
     internal static Action<string>? AfterCreateParentDirectoryForTests { get; set; }
 
+    private static readonly AsyncLocal<Action<string>?> BeforeDestinationPreambleReadOverride = new();
+
+    /// <summary>
+    /// Deterministic test hook invoked with the destination path inside the preamble probe's read guard,
+    /// after the handle-checked open and before the first byte is read, so a test can raise the read
+    /// fault a failing device would. Flow-local, like <see cref="SecureFileReader.AfterOpenForTests"/>:
+    /// every overwrite in the process probes here, so a process-global hook would fire inside unrelated
+    /// tests running in parallel. It observes; it does not replace any check.
+    /// </summary>
+    internal static Action<string>? BeforeDestinationPreambleReadForTests
+    {
+        get => BeforeDestinationPreambleReadOverride.Value;
+
+        set => BeforeDestinationPreambleReadOverride.Value = value;
+    }
+
     internal static bool TryOpenForRead(
         string workspaceRoot,
         string absolutePath,
@@ -279,6 +295,8 @@ internal static class SandboxedFileIo
 
             try
             {
+                BeforeDestinationPreambleReadForTests?.Invoke(absolutePath);
+
                 return stream.ReadAtLeast(head, head.Length, throwOnEndOfStream: false) == head.Length
                     && head.SequenceEqual(Encoding.UTF8.Preamble);
             }
