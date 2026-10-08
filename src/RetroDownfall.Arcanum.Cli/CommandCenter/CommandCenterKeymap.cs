@@ -169,16 +169,14 @@ internal static class CommandCenterKeymap
             return chord.IsShift ? CommandCenterAction.CycleFocusPrev : CommandCenterAction.CycleFocusNext;
         }
 
-        if (focus == CommandCenterFocusRegion.Composer && chord.IsEnter)
+        // Enter is the send key because Terminal.app, iTerm2's defaults, tmux and xterm.js send the same
+        // CR for Enter and Ctrl+Enter, so a Ctrl+Enter-only send left nothing sendable there. Every other
+        // Enter-like chord (Ctrl+J above all) is a line break, which the host inserts through TextView's
+        // own NewLine command. EnterKeyAddsLine stays true because clearing it also clears Multiline and
+        // WordWrap; both actions are taken before TextView's own Enter binding can run.
+        if (focus == CommandCenterFocusRegion.Composer && (chord.IsNewLine || chord.IsEnter))
         {
-            // Ctrl+Enter sends. Bare/Shift/Alt+Enter fall through so TextView can insert
-            // newlines (EnterKeyAddsLine must stay true for WordWrap).
-            if (chord.IsCtrl)
-            {
-                return CommandCenterAction.Send;
-            }
-
-            return CommandCenterAction.None;
+            return chord.IsNewLine ? CommandCenterAction.InsertComposerNewLine : CommandCenterAction.Send;
         }
 
         if (focus == CommandCenterFocusRegion.Sessions)
@@ -384,13 +382,18 @@ internal static class CommandCenterKeymap
             CommandCenterOverlayKind.ModelPicker => CommandCenterAction.SelectModel,
             CommandCenterOverlayKind.QuitConfirm or CommandCenterOverlayKind.DiscardConfirm
                 => CommandCenterAction.ConfirmPending,
-            // HumanPrompt: Enter inserts newline in the answer TextView; Ctrl+Enter submits.
-            CommandCenterOverlayKind.HumanPrompt => CommandCenterAction.NoOp,
+            // HumanPrompt follows the composer: Enter submits the answer, and a line break is any other
+            // Enter-like chord, which the host inserts into the answer before this is consulted.
+            CommandCenterOverlayKind.HumanPrompt => CommandCenterAction.Send,
             _ => CommandCenterAction.NoOp,
         };
 }
 
-/// <summary>Normalized key chord flags for <see cref="CommandCenterKeymap"/>.</summary>
+/// <summary>
+/// Normalized key chord flags for <see cref="CommandCenterKeymap"/>. <see cref="IsNewLine"/> marks the
+/// Enter-like chords that insert a line break instead of sending; <see cref="CommandCenterKeyChords.FromKey"/>
+/// documents which keys those are and why.
+/// </summary>
 internal readonly record struct KeyChord(
     bool IsEnter = false,
     bool IsEsc = false,
@@ -416,4 +419,5 @@ internal readonly record struct KeyChord(
     bool IsJ = false,
     bool IsSpace = false,
     bool IsK = false,
-    bool IsBareLetter = false);
+    bool IsBareLetter = false,
+    bool IsNewLine = false);

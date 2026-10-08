@@ -272,6 +272,19 @@ internal sealed class CommandCenterState
     public IReadOnlyList<ModelPickerItem> FilteredModels =>
         CommandCenterModelPicker.Filter(ModelChoices, ModelFilter);
 
+    /// <summary>
+    /// Which list the command palette shows: the curated actions (<c>Ctrl+K</c>) or every slash
+    /// command (<c>/</c>). Both are <see cref="CommandCenterOverlayKind.CommandPalette"/>.
+    /// </summary>
+    public CommandPaletteMode PaletteMode { get; set; }
+
+    /// <summary>Type-ahead text narrowing the palette; in the slash menu it starts with the <c>/</c>.</summary>
+    public string PaletteFilter { get; set; } = string.Empty;
+
+    /// <summary>The palette rows on screen, in order: the row Enter runs is the one at the highlight.</summary>
+    public IReadOnlyList<CommandPaletteEntry> FilteredPaletteEntries =>
+        CommandPaletteCatalog.Filter(PaletteMode, PaletteFilter);
+
     public Guid? SelectedSessionId { get; set; }
 
     public Guid? SelectedTranscriptEntryId { get; set; }
@@ -348,36 +361,53 @@ internal sealed class CommandCenterState
         }
     }
 
-    public string FooterHints
+    /// <summary>
+    /// The footer as one plain line: the ephemeral <see cref="FooterHint"/> message when one is set,
+    /// otherwise every hint <see cref="FooterHintItems"/> lists. The window fits the hints to the
+    /// terminal through <see cref="CommandCenterHintBar.Fit"/> rather than using this line.
+    /// </summary>
+    public string FooterHints =>
+        !string.IsNullOrWhiteSpace(FooterHint)
+            ? FooterHint!
+            : string.Join(CommandCenterHintBar.Separator, FooterHintItems(modelSelectorVisible: true));
+
+    /// <summary>
+    /// The footer hints for the focused region or open overlay, most important first: the
+    /// attachment-indexing status when there is one, then that region's own keys. The composer offers the
+    /// header model control only when <paramref name="modelSelectorVisible"/>, since a narrow terminal does
+    /// not render it.
+    /// </summary>
+    public IReadOnlyList<string> FooterHintItems(bool modelSelectorVisible)
     {
-        get
+        IReadOnlyList<string> controls = FocusRegion switch
         {
-            if (!string.IsNullOrWhiteSpace(FooterHint))
-            {
-                return FooterHint!;
-            }
+            CommandCenterFocusRegion.Sessions or CommandCenterFocusRegion.Overlay
+                when Overlay is CommandCenterOverlayKind.SessionPicker or CommandCenterOverlayKind.None
+                => CommandCenterGuidance.SessionHints,
+            CommandCenterFocusRegion.Transcript
+                => CommandCenterGuidance.TranscriptHints,
+            CommandCenterFocusRegion.Incantations
+                => CommandCenterGuidance.IncantationsHints,
+            CommandCenterFocusRegion.Model
+                => CommandCenterGuidance.ModelControlHints,
+            CommandCenterFocusRegion.Overlay when Overlay == CommandCenterOverlayKind.ModelPicker
+                => CommandCenterGuidance.ModelPickerHints,
+            CommandCenterFocusRegion.Overlay when Overlay == CommandCenterOverlayKind.CommandPalette
+                => CommandCenterGuidance.CommandPaletteHints,
+            CommandCenterFocusRegion.Overlay when Overlay == CommandCenterOverlayKind.Help
+                => CommandCenterGuidance.HelpOverlayHints,
+            CommandCenterFocusRegion.Overlay
+                when Overlay is CommandCenterOverlayKind.QuitConfirm or CommandCenterOverlayKind.DiscardConfirm
+                => CommandCenterGuidance.ConfirmHints,
+            CommandCenterFocusRegion.Overlay when Overlay == CommandCenterOverlayKind.HumanPrompt
+                => CommandCenterGuidance.HumanPromptHints,
+            _
+                => CommandCenterGuidance.ComposerHints(modelSelectorVisible),
+        };
 
-            string controls = FocusRegion switch
-            {
-                CommandCenterFocusRegion.Sessions or CommandCenterFocusRegion.Overlay
-                    when Overlay is CommandCenterOverlayKind.SessionPicker or CommandCenterOverlayKind.None
-                    => "↑↓/jk select · Enter resume · Ctrl+PgDn/PgUp older/newer page · type to filter · Esc composer · Ctrl+R refresh · F1 help",
-                CommandCenterFocusRegion.Transcript
-                    => "↑↓ scroll · PgUp/PgDn · Ctrl+PgUp/PgDn load adjacent page · Home/End · Esc composer · Tab focus · F1 help",
-                CommandCenterFocusRegion.Incantations
-                    => "↑↓ scroll Incantations · PgUp/PgDn · Home/End · Esc composer · Tab focus · F1 help",
-                CommandCenterFocusRegion.Model
-                    => "Enter/Space open models · Esc composer · Tab focus · /model <name> also works",
-                CommandCenterFocusRegion.Overlay when Overlay == CommandCenterOverlayKind.ModelPicker
-                    => "↑↓/jk select · Enter use model · type to filter · Esc cancel",
-                _
-                    => "Ctrl+Enter send · Enter newline · Ctrl+K commands · Ctrl+O sessions · Ctrl+N new · Ctrl+R refresh · Ctrl+C cancel · Ctrl+Q quit · F1 · Tab",
-            };
+        string? indexing = AttachmentIndexingStatusText;
 
-            string? indexing = AttachmentIndexingStatusText;
-
-            return indexing is null ? controls : $"{indexing} | {controls}";
-        }
+        return indexing is null ? controls : [indexing, .. controls];
     }
 
     public string? AttachmentIndexingStatusText

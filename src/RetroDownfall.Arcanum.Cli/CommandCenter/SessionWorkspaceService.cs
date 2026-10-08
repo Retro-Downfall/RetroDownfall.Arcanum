@@ -586,19 +586,27 @@ internal sealed class SessionWorkspaceService(
             _ => string.IsNullOrWhiteSpace(error.Message) ? "The session could not be forked." : error.Message,
         };
 
+    /// <summary>
+    /// Unbinds the session. A cleared transcript opens with the welcome block as one entry, so it reads
+    /// as consecutive lines; a resumed session never gets it, since it would interleave with history.
+    /// </summary>
     public void StartNewSession(CommandCenterState state, bool clearTranscript = true)
     {
         ArgumentNullException.ThrowIfNull(state);
+
         state.ClearSessionBinding();
+
         state.LastError = null;
+
         state.TransientStatus = null;
+
         if (clearTranscript)
         {
             state.Log.Clear();
+
             state.Incantations.Clear();
-            state.Log.Append(
-                SessionLogEntryKind.Status,
-                "New Session — first message will create it.");
+
+            state.Log.Append(SessionLogEntryKind.Status, string.Join('\n', CommandCenterWelcome.Lines));
         }
     }
 

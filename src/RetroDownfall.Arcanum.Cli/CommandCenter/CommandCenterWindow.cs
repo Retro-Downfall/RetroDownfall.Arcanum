@@ -3,6 +3,7 @@ using System.Drawing;
 using RetroDownfall.Arcanum.Cli.UX;
 using Terminal.Gui.App;
 using Terminal.Gui.Drawing;
+using Terminal.Gui.Input;
 using Terminal.Gui.ViewBase;
 using Terminal.Gui.Views;
 
@@ -97,7 +98,9 @@ internal sealed class CommandCenterWindow : Window, ICommandCenterSessionActionW
 
         HeaderPane = new FrameView
         {
-            // Empty: the ASCII brand mark + status line are enough; avoid a redundant border title.
+            // Empty while the ASCII brand mark and rights line have rows of their own. Below
+            // CommandCenterBrandBanner.MinRowsForBanner rows ApplyAbsoluteLayoutCore collapses both into
+            // this border title (CommandCenterBrandBanner.CompactTitle), so the brand costs no row.
             Title = string.Empty,
             BorderStyle = chrome,
             // Focusable so the model drop-down it hosts can take focus at all: Terminal.Gui refuses
@@ -343,6 +346,11 @@ internal sealed class CommandCenterWindow : Window, ICommandCenterSessionActionW
             VerticalTextAlignment = Alignment.Start,
         };
 
+        // Dim.Fill() and never Dim.Fill(1): Terminal.Gui's Dim.Fill(margin) fills to the end of the
+        // SuperView's content area and LEAVES `margin` cells empty. The list already sits at Y = 1
+        // under the filter row, so Dim.Fill(1) gave it the inner height minus two: one row for a
+        // two-model picker whose frame OverlayLayout.MeasureHeight had sized to five, clipping the
+        // second model below the frame.
         OverlayList = new ListView
         {
             CanFocus = true,
@@ -351,7 +359,7 @@ internal sealed class CommandCenterWindow : Window, ICommandCenterSessionActionW
             X = 0,
             Y = 1,
             Width = Dim.Fill(),
-            Height = Dim.Fill(1),
+            Height = Dim.Fill(),
             SchemeName = CommandCenterTheme.OverlayScheme,
             ViewportSettings = ViewportSettingsFlags.HasVerticalScrollBar,
         };
@@ -456,6 +464,11 @@ internal sealed class CommandCenterWindow : Window, ICommandCenterSessionActionW
 
     public bool IsSessionsFocused => SessionsView.HasFocus || (OverlayPane.Visible && OverlayList.HasFocus);
 
+    /// <summary>
+    /// The region Terminal.Gui focus is actually in. The overlay's filter and list belong to the
+    /// Sessions region only while they are showing the session picker; under any other overlay —
+    /// the palette, the slash menu, the model drop-down — they are that overlay's own.
+    /// </summary>
     public CommandCenterFocusRegion? ResolveFocusedRegion()
     {
         if (Input.HasFocus)
@@ -463,14 +476,18 @@ internal sealed class CommandCenterWindow : Window, ICommandCenterSessionActionW
             return CommandCenterFocusRegion.Composer;
         }
 
+        bool overlayChildFocused = OverlayPane.Visible
+            && (OverlayFilter.HasFocus || OverlayList.HasFocus || OverlayBody.HasFocus || OverlayAnswer.HasFocus);
+
         if (SessionsView.HasFocus
-            || (OverlayPane.Visible && OverlayFilter.Visible && OverlayFilter.HasFocus)
-            || (OverlayPane.Visible && OverlayPane.Title is "Sessions" or "Sessions ●" && OverlayList.HasFocus))
+            || (OverlayPane.Visible
+                && _overlayKind == CommandCenterOverlayKind.SessionPicker
+                && (OverlayFilter.HasFocus || OverlayList.HasFocus)))
         {
             return CommandCenterFocusRegion.Sessions;
         }
 
-        if (OverlayPane.Visible && (OverlayList.HasFocus || OverlayBody.HasFocus || OverlayAnswer.HasFocus))
+        if (overlayChildFocused)
         {
             return CommandCenterFocusRegion.Overlay;
         }
@@ -618,11 +635,21 @@ internal sealed class CommandCenterWindow : Window, ICommandCenterSessionActionW
     /// </summary>
     public void SetComposerLayoutRequest(Action? request) => _requestComposerLayout = request;
 
+    /// <summary>
+    /// Splits the composer line at the caret. Goes through TextView's own <see cref="Command.NewLine"/>,
+    /// which Terminal.Gui binds to the handler Enter used to reach, so undo and the wrap model stay
+    /// intact. <c>InsertText("\n")</c> must not be used: it appends an empty row after the current line
+    /// instead of splitting it.
+    /// </summary>
     public void InsertComposerNewLine()
     {
-        Input.InsertText("\n");
+        _ = Input.InvokeCommand(Command.NewLine);
+
         _requestComposerLayout?.Invoke();
     }
+
+    /// <summary>Splits the ask_human answer line at the caret, the same way <see cref="InsertComposerNewLine"/> does.</summary>
+    public void InsertHumanPromptNewLine() => _ = OverlayAnswer.InvokeCommand(Command.NewLine);
 
     public void WireResize(IApplication app)
     {
@@ -679,7 +706,9 @@ internal sealed class CommandCenterWindow : Window, ICommandCenterSessionActionW
                 or CommandCenterUiUpdateKind.RefreshFooter)
             {
                 Header.Text = TruncateToWidth(state.HeaderText, Math.Max(8, Header.Frame.Width - 2));
-                Footer.Text = TruncateToWidth(state.FooterHints, Math.Max(8, _cols - 2));
+                Footer.Text = string.IsNullOrWhiteSpace(state.FooterHint)
+                    ? CommandCenterHintBar.Fit(state.FooterHintItems(ModelSelectorVisible), Math.Max(8, _cols - 2))
+                    : TruncateToWidth(state.FooterHint!, Math.Max(8, _cols - 2));
                 UpdateModelSelector(state);
                 UpdateThinkingLabel(state);
             }
@@ -910,7 +939,9 @@ internal sealed class CommandCenterWindow : Window, ICommandCenterSessionActionW
 
         // The palette is a list of actions, not prose: it renders through the list view so the row
         // Enter will run is highlighted, and its rows stay one-to-one with the actions behind them.
-        bool selectable = kind == CommandCenterOverlayKind.CommandPalette;
+        // Help renders through the list view too, wrapped, so ↑↓, PgUp/PgDn and Home/End scroll it:
+        // as a label it was clipped to the frame and lost its last lines on any ordinary terminal.
+        bool listBacked = kind is CommandCenterOverlayKind.CommandPalette or CommandCenterOverlayKind.Help;
 
         OverlayPane.Title = title;
         OverlayPane.Visible = true;
@@ -931,7 +962,7 @@ internal sealed class CommandCenterWindow : Window, ICommandCenterSessionActionW
 
         int overlayW = OverlayLayout.MeasureWidth(_cols, longest);
         int innerWidth = Math.Max(8, overlayW - 2);
-        IReadOnlyList<string> displayLines = showFilter || selectable
+        IReadOnlyList<string> displayLines = showFilter || kind == CommandCenterOverlayKind.CommandPalette
             ? lines
             : OverlayLayout.WrapLines(lines, innerWidth);
 
@@ -941,13 +972,15 @@ internal sealed class CommandCenterWindow : Window, ICommandCenterSessionActionW
             _overlayLines.Add(line);
         }
 
-        if (showFilter || selectable)
+        if (showFilter || listBacked)
         {
             OverlayBody.Visible = false;
             OverlayBody.Text = string.Empty;
             OverlayList.Visible = true;
             OverlayList.Y = showFilter ? 1 : 0;
-            OverlayList.Height = showFilter ? Dim.Fill(1) : Dim.Fill();
+
+            // No fill margin with or without the filter row: the Y offset already makes room for it.
+            OverlayList.Height = Dim.Fill();
             if (_overlayLines.Count > 0)
             {
                 OverlayList.SelectedItem = 0;
@@ -969,7 +1002,7 @@ internal sealed class CommandCenterWindow : Window, ICommandCenterSessionActionW
         {
             OverlayFilter.SetFocus();
         }
-        else if (selectable)
+        else if (listBacked)
         {
             OverlayList.SetFocus();
         }
@@ -1121,7 +1154,8 @@ internal sealed class CommandCenterWindow : Window, ICommandCenterSessionActionW
         {
         }
 
-        OverlayPane.Title = "Models";
+        // The first row is a blank text field; the title says so, or it reads as an empty row.
+        OverlayPane.Title = "Models · type to filter";
         OverlayPane.Visible = true;
         _overlayShowFilter = true;
         OverlayBody.Visible = false;
@@ -1137,7 +1171,9 @@ internal sealed class CommandCenterWindow : Window, ICommandCenterSessionActionW
 
         OverlayList.Visible = true;
         OverlayList.Y = 1;
-        OverlayList.Height = Dim.Fill(1);
+
+        // Dim.Fill(), not Dim.Fill(1): see the OverlayList initializer.
+        OverlayList.Height = Dim.Fill();
         RefreshModelList(state);
         ApplyAbsoluteLayout(_cols, _rows);
         OverlayFilter.SetFocus();
@@ -1260,7 +1296,10 @@ internal sealed class CommandCenterWindow : Window, ICommandCenterSessionActionW
         OverlayFilter.Visible = true;
         OverlayList.Visible = true;
         OverlayList.Y = 1;
-        OverlayList.Height = Dim.Fill(1);
+
+        // Dim.Fill(), not Dim.Fill(1): see the OverlayList initializer. The rows arrive afterwards,
+        // through RefreshSessionList, which re-measures the frame once they do.
+        OverlayList.Height = Dim.Fill();
         ApplyAbsoluteLayout(_cols, _rows);
         OverlayFilter.SetFocus();
     }
@@ -1292,6 +1331,124 @@ internal sealed class CommandCenterWindow : Window, ICommandCenterSessionActionW
         }
         catch
         {
+        }
+    }
+
+    /// <summary>The narrowest palette row: an overlay frame of the shared 60-cell default width.</summary>
+    private const int MinimumPaletteRowWidth = OverlayLayout.DefaultMaxWidth - 2;
+
+    /// <summary>
+    /// The width every palette row is rendered at. The overlay frame is sized from its widest row,
+    /// so the frame comes out at exactly this plus its border and the two cannot drift apart.
+    /// </summary>
+    private int _paletteRowWidth = MinimumPaletteRowWidth;
+
+    /// <summary>
+    /// Opens the command palette — the curated actions or, in <see cref="CommandPaletteMode.Slash"/>,
+    /// every slash command — as a two-column list under a filter field that has the keyboard, the
+    /// same shape the model and session pickers use.
+    /// </summary>
+    public void ShowPaletteOverlay(CommandCenterState state)
+    {
+        ArgumentNullException.ThrowIfNull(state);
+
+        _overlayKind = CommandCenterOverlayKind.CommandPalette;
+
+        _overlayHumanPrompt = false;
+
+        OverlayAnswer.Visible = false;
+
+        try
+        {
+            OverlayAnswer.Text = string.Empty;
+        }
+        catch
+        {
+        }
+
+        OverlayPane.Title = state.PaletteMode == CommandPaletteMode.Slash
+            ? "Slash commands · type to filter"
+            : "Commands · type to filter";
+
+        OverlayPane.Visible = true;
+
+        _overlayShowFilter = true;
+
+        OverlayBody.Visible = false;
+
+        OverlayBody.Text = string.Empty;
+
+        OverlayFilter.Visible = true;
+
+        OverlayFilter.Text = state.PaletteFilter;
+
+        OverlayList.Visible = true;
+
+        OverlayList.Y = 1;
+
+        // The list already starts below the filter row; a fill margin on top of that would hide the
+        // last row of a list that exactly fills its frame.
+        OverlayList.Height = Dim.Fill();
+
+        _paletteRowWidth = Math.Clamp(
+            CommandPaletteCatalog.NaturalRowWidth(state.PaletteMode) + 1,
+            MinimumPaletteRowWidth,
+            Math.Max(MinimumPaletteRowWidth, Math.Min(_cols - 6, OverlayLayout.AbsoluteMaxWidth - 2)));
+
+        RefreshPaletteList(state);
+
+        ApplyAbsoluteLayout(_cols, _rows);
+
+        OverlayFilter.SetFocus();
+
+        OverlayFilter.MoveEnd();
+    }
+
+    /// <summary>
+    /// Refills the palette from the current filter and highlights the first row, which is the best
+    /// match for what has been typed. Every row comes from the palette catalog, never from the host
+    /// or a model, so nothing here needs stripping.
+    /// </summary>
+    public void RefreshPaletteList(CommandCenterState state)
+    {
+        ArgumentNullException.ThrowIfNull(state);
+
+        _overlayLines.Clear();
+
+        foreach (string row in CommandPaletteCatalog.Render(
+            state.FilteredPaletteEntries,
+            state.PaletteMode,
+            _paletteRowWidth))
+        {
+            _overlayLines.Add(row);
+        }
+
+        try
+        {
+            OverlayList.SelectedItem = 0;
+
+            OverlayList.EnsureSelectedItemVisible();
+        }
+        catch
+        {
+        }
+    }
+
+    /// <summary>
+    /// Replaces the composer text and leaves the caret at its end, so whatever is typed next
+    /// continues the line — how the slash menu hands a command back for its argument.
+    /// </summary>
+    public void SetComposerText(string text)
+    {
+        ArgumentNullException.ThrowIfNull(text);
+
+        Input.Text = text;
+
+        Input.MoveEnd();
+
+        if (!_layoutInProgress)
+        {
+            ApplyAbsoluteLayout(_cols, _rows);
         }
     }
 
@@ -1583,6 +1740,9 @@ internal sealed class CommandCenterWindow : Window, ICommandCenterSessionActionW
         Banner.Text = showBrand ? CommandCenterBrandBanner.AsText() : string.Empty;
         Rights.Text = showBrand ? CommandCenterBrandBanner.RightsBlurb : string.Empty;
 
+        // Without rows of its own the brand moves into the border title, which costs none.
+        HeaderPane.Title = showBrand ? string.Empty : CommandCenterBrandBanner.CompactTitle;
+
         int headerH = showBrand ? BorderedHeaderWithBrandHeight : BorderedHeaderCompactHeight;
         int footerH = FooterHeight;
 
@@ -1647,6 +1807,7 @@ internal sealed class CommandCenterWindow : Window, ICommandCenterSessionActionW
             Rights.Visible = false;
             Banner.Text = string.Empty;
             Rights.Text = string.Empty;
+            HeaderPane.Title = CommandCenterBrandBanner.CompactTitle;
             headerH = Math.Min(BorderedHeaderCompactHeight, Math.Max(3, _rows / 5));
             int tightWidth = Math.Max(1, _cols - ComposerLayout.BorderOverhead);
             wrapped = Math.Max(ComposerLayout.CountWrappedRows(composerText, tightWidth), lineFloor);
@@ -1873,9 +2034,11 @@ internal sealed class CommandCenterWindow : Window, ICommandCenterSessionActionW
     }
 
     /// <summary>
-    /// Configures the composer TextView for soft-wrap. Terminal.Gui couples
-    /// <c>EnterKeyAddsLine=false</c> to <c>Multiline=false</c> and <c>WordWrap=false</c>,
-    /// so Enter stays as newline and <b>Ctrl+Enter</b> sends via the keymap.
+    /// Configures the composer (and the ask_human answer) TextView for soft-wrap. Terminal.Gui couples
+    /// <c>EnterKeyAddsLine=false</c> to <c>Multiline=false</c> and <c>WordWrap=false</c>, so it stays
+    /// true; Enter never reaches TextView's own binding anyway, because the host's KeyDown handler maps
+    /// bare Enter to send and every other Enter-like chord to <see cref="Command.NewLine"/> and marks the
+    /// key handled first.
     /// </summary>
 #pragma warning disable CS0618
     internal static void ConfigureComposerTextView(TextView input)
@@ -1963,10 +2126,20 @@ internal sealed class CommandCenterWindow : Window, ICommandCenterSessionActionW
 
         if (OverlayPane.Visible && _overlayKind == CommandCenterOverlayKind.SessionPicker)
         {
+            int previousRows = _overlayLines.Count;
+
             _overlayLines.Clear();
             foreach (string line in _sessionLines)
             {
                 _overlayLines.Add(line);
+            }
+
+            // The picker opens before the host hands it any sessions, so its frame was measured for
+            // whatever the list held then — nothing, or the overlay it replaced. Re-measure whenever
+            // the row count moves; ApplyAbsoluteLayout is re-entrancy guarded and never calls back here.
+            if (_overlayLines.Count != previousRows)
+            {
+                ApplyAbsoluteLayout(_cols, _rows);
             }
         }
 
@@ -2024,7 +2197,7 @@ internal sealed class CommandCenterWindow : Window, ICommandCenterSessionActionW
             ? "Incantations ●"
             : "Incantations";
         Input.Title = state.FocusRegion == CommandCenterFocusRegion.Composer
-            ? "Composer ●  Ctrl+Enter send · Enter newline"
+            ? CommandCenterGuidance.ComposerFocusedTitle
             : "Composer";
 
         if (OverlayPane.Visible && !string.IsNullOrEmpty(OverlayPane.Title?.ToString()))

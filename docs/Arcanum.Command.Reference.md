@@ -158,13 +158,33 @@ Interactive auto-start uses short connection/readiness observation only: two sec
 
 On a fresh installation, the foreground command explains before the operating system may request access to its credential store. Arcanum reads or creates one private server-authentication key; the password dialog belongs to macOS Keychain, Windows Credential Manager, or the desktop secret store, and Arcanum never receives the login password. Before configuration, an ordinary command checks only public reset residue and credential-item existence metadata; it does not request reset secret bytes. Proven reset evidence enters authenticated recovery, while an indeterminate metadata answer fails closed without opening another password prompt. Presence polling opens secure storage only after the host proves it already knows the key and reads the OS store at most once, so a failed launch cannot open a series of password prompts. A successful host start records that the explanation was shown; a failed start does not. If existing encrypted attachment/upload/batch files need startup validation, Arcanum may also read their separate file-encryption key then. Otherwise that key remains lazy and is created only by the first encrypted-file write.
 
+### Keys
+
+| Key | Action |
+|---|---|
+| `Enter` | Send the composer (a message or a `/command`). It also submits an `ask_human` answer, resumes the selected session in Sessions, and opens the model list on the Model control. |
+| `Ctrl+J` | Insert a new line in the composer or the `ask_human` answer. It is a line feed, so it works in every terminal. |
+| `Alt+Enter`, `Shift+Enter`, `Ctrl+Enter` | Also insert a new line where the terminal sends them distinctly. `Alt+Enter` needs Option/Alt to send Esc (iTerm2 "Esc+", Terminal.app "Use Option as Meta key"); `Shift+Enter` and `Ctrl+Enter` need CSI-u (kitty) key reporting. Where the terminal sends the same byte as `Enter` (Terminal.app, iTerm2 by default, tmux, xterm.js), they send. |
+| `/` | In an empty composer, opens the slash-command menu (see Command palette and slash menu). |
+| `Ctrl+K` | The command palette. |
+| `Ctrl+N` | New session. |
+| `Ctrl+O` | Sessions (the sidebar, or a picker under 100 columns). |
+| `Tab` / `Shift+Tab` | Cycle Composer → Sessions → Transcript → Incantations → Model; `Shift+Tab` from the composer reaches the Model control directly. |
+| `Ctrl+R` / `F5` | Refresh. |
+| `Ctrl+C` | Cancel the turn, else clear the composer, else show the quit hint. |
+| `Ctrl+Q` | Quit (asks first while a turn is generating). |
+| `Esc` | Close an overlay or return to the composer. |
+| `F1` | Help, scrolled with `↑`/`↓` and `PgUp`/`PgDn`. |
+
+The bottom row shows the hints for the focused region that fit, most important first, and ends with `F1 help` whenever any were left out; a hint is never cut in half. The focused composer's title carries `Enter send · Ctrl+J newline`, so the bottom row does not repeat them. Below 30 rows the ASCII logo and the rights line collapse into the header's border title, so the header takes three rows instead of seven and the transcript keeps them.
+
 ### The model drop-down
 
 `/model <name>` needs you to know the model id before you can type it. That is fine for models you wrote into `arcanum.json` yourself, but a Familiar's catalogue belongs to the vendor and changes without a configuration edit, so Command Center also carries a model control in the header.
 
 It is a full focus region: `Tab` / `Shift+Tab` reach it alongside Composer, Sessions, Transcript, and Incantations. `Enter`, `Space`, or `↓` opens it; typing narrows by model name or provider name; `↑`/`↓` (or `k`/`j`) move; `Enter` selects; `Esc` cancels back to the composer. No mouse anywhere.
 
-The list is `GET /api/models`, so it spans every provider kind, groups by provider, marks the model prompts currently go to, and already excludes anything on a Familiar's `hiddenModels` list. Selecting sets exactly the session model `/model <name>` sets — the two cannot disagree. On a terminal under 72 columns the control is not rendered and drops out of the `Tab` cycle; `/model <name>` is unchanged, and so is `-m` / `--model` on `arcanum run`.
+The list is `GET /api/models`, so it spans every provider kind, groups by provider, marks the model prompts currently go to, and already excludes anything on a Familiar's `hiddenModels` list. Its first row is a type-to-filter field, which is why the overlay is titled `Models · type to filter`. Selecting sets exactly the session model `/model <name>` sets — the two cannot disagree — and prints `Model set to <model> (<provider>) for this session.` On a terminal under 72 columns the control is not rendered and drops out of the `Tab` cycle; `/model <name>` is unchanged, and so is `-m` / `--model` on `arcanum run`.
 
 ### Slash commands
 
@@ -182,7 +202,7 @@ One registry defines every slash command, its help text, and the canonical repla
 | `/cost` | Show token and spend totals for the current session. |
 | `/memory` | Show the compressed Campaign Summary for this session. |
 | `/config` | Show the effective configuration summary and its file path. |
-| `/model [<name>]` | With no name, list configured models; with a name, select it for this session. The header model drop-down sets the same session model — see below. |
+| `/model [<name>]` | With no name, list the models and mark this session's. With a name, select it for this session after checking it against `GET /api/providers`: a listed model, a model on a Familiar's `hiddenModels` list, or (when a `ClaudeCodeCli` or `CodexCli` provider is configured) any other name, which goes to the first Familiar as the host would route it. Any other name is refused with the available list, and the model stays as it was. The confirmation names the model and its provider. `/model list` is refused; `/model` lists. The header drop-down sets the same session model, see above. |
 | `/provider list` | List configured providers. |
 | `/mcp [reload]` | Show MCP server status, or reload MCP configuration. |
 | `/tools` | Show native tools. |
@@ -219,6 +239,37 @@ Persistent pins use `/pins`, `/pin`, and `/unpin` rather than overloading `/cont
 List offsets must be nonnegative integers. Campaign pages are fetched from the API at the requested offset; Spell and Ward pages slice the complete fetched state for terminal rendering. When another page exists, Command Center states that server/durable state was not changed and prints the exact next command instead of silently truncating the list.
 
 The Sessions pane keeps one 40-session page and the Transcript pane keeps one 200-entry page; these are view allocations, not history totals. In Sessions, `Ctrl+PgDn` loads older sessions and `Ctrl+PgUp` returns toward recent sessions. In Transcript, `Ctrl+PgUp` loads older entries and `Ctrl+PgDn` returns toward the latest entries. Paging uses exact server cursors/offsets, refuses a repeated or missing checkpoint as no progress, honors cancellation, and rebuilds Incantations from the current transcript page.
+
+### Command palette and slash menu
+
+`Ctrl+K` opens the command palette: one row per action, its name on the left and what it does on the right. The filter field above the list has the keyboard, so typing narrows the list as you go — names that start with what you typed first, then names that contain it, then rows whose description mentions it. `↑`/`↓` move the highlight, `Enter` runs the highlighted row, and `Esc` closes the palette.
+
+| Palette entry | What it does |
+|---|---|
+| New Session | Starts a fresh conversation, as `Ctrl+N` does. |
+| Choose Model | Opens the header's model drop-down (above), so a model can be chosen at any terminal width. |
+| Open Sessions | Opens the Sessions pane, or the session picker under 100 columns, as `Ctrl+O` does. |
+| Slash Commands | Opens the slash menu below, as typing `/` into an empty composer does. Leaving the menu writes into the composer, so over a draft the footer asks you to send or clear it first. |
+| Refresh | Reloads the session list, as `Ctrl+R` does. |
+| Provider List | Runs `/provider list`. |
+| MCP Status | Runs `/mcp`. |
+| Arsenal | Runs `/arsenal`. |
+| Campaign List | Runs `/campaign list`. |
+| Spell List | Runs `/spell list`. |
+| Ward List | Runs `/ward list`. |
+| Doctor | Runs `/doctor`. |
+| Context | Runs `/context`. |
+| Help | Shows the key and command help, as `F1` does. |
+| Quit | Leaves Command Center, as `Ctrl+Q` does. |
+
+Each slash-backed row shows its command's description from the slash registry, so the palette, the slash menu, and `/help` describe a command in the same words.
+
+Typing `/` into an empty composer opens the slash menu: every registered command, its usage on the left and its description on the right, narrowed as you type by the command name after the `/`.
+
+- `Enter` runs a command that takes no argument (`/help`, `/doctor`, `/provider list`). For any other command it fills the composer with the command's fixed part — `/model `, `/resume `, `/campaign list ` — so you add the argument and press `Enter` again. When nothing matches, `Enter` sends what you typed, so a misspelling gets the usual did-you-mean answer.
+- A space hands the line to the composer, so `/model gemma4:e4b` typed straight through works. Backspace past the `/`, or `Esc`, returns to the composer with what you typed. A paste that carries an argument, or a `/` deleted from the front of the line, hands the line over the same way.
+
+A new session's transcript — after `Ctrl+N`, the palette's New Session, `/clear`, or a start-up with no session to reopen — opens with a short welcome naming these keys: `Enter` to send and `Ctrl+J` for a new line, `/` and `Ctrl+K`, `Ctrl+N` and `Ctrl+O`, `Shift+Tab` to the model control, and `F1` for every key. A resumed session opens on its history instead.
 
 ## Turn entry points
 

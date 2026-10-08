@@ -13,9 +13,10 @@ public sealed class CommandCenterOverlayNavigationTests
     private static readonly string[] PaletteRows =
     [
         "New Session",
+        "Choose Model",
         "Open Sessions",
+        "Slash Commands",
         "Refresh",
-        "Model List",
         "Provider List",
         "MCP Status",
         "Arsenal",
@@ -23,7 +24,7 @@ public sealed class CommandCenterOverlayNavigationTests
         "Spell List",
         "Ward List",
         "Doctor",
-        "Mana",
+        "Context",
         "Help",
         "Quit",
     ];
