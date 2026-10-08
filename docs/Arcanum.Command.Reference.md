@@ -164,7 +164,7 @@ On a fresh installation, the foreground command explains before the operating sy
 
 It is a full focus region: `Tab` / `Shift+Tab` reach it alongside Composer, Sessions, Transcript, and Incantations. `Enter`, `Space`, or `↓` opens it; typing narrows by model name or provider name; `↑`/`↓` (or `k`/`j`) move; `Enter` selects; `Esc` cancels back to the composer. No mouse anywhere.
 
-The list is `GET /api/models`, so it spans every provider kind, groups by provider, marks the model prompts currently go to, and already excludes anything on a Familiar's `hiddenModels` list. Its first row is a type-to-filter field, which is why the overlay is titled `Models · type to filter`. Selecting sets exactly the session model `/model <name>` sets — the two cannot disagree. On a terminal under 72 columns the control is not rendered and drops out of the `Tab` cycle; `/model <name>` is unchanged, and so is `-m` / `--model` on `arcanum run`.
+The list is `GET /api/models`, so it spans every provider kind, groups by provider, marks the model prompts currently go to, and already excludes anything on a Familiar's `hiddenModels` list. Its first row is a type-to-filter field, which is why the overlay is titled `Models · type to filter`. Selecting sets exactly the session model `/model <name>` sets — the two cannot disagree — and prints `Model set to <model> (<provider>) for this session.` On a terminal under 72 columns the control is not rendered and drops out of the `Tab` cycle; `/model <name>` is unchanged, and so is `-m` / `--model` on `arcanum run`.
 
 ### Slash commands
 
@@ -182,7 +182,7 @@ One registry defines every slash command, its help text, and the canonical repla
 | `/cost` | Show token and spend totals for the current session. |
 | `/memory` | Show the compressed Campaign Summary for this session. |
 | `/config` | Show the effective configuration summary and its file path. |
-| `/model [<name>]` | With no name, list configured models; with a name, select it for this session. The header model drop-down sets the same session model — see below. |
+| `/model [<name>]` | With no name, list the models and mark this session's. With a name, select it for this session after checking it against `GET /api/providers`: a listed model, a model on a Familiar's `hiddenModels` list, or (when a `ClaudeCodeCli` or `CodexCli` provider is configured) any other name, which goes to the first Familiar as the host would route it. Any other name is refused with the available list, and the model stays as it was. The confirmation names the model and its provider. `/model list` is refused; `/model` lists. The header drop-down sets the same session model, see above. |
 | `/provider list` | List configured providers. |
 | `/mcp [reload]` | Show MCP server status, or reload MCP configuration. |
 | `/tools` | Show native tools. |

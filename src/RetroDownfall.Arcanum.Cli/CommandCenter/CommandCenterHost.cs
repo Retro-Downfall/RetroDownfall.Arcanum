@@ -1695,16 +1695,18 @@ internal sealed class CommandCenterHost(
         CommandCenterWindow window,
         IApplication app)
     {
-        string? selected = CommandCenterModelPicker.Resolve(
+        ModelPickerItem? selected = CommandCenterModelPicker.ResolveItem(
             state.FilteredModels,
             state.SelectedModelIndex);
 
         if (selected is not null)
         {
-            state.Model = selected;
+            state.Model = selected.Model;
+
+            // The same words `/model <name>` uses for a listed model: every row here is one.
             state.Log.Append(
                 SessionLogEntryKind.Status,
-                $"Model set to {selected} for this session.");
+                CommandCenterModelChoice.Confirmation(selected.Model, selected.ProviderName));
         }
 
         CloseOverlayAndFocusInput(state, window, app);
