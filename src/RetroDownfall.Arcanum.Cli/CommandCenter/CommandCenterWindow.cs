@@ -3,6 +3,7 @@ using System.Drawing;
 using RetroDownfall.Arcanum.Cli.UX;
 using Terminal.Gui.App;
 using Terminal.Gui.Drawing;
+using Terminal.Gui.Input;
 using Terminal.Gui.ViewBase;
 using Terminal.Gui.Views;
 
@@ -97,7 +98,9 @@ internal sealed class CommandCenterWindow : Window, ICommandCenterSessionActionW
 
         HeaderPane = new FrameView
         {
-            // Empty: the ASCII brand mark + status line are enough; avoid a redundant border title.
+            // Empty while the ASCII brand mark and rights line have rows of their own. Below
+            // CommandCenterBrandBanner.MinRowsForBanner rows ApplyAbsoluteLayoutCore collapses both into
+            // this border title (CommandCenterBrandBanner.CompactTitle), so the brand costs no row.
             Title = string.Empty,
             BorderStyle = chrome,
             // Focusable so the model drop-down it hosts can take focus at all: Terminal.Gui refuses
@@ -618,11 +621,21 @@ internal sealed class CommandCenterWindow : Window, ICommandCenterSessionActionW
     /// </summary>
     public void SetComposerLayoutRequest(Action? request) => _requestComposerLayout = request;
 
+    /// <summary>
+    /// Splits the composer line at the caret. Goes through TextView's own <see cref="Command.NewLine"/>,
+    /// which Terminal.Gui binds to the handler Enter used to reach, so undo and the wrap model stay
+    /// intact. <c>InsertText("\n")</c> must not be used: it appends an empty row after the current line
+    /// instead of splitting it.
+    /// </summary>
     public void InsertComposerNewLine()
     {
-        Input.InsertText("\n");
+        _ = Input.InvokeCommand(Command.NewLine);
+
         _requestComposerLayout?.Invoke();
     }
+
+    /// <summary>Splits the ask_human answer line at the caret, the same way <see cref="InsertComposerNewLine"/> does.</summary>
+    public void InsertHumanPromptNewLine() => _ = OverlayAnswer.InvokeCommand(Command.NewLine);
 
     public void WireResize(IApplication app)
     {
@@ -679,7 +692,9 @@ internal sealed class CommandCenterWindow : Window, ICommandCenterSessionActionW
                 or CommandCenterUiUpdateKind.RefreshFooter)
             {
                 Header.Text = TruncateToWidth(state.HeaderText, Math.Max(8, Header.Frame.Width - 2));
-                Footer.Text = TruncateToWidth(state.FooterHints, Math.Max(8, _cols - 2));
+                Footer.Text = string.IsNullOrWhiteSpace(state.FooterHint)
+                    ? CommandCenterHintBar.Fit(state.FooterHintItems(ModelSelectorVisible), Math.Max(8, _cols - 2))
+                    : TruncateToWidth(state.FooterHint!, Math.Max(8, _cols - 2));
                 UpdateModelSelector(state);
                 UpdateThinkingLabel(state);
             }
@@ -910,7 +925,9 @@ internal sealed class CommandCenterWindow : Window, ICommandCenterSessionActionW
 
         // The palette is a list of actions, not prose: it renders through the list view so the row
         // Enter will run is highlighted, and its rows stay one-to-one with the actions behind them.
-        bool selectable = kind == CommandCenterOverlayKind.CommandPalette;
+        // Help renders through the list view too, wrapped, so ↑↓, PgUp/PgDn and Home/End scroll it:
+        // as a label it was clipped to the frame and lost its last lines on any ordinary terminal.
+        bool listBacked = kind is CommandCenterOverlayKind.CommandPalette or CommandCenterOverlayKind.Help;
 
         OverlayPane.Title = title;
         OverlayPane.Visible = true;
@@ -931,7 +948,7 @@ internal sealed class CommandCenterWindow : Window, ICommandCenterSessionActionW
 
         int overlayW = OverlayLayout.MeasureWidth(_cols, longest);
         int innerWidth = Math.Max(8, overlayW - 2);
-        IReadOnlyList<string> displayLines = showFilter || selectable
+        IReadOnlyList<string> displayLines = showFilter || kind == CommandCenterOverlayKind.CommandPalette
             ? lines
             : OverlayLayout.WrapLines(lines, innerWidth);
 
@@ -941,7 +958,7 @@ internal sealed class CommandCenterWindow : Window, ICommandCenterSessionActionW
             _overlayLines.Add(line);
         }
 
-        if (showFilter || selectable)
+        if (showFilter || listBacked)
         {
             OverlayBody.Visible = false;
             OverlayBody.Text = string.Empty;
@@ -969,7 +986,7 @@ internal sealed class CommandCenterWindow : Window, ICommandCenterSessionActionW
         {
             OverlayFilter.SetFocus();
         }
-        else if (selectable)
+        else if (listBacked)
         {
             OverlayList.SetFocus();
         }
@@ -1583,6 +1600,9 @@ internal sealed class CommandCenterWindow : Window, ICommandCenterSessionActionW
         Banner.Text = showBrand ? CommandCenterBrandBanner.AsText() : string.Empty;
         Rights.Text = showBrand ? CommandCenterBrandBanner.RightsBlurb : string.Empty;
 
+        // Without rows of its own the brand moves into the border title, which costs none.
+        HeaderPane.Title = showBrand ? string.Empty : CommandCenterBrandBanner.CompactTitle;
+
         int headerH = showBrand ? BorderedHeaderWithBrandHeight : BorderedHeaderCompactHeight;
         int footerH = FooterHeight;
 
@@ -1647,6 +1667,7 @@ internal sealed class CommandCenterWindow : Window, ICommandCenterSessionActionW
             Rights.Visible = false;
             Banner.Text = string.Empty;
             Rights.Text = string.Empty;
+            HeaderPane.Title = CommandCenterBrandBanner.CompactTitle;
             headerH = Math.Min(BorderedHeaderCompactHeight, Math.Max(3, _rows / 5));
             int tightWidth = Math.Max(1, _cols - ComposerLayout.BorderOverhead);
             wrapped = Math.Max(ComposerLayout.CountWrappedRows(composerText, tightWidth), lineFloor);
@@ -1873,9 +1894,11 @@ internal sealed class CommandCenterWindow : Window, ICommandCenterSessionActionW
     }
 
     /// <summary>
-    /// Configures the composer TextView for soft-wrap. Terminal.Gui couples
-    /// <c>EnterKeyAddsLine=false</c> to <c>Multiline=false</c> and <c>WordWrap=false</c>,
-    /// so Enter stays as newline and <b>Ctrl+Enter</b> sends via the keymap.
+    /// Configures the composer (and the ask_human answer) TextView for soft-wrap. Terminal.Gui couples
+    /// <c>EnterKeyAddsLine=false</c> to <c>Multiline=false</c> and <c>WordWrap=false</c>, so it stays
+    /// true; Enter never reaches TextView's own binding anyway, because the host's KeyDown handler maps
+    /// bare Enter to send and every other Enter-like chord to <see cref="Command.NewLine"/> and marks the
+    /// key handled first.
     /// </summary>
 #pragma warning disable CS0618
     internal static void ConfigureComposerTextView(TextView input)
@@ -2024,7 +2047,7 @@ internal sealed class CommandCenterWindow : Window, ICommandCenterSessionActionW
             ? "Incantations ●"
             : "Incantations";
         Input.Title = state.FocusRegion == CommandCenterFocusRegion.Composer
-            ? "Composer ●  Ctrl+Enter send · Enter newline"
+            ? CommandCenterGuidance.ComposerFocusedTitle
             : "Composer";
 
         if (OverlayPane.Visible && !string.IsNullOrEmpty(OverlayPane.Title?.ToString()))

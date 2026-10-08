@@ -987,30 +987,40 @@ internal sealed class ShellCommandDispatcher(
                 state.ServeLaunch?.Guidance ?? "",
             ]);
 
-    private static string BuildKeysHelp() =>
-        string.Join(
+    /// <summary>
+    /// The <c>/keys</c> text. Enter sends and Ctrl+J inserts a line break: Ctrl+J is a line feed in every
+    /// terminal, while Ctrl+Enter arrives as the same CR as Enter in most of them. <c>/exit</c> stays the
+    /// last row, where an operator looking for the way out ends up.
+    /// </summary>
+    internal static string BuildKeysHelp()
+    {
+        static string Row(string key, string text) => $"  {key,-14}{text}";
+
+        return string.Join(
             Environment.NewLine,
             [
                 "Keyboard:",
-                "  F1            Help overlay",
-                "  Ctrl+K        Command palette",
-                "  Ctrl+O        Sessions (sidebar or picker)",
-                "  Ctrl+N        New session",
-                "  Ctrl+R / F5   Refresh sessions",
-                "  Tab/S-Tab     Cycle focus (Composer→Sessions→Transcript→Incantations→Model)",
-                "  Enter/Space   Open the model drop-down (Model header control)",
-                "  Enter         Newline (composer) / resume selected session",
-                "  Ctrl+Enter    Send (composer)",
-                "  ↑↓ / j k      Move session selection",
-                "  PgUp/PgDn     Scroll transcript",
-                "  Ctrl+PgUp/Dn Load newer/older transcript or session catalog page",
-                "  Home/End      Jump transcript top / bottom",
-                "  Esc           Close overlay / focus composer",
-                "  Ctrl+C        Cancel turn / clear composer / quit hint",
-                "  Ctrl+Q        Quit (confirm if generating)",
-                "  /keys         Show this help",
-                "  /exit         Leave Command Center",
+                Row("Enter", "Send the message or /command"),
+                Row("Ctrl+J", "New line (also Alt+Enter, Shift+Enter, Ctrl+Enter where the terminal sends them)"),
+                Row("/", "Slash-command menu (empty composer)"),
+                Row("Ctrl+K", "Command palette"),
+                Row("Ctrl+N", "New session"),
+                Row("Ctrl+O", "Sessions (sidebar or picker)"),
+                Row("Shift+Tab", "Model control (Enter opens the model list)"),
+                Row("Tab/S-Tab", "Cycle focus (Composer→Sessions→Transcript→Incantations→Model)"),
+                Row("Ctrl+R / F5", "Refresh sessions"),
+                Row("F1", "Help overlay"),
+                Row("↑↓ / j k", "Move session selection"),
+                Row("PgUp/PgDn", "Scroll transcript"),
+                Row("Ctrl+PgUp/Dn", "Load newer/older transcript or session catalog page"),
+                Row("Home/End", "Jump transcript top / bottom"),
+                Row("Esc", "Close overlay / focus composer"),
+                Row("Ctrl+C", "Cancel turn / clear composer / quit hint"),
+                Row("Ctrl+Q", "Quit (confirm if generating)"),
+                Row("/keys", "Show this help"),
+                Row("/exit", "Leave Command Center"),
             ]);
+    }
 
     /// <summary>
     /// The <c>/context</c> view: how the context window is being spent on this turn. This is the

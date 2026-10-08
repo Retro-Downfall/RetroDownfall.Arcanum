@@ -402,7 +402,9 @@ public sealed class CommandCenterBrandBannerTests
             CommandCenterBrandBanner.RightsBlurb,
             StringComparison.Ordinal);
         Assert.Equal(4, CommandCenterBrandBanner.BrandedContentRows);
-        Assert.True(CommandCenterBrandBanner.Fits(80, 24));
+        // Below 30 rows the logo collapses into the header's border title, so 80x24 has no room for it.
+        Assert.False(CommandCenterBrandBanner.Fits(80, 24));
+        Assert.True(CommandCenterBrandBanner.Fits(80, 30));
         Assert.False(CommandCenterBrandBanner.Fits(20, 10));
     }
 }
