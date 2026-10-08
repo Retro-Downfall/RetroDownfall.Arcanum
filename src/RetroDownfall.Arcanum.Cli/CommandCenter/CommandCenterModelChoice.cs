@@ -41,16 +41,18 @@ internal sealed record ModelChoiceDecision(ModelChoiceRoute Route, string Model,
 /// <para>
 /// A CLI-side mirror of <see cref="ProviderResolver.TryResolveProviderForModel"/>, fed from the
 /// projection <c>GET /api/providers</c> already returns (each provider's visible models, its hide
-/// list and its kind, in configured order). It reads the host's answer rather than local settings
-/// because the host resolves the name at turn time against its own latest configuration.
+/// list and its kind, in configured order). It asks the host rather than reading the CLI's own
+/// settings because the host is what resolves the name at turn time.
 /// <c>CommandCenterModelChoiceTests</c> runs the same names through both, so the copy cannot drift
 /// silently.
 /// </para>
 /// <para>
 /// Matching is trimmed, case-insensitive and in configured order: a listed model on any provider,
-/// then a hidden one, then the first Familiar. Acceptance always agrees with the host; the provider
-/// named for a hidden model can differ only when an earlier Familiar both declares and hides a name a
-/// later row lists, which the projection cannot tell apart.
+/// then a hidden one, then the first Familiar. Over the same configuration, acceptance always agrees
+/// with the resolver. Only the provider named can differ, in two hide-list corners the projection
+/// cannot tell apart: an earlier Familiar that declares and hides a name a later row lists (the
+/// resolver picks the Familiar), and a Familiar after the first that hides a name it never declares
+/// (the resolver hands it to the first Familiar).
 /// </para>
 /// </remarks>
 internal static class CommandCenterModelChoice
