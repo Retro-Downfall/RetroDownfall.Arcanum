@@ -677,6 +677,48 @@ public sealed class BudgetReservationServiceTests : IAsyncLifetime
     }
 
     /// <summary>
+    /// The recheck reads the live budget policy: once the budget is switched off, or its daily limit
+    /// is no longer positive, there is no limit to judge, so a reservation whose spend plus delegated
+    /// spend the enabled policy refuses passes, and the recheck leaves the reservation as it was.
+    /// </summary>
+    [SkippableTheory]
+    [InlineData(false, 1)]
+    [InlineData(true, 0)]
+    public async Task RecheckDailyLimitAsync_WhenBudgetDisabledOrLimitNonPositive_ReturnsSuccessWithoutJudging(
+        bool enabled,
+        double dailyLimit)
+    {
+        RequireSqlCipher();
+
+        DateTimeOffset admittedAt = new(2035, 2, 3, 12, 0, 0, TimeSpan.Zero);
+        BudgetPolicySettings policy = new()
+        {
+            Enabled = true,
+            DailyLimitUsd = 1m,
+        };
+        BudgetReservationService service = CreateService(policy);
+        service.UtcNowForTesting = () => admittedAt;
+        BudgetReservation reservation = await ReserveAsync(
+            service,
+            0.50m,
+            admittedAt.AddHours(1),
+            BudgetReservationService.UtcBudgetPeriod(admittedAt));
+
+        Result refusedWhileEnabled = await service.RecheckDailyLimitAsync(reservation.Id, delegatedSpendUsd: 5m);
+
+        policy.Enabled = enabled;
+        policy.DailyLimitUsd = (decimal)dailyLimit;
+        Result unjudged = await service.RecheckDailyLimitAsync(reservation.Id, delegatedSpendUsd: 5m);
+
+        Assert.True(refusedWhileEnabled.IsFailure);
+        Assert.Equal(ErrorCodes.Budget.Exceeded, refusedWhileEnabled.Error.Code);
+        Assert.True(unjudged.IsSuccess, unjudged.IsFailure ? unjudged.Error.Message : null);
+        (BudgetReservationStatus status, decimal reconciledUsd) = await ReadReservationStateAsync(reservation.Id);
+        Assert.Equal(BudgetReservationStatus.Reserved, status);
+        Assert.Equal(0m, reconciledUsd);
+    }
+
+    /// <summary>
     /// A raise after UTC midnight is what the turn's next call may spend, and that spend lands in the
     /// new day, so the raise is judged against the new day's committed and outstanding spend as well
     /// as the admitted day's. A refused raise leaves the reservation as it was.
