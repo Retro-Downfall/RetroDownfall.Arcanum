@@ -272,6 +272,19 @@ internal sealed class CommandCenterState
     public IReadOnlyList<ModelPickerItem> FilteredModels =>
         CommandCenterModelPicker.Filter(ModelChoices, ModelFilter);
 
+    /// <summary>
+    /// Which list the command palette shows: the curated actions (<c>Ctrl+K</c>) or every slash
+    /// command (<c>/</c>). Both are <see cref="CommandCenterOverlayKind.CommandPalette"/>.
+    /// </summary>
+    public CommandPaletteMode PaletteMode { get; set; }
+
+    /// <summary>Type-ahead text narrowing the palette; in the slash menu it starts with the <c>/</c>.</summary>
+    public string PaletteFilter { get; set; } = string.Empty;
+
+    /// <summary>The palette rows on screen, in order: the row Enter runs is the one at the highlight.</summary>
+    public IReadOnlyList<CommandPaletteEntry> FilteredPaletteEntries =>
+        CommandPaletteCatalog.Filter(PaletteMode, PaletteFilter);
+
     public Guid? SelectedSessionId { get; set; }
 
     public Guid? SelectedTranscriptEntryId { get; set; }
