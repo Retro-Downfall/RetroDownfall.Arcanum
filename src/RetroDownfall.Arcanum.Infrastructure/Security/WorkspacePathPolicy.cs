@@ -49,10 +49,25 @@ internal static class WorkspacePathPolicy
     private static bool _useOrdinalIgnoreCasePathComparisonForTests;
 
     /// <summary>
+    /// Test-only seam for the Windows classification of a reparse point that names no other location, on
+    /// non-Windows hosts. Production code should leave this at the default (<see langword="false"/>).
+    /// Set via <see cref="SetUseWindowsReparsePointClassificationForTests(bool)"/>.
+    /// </summary>
+    private static bool _useWindowsReparsePointClassificationForTests;
+
+    /// <summary>
     /// Observation-only test hook, invoked once per <see cref="IsPathUnderWorkspaceWithSymlinkCheck"/> call
     /// that passes the lexical check, with the normalized candidate. It cannot change the outcome.
     /// </summary>
     internal static Action<string>? ContainmentCheckObserverForTests { get; set; }
+
+    /// <summary>
+    /// Test-only seam that replaces reading a reparse point's link target, given the path being classified.
+    /// It stands in for what the filesystem cannot be made to answer on demand: a read that fails, or a
+    /// target that disappears, between the <c>lstat</c> and the <c>readlink</c>, and target text no POSIX
+    /// link can hold. Production code leaves it <see langword="null"/>.
+    /// </summary>
+    internal static Func<string, string?>? LinkTargetReaderForTests { get; set; }
 
     /// <summary>
     /// Enables or disables Windows-style ordinal-ignore-case path comparison for tests.
@@ -63,18 +78,37 @@ internal static class WorkspacePathPolicy
     }
 
     /// <summary>
+    /// Enables or disables the Windows classification of a reparse point that names no other location
+    /// (an ordinary entry rather than a link that changed under the walk) for tests.
+    /// </summary>
+    internal static void SetUseWindowsReparsePointClassificationForTests(bool value)
+    {
+        _useWindowsReparsePointClassificationForTests = value;
+    }
+
+    /// <summary>
     /// Restores all test seams to production defaults. Call from test teardown to avoid cross-test leakage.
     /// </summary>
     internal static void ResetTestSeams()
     {
         _useOrdinalIgnoreCasePathComparisonForTests = false;
+        _useWindowsReparsePointClassificationForTests = false;
         ContainmentCheckObserverForTests = null;
+        LinkTargetReaderForTests = null;
     }
 
     private static StringComparison PathComparison =>
         _useOrdinalIgnoreCasePathComparisonForTests || OperatingSystem.IsWindows()
             ? StringComparison.OrdinalIgnoreCase
             : StringComparison.Ordinal;
+
+    /// <summary>
+    /// Whether a reparse point that names no other location is an ordinary entry. On Windows it is some
+    /// other reparse point (a cloud placeholder, deduplicated data); on Unix every reparse point is a
+    /// symbolic link, so a missing target means the entry changed under the walk.
+    /// </summary>
+    private static bool ReparsePointWithoutTargetIsOrdinaryEntry =>
+        _useWindowsReparsePointClassificationForTests || OperatingSystem.IsWindows();
 
     internal static bool TryNormalizeWorkspace(
         string workingDirectory,
@@ -373,12 +407,14 @@ internal static class WorkspacePathPolicy
 
         exists = false;
 
-        string? pathRoot = Path.GetPathRoot(absolutePath);
-
-        if (string.IsNullOrEmpty(pathRoot) || !Path.IsPathFullyQualified(absolutePath))
+        // A fully qualified path always has a non-empty root, so this one check refuses both a relative path
+        // and a Windows drive- or root-relative one.
+        if (!Path.IsPathFullyQualified(absolutePath))
         {
             return false;
         }
+
+        string pathRoot = Path.GetPathRoot(absolutePath)!;
 
         return TryResolveComponents(
             pathRoot,
@@ -480,9 +516,10 @@ internal static class WorkspacePathPolicy
 
         bool currentIsDirectory = true;
 
+        // Every component reaches the stack through SplitComponents, which drops empty entries.
         while (pending.TryPop(out string? part))
         {
-            if (part.Length == 0 || part == ".")
+            if (part == ".")
             {
                 continue;
             }
@@ -531,13 +568,9 @@ internal static class WorkspacePathPolicy
 
                     PushReversed(pending, SplitComponents(linkTarget![targetRoot.Length..]));
                 }
-                else if (Path.IsPathRooted(linkTarget))
-                {
-                    // A Windows drive- or root-relative target depends on process state; refuse it.
-                    return false;
-                }
                 else
                 {
+                    // Relative: TryClassifyNoFollow refuses a Windows drive- or root-relative target.
                     string[] targetComponents = SplitComponents(linkTarget!);
 
                     if (windowsLinkSemantics
@@ -628,12 +661,8 @@ internal static class WorkspacePathPolicy
             return false;
         }
 
-        string? textualRoot = Path.GetPathRoot(textual);
-
-        if (string.IsNullOrEmpty(textualRoot))
-        {
-            return false;
-        }
+        // GetFullPath always answers a fully qualified path, so its root is never empty.
+        string textualRoot = Path.GetPathRoot(textual)!;
 
         // Stack<T> enumerates top first, which is walk order.
         List<string> remaining = [.. SplitComponents(textual[textualRoot.Length..]), .. pending];
@@ -651,7 +680,8 @@ internal static class WorkspacePathPolicy
 
     /// <summary>
     /// Classifies one path without following a symbolic link in its last component. Returns
-    /// <see langword="false"/> (fail closed) when the entry exists but cannot be classified.
+    /// <see langword="false"/> (fail closed) when the entry exists but cannot be classified, including a
+    /// symbolic link whose target text no walk can follow (see <see cref="IsFollowableLinkTarget"/>).
     /// </summary>
     private static bool TryClassifyNoFollow(
         string path,
@@ -689,9 +719,7 @@ internal static class WorkspacePathPolicy
         {
             try
             {
-                linkTarget = isDirectory
-                    ? new DirectoryInfo(path).LinkTarget
-                    : new FileInfo(path).LinkTarget;
+                linkTarget = ReadLinkTarget(path, isDirectory);
             }
             catch (Exception ex) when (
                 ex is IOException
@@ -705,7 +733,7 @@ internal static class WorkspacePathPolicy
 
             if (linkTarget is not null)
             {
-                if (linkTarget.Length == 0)
+                if (!IsFollowableLinkTarget(linkTarget))
                 {
                     return false;
                 }
@@ -715,10 +743,7 @@ internal static class WorkspacePathPolicy
                 return true;
             }
 
-            // On Unix every reparse point is a symbolic link, so a missing target means the entry changed
-            // under us. On Windows it is some other reparse point (a cloud placeholder, deduplicated data)
-            // that names no other location.
-            if (!OperatingSystem.IsWindows())
+            if (!ReparsePointWithoutTargetIsOrdinaryEntry)
             {
                 return false;
             }
@@ -728,6 +753,22 @@ internal static class WorkspacePathPolicy
 
         return true;
     }
+
+    private static string? ReadLinkTarget(string path, bool isDirectory) =>
+        LinkTargetReaderForTests is { } reader
+            ? reader(path)
+            : isDirectory
+                ? new DirectoryInfo(path).LinkTarget
+                : new FileInfo(path).LinkTarget;
+
+    /// <summary>
+    /// Whether the walk can follow a link with this target text: it is not empty, and it is either fully
+    /// qualified or purely relative. A Windows drive- or root-relative target (<c>C:x</c>, <c>\x</c>)
+    /// depends on process state, so it is refused; on Unix a rooted path is always fully qualified.
+    /// </summary>
+    private static bool IsFollowableLinkTarget(string linkTarget) =>
+        linkTarget.Length != 0
+        && (Path.IsPathFullyQualified(linkTarget) || !Path.IsPathRooted(linkTarget));
 
     private enum PathEntryKind
     {
