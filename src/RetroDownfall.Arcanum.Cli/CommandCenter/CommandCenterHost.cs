@@ -1644,10 +1644,11 @@ internal sealed class CommandCenterHost(
         state.FocusRegion = CommandCenterFocusRegion.Overlay;
         app.Invoke(() =>
         {
+            // The help is a scrollable list, so its title says how to move through it and out of it.
             window.ShowOverlay(
                 CommandCenterOverlayKind.Help,
                 HelpOverlayLines,
-                "Help",
+                "Help · ↑↓ scroll · Esc close",
                 showFilter: false);
             window.ApplyState(state, kind: CommandCenterUiUpdateKind.RefreshFooter);
         });

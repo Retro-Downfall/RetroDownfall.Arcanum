@@ -98,7 +98,9 @@ internal sealed class CommandCenterWindow : Window, ICommandCenterSessionActionW
 
         HeaderPane = new FrameView
         {
-            // Empty: the ASCII brand mark + status line are enough; avoid a redundant border title.
+            // Empty while the ASCII brand mark and rights line have rows of their own. Below
+            // CommandCenterBrandBanner.MinRowsForBanner rows ApplyAbsoluteLayoutCore collapses both into
+            // this border title (CommandCenterBrandBanner.CompactTitle), so the brand costs no row.
             Title = string.Empty,
             BorderStyle = chrome,
             // Focusable so the model drop-down it hosts can take focus at all: Terminal.Gui refuses
@@ -690,7 +692,9 @@ internal sealed class CommandCenterWindow : Window, ICommandCenterSessionActionW
                 or CommandCenterUiUpdateKind.RefreshFooter)
             {
                 Header.Text = TruncateToWidth(state.HeaderText, Math.Max(8, Header.Frame.Width - 2));
-                Footer.Text = TruncateToWidth(state.FooterHints, Math.Max(8, _cols - 2));
+                Footer.Text = string.IsNullOrWhiteSpace(state.FooterHint)
+                    ? CommandCenterHintBar.Fit(state.FooterHintItems(ModelSelectorVisible), Math.Max(8, _cols - 2))
+                    : TruncateToWidth(state.FooterHint!, Math.Max(8, _cols - 2));
                 UpdateModelSelector(state);
                 UpdateThinkingLabel(state);
             }
@@ -921,7 +925,9 @@ internal sealed class CommandCenterWindow : Window, ICommandCenterSessionActionW
 
         // The palette is a list of actions, not prose: it renders through the list view so the row
         // Enter will run is highlighted, and its rows stay one-to-one with the actions behind them.
-        bool selectable = kind == CommandCenterOverlayKind.CommandPalette;
+        // Help renders through the list view too, wrapped, so ↑↓, PgUp/PgDn and Home/End scroll it:
+        // as a label it was clipped to the frame and lost its last lines on any ordinary terminal.
+        bool listBacked = kind is CommandCenterOverlayKind.CommandPalette or CommandCenterOverlayKind.Help;
 
         OverlayPane.Title = title;
         OverlayPane.Visible = true;
@@ -942,7 +948,7 @@ internal sealed class CommandCenterWindow : Window, ICommandCenterSessionActionW
 
         int overlayW = OverlayLayout.MeasureWidth(_cols, longest);
         int innerWidth = Math.Max(8, overlayW - 2);
-        IReadOnlyList<string> displayLines = showFilter || selectable
+        IReadOnlyList<string> displayLines = showFilter || kind == CommandCenterOverlayKind.CommandPalette
             ? lines
             : OverlayLayout.WrapLines(lines, innerWidth);
 
@@ -952,7 +958,7 @@ internal sealed class CommandCenterWindow : Window, ICommandCenterSessionActionW
             _overlayLines.Add(line);
         }
 
-        if (showFilter || selectable)
+        if (showFilter || listBacked)
         {
             OverlayBody.Visible = false;
             OverlayBody.Text = string.Empty;
@@ -980,7 +986,7 @@ internal sealed class CommandCenterWindow : Window, ICommandCenterSessionActionW
         {
             OverlayFilter.SetFocus();
         }
-        else if (selectable)
+        else if (listBacked)
         {
             OverlayList.SetFocus();
         }
@@ -1594,6 +1600,9 @@ internal sealed class CommandCenterWindow : Window, ICommandCenterSessionActionW
         Banner.Text = showBrand ? CommandCenterBrandBanner.AsText() : string.Empty;
         Rights.Text = showBrand ? CommandCenterBrandBanner.RightsBlurb : string.Empty;
 
+        // Without rows of its own the brand moves into the border title, which costs none.
+        HeaderPane.Title = showBrand ? string.Empty : CommandCenterBrandBanner.CompactTitle;
+
         int headerH = showBrand ? BorderedHeaderWithBrandHeight : BorderedHeaderCompactHeight;
         int footerH = FooterHeight;
 
@@ -1658,6 +1667,7 @@ internal sealed class CommandCenterWindow : Window, ICommandCenterSessionActionW
             Rights.Visible = false;
             Banner.Text = string.Empty;
             Rights.Text = string.Empty;
+            HeaderPane.Title = CommandCenterBrandBanner.CompactTitle;
             headerH = Math.Min(BorderedHeaderCompactHeight, Math.Max(3, _rows / 5));
             int tightWidth = Math.Max(1, _cols - ComposerLayout.BorderOverhead);
             wrapped = Math.Max(ComposerLayout.CountWrappedRows(composerText, tightWidth), lineFloor);

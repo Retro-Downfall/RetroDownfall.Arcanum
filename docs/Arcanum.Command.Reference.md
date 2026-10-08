@@ -174,7 +174,9 @@ On a fresh installation, the foreground command explains before the operating sy
 | `Ctrl+C` | Cancel the turn, else clear the composer, else show the quit hint. |
 | `Ctrl+Q` | Quit (asks first while a turn is generating). |
 | `Esc` | Close an overlay or return to the composer. |
-| `F1` | Help. |
+| `F1` | Help, scrolled with `↑`/`↓` and `PgUp`/`PgDn`. |
+
+The bottom row shows the hints for the focused region that fit, most important first, and ends with `F1 help` whenever any were left out; a hint is never cut in half. The focused composer's title carries `Enter send · Ctrl+J newline`, so the bottom row does not repeat them. Below 30 rows the ASCII logo and the rights line collapse into the header's border title, so the header takes three rows instead of seven and the transcript keeps them.
 
 ### The model drop-down
 
