@@ -249,6 +249,8 @@ Typing `/` into an empty composer opens the slash menu: every registered command
 - `Enter` runs a command that takes no argument (`/help`, `/doctor`, `/provider list`). For any other command it fills the composer with the command's fixed part — `/model `, `/resume `, `/campaign list ` — so you add the argument and press `Enter` again. When nothing matches, `Enter` sends what you typed, so a misspelling gets the usual did-you-mean answer.
 - A space hands the line to the composer, so `/model gemma4:e4b` typed straight through works. Backspace past the `/`, or `Esc`, returns to the composer with what you typed. A paste that carries an argument, or a `/` deleted from the front of the line, hands the line over the same way.
 
+A new session's transcript — after `Ctrl+N`, the palette's New Session, `/clear`, or a start-up with no session to reopen — opens with a short welcome naming these keys: `Enter` to send and `Ctrl+J` for a new line, `/` and `Ctrl+K`, `Ctrl+N` and `Ctrl+O`, `Shift+Tab` to the model control, and `F1` for every key. A resumed session opens on its history instead.
+
 ## Turn entry points
 
 Arcanum has exactly two ways to start a turn, and neither is a second implementation of the other:
