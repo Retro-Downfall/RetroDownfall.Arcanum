@@ -11438,6 +11438,46 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
                 && diagnostic.Detail.StartsWith("System.Threading.Tasks.Task.Run;", StringComparison.Ordinal)));
     }
 
+    /// <summary>
+    /// A credential write waits out a parked OS read outside its gate and re-checks for one once it holds
+    /// the gate (F051). A helper that hands the outstanding read's task to both places is an awaitable
+    /// neither joins: the re-check only tests it for null, and the wait tests it before awaiting it. Asking
+    /// whether a read is outstanding, and snapshotting the field where the wait awaits it, leaves the
+    /// analysis no detached awaitable, which is the shape <c>MirroredOsCredential</c> keeps.
+    /// </summary>
+    [Theory]
+    [InlineData("task", true)]
+    [InlineData("flag", false)]
+    public void AParkedReadCheckThatHandsOutTheReadTaskIsADetachedAwaitable(string shape, bool detached)
+    {
+        string check = shape == "task"
+            ? "private Task<string>? OutstandingRead() { lock (_sync) { return _read is { IsCompleted: false } read ? read : null; } } "
+                + "private async Task WaitForReadAsync() { Task<string>? read = OutstandingRead(); if (read is null) { return; } _ = await read.WaitAsync(CancellationToken.None); } "
+            : "private bool HasOutstandingRead() { lock (_sync) { return _read is { IsCompleted: false }; } } "
+                + "private async Task WaitForReadAsync() { Task<string>? read; lock (_sync) { read = _read; } if (read is null || read.IsCompleted) { return; } _ = await read.WaitAsync(CancellationToken.None); } ";
+
+        string recheck = shape == "task"
+            ? "OutstandingRead() is null"
+            : "!HasOutstandingRead()";
+
+        string helper = "internal sealed class Credential { private readonly SemaphoreSlim _gate = new(1, 1); private readonly System.Threading.Lock _sync = new(); private Task<string>? _read; "
+            + "internal void Park(Task<string> read) { lock (_sync) { _read = read; } } "
+            + "internal async Task SaveAsync() { await EnterGateForWriteAsync(); _ = _gate.Release(); } "
+            + "private async Task EnterGateForWriteAsync() { while (true) { await WaitForReadAsync(); await _gate.WaitAsync(); if (" + recheck + ") { return; } _ = _gate.Release(); } } "
+            + check
+            + "}";
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(
+            "#nullable enable\n" + R2Source(R2Admission + "await new Credential().SaveAsync();", helper));
+
+        Assert.Equal(
+            detached,
+            result.Diagnostics.Any(static diagnostic => diagnostic.Code == "HOSTED_CALLBACK_OWNERSHIP_UNPROVEN"
+                && diagnostic.Detail.EndsWith(
+                    "An awaitable or lazy helper must complete within its caller's retained lifetime.",
+                    StringComparison.Ordinal)));
+    }
+
     [Fact]
     public void WrongNamespaceWrapperIsRejected()
     {
