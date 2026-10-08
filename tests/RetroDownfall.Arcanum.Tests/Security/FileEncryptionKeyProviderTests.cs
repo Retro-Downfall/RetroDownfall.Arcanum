@@ -135,7 +135,7 @@ public sealed class FileEncryptionKeyProviderTests
     public async Task GetForWriteAsync_generates_a_dedicated_256_bit_secret_once()
     {
         RecordingSecretStore secrets = new(SecretStoreReadResult.Missing());
-        FileEncryptionKeyProvider provider = new(secrets);
+        FileEncryptionKeyProvider provider = CreateIsolated(secrets);
 
         FileEncryptionKeyMaterial first = await provider.GetForWriteAsync();
         FileEncryptionKeyMaterial second = await provider.GetForWriteAsync();
@@ -149,7 +149,7 @@ public sealed class FileEncryptionKeyProviderTests
     [Fact]
     public async Task GetForReadAsync_missing_or_wrong_key_fails_closed_with_recovery_guidance()
     {
-        FileEncryptionKeyProvider missing = new(
+        FileEncryptionKeyProvider missing = CreateIsolated(
             new RecordingSecretStore(SecretStoreReadResult.Missing()));
 
         EncryptedBlobKeyException missingError =
@@ -158,7 +158,7 @@ public sealed class FileEncryptionKeyProviderTests
         Assert.Contains("restore", missingError.Message, StringComparison.OrdinalIgnoreCase);
 
         string secret = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
-        FileEncryptionKeyProvider wrong = new(
+        FileEncryptionKeyProvider wrong = CreateIsolated(
             new RecordingSecretStore(SecretStoreReadResult.Ok(secret)));
         await Assert.ThrowsAsync<EncryptedBlobKeyException>(
             () => wrong.GetForReadAsync("0123456789abcdef").AsTask());
@@ -169,7 +169,7 @@ public sealed class FileEncryptionKeyProviderTests
     {
         string secret = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
         RecordingSecretStore secrets = new(SecretStoreReadResult.Ok(secret));
-        using FileEncryptionKeyProvider provider = new(secrets);
+        using FileEncryptionKeyProvider provider = CreateIsolated(secrets);
         using FileEncryptionKeyMaterial expected = FileEncryptionKeyMaterial.Create(
             Convert.FromBase64String(secret));
 
@@ -188,7 +188,7 @@ public sealed class FileEncryptionKeyProviderTests
     {
         RecordingSecretStore secrets = new(
             SecretStoreReadResult.Corrupted("protected secret is corrupt; restore backup"));
-        FileEncryptionKeyProvider provider = new(secrets);
+        FileEncryptionKeyProvider provider = CreateIsolated(secrets);
 
         EncryptedBlobKeyException error =
             await Assert.ThrowsAsync<EncryptedBlobKeyException>(
@@ -300,7 +300,7 @@ public sealed class FileEncryptionKeyProviderTests
     {
         string secret = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
         RecordingSecretStore secrets = new(SecretStoreReadResult.Ok(secret));
-        FileEncryptionKeyProvider provider = new(secrets);
+        FileEncryptionKeyProvider provider = CreateIsolated(secrets);
         FileEncryptionKeyMaterial prior = await provider.GetForWriteAsync();
 
         FileEncryptionKeyMaterial current = await provider.RotateAsync();
@@ -311,7 +311,7 @@ public sealed class FileEncryptionKeyProviderTests
         Assert.Contains(prior.KeyId, await provider.GetActiveKeyIdsAsync());
         Assert.Contains(current.KeyId, await provider.GetActiveKeyIdsAsync());
 
-        FileEncryptionKeyProvider restored = new(secrets);
+        FileEncryptionKeyProvider restored = CreateIsolated(secrets);
         Assert.Equal(current.KeyId, (await restored.GetForWriteAsync()).KeyId);
         Assert.Equal(prior.KeyId, (await restored.GetForReadAsync(prior.KeyId)).KeyId);
 
@@ -332,7 +332,7 @@ public sealed class FileEncryptionKeyProviderTests
     {
         string secret = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
         RecordingSecretStore secrets = new(SecretStoreReadResult.Ok(secret));
-        FileEncryptionKeyProvider provider = new(secrets);
+        FileEncryptionKeyProvider provider = CreateIsolated(secrets);
         _ = await provider.GetForWriteAsync();
 
         _ = await provider.RotateAsync();
@@ -349,12 +349,12 @@ public sealed class FileEncryptionKeyProviderTests
     {
         string secret = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
         RecordingSecretStore source = new(SecretStoreReadResult.Ok(secret));
-        FileEncryptionKeyProvider writer = new(source);
+        FileEncryptionKeyProvider writer = CreateIsolated(source);
         FileEncryptionKeyMaterial prior = await writer.GetForWriteAsync();
         FileEncryptionKeyMaterial current = await writer.RotateAsync();
         string crlfRing = source.SavedSecret!.Replace("\n", "\r\n", StringComparison.Ordinal);
 
-        FileEncryptionKeyProvider restored = new(
+        FileEncryptionKeyProvider restored = CreateIsolated(
             new RecordingSecretStore(SecretStoreReadResult.Ok(crlfRing)));
 
         Assert.Equal(current.KeyId, (await restored.GetForWriteAsync()).KeyId);
@@ -371,7 +371,7 @@ public sealed class FileEncryptionKeyProviderTests
     {
         string secret = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
         RecordingSecretStore secrets = new(SecretStoreReadResult.Ok(secret));
-        FileEncryptionKeyProvider provider = new(secrets);
+        FileEncryptionKeyProvider provider = CreateIsolated(secrets);
         FileEncryptionKeyMaterial prior = await provider.GetForWriteAsync();
         _ = await provider.RotateAsync();
 
@@ -387,7 +387,7 @@ public sealed class FileEncryptionKeyProviderTests
     public async Task Active_write_key_cannot_be_retired()
     {
         string secret = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
-        FileEncryptionKeyProvider provider = new(
+        FileEncryptionKeyProvider provider = CreateIsolated(
             new RecordingSecretStore(SecretStoreReadResult.Ok(secret)));
         FileEncryptionKeyMaterial current = await provider.GetForWriteAsync();
 
@@ -408,13 +408,13 @@ public sealed class FileEncryptionKeyProviderTests
 
         const string UnknownKeyId = "does-not-exist-in-the-ring";
 
-        FileEncryptionKeyProvider oneKeyRing = new(
+        FileEncryptionKeyProvider oneKeyRing = CreateIsolated(
             new RecordingSecretStore(
                 SecretStoreReadResult.Ok(Convert.ToBase64String(RandomNumberGenerator.GetBytes(32)))));
 
         _ = await oneKeyRing.GetForWriteAsync();
 
-        FileEncryptionKeyProvider fiveKeyRing = new(
+        FileEncryptionKeyProvider fiveKeyRing = CreateIsolated(
             new RecordingSecretStore(
                 SecretStoreReadResult.Ok(Convert.ToBase64String(RandomNumberGenerator.GetBytes(32)))));
 
@@ -483,6 +483,18 @@ public sealed class FileEncryptionKeyProviderTests
 
         return allocatedBytes;
     }
+
+    /// <summary>
+    /// Builds a provider that sees an empty encrypted-blob inventory. The public constructor
+    /// inspects the real <c>~/.config/arcanum</c> attachment and file directories, so a test that
+    /// used it would start failing the moment the developer's own installation held one encrypted
+    /// upload, which is an environment fact and not a behaviour of the provider.
+    /// </summary>
+    private static FileEncryptionKeyProvider CreateIsolated(ISecretStore secrets) =>
+        new(
+            secrets,
+            new FixedEncryptedBlobPresenceInspector(EncryptedBlobPresence.Absent),
+            new FileEncryptionRuntimeStatus());
 
     private sealed class RecordingSecretStore(SecretStoreReadResult readResult) : ISecretStore
     {
