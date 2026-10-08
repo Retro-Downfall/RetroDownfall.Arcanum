@@ -681,17 +681,22 @@ verify_rid_compile_options() {
   # The strings output is captured once rather than piped into each grep: under `set -o pipefail`,
   # `grep -q` exits at the first match, strings dies of SIGPIPE, and the pipeline reports failure
   # even though the option was found.
+  #
+  # On the Windows runner strings is the mingw binutils one, which writes CRLF like jq and dumpbin
+  # do: every captured line kept its carriage return, the exact line match below found none of the
+  # options, and the job failed with each one "not present" (run 37782869619). Both captures strip
+  # the carriage returns; a compile option literal never legitimately contains one.
   local literals
 
   if command -v strings >/dev/null 2>&1; then
 
-    literals="$(strings -a "${file}")"
+    literals="$(strings -a "${file}" | tr -d '\r')"
 
   else
 
-    # Git Bash on a Windows runner has no binutils. strings reports printable runs of four or more
-    # characters, and so does this.
-    literals="$(LC_ALL=C grep -a -o -E '[[:print:]]{4,}' "${file}" || true)"
+    # A Windows bash without binutils on the path has no strings. strings reports printable runs of
+    # four or more characters, and so does this.
+    literals="$(LC_ALL=C grep -a -o -E '[[:print:]]{4,}' "${file}" | tr -d '\r' || true)"
 
   fi
 
