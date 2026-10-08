@@ -194,6 +194,22 @@ public sealed class McpSecurityLimitsTests
         Assert.Contains("evil?INJECTED", error.Message, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void A_tool_with_no_name_still_fails_with_the_metadata_boundary_error_and_an_empty_label()
+    {
+        // The name is an external server's JSON, which can omit it: the SDK then hands a null to a
+        // non-nullable property, and the label must quote nothing rather than throw a NullReferenceException
+        // that would hide the boundary refusal.
+        int size = McpSecurityLimits.MaxMcpToolDescriptionUtf8Bytes + 1;
+
+        InvalidDataException error = Assert.Throws<InvalidDataException>(
+            () => McpSecurityLimits.BoundToolDescription(null!, new string('x', size)));
+
+        Assert.Contains("MCP tool ''", error.Message, StringComparison.Ordinal);
+
+        Assert.Contains($"{size} UTF-8 bytes", error.Message, StringComparison.Ordinal);
+    }
+
     private static void AssertWellFormedUtf16(string text)
     {
         // A strict UTF-8 encoder throws on an unpaired surrogate, which is what System.Text.Json does too.
@@ -208,6 +224,14 @@ public sealed class McpSecurityLimitsTests
     public void BoundToolDescription_returns_empty_for_missing_descriptions(string? description)
     {
         Assert.Equal(string.Empty, McpSecurityLimits.BoundToolDescription("probe_tool", description!));
+    }
+
+    [Fact]
+    public void BoundToolDescription_returns_a_description_at_the_limit_unchanged()
+    {
+        string atLimit = new('x', McpSecurityLimits.MaxMcpToolDescriptionUtf8Bytes);
+
+        Assert.Same(atLimit, McpSecurityLimits.BoundToolDescription("probe_tool", atLimit));
     }
 
     [Fact]
