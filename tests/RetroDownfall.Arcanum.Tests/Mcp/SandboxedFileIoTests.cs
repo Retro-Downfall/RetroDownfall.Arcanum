@@ -1218,6 +1218,443 @@ public sealed class SandboxedFileIoTests : IAsyncLifetime
         Assert.Equal("notes", await File.ReadAllTextAsync(notes));
     }
 
+    /// <summary>
+    /// The handle opened for a read is revalidated against the kernel's own path for it before the
+    /// stream is handed back: a file that leaves the workspace between the identity-checked open and that
+    /// revalidation is refused, and the caller receives no stream.
+    /// </summary>
+    [SkippableFact]
+    public void TryOpenForRead_refuses_and_returns_no_stream_when_the_file_leaves_the_workspace_after_open()
+    {
+        Skip.If(
+            !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux(),
+            "Moving a file that has an open handle is refused on Windows.");
+
+        string outside = CreateOutsideDirectory();
+
+        string target = _workspace.WriteFile("leaves-after-open.txt", "inside secret");
+
+        string moved = Path.Combine(outside, "leaves-after-open.txt");
+
+        // Runs once the identity-checked handle is open and before SandboxedFileIo revalidates it.
+        SecureFileReader.AfterRegularFileOpenedForTests = opened =>
+        {
+            SecureFileReader.AfterRegularFileOpenedForTests = null;
+
+            File.Move(opened, moved);
+        };
+
+        try
+        {
+            bool opened = SandboxedFileIo.TryOpenForRead(
+                _workspace.Root,
+                target,
+                out FileStream? stream,
+                out McpToolsCallResultWire? error);
+
+            Assert.False(opened);
+
+            Assert.Null(stream);
+
+            AssertSandboxError(error);
+
+            Assert.False(File.Exists(target));
+
+            Assert.Equal("inside secret", File.ReadAllText(moved));
+        }
+        finally
+        {
+            SecureFileReader.AfterRegularFileOpenedForTests = null;
+        }
+    }
+
+    /// <summary>
+    /// A parent directory the write cannot create for lack of permission is reported as an access
+    /// failure, not as a sandbox escape or a blocked path, and nothing is created below it.
+    /// </summary>
+    [SkippableFact]
+    [System.Runtime.Versioning.UnsupportedOSPlatform("windows")]
+    public async Task TryWriteAllTextAtomicallyAsync_reports_access_denied_when_the_parent_directory_cannot_be_created()
+    {
+        Skip.If(
+            !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux(),
+            "This asserts POSIX behaviour and runs on macOS and Linux only.");
+
+        Skip.If(
+            string.Equals(System.Environment.UserName, "root", StringComparison.Ordinal),
+            "root bypasses directory write permission.");
+
+        string locked = _workspace.CreateSubdir("locked-for-mkdir");
+
+        File.SetUnixFileMode(locked, UnixFileMode.UserRead | UnixFileMode.UserExecute);
+
+        try
+        {
+            (bool success, McpToolsCallResultWire? error) =
+                await SandboxedFileIo.TryWriteAllTextAtomicallyAsync(
+                    _workspace.Root,
+                    Path.Combine(locked, "child", "new.txt"),
+                    "content",
+                    CancellationToken.None);
+
+            Assert.False(success);
+
+            Assert.Equal("Access denied creating directory.", AssertSingleErrorText(error));
+
+            Assert.Empty(Directory.EnumerateFileSystemEntries(locked));
+        }
+        finally
+        {
+            File.SetUnixFileMode(
+                locked,
+                UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        }
+    }
+
+    /// <summary>
+    /// A directory-creation I/O failure that no existing file or link explains (a device fault) is
+    /// reported as a generic I/O error, not as a blocked parent: no entry on the path is blocking it, so
+    /// naming one would send the model after something that is not there. Nothing is staged or written.
+    /// </summary>
+    /// <remarks>
+    /// The fault is raised from the post-creation seam, which runs inside the creation guard: the
+    /// natural causes (EIO, ENOSPC, a read-only volume) cannot be produced on demand, and an overlong
+    /// folder name is refused earlier, by containment revalidation.
+    /// </remarks>
+    [Fact]
+    public async Task TryWriteAllTextAtomicallyAsync_reports_a_generic_io_error_when_directory_creation_fails_without_a_blocking_entry()
+    {
+        string parent = Path.Combine(_workspace.Root, "device-fault");
+
+        string target = Path.Combine(parent, "new.txt");
+
+        SandboxedFileIo.AfterCreateParentDirectoryForTests = _ =>
+        {
+            SandboxedFileIo.AfterCreateParentDirectoryForTests = null;
+
+            throw new IOException("simulated device fault creating the directory");
+        };
+
+        try
+        {
+            (bool success, McpToolsCallResultWire? error) =
+                await SandboxedFileIo.TryWriteAllTextAtomicallyAsync(
+                    _workspace.Root,
+                    target,
+                    "content",
+                    CancellationToken.None);
+
+            Assert.False(success);
+
+            Assert.Equal(
+                "An I/O error occurred creating directory. See server logs.",
+                AssertSingleErrorText(error));
+
+            Assert.False(WorkspacePathPolicy.HasEntryBlockingDirectoryCreation(_workspace.Root, parent));
+
+            Assert.Empty(Directory.EnumerateFileSystemEntries(parent));
+        }
+        finally
+        {
+            SandboxedFileIo.AfterCreateParentDirectoryForTests = null;
+        }
+    }
+
+    /// <summary>
+    /// An existing parent the process may not write to refuses the staging file itself: the write
+    /// reports an access failure and leaves no staging file behind.
+    /// </summary>
+    [SkippableFact]
+    [System.Runtime.Versioning.UnsupportedOSPlatform("windows")]
+    public async Task TryWriteAllTextAtomicallyAsync_reports_access_denied_when_the_staging_file_cannot_be_created()
+    {
+        Skip.If(
+            !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux(),
+            "This asserts POSIX behaviour and runs on macOS and Linux only.");
+
+        Skip.If(
+            string.Equals(System.Environment.UserName, "root", StringComparison.Ordinal),
+            "root bypasses directory write permission.");
+
+        string locked = _workspace.CreateSubdir("locked-for-staging");
+
+        File.SetUnixFileMode(locked, UnixFileMode.UserRead | UnixFileMode.UserExecute);
+
+        try
+        {
+            (bool success, McpToolsCallResultWire? error) =
+                await SandboxedFileIo.TryWriteAllTextAtomicallyAsync(
+                    _workspace.Root,
+                    Path.Combine(locked, "new.txt"),
+                    "content",
+                    CancellationToken.None);
+
+            Assert.False(success);
+
+            Assert.Equal("Access denied writing.", AssertSingleErrorText(error));
+
+            Assert.Empty(Directory.EnumerateFileSystemEntries(locked));
+        }
+        finally
+        {
+            File.SetUnixFileMode(
+                locked,
+                UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        }
+    }
+
+    /// <summary>
+    /// A destination whose own path fits the platform path limit while its same-directory staging name
+    /// does not cannot be staged: the write reports a generic I/O error and creates nothing.
+    /// </summary>
+    [SkippableFact]
+    public async Task TryWriteAllTextAtomicallyAsync_reports_an_io_error_when_the_staging_path_exceeds_the_platform_limit()
+    {
+        Skip.If(
+            !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux(),
+            "This asserts the POSIX PATH_MAX limit and runs on macOS and Linux only.");
+
+        // PATH_MAX counts the terminating NUL. The staging name ".arcanum-<32 hex>.tmp" adds 46
+        // characters to the directory where the destination "x" adds 2, so a directory 20 short of the
+        // limit leaves the destination legal and the staging path too long.
+        int pathMax = OperatingSystem.IsMacOS() ? 1024 : 4096;
+
+        int directoryLength = pathMax - 20;
+
+        string directory = _workspace.Root;
+
+        while (directory.Length < directoryLength)
+        {
+            // Characters left for the next folder name after its separator; never leave exactly one
+            // character short, which no further folder could fill.
+            int remaining = directoryLength - directory.Length - 1;
+
+            int folderLength = remaining <= 200 ? remaining : Math.Min(200, remaining - 2);
+
+            directory = Path.Combine(directory, new string('d', folderLength));
+        }
+
+        Assert.Equal(directoryLength, directory.Length);
+
+        Directory.CreateDirectory(directory);
+
+        string target = Path.Combine(directory, "x");
+
+        (bool success, McpToolsCallResultWire? error) =
+            await SandboxedFileIo.TryWriteAllTextAtomicallyAsync(
+                _workspace.Root,
+                target,
+                "content",
+                CancellationToken.None);
+
+        Assert.False(success);
+
+        Assert.Equal("An I/O error occurred writing. See server logs.", AssertSingleErrorText(error));
+
+        Assert.Empty(Directory.EnumerateFileSystemEntries(directory));
+    }
+
+    /// <summary>
+    /// The preamble probe answers "no preamble" for a destination it cannot read, so a read fault on the
+    /// existing file neither fails the overwrite nor invents a BOM: the replacement is written as given.
+    /// </summary>
+    [Theory]
+    [InlineData(typeof(IOException))]
+    [InlineData(typeof(UnauthorizedAccessException))]
+    public async Task TryWriteAllTextAtomicallyAsync_writes_without_a_preamble_when_the_destination_probe_cannot_read(
+        Type faultType)
+    {
+        string target = Path.Combine(_workspace.Root, "probe-read-fault.txt");
+
+        await File.WriteAllBytesAsync(target, [0xEF, 0xBB, 0xBF, (byte)'o', (byte)'l', (byte)'d']);
+
+        List<string> probed = [];
+
+        SandboxedFileIo.BeforeDestinationPreambleReadForTests = path =>
+        {
+            probed.Add(path);
+
+            throw (Exception)Activator.CreateInstance(faultType, "simulated device read fault")!;
+        };
+
+        try
+        {
+            (bool success, McpToolsCallResultWire? error) =
+                await SandboxedFileIo.TryWriteAllTextAtomicallyAsync(
+                    _workspace.Root,
+                    target,
+                    "new",
+                    CancellationToken.None);
+
+            Assert.True(success);
+
+            Assert.Null(error);
+
+            Assert.Equal(target, Assert.Single(probed));
+
+            Assert.Equal("new"u8.ToArray(), await File.ReadAllBytesAsync(target));
+        }
+        finally
+        {
+            SandboxedFileIo.BeforeDestinationPreambleReadForTests = null;
+        }
+    }
+
+    /// <summary>
+    /// The post-move verification reopens the destination by path. A destination that vanishes after the
+    /// staged content was fingerprinted and before that reopen cannot be confirmed, so the write fails
+    /// closed and reports the destination as unverified rather than claiming success.
+    /// </summary>
+    [Fact]
+    public async Task TryWriteAllTextAtomicallyAsync_reports_unverified_when_the_moved_destination_cannot_be_reopened()
+    {
+        string target = Path.Combine(_workspace.Root, "vanishes-before-verify.txt");
+
+        int existingObservations = 0;
+
+        // The destination is new, so the only path-metadata probes that find it are the two made by the
+        // post-move fingerprint check (on entry and after hashing). The second one removes it once its
+        // real metadata is in hand, which leaves the fingerprint satisfied and the reopen with nothing.
+        FileHandleIdentityInterop.TryGetPathMetadataForTests = path =>
+        {
+            FileHandleMetadata? real = ResolveRealPathMetadata(path);
+
+            if (real is not null
+                && string.Equals(path, target, StringComparison.Ordinal)
+                && ++existingObservations == 2)
+            {
+                File.Delete(target);
+            }
+
+            return real;
+        };
+
+        try
+        {
+            (bool success, McpToolsCallResultWire? error) =
+                await SandboxedFileIo.TryWriteAllTextAtomicallyAsync(
+                    _workspace.Root,
+                    target,
+                    "replacement",
+                    CancellationToken.None);
+
+            Assert.False(success);
+
+            Assert.Equal(
+                "Write replaced the file but post-move verification failed; destination left unverified.",
+                AssertSingleErrorText(error));
+
+            Assert.Equal(2, existingObservations);
+
+            Assert.False(File.Exists(target));
+
+            Assert.Empty(Directory.EnumerateFiles(_workspace.Root, ".arcanum-*"));
+        }
+        finally
+        {
+            FileHandleIdentityInterop.TryGetPathMetadataForTests = null;
+        }
+    }
+
+    /// <summary>
+    /// A write cancelled while the staging content is being written surfaces the cancellation, leaves
+    /// an existing destination exactly as it was, and removes the staging file.
+    /// </summary>
+    [Fact]
+    public async Task TryWriteAllTextAtomicallyAsync_cancelled_during_staging_leaves_the_destination_and_no_staging_file()
+    {
+        string target = _workspace.WriteFile("cancelled.txt", "original");
+
+        using CancellationTokenSource cancellation = new();
+
+        await cancellation.CancelAsync();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            SandboxedFileIo.TryWriteAllTextAtomicallyAsync(
+                _workspace.Root,
+                target,
+                "replacement",
+                cancellation.Token));
+
+        Assert.Equal("original", await File.ReadAllTextAsync(target));
+
+        Assert.Empty(Directory.EnumerateFiles(_workspace.Root, ".arcanum-*"));
+    }
+
+    /// <summary>
+    /// The destination's containment is revalidated once more after the staging file is written and
+    /// before the rename. A parent directory swapped for a link out of the workspace in that window
+    /// (the staged file travelling with it, so the staging checks still pass) aborts the replace: the
+    /// write reports a sandbox escape and nothing lands at the link's target.
+    /// </summary>
+    [SkippableFact]
+    public async Task TryWriteAllTextAtomicallyAsync_rejects_a_destination_whose_parent_escapes_after_staging()
+    {
+        Skip.If(
+            !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux(),
+            "This asserts POSIX behaviour and runs on macOS and Linux only.");
+
+        string outside = CreateOutsideDirectory();
+
+        string parent = _workspace.CreateSubdir("swapped-after-staging");
+
+        string target = Path.Combine(parent, "escapes-after-staging.txt");
+
+        string movedParent = Path.Combine(outside, "moved");
+
+        bool swapped = false;
+
+        // The first metadata probe of the staging file runs after it is written and closed and before
+        // the pre-rename revalidation: move the whole parent out (staging file included) and leave a
+        // link to it behind, so the staging file still resolves and only containment can object.
+        FileHandleIdentityInterop.TryGetPathMetadataForTests = path =>
+        {
+            if (!swapped
+                && Path.GetFileName(path).StartsWith(".arcanum-", StringComparison.Ordinal)
+                && path.EndsWith(".tmp", StringComparison.Ordinal))
+            {
+                swapped = true;
+
+                Directory.Move(parent, movedParent);
+
+                Directory.CreateSymbolicLink(parent, movedParent);
+            }
+
+            return ResolveRealPathMetadata(path);
+        };
+
+        try
+        {
+            (bool success, McpToolsCallResultWire? error) =
+                await SandboxedFileIo.TryWriteAllTextAtomicallyAsync(
+                    _workspace.Root,
+                    target,
+                    "attacker content",
+                    CancellationToken.None);
+
+            Assert.False(success);
+
+            AssertSandboxError(error);
+
+            Assert.True(swapped);
+
+            Assert.Empty(Directory.EnumerateFileSystemEntries(movedParent));
+        }
+        finally
+        {
+            FileHandleIdentityInterop.TryGetPathMetadataForTests = null;
+        }
+    }
+
+    private static string AssertSingleErrorText(McpToolsCallResultWire? error)
+    {
+        Assert.NotNull(error);
+
+        Assert.True(error!.IsError);
+
+        return Assert.IsType<McpToolContentTextWire>(Assert.Single(error.Content!)).Text!;
+    }
+
     // Real metadata for paths the seam is not simulating. Resolved through the no-follow probe,
     // which has its own seam, so this never has to unset (and race with) the seam it is called from.
     // Every path in these tests is a regular file, where the two probes agree.
