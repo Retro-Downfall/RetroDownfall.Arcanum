@@ -170,9 +170,10 @@ public sealed class NativeSqlCipherVerifyScriptTests : IDisposable
     }
 
     /// <summary>
-    /// The bash a Windows runner ships has no <c>strings</c>, so the Windows job reads the compile
-    /// options through the <c>grep</c> fallback. That is the only path the real job takes, and every
-    /// other case here runs on a host that has <c>strings</c>.
+    /// A Windows bash without binutils on the path has no <c>strings</c>, so it reads the compile
+    /// options through the <c>grep</c> fallback. (The Windows job's runner does carry the mingw
+    /// <c>strings</c>; see the CRLF case below.) Every other case here runs on a host that has
+    /// <c>strings</c>.
     /// </summary>
     [SkippableFact]
     public async Task A_host_without_strings_still_proves_the_compile_options_through_the_grep_fallback()
@@ -230,6 +231,53 @@ public sealed class NativeSqlCipherVerifyScriptTests : IDisposable
         Assert.Contains($"{Rid} links only its declared dynamic dependencies", result.Output, StringComparison.Ordinal);
 
         Assert.DoesNotContain("UNVERIFIED", result.Output, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The Windows job's <c>strings</c> is the mingw binutils one, which ends every line with CRLF
+    /// (run 37782869619). An exact line match then found none of the compile options, so the job
+    /// failed with every option "not present". The stub delegates to the real <c>strings</c> and
+    /// writes CRLF, as the Windows runner's does.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_strict_win_run_passes_when_strings_writes_windows_line_endings()
+    {
+        RequireScriptHost();
+
+        ScriptResult result = await RunAsync(
+            withDumpbin: true,
+            exports: SqliteExports(),
+            dependents: ManifestDependents(),
+            strict: true,
+            windowsStrings: true);
+
+        Assert.True(result.ExitCode == 0, result.Output);
+
+        Assert.Contains($"{Rid} compile options match the manifest", result.Output, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("UNVERIFIED", result.Output, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// A host without binutils reads the compile options through <c>grep -a -o</c>, whose matches a
+    /// Windows grep can likewise end with CRLF. The stub writes CRLF only for <c>-o</c> output, the
+    /// one line-producing grep the compile-option check depends on.
+    /// </summary>
+    [SkippableFact]
+    public async Task The_grep_fallback_proves_the_compile_options_when_grep_writes_windows_line_endings()
+    {
+        RequireScriptHost();
+
+        ScriptResult result = await RunAsync(
+            withDumpbin: true,
+            exports: SqliteExports(),
+            dependents: ManifestDependents(),
+            withStrings: false,
+            windowsGrepMatches: true);
+
+        Assert.True(result.ExitCode == 0, result.Output);
+
+        Assert.Contains($"{Rid} compile options match the manifest", result.Output, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -380,13 +428,25 @@ public sealed class NativeSqlCipherVerifyScriptTests : IDisposable
         bool strict = false,
         IReadOnlyList<string>? rawExportRows = null,
         bool manifestOnly = false,
-        bool windowsJq = false)
+        bool windowsJq = false,
+        bool windowsStrings = false,
+        bool windowsGrepMatches = false)
     {
         string stubBin = Directory.CreateDirectory(Path.Combine(_root, "bin")).FullName;
 
         if (windowsJq)
         {
-            await WriteWindowsJqStubAsync(stubBin);
+            await WriteWindowsLineEndingStubAsync(stubBin, "jq");
+        }
+
+        if (windowsStrings)
+        {
+            await WriteWindowsLineEndingStubAsync(stubBin, "strings");
+        }
+
+        if (windowsGrepMatches)
+        {
+            await WriteWindowsLineEndingStubAsync(stubBin, "grep", onlyWithArgument: "-o");
         }
 
         if (withDumpbin)
@@ -460,23 +520,27 @@ public sealed class NativeSqlCipherVerifyScriptTests : IDisposable
     }
 
     /// <summary>
-    /// A <c>jq</c> ahead of the real one on <c>PATH</c> that delegates to it and ends every output
-    /// line with CRLF, as jq does on the Windows runner, keeping jq's own exit status.
+    /// A <paramref name="command"/> ahead of the real one on <c>PATH</c> that delegates to it and
+    /// ends every output line with CRLF, as the Windows runner's jq and strings do, keeping the real
+    /// command's own exit status. With <paramref name="onlyWithArgument"/>, only an invocation that
+    /// passes that argument is rewritten; every other one runs the real command unchanged.
     /// </summary>
-    private static async Task WriteWindowsJqStubAsync(string stubBin)
+    private static async Task WriteWindowsLineEndingStubAsync(string stubBin, string command, string? onlyWithArgument = null)
     {
-        string realJq = (global::System.Environment.GetEnvironmentVariable("PATH") ?? string.Empty)
+        string real = (global::System.Environment.GetEnvironmentVariable("PATH") ?? string.Empty)
             .Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries)
-            .Select(static directory => Path.Combine(directory, "jq"))
+            .Select(directory => Path.Combine(directory, command))
             .First(File.Exists);
 
-        string stub = Path.Combine(stubBin, "jq");
+        string stub = Path.Combine(stubBin, command);
 
-        await File.WriteAllTextAsync(
-            stub,
-            "#!/usr/bin/env bash\n"
-            + "set -o pipefail\n"
-            + $"'{realJq}' \"$@\" | awk '{{ printf \"%s\\r\\n\", $0 }}'\n");
+        string crlf = $"'{real}' \"$@\" | awk '{{ printf \"%s\\r\\n\", $0 }}'";
+
+        string body = onlyWithArgument is null
+            ? crlf + "\n"
+            : $"case \" $* \" in\n  *\" {onlyWithArgument} \"*) {crlf} ;;\n  *) exec '{real}' \"$@\" ;;\nesac\n";
+
+        await File.WriteAllTextAsync(stub, "#!/usr/bin/env bash\n" + "set -o pipefail\n" + body);
 
         if (!OperatingSystem.IsWindows())
         {
