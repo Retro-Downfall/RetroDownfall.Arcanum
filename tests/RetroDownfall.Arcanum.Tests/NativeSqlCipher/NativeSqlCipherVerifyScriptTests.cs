@@ -190,6 +190,48 @@ public sealed class NativeSqlCipherVerifyScriptTests : IDisposable
             "The fixture must hide strings, or the fallback was never taken.");
     }
 
+    /// <summary>
+    /// jq on Windows ends every output line with CRLF. Read into a bash variable or a
+    /// <c>while read</c> loop, each value then carries a trailing carriage return, so a manifest path
+    /// matched no license or SBOM entry and <c>jq -e</c> aborted the Windows job with exit 4 and no
+    /// message. The stub delegates to the real jq and writes CRLF, as the Windows runner's jq does.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_manifest_only_run_passes_when_jq_writes_windows_line_endings()
+    {
+        RequireScriptHost();
+
+        ScriptResult result = await RunAsync(withDumpbin: false, exports: [], dependents: [], manifestOnly: true, windowsJq: true);
+
+        Assert.True(result.ExitCode == 0, result.Output);
+
+        Assert.Contains("verify-native-sqlcipher: all checks passed.", result.Output, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The exact configuration of the Windows job: <c>--rid win-x64 --strict</c> with <c>dumpbin</c>
+    /// on the path and jq writing CRLF. The declared dynamic dependencies are read through jq, so a
+    /// stray carriage return there would also turn every declared import into a mismatch.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_strict_win_run_passes_when_jq_writes_windows_line_endings()
+    {
+        RequireScriptHost();
+
+        ScriptResult result = await RunAsync(
+            withDumpbin: true,
+            exports: SqliteExports(),
+            dependents: ManifestDependents(),
+            strict: true,
+            windowsJq: true);
+
+        Assert.True(result.ExitCode == 0, result.Output);
+
+        Assert.Contains($"{Rid} links only its declared dynamic dependencies", result.Output, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("UNVERIFIED", result.Output, StringComparison.Ordinal);
+    }
+
     [Fact]
     public void The_windows_verification_job_runs_the_script_with_dumpbin_on_the_path()
     {
@@ -336,9 +378,16 @@ public sealed class NativeSqlCipherVerifyScriptTests : IDisposable
         IReadOnlyList<string> dependents,
         bool withStrings = true,
         bool strict = false,
-        IReadOnlyList<string>? rawExportRows = null)
+        IReadOnlyList<string>? rawExportRows = null,
+        bool manifestOnly = false,
+        bool windowsJq = false)
     {
         string stubBin = Directory.CreateDirectory(Path.Combine(_root, "bin")).FullName;
+
+        if (windowsJq)
+        {
+            await WriteWindowsJqStubAsync(stubBin);
+        }
 
         if (withDumpbin)
         {
@@ -378,9 +427,16 @@ public sealed class NativeSqlCipherVerifyScriptTests : IDisposable
 
         start.ArgumentList.Add(Path.Combine(TestRepositoryPaths.RepositoryRoot(), "scripts", "verify-native-sqlcipher.sh"));
 
-        start.ArgumentList.Add("--rid");
+        if (manifestOnly)
+        {
+            start.ArgumentList.Add("--manifest-only");
+        }
+        else
+        {
+            start.ArgumentList.Add("--rid");
 
-        start.ArgumentList.Add(Rid);
+            start.ArgumentList.Add(Rid);
+        }
 
         if (strict)
         {
@@ -401,6 +457,31 @@ public sealed class NativeSqlCipherVerifyScriptTests : IDisposable
         await process.WaitForExitAsync(timeout.Token);
 
         return new ScriptResult(process.ExitCode, await standardOutput + await standardError);
+    }
+
+    /// <summary>
+    /// A <c>jq</c> ahead of the real one on <c>PATH</c> that delegates to it and ends every output
+    /// line with CRLF, as jq does on the Windows runner, keeping jq's own exit status.
+    /// </summary>
+    private static async Task WriteWindowsJqStubAsync(string stubBin)
+    {
+        string realJq = (global::System.Environment.GetEnvironmentVariable("PATH") ?? string.Empty)
+            .Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries)
+            .Select(static directory => Path.Combine(directory, "jq"))
+            .First(File.Exists);
+
+        string stub = Path.Combine(stubBin, "jq");
+
+        await File.WriteAllTextAsync(
+            stub,
+            "#!/usr/bin/env bash\n"
+            + "set -o pipefail\n"
+            + $"'{realJq}' \"$@\" | awk '{{ printf \"%s\\r\\n\", $0 }}'\n");
+
+        if (!OperatingSystem.IsWindows())
+        {
+            File.SetUnixFileMode(stub, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        }
     }
 
     /// <summary>

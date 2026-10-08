@@ -79,7 +79,9 @@ require_cmd() {
 
   for cmd in "$@"; do
 
-    if ! command -v "${cmd}" >/dev/null 2>&1; then
+    # type -P, not command -v: only an executable on PATH counts, so the jq function below cannot
+    # stand in for a jq that is not installed.
+    if ! type -P "${cmd}" >/dev/null 2>&1; then
 
       echo "Required command not found: ${cmd}" >&2
 
@@ -94,6 +96,17 @@ require_cmd() {
     exit 1
 
   fi
+
+}
+
+# jq on Windows writes CRLF. Git Bash drops the carriage return from a $(...) result but not from a
+# `while read` line, so every manifest path read in a loop carried a trailing \r, matched no entry,
+# and `jq -e` aborted the run with exit 4 and no message. Every jq call in this script goes through
+# this function, which strips the carriage returns; pipefail keeps jq's own exit status (including
+# -e's), and a manifest value never legitimately contains one.
+jq() {
+
+  command jq "$@" | tr -d '\r'
 
 }
 
