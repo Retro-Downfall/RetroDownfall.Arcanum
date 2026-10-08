@@ -192,6 +192,36 @@ public sealed class WorkspacePathPolicyFailClosedTests : IDisposable
     }
 
     /// <summary>
+    /// The link-target seam is flow-local, like <see cref="SecureFileReader.AfterOpenForTests"/>: a reader
+    /// a test installs answers only the walks of that test's own flow, so it needs no reset and cannot
+    /// reach a walk another flow runs. Nothing in production writes it, not even a reset, which is what
+    /// lets the hosted-producer analysis prove that a production walk never invokes it.
+    /// </summary>
+    [SkippableFact]
+    public async Task LinkTargetReader_DoesNotReachAnotherFlow()
+    {
+        SkipUnlessPosix();
+
+        string candidate = CreateLinkedDirectoryFixture("other-flow-link");
+
+        WorkspacePathPolicy.LinkTargetReaderForTests = path =>
+            Path.GetFileName(path) == "other-flow-link"
+                ? throw new IOException("readlink failed")
+                : new FileInfo(path).LinkTarget;
+
+        Task<bool> otherFlow;
+
+        using (ExecutionContext.SuppressFlow())
+        {
+            otherFlow = Task.Run(() => WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(_root, candidate, out _));
+        }
+
+        Assert.True(await otherFlow);
+
+        Assert.False(WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(_root, candidate, out _));
+    }
+
+    /// <summary>
     /// A reparse point that names no other location is a link that changed under the walk on Unix, so the
     /// walk refuses; on Windows it is an ordinary entry (a cloud placeholder) and the walk continues on the
     /// entry's own name.

@@ -449,7 +449,7 @@ internal sealed class MirroredOsCredential(
 
             await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
 
-            if (OutstandingOsRead() is null)
+            if (!HasOutstandingOsRead())
             {
                 return;
             }
@@ -458,23 +458,34 @@ internal sealed class MirroredOsCredential(
         }
     }
 
-    private Task<OsCredentialStoreResult>? OutstandingOsRead()
+    /// <summary>
+    /// Whether an OS read is still outstanding. The re-check under the gate only needs that answer, so it
+    /// does not take the read's task: the hosted-producer analysis holds every caller of a helper that
+    /// returns a task to awaiting it, and a test for null awaits nothing.
+    /// </summary>
+    private bool HasOutstandingOsRead()
     {
         lock (_osReadSync)
         {
-            return _osRead is { IsCompleted: false } read ? read : null;
+            return _osRead is { IsCompleted: false };
         }
     }
 
     /// <summary>
     /// Waits for the outstanding read to return; its outcome was already reported to the readers that
-    /// joined it.
+    /// joined it. The read is taken from the field here, where it is awaited, rather than from a helper,
+    /// for the reason <see cref="HasOutstandingOsRead"/> gives.
     /// </summary>
     private async Task WaitForOutstandingOsReadAsync(CancellationToken cancellationToken)
     {
-        Task<OsCredentialStoreResult>? read = OutstandingOsRead();
+        Task<OsCredentialStoreResult>? read;
 
-        if (read is null)
+        lock (_osReadSync)
+        {
+            read = _osRead;
+        }
+
+        if (read is null || read.IsCompleted)
         {
             return;
         }
