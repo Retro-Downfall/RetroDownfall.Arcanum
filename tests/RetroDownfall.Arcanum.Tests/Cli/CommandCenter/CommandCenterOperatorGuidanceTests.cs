@@ -76,6 +76,51 @@ public sealed class CommandCenterOperatorGuidanceTests
         AssertEveryDocumentedFormParses(CommandCenterHost.HelpOverlaySlashSummary);
     }
 
+    /// <summary>
+    /// Every surface that teaches the composer and ask_human keys: F1, <c>/keys</c>, the ask_human
+    /// hint lines and footer, and the focused composer's title.
+    /// </summary>
+    public static TheoryData<string> KeyGuidance =>
+    [
+        string.Join('\n', CommandCenterHost.HelpOverlayLines),
+        ShellCommandDispatcher.BuildKeysHelp(),
+        string.Join('\n', HumanPromptOverlayContent.HintLines),
+        CommandCenterGuidance.HumanPromptFooter,
+        CommandCenterGuidance.ComposerFocusedTitle,
+    ];
+
+    /// <summary>
+    /// Enter sends and Ctrl+J inserts a line break. Guidance still teaching Ctrl+Enter to send or Enter
+    /// for a new line sends the operator to the chord that, in Terminal.app, iTerm2's defaults, tmux and
+    /// xterm.js, arrives as the same CR as Enter.
+    /// </summary>
+    [Theory]
+    [MemberData(nameof(KeyGuidance))]
+    public void Key_guidance_never_teaches_Ctrl_Enter_to_send_or_Enter_for_a_new_line(string guidance)
+    {
+        foreach (string retired in new[] { "Ctrl+Enter send", "Ctrl+Enter Send", "Enter newline", "Enter Newline" })
+        {
+            Assert.DoesNotContain(retired, guidance, StringComparison.Ordinal);
+        }
+    }
+
+    /// <summary>Ctrl+J is a line feed in every terminal, so it is the newline key every surface names.</summary>
+    [Theory]
+    [MemberData(nameof(KeyGuidance))]
+    public void Key_guidance_names_Ctrl_J_for_a_new_line(string guidance)
+    {
+        Assert.Contains("Ctrl+J", guidance, StringComparison.Ordinal);
+    }
+
+    /// <summary>The way out stays the last thing <c>/keys</c> says, where an operator looking for it ends up.</summary>
+    [Fact]
+    public void The_keys_help_ends_with_the_exit_row()
+    {
+        string last = ShellCommandDispatcher.BuildKeysHelp().Split(System.Environment.NewLine)[^1];
+
+        Assert.StartsWith("  /exit", last, StringComparison.Ordinal);
+    }
+
     [Fact]
     public void The_canonical_resume_usage_is_accepted_by_the_parser()
     {

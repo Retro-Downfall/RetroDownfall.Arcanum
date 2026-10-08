@@ -3,6 +3,7 @@ using System.Drawing;
 using RetroDownfall.Arcanum.Cli.UX;
 using Terminal.Gui.App;
 using Terminal.Gui.Drawing;
+using Terminal.Gui.Input;
 using Terminal.Gui.ViewBase;
 using Terminal.Gui.Views;
 
@@ -618,11 +619,21 @@ internal sealed class CommandCenterWindow : Window, ICommandCenterSessionActionW
     /// </summary>
     public void SetComposerLayoutRequest(Action? request) => _requestComposerLayout = request;
 
+    /// <summary>
+    /// Splits the composer line at the caret. Goes through TextView's own <see cref="Command.NewLine"/>,
+    /// which Terminal.Gui binds to the handler Enter used to reach, so undo and the wrap model stay
+    /// intact. <c>InsertText("\n")</c> must not be used: it appends an empty row after the current line
+    /// instead of splitting it.
+    /// </summary>
     public void InsertComposerNewLine()
     {
-        Input.InsertText("\n");
+        _ = Input.InvokeCommand(Command.NewLine);
+
         _requestComposerLayout?.Invoke();
     }
+
+    /// <summary>Splits the ask_human answer line at the caret, the same way <see cref="InsertComposerNewLine"/> does.</summary>
+    public void InsertHumanPromptNewLine() => _ = OverlayAnswer.InvokeCommand(Command.NewLine);
 
     public void WireResize(IApplication app)
     {
@@ -1873,9 +1884,11 @@ internal sealed class CommandCenterWindow : Window, ICommandCenterSessionActionW
     }
 
     /// <summary>
-    /// Configures the composer TextView for soft-wrap. Terminal.Gui couples
-    /// <c>EnterKeyAddsLine=false</c> to <c>Multiline=false</c> and <c>WordWrap=false</c>,
-    /// so Enter stays as newline and <b>Ctrl+Enter</b> sends via the keymap.
+    /// Configures the composer (and the ask_human answer) TextView for soft-wrap. Terminal.Gui couples
+    /// <c>EnterKeyAddsLine=false</c> to <c>Multiline=false</c> and <c>WordWrap=false</c>, so it stays
+    /// true; Enter never reaches TextView's own binding anyway, because the host's KeyDown handler maps
+    /// bare Enter to send and every other Enter-like chord to <see cref="Command.NewLine"/> and marks the
+    /// key handled first.
     /// </summary>
 #pragma warning disable CS0618
     internal static void ConfigureComposerTextView(TextView input)
@@ -2024,7 +2037,7 @@ internal sealed class CommandCenterWindow : Window, ICommandCenterSessionActionW
             ? "Incantations ●"
             : "Incantations";
         Input.Title = state.FocusRegion == CommandCenterFocusRegion.Composer
-            ? "Composer ●  Ctrl+Enter send · Enter newline"
+            ? CommandCenterGuidance.ComposerFocusedTitle
             : "Composer";
 
         if (OverlayPane.Visible && !string.IsNullOrEmpty(OverlayPane.Title?.ToString()))

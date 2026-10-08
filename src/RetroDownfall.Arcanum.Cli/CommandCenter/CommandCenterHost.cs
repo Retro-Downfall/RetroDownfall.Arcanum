@@ -494,14 +494,9 @@ internal sealed class CommandCenterHost(
                         return;
                     }
 
+                    // Enter is explicit by overlay kind, ask_human included: there it submits.
                     if (e == Key.Enter)
                     {
-                        if (state.Overlay == CommandCenterOverlayKind.HumanPrompt)
-                        {
-                            // Enter = newline in answer field; handled by OverlayAnswer path.
-                            return;
-                        }
-
                         e.Handled = true;
                         HandleAction(CommandCenterKeymap.MapOverlayEnter(state.Overlay));
                         return;
@@ -511,7 +506,7 @@ internal sealed class CommandCenterHost(
                         && state.Overlay == CommandCenterOverlayKind.HumanPrompt)
                     {
                         e.Handled = true;
-                        state.FooterHint = "Ctrl+Enter to submit · Ctrl+C to cancel turn";
+                        state.FooterHint = CommandCenterGuidance.HumanPromptFooter;
                         window.ApplyState(state, kind: CommandCenterUiUpdateKind.RefreshFooter);
                         return;
                     }
@@ -543,8 +538,18 @@ internal sealed class CommandCenterHost(
                         return;
                     }
 
+                    // The composer's key model: every Enter-like chord but bare Enter is a line break, and
+                    // bare Enter submits. Both are taken here, before TextView's own Enter binding runs.
                     KeyChord chord = ToChord(e);
-                    if (chord.IsEnter && chord.IsCtrl)
+
+                    if (chord.IsNewLine)
+                    {
+                        e.Handled = true;
+                        window.InsertHumanPromptNewLine();
+                        return;
+                    }
+
+                    if (chord.IsEnter)
                     {
                         e.Handled = true;
                         CancellationToken submitToken = state.TurnTokenOr(linked.Token);
@@ -556,23 +561,18 @@ internal sealed class CommandCenterHost(
                     {
                         // Hard modal: Esc does not dismiss; Ctrl+C cancels the turn.
                         e.Handled = true;
-                        state.FooterHint = "Ctrl+Enter to submit · Ctrl+C to cancel turn";
+                        state.FooterHint = CommandCenterGuidance.HumanPromptFooter;
                         window.ApplyState(state, kind: CommandCenterUiUpdateKind.RefreshFooter);
-                        return;
-                    }
-
-                    // Bare Enter = newline (TextView default). Do not ConfirmPending.
-                    if (chord.IsEnter && !chord.IsCtrl)
-                    {
                         return;
                     }
 
                     _ = TryMapAndHandle(e, CommandCenterFocusRegion.Overlay, state, window, HandleAction);
                 };
 
-                // Send ownership: Ctrl+Enter → CommandCenterAction.Send → SubmitFromInput.
-                // Bare Enter falls through to TextView (EnterKeyAddsLine=true, required for WordWrap).
-                // Accepting is a no-op so it cannot double-submit if raised.
+                // Send ownership: Input.KeyDown maps bare Enter to CommandCenterAction.Send (SubmitFromInput)
+                // and every other Enter-like chord to InsertComposerNewLine, marking the key handled before
+                // TextView's own Enter binding runs. With EnterKeyAddsLine true the TextView never raises
+                // Accepting; the handler stays a no-op so nothing could double-submit if it ever did.
                 window.Input.Accepting += (_, e) =>
                 {
                     e.Handled = true;
@@ -896,11 +896,10 @@ internal sealed class CommandCenterHost(
                 break;
 
             case CommandCenterAction.InsertComposerNewLine:
-                app.Invoke(() =>
-                {
-                    window.InsertComposerNewLine();
-                    window.FocusInput();
-                });
+                // Only key handlers on the UI thread produce this action, so the break goes in now:
+                // deferring it through app.Invoke would let the next key of a fast burst land before it.
+                window.InsertComposerNewLine();
+                window.FocusInput();
                 break;
 
             case CommandCenterAction.CancelTurn:
@@ -1009,7 +1008,7 @@ internal sealed class CommandCenterHost(
                     || humanPromptCoordinator.IsActive)
                 {
                     // Hard modal — Esc does not dismiss HITL.
-                    state.FooterHint = "Ctrl+Enter to submit · Ctrl+C to cancel turn";
+                    state.FooterHint = CommandCenterGuidance.HumanPromptFooter;
                     app.Invoke(() => window.ApplyState(state, kind: CommandCenterUiUpdateKind.RefreshFooter));
                     break;
                 }
@@ -1600,35 +1599,40 @@ internal sealed class CommandCenterHost(
 
     /// <summary>
     /// Body of the F1 overlay. The <c>Slash:</c> line is operator instruction, so every spelling it
-    /// lists must be one <see cref="ShellCommandParser"/> still accepts.
+    /// lists must be one <see cref="ShellCommandParser"/> still accepts. Enter sends and Ctrl+J inserts
+    /// a line break, in the composer and the ask_human answer alike: Ctrl+J is a line feed in every
+    /// terminal, while Ctrl+Enter arrives as the same CR as Enter in most of them.
     /// </summary>
     internal static readonly string[] HelpOverlayLines =
     [
-        "F1 Help",
-        "Ctrl+K Command palette",
-        "Ctrl+O Sessions",
-        "Ctrl+N New session",
-        "Ctrl+R / F5 Refresh",
-        "Tab / Shift+Tab Cycle focus (Composer→Sessions→Transcript→Incantations→Model)",
-        "Enter/Space     Open the model drop-down when the Model header control has focus",
-        "Ctrl+Enter Send (composer)",
-        "Enter Newline (composer)",
-        "Enter Resume (sessions)",
-        "Ctrl+C Cancel turn / clear input / quit hint",
-        "Ctrl+Q Quit",
-        "Esc Close overlay / focus composer",
-        "PgUp/PgDn Transcript scroll (also from composer)",
-        "Ctrl+PgUp/PgDn Load adjacent Transcript or Sessions page",
-        "↑↓/Home/End Scroll focused Transcript or Incantations",
-        "",
-        "Slash: /help /keys /session list /clear /resume <id>",
+        HelpRow("Enter", "Send the message or /command (composer) · submit (ask_human)"),
+        HelpRow("Ctrl+J", "New line · also Alt+Enter, Shift+Enter, Ctrl+Enter where the terminal sends them"),
+        HelpRow("/", "Slash-command menu (in an empty composer)"),
+        HelpRow("Ctrl+K", "Command palette"),
+        HelpRow("Ctrl+N", "New session"),
+        HelpRow("Ctrl+O", "Sessions"),
+        HelpRow("Shift+Tab", "Model control from the composer · Enter opens the model list"),
+        HelpRow("Tab / Shift+Tab", "Cycle focus (Composer→Sessions→Transcript→Incantations→Model)"),
+        HelpRow("Enter", "Resume the selected session (Sessions)"),
+        HelpRow("Ctrl+R / F5", "Refresh"),
+        HelpRow("Ctrl+C", "Cancel turn / clear input / quit hint"),
+        HelpRow("Ctrl+Q", "Quit"),
+        HelpRow("Esc", "Close overlay / focus composer"),
+        HelpRow("PgUp/PgDn", "Transcript scroll (also from composer)"),
+        HelpRow("Ctrl+PgUp/PgDn", "Load adjacent Transcript or Sessions page"),
+        HelpRow("↑↓/Home/End", "Scroll the focused Transcript, Incantations or this help"),
+        string.Empty,
+        "Slash: /help /keys /model /session list /clear /resume <id>",
         "Denied: /serve /daemon… /key…",
-        "",
+        string.Empty,
         "Incantations: tool calls by CallId (heavy args suppressed)",
         "Thinking ⠋ while waiting for first token",
-        "",
-        "ask_human: Ctrl+Enter submit · Enter newline · Ctrl+C cancel turn",
+        string.Empty,
+        $"ask_human: {CommandCenterGuidance.HumanPromptFooter}",
     ];
+
+    /// <summary>One <see cref="HelpOverlayLines"/> row: the key padded to a 19-cell column, then what it does.</summary>
+    private static string HelpRow(string key, string text) => $"{key,-19}{text}";
 
     /// <summary>The <c>Slash:</c> summary line of <see cref="HelpOverlayLines"/>.</summary>
     internal static string HelpOverlaySlashSummary =>
@@ -2100,17 +2104,35 @@ internal sealed class CommandCenterHost(
         if (state.Overlay == CommandCenterOverlayKind.HumanPrompt)
         {
             KeyChord humanChord = ToChord(e);
-            if (humanChord.IsEnter && humanChord.IsCtrl)
+
+            // A line break belongs in the answer, never the composer that still holds the keyboard.
+            if (humanChord.IsNewLine)
             {
                 e.Handled = true;
+
+                if (!window.OverlayAnswer.HasFocus)
+                {
+                    window.OverlayAnswer.SetFocus();
+                }
+
+                window.InsertHumanPromptNewLine();
+
+                return true;
+            }
+
+            if (humanChord.IsEnter)
+            {
+                e.Handled = true;
+
                 handle(CommandCenterAction.Send);
+
                 return true;
             }
 
             if (e == Key.Esc)
             {
                 e.Handled = true;
-                state.FooterHint = "Ctrl+Enter to submit · Ctrl+C to cancel turn";
+                state.FooterHint = CommandCenterGuidance.HumanPromptFooter;
                 window.ApplyState(state, kind: CommandCenterUiUpdateKind.RefreshFooter);
                 return true;
             }
@@ -2119,12 +2141,6 @@ internal sealed class CommandCenterHost(
             if (!window.OverlayAnswer.HasFocus)
             {
                 window.OverlayAnswer.SetFocus();
-            }
-
-            // Let printable / Enter reach OverlayAnswer (newline). Block composer side-effects.
-            if (humanChord.IsEnter && !humanChord.IsCtrl)
-            {
-                return false;
             }
 
             if (!e.IsCtrl && !e.IsAlt && e != Key.Tab)
@@ -2199,7 +2215,7 @@ internal sealed class CommandCenterHost(
             return false;
         }
 
-        state.FooterHint = "Answer the Mage prompt first (Ctrl+Enter), or cancel the turn (Ctrl+C).";
+        state.FooterHint = "Answer the Mage prompt first (Enter submits), or cancel the turn (Ctrl+C).";
         app.Invoke(() => window.ApplyState(state, kind: CommandCenterUiUpdateKind.RefreshFooter));
         return true;
     }

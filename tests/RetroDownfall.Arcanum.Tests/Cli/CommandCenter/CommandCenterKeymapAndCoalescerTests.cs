@@ -1,6 +1,7 @@
 using System.Runtime.CompilerServices;
 using System.Threading.Channels;
 using RetroDownfall.Arcanum.Cli.CommandCenter;
+using Terminal.Gui.Input;
 
 namespace RetroDownfall.Arcanum.Tests.Cli.CommandCenter;
 
@@ -122,11 +123,15 @@ public sealed class CommandCenterKeymapTests
                 new KeyChord(IsCtrl: true, IsPageUp: true)));
     }
 
+    /// <summary>
+    /// Enter is the send key: Terminal.app, iTerm2's defaults, tmux and xterm.js send the same CR for
+    /// Enter and Ctrl+Enter, so a Ctrl+Enter-only send left nothing sendable in those terminals.
+    /// </summary>
     [Fact]
-    public void Enter_in_composer_falls_through_for_newline()
+    public void Enter_in_composer_sends()
     {
         Assert.Equal(
-            CommandCenterAction.None,
+            CommandCenterAction.Send,
             CommandCenterKeymap.Map(
                 CommandCenterFocusRegion.Composer,
                 false,
@@ -136,42 +141,42 @@ public sealed class CommandCenterKeymapTests
     }
 
     [Fact]
-    public void CtrlEnter_in_composer_sends()
+    public void CtrlEnter_in_composer_inserts_a_new_line()
     {
         Assert.Equal(
-            CommandCenterAction.Send,
+            CommandCenterAction.InsertComposerNewLine,
             CommandCenterKeymap.Map(
                 CommandCenterFocusRegion.Composer,
                 false,
                 false,
                 false,
-                new KeyChord(IsEnter: true, IsCtrl: true)));
+                CommandCenterKeyChords.FromKey(Key.Enter.WithCtrl)));
     }
 
     [Fact]
-    public void ShiftEnter_in_composer_falls_through_for_newline()
+    public void ShiftEnter_in_composer_inserts_a_new_line()
     {
         Assert.Equal(
-            CommandCenterAction.None,
+            CommandCenterAction.InsertComposerNewLine,
             CommandCenterKeymap.Map(
                 CommandCenterFocusRegion.Composer,
                 false,
                 false,
                 false,
-                new KeyChord(IsEnter: true, IsShift: true)));
+                CommandCenterKeyChords.FromKey(Key.Enter.WithShift)));
     }
 
     [Fact]
-    public void AltEnter_in_composer_falls_through_for_newline()
+    public void AltEnter_in_composer_inserts_a_new_line()
     {
         Assert.Equal(
-            CommandCenterAction.None,
+            CommandCenterAction.InsertComposerNewLine,
             CommandCenterKeymap.Map(
                 CommandCenterFocusRegion.Composer,
                 false,
                 false,
                 false,
-                new KeyChord(IsEnter: true, IsAlt: true)));
+                CommandCenterKeyChords.FromKey(Key.Enter.WithAlt)));
     }
 
     [Fact]
@@ -232,7 +237,7 @@ public sealed class CommandCenterKeymapTests
     [InlineData(nameof(CommandCenterOverlayKind.CommandPalette), nameof(CommandCenterAction.ExecutePaletteItem))]
     [InlineData(nameof(CommandCenterOverlayKind.QuitConfirm), nameof(CommandCenterAction.ConfirmPending))]
     [InlineData(nameof(CommandCenterOverlayKind.DiscardConfirm), nameof(CommandCenterAction.ConfirmPending))]
-    [InlineData(nameof(CommandCenterOverlayKind.HumanPrompt), nameof(CommandCenterAction.NoOp))]
+    [InlineData(nameof(CommandCenterOverlayKind.HumanPrompt), nameof(CommandCenterAction.Send))]
     [InlineData(nameof(CommandCenterOverlayKind.None), nameof(CommandCenterAction.NoOp))]
     public void Overlay_Enter_is_explicit_by_kind(string kindName, string expectedName)
     {

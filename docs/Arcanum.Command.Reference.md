@@ -158,6 +158,24 @@ Interactive auto-start uses short connection/readiness observation only: two sec
 
 On a fresh installation, the foreground command explains before the operating system may request access to its credential store. Arcanum reads or creates one private server-authentication key; the password dialog belongs to macOS Keychain, Windows Credential Manager, or the desktop secret store, and Arcanum never receives the login password. Before configuration, an ordinary command checks only public reset residue and credential-item existence metadata; it does not request reset secret bytes. Proven reset evidence enters authenticated recovery, while an indeterminate metadata answer fails closed without opening another password prompt. Presence polling opens secure storage only after the host proves it already knows the key and reads the OS store at most once, so a failed launch cannot open a series of password prompts. A successful host start records that the explanation was shown; a failed start does not. If existing encrypted attachment/upload/batch files need startup validation, Arcanum may also read their separate file-encryption key then. Otherwise that key remains lazy and is created only by the first encrypted-file write.
 
+### Keys
+
+| Key | Action |
+|---|---|
+| `Enter` | Send the composer (a message or a `/command`). It also submits an `ask_human` answer, resumes the selected session in Sessions, and opens the model list on the Model control. |
+| `Ctrl+J` | Insert a new line in the composer or the `ask_human` answer. It is a line feed, so it works in every terminal. |
+| `Alt+Enter`, `Shift+Enter`, `Ctrl+Enter` | Also insert a new line where the terminal sends them distinctly. `Alt+Enter` needs Option/Alt to send Esc (iTerm2 "Esc+", Terminal.app "Use Option as Meta key"); `Shift+Enter` and `Ctrl+Enter` need CSI-u (kitty) key reporting. Where the terminal sends the same byte as `Enter` (Terminal.app, iTerm2 by default, tmux, xterm.js), they send. |
+| `/` | In an empty composer, opens the slash-command menu (see Command palette and slash menu). |
+| `Ctrl+K` | The command palette. |
+| `Ctrl+N` | New session. |
+| `Ctrl+O` | Sessions (the sidebar, or a picker under 100 columns). |
+| `Tab` / `Shift+Tab` | Cycle Composer → Sessions → Transcript → Incantations → Model; `Shift+Tab` from the composer reaches the Model control directly. |
+| `Ctrl+R` / `F5` | Refresh. |
+| `Ctrl+C` | Cancel the turn, else clear the composer, else show the quit hint. |
+| `Ctrl+Q` | Quit (asks first while a turn is generating). |
+| `Esc` | Close an overlay or return to the composer. |
+| `F1` | Help. |
+
 ### The model drop-down
 
 `/model <name>` needs you to know the model id before you can type it. That is fine for models you wrote into `arcanum.json` yourself, but a Familiar's catalogue belongs to the vendor and changes without a configuration edit, so Command Center also carries a model control in the header.
