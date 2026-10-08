@@ -164,7 +164,7 @@ On a fresh installation, the foreground command explains before the operating sy
 
 It is a full focus region: `Tab` / `Shift+Tab` reach it alongside Composer, Sessions, Transcript, and Incantations. `Enter`, `Space`, or `↓` opens it; typing narrows by model name or provider name; `↑`/`↓` (or `k`/`j`) move; `Enter` selects; `Esc` cancels back to the composer. No mouse anywhere.
 
-The list is `GET /api/models`, so it spans every provider kind, groups by provider, marks the model prompts currently go to, and already excludes anything on a Familiar's `hiddenModels` list. Selecting sets exactly the session model `/model <name>` sets — the two cannot disagree. On a terminal under 72 columns the control is not rendered and drops out of the `Tab` cycle; `/model <name>` is unchanged, and so is `-m` / `--model` on `arcanum run`.
+The list is `GET /api/models`, so it spans every provider kind, groups by provider, marks the model prompts currently go to, and already excludes anything on a Familiar's `hiddenModels` list. Its first row is a type-to-filter field, which is why the overlay is titled `Models · type to filter`. Selecting sets exactly the session model `/model <name>` sets — the two cannot disagree. On a terminal under 72 columns the control is not rendered and drops out of the `Tab` cycle; `/model <name>` is unchanged, and so is `-m` / `--model` on `arcanum run`.
 
 ### Slash commands
 

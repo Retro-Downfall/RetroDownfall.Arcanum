@@ -343,6 +343,11 @@ internal sealed class CommandCenterWindow : Window, ICommandCenterSessionActionW
             VerticalTextAlignment = Alignment.Start,
         };
 
+        // Dim.Fill() and never Dim.Fill(1): Terminal.Gui's Dim.Fill(margin) fills to the end of the
+        // SuperView's content area and LEAVES `margin` cells empty. The list already sits at Y = 1
+        // under the filter row, so Dim.Fill(1) gave it the inner height minus two: one row for a
+        // two-model picker whose frame OverlayLayout.MeasureHeight had sized to five, clipping the
+        // second model below the frame.
         OverlayList = new ListView
         {
             CanFocus = true,
@@ -351,7 +356,7 @@ internal sealed class CommandCenterWindow : Window, ICommandCenterSessionActionW
             X = 0,
             Y = 1,
             Width = Dim.Fill(),
-            Height = Dim.Fill(1),
+            Height = Dim.Fill(),
             SchemeName = CommandCenterTheme.OverlayScheme,
             ViewportSettings = ViewportSettingsFlags.HasVerticalScrollBar,
         };
@@ -947,7 +952,9 @@ internal sealed class CommandCenterWindow : Window, ICommandCenterSessionActionW
             OverlayBody.Text = string.Empty;
             OverlayList.Visible = true;
             OverlayList.Y = showFilter ? 1 : 0;
-            OverlayList.Height = showFilter ? Dim.Fill(1) : Dim.Fill();
+
+            // No fill margin with or without the filter row: the Y offset already makes room for it.
+            OverlayList.Height = Dim.Fill();
             if (_overlayLines.Count > 0)
             {
                 OverlayList.SelectedItem = 0;
@@ -1121,7 +1128,8 @@ internal sealed class CommandCenterWindow : Window, ICommandCenterSessionActionW
         {
         }
 
-        OverlayPane.Title = "Models";
+        // The first row is a blank text field; the title says so, or it reads as an empty row.
+        OverlayPane.Title = "Models · type to filter";
         OverlayPane.Visible = true;
         _overlayShowFilter = true;
         OverlayBody.Visible = false;
@@ -1137,7 +1145,9 @@ internal sealed class CommandCenterWindow : Window, ICommandCenterSessionActionW
 
         OverlayList.Visible = true;
         OverlayList.Y = 1;
-        OverlayList.Height = Dim.Fill(1);
+
+        // Dim.Fill(), not Dim.Fill(1): see the OverlayList initializer.
+        OverlayList.Height = Dim.Fill();
         RefreshModelList(state);
         ApplyAbsoluteLayout(_cols, _rows);
         OverlayFilter.SetFocus();
@@ -1260,7 +1270,10 @@ internal sealed class CommandCenterWindow : Window, ICommandCenterSessionActionW
         OverlayFilter.Visible = true;
         OverlayList.Visible = true;
         OverlayList.Y = 1;
-        OverlayList.Height = Dim.Fill(1);
+
+        // Dim.Fill(), not Dim.Fill(1): see the OverlayList initializer. The rows arrive afterwards,
+        // through RefreshSessionList, which re-measures the frame once they do.
+        OverlayList.Height = Dim.Fill();
         ApplyAbsoluteLayout(_cols, _rows);
         OverlayFilter.SetFocus();
     }
@@ -1963,10 +1976,20 @@ internal sealed class CommandCenterWindow : Window, ICommandCenterSessionActionW
 
         if (OverlayPane.Visible && _overlayKind == CommandCenterOverlayKind.SessionPicker)
         {
+            int previousRows = _overlayLines.Count;
+
             _overlayLines.Clear();
             foreach (string line in _sessionLines)
             {
                 _overlayLines.Add(line);
+            }
+
+            // The picker opens before the host hands it any sessions, so its frame was measured for
+            // whatever the list held then — nothing, or the overlay it replaced. Re-measure whenever
+            // the row count moves; ApplyAbsoluteLayout is re-entrancy guarded and never calls back here.
+            if (_overlayLines.Count != previousRows)
+            {
+                ApplyAbsoluteLayout(_cols, _rows);
             }
         }
 
