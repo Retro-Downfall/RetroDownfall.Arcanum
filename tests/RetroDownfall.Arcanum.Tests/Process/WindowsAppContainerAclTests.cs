@@ -45,6 +45,7 @@ public sealed class WindowsAppContainerAclTests : IDisposable
         string journalB = Path.Combine(_root, "b.journal");
         File.WriteAllBytes(journalA, []);
         File.WriteAllBytes(journalB, []);
+        InitializeModernInheritance(shared);
         string original = Sddl(shared);
 
         WindowsAppContainerLauncher.Grant(
@@ -68,6 +69,137 @@ public sealed class WindowsAppContainerAclTests : IDisposable
         Assert.Contains(RunB, remaining);
 
         Assert.True(WindowsAppContainerLauncher.RemoveGrant(shared, RunB, WindowsAppContainerRootLockBudget.StartPerRun()));
+
+        Assert.Equal(original, Sddl(shared));
+    }
+
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    [SupportedOSPlatform("windows")]
+    public void Grants_preserve_protection_and_propagate_to_existing_children(bool protectedDacl)
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), "The AppContainer ACL grant is Windows-only.");
+
+        string shared = Directory.CreateDirectory(Path.Combine(_root, "workspace")).FullName;
+
+        string child = Directory.CreateDirectory(Path.Combine(shared, "existing-child")).FullName;
+
+        string file = Path.Combine(child, "existing-file.txt");
+
+        File.WriteAllText(file, "existing content");
+
+        InitializeModernInheritance(shared);
+
+        DirectoryInfo directory = new(shared);
+
+        DirectorySecurity security = directory.GetAccessControl(AccessControlSections.Access);
+
+        security.SetAccessRuleProtection(protectedDacl, preserveInheritance: true);
+
+        directory.SetAccessControl(security);
+
+        string original = Sddl(shared);
+
+        string childOriginal = Sddl(child);
+
+        string fileOriginal = Sddl(file);
+
+        ControlFlags originalFlags = Descriptor(shared).ControlFlags;
+
+        Assert.True((originalFlags & ControlFlags.DiscretionaryAclAutoInherited) != 0);
+
+        Assert.Equal(protectedDacl, (originalFlags & ControlFlags.DiscretionaryAclProtected) != 0);
+
+        string journal = Path.Combine(_root, "children.journal");
+
+        File.WriteAllBytes(journal, []);
+
+        WindowsAppContainerLauncher.Grant(journal, shared, new SecurityIdentifier(RunA),
+            FileSystemRights.Modify | FileSystemRights.ReadAndExecute, WindowsAppContainerRootLockBudget.StartPerRun());
+
+        WindowsAppContainerLauncher.Grant(journal, shared, new SecurityIdentifier(RunB),
+            FileSystemRights.ReadAndExecute, WindowsAppContainerRootLockBudget.StartPerRun());
+
+        Assert.Equal(originalFlags, Descriptor(shared).ControlFlags);
+
+        AssertInheritedSid(child, RunA);
+
+        AssertInheritedSid(file, RunA);
+
+        AssertInheritedSid(child, RunB);
+
+        AssertInheritedSid(file, RunB);
+
+        Assert.True(WindowsAppContainerLauncher.RemoveGrant(shared, RunA, WindowsAppContainerRootLockBudget.StartPerRun()));
+
+        foreach (string path in new[] { shared, child, file })
+        {
+            Assert.DoesNotContain(RunA, AccessSids(path));
+
+            Assert.Contains(RunB, AccessSids(path));
+        }
+
+        Assert.Equal(originalFlags, Descriptor(shared).ControlFlags);
+
+        Assert.True(WindowsAppContainerLauncher.RemoveGrant(shared, RunB, WindowsAppContainerRootLockBudget.StartPerRun()));
+
+        Assert.Equal(original, Sddl(shared));
+
+        Assert.Equal(childOriginal, Sddl(child));
+
+        Assert.Equal(fileOriginal, Sddl(file));
+    }
+
+    [SkippableFact]
+    [SupportedOSPlatform("windows")]
+    public void Fresh_root_round_trip_preserves_exact_aces_and_protection_while_windows_initializes_inheritance()
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), "The AppContainer ACL grant is Windows-only.");
+
+        string shared = Directory.CreateDirectory(Path.Combine(_root, "fresh-workspace")).FullName;
+
+        string journal = Path.Combine(_root, "fresh.journal");
+
+        File.WriteAllBytes(journal, []);
+
+        RawSecurityDescriptor original = Descriptor(shared);
+
+        byte[] originalAcl = AclBytes(original);
+
+        WindowsAppContainerLauncher.Grant(journal, shared, new SecurityIdentifier(RunA),
+            FileSystemRights.ReadAndExecute, WindowsAppContainerRootLockBudget.StartPerRun());
+
+        Assert.True(WindowsAppContainerLauncher.RemoveGrant(shared, RunA, WindowsAppContainerRootLockBudget.StartPerRun()));
+
+        RawSecurityDescriptor restored = Descriptor(shared);
+
+        Assert.Equal(originalAcl, AclBytes(restored));
+
+        // Windows imposes its current inheritance model on the first SetSecurityInfo DACL write.
+        // Every other control flag and every ACE remains exactly the captured value.
+        Assert.Equal(original.ControlFlags | ControlFlags.DiscretionaryAclAutoInherited, restored.ControlFlags);
+    }
+
+    [SkippableFact]
+    [SupportedOSPlatform("windows")]
+    public void Replaying_an_absent_run_sid_twice_leaves_the_complete_dacl_unchanged()
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), "The AppContainer ACL removal is Windows-only.");
+
+        string shared = Directory.CreateDirectory(Path.Combine(_root, "ungranted-workspace")).FullName;
+
+        string original = Sddl(shared);
+
+        Assert.DoesNotContain(RunA, ExplicitSids(shared));
+
+        // The journal is written before the grant. A killed broker may therefore ask replay to remove
+        // a SID that was never present; repeating that replay must remain a complete descriptor no-op.
+        Assert.True(WindowsAppContainerLauncher.RemoveGrant(shared, RunA, WindowsAppContainerRootLockBudget.StartPerRun()));
+
+        Assert.Equal(original, Sddl(shared));
+
+        Assert.True(WindowsAppContainerLauncher.RemoveGrant(shared, RunA, WindowsAppContainerRootLockBudget.StartPerRun()));
 
         Assert.Equal(original, Sddl(shared));
     }
@@ -142,10 +274,59 @@ public sealed class WindowsAppContainerAclTests : IDisposable
     }
 
     [SupportedOSPlatform("windows")]
+    internal static void InitializeModernInheritance(string path)
+    {
+        DirectoryInfo directory = new(path);
+
+        DirectorySecurity security = directory.GetAccessControl(AccessControlSections.Access);
+
+        // Persisting the current protection choice initializes Windows' current inheritance model
+        // without changing the ACEs or protection. A first SetSecurityInfo write legitimately adds
+        // SE_DACL_AUTO_INHERITED; the round trip below compares the complete descriptor afterward.
+        security.SetAccessRuleProtection(security.AreAccessRulesProtected, preserveInheritance: true);
+
+        directory.SetAccessControl(security);
+    }
+
+    [SupportedOSPlatform("windows")]
     private static string Sddl(string path) =>
-        new DirectoryInfo(path)
-            .GetAccessControl(AccessControlSections.Access)
-            .GetSecurityDescriptorSddlForm(AccessControlSections.Access);
+        Security(path).GetSecurityDescriptorSddlForm(AccessControlSections.Access);
+
+    [SupportedOSPlatform("windows")]
+    private static FileSystemSecurity Security(string path) =>
+        Directory.Exists(path)
+            ? new DirectoryInfo(path).GetAccessControl(AccessControlSections.Access)
+            : new FileInfo(path).GetAccessControl(AccessControlSections.Access);
+
+    [SupportedOSPlatform("windows")]
+    private static RawSecurityDescriptor Descriptor(string path) => new(Sddl(path));
+
+    [SupportedOSPlatform("windows")]
+    private static byte[] AclBytes(RawSecurityDescriptor descriptor)
+    {
+        RawAcl acl = descriptor.DiscretionaryAcl!;
+
+        byte[] bytes = new byte[acl.BinaryLength];
+
+        acl.GetBinaryForm(bytes, 0);
+
+        return bytes;
+    }
+
+    [SupportedOSPlatform("windows")]
+    private static void AssertInheritedSid(string path, string sid) =>
+        Assert.Contains(Security(path)
+            .GetAccessRules(includeExplicit: false, includeInherited: true, typeof(SecurityIdentifier))
+            .Cast<FileSystemAccessRule>(), rule => rule.IdentityReference.Value == sid && rule.IsInherited);
+
+    [SupportedOSPlatform("windows")]
+    private static List<string> AccessSids(string path) =>
+        [
+            .. Security(path)
+                .GetAccessRules(includeExplicit: true, includeInherited: true, typeof(SecurityIdentifier))
+                .Cast<FileSystemAccessRule>()
+                .Select(static rule => rule.IdentityReference.Value),
+        ];
 
     [SupportedOSPlatform("windows")]
     private static List<string> ExplicitSids(string path) =>

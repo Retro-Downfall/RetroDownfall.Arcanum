@@ -20,7 +20,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.ProcessExecution;
 [SupportedOSPlatform("windows")]
 // Windows kernel/ACL integration. Its only end-to-end coverage is the Windows-lane
 // WindowsAppContainerBrokerTests (whose smoke needs a published apphost) and
-// WindowsAppContainerAclTests, which have not yet run in CI; the pure parts it relies on
+// WindowsAppContainerAclTests, selected by both Windows CI lanes; the pure parts it relies on
 // (WindowsAppContainerBrokerExit, WindowsAppContainerRootLockBudget, the journal and the resolver)
 // are covered on every host.
 [ExcludeFromCodeCoverage]
@@ -32,7 +32,7 @@ internal static partial class WindowsAppContainerLauncher
 
     private const uint ExtendedStartupInfoPresent = 0x00080000;
 
-    private const uint ProcThreadAttributeSecurityCapabilities = 0x00020005;
+    private const uint ProcThreadAttributeSecurityCapabilities = 0x00020009;
 
     private const uint ProcThreadAttributeHandleList = 0x00020002;
 
@@ -201,6 +201,18 @@ internal static partial class WindowsAppContainerLauncher
         {
             DirectoryInfo directory = new(path);
             DirectorySecurity security = directory.GetAccessControl(AccessControlSections.Access);
+
+            bool hasGrant = security.GetAccessRules(includeExplicit: true, includeInherited: false, typeof(SecurityIdentifier))
+                .Cast<FileSystemAccessRule>()
+                .Any(rule => rule.IdentityReference.Equals(identity));
+
+            if (!hasGrant)
+            {
+                // Recording precedes granting, so replay can legitimately find no ACE for this SID.
+                // Persisting that no-op would still initialize Windows' inheritance control flags.
+                return true;
+            }
+
             security.PurgeAccessRules(identity);
             directory.SetAccessControl(security);
             return true;

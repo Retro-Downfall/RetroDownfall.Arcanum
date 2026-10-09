@@ -37,6 +37,21 @@ public sealed class WindowsAppContainerPolicyTests
 
     [Fact]
     [SupportedOSPlatform("windows")]
+    public void Broker_security_capabilities_attribute_matches_the_Windows_SDK()
+    {
+        System.Reflection.FieldInfo? attribute = typeof(WindowsAppContainerLauncher).GetField(
+            "ProcThreadAttributeSecurityCapabilities",
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+
+        Assert.NotNull(attribute);
+
+        // WinBase.h defines attribute number 9 with PROC_THREAD_ATTRIBUTE_INPUT (0x00020000).
+
+        Assert.Equal(0x00020009u, Assert.IsType<uint>(attribute.GetRawConstantValue()));
+    }
+
+    [Fact]
+    [SupportedOSPlatform("windows")]
     public void Broker_command_line_preserves_spaces_quotes_and_trailing_backslashes()
     {
         string commandLine = WindowsAppContainerLauncher.BuildCommandLine(
