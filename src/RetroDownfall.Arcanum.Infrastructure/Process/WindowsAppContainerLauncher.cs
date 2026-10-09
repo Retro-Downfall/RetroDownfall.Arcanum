@@ -202,6 +202,17 @@ internal static partial class WindowsAppContainerLauncher
             DirectoryInfo directory = new(path);
             DirectorySecurity security = directory.GetAccessControl(AccessControlSections.Access);
 
+            bool hasGrant = security.GetAccessRules(includeExplicit: true, includeInherited: false, typeof(SecurityIdentifier))
+                .Cast<FileSystemAccessRule>()
+                .Any(rule => rule.IdentityReference.Equals(identity));
+
+            if (!hasGrant)
+            {
+                // Recording precedes granting, so replay can legitimately find no ACE for this SID.
+                // Persisting that no-op would still initialize Windows' inheritance control flags.
+                return true;
+            }
+
             security.PurgeAccessRules(identity);
             directory.SetAccessControl(security);
             return true;
