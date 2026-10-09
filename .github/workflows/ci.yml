@@ -1,23 +1,66 @@
-name: Windows ACL regression diagnostic
+name: Long Rest shipping RID verification
 on:
   workflow_dispatch:
 permissions:
   contents: read
 jobs:
-  acl-regression:
-    name: Windows ACL regression (${{ matrix.runner }})
+  long-rest:
+    name: Long Rest canonical replay (${{ matrix.rid }})
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 20
+    timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
-        runner: [windows-latest, windows-11-arm]
+        include:
+          - runner: windows-latest
+            rid: win-x64
+          - runner: windows-11-arm
+            rid: win-arm64
     steps:
-      - name: Checkout diagnostic snapshot
+      - name: Checkout exact qualified source
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: 'fa904781cfb9417031d55d6460902c2002a2ead1'
       - name: Setup .NET
         uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9
         with:
           global-json-file: global.json
-      - name: Real Windows ACL regression
-        run: dotnet test tests/RetroDownfall.Arcanum.Tests/RetroDownfall.Arcanum.Tests.csproj --configuration Release --filter "FullyQualifiedName~WindowsAppContainerAclTests" --blame-hang-timeout 5m --blame-hang-dump-type none
+      - name: Verify source and native SDK RID
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $actualSha = git rev-parse HEAD
+          Write-Host "Checked-out candidate: $actualSha"
+          if ($actualSha -ne 'fa904781cfb9417031d55d6460902c2002a2ead1') { throw 'Candidate checkout mismatch.' }
+          $info = (& dotnet --info) -join "`n"
+          Write-Host $info
+          $match = [regex]::Match($info, '(?m)^\s*RID:\s*(?<rid>\S+)\s*$')
+          if (-not $match.Success -or $match.Groups['rid'].Value -ne '${{ matrix.rid }}') {
+            throw 'The SDK host RID must match the native shipping architecture.'
+          }
+      - name: Test canonical goldens and durable replay
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $longRestFilter = @(
+            'FullyQualifiedName~RetroDownfall.Arcanum.Tests.LongRest.LongRestPolicyTests',
+            'FullyQualifiedName=RetroDownfall.Arcanum.Tests.LongRest.SagaLongRestServiceTests.Exact_duplicates_converge_without_rewriting_source_claims_or_embeddings',
+            'FullyQualifiedName=RetroDownfall.Arcanum.Tests.LongRest.SagaLongRestServiceTests.Applied_replay_and_receipt_inspection_perform_zero_database_writes',
+            'FullyQualifiedName=RetroDownfall.Arcanum.Tests.LongRest.SagaLongRestServiceTests.Pinned_input_writes_one_no_change_receipt_and_unpin_allows_a_distinct_transformation',
+            'FullyQualifiedName=RetroDownfall.Arcanum.Tests.LongRest.SagaLongRestServiceTests.Equivalent_observations_preserve_each_content_and_supersession_names_the_exact_survivor',
+            'FullyQualifiedName=RetroDownfall.Arcanum.Tests.LongRest.SagaLongRestServiceTests.Equivalent_observations_converge_and_replay_preserves_the_original_historical_decision_after_correction'
+          ) -join '|'
+          dotnet test tests/RetroDownfall.Arcanum.Tests/RetroDownfall.Arcanum.Tests.csproj -c Release --filter $longRestFilter --blame-hang-timeout 5m --blame-hang-dump-type none --logger 'trx;LogFileName=long-rest-${{ matrix.rid }}.trx' --results-directory windows-long-rest-results
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          [xml]$trx = Get-Content 'windows-long-rest-results/long-rest-${{ matrix.rid }}.trx'
+          $counters = $trx.TestRun.ResultSummary.Counters
+          if ([int]$counters.total -ne 49 -or [int]$counters.passed -ne 49 -or [int]$counters.failed -ne 0 -or [int]$counters.notExecuted -ne 0) {
+            throw 'Expected all 49 Long Rest cases to pass without skips.'
+          }
+      - name: Upload exact source test evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: long-rest-${{ matrix.rid }}-fa904781cfb9417031d55d6460902c2002a2ead1
+          path: windows-long-rest-results/*.trx
+          if-no-files-found: error

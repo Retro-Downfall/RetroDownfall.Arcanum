@@ -20,7 +20,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.ProcessExecution;
 [SupportedOSPlatform("windows")]
 // Windows kernel/ACL integration. Its only end-to-end coverage is the Windows-lane
 // WindowsAppContainerBrokerTests (whose smoke needs a published apphost) and
-// WindowsAppContainerAclTests, which have not yet run in CI; the pure parts it relies on
+// WindowsAppContainerAclTests, selected by both Windows CI lanes; the pure parts it relies on
 // (WindowsAppContainerBrokerExit, WindowsAppContainerRootLockBudget, the journal and the resolver)
 // are covered on every host.
 [ExcludeFromCodeCoverage]

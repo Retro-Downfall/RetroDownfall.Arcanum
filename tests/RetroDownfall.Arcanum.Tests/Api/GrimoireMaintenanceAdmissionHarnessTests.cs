@@ -385,6 +385,10 @@ public sealed class GrimoireMaintenanceAdmissionHarnessTests
 
         await using GrimoireMaintenanceAdmissionHarness recovered = await GrimoireMaintenanceAdmissionHarness.StartRecoveryAsync(profile);
 
+        // Host startup only schedules the probe; await its actual observation before inspecting
+        // the recovered participants and effects.
+        await recovered.Admission.WaitUntilProviderHealthProbeEffectAsync();
+
         Assert.Equal(sessionId, recovered.SessionId);
 
         Assert.Equal(apprenticeId, recovered.ApprenticeId);

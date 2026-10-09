@@ -8,6 +8,7 @@ using System.Text.Json;
 
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 
@@ -193,6 +194,81 @@ public sealed class MemoryErasureLifecycleSurvivalTests
     }
 
     [SkippableFact]
+    public async Task Workspace_victim_seeding_drains_late_publication_before_reset()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        InMemoryOsCredentialStore credentials = new();
+
+        WorkspacePublicationWeave weave = new();
+
+        await using ArcanumWebApplicationFactory factory = MemoryErasureRouteDriver.Host(
+            credentials,
+            covenant: true,
+            weave: weave,
+            configure: static settings => settings.Features.CodebaseRetrieval = true);
+
+        SurvivalHost host = await SurvivalHost.EraseOneOfEachAsync(factory, credentials);
+
+        MemoryErasureRetainedSnapshot before = await host.CaptureAsync();
+
+        Assert.Equal((3, 3, 3), (before.Fingerprints.Count, before.Receipts.Count, before.Subjects.Count));
+
+        Assert.NotNull(before.KeySecret);
+
+        weave.Armed = true;
+
+        Task<LifecycleVictim> seeding = host.SeedVictimAsync(
+            MemoryErasureLifecyclePath.ResetWorkspace,
+            indexAdditionalWorkspaceFile: true);
+
+        try
+        {
+            // The first file is already persisted while the embedding provider holds the second.
+            // The lifecycle fixture must not hand that unfinished producer to the reset assertion.
+            await weave.Blocked.Task.WaitAsync(IndexingDeadline);
+
+            Assert.False(seeding.IsCompleted, "seeding completed while the second file was still held");
+
+            LifecycleVictim pending = new(Path.Combine(factory.TempHome, "survival-workspace"));
+
+            Assert.All(
+                await host.VictimStatesAsync(MemoryErasureLifecyclePath.ResetWorkspace, pending),
+                static state => Assert.True(state.Present));
+
+            _ = weave.Release.TrySetResult();
+
+            LifecycleVictim victim = await seeding.WaitAsync(IndexingDeadline);
+
+            Result<WorkspaceIndexQueueDisposition> furtherWork = factory.Services
+                .GetRequiredService<IWorkspaceIndexingService>()
+                .QueueIndexNow(victim.Id);
+
+            Assert.True(furtherWork.IsFailure, "the seeded workspace producer still accepted work");
+
+            Assert.Equal(ErrorCodes.Workspace.IndexingUnavailable, furtherWork.Error.Code);
+
+            await host.AssertWorkspaceFilesPublishedAsync(victim.Id);
+
+            await host.RunAsync(MemoryErasureLifecyclePath.ResetWorkspace, victim);
+
+            Assert.All(
+                await host.VictimStatesAsync(MemoryErasureLifecyclePath.ResetWorkspace, victim),
+                static state => Assert.False(state.Present, $"{state.Name} survived the path."));
+
+            await host.AssertRetainedAsync(before);
+
+            Assert.Equal(SagaMemoryWriteOutcome.Suppressed, await MemoryErasureRouteDriver.InsertSagaOutcomeAsync(factory, T));
+        }
+        finally
+        {
+            _ = weave.Release.TrySetResult();
+
+            _ = await seeding.WaitAsync(IndexingDeadline);
+        }
+    }
+
+    [SkippableFact]
     public async Task Status_reports_erasure_evidence_under_a_never_aged_class()
     {
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
@@ -335,6 +411,46 @@ public sealed class MemoryErasureLifecycleSurvivalTests
     /// <summary>Whether one victim of a row is still present.</summary>
     private sealed record VictimState(string Name, bool Present);
 
+    private sealed class WorkspacePublicationWeave : IWeaveService
+    {
+        private int _batches;
+
+        internal bool Armed { get; set; }
+
+        internal TaskCompletionSource Blocked { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        internal TaskCompletionSource Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public bool IsAvailable => true;
+
+        public Task<Result<Embedding<float>>> EmbedAsync(string text, CancellationToken cancellationToken) =>
+            Task.FromResult(Result<Embedding<float>>.Success(new Embedding<float>(Vector())));
+
+        public async Task<Result<Embedding<float>[]>> EmbedBatchAsync(IReadOnlyList<string> texts, CancellationToken cancellationToken)
+        {
+            if (Armed && Interlocked.Increment(ref _batches) == 2)
+            {
+                _ = Blocked.TrySetResult();
+
+                await Release.Task.WaitAsync(cancellationToken);
+            }
+
+            return Result<Embedding<float>[]>.Success([.. texts.Select(static _ => new Embedding<float>(Vector()))]);
+        }
+
+        public Task<Result<(string Chunk, int Offset)[]>> ChunkAsync(string text, CancellationToken cancellationToken) =>
+            Task.FromResult(Result<(string Chunk, int Offset)[]>.Success([(text, 0)]));
+
+        private static float[] Vector()
+        {
+            float[] vector = new float[MemoryErasureRouteDriver.Dimensions];
+
+            vector[0] = 1;
+
+            return vector;
+        }
+    }
+
     /// <summary>
     /// One host with one item erased in each store, and the routes and services a lifecycle row drives.
     /// </summary>
@@ -423,7 +539,9 @@ public sealed class MemoryErasureLifecycleSurvivalTests
                 .PlanAsync(new DataRetentionRequest(DataRetentionOperation.FactoryReset), Token);
         }
 
-        internal async Task<LifecycleVictim> SeedVictimAsync(MemoryErasureLifecyclePath path)
+        internal async Task<LifecycleVictim> SeedVictimAsync(
+            MemoryErasureLifecyclePath path,
+            bool indexAdditionalWorkspaceFile = false)
         {
             switch (path)
             {
@@ -451,7 +569,7 @@ public sealed class MemoryErasureLifecycleSurvivalTests
                     return await SeedIndexedAttachmentAsync();
 
                 case MemoryErasureLifecyclePath.ResetWorkspace:
-                    return new(await SeedIndexedWorkspaceAsync());
+                    return new(await SeedIndexedWorkspaceAsync(indexAdditionalWorkspaceFile));
 
                 case MemoryErasureLifecyclePath.ResetCovenant:
                     _ = await Driver.SetCovenantAsync(
@@ -1346,15 +1464,15 @@ public sealed class MemoryErasureLifecycleSurvivalTests
         }
 
         /// <summary>
-        /// One workspace with one file, registered through the route and indexed by the host's own
+        /// One workspace, registered through the route and indexed by the host's own
         /// background indexer after the re-index route queued it; the victim is the workspace's chunks.
         /// </summary>
         /// <remarks>
-        /// No synchronous writer of workspace chunks is reachable, so the row waits, bounded, for the
-        /// queued reconciliation to persist them. Nothing re-indexes the workspace afterwards: its file
-        /// does not change again, and the periodic reconciliation is an hour away.
+        /// A first persisted chunk does not prove that the queued reconciliation has finished.
+        /// Wait for successful publication, then stop and drain the producer before returning a victim
+        /// to the lifecycle assertion, so no unfinished indexing can publish rows after deletion.
         /// </remarks>
-        private async Task<string> SeedIndexedWorkspaceAsync()
+        private async Task<string> SeedIndexedWorkspaceAsync(bool indexAdditionalFile = false)
         {
             string root = Path.Combine(Factory.TempHome, "survival-workspace");
 
@@ -1364,6 +1482,14 @@ public sealed class MemoryErasureLifecycleSurvivalTests
                 Path.Combine(root, "ferry.md"),
                 "# Ferry\n\nThe ferry leaves the east quay at noon on market days.",
                 Token);
+
+            if (indexAdditionalFile)
+            {
+                await File.WriteAllTextAsync(
+                    Path.Combine(root, "second.md"),
+                    "# Second\n\nA second file is indexed after the first.",
+                    Token);
+            }
 
             WorkspaceInfo workspace;
 
@@ -1391,12 +1517,24 @@ public sealed class MemoryErasureLifecycleSurvivalTests
 
             DateTime deadline = DateTime.UtcNow + IndexingDeadline;
 
-            while (await CountAsync("SELECT count(*) FROM workspace_file_chunks WHERE WorkspacePath = $id;", workspace.Path) == 0)
+            WorkspaceIndexingService indexer = Factory.Services.GetRequiredService<WorkspaceIndexingService>();
+
+            while (true)
             {
-                Assert.True(DateTime.UtcNow < deadline, "the workspace was never indexed");
+                WorkspaceIndexRuntimeStatus status = indexer.GetRuntimeStatus(workspace.Path);
+
+                if (status is { Reconciling: false, LastSuccessfulIndexAt: not null }
+                    && await CountAsync("SELECT count(*) FROM workspace_file_chunks WHERE WorkspacePath = $id;", workspace.Path) > 0)
+                {
+                    break;
+                }
+
+                Assert.True(DateTime.UtcNow < deadline, "the workspace indexing never completed");
 
                 await Task.Delay(TimeSpan.FromMilliseconds(50), Token);
             }
+
+            await indexer.StopAsync(Token);
 
             return workspace.Path;
         }
@@ -1486,6 +1624,20 @@ public sealed class MemoryErasureLifecycleSurvivalTests
             await using IGrimoireOrdinaryConnectionLease lease = opened.Value;
 
             return await read(lease.Connection);
+        }
+
+        /// <summary>Both real files must have published chunks before the controlled reset.</summary>
+        internal async Task AssertWorkspaceFilesPublishedAsync(string workspacePath)
+        {
+            Assert.Equal(
+                2L,
+                await CountAsync(
+                    """
+                    SELECT count(DISTINCT RelativePath)
+                    FROM workspace_file_chunks
+                    WHERE WorkspacePath = $id AND RelativePath IN ('ferry.md', 'second.md');
+                    """,
+                    workspacePath));
         }
 
         /// <summary>One count from the host's Grimoire. Assertion-only.</summary>
