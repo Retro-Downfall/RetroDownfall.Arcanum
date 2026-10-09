@@ -1192,4 +1192,21 @@ public static class ErrorCodes
         /// </remarks>
         public const string IneligibleTurn = "Covenant.IneligibleTurn";
     }
+
+    /// <summary>Deterministic Saga consolidation failures.</summary>
+    public static class LongRest
+    {
+        public const string InvalidRequest = "LongRest.InvalidRequest";
+
+        public const string StaleInput = "LongRest.StaleInput";
+
+        public const string NotFound = "LongRest.NotFound";
+
+        public const string MissingClaim = "LongRest.MissingClaim";
+
+        public const string Unavailable = "LongRest.Unavailable";
+
+        public const string IntegrityFailure = "LongRest.IntegrityFailure";
+    }
+
 }

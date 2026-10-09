@@ -38,6 +38,7 @@ using RetroDownfall.Arcanum.Core.Platform;
 using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Core.Weave.Tapestry;
 using RetroDownfall.Arcanum.Core.Lexicon;
+using RetroDownfall.Arcanum.Core.LongRest;
 using RetroDownfall.Arcanum.Core.Workspaces;
 using RetroDownfall.Arcanum.Infrastructure.A2A;
 using RetroDownfall.Arcanum.Infrastructure.Backup;
@@ -45,6 +46,7 @@ using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Data.Annals;
 using RetroDownfall.Arcanum.Infrastructure.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
+using RetroDownfall.Arcanum.Infrastructure.Data.LongRest;
 using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 using RetroDownfall.Arcanum.Infrastructure.CommLink;
 using RetroDownfall.Arcanum.Infrastructure.Chronosync;
@@ -1424,6 +1426,8 @@ public static class ServiceCollectionExtensions
         // and a service scoped any looser would hold that DbContext across a boundary the store itself
         // does not.
         services.AddScoped<ISagaCurationService, SagaCurationService>();
+
+        services.AddScoped<ILongRestService, SagaLongRestService>();
 
         services.AddScoped<ISagaMemoryReviewService, SagaMemoryReviewService>();
 

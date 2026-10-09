@@ -416,7 +416,6 @@ public sealed partial class ModelTokenEstimator : IModelTokenEstimator
 
             text = attribution.ExcludingRollupsAndCovenant();
         }
-
         else if (attribution is { HasCovenantContent: true }
             && string.Equals(attribution.Prompt, text, StringComparison.Ordinal))
         {

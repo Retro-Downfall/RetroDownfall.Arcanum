@@ -1,0 +1,169 @@
+using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
+
+namespace RetroDownfall.Arcanum.Tests.Fixtures;
+
+/// <summary>The published Core version-16 tree before request-bound Long Rest receipts existed.</summary>
+internal static class CoreSchemaVersionSixteenFixture
+{
+    internal const string PublishedFingerprint =
+        "C29DE2AB1E2D134F8F2C1D989F908127CBAE8B1EF417BAE149ABE8FC1BEC4E5C";
+
+    private const string UtcInventoryViewSql =
+        """
+        CREATE VIEW IF NOT EXISTS grimoire_utc_instant_columns AS
+        SELECT 'Apprentices' AS TableName, 'CreatedAt' AS ColumnName
+        UNION ALL SELECT 'Apprentices' AS TableName, 'UpdatedAt' AS ColumnName
+        UNION ALL SELECT 'BatchLineCheckpoints' AS TableName, 'CompletedAt' AS ColumnName
+        UNION ALL SELECT 'BatchLineCheckpoints' AS TableName, 'DispatchedAt' AS ColumnName
+        UNION ALL SELECT 'Batches' AS TableName, 'CompletedAt' AS ColumnName
+        UNION ALL SELECT 'Batches' AS TableName, 'CreatedAt' AS ColumnName
+        UNION ALL SELECT 'BillableOperations' AS TableName, 'CompletedAt' AS ColumnName
+        UNION ALL SELECT 'BillableOperations' AS TableName, 'StartedAt' AS ColumnName
+        UNION ALL SELECT 'BudgetAlerts' AS TableName, 'AlertedAt' AS ColumnName
+        UNION ALL SELECT 'BudgetReservations' AS TableName, 'CreatedAt' AS ColumnName
+        UNION ALL SELECT 'BudgetReservations' AS TableName, 'ExpiresAt' AS ColumnName
+        UNION ALL SELECT 'BudgetReservations' AS TableName, 'UpdatedAt' AS ColumnName
+        UNION ALL SELECT 'Campaigns' AS TableName, 'CreatedAt' AS ColumnName
+        UNION ALL SELECT 'Campaigns' AS TableName, 'UpdatedAt' AS ColumnName
+        UNION ALL SELECT 'CostAdjustments' AS TableName, 'CreatedAt' AS ColumnName
+        UNION ALL SELECT 'Entries' AS TableName, 'CreatedAt' AS ColumnName
+        UNION ALL SELECT 'IdempotencyClaims' AS TableName, 'CreatedAt' AS ColumnName
+        UNION ALL SELECT 'IdempotencyClaims' AS TableName, 'HeartbeatAt' AS ColumnName
+        UNION ALL SELECT 'IdempotencyClaims' AS TableName, 'LeaseExpiresAt' AS ColumnName
+        UNION ALL SELECT 'IdempotencyClaims' AS TableName, 'UpdatedAt' AS ColumnName
+        UNION ALL SELECT 'IdempotencyKeys' AS TableName, 'CreatedAt' AS ColumnName
+        UNION ALL SELECT 'InferenceRuns' AS TableName, 'CompletedAt' AS ColumnName
+        UNION ALL SELECT 'InferenceRuns' AS TableName, 'StartedAt' AS ColumnName
+        UNION ALL SELECT 'LongRunningOperations' AS TableName, 'CompletedAt' AS ColumnName
+        UNION ALL SELECT 'LongRunningOperations' AS TableName, 'CreatedAt' AS ColumnName
+        UNION ALL SELECT 'LongRunningOperations' AS TableName, 'HeartbeatAt' AS ColumnName
+        UNION ALL SELECT 'LongRunningOperations' AS TableName, 'LeaseExpiresAt' AS ColumnName
+        UNION ALL SELECT 'LongRunningOperations' AS TableName, 'StartedAt' AS ColumnName
+        UNION ALL SELECT 'MageSettings' AS TableName, 'UpdatedAt' AS ColumnName
+        UNION ALL SELECT 'Prompts' AS TableName, 'CreatedAt' AS ColumnName
+        UNION ALL SELECT 'Prompts' AS TableName, 'UpdatedAt' AS ColumnName
+        UNION ALL SELECT 'SanctumBreaches' AS TableName, 'OccurredAt' AS ColumnName
+        UNION ALL SELECT 'SessionAttachments' AS TableName, 'CreatedAt' AS ColumnName
+        UNION ALL SELECT 'SessionAttachments' AS TableName, 'SourceLastWriteAt' AS ColumnName
+        UNION ALL SELECT 'SessionContextPins' AS TableName, 'CreatedAt' AS ColumnName
+        UNION ALL SELECT 'SessionContextPins' AS TableName, 'UpdatedAt' AS ColumnName
+        UNION ALL SELECT 'Sessions' AS TableName, 'CreatedAt' AS ColumnName
+        UNION ALL SELECT 'Sessions' AS TableName, 'LastSummarizedMessageAt' AS ColumnName
+        UNION ALL SELECT 'Sessions' AS TableName, 'UpdatedAt' AS ColumnName
+        UNION ALL SELECT 'UnseenServantWatermarks' AS TableName, 'LastRunAt' AS ColumnName
+        UNION ALL SELECT 'UploadedFiles' AS TableName, 'CreatedAt' AS ColumnName
+        UNION ALL SELECT 'WorkspaceContexts' AS TableName, 'CreatedAt' AS ColumnName
+        UNION ALL SELECT 'annal_claims' AS TableName, 'CreatedAtUtc' AS ColumnName
+        UNION ALL SELECT 'annal_dependencies' AS TableName, 'CreatedAtUtc' AS ColumnName
+        UNION ALL SELECT 'annal_heads' AS TableName, 'UpdatedAtUtc' AS ColumnName
+        UNION ALL SELECT 'annal_versions' AS TableName, 'RecordedAtUtc' AS ColumnName
+        UNION ALL SELECT 'annal_versions' AS TableName, 'ValidFromUtc' AS ColumnName
+        UNION ALL SELECT 'annal_versions' AS TableName, 'ValidToUtc' AS ColumnName
+        UNION ALL SELECT 'artifact_sensitivity' AS TableName, 'CreatedAtUtc' AS ColumnName
+        UNION ALL SELECT 'assistant_entry_erasure_receipts' AS TableName, 'ErasedAtUtc' AS ColumnName
+        UNION ALL SELECT 'assistant_entry_finalizations' AS TableName, 'FinalizedAtUtc' AS ColumnName
+        UNION ALL SELECT 'assistant_finalization_capacity_reservations' AS TableName, 'CreatedAtUtc' AS ColumnName
+        UNION ALL SELECT 'assistant_finalization_capacity_reservations' AS TableName, 'StateChangedAtUtc' AS ColumnName
+        UNION ALL SELECT 'attachment_memory_consultations' AS TableName, 'MaterializedAt' AS ColumnName
+        UNION ALL SELECT 'campaign_contribution_artifacts' AS TableName, 'CreatedAtUtc' AS ColumnName
+        UNION ALL SELECT 'campaign_contribution_state' AS TableName, 'UpdatedAtUtc' AS ColumnName
+        UNION ALL SELECT 'campaign_fork_frontiers' AS TableName, 'CreatedAtUtc' AS ColumnName
+        UNION ALL SELECT 'campaign_maintenance_checkpoints' AS TableName, 'UpdatedAtUtc' AS ColumnName
+        UNION ALL SELECT 'campaign_path_identities' AS TableName, 'UpdatedAtUtc' AS ColumnName
+        UNION ALL SELECT 'campaign_path_marker_intents' AS TableName, 'CreatedAtUtc' AS ColumnName
+        UNION ALL SELECT 'campaign_path_marker_intents' AS TableName, 'UpdatedAtUtc' AS ColumnName
+        UNION ALL SELECT 'campaign_path_operation_receipts' AS TableName, 'CompletedAtUtc' AS ColumnName
+        UNION ALL SELECT 'campaign_rollup_artifacts' AS TableName, 'CreatedAtUtc' AS ColumnName
+        UNION ALL SELECT 'campaign_rollup_state' AS TableName, 'UpdatedAtUtc' AS ColumnName
+        UNION ALL SELECT 'capability_cleanup_state' AS TableName, 'UpdatedAtUtc' AS ColumnName
+        UNION ALL SELECT 'covenant_authority_state' AS TableName, 'UpdatedAtUtc' AS ColumnName
+        UNION ALL SELECT 'covenant_schema_repair_intents' AS TableName, 'CreatedAtUtc' AS ColumnName
+        UNION ALL SELECT 'covenant_schema_repair_intents' AS TableName, 'UpdatedAtUtc' AS ColumnName
+        UNION ALL SELECT 'disclosure_subject_aggregates' AS TableName, 'UpdatedAtUtc' AS ColumnName
+        UNION ALL SELECT 'disclosure_subject_state' AS TableName, 'ClosedAtUtc' AS ColumnName
+        UNION ALL SELECT 'disclosure_subject_state' AS TableName, 'LastHeartbeatAtUtc' AS ColumnName
+        UNION ALL SELECT 'external_disclosure_receipts' AS TableName, 'DisclosedAtUtc' AS ColumnName
+        UNION ALL SELECT 'external_disclosure_state' AS TableName, 'UpdatedAtUtc' AS ColumnName
+        UNION ALL SELECT 'grimoire_feature_schemas' AS TableName, 'InstalledAtUtc' AS ColumnName
+        UNION ALL SELECT 'grimoire_schema_transitions' AS TableName, 'StartedAtUtc' AS ColumnName
+        UNION ALL SELECT 'grimoire_schema_transitions' AS TableName, 'UpdatedAtUtc' AS ColumnName
+        UNION ALL SELECT 'lexicon_annal_fact_provenance' AS TableName, 'MaterializedAt' AS ColumnName
+        UNION ALL SELECT 'lexicon_entries' AS TableName, 'PinnedAtUtc' AS ColumnName
+        UNION ALL SELECT 'lexicon_entries' AS TableName, 'RetiredAtUtc' AS ColumnName
+        UNION ALL SELECT 'lexicon_entries' AS TableName, 'UpdatedAt' AS ColumnName
+        UNION ALL SELECT 'lexicon_fact_attachment_provenance' AS TableName, 'MaterializedAt' AS ColumnName
+        UNION ALL SELECT 'local_erasure_work_items' AS TableName, 'CreatedAtUtc' AS ColumnName
+        UNION ALL SELECT 'local_erasure_work_items' AS TableName, 'UpdatedAtUtc' AS ColumnName
+        UNION ALL SELECT 'long_running_operation_request_identities' AS TableName, 'CreatedAtUtc' AS ColumnName
+        UNION ALL SELECT 'managed_file_write_intents' AS TableName, 'CreatedAtUtc' AS ColumnName
+        UNION ALL SELECT 'managed_file_write_intents' AS TableName, 'UpdatedAtUtc' AS ColumnName
+        UNION ALL SELECT 'owner_deletion_events' AS TableName, 'DeletedAtUtc' AS ColumnName
+        UNION ALL SELECT 'owner_deletion_operation_intents' AS TableName, 'CreatedAtUtc' AS ColumnName
+        UNION ALL SELECT 'owner_deletion_operation_intents' AS TableName, 'UpdatedAtUtc' AS ColumnName
+        UNION ALL SELECT 'protected_session_transfer_blobs' AS TableName, 'CreatedAtUtc' AS ColumnName
+        UNION ALL SELECT 'protected_session_transfer_blobs' AS TableName, 'UpdatedAtUtc' AS ColumnName
+        UNION ALL SELECT 'protected_session_transfer_intents' AS TableName, 'CreatedAtUtc' AS ColumnName
+        UNION ALL SELECT 'protected_session_transfer_intents' AS TableName, 'UpdatedAtUtc' AS ColumnName
+        UNION ALL SELECT 'restored_managed_file_authority_tombstones' AS TableName, 'RecordedAtUtc' AS ColumnName
+        UNION ALL SELECT 'saga_extraction_watermarks' AS TableName, 'LastExtractedEntryCreatedAt' AS ColumnName
+        UNION ALL SELECT 'saga_memories' AS TableName, 'CreatedAt' AS ColumnName
+        UNION ALL SELECT 'saga_memory_attachment_provenance' AS TableName, 'MaterializedAt' AS ColumnName
+        UNION ALL SELECT 'saga_retirement_suppressions' AS TableName, 'RetiredAtUtc' AS ColumnName
+        UNION ALL SELECT 'saga_suppression_key' AS TableName, 'CreatedAtUtc' AS ColumnName
+        UNION ALL SELECT 'session_attachment_chunks' AS TableName, 'ExtractedAt' AS ColumnName
+        UNION ALL SELECT 'session_attachment_chunks' AS TableName, 'IndexedAt' AS ColumnName
+        UNION ALL SELECT 'session_attachment_index_state' AS TableName, 'ExtractedAt' AS ColumnName
+        UNION ALL SELECT 'session_attachment_index_state' AS TableName, 'IndexedAt' AS ColumnName
+        UNION ALL SELECT 'session_attachment_index_state' AS TableName, 'PendingExtractedAt' AS ColumnName
+        UNION ALL SELECT 'session_attachment_index_state' AS TableName, 'UpdatedAt' AS ColumnName
+        UNION ALL SELECT 'session_campaign_binding_resolution_receipts' AS TableName, 'ResolvedAtUtc' AS ColumnName
+        UNION ALL SELECT 'session_campaign_bindings' AS TableName, 'BoundAtUtc' AS ColumnName
+        UNION ALL SELECT 'session_sensitivity_state' AS TableName, 'UpdatedAtUtc' AS ColumnName
+        UNION ALL SELECT 'session_summary_artifacts' AS TableName, 'CreatedAtUtc' AS ColumnName
+        UNION ALL SELECT 'session_summary_artifacts' AS TableName, 'SummarizedThroughUtc' AS ColumnName
+        UNION ALL SELECT 'session_summary_state' AS TableName, 'UpdatedAtUtc' AS ColumnName
+        UNION ALL SELECT 'session_title_artifacts' AS TableName, 'CreatedAtUtc' AS ColumnName
+        UNION ALL SELECT 'session_title_state' AS TableName, 'UpdatedAtUtc' AS ColumnName
+        UNION ALL SELECT 'session_turn_claims' AS TableName, 'CreatedAtUtc' AS ColumnName
+        UNION ALL SELECT 'session_turn_claims' AS TableName, 'HeartbeatAtUtc' AS ColumnName
+        UNION ALL SELECT 'session_turn_claims' AS TableName, 'LeaseDeadlineUtc' AS ColumnName
+        UNION ALL SELECT 'session_turn_claims' AS TableName, 'PreRequestHistoryWatermarkUtc' AS ColumnName
+        UNION ALL SELECT 'session_turn_claims' AS TableName, 'TerminalAtUtc' AS ColumnName
+        UNION ALL SELECT 'session_turn_maintenance_steps' AS TableName, 'UpdatedAtUtc' AS ColumnName
+        UNION ALL SELECT 'tapestry_generations' AS TableName, 'CompletedAt' AS ColumnName
+        UNION ALL SELECT 'tapestry_generations' AS TableName, 'StartedAt' AS ColumnName
+        UNION ALL SELECT 'tapestry_nodes' AS TableName, 'CreatedAt' AS ColumnName
+        UNION ALL SELECT 'workspace_file_chunks' AS TableName, 'FileLastWriteTime' AS ColumnName
+        UNION ALL SELECT 'workspace_file_chunks' AS TableName, 'IndexedAt' AS ColumnName;
+        """;
+
+    internal static IReadOnlyList<GrimoireSchemaObject> Objects =>
+    [
+        .. GrimoireSchemaCatalog.CoreObjects
+            .Where(static definition => !definition.Name.StartsWith("long_rest_", StringComparison.Ordinal))
+            .Select(static definition => definition.Name == "grimoire_utc_instant_columns"
+                ? definition with { Sql = UtcInventoryViewSql.ReplaceLineEndings("\n") + "\n" }
+                : definition),
+    ];
+
+    internal static string Fingerprint => GrimoireSchemaCatalog.ComputeSourceFingerprint(Objects);
+
+    internal static GrimoireSchemaVersionChainSet ChainSet() =>
+        new(
+        [
+            new GrimoireSchemaVersionChain(
+                GrimoireSchemaManifestBuilder.Build(
+                    GrimoireSchemaFamily.Core,
+                    GrimoireSchemaTransactionTier.Core,
+                    version: 16,
+                    Fingerprint,
+                    Objects),
+                Objects,
+                [
+                    .. GrimoireSchemaVersionChains.Default.ForTier(GrimoireSchemaTransactionTier.Core)
+                        .Steps.Where(static step => step.ToVersion <= 16),
+                ]),
+            GrimoireSchemaVersionChains.Default.ForTier(GrimoireSchemaTransactionTier.CovenantCanonical),
+            GrimoireSchemaVersionChains.Default.ForTier(GrimoireSchemaTransactionTier.CovenantAccelerator),
+        ]);
+}

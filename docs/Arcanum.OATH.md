@@ -104,8 +104,8 @@ Two defects were found by writing the end-to-end proof rather than by review, an
 | **#106** | XL | Counterfactual memory evaluation lab. Prerequisite for #95. |
 | **#76** | XL | Campaign-scoped retrieval. |
 | **#77** | XL | Campaign rollup — a genuinely Campaign-scoped summary. |
-| **#75** | Epic | The Long Rest, via #93, #91, #95. |
-| **#78** | Epic, landed | Memory curation, via #96, #97, #98, #99, and #100, all landed. Its carve-outs are recorded rather than delivered: scoped agent recall is #101, and Long Rest consolidation and decay are #93 and #95. Covenant `show` is content-free by rule rather than printing full content. |
+| **#75** | Epic | The Long Rest: bounded deterministic Saga consolidation and receipts in #93, discovery and resumable sweeps in #91, and usefulness, decay and ranking in #95. |
+| **#78** | Epic, landed | Memory curation, via #96, #97, #98, #99, and #100, all landed. Bounded Saga consolidation is the #93 API slice (§20.4); its remaining carve-outs are scoped agent recall in #101 and decay in #95. Covenant `show` is content-free by rule rather than printing full content. |
 | **#101** | M | Scoped read-only agent recall. |
 | **#103** | XL | Dynamic Context Injection v2 — secure provider-cacheable prefix. |
 | **#104** | L | Typed Covenant operational defaults excluding security-policy authority. |
@@ -1201,14 +1201,16 @@ Make Saga get better as it grows instead of only getting bigger.
 
 **#93 — Deterministic deduplication, dependency-aware supersession, and transformation receipts (XL).**
 
-- Exact duplicates and equivalent observations converge idempotently to one current claim **without deleting immutable source versions**. Exact content-hash matches short-circuit before any vector work; near neighbors above a consolidation threshold deliberately higher than the retrieval threshold reinforce the existing memory and extend its provenance.
-- Supersession targets exact versions and dependency edges while preserving origin, Campaign scope, sensitivity, pin, and retirement state. Superseded rows are excluded from retrieval and remain visible in `memory search` naming what superseded them — deleting the older row would silently destroy the audit trail that makes the memory trustworthy.
-- Every applied or no-change transformation writes an immutable receipt binding policy version, inputs, outputs, and canonical hashes.
+- One bounded operator-declared Saga transformation makes exact duplicates or equivalent observations converge idempotently to one effective canonical claim **without deleting immutable source versions**. Exact duplicates require the same content-hash format and digest; equivalent observations require an explicit declaration over inspected exact versions and hashes. Similarity may discover candidates under #91, but does not authorize consolidation or establish reinforcement.
+- Supersession names the exact survivor version and preserves every original memory, embedding, origin, Session and attachment provenance, Campaign scope, sensitivity, pin, retirement state, validity interval, and dependency edge. Subject heads retain their truthful history; an immutable exact-version suppression projection removes superseded current sources from recall. Operator inspection keeps those rows visible with their eligibility and content-free receipt evidence.
+- Every first valid applied or no-change transformation writes an immutable content-free receipt binding policy version, ordered exact inputs, the survivor declaration, output, and canonical hashes. Stale targets and claimless subjects are refused without manufacturing Annals history; protected artifacts are proved before plaintext is read and remain untouched.
 - Reprocessing unchanged inputs performs **zero canonical writes** and produces the same result across storage order and shipping RIDs.
+- Source correction releases suppression of the old head, and a source pin permits recall while pinned. Survivor correction or retirement does not revive an old superseded assertion. Erasing any participating subject removes the complete receipt and its companions, so surviving subjects follow their own eligibility again.
 
 **#91 — Hybrid discovery and authority-scoped resumable consolidation sweeps (XL).**
 
 - FTS5, vector, and RAPTOR-style candidates honor canonical Campaign scope, owner generations, protected partitions, and deterministic bounds.
+- Near-neighbor thresholds and any model judgment belong to discovery. They produce an exact candidate group for the #93 policy rather than making a similarity score canonical authority.
 - Protected work runs only under request-bound maintenance authority, exposes **zero tools**, and persists a disclosure receipt before each provider dispatch.
 - Stable checkpoints advance only after committed work; cancellation or failure leaves every unprocessed item eligible for retry.
 - Sweeps stop before another dispatch when Campaign binding, deletion, reset, restore, feature, or authority generations change.

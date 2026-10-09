@@ -972,7 +972,6 @@ internal sealed class SessionTurnClaimStore(
             : Result<ClaimRow>.Success(settled.Value);
     }
 
-
     private static ValueTask<ClaimRow?> ReadByClaimIdAsync(
         CovenantMutationTransaction transaction,
         Guid claimId,

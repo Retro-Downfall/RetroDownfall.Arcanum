@@ -6,6 +6,8 @@ using Microsoft.Extensions.Logging;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Infrastructure.Data;
+using RetroDownfall.Arcanum.Infrastructure.Data.LongRest;
+using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Weave;
 
@@ -56,6 +58,19 @@ internal sealed class DivinationService(
 
             float[] queryVector = queryEmbedding.Vector.ToArray();
 
+            string blobTableName = DeriveBlobTableName(tableName);
+
+            if (IsSaga(blobTableName))
+            {
+                // Eligibility is part of candidate selection, before the heap ranks and takes K.
+                // A vector accelerator cannot express this exact-head predicate, so Saga always uses
+                // the managed source-of-truth path regardless of the optional accelerator flag.
+                return await GrimoireCoreSchemaVersion.InSnapshotAsync(connection,
+                    () => SearchManagedSagaAsync(connection, primaryKeyColumn, embeddingColumn,
+                        queryVector, maxResults, similarityThreshold, cancellationToken), cancellationToken)
+                    .ConfigureAwait(false);
+            }
+
             return availability.IsVecAvailable
                 ? Result<DivinationResult[]>.Success(
                     await SearchVecAsync(
@@ -69,7 +84,7 @@ internal sealed class DivinationService(
                         cancellationToken).ConfigureAwait(false))
                 : await SearchManagedAsync(
                     connection,
-                    DeriveBlobTableName(tableName),
+                    blobTableName,
                     primaryKeyColumn,
                     embeddingColumn,
                     queryVector,
@@ -115,13 +130,24 @@ internal sealed class DivinationService(
 
             float[] queryVector = queryEmbedding.Vector.ToArray();
 
+            string blobTableName = DeriveBlobTableName(tableName);
+
+            if (IsSaga(blobTableName))
+            {
+                return await GrimoireCoreSchemaVersion.InSnapshotAsync(connection,
+                    () => SearchManagedScopedAsync(connection, blobTableName, primaryKeyColumn, embeddingColumn,
+                        scopeTableName, scopeJoinColumn, scopeFilterColumn, scopeFilterValue,
+                        queryVector, maxResults, similarityThreshold, cancellationToken), cancellationToken)
+                    .ConfigureAwait(false);
+            }
+
             // The vec0 KNN path (used when IsVecAvailable) has no per-row partition key in its current
             // schema, so a scoped search always ranks via the managed brute-force path below instead —
             // but SQL-joined to the scope table so only in-scope rows are read (no unbounded IN of
             // every matching chunk id).
             return await SearchManagedScopedAsync(
                 connection,
-                DeriveBlobTableName(tableName),
+                blobTableName,
                 primaryKeyColumn,
                 embeddingColumn,
                 scopeTableName,
@@ -172,9 +198,19 @@ internal sealed class DivinationService(
             // vec0 table has no per-row ownership column, so an accelerated scoped search could only
             // rank first and filter afterwards - a different candidate set, reached by whether an
             // optional native asset shipped. Routing both cases here is what makes the answer one answer.
+            string blobTableName = DeriveBlobTableName(tableName);
+
+            if (IsSaga(blobTableName))
+            {
+                return await GrimoireCoreSchemaVersion.InSnapshotAsync(connection,
+                    () => SearchManagedCampaignScopedAsync(connection, blobTableName, primaryKeyColumn,
+                        embeddingColumn, scope, queryEmbedding.Vector.ToArray(), maxResults,
+                        similarityThreshold, cancellationToken), cancellationToken).ConfigureAwait(false);
+            }
+
             return await SearchManagedCampaignScopedAsync(
                 connection,
-                DeriveBlobTableName(tableName),
+                blobTableName,
                 primaryKeyColumn,
                 embeddingColumn,
                 scope,
@@ -222,6 +258,14 @@ internal sealed class DivinationService(
     {
         await using DbCommand cmd = connection.CreateCommand();
 
+        bool saga = IsSaga(blobTableName);
+
+        bool longRest = saga && await LongRestRecallSql.AvailableAsync(connection, cancellationToken).ConfigureAwait(false);
+
+        string sagaJoin = saga ? $"INNER JOIN saga_memories m ON m.\"Id\" = e.\"{primaryKeyColumn}\"" : "";
+
+        string eligible = saga ? LongRestRecallSql.Eligible("m", longRest) : "1 = 1";
+
         string ownership = scope.CampaignId is null
             ? $"""o."{scope.OwnerScopeKindColumn}" = @globalScopeKind"""
             : $"""
@@ -235,7 +279,8 @@ internal sealed class DivinationService(
             SELECT e."{primaryKeyColumn}", e."{embeddingColumn}"
             FROM "{blobTableName}" e
             INNER JOIN "{scope.OwnerTableName}" o ON e."{primaryKeyColumn}" = o."{scope.OwnerJoinColumn}"
-            WHERE {ownership}
+            {sagaJoin}
+            WHERE ({ownership}) AND {eligible}
             """;
 
         AddParameter(cmd, "@globalScopeKind", scope.GlobalScopeKindCode);
@@ -279,6 +324,14 @@ internal sealed class DivinationService(
     {
         await using DbCommand cmd = connection.CreateCommand();
 
+        bool saga = IsSaga(blobTableName);
+
+        bool longRest = saga && await LongRestRecallSql.AvailableAsync(connection, cancellationToken).ConfigureAwait(false);
+
+        string sagaJoin = saga ? $"INNER JOIN saga_memories m ON m.\"Id\" = e.\"{primaryKeyColumn}\"" : "";
+
+        string eligible = saga ? LongRestRecallSql.Eligible("m", longRest) : "1 = 1";
+
         // Table/column names are internal constants owned by the calling feature's retrieval code
         // (never user input); only scopeFilterValue is a bound parameter.
         cmd.CommandText =
@@ -286,7 +339,8 @@ internal sealed class DivinationService(
             SELECT e."{primaryKeyColumn}", e."{embeddingColumn}"
             FROM "{blobTableName}" e
             INNER JOIN "{scopeTableName}" s ON e."{primaryKeyColumn}" = s."{scopeJoinColumn}"
-            WHERE s."{scopeFilterColumn}" = @scopeFilterValue
+            {sagaJoin}
+            WHERE s."{scopeFilterColumn}" = @scopeFilterValue AND {eligible}
             """;
 
         AddParameter(cmd, "@scopeFilterValue", scopeFilterValue);
@@ -298,6 +352,33 @@ internal sealed class DivinationService(
             similarityThreshold,
             cancellationToken).ConfigureAwait(false);
     }
+
+    private async Task<Result<DivinationResult[]>> SearchManagedSagaAsync(
+        DbConnection connection,
+        string primaryKeyColumn,
+        string embeddingColumn,
+        float[] queryVector,
+        int maxResults,
+        float similarityThreshold,
+        CancellationToken cancellationToken)
+    {
+        bool longRest = await LongRestRecallSql.AvailableAsync(connection, cancellationToken).ConfigureAwait(false);
+
+        await using DbCommand cmd = connection.CreateCommand();
+
+        cmd.CommandText =
+            $"""
+            SELECT e."{primaryKeyColumn}", e."{embeddingColumn}"
+            FROM saga_memory_embeddings e
+            INNER JOIN saga_memories m ON m."Id" = e."{primaryKeyColumn}"
+            WHERE {LongRestRecallSql.Eligible("m", longRest)}
+            """;
+
+        return await ScoreManagedRowsAsync(cmd, queryVector, maxResults, similarityThreshold, cancellationToken).ConfigureAwait(false);
+    }
+
+    private static bool IsSaga(string blobTableName) =>
+        string.Equals(blobTableName, "saga_memory_embeddings", StringComparison.Ordinal);
 
     private static async Task<DivinationResult[]> SearchVecAsync(
         DbConnection connection,

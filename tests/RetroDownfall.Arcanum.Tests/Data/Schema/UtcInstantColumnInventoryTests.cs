@@ -30,7 +30,7 @@ public sealed partial class UtcInstantColumnInventoryTests
             GrimoireSchemaCatalog.CovenantCanonicalObjects,
             UtcInstantColumnInventory.CovenantCanonical);
 
-        Assert.Equal(124, UtcInstantColumnInventory.Core.Sum(static table => table.Columns.Count));
+        Assert.Equal(125, UtcInstantColumnInventory.Core.Sum(static table => table.Columns.Count));
 
         Assert.Equal(
             13,

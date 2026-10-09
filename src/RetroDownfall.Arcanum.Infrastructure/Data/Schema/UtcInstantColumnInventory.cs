@@ -101,6 +101,7 @@ internal static class UtcInstantColumnInventory
             .Append(new UtcInstantTable("campaign_contribution_state", ["UpdatedAtUtc"]))
             .Append(new UtcInstantTable("campaign_fork_frontiers", ["CreatedAtUtc"]))
             .Append(new UtcInstantTable("campaign_maintenance_checkpoints", ["UpdatedAtUtc"]))
+            .Append(new UtcInstantTable("long_rest_receipts", ["CreatedAtUtc"]))
             .OrderBy(static table => table.TableName, StringComparer.Ordinal),
     ];
 

@@ -19,6 +19,7 @@ using RetroDownfall.Arcanum.Core.Intelligence.OpenAi;
 using RetroDownfall.Arcanum.Core.Intelligence.Spells;
 using RetroDownfall.Arcanum.Core.Logging;
 using RetroDownfall.Arcanum.Core.Lexicon;
+using RetroDownfall.Arcanum.Core.LongRest;
 using RetroDownfall.Arcanum.Core.Memory;
 using RetroDownfall.Arcanum.Core.Mcp;
 using RetroDownfall.Arcanum.Core.Operations;
@@ -420,6 +421,16 @@ namespace RetroDownfall.Arcanum.Api.Serialization;
 [JsonSerializable(typeof(MemorySearchResponse))]
 [JsonSerializable(typeof(ApiResponse<MemorySearchResponse>))]
 [JsonSerializable(typeof(MemoryReviewStore))]
+[JsonSerializable(typeof(LongRestTransformationKind))]
+[JsonSerializable(typeof(LongRestOutcome))]
+[JsonSerializable(typeof(LongRestReason))]
+[JsonSerializable(typeof(LongRestTarget))]
+[JsonSerializable(typeof(LongRestTarget[]))]
+[JsonSerializable(typeof(LongRestRequest))]
+[JsonSerializable(typeof(LongRestReceiptTarget))]
+[JsonSerializable(typeof(LongRestReceiptTarget[]))]
+[JsonSerializable(typeof(LongRestReceipt))]
+[JsonSerializable(typeof(ApiResponse<LongRestReceipt>))]
 [JsonSerializable(typeof(MemoryReviewAction))]
 [JsonSerializable(typeof(SagaReviewListRequest))]
 [JsonSerializable(typeof(LexiconReviewListRequest))]

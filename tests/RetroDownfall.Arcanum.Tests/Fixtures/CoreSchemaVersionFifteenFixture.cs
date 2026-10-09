@@ -223,7 +223,7 @@ internal static class CoreSchemaVersionFifteenFixture
 
     internal static IReadOnlyList<GrimoireSchemaObject> Objects =>
     [
-        .. GrimoireSchemaCatalog.CoreObjects
+        .. CoreSchemaVersionSixteenFixture.Objects
             .Where(static definition => !IsVersionSixteenObject(definition.Name))
             .Select(static definition => definition.Name switch
             {

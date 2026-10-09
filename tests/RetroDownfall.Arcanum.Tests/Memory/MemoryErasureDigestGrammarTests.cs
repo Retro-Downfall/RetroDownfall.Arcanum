@@ -703,6 +703,9 @@ public sealed class MemoryErasureDigestGrammarTests
             "covenant_key_epochs",
             "covenant_review_events",
             "covenant_review_decision_receipts",
+            "long_rest_receipts",
+            "long_rest_receipt_inputs",
+            "long_rest_suppressions",
         ];
 
         Assert.Equal(expected, MemoryErasureTableCodes.Tables);
@@ -715,6 +718,12 @@ public sealed class MemoryErasureDigestGrammarTests
         Assert.Equal(16, MemoryErasureTableCodes.For("covenant_entries"));
 
         Assert.Equal(28, MemoryErasureTableCodes.For("covenant_review_decision_receipts"));
+
+        Assert.Equal(29, MemoryErasureTableCodes.For("long_rest_receipts"));
+
+        Assert.Equal(30, MemoryErasureTableCodes.For("long_rest_receipt_inputs"));
+
+        Assert.Equal(31, MemoryErasureTableCodes.For("long_rest_suppressions"));
     }
 
     private static byte[] SagaGlobal(string content) =>

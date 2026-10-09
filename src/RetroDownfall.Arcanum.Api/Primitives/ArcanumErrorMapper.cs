@@ -51,6 +51,20 @@ internal static class ArcanumErrorMapper
             ErrorCodes.MemoryReview.IntegrityFailure =>
                 StatusCodes.Status500InternalServerError,
 
+            ErrorCodes.LongRest.InvalidRequest =>
+                StatusCodes.Status400BadRequest,
+
+            ErrorCodes.LongRest.NotFound =>
+                StatusCodes.Status404NotFound,
+
+            ErrorCodes.LongRest.StaleInput
+                or ErrorCodes.LongRest.MissingClaim =>
+                StatusCodes.Status409Conflict,
+
+            ErrorCodes.LongRest.Unavailable
+                or ErrorCodes.LongRest.IntegrityFailure =>
+                StatusCodes.Status503ServiceUnavailable,
+
             // Selective erasure. A token that cannot be read is the request's fault. A lost key and a
             // plan that moved are states the operator re-reads and decides on again. An erased
             // subject is gone and a receipt proves it. A key secure storage cannot reach, or a schema not yet at this slice's version, is

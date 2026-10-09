@@ -4,7 +4,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 /// The three shipped version chains, built once from the catalog.
 /// </summary>
 /// <remarks>
-/// Core is at version 16 and declares fifteen steps, Covenant canonical is at version 6 and declares five,
+/// Core is at version 17 and declares sixteen steps, Covenant canonical is at version 6 and declares five,
 /// and the Covenant accelerator is still at version 1 and declares none. A tier that never left version 1
 /// keeps the cheapest state there is - the loader, the planner's evolve arm, the installer's step arm,
 /// and the backfill driver all run in production and find nothing to do - and a tier that has left it
@@ -132,8 +132,10 @@ internal static class GrimoireSchemaVersionChains
     /// inherited fork prefixes by deterministic copied Entry identity and excludes the entire legacy
     /// transcript when that proof is unavailable. It extends only the artifact-kind ledger domain;
     /// every prior label and maintenance step retains its existing representation.</para>
+    /// <para>Version 17 adds immutable, request-bound Long Rest transformation receipts and exact-version
+    /// Saga suppression links. Every table starts empty; existing subjects and claims are unchanged.</para>
     /// </remarks>
-    internal const int CoreSchemaVersion = 16;
+    internal const int CoreSchemaVersion = 17;
 
     /// <summary>The version of Covenant's authoritative tables this binary declares.</summary>
     /// <remarks>
@@ -275,6 +277,10 @@ internal static class GrimoireSchemaVersionChains
             // installation.
             [(GrimoireSchemaTransactionTier.Core, 16)] =
                 "24765BDDB071B091B7DE145F23A87FBEF5E1D3487D71B835C139B9C4067AC4E6",
+
+            // Captured from the normalized Core version-16 head before any Long Rest object edit.
+            [(GrimoireSchemaTransactionTier.Core, 17)] =
+                "C29DE2AB1E2D134F8F2C1D989F908127CBAE8B1EF417BAE149ABE8FC1BEC4E5C",
 
             [(GrimoireSchemaTransactionTier.CovenantCanonical, 2)] =
                 "7F906C4C832FDF824EC3B6A56431E9E6098DC9BB83EDA5BAE02EC62CE3B4E105",

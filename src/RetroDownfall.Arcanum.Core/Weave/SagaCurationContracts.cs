@@ -9,8 +9,8 @@ namespace RetroDownfall.Arcanum.Core.Weave;
 /// Whether a memory is currently something retrieval can hand back to a turn.
 /// </summary>
 /// <remarks>
-/// <see cref="Eligible"/> — retrievable now: not retired, an embedding still on file, and — while
-/// Campaign scoping is on — its owning Session's binding resolved.
+/// <see cref="Eligible"/> — retrievable now: not retired or consolidated, an embedding still on file,
+/// and — while Campaign scoping is on — its owning Session's binding resolved.
 ///
 /// <para><see cref="Retired"/> — an operator retired this memory. That is a deliberate curation act
 /// (<c>RetiredAtUtc</c> is set), reversible by reinstating it, and unrelated to whether the row or its
@@ -23,6 +23,10 @@ namespace RetroDownfall.Arcanum.Core.Weave;
 /// standing to be reached — and a different thing from <see cref="EmbeddingMissing"/>, which is a data
 /// defect rather than a scope one. With Campaign scoping off, retrieval does not filter by ownership,
 /// so the same memory is reported by its other rungs and is <see cref="Eligible"/> when embedded.</para>
+///
+/// <para><see cref="Consolidated"/> — a Long Rest receipt names this exact current version as a source
+/// consolidated into another retained claim. Its history remains available for inspection. A new
+/// source version or an operator pin releases this source from that receipt's retrieval projection.</para>
 ///
 /// <para><see cref="EmbeddingMissing"/> — the row survives but <c>saga_memory_embeddings</c> no longer
 /// has a matching entry, so no similarity search can surface it even though nothing about its scope or
@@ -50,6 +54,9 @@ public enum SagaRetrievalEligibility
 
     /// <summary>The row survives but its embedding does not, so no similarity search can reach it.</summary>
     EmbeddingMissing = 4,
+
+    /// <summary>An exact current version was consolidated into another retained claim.</summary>
+    Consolidated = 5,
 }
 
 /// <summary>One memory's curation timestamps: when it was retired, and when it was pinned.</summary>
@@ -76,8 +83,8 @@ public sealed record SagaMemoryCurationRow(SagaMemoryDto Memory, SagaMemoryLifec
 public static class SagaRetrievalEligibilityClassifier
 {
     /// <summary>
-    /// Retired first, then ownership, then whether an embedding survives, then eligible — in that
-    /// order because a retired memory has no embedding by construction, and reporting that as
+    /// Retired first, then ownership, then consolidation, then whether an embedding survives, then
+    /// eligible — in that order because a retired memory has no embedding by construction, and reporting that as
     /// <see cref="SagaRetrievalEligibility.EmbeddingMissing"/> would describe the wrong problem to an
     /// operator trying to understand why a memory is not being recalled.
     /// </summary>
@@ -108,6 +115,11 @@ public static class SagaRetrievalEligibilityClassifier
             && row.Memory.ScopeKind is SagaMemoryScopeKind.Unclassified or SagaMemoryScopeKind.LegacyUnresolved)
         {
             return SagaRetrievalEligibility.OwnershipUnresolved;
+        }
+
+        if (row.Memory.LongRestReceiptId is not null)
+        {
+            return SagaRetrievalEligibility.Consolidated;
         }
 
         if (!row.HasEmbedding)

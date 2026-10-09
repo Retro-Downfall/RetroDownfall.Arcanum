@@ -1425,6 +1425,8 @@ public static class ApiBootstrapper
 
         apiGroup.MapSagaCurationEndpoints();
 
+        apiGroup.MapLongRestEndpoints();
+
         apiGroup.MapLexiconCurationEndpoints();
 
         apiGroup.MapMemoryErasureEndpoints();

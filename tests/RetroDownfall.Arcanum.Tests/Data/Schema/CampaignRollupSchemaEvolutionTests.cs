@@ -406,7 +406,9 @@ public sealed class CampaignRollupSchemaEvolutionTests
 
     internal static async Task InstallHeadAsync(SqliteConnection connection)
     {
-        GrimoireSchemaInstaller installer = GrimoireSchemaTestInstaller.Create();
+        GrimoireSchemaVersionChainSet chains = CoreSchemaVersionSixteenFixture.ChainSet();
+
+        GrimoireSchemaInstaller installer = GrimoireSchemaTestInstaller.Create(chains);
 
         GrimoireSchemaInitializationContext context = GrimoireSchemaTestInstaller.CreateContext();
 
@@ -427,7 +429,7 @@ public sealed class CampaignRollupSchemaEvolutionTests
                 }
 
                 _ = await runner.AdvanceAsync(connection,
-                    GrimoireSchemaVersionChains.Default.ForTier(GrimoireSchemaTransactionTier.Core),
+                    chains.ForTier(GrimoireSchemaTransactionTier.Core),
                     journal, context, 16, CancellationToken.None);
             }
 

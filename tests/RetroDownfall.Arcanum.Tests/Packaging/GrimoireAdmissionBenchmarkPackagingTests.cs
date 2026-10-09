@@ -307,9 +307,18 @@ public sealed partial class GrimoireAdmissionBenchmarkPackagingTests
 
             Directory.CreateDirectory(workingDirectory);
 
+            // Archive the staged candidate before commit; a clean CI index has the same tree as HEAD.
+
+            ProcessResult snapshot = await RunProcessAsync(
+                "git",
+                ["write-tree"],
+                root);
+
+            Assert.Equal(0, snapshot.ExitCode);
+
             ProcessResult archive = await RunProcessAsync(
                 "git",
-                ["archive", "HEAD", "--output=" + Path.Combine(workspaceRoot, "source.tar")],
+                ["archive", snapshot.StandardOutput.Trim(), "--output=" + Path.Combine(workspaceRoot, "source.tar")],
                 root);
 
             Assert.Equal(0, archive.ExitCode);

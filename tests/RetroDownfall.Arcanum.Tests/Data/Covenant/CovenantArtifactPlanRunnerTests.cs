@@ -63,6 +63,7 @@ public sealed class CovenantArtifactPlanRunnerTests
         // One review event per claim, because every head insert fires annal_review_events_head_insert.
         IReadOnlyList<MemoryErasureTableCount> expected =
         [
+            new("long_rest_receipts", 0), new("long_rest_suppressions", 0), new("long_rest_receipt_inputs", 0),
             new("annal_review_decision_receipts", 0), new("annal_review_events", 1), new("annal_dependencies", 0),
             new("annal_heads", 1), new("annal_versions", 1), new("annal_claims", 1),
             new("saga_memory_embeddings", 1), new("saga_memory_embeddings_vec", 1),
@@ -116,6 +117,7 @@ public sealed class CovenantArtifactPlanRunnerTests
 
         foreach (string table in new[]
                  {
+                     "long_rest_receipts", "long_rest_suppressions", "long_rest_receipt_inputs",
                      "lexicon_annal_fact_provenance", "annal_review_decision_receipts", "annal_review_events",
                      "annal_dependencies", "annal_heads", "annal_versions", "annal_claims",
                      "lexicon_fact_attachment_provenance", "lexicon_entries",
@@ -172,6 +174,7 @@ public sealed class CovenantArtifactPlanRunnerTests
         // The whole ordered tally, so a skipped mirror that was duplicated or moved would show.
         IReadOnlyList<MemoryErasureTableCount> expected =
         [
+            new("long_rest_receipts", 0), new("long_rest_suppressions", 0), new("long_rest_receipt_inputs", 0),
             new("annal_review_decision_receipts", 0), new("annal_review_events", 1), new("annal_dependencies", 0),
             new("annal_heads", 1), new("annal_versions", 1), new("annal_claims", 1),
             new("saga_memory_embeddings", 1), new("saga_memory_embeddings_vec", 0),
@@ -238,6 +241,7 @@ public sealed class CovenantArtifactPlanRunnerTests
 
         IReadOnlyList<MemoryErasureTableCount> expected =
         [
+            new("long_rest_receipts", 0), new("long_rest_suppressions", 0), new("long_rest_receipt_inputs", 0),
             new("annal_review_decision_receipts", 0), new("annal_review_events", 0), new("annal_dependencies", 0),
             new("annal_heads", 1), new("annal_versions", 1), new("annal_claims", 1),
             new("saga_memory_embeddings", 1), new("saga_memory_embeddings_vec", 0),

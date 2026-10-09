@@ -214,5 +214,4 @@ internal static class SessionSummaryLifecycle
     }
 }
 
-
 internal sealed record SessionSummaryClosureSnapshot(long Rows, string Authority);

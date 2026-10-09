@@ -14,6 +14,8 @@ using RetroDownfall.Arcanum.Core.Memory;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Infrastructure.Data.Annals;
+using RetroDownfall.Arcanum.Infrastructure.Data.LongRest;
+using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 using RetroDownfall.Arcanum.Infrastructure.Weave;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Data;
@@ -371,14 +373,12 @@ internal sealed partial class SagaMemoryStore(
         int offset,
         CancellationToken cancellationToken)
     {
-        return await SqliteBusyRetry.ExecuteAsync(
-            async () =>
+        return await ReadLongRestSnapshotAsync(
+            async (connection, longRest) =>
             {
-                DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
-
                 await using DbCommand cmd = connection.CreateCommand();
 
-                BuildListCommand(cmd, query, sessionId, scope, limit, offset, includeEmbeddingProbe: false);
+                BuildListCommand(cmd, query, sessionId, scope, limit, offset, includeEmbeddingProbe: false, longRest);
 
                 List<SagaMemoryDto> results = [];
 
@@ -402,14 +402,12 @@ internal sealed partial class SagaMemoryStore(
         int offset,
         CancellationToken cancellationToken)
     {
-        return await SqliteBusyRetry.ExecuteAsync(
-            async () =>
+        return await ReadLongRestSnapshotAsync(
+            async (connection, longRest) =>
             {
-                DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
-
                 await using DbCommand cmd = connection.CreateCommand();
 
-                BuildListCommand(cmd, query, sessionId, scope, limit, offset, includeEmbeddingProbe: true);
+                BuildListCommand(cmd, query, sessionId, scope, limit, offset, includeEmbeddingProbe: true, longRest);
 
                 List<SagaMemoryCurationRow> results = [];
 
@@ -501,11 +499,9 @@ internal sealed partial class SagaMemoryStore(
 
     public async Task<bool> AnyRetrievableAsync(MemoryScope scope, CancellationToken cancellationToken)
     {
-        return await SqliteBusyRetry.ExecuteAsync(
-            async () =>
+        return await ReadLongRestSnapshotAsync(
+            async (connection, longRest) =>
             {
-                DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
-
                 await using DbCommand cmd = connection.CreateCommand();
 
                 // Retrieval's own choice, read the other way round: a turn ranks only embedded rows, so an
@@ -515,11 +511,12 @@ internal sealed partial class SagaMemoryStore(
                 // Retirement already removes the embedding, so the RetiredAtUtc predicate is the statement
                 // of intent rather than the thing that does the work.
                 cmd.CommandText =
-                    """
+                    $"""
                     SELECT EXISTS (
                         SELECT 1 FROM "saga_memory_embeddings" e
                         INNER JOIN "saga_memories" m ON m."Id" = e."MemoryId"
                         WHERE m."RetiredAtUtc" IS NULL
+                          AND {LongRestRecallSql.Eligible("m", longRest)}
                           AND (@enforced = 0
                                OR m.ScopeKindCode = @globalScopeKind
                                OR (m.ScopeKindCode = @campaignScopeKind AND m.CampaignId = @campaignId)))
@@ -553,9 +550,9 @@ internal sealed partial class SagaMemoryStore(
     /// so the two can never select different memories for the same arguments.
     /// </summary>
     /// <remarks>
-    /// <paramref name="includeEmbeddingProbe"/> appends one projected column, at ordinal 18, after every
-    /// column <see cref="ReadMemory"/> reads. It is a correlated <c>EXISTS</c> rather than a join, so it
-    /// can only add a column and never multiply or drop a row.
+    /// <paramref name="includeEmbeddingProbe"/> appends one projected column at ordinal 18, after the
+    /// existing memory columns and before the named Long Rest projection columns. It is a correlated
+    /// <c>EXISTS</c> rather than a join, so it can only add a column and never multiply or drop a row.
     /// </remarks>
     private static void BuildListCommand(
         DbCommand cmd,
@@ -564,7 +561,8 @@ internal sealed partial class SagaMemoryStore(
         MemoryScope scope,
         int limit,
         int offset,
-        bool includeEmbeddingProbe)
+        bool includeEmbeddingProbe,
+        bool longRest)
     {
         StringBuilder sql = new(
             """
@@ -586,6 +584,8 @@ internal sealed partial class SagaMemoryStore(
                        EXISTS(SELECT 1 FROM "saga_memory_embeddings" e WHERE e."MemoryId" = m."Id")
                 """);
         }
+
+        sql.Append(LongRestRecallSql.Projection("m", longRest));
 
         sql.Append(
             """
@@ -661,11 +661,9 @@ internal sealed partial class SagaMemoryStore(
             return new Dictionary<string, SagaMemoryDto>(0);
         }
 
-        return await SqliteBusyRetry.ExecuteAsync(
-            async () =>
+        return await ReadLongRestSnapshotAsync(
+            async (connection, longRest) =>
             {
-                DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
-
                 await using DbCommand cmd = connection.CreateCommand();
 
                 string[] parameterNames = new string[ids.Count];
@@ -689,9 +687,11 @@ internal sealed partial class SagaMemoryStore(
                                WHERE a."Id" = p.AttachmentId AND a."State" = 'Bound'
                            ),
                            m.ScopeKindCode, m.CampaignId, m."RetiredAtUtc", m."PinnedAtUtc"
+                           {LongRestRecallSql.Projection("m", longRest)}
                     FROM "saga_memories" m
                     LEFT JOIN saga_memory_attachment_provenance p ON p.MemoryId = m."Id"
                     WHERE m."Id" IN ({string.Join(", ", parameterNames)})
+                        AND {LongRestRecallSql.Eligible("m", longRest)}
                     """;
 
                 Dictionary<string, SagaMemoryDto> results = new(ids.Count, StringComparer.Ordinal);
@@ -1095,6 +1095,21 @@ internal sealed partial class SagaMemoryStore(
             .Replace("%", "\\%", StringComparison.Ordinal)
             .Replace("_", "\\_", StringComparison.Ordinal);
 
+    private Task<T> ReadLongRestSnapshotAsync<T>(
+        Func<DbConnection, bool, Task<T>> read,
+        CancellationToken cancellationToken) =>
+        SqliteBusyRetry.ExecuteAsync(async () =>
+        {
+            DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+
+            return await GrimoireCoreSchemaVersion.InSnapshotAsync(connection, async () =>
+            {
+                bool longRest = await LongRestRecallSql.AvailableAsync(connection, cancellationToken).ConfigureAwait(false);
+
+                return await read(connection, longRest).ConfigureAwait(false);
+            }, cancellationToken).ConfigureAwait(false);
+        }, cancellationToken);
+
     private static SagaMemoryDto ReadMemory(DbDataReader reader)
     {
         string id = reader.GetString(0);
@@ -1142,7 +1157,17 @@ internal sealed partial class SagaMemoryStore(
             (SagaMemoryScopeKind)reader.GetInt32(14),
             reader.IsDBNull(15) ? null : Guid.Parse(reader.GetString(15)),
             retiredAtUtc,
-            pinnedAtUtc);
+            pinnedAtUtc,
+            NullableString(reader, "ConsolidatedIntoMemoryId"),
+            NullableString(reader, "ConsolidatedIntoVersionId"),
+            NullableString(reader, "LongRestReceiptId"));
+    }
+
+    private static string? NullableString(DbDataReader reader, string column)
+    {
+        int ordinal = reader.GetOrdinal(column);
+
+        return reader.IsDBNull(ordinal) ? null : reader.GetString(ordinal);
     }
 
     private static async Task InsertProvenanceAsync(

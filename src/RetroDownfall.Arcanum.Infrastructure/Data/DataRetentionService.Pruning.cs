@@ -10,6 +10,8 @@ using System.Runtime.CompilerServices;
 
 using System.Text;
 
+using System.Text.Json;
+
 using Microsoft.Extensions.Logging;
 
 using RetroDownfall.Arcanum.Core.Configuration;
@@ -23,6 +25,8 @@ using RetroDownfall.Arcanum.Core.DataLifecycle;
 using RetroDownfall.Arcanum.Core.Operations;
 
 using RetroDownfall.Arcanum.Core.Primitives;
+
+using RetroDownfall.Arcanum.Core.Serialization;
 
 using RetroDownfall.Arcanum.Core.Storage;
 
@@ -2149,10 +2153,41 @@ internal sealed partial class DataRetentionService
                     derived));
         }
 
+        if (ids.Length > 0)
+        {
+            string selectedIds = JsonSerializer.Serialize(ids, ArcanumCoreJsonContext.Default.StringArray);
+
+            const string subjectQuery = "SELECT value FROM json_each(@longRestMemoryIds)";
+
+            long transformations = 0;
+
+            // A receipt can name several selected candidates. Count its complete manifest once
+            // over the selected identities, rather than once for every endpoint that will erase it.
+            // One JSON parameter also keeps a large paged plan below SQLite's variable ceiling.
+            foreach (AnnalsErasureStep step in SagaLongRestPruneSteps(subjectQuery))
+            {
+                transformations += await CountTableAsync(
+                    step.Table,
+                    step.Predicate,
+                    cancellationToken,
+                    ("@longRestMemoryIds", selectedIds)).ConfigureAwait(false);
+            }
+
+            if (transformations > 0)
+            {
+                items.Add(new DataRetentionPlanItem(RetentionDataClass.SagaMemories, 0, 0, 0, transformations));
+            }
+        }
+
         return new DataRetentionSagaCurationInventory(
             pinnedRows,
             pinnedRowsExemptFromPlan);
     }
+
+    /// <summary>The shared erasure coordinates for the Saga transformation companions a prune owns.</summary>
+    private static IEnumerable<AnnalsErasureStep> SagaLongRestPruneSteps(string subjectQuery) =>
+        AnnalsErasurePlan.ForSubjectQuery(AnnalSubjectStore.Saga, subjectQuery)
+            .Where(static step => step.Table.StartsWith("long_rest_", StringComparison.Ordinal));
 
     private async Task<DataRetentionLexiconCurationInventory> AddLexiconCandidatesAsync(
         RetentionSettings retention,
@@ -5876,7 +5911,7 @@ internal sealed partial class DataRetentionService
         DateTimeOffset effectiveCutoff,
         CancellationToken cancellationToken)
     {
-        int derived = 0;
+        long derived = 0;
 
         int provenance;
 
@@ -5933,6 +5968,27 @@ internal sealed partial class DataRetentionService
             // Before the memory row, because the claim is found through the row that names it. The
             // rows-zero arm below rolls the whole transaction back, so a candidate the delete's own
             // WHERE refuses keeps its claim along with its memory.
+            derived += await CountInTransactionAsync(
+                connection,
+                transaction,
+                "annal_claims",
+                "SubjectStoreCode = 1 AND SubjectId = @id",
+                cancellationToken,
+                ("@id", memoryId)).ConfigureAwait(false);
+
+            // Measure before the receipt parent cascades its children. Later candidates sharing
+            // this receipt then see zero, matching the preview's one count of the whole manifest.
+            foreach (AnnalsErasureStep step in SagaLongRestPruneSteps("SELECT @id"))
+            {
+                derived += await CountInTransactionAsync(
+                    connection,
+                    transaction,
+                    step.Table,
+                    step.Predicate,
+                    cancellationToken,
+                    ("@id", memoryId)).ConfigureAwait(false);
+            }
+
             await AnnalsClaimWriter.DeleteClaimsForSubjectAsync(
                 connection,
                 transaction,

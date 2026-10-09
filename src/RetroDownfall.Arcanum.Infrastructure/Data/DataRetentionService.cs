@@ -328,8 +328,11 @@ internal sealed partial class DataRetentionService(
                 "annal_review_events",
                 "annal_review_decision_receipts",
                 "annal_review_markers",
+                "long_rest_receipts",
+                "long_rest_receipt_inputs",
+                "long_rest_suppressions",
             ],
-            "Bitemporal claim identities, immutable versions, current pointers, dependency edges, historical Lexicon source coordinates, and content-free exact-review state. Removed with the memory each claim describes; never aged out on their own.",
+            "Bitemporal claim identities, immutable versions, current pointers, dependency edges, historical Lexicon source coordinates, content-free exact-review state, and immutable Long Rest transformations. Removed with the memory each claim describes; never aged out on their own.",
             retention,
             cancellationToken).ConfigureAwait(false);
 

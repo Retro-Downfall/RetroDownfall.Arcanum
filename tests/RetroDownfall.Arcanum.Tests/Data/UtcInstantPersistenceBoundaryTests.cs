@@ -530,6 +530,7 @@ public sealed class UtcInstantPersistenceBoundaryTests
             "src/RetroDownfall.Arcanum.Infrastructure/Data/GrimoireEntitySql.cs",
             "src/RetroDownfall.Arcanum.Infrastructure/Data/IdempotencyClaimStore.cs",
             "src/RetroDownfall.Arcanum.Infrastructure/Data/IdempotencyStore.cs",
+            "src/RetroDownfall.Arcanum.Infrastructure/Data/LongRest/SagaLongRestService.Receipts.cs",
             "src/RetroDownfall.Arcanum.Infrastructure/Data/LongRunningOperationStore.cs",
             "src/RetroDownfall.Arcanum.Infrastructure/Data/SagaMemoryStore.Curation.cs",
             "src/RetroDownfall.Arcanum.Infrastructure/Data/SagaMemoryStore.cs",

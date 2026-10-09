@@ -11,6 +11,7 @@ using RetroDownfall.Arcanum.Core.Memory;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Infrastructure.Data.Annals;
+using RetroDownfall.Arcanum.Infrastructure.Data.LongRest;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Data;
 
@@ -18,11 +19,9 @@ internal sealed partial class SagaMemoryStore
 {
     public async Task<SagaMemoryCurationRow?> ReadCurationRowAsync(string id, CancellationToken cancellationToken)
     {
-        return await SqliteBusyRetry.ExecuteAsync(
-            async () =>
+        return await ReadLongRestSnapshotAsync<SagaMemoryCurationRow?>(
+            async (connection, longRest) =>
             {
-                DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
-
                 await using DbCommand cmd = connection.CreateCommand();
 
                 // One LEFT JOIN against saga_memory_embeddings rather than a second round trip: the row,
@@ -30,7 +29,7 @@ internal sealed partial class SagaMemoryStore
                 // instant, and a caller reading them separately would be describing three instants as
                 // though they were one.
                 cmd.CommandText =
-                    """
+                    $"""
                     SELECT m."Id", m."Content", m."CreatedAt", m."SessionId", m."Tags", m."Source",
                            p.SessionId, p.AttachmentId, p.LogicalKey, p.Version,
                            p.ContentHash, p.MaterializedAt, p.SourceType,
@@ -40,6 +39,7 @@ internal sealed partial class SagaMemoryStore
                            ),
                            m.ScopeKindCode, m.CampaignId, m."RetiredAtUtc", m."PinnedAtUtc",
                            e."MemoryId" IS NOT NULL
+                           {LongRestRecallSql.Projection("m", longRest)}
                     FROM "saga_memories" m
                     LEFT JOIN saga_memory_attachment_provenance p ON p.MemoryId = m."Id"
                     LEFT JOIN "saga_memory_embeddings" e ON e."MemoryId" = m."Id"

@@ -95,6 +95,9 @@ public static class MemoryErasureTableCodes
         "covenant_key_epochs",
         "covenant_review_events",
         "covenant_review_decision_receipts",
+        "long_rest_receipts",
+        "long_rest_receipt_inputs",
+        "long_rest_suppressions",
     ];
 
     /// <summary>The code of one registered table.</summary>

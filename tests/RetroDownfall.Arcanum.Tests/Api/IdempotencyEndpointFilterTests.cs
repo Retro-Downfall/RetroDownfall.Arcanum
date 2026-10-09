@@ -2364,27 +2364,37 @@ public sealed class IdempotencyEndpointFilterOwnershipTests
 
         Task<object?> leader = CreateFilter()(leaderContext, next).AsTask();
 
-        await leaderEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        try
+        {
+            await leaderEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
-        using CancellationTokenSource waiterCancellation = new();
+            using CancellationTokenSource waiterCancellation = new();
 
-        (TestEndpointFilterInvocationContext waiterContext, _) =
-            CreateContext(services, key, requestAborted: waiterCancellation.Token);
+            (TestEndpointFilterInvocationContext waiterContext, _) =
+                CreateContext(services, key, requestAborted: waiterCancellation.Token);
 
-        Task<object?> waiter = CreateFilter()(waiterContext, next).AsTask();
+            Task<object?> waiter = CreateFilter()(waiterContext, next).AsTask();
 
-        waiterCancellation.Cancel();
+            Assert.False(waiter.IsCompleted);
 
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(
-            async () => await waiter.WaitAsync(TimeSpan.FromSeconds(2)));
+            // Cancel outside xUnit's synchronization context so cancellation can propagate inline;
+            // a busy test runner must not turn the assertion into a race against its timer queue.
+            await Task.Run(waiterCancellation.Cancel);
 
-        Assert.Equal(1, handlerCalls);
+            Assert.True(waiter.IsCanceled);
 
-        releaseLeader.SetResult();
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => waiter);
 
-        _ = await leader;
+            Assert.Equal(1, handlerCalls);
+        }
+        finally
+        {
+            _ = releaseLeader.TrySetResult();
 
-        await leaderResponse.CompleteAsync();
+            _ = await leader;
+
+            await leaderResponse.CompleteAsync();
+        }
 
         Assert.Equal(1, handlerCalls);
     }

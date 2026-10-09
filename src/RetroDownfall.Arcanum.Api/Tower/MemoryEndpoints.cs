@@ -1487,6 +1487,13 @@ internal static class MemoryEndpoints
                 _ => "; ownership not yet classified",
             };
 
+            if (memory.ConsolidatedIntoMemoryId is { } survivorMemoryId
+                && memory.ConsolidatedIntoVersionId is { } survivorVersionId
+                && memory.LongRestReceiptId is { } receiptId)
+            {
+                provenance += $"; consolidated into memory {survivorMemoryId}, version {survivorVersionId}, Long Rest receipt {receiptId}";
+            }
+
             // Last, so it reads as the verdict on everything before it: the row is still here, and no
             // turn can recall it.
             if (row.Lifecycle.RetiredAtUtc is not null)

@@ -2163,14 +2163,7 @@ internal static class GrimoireConnectionAcquisitionScanner
             null),
 
         new(
-            new("src/RetroDownfall.Arcanum.Infrastructure/Data/SagaMemoryStore.cs", "SagaMemoryStore", "ListAsync(6)", AcquisitionConstructKind.ProviderOpen, "OpenConnectionAsync", 1, "OpenConnectionAsync(cancellationToken)"),
-            GrimoirePathAuthority.LiveGrimoire,
-            GrimoireAcquisitionKind.ServingRawOrdinary,
-            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
-            null),
-
-        new(
-            new("src/RetroDownfall.Arcanum.Infrastructure/Data/SagaMemoryStore.cs", "SagaMemoryStore", "ListCurationRowsAsync(6)", AcquisitionConstructKind.ProviderOpen, "OpenConnectionAsync", 1, "OpenConnectionAsync(cancellationToken)"),
+            new("src/RetroDownfall.Arcanum.Infrastructure/Data/SagaMemoryStore.cs", "SagaMemoryStore", "ReadLongRestSnapshotAsync(2)", AcquisitionConstructKind.ProviderOpen, "OpenConnectionAsync", 1, "OpenConnectionAsync(cancellationToken)"),
             GrimoirePathAuthority.LiveGrimoire,
             GrimoireAcquisitionKind.ServingRawOrdinary,
             GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
@@ -2178,20 +2171,6 @@ internal static class GrimoireConnectionAcquisitionScanner
 
         new(
             new("src/RetroDownfall.Arcanum.Infrastructure/Data/SagaMemoryStore.cs", "SagaMemoryStore", "ListPositionsAfterAsync(3)", AcquisitionConstructKind.ProviderOpen, "OpenConnectionAsync", 1, "OpenConnectionAsync(cancellationToken)"),
-            GrimoirePathAuthority.LiveGrimoire,
-            GrimoireAcquisitionKind.ServingRawOrdinary,
-            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
-            null),
-
-        new(
-            new("src/RetroDownfall.Arcanum.Infrastructure/Data/SagaMemoryStore.cs", "SagaMemoryStore", "AnyRetrievableAsync(2)", AcquisitionConstructKind.ProviderOpen, "OpenConnectionAsync", 1, "OpenConnectionAsync(cancellationToken)"),
-            GrimoirePathAuthority.LiveGrimoire,
-            GrimoireAcquisitionKind.ServingRawOrdinary,
-            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
-            null),
-
-        new(
-            new("src/RetroDownfall.Arcanum.Infrastructure/Data/SagaMemoryStore.cs", "SagaMemoryStore", "GetByIdsAsync(2)", AcquisitionConstructKind.ProviderOpen, "OpenConnectionAsync", 1, "OpenConnectionAsync(cancellationToken)"),
             GrimoirePathAuthority.LiveGrimoire,
             GrimoireAcquisitionKind.ServingRawOrdinary,
             GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
@@ -2248,6 +2227,27 @@ internal static class GrimoireConnectionAcquisitionScanner
 
         new(
             new("src/RetroDownfall.Arcanum.Infrastructure/Data/SagaMemoryStore.cs", "SagaMemoryStore", "OpenConnectionAsync(1)", AcquisitionConstructKind.ProviderOpen, "db.Database.OpenConnectionAsync", 1, "db.Database.OpenConnectionAsync(cancellationToken)"),
+            GrimoirePathAuthority.LiveGrimoire,
+            GrimoireAcquisitionKind.ServingRawOrdinary,
+            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
+            null),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Data/LongRest/SagaLongRestService.cs", "SagaLongRestService", "ApplyAsync(2)", AcquisitionConstructKind.ProviderOpen, "OpenAsync", 1, "OpenAsync(cancellationToken)"),
+            GrimoirePathAuthority.LiveGrimoire,
+            GrimoireAcquisitionKind.ServingRawOrdinary,
+            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
+            null),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Data/LongRest/SagaLongRestService.cs", "SagaLongRestService", "GetReceiptAsync(2)", AcquisitionConstructKind.ProviderOpen, "OpenAsync", 1, "OpenAsync(cancellationToken)"),
+            GrimoirePathAuthority.LiveGrimoire,
+            GrimoireAcquisitionKind.ServingRawOrdinary,
+            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
+            null),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Data/LongRest/SagaLongRestService.cs", "SagaLongRestService", "OpenAsync(1)", AcquisitionConstructKind.ProviderOpen, "db.Database.OpenConnectionAsync", 1, "db.Database.OpenConnectionAsync(cancellationToken)"),
             GrimoirePathAuthority.LiveGrimoire,
             GrimoireAcquisitionKind.ServingRawOrdinary,
             GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
@@ -3218,13 +3218,6 @@ internal static class GrimoireConnectionAcquisitionScanner
             GrimoireAcquisitionKind.DesignTimeOrNativeValidation,
             GrimoireRuntimeAdmissionRoute.ExactNonServingProof,
             new(ExactNonServingProofKind.NativeRuntimeValidation, "SqliteNativeRuntimeValidator.LoadExtensionIsBlockedAsync(3)", 0)),
-
-        new(
-            new("src/RetroDownfall.Arcanum.Infrastructure/Data/SagaMemoryStore.Curation.cs", "SagaMemoryStore", "ReadCurationRowAsync(2)", AcquisitionConstructKind.ProviderOpen, "OpenConnectionAsync", 1, "OpenConnectionAsync(cancellationToken)"),
-            GrimoirePathAuthority.LiveGrimoire,
-            GrimoireAcquisitionKind.ServingRawOrdinary,
-            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
-            null),
 
         new(
             new("src/RetroDownfall.Arcanum.Infrastructure/Data/SagaMemoryStore.Curation.cs", "SagaMemoryStore", "RetireAsync(4)", AcquisitionConstructKind.ProviderOpen, "OpenConnectionAsync", 1, "OpenConnectionAsync(cancellationToken)"),

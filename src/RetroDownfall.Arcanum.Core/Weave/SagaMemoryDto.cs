@@ -17,4 +17,7 @@ public sealed record SagaMemoryDto(
     SagaMemoryScopeKind ScopeKind = SagaMemoryScopeKind.Unclassified,
     Guid? ScopeCampaignId = null,
     DateTimeOffset? RetiredAtUtc = null,
-    DateTimeOffset? PinnedAtUtc = null);
+    DateTimeOffset? PinnedAtUtc = null,
+    string? ConsolidatedIntoMemoryId = null,
+    string? ConsolidatedIntoVersionId = null,
+    string? LongRestReceiptId = null);

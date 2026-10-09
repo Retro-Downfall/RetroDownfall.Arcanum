@@ -61,8 +61,31 @@ internal static class AnnalsErasurePlan
 
         string reviewEventScope = $"SELECT Sequence FROM annal_review_events WHERE VersionId IN ({versionScope})";
 
+        string receiptPredicate =
+            $"SurvivorVersionId IN ({versionScope}) OR RequestedSurvivorVersionId IN ({versionScope}) OR ReceiptId IN (SELECT ReceiptId FROM long_rest_receipt_inputs WHERE VersionId IN ({versionScope}))";
+
+        string receiptScope = $"SELECT ReceiptId FROM long_rest_receipts WHERE {receiptPredicate}";
+
         return
         [
+            // Delete the whole receipt while all input coordinates are still available. Its child
+            // cascades are followed by explicit orphan cleanup, so erasure also works when a caller
+            // has not enabled foreign keys and never leaves a partial immutable manifest behind.
+            new(
+                "long_rest_receipts",
+                receiptPredicate,
+                RequiredFromCoreVersion: 17),
+
+            new(
+                "long_rest_suppressions",
+                $"ReceiptId IN ({receiptScope}) OR NOT EXISTS (SELECT 1 FROM long_rest_receipts receipt WHERE receipt.ReceiptId = long_rest_suppressions.ReceiptId)",
+                RequiredFromCoreVersion: 17),
+
+            new(
+                "long_rest_receipt_inputs",
+                $"ReceiptId IN ({receiptScope}) OR NOT EXISTS (SELECT 1 FROM long_rest_receipts receipt WHERE receipt.ReceiptId = long_rest_receipt_inputs.ReceiptId)",
+                RequiredFromCoreVersion: 17),
+
             .. subjectStoreCode == (int)AnnalSubjectStore.Lexicon
                 ? new[] { new AnnalsErasureStep("lexicon_annal_fact_provenance", $"AnnalVersionId IN ({versionScope})", RequiredFromCoreVersion: 11) }
                 : [],
