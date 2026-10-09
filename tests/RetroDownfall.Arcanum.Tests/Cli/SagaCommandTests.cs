@@ -536,9 +536,13 @@ public sealed class SagaCommandTests
     /// A Saga memory is written by extraction from model output, and Markup escaping does not remove the
     /// control sequences a terminal acts on, so the table strips them.
     /// </summary>
-    [Fact]
-    public void Saga_divine_strips_terminal_controls_from_memory_content()
+    [Theory]
+    [InlineData(null)]
+    [InlineData("true")]
+    public void Saga_divine_strips_terminal_controls_from_memory_content(string? githubActions)
     {
+        using CliTestConsoleEnvironment environment = new(githubActions);
+
         SagaMemoryDto memory = new("mem-1", "ok\u001b]52;c;QUFBQQ==\u0007title\u001b[2J\u009b", DateTimeOffset.UtcNow, null, null, "extraction");
 
         RecordingHandler handler = new(_ => CreateResponse(
@@ -552,6 +556,8 @@ public sealed class SagaCommandTests
         Assert.DoesNotContain('\u001b', result.Output);
         Assert.DoesNotContain('\u0007', result.Output);
         Assert.DoesNotContain('\u009b', result.Output);
+
+        Assert.Equal(githubActions, global::System.Environment.GetEnvironmentVariable("GITHUB_ACTIONS"));
     }
 
     private static CliTestResult RunCommand(RecordingHandler handler, string[] args)

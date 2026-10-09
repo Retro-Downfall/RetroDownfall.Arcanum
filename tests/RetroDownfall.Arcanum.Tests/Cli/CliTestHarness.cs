@@ -56,6 +56,11 @@ internal static class CliTestHarness
         string[] args,
         string? input = null)
     {
+        // Spectre's GitHub profile enrichment enables ANSI after the explicit No settings below.
+        // Captured tests need plain bytes, including diagnostics that create a console per write.
+        // This scope keeps CI enabled and restores the runner signal even if setup throws.
+        using CliTestConsoleEnvironment consoleEnvironment = new();
+
         // Production dependency injection resolves every persistent path through ArcanumPaths, which
         // outside a Testing environment is the developer's real profile directory: the command
         // would read the operator's arcanum.json and a name-resolved selection would write
@@ -182,6 +187,21 @@ internal static class CliTestHarness
 }
 
 internal readonly record struct CliTestResult(int ExitCode, string Output, string Error);
+
+/// <summary>
+/// Controls Spectre's GitHub runner enrichment inside captured CLI tests. Callers belong to the
+/// nonparallel <c>GlobalConsole</c> collection because this signal is process-global.
+/// </summary>
+internal sealed class CliTestConsoleEnvironment : IDisposable
+{
+    private readonly string? _originalGitHubActions = global::System.Environment.GetEnvironmentVariable("GITHUB_ACTIONS");
+
+    public CliTestConsoleEnvironment(string? githubActions = null) =>
+        global::System.Environment.SetEnvironmentVariable("GITHUB_ACTIONS", githubActions);
+
+    public void Dispose() =>
+        global::System.Environment.SetEnvironmentVariable("GITHUB_ACTIONS", _originalGitHubActions);
+}
 
 /// <summary>
 /// Console previews are truncated by character count. .NET strings are UTF-16, so a cutoff that

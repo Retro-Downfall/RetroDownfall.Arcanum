@@ -101,6 +101,21 @@ public sealed class CliOutputFileTests : IDisposable
     }
 
     [Fact]
+    public void Captured_error_diagnostics_are_plain_in_a_GitHub_runner()
+    {
+        using CliTestConsoleEnvironment environment = new("true");
+
+        using (ConsoleCapture capture = new())
+        {
+            CliErrorOutput.WriteMarkupLine("[bold]diagnostic[/]");
+
+            Assert.Equal("diagnostic" + global::System.Environment.NewLine, capture.Error);
+        }
+
+        Assert.Equal("true", global::System.Environment.GetEnvironmentVariable("GITHUB_ACTIONS"));
+    }
+
+    [Fact]
     public async Task Writing_replaces_the_destination_and_leaves_no_temporary_sibling()
     {
         string path = Path.Combine(_directory, "answer.md");
@@ -257,10 +272,36 @@ public sealed class CliOutputFileTests : IDisposable
 
         private readonly StringWriter _error = new();
 
-        public ConsoleCapture() => Console.SetError(_error);
+        private readonly CliTestConsoleEnvironment _environment;
+
+        public ConsoleCapture()
+        {
+            _environment = new();
+
+            try
+            {
+                Console.SetError(_error);
+            }
+            catch
+            {
+                _environment.Dispose();
+
+                throw;
+            }
+        }
 
         public string Error => _error.ToString();
 
-        public void Dispose() => Console.SetError(_priorError);
+        public void Dispose()
+        {
+            try
+            {
+                Console.SetError(_priorError);
+            }
+            finally
+            {
+                _environment.Dispose();
+            }
+        }
     }
 }

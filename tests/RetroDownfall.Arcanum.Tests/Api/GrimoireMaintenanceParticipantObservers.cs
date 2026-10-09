@@ -1576,6 +1576,8 @@ internal sealed class GrimoireMaintenanceAdmissionObserver(
 
     private readonly ConcurrentQueue<GrimoireEffectObservation> _effects = new();
 
+    private readonly TaskCompletionSource _providerHealthEffectStarted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
     private readonly ConcurrentQueue<GrimoireTicketObservation> _tickets = new();
 
     private readonly ConcurrentQueue<GrimoireOwnerObservation> _closingOwners = new();
@@ -1591,6 +1593,9 @@ internal sealed class GrimoireMaintenanceAdmissionObserver(
     internal MaintenanceStageObservation StageTwo { get; } = new();
 
     internal IReadOnlyList<GrimoireEffectObservation> Effects => _effects.ToArray();
+
+    internal Task WaitUntilProviderHealthProbeEffectAsync() =>
+        _providerHealthEffectStarted.Task.WaitAsync(TimeSpan.FromSeconds(10));
 
     internal IReadOnlyList<GrimoireTicketObservation> Tickets => _tickets.ToArray();
 
@@ -1643,7 +1648,7 @@ internal sealed class GrimoireMaintenanceAdmissionObserver(
 
         _workAttempts.Enqueue(observation);
 
-        lease = actual is null ? null : new ObservedWork(actual, observation, _effects);
+        lease = actual is null ? null : new ObservedWork(actual, observation, _effects, _providerHealthEffectStarted);
 
         observation.Lease = lease;
 
@@ -1902,7 +1907,8 @@ internal sealed class GrimoireMaintenanceAdmissionObserver(
     private sealed class ObservedWork(
         IGrimoireWorkLease actual,
         GrimoireLeaseObservation<GrimoireWorkKind> observation,
-        ConcurrentQueue<GrimoireEffectObservation> effects) : IGrimoireWorkLease
+        ConcurrentQueue<GrimoireEffectObservation> effects,
+        TaskCompletionSource providerHealthEffectStarted) : IGrimoireWorkLease
     {
         public GrimoireWorkKind Kind => actual.Kind;
 
@@ -1921,6 +1927,11 @@ internal sealed class GrimoireMaintenanceAdmissionObserver(
                 GrimoireEffectObservation effectObservation = new(actual.Kind);
 
                 effects.Enqueue(effectObservation);
+
+                if (actual.Kind == GrimoireWorkKind.ProviderHealthProbe)
+                {
+                    providerHealthEffectStarted.TrySetResult();
+                }
 
                 effectGroup = new ObservedEffect(effect, effectObservation);
             }
