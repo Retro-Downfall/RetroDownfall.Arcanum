@@ -8347,6 +8347,33 @@
       ]
     },
     {
+      "id": "setting.retention-campaign-summaries-days",
+      "subsystem": "Retention",
+      "sourceLocations": [
+        "src/RetroDownfall.Arcanum.Core/Configuration/RetentionSettings.cs#ArcanumSettings.retention.campaignSummaries.days"
+      ],
+      "coveredSymbols": [
+        "ArcanumSettings.retention.campaignSummaries.days"
+      ],
+      "symbolValues": {
+        "ArcanumSettings.retention.campaignSummaries.days": "default 365"
+      },
+      "currentValue": "default 365",
+      "owner": "operator",
+      "enforcementPoint": "ArcanumSettings.retention.campaignSummaries.days",
+      "userVisibleBehavior": "Work stops or data becomes eligible only under an explicit authored policy.",
+      "originalRationale": "The operator intentionally owns spend, pricing, retention age, or schedule policy.",
+      "threatOrFailureModel": "Ignoring an explicit policy would violate the operator's cost or data-lifecycle decision.",
+      "classification": "Explicit operator policy",
+      "action": "retain",
+      "replacementOrContinuation": "Report the configured value, measured state, checkpoint status, and exact command/configuration action.",
+      "tests": [
+        "ConfigurationValidatorTests",
+        "CampaignRollupRetentionContractTests",
+        "RetentionSettingsTests"
+      ]
+    },
+    {
       "id": "setting.retention-completed-batches-days",
       "subsystem": "Batches",
       "sourceLocations": [

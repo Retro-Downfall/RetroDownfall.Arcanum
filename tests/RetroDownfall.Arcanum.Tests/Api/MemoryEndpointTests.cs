@@ -62,6 +62,212 @@ namespace RetroDownfall.Arcanum.Tests.Api;
 
 public sealed class MemoryEndpointTests
 {
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Campaign_inspection_reports_a_current_revision_without_payload_and_refold_debt_is_ineligible(bool enabled)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using ArcanumWebApplicationFactory factory = new()
+        {
+            SettingsOverride = settings => settings with
+            {
+                Features = settings.Features with { CampaignRollups = enabled },
+            },
+        };
+
+        Guid campaignId = Guid.NewGuid();
+
+        Guid sourceSessionId = Guid.NewGuid();
+
+        Guid selectedSessionId = Guid.NewGuid();
+
+        Guid entryId = Guid.NewGuid();
+
+        CampaignRollupArtifact rollup;
+
+        await using (AsyncServiceScope scope = factory.Services.CreateAsyncScope())
+        {
+            ArcanumDbContext db = scope.ServiceProvider.GetRequiredService<ArcanumDbContext>();
+
+            db.Campaigns.Add(new Campaign
+            {
+                Id = campaignId, Name = "continuity", NameLower = "continuity", Path = Path.Combine(factory.TempHome, "continuity"),
+                Settings = "{}", CreatedAt = DateTimeOffset.UtcNow, UpdatedAt = DateTimeOffset.UtcNow,
+            });
+
+            foreach (Guid session in new[] { sourceSessionId, selectedSessionId })
+            {
+                db.Sessions.Add(new Session
+                {
+                    Id = session, CampaignId = campaignId, Status = "active", CreatedAt = DateTimeOffset.UtcNow, UpdatedAt = DateTimeOffset.UtcNow,
+                });
+            }
+
+            db.Entries.Add(new Entry
+            {
+                Id = entryId, SessionId = sourceSessionId, Role = MessageRole.User,
+                Content = "use SQLite", ModelUsed = "", Sequence = 1, CreatedAt = DateTimeOffset.UtcNow,
+            });
+
+            _ = await db.SaveChangesAsync();
+
+            await db.Database.OpenConnectionAsync();
+
+            using IDisposable bindingWrite = CovenantSqliteConnectionInitializer.Instance.Authorize(
+                (SqliteConnection)db.Database.GetDbConnection(), CovenantSqliteAuthorizationKind.SessionBindingWrite);
+
+            foreach (Guid session in new[] { sourceSessionId, selectedSessionId })
+            {
+                _ = await db.Database.ExecuteSqlInterpolatedAsync($"INSERT INTO session_campaign_bindings (SessionId, BindingKindCode, CampaignId, BoundAtUtc) VALUES ({session.ToString("D").ToUpperInvariant()}, 2, {campaignId.ToString("D").ToUpperInvariant()}, {DateTimeOffset.UtcNow.ToString("O")});");
+            }
+
+            CampaignRollupStore store = new(scope.ServiceProvider.GetRequiredService<ICovenantConnectionSource>(), CovenantSqliteConnectionInitializer.Instance);
+
+            Result<CampaignContributionInput?> input = await store.PrepareContributionAsync(sourceSessionId, null, null, CancellationToken.None);
+
+            Assert.True(input.IsSuccess, input.Error.Message);
+
+            Assert.NotNull(input.Value);
+
+            Assert.True((await store.PublishContributionAsync(input.Value, "SQLite was selected", null, null, CancellationToken.None)).IsSuccess);
+
+            Result<CampaignRollupInput?> fold = await store.PrepareRollupAsync(campaignId, null, CancellationToken.None);
+
+            Assert.True(fold.IsSuccess, fold.Error.Message);
+
+            Assert.NotNull(fold.Value);
+
+            Result<CampaignRollupArtifact> published = await store.PublishRollupAsync(fold.Value, "private Campaign decision payload", null, null, CancellationToken.None);
+
+            Assert.True(published.IsSuccess, published.Error.Message);
+
+            rollup = published.Value;
+        }
+
+        using HttpClient client = factory.CreateAuthenticatedClient();
+
+        foreach (string surface in new[] { "status", "sources", "explain" })
+        {
+            using HttpResponseMessage response = await client.GetAsync($"/api/memory/{surface}/{selectedSessionId:D}");
+
+            string body = await response.Content.ReadAsStringAsync();
+
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+            Assert.DoesNotContain("private Campaign decision payload", body, StringComparison.Ordinal);
+
+            Assert.DoesNotContain(factory.TempHome, body, StringComparison.Ordinal);
+
+            using JsonDocument json = JsonDocument.Parse(body);
+
+            JsonElement metadata = json.RootElement.GetProperty("data").GetProperty("campaignSummary");
+
+            Assert.Equal(campaignId, metadata.GetProperty("campaignId").GetGuid());
+
+            Assert.Equal(rollup.ArtifactId, metadata.GetProperty("currentArtifactId").GetGuid());
+
+            Assert.Equal(rollup.Revision, metadata.GetProperty("revision").GetInt64());
+
+            Assert.Equal(1, metadata.GetProperty("sourceCount").GetInt32());
+
+            Assert.False(metadata.GetProperty("refoldRequired").GetBoolean());
+        }
+
+        using HttpResponseMessage explained = await client.GetAsync($"/api/memory/explain/{selectedSessionId:D}");
+
+        ApiResponse<MemoryExplainDto>? explanation = await ReadAsync(explained, ArcanumJsonContext.Default.ApiResponseMemoryExplainDto);
+
+        Assert.Equal(enabled, EligibleSource(explanation!.Data!, "Campaign Summary"));
+
+        await using (AsyncServiceScope scope = factory.Services.CreateAsyncScope())
+        {
+            ArcanumDbContext db = scope.ServiceProvider.GetRequiredService<ArcanumDbContext>();
+
+            _ = await db.Database.ExecuteSqlInterpolatedAsync($"DELETE FROM \"Entries\" WHERE \"Id\" = {entryId.ToString("D").ToUpperInvariant()};");
+        }
+
+        using HttpResponseMessage invalidated = await client.GetAsync($"/api/memory/explain/{selectedSessionId:D}");
+
+        ApiResponse<MemoryExplainDto>? debt = await ReadAsync(invalidated, ArcanumJsonContext.Default.ApiResponseMemoryExplainDto);
+
+        Assert.False(EligibleSource(debt!.Data!, "Campaign Summary"));
+    }
+
+    [SkippableFact]
+    public async Task Session_compression_is_distinct_from_disabled_Campaign_continuity_on_every_inspection_surface()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using ArcanumWebApplicationFactory factory = new();
+
+        Guid sessionId = Guid.NewGuid();
+
+        await using (AsyncServiceScope scope = factory.Services.CreateAsyncScope())
+        {
+            ArcanumDbContext db = scope.ServiceProvider.GetRequiredService<ArcanumDbContext>();
+
+            db.Sessions.Add(new Session
+            {
+                Id = sessionId,
+                Status = "active",
+                CreatedAt = DateTimeOffset.UtcNow,
+                UpdatedAt = DateTimeOffset.UtcNow,
+                Summary = "compressed Session decisions",
+                LastSummarizedMessageAt = DateTime.UtcNow,
+            });
+
+            _ = await db.SaveChangesAsync();
+        }
+
+        using HttpClient client = factory.CreateAuthenticatedClient();
+
+        using HttpResponseMessage statusResponse = await client.GetAsync($"/api/memory/status/{sessionId:D}");
+
+        ApiResponse<MemoryStatusDto>? status = await ReadAsync(statusResponse, ArcanumJsonContext.Default.ApiResponseMemoryStatusDto);
+
+        Assert.Equal(HttpStatusCode.OK, statusResponse.StatusCode);
+
+        MemoryStoreStatusDto session = Assert.Single(status!.Data!.Stores, source => source.Name == "Session Summary");
+
+        Assert.Equal("session", session.Scope);
+
+        Assert.Equal(1, session.Count);
+
+        MemoryStoreStatusDto campaign = Assert.Single(status.Data.Stores, source => source.Name == "Campaign Summary");
+
+        Assert.Equal("campaign-summary", campaign.Scope);
+
+        Assert.False(campaign.Enabled);
+
+        Assert.Equal(0, campaign.Count);
+
+        using HttpResponseMessage sourcesResponse = await client.GetAsync($"/api/memory/sources/{sessionId:D}");
+
+        ApiResponse<MemorySourcesDto>? sources = await ReadAsync(sourcesResponse, ArcanumJsonContext.Default.ApiResponseMemorySourcesDto);
+
+        Assert.Equal(HttpStatusCode.OK, sourcesResponse.StatusCode);
+
+        Assert.Contains("watermark", Assert.Single(sources!.Data!.Sources, source => source.Name == "Session Summary").Provenance, StringComparison.OrdinalIgnoreCase);
+
+        Assert.Contains("contribution", Assert.Single(sources.Data.Sources, source => source.Name == "Campaign Summary").Provenance, StringComparison.OrdinalIgnoreCase);
+
+        using HttpResponseMessage explainResponse = await client.GetAsync($"/api/memory/explain/{sessionId:D}");
+
+        ApiResponse<MemoryExplainDto>? explain = await ReadAsync(explainResponse, ArcanumJsonContext.Default.ApiResponseMemoryExplainDto);
+
+        Assert.Equal(HttpStatusCode.OK, explainResponse.StatusCode);
+
+        MemoryExplainDto explanation = Assert.IsType<MemoryExplainDto>(explain?.Data);
+
+        Assert.True(EligibleSource(explanation, "Session Summary"));
+
+        Assert.False(EligibleSource(explanation, "Campaign Summary"));
+
+        Assert.Contains("disabled", Assert.Single(explanation.Sources, source => source.Name == "Campaign Summary").Reason, StringComparison.OrdinalIgnoreCase);
+    }
+
     [SkippableFact]
     public async Task Explain_excludes_retired_Lexicon_rows_while_operator_inspection_keeps_them()
     {
@@ -555,6 +761,8 @@ public sealed class MemoryEndpointTests
 
         Assert.Contains("Pinned Entries", names);
 
+        Assert.Contains("Session Summary", names);
+
         Assert.Contains("Campaign Summary", names);
 
         Assert.Contains("Attachments", names);
@@ -739,7 +947,7 @@ public sealed class MemoryEndpointTests
 
         MemoryStoreStatusDto summaryStore = Assert.Single(
             envelope.Data.Stores,
-            static store => string.Equals(store.Name, "Campaign Summary", StringComparison.Ordinal));
+            static store => string.Equals(store.Name, "Session Summary", StringComparison.Ordinal));
 
         Assert.Equal(1, summaryStore.Count);
 
@@ -764,7 +972,7 @@ public sealed class MemoryEndpointTests
 
         Assert.True(EligibleSource(explainEnvelope.Data, "Pinned Entries"));
 
-        Assert.True(EligibleSource(explainEnvelope.Data, "Campaign Summary"));
+        Assert.True(EligibleSource(explainEnvelope.Data, "Session Summary"));
     }
 
     /// <summary>
@@ -984,7 +1192,7 @@ public sealed class MemoryEndpointTests
 
         MemorySearchResultDto summaryMatch = Assert.Single(summaryEnvelope!.Data!.Results);
 
-        Assert.Equal("Campaign Summary", summaryMatch.Title);
+        Assert.Equal("Session Summary", summaryMatch.Title);
 
         Assert.Contains("morale notes", summaryMatch.Content, StringComparison.Ordinal);
     }

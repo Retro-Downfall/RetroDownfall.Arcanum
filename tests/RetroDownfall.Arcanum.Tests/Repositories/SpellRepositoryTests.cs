@@ -4,6 +4,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.DataLifecycle;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Intelligence.Spells;
 using RetroDownfall.Arcanum.Core.Mcp;
@@ -2611,6 +2612,8 @@ public sealed class SpellRepositoryTests : IAsyncLifetime
 
         services.AddSingleton(_db!);
 
+        services.AddSingleton<ICovenantLabeledArtifactGuard>(FixtureLabeledArtifactGuard.For(_db!));
+
         services.AddSingleton<ILogger<CampaignRepository>>(NullLogger<CampaignRepository>.Instance);
 
         services.AddSingleton<IOptionsSnapshot<ArcanumSettings>>(new TestOptionsSnapshot<ArcanumSettings>(settings ?? new ArcanumSettings()));
@@ -2650,7 +2653,8 @@ public sealed class SpellRepositoryTests : IAsyncLifetime
         new(
             _db!,
             NullLogger<CampaignRepository>.Instance,
-            new TestOptionsSnapshot<ArcanumSettings>(new ArcanumSettings()));
+            new TestOptionsSnapshot<ArcanumSettings>(new ArcanumSettings()),
+            FixtureLabeledArtifactGuard.For(_db!));
 
     private sealed class FakeMcpConnectionManager : IMcpConnectionManager
     {

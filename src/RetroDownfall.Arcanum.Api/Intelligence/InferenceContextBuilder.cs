@@ -8,6 +8,8 @@ using Microsoft.Extensions.Options;
 
 using RetroDownfall.Arcanum.Core.Configuration;
 
+using RetroDownfall.Arcanum.Core.Covenant;
+
 using RetroDownfall.Arcanum.Core.Intelligence;
 
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
@@ -65,6 +67,10 @@ internal sealed record ContextCompressionRequest
     /// document, so the mismatch does not degrade quietly: it refuses the turn.
     /// </remarks>
     public CovenantPromptContent? Covenant { get; init; }
+
+    public CampaignRollupArtifact? CampaignRollup { get; init; }
+
+    public bool EnableCampaignRollups { get; init; }
 
     /// <summary>
     /// The Scrying foci the ledger accepted for this turn — the images
@@ -296,7 +302,10 @@ public sealed class InferenceContextBuilder(
             maxIndexBytes: context.MaxIndexBytes,
             sessionAttachmentContext: context.SessionAttachmentContext,
             tapestryContext: context.TapestryContext,
-            covenant: context.Covenant);
+            covenant: context.Covenant,
+            campaignRollup: context.CampaignRollup?.Content,
+            enableCampaignRollups: context.EnableCampaignRollups,
+            campaignRollupSensitive: context.CampaignRollup?.Sensitivity is ContentSensitivity.CovenantDerived);
 
         PrependDynamicSystemMessage(rebuilt, augmentedSystem);
 

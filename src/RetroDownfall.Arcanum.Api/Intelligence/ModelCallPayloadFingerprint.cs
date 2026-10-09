@@ -26,19 +26,30 @@ internal static class ModelCallPayloadFingerprint
     {
         using IncrementalHash hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
 
+        bool fullyRepresented = true;
+
+        void AppendMetadata(object? value)
+        {
+            string formatted = ModelTokenEstimator.FormatValue(value, out bool represented);
+
+            fullyRepresented &= represented;
+
+            Append(hash, formatted);
+        }
+
         foreach (ChatMessage message in messages)
         {
             Append(hash, message.Role.ToString());
             Append(hash, message.AuthorName);
             Append(hash, message.MessageId);
-            Append(hash, ModelTokenEstimator.FormatValue(message.AdditionalProperties));
-            Append(hash, ModelTokenEstimator.FormatValue(message.RawRepresentation));
+            AppendMetadata(message.AdditionalProperties);
+            AppendMetadata(message.RawRepresentation);
 
             foreach (AIContent content in message.Contents)
             {
                 Append(hash, content.GetType().FullName);
-                Append(hash, ModelTokenEstimator.FormatValue(content.AdditionalProperties));
-                Append(hash, ModelTokenEstimator.FormatValue(content.RawRepresentation));
+                AppendMetadata(content.AdditionalProperties);
+                AppendMetadata(content.RawRepresentation);
                 switch (content)
                 {
                     case TextContent text:
@@ -53,12 +64,12 @@ internal static class ModelCallPayloadFingerprint
                     case FunctionCallContent call:
                         Append(hash, call.CallId);
                         Append(hash, call.Name);
-                        Append(hash, ModelTokenEstimator.FormatValue(call.Arguments));
+                        AppendMetadata(call.Arguments);
                         break;
 
                     case FunctionResultContent result:
                         Append(hash, result.CallId);
-                        Append(hash, ModelTokenEstimator.FormatValue(result.Result));
+                        AppendMetadata(result.Result);
                         break;
 
                     case DataContent data:
@@ -86,7 +97,7 @@ internal static class ModelCallPayloadFingerprint
                 Append(hash, tool.GetType().FullName);
                 Append(hash, tool.Name);
                 Append(hash, tool.Description);
-                Append(hash, ModelTokenEstimator.FormatValue(tool.AdditionalProperties));
+                AppendMetadata(tool.AdditionalProperties);
                 if (tool is AIFunction function)
                 {
                     Append(hash, function.JsonSchema.GetRawText());
@@ -98,7 +109,7 @@ internal static class ModelCallPayloadFingerprint
         Append(hash, options.Reasoning?.Effort?.ToString());
         Append(hash, options.Reasoning?.Output?.ToString());
         Append(hash, options.MaxOutputTokens?.ToString(System.Globalization.CultureInfo.InvariantCulture));
-        Append(hash, ModelTokenEstimator.FormatValue(options.AdditionalProperties));
+        AppendMetadata(options.AdditionalProperties);
 
         if (options.StopSequences is { } stops)
         {
@@ -122,7 +133,8 @@ internal static class ModelCallPayloadFingerprint
             Append(hash, options.ResponseFormat?.GetType().FullName);
         }
 
-        return Finish(hash);
+        // Opaque metadata has an approximate size marker, never an exact reusable payload identity.
+        return fullyRepresented ? Finish(hash) : string.Empty;
     }
 
     private static void Append(IncrementalHash hash, string? value)

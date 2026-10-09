@@ -334,6 +334,7 @@ The compact table below has exact ID parity with the JSON source. The JSON conta
 | `setting.retention-archived-sessions-days` | Sessions and context | default 180 | Explicit operator policy | retain | Report the configured value, measured state, checkpoint status, and exact command/configuration action. |
 | `setting.retention-attachments-days` | Attachments | default 180 | Explicit operator policy | retain | Report the configured value, measured state, checkpoint status, and exact command/configuration action. |
 | `setting.retention-audit-logs-days` | Retention | default 30 | Explicit operator policy | retain | Report the configured value, measured state, checkpoint status, and exact command/configuration action. |
+| `setting.retention-campaign-summaries-days` | Retention | default 365 | Explicit operator policy | retain | Report the configured value, measured state, checkpoint status, and exact command/configuration action. |
 | `setting.retention-completed-batches-days` | Batches | default 30 | Explicit operator policy | retain | Report the configured value, measured state, checkpoint status, and exact command/configuration action. |
 | `setting.retention-daemon-history-days` | Daemons | default 30 | Explicit operator policy | retain | Report the configured value, measured state, checkpoint status, and exact command/configuration action. |
 | `setting.retention-entries-days` | Retention | default 180 | Explicit operator policy | retain | Report the configured value, measured state, checkpoint status, and exact command/configuration action. |

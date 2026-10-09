@@ -16,7 +16,7 @@ namespace RetroDownfall.Arcanum.Api.Intelligence;
 /// single authoritative pre-call breakdown, enforces admission before provider I/O, and reconciles
 /// provider-reported input usage without replacing the estimate.
 /// </summary>
-public sealed class ModelCallExecutor : IModelCallExecutor
+public sealed partial class ModelCallExecutor : IModelCallExecutor
 {
     private readonly IModelTokenEstimator? _tokenEstimator;
 

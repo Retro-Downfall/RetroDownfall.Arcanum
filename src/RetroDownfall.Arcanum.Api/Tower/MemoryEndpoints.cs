@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Data;
 
 using System.Data.Common;
@@ -111,6 +112,8 @@ internal static class MemoryEndpoints
             return stopped;
         }
     }
+
+    private const string CampaignSummaryRetention = "Campaign lifetime; archive preserves continuity, source deletion invalidates it, and Campaign-summary reset or enabled retention removes derived summaries.";
 
     private const string SessionRetention = "Session lifetime; archiving retains it and session purge removes it.";
 
@@ -302,7 +305,7 @@ internal static class MemoryEndpoints
                 .ToArray();
 
             result = Result<MemorySourcesDto>.Success(
-                new MemorySourcesDto(status.Value.SessionId, sources));
+                new MemorySourcesDto(status.Value.SessionId, sources, status.Value.CampaignSummary));
         }
 
         return result;
@@ -363,7 +366,7 @@ internal static class MemoryEndpoints
                     stores["Session Entries"],
                     hasSession && stores["Session Entries"].Count > 0,
                     hasSession
-                        ? "The active session transcript is considered in sequence and may be compressed when a Campaign Summary watermark applies."
+                        ? "The active session transcript is considered in sequence and may be compressed when a Session Summary watermark applies."
                         : "Select a session to make a transcript eligible for a turn."),
                 Explain(
                     stores["Pinned Entries"],
@@ -372,11 +375,22 @@ internal static class MemoryEndpoints
                         ? "Pinned entries remain eligible even when older unpinned transcript entries are compressed."
                         : "Pins belong to a specific session; select one to inspect eligibility."),
                 Explain(
-                    stores["Campaign Summary"],
-                    hasSession && stores["Campaign Summary"].Count > 0,
+                    stores["Session Summary"],
+                    hasSession && stores["Session Summary"].Count > 0,
                     hasSession
                         ? "The summary becomes compressed context when the session watermark and context-pressure policy require it."
-                        : "Campaign summaries are stored on sessions; select one to inspect eligibility."),
+                        : "Session summaries are stored on sessions; select one to inspect eligibility."),
+                Explain(
+                    stores["Campaign Summary"],
+                    hasSession && stores["Campaign Summary"].Enabled
+                        && status.Value.CampaignSummary is { CurrentArtifactId: not null, RefoldRequired: false },
+                    !stores["Campaign Summary"].Enabled
+                        ? "Campaign continuity is disabled; retained summaries remain inspectable and resettable."
+                        : status.Value.CampaignSummary is { RefoldRequired: true }
+                            ? "The Campaign source evidence changed; a fresh refold is required before continuity is eligible."
+                            : status.Value.CampaignSummary is { CurrentArtifactId: not null }
+                                ? "A published Campaign summary provides cross-session continuity independently of Session compression."
+                                : "No current Campaign summary is available for the selected Session."),
                 Explain(
                     stores["Attachments"],
                     hasSession && stores["Attachments"].Enabled && stores["Attachments"].Count > 0,
@@ -409,7 +423,8 @@ internal static class MemoryEndpoints
                     status.Value.SessionId,
                     status.Value.SessionTitle,
                     eligibility,
-                    MemoryCampaignScopeReport.Describe(scope)));
+                    MemoryCampaignScopeReport.Describe(scope),
+                    status.Value.CampaignSummary));
         }
 
         return result;
@@ -967,6 +982,14 @@ internal static class MemoryEndpoints
             sessionId,
             cancellationToken).ConfigureAwait(false);
 
+        int campaignSummaries = sessionId is not null && session?.CampaignId is null
+            ? 0
+            : await CountCampaignSummariesAsync(connection, session?.CampaignId, cancellationToken).ConfigureAwait(false);
+
+        MemoryCampaignSummaryDto? campaignSummary = session?.CampaignId is { } continuityCampaign
+            ? await ReadCampaignSummaryMetadataAsync(connection, continuityCampaign, cancellationToken).ConfigureAwait(false)
+            : null;
+
         int attachments = await CountAsync(
             connection,
             sessionId is null
@@ -1034,7 +1057,8 @@ internal static class MemoryEndpoints
         [
             new("Session Entries", true, entries, "session", SessionRetention),
             new("Pinned Entries", features.MemoryManagement, pinned, "session", PinRetention),
-            new("Campaign Summary", true, summaries, "session", SessionRetention),
+            new("Session Summary", true, summaries, "session", SessionRetention),
+            new("Campaign Summary", features.CampaignRollups, campaignSummaries, "campaign-summary", CampaignSummaryRetention),
             new("Attachments", features.Attachments, attachments, "attachments", AttachmentRetention),
             new("Indexed Attachment Chunks", features.AttachmentRetrieval, attachmentChunks, "attachments", AttachmentIndexRetention),
             new("Lexicon", features.Lexicon, lexicon, "lexicon", LexiconRetention),
@@ -1049,7 +1073,60 @@ internal static class MemoryEndpoints
                 session?.Title,
                 stores,
                 await BuildCovenantStatusAsync(availability, management, cancellationToken)
-                    .ConfigureAwait(false)));
+                    .ConfigureAwait(false),
+                CampaignSummary: campaignSummary));
+    }
+
+    private static async Task<MemoryCampaignSummaryDto?> ReadCampaignSummaryMetadataAsync(
+        SqliteConnection connection,
+        Guid campaignId,
+        CancellationToken cancellationToken)
+    {
+        await using SqliteCommand command = connection.CreateCommand();
+
+        command.CommandText = """
+            SELECT s.CurrentArtifactId, s.Revision, s.SourceGeneration,
+                COALESCE(a.SourceCount, 0), s.RefoldRequired, COALESCE(a.SensitivityCode, 0), s.UpdatedAtUtc
+            FROM campaign_rollup_state s
+            LEFT JOIN campaign_rollup_artifacts a ON a.ArtifactId = s.CurrentArtifactId
+                AND a.CampaignId = s.CampaignId AND a.Revision = s.Revision
+            WHERE s.CampaignId = $campaignId;
+            """;
+
+        AddParameter(command, "$campaignId", campaignId.ToString("D").ToUpperInvariant());
+
+        await using SqliteDataReader reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+
+        return await reader.ReadAsync(cancellationToken).ConfigureAwait(false)
+            ? new MemoryCampaignSummaryDto(
+                campaignId,
+                reader.IsDBNull(0) ? null : Guid.Parse(reader.GetString(0)),
+                reader.GetInt64(1),
+                reader.GetInt64(2),
+                reader.GetInt32(3),
+                reader.GetInt64(4) != 0,
+                (ContentSensitivity)reader.GetInt64(5),
+                reader.IsDBNull(6) ? null : DateTimeOffset.Parse(reader.GetString(6), CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal))
+            : new MemoryCampaignSummaryDto(campaignId, null, 0, 0, 0, false, ContentSensitivity.None, null);
+    }
+
+    private static async Task<int> CountCampaignSummariesAsync(
+        SqliteConnection connection,
+        Guid? campaignId,
+        CancellationToken cancellationToken)
+    {
+        await using SqliteCommand command = connection.CreateCommand();
+
+        command.CommandText = campaignId is null
+            ? "SELECT COUNT(*) FROM campaign_rollup_artifacts;"
+            : "SELECT COUNT(*) FROM campaign_rollup_artifacts WHERE CampaignId = $campaignId;";
+
+        if (campaignId is { } campaign)
+        {
+            AddParameter(command, "$campaignId", campaign.ToString("D").ToUpperInvariant());
+        }
+
+        return Convert.ToInt32(await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false), CultureInfo.InvariantCulture);
     }
 
     private static MemoryEligibilityDto Explain(
@@ -1062,7 +1139,8 @@ internal static class MemoryEndpoints
     {
         "Session Entries" => "Grimoire Entries rows for the selected session, or all sessions when none is selected.",
         "Pinned Entries" => "The IsPinned flag on an exact Grimoire Entry row.",
-        "Campaign Summary" => "The selected Session Summary and its summarization watermark.",
+        "Session Summary" => "The selected Session Summary and its summarization watermark.",
+        "Campaign Summary" => "Immutable Campaign summary revisions folded from exact native Session contribution revisions and source manifests.",
         "Attachments" => "Encrypted session-bound attachment metadata; no bytes or host paths are returned.",
         "Indexed Attachment Chunks" => "Derived text chunks carrying session, attachment, logical key, version, and content-hash provenance.",
         "Lexicon" => "Structured Lexicon entity name, type, facts, and any typed attachment fact provenance.",
@@ -1190,7 +1268,7 @@ internal static class MemoryEndpoints
 
             results.Add(new MemorySearchResultDto(
                 MemorySearchScope.Session,
-                "Campaign Summary",
+                "Session Summary",
                 summary,
                 $"Session {(title.Length == 0 ? id : title)}, Summary field",
                 SessionRetention,

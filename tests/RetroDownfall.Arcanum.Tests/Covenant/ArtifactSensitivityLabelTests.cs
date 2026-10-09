@@ -12,6 +12,35 @@ public sealed class ArtifactSensitivityLabelTests
 
     private static readonly DateTimeOffset CreatedAt = DateTimeOffset.FromUnixTimeSeconds(1_700_000_000);
 
+    [Theory]
+    [InlineData(SensitiveArtifactKind.CampaignRollup)]
+    [InlineData(SensitiveArtifactKind.CampaignContribution)]
+    public void Campaign_artifacts_have_distinct_policy_codes_and_immutable_sensitivity_labels(SensitiveArtifactKind kind)
+    {
+        ArtifactSensitivityLabel label = new(
+            Guid.NewGuid(),
+            kind,
+            ArtifactId,
+            kind is SensitiveArtifactKind.CampaignContribution ? SessionId : null,
+            Guid.Parse("12345678-1111-2222-3333-444444444444"),
+            TurnId,
+            1,
+            Digest(0x11),
+            ContentSensitivity.CovenantDerived,
+            ExactProvenance(),
+            null,
+            null,
+            Digest(0x44),
+            CreatedAt);
+
+        Assert.Equal((uint)kind, CovenantPolicyV1Manifest.GetCode(kind));
+
+        Assert.Equal(kind, label.ArtifactKind);
+
+        Assert.Equal(label.LabelDigest, CovenantDigests.ArtifactLabel(label.ToDigestInput()));
+
+    }
+
     [Fact]
     public void Plan_and_admission_evidence_with_revision_zero_match_the_literal_label()
     {

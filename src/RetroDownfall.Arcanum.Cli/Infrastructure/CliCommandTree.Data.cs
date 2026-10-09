@@ -209,7 +209,7 @@ internal static partial class CliCommandTree
         Option<string> memoryScope = new("--scope")
         {
             Description =
-                "Required scope: entry, attachments, workspace, saga, lexicon, or covenant.",
+                "Required scope: entry, attachments, workspace, saga, lexicon, covenant, or campaign-summary.",
 
             Required = true,
         };
@@ -217,7 +217,7 @@ internal static partial class CliCommandTree
         Option<string?> memoryCampaign = new("--campaign")
         {
             Description =
-                "Optional Campaign GUID. Saga and Lexicon only; other Campaigns' memories are untouched.",
+                "Optional Campaign GUID. Saga, Lexicon, and Campaign summaries only; other Campaigns' memories are untouched.",
         };
 
         resetMemory.Add(memoryScope);

@@ -151,8 +151,33 @@ public sealed class SessionKeyIndexSchemaEvolutionTests
 
     private static async Task InstallAsync(SqliteConnection connection, GrimoireSchemaVersionChainSet chains, int version)
     {
-        GrimoireSchemaInstallResult result = await GrimoireSchemaTestInstaller.InstallAsync(
-            connection, chains, 1536, CancellationToken.None);
+        GrimoireSchemaInstaller installer = GrimoireSchemaTestInstaller.Create(chains);
+
+        GrimoireSchemaInitializationContext context = GrimoireSchemaTestInstaller.CreateContext();
+
+        GrimoireSchemaInstallResult result = await installer.InstallAsync(
+            connection, 1536, context, CancellationToken.None);
+
+        if (result.Core.Health is GrimoireSchemaTierHealth.TransitionIncomplete)
+        {
+            // Later steps can require a sweep even though version 14 only builds indexes. Drive the
+            // installed chain to completion before comparing its catalog with a fresh head.
+            GrimoireSchemaTransitionJournalRow journal = Assert.IsType<GrimoireSchemaTransitionJournalRow>(
+                await GrimoireSchemaTransitionJournal.ReadAsync(
+                    connection, null, GrimoireSchemaTransactionTier.Core, CancellationToken.None));
+
+            GrimoireSchemaBackfillRunner runner = new(installer, TimeProvider.System);
+
+            _ = await runner.AdvanceAsync(
+                connection,
+                chains.ForTier(GrimoireSchemaTransactionTier.Core),
+                journal,
+                context,
+                maxBatches: 128,
+                CancellationToken.None);
+
+            result = await installer.InstallAsync(connection, 1536, context, CancellationToken.None);
+        }
 
         Assert.Equal(GrimoireSchemaTierHealth.Healthy, result.Core.Health);
 

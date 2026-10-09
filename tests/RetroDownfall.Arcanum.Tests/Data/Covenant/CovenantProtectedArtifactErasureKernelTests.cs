@@ -6,7 +6,9 @@ using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.DataLifecycle;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Infrastructure.Covenant;
+using RetroDownfall.Arcanum.Infrastructure.Backup;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
+using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 using RetroDownfall.Arcanum.Tests.Covenant;
 using RetroDownfall.Arcanum.Tests.Fixtures;
 using RetroDownfall.Arcanum.Tests.Support;
@@ -26,6 +28,45 @@ public sealed class CovenantProtectedArtifactErasureKernelTests
     private static readonly Guid SessionId = Guid.Parse("0A1B2C3D-4E5F-4A6B-8C9D-0E1F2A3B4C5D");
 
     private static CancellationToken Token => CancellationToken.None;
+
+    [Fact]
+    public async Task A_staged_protected_purge_keeps_Campaign_tombstones_and_counts_dependent_labels_once()
+    {
+        await using ErasureFixture fixture = await ErasureFixture.CreateAsync();
+
+        Guid campaignId = Guid.NewGuid();
+
+        Guid contribution = Guid.NewGuid();
+
+        Guid rollup = Guid.NewGuid();
+
+        await fixture.SeedCampaignSummariesAsync(campaignId, contribution, rollup);
+
+        await using SqliteTransaction transaction = fixture.Connection.BeginTransaction(deferred: false);
+
+        Result<BackupRestoreProtectedStatePurgeReceipt> purged = await BackupRestoreProtectedStatePurger.PurgeStagedAsync(
+            fixture.Connection, transaction, CovenantSqliteConnectionInitializer.Instance, TimeProvider.System, Token);
+
+        Assert.True(purged.IsSuccess, purged.Error.Message);
+
+        await transaction.CommitAsync(Token);
+
+        Assert.Equal(2UL, purged.Value.RemovedArtifacts);
+
+        Assert.Equal(2UL, purged.Value.RemovedLabels);
+
+        Assert.Equal(0, await fixture.CountAsync("SELECT COUNT(*) FROM campaign_rollup_artifacts;"));
+
+        Assert.Equal(0, await fixture.CountAsync("SELECT COUNT(*) FROM campaign_contribution_artifacts;"));
+
+        Assert.Equal(0, await fixture.CountAsync("SELECT COUNT(*) FROM campaign_rollup_sources;"));
+
+        Assert.Equal(0, await fixture.CountAsync("SELECT COUNT(*) FROM artifact_sensitivity;"));
+
+        Assert.Equal(1, await fixture.CountAsync("SELECT COUNT(*) FROM campaign_rollup_state WHERE CurrentArtifactId IS NULL AND Revision = 1 AND RefoldRequired = 1;"));
+
+        Assert.Equal(1, await fixture.CountAsync("SELECT COUNT(*) FROM campaign_contribution_state WHERE CurrentArtifactId IS NULL AND Revision = 1 AND SummarizedThroughSequence = 7 AND RefoldRequired = 1;"));
+    }
 
     [Fact]
     public async Task An_exclusive_authority_erases_the_artifact_its_projections_and_its_label_atomically()
@@ -587,6 +628,216 @@ public sealed class CovenantProtectedArtifactErasureKernelTests
         Assert.Equal(1, await fixture.CountAsync("SELECT COUNT(*) FROM tapestry_node_embeddings_vec WHERE NodeId = 'other-session-generation-node';"));
     }
 
+    [Theory]
+    [InlineData(SensitiveArtifactKind.CampaignRollup)]
+    [InlineData(SensitiveArtifactKind.CampaignContribution)]
+    public async Task Campaign_artifact_erasure_removes_owned_sources_and_labels_while_retaining_monotonic_denial_state(SensitiveArtifactKind kind)
+    {
+        await using ErasureFixture fixture = await ErasureFixture.CreateAsync();
+
+        Guid campaignId = Guid.NewGuid();
+
+        Guid contribution = Guid.NewGuid();
+
+        Guid rollup = Guid.NewGuid();
+
+        await fixture.SeedCampaignSummariesAsync(campaignId, contribution, rollup);
+
+        Guid selected = kind == SensitiveArtifactKind.CampaignRollup ? rollup : contribution;
+
+        Guid? owner = kind == SensitiveArtifactKind.CampaignRollup ? null : SessionId;
+
+        Guid labelId = Guid.Parse((await fixture.LabelIdAsync(selected))!);
+
+        Result<CovenantArtifactErasureProgress> erased = await EraseUnderExclusiveAsync(
+            fixture, fixture.Page(selected, labelId, kind, owner, campaignId, revision: 1));
+
+        Assert.True(erased.IsSuccess, erased.IsFailure ? erased.Error.Message : string.Empty);
+
+        Assert.Equal(1UL, erased.Value.ErasedCount);
+
+        Assert.Equal(0, await fixture.CountAsync("SELECT COUNT(*) FROM campaign_rollup_artifacts;"));
+
+        Assert.Equal(0, await fixture.CountAsync("SELECT COUNT(*) FROM campaign_rollup_sources;"));
+
+        Assert.Equal(1, await fixture.CountAsync("SELECT COUNT(*) FROM campaign_rollup_state WHERE CurrentArtifactId IS NULL AND Revision = 1 AND SourceGeneration > 0 AND RefoldRequired = 1;"));
+
+        Assert.Equal(0, await fixture.CountAsync("SELECT COUNT(*) FROM artifact_sensitivity WHERE ArtifactKindCode = 14;"));
+
+        Assert.Equal(kind == SensitiveArtifactKind.CampaignRollup ? 1 : 0, await fixture.CountAsync("SELECT COUNT(*) FROM campaign_contribution_artifacts;"));
+
+        Assert.Equal(kind == SensitiveArtifactKind.CampaignRollup ? 1 : 0, await fixture.CountAsync("SELECT COUNT(*) FROM artifact_sensitivity WHERE ArtifactKindCode = 15;"));
+
+        if (kind == SensitiveArtifactKind.CampaignContribution)
+        {
+            Assert.Equal(1, await fixture.CountAsync("SELECT COUNT(*) FROM campaign_contribution_state WHERE CurrentArtifactId IS NULL AND Revision = 1 AND SummarizedThroughSequence = 7 AND SourceGeneration > 0 AND RefoldRequired = 1;"));
+        }
+    }
+
+    [Theory]
+    [InlineData("D")]
+    [InlineData("N")]
+    public async Task A_protected_contribution_purge_counts_and_removes_exact_dependent_label_aliases(string spelling)
+    {
+        await using ErasureFixture fixture = await ErasureFixture.CreateAsync();
+
+        Guid campaignId = Guid.NewGuid();
+
+        Guid contribution = Guid.NewGuid();
+
+        Guid rollup = Guid.NewGuid();
+
+        await fixture.SeedCampaignSummariesAsync(campaignId, contribution, rollup,
+            rollupLabelIdentity: rollup.ToString(spelling).ToLowerInvariant());
+
+        Guid labelId = Guid.Parse((await fixture.LabelIdAsync(contribution))!);
+
+        long plannedClosure = await CampaignSummaryLifecycle.CountArtifactClosureAsync(
+            fixture.Connection, null, SensitiveArtifactKind.CampaignContribution, contribution, Token);
+
+        Result<CovenantArtifactErasureProgress> erased = await EraseUnderExclusiveAsync(
+            fixture, fixture.Page(contribution, labelId, SensitiveArtifactKind.CampaignContribution,
+                SessionId, campaignId, revision: 1));
+
+        Assert.True(erased.IsSuccess, erased.Error.Message);
+
+        Assert.Equal(1UL, erased.Value.ErasedCount);
+
+        Assert.Equal(0, await fixture.CountAsync("SELECT COUNT(*) FROM artifact_sensitivity;"));
+
+        Assert.Equal(0, await fixture.CountAsync("SELECT COUNT(*) FROM campaign_rollup_artifacts;"));
+
+        Assert.Equal(0, await fixture.CountAsync("SELECT COUNT(*) FROM campaign_contribution_artifacts;"));
+
+        Assert.Equal(5L, plannedClosure);
+    }
+
+    [Theory]
+    [InlineData("D")]
+    [InlineData("N")]
+    public async Task A_native_Entry_purge_removes_exact_Session_summary_label_aliases(string spelling)
+    {
+        await using ErasureFixture fixture = await ErasureFixture.CreateAsync();
+
+        Guid entry = Guid.NewGuid();
+
+        Guid entryLabel = await fixture.SeedLabelAsync(entry, SensitiveArtifactKind.AssistantEntry, SessionId);
+
+        await fixture.SeedCommittedAssistantEntryAsync(entry);
+
+        await fixture.SeedSessionSummaryAsync(Guid.NewGuid(), spelling);
+
+        Result<CovenantArtifactErasureProgress> erased = await EraseUnderExclusiveAsync(
+            fixture, fixture.Page(entry, entryLabel, SensitiveArtifactKind.AssistantEntry, SessionId));
+
+        Assert.True(erased.IsSuccess, erased.Error.Message);
+
+        Assert.Equal(1UL, erased.Value.ErasedCount);
+
+        Assert.Equal(0, await fixture.CountAsync("SELECT COUNT(*) FROM session_summary_artifacts;"));
+
+        Assert.Equal(0, await fixture.CountAsync("SELECT COUNT(*) FROM session_summary_state;"));
+
+        Assert.Equal(0, await fixture.CountAsync("SELECT COUNT(*) FROM artifact_sensitivity;"));
+    }
+
+    [Theory]
+    [InlineData("canonical")]
+    [InlineData("D")]
+    [InlineData("N")]
+    public async Task An_entry_purge_cannot_clear_dependent_Campaign_artifacts_outside_its_historical_owner_lease(string spelling)
+    {
+        await using ErasureFixture fixture = await ErasureFixture.CreateAsync();
+
+        Guid currentCampaign = Guid.NewGuid();
+
+        Guid contribution = Guid.NewGuid();
+
+        Guid rollup = Guid.NewGuid();
+
+        await fixture.SeedCampaignSummariesAsync(currentCampaign, contribution, rollup,
+            rollupLabelIdentity: spelling == "canonical" ? null : rollup.ToString(spelling).ToLowerInvariant(),
+            contributionLabelIdentity: spelling == "canonical" ? null : contribution.ToString(spelling).ToLowerInvariant());
+
+        Guid historicalCampaign = Guid.NewGuid();
+
+        Guid entryId = Guid.NewGuid();
+
+        Guid labelId = await fixture.SeedLabelAsync(entryId, SensitiveArtifactKind.AssistantEntry, SessionId, historicalCampaign);
+
+        await fixture.SeedCommittedAssistantEntryAsync(entryId);
+
+        FakeCovenantAuthorityProvider provider = new();
+
+        CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate(authority: provider);
+
+        await using CovenantWriteLease lease = (await gate.AcquireWriteAsync(
+            CovenantOperationScope.ForCampaign(historicalCampaign), Token)).Value;
+
+        CovenantArtifactErasureAuthority authority = CovenantArtifactErasureAuthority.ForOrdinary(
+            lease, CovenantErasureAuthorityFixture.OperatorContext(provider), CovenantErasureAuthorityFixture.Issuer(provider)).Value;
+
+        Result<CovenantArtifactErasureProgress> erased = await fixture.Kernel.ErasePageAsync(
+            fixture.Page(entryId, labelId, SensitiveArtifactKind.AssistantEntry, SessionId, historicalCampaign), authority, Token);
+
+        Assert.True(erased.IsSuccess);
+
+        Assert.Equal(0UL, erased.Value.ErasedCount);
+
+        Assert.NotEqual(CovenantErasureBlocker.None, erased.Value.Blocker);
+
+        Assert.Equal(1, await fixture.CountAsync("SELECT COUNT(*) FROM Entries;"));
+
+        Assert.Equal(1, await fixture.CountAsync("SELECT COUNT(*) FROM campaign_rollup_artifacts;"));
+
+        Assert.Equal(3, await fixture.CountAsync("SELECT COUNT(*) FROM artifact_sensitivity;"));
+    }
+
+    [Theory]
+    [InlineData("D")]
+    [InlineData("N")]
+    public async Task An_entry_purge_cannot_clear_a_native_Session_summary_with_a_global_historical_label(string spelling)
+    {
+        await using ErasureFixture fixture = await ErasureFixture.CreateAsync();
+
+        Guid historicalCampaign = Guid.NewGuid();
+
+        Guid entryId = Guid.NewGuid();
+
+        Guid labelId = await fixture.SeedLabelAsync(entryId, SensitiveArtifactKind.AssistantEntry, SessionId, historicalCampaign);
+
+        await fixture.SeedCommittedAssistantEntryAsync(entryId);
+
+        await fixture.SeedSessionSummaryAsync(Guid.NewGuid(), spelling, unscopedLabel: true);
+
+        FakeCovenantAuthorityProvider provider = new();
+
+        CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate(authority: provider);
+
+        await using CovenantWriteLease lease = (await gate.AcquireWriteAsync(
+            CovenantOperationScope.ForCampaign(historicalCampaign), Token)).Value;
+
+        CovenantArtifactErasureAuthority authority = CovenantArtifactErasureAuthority.ForOrdinary(
+            lease, CovenantErasureAuthorityFixture.OperatorContext(provider), CovenantErasureAuthorityFixture.Issuer(provider)).Value;
+
+        Result<CovenantArtifactErasureProgress> erased = await fixture.Kernel.ErasePageAsync(
+            fixture.Page(entryId, labelId, SensitiveArtifactKind.AssistantEntry, SessionId, historicalCampaign), authority, Token);
+
+        Assert.True(erased.IsSuccess, erased.Error.Message);
+
+        Assert.Equal(0UL, erased.Value.ErasedCount);
+
+        Assert.NotEqual(CovenantErasureBlocker.None, erased.Value.Blocker);
+
+        Assert.Equal(1, await fixture.CountAsync("SELECT COUNT(*) FROM Entries;"));
+
+        Assert.Equal(1, await fixture.CountAsync("SELECT COUNT(*) FROM session_summary_artifacts;"));
+
+        Assert.Equal(1, await fixture.CountAsync("SELECT COUNT(*) FROM session_summary_state;"));
+
+        Assert.Equal(2, await fixture.CountAsync("SELECT COUNT(*) FROM artifact_sensitivity;"));
+    }
+
     private static async Task<Result<CovenantArtifactErasureProgress>> EraseUnderExclusiveAsync(
         ErasureFixture fixture,
         CovenantProtectedArtifactErasurePage page)
@@ -696,16 +947,19 @@ public sealed class CovenantProtectedArtifactErasureKernelTests
             Guid labelId,
             SensitiveArtifactKind kind,
             Guid? sessionId,
-            Guid? campaignId = null) =>
+            Guid? campaignId = null,
+            ulong revision = 0) =>
             new(
                 CovenantOperationGateFixture.DatasetGeneration,
-                [CovenantErasureAuthorityFixture.Item(artifactId, labelId, kind, sessionId, campaignId)]);
+                [CovenantErasureAuthorityFixture.Item(artifactId, labelId, kind, sessionId, campaignId, revision)]);
 
         internal async Task<Guid> SeedLabelAsync(
             Guid artifactId,
             SensitiveArtifactKind kind,
             Guid? sessionId,
-            Guid? campaignId = null)
+            Guid? campaignId = null,
+            ulong revision = 0,
+            string? storedIdentity = null)
         {
             Guid labelId = Guid.NewGuid();
 
@@ -714,7 +968,8 @@ public sealed class CovenantProtectedArtifactErasureKernelTests
                 labelId,
                 kind,
                 sessionId,
-                campaignId);
+                campaignId,
+                revision);
 
             await using SqliteCommand command = _database.Connection.CreateCommand();
 
@@ -723,7 +978,7 @@ public sealed class CovenantProtectedArtifactErasureKernelTests
                     LabelId, ArtifactKindCode, ArtifactId, SensitivityCode, ProvenanceModeCode,
                     ExactGenerationIds, GenerationBloom, SessionId, CampaignId, TurnId, ArtifactRevision,
                     ArtifactContentDigest, SensitivityDigest, ArtifactLabelDigest, CreatedAtUtc)
-                VALUES ($labelId, $kind, $artifactId, 1, 1, $generations, NULL, $sessionId, $campaignId, NULL, 0,
+                VALUES ($labelId, $kind, $artifactId, 1, 1, $generations, NULL, $sessionId, $campaignId, NULL, $revision,
                     $contentDigest, $sensitivityDigest, $labelDigest, '2026-08-16T00:00:00Z');
                 """;
 
@@ -731,7 +986,7 @@ public sealed class CovenantProtectedArtifactErasureKernelTests
 
             _ = command.Parameters.AddWithValue("$kind", (long)kind);
 
-            _ = command.Parameters.AddWithValue("$artifactId", Format(artifactId));
+            _ = command.Parameters.AddWithValue("$artifactId", storedIdentity ?? Format(artifactId));
 
             _ = command.Parameters.AddWithValue(
                 "$generations",
@@ -744,6 +999,8 @@ public sealed class CovenantProtectedArtifactErasureKernelTests
             _ = command.Parameters.AddWithValue(
                 "$campaignId",
                 campaignId is { } campaign ? Format(campaign) : DBNull.Value);
+
+            _ = command.Parameters.AddWithValue("$revision", (long)revision);
 
             _ = command.Parameters.AddWithValue("$contentDigest", label.ArtifactContentDigest.Bytes.ToArray());
 
@@ -845,6 +1102,74 @@ public sealed class CovenantProtectedArtifactErasureKernelTests
             command.CommandText = "SELECT FinalizationGuardDigest FROM assistant_entry_erasure_receipts;";
 
             return await command.ExecuteScalarAsync(Token) as byte[];
+        }
+
+        internal async Task<string?> LabelIdAsync(Guid artifactId) =>
+            await _database.ScalarStringAsync($"SELECT LabelId FROM artifact_sensitivity WHERE ArtifactId = '{Format(artifactId)}';", Token);
+
+        internal async Task SeedSessionSummaryAsync(Guid artifactId, string spelling, bool unscopedLabel = false)
+        {
+            await _database.InstallCoreObjectsAsync(["session_summary_artifacts", "session_summary_state"], Token);
+
+            Guid? labelSessionId = unscopedLabel ? null : SessionId;
+
+            Guid labelId = await SeedLabelAsync(artifactId, SensitiveArtifactKind.Summary, labelSessionId,
+                revision: 1, storedIdentity: artifactId.ToString(spelling).ToLowerInvariant());
+
+            string sensitivity = Convert.ToHexString(CovenantErasureAuthorityFixture.Label(
+                artifactId, labelId, SensitiveArtifactKind.Summary, labelSessionId, revision: 1).SensitivityDigest.Bytes);
+
+            await ExecuteAsync($"""
+                INSERT INTO session_summary_artifacts(ArtifactId,SessionId,Revision,ContentDigest,SensitivityCode,SensitivityDigest,SummarizedThroughUtc,CreatedAtUtc)
+                VALUES('{Format(artifactId)}','{Format(SessionId)}',1,x'{new string('1',64)}',1,x'{sensitivity}',NULL,'2026-10-01T00:00:00Z');
+                INSERT INTO session_summary_state(SessionId,CurrentArtifactId,Revision,UpdatedAtUtc)
+                VALUES('{Format(SessionId)}','{Format(artifactId)}',1,'2026-10-01T00:00:00Z');
+                """);
+        }
+
+        internal async Task SeedCampaignSummariesAsync(
+            Guid campaignId,
+            Guid contribution,
+            Guid rollup,
+            string? rollupLabelIdentity = null,
+            string? contributionLabelIdentity = null)
+        {
+            await _database.InstallCoreObjectsAsync([
+                "session_campaign_bindings", "session_turn_claims", "assistant_finalization_capacity_reservations",
+            ], Token);
+
+            foreach (GrimoireSchemaObject item in GrimoireSchemaCatalog.CoreObjects.Where(static item => item.Name.StartsWith("campaign_", StringComparison.Ordinal)))
+            {
+                await _database.InstallCoreObjectsAsync([item.Name], Token);
+            }
+
+            await ExecuteAsync($"""
+                UPDATE grimoire_feature_schemas SET SchemaVersion = 16 WHERE FamilyCode = 0 AND TransactionTierCode = 0;
+                INSERT INTO Campaigns(Id,Name,NameLower,Path,Type,Settings,CreatedAt,UpdatedAt) VALUES('{Format(campaignId)}','campaign','campaign','/fixture',0,char(123)||char(125),'2026-10-01T00:00:00Z','2026-10-01T00:00:00Z');
+                UPDATE Sessions SET CampaignId = '{Format(campaignId)}' WHERE Id = '{Format(SessionId)}';
+                INSERT INTO session_campaign_bindings(SessionId,BindingKindCode,CampaignId,BoundAtUtc) VALUES('{Format(SessionId)}',2,'{Format(campaignId)}','2026-10-01T00:00:00Z');
+                """);
+
+            Guid contributionLabel = await SeedLabelAsync(contribution, SensitiveArtifactKind.CampaignContribution, SessionId, campaignId,
+                revision: 1, storedIdentity: contributionLabelIdentity);
+
+            Guid rollupLabel = await SeedLabelAsync(rollup, SensitiveArtifactKind.CampaignRollup, null, campaignId,
+                revision: 1, storedIdentity: rollupLabelIdentity);
+
+            string sensitivity = Convert.ToHexString(CovenantErasureAuthorityFixture.Label(contribution, contributionLabel, SensitiveArtifactKind.CampaignContribution, SessionId, campaignId, revision: 1).SensitivityDigest.Bytes);
+
+            await ExecuteAsync($"""
+                INSERT INTO campaign_contribution_artifacts(ArtifactId,CampaignId,SessionId,Revision,Content,ContentDigest,SensitivityCode,SensitivityDigest,SourceManifestDigest,SourceGeneration,SummarizedThroughSequence,CreatedAtUtc)
+                VALUES('{Format(contribution)}','{Format(campaignId)}','{Format(SessionId)}',1,'protected source',x'{new string('1',64)}',1,x'{sensitivity}',zeroblob(32),0,7,'2026-10-01T00:00:00Z');
+                INSERT INTO campaign_contribution_state(SessionId,CampaignId,CurrentArtifactId,Revision,SourceGeneration,SummarizedThroughSequence,RefoldRequired,UpdatedAtUtc)
+                VALUES('{Format(SessionId)}','{Format(campaignId)}','{Format(contribution)}',1,0,7,0,'2026-10-01T00:00:00Z');
+                INSERT INTO campaign_rollup_artifacts(ArtifactId,CampaignId,Revision,Content,ContentDigest,SensitivityCode,SensitivityDigest,SourceManifestDigest,SourceGeneration,SourceCount,CreatedAtUtc)
+                VALUES('{Format(rollup)}','{Format(campaignId)}',1,'protected Campaign',x'{new string('1',64)}',1,x'{sensitivity}',zeroblob(32),1,1,'2026-10-01T00:00:00Z');
+                INSERT INTO campaign_rollup_state(CampaignId,CurrentArtifactId,Revision,SourceGeneration,RefoldRequired,LastFoldedSessionId,UpdatedAtUtc)
+                VALUES('{Format(campaignId)}','{Format(rollup)}',1,1,0,'{Format(SessionId)}','2026-10-01T00:00:00Z');
+                INSERT INTO campaign_rollup_sources(RollupArtifactId,CampaignId,RollupRevision,SessionId,ContributionArtifactId,ContributionRevision,ContentDigest,SensitivityDigest,SummarizedThroughSequence)
+                VALUES('{Format(rollup)}','{Format(campaignId)}',1,'{Format(SessionId)}','{Format(contribution)}',1,x'{new string('1',64)}',x'{sensitivity}',7);
+                """);
         }
 
         internal async Task SeedSagaAsync(Guid artifactId)

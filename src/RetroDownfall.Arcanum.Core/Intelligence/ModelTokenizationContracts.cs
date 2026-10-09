@@ -96,6 +96,12 @@ public enum ContextTokenSource
     /// </remarks>
     [JsonStringEnumMemberName("covenantProposed")]
     CovenantProposed,
+
+    [JsonStringEnumMemberName("campaignRollup")]
+    CampaignRollup,
+
+    [JsonStringEnumMemberName("sessionRollup")]
+    SessionRollup,
 }
 
 /// <summary>A single classified token value.</summary>
@@ -317,6 +323,12 @@ public sealed record ModelCallContext(
 /// <summary>Resolves profiles and estimates provider-facing context without performing model I/O.</summary>
 public interface IModelTokenEstimator
 {
+    ContextTokenBreakdown EstimateCampaignMaintenance(
+        ProviderSettings provider,
+        string canonicalModel,
+        CampaignMaintenancePayload payload) =>
+        throw new NotSupportedException("This estimator does not support closed Campaign maintenance calls.");
+
     ResolvedModelTokenizationProfile ResolveProfile(ProviderSettings provider, string canonicalModel);
 
     ResolvedModelTokenizationProfile ResolveEffectiveProfile(

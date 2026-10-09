@@ -6,6 +6,8 @@ using RetroDownfall.Arcanum.Api.Intelligence;
 
 using RetroDownfall.Arcanum.Core.Configuration;
 
+using RetroDownfall.Arcanum.Core.Covenant;
+
 using RetroDownfall.Arcanum.Core.Intelligence;
 
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
@@ -29,6 +31,183 @@ namespace RetroDownfall.Arcanum.Tests.Intelligence;
 
 public sealed class GrimoireTurnWriterTests
 {
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task A_claimed_begin_uses_its_atomic_port_and_reserved_identity_without_legacy_begin(bool streamed)
+    {
+        TrackingGrimoireRepository grimoire = new();
+
+        FakeSessionTurnBeginStore ordinary = new();
+
+        ClaimWriterPorts ports = new();
+
+        SessionTurnClaimLease claim = WriterClaim();
+
+        using GrimoireTurnWriter writer = new(grimoire, ordinary, CreateHub(), NullLogger<GrimoireTurnWriter>.Instance,
+            turnCommitter: ports, claimedBeginStore: ports, claims: ports);
+
+        PingRequest request = new("hello", SessionId: null);
+
+        Result<GrimoireTurnWriter.TurnHandle> begun = streamed
+            ? await writer.BeginStreamedAssistantReplyAsync(request, InvocationContexts.AttendedSession(), "hello", "model", CancellationToken.None, claim)
+            : await writer.BeginBufferedAssistantReplyAsync(request, InvocationContexts.AttendedSession(), "hello", "model", CancellationToken.None, claim);
+
+        Assert.True(begun.IsSuccess, begun.IsFailure ? begun.Error.Message : null);
+
+        Assert.Equal(1, ports.Begins);
+
+        Assert.Equal(0, ordinary.BeginCalls);
+
+        Assert.Equal(0, ordinary.CreateCalls);
+
+        Assert.Equal(claim.Claim.SessionId, begun.Value.SessionId);
+
+        Assert.Equal(claim.FutureAssistantEntryId, begun.Value.AssistantEntryId);
+
+        Assert.NotNull(begun.Value.ClaimLease);
+    }
+
+    [Fact]
+    public async Task A_claimed_begin_refuses_missing_ports_without_falling_back_to_legacy_entries()
+    {
+        FakeSessionTurnBeginStore ordinary = new();
+
+        using GrimoireTurnWriter writer = CreateWriter(new TrackingGrimoireRepository(), ordinary);
+
+        SessionTurnClaimLease claim = WriterClaim();
+
+        Result<GrimoireTurnWriter.TurnHandle> result = await writer.BeginBufferedAssistantReplyAsync(
+            new("hello", SessionId: claim.Claim.SessionId), InvocationContexts.AttendedSession(), "hello", "model", CancellationToken.None, claim);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(0, ordinary.BeginCalls);
+    }
+
+    [Theory]
+    [InlineData("complete", SessionTurnClaimState.Committed)]
+    [InlineData("partial", SessionTurnClaimState.RestoredInterrupted)]
+    [InlineData("discard", SessionTurnClaimState.Discarded)]
+    public async Task A_persisted_claimed_reply_completes_the_matching_durable_outcome(string mode, SessionTurnClaimState expected)
+    {
+        TrackingGrimoireRepository grimoire = new();
+
+        ClaimWriterPorts ports = new();
+
+        using GrimoireTurnWriter writer = new(grimoire, new FakeSessionTurnBeginStore(), CreateHub(), NullLogger<GrimoireTurnWriter>.Instance,
+            turnCommitter: ports, claimedBeginStore: ports, claims: ports);
+
+        SessionTurnClaimLease claim = WriterClaim();
+
+        GrimoireTurnWriter.TurnHandle handle = (await writer.BeginBufferedAssistantReplyAsync(
+            new("hello", SessionId: claim.Claim.SessionId), InvocationContexts.AttendedSession(), "hello", "model", CancellationToken.None, claim)).Value;
+
+        bool saved = mode == "complete"
+            ? await writer.TryFinalizeBufferedAssistantEntryAsync(handle, "answer", "model", CancellationToken.None)
+            : await writer.ResolveInterruptedAndMarkFinalizedAsync(handle, mode == "partial" ? "partial answer" : null, CancellationToken.None);
+
+        Assert.True(saved);
+
+        Assert.Equal(expected, Assert.Single(ports.Outcomes).State);
+
+        if (mode == "partial")
+        {
+            Assert.Equal(ErrorCodes.Hub.SessionTurnRestoredInterrupted, ports.Outcomes.Single().TerminalErrorCode);
+        }
+
+        Assert.True(handle.IsFinalized);
+
+        Assert.Equal(mode == "discard" ? AssistantFinalizationOutcome.Discarded : AssistantFinalizationOutcome.Committed,
+            Assert.Single(ports.Commits).Outcome);
+
+        Assert.Equal(claim.Claim.RequestDigest, ports.Commits.Single().RequestDigest);
+
+        Assert.Equal(claim.FutureAssistantEntryId, ports.Commits.Single().AssistantEntryId);
+
+        Assert.Equal(0, grimoire.DiscardCallCount);
+    }
+
+    [Fact]
+    public async Task A_claim_completion_refusal_never_discards_an_already_authoritative_reply()
+    {
+        TrackingGrimoireRepository grimoire = new();
+
+        ClaimWriterPorts ports = new() { RefuseCompletion = true };
+
+        using GrimoireTurnWriter writer = new(grimoire, new FakeSessionTurnBeginStore(), CreateHub(), NullLogger<GrimoireTurnWriter>.Instance,
+            turnCommitter: ports, claimedBeginStore: ports, claims: ports);
+
+        SessionTurnClaimLease claim = WriterClaim();
+
+        GrimoireTurnWriter.TurnHandle handle = (await writer.BeginBufferedAssistantReplyAsync(
+            new("hello", SessionId: claim.Claim.SessionId), InvocationContexts.AttendedSession(), "hello", "model", CancellationToken.None, claim)).Value;
+
+        Assert.False(await writer.TryFinalizeBufferedAssistantEntryAsync(handle, "answer", "model", CancellationToken.None));
+
+        Assert.Single(ports.Commits);
+
+        Assert.Equal(0, grimoire.DiscardCallCount);
+
+        Assert.True(handle.IsFinalized);
+    }
+
+    private static SessionTurnClaimLease WriterClaim()
+    {
+        Guid boot = Guid.NewGuid();
+
+        CovenantDigest digest = new(Enumerable.Repeat((byte)1, 32).ToArray());
+
+        SessionTurnClaim claim = new(Guid.NewGuid(), Guid.NewGuid(), 0, Guid.NewGuid(), Guid.NewGuid(), SessionTurnSurface.Intelligence,
+            digest, digest, SessionTurnClaimState.PendingMaintenance, null, 0, 0, 0, Guid.NewGuid(), null, null, boot, 0, 0, null, DateTimeOffset.UtcNow);
+
+        return new(claim, SessionTurnClaimDisposition.Created, Guid.NewGuid(), Guid.NewGuid(), boot, DateTimeOffset.UtcNow.AddMinutes(5));
+    }
+
+    private sealed class ClaimWriterPorts : ISessionTurnClaimBeginStore, ISessionTurnClaimCoordinator, IGrimoireTurnCommitter
+    {
+        public int Begins { get; private set; }
+
+        public bool RefuseCompletion { get; set; }
+
+        public List<SessionTurnClaimOutcome> Outcomes { get; } = [];
+
+        public List<TurnCommitRequest> Commits { get; } = [];
+
+        public Task<Result<TurnCommitReceipt>> CommitTurnAsync(TurnCommitRequest request, CancellationToken cancellationToken)
+        {
+            Commits.Add(request);
+
+            return Task.FromResult(Result<TurnCommitReceipt>.Success(new(request.AssistantEntryId, request.Outcome, false, [], 1)));
+        }
+
+        public ValueTask<Result<SessionTurnClaimInputSnapshot>> ReadClaimInputAsync(Guid sessionId, CancellationToken cancellationToken) => throw new NotSupportedException();
+
+        public ValueTask<Result<AssistantReplyBeginReceipt>> BeginClaimedAssistantReplyAsync(
+            SessionTurnClaimLease lease, CanonicalCampaignContext campaign, string prompt, string model, CancellationToken cancellationToken)
+        {
+            Begins++;
+
+            return ValueTask.FromResult(Result<AssistantReplyBeginReceipt>.Success(new(lease.Claim.SessionId, Guid.NewGuid(), lease.FutureAssistantEntryId,
+                new(lease.Claim.SessionId, campaign.Binding, lease.Claim.PreRequestHistoryRevision, 0))));
+        }
+
+        public ValueTask<Result<SessionTurnClaimLease>> AcquireAsync(SessionTurnRequestIdentity request, CancellationToken cancellationToken) => throw new NotSupportedException();
+
+        public ValueTask<Result<SessionTurnClaim>> MarkBegunAsync(SessionTurnClaimLease lease, AssistantReplyBeginReceipt begin, CancellationToken cancellationToken) => throw new NotSupportedException();
+
+        public ValueTask<Result<SessionTurnClaim>> CompleteAsync(SessionTurnClaimLease lease, SessionTurnClaimOutcome outcome, CancellationToken cancellationToken)
+        {
+            Assert.False(cancellationToken.CanBeCanceled);
+
+            Outcomes.Add(outcome);
+
+            return ValueTask.FromResult(RefuseCompletion
+                ? Result<SessionTurnClaim>.Failure(new(ErrorCodes.Covenant.StaleSnapshot, "Completion refused."))
+                : Result<SessionTurnClaim>.Success(lease.Claim with { State = outcome.State, Outcome = outcome }));
+        }
+    }
 
     [Fact]
     public async Task BeginBufferedAssistantReplyAsync_StatelessRequest_ReturnsEmptyHandle()

@@ -108,6 +108,13 @@ public sealed record FeatureSettings
     public bool CampaignScopedMemory { get; set; }
 
     /// <summary>
+    /// Whether bounded Campaign summaries carry continuity across the Campaign's Sessions. Default
+    /// <c>false</c>: omitted configuration performs no rollup work and adds no Campaign-summary prompt
+    /// content. Disabling this feature preserves stored summaries for explicit inspection and reset.
+    /// </summary>
+    public bool CampaignRollups { get; set; }
+
+    /// <summary>
     /// Whether durable memory records what it claimed, when that was true, and when Arcanum came to hold
     /// it. Default <c>true</c>: omitted configuration records ordinary Saga extraction and Lexicon
     /// history as <c>AgentExtracted</c> and <c>AgentAsserted</c> claims.

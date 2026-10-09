@@ -264,6 +264,10 @@ internal sealed class DataRetentionPolicyStore : IDataRetentionPolicyStore
                 updated.LexiconEntries = replacement;
                 break;
 
+            case RetentionDataClass.CampaignSummaries:
+                updated.CampaignSummaries = replacement;
+                break;
+
             case RetentionDataClass.WorkspaceChunks:
             case RetentionDataClass.WorkspaceEmbeddings:
                 updated.WorkspaceIndexes = replacement;
@@ -359,6 +363,8 @@ internal sealed class DataRetentionPolicyStore : IDataRetentionPolicyStore
             SagaMemories = NormalizeRule(source.SagaMemories),
 
             LexiconEntries = NormalizeRule(source.LexiconEntries),
+
+            CampaignSummaries = NormalizeRule(source.CampaignSummaries),
 
             WorkspaceIndexes = NormalizeRule(source.WorkspaceIndexes),
 

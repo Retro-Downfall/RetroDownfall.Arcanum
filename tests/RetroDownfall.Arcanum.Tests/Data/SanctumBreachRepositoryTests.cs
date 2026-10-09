@@ -317,7 +317,8 @@ public sealed class SanctumBreachRepositoryTests : IAsyncLifetime
         CampaignRepository campaignRepository = new(
             _db!,
             NullLogger<CampaignRepository>.Instance,
-            new TestOptionsSnapshot<ArcanumSettings>(new ArcanumSettings()));
+            new TestOptionsSnapshot<ArcanumSettings>(new ArcanumSettings()),
+            FixtureLabeledArtifactGuard.For(_db!));
 
         string workspaceRoot = Path.Combine(Path.GetTempPath(), "arcanum-sanctum-breach-repo", Guid.NewGuid().ToString("N"));
 

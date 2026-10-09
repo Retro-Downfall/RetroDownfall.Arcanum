@@ -32,7 +32,9 @@ public sealed class GrimoireTurnWriter(
     SessionEventHub sessionEventHub,
     ILogger<GrimoireTurnWriter> logger,
     IGrimoireTurnCommitter? turnCommitter = null,
-    SessionTurnConcurrencyGate? sessionTurnGate = null) : IDisposable
+    SessionTurnConcurrencyGate? sessionTurnGate = null,
+    ISessionTurnClaimBeginStore? claimedBeginStore = null,
+    ISessionTurnClaimCoordinator? claims = null) : IDisposable
 {
 
     private readonly SessionTurnConcurrencyGate _sessionTurnGate =
@@ -55,6 +57,8 @@ public sealed class GrimoireTurnWriter(
         internal long SagaExtractionAfterSequenceExclusive { get; set; }
 
         public Guid? SessionId { get; internal set; }
+
+        public SessionTurnClaimLease? ClaimLease { get; internal set; }
 
         public bool IsFinalized { get; internal set; }
 
@@ -80,14 +84,16 @@ public sealed class GrimoireTurnWriter(
         ArcanumInvocationContext invocationContext,
         string prompt,
         string targetModel,
-        CancellationToken cancellationToken) =>
+        CancellationToken cancellationToken,
+        SessionTurnClaimLease? claimLease = null) =>
         BeginAssistantReplyCoreAsync(
             request,
             invocationContext,
             prompt,
             targetModel,
             cancellationToken,
-            "Grimoire could not begin assistant reply for model {ModelName}.");
+            "Grimoire could not begin assistant reply for model {ModelName}.",
+            claimLease);
 
     /// <inheritdoc cref="BeginBufferedAssistantReplyAsync"/>
     public Task<Result<TurnHandle>> BeginStreamedAssistantReplyAsync(
@@ -95,14 +101,16 @@ public sealed class GrimoireTurnWriter(
         ArcanumInvocationContext invocationContext,
         string prompt,
         string targetModel,
-        CancellationToken cancellationToken) =>
+        CancellationToken cancellationToken,
+        SessionTurnClaimLease? claimLease = null) =>
         BeginAssistantReplyCoreAsync(
             request,
             invocationContext,
             prompt,
             targetModel,
             cancellationToken,
-            "Grimoire could not start streamed session persistence for model {ModelName}.");
+            "Grimoire could not start streamed session persistence for model {ModelName}.",
+            claimLease);
 
     /// <summary>
     /// Persists the assistant entry, then publishes to the session event hub.
@@ -155,8 +163,14 @@ public sealed class GrimoireTurnWriter(
         string? streamedContent,
         CancellationToken cancellationToken,
         ProviderCallSensitivity? sensitivity = null,
-        CovenantTurnCommitBinding? covenantCommit = null)
+        CovenantTurnCommitBinding? covenantCommit = null,
+        SessionTurnClaimOutcome? interruptionOutcome = null)
     {
+
+        if (handle.IsFinalized)
+        {
+            return true;
+        }
 
         if (handle.AssistantEntryId is not { } entryId)
         {
@@ -172,6 +186,9 @@ public sealed class GrimoireTurnWriter(
         // reported. A turn that staged something therefore persists it with its answer or persists
         // neither, so the content is dropped here rather than committed without its batch.
         string? resolvedContent = covenantCommit is null ? streamedContent : null;
+
+        SessionTurnClaimOutcome interrupted = interruptionOutcome
+            ?? SessionTurnClaimOutcome.RestoredInterrupted(ErrorCodes.Hub.SessionTurnRestoredInterrupted, 409, []);
 
         try
         {
@@ -189,7 +206,8 @@ public sealed class GrimoireTurnWriter(
                         resolvedContent,
                         sensitivity,
                         covenantCommit: null,
-                        cancellationToken)
+                        cancellationToken,
+                        interruptionOutcome: interrupted)
                     .ConfigureAwait(false);
 
                 if (committed.IsFailure)
@@ -216,10 +234,35 @@ public sealed class GrimoireTurnWriter(
             else
             {
 
-                await grimoire
-                    .DiscardAssistantEntryAsync(entryId, cancellationToken)
-                    .ConfigureAwait(false);
+                if (handle.ClaimLease is not null)
+                {
+                    Result discarded = await DiscardClaimedReplyAsync(handle, entryId, cancellationToken).ConfigureAwait(false);
 
+                    if (discarded.IsFailure)
+                    {
+                        logger.LogWarning("The interrupted claimed reply could not be discarded atomically ({Code}).", discarded.Error.Code);
+
+                        return false;
+                    }
+                }
+                else
+                {
+                    await grimoire.DiscardAssistantEntryAsync(entryId, cancellationToken).ConfigureAwait(false);
+                }
+
+            }
+
+            if (handle.ClaimLease is not null)
+            {
+                handle.IsFinalized = true;
+
+                ReleaseTurnHandle(handle);
+
+                SessionTurnClaimOutcome outcome = !string.IsNullOrEmpty(resolvedContent)
+                    ? interrupted
+                    : SessionTurnClaimOutcome.Discarded(interrupted.TerminalErrorCode!, interrupted.TerminalHttpStatus!.Value, interrupted.TerminalParameterBytes);
+
+                return await CompleteClaimAsync(handle, committed: false, terminalOutcome: outcome).ConfigureAwait(false);
             }
 
             return true;
@@ -249,7 +292,8 @@ public sealed class GrimoireTurnWriter(
         string? streamedContent,
         CancellationToken cancellationToken,
         ProviderCallSensitivity? sensitivity = null,
-        CovenantTurnCommitBinding? covenantCommit = null)
+        CovenantTurnCommitBinding? covenantCommit = null,
+        SessionTurnClaimOutcome? interruptionOutcome = null)
     {
 
         if (handle.IsFinalized)
@@ -263,7 +307,8 @@ public sealed class GrimoireTurnWriter(
             streamedContent,
             cancellationToken,
             sensitivity,
-            covenantCommit).ConfigureAwait(false);
+            covenantCommit,
+            interruptionOutcome).ConfigureAwait(false);
 
         if (resolved)
         {
@@ -789,10 +834,20 @@ public sealed class GrimoireTurnWriter(
         string prompt,
         string targetModel,
         CancellationToken cancellationToken,
-        string beginFailureLogMessage)
+        string beginFailureLogMessage,
+        SessionTurnClaimLease? claimLease)
     {
 
         ArgumentNullException.ThrowIfNull(invocationContext);
+
+        if (claimLease is not null
+            && (claimedBeginStore is null || claims is null || turnCommitter is null
+                || !claimLease.IsExecutable || IsStateless(request)
+                || (request.SessionId is { } named && named != Guid.Empty && named != claimLease.Claim.SessionId)))
+        {
+            return new Error(ErrorCodes.Covenant.Unavailable,
+                "The claimed Session reply cannot begin without its atomic persistence ports and exact reserved identity.");
+        }
 
         // A stateless turn has no durable Session by construction, so there is nothing to begin and
         // nothing to fail. It is the one legitimate handle-free success.
@@ -805,7 +860,9 @@ public sealed class GrimoireTurnWriter(
 
         // A request naming a Session must use that Session or fail; only a request naming none may
         // create one, and it creates it bound to the Campaign the resolver already decided.
-        Result<Guid> sessionId = request.SessionId is { } existing && existing != Guid.Empty
+        Result<Guid> sessionId = claimLease is not null
+            ? Result<Guid>.Success(claimLease.Claim.SessionId)
+            : request.SessionId is { } existing && existing != Guid.Empty
             ? Result<Guid>.Success(existing)
             : await turnBeginStore
                 .CreateBoundSessionAsync(campaign, prompt, cancellationToken)
@@ -832,9 +889,9 @@ public sealed class GrimoireTurnWriter(
         try
         {
 
-            Result<AssistantReplyBeginReceipt> receipt = await turnBeginStore
-                .BeginAssistantReplyAsync(sessionId.Value, campaign, prompt, targetModel, cancellationToken)
-                .ConfigureAwait(false);
+            Result<AssistantReplyBeginReceipt> receipt = claimLease is null
+                ? await turnBeginStore.BeginAssistantReplyAsync(sessionId.Value, campaign, prompt, targetModel, cancellationToken).ConfigureAwait(false)
+                : await claimedBeginStore!.BeginClaimedAssistantReplyAsync(claimLease, campaign, prompt, targetModel, cancellationToken).ConfigureAwait(false);
 
             if (receipt.IsFailure)
             {
@@ -845,10 +902,18 @@ public sealed class GrimoireTurnWriter(
 
             }
 
+            if (claimLease is not null && (receipt.Value.AssistantEntryId != claimLease.FutureAssistantEntryId
+                || receipt.Value.SessionId != claimLease.Claim.SessionId))
+            {
+                return new Error(ErrorCodes.Covenant.IntegrityFailure,
+                    "The atomic begin did not return the identity this Session claim reserved.");
+            }
+
             TurnHandle handle = new()
             {
                 SessionId = receipt.Value.SessionId,
                 AssistantEntryId = receipt.Value.AssistantEntryId,
+                ClaimLease = claimLease,
                 SagaExtractionAfterSequenceExclusive =
                     receipt.Value.Preflight.PreRequestHistoryRevision,
             };
@@ -862,7 +927,7 @@ public sealed class GrimoireTurnWriter(
             try
             {
 
-                await PublishLatestSavedEntriesAsync(receipt.Value.SessionId, 2, cancellationToken)
+                await PublishLatestSavedEntriesAsync(receipt.Value.SessionId, 2, claimLease is null ? cancellationToken : CancellationToken.None)
                     .ConfigureAwait(false);
 
             }
@@ -924,7 +989,8 @@ public sealed class GrimoireTurnWriter(
         string finalText,
         ProviderCallSensitivity? sensitivity,
         CovenantTurnCommitBinding? covenantCommit,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        SessionTurnClaimOutcome? interruptionOutcome = null)
     {
 
         // Two independent reasons to come here, and neither implies the other. A Covenant-derived
@@ -935,14 +1001,14 @@ public sealed class GrimoireTurnWriter(
         bool owesLabel = sensitivity is { Level: ContentSensitivity.CovenantDerived };
 
         if (turnCommitter is null
-            || (!owesLabel && covenantCommit is null)
+            || (!owesLabel && covenantCommit is null && handle.ClaimLease is null)
             || handle.SessionId is not { } sessionId)
         {
 
             // The ordinary reply has nothing to lose on this arm. A turn holding a staged batch does:
             // "not mine" hands it to a finalize path that writes content alone, so a turn that cannot
             // reach the atomic committer refuses rather than publishing half of what it owes.
-            return covenantCommit is null
+            return covenantCommit is null && handle.ClaimLease is null
                 ? Result<bool>.Success(false)
                 : Result<bool>.Failure(new Error(
                     ErrorCodes.Covenant.Unavailable,
@@ -988,7 +1054,7 @@ public sealed class GrimoireTurnWriter(
                     sessionId,
                     AssistantFinalizationOutcome.Committed,
                     finalText,
-                    RequestIdentity(sessionId, finalizeId),
+                    handle.ClaimLease?.Claim.RequestDigest ?? RequestIdentity(sessionId, finalizeId),
 
                     // An unlabelled staging turn commits its batch under the label it actually
                     // earned. Borrowing CovenantDerived to reach this committer would taint a reply
@@ -997,9 +1063,18 @@ public sealed class GrimoireTurnWriter(
                     sensitivity?.Provenance ?? GenerationProvenance.CreateExact([]),
                     finalReceiptDigest: null,
                     mutations,
-                    mutationBinding),
+                    mutationBinding,
+                    claimInterruption: interruptionOutcome is not null && handle.ClaimLease is { } interruptedLease
+                        ? new SessionTurnClaimInterruption(interruptedLease, interruptionOutcome)
+                        : null),
                 cancellationToken)
             .ConfigureAwait(false);
+
+        if (committed.IsSuccess && handle.ClaimLease is not null
+            && (committed.Value.AssistantEntryId != finalizeId || committed.Value.Outcome is not AssistantFinalizationOutcome.Committed))
+        {
+            return new Error(ErrorCodes.Covenant.IntegrityFailure, "The atomic finalizer returned a different claimed assistant outcome.");
+        }
 
         if (committed.IsSuccess
             && committed.Value.ThroughEntrySequence is { } throughEntrySequence)
@@ -1015,15 +1090,61 @@ public sealed class GrimoireTurnWriter(
 
     }
 
-    /// <summary>
-    /// The content-free identity this finalization replays against.
-    /// </summary>
-    /// <remarks>
-    /// Derived from the Session and the assistant placeholder rather than from the reply text, because
-    /// the whole point of the one-shot guard is that a retry of the same turn resolves through the
-    /// stored outcome instead of running a second turn — and a digest over the text would make every
-    /// regenerated wording look like a different request.
-    /// </remarks>
+    private async Task<bool> CompleteClaimAsync(TurnHandle handle, bool committed, SessionTurnClaimOutcome? terminalOutcome = null)
+    {
+        if (handle.ClaimLease is not { } claimLease)
+        {
+            return true;
+        }
+
+        try
+        {
+            SessionTurnClaimOutcome outcome = terminalOutcome ?? (committed
+                ? SessionTurnClaimOutcome.Committed()
+                : SessionTurnClaimOutcome.Discarded(ErrorCodes.Hub.SessionTurnRestoredInterrupted, 409, []));
+
+            Result<SessionTurnClaim> result = await claims!.CompleteAsync(
+                claimLease, outcome, CancellationToken.None).ConfigureAwait(false);
+
+            if (result.IsFailure)
+            {
+                logger.LogWarning("The saved assistant outcome could not settle its Session claim ({Code}).", result.Error.Code);
+            }
+
+            return result.IsSuccess;
+        }
+        catch (Exception exception)
+        {
+            logger.LogWarning(exception, "The saved assistant outcome could not settle its Session claim.");
+
+            return false;
+        }
+    }
+
+    private async Task<Result> DiscardClaimedReplyAsync(TurnHandle handle, Guid entryId, CancellationToken cancellationToken)
+    {
+        if (handle.ClaimLease is not { } claimLease || handle.SessionId is not { } sessionId || turnCommitter is null)
+        {
+            return new Error(ErrorCodes.Covenant.Unavailable, "The claimed reply cannot be discarded without its atomic finalizer.");
+        }
+
+        Result<TurnCommitReceipt> discarded = await turnCommitter.CommitTurnAsync(
+            new TurnCommitRequest(entryId, sessionId, AssistantFinalizationOutcome.Discarded, string.Empty,
+                claimLease.Claim.RequestDigest, ContentSensitivity.None, GenerationProvenance.CreateExact([]),
+                finalReceiptDigest: null, []), cancellationToken).ConfigureAwait(false);
+
+        if (discarded.IsFailure)
+        {
+            return discarded.Error;
+        }
+
+        return discarded.Value.AssistantEntryId == entryId && discarded.Value.Outcome is AssistantFinalizationOutcome.Discarded
+            ? Result.Success()
+            : Result.Failure(new Error(ErrorCodes.Covenant.IntegrityFailure, "The atomic finalizer returned a different claimed assistant outcome."));
+    }
+
+    /// <summary>The content-free identity of an unclaimed legacy finalization.</summary>
+    /// <remarks>Claimed public turns use the accepted request digest persisted on their claim.</remarks>
     private static CovenantDigest RequestIdentity(Guid sessionId, Guid assistantEntryId) =>
         new(System.Security.Cryptography.SHA256.HashData(
         [
@@ -1096,6 +1217,11 @@ public sealed class GrimoireTurnWriter(
             // hub publication fails below.
             handle.IsFinalized = true;
 
+            if (!await CompleteClaimAsync(handle, committed: true).ConfigureAwait(false))
+            {
+                return false;
+            }
+
             if (handle.SessionId is { } publishSessionId)
             {
 
@@ -1139,9 +1265,19 @@ public sealed class GrimoireTurnWriter(
             try
             {
 
-                await grimoire
-                    .DiscardAssistantEntryAsync(finalizeId, CancellationToken.None)
-                    .ConfigureAwait(false);
+                if (handle.ClaimLease is not null)
+                {
+                    Result discarded = await DiscardClaimedReplyAsync(handle, finalizeId, CancellationToken.None).ConfigureAwait(false);
+
+                    if (discarded.IsSuccess)
+                    {
+                        _ = await CompleteClaimAsync(handle, committed: false).ConfigureAwait(false);
+                    }
+                }
+                else
+                {
+                    await grimoire.DiscardAssistantEntryAsync(finalizeId, CancellationToken.None).ConfigureAwait(false);
+                }
 
             }
             catch (Exception cleanupEx)

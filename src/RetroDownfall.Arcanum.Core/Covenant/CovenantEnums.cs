@@ -194,7 +194,9 @@ public enum SensitiveArtifactKind : byte
     AuditProjection = 10,
     Notification = 11,
     ManagedWorkspaceFile = 12,
-    IdempotencyClaim = 13
+    IdempotencyClaim = 13,
+    CampaignRollup = 14,
+    CampaignContribution = 15
 }
 
 [JsonConverter(typeof(StringOnlyJsonStringEnumConverter<CovenantEgressDestination>))]
@@ -254,7 +256,9 @@ public enum CovenantMaintenanceStep : byte
     Summary = 1,
     Title = 2,
     Saga = 3,
-    Lexicon = 4
+    Lexicon = 4,
+    CampaignRollup = 5,
+    CampaignContribution = 6
 }
 
 [JsonConverter(typeof(StringOnlyJsonStringEnumConverter<CovenantMaintenanceCheckpoint>))]
@@ -365,7 +369,9 @@ public enum CovenantPromptAttribution : byte
     ContextBody = 6,
     SpecialOrUncovered = 7,
     Preamble = 8,
-    Instructions = 9
+    Instructions = 9,
+    CampaignRollup = 10,
+    SessionRollup = 11
 }
 
 [JsonConverter(typeof(StringOnlyJsonStringEnumConverter<CovenantMaterializationContainer>))]

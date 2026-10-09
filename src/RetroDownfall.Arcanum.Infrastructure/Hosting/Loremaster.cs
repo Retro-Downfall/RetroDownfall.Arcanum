@@ -12,6 +12,7 @@ using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.Storage.Entities;
+using RetroDownfall.Arcanum.Core.Tower;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Hosting;
@@ -133,11 +134,21 @@ internal sealed class Loremaster(
                 .GetSessionsNeedingSummarizationAsync(threshold, idleCutoff, cancellationToken)
                 .ConfigureAwait(false);
 
+            if (options.CurrentValue.ResolveIntelligence().EnableCampaignRollups)
+            {
+                ICampaignRollupStore rollups = scope.ServiceProvider.GetRequiredService<ICampaignRollupStore>();
+
+                IReadOnlyList<Guid> contributionIds = await rollups.FindPendingContributionsAsync(
+                    new DateTimeOffset(idleCutoff, TimeSpan.Zero), 256, cancellationToken).ConfigureAwait(false);
+
+                ids.AddRange(contributionIds);
+            }
+
             hostLogger.LogInformation(
                 "Campaign Logger sweep executed. Found {Count} sessions to consolidate.",
                 ids.Count);
 
-            foreach (Guid id in ids)
+            foreach (Guid id in ids.Distinct())
             {
                 cancellationToken.ThrowIfCancellationRequested();
 
@@ -226,15 +237,116 @@ internal sealed class Loremaster(
         IGrimoireRepository grimoire =
             iterationScope.ServiceProvider.GetRequiredService<IGrimoireRepository>();
 
+        bool cleanSummaryLane = options.CurrentValue.ResolveIntelligence().EnableCampaignRollups;
+
+        if (cleanSummaryLane)
+        {
+            ISessionCampaignBindingReader bindings = iterationScope.ServiceProvider.GetRequiredService<ISessionCampaignBindingReader>();
+
+            Result<SessionCampaignBindingRecord?> binding = await bindings.FindAsync(sessionId, stoppingToken).ConfigureAwait(false);
+
+            if (binding.IsFailure)
+            {
+                hostLogger.LogWarning("Campaign Logger: Session binding could not be read ({Code}).", binding.Error.Code);
+
+                return LoremasterSessionDisposition.Concluded;
+            }
+
+            if (binding.Value?.Binding.CampaignId is { } campaignId)
+            {
+                if (!lease.TryBeginExternalEffectGroup(out IGrimoireExternalEffectGroup? maintenanceGroup))
+                {
+                    return LoremasterSessionDisposition.DeferredForMaintenance;
+                }
+
+                await using (IGrimoireExternalEffectGroup held = maintenanceGroup!)
+                {
+                    ICampaignRollupMaintenance maintenance = iterationScope.ServiceProvider.GetRequiredService<ICampaignRollupMaintenance>();
+
+                    Result<CampaignRollupMaintenanceResult> contribution = await maintenance.ProcessSessionAsync(
+                        sessionId, null, null, stoppingToken).ConfigureAwait(false);
+
+                    if (contribution.IsFailure || contribution.Value.Deferred)
+                    {
+                        hostLogger.LogDebug("Campaign Logger: Contribution maintenance remains pending for Session {SessionId}.", sessionId);
+
+                        // Background work has no Covenant authority. In particular it must not fall
+                        // through into the ordinary Summary/Entry lane after protected deferral.
+                        return LoremasterSessionDisposition.Concluded;
+                    }
+
+                    Result<CampaignRollupMaintenanceResult> folded = await maintenance.ProcessCampaignAsync(
+                        campaignId, null, stoppingToken).ConfigureAwait(false);
+
+                    if (folded.IsFailure || folded.Value.Deferred)
+                    {
+                        hostLogger.LogDebug("Campaign Logger: Campaign continuity remains pending for Campaign {CampaignId}.", campaignId);
+
+                        return LoremasterSessionDisposition.Concluded;
+                    }
+                }
+            }
+        }
+
         IArcanumIntelligenceProvider intelligence =
             iterationScope.ServiceProvider.GetRequiredService<IArcanumIntelligenceProvider>();
 
         IAttachmentMemoryProvenanceStore attachmentProvenance =
             iterationScope.ServiceProvider.GetRequiredService<IAttachmentMemoryProvenanceStore>();
 
-        Session? session = await grimoire
-            .GetSessionHeaderAsync(sessionId, stoppingToken)
-            .ConfigureAwait(false);
+        int batchSize = ArcanumSettingClamps.MaxMessagesPerConversationLoad(
+            ArcanumRuntimeDefaults.Grimoire.MaxMessagesPerConversationLoad);
+
+        ISessionSummaryMaintenanceStore? cleanSummaries = null;
+
+        SessionSummaryMaintenanceInput? cleanInput = null;
+
+        Session? session;
+
+        List<Entry> batch;
+
+        if (cleanSummaryLane)
+        {
+            cleanSummaries = iterationScope.ServiceProvider.GetRequiredService<ISessionSummaryMaintenanceStore>();
+
+            Result<SessionSummaryMaintenanceInput?> prepared = await cleanSummaries.PrepareAsync(
+                sessionId, batchSize, stoppingToken).ConfigureAwait(false);
+
+            if (prepared.IsFailure || prepared.Value is not { } input)
+            {
+                hostLogger.LogDebug("Campaign Logger: Clean Session compression remains pending or has no input for Session {SessionId}.", sessionId);
+
+                return LoremasterSessionDisposition.Concluded;
+            }
+
+            cleanInput = input;
+
+            session = new Session
+            {
+                Id = sessionId,
+                Summary = input.PreviousSummary,
+                LastSummarizedMessageAt = input.PreviousWatermark?.UtcDateTime,
+            };
+
+            batch = input.Entries.Select(entry => new Entry
+            {
+                Id = entry.EntryId,
+                SessionId = sessionId,
+                Sequence = entry.Sequence,
+                Role = (MessageRole)entry.Role,
+                Content = entry.Content,
+                CreatedAt = entry.CreatedAt,
+            }).ToList();
+        }
+        else
+        {
+            session = await grimoire.GetSessionHeaderAsync(sessionId, stoppingToken).ConfigureAwait(false);
+
+            DateTime watermark = session?.LastSummarizedMessageAt ?? DateTime.MinValue;
+
+            batch = session is null ? [] : await grimoire.GetUnsummarizedEntriesAsync(
+                sessionId, watermark, batchSize, stoppingToken).ConfigureAwait(false);
+        }
 
         if (session is null)
         {
@@ -244,15 +356,6 @@ internal sealed class Loremaster(
 
             return LoremasterSessionDisposition.Concluded;
         }
-
-        DateTime watermark = session.LastSummarizedMessageAt ?? DateTime.MinValue;
-
-        int batchSize = ArcanumSettingClamps.MaxMessagesPerConversationLoad(
-            ArcanumRuntimeDefaults.Grimoire.MaxMessagesPerConversationLoad);
-
-        List<Entry> batch = await grimoire
-            .GetUnsummarizedEntriesAsync(sessionId, watermark, batchSize, stoppingToken)
-            .ConfigureAwait(false);
 
         if (batch.Count == 0)
         {
@@ -379,9 +482,22 @@ internal sealed class Loremaster(
             // The provider call is billed once it returns, so the write that keeps its result runs on a
             // token the host cannot cancel: a shutdown arriving here would otherwise discard the summary
             // and leave the watermark behind, and the next sweep would pay for the same batch again.
-            await grimoire
-                .UpdateSessionCampaignRollupAsync(sessionId, summaryText, batchEndUtc, CancellationToken.None)
-                .ConfigureAwait(false);
+            if (cleanSummaries is not null)
+            {
+                Result saved = await cleanSummaries.PublishAsync(cleanInput!, summaryText, CancellationToken.None).ConfigureAwait(false);
+
+                if (saved.IsFailure)
+                {
+                    hostLogger.LogWarning("Campaign Logger: Clean Session compression could not be published ({Code}).", saved.Error.Code);
+
+                    return LoremasterSessionDisposition.Concluded;
+                }
+            }
+            else
+            {
+                await grimoire.UpdateSessionCampaignRollupAsync(
+                    sessionId, summaryText, batchEndUtc, CancellationToken.None).ConfigureAwait(false);
+            }
 
             hostLogger.LogInformation(
                 "Campaign Logger: Updated campaign summary for session {SessionId} through {BatchEndUtc:o}.",

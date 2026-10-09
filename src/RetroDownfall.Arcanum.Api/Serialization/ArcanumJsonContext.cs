@@ -401,6 +401,7 @@ namespace RetroDownfall.Arcanum.Api.Serialization;
 [JsonSerializable(typeof(MemorySearchScope))]
 [JsonSerializable(typeof(MemoryStoreStatusDto))]
 [JsonSerializable(typeof(MemoryStoreStatusDto[]))]
+[JsonSerializable(typeof(MemoryCampaignSummaryDto))]
 [JsonSerializable(typeof(MemoryStatusDto))]
 [JsonSerializable(typeof(ApiResponse<MemoryStatusDto>))]
 [JsonSerializable(typeof(MemorySourceDto))]

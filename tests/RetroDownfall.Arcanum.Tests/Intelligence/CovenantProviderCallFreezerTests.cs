@@ -1,4 +1,7 @@
 using System.Collections.Immutable;
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json;
 
 using Microsoft.Extensions.AI;
 
@@ -151,6 +154,157 @@ public sealed class CovenantProviderCallFreezerTests
 
         Assert.Equal(ErrorCodes.Covenant.InvalidContent, frozen.Error.Code);
 
+    }
+
+    [Fact]
+    public void A_json_object_response_format_is_distinct_from_text()
+    {
+        Result<ProviderCallEnvelope> frozen = CovenantProviderCallFreezer.TryFreeze(
+            Descriptor([new ChatMessage(ChatRole.User, "hello")]) with
+            {
+                Options = new ChatOptions { ResponseFormat = ChatResponseFormat.Json },
+            },
+            Sensitivity(),
+            new ProviderCallMaterializationSnapshot(false, []));
+
+        Assert.True(frozen.IsSuccess, frozen.IsFailure ? frozen.Error.Message : string.Empty);
+
+        Assert.Equal(ProviderResponseFormat.JsonObject, frozen.Value.Options.ResponseFormat);
+
+        Assert.False(frozen.Value.Options.HasCanonicalJsonSchema);
+
+        Assert.Null(frozen.Value.StructuredOutputSchemaDigest);
+    }
+
+    [Fact]
+    public void A_pinned_json_schema_freezes_its_canonical_bytes_and_metadata()
+    {
+        using JsonDocument schema = JsonDocument.Parse(
+            """{"type":"object","required":["summary"],"properties":{"summary":{"type":"string"}},"additionalProperties":false}""");
+
+        Result<ProviderCallEnvelope> frozen = CovenantProviderCallFreezer.TryFreeze(
+            Descriptor([new ChatMessage(ChatRole.User, "hello")]) with
+            {
+                Options = new ChatOptions
+                {
+                    ResponseFormat = ChatResponseFormat.ForJsonSchema(
+                        schema.RootElement,
+                        "campaign_summary",
+                        "A bounded summary."),
+                },
+            },
+            Sensitivity(),
+            new ProviderCallMaterializationSnapshot(false, []));
+
+        Assert.True(frozen.IsSuccess, frozen.IsFailure ? frozen.Error.Message : string.Empty);
+
+        const string canonicalSchema =
+            """{"additionalProperties":false,"properties":{"summary":{"type":"string"}},"required":["summary"],"type":"object"}""";
+
+        CovenantDigest schemaDigest = new(SHA256.HashData(Encoding.UTF8.GetBytes(canonicalSchema)));
+
+        Assert.Equal(ProviderResponseFormat.JsonSchema, frozen.Value.Options.ResponseFormat);
+
+        Assert.Equal("campaign_summary", frozen.Value.Options.JsonSchemaName);
+
+        Assert.Equal("A bounded summary.", frozen.Value.Options.JsonSchemaDescription);
+
+        Assert.Equal(CovenantTriStateBoolean.Absent, frozen.Value.Options.JsonSchemaStrict);
+
+        Assert.Equal(canonicalSchema, Encoding.UTF8.GetString([.. frozen.Value.Options.CanonicalJsonSchemaBytes]));
+
+        Assert.Equal(schemaDigest, frozen.Value.Options.CanonicalJsonSchemaDigest);
+
+        Assert.Equal(schemaDigest, frozen.Value.StructuredOutputSchemaDigest);
+
+        Assert.Equal(canonicalSchema, Encoding.UTF8.GetString([.. frozen.Value.CanonicalStructuredOutputSchemaBytes]));
+    }
+
+    [Theory]
+    [InlineData("schema")]
+    [InlineData("name")]
+    [InlineData("description")]
+    public void Changing_a_schema_or_its_metadata_changes_the_frozen_call(string changed)
+    {
+        using JsonDocument originalSchema = JsonDocument.Parse("""{"type":"string"}""");
+
+        using JsonDocument alteredSchema = JsonDocument.Parse("""{"type":"integer"}""");
+
+        CovenantProviderCallDescriptor original = Descriptor([new ChatMessage(ChatRole.User, "hello")]) with
+        {
+            Options = new ChatOptions
+            {
+                ResponseFormat = ChatResponseFormat.ForJsonSchema(originalSchema.RootElement, "summary", "Original description."),
+            },
+        };
+
+        CovenantProviderCallDescriptor altered = original with
+        {
+            Options = new ChatOptions
+            {
+                ResponseFormat = ChatResponseFormat.ForJsonSchema(
+                    changed == "schema" ? alteredSchema.RootElement : originalSchema.RootElement,
+                    changed == "name" ? "different_summary" : "summary",
+                    changed == "description" ? "Changed description." : "Original description."),
+            },
+        };
+
+        Result<ProviderCallEnvelope> before = CovenantProviderCallFreezer.TryFreeze(
+            original, Sensitivity(), new ProviderCallMaterializationSnapshot(false, []));
+
+        Result<ProviderCallEnvelope> after = CovenantProviderCallFreezer.TryFreeze(
+            altered, Sensitivity(), new ProviderCallMaterializationSnapshot(false, []));
+
+        Assert.True(before.IsSuccess, before.IsFailure ? before.Error.Message : string.Empty);
+
+        Assert.True(after.IsSuccess, after.IsFailure ? after.Error.Message : string.Empty);
+
+        Assert.NotEqual(before.Value.Digest, after.Value.Digest);
+    }
+
+    [Fact]
+    public void Equivalent_json_schema_property_order_keeps_the_frozen_digest()
+    {
+        using JsonDocument orderedSchema = JsonDocument.Parse("""{"type":"object","additionalProperties":false}""");
+
+        using JsonDocument reversedSchema = JsonDocument.Parse("""{ "additionalProperties": false, "type": "object" }""");
+
+        CovenantProviderCallDescriptor descriptor = Descriptor([new ChatMessage(ChatRole.User, "hello")]);
+
+        Result<ProviderCallEnvelope> ordered = CovenantProviderCallFreezer.TryFreeze(
+            descriptor with { Options = new ChatOptions { ResponseFormat = ChatResponseFormat.ForJsonSchema(orderedSchema.RootElement, "summary") } },
+            Sensitivity(),
+            new ProviderCallMaterializationSnapshot(false, []));
+
+        Result<ProviderCallEnvelope> reversed = CovenantProviderCallFreezer.TryFreeze(
+            descriptor with { Options = new ChatOptions { ResponseFormat = ChatResponseFormat.ForJsonSchema(reversedSchema.RootElement, "summary") } },
+            Sensitivity(),
+            new ProviderCallMaterializationSnapshot(false, []));
+
+        Assert.Equal(ordered.Value.Digest, reversed.Value.Digest);
+    }
+
+    [Fact]
+    public void Explicit_text_keeps_the_default_provider_options_digest()
+    {
+        CovenantProviderCallDescriptor descriptor = Descriptor([new ChatMessage(ChatRole.User, "hello")]);
+
+        Result<ProviderCallEnvelope> omitted = CovenantProviderCallFreezer.TryFreeze(
+            descriptor, Sensitivity(), new ProviderCallMaterializationSnapshot(false, []));
+
+        Result<ProviderCallEnvelope> explicitText = CovenantProviderCallFreezer.TryFreeze(
+            descriptor with { Options = new ChatOptions { ResponseFormat = ChatResponseFormat.Text } },
+            Sensitivity(),
+            new ProviderCallMaterializationSnapshot(false, []));
+
+        FrozenProviderOptions textProjection = FrozenProviderOptions.Create(new ProviderOptionsDigestInput(
+            null, null, null, null, null, null, null, [], ProviderToolChoice.None, null,
+            CovenantTriStateBoolean.Absent, ProviderResponseFormat.Text, null, null, null,
+            CovenantTriStateBoolean.Absent, null, null, null, CovenantReasoningWireDialect.Standard, default));
+
+        Assert.Equal(textProjection.Digest, omitted.Value.Options.Digest);
+
+        Assert.Equal(omitted.Value.Digest, explicitText.Value.Digest);
     }
 
     [Fact]

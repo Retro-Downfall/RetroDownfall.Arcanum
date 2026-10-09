@@ -382,6 +382,129 @@ public sealed class ModelTokenEstimatorTests
     }
 
     [Fact]
+    public void EstimateContext_DoesNotInvokeOpaqueMetadataFormatters()
+    {
+        OpaqueMetadata formatted = new();
+
+        OpaqueMetadataText text = new();
+
+        ChatOptions options = new()
+        {
+            AdditionalProperties = new AdditionalPropertiesDictionary
+            {
+                ["formatted"] = formatted,
+                ["text"] = text,
+            },
+        };
+
+        ModelTokenEstimator estimator = CreateEstimator();
+
+        ContextTokenBreakdown first = estimator.EstimateContext(new(
+            Provider("gpt-4o"), "gpt-4o", [new ChatMessage(ChatRole.User, "hello")], options, 0, 0));
+
+        ContextTokenBreakdown repeated = estimator.EstimateContext(new(
+            Provider("gpt-4o"), "gpt-4o", [new ChatMessage(ChatRole.User, "hello")], options, 0, 0));
+
+        Assert.Equal(0, formatted.Calls);
+
+        Assert.Equal(0, text.Calls);
+
+        Assert.Equal(first.PayloadFingerprint, repeated.PayloadFingerprint);
+
+        Assert.True(first.Source(ContextTokenSource.ProviderFraming).TokenCount > 0);
+    }
+
+    [Fact]
+    public void OpaqueMetadataDisablesMeasuredPayloadReuse()
+    {
+        ModelTokenEstimator estimator = CreateEstimator();
+
+        ChatOptions options = new()
+        {
+            AdditionalProperties = new AdditionalPropertiesDictionary
+            {
+                ["opaque"] = new OpaqueMetadata(),
+            },
+        };
+
+        ContextTokenBreakdown measured = estimator.EstimateContext(new(
+            Provider("gpt-4o"), "gpt-4o", [new ChatMessage(ChatRole.User, "hello")], options, 0, 0));
+
+        // ModelCallExecutor.ValidatePrecomputedBreakdown accepts a reused measurement only with a nonempty fingerprint.
+        Assert.Empty(measured.PayloadFingerprint);
+
+        Assert.NotEqual(TokenEstimateClassification.Exact, measured.OverallClassification);
+    }
+
+    [Fact]
+    public void EstimateContext_BuiltInMetadataFormattingPreservesInvariantBytes()
+    {
+        Guid identity = Guid.Parse("DA523426-C89D-4776-B465-ED1C611788EC");
+
+        DateTimeOffset instant = new(2026, 10, 8, 12, 30, 0, TimeSpan.Zero);
+
+        ChatOptions typed = new()
+        {
+            AdditionalProperties = new AdditionalPropertiesDictionary
+            {
+                ["integer"] = 123,
+                ["decimal"] = 42.5m,
+                ["boolean"] = true,
+                ["identity"] = identity,
+                ["instant"] = instant,
+            },
+        };
+
+        ChatOptions rendered = new()
+        {
+            AdditionalProperties = new AdditionalPropertiesDictionary
+            {
+                ["integer"] = "123",
+                ["decimal"] = "42.5",
+                ["boolean"] = "True",
+                ["identity"] = identity.ToString(),
+                ["instant"] = instant.ToString(null, System.Globalization.CultureInfo.InvariantCulture),
+            },
+        };
+
+        ModelTokenEstimator estimator = CreateEstimator();
+
+        ContextTokenBreakdown original = estimator.EstimateContext(new(
+            Provider("gpt-4o"), "gpt-4o", [new ChatMessage(ChatRole.User, "hello")], typed, 0, 0));
+
+        ContextTokenBreakdown strings = estimator.EstimateContext(new(
+            Provider("gpt-4o"), "gpt-4o", [new ChatMessage(ChatRole.User, "hello")], rendered, 0, 0));
+
+        Assert.Equal(strings.PayloadFingerprint, original.PayloadFingerprint);
+
+        Assert.Equal(strings.InputTokens, original.InputTokens);
+    }
+
+    private sealed class OpaqueMetadata : IFormattable
+    {
+        public int Calls { get; private set; }
+
+        public string ToString(string? format, IFormatProvider? formatProvider)
+        {
+            Calls++;
+
+            return "formatter performed an opaque effect";
+        }
+    }
+
+    private sealed class OpaqueMetadataText
+    {
+        public int Calls { get; private set; }
+
+        public override string ToString()
+        {
+            Calls++;
+
+            return "override performed an opaque effect";
+        }
+    }
+
+    [Fact]
     public void EstimateContext_TracksAnswerAndReasoningReservationsSeparately()
     {
         ModelTokenEstimator estimator = CreateEstimator();

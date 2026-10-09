@@ -42,6 +42,8 @@ public sealed class SessionTurnClaimStoreTests
         "session_turn_claims_validate_update",
 
         "session_turn_claims_guard_delete",
+
+        "assistant_entry_finalizations",
     ];
 
     private static CancellationToken Token => CancellationToken.None;
@@ -75,10 +77,70 @@ public sealed class SessionTurnClaimStoreTests
 
         Assert.Equal(first.Value.FutureAssistantEntryId, second.Value.FutureAssistantEntryId);
 
+        Assert.Equal(first.Value.ExecutorId, second.Value.ExecutorId);
+
         Assert.Equal(1, await CountClaimsAsync(fixture));
 
         Assert.Equal(1, await ScalarAsync(fixture, ClaimCountSql));
 
+    }
+
+    [Fact]
+    public async Task A_same_boot_claim_with_an_expired_lease_cannot_resume_or_replace_its_executor()
+    {
+        await using CovenantCanonicalFixture fixture = await CreateAsync();
+
+        Guid bootId = Guid.NewGuid();
+
+        SessionTurnClaimStore store = CreateStore(fixture, bootId);
+
+        SessionTurnRequestIdentity request = Request(Guid.NewGuid());
+
+        SessionTurnClaimLease lease = (await store.AcquireAsync(request, Token)).Value;
+
+        const string expiredDeadline = "2000-01-01T00:00:00.0000000+00:00";
+
+        await using (SqliteCommand expire = fixture.Connection.CreateCommand())
+        {
+            expire.CommandText = """
+                UPDATE session_turn_claims
+                SET LeaseDeadlineUtc = $deadline
+                WHERE ClaimId = $claim;
+                """;
+
+            _ = expire.Parameters.AddWithValue("$deadline", expiredDeadline);
+
+            _ = expire.Parameters.AddWithValue("$claim", lease.Claim.ClaimId.ToString("D").ToUpperInvariant());
+
+            Assert.Equal(1, await expire.ExecuteNonQueryAsync(Token));
+        }
+
+        Result<SessionTurnClaimLease> resumed = await store.AcquireAsync(request, Token);
+
+        Assert.True(resumed.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.StaleSnapshot, resumed.Error.Code);
+
+        await using (SqliteCommand read = fixture.Connection.CreateCommand())
+        {
+            read.CommandText = "SELECT ExecutorId, OwnerBootId, LeaseDeadlineUtc FROM session_turn_claims;";
+
+            await using SqliteDataReader row = await read.ExecuteReaderAsync(Token);
+
+            Assert.True(await row.ReadAsync(Token));
+
+            Assert.Equal(lease.ExecutorId, Guid.Parse(row.GetString(0)));
+
+            Assert.Equal(bootId, Guid.Parse(row.GetString(1)));
+
+            Assert.Equal(expiredDeadline, row.GetString(2));
+        }
+
+        Assert.Equal(1, await CountClaimsAsync(fixture));
+
+        Assert.Equal(1, await ScalarAsync(fixture, ClaimCountSql));
+
+        Assert.Equal(1, await ScalarAsync(fixture, ReservedCountSql));
     }
 
     [Fact]
@@ -368,6 +430,8 @@ public sealed class SessionTurnClaimStoreTests
                 new SessionTurnInputPreflight(SessionId, SessionCampaignBinding.GlobalOnly, 0, 0)),
             Token);
 
+        await InsertFinalizationAsync(fixture, lease.FutureAssistantEntryId, 1);
+
         Result<SessionTurnClaim> committed = await store.CompleteAsync(
             lease,
             SessionTurnClaimOutcome.Committed(),
@@ -384,6 +448,198 @@ public sealed class SessionTurnClaimStoreTests
 
         Assert.Equal(SessionTurnClaimState.Erased, erased.Value.State);
 
+    }
+
+    [Fact]
+    public async Task Accepted_key_ownership_is_content_free_and_available_across_local_origins_without_Covenant_material()
+    {
+        await using CovenantCanonicalFixture fixture = await CreateAsync();
+
+        ClaimConnectionProbe connections = new(fixture.Connection);
+
+        SessionTurnClaimStore store = new(connections, new CovenantQuotaGuard(), Guid.NewGuid());
+
+        Guid clientTurnId = Guid.NewGuid();
+
+        Result<bool> missing = await store.HasClaimAsync(clientTurnId, Token);
+
+        Assert.True(missing.IsSuccess, missing.IsFailure ? missing.Error.Message : null);
+
+        Assert.False(missing.Value);
+
+        Guid foreignOrigin = Guid.NewGuid();
+
+        SessionTurnClaimLease lease = (await store.AcquireAsync(
+            Request(clientTurnId) with { OriginInstallationId = foreignOrigin }, Token)).Value;
+
+        Assert.NotEqual(InstallationId, lease.Claim.OriginInstallationId);
+
+        Assert.True((await store.HasClaimAsync(clientTurnId, Token)).Value);
+
+        Assert.True((await store.CompleteAsync(
+            lease, SessionTurnClaimOutcome.Discarded(ErrorCodes.Hub.Error, 500, []), Token)).IsSuccess);
+
+        Assert.True((await store.HasClaimAsync(clientTurnId, Token)).Value);
+
+        Assert.False((await store.HasClaimAsync(Guid.NewGuid(), Token)).Value);
+
+        Assert.Equal(0, connections.CanonicalOpens);
+
+        Assert.Equal(6, connections.CoreOpens);
+
+        Assert.Equal(1, await CountClaimsAsync(fixture));
+
+        Assert.Equal(0, await ScalarAsync(fixture, ReservedCountSql));
+    }
+
+    [Fact]
+    public async Task Content_free_lookup_finds_the_original_Session_without_resuming_or_reserving_again()
+    {
+        await using CovenantCanonicalFixture fixture = await CreateAsync();
+
+        SessionTurnClaimStore store = CreateStore(fixture, Guid.NewGuid());
+
+        Guid clientTurnId = Guid.NewGuid();
+
+        Assert.Null((await store.FindAsync(InstallationId, clientTurnId, Token)).Value);
+
+        SessionTurnClaimLease accepted = (await store.AcquireAsync(Request(clientTurnId), Token)).Value;
+
+        SessionTurnClaim? found = (await store.FindAsync(InstallationId, clientTurnId, Token)).Value;
+
+        Assert.NotNull(found);
+
+        Assert.Equal(accepted.Claim.ClaimId, found.ClaimId);
+
+        Assert.Equal(SessionId, found.SessionId);
+
+        Assert.Equal(accepted.Claim.RequestDigest, found.RequestDigest);
+
+        Assert.Null((await store.FindAsync(Guid.NewGuid(), clientTurnId, Token)).Value);
+
+        Assert.Equal(1, await CountClaimsAsync(fixture));
+
+        Assert.Equal(1, await ScalarAsync(fixture, ReservedCountSql));
+    }
+
+    [Fact]
+    public async Task Core_claim_operations_use_the_admitted_Core_connection_without_opening_Covenant_material()
+    {
+        await using CovenantCanonicalFixture fixture = await CreateAsync();
+
+        ClaimConnectionProbe connections = new(fixture.Connection);
+
+        SessionTurnClaimStore store = new(connections, new CovenantQuotaGuard(), Guid.NewGuid());
+
+        SessionTurnClaimLease lease = (await store.AcquireAsync(Request(Guid.NewGuid()), Token)).Value;
+
+        await store.FindAsync(InstallationId, lease.Claim.ClientTurnId, Token);
+
+        await store.CompleteAsync(lease, SessionTurnClaimOutcome.Discarded(ErrorCodes.Hub.Error, 500, []), Token);
+
+        Assert.Equal(0, connections.CanonicalOpens);
+
+        Assert.Equal(3, connections.CoreOpens);
+    }
+
+    private sealed class ClaimConnectionProbe(SqliteConnection connection) : ICovenantConnectionSource
+    {
+        public int CanonicalOpens { get; private set; }
+
+        public int CoreOpens { get; private set; }
+
+        public ValueTask<SqliteConnection> GetOpenConnectionAsync(CancellationToken cancellationToken)
+        {
+            CanonicalOpens++;
+
+            return ValueTask.FromResult(connection);
+        }
+
+        public ValueTask<SqliteConnection> GetOpenCoreConnectionAsync(CancellationToken cancellationToken)
+        {
+            CoreOpens++;
+
+            return ValueTask.FromResult(connection);
+        }
+    }
+
+    [Fact]
+    public async Task A_claim_cannot_report_committed_before_its_reserved_assistant_has_a_native_finalization()
+    {
+        await using CovenantCanonicalFixture fixture = await CreateAsync();
+
+        SessionTurnClaimStore store = CreateStore(fixture, Guid.NewGuid());
+
+        SessionTurnClaimLease lease = (await store.AcquireAsync(Request(Guid.NewGuid()), Token)).Value;
+
+        await store.MarkBegunAsync(lease, new(SessionId, Guid.NewGuid(), lease.FutureAssistantEntryId,
+            new(SessionId, SessionCampaignBinding.GlobalOnly, 0, 0)), Token);
+
+        Result<SessionTurnClaim> result = await store.CompleteAsync(lease, SessionTurnClaimOutcome.Committed(), Token);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(SessionTurnClaimState.Begun, (await store.FindAsync(InstallationId, lease.Claim.ClientTurnId, Token)).Value!.State);
+    }
+
+    [Theory]
+    [InlineData(1, SessionTurnClaimState.Committed)]
+    [InlineData(2, SessionTurnClaimState.Discarded)]
+    public async Task A_retry_after_finalization_but_before_claim_completion_replays_the_authoritative_outcome(int finalization, SessionTurnClaimState expected)
+    {
+        await using CovenantCanonicalFixture fixture = await CreateAsync();
+
+        SessionTurnClaimStore firstBoot = CreateStore(fixture, Guid.NewGuid());
+
+        SessionTurnRequestIdentity request = Request(Guid.NewGuid());
+
+        SessionTurnClaimLease lease = (await firstBoot.AcquireAsync(request, Token)).Value;
+
+        await firstBoot.MarkBegunAsync(lease, new(SessionId, Guid.NewGuid(), lease.FutureAssistantEntryId,
+            new(SessionId, SessionCampaignBinding.GlobalOnly, 0, 0)), Token);
+
+        await InsertFinalizationAsync(fixture, lease.FutureAssistantEntryId, finalization);
+
+        SessionTurnClaimStore restarted = CreateStore(fixture, Guid.NewGuid());
+
+        Result<SessionTurnClaimLease> replayed = await restarted.AcquireAsync(request, Token);
+
+        Assert.True(replayed.IsSuccess, replayed.IsFailure ? replayed.Error.Message : null);
+
+        Assert.Equal(SessionTurnClaimDisposition.Replayed, replayed.Value.Disposition);
+
+        Assert.Equal(expected, replayed.Value.Claim.State);
+
+        Assert.Null(replayed.Value.ExecutorId);
+
+        Assert.Null(replayed.Value.LeaseDeadlineUtc);
+
+        Assert.Equal(lease.FutureAssistantEntryId, replayed.Value.FutureAssistantEntryId);
+
+        Assert.Equal(1, await CountClaimsAsync(fixture));
+    }
+
+    private static async Task InsertFinalizationAsync(CovenantCanonicalFixture fixture, Guid assistant, int outcome)
+    {
+        await using SqliteCommand command = fixture.Connection.CreateCommand();
+
+        command.CommandText = """
+            INSERT INTO assistant_entry_finalizations
+                (AssistantEntryId,SessionId,OutcomeCode,ContentSensitivityCode,ContentSensitivityDigest,RequestDigest,FinalizedAtUtc)
+            VALUES($assistant,$session,$outcome,0,$digest,$digest,$now);
+            """;
+
+        _ = command.Parameters.AddWithValue("$assistant", assistant);
+
+        _ = command.Parameters.AddWithValue("$session", SessionId);
+
+        _ = command.Parameters.AddWithValue("$outcome", outcome);
+
+        _ = command.Parameters.AddWithValue("$digest", CovenantOperationGateFixture.Digest(1).Bytes);
+
+        _ = command.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow.ToString("O"));
+
+        await command.ExecuteNonQueryAsync(Token);
     }
 
     private const string ReservedCountSql =

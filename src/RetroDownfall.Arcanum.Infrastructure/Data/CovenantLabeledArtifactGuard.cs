@@ -77,11 +77,8 @@ internal sealed class CovenantLabeledArtifactGuard(
         try
         {
 
-            return Verdict(
-                kind,
-                await ArtifactSensitivityLedger
-                    .ReadLabelThroughAsync(connection, transaction, kind, artifactId, cancellationToken)
-                    .ConfigureAwait(false));
+            return await AnyLabeledAmongAsync(connection, transaction, kind, [artifactId], cancellationToken)
+                .ConfigureAwait(false);
 
         }
         catch (SqliteException exception)
@@ -181,11 +178,10 @@ internal sealed class CovenantLabeledArtifactGuard(
     /// </summary>
     private const int IdentityChunkSize = 256;
 
-    private static string Format(Guid value) => value.ToString("D").ToUpperInvariant();
-
     /// <summary>
-    /// Whether any of one chunk of identities carries a label of this kind, by the unique
-    /// (kind, artifact) index, reading inside the caller's transaction.
+    /// Whether any of one chunk of identities carries a label of this kind inside the caller's
+    /// transaction. Historical label identities are outside the canonical column family, so their
+    /// spellings are normalized while the closed artifact kind remains exact.
     /// </summary>
     private static async Task<Result> AnyLabeledAmongAsync(
         DbConnection connection,
@@ -211,7 +207,8 @@ internal sealed class CovenantLabeledArtifactGuard(
         command.CommandText = $"""
             SELECT EXISTS(
                 SELECT 1 FROM artifact_sensitivity
-                WHERE ArtifactKindCode = $kind AND ArtifactId IN ({string.Join(", ", names)}));
+                WHERE ArtifactKindCode = $kind
+                  AND lower(replace(ArtifactId, '-', '')) IN ({string.Join(", ", names)}));
             """;
 
         DbParameter kindParameter = command.CreateParameter();
@@ -229,7 +226,7 @@ internal sealed class CovenantLabeledArtifactGuard(
 
             parameter.ParameterName = names[index];
 
-            parameter.Value = Format(artifactIds[index]);
+            parameter.Value = CovenantIdentitySql.Key(artifactIds[index]);
 
             _ = command.Parameters.Add(parameter);
 

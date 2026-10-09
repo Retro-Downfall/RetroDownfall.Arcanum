@@ -535,7 +535,30 @@ public sealed class LexiconErasureTests(GrimoireFixture fixture)
 
     private static async Task InstallAsync(SqliteConnection connection, GrimoireSchemaVersionChainSet chains, int version)
     {
-        GrimoireSchemaInstallResult result = await GrimoireSchemaTestInstaller.InstallAsync(connection, chains, 64, Token);
+        GrimoireSchemaInstaller installer = GrimoireSchemaTestInstaller.Create(chains);
+
+        GrimoireSchemaInitializationContext context = GrimoireSchemaTestInstaller.CreateContext();
+
+        GrimoireSchemaInstallResult result = await installer.InstallAsync(connection, 64, context, Token);
+
+        if (result.Core.Health is GrimoireSchemaTierHealth.TransitionIncomplete)
+        {
+            GrimoireSchemaTransitionJournalRow journal = Assert.IsType<GrimoireSchemaTransitionJournalRow>(
+                await GrimoireSchemaTransitionJournal.ReadAsync(
+                    connection, null, GrimoireSchemaTransactionTier.Core, Token));
+
+            GrimoireSchemaBackfillRunner runner = new(installer, TimeProvider.System);
+
+            _ = await runner.AdvanceAsync(
+                connection,
+                chains.ForTier(GrimoireSchemaTransactionTier.Core),
+                journal,
+                context,
+                maxBatches: 128,
+                Token);
+
+            result = await installer.InstallAsync(connection, 64, context, Token);
+        }
 
         Assert.Equal(GrimoireSchemaTierHealth.Healthy, result.Core.Health);
 

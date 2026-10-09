@@ -74,6 +74,22 @@ public sealed class CovenantTurnScope : IAsyncDisposable
     /// </remarks>
     public bool HistoryTainted { get; }
 
+    public CampaignRollupArtifact? CampaignArtifact { get; private set; }
+
+    internal Task<Result<CampaignRollupTurnSnapshot?>>? CampaignPreparation { get; set; }
+
+    public void BindCampaignArtifact(CampaignRollupArtifact artifact)
+    {
+        ArgumentNullException.ThrowIfNull(artifact);
+
+        if (CampaignArtifact is not null && CampaignArtifact != artifact)
+        {
+            throw new InvalidOperationException("One logical turn cannot replace its bound Campaign artifact.");
+        }
+
+        CampaignArtifact = artifact;
+    }
+
     /// <summary>The sensitivity of the last dispatch this turn actually made, if any was protected.</summary>
     /// <remarks>
     /// What the reply inherits. A turn that showed the provider protected content produces a protected
@@ -151,7 +167,22 @@ public sealed class CovenantTurnScope : IAsyncDisposable
     /// </remarks>
     internal ulong NextAttemptOrdinal() => Interlocked.Increment(ref _attemptOrdinal);
 
-    public ValueTask DisposeAsync() => _context.DisposeAsync();
+    public async ValueTask DisposeAsync()
+    {
+        try
+        {
+            await _context.DisposeAsync().ConfigureAwait(false);
+        }
+        finally
+        {
+            if (CampaignPreparation is { IsCompletedSuccessfully: true } prepared
+                && prepared.Result.IsSuccess
+                && prepared.Result.Value is { } campaign)
+            {
+                await campaign.DisposeAsync().ConfigureAwait(false);
+            }
+        }
+    }
 
 }
 
@@ -397,7 +428,9 @@ public sealed class CovenantDispatchGate(
 
         ArgumentNullException.ThrowIfNull(plan);
 
-        bool derived = plan.HasAdmittedContent || scope.HistoryTainted;
+        bool campaignDerived = scope.CampaignArtifact?.Sensitivity is ContentSensitivity.CovenantDerived;
+
+        bool derived = plan.HasAdmittedContent || scope.HistoryTainted || campaignDerived;
 
         if (!derived)
         {
@@ -420,9 +453,16 @@ public sealed class CovenantDispatchGate(
         // into disclosure accounting that is required to stay content-free. A tainted-history call
         // with no plan of its own has no generation to name at all, so it declares the taint without
         // claiming to know which generation produced it.
-        GenerationProvenance provenance = scope.Plan is { } turnPlan && plan.HasAdmittedContent
-            ? GenerationProvenance.CreateExact([turnPlan.Snapshot.DatasetGeneration.Value])
-            : GenerationProvenance.CreateExact([scope.LogicalTurnId]);
+        GenerationProvenance provenance = plan.HasAdmittedContent || scope.HistoryTainted
+            ? scope.Plan is { } turnPlan && plan.HasAdmittedContent
+                ? GenerationProvenance.CreateExact([turnPlan.Snapshot.DatasetGeneration.Value])
+                : GenerationProvenance.CreateExact([scope.LogicalTurnId])
+            : GenerationProvenance.CreateExact([]);
+
+        if (campaignDerived)
+        {
+            provenance = provenance.Merge(scope.CampaignArtifact!.Provenance);
+        }
 
         return new ProviderCallSensitivity(
             ContentSensitivity.CovenantDerived,

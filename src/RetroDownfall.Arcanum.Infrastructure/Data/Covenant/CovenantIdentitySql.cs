@@ -31,8 +31,10 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 ///
 /// <para><b>The cost, chosen rather than overlooked.</b> <c>lower(replace(col, '-', '')) = @id</c>
 /// cannot use a BINARY-collated index, so every statement generated here degrades from an index seek
-/// to a table scan. Each call site states what that costs it specifically. No remaining caller is on a
-/// per-turn path — that was the reason the data was settled — and the index-preserving alternative,
+/// to a table scan. Each call site states what that costs it specifically. Native Entry and owner
+/// reads keep exact index seeks. Clean claimed-reply and Campaign-source proofs normalize the closed
+/// artifact kind's label identities before reading text because those historical label keys are
+/// outside the governed family; their returned metadata is bounded. The index-preserving alternative,
 /// <c>WHERE col IN ($upper, $lower, $n)</c>, is faster and silently wrong the first time a writer
 /// spells an identity a fourth way.</para>
 ///

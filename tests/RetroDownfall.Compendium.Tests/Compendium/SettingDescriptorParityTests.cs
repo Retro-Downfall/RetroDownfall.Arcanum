@@ -177,6 +177,7 @@ public sealed class SettingDescriptorParityTests
             "completedBatches",
             "sagaMemories",
             "lexiconEntries",
+            "campaignSummaries",
             "workspaceIndexes",
             "sessionEntryEmbeddings",
             "auditLogs",

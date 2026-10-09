@@ -74,7 +74,7 @@ public sealed class FileIdentitySchemaEvolutionTests
 
         await InsertBatchAsync(connection, "batch-three", input: UpperPlain, output: UpperPlain, error: UpperPlain);
 
-        await InstallAsync(connection, GrimoireSchemaVersionChains.Default, GrimoireSchemaVersionChains.CoreSchemaVersion);
+        await InstallAsync(connection, CoreSchemaVersionFifteenFixture.ChainSet(), 15);
 
         Assert.Equal(
             [
@@ -118,7 +118,7 @@ public sealed class FileIdentitySchemaEvolutionTests
         await InsertUploadedFileAsync(connection, LowerDashed.ToUpperInvariant());
 
         // The second row would collide with the first on the primary key, so the transition must not abort over it.
-        await InstallAsync(connection, GrimoireSchemaVersionChains.Default, GrimoireSchemaVersionChains.CoreSchemaVersion);
+        await InstallAsync(connection, CoreSchemaVersionFifteenFixture.ChainSet(), 15);
 
         Assert.Equal(
             [LowerDashed, LowerDashed.ToUpperInvariant()],
@@ -209,7 +209,7 @@ public sealed class FileIdentitySchemaEvolutionTests
             await InstallAsync(connection, CoreSchemaVersionFourteenFixture.ChainSet(), 14);
         }
 
-        await InstallAsync(connection, GrimoireSchemaVersionChains.Default, GrimoireSchemaVersionChains.CoreSchemaVersion);
+        await InstallAsync(connection, CoreSchemaVersionFifteenFixture.ChainSet(), 15);
 
         Dictionary<string, string> definitions = new(StringComparer.Ordinal);
 

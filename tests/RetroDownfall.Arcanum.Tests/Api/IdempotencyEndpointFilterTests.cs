@@ -5,10 +5,12 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.Features;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
+using RetroDownfall.Arcanum.Api.Intelligence;
 using RetroDownfall.Arcanum.Api.Intelligence.OpenAi;
 using RetroDownfall.Arcanum.Api.Security;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Spells;
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -66,6 +68,16 @@ public sealed class IdempotencyEndpointFilterTests
         HttpResponseMessage firstResponse = await client.SendAsync(first);
 
         Assert.Equal(HttpStatusCode.OK, firstResponse.StatusCode);
+
+        TurnIdempotencyRequestIdentity identity = Assert.IsType<TurnIdempotencyRequestIdentity>(_factory.FakeIntelligence.LastAcceptedTurnIdentity);
+
+        Assert.NotEqual(Guid.Empty, identity.ClientTurnId);
+
+        Assert.Equal(32, identity.AcceptedBodyDigest.Bytes.Length);
+
+        Assert.Equal(SessionTurnSurface.Intelligence, identity.Surface);
+
+        Assert.Null(identity.Route);
 
         string firstBody = await firstResponse.Content.ReadAsStringAsync();
 
@@ -445,6 +457,16 @@ public sealed class IdempotencyEndpointFilterTests
 
         Assert.Equal(HttpStatusCode.OK, firstResponse.StatusCode);
 
+        TurnIdempotencyRequestIdentity identity = Assert.IsType<TurnIdempotencyRequestIdentity>(_factory.FakeIntelligence.LastAcceptedTurnIdentity);
+
+        Assert.NotEqual(Guid.Empty, identity.ClientTurnId);
+
+        Assert.Equal(32, identity.AcceptedBodyDigest.Bytes.Length);
+
+        Assert.Equal(SessionTurnSurface.SpellExecute, identity.Surface);
+
+        Assert.Equal(SessionTurnRouteValue.ForSpell("test-spell"), identity.Route);
+
         string firstBody = await firstResponse.Content.ReadAsStringAsync();
 
         Assert.Equal(before + 1, _factory.FakeIntelligence.ExecutePromptCallCount);
@@ -517,6 +539,16 @@ public sealed class IdempotencyEndpointFilterTests
         HttpResponseMessage firstResponse = await client.SendAsync(first);
 
         Assert.Equal(HttpStatusCode.OK, firstResponse.StatusCode);
+
+        TurnIdempotencyRequestIdentity identity = Assert.IsType<TurnIdempotencyRequestIdentity>(_factory.FakeIntelligence.LastAcceptedTurnIdentity);
+
+        Assert.NotEqual(Guid.Empty, identity.ClientTurnId);
+
+        Assert.Equal(32, identity.AcceptedBodyDigest.Bytes.Length);
+
+        Assert.Equal(SessionTurnSurface.PromptExecute, identity.Surface);
+
+        Assert.Equal(SessionTurnRouteValue.ForPrompt(promptId), identity.Route);
 
         string firstBody = await firstResponse.Content.ReadAsStringAsync();
 

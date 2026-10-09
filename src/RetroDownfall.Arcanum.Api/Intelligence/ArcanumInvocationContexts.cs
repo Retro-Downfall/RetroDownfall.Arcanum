@@ -1,5 +1,8 @@
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
+using RetroDownfall.Arcanum.Api.Security;
+using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Tower;
@@ -65,10 +68,29 @@ internal static class ArcanumInvocationContexts
     internal static ArcanumInvocationContext ForTurn(
         HttpContext httpContext,
         PingRequest request,
-        CanonicalCampaignContext? campaign = null) =>
-        request.SessionId is null
-            ? ForStatelessTurn(httpContext, request, campaign)
-            : ForSessionTurn(httpContext, request, campaign);
+        CanonicalCampaignContext? campaign = null)
+    {
+        ArgumentNullException.ThrowIfNull(httpContext);
+
+        ArgumentNullException.ThrowIfNull(request);
+
+        bool campaignTurn = !InferenceContextBuilder.HasStatelessMessages(request)
+            && campaign is { IsCampaignBound: true }
+            && ResolveContextPolicy(httpContext) is CovenantContextPolicy.Default
+            && httpContext.RequestServices?.GetService<IOptionsMonitor<ArcanumSettings>>()
+                ?.CurrentValue.Features.CampaignRollups is true;
+
+        if (campaignTurn)
+        {
+            // Campaign turns use their durable claim and authoritative native answer for replay.
+            // Mark before preparation can await: even an idle stream's first heartbeat seals headers.
+            CovenantRequestFeatures.MarkProtectedResponse(httpContext);
+        }
+
+        return request.SessionId is not null || campaignTurn
+            ? ForSessionTurn(httpContext, request, campaign)
+            : ForStatelessTurn(httpContext, request, campaign);
+    }
 
     private static ArcanumInvocationContext Build(
         HttpContext httpContext,

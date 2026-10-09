@@ -361,7 +361,7 @@ public sealed class SystemPromptBuilderTests
         string prompt = SystemPromptBuilder.Build(
             new PingRequest("hello"),
             codexContent: null,
-            campaignSummary: "  earlier plot points  ");
+            sessionSummary: "  earlier plot points  ");
 
         Assert.Contains("### Campaign Summary (compressed context)", prompt, StringComparison.Ordinal);
 

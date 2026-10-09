@@ -158,6 +158,14 @@ internal static class BackupRestoreProtectedStatePurger
                     + "protected-artifact purge policy for, so its protected state cannot be removed.");
             }
 
+            if (RulesByCode[label.KindCode].Kind is SensitiveArtifactKind.CampaignRollup or SensitiveArtifactKind.CampaignContribution
+                && !Guid.TryParse(label.ArtifactId, out _))
+            {
+                return new Error(
+                    ErrorCodes.Covenant.ManualRecoveryRequired,
+                    "The staged archive carries a Campaign summary label without a valid artifact identity.");
+            }
+
             if (CovenantIdentitySql.Key(label.ArtifactId).Length == 0)
             {
                 // Fail closed. Every content, pointer, and projection delete compares a normalised column
@@ -170,17 +178,27 @@ internal static class BackupRestoreProtectedStatePurger
             }
         }
 
+        // Measure every labelled primary before any dependency closure is removed. A contribution
+        // purge may consume a rollup and its label before the walk reaches that label, so counting
+        // after each delete would under-report both protected primaries and their evidence.
         ulong removedArtifacts = 0;
+
+        foreach (StagedLabel label in labels)
+        {
+            CovenantArtifactPlanTally measured = await CovenantArtifactPlanRunner.RunAsync(
+                staged, transaction, RulesByCode[label.KindCode].Kind,
+                CovenantIdentitySql.Key(label.ArtifactId), CovenantArtifactPlanMode.Count, cancellationToken)
+                .ConfigureAwait(false);
+
+            removedArtifacts = checked(removedArtifacts + (ulong)measured.ArtifactRows);
+        }
 
         HashSet<string> sessions = new(StringComparer.Ordinal);
 
         foreach (StagedLabel label in labels)
         {
-            if (await ApplyPlanAsync(staged, transaction, label, RulesByCode[label.KindCode], cancellationToken)
-                    .ConfigureAwait(false))
-            {
-                removedArtifacts = checked(removedArtifacts + 1);
-            }
+            _ = await ApplyPlanAsync(staged, transaction, label, RulesByCode[label.KindCode], cancellationToken)
+                .ConfigureAwait(false);
 
             if (label.SessionId is { } sessionId)
             {
@@ -188,14 +206,14 @@ internal static class BackupRestoreProtectedStatePurger
             }
         }
 
-        ulong removedLabels = await DeleteAllAsync(
+        _ = await DeleteAllAsync(
             staged,
             transaction,
             ["artifact_sensitivity"],
             cancellationToken).ConfigureAwait(false);
 
         return new LabelPurge(
-            removedLabels,
+            checked((ulong)labels.Count),
             removedArtifacts,
             await FoldSessionProjectionsAsync(
                 staged,
@@ -236,6 +254,14 @@ internal static class BackupRestoreProtectedStatePurger
         CovenantSensitiveArtifactPurgeRule rule,
         CancellationToken cancellationToken)
     {
+        if (rule.Kind is SensitiveArtifactKind.CampaignRollup or SensitiveArtifactKind.CampaignContribution)
+        {
+            _ = await CampaignSummaryLifecycle.PurgeArtifactAsync(
+                staged, transaction, rule.Kind, Guid.Parse(label.ArtifactId), cancellationToken).ConfigureAwait(false);
+
+            return true;
+        }
+
         CovenantArtifactPurgePlan plan = CovenantArtifactPurgePlans.Resolve(rule.Kind);
 
         IReadOnlyCollection<string> owningSessions = rule.Kind == SensitiveArtifactKind.AssistantEntry
@@ -265,6 +291,17 @@ internal static class BackupRestoreProtectedStatePurger
             CovenantIdentitySql.Key(label.ArtifactId),
             CovenantArtifactPlanMode.Delete,
             cancellationToken).ConfigureAwait(false);
+
+        foreach (string sessionKey in owningSessions)
+        {
+            Guid sessionId = Guid.ParseExact(sessionKey, "N");
+
+            _ = await SessionSummaryLifecycle.ClearAsync(staged, transaction, sessionId, cancellationToken)
+                .ConfigureAwait(false);
+
+            _ = await CampaignSummaryLifecycle.ClearSessionAsync(staged, transaction, sessionId, cancellationToken)
+                .ConfigureAwait(false);
+        }
 
         if (owningSessions.Count > 0
             && await BackupRestoreDatabaseWorker

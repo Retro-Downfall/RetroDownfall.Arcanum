@@ -302,6 +302,36 @@ public static class CovenantSensitiveArtifactPurgePolicy
                 "Purge the cached protected response body and its label only after the claim is durably "
                 + "non-replayable or bound to erasure evidence; preserve the claim identity and its typed "
                 + "replay denial."),
+        new(
+            SensitiveArtifactKind.CampaignRollup,
+            Code: 14,
+            CovenantArtifactPurgeExecutor.DatabaseTransaction,
+            DeletesDerivedProjections: true,
+            RepairsCurrentPointer: true,
+            RepairsSessionSensitivityState: false,
+            AppendsErasureReceipt: false,
+            RequiresDurableTerminalEvidenceFirst: false,
+            PreservesFinalizationAndClaimEvidence: false,
+            PreservesReplayDenialEvidence: false,
+            Policy:
+                "Delete the Campaign summary artifact, its source manifest, output checkpoints, and label "
+                + "in one transaction; retire the current pointer and preserve the source-generation tombstone."),
+
+        new(
+            SensitiveArtifactKind.CampaignContribution,
+            Code: 15,
+            CovenantArtifactPurgeExecutor.DatabaseTransaction,
+            DeletesDerivedProjections: true,
+            RepairsCurrentPointer: true,
+            RepairsSessionSensitivityState: true,
+            AppendsErasureReceipt: false,
+            RequiresDurableTerminalEvidenceFirst: false,
+            PreservesFinalizationAndClaimEvidence: false,
+            PreservesReplayDenialEvidence: false,
+            Policy:
+                "Delete the Session contribution, dependent Campaign summaries, source manifests, output "
+                + "checkpoints, and labels in one transaction; retire current pointers, preserve sequence and "
+                + "source-generation tombstones, and repair Session sensitivity state."),
     ];
 
     private static readonly Dictionary<SensitiveArtifactKind, CovenantSensitiveArtifactPurgeRule> ByKind =

@@ -310,6 +310,14 @@ internal sealed partial class DataRetentionService(
 
         await AddCompositeDatabaseStatusAsync(
             items,
+            RetentionDataClass.CampaignSummaries,
+            ["campaign_rollup_artifacts", "campaign_contribution_artifacts", "campaign_rollup_sources", "campaign_maintenance_checkpoints"],
+            "Campaign continuity and exact native Session contributions; content-free generation tombstones survive reset.",
+            retention,
+            cancellationToken).ConfigureAwait(false);
+
+        await AddCompositeDatabaseStatusAsync(
+            items,
             RetentionDataClass.Annals,
             [
                 "annal_claims",
@@ -2378,7 +2386,8 @@ internal sealed partial class DataRetentionService(
                 0,
                 0,
                 snapshot.EntryFtsCount
-                    + snapshot.AttachmentMemoryConsultationCount),
+                    + snapshot.AttachmentMemoryConsultationCount
+                    + snapshot.Summaries.Rows),
             new(
                 RetentionDataClass.AttachmentVersions,
                 snapshot.Attachments.Length,
@@ -2423,6 +2432,12 @@ internal sealed partial class DataRetentionService(
                 0,
                 0,
                 snapshot.EntryVectorEmbeddingCount),
+            new(
+                RetentionDataClass.CampaignSummaries,
+                0,
+                0,
+                0,
+                snapshot.CampaignContinuity.Rows),
         ];
 
         List<DataRetentionBlocker> blockers = [];
@@ -2464,7 +2479,8 @@ internal sealed partial class DataRetentionService(
             blockers,
             conflicts,
             [sessionId.ToString("D")],
-            requiresConfirmation: true);
+            requiresConfirmation: true,
+            planAuthority: snapshot.CampaignContinuity.Authority + ":" + snapshot.Summaries.Authority);
     }
 
     private async Task<DataRetentionPlan> BuildDeleteAttachmentPlanAsync(
@@ -2706,7 +2722,7 @@ internal sealed partial class DataRetentionService(
 
     /// <summary>Only these two stores record who owns a memory.</summary>
     private static bool CampaignTargetedResetIsSupported(MemoryResetScope scope) =>
-        scope is MemoryResetScope.Saga or MemoryResetScope.Lexicon;
+        scope is MemoryResetScope.Saga or MemoryResetScope.Lexicon or MemoryResetScope.CampaignSummary;
 
     private static RetentionDataClass MemoryResetDataClass(MemoryResetScope scope) =>
         scope switch
@@ -2720,6 +2736,8 @@ internal sealed partial class DataRetentionService(
             MemoryResetScope.Saga => RetentionDataClass.SagaMemories,
 
             MemoryResetScope.Lexicon => RetentionDataClass.LexiconEntries,
+
+            MemoryResetScope.CampaignSummary => RetentionDataClass.CampaignSummaries,
 
             _ => throw new InvalidOperationException("Unsupported memory reset scope."),
         };
@@ -2853,8 +2871,16 @@ internal sealed partial class DataRetentionService(
                 new("lexicon_entries", "ScopeCampaignId = @campaignId", campaignOnly),
             ],
 
+            MemoryResetScope.CampaignSummary =>
+            [
+                new("campaign_maintenance_checkpoints", "CampaignId = @campaignId", campaignAndKind),
+                new("campaign_rollup_sources", "CampaignId = @campaignId", campaignAndKind),
+                new("campaign_contribution_artifacts", "CampaignId = @campaignId", campaignAndKind),
+                new("campaign_rollup_artifacts", "CampaignId = @campaignId", campaignAndKind),
+            ],
+
             _ => throw new InvalidOperationException(
-                "Only Saga and Lexicon memories record an owning Campaign."),
+                "This memory store does not record an owning Campaign."),
         };
     }
 
@@ -2919,6 +2945,14 @@ internal sealed partial class DataRetentionService(
                     Whole("lexicon_fact_attachment_provenance"),
                     Whole("lexicon_entries"),
                 ],
+
+            MemoryResetScope.CampaignSummary =>
+            [
+                Whole("campaign_maintenance_checkpoints"),
+                Whole("campaign_rollup_sources"),
+                Whole("campaign_contribution_artifacts"),
+                Whole("campaign_rollup_artifacts"),
+            ],
 
             _ => throw new InvalidOperationException("Unsupported memory reset scope."),
         };
@@ -3047,6 +3081,7 @@ internal sealed partial class DataRetentionService(
             // Asked about the Entries this transaction will remove, now that it holds the write lock, so
             // no label can be committed between the answer and the delete below.
             await RefuseLabeledSessionEntriesAsync(
+                sessionId,
                 snapshot,
                 connection,
                 transaction,
@@ -3078,6 +3113,19 @@ internal sealed partial class DataRetentionService(
                 operationId,
                 sessionId,
                 cancellationToken).ConfigureAwait(false);
+
+            using (CovenantSqliteConnectionInitializer.Instance.Authorize(
+                (SqliteConnection)connection, CovenantSqliteAuthorizationKind.SessionRetention))
+            {
+                derivedDeleted += await SessionSummaryLifecycle.ClearAsync(
+                    connection, transaction, sessionId, cancellationToken).ConfigureAwait(false);
+
+                _ = await CampaignSummaryLifecycle.ClearSessionAsync(
+                    connection, transaction, sessionId, cancellationToken).ConfigureAwait(false);
+
+                // The snapshot includes owned rows removed by the Session's foreign-key cascade.
+                derivedDeleted += snapshot.CampaignContinuity.Rows;
+            }
 
             derivedDeleted += await DeleteEntryIndexesAsync(
                 connection,
@@ -3595,26 +3643,37 @@ internal sealed partial class DataRetentionService(
                     "Memory data changed after preview; request a new dry-run before retrying.");
             }
 
-            foreach (MemoryResetSelection selection in selections)
+            if (scope == MemoryResetScope.CampaignSummary)
             {
-                // annal_versions goes through the leaf-first delete for the reason stated there: a bare
-                // statement over it empties the table and reports fewer rows than it removed, and this
-                // sum is the number the operator is shown.
-                deleted += string.Equals(selection.Table, "annal_versions", StringComparison.Ordinal)
-                    ? await DeleteAnnalVersionsAsync(
-                        connection,
-                        transaction,
-                        selection.Predicate,
-                        cancellationToken,
-                        selection.Parameters).ConfigureAwait(false)
-                    : await ExecuteAsync(
-                        connection,
-                        transaction,
-                        selection.Predicate is null
-                            ? $"DELETE FROM \"{selection.Table}\""
-                            : $"DELETE FROM \"{selection.Table}\" WHERE {selection.Predicate}",
-                        cancellationToken,
-                        selection.Parameters).ConfigureAwait(false);
+                using IDisposable cleanup = CovenantSqliteConnectionInitializer.Instance.Authorize(
+                    (SqliteConnection)connection, CovenantSqliteAuthorizationKind.SessionRetention);
+
+                deleted = await CampaignSummaryLifecycle.ClearCampaignAsync(
+                    connection, transaction, campaignId, removeOwner: false, cancellationToken).ConfigureAwait(false);
+            }
+            else
+            {
+                foreach (MemoryResetSelection selection in selections)
+                {
+                    // annal_versions goes through the leaf-first delete for the reason stated there: a bare
+                    // statement over it empties the table and reports fewer rows than it removed, and this
+                    // sum is the number the operator is shown.
+                    deleted += string.Equals(selection.Table, "annal_versions", StringComparison.Ordinal)
+                        ? await DeleteAnnalVersionsAsync(
+                            connection,
+                            transaction,
+                            selection.Predicate,
+                            cancellationToken,
+                            selection.Parameters).ConfigureAwait(false)
+                        : await ExecuteAsync(
+                            connection,
+                            transaction,
+                            selection.Predicate is null
+                                ? $"DELETE FROM \"{selection.Table}\""
+                                : $"DELETE FROM \"{selection.Table}\" WHERE {selection.Predicate}",
+                            cancellationToken,
+                            selection.Parameters).ConfigureAwait(false);
+                }
             }
 
             await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
@@ -3768,6 +3827,12 @@ internal sealed partial class DataRetentionService(
             cancellationToken,
             ("@id", sessionId.ToString("N"))).ConfigureAwait(false);
 
+        CampaignSummaryClosureSnapshot campaignContinuity = await CampaignSummaryLifecycle.ReadSessionClosureAsync(
+            connection, null, sessionId, cancellationToken).ConfigureAwait(false);
+
+        SessionSummaryClosureSnapshot summaries = await SessionSummaryLifecycle.ReadClosureAsync(
+            connection, null, sessionId, cancellationToken).ConfigureAwait(false);
+
         return new SessionPlanSnapshot(
             status,
             [.. entryIds],
@@ -3782,7 +3847,9 @@ internal sealed partial class DataRetentionService(
             attachments.Sum(static attachment => attachment.ChunkCount),
             attachments.Sum(static attachment => attachment.EmbeddingCount),
             attachments.Sum(static attachment => attachment.VectorEmbeddingCount),
-            attachments.Sum(static attachment => attachment.IndexStateCount));
+            attachments.Sum(static attachment => attachment.IndexStateCount),
+            campaignContinuity,
+            summaries);
     }
 
     private async Task<AttachmentPlanSnapshot?> ReadAttachmentSnapshotAsync(
@@ -4017,6 +4084,12 @@ internal sealed partial class DataRetentionService(
             cancellationToken,
             ("@id", sessionId.ToString("N"))).ConfigureAwait(false);
 
+        CampaignSummaryClosureSnapshot campaignContinuity = await CampaignSummaryLifecycle.ReadSessionClosureAsync(
+            connection, transaction, sessionId, cancellationToken).ConfigureAwait(false);
+
+        SessionSummaryClosureSnapshot summaries = await SessionSummaryLifecycle.ReadClosureAsync(
+            connection, transaction, sessionId, cancellationToken).ConfigureAwait(false);
+
         return new SessionPlanSnapshot(
             status,
             [.. entryIds],
@@ -4031,7 +4104,9 @@ internal sealed partial class DataRetentionService(
             attachmentSnapshots.Sum(static attachment => attachment.ChunkCount),
             attachmentSnapshots.Sum(static attachment => attachment.EmbeddingCount),
             attachmentSnapshots.Sum(static attachment => attachment.VectorEmbeddingCount),
-            attachmentSnapshots.Sum(static attachment => attachment.IndexStateCount));
+            attachmentSnapshots.Sum(static attachment => attachment.IndexStateCount),
+            campaignContinuity,
+            summaries);
     }
 
     private async Task<AttachmentPlanSnapshot?> ReadAttachmentSnapshotInTransactionAsync(
@@ -4281,7 +4356,9 @@ internal sealed partial class DataRetentionService(
             + snapshot.AttachmentChunkCount
             + snapshot.AttachmentEmbeddingCount
             + snapshot.AttachmentVectorEmbeddingCount
-            + snapshot.AttachmentIndexStateCount;
+            + snapshot.AttachmentIndexStateCount
+            + snapshot.CampaignContinuity.Rows
+            + snapshot.Summaries.Rows;
 
         if (rows != plan.Rows
             || files != plan.Files
@@ -4300,6 +4377,8 @@ internal sealed partial class DataRetentionService(
                 snapshot.Status,
                 expectedSnapshot.Status,
                 StringComparison.OrdinalIgnoreCase)
+            && snapshot.CampaignContinuity == expectedSnapshot.CampaignContinuity
+            && snapshot.Summaries == expectedSnapshot.Summaries
             && snapshot.EntryIds
                 .Order()
                 .SequenceEqual(expectedSnapshot.EntryIds.Order())
@@ -6173,6 +6252,19 @@ internal sealed partial class DataRetentionService(
         DbTransaction transaction,
         CancellationToken cancellationToken)
     {
+        if (scope == MemoryResetScope.CampaignSummary)
+        {
+            Result campaignUnlabeled = await CampaignSummaryLifecycle.EnsureCampaignUnlabeledAsync(
+                connection, transaction, campaignId, labeledArtifactGuard, cancellationToken).ConfigureAwait(false);
+
+            if (campaignUnlabeled.IsFailure)
+            {
+                throw new RetentionCovenantLabelException(campaignUnlabeled.Error);
+            }
+
+            return;
+        }
+
         (SensitiveArtifactKind Kind, string Table)? store = scope switch
         {
             MemoryResetScope.Saga => (SensitiveArtifactKind.Saga, "saga_memories"),
@@ -6315,6 +6407,7 @@ internal sealed partial class DataRetentionService(
     /// as long as the Session has Entries.</para>
     /// </remarks>
     private async Task RefuseLabeledSessionEntriesAsync(
+        Guid sessionId,
         SessionPlanSnapshot snapshot,
         DbConnection connection,
         DbTransaction transaction,
@@ -6332,6 +6425,22 @@ internal sealed partial class DataRetentionService(
         if (unlabeled.IsFailure)
         {
             throw new RetentionCovenantLabelException(unlabeled.Error);
+        }
+
+        Result summary = await SessionSummaryLifecycle.EnsureUnlabeledAsync(
+            connection, transaction, sessionId, labeledArtifactGuard, cancellationToken).ConfigureAwait(false);
+
+        if (summary.IsFailure)
+        {
+            throw new RetentionCovenantLabelException(summary.Error);
+        }
+
+        Result campaign = await CampaignSummaryLifecycle.EnsureSessionUnlabeledAsync(
+            connection, transaction, sessionId, labeledArtifactGuard, cancellationToken).ConfigureAwait(false);
+
+        if (campaign.IsFailure)
+        {
+            throw new RetentionCovenantLabelException(campaign.Error);
         }
     }
 
@@ -7525,6 +7634,12 @@ internal sealed partial class DataRetentionService(
                     "lexicon_entries",
                 ],
 
+            MemoryResetScope.CampaignSummary =>
+            [
+                "campaign_maintenance_checkpoints", "campaign_rollup_sources",
+                "campaign_contribution_artifacts", "campaign_rollup_artifacts",
+            ],
+
             _ => [],
         };
 
@@ -7809,7 +7924,9 @@ internal sealed partial class DataRetentionService(
         long AttachmentChunkCount,
         long AttachmentEmbeddingCount,
         long AttachmentVectorEmbeddingCount,
-        long AttachmentIndexStateCount);
+        long AttachmentIndexStateCount,
+        CampaignSummaryClosureSnapshot CampaignContinuity,
+        SessionSummaryClosureSnapshot Summaries);
 
     private readonly record struct IdSetBatch(
         string Predicate,

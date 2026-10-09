@@ -2,6 +2,8 @@ using Microsoft.Extensions.AI;
 
 using RetroDownfall.Arcanum.Core.Configuration;
 
+using RetroDownfall.Arcanum.Core.Covenant;
+
 using RetroDownfall.Arcanum.Core.Intelligence;
 
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
@@ -370,6 +372,31 @@ public sealed partial class WizardIntelligenceProvider
 
         await using CovenantTurnScope previewCovenantOwned = previewCovenantScope;
 
+        CampaignRollupTurnSnapshot? previewCampaign = null;
+
+        if (settings.Value.ResolveIntelligence().EnableCampaignRollups
+            && invocationContext.ContextPolicy is not CovenantContextPolicy.None
+            && invocationContext.Campaign is { IsCampaignBound: true })
+        {
+            if (campaignRollups is null)
+            {
+                return new Error(ErrorCodes.Covenant.Unavailable, "Campaign summary inspection is unavailable.");
+            }
+
+            Result<CampaignRollupTurnSnapshot?> prepared = await campaignRollups.PreparePreviewAsync(
+                turn, invocationContext, cancellationToken,
+                CampaignRollupTurnPreparer.ConfigurationDigest(settings.Value)).ConfigureAwait(false);
+
+            if (prepared.IsFailure)
+            {
+                return prepared.Error;
+            }
+
+            previewCampaign = prepared.Value;
+        }
+
+        await using CampaignRollupTurnSnapshot? previewCampaignOwned = previewCampaign;
+
         // The plan is the unpressured set; dispatch injects only what admission admitted, so the
         // preview assembles the prompt without a single Covenant byte and re-renders below from the
         // admitted content. Rendering the plan first and measuring against it would charge the
@@ -408,7 +435,13 @@ public sealed partial class WizardIntelligenceProvider
 
                 tapestryContext: tapestryContext,
 
-                covenant: covenant);
+                covenant: covenant,
+
+                campaignRollup: previewCampaign?.Artifact?.Content,
+
+                enableCampaignRollups: settings.Value.ResolveIntelligence().EnableCampaignRollups,
+
+                campaignRollupSensitive: previewCampaign?.Artifact?.Sensitivity is ContentSensitivity.CovenantDerived);
 
         SystemPromptDocument document = BuildPreviewDocument(covenant: null);
 
@@ -571,6 +604,10 @@ public sealed partial class WizardIntelligenceProvider
                     // agreement matters most for. It carries the admitted content rather than the plan,
                     // because that is what this turn would send. The dispatch path does the same.
                     Covenant = previewCovenant,
+
+                    CampaignRollup = previewCampaign?.Artifact,
+
+                    EnableCampaignRollups = settings.Value.ResolveIntelligence().EnableCampaignRollups,
                 });
 
         // The attribution map is the only producer of the two Covenant token lanes. Without it the
@@ -695,6 +732,16 @@ public sealed partial class WizardIntelligenceProvider
                 breakdown.Profile.ProfileId),
 
             content);
+
+        if (previewCampaign is not null)
+        {
+            Result valid = await previewCampaign.ValidateAsync(cancellationToken).ConfigureAwait(false);
+
+            if (valid.IsFailure)
+            {
+                return valid.Error;
+            }
+        }
 
         return Result<ContextPreviewResult>.Success(result);
     }

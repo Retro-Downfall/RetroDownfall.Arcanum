@@ -481,7 +481,8 @@ public sealed class CovenantCampaignScopeProbeTests : IAsyncLifetime
         CampaignRepository campaigns = new(
             _db!,
             NullLogger<CampaignRepository>.Instance,
-            new TestOptionsSnapshot<ArcanumSettings>(new ArcanumSettings()));
+            new TestOptionsSnapshot<ArcanumSettings>(new ArcanumSettings()),
+            FixtureLabeledArtifactGuard.For(_db!));
 
         DateTimeOffset now = DateTimeOffset.UtcNow;
 
@@ -569,7 +570,8 @@ public sealed class CovenantCampaignScopeProbeTests : IAsyncLifetime
         CampaignRepository campaigns = new(
             _db!,
             NullLogger<CampaignRepository>.Instance,
-            new TestOptionsSnapshot<ArcanumSettings>(new ArcanumSettings()));
+            new TestOptionsSnapshot<ArcanumSettings>(new ArcanumSettings()),
+            FixtureLabeledArtifactGuard.For(_db!));
         DateTimeOffset now = DateTimeOffset.UtcNow;
 
         Result<Campaign> added = await campaigns.AddAsync(

@@ -8704,7 +8704,7 @@
             {
               "name": "--scope",
               "aliases": [],
-              "description": "Required scope: entry, attachments, workspace, saga, lexicon, or covenant.",
+              "description": "Required scope: entry, attachments, workspace, saga, lexicon, covenant, or campaign-summary.",
               "recursive": false,
               "takesValue": true,
               "repeatable": false,
@@ -8713,7 +8713,7 @@
             {
               "name": "--campaign",
               "aliases": [],
-              "description": "Optional Campaign GUID. Saga and Lexicon only; other Campaigns\u0027 memories are untouched.",
+              "description": "Optional Campaign GUID. Saga, Lexicon, and Campaign summaries only; other Campaigns\u0027 memories are untouched.",
               "recursive": false,
               "takesValue": true,
               "repeatable": false,

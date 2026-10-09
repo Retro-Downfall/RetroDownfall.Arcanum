@@ -4,9 +4,9 @@
 -- no row at all, which is why exact provenance requires at least one generation rather than zero.
 -- Session, Campaign, and turn are historical owner identities without foreign keys, because a label
 -- outlives the turn that produced it and is retired through the owner-deletion journal.
-CREATE TABLE IF NOT EXISTS artifact_sensitivity (
+CREATE TABLE IF NOT EXISTS "artifact_sensitivity" (
     LabelId TEXT NOT NULL PRIMARY KEY,
-    ArtifactKindCode INTEGER NOT NULL CHECK (ArtifactKindCode IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13)),
+    ArtifactKindCode INTEGER NOT NULL CHECK (ArtifactKindCode IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15)),
     ArtifactId TEXT NOT NULL,
     SensitivityCode INTEGER NOT NULL CHECK (SensitivityCode IN (1)),
     ProvenanceModeCode INTEGER NOT NULL CHECK (ProvenanceModeCode IN (1, 2)),

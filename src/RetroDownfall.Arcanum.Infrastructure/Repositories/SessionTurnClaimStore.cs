@@ -31,13 +31,52 @@ namespace RetroDownfall.Arcanum.Infrastructure.Repositories;
 internal sealed class SessionTurnClaimStore(
     ICovenantConnectionSource connections,
     CovenantQuotaGuard quotas,
-    Guid bootId) : ISessionTurnClaimCoordinator
+    Guid bootId) : ISessionTurnClaimCoordinator, ISessionTurnClaimLookup
 {
     /// <summary>
     /// How long an acquisition owns its claim before another boot may take it over. Code-owned: a
     /// caller that could choose its own fencing window could choose never to be fenced.
     /// </summary>
     private static readonly TimeSpan LeaseDuration = TimeSpan.FromMinutes(5);
+
+    public async ValueTask<Result<bool>> HasClaimAsync(Guid clientTurnId, CancellationToken cancellationToken)
+    {
+        if (clientTurnId == Guid.Empty)
+        {
+            return new Error(ErrorCodes.Validation.InvalidFields, "A Session turn ownership lookup requires a nonempty client identity.");
+        }
+
+        SqliteConnection connection = await connections.GetOpenCoreConnectionAsync(cancellationToken).ConfigureAwait(false);
+
+        using SqliteCommand command = connection.CreateCommand();
+
+        command.CommandText = "SELECT EXISTS(SELECT 1 FROM session_turn_claims WHERE ClientTurnId = $client);";
+
+        command.Parameters.AddWithValue("$client", clientTurnId.ToString("D").ToUpperInvariant());
+
+        object? exists = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+
+        return Result<bool>.Success(Convert.ToInt64(exists, CultureInfo.InvariantCulture) != 0);
+    }
+
+    public async ValueTask<Result<SessionTurnClaim?>> FindAsync(Guid originInstallationId, Guid clientTurnId, CancellationToken cancellationToken)
+    {
+        if (originInstallationId == Guid.Empty || clientTurnId == Guid.Empty)
+        {
+            return new Error(ErrorCodes.Validation.InvalidFields, "A Session turn lookup requires nonempty installation and client identities.");
+        }
+
+        SqliteConnection connection = await connections.GetOpenCoreConnectionAsync(cancellationToken).ConfigureAwait(false);
+
+        await using SqliteTransaction transaction = connection.BeginTransaction(deferred: true);
+
+        ClaimRow? found = await ReadByClientIdentityAsync(new(connection, transaction),
+            originInstallationId, clientTurnId, cancellationToken).ConfigureAwait(false);
+
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+
+        return Result<SessionTurnClaim?>.Success(found?.Claim);
+    }
 
     private const string ClaimColumns = """
         ClaimId, OriginInstallationId, OriginRestoreEpoch, ClientTurnId, SessionId, SurfaceCode,
@@ -60,7 +99,7 @@ internal sealed class SessionTurnClaimStore(
         }
 
         SqliteConnection connection = await connections
-            .GetOpenConnectionAsync(cancellationToken)
+            .GetOpenCoreConnectionAsync(cancellationToken)
             .ConfigureAwait(false);
 
         return await SqliteBusyRetry.ExecuteAsync(
@@ -78,7 +117,7 @@ internal sealed class SessionTurnClaimStore(
         ArgumentNullException.ThrowIfNull(begin);
 
         SqliteConnection connection = await connections
-            .GetOpenConnectionAsync(cancellationToken)
+            .GetOpenCoreConnectionAsync(cancellationToken)
             .ConfigureAwait(false);
 
         return await SqliteBusyRetry.ExecuteAsync(
@@ -96,7 +135,7 @@ internal sealed class SessionTurnClaimStore(
         ArgumentNullException.ThrowIfNull(outcome);
 
         SqliteConnection connection = await connections
-            .GetOpenConnectionAsync(cancellationToken)
+            .GetOpenCoreConnectionAsync(cancellationToken)
             .ConfigureAwait(false);
 
         return await SqliteBusyRetry.ExecuteAsync(
@@ -250,6 +289,19 @@ internal sealed class SessionTurnClaimStore(
                 cancellationToken)
             .ConfigureAwait(false);
 
+        if (existing.Claim.State is SessionTurnClaimState.Begun
+            && await ReadNativeFinalizationAsync(transaction, existing.Claim, futureAssistantEntryId, cancellationToken).ConfigureAwait(false) is { } finalization)
+        {
+            Result<ClaimRow> recovered = await RecoverFinalizedAsync(transaction, existing, finalization, cancellationToken).ConfigureAwait(false);
+
+            if (recovered.IsFailure)
+            {
+                return recovered.Error;
+            }
+
+            existing = recovered.Value;
+        }
+
         if (existing.Claim.IsTerminal)
         {
             return Result<SessionTurnClaimLease>.Success(
@@ -278,9 +330,26 @@ internal sealed class SessionTurnClaimStore(
 
         DateTimeOffset now = DateTimeOffset.UtcNow;
 
+        if (disposition is SessionTurnClaimDisposition.Resumed
+            && existing.LeaseDeadlineUtc <= now)
+        {
+            return new Error(
+                ErrorCodes.Covenant.StaleSnapshot,
+                "This boot's session turn claim lease expired before it could resume.");
+        }
+
         DateTimeOffset deadline = now + LeaseDuration;
 
-        Guid executorId = Guid.NewGuid();
+        if (disposition is SessionTurnClaimDisposition.Resumed && existing.ExecutorId is null)
+        {
+            return new Error(
+                ErrorCodes.Covenant.StaleSnapshot,
+                "This boot's session turn claim lost its preparing executor before it could resume.");
+        }
+
+        Guid executorId = disposition is SessionTurnClaimDisposition.Resumed
+            ? existing.ExecutorId!.Value
+            : Guid.NewGuid();
 
         await using SqliteCommand command = transaction.CreateCommand();
 
@@ -428,6 +497,20 @@ internal sealed class SessionTurnClaimStore(
             return refusal;
         }
 
+        if (existing.Claim.State is SessionTurnClaimState.Begun)
+        {
+            Guid reserved = await ReadReservedAssistantEntryAsync(owned, existing.Claim.FinalizationReservationId, cancellationToken).ConfigureAwait(false);
+
+            int expectedFinalization = outcome.State is SessionTurnClaimState.Committed ? 1 : 2;
+
+            if (await ReadNativeFinalizationAsync(owned, existing.Claim, reserved, cancellationToken).ConfigureAwait(false) != expectedFinalization)
+            {
+                await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+
+                return new Error(ErrorCodes.Covenant.IntegrityFailure, "The reserved assistant has no matching authoritative finalization for this claim outcome.");
+            }
+        }
+
         // A claim that never began will never reach the transaction that consumes its guard slot, so
         // this is the only place that slot can be handed back.
         if (existing.Claim.State == SessionTurnClaimState.PendingMaintenance)
@@ -466,7 +549,7 @@ internal sealed class SessionTurnClaimStore(
                 SET StateCode = $state, TerminalErrorCode = $code, TerminalHttpStatus = $status,
                     TerminalParameterBytes = $parameters, TerminalParameterDigest = $digest,
                     TerminalAtUtc = $now, HeartbeatAtUtc = $now, ExecutorId = NULL, LeaseDeadlineUtc = NULL
-                WHERE ClaimId = $claim AND StateCode = $expected AND ExecutorId = $executor;
+                WHERE ClaimId = $claim AND StateCode = $expected AND ExecutorId = $executor AND OwnerBootId = $boot;
                 """;
 
             BindOutcome(command, outcome);
@@ -478,6 +561,8 @@ internal sealed class SessionTurnClaimStore(
             Bind(command, "$expected", (int)existing.Claim.State);
 
             Bind(command, "$executor", lease.ExecutorId is { } executor ? executor : DBNull.Value);
+
+            Bind(command, "$boot", lease.OwnerBootId is { } owner ? owner : DBNull.Value);
 
             if (await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) != 1)
             {
@@ -819,6 +904,74 @@ internal sealed class SessionTurnClaimStore(
             ? Guid.Parse(text, CultureInfo.InvariantCulture)
             : Guid.Empty;
     }
+
+    private static async Task<int?> ReadNativeFinalizationAsync(
+        CovenantMutationTransaction transaction, SessionTurnClaim claim, Guid reservedAssistantEntryId, CancellationToken cancellationToken)
+    {
+        if (claim.AssistantEntryId != reservedAssistantEntryId)
+        {
+            return null;
+        }
+
+        await using SqliteCommand command = transaction.CreateCommand();
+
+        command.CommandText = """
+            SELECT OutcomeCode FROM assistant_entry_finalizations
+            WHERE AssistantEntryId = $assistant AND SessionId = $session AND RequestDigest = $request
+              AND OutcomeCode IN (1,2) AND SourceEvidenceDigest IS NULL;
+            """;
+
+        Bind(command, "$assistant", reservedAssistantEntryId);
+
+        Bind(command, "$session", claim.SessionId);
+
+        Bind(command, "$request", claim.RequestDigest.Bytes);
+
+        object? value = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+
+        return value is null or DBNull ? null : Convert.ToInt32(value, CultureInfo.InvariantCulture);
+    }
+
+    private static async Task<Result<ClaimRow>> RecoverFinalizedAsync(
+        CovenantMutationTransaction transaction, ClaimRow existing, int finalization, CancellationToken cancellationToken)
+    {
+        SessionTurnClaimOutcome outcome = finalization == 1
+            ? SessionTurnClaimOutcome.Committed()
+            : SessionTurnClaimOutcome.Discarded(ErrorCodes.Hub.SessionTurnRestoredInterrupted, 409, []);
+
+        await using SqliteCommand command = transaction.CreateCommand();
+
+        command.CommandText = """
+            UPDATE session_turn_claims
+            SET StateCode = $state, TerminalErrorCode = $code, TerminalHttpStatus = $status,
+                TerminalParameterBytes = $parameters, TerminalParameterDigest = $digest,
+                TerminalAtUtc = $now, HeartbeatAtUtc = $now, ExecutorId = NULL, LeaseDeadlineUtc = NULL
+            WHERE ClaimId = $claim AND StateCode = 2 AND AssistantEntryId = $assistant
+              AND RequestDigest = $request;
+            """;
+
+        BindOutcome(command, outcome);
+
+        Bind(command, "$now", Iso(DateTimeOffset.UtcNow));
+
+        Bind(command, "$claim", existing.Claim.ClaimId);
+
+        Bind(command, "$assistant", existing.Claim.AssistantEntryId!.Value);
+
+        Bind(command, "$request", existing.Claim.RequestDigest.Bytes);
+
+        if (await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) != 1)
+        {
+            return new Error(ErrorCodes.Covenant.StaleSnapshot, "The authoritative assistant finalization could not settle its Session claim.");
+        }
+
+        ClaimRow? settled = await ReadByClaimIdAsync(transaction, existing.Claim.ClaimId, cancellationToken).ConfigureAwait(false);
+
+        return settled is null
+            ? Result<ClaimRow>.Failure(new(ErrorCodes.Covenant.IntegrityFailure, "The settled Session claim disappeared before replay."))
+            : Result<ClaimRow>.Success(settled.Value);
+    }
+
 
     private static ValueTask<ClaimRow?> ReadByClaimIdAsync(
         CovenantMutationTransaction transaction,

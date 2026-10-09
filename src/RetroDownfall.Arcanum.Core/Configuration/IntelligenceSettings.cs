@@ -31,6 +31,9 @@ public sealed record IntelligenceSettings
 
     public int ArchiveSearchMaxQueryLength { get; set; } = 512;
 
+    /// <summary>Runtime projection of the explicit Campaign-rollup feature opt-in.</summary>
+    public bool EnableCampaignRollups { get; set; }
+
     public int CampaignLogThreshold { get; set; } = 25;
 
     public int CampaignLogIdleTimeoutMinutes { get; set; } = 240;

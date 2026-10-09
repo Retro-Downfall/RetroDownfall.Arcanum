@@ -32,6 +32,10 @@ public enum PromptSegmentKind
 
     /// <summary>Operator-authored Campaign Covenant content inside CONTEXT (§10.13).</summary>
     CovenantCampaignConfirmed = 16,
+
+    CampaignRollup = 17,
+
+    SessionRollup = 18,
 }
 
 public enum PromptSegmentStability
@@ -69,6 +73,8 @@ public sealed record PromptSegment(
             PromptSegmentKind.Preamble => CovenantPromptAttribution.Preamble,
             PromptSegmentKind.DataHeader => CovenantPromptAttribution.DataHeader,
             PromptSegmentKind.CovenantProposed => CovenantPromptAttribution.CovenantProposed,
+            PromptSegmentKind.CampaignRollup => CovenantPromptAttribution.CampaignRollup,
+            PromptSegmentKind.SessionRollup => CovenantPromptAttribution.SessionRollup,
             PromptSegmentKind.Data => CovenantPromptAttribution.DataBody,
             PromptSegmentKind.WorkspaceContext => CovenantPromptAttribution.WorkspaceContext,
             PromptSegmentKind.CovenantGlobalConfirmed

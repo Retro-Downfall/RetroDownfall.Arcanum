@@ -1,4 +1,5 @@
 using System.Threading;
+using RetroDownfall.Arcanum.Api.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -36,6 +37,10 @@ public sealed class FakeIntelligenceProvider : IArcanumIntelligenceProvider, ICo
     /// beyond just the flattened <see cref="LastPrompt"/> string.
     /// </summary>
     public PingRequest? LastRequest { get; private set; }
+
+    public ArcanumInvocationContext? LastInvocation { get; private set; }
+
+    internal TurnIdempotencyRequestIdentity? LastAcceptedTurnIdentity { get; private set; }
 
     /// <summary>The <see cref="InferenceAuditContext"/> passed to the most recent call, if any.</summary>
     public InferenceAuditContext? LastAuditContext { get; private set; }
@@ -101,6 +106,10 @@ public sealed class FakeIntelligenceProvider : IArcanumIntelligenceProvider, ICo
         LastPrompt = request.Prompt;
 
         LastRequest = request;
+
+        LastAcceptedTurnIdentity = TurnIdempotencyAmbient.RequestIdentity;
+
+        LastInvocation = invocationContext;
 
         LastAuditContext = auditContext;
 
@@ -175,6 +184,10 @@ public sealed class FakeIntelligenceProvider : IArcanumIntelligenceProvider, ICo
         _ = Interlocked.Increment(ref _streamPromptCallCount);
 
         LastRequest = request;
+
+        LastAcceptedTurnIdentity = TurnIdempotencyAmbient.RequestIdentity;
+
+        LastInvocation = invocationContext;
 
         LastAuditContext = auditContext;
 

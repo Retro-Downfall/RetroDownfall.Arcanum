@@ -76,7 +76,8 @@ public sealed class BackupRestoreStagedDrainTests
 
     /// <summary>
     /// The drain follows every tier, not only Core: an archive whose canonical tier also stops at a sweep
-    /// can only reach that sweep once Core is at head, so it takes a second pass.
+    /// can only reach that sweep once Core is at head. Core crosses the version-12 identity sweep
+    /// and the version-16 Campaign frontier sweep before the canonical sweep, so it takes three passes.
     /// </summary>
     [SkippableFact]
     public async Task An_archive_with_sweeps_pending_in_two_tiers_is_drained_through_both()
@@ -111,7 +112,7 @@ public sealed class BackupRestoreStagedDrainTests
 
         Assert.Equal(0L, await ScalarAsync(restored, "SELECT COUNT(*) FROM grimoire_schema_transitions"));
 
-        Assert.Contains(result.Phases, static p => p.Phase == BackupRestorePhase.Migrate && p.Detail.StartsWith("Drained staged schema transitions: 2 passes,", StringComparison.Ordinal));
+        Assert.Contains(result.Phases, static p => p.Phase == BackupRestorePhase.Migrate && p.Detail.StartsWith("Drained staged schema transitions: 3 passes,", StringComparison.Ordinal));
     }
 
     [SkippableFact]
@@ -696,10 +697,12 @@ public sealed class BackupRestoreStagedDrainTests
 
         Assert.Equal(total, counting!.Batches);
 
+        // Three passes exhaust the synthetic version-12 sweep; the empty version-16 Campaign
+        // frontier sweep then requires its own pass and one batch without processing a row.
         Assert.Contains(
             result.Phases,
             static p => p.Phase == BackupRestorePhase.Migrate
-                && p.Detail == $"Drained staged schema transitions: 3 passes, {total} batches, {total} rows.");
+                && p.Detail == $"Drained staged schema transitions: 4 passes, {total + 1} batches, {total} rows.");
 
         await using SqliteConnection restored = await harness.OpenLiveDatabaseAsync(archive.GrimoireSecret);
 

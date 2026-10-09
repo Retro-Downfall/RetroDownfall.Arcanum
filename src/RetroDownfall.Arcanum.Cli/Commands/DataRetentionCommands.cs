@@ -183,9 +183,8 @@ internal sealed class DataRetentionCommands(
             cancellationToken);
 
     /// <param name="campaign">
-    /// Optional Campaign GUID. Only Saga and Lexicon record an owning Campaign, so only those two
-    /// scopes accept it; every other Campaign's memories, and every installation-scoped one, are left
-    /// exactly where they were.
+    /// Optional Campaign GUID. Saga, Lexicon, and Campaign summaries accept an owning Campaign;
+    /// every other Campaign's memories, and every installation-scoped one, are left where they were.
     /// </param>
     public async Task<int> ResetMemory(
         string scope,
@@ -195,7 +194,7 @@ internal sealed class DataRetentionCommands(
         if (!TryParseMemoryScope(scope, out MemoryResetScope parsedScope))
         {
             dispatcher.WriteDiagnostic(
-                "--scope must be entry, attachments, workspace, saga, lexicon, or covenant.");
+                "--scope must be entry, attachments, workspace, saga, lexicon, covenant, or campaign-summary.");
 
             return (int)CliExitCode.ConfigurationError;
         }
@@ -368,6 +367,8 @@ internal sealed class DataRetentionCommands(
         WriteRule("saga-memories", settings.SagaMemories);
 
         WriteRule("lexicon-entries", settings.LexiconEntries);
+
+        WriteRule("campaign-summaries", settings.CampaignSummaries);
 
         WriteRule("workspace-indexes", settings.WorkspaceIndexes);
 

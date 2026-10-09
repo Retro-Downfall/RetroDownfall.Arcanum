@@ -188,7 +188,9 @@ public sealed class CovenantRetentionTests : IAsyncLifetime
 
         Assert.Equal(30, (int)RetentionDataClass.MemoryErasureEvidence);
 
-        Assert.Equal(31, Enum.GetValues<RetentionDataClass>().Length);
+        Assert.Equal(31, (int)RetentionDataClass.CampaignSummaries);
+
+        Assert.Equal(32, Enum.GetValues<RetentionDataClass>().Length);
 
         Assert.Equal(0, (int)MemoryResetScope.Entry);
 
@@ -202,7 +204,9 @@ public sealed class CovenantRetentionTests : IAsyncLifetime
 
         Assert.Equal(5, (int)MemoryResetScope.Covenant);
 
-        Assert.Equal(6, Enum.GetValues<MemoryResetScope>().Length);
+        Assert.Equal(6, (int)MemoryResetScope.CampaignSummary);
+
+        Assert.Equal(7, Enum.GetValues<MemoryResetScope>().Length);
 
     }
 
@@ -1153,18 +1157,33 @@ public sealed class CovenantRetentionTests : IAsyncLifetime
     /// </remarks>
     [SkippableFact]
 
-    public async Task Whole_session_retention_takes_its_own_session_scoped_erasure_receipt_with_it()
+    public async Task Whole_unlabeled_session_retention_takes_only_its_own_session_scoped_erasure_receipt_with_it()
     {
 
         RequireSqlCipher();
 
         await SeedCovenantFamilyAsync(CancellationToken.None, sessionAgedOut: true);
 
-        Assert.Equal(
-            1,
-            await ScalarAsync(
-                "SELECT COUNT(*) FROM assistant_entry_erasure_receipts",
-                CancellationToken.None));
+        const string cleanSession = "10909090-0000-4000-8000-000000000001";
+
+        SqliteConnection connection = (SqliteConnection)_db!.Database.GetDbConnection();
+
+        // The protected family remains as a refusal control. An ordinary sweep may delete an
+        // unlabeled Session's receipt, but it must not erase a protected summary to reach one.
+        await ExecuteAsync(connection,
+            """
+            INSERT INTO Sessions (Id, Status, CreatedAt, UpdatedAt)
+            VALUES ($session, 'active', '2026-01-01T00:00:00.0000000Z', '2026-01-01T00:00:00.0000000Z');
+
+            INSERT INTO assistant_entry_erasure_receipts (
+                AssistantEntryId, SessionId, FinalizationGuardDigest, ErasureReasonCode,
+                OperationId, ErasedAtUtc)
+            VALUES ('10909090-0000-4000-8000-000000000002', $session, zeroblob(32), 1,
+                    '10909090-0000-4000-8000-000000000003', '2026-01-01T00:00:00.0000000Z');
+            """, CancellationToken.None, ("$session", cleanSession));
+
+        Assert.Equal(2, await ScalarAsync(
+            "SELECT COUNT(*) FROM assistant_entry_erasure_receipts", CancellationToken.None));
 
         IDataRetentionService service = CreateService(EveryRuleEnabled());
 
@@ -1181,14 +1200,20 @@ public sealed class CovenantRetentionTests : IAsyncLifetime
         Assert.Equal(
             0,
             await ScalarAsync(
-                "SELECT COUNT(*) FROM \"Sessions\" WHERE \"Id\" = '" + CovenantRetentionSeed.SessionId + "'",
+                "SELECT COUNT(*) FROM \"Sessions\" WHERE \"Id\" = '" + cleanSession + "'",
                 CancellationToken.None));
 
-        Assert.Equal(
-            0,
-            await ScalarAsync(
-                "SELECT COUNT(*) FROM assistant_entry_erasure_receipts",
-                CancellationToken.None));
+        Assert.Equal(0, await ScalarAsync(
+            "SELECT COUNT(*) FROM assistant_entry_erasure_receipts WHERE SessionId = '" + cleanSession + "'",
+            CancellationToken.None));
+
+        Assert.Equal(1, await ScalarAsync(
+            "SELECT COUNT(*) FROM Sessions WHERE Id = '" + CovenantRetentionSeed.SessionId + "'",
+            CancellationToken.None));
+
+        Assert.Equal(1, await ScalarAsync(
+            "SELECT COUNT(*) FROM assistant_entry_erasure_receipts WHERE SessionId = '" + CovenantRetentionSeed.SessionId + "'",
+            CancellationToken.None));
 
         // The immutable canonical arm is untouched by the same sweep: only the Session's own
         // Session-scoped evidence went with the Session.

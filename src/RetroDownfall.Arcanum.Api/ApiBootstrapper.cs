@@ -555,6 +555,16 @@ public static class ApiBootstrapper
 
         services.AddSingleton<IChatClientFactory, ChatClientFactory>();
 
+        services.AddHttpClient(CampaignRollupProviderClientFactory.HttpClientName,
+            static client => client.Timeout = Timeout.InfiniteTimeSpan)
+            .ConfigurePrimaryHttpMessageHandler(static () => OutboundUrlGuard.CreateProviderEgressHandler());
+
+        services.AddScoped<ICampaignRollupProviderClientFactory, CampaignRollupProviderClientFactory>();
+
+        services.AddScoped<ICampaignRollupMaintenance, CampaignRollupMaintenance>();
+
+        services.AddScoped<CampaignRollupTurnPreparer>();
+
         services.AddSingleton<IEmbeddingGeneratorFactory, EmbeddingGeneratorFactory>();
 
         services.AddSingleton<IWeaveService, WeaveService>();

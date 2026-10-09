@@ -196,7 +196,7 @@ public sealed class ArtifactSensitivityLabel
     }
 
     private static SensitiveArtifactKind RequireArtifactKind(SensitiveArtifactKind value) =>
-        value is >= SensitiveArtifactKind.AssistantEntry and <= SensitiveArtifactKind.IdempotencyClaim
+        value is >= SensitiveArtifactKind.AssistantEntry and <= SensitiveArtifactKind.CampaignContribution
             ? value
             : throw new ArgumentOutOfRangeException(nameof(value));
 

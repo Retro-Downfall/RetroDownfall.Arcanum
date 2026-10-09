@@ -256,12 +256,12 @@ public static class CovenantPolicyV1Manifest
     {
         if (typeof(TEnum) == typeof(SensitiveArtifactKind))
         {
-            return 13;
+            return 15;
         }
 
         if (typeof(TEnum) == typeof(CovenantPromptAttribution))
         {
-            return 9;
+            return 11;
         }
 
         if (typeof(TEnum) == typeof(CovenantEgressDestination))
@@ -280,6 +280,7 @@ public static class CovenantPolicyV1Manifest
         }
 
         if (typeof(TEnum) == typeof(SessionTurnClaimState)
+            || typeof(TEnum) == typeof(CovenantMaintenanceStep)
             || typeof(TEnum) == typeof(CovenantReasoningEffort))
         {
             return 6;
@@ -297,7 +298,6 @@ public static class CovenantPolicyV1Manifest
             || typeof(TEnum) == typeof(CovenantProviderRole)
             || typeof(TEnum) == typeof(CovenantToolRiskIdentity)
             || typeof(TEnum) == typeof(CovenantToolPolicyCode)
-            || typeof(TEnum) == typeof(CovenantMaintenanceStep)
             || typeof(TEnum) == typeof(ProviderToolChoice)
             || typeof(TEnum) == typeof(CovenantReasoningWireDialect)
             || typeof(TEnum) == typeof(CovenantCursorEndpoint)

@@ -211,6 +211,24 @@ public sealed partial class GrimoireRepository : IGrimoireTurnCommitter
                 throughEntrySequence,
                 cancellationToken).ConfigureAwait(false);
 
+            if (request.ClaimInterruption is { } interruption)
+            {
+                Result interrupted = await RecordClaimInterruptionAsync(
+                    connection, sqliteTransaction, interruption, cancellationToken).ConfigureAwait(false);
+
+                if (interrupted.IsFailure)
+                {
+                    await efTransaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+
+                    await PauseAfterTurnTransactionAsync(
+                        GrimoireScopedConsumerFinalUseKind.TransactionRolledBack,
+                        request.Outcome,
+                        cancellationToken).ConfigureAwait(false);
+
+                    return interrupted.Error;
+                }
+            }
+
             await efTransaction.CommitAsync(cancellationToken).ConfigureAwait(false);
 
             // A published batch advanced the canonical search sequence. Republished after COMMIT, on the
@@ -463,6 +481,40 @@ public sealed partial class GrimoireRepository : IGrimoireTurnCommitter
         CovenantMutationTransaction transaction,
         CancellationToken cancellationToken)
     {
+        await using (SqliteCommand command = transaction.CreateCommand())
+        {
+            command.CommandText = """
+                SELECT reservation.OriginCode,
+                    CASE WHEN reservation.StateCode = 2 AND reservation.SessionId = $session
+                        AND EXISTS (SELECT 1 FROM session_turn_claims claim
+                            WHERE claim.ClaimId = reservation.ClaimId AND claim.StateCode = 2
+                                AND claim.SessionId = reservation.SessionId
+                                AND claim.FinalizationReservationId = reservation.ReservationId
+                                AND claim.AssistantEntryId = reservation.AssistantEntryId
+                                AND claim.RequestDigest = $request)
+                    THEN 1 ELSE 0 END
+                FROM assistant_finalization_capacity_reservations reservation
+                WHERE reservation.AssistantEntryId = $assistant;
+                """;
+
+            _ = command.Parameters.AddWithValue("$session", request.SessionId.ToString("D").ToUpperInvariant());
+
+            _ = command.Parameters.AddWithValue("$assistant", request.AssistantEntryId.ToString("D").ToUpperInvariant());
+
+            _ = command.Parameters.AddWithValue("$request", request.RequestDigest.Bytes.ToArray());
+
+            await using SqliteDataReader reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+
+            if (await reader.ReadAsync(cancellationToken).ConfigureAwait(false)
+                && reader.GetInt64(0) == (long)AssistantFinalizationCapacityOrigin.PublicClaim)
+            {
+                return reader.GetInt64(1) == 1
+                    ? Result.Success()
+                    : new Error(ErrorCodes.Covenant.StaleSnapshot,
+                        "This public assistant finalization does not match its consumed turn claim reservation.");
+            }
+        }
+
         await SeedSessionCapacityRowAsync(request.SessionId, transaction, cancellationToken)
             .ConfigureAwait(false);
 
@@ -646,4 +698,90 @@ public sealed partial class GrimoireRepository : IGrimoireTurnCommitter
     private sealed record FinalizationGuard(
         AssistantFinalizationOutcome Outcome,
         long? ThroughEntrySequence);
+
+    private static async Task<Result> RecordClaimInterruptionAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        SessionTurnClaimInterruption interruption,
+        CancellationToken cancellationToken)
+    {
+        SessionTurnClaimLease lease = interruption.Lease;
+
+        SessionTurnClaimOutcome outcome = interruption.Outcome;
+
+        await using SqliteCommand command = connection.CreateCommand();
+
+        command.Transaction = transaction;
+
+        // Retaining paid partial text must never create the crash window in which native Committed
+        // evidence is recovered as a successful request. Both outcomes share this transaction, and
+        // the writer must still own the exact claim it began before either one can publish.
+        command.CommandText = """
+            UPDATE session_turn_claims
+            SET StateCode = 6, TerminalErrorCode = $code, TerminalHttpStatus = $status,
+                TerminalParameterBytes = $parameters, TerminalParameterDigest = $digest,
+                TerminalAtUtc = $now, HeartbeatAtUtc = $now, ExecutorId = NULL, LeaseDeadlineUtc = NULL
+            WHERE ClaimId = $claim AND SessionId = $session AND StateCode = 2
+                AND OriginInstallationId = $origin AND OriginRestoreEpoch = $epoch
+                AND ClientTurnId = $client AND SurfaceCode = $surface
+                AND RequestDigest = $request AND DependencyDigest = $dependency
+                AND PreRequestHistoryRevision = $history AND PreRequestHistoryWatermarkUtc IS $watermark
+                AND InputSensitivityRevision = $inputSensitivity AND FinalizationReservationId = $reservation
+                AND AssistantEntryId = $assistant AND OwnerBootId = $boot AND ExecutorId = $executor
+                AND EXISTS (
+                    SELECT 1 FROM assistant_finalization_capacity_reservations reservation
+                    WHERE reservation.ReservationId = session_turn_claims.FinalizationReservationId
+                        AND reservation.SessionId = session_turn_claims.SessionId
+                        AND reservation.ClaimId = session_turn_claims.ClaimId AND reservation.OriginCode = 1
+                        AND reservation.StateCode = 2 AND reservation.AssistantEntryId = $assistant)
+                AND EXISTS (
+                    SELECT 1 FROM assistant_entry_finalizations final
+                    WHERE final.AssistantEntryId = $assistant AND final.SessionId = $session
+                        AND final.RequestDigest = $request AND final.OutcomeCode = 1 AND final.SourceEvidenceDigest IS NULL);
+            """;
+
+        _ = command.Parameters.AddWithValue("$claim", ClaimGuid(lease.Claim.ClaimId));
+
+        _ = command.Parameters.AddWithValue("$session", ClaimGuid(lease.Claim.SessionId));
+
+        _ = command.Parameters.AddWithValue("$origin", ClaimGuid(lease.Claim.OriginInstallationId));
+
+        _ = command.Parameters.AddWithValue("$epoch", lease.Claim.OriginRestoreEpoch);
+
+        _ = command.Parameters.AddWithValue("$client", ClaimGuid(lease.Claim.ClientTurnId));
+
+        _ = command.Parameters.AddWithValue("$surface", (int)lease.Claim.Surface);
+
+        _ = command.Parameters.AddWithValue("$request", lease.Claim.RequestDigest.Bytes);
+
+        _ = command.Parameters.AddWithValue("$dependency", lease.Claim.DependencyDigest.Bytes);
+
+        _ = command.Parameters.AddWithValue("$history", lease.Claim.PreRequestHistoryRevision);
+
+        _ = command.Parameters.AddWithValue("$watermark", lease.Claim.PreRequestHistoryWatermarkUtc is { } watermark ? UtcInstantText.Format(watermark) : DBNull.Value);
+
+        _ = command.Parameters.AddWithValue("$inputSensitivity", lease.Claim.InputSensitivityRevision);
+
+        _ = command.Parameters.AddWithValue("$reservation", ClaimGuid(lease.Claim.FinalizationReservationId));
+
+        _ = command.Parameters.AddWithValue("$assistant", ClaimGuid(lease.FutureAssistantEntryId));
+
+        _ = command.Parameters.AddWithValue("$boot", ClaimGuid(lease.OwnerBootId!.Value));
+
+        _ = command.Parameters.AddWithValue("$executor", ClaimGuid(lease.ExecutorId!.Value));
+
+        _ = command.Parameters.AddWithValue("$code", outcome.TerminalErrorCode!);
+
+        _ = command.Parameters.AddWithValue("$status", outcome.TerminalHttpStatus!.Value);
+
+        _ = command.Parameters.AddWithValue("$parameters", outcome.TerminalParameterBytes.ToArray());
+
+        _ = command.Parameters.AddWithValue("$digest", outcome.TerminalParameterDigest!.Value.Bytes);
+
+        _ = command.Parameters.AddWithValue("$now", UtcInstantText.Format(DateTimeOffset.UtcNow));
+
+        return await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) == 1
+            ? Result.Success()
+            : Result.Failure(new Error(ErrorCodes.Covenant.StaleSnapshot, "The interrupted reply no longer owns its exact Session claim."));
+    }
 }

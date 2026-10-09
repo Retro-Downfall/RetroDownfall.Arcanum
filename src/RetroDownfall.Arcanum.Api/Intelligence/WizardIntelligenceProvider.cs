@@ -96,7 +96,8 @@ public sealed partial class WizardIntelligenceProvider(
     IAttachmentMemoryProvenanceStore? attachmentMemoryProvenanceStore = null,
     ITapestryStore? tapestryStore = null,
     CovenantDispatchGate? covenantDispatch = null,
-    CovenantToolCapabilityRegistry? covenantToolCapabilities = null) : IArcanumIntelligenceProvider, IContextPreviewService, ITurnPipelineRunner
+    CovenantToolCapabilityRegistry? covenantToolCapabilities = null,
+    CampaignRollupTurnPreparer? campaignRollups = null) : IArcanumIntelligenceProvider, IContextPreviewService, ITurnPipelineRunner
 {
     /// <summary>
     /// The token allowance charged for one emitted Covenant section's headings, notice, and fences.
@@ -1689,6 +1690,74 @@ public sealed partial class WizardIntelligenceProvider(
                 yield return new IntelligenceEvent(IntelligenceEventType.Status, "Mage is generating response...");
             }
 
+        CampaignRollupTurnSnapshot? campaignTurn = null;
+
+        if ((settings.Value.ResolveIntelligence().EnableCampaignRollups
+            && invocationContext.Surface is ArcanumExecutionSurface.SessionBackedOperatorTurn
+            && invocationContext.ContextPolicy is not CovenantContextPolicy.None
+            && invocationContext.Campaign is { IsCampaignBound: true }
+            && !InferenceContextBuilder.HasStatelessMessages(request))
+            || (TurnIdempotencyAmbient.RequestIdentity is not null && campaignRollups is not null))
+        {
+            if (campaignRollups is null || covenantScope is null)
+            {
+                Error unavailable = new(ErrorCodes.Covenant.Unavailable, "Campaign summary turn preparation is unavailable.");
+
+                classification.BufferedTerminal = Result<PromptTurnResult>.Failure(unavailable);
+
+                yield return FailureFrame(unavailable);
+
+                yield break;
+            }
+
+            covenantScope.CampaignPreparation ??= campaignRollups.PrepareLiveAsync(
+                request, invocationContext, streaming, inferenceToken,
+                CampaignRollupTurnPreparer.ConfigurationDigest(settings.Value));
+
+            Result<CampaignRollupTurnSnapshot?> prepared = await covenantScope.CampaignPreparation.ConfigureAwait(false);
+
+            if (prepared.IsFailure)
+            {
+                classification.BufferedTerminal = Result<PromptTurnResult>.Failure(prepared.Error);
+
+                yield return FailureFrame(prepared.Error);
+
+                yield break;
+            }
+
+            campaignTurn = prepared.Value;
+
+            if (campaignTurn is not null)
+            {
+                request = request with { SessionId = campaignTurn.SessionId };
+
+                if (campaignTurn.Artifact is { } campaignArtifact)
+                {
+                    covenantScope.BindCampaignArtifact(campaignArtifact);
+                }
+
+                if (campaignTurn.Replay is { } replay)
+                {
+                    classification.BufferedTerminal = replay;
+
+                    if (replay.IsFailure)
+                    {
+                        yield return FailureFrame(replay.Error);
+                    }
+                    else if (streaming)
+                    {
+                        yield return new IntelligenceEvent(IntelligenceEventType.SessionBound, "Session", campaignTurn.SessionId?.ToString("D"));
+
+                        yield return new IntelligenceEvent(IntelligenceEventType.Token, string.Empty, replay.Value.Text);
+
+                        yield return new IntelligenceEvent(IntelligenceEventType.Result, "Complete", "0", FinishReason: "stop");
+                    }
+
+                    yield break;
+                }
+            }
+        }
+
         // One thread snapshot for the whole run (DESIGN §10.7.2), taken before any candidate begins
         // the turn. A later candidate reloading it would read the turn's own user Entry, and with
         // the prompt appended again the fallback provider would be sent it twice.
@@ -1744,7 +1813,8 @@ public sealed partial class WizardIntelligenceProvider(
                     invocationContext,
                     prompt,
                     targetModel,
-                    inferenceToken)
+                    inferenceToken,
+                    claimLease: campaignTurn?.ClaimLease)
                 .ConfigureAwait(false);
 
             if (begun.IsFailure)
@@ -1763,6 +1833,8 @@ public sealed partial class WizardIntelligenceProvider(
 
             grimoireTurn = begun.Value;
 
+            campaignTurn?.MarkBegun();
+
             streamTurnBegunEarly = true;
 
             if (seed is not null)
@@ -1778,7 +1850,8 @@ public sealed partial class WizardIntelligenceProvider(
                     invocationContext,
                     prompt,
                     targetModel,
-                    inferenceToken)
+                    inferenceToken,
+                    claimLease: campaignTurn?.ClaimLease)
                 .ConfigureAwait(false);
 
             if (begun.IsFailure)
@@ -1789,6 +1862,8 @@ public sealed partial class WizardIntelligenceProvider(
             }
 
             grimoireTurn = begun.Value;
+
+            campaignTurn?.MarkBegun();
 
             streamTurnBegunEarly = true;
 
@@ -2288,7 +2363,10 @@ public sealed partial class WizardIntelligenceProvider(
             maxIndexBytes: streamMaxIndexBytes,
             sessionAttachmentContext: streamAttachmentContext,
             tapestryContext: streamTapestryContext,
-            covenant: streamCovenantContent);
+            covenant: streamCovenantContent,
+                campaignRollup: campaignTurn?.Artifact?.Content,
+                enableCampaignRollups: settings.Value.ResolveIntelligence().EnableCampaignRollups,
+                campaignRollupSensitive: campaignTurn?.Artifact?.Sensitivity is ContentSensitivity.CovenantDerived);
         SystemPromptDocument streamSystemPromptDocument = baseSystemPromptDocument;
         string streamBuiltSystemPrompt = streamSystemPromptDocument.Render();
 
@@ -2303,7 +2381,7 @@ public sealed partial class WizardIntelligenceProvider(
                 streamCodexContent,
                 streamActiveSpell,
                 streamAcceptedAttachedFiles,
-                campaignSummary: streamContextUsesCompressedSummary ? thread?.Summary : null,
+                sessionSummary: streamContextUsesCompressedSummary ? thread?.Summary : null,
                 dependencySpells: streamResonants,
                 maxResonantBytes: ArcanumSettingClamps.MaxResonantBytes(
                     ArcanumRuntimeDefaults.Spells.MaxResonantBytes),
@@ -2317,7 +2395,10 @@ public sealed partial class WizardIntelligenceProvider(
                 maxIndexBytes: streamMaxIndexBytes,
                 sessionAttachmentContext: streamAttachmentContext,
                 tapestryContext: streamTapestryContext,
-                covenant: streamCovenantContent);
+                covenant: streamCovenantContent,
+                campaignRollup: campaignTurn?.Artifact?.Content,
+                enableCampaignRollups: settings.Value.ResolveIntelligence().EnableCampaignRollups,
+                campaignRollupSensitive: campaignTurn?.Artifact?.Sensitivity is ContentSensitivity.CovenantDerived);
 
             streamBuiltSystemPrompt = streamSystemPromptDocument.Render();
 
@@ -2387,7 +2468,8 @@ public sealed partial class WizardIntelligenceProvider(
                     invocationContext,
                     prompt,
                     targetModel,
-                    inferenceToken)
+                    inferenceToken,
+                    claimLease: campaignTurn?.ClaimLease)
                 .ConfigureAwait(false);
 
             if (lateBegun.IsFailure)
@@ -2398,6 +2480,8 @@ public sealed partial class WizardIntelligenceProvider(
             }
 
             grimoireTurn = lateBegun.Value;
+
+            campaignTurn?.MarkBegun();
 
             if (seed is not null)
             {
@@ -2651,6 +2735,10 @@ public sealed partial class WizardIntelligenceProvider(
                             MaxIndexBytes = streamMaxIndexBytes,
 
                             ScryingFoci = streamContextRequest.ScryingFoci,
+
+                            CampaignRollup = campaignTurn?.Artifact,
+
+                            EnableCampaignRollups = settings.Value.ResolveIntelligence().EnableCampaignRollups,
                         });
 
                 bool RemoveSemanticForAttachmentAdmission(ContextMaterializationEntry removed)
@@ -2667,7 +2755,7 @@ public sealed partial class WizardIntelligenceProvider(
                         streamCodexContent,
                         streamActiveSpell,
                         streamAcceptedAttachedFiles,
-                        campaignSummary: admissionCompressed ? thread?.Summary : null,
+                        sessionSummary: admissionCompressed ? thread?.Summary : null,
                         dependencySpells: streamResonants,
                         maxResonantBytes: ArcanumSettingClamps.MaxResonantBytes(
                             ArcanumRuntimeDefaults.Spells.MaxResonantBytes),
@@ -2681,7 +2769,10 @@ public sealed partial class WizardIntelligenceProvider(
                         maxIndexBytes: streamMaxIndexBytes,
                         sessionAttachmentContext: streamAttachmentContext,
                         tapestryContext: streamTapestryContext,
-                covenant: streamCovenantContent);
+                covenant: streamCovenantContent,
+                campaignRollup: campaignTurn?.Artifact?.Content,
+                enableCampaignRollups: settings.Value.ResolveIntelligence().EnableCampaignRollups,
+                campaignRollupSensitive: campaignTurn?.Artifact?.Sensitivity is ContentSensitivity.CovenantDerived);
 
                     if (preparedAdmissionMessages.Count > 0
                         && preparedAdmissionMessages[0].Role == ChatRole.System)
@@ -2902,6 +2993,10 @@ public sealed partial class WizardIntelligenceProvider(
                             MaxIndexItems = streamMaxIndexItems,
                             MaxIndexBytes = streamMaxIndexBytes,
                             ScryingFoci = streamContextRequest.ScryingFoci,
+
+                            CampaignRollup = campaignTurn?.Artifact,
+
+                            EnableCampaignRollups = settings.Value.ResolveIntelligence().EnableCampaignRollups,
                             Covenant = streamCovenantContent,
                         });
                 chatMessages = preparedMessages;
@@ -3903,6 +3998,8 @@ public sealed partial class WizardIntelligenceProvider(
 
             if (inferenceError is not null)
             {
+                Error terminalInferenceError = inferenceTypedError ?? new Error(ErrorCodes.Hub.Error, inferenceError);
+
                 if (!streaming)
                 {
                     if (classification.BufferedTerminal is null)
@@ -3927,10 +4024,14 @@ public sealed partial class WizardIntelligenceProvider(
                         streamAccumulator.Length > 0 ? streamAccumulator.ToString() : null,
                         CancellationToken.None,
                         covenantScope?.DerivedSensitivity,
-                        covenantScope?.StagedCommit()).ConfigureAwait(false);
+                        covenantScope?.StagedCommit(),
+                        interruptionOutcome: SessionTurnClaimOutcome.RestoredInterrupted(
+                            terminalInferenceError.Code,
+                            Primitives.ArcanumErrorMapper.ResolveStatusCode(terminalInferenceError.Code),
+                            [])).ConfigureAwait(false);
                 }
 
-                yield return FailureFrame(inferenceTypedError ?? new Error(ErrorCodes.Hub.Error, inferenceError));
+                yield return FailureFrame(terminalInferenceError);
 
                 yield break;
             }
@@ -4028,6 +4129,16 @@ public sealed partial class WizardIntelligenceProvider(
                             if (retryReservation.IsFailure)
                             {
                                 throw new ModelCallAdmissionException(retryReservation.Error);
+                            }
+
+                            Result<CovenantDispatchAdmission?> retryAdmission = await AcknowledgeCovenantDispatchAsync(
+                                covenantScope, streamCovenantDispatch, lease, targetModel, false,
+                                streamSystemPromptDocument, chatMessages, retryOptions, retryContextBreakdown, ct)
+                                .ConfigureAwait(false);
+
+                            if (retryAdmission.IsFailure)
+                            {
+                                throw new ModelCallAdmissionException(retryAdmission.Error);
                             }
 
                             PromptCachePlan retryPromptCachePlan = BuildPromptCachePlan(
@@ -7180,12 +7291,30 @@ public sealed partial class WizardIntelligenceProvider(
         ContextTokenBreakdown breakdown,
         CancellationToken cancellationToken)
     {
+        if (covenantScope?.CampaignPreparation is { IsCompletedSuccessfully: true } prepared
+            && prepared.Result.IsSuccess
+            && prepared.Result.Value is { } campaign)
+        {
+            Result valid = await campaign.ValidateAsync(cancellationToken).ConfigureAwait(false);
+
+            if (valid.IsFailure)
+            {
+                return valid.Error;
+            }
+        }
+
         if (covenantDispatch is null || covenantScope is not { } scope)
         {
+            if (covenantScope?.CampaignArtifact?.Sensitivity is ContentSensitivity.CovenantDerived)
+            {
+                return new Error(ErrorCodes.Covenant.Unavailable, "Protected Campaign context has no disclosure gate.");
+            }
+
             return Result<CovenantDispatchAdmission?>.Success(null);
         }
 
-        if (!dispatch.HasAdmittedContent && !scope.HistoryTainted && !scope.MayStage)
+        if (!dispatch.HasAdmittedContent && !scope.HistoryTainted && !scope.MayStage
+            && scope.CampaignArtifact?.Sensitivity is not ContentSensitivity.CovenantDerived)
         {
             return Result<CovenantDispatchAdmission?>.Success(null);
         }
@@ -7231,6 +7360,19 @@ public sealed partial class WizardIntelligenceProvider(
         Result<CovenantDispatchAdmission> admitted = await covenantDispatch
             .AcknowledgeDispatchAsync(scope, dispatch, frozen.Value, cancellationToken)
             .ConfigureAwait(false);
+
+        if (admitted.IsSuccess
+            && scope.CampaignPreparation is { IsCompletedSuccessfully: true } acknowledgedPreparation
+            && acknowledgedPreparation.Result.IsSuccess
+            && acknowledgedPreparation.Result.Value is { } acknowledgedCampaign)
+        {
+            Result valid = await acknowledgedCampaign.ValidateAsync(cancellationToken).ConfigureAwait(false);
+
+            if (valid.IsFailure)
+            {
+                return valid.Error;
+            }
+        }
 
         return admitted.IsFailure
             ? Result<CovenantDispatchAdmission?>.Failure(admitted.Error)

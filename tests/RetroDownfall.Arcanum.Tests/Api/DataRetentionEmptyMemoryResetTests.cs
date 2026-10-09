@@ -41,6 +41,8 @@ public sealed class DataRetentionEmptyMemoryResetTests
             { MemoryResetScope.Lexicon, false },
             { MemoryResetScope.Saga, true },
             { MemoryResetScope.Lexicon, true },
+            { MemoryResetScope.CampaignSummary, false },
+            { MemoryResetScope.CampaignSummary, true },
         };
 
     [SkippableTheory]

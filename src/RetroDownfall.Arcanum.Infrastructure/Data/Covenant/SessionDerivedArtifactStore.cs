@@ -93,97 +93,51 @@ internal sealed class SessionDerivedArtifactStore(
             cancellationToken);
     }
 
+    internal Task<Result<SessionDerivedArtifactWriteReceipt>> ReplaceSummaryWithinAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        SessionSummaryArtifactWrite request,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        return ReplaceWithinAsync(connection, transaction,
+            new ReplacementPlan(request.SessionId, SensitiveArtifactKind.Summary,
+                "session_summary_artifacts", "session_summary_state",
+                """
+                UPDATE "Sessions"
+                SET "Summary" = $content, "LastSummarizedMessageAt" = $watermark
+                WHERE "Id" = $sessionId;
+                """,
+                request.Summary, request.SummarizedThroughUtc, request.Sensitivity, request.Provenance,
+                request.CampaignId, request.TurnId, request.ProducingPlanDigest,
+                request.ProducingAdmissionDigest, request.ProducingMaintenanceReceiptDigest),
+            cancellationToken);
+    }
+
     private async Task<Result<SessionDerivedArtifactWriteReceipt>> ReplaceCoreAsync(
         ReplacementPlan plan,
         CancellationToken cancellationToken)
     {
-        SqliteConnection connection = await connections.GetOpenConnectionAsync(cancellationToken)
-            .ConfigureAwait(false);
+        SqliteConnection connection = await connections.GetOpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
         await using SqliteTransaction transaction = connection.BeginTransaction(deferred: false);
 
         try
         {
-            // The canonical spelling, which is the only one "Sessions"."Id" is permitted to hold, used
-            // by every step below. This used to read the parent row's own text first and fall back to
-            // this spelling, because the parent could hold either of two; with one spelling that read
-            // resolved to its own fallback on every call, and a scan of "Sessions" per replacement
-            // went with it.
-            string sessionKey = Format(plan.SessionId);
+            Result<SessionDerivedArtifactWriteReceipt> replaced = await ReplaceWithinAsync(
+                connection, transaction, plan, cancellationToken).ConfigureAwait(false);
 
-            (Guid? priorArtifactId, long priorRevision) = await ReadCurrentAsync(
-                connection,
-                transaction,
-                plan,
-                sessionKey,
-                cancellationToken).ConfigureAwait(false);
-
-            Guid artifactId = Guid.NewGuid();
-
-            long revision = checked(priorRevision + 1);
-
-            CovenantDigest contentDigest = DerivedArtifactContentDigest.ForText(plan.Content);
-
-            await InsertArtifactAsync(
-                connection,
-                transaction,
-                plan,
-                sessionKey,
-                artifactId,
-                revision,
-                contentDigest,
-                cancellationToken).ConfigureAwait(false);
-
-            await MovePointerAsync(
-                connection,
-                transaction,
-                plan,
-                sessionKey,
-                artifactId,
-                revision,
-                cancellationToken).ConfigureAwait(false);
-
-            await WriteColumnAsync(connection, transaction, plan, sessionKey, cancellationToken)
-                .ConfigureAwait(false);
-
-            Result<LabeledArtifactWriteReceipt> labelled = await ArtifactSensitivityLedger.WriteWithinAsync(
-                connection,
-                transaction,
-                new DerivedArtifactWrite(
-                    plan.ArtifactKind,
-                    artifactId,
-                    plan.SessionId,
-                    plan.CampaignId,
-                    plan.TurnId,
-                    checked((ulong)revision),
-                    contentDigest,
-                    plan.Sensitivity,
-                    plan.Provenance,
-                    plan.ProducingPlanDigest,
-                    plan.ProducingAdmissionDigest,
-                    plan.ProducingMaintenanceReceiptDigest),
-                cancellationToken).ConfigureAwait(false);
-
-            if (labelled.IsFailure)
+            if (replaced.IsFailure)
             {
                 await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
 
-                return labelled.Error;
-            }
-
-            if (priorArtifactId is { } prior)
-            {
-                await RetirePriorAsync(connection, transaction, plan, prior, cancellationToken)
-                    .ConfigureAwait(false);
+                return replaced.Error;
             }
 
             await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
 
-            return new SessionDerivedArtifactWriteReceipt(
-                artifactId,
-                revision,
-                labelled.Value.Sensitivity,
-                labelled.Value.LabelId);
+            return replaced;
         }
         catch (SqliteException exception)
         {
@@ -193,6 +147,90 @@ internal sealed class SessionDerivedArtifactStore(
                 ErrorCodes.Grimoire.WriteFailed,
                 $"The Session derived artifact could not be replaced ({exception.SqliteErrorCode}).");
         }
+    }
+
+    private async Task<Result<SessionDerivedArtifactWriteReceipt>> ReplaceWithinAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        ReplacementPlan plan,
+        CancellationToken cancellationToken)
+    {
+        // The canonical spelling, which is the only one "Sessions"."Id" is permitted to hold, used
+        // by every step below. This used to read the parent row's own text first and fall back to
+        // this spelling, because the parent could hold either of two; with one spelling that read
+        // resolved to its own fallback on every call, and a scan of "Sessions" per replacement
+        // went with it.
+        string sessionKey = Format(plan.SessionId);
+
+        (Guid? priorArtifactId, long priorRevision) = await ReadCurrentAsync(
+            connection,
+            transaction,
+            plan,
+            sessionKey,
+            cancellationToken).ConfigureAwait(false);
+
+        Guid artifactId = Guid.NewGuid();
+
+        long revision = checked(priorRevision + 1);
+
+        CovenantDigest contentDigest = DerivedArtifactContentDigest.ForText(plan.Content);
+
+        await InsertArtifactAsync(
+            connection,
+            transaction,
+            plan,
+            sessionKey,
+            artifactId,
+            revision,
+            contentDigest,
+            cancellationToken).ConfigureAwait(false);
+
+        await MovePointerAsync(
+            connection,
+            transaction,
+            plan,
+            sessionKey,
+            artifactId,
+            revision,
+            cancellationToken).ConfigureAwait(false);
+
+        await WriteColumnAsync(connection, transaction, plan, sessionKey, cancellationToken)
+            .ConfigureAwait(false);
+
+        Result<LabeledArtifactWriteReceipt> labelled = await ArtifactSensitivityLedger.WriteWithinAsync(
+            connection,
+            transaction,
+            new DerivedArtifactWrite(
+                plan.ArtifactKind,
+                artifactId,
+                plan.SessionId,
+                plan.CampaignId,
+                plan.TurnId,
+                checked((ulong)revision),
+                contentDigest,
+                plan.Sensitivity,
+                plan.Provenance,
+                plan.ProducingPlanDigest,
+                plan.ProducingAdmissionDigest,
+                plan.ProducingMaintenanceReceiptDigest),
+            cancellationToken).ConfigureAwait(false);
+
+        if (labelled.IsFailure)
+        {
+            return labelled.Error;
+        }
+
+        if (priorArtifactId is { } prior)
+        {
+            await RetirePriorAsync(connection, transaction, plan, prior, cancellationToken)
+                .ConfigureAwait(false);
+        }
+
+        return new SessionDerivedArtifactWriteReceipt(
+            artifactId,
+            revision,
+            labelled.Value.Sensitivity,
+            labelled.Value.LabelId);
     }
 
     private static async Task<(Guid? ArtifactId, long Revision)> ReadCurrentAsync(

@@ -9554,7 +9554,11 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
         IHumanPromptRegistry? humanPrompts = null,
         SessionTurnConcurrencyGate? sessionTurnGate = null,
         CovenantDispatchGate? covenantDispatch = null,
-        CovenantToolCapabilityRegistry? covenantToolCapabilities = null)
+        CovenantToolCapabilityRegistry? covenantToolCapabilities = null,
+        CampaignRollupTurnPreparer? campaignRollups = null,
+        IGrimoireTurnCommitter? turnCommitter = null,
+        ISessionTurnClaimBeginStore? claimedBeginStore = null,
+        ISessionTurnClaimCoordinator? claims = null)
     {
         settings ??= DefaultSettings();
 
@@ -9621,7 +9625,10 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
             grimoire as ISessionTurnBeginStore ?? new FakeSessionTurnBeginStore(),
             new SessionEventHub(NullLogger<SessionEventHub>.Instance),
             NullLogger<GrimoireTurnWriter>.Instance,
-            sessionTurnGate: sessionTurnGate);
+            sessionTurnGate: sessionTurnGate,
+            turnCommitter: turnCommitter,
+            claimedBeginStore: claimedBeginStore,
+            claims: claims);
 
         return new WizardIntelligenceProvider(
             factory,
@@ -9665,7 +9672,8 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
             serviceProvider: ordinaryProvider,
             modelTokenEstimator: modelTokenEstimator,
             covenantDispatch: covenantDispatch,
-            covenantToolCapabilities: covenantToolCapabilities);
+            covenantToolCapabilities: covenantToolCapabilities,
+            campaignRollups: campaignRollups);
     }
 
     private static GuardrailsPipeline CreateGuardrailsPipeline(ArcanumSettings settings, FakeGuardrailAuditLogger? audit = null) =>
@@ -10228,6 +10236,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
     private sealed class ScriptingChatClient : IChatClient
     {
+        public Action? BeforeCall { get; set; }
         private readonly Queue<Func<CancellationToken, Task<ChatResponse>>> _buffered = new();
 
         private readonly Queue<Func<CancellationToken, IAsyncEnumerable<ChatResponseUpdate>>> _streaming = new();
@@ -10363,6 +10372,8 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
             AllBufferedCalls.Add(LastBufferedMessages);
 
+            BeforeCall?.Invoke();
+
             LastChatOptions = options;
 
             if (_buffered.Count == 0)
@@ -10383,6 +10394,8 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
             LastBufferedMessages = messages.ToList();
 
             AllStreamingCalls.Add(LastBufferedMessages);
+
+            BeforeCall?.Invoke();
 
             LastChatOptions = options;
 

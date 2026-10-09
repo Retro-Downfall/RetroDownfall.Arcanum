@@ -53,10 +53,16 @@ UNION ALL SELECT 'assistant_entry_finalizations' AS TableName, 'FinalizedAtUtc' 
 UNION ALL SELECT 'assistant_finalization_capacity_reservations' AS TableName, 'CreatedAtUtc' AS ColumnName
 UNION ALL SELECT 'assistant_finalization_capacity_reservations' AS TableName, 'StateChangedAtUtc' AS ColumnName
 UNION ALL SELECT 'attachment_memory_consultations' AS TableName, 'MaterializedAt' AS ColumnName
+UNION ALL SELECT 'campaign_contribution_artifacts' AS TableName, 'CreatedAtUtc' AS ColumnName
+UNION ALL SELECT 'campaign_contribution_state' AS TableName, 'UpdatedAtUtc' AS ColumnName
+UNION ALL SELECT 'campaign_fork_frontiers' AS TableName, 'CreatedAtUtc' AS ColumnName
+UNION ALL SELECT 'campaign_maintenance_checkpoints' AS TableName, 'UpdatedAtUtc' AS ColumnName
 UNION ALL SELECT 'campaign_path_identities' AS TableName, 'UpdatedAtUtc' AS ColumnName
 UNION ALL SELECT 'campaign_path_marker_intents' AS TableName, 'CreatedAtUtc' AS ColumnName
 UNION ALL SELECT 'campaign_path_marker_intents' AS TableName, 'UpdatedAtUtc' AS ColumnName
 UNION ALL SELECT 'campaign_path_operation_receipts' AS TableName, 'CompletedAtUtc' AS ColumnName
+UNION ALL SELECT 'campaign_rollup_artifacts' AS TableName, 'CreatedAtUtc' AS ColumnName
+UNION ALL SELECT 'campaign_rollup_state' AS TableName, 'UpdatedAtUtc' AS ColumnName
 UNION ALL SELECT 'capability_cleanup_state' AS TableName, 'UpdatedAtUtc' AS ColumnName
 UNION ALL SELECT 'covenant_authority_state' AS TableName, 'UpdatedAtUtc' AS ColumnName
 UNION ALL SELECT 'covenant_schema_repair_intents' AS TableName, 'CreatedAtUtc' AS ColumnName
@@ -116,5 +122,4 @@ UNION ALL SELECT 'tapestry_generations' AS TableName, 'CompletedAt' AS ColumnNam
 UNION ALL SELECT 'tapestry_generations' AS TableName, 'StartedAt' AS ColumnName
 UNION ALL SELECT 'tapestry_nodes' AS TableName, 'CreatedAt' AS ColumnName
 UNION ALL SELECT 'workspace_file_chunks' AS TableName, 'FileLastWriteTime' AS ColumnName
-UNION ALL SELECT 'workspace_file_chunks' AS TableName, 'IndexedAt' AS ColumnName
-;
+UNION ALL SELECT 'workspace_file_chunks' AS TableName, 'IndexedAt' AS ColumnName;

@@ -4,7 +4,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 /// The three shipped version chains, built once from the catalog.
 /// </summary>
 /// <remarks>
-/// Core is at version 15 and declares fourteen steps, Covenant canonical is at version 6 and declares five,
+/// Core is at version 16 and declares fifteen steps, Covenant canonical is at version 6 and declares five,
 /// and the Covenant accelerator is still at version 1 and declares none. A tier that never left version 1
 /// keeps the cheapest state there is - the loader, the planner's evolve arm, the installer's step arm,
 /// and the backfill driver all run in production and find nothing to do - and a tier that has left it
@@ -127,8 +127,13 @@ internal static class GrimoireSchemaVersionChains
     /// column, the rewrite is one statement per column, the Tapestry repair is one statement over a derived table,
     /// the new table and its triggers are plain DDL over nothing, and an index is built inside the step's own
     /// transaction.</para>
+    /// <para>Version 16 adds immutable Campaign publications, native Session contribution cursors,
+    /// exact source manifests and request-bound maintenance checkpoints. Its bounded sweep proves
+    /// inherited fork prefixes by deterministic copied Entry identity and excludes the entire legacy
+    /// transcript when that proof is unavailable. It extends only the artifact-kind ledger domain;
+    /// every prior label and maintenance step retains its existing representation.</para>
     /// </remarks>
-    internal const int CoreSchemaVersion = 15;
+    internal const int CoreSchemaVersion = 16;
 
     /// <summary>The version of Covenant's authoritative tables this binary declares.</summary>
     /// <remarks>
@@ -268,6 +273,9 @@ internal static class GrimoireSchemaVersionChains
             // reconstructs that tree by removing those objects from the shipped list and a test hashes
             // it, so a wrong value here fails there rather than against every operator's version-1
             // installation.
+            [(GrimoireSchemaTransactionTier.Core, 16)] =
+                "24765BDDB071B091B7DE145F23A87FBEF5E1D3487D71B835C139B9C4067AC4E6",
+
             [(GrimoireSchemaTransactionTier.CovenantCanonical, 2)] =
                 "7F906C4C832FDF824EC3B6A56431E9E6098DC9BB83EDA5BAE02EC62CE3B4E105",
 
@@ -340,6 +348,8 @@ internal static class GrimoireSchemaVersionChains
                 UtcInstantColumnInventory.CovenantCanonical),
 
             [(GrimoireSchemaTransactionTier.Core, 12)] = new AnnalReviewEventBackfill(),
+
+            [(GrimoireSchemaTransactionTier.Core, 16)] = new CampaignForkFrontierBackfill(),
 
             [(GrimoireSchemaTransactionTier.CovenantCanonical, 5)] = new CovenantReviewEventBackfill(),
         };

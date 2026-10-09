@@ -142,7 +142,7 @@ public sealed class CovenantErasurePageTests
         _ = Assert.Throws<ArgumentOutOfRangeException>(() =>
             new CovenantProtectedArtifactErasureItem(
                 artifactId,
-                (SensitiveArtifactKind)14,
+                (SensitiveArtifactKind)byte.MaxValue,
                 null,
                 labelId,
                 CovenantErasureAuthorityFixture.Label(artifactId, labelId),

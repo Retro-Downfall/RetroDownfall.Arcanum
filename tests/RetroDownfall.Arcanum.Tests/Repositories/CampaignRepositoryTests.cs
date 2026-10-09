@@ -554,6 +554,7 @@ public sealed class CampaignRepositoryTests : IAsyncLifetime
         return new CampaignRepository(
             db ?? _db!,
             NullLogger<CampaignRepository>.Instance,
-            new TestOptionsSnapshot<ArcanumSettings>(new ArcanumSettings()));
+            new TestOptionsSnapshot<ArcanumSettings>(new ArcanumSettings()),
+            FixtureLabeledArtifactGuard.For(db ?? _db!));
     }
 }

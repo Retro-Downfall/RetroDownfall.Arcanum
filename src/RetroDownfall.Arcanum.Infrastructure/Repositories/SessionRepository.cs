@@ -613,6 +613,8 @@ internal sealed class SessionRepository(
 
                 await UpdateForkEntryCountAsync(fork.Id, copiedEntryCount, ct).ConfigureAwait(false);
 
+                await InsertForkFrontierAsync(fork, maximumSourceEntrySequence, ct).ConfigureAwait(false);
+
                 await foreach (IReadOnlyList<SessionAttachmentRecord> sourcePage in attachments
                                    .ReadBoundForForkPagesAsync(
                                        sourceId,
@@ -1224,6 +1226,36 @@ internal sealed class SessionRepository(
                 GrimoireEntitySql.AddParameter(command, "$id", Format(sessionId));
             },
             cancellationToken);
+
+    private async Task InsertForkFrontierAsync(Session fork, long inheritedThroughSequence, CancellationToken ct)
+    {
+        // The table may already be installed while the version-16 legacy sweep is pending. New
+        // forks have exact evidence and must not depend on reconstructing it in a later sweep.
+        await using SqliteCommand exists = await GrimoireSqlCommandFactory.CreateAsync(
+            db,
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'campaign_fork_frontiers');",
+            ct).ConfigureAwait(false);
+
+        if (Convert.ToInt64(await exists.ExecuteScalarAsync(ct).ConfigureAwait(false), CultureInfo.InvariantCulture) == 0)
+        {
+            return;
+        }
+
+        await ExecuteNonQueryAsync(
+            """
+            INSERT INTO campaign_fork_frontiers
+                (SessionId, SourceSessionId, InheritedThroughSequence, ProofKindCode, CreatedAtUtc)
+            VALUES ($session, $source, $sequence, 1, $created);
+            """,
+            command =>
+            {
+                GrimoireEntitySql.AddParameter(command, "$session", Format(fork.Id));
+                GrimoireEntitySql.AddParameter(command, "$source", Format(fork.ForkedFromSessionId!.Value));
+                GrimoireEntitySql.AddParameter(command, "$sequence", inheritedThroughSequence);
+                GrimoireEntitySql.AddParameter(command, "$created", GrimoireEntitySql.Format(fork.CreatedAt));
+            },
+            ct).ConfigureAwait(false);
+    }
 
     private async Task ExecuteNonQueryAsync(
         string commandText,

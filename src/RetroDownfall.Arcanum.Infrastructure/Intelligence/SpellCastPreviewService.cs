@@ -70,7 +70,7 @@ internal sealed class SpellCastPreviewService(
             codexContent,
             primary,
             attachedFiles: null,
-            campaignSummary: null,
+            sessionSummary: null,
             dependencySpells: resolved.Resonants,
             maxResonantBytes: maxResonantBytes);
 

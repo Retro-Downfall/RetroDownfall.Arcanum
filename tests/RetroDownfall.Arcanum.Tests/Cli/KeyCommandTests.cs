@@ -629,6 +629,16 @@ public sealed class KeyCommandTests
             new OptionsWrapper<ArcanumSettings>(
                 new ArcanumSettings
                 {
+                    // This suite exercises the secure-store inventory branch, independent of an
+                    // operator's Perplexity key already present in the process environment.
+                    Integrations = new IntegrationSettings
+                    {
+                        WebResearch = new WebResearchIntegrationSettings
+                        {
+                            CredentialEnvironmentVariable = "ARCANUM_TEST_KEY_WEB_RESEARCH_" + Guid.NewGuid().ToString("N"),
+                        },
+                    },
+
                     Providers =
                     [
                         new ProviderSettings

@@ -51,7 +51,19 @@ public sealed record MemoryStatusDto(
     string? SessionTitle,
     MemoryStoreStatusDto[] Stores,
     CovenantStatusDto? Covenant = null,
-    MemoryCampaignScopeDto? CampaignScope = null);
+    MemoryCampaignScopeDto? CampaignScope = null,
+    MemoryCampaignSummaryDto? CampaignSummary = null);
+
+/// <summary>Current Campaign continuity evidence without summary payload or source transcript bytes.</summary>
+public sealed record MemoryCampaignSummaryDto(
+    Guid CampaignId,
+    Guid? CurrentArtifactId,
+    long Revision,
+    long SourceGeneration,
+    int SourceCount,
+    bool RefoldRequired,
+    ContentSensitivity Sensitivity,
+    DateTimeOffset? UpdatedAtUtc);
 
 /// <summary>
 /// Which Campaign scope a turn on this surface would draw memory from, stated before any turn runs.
@@ -77,7 +89,8 @@ public sealed record MemorySourceDto(
 
 public sealed record MemorySourcesDto(
     Guid? SessionId,
-    MemorySourceDto[] Sources);
+    MemorySourceDto[] Sources,
+    MemoryCampaignSummaryDto? CampaignSummary = null);
 
 /// <param name="Limit">
 /// Optional caller ceiling on the number of results. Omitted means the server's own budget, which is
@@ -159,6 +172,7 @@ public sealed record MemoryExplainDto(
     Guid? SessionId,
     string? SessionTitle,
     MemoryEligibilityDto[] Sources,
-    MemoryCampaignScopeDto? CampaignScope = null);
+    MemoryCampaignScopeDto? CampaignScope = null,
+    MemoryCampaignSummaryDto? CampaignSummary = null);
 
 public sealed record LexiconListDto(LexiconEntryDto[] Entries);

@@ -28,7 +28,7 @@ namespace RetroDownfall.Arcanum.Tests.Operations;
 
 [Collection(HostedProducerAnalysisCollection.Name)]
 [Trait("Category", "HostedProducerAnalysis")]
-public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper output)
+public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelper output)
 {
     [Fact]
     public void MemberMethodIdentityReusesOnlyExactGenericAndReducedSymbolReferences()
@@ -12462,6 +12462,241 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
             && site.Callee == (matches
                 ? "System.IO.File.Delete"
                 : "System.IO.File.Exists"));
+    }
+
+    [Fact]
+    public void ExpressionBodiedAuthoredIndexerRetainsProducerEffectsAndArgumentBindings()
+    {
+        const string helper = """
+            internal sealed class ExpressionIndexerTarget
+            {
+                internal int this[int index] => index == 23 ? InspectSelected() : InspectUnselected();
+
+                private static int InspectSelected()
+                {
+                    System.IO.File.Delete("expression-indexer");
+
+                    return 23;
+                }
+
+                private static int InspectUnselected()
+                {
+                    System.IO.File.Exists("unselected-indexer");
+
+                    return 0;
+                }
+            }
+            """;
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(
+            R2Source("_ = new ExpressionIndexerTarget()[23];", helper),
+            OrdinaryRoot() with
+            {
+                Authority = HostedProducerAuthorityKind.PreReadinessStartup,
+                WorkKind = null,
+                Proof = "Worker.StartAsync: expression-bodied authored indexer fixture",
+            });
+
+        Assert.Contains(result.Items, static site =>
+            site.EnclosingType == "ExpressionIndexerTarget"
+            && site.Callee == "System.IO.File.Delete");
+
+        Assert.DoesNotContain(result.Items, static site =>
+            site.Callee == "System.IO.File.Exists");
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_CALL_TARGET_UNRESOLVED");
+    }
+
+    [Theory]
+    [InlineData("owned", false)]
+    [InlineData("unknown", true)]
+    [InlineData("derived", true)]
+    [InlineData("mutated", true)]
+    [InlineData("escaped", true)]
+    [InlineData("reassigned", true)]
+    public void ChatSdkConstructionRequiresExactUnescapedCodeOwnedOptions(string shape, bool unclassified)
+    {
+        string initializer = shape switch
+        {
+            "unknown" => "ChatOptionsInput.Unknown()",
+            "derived" => "new DerivedChatOptions()",
+            _ => "new OpenAI.OpenAIClientOptions { Endpoint = new System.Uri(\"https://provider.invalid/v1\"), Transport = new System.ClientModel.Primitives.HttpClientPipelineTransport(new System.Net.Http.HttpClient()), RetryPolicy = new System.ClientModel.Primitives.ClientRetryPolicy(0) }",
+        };
+
+        string mutation = shape switch
+        {
+            "mutated" => "options.Endpoint = new System.Uri(\"https://changed.invalid/v1\");",
+            "escaped" => "ChatOptionsInput.Capture(options);",
+            "reassigned" => "options = ChatOptionsInput.Unknown();",
+            _ => string.Empty,
+        };
+
+        string source = R2Source(R2Admission
+            + "OpenAI.OpenAIClientOptions options = " + initializer + "; " + mutation
+            + "_ = new OpenAI.Chat.ChatClient(\"fixture-model\", new System.ClientModel.ApiKeyCredential(\"fixture-key\"), options);",
+            "internal static class ChatOptionsInput { internal static extern OpenAI.OpenAIClientOptions Unknown(); internal static extern void Capture(OpenAI.OpenAIClientOptions value); } "
+            + "internal sealed class DerivedChatOptions : OpenAI.OpenAIClientOptions { public override void Freeze() { System.IO.File.Delete(\"derived-freeze\"); base.Freeze(); } }");
+
+        CSharpCompilation compilation = CompileWithProductionReferencePack(source, "RetroDownfall.Arcanum.Api");
+
+        Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        HostedProducerDiscovery<HostedProducerSite> result = HostedGrimoireProducerInventory.DiscoverProducerSites(
+            [compilation], new(["Worker"], []), [new("Worker", [OrdinaryRoot()])], []);
+
+        Assert.Equal(unclassified, result.Diagnostics.Any(static diagnostic =>
+            diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED"
+            && diagnostic.Detail == "OpenAI.Chat.ChatClient..ctor"));
+    }
+
+    [Theory]
+    [InlineData("adapter", false)]
+    [InlineData("unknown", true)]
+    [InlineData("reassigned", true)]
+    [InlineData("ref-escaped", true)]
+    public void ChatSdkAdapterCleanupRequiresAuthenticatedFactoryValue(string shape, bool unresolved)
+    {
+        const string factory = "Microsoft.Extensions.AI.OpenAIClientExtensions.AsIChatClient(new OpenAI.Chat.ChatClient(\"fixture-model\", new System.ClientModel.ApiKeyCredential(\"fixture-key\"), new OpenAI.OpenAIClientOptions()))";
+
+        string acquisition = shape == "unknown" ? "ChatCleanupInput.Unknown()" : factory;
+
+        string mutation = shape switch
+        {
+            "reassigned" => "client = ChatCleanupInput.Unknown();",
+            "ref-escaped" => "ChatCleanupInput.Replace(ref client);",
+            _ => string.Empty,
+        };
+
+        string source = R2Source(R2Admission
+            + "Microsoft.Extensions.AI.IChatClient client = " + acquisition + "; " + mutation
+            + "((System.IDisposable)client).Dispose(); System.IO.File.Exists(\"adapter-cleanup-control\");",
+            "internal static class ChatCleanupInput { internal static extern Microsoft.Extensions.AI.IChatClient Unknown(); internal static extern void Replace(ref Microsoft.Extensions.AI.IChatClient client); }");
+
+        CSharpCompilation compilation = CompileWithProductionReferencePack(source, "RetroDownfall.Arcanum.Api");
+
+        Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        HostedProducerDiscovery<HostedProducerSite> result = HostedGrimoireProducerInventory.DiscoverProducerSites(
+            [compilation], new(["Worker"], []), [new("Worker", [OrdinaryRoot()])], []);
+
+        Assert.Single(result.Items, static site => site.Callee == "System.IO.File.Exists");
+
+        Assert.Equal(unresolved, result.Diagnostics.Any(static diagnostic =>
+            diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED"
+            && diagnostic.Detail.StartsWith("System.IDisposable.Dispose;", StringComparison.Ordinal)));
+    }
+
+    [Theory]
+    [InlineData("owned", false)]
+    [InlineData("unknown", true)]
+    [InlineData("custom-normalizer", true)]
+    [InlineData("mutable", true)]
+    public void ConcreteTokenizerCountingRequiresCodeOwnedDefaultFactory(string shape, bool unclassified)
+    {
+        string initializer = shape switch
+        {
+            "unknown" => "TokenizerInput.Unknown()",
+            "custom-normalizer" => "Microsoft.ML.Tokenizers.TiktokenTokenizer.CreateForEncoding(encoding, normalizer: TokenizerInput.Custom())",
+            _ => "Microsoft.ML.Tokenizers.TiktokenTokenizer.CreateForEncoding(encoding)",
+        };
+
+        string field = shape == "mutable" ? "private" : "private readonly";
+
+        string source = R2Source(R2Admission + "_ = new OwnedTextCounter(\"o200k_base\").Count(\"fixture\");",
+            "internal sealed class OwnedTextCounter(string encoding) { " + field
+            + " Microsoft.ML.Tokenizers.TiktokenTokenizer tokenizer = " + initializer
+            + "; internal int Count(string text) => tokenizer.CountTokens(text, considerPreTokenization: true, considerNormalization: false); } "
+            + "internal static class TokenizerInput { internal static extern Microsoft.ML.Tokenizers.TiktokenTokenizer Unknown(); internal static extern Microsoft.ML.Tokenizers.Normalizer Custom(); }");
+
+        CSharpCompilation compilation = CompileWithProductionReferencePack(source, "RetroDownfall.Arcanum.Api");
+
+        Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        HostedProducerDiscovery<HostedProducerSite> result = HostedGrimoireProducerInventory.DiscoverProducerSites(
+            [compilation], new(["Worker"], []), [new("Worker", [OrdinaryRoot()])], []);
+
+        Assert.Equal(unclassified, result.Diagnostics.Any(static diagnostic =>
+            diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED"
+            && diagnostic.Detail == "Microsoft.ML.Tokenizers.Tokenizer.CountTokens"));
+    }
+
+    [Fact]
+    public void ExactChatMetadataStorageMembersAreBoundedWithoutTrustingVirtualToolMetadata()
+    {
+        const string body = """
+            Microsoft.Extensions.AI.ChatOptions options = new() { MaxOutputTokens = 23, Temperature = 0.5f };
+            _ = options.MaxOutputTokens;
+            Microsoft.Extensions.AI.ChatMessage message = new(Microsoft.Extensions.AI.ChatRole.User, "text");
+            _ = message.Role;
+            _ = message.AdditionalProperties;
+            Microsoft.Extensions.AI.AdditionalPropertiesDictionary properties = new();
+            _ = properties.Count;
+            _ = properties.TryGetValue("key", out object? value);
+            Microsoft.Extensions.AI.AITool unknown = null!;
+            _ = unknown.Name;
+            _ = properties.TryGetValue<int>("convertible", out _);
+            """;
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(R2Source(body));
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED"
+            && (diagnostic.Detail.StartsWith("Microsoft.Extensions.AI.ChatOptions.", StringComparison.Ordinal)
+                || diagnostic.Detail.StartsWith("Microsoft.Extensions.AI.ChatMessage.", StringComparison.Ordinal)
+                || diagnostic.Detail == "Microsoft.Extensions.AI.ChatRole.User"
+                || diagnostic.Detail == "Microsoft.Extensions.AI.AdditionalPropertiesDictionary`1.Count"));
+
+        Assert.Contains(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED"
+            && diagnostic.Detail == "Microsoft.Extensions.AI.AITool.Name");
+
+        Assert.Single(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED"
+            && diagnostic.Detail == "Microsoft.Extensions.AI.AdditionalPropertiesDictionary`1.TryGetValue");
+    }
+
+    [Fact]
+    public void ExactLinkedListNodeOperationsAreBoundedButValueEqualityRemainsUnclassified()
+    {
+        const string body = """
+            System.Collections.Generic.LinkedList<object> values = new();
+            System.Collections.Generic.LinkedListNode<object> node = new(new object());
+            values.AddFirst(node);
+            _ = values.Count;
+            _ = values.Last;
+            _ = node.Value;
+            node.Value = new object();
+            values.Remove(node);
+            values.RemoveLast();
+            _ = values.Remove(new object());
+            """;
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(R2Source(body));
+
+        Assert.Single(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED"
+            && diagnostic.Detail.StartsWith("System.Collections.Generic.LinkedList", StringComparison.Ordinal));
+
+        Assert.Contains(result.Diagnostics, static diagnostic =>
+            diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED"
+            && diagnostic.Detail == "System.Collections.Generic.LinkedList`1.Remove");
+    }
+
+    [Fact]
+    public void AclCreateAndSqliteReaderIndexerRetainWriteAndDatabaseEffects()
+    {
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(R2Source(
+            R2Admission
+                + "System.IO.FileSystemAclExtensions.Create(new System.IO.FileInfo(\"path\"), System.IO.FileMode.Create, System.Security.AccessControl.FileSystemRights.Modify, System.IO.FileShare.None, 4096, System.IO.FileOptions.Asynchronous, new System.Security.AccessControl.FileSecurity()); Microsoft.Data.Sqlite.SqliteDataReader reader = null!; _ = reader[0];"));
+
+        Assert.Contains(result.Items, static site =>
+            site.Kind == HostedProducerSiteKind.FileSystemEffect
+            && site.Callee == "System.IO.FileSystemAclExtensions.Create");
+
+        Assert.Contains(result.Items, static site =>
+            site.Kind == HostedProducerSiteKind.DatabaseAccess
+            && site.Callee == "Microsoft.Data.Sqlite.SqliteDataReader.this[]");
     }
 
     [Fact]
@@ -27745,6 +27980,7 @@ public sealed class HostedGrimoireProducerInventoryTests(ITestOutputHelper outpu
     [InlineData("Microsoft.Extensions.AI.IEmbeddingGenerator`2.GenerateAsync", 3)]
     [InlineData("RetroDownfall.Arcanum.Core.Intelligence.IModelCallExecutor.ExecuteBufferedAsync", 3)]
     [InlineData("RetroDownfall.Arcanum.Core.Intelligence.IModelCallExecutor.ExecuteStreamingAsync", 3)]
+    [InlineData("RetroDownfall.Arcanum.Core.Intelligence.IModelCallExecutor.ExecuteCampaignMaintenanceAsync", 3)]
     [InlineData("RetroDownfall.Arcanum.Core.Intelligence.IArcanumIntelligenceProvider.ExecutePromptAsync", 3)]
     [InlineData("RetroDownfall.Arcanum.Core.Intelligence.IArcanumIntelligenceProvider.StreamPromptAsync", 3)]
     [InlineData("RetroDownfall.Arcanum.Core.Weave.IWeaveService.EmbedAsync", 3)]

@@ -44,6 +44,40 @@ namespace RetroDownfall.Arcanum.Tests.Cli;
 
 public sealed class DataRetentionCommandTests
 {
+    [Fact]
+    public void Campaign_summary_reset_sends_the_selected_campaign_and_confirmed_plan()
+    {
+        Guid campaign = Guid.Parse("b43d153c-60bf-4cb9-a3e4-46353abfb9ec");
+
+        DataRetentionPlan plan = CreatePlan();
+
+        RecordingHandler handler = new(request => request.Path == "/api/data/memory/reset/plan"
+            ? SuccessResponse(plan, ArcanumJsonContext.Default.ApiResponseDataRetentionPlan)
+            : SuccessResponse(CreateApplyResult(plan.PlanId), ArcanumJsonContext.Default.ApiResponseDataRetentionApplyResult));
+
+        CliTestResult result = RunCommand(handler,
+            ["--yes", "data", "reset-memory", "--scope", "campaign-summary", "--campaign", campaign.ToString("D")]);
+
+        Assert.True(result.ExitCode == 0, result.Error);
+
+        Assert.Equal(2, handler.Requests.Count);
+
+        foreach (RecordedRequest recorded in handler.Requests)
+        {
+            using JsonDocument body = JsonDocument.Parse(recorded.Body);
+
+            Assert.Equal("CampaignSummary", body.RootElement.GetProperty("scope").GetString());
+
+            Assert.Equal(campaign, body.RootElement.GetProperty("campaignId").GetGuid());
+        }
+
+        RecordedRequest applied = Assert.Single(handler.Requests, request => request.Path == "/api/data/memory/reset");
+
+        using JsonDocument applyBody = JsonDocument.Parse(applied.Body);
+
+        Assert.Equal(plan.PlanId, applyBody.RootElement.GetProperty("expectedPlanId").GetString());
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -473,6 +507,8 @@ public sealed class DataRetentionCommandTests
             "archived-sessions: enabled, 180 days",
             settingsResult.Output,
             StringComparison.Ordinal);
+
+        Assert.Contains("campaign-summaries: disabled, 365 days", settingsResult.Output, StringComparison.Ordinal);
 
         Assert.DoesNotContain("{", settingsResult.Output, StringComparison.Ordinal);
 

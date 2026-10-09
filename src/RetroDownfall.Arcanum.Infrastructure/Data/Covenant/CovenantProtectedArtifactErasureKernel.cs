@@ -31,7 +31,9 @@ internal sealed record CovenantArtifactPurgeTarget(
     string KeyColumn,
     bool ExistsConditionally = false,
     AnnalSubjectStore? AnnalStore = null,
-    int? RequiredFromCoreVersion = null)
+    int? RequiredFromCoreVersion = null,
+    string? AdditionalPredicate = null,
+    string? RowIdentity = null)
 {
     /// <summary>This target's delete, keyed by an already-normalised parameter.</summary>
     internal string DeleteBy(string parameter) => $"DELETE FROM {Table} WHERE {Predicate(parameter)};";
@@ -39,13 +41,21 @@ internal sealed record CovenantArtifactPurgeTarget(
     /// <summary>This target's row count, over exactly the rows <see cref="DeleteBy"/> removes.</summary>
     internal string CountBy(string parameter) => $"SELECT count(*) FROM {Table} WHERE {Predicate(parameter)};";
 
-    private string Predicate(string parameter) =>
-        AnnalStore is { } store
+    /// <summary>Content-free row identities over the same exact predicate as count and delete.</summary>
+    internal string ReadIdentitiesBy(string parameter) =>
+        $"SELECT {RowIdentity ?? KeyColumn} FROM {Table} WHERE {Predicate(parameter)};";
+
+    private string Predicate(string parameter)
+    {
+        string keyed = AnnalStore is { } store
             ? AnnalsErasurePlan.ForSubjectQuery(
                 store,
                 $"SELECT SubjectId FROM annal_claims WHERE {CovenantIdentitySql.Keyed("SubjectId", parameter)}")
                 .Single(step => string.Equals(step.Table, Table, StringComparison.Ordinal)).Predicate
             : CovenantIdentitySql.Keyed(KeyColumn, parameter);
+
+        return AdditionalPredicate is null ? keyed : $"({keyed}) AND ({AdditionalPredicate})";
+    }
 }
 
 /// <summary>
@@ -135,6 +145,23 @@ internal static class CovenantArtifactPurgePlans
 
         // The claim row itself is preserved on purpose: it is the only thing that can still answer a
         // replayed request with a typed denial. Only the cached protected body is removed.
+        [SensitiveArtifactKind.CampaignRollup] = new(
+            SensitiveArtifactKind.CampaignRollup,
+            [
+                new CovenantArtifactPurgeTarget("campaign_rollup_sources", "RollupArtifactId", RowIdentity: "RollupArtifactId || ':' || SessionId"),
+                new CovenantArtifactPurgeTarget("campaign_maintenance_checkpoints", "OutputArtifactId", AdditionalPredicate: "OutputArtifactKindCode = 14", RowIdentity: "ClaimId || ':' || StepCode || ':' || hex(InputManifestDigest)"),
+            ],
+            new CovenantArtifactPurgeTarget("campaign_rollup_artifacts", "ArtifactId"),
+            CurrentPointerTable: null,
+            RedactionSql: null),
+
+        [SensitiveArtifactKind.CampaignContribution] = new(
+            SensitiveArtifactKind.CampaignContribution,
+            [new CovenantArtifactPurgeTarget("campaign_maintenance_checkpoints", "OutputArtifactId", AdditionalPredicate: "OutputArtifactKindCode = 15", RowIdentity: "ClaimId || ':' || StepCode || ':' || hex(InputManifestDigest)")],
+            new CovenantArtifactPurgeTarget("campaign_contribution_artifacts", "ArtifactId"),
+            CurrentPointerTable: null,
+            RedactionSql: null),
+
         [SensitiveArtifactKind.IdempotencyClaim] = new(
             SensitiveArtifactKind.IdempotencyClaim,
             [],
@@ -343,8 +370,24 @@ internal sealed class CovenantProtectedArtifactErasureKernel(
                 return Blocked(CovenantErasureBlocker.ManualOwnershipMismatch);
             }
 
+            CovenantOperationScope[] dependentOwners = await CampaignSummaryLifecycle.ReadDependencyOwnersAsync(
+                connection, transaction, item.Kind, item.ArtifactId, item.SessionId, cancellationToken).ConfigureAwait(false);
+
+            if (dependentOwners.Any(ownerScope => !authority.Covers(ownerScope)))
+            {
+                await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+
+                return Blocked(CovenantErasureBlocker.ManualOwnershipMismatch);
+            }
+
             using (_initializer.Authorize(connection, authorization))
             {
+                // Exclusive family authority covers canonical rows and labels. Database-owned
+                // artifact guards additionally require the same purge scope used by ordinary erasure.
+                using CovenantSqliteAuthorizationScope? artifactPurge = authorization == CovenantSqliteAuthorizationKind.CovenantFamilyMaintenance
+                    ? _initializer.Authorize(connection, CovenantSqliteAuthorizationKind.SensitivityRetentionPurge)
+                    : null;
+
                 await ApplyPlanAsync(
                     connection,
                     transaction,
@@ -417,6 +460,20 @@ internal sealed class CovenantProtectedArtifactErasureKernel(
         Guid operationId,
         CancellationToken cancellationToken)
     {
+        if (item.Kind is SensitiveArtifactKind.CampaignRollup or SensitiveArtifactKind.CampaignContribution)
+        {
+            _ = await CampaignSummaryLifecycle.PurgeArtifactAsync(
+                connection, transaction, item.Kind, item.ArtifactId, cancellationToken).ConfigureAwait(false);
+
+            if (rule.RepairsSessionSensitivityState && item.SessionId is { } contributionSession)
+            {
+                await RepairSessionSensitivityAsync(connection, transaction, contributionSession, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+
+            return;
+        }
+
         CovenantArtifactPurgePlan plan = CovenantArtifactPurgePlans.Resolve(item.Kind);
 
         if (rule.RepairsCurrentPointer && plan.CurrentPointerTable is { } pointer)
@@ -449,6 +506,12 @@ internal sealed class CovenantProtectedArtifactErasureKernel(
         // retrievable behind a purge that reported success; the sweep rebuilds it from what is left.
         if (item.Kind == SensitiveArtifactKind.AssistantEntry && item.SessionId is { } owningSession)
         {
+            _ = await SessionSummaryLifecycle.ClearAsync(
+                connection, transaction, owningSession, cancellationToken).ConfigureAwait(false);
+
+            _ = await CampaignSummaryLifecycle.ClearSessionAsync(
+                connection, transaction, owningSession, cancellationToken).ConfigureAwait(false);
+
             _ = await TapestryStore.DeleteSessionTreesAsync(
                 connection,
                 transaction,

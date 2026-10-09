@@ -37,7 +37,7 @@ public sealed class TapestryLeafHashSchemaEvolutionTests
 
         await InsertWorkspaceChunkAsync(connection, "chunk-1", "body");
 
-        await InstallAsync(connection, GrimoireSchemaVersionChains.Default, GrimoireSchemaVersionChains.CoreSchemaVersion);
+        await InstallAsync(connection, CoreSchemaVersionFifteenFixture.ChainSet(), 15);
 
         string[] expected = [.. TriggerNames.Append("tapestry_leaf_hashes").Order(StringComparer.Ordinal)];
 
@@ -62,9 +62,9 @@ public sealed class TapestryLeafHashSchemaEvolutionTests
 
         await InstallAsync(evolved, CoreSchemaVersionFourteenFixture.ChainSet(), 14);
 
-        await InstallAsync(evolved, GrimoireSchemaVersionChains.Default, GrimoireSchemaVersionChains.CoreSchemaVersion);
+        await InstallAsync(evolved, CoreSchemaVersionFifteenFixture.ChainSet(), 15);
 
-        await InstallAsync(fresh, GrimoireSchemaVersionChains.Default, GrimoireSchemaVersionChains.CoreSchemaVersion);
+        await InstallAsync(fresh, CoreSchemaVersionFifteenFixture.ChainSet(), 15);
 
         Assert.Equal(await DefinitionsAsync(fresh), await DefinitionsAsync(evolved));
     }
@@ -185,13 +185,13 @@ public sealed class TapestryLeafHashSchemaEvolutionTests
     private static Task InstallAsync(SqliteConnection connection, bool evolved) =>
         evolved
             ? InstallEvolvedAsync(connection)
-            : InstallAsync(connection, GrimoireSchemaVersionChains.Default, GrimoireSchemaVersionChains.CoreSchemaVersion);
+            : InstallAsync(connection, CoreSchemaVersionFifteenFixture.ChainSet(), 15);
 
     private static async Task InstallEvolvedAsync(SqliteConnection connection)
     {
         await InstallAsync(connection, CoreSchemaVersionFourteenFixture.ChainSet(), 14);
 
-        await InstallAsync(connection, GrimoireSchemaVersionChains.Default, GrimoireSchemaVersionChains.CoreSchemaVersion);
+        await InstallAsync(connection, CoreSchemaVersionFifteenFixture.ChainSet(), 15);
     }
 
     private static async Task InstallAsync(SqliteConnection connection, GrimoireSchemaVersionChainSet chains, int version)

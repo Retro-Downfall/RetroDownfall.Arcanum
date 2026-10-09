@@ -770,6 +770,13 @@ internal sealed class ProtectedArtifactTransferStore(
             _ = await write.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         }
 
+        Result binding = await WriteImportedBindingAsync(request, destination.Connection, transaction, cancellationToken).ConfigureAwait(false);
+
+        if (binding.IsFailure)
+        {
+            return binding;
+        }
+
         Dictionary<string, string> entryIds = [];
 
         foreach (EntryRow entry in graph.Entries)
@@ -813,6 +820,8 @@ internal sealed class ProtectedArtifactTransferStore(
 
             _ = await write.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         }
+
+        await WriteImportedFrontierAsync(request, destination.Connection, transaction, cancellationToken).ConfigureAwait(false);
 
         int blobIndex = 0;
 
@@ -913,6 +922,82 @@ internal sealed class ProtectedArtifactTransferStore(
             destinationSessionId,
             transaction,
             cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<Result> WriteImportedBindingAsync(ImportedSessionTransferRequest request,
+        SqliteConnection connection, SqliteTransaction transaction, CancellationToken cancellationToken)
+    {
+        if (!await BackupRestoreDatabaseWorker.TableExistsAsync(connection, "session_campaign_bindings", cancellationToken, transaction).ConfigureAwait(false))
+        {
+            return Result.Success();
+        }
+
+        if (request.CampaignMapping is { } mapping)
+        {
+            await using SqliteCommand exists = connection.CreateCommand();
+
+            exists.Transaction = transaction;
+
+            exists.CommandText = "SELECT 1 FROM Campaigns WHERE Id = $campaign;";
+
+            _ = exists.Parameters.AddWithValue("$campaign", mapping.DestinationCampaignId.ToString("D").ToUpperInvariant());
+
+            if (await exists.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is null)
+            {
+                return new Error(ErrorCodes.Campaign.NotFound, "The destination Campaign no longer exists.");
+            }
+        }
+
+        using CovenantSqliteAuthorizationScope scope = initializer.Authorize(connection, CovenantSqliteAuthorizationKind.SessionBindingWrite);
+
+        await using SqliteCommand command = connection.CreateCommand();
+
+        command.Transaction = transaction;
+
+        command.CommandText = """
+            INSERT INTO session_campaign_bindings(SessionId,BindingKindCode,CampaignId,BoundAtUtc)
+            VALUES($session,$kind,$campaign,$now);
+            """;
+
+        _ = command.Parameters.AddWithValue("$session", request.DestinationSessionId.ToString("D").ToUpperInvariant());
+
+        _ = command.Parameters.AddWithValue("$kind", request.CampaignMapping is null ? 1 : 2);
+
+        _ = command.Parameters.AddWithValue("$campaign", request.CampaignMapping is { } bound ? bound.DestinationCampaignId.ToString("D").ToUpperInvariant() : DBNull.Value);
+
+        _ = command.Parameters.AddWithValue("$now", UtcInstantText.Format(timeProvider.GetUtcNow()));
+
+        _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+
+        return Result.Success();
+    }
+
+    /// <summary>The verified imported graph is entirely inherited; only future destination Entries are native.</summary>
+    private async Task WriteImportedFrontierAsync(ImportedSessionTransferRequest request,
+        SqliteConnection connection, SqliteTransaction transaction, CancellationToken cancellationToken)
+    {
+        if (!await BackupRestoreDatabaseWorker.TableExistsAsync(connection, "campaign_fork_frontiers", cancellationToken, transaction).ConfigureAwait(false))
+        {
+            return;
+        }
+
+        await using SqliteCommand command = connection.CreateCommand();
+
+        command.Transaction = transaction;
+
+        command.CommandText = """
+            INSERT INTO campaign_fork_frontiers(SessionId,SourceSessionId,InheritedThroughSequence,ProofKindCode,CreatedAtUtc)
+            SELECT $session,$source,COALESCE(MAX(Sequence),0),1,$now
+            FROM Entries WHERE SessionId=$session;
+            """;
+
+        _ = command.Parameters.AddWithValue("$session", request.DestinationSessionId.ToString("D").ToUpperInvariant());
+
+        _ = command.Parameters.AddWithValue("$source", request.SourceSessionId.ToString("D").ToUpperInvariant());
+
+        _ = command.Parameters.AddWithValue("$now", UtcInstantText.Format(timeProvider.GetUtcNow()));
+
+        _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>

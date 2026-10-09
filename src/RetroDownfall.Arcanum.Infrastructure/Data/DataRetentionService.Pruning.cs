@@ -1,3 +1,7 @@
+using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
+
+using Microsoft.Data.Sqlite;
+
 using System.Data.Common;
 
 using System.Globalization;
@@ -332,10 +336,13 @@ internal sealed partial class DataRetentionService
             .Select(static candidate => Guid.Parse(candidate[8..]))
             .ToHashSet();
 
+        HashSet<Guid> selectedEntryOwners = [];
+
         await AddEntryCandidatesAsync(
             retention,
             limit,
             selectedSessions,
+            selectedEntryOwners,
             items,
             blockers,
             conflicts,
@@ -384,6 +391,15 @@ internal sealed partial class DataRetentionService
             items,
             candidates,
             cancellationToken).ConfigureAwait(false);
+
+        HashSet<string> coveredCampaignRows = await AddNativeOwnerClosureItemsAsync(
+            selectedSessions, selectedEntryOwners, items, cancellationToken).ConfigureAwait(false);
+
+        HashSet<Guid> selectedOwnerClosures = [.. selectedSessions, .. selectedEntryOwners];
+
+        await AddCampaignSummaryCandidatesAsync(
+            retention, limit, selectedOwnerClosures, coveredCampaignRows, items, candidates, cancellationToken)
+            .ConfigureAwait(false);
 
         AddLogCandidates(
             retention,
@@ -489,6 +505,8 @@ internal sealed partial class DataRetentionService
 
             LexiconEntries = retention.LexiconEntries with { },
 
+            CampaignSummaries = retention.CampaignSummaries with { },
+
             WorkspaceIndexes = retention.WorkspaceIndexes with { },
 
             SessionEntryEmbeddings = retention.SessionEntryEmbeddings with { },
@@ -533,6 +551,8 @@ internal sealed partial class DataRetentionService
         AppendRuleAuthority(authority, "saga", retention.SagaMemories);
 
         AppendRuleAuthority(authority, "lexicon", retention.LexiconEntries);
+
+        AppendRuleAuthority(authority, "campaign-summaries", retention.CampaignSummaries);
 
         AppendRuleAuthority(authority, "workspace", retention.WorkspaceIndexes);
 
@@ -1357,6 +1377,7 @@ internal sealed partial class DataRetentionService
         RetentionSettings retention,
         int limit,
         HashSet<Guid> selectedSessions,
+        HashSet<Guid> selectedEntryOwners,
         List<DataRetentionPlanItem> items,
         List<DataRetentionBlocker> blockers,
         List<DataRetentionConflict> conflicts,
@@ -1573,6 +1594,8 @@ internal sealed partial class DataRetentionService
                 ("@id", id.ToString("N"))).ConfigureAwait(false);
 
             candidates.Add(EntryCandidatePrefix + id.ToString("D"));
+
+            selectedEntryOwners.Add(sessionId);
 
             items.Add(
                 new DataRetentionPlanItem(
@@ -3124,6 +3147,12 @@ internal sealed partial class DataRetentionService
             return Boundary(retention.LexiconEntries, generatedAt);
         }
 
+        if (candidate.StartsWith(CampaignRollupCandidatePrefix, StringComparison.Ordinal)
+            || candidate.StartsWith(CampaignContributionCandidatePrefix, StringComparison.Ordinal))
+        {
+            return Boundary(retention.CampaignSummaries, generatedAt);
+        }
+
         if (candidate.StartsWith(AuditLogCandidatePrefix, StringComparison.Ordinal))
         {
             return Boundary(retention.AuditLogs, generatedAt);
@@ -4085,6 +4114,8 @@ internal sealed partial class DataRetentionService
             EntryCandidatePrefix,
             AttachmentCandidatePrefix,
             EntryEmbeddingCandidatePrefix,
+            CampaignRollupCandidatePrefix,
+            CampaignContributionCandidatePrefix,
             IdempotencyClaimCandidatePrefix,
             AccountingCandidatePrefix,
             AccountingAdjustmentCandidatePrefix,
@@ -4274,6 +4305,18 @@ internal sealed partial class DataRetentionService
                 candidate[LexiconCandidatePrefix.Length..],
                 effectiveCutoff,
                 cancellationToken).ConfigureAwait(false);
+        }
+
+        if (TryReadGuidCandidate(candidate, CampaignRollupCandidatePrefix, out Guid rollupId))
+        {
+            return await DeleteCampaignSummaryCandidateAsync(SensitiveArtifactKind.CampaignRollup,
+                rollupId, effectiveCutoff, cancellationToken).ConfigureAwait(false);
+        }
+
+        if (TryReadGuidCandidate(candidate, CampaignContributionCandidatePrefix, out Guid contributionId))
+        {
+            return await DeleteCampaignSummaryCandidateAsync(SensitiveArtifactKind.CampaignContribution,
+                contributionId, effectiveCutoff, cancellationToken).ConfigureAwait(false);
         }
 
         if (candidate.StartsWith(AuditLogCandidatePrefix, StringComparison.Ordinal))
@@ -4588,6 +4631,20 @@ internal sealed partial class DataRetentionService
                 "Id = @id AND julianday(UpdatedAt) <= julianday(@cutoff)",
                 cancellationToken,
                 ("@id", candidate[LexiconCandidatePrefix.Length..])).ConfigureAwait(false);
+        }
+
+        if (TryReadGuidCandidate(candidate, CampaignRollupCandidatePrefix, out Guid rollupId))
+        {
+            return await IsDatabaseCandidateOldEnoughAsync(retention.CampaignSummaries, effectiveCutoff,
+                "campaign_rollup_artifacts", "ArtifactId = @id AND julianday(CreatedAtUtc) <= julianday(@cutoff)",
+                cancellationToken, ("@id", rollupId.ToString("D").ToUpperInvariant())).ConfigureAwait(false);
+        }
+
+        if (TryReadGuidCandidate(candidate, CampaignContributionCandidatePrefix, out Guid contributionId))
+        {
+            return await IsDatabaseCandidateOldEnoughAsync(retention.CampaignSummaries, effectiveCutoff,
+                "campaign_contribution_artifacts", "ArtifactId = @id AND julianday(CreatedAtUtc) <= julianday(@cutoff)",
+                cancellationToken, ("@id", contributionId.ToString("D").ToUpperInvariant())).ConfigureAwait(false);
         }
 
         if (HasBoundedValue(candidate, AuditLogCandidatePrefix))
@@ -4908,6 +4965,18 @@ internal sealed partial class DataRetentionService
                 "Id = @id",
                 cancellationToken,
                 ("@id", candidate[LexiconCandidatePrefix.Length..])).ConfigureAwait(false) > 0;
+        }
+
+        if (TryReadGuidCandidate(candidate, CampaignRollupCandidatePrefix, out Guid rollupId))
+        {
+            return await CountTableAsync("campaign_rollup_artifacts", "ArtifactId = @id", cancellationToken,
+                ("@id", rollupId.ToString("D").ToUpperInvariant())).ConfigureAwait(false) > 0;
+        }
+
+        if (TryReadGuidCandidate(candidate, CampaignContributionCandidatePrefix, out Guid contributionId))
+        {
+            return await CountTableAsync("campaign_contribution_artifacts", "ArtifactId = @id", cancellationToken,
+                ("@id", contributionId.ToString("D").ToUpperInvariant())).ConfigureAwait(false) > 0;
         }
 
         if (HasBoundedValue(candidate, AuditLogCandidatePrefix))
@@ -5251,7 +5320,7 @@ internal sealed partial class DataRetentionService
             connection,
             cancellationToken).ConfigureAwait(false);
 
-        int derived = 0;
+        long derived = 0;
 
         int rows;
 
@@ -5314,6 +5383,19 @@ internal sealed partial class DataRetentionService
                 || CurrentRetention.ProtectedSessionIds.Contains(sessionId)
                 || boundaryPin is not null
                 || boundaryConflicts.Length > 0)
+            {
+                await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+
+                return CandidateDeleteResult.Empty;
+            }
+
+            Result summaryUnlabeled = await SessionSummaryLifecycle.EnsureUnlabeledAsync(
+                connection, transaction, sessionId, labeledArtifactGuard, cancellationToken).ConfigureAwait(false);
+
+            Result campaignUnlabeled = await CampaignSummaryLifecycle.EnsureSessionUnlabeledAsync(
+                connection, transaction, sessionId, labeledArtifactGuard, cancellationToken).ConfigureAwait(false);
+
+            if (summaryUnlabeled.IsFailure || campaignUnlabeled.IsFailure)
             {
                 await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
 
@@ -5411,21 +5493,16 @@ internal sealed partial class DataRetentionService
             // Entries_ai mirrors exactly one search row per entry.
             derived += ftsTableExists ? rows : 0;
 
-            _ = await ExecuteAsync(
-                connection,
-                transaction,
-                """
-                UPDATE Sessions
-                SET Summary = NULL,
-                    LastSummarizedMessageAt = NULL,
-                    UnsummarizedEntryCount = (
-                        SELECT COUNT(*)
-                        FROM Entries
-                        WHERE lower(replace(SessionId, '-', '')) = @sessionId)
-                WHERE lower(replace(Id, '-', '')) = @sessionId
-                """,
-                cancellationToken,
-                ("@sessionId", sessionId.ToString("N"))).ConfigureAwait(false);
+            using (CovenantSqliteConnectionInitializer.Instance.Authorize(
+                       (SqliteConnection)connection, CovenantSqliteAuthorizationKind.SessionRetention))
+            {
+                derived += await SessionSummaryLifecycle.ClearAsync(
+                    connection, transaction, sessionId, cancellationToken).ConfigureAwait(false);
+
+                derived += await CampaignSummaryLifecycle.ClearSessionAsync(
+                    (SqliteConnection)connection, (SqliteTransaction)transaction, sessionId, cancellationToken)
+                    .ConfigureAwait(false);
+            }
 
             await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
         }

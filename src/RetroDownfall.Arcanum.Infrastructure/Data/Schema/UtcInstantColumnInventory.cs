@@ -95,6 +95,12 @@ internal static class UtcInstantColumnInventory
             ? new UtcInstantTable("lexicon_entries", ["PinnedAtUtc", "RetiredAtUtc", "UpdatedAt"])
             : table)
             .Append(new UtcInstantTable("lexicon_annal_fact_provenance", ["MaterializedAt"]))
+            .Append(new UtcInstantTable("campaign_rollup_artifacts", ["CreatedAtUtc"]))
+            .Append(new UtcInstantTable("campaign_rollup_state", ["UpdatedAtUtc"]))
+            .Append(new UtcInstantTable("campaign_contribution_artifacts", ["CreatedAtUtc"]))
+            .Append(new UtcInstantTable("campaign_contribution_state", ["UpdatedAtUtc"]))
+            .Append(new UtcInstantTable("campaign_fork_frontiers", ["CreatedAtUtc"]))
+            .Append(new UtcInstantTable("campaign_maintenance_checkpoints", ["UpdatedAtUtc"]))
             .OrderBy(static table => table.TableName, StringComparer.Ordinal),
     ];
 

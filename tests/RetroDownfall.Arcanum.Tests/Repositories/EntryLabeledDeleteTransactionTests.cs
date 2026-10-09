@@ -12,9 +12,15 @@ using RetroDownfall.Arcanum.Core.DataLifecycle;
 
 using RetroDownfall.Arcanum.Core.Primitives;
 
+using RetroDownfall.Arcanum.Core.Storage;
+
 using RetroDownfall.Arcanum.Infrastructure.Data;
 
+using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
+
 using RetroDownfall.Arcanum.Infrastructure.Repositories;
+
+using RetroDownfall.Arcanum.Tests.Data.Covenant;
 
 using RetroDownfall.Arcanum.Tests.Fixtures;
 
@@ -75,6 +81,42 @@ public sealed class EntryLabeledDeleteTransactionTests(GrimoireFixture fixture) 
 
         File.Delete(_path);
 
+    }
+
+    [SkippableFact]
+    public async Task A_clean_entry_delete_cannot_remove_a_labelled_dependent_summary_through_the_ordinary_lane()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        GrimoireRepository repository = Repository(FixtureLabeledArtifactGuard.For(_db));
+
+        (Guid sessionId, Guid entryId) = await CreateEntryAsync(repository);
+
+        ISessionSummaryArtifactStore summaries = new SessionDerivedArtifactStore(
+            new FixedCovenantConnectionSource((SqliteConnection)_db.Database.GetDbConnection()),
+            CovenantSqliteConnectionInitializer.Instance);
+
+        Result<SessionDerivedArtifactWriteReceipt> summary = await summaries.ReplaceAsync(
+            new SessionSummaryArtifactWrite(
+                sessionId,
+                "protected compression derived from the deleted source",
+                DateTimeOffset.UtcNow.AddMinutes(1),
+                ContentSensitivity.CovenantDerived,
+                GenerationProvenance.CreateExact([Guid.NewGuid()])),
+            Token);
+
+        Assert.True(summary.IsSuccess, summary.Error.Message);
+
+        LabeledArtifactRefusalException refused = await Assert.ThrowsAsync<LabeledArtifactRefusalException>(
+            () => repository.DeleteEntryAsync(sessionId, entryId, Token));
+
+        Assert.Equal(ErrorCodes.Covenant.ForbiddenAuthority, refused.Error.Code);
+
+        Assert.Equal(1L, await CountEntryAsync(entryId));
+
+        Assert.Equal(1L, await CountAsync("session_summary_artifacts"));
+
+        Assert.Equal(1L, await CountAsync("artifact_sensitivity"));
     }
 
     [SkippableFact]

@@ -40,7 +40,7 @@ public sealed class InferenceTokenizerResolver(ILogger<InferenceTokenizerResolve
 
         try
         {
-            Tokenizer created = TiktokenTokenizer.CreateForEncoding(requested);
+            InferenceTextCounter created = new(requested);
 
             logger.LogDebug("Created Tiktoken tokenizer for encoding {EncodingName}.", requested);
 
@@ -57,7 +57,7 @@ public sealed class InferenceTokenizerResolver(ILogger<InferenceTokenizerResolve
             ResolvedInferenceTokenizer fallback = _cache.GetOrAdd(
                 DefaultEncodingName,
                 static _ => new ResolvedInferenceTokenizer(
-                    TiktokenTokenizer.CreateForEncoding(DefaultEncodingName),
+                    new InferenceTextCounter(DefaultEncodingName),
                     DefaultEncodingName,
                     DefaultEncodingName,
                     UsedFallback: false));
@@ -74,7 +74,21 @@ public sealed class InferenceTokenizerResolver(ILogger<InferenceTokenizerResolve
 }
 
 internal sealed record ResolvedInferenceTokenizer(
-    Tokenizer Tokenizer,
+    InferenceTextCounter Counter,
     string RequestedEncoding,
     string ActualEncoding,
-    bool UsedFallback);
+    bool UsedFallback)
+{
+    public TiktokenTokenizer Tokenizer => Counter.Tokenizer;
+}
+
+/// <summary>Owns the exact embedded-encoding factory result; accepts no caller tokenizer or hooks.</summary>
+internal sealed class InferenceTextCounter(string encodingName)
+{
+    private readonly TiktokenTokenizer _tokenizer = TiktokenTokenizer.CreateForEncoding(encodingName);
+
+    public TiktokenTokenizer Tokenizer => _tokenizer;
+
+    public int CountTokens(string text) =>
+        _tokenizer.CountTokens(text, considerPreTokenization: true, considerNormalization: false);
+}

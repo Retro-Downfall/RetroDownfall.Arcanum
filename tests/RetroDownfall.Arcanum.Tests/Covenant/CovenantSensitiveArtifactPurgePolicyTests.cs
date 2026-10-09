@@ -13,6 +13,32 @@ public sealed class CovenantSensitiveArtifactPurgePolicyTests
 {
 
     [Theory]
+    [InlineData(14, false)]
+    [InlineData(15, true)]
+    public void Campaign_summary_kinds_share_atomic_database_purge_and_pointer_repair(byte code, bool repairsSession)
+    {
+        Result<CovenantSensitiveArtifactPurgeRule> result = CovenantSensitiveArtifactPurgePolicy.Resolve((SensitiveArtifactKind)code);
+
+        Assert.True(result.IsSuccess, result.Error.Message);
+
+        Assert.Equal(code, result.Value.Code);
+
+        Assert.Equal(CovenantArtifactPurgeExecutor.DatabaseTransaction, result.Value.Executor);
+
+        Assert.True(result.Value.DeletesDerivedProjections);
+
+        Assert.True(result.Value.RemovesLabelWithContent);
+
+        Assert.True(result.Value.RepairsCurrentPointer);
+
+        Assert.Equal(repairsSession, result.Value.RepairsSessionSensitivityState);
+
+        Assert.False(result.Value.AppendsErasureReceipt);
+
+        Assert.Contains("checkpoint", result.Value.Policy, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Theory]
     [InlineData(SensitiveArtifactKind.AssistantEntry, 1)]
     [InlineData(SensitiveArtifactKind.TurnEvidence, 2)]
     [InlineData(SensitiveArtifactKind.Summary, 3)]
@@ -26,6 +52,8 @@ public sealed class CovenantSensitiveArtifactPurgePolicyTests
     [InlineData(SensitiveArtifactKind.Notification, 11)]
     [InlineData(SensitiveArtifactKind.ManagedWorkspaceFile, 12)]
     [InlineData(SensitiveArtifactKind.IdempotencyClaim, 13)]
+    [InlineData(SensitiveArtifactKind.CampaignRollup, 14)]
+    [InlineData(SensitiveArtifactKind.CampaignContribution, 15)]
     public void Purge_registry_has_one_literal_rule_for_every_artifact_kind(
         SensitiveArtifactKind kind,
         byte code)
@@ -87,10 +115,10 @@ public sealed class CovenantSensitiveArtifactPurgePolicyTests
     }
 
     [Fact]
-    public void Purge_registry_is_exhaustive_over_the_thirteen_kinds_and_rejects_anything_else()
+    public void Purge_registry_is_exhaustive_over_all_kinds_and_rejects_anything_else()
     {
 
-        Assert.Equal(13, CovenantSensitiveArtifactPurgePolicy.All.Count);
+        Assert.Equal(15, CovenantSensitiveArtifactPurgePolicy.All.Count);
 
         Assert.Equal(
             Enum.GetValues<SensitiveArtifactKind>().OrderBy(static kind => (byte)kind),
@@ -98,10 +126,10 @@ public sealed class CovenantSensitiveArtifactPurgePolicyTests
 
         Assert.False(CovenantSensitiveArtifactPurgePolicy.IsCovered((SensitiveArtifactKind)0));
 
-        Assert.False(CovenantSensitiveArtifactPurgePolicy.IsCovered((SensitiveArtifactKind)14));
+        Assert.False(CovenantSensitiveArtifactPurgePolicy.IsCovered((SensitiveArtifactKind)16));
 
         Result<CovenantSensitiveArtifactPurgeRule> unknown =
-            CovenantSensitiveArtifactPurgePolicy.Resolve((SensitiveArtifactKind)14);
+            CovenantSensitiveArtifactPurgePolicy.Resolve((SensitiveArtifactKind)16);
 
         Assert.True(unknown.IsFailure);
 
@@ -145,7 +173,7 @@ public sealed class CovenantSensitiveArtifactPurgePolicyTests
     }
 
     [Fact]
-    public void Current_pointer_repair_is_exactly_the_two_session_scoped_singletons()
+    public void Current_pointer_repair_covers_session_and_campaign_summary_singletons()
     {
 
         IReadOnlyList<SensitiveArtifactKind> pointerRepairing =
@@ -156,11 +184,11 @@ public sealed class CovenantSensitiveArtifactPurgePolicyTests
         ];
 
         Assert.Equal(
-            [SensitiveArtifactKind.Summary, SensitiveArtifactKind.SessionTitle],
+            [SensitiveArtifactKind.Summary, SensitiveArtifactKind.SessionTitle, SensitiveArtifactKind.CampaignRollup, SensitiveArtifactKind.CampaignContribution],
             pointerRepairing.OrderBy(static kind => (byte)kind));
 
         Assert.All(
-            CovenantSensitiveArtifactPurgePolicy.All.Where(static rule => rule.RepairsCurrentPointer),
+            CovenantSensitiveArtifactPurgePolicy.All.Where(static rule => rule.RepairsCurrentPointer && rule.Kind != SensitiveArtifactKind.CampaignRollup),
             static rule => Assert.True(rule.RepairsSessionSensitivityState));
 
     }

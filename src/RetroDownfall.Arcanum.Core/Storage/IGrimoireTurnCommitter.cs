@@ -47,7 +47,8 @@ public sealed record TurnCommitRequest
         Guid? campaignId = null,
         Guid? turnId = null,
         CovenantDigest? producingPlanDigest = null,
-        CovenantDigest? producingAdmissionDigest = null)
+        CovenantDigest? producingAdmissionDigest = null,
+        SessionTurnClaimInterruption? claimInterruption = null)
     {
 
         ArgumentNullException.ThrowIfNull(finalText);
@@ -118,6 +119,26 @@ public sealed record TurnCommitRequest
 
         ProducingAdmissionDigest = producingAdmissionDigest;
 
+        if (claimInterruption is not null)
+        {
+            ArgumentNullException.ThrowIfNull(claimInterruption.Lease);
+
+            ArgumentNullException.ThrowIfNull(claimInterruption.Outcome);
+
+            SessionTurnClaimLease interrupted = claimInterruption.Lease;
+
+            if (Outcome is not AssistantFinalizationOutcome.Committed || !Mutations.IsEmpty
+                || claimInterruption.Outcome.State is not SessionTurnClaimState.RestoredInterrupted
+                || !interrupted.IsExecutable || interrupted.ExecutorId is null || interrupted.OwnerBootId is null
+                || interrupted.FutureAssistantEntryId != AssistantEntryId || interrupted.Claim.SessionId != SessionId
+                || interrupted.Claim.RequestDigest != RequestDigest)
+            {
+                throw new ArgumentException("A retained partial reply requires its exact executable claim and interrupted outcome, without staged mutations.", nameof(claimInterruption));
+            }
+        }
+
+        ClaimInterruption = claimInterruption;
+
     }
 
     public Guid AssistantEntryId { get; }
@@ -153,6 +174,9 @@ public sealed record TurnCommitRequest
     /// <summary>The admission that froze that plan. Recorded only as a pair with it.</summary>
     public CovenantDigest? ProducingAdmissionDigest { get; }
 
+    /// <summary>The request failure that must publish atomically with a retained partial reply.</summary>
+    public SessionTurnClaimInterruption? ClaimInterruption { get; }
+
     /// <summary>
     /// The information-flow label this finalization has to persist beside its content.
     /// </summary>
@@ -176,6 +200,9 @@ public sealed record TurnCommitRequest
             ProducingAdmissionDigest);
 
 }
+
+/// <summary>Preserves one executable request's terminal error while retaining its paid partial Entry.</summary>
+public sealed record SessionTurnClaimInterruption(SessionTurnClaimLease Lease, SessionTurnClaimOutcome Outcome);
 
 /// <summary>
 /// The generation and epoch values a staged batch was planned under and must still hold at commit.

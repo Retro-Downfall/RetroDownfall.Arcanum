@@ -1,4 +1,5 @@
 using Microsoft.Extensions.AI;
+using RetroDownfall.Arcanum.Core.Primitives;
 
 namespace RetroDownfall.Arcanum.Core.Intelligence;
 
@@ -8,6 +9,16 @@ namespace RetroDownfall.Arcanum.Core.Intelligence;
 /// </summary>
 public interface IModelCallExecutor
 {
+    /// <summary>Fixed plaintext Campaign maintenance lane with the physical-send authority fence.</summary>
+    Task<Result<CampaignMaintenanceCallResult>> ExecuteCampaignMaintenanceAsync(
+        IChatClient chatClient,
+        CampaignMaintenancePayload payload,
+        ITurnBudget budget,
+        Func<CancellationToken, Task> beforeSend,
+        CancellationToken cancellationToken,
+        ModelCallContext context) =>
+        throw new NotSupportedException("This executor does not support closed Campaign maintenance calls.");
+
     /// <summary>
     /// Buffered provider invocation with purpose metadata. Production callers must supply a
     /// model-call context so context, cache, fingerprint, and cost admission cannot be bypassed.

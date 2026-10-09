@@ -18,7 +18,7 @@ namespace RetroDownfall.Arcanum.Api.Intelligence;
 public sealed class SystemPromptTokenAttribution
 {
 
-    private const int CategoryCount = 10;
+    private const int CategoryCount = 12;
 
     private readonly int[] _counts;
 
@@ -154,7 +154,9 @@ public sealed class SystemPromptTokenAttribution
             CovenantPromptAttribution.SpecialOrUncovered => 6,
             CovenantPromptAttribution.Preamble => 7,
             CovenantPromptAttribution.Instructions => 8,
-            _ => 9,
+            CovenantPromptAttribution.CampaignRollup => 9,
+            CovenantPromptAttribution.SessionRollup => 10,
+            _ => 11,
         };
 
 }

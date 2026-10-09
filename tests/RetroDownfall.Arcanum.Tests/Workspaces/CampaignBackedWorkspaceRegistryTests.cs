@@ -520,7 +520,8 @@ public sealed class CampaignBackedWorkspaceRegistryTests : IAsyncLifetime
                 new CampaignRepository(
                     db,
                     NullLogger<CampaignRepository>.Instance,
-                    new TestOptionsSnapshot<ArcanumSettings>(settings)));
+                    new TestOptionsSnapshot<ArcanumSettings>(settings),
+                    FixtureLabeledArtifactGuard.For(db)));
 
             _provider = services.BuildServiceProvider();
 

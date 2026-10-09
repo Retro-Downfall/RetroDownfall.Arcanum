@@ -86,6 +86,24 @@ public sealed class NullableInterfaceConstructorDefaultTests
 
         ["src/RetroDownfall.Arcanum.Api/Intelligence/ChatClientFactory.cs:ChatClientFactory:loggerFactory"] = "diagnostic sink; absence degrades logging, not a guard",
 
+        ["src/RetroDownfall.Arcanum.Api/Intelligence/CampaignRollupTurnPreparer.cs:CampaignRollupTurnPreparer:authoritySnapshot"] = "inspection and default-off fixtures need no runtime authority; the live eligible path refuses before claims or maintenance if authority is absent, and the composed host registers the snapshot provider",
+
+        ["src/RetroDownfall.Arcanum.Api/Intelligence/CampaignRollupTurnPreparer.cs:CampaignRollupTurnPreparer:claimBegin"] = "read-only inspection needs no claim begin; eligible live preparation refuses before payment if this port is absent, and the composed host registers the atomic claim begin store",
+
+        ["src/RetroDownfall.Arcanum.Api/Intelligence/CampaignRollupTurnPreparer.cs:CampaignRollupTurnPreparer:claims"] = "read-only inspection needs no claim coordinator; eligible live preparation refuses before payment if absent, and the composed host registers the durable coordinator",
+
+        ["src/RetroDownfall.Arcanum.Api/Intelligence/CampaignRollupTurnPreparer.cs:CampaignRollupTurnPreparer:lookup"] = "read-only inspection and unkeyed gate-off fixtures need no accepted-key lookup; keyed ineligible requests refuse if it is absent, and the composed host registers the content-free lookup",
+
+        ["src/RetroDownfall.Arcanum.Api/Intelligence/CampaignRollupTurnPreparer.cs:CampaignRollupTurnPreparer:maintenance"] = "read-only inspection needs no maintenance service; eligible live preparation refuses before payment if absent, and ApiBootstrapper registers the shared service",
+
+        ["src/RetroDownfall.Arcanum.Api/Intelligence/CampaignRollupTurnPreparer.cs:CampaignRollupTurnPreparer:protectedReplies"] = "the composed host registers both the atomic replay store and protected reader; inspection does not replay, and a replay requiring protected content refuses rather than reading raw content when no authorized reader exists",
+
+        ["src/RetroDownfall.Arcanum.Api/Intelligence/CampaignRollupTurnPreparer.cs:CampaignRollupTurnPreparer:replayStore"] = "inspection does not replay; absence selects the explicitly clean-proven fallback or an authorized protected reader, never a raw protected read, and the composed host registers the atomic replay store",
+
+        ["src/RetroDownfall.Arcanum.Api/Intelligence/CampaignRollupTurnPreparer.cs:CampaignRollupTurnPreparer:sessionBegin"] = "inspection and already-bound Session fixtures need no Session creation; a live request omitting Session identity refuses if absent, and the composed host registers the Session begin store",
+
+        ["src/RetroDownfall.Arcanum.Api/Intelligence/CampaignRollupTurnPreparer.cs:CampaignRollupTurnSnapshot:claims"] = "preview snapshots own no claim and need no coordinator; every live snapshot is constructed by the preparer with its required registered coordinator, which terminalizes an unbegun claim on disposal",
+
         ["src/RetroDownfall.Arcanum.Api/Intelligence/ContextCompressionService.cs:ContextCompressionService:modelTokenEstimator"] = "the null coalesces to a constructed default at the use site, so no host runs without a IModelTokenEstimator",
 
         ["src/RetroDownfall.Arcanum.Api/Intelligence/ContextCompressionService.cs:ContextCompressionService:purger"] = "the owner is registered by ApiBootstrapper (IContextCompressionService, scoped) and ICovenantSensitiveArtifactPurger by the Covenant registrations in AddArcanumInfrastructure; the `_purger is null` check in the compaction path skips the group-safe purge entirely (and is what keeps the null-forgiving dereference in PurgeSelectedEntriesAsync unreached), so the container supplying it is what keeps that purge reachable",
@@ -94,7 +112,11 @@ public sealed class NullableInterfaceConstructorDefaultTests
 
         ["src/RetroDownfall.Arcanum.Api/Intelligence/Familiars/CodexCliChatClient.cs:CodexCliChatClient:logger"] = "diagnostic sink; absence degrades logging, not a guard",
 
-        ["src/RetroDownfall.Arcanum.Api/Intelligence/GrimoireTurnWriter.cs:GrimoireTurnWriter:turnCommitter"] = "every use of the IGrimoireTurnCommitter is null-safe; absence disables an observation, not a refusal",
+        ["src/RetroDownfall.Arcanum.Api/Intelligence/GrimoireTurnWriter.cs:GrimoireTurnWriter:turnCommitter"] = "legacy unclaimed clean fixtures retain their old persistence lane; claimed or protected finalization refuses without the atomic committer, and the composed host supplies it",
+
+        ["src/RetroDownfall.Arcanum.Api/Intelligence/GrimoireTurnWriter.cs:GrimoireTurnWriter:claimedBeginStore"] = "legacy unclaimed fixtures need only the ordinary begin port; supplying a claim selects required atomic begin and refuses if the claim port is absent, and the composed host supplies it",
+
+        ["src/RetroDownfall.Arcanum.Api/Intelligence/GrimoireTurnWriter.cs:GrimoireTurnWriter:claims"] = "legacy unclaimed fixtures own no durable claim; supplying a claim requires this coordinator before begin and finalization, and the composed host supplies it",
 
         ["src/RetroDownfall.Arcanum.Api/Intelligence/ModelCallExecutor.cs:ModelCallExecutor:logger"] = "diagnostic sink; absence degrades logging, not a guard",
 

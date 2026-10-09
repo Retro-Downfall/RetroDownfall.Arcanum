@@ -122,7 +122,8 @@ public static class CovenantProviderCallFreezer
                 materialization,
                 messages.Value,
                 tools.Value,
-                null));
+                options.Value.CanonicalJsonSchemaDigest,
+                options.Value.HasCanonicalJsonSchema ? options.Value.CanonicalJsonSchemaBytes.AsSpan() : default));
 
         }
         catch (ArgumentException exception)
@@ -486,8 +487,37 @@ public static class CovenantProviderCallFreezer
 
         try
         {
+            ProviderResponseFormat responseFormat = ProviderResponseFormat.Text;
 
-            return Result<FrozenProviderOptions>.Success(FrozenProviderOptions.Create(new ProviderOptionsDigestInput(
+            string? schemaName = null;
+
+            string? schemaDescription = null;
+
+            byte[]? canonicalSchema = null;
+
+            CovenantDigest? schemaDigest = null;
+
+            if (options?.ResponseFormat is ChatResponseFormatJson json)
+            {
+                responseFormat = json.Schema is null ? ProviderResponseFormat.JsonObject : ProviderResponseFormat.JsonSchema;
+
+                if (json.Schema is { } schema)
+                {
+                    schemaName = json.SchemaName;
+
+                    schemaDescription = json.SchemaDescription;
+
+                    canonicalSchema = ArcanumCanonicalJsonV1.Canonicalize(schema.GetRawText());
+
+                    schemaDigest = new CovenantDigest(SHA256.HashData(canonicalSchema));
+                }
+            }
+            else if (options?.ResponseFormat is not (null or ChatResponseFormatText))
+            {
+                throw new ArgumentException("This response format cannot be frozen.");
+            }
+
+            ProviderOptionsDigestInput input = new(
                 options?.MaxOutputTokens is > 0 and { } max ? (ulong)max : null,
                 options?.Temperature,
                 options?.TopP,
@@ -499,19 +529,22 @@ public static class CovenantProviderCallFreezer
                 FreezeToolChoice(options),
                 null,
                 CovenantTriStateBoolean.Absent,
-                ProviderResponseFormat.Text,
-                null,
-                null,
-                null,
+                responseFormat,
+                schemaName,
+                schemaDescription,
+                schemaDigest,
                 CovenantTriStateBoolean.Absent,
                 null,
                 null,
                 null,
                 CovenantReasoningWireDialect.Standard,
-                default)));
+                default);
 
+            return Result<FrozenProviderOptions>.Success(canonicalSchema is null
+                ? FrozenProviderOptions.Create(input)
+                : FrozenProviderOptions.Create(input, canonicalSchema));
         }
-        catch (Exception exception) when (exception is ArgumentException or ArgumentOutOfRangeException)
+        catch (Exception exception) when (exception is ArgumentException or JsonException or InvalidOperationException)
         {
 
             return Result<FrozenProviderOptions>.Failure(new Error(

@@ -294,7 +294,7 @@ internal sealed record HostedProducerCapsuleManifestUpdate(
     string Reviewed,
     string Report);
 
-internal static class HostedGrimoireProducerInventory
+internal static partial class HostedGrimoireProducerInventory
 {
     private const int DefaultEvaluationEnvironmentMaximumMembers = 4096;
 
@@ -707,6 +707,7 @@ internal static class HostedGrimoireProducerInventory
         ["Microsoft.Extensions.AI.IEmbeddingGenerator`2.GenerateAsync"] = (HostedProducerSiteKind)3,
         ["RetroDownfall.Arcanum.Core.Intelligence.IModelCallExecutor.ExecuteBufferedAsync"] = (HostedProducerSiteKind)3,
         ["RetroDownfall.Arcanum.Core.Intelligence.IModelCallExecutor.ExecuteStreamingAsync"] = (HostedProducerSiteKind)3,
+        ["RetroDownfall.Arcanum.Core.Intelligence.IModelCallExecutor.ExecuteCampaignMaintenanceAsync"] = HostedProducerSiteKind.ProviderCall,
         ["RetroDownfall.Arcanum.Core.Intelligence.IArcanumIntelligenceProvider.ExecutePromptAsync"] = (HostedProducerSiteKind)3,
         ["RetroDownfall.Arcanum.Core.Intelligence.IArcanumIntelligenceProvider.StreamPromptAsync"] = (HostedProducerSiteKind)3,
         ["RetroDownfall.Arcanum.Core.Weave.IWeaveService.EmbedAsync"] = (HostedProducerSiteKind)3,
@@ -995,6 +996,118 @@ internal static class HostedGrimoireProducerInventory
         "System.UnauthorizedAccessException",
         "System.Uri",
         "System.Version",
+    };
+
+    // Reviewed against the pinned Microsoft.Extensions.AI 10.8.1 source at
+    // dotnet/extensions e9be58acf7ef5e001b6685c8d505e5963c2a9ffe. These accessors
+    // store or return values without enumerating them or invoking supplied code.
+    // Virtual AITool/AIFunctionDeclaration metadata and the Text concatenation
+    // getters are deliberately absent. Every entry also requires its exact loaded
+    // package/framework assembly identity and non-virtual accessor below.
+    private static readonly IReadOnlySet<string> ReviewedExactStoredExternalProperties = new HashSet<string>(StringComparer.Ordinal)
+    {
+        "Microsoft.Extensions.AI.AIContent.AdditionalProperties",
+        "Microsoft.Extensions.AI.AIContent.RawRepresentation",
+        "Microsoft.Extensions.AI.AdditionalPropertiesDictionary`1.Count",
+        "Microsoft.Extensions.AI.ChatMessage.AdditionalProperties",
+        "Microsoft.Extensions.AI.ChatMessage.AuthorName",
+        "Microsoft.Extensions.AI.ChatMessage.Contents",
+        "Microsoft.Extensions.AI.ChatMessage.MessageId",
+        "Microsoft.Extensions.AI.ChatMessage.RawRepresentation",
+        "Microsoft.Extensions.AI.ChatMessage.Role",
+        "Microsoft.Extensions.AI.ChatOptions.AdditionalProperties",
+        "Microsoft.Extensions.AI.ChatOptions.FrequencyPenalty",
+        "Microsoft.Extensions.AI.ChatOptions.MaxOutputTokens",
+        "Microsoft.Extensions.AI.ChatOptions.PresencePenalty",
+        "Microsoft.Extensions.AI.ChatOptions.Reasoning",
+        "Microsoft.Extensions.AI.ChatOptions.ResponseFormat",
+        "Microsoft.Extensions.AI.ChatOptions.Seed",
+        "Microsoft.Extensions.AI.ChatOptions.StopSequences",
+        "Microsoft.Extensions.AI.ChatOptions.Temperature",
+        "Microsoft.Extensions.AI.ChatOptions.ToolMode",
+        "Microsoft.Extensions.AI.ChatOptions.Tools",
+        "Microsoft.Extensions.AI.ChatOptions.TopP",
+        "Microsoft.Extensions.AI.ChatResponse.FinishReason",
+        "Microsoft.Extensions.AI.ChatResponseFormatJson.Schema",
+        "Microsoft.Extensions.AI.ChatResponseFormatJson.SchemaDescription",
+        "Microsoft.Extensions.AI.ChatResponseFormatJson.SchemaName",
+        "Microsoft.Extensions.AI.ChatRole.Assistant",
+        "Microsoft.Extensions.AI.ChatRole.System",
+        "Microsoft.Extensions.AI.ChatRole.Tool",
+        "Microsoft.Extensions.AI.ChatRole.User",
+        "Microsoft.Extensions.AI.DataContent.Data",
+        "Microsoft.Extensions.AI.DataContent.MediaType",
+        "Microsoft.Extensions.AI.DataContent.Name",
+        "Microsoft.Extensions.AI.FunctionCallContent.Arguments",
+        "Microsoft.Extensions.AI.FunctionCallContent.Name",
+        "Microsoft.Extensions.AI.FunctionResultContent.Result",
+        "Microsoft.Extensions.AI.ReasoningOptions.Effort",
+        "Microsoft.Extensions.AI.ReasoningOptions.Output",
+        "Microsoft.Extensions.AI.TextContent.Text",
+        "Microsoft.Extensions.AI.TextReasoningContent.ProtectedData",
+        "Microsoft.Extensions.AI.TextReasoningContent.Text",
+        "Microsoft.Extensions.AI.ToolCallContent.CallId",
+        "Microsoft.Extensions.AI.ToolResultContent.CallId",
+        "Microsoft.Extensions.AI.UriContent.MediaType",
+        "Microsoft.Extensions.AI.UriContent.Uri",
+        "Microsoft.Extensions.AI.UsageDetails.CachedInputTokenCount",
+        "Microsoft.Extensions.AI.UsageDetails.InputTokenCount",
+        "Microsoft.Extensions.AI.UsageDetails.OutputTokenCount",
+        "Microsoft.Extensions.AI.UsageDetails.ReasoningTokenCount",
+        "Microsoft.Extensions.AI.UsageDetails.TotalTokenCount",
+        "Microsoft.ML.Tokenizers.EncodedToken.Offset",
+        "OpenAI.OpenAIClientOptions.Endpoint",
+        "System.ClientModel.Primitives.ClientPipelineOptions.RetryPolicy",
+        "System.ClientModel.Primitives.ClientPipelineOptions.Transport",
+        "System.Collections.Generic.LinkedListNode`1.Value",
+        "System.Collections.Generic.LinkedList`1.Count",
+        "System.Collections.Generic.LinkedList`1.Last",
+        "System.Text.Json.JsonDocumentOptions.MaxDepth",
+        "System.Text.Json.JsonProperty.Name",
+        "System.Text.Json.JsonProperty.Value",
+        "System.Text.Json.JsonReaderOptions.AllowTrailingCommas",
+        "System.Text.Json.JsonReaderOptions.CommentHandling",
+        "System.Text.Json.JsonReaderOptions.MaxDepth",
+    };
+
+    // Documentation IDs retain overload and generic arity. In particular the
+    // generic AdditionalPropertiesDictionary.TryGetValue<T> conversion invokes
+    // IConvertible, and LinkedList.Remove(T) invokes value equality; neither is
+    // covered by the bounded non-generic lookup/node-removal entries.
+    private static readonly IReadOnlySet<string> ReviewedExactBoundedExternalMethods = new HashSet<string>(StringComparer.Ordinal)
+    {
+        "M:Microsoft.Extensions.AI.AdditionalPropertiesDictionary.#ctor",
+        "M:Microsoft.Extensions.AI.AdditionalPropertiesDictionary`1.TryGetValue(System.String,`0@)",
+        "M:Microsoft.Extensions.AI.ChatFinishReason.ToString",
+        "M:Microsoft.Extensions.AI.ChatMessage.#ctor",
+        "M:Microsoft.Extensions.AI.ChatMessage.#ctor(Microsoft.Extensions.AI.ChatRole,System.String)",
+        "M:Microsoft.Extensions.AI.ChatMessage.#ctor(Microsoft.Extensions.AI.ChatRole,System.Collections.Generic.IList{Microsoft.Extensions.AI.AIContent})",
+        "M:Microsoft.Extensions.AI.ChatOptions.#ctor",
+        "M:Microsoft.Extensions.AI.ChatResponseFormat.ForJsonSchema(System.Text.Json.JsonElement,System.String,System.String)",
+        "M:Microsoft.Extensions.AI.ChatRole.ToString",
+        "M:Microsoft.Extensions.AI.OpenAIClientExtensions.AsIChatClient(OpenAI.Chat.ChatClient)",
+        "M:OpenAI.OpenAIClientOptions.#ctor",
+        "M:System.ClientModel.ApiKeyCredential.#ctor(System.String)",
+        "M:System.ClientModel.Primitives.ClientRetryPolicy.#ctor(System.Int32)",
+        "M:System.ClientModel.Primitives.HttpClientPipelineTransport.#ctor(System.Net.Http.HttpClient)",
+        "M:System.Collections.Generic.LinkedList`1.#ctor",
+        "M:System.Collections.Generic.LinkedListNode`1.#ctor(`0)",
+        "M:System.Collections.Generic.LinkedList`1.AddFirst(`0)",
+        "M:System.Collections.Generic.LinkedList`1.AddFirst(System.Collections.Generic.LinkedListNode{`0})",
+        "M:System.Collections.Generic.LinkedList`1.Remove(System.Collections.Generic.LinkedListNode{`0})",
+        "M:System.Collections.Generic.LinkedList`1.RemoveLast",
+        "M:System.Range.GetOffsetAndLength(System.Int32)",
+        "M:System.Security.Cryptography.IncrementalHash.TryGetHashAndReset(System.Span{System.Byte},System.Int32@)",
+        "M:System.Security.Cryptography.SHA256.TryHashData(System.ReadOnlySpan{System.Byte},System.Span{System.Byte},System.Int32@)",
+        "M:System.Text.Json.JsonDocument.Dispose",
+        "M:System.Text.Json.JsonDocument.ParseValue(System.Text.Json.Utf8JsonReader@)",
+        "M:System.Text.Json.JsonDocumentOptions.#ctor",
+        "M:System.Text.Json.JsonProperty.NameEquals(System.String)",
+        "M:System.Text.Json.JsonProperty.NameEquals(System.ReadOnlySpan{System.Char})",
+        "M:System.Text.Json.JsonProperty.NameEquals(System.ReadOnlySpan{System.Byte})",
+        "M:System.Text.Json.JsonReaderOptions.#ctor",
+        "M:System.Text.Json.Utf8JsonReader.#ctor(System.ReadOnlySpan{System.Byte},System.Text.Json.JsonReaderOptions)",
+        "M:System.Text.Json.Utf8JsonReader.#ctor(System.ReadOnlySpan{System.Byte},System.Boolean,System.Text.Json.JsonReaderState)",
     };
 
     private static readonly IReadOnlySet<string> ReviewedNonProducerExternalMembers = new HashSet<string>(StringComparer.Ordinal)
@@ -1358,6 +1471,7 @@ internal static class HostedGrimoireProducerInventory
     internal static readonly IReadOnlySet<string> SchemaBackfillStrategies = new HashSet<string>(StringComparer.Ordinal)
     {
         "RetroDownfall.Arcanum.Infrastructure.Data.Schema.AnnalReviewEventBackfill",
+        "RetroDownfall.Arcanum.Infrastructure.Data.Schema.CampaignForkFrontierBackfill",
         "RetroDownfall.Arcanum.Infrastructure.Data.Schema.CovenantReviewEventBackfill",
         "RetroDownfall.Arcanum.Infrastructure.Data.Schema.IdentitySpellingBackfill",
         "RetroDownfall.Arcanum.Infrastructure.Data.Schema.MemoryAnnalsBackfill",
@@ -2074,7 +2188,7 @@ internal static class HostedGrimoireProducerInventory
         IReadOnlyDictionary<ISymbol, BoundValueSource>? ValueBindings = null,
         IReadOnlySet<IMethodSymbol>? ConstructorContexts = null);
 
-    private sealed class ProducerGraph
+    private sealed partial class ProducerGraph
     {
         private const int ReceiverCleanupForwardingMaximumDepth = 16;
 
@@ -2884,6 +2998,11 @@ internal static class HostedGrimoireProducerInventory
                         if (node is PropertyDeclarationSyntax { ExpressionBody.Expression: { } expression } property && model.GetDeclaredSymbol(property)?.GetMethod is { } getter)
                         {
                             AddMember(new(getter, expression, model));
+                        }
+
+                        if (node is IndexerDeclarationSyntax { ExpressionBody.Expression: { } indexerExpression } indexer && model.GetDeclaredSymbol(indexer)?.GetMethod is { } indexerGetter)
+                        {
+                            AddMember(new(indexerGetter, indexerExpression, model));
                         }
 
                         if (node is InvocationExpressionSyntax invocation)
@@ -5169,6 +5288,7 @@ internal static class HostedGrimoireProducerInventory
             source = null;
 
             return member.Model.GetSymbolInfo(expression).Symbol is { } symbol
+                && CanUseCurrentInstanceStorageBinding(symbol, expression)
                 && member.ValueBindings?.TryGetValue(symbol, out source) == true
                 && source is not null
                 && (symbol is not IParameterSymbol { Type.SpecialType: SpecialType.System_Boolean }
@@ -22785,6 +22905,11 @@ internal static class HostedGrimoireProducerInventory
         {
             string callee = Normalize(method);
 
+            if (HasRejectedCampaignEncodingArgument(method, node, model, context))
+            {
+                return true;
+            }
+
             if (Vocabulary.ContainsKey(callee)
                 || PureSensitiveMethods.Contains(callee)
                 || ReviewedInProcessSynchronizationMembers.Contains(callee)
@@ -22796,6 +22921,11 @@ internal static class HostedGrimoireProducerInventory
                     node,
                     model,
                     context)
+                || IsReviewedChatSdkConstruction(method, node, model, context)
+                || IsReviewedConcreteTokenizerCall(method, node, model, context)
+                || IsReviewedCampaignEncodingMethod(method, node, model, context)
+                || IsReviewedCampaignAclMethod(method, node, model, context)
+                || IsReviewedAbsentHttpClientCleanup(method, node, model, context)
                 || IsReviewedEffectFreeExternalMember(
                     method,
                     node,
@@ -22814,6 +22944,144 @@ internal static class HostedGrimoireProducerInventory
                 && !method.ContainingNamespace.ToDisplayString()
                     .StartsWith("RetroDownfall.", StringComparison.Ordinal);
         }
+
+        private bool IsReviewedChatSdkConstruction(
+            IMethodSymbol method,
+            SyntaxNode? node,
+            SemanticModel? model,
+            AuthoredMember? context)
+        {
+            if (method.MethodKind != MethodKind.Constructor
+                || !IsExactFrameworkType(method.ContainingType, "OpenAI.Chat.ChatClient",
+                    typeof(OpenAI.Chat.ChatClient).Assembly.GetName())
+                || !HasExactParameterTypes(method, "System.String", "System.ClientModel.ApiKeyCredential", "OpenAI.OpenAIClientOptions")
+                || node is null
+                || model?.GetOperation(node) is not IObjectCreationOperation creation
+                || creation.Arguments.SingleOrDefault(static argument => argument.Parameter?.Name == "options")
+                    ?.Value.Syntax is not ExpressionSyntax options)
+            {
+                return false;
+            }
+
+            return HasExactCodeOwnedChatOptions(options, model, context);
+        }
+
+        private bool HasExactCodeOwnedChatOptions(ExpressionSyntax expression, SemanticModel model, AuthoredMember? context)
+        {
+            expression = StripTransparentExpression(expression);
+
+            if (model.GetSymbolInfo(expression).Symbol is ILocalSymbol local)
+            {
+                if (context is null
+                    || !HasOnlyReferences(context, local, expression)
+                    || local.DeclaringSyntaxReferences is not [SyntaxReference declaration]
+                    || declaration.GetSyntax() is not VariableDeclaratorSyntax { Initializer.Value: { } initializer })
+                {
+                    return false;
+                }
+
+                expression = StripTransparentExpression(initializer);
+                model = semanticModels[expression.SyntaxTree];
+            }
+
+            if (model.GetOperation(expression) is not IObjectCreationOperation creation
+                || creation.Constructor is not { Parameters.Length: 0 } constructor
+                || !IsExactFrameworkType(constructor.ContainingType, "OpenAI.OpenAIClientOptions",
+                    typeof(OpenAI.OpenAIClientOptions).Assembly.GetName()))
+            {
+                return false;
+            }
+
+            foreach (IOperation initializer in creation.Initializer?.Initializers ?? [])
+            {
+                if (initializer is not ISimpleAssignmentOperation { Target: IPropertyReferenceOperation property, Value: { } value }
+                    || property.Property.Name switch
+                    {
+                        "Endpoint" => !IsExactSdkOptionCreation(value, "System.Uri", typeof(Uri).Assembly.GetName()),
+                        "Transport" => !IsExactSdkOptionCreation(value, "System.ClientModel.Primitives.HttpClientPipelineTransport",
+                            typeof(System.ClientModel.Primitives.HttpClientPipelineTransport).Assembly.GetName()),
+                        "RetryPolicy" => !IsExactSdkOptionCreation(value, "System.ClientModel.Primitives.ClientRetryPolicy",
+                            typeof(System.ClientModel.Primitives.ClientRetryPolicy).Assembly.GetName()),
+                        _ => true,
+                    })
+                {
+                    return false;
+                }
+            }
+
+            // The pinned SDK constructs policies and freezes its options here. Only an exact,
+            // unescaped SDK options object may be treated as mechanical: a derived Freeze or
+            // caller-owned logging/options object could execute arbitrary code in this ctor.
+            return true;
+        }
+
+        private static bool IsExactSdkOptionCreation(IOperation value, string type, AssemblyName assembly)
+        {
+            while (value is IConversionOperation conversion)
+            {
+                value = conversion.Operand;
+            }
+
+            return value is IObjectCreationOperation { Constructor: { } constructor }
+                && (IsExactFrameworkType(constructor.ContainingType, type, assembly)
+                    || type == "System.Uri"
+                        && IsExactFrameworkType(constructor.ContainingType, type, typeof(object).Assembly.GetName()));
+        }
+
+        private bool IsReviewedConcreteTokenizerCall(IMethodSymbol method, SyntaxNode? node, SemanticModel? model, AuthoredMember? context)
+        {
+            if (node is not InvocationExpressionSyntax call
+                || model?.GetOperation(call) is not IInvocationOperation invocation
+                || !FrameworkAssemblyIdentityMatches(method.ContainingAssembly.Identity,
+                    typeof(Microsoft.ML.Tokenizers.TiktokenTokenizer).Assembly.GetName()))
+            {
+                return false;
+            }
+
+            if (IsExactDefaultTokenizerFactory(method, invocation))
+            {
+                return true;
+            }
+
+            if (method.Name != "CountTokens"
+                || TypeKey(method.ContainingType) != "Microsoft.ML.Tokenizers.Tokenizer"
+                || !HasExactParameterTypes(method, "System.String", "System.Boolean", "System.Boolean")
+                || invocation.Instance?.Syntax is not ExpressionSyntax receiver
+                || !IsExactFrameworkType(invocation.Instance.Type!, "Microsoft.ML.Tokenizers.TiktokenTokenizer",
+                    typeof(Microsoft.ML.Tokenizers.TiktokenTokenizer).Assembly.GetName())
+                || invocation.Arguments.SingleOrDefault(static argument => argument.Parameter?.Name == "considerPreTokenization")
+                    ?.Value.ConstantValue is not { HasValue: true, Value: true }
+                || invocation.Arguments.SingleOrDefault(static argument => argument.Parameter?.Name == "considerNormalization")
+                    ?.Value.ConstantValue is not { HasValue: true, Value: false })
+            {
+                return false;
+            }
+
+            return HasOnlyReviewedValueSources(receiver, model, new HashSet<ISymbol>(SymbolEqualityComparer.Default),
+                context, HasExactDefaultTokenizerValue);
+        }
+
+        private bool HasExactDefaultTokenizerValue(ExpressionSyntax expression, SemanticModel model, HashSet<ISymbol> path, AuthoredMember? context)
+        {
+            expression = StripTransparentExpression(expression);
+
+            if (model.GetOperation(expression) is IInvocationOperation factory
+                && IsExactDefaultTokenizerFactory(factory.TargetMethod, factory))
+            {
+                return true;
+            }
+
+            return HasOnlyReviewedValueSources(expression, model, path, context, HasExactDefaultTokenizerValue);
+        }
+
+        private static bool IsExactDefaultTokenizerFactory(IMethodSymbol method, IInvocationOperation invocation) =>
+            method.IsStatic
+            && method.Name == "CreateForEncoding"
+            && IsExactFrameworkType(method.ContainingType, "Microsoft.ML.Tokenizers.TiktokenTokenizer",
+                typeof(Microsoft.ML.Tokenizers.TiktokenTokenizer).Assembly.GetName())
+            && HasExactParameterTypes(method, "System.String", "System.Collections.Generic.IReadOnlyDictionary`2", "Microsoft.ML.Tokenizers.Normalizer")
+            && invocation.Arguments.Where(static argument => argument.Parameter?.Ordinal != 0)
+                .All(static argument => argument.Value.ConstantValue is { HasValue: true, Value: null });
 
         private bool IsExactOwnedWatcherCleanup(
             IMethodSymbol method,
@@ -22869,6 +23137,7 @@ internal static class HostedGrimoireProducerInventory
                     node,
                     model,
                     context)
+                || IsReviewedCampaignModelIndexer(property, mutation, node, model, context)
                 || IsReviewedNonProducerExternalMember(property, mutation))
             {
                 return false;
@@ -22902,6 +23171,7 @@ internal static class HostedGrimoireProducerInventory
             if (CompletionOwnedExternalAwaitables.Contains(Normalize(method))
                 || ReviewedBoundedIntrinsicMembers.Contains(Normalize(method))
                 || ReviewedNonProducerExternalMembers.Contains(Normalize(method))
+                || IsReviewedExactBoundedExternalMember(method)
                 || IsReviewedDatabaseSupportMember(method)
                 || IsReviewedRuntimeCleanup(method)
                 || IsReviewedCollectionMechanicalMember(method)
@@ -24141,10 +24411,62 @@ internal static class HostedGrimoireProducerInventory
                     or "System.Collections.Generic.IComparer`1"
                     or "System.Collections.Generic.IEqualityComparer`1";
 
+        private static bool IsReviewedExactStoredExternalProperty(
+            IPropertySymbol property,
+            bool mutation)
+        {
+            IMethodSymbol? accessor = mutation
+                ? property.SetMethod
+                : property.GetMethod;
+
+            return accessor is not null
+                && !accessor.IsAbstract
+                && !accessor.IsVirtual
+                && !accessor.IsOverride
+                && ReviewedExactStoredExternalProperties.Contains(Normalize(property))
+                && HasReviewedExactExternalIdentity(property);
+        }
+
+        private static bool IsReviewedExactBoundedExternalMember(IMethodSymbol method)
+        {
+            IMethodSymbol definition = (method.ReducedFrom ?? method).OriginalDefinition;
+
+            return !definition.IsAbstract
+                && (!definition.IsVirtual
+                    || definition.ContainingType.IsSealed
+                    || definition.ContainingType.IsValueType)
+                && definition.GetDocumentationCommentId() is { } identity
+                && ReviewedExactBoundedExternalMethods.Contains(identity)
+                && HasReviewedExactExternalIdentity(definition);
+        }
+
+        private static bool HasReviewedExactExternalIdentity(ISymbol symbol)
+        {
+            string type = TypeKey(symbol.ContainingType);
+
+            AssemblyName? trusted = type switch
+            {
+                "Microsoft.Extensions.AI.OpenAIClientExtensions" => typeof(Microsoft.Extensions.AI.OpenAIClientExtensions).Assembly.GetName(),
+                _ when type.StartsWith("Microsoft.Extensions.AI.", StringComparison.Ordinal) => typeof(Microsoft.Extensions.AI.ChatOptions).Assembly.GetName(),
+                "Microsoft.ML.Tokenizers.EncodedToken" => typeof(Microsoft.ML.Tokenizers.EncodedToken).Assembly.GetName(),
+                "OpenAI.OpenAIClientOptions" => typeof(OpenAI.OpenAIClientOptions).Assembly.GetName(),
+                _ when type.StartsWith("System.ClientModel.", StringComparison.Ordinal) => typeof(System.ClientModel.ApiKeyCredential).Assembly.GetName(),
+                "System.Collections.Generic.LinkedList`1" or "System.Collections.Generic.LinkedListNode`1" => typeof(LinkedList<>).Assembly.GetName(),
+                "System.Range" => typeof(Range).Assembly.GetName(),
+                "System.Security.Cryptography.IncrementalHash" or "System.Security.Cryptography.SHA256" => typeof(SHA256).Assembly.GetName(),
+                _ when type.StartsWith("System.Text.Json.", StringComparison.Ordinal) => typeof(JsonDocument).Assembly.GetName(),
+                _ => null,
+            };
+
+            return trusted is not null
+                && FrameworkAssemblyIdentityMatches(symbol.ContainingAssembly.Identity, trusted);
+        }
+
         private static bool IsReviewedNonProducerExternalMember(
             IPropertySymbol property,
             bool mutation) =>
             ReviewedIntrinsicExternalTypes.Contains(TypeKey(property.ContainingType))
+            || IsReviewedExactStoredExternalProperty(property, mutation)
             || IsReviewedDatabaseSupportMember(property, mutation)
             || ReviewedNonProducerExternalMembers.Contains(
                 Normalize(property) + (mutation ? " setter" : string.Empty));
@@ -26259,6 +26581,7 @@ internal static class HostedGrimoireProducerInventory
                 ISymbol? symbol = caller.Model.GetSymbolInfo(expression).Symbol;
 
                 if (symbol is not null
+                    && CanUseCurrentInstanceStorageBinding(symbol, expression)
                     && caller.ValueBindings?.TryGetValue(
                         symbol,
                         out BoundValueSource? boundValue) == true
@@ -26631,6 +26954,23 @@ internal static class HostedGrimoireProducerInventory
             }
         }
 
+        private static bool CanUseCurrentInstanceStorageBinding(ISymbol symbol, ExpressionSyntax expression)
+        {
+            if (symbol is not IFieldSymbol { IsStatic: false } and not IPropertySymbol { IsStatic: false })
+            {
+                return true;
+            }
+
+            expression = StripTransparentExpression(expression);
+
+            // A storage symbol identifies a slot, not its receiver. In particular the
+            // Name child of other.Client still resolves to this same property symbol.
+            return expression is MemberAccessExpressionSyntax { Expression: ThisExpressionSyntax }
+                || expression is IdentifierNameSyntax identifier
+                    && (identifier.Parent is not MemberAccessExpressionSyntax access || access.Name != identifier)
+                    && identifier.Parent is not MemberBindingExpressionSyntax;
+        }
+
         private bool IsFailureGuardedSuccessfulValueAccess(
             AuthoredMember member,
             ExpressionSyntax expression)
@@ -26640,6 +26980,7 @@ internal static class HostedGrimoireProducerInventory
             ISymbol? symbol = member.Model.GetSymbolInfo(expression).Symbol;
 
             if (symbol is not null
+                && CanUseCurrentInstanceStorageBinding(symbol, expression)
                 && member.ValueBindings?.TryGetValue(
                     symbol,
                     out BoundValueSource? bound) == true
@@ -31206,6 +31547,20 @@ internal static class HostedGrimoireProducerInventory
             && IsExactFrameworkType(client, "ModelContextProtocol.Client.McpClient",
                 typeof(ModelContextProtocol.Client.McpClient).Assembly.GetName());
 
+        private static bool IsExactChatSdkAdapterFactory(IMethodSymbol method)
+        {
+            IMethodSymbol definition = method.ReducedFrom ?? method;
+
+            return definition.IsStatic
+                && definition.Name == "AsIChatClient"
+                && definition.Arity == 0
+                && IsExactFrameworkType(definition.ContainingType, "Microsoft.Extensions.AI.OpenAIClientExtensions",
+                    typeof(Microsoft.Extensions.AI.OpenAIClientExtensions).Assembly.GetName())
+                && HasExactParameterTypes(definition, "OpenAI.Chat.ChatClient")
+                && IsExactFrameworkType(definition.ReturnType, "Microsoft.Extensions.AI.IChatClient",
+                    typeof(Microsoft.Extensions.AI.IChatClient).Assembly.GetName());
+        }
+
         private static bool IsExactCleanupContract(IMethodSymbol method, ITypeSymbol receiverType)
         {
             bool synchronous = method.Name == "Dispose" && TypeKey(method.ReturnType) == "System.Void";
@@ -33071,6 +33426,8 @@ internal static class HostedGrimoireProducerInventory
 
                 AuthoredMember selected = MergeValueContext(target, receiver);
 
+                selected = BindExactConstructedReceiverPropertyContext(selected, target, source, new CleanupProvenanceContext());
+
                 EvaluationEnvironmentFingerprint environment =
                     EvaluationEnvironmentIdentity(selected);
 
@@ -33221,6 +33578,35 @@ internal static class HostedGrimoireProducerInventory
             out ExternalCleanupResolution? external)
         {
             external = null;
+
+            if (name == "Dispose"
+                && IsExactFrameworkType(staticType, "System.IDisposable", typeof(IDisposable).Assembly.GetName()))
+            {
+                ExpressionSyntax adapter = StripTransparentExpression(resource);
+
+                if (adapter is BinaryExpressionSyntax tryCast
+                    && tryCast.IsKind(SyntaxKind.AsExpression)
+                    && member.Model.GetOperation(tryCast) is IConversionOperation { IsTryCast: true, OperatorMethod: null })
+                {
+                    // A built-in as conversion can only select this same instance or null.
+                    // It cannot invoke a user conversion before the conditional cleanup.
+                    adapter = tryCast.Left;
+                }
+
+                CleanupValueFlow sources = CleanupValueFlowOf(member, adapter, new CleanupProvenanceContext());
+
+                if (sources.Complete
+                    && sources.Values.Count != 0
+                    && sources.Values.All(source => StripTransparentExpression(source.Expression) is InvocationExpressionSyntax factory
+                        && source.Caller.Model.GetSymbolInfo(factory).Symbol is IMethodSymbol factoryMethod
+                        && IsExactChatSdkAdapterFactory(factoryMethod)))
+                {
+                    // The pinned AsIChatClient(ChatClient) returns the internal sealed SDK
+                    // adapter, whose explicit IDisposable implementation is a no-op. An
+                    // arbitrary IChatClient or replacement value has no such cleanup proof.
+                    return true;
+                }
+            }
 
             if (name == "Dispose"
                 && IsExactFrameworkType(
@@ -34009,6 +34395,7 @@ internal static class HostedGrimoireProducerInventory
             }
 
             if (symbol is IFieldSymbol
+                && CanUseCurrentInstanceStorageBinding(symbol, expression)
                 && member.ValueBindings?.TryGetValue(
                     symbol,
                     out BoundValueSource? boundFieldValue) == true
@@ -34054,6 +34441,7 @@ internal static class HostedGrimoireProducerInventory
             }
 
             if (symbol is IPropertySymbol
+                && CanUseCurrentInstanceStorageBinding(symbol, expression)
                 && member.ValueBindings?.TryGetValue(
                     symbol,
                     out BoundValueSource? propertyValue) == true
@@ -34191,6 +34579,7 @@ internal static class HostedGrimoireProducerInventory
             }
 
             if (symbol is not null
+                && CanUseCurrentInstanceStorageBinding(symbol, expression)
                 && member.ConcreteBindings?.TryGetValue(
                     symbol,
                     out ITypeSymbol? bound) == true)
@@ -37087,73 +37476,7 @@ internal static class HostedGrimoireProducerInventory
                 bound = MergeValueContext(bound, constructed);
             }
 
-            Dictionary<ISymbol, BoundValueSource> values =
-                bound.ValueBindings?.ToDictionary(
-                    static pair => pair.Key,
-                    static pair => pair.Value,
-                    SymbolEqualityComparer.Default)
-                ?? new(SymbolEqualityComparer.Default);
-
-            Dictionary<ISymbol, ITypeSymbol> concrete =
-                bound.ConcreteBindings?.ToDictionary(
-                    static pair => pair.Key,
-                    static pair => pair.Value,
-                    SymbolEqualityComparer.Default)
-                ?? new(SymbolEqualityComparer.Default);
-
-            IPropertySymbol[] referencedProperties = target.Syntax
-                .DescendantNodesAndSelf(node => node == target.Syntax
-                    || node is not AnonymousFunctionExpressionSyntax
-                        and not LocalFunctionStatementSyntax)
-                .OfType<ExpressionSyntax>()
-                .Select(expression =>
-                    target.Model.GetSymbolInfo(expression).Symbol)
-                .OfType<IPropertySymbol>()
-                .Where(property => !property.IsStatic
-                    && property.SetMethod is not { IsInitOnly: false }
-                    && SameBoundType(
-                        property.ContainingType,
-                        target.Model.Compilation,
-                        target.Symbol.ContainingType,
-                        target.Model.Compilation))
-                .DistinctBy(
-                    static property => property.OriginalDefinition,
-                    SymbolEqualityComparer.Default)
-                .ToArray();
-
-            foreach (IPropertySymbol property in referencedProperties)
-            {
-                if (PropertyValueFromExactConstruction(
-                        exactReceiver,
-                        property,
-                        context) is not { } propertyFlow
-                    || !propertyFlow.Complete)
-                {
-                    continue;
-                }
-
-                if (propertyFlow.Values is
-                    [BoundValueSource propertyValue])
-                {
-                    values[property] = propertyValue;
-
-                    continue;
-                }
-
-                if (TryResolveConvergentCleanupPropertyType(
-                    propertyFlow,
-                    context,
-                    out ITypeSymbol propertyType))
-                {
-                    concrete[property] = propertyType;
-                }
-            }
-
-            return bound with
-            {
-                ConcreteBindings = concrete,
-                ValueBindings = values,
-            };
+            return BindExactConstructedReceiverPropertyContext(bound, target, exactReceiver, context);
         }
 
         private bool TryResolveConvergentCleanupPropertyType(
@@ -37526,6 +37849,7 @@ internal static class HostedGrimoireProducerInventory
             }
 
             if (symbol is IParameterSymbol or IPropertySymbol or IFieldSymbol
+                && CanUseCurrentInstanceStorageBinding(symbol, expression)
                 && member.ValueBindings?.TryGetValue(
                     symbol,
                     out BoundValueSource? bound) == true
@@ -37551,7 +37875,8 @@ internal static class HostedGrimoireProducerInventory
 
             if (expression is InvocationExpressionSyntax sdkFactory
                 && symbol is IMethodSymbol sdkFactoryMethod
-                && IsExactSdkClientFactory(sdkFactoryMethod))
+                && (IsExactSdkClientFactory(sdkFactoryMethod)
+                    || IsExactChatSdkAdapterFactory(sdkFactoryMethod)))
             {
                 return new([new(member, sdkFactory)], true, false);
             }
@@ -37687,6 +38012,7 @@ internal static class HostedGrimoireProducerInventory
             }
 
             if (symbol is IFieldSymbol boundField
+                && CanUseCurrentInstanceStorageBinding(symbol, expression)
                 && member.ValueBindings?.TryGetValue(
                     boundField,
                     out BoundValueSource? fieldValue) == true
@@ -44658,6 +44984,17 @@ internal static class HostedGrimoireProducerInventory
                 return true;
             }
 
+            if (type == "System.IO.FileSystemAclExtensions"
+                && method.Name == "Create"
+                && FrameworkAssemblyIdentityMatches(
+                    method.ContainingAssembly.Identity,
+                    typeof(System.IO.FileSystemAclExtensions).Assembly.GetName()))
+            {
+                kind = HostedProducerSiteKind.FileSystemEffect;
+
+                return true;
+            }
+
             if (type is "System.Net.Http.HttpClient"
                     or "System.Net.Sockets.Socket"
                     or "System.Diagnostics.Process"
@@ -44826,7 +45163,12 @@ internal static class HostedGrimoireProducerInventory
 
         private static bool IsDatabaseOperation(
             IPropertySymbol property,
-            bool mutation) => false;
+            bool mutation) => !mutation
+                && property.IsIndexer
+                && TypeKey(property.ContainingType) == "Microsoft.Data.Sqlite.SqliteDataReader"
+                && AssemblyIdentityMatches(
+                    property.ContainingAssembly.Identity,
+                    typeof(Microsoft.Data.Sqlite.SqliteDataReader).Assembly.GetName());
 
         private static bool IsReviewedDatabaseSupportMember(IMethodSymbol method)
         {

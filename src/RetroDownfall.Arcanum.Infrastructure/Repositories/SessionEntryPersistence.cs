@@ -18,6 +18,15 @@ namespace RetroDownfall.Arcanum.Infrastructure.Repositories;
 /// </summary>
 internal sealed class SessionEntryPersistence
 {
+    private static readonly (string Table, string Column, bool Normalize)[] SequenceEvidence =
+    [
+        ("assistant_entry_finalizations", "ThroughEntrySequence", false),
+        ("saga_extraction_watermarks", "LastExtractedEntrySequence", true),
+        ("campaign_fork_frontiers", "InheritedThroughSequence", false),
+        ("campaign_contribution_state", "SummarizedThroughSequence", false),
+        ("campaign_contribution_artifacts", "SummarizedThroughSequence", false),
+    ];
+
     private readonly ArcanumDbContext _db;
 
     private readonly IGrimoireOrdinaryConnectionFactory _connections;
@@ -89,13 +98,53 @@ internal sealed class SessionEntryPersistence
         }
 
         long persistedMax = await SqliteBusyRetry.ExecuteAsync(
-            () => ReadInt64Async(
-                "SELECT COALESCE(MAX(\"Sequence\"), 0) FROM \"Entries\" WHERE \"SessionId\" = $sessionId;",
-                command => BindSessionId(command, sessionId),
-                cancellationToken),
-            cancellationToken).ConfigureAwait(false);
+            async () =>
+            {
+                long maximum = await ReadInt64Async(
+                    "SELECT COALESCE(MAX(\"Sequence\"), 0) FROM \"Entries\" WHERE \"SessionId\" = $sessionId;",
+                    command => BindSessionId(command, sessionId),
+                    cancellationToken).ConfigureAwait(false);
 
-        return persistedMax + 1L;
+                // A deleted Entry can remain behind an immutable fork frontier or a durable consumed
+                // cursor. Reusing its number would make a future native tail look already inherited.
+                foreach ((string table, string column, bool normalize) in SequenceEvidence)
+                {
+                    long installed = await ReadInt64Async(
+                        "SELECT COUNT(*) FROM pragma_table_info($table) WHERE name = $column;",
+                        command =>
+                        {
+                            GrimoireEntitySql.AddParameter(command, "$table", table);
+
+                            GrimoireEntitySql.AddParameter(command, "$column", column);
+                        }, cancellationToken).ConfigureAwait(false);
+
+                    if (installed == 0)
+                    {
+                        continue;
+                    }
+
+                    string predicate = normalize
+                        ? "lower(replace(SessionId, '-', '')) = $sessionKey"
+                        : "SessionId = $sessionId";
+
+                    long consumed = await ReadInt64Async(
+                        $"SELECT COALESCE(MAX({column}), 0) FROM {table} WHERE {predicate};",
+                        command =>
+                        {
+                            BindSessionId(command, sessionId);
+
+                            GrimoireEntitySql.AddParameter(command, "$sessionKey", sessionId.ToString("N"));
+                        }, cancellationToken).ConfigureAwait(false);
+
+                    maximum = Math.Max(maximum, consumed);
+                }
+
+                return maximum;
+            }, cancellationToken).ConfigureAwait(false);
+
+        _ = checked(persistedMax + count);
+
+        return checked(persistedMax + 1L);
     }
 
     public Task BumpSessionUpdatedAtAsync(

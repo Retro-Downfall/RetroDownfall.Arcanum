@@ -68,6 +68,10 @@ public sealed class SystemPromptAttributionMap
     public bool HasCovenantContent =>
         Spans.Any(static span => IsCovenant(span.Attribution));
 
+    public bool HasRollupContent =>
+        Spans.Any(static span => span.Attribution is CovenantPromptAttribution.CampaignRollup
+            or CovenantPromptAttribution.SessionRollup);
+
     /// <summary>
     /// The category owning <paramref name="utf16Index"/>, or
     /// <see cref="CovenantPromptAttribution.SpecialOrUncovered"/> when nothing covers it.
@@ -170,5 +174,29 @@ public sealed class SystemPromptAttributionMap
     public static bool IsCovenant(CovenantPromptAttribution attribution) =>
         attribution is CovenantPromptAttribution.CovenantConfirmed
             or CovenantPromptAttribution.CovenantProposed;
+
+    /// <summary>Removes typed summary and Covenant spans before legacy DATA-source classification.</summary>
+    public string ExcludingRollupsAndCovenant()
+    {
+
+        StringBuilder builder = new(Prompt.Length);
+
+        foreach (SystemPromptAttributionSpan span in Spans)
+        {
+
+            if (!IsCovenant(span.Attribution)
+                && span.Attribution is not CovenantPromptAttribution.CampaignRollup
+                    and not CovenantPromptAttribution.SessionRollup)
+            {
+
+                _ = builder.Append(Prompt.AsSpan(span.Utf16Start, span.Utf16Length));
+
+            }
+
+        }
+
+        return builder.ToString();
+
+    }
 
 }

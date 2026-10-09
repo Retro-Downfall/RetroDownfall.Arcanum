@@ -42,7 +42,7 @@ public sealed class TapestryGenerationSchemaEvolutionTests
 
         await InsertAsync(connection, "building", "SessionAttachment", "s1", "Building", null);
 
-        await InstallAsync(connection, GrimoireSchemaVersionChains.Default, GrimoireSchemaVersionChains.CoreSchemaVersion);
+        await InstallAsync(connection, CoreSchemaVersionFifteenFixture.ChainSet(), 15);
 
         Assert.Equal(
             [
@@ -68,7 +68,7 @@ public sealed class TapestryGenerationSchemaEvolutionTests
 
         await InsertAsync(connection, "first", "Workspace", WorkspaceScope, "Complete", "2026-01-01T00:00:00.0000000Z");
 
-        await InstallAsync(connection, GrimoireSchemaVersionChains.Default, GrimoireSchemaVersionChains.CoreSchemaVersion);
+        await InstallAsync(connection, CoreSchemaVersionFifteenFixture.ChainSet(), 15);
 
         await AssertOneCompleteGenerationPerScopeAsync(connection);
     }
@@ -80,7 +80,7 @@ public sealed class TapestryGenerationSchemaEvolutionTests
 
         await using SqliteConnection connection = await file.OpenAsync(CancellationToken.None);
 
-        await InstallAsync(connection, GrimoireSchemaVersionChains.Default, GrimoireSchemaVersionChains.CoreSchemaVersion);
+        await InstallAsync(connection, CoreSchemaVersionFifteenFixture.ChainSet(), 15);
 
         await InsertAsync(connection, "first", "Workspace", WorkspaceScope, "Complete", "2026-01-01T00:00:00.0000000Z");
 

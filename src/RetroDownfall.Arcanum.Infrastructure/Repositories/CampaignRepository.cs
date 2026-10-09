@@ -6,12 +6,14 @@ using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.DataLifecycle;
 using RetroDownfall.Arcanum.Core.Tower;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Sanctum;
 using RetroDownfall.Arcanum.Core.Serialization;
 using RetroDownfall.Arcanum.Core.Workspaces;
 using RetroDownfall.Arcanum.Infrastructure.Data;
+using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Repositories;
 
@@ -30,6 +32,8 @@ public sealed class CampaignRepository : ICampaignRepository
 
     private readonly IOptionsSnapshot<ArcanumSettings> _arcOptions;
 
+    private readonly ICovenantLabeledArtifactTransactionGuard _labeledArtifactGuard;
+
     internal Func<CancellationToken, Task>? AfterImmediateTransactionBeganForTesting { get; set; }
 
     internal Func<int, Exception, CancellationToken, ValueTask>? RetryingForTesting { get; set; }
@@ -37,13 +41,17 @@ public sealed class CampaignRepository : ICampaignRepository
     public CampaignRepository(
         ArcanumDbContext db,
         ILogger<CampaignRepository> logger,
-        IOptionsSnapshot<ArcanumSettings> arcOptions)
+        IOptionsSnapshot<ArcanumSettings> arcOptions,
+        ICovenantLabeledArtifactGuard labeledArtifactGuard)
     {
         _db = db;
 
         _logger = logger;
 
         _arcOptions = arcOptions;
+
+        _labeledArtifactGuard = labeledArtifactGuard as ICovenantLabeledArtifactTransactionGuard
+            ?? throw new ArgumentException("Campaign deletion requires the transaction-bound labelled-artifact guard.", nameof(labeledArtifactGuard));
     }
 
     public async Task<Campaign?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default)
@@ -322,6 +330,22 @@ public sealed class CampaignRepository : ICampaignRepository
 
         try
         {
+            var transaction = tx.GetDbTransaction();
+
+            Result unlabeled = await CampaignSummaryLifecycle.EnsureCampaignUnlabeledAsync(
+                transaction.Connection!, transaction, id, _labeledArtifactGuard, cancellationToken).ConfigureAwait(false);
+
+            if (unlabeled.IsFailure)
+            {
+                throw new LabeledArtifactRefusalException(unlabeled.Error);
+            }
+
+            using IDisposable ownerCleanup = CovenantSqliteConnectionInitializer.Instance.Authorize(
+                (SqliteConnection)transaction.Connection!, CovenantSqliteAuthorizationKind.OwnerCleanup);
+
+            _ = await CampaignSummaryLifecycle.ClearCampaignAsync(
+                transaction.Connection!, transaction, id, removeOwner: true, cancellationToken).ConfigureAwait(false);
+
             await using SqliteCommand unbind = await GrimoireSqlCommandFactory.CreateAsync(
                 _db,
                 "UPDATE \"Sessions\" SET \"CampaignId\" = NULL WHERE \"CampaignId\" = $id;",

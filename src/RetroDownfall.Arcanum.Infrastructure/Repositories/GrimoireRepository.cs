@@ -720,11 +720,23 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
                 return false;
             }
 
-            DateTime? watermark = await ReadSessionWatermarkAsync(sessionId, cancellationToken)
+            Result summaryUnlabeled = await SessionSummaryLifecycle.EnsureUnlabeledAsync(
+                guardTransaction.Connection!, guardTransaction, sessionId, _labeledArtifactGuard, cancellationToken)
                 .ConfigureAwait(false);
 
-            bool isUnsummarized = watermark is null
-                || entry.CreatedAt > new DateTimeOffset(watermark.Value, TimeSpan.Zero);
+            if (summaryUnlabeled.IsFailure)
+            {
+                throw new LabeledArtifactRefusalException(summaryUnlabeled.Error);
+            }
+
+            Result campaignUnlabeled = await CampaignSummaryLifecycle.EnsureSessionUnlabeledAsync(
+                guardTransaction.Connection!, guardTransaction, sessionId, _labeledArtifactGuard, cancellationToken)
+                .ConfigureAwait(false);
+
+            if (campaignUnlabeled.IsFailure)
+            {
+                throw new LabeledArtifactRefusalException(campaignUnlabeled.Error);
+            }
 
             await SqliteBusyRetry.ExecuteAsync(
                 () => _attachments.ClearEntryIdsInAmbientTransactionAsync(sessionId, [entryId], cancellationToken),
@@ -745,9 +757,16 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
                     cancellationToken),
                 cancellationToken).ConfigureAwait(false);
 
-            if (deleted > 0 && isUnsummarized)
+            if (deleted > 0)
             {
-                await _entryPersistence.DecrementUnsummarizedEntryCountIfKnownAsync(sessionId, 1, cancellationToken).ConfigureAwait(false);
+                using IDisposable summaryInvalidation = CovenantSqliteConnectionInitializer.Instance.Authorize(
+                    (SqliteConnection)guardTransaction.Connection!, CovenantSqliteAuthorizationKind.ArtifactReplacement);
+
+                _ = await SessionSummaryLifecycle.ClearAsync(
+                    guardTransaction.Connection!, guardTransaction, sessionId, cancellationToken).ConfigureAwait(false);
+
+                _ = await CampaignSummaryLifecycle.ClearSessionAsync(
+                    guardTransaction.Connection!, guardTransaction, sessionId, cancellationToken).ConfigureAwait(false);
             }
 
             await tx.CommitAsync(cancellationToken).ConfigureAwait(false);

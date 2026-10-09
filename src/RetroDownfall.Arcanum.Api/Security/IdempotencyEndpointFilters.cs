@@ -14,6 +14,7 @@ using RetroDownfall.Arcanum.Api.Intelligence;
 using RetroDownfall.Arcanum.Api.Intelligence.OpenAi;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage;
 
@@ -180,6 +181,33 @@ public static class IdempotencyEndpointFilters
             IdempotencyIdentity.NormalizeQuery(httpContext),
             httpContext.Request.ContentType,
             CovenantRequestFeatures.ContextPolicy(httpContext));
+
+        SessionTurnSurface surface = SessionTurnSurface.Intelligence;
+
+        SessionTurnRouteValue? turnRoute = null;
+
+        string path = httpContext.Request.Path.Value?.TrimEnd('/') ?? string.Empty;
+
+        if (path.Contains("/prompts/", StringComparison.Ordinal)
+            && (path.EndsWith("/execute", StringComparison.Ordinal) || path.EndsWith("/execute-stream", StringComparison.Ordinal)))
+        {
+            if (Guid.TryParse(httpContext.Request.RouteValues["id"]?.ToString(), out Guid promptId))
+            {
+                surface = SessionTurnSurface.PromptExecute;
+
+                turnRoute = SessionTurnRouteValue.ForPrompt(promptId);
+            }
+        }
+        else if (path.Contains("/spells/", StringComparison.Ordinal)
+            && (path.EndsWith("/execute", StringComparison.Ordinal) || path.EndsWith("/execute-stream", StringComparison.Ordinal))
+            && httpContext.Request.RouteValues["name"] is string spellName)
+        {
+            surface = SessionTurnSurface.SpellExecute;
+
+            turnRoute = SessionTurnRouteValue.ForSpell(spellName);
+        }
+
+        TurnIdempotencyAmbient.PublishIdentity(claimKeyHash, fingerprintHash, surface, turnRoute);
 
         IIdempotencyClaimStore claimStore =
             httpContext.RequestServices.GetRequiredService<IIdempotencyClaimStore>();

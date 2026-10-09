@@ -32,6 +32,24 @@ public sealed class CovenantDispatchGateTests
     private static readonly Guid InstallationId = Guid.Parse("11111111-2222-3333-4444-555555555555");
 
     [Fact]
+    public void Protected_Campaign_context_taints_a_clean_Session_and_preserves_its_real_provenance()
+    {
+        CampaignRollupArtifact protectedArtifact = CampaignRollupTurnSnapshotTests.Artifact("A protected earlier decision.", ContentSensitivity.CovenantDerived);
+
+        CovenantTurnScope scope = CovenantTurnScope.NotEligible();
+
+        scope.BindCampaignArtifact(protectedArtifact);
+
+        ProviderCallSensitivity sensitivity = CovenantDispatchGate.ResolveSensitivity(scope, CovenantDispatchPlan.Empty);
+
+        Assert.Equal(ContentSensitivity.CovenantDerived, sensitivity.Level);
+
+        Assert.Equal(protectedArtifact.Provenance, sensitivity.Provenance);
+
+        Assert.Equal(protectedArtifact.SensitivityDigest, sensitivity.Digest);
+    }
+
+    [Fact]
     public async Task An_ineligible_invocation_injects_nothing_and_reads_no_session_label()
     {
 

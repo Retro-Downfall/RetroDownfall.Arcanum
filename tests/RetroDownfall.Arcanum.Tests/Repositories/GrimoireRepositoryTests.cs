@@ -1640,6 +1640,100 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
             $"Archive search returned {result.Length} characters against a {cap}-byte cap.");
     }
 
+    [SkippableTheory]
+    [InlineData("fork")]
+    [InlineData("saga")]
+    [InlineData("finalization")]
+    public async Task Append_after_history_deletion_never_reuses_a_durable_consumed_sequence(string evidence)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        GrimoireRepository repository = CreateRepository();
+
+        (Guid sessionId, Guid assistantEntryId) = await repository.BeginAssistantReplyAsync(
+            null, "original history", "test-model", CancellationToken.None);
+
+        long expectedFloor = 24;
+
+        if (evidence == "fork")
+        {
+            _ = await _db!.Database.ExecuteSqlInterpolatedAsync($"INSERT INTO campaign_fork_frontiers (SessionId, SourceSessionId, InheritedThroughSequence, ProofKindCode, CreatedAtUtc) VALUES ({sessionId.ToString("D").ToUpperInvariant()}, {Guid.NewGuid().ToString("D").ToUpperInvariant()}, {expectedFloor}, 1, {DateTimeOffset.UtcNow.ToString("O")});");
+        }
+        else if (evidence == "saga")
+        {
+            _ = await _db!.Database.ExecuteSqlInterpolatedAsync($"INSERT INTO saga_extraction_watermarks (SessionId, LastExtractedEntryCreatedAt, LastExtractedEntrySequence) VALUES ({sessionId.ToString("D")}, {DateTimeOffset.UtcNow.ToString("O")}, {expectedFloor});");
+        }
+        else
+        {
+            expectedFloor = 2;
+
+            Result<TurnCommitReceipt> committed = await repository.CommitTurnAsync(
+                new TurnCommitRequest(
+                    assistantEntryId, sessionId, AssistantFinalizationOutcome.Committed, "durable finalized reply",
+                    CovenantTask6Fixture.D(47), ContentSensitivity.None, GenerationProvenance.CreateExact([])),
+                CancellationToken.None);
+
+            Assert.True(committed.IsSuccess, committed.Error.Message);
+
+            Assert.Equal(expectedFloor, committed.Value.ThroughEntrySequence);
+        }
+
+        _ = await _db!.Database.ExecuteSqlInterpolatedAsync($"DELETE FROM \"Entries\" WHERE \"SessionId\" = {sessionId.ToString("D").ToUpperInvariant()};");
+
+        _ = await repository.BeginAssistantReplyAsync(
+            sessionId, "new native tail", "test-model", CancellationToken.None);
+
+        List<Entry> appended = await _db.Entries.AsNoTracking().Where(entry => entry.SessionId == sessionId).ToListAsync(CancellationToken.None);
+
+        Assert.Equal([expectedFloor + 1, expectedFloor + 2], appended.OrderBy(static entry => entry.Sequence).Select(static entry => entry.Sequence));
+    }
+
+    [SkippableFact]
+    public async Task DeleteEntryAsync_invalidates_the_owning_summary_watermark_and_rebuild_debt()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        GrimoireRepository repository = CreateRepository();
+
+        (Guid sessionId, Guid deletedEntry) = await repository.BeginAssistantReplyAsync(
+            null, "words that are later deleted", "test-model", CancellationToken.None);
+
+        await repository.FinalizeAssistantEntryAsync(deletedEntry, "deleted decision", CancellationToken.None);
+
+        (Guid otherSession, Guid otherEntry) = await repository.BeginAssistantReplyAsync(
+            null, "independent source", "test-model", CancellationToken.None);
+
+        await repository.FinalizeAssistantEntryAsync(otherEntry, "preserved decision", CancellationToken.None);
+
+        DateTime watermark = DateTime.UtcNow.AddMinutes(1);
+
+        await repository.UpdateSessionCampaignRollupAsync(sessionId, "contains deleted decision", watermark);
+
+        await repository.UpdateSessionCampaignRollupAsync(otherSession, "preserved summary", watermark);
+
+        Assert.True(await repository.DeleteEntryAsync(sessionId, deletedEntry));
+
+        Session? owner = await repository.GetSessionHeaderAsync(sessionId);
+
+        Assert.NotNull(owner);
+
+        Assert.Null(owner.Summary);
+
+        Assert.Null(owner.LastSummarizedMessageAt);
+
+        Assert.Equal(1, owner.UnsummarizedEntryCount);
+
+        Session? other = await repository.GetSessionHeaderAsync(otherSession);
+
+        Assert.NotNull(other);
+
+        Assert.Equal("preserved summary", other.Summary);
+
+        Assert.Equal(watermark, other.LastSummarizedMessageAt);
+
+        Assert.Equal(0, other.UnsummarizedEntryCount);
+    }
+
     [SkippableFact]
     public async Task DeleteEntryAsync_removes_existing_entry()
     {

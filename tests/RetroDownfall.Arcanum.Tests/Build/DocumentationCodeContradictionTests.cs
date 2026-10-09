@@ -500,32 +500,27 @@ public sealed class DocumentationCodeContradictionTests
     }
 
     /// <summary>
-    /// <c>SessionTurnClaimStore</c> is registered but nothing in production resolves it, and the design
-    /// says so instead of listing it as the owner of durable Session turn claims. The claim stays true
-    /// only while the declaration, the store, and the registration are the only files naming the
-    /// coordinator; the day a turn path consumes it this fails, and the section has to be rewritten
-    /// with the wiring rather than left saying "unconsumed".
+    /// Durable claims are consumed by eligible Campaign rollup turns. Keep the documented consumer
+    /// inventory exact, and preserve the distinction between the claimed and ordinary begin paths.
     /// </summary>
-    /// <remarks>
-    /// Two other documents read as if the claim were in use and are held to the same fact: the OATH
-    /// issue table must not list durable turn claims as landed behaviour without saying nothing consumes
-    /// them, and the buffered-finalization step takes its exclusive pre-request revision from the begin
-    /// preflight, which is what <c>GrimoireTurnWriter</c> reads, not from a durable claim.
-    /// </remarks>
     [Fact]
-    public void The_session_turn_claim_coordinator_is_documented_as_installed_but_unconsumed()
+    public void The_session_turn_claim_coordinator_documents_its_actual_Campaign_rollup_consumers()
     {
         string section = DocumentSection(
             ReadDocument("Arcanum.DESIGN.md"),
             "### 10.18 ",
             "### 10.19 ");
 
-        Assert.Contains("installed but unconsumed", section, StringComparison.Ordinal);
+        Assert.Contains("Durable claims are consumed by eligible Campaign rollup turns", section, StringComparison.Ordinal);
 
-        Assert.DoesNotContain("| Durable Session turn claims |", section, StringComparison.Ordinal);
+        Assert.DoesNotContain("installed but unconsumed", section, StringComparison.Ordinal);
 
-        // Comment-free text, so a doc comment that merely mentions the coordinator is not a consumer, and
-        // repository-relative paths, so two files that share a name cannot alias one another.
+        Assert.Contains("`CampaignRollupTurnPreparer` acquires the claim before maintenance or inference dispatch", section, StringComparison.Ordinal);
+
+        Assert.Contains("`GrimoireTurnWriter` consumes the future assistant Entry reservation", section, StringComparison.Ordinal);
+
+        // Comment-free sources and exact repository-relative paths prevent comments or same-named
+        // files from manufacturing a new consumer.
         string[] namingFiles =
         [
             .. ProductionSourceInventory
@@ -537,6 +532,8 @@ public sealed class DocumentationCodeContradictionTests
 
         Assert.Equal(
             [
+                "src/RetroDownfall.Arcanum.Api/Intelligence/CampaignRollupTurnPreparer.cs",
+                "src/RetroDownfall.Arcanum.Api/Intelligence/GrimoireTurnWriter.cs",
                 "src/RetroDownfall.Arcanum.Core/Storage/ISessionTurnClaimCoordinator.cs",
                 "src/RetroDownfall.Arcanum.Infrastructure/DependencyInjection/ServiceCollectionExtensions.cs",
                 "src/RetroDownfall.Arcanum.Infrastructure/Repositories/SessionTurnClaimStore.cs",
@@ -547,15 +544,19 @@ public sealed class DocumentationCodeContradictionTests
             ReadDocument("Arcanum.OATH.md").Split('\n'),
             static line => line.StartsWith("| **#89** |", StringComparison.Ordinal));
 
-        Assert.DoesNotContain("durable Session turn claims,", oathRow, StringComparison.Ordinal);
+        Assert.Contains("consumed by eligible Campaign rollup turns under #77", oathRow, StringComparison.Ordinal);
 
-        Assert.Contains("no turn path consumes them yet", oathRow, StringComparison.Ordinal);
+        string writer = ReadSource("Api", "Intelligence", "GrimoireTurnWriter.cs");
+
+        Assert.Contains("claimedBeginStore!.BeginClaimedAssistantReplyAsync", writer, StringComparison.Ordinal);
+
+        Assert.Contains("receipt.Value.Preflight.PreRequestHistoryRevision", writer, StringComparison.Ordinal);
 
         string design = ReadDocument("Arcanum.DESIGN.md");
 
-        Assert.DoesNotContain("the turn claim's exclusive pre-request history revision", design, StringComparison.Ordinal);
-
         Assert.Contains("the begin preflight's exclusive pre-request history revision", design, StringComparison.Ordinal);
+
+        Assert.Contains("eligible claimed turns validate it against their frozen claim in the atomic begin", design, StringComparison.Ordinal);
     }
 
     /// <summary>

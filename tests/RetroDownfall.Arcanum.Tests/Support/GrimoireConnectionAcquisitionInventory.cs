@@ -1467,6 +1467,29 @@ internal static class GrimoireConnectionAcquisitionScanner
             GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
             null),
 
+        // Claim input, begin, and replay retain an explicit ordinary lease over the EF context's
+        // exact connection. Begin and replay attach their transaction before factory commands run.
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Repositories/GrimoireRepository.SessionTurnClaimBegin.cs", "GrimoireRepository", "ReadClaimInputAsync(2)", AcquisitionConstructKind.MarkedRouteInvocation, "AcquireScopedAsync", 3, "_connections.AcquireScopedAsync(connection,CovenantSqliteConnectionMode.ReadOnly,cancellationToken)"),
+            GrimoirePathAuthority.LiveGrimoire,
+            GrimoireAcquisitionKind.ServingRawOrdinary,
+            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
+            null),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Repositories/GrimoireRepository.SessionTurnClaimBegin.cs", "GrimoireRepository", "BeginClaimedWithinAsync(5)", AcquisitionConstructKind.MarkedRouteInvocation, "AcquireScopedAsync", 3, "_connections.AcquireScopedAsync(connection,CovenantSqliteConnectionMode.ReadWrite,cancellationToken)"),
+            GrimoirePathAuthority.LiveGrimoire,
+            GrimoireAcquisitionKind.ServingRawOrdinary,
+            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
+            null),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Repositories/GrimoireRepository.SessionTurnClaimReplay.cs", "GrimoireRepository", "ReadCleanClaimedReplyWithinAsync(2)", AcquisitionConstructKind.MarkedRouteInvocation, "AcquireScopedAsync", 3, "_connections.AcquireScopedAsync(connection,CovenantSqliteConnectionMode.ReadOnly,cancellationToken)"),
+            GrimoirePathAuthority.LiveGrimoire,
+            GrimoireAcquisitionKind.ServingRawOrdinary,
+            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
+            null),
+
         new(
             new("src/RetroDownfall.Arcanum.Infrastructure/Repositories/SessionEntryPersistence.cs", "SessionEntryPersistence", "ReadProbeOnFreshConnectionAsync(2)", AcquisitionConstructKind.MarkedRouteInvocation, "OpenFreshAsync", 2, "_connections.OpenFreshAsync(GrimoireOrdinaryFreshConnectionKind.ReadOnly,cancellationToken)"),
             GrimoirePathAuthority.LiveGrimoire,
@@ -3406,8 +3429,31 @@ internal static class GrimoireConnectionAcquisitionScanner
             GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
             null),
 
+        // Campaign summary planning and cleanup reuse the existing admitted EF connection helper;
+        // deletion starts its immediate transaction on that owner before the derived-state purge.
         new(
-            new("src/RetroDownfall.Arcanum.Infrastructure/Data/DataRetentionService.Pruning.cs", "DataRetentionService", "AddEntryCandidatesAsync(8)", AcquisitionConstructKind.ProviderOpen, "OpenConnectionAsync", 1, "OpenConnectionAsync(cancellationToken)"),
+            new("src/RetroDownfall.Arcanum.Infrastructure/Data/DataRetentionService.CampaignSummaries.cs", "DataRetentionService", "AddCampaignSummaryCandidatesAsync(7)", AcquisitionConstructKind.ProviderOpen, "OpenConnectionAsync", 1, "OpenConnectionAsync(cancellationToken)"),
+            GrimoirePathAuthority.LiveGrimoire,
+            GrimoireAcquisitionKind.ServingRawOrdinary,
+            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
+            null),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Data/DataRetentionService.CampaignSummaries.cs", "DataRetentionService", "AddNativeOwnerClosureItemsAsync(4)", AcquisitionConstructKind.ProviderOpen, "OpenConnectionAsync", 1, "OpenConnectionAsync(cancellationToken)"),
+            GrimoirePathAuthority.LiveGrimoire,
+            GrimoireAcquisitionKind.ServingRawOrdinary,
+            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
+            null),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Data/DataRetentionService.CampaignSummaries.cs", "DataRetentionService", "DeleteCampaignSummaryCandidateAsync(4)", AcquisitionConstructKind.ProviderOpen, "OpenConnectionAsync", 1, "OpenConnectionAsync(cancellationToken)"),
+            GrimoirePathAuthority.LiveGrimoire,
+            GrimoireAcquisitionKind.ServingRawOrdinary,
+            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
+            null),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Data/DataRetentionService.Pruning.cs", "DataRetentionService", "AddEntryCandidatesAsync(9)", AcquisitionConstructKind.ProviderOpen, "OpenConnectionAsync", 1, "OpenConnectionAsync(cancellationToken)"),
             GrimoirePathAuthority.LiveGrimoire,
             GrimoireAcquisitionKind.ServingRawOrdinary,
             GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,

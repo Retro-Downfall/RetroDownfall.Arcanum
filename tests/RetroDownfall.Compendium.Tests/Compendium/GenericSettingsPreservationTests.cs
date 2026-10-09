@@ -26,6 +26,37 @@ public sealed class GenericSettingsPreservationTests : IDisposable
     }
 
     [Fact]
+    public async Task Editing_campaign_rollup_gate_and_retention_fields_survives_settings_publication()
+    {
+        await SeedAsync(new ArcanumSettings());
+
+        ConfigurationViewModel vm = CreateViewModel();
+
+        await WaitForLoadAsync(vm);
+
+        GenericSettingFieldViewModel gate = Field(vm, ConfigSection.Features, "features.campaignRollups");
+
+        Assert.False(gate.BoolValue);
+
+        gate.BoolValue = true;
+
+        Field(vm, ConfigSection.Retention, "retention.campaignSummaries.enabled").BoolValue = true;
+
+        Field(vm, ConfigSection.Retention, "retention.campaignSummaries.days").NumericValue = 180;
+
+        using JsonDocument published = JsonDocument.Parse(JsonSerializer.Serialize(
+            vm.BuildSettings(), ConfigurationJsonContext.Default.ArcanumSettings));
+
+        Assert.True(published.RootElement.GetProperty("features").GetProperty("campaignRollups").GetBoolean());
+
+        JsonElement rule = published.RootElement.GetProperty("retention").GetProperty("campaignSummaries");
+
+        Assert.True(rule.GetProperty("enabled").GetBoolean());
+
+        Assert.Equal(180, rule.GetProperty("days").GetInt32());
+    }
+
+    [Fact]
     public async Task Editing_polished_host_preserves_every_generic_minimal_section()
     {
         await SeedAsync(new ArcanumSettings

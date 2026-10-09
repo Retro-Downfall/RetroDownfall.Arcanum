@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Collections.Immutable;
 
 using System.Data.Common;
 
@@ -26,6 +27,8 @@ using RetroDownfall.Arcanum.Core.Storage;
 
 using RetroDownfall.Arcanum.Core.Storage.Entities;
 
+using RetroDownfall.Arcanum.Core.Tower;
+
 using RetroDownfall.Arcanum.Infrastructure.Data;
 
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
@@ -39,6 +42,221 @@ namespace RetroDownfall.Arcanum.Tests.Hosting;
 [Collection(HostedServiceLifetimeCollection.Name)]
 public sealed class LoremasterTests
 {
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Current_contribution_or_Campaign_deferral_cannot_fall_through_to_protected_legacy_text(bool campaignDeferred)
+    {
+        LoremasterHarness harness = new();
+
+        harness.Settings.Features.CampaignRollups = true;
+
+        harness.CampaignMaintenance.ContributionPages = 0;
+
+        harness.CampaignMaintenance.FoldDeferred = campaignDeferred;
+
+        harness.CampaignMaintenance.TaintedSummary = true;
+
+        await harness.Service.StartAsync(CancellationToken.None);
+
+        await harness.NextStepAsync("sweep");
+
+        await harness.NextStepAsync("scope-dispose");
+
+        Assert.True(harness.Queue.TryQueue(harness.Repository.Session.Id));
+
+        await harness.NextStepAsync("scope-dispose");
+
+        await harness.Service.StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.Equal(0, harness.Repository.HeaderReads);
+
+        Assert.DoesNotContain("entries", harness.Events);
+
+        Assert.Equal(0, harness.Intelligence.Calls);
+
+        Assert.Equal(campaignDeferred ? 0 : 1, harness.CampaignMaintenance.SnapshotReads);
+    }
+
+    [Fact]
+    public async Task Campaign_pending_discovery_queues_short_sessions_below_the_legacy_threshold()
+    {
+        LoremasterHarness harness = new();
+
+        harness.Settings.Features.CampaignRollups = true;
+
+        harness.CampaignMaintenance.Pending = [harness.Repository.Session.Id];
+
+        await harness.Service.RunSweepAsync(100, CancellationToken.None);
+
+        Assert.Equal(1, harness.CampaignMaintenance.DiscoveryCalls);
+
+        Assert.Equal(1, harness.Queue.PendingCountForTesting);
+    }
+
+    [Fact]
+    public async Task Protected_background_maintenance_defers_before_ordinary_summary_or_entry_reads()
+    {
+        LoremasterHarness harness = new();
+
+        harness.Settings.Features.CampaignRollups = true;
+
+        harness.CampaignMaintenance.Deferred = true;
+
+        await harness.Service.StartAsync(CancellationToken.None);
+
+        await harness.NextStepAsync("sweep");
+
+        await harness.NextStepAsync("scope-dispose");
+
+        Assert.True(harness.Queue.TryQueue(harness.Repository.Session.Id));
+
+        await harness.NextStepAsync("scope-dispose");
+
+        await harness.Service.StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.Equal(1, harness.CampaignMaintenance.SessionCalls);
+
+        Assert.Equal(0, harness.Repository.HeaderReads);
+
+        Assert.DoesNotContain("entries", harness.Events);
+
+        Assert.Equal(0, harness.Intelligence.Calls);
+
+        Assert.Equal(0, harness.CampaignMaintenance.CampaignCalls);
+    }
+
+    [Fact]
+    public async Task Clean_background_maintenance_uses_the_shared_lane_and_preserves_whole_Session_summary_processing()
+    {
+        LoremasterHarness harness = new();
+
+        harness.Settings.Features.CampaignRollups = true;
+
+        await harness.Service.StartAsync(CancellationToken.None);
+
+        await harness.NextStepAsync("sweep");
+
+        await harness.NextStepAsync("scope-dispose");
+
+        Assert.True(harness.Queue.TryQueue(harness.Repository.Session.Id));
+
+        await harness.NextStepAsync("scope-dispose");
+
+        await harness.Service.StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.Equal(1, harness.CampaignMaintenance.SessionCalls);
+
+        Assert.Equal(1, harness.CampaignMaintenance.CampaignCalls);
+
+        Assert.Equal(1, harness.Intelligence.Calls);
+
+        Assert.Equal(1, harness.CampaignMaintenance.SnapshotReads);
+
+        Assert.Equal(0, harness.Repository.HeaderReads);
+
+        Assert.Equal(1, harness.Repository.Rollups);
+    }
+
+    private sealed class LoremasterCampaignMaintenance(LoremasterHarness harness) : ICampaignRollupMaintenance, ICampaignRollupStore, ISessionCampaignBindingReader, ISessionSummaryMaintenanceStore
+    {
+        public IReadOnlyList<Guid> Pending { get; set; } = [];
+
+        public int DiscoveryCalls { get; private set; }
+
+        public int SessionCalls { get; private set; }
+
+        public int CampaignCalls { get; private set; }
+
+        public bool Deferred { get; set; }
+
+        public bool FoldDeferred { get; set; }
+
+        public bool TaintedSummary { get; set; }
+
+        public int ContributionPages { get; set; } = 1;
+
+        public int SnapshotReads { get; private set; }
+
+        public Task<Result<SessionSummaryMaintenanceInput?>> PrepareAsync(Guid sessionId, int entryLimit, CancellationToken cancellationToken)
+        {
+            SnapshotReads++;
+
+            if (TaintedSummary)
+            {
+                return Task.FromResult(Result<SessionSummaryMaintenanceInput?>.Failure(
+                    new Error(ErrorCodes.Covenant.ForbiddenAuthority, "Protected background text is unavailable.")));
+            }
+
+            DateTimeOffset? watermark = harness.Repository.Session.LastSummarizedMessageAt is { } prior
+                ? new DateTimeOffset(DateTime.SpecifyKind(prior, DateTimeKind.Utc)) : null;
+
+            ImmutableArray<SessionSummaryMaintenanceEntry> entries = [.. harness.Repository.Entries.Select(
+                (entry, index) => new SessionSummaryMaintenanceEntry(entry.Id, index + 1, (int)entry.Role, entry.Content, entry.CreatedAt))];
+
+            return Task.FromResult(Result<SessionSummaryMaintenanceInput?>.Success(new(
+                sessionId, harness.Repository.Session.Summary, watermark, entries,
+                entries.Length, 0, entryLimit, new CovenantDigest(new byte[32]))));
+        }
+
+        public async Task<Result> PublishAsync(SessionSummaryMaintenanceInput input, string summary, CancellationToken cancellationToken)
+        {
+            await harness.Repository.UpdateSessionCampaignRollupAsync(
+                input.SessionId, summary, input.Entries[^1].CreatedAt.UtcDateTime, cancellationToken);
+
+            return Result.Success();
+        }
+
+        public ValueTask<Result<SessionCampaignBindingRecord?>> FindAsync(Guid? sessionId, CancellationToken cancellationToken) =>
+            ValueTask.FromResult(Result<SessionCampaignBindingRecord?>.Success(new(harness.Repository.Session.Id, SessionCampaignBinding.ForCampaign(Guid.Parse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")))));
+
+        public Task<Result<CampaignRollupMaintenanceCapability>> CreateCapabilityAsync(ArcanumInvocationContext invocation, SessionTurnClaimLease claimLease,
+            CanonicalCampaignContext campaign, CovenantTurnLease maintenanceTurnLease, CancellationToken cancellationToken) => throw new NotSupportedException();
+
+        public Task<Result<CampaignRollupMaintenanceResult>> ProcessSessionAsync(Guid sessionId, long? upperSequence,
+            CampaignRollupMaintenanceCapability? capability, CancellationToken cancellationToken)
+        {
+            Assert.Null(capability);
+
+            SessionCalls++;
+
+            return Task.FromResult(Result<CampaignRollupMaintenanceResult>.Success(new(Deferred ? 0 : ContributionPages, Deferred, Deferred ? "Protected" : null)));
+        }
+
+        public Task<Result<CampaignRollupMaintenanceResult>> ProcessCampaignAsync(Guid campaignId,
+            CampaignRollupMaintenanceCapability? capability, CancellationToken cancellationToken)
+        {
+            Assert.Null(capability);
+
+            CampaignCalls++;
+
+            return Task.FromResult(Result<CampaignRollupMaintenanceResult>.Success(new(FoldDeferred ? 0 : 1, FoldDeferred, FoldDeferred ? "Protected" : null)));
+        }
+
+        public Task<IReadOnlyList<Guid>> FindPendingContributionsAsync(DateTimeOffset idleCutoffUtc, int pageSize, CancellationToken cancellationToken)
+        {
+            DiscoveryCalls++;
+
+            return Task.FromResult(Pending);
+        }
+
+        public Task<IReadOnlyList<Guid>> FindPendingContributionsForCampaignAsync(Guid campaignId, DateTimeOffset idleCutoffUtc, int pageSize, CancellationToken cancellationToken) => throw new NotSupportedException();
+
+        public Task<Result<CampaignRollupArtifact?>> ReadCurrentAsync(Guid campaignId, ICovenantSnapshotReadLease? authority, CancellationToken cancellationToken) => throw new NotSupportedException();
+
+        public Task<Result<CampaignContributionInput?>> PrepareContributionAsync(Guid sessionId, long? throughSequence, ICovenantSnapshotReadLease? authority, CancellationToken cancellationToken) => throw new NotSupportedException();
+
+        public Task<Result<CampaignRollupInput?>> PrepareRollupAsync(Guid campaignId, ICovenantSnapshotReadLease? authority, CancellationToken cancellationToken) => throw new NotSupportedException();
+
+        public Task<Result<CampaignRollupArtifact>> PublishContributionAsync(CampaignContributionInput input, string content, CampaignMaintenancePublication? maintenancePublication, ICovenantSnapshotReadLease? authority, CancellationToken cancellationToken) => throw new NotSupportedException();
+
+        public Task<Result<CampaignRollupArtifact>> PublishRollupAsync(CampaignRollupInput input, string content, CampaignMaintenancePublication? maintenancePublication, ICovenantSnapshotReadLease? authority, CancellationToken cancellationToken) => throw new NotSupportedException();
+
+        public Task<Result> ValidateAsync(CampaignRollupArtifact artifact, ICovenantSnapshotReadLease? authority, CancellationToken cancellationToken) => throw new NotSupportedException();
+
+        public Task<Result<CampaignRollupStatus>> ReadStatusAsync(Guid campaignId, CancellationToken cancellationToken) => throw new NotSupportedException();
+    }
     [Fact]
     public async Task WinningSweepDrainsThroughScopeAndLeaseDisposal()
     {
@@ -860,6 +1078,8 @@ public sealed class LoremasterTests
 
             Intelligence = new LoremasterIntelligence(this);
 
+            CampaignMaintenance = new(this);
+
             Scopes = new LoremasterScopeFactory(this);
 
             Logger = new RecordingLogger<Loremaster>();
@@ -867,12 +1087,16 @@ public sealed class LoremasterTests
             Service = new Loremaster(
                 Scopes,
                 Queue,
-                new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings()),
+                new TestOptionsMonitor<ArcanumSettings>(Settings),
                 Gate,
                 Logger);
         }
 
         internal LoremasterAdmissionGate Gate { get; }
+
+        internal ArcanumSettings Settings { get; } = new();
+
+        internal LoremasterCampaignMaintenance CampaignMaintenance { get; }
 
         internal CampaignLoggerQueue Queue { get; }
 
@@ -956,6 +1180,14 @@ public sealed class LoremasterTests
                 if (serviceType == typeof(IAttachmentMemoryProvenanceStore))
                 {
                     return harness.Repository;
+                }
+
+                if (serviceType == typeof(ICampaignRollupMaintenance)
+                    || serviceType == typeof(ICampaignRollupStore)
+                    || serviceType == typeof(ISessionCampaignBindingReader)
+                    || serviceType == typeof(ISessionSummaryMaintenanceStore))
+                {
+                    return harness.CampaignMaintenance;
                 }
 
                 return null;

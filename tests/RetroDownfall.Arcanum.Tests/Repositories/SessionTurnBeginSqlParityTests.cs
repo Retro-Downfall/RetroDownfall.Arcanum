@@ -133,7 +133,8 @@ public sealed class SessionTurnBeginSqlParityTests : IAsyncLifetime
         CampaignRepository campaigns = new(
             _db,
             NullLogger<CampaignRepository>.Instance,
-            new TestOptionsSnapshot<ArcanumSettings>(new ArcanumSettings()));
+            new TestOptionsSnapshot<ArcanumSettings>(new ArcanumSettings()),
+            FixtureLabeledArtifactGuard.For(_db!));
         Assert.True(await campaigns.DeleteAsync(campaignId, CancellationToken.None));
 
         Result<AssistantReplyBeginReceipt> result = await repository.BeginAssistantReplyAsync(

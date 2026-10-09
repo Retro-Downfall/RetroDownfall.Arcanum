@@ -9,6 +9,7 @@ using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
+using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 using RetroDownfall.Arcanum.Infrastructure.Repositories;
 using RetroDownfall.Arcanum.Tests.Covenant;
 using RetroDownfall.Arcanum.Tests.Data.Covenant;
@@ -148,6 +149,117 @@ public sealed class ProtectedArtifactTransferStoreTests : IAsyncLifetime, IDispo
         Assert.Equal(1, await CountDestinationAsync("SessionAttachments"));
 
         Assert.Equal(1, await CountDestinationAsync("assistant_entry_finalizations"));
+    }
+
+    [Fact]
+    public async Task A_mapped_import_writes_its_exact_canonical_binding_in_the_graph_transaction()
+    {
+        Guid campaign = await InstallCampaignDestinationAsync();
+
+        ImportedSessionTransferRequest request = await BuildRequestAsync(Guid.NewGuid(), new BackupSessionCampaignMapping(Guid.NewGuid(), campaign));
+
+        ProtectedSessionTransferCompletion<ImportedSessionCommitReceipt> completion = await CommitAsync(request, ProtectedTransferScope.ForCampaign(campaign));
+
+        Assert.True(completion.Result.IsSuccess, completion.Result.Error.Message);
+
+        Assert.Equal(1, await _destination.ScalarLongAsync("SELECT COUNT(*) FROM session_campaign_bindings WHERE BindingKindCode=2;", CancellationToken.None));
+
+        Assert.Equal(campaign.ToString("D").ToUpperInvariant(), await _destination.ScalarStringAsync("SELECT CampaignId FROM session_campaign_bindings;", CancellationToken.None));
+
+        Assert.Equal(request.DestinationSessionId.ToString("D").ToUpperInvariant(), await _destination.ScalarStringAsync("SELECT SessionId FROM session_campaign_bindings;", CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task A_legacy_import_without_frontier_cannot_offer_copied_history_as_native()
+    {
+        Guid campaign = await InstallCampaignDestinationAsync();
+
+        ImportedSessionTransferRequest request = await BuildRequestAsync(Guid.NewGuid(), new BackupSessionCampaignMapping(Guid.NewGuid(), campaign));
+
+        ProtectedSessionTransferCompletion<ImportedSessionCommitReceipt> completion = await CommitAsync(request, ProtectedTransferScope.ForCampaign(campaign));
+
+        Assert.True(completion.Result.IsSuccess, completion.Result.Error.Message);
+
+        using (CovenantSqliteAuthorizationScope scope = CovenantSqliteConnectionInitializer.Instance.Authorize(_destination.Connection, CovenantSqliteAuthorizationKind.ArtifactReplacement))
+        {
+            await _destination.ExecuteAsync("DELETE FROM campaign_fork_frontiers;", CancellationToken.None);
+        }
+
+        CampaignRollupStore store = new(new FixedCovenantConnectionSource(_destination.Connection), CovenantSqliteConnectionInitializer.Instance);
+
+        Result<CampaignContributionInput?> inherited = await store.PrepareContributionAsync(request.DestinationSessionId, null, null, CancellationToken.None);
+
+        Assert.True(inherited.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.StaleSnapshot, inherited.Error.Code);
+
+        Assert.Empty(await store.FindPendingContributionsForCampaignAsync(campaign, DateTimeOffset.MaxValue, 128, CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task A_selectively_imported_fork_excludes_every_copied_entry_until_its_destination_native_tail()
+    {
+        Guid campaign = await InstallCampaignDestinationAsync();
+
+        await _source.InstallCoreObjectsAsync(["campaign_fork_frontiers"], CancellationToken.None);
+
+        await _source.ExecuteAsync($"UPDATE Sessions SET ForkedFromSessionId='E8B67860-E60E-4982-BBB4-61510D619BC5'; INSERT INTO campaign_fork_frontiers(SessionId,SourceSessionId,InheritedThroughSequence,ProofKindCode,CreatedAtUtc) VALUES('{_sourceSessionId.ToString().ToUpperInvariant()}','E8B67860-E60E-4982-BBB4-61510D619BC5',2,1,'2026-10-01T00:00:00.0000000Z');", CancellationToken.None);
+
+        ImportedSessionTransferRequest request = await BuildRequestAsync(Guid.NewGuid(), new BackupSessionCampaignMapping(Guid.NewGuid(), campaign));
+
+        ProtectedSessionTransferCompletion<ImportedSessionCommitReceipt> completion = await CommitAsync(request, ProtectedTransferScope.ForCampaign(campaign));
+
+        Assert.True(completion.Result.IsSuccess, completion.Result.Error.Message);
+
+        // Keep this test focused on the copied-prefix proof even before the separate binding repair.
+        using (CovenantSqliteAuthorizationScope scope = CovenantSqliteConnectionInitializer.Instance.Authorize(_destination.Connection, CovenantSqliteAuthorizationKind.SessionBindingWrite))
+        {
+            await _destination.ExecuteAsync($"INSERT OR IGNORE INTO session_campaign_bindings(SessionId,BindingKindCode,CampaignId,BoundAtUtc) VALUES('{request.DestinationSessionId.ToString().ToUpperInvariant()}',2,'{campaign.ToString().ToUpperInvariant()}','2026-10-01T00:00:00.0000000Z');", CancellationToken.None);
+        }
+
+        CampaignRollupStore store = new(new FixedCovenantConnectionSource(_destination.Connection), CovenantSqliteConnectionInitializer.Instance);
+
+        Result<CampaignContributionInput?> inherited = await store.PrepareContributionAsync(request.DestinationSessionId, null, null, CancellationToken.None);
+
+        Assert.True(inherited.IsSuccess, inherited.Error.Message);
+
+        Assert.Null(inherited.Value);
+
+        Assert.Equal(1, await CountDestinationAsync("campaign_fork_frontiers"));
+
+        Assert.Equal(2, await _destination.ScalarLongAsync("SELECT InheritedThroughSequence FROM campaign_fork_frontiers;", CancellationToken.None));
+
+        Assert.Equal(_sourceSessionId.ToString("D").ToUpperInvariant(), await _destination.ScalarStringAsync("SELECT SourceSessionId FROM campaign_fork_frontiers;", CancellationToken.None));
+
+        Assert.Equal(0, await CountDestinationAsync("campaign_rollup_artifacts"));
+
+        Assert.Equal(0, await CountDestinationAsync("campaign_contribution_artifacts"));
+
+        await _destination.ExecuteAsync($"INSERT INTO Entries(Id,SessionId,Role,Content,ModelUsed,CreatedAt,Sequence) VALUES('{Guid.NewGuid().ToString().ToUpperInvariant()}','{request.DestinationSessionId.ToString().ToUpperInvariant()}',1,'Native destination decision','','2026-10-08T00:00:00.0000000Z',3);", CancellationToken.None);
+
+        CampaignContributionInput native = (await store.PrepareContributionAsync(request.DestinationSessionId, null, null, CancellationToken.None)).Value!;
+
+        Assert.Equal("Native destination decision", Assert.Single(native.Entries).Content);
+
+        Assert.Equal(2, native.InheritedThroughSequence);
+
+        Assert.Null(native.Previous);
+    }
+
+    private async Task<Guid> InstallCampaignDestinationAsync()
+    {
+        await _destination.InstallCoreObjectsAsync(["Campaigns", "session_campaign_bindings", "session_turn_claims"], CancellationToken.None);
+
+        foreach (GrimoireSchemaObject item in GrimoireSchemaCatalog.CoreObjects.Where(item => item.Name.StartsWith("campaign_", StringComparison.Ordinal)))
+        {
+            await _destination.InstallCoreObjectsAsync([item.Name], CancellationToken.None);
+        }
+
+        Guid campaign = Guid.NewGuid();
+
+        await _destination.ExecuteAsync($"INSERT INTO Campaigns(Id,Name,NameLower,Path,Type,Settings,CreatedAt,UpdatedAt) VALUES('{campaign.ToString().ToUpperInvariant()}','import-destination','import-destination','/import-destination',0,char(123)||char(125),'2026-10-01T00:00:00.0000000Z','2026-10-01T00:00:00.0000000Z');", CancellationToken.None);
+
+        return campaign;
     }
 
     [Fact]

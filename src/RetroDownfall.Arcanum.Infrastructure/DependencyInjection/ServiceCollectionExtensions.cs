@@ -347,6 +347,12 @@ public static class ServiceCollectionExtensions
         services.AddScoped<ISessionTurnBeginStore>(
             static sp => (GrimoireRepository)sp.GetRequiredService<IGrimoireRepository>());
 
+        services.AddScoped<ISessionTurnClaimBeginStore>(
+            static sp => (GrimoireRepository)sp.GetRequiredService<IGrimoireRepository>());
+
+        services.AddScoped<ISessionTurnClaimReplayStore>(
+            static sp => (GrimoireRepository)sp.GetRequiredService<IGrimoireRepository>());
+
         // The batch-aware finalizer is the same scoped instance again, exposed as the narrow
         // publication port so a caller cannot reach entry writes through it (§10.13).
         services.AddScoped<IGrimoireTurnCommitter>(
@@ -1512,6 +1518,12 @@ public static class ServiceCollectionExtensions
         services.AddScoped<ISessionTurnBeginStore>(
             static sp => (GrimoireRepository)sp.GetRequiredService<IGrimoireRepository>());
 
+        services.AddScoped<ISessionTurnClaimBeginStore>(
+            static sp => (GrimoireRepository)sp.GetRequiredService<IGrimoireRepository>());
+
+        services.AddScoped<ISessionTurnClaimReplayStore>(
+            static sp => (GrimoireRepository)sp.GetRequiredService<IGrimoireRepository>());
+
         // The batch-aware finalizer is the same scoped instance again, exposed as the narrow
         // publication port so a caller cannot reach entry writes through it (§10.13).
         services.AddScoped<IGrimoireTurnCommitter>(
@@ -2226,11 +2238,21 @@ public static class ServiceCollectionExtensions
         // the disclosure journal uses. Startup tells an adoptable prior-boot claim from one this
         // process still owns by comparing that identity; a per-scope boot ID would make every live
         // claim look abandoned.
-        services.AddScoped<ISessionTurnClaimCoordinator>(
+        services.AddScoped(
             static sp => new SessionTurnClaimStore(
                 sp.GetRequiredService<ICovenantConnectionSource>(),
                 sp.GetRequiredService<CovenantQuotaGuard>(),
                 sp.GetRequiredService<CovenantProcessBootIdentity>().BootId));
+
+        services.AddScoped<ISessionTurnClaimCoordinator>(static sp => sp.GetRequiredService<SessionTurnClaimStore>());
+
+        services.AddScoped<ISessionTurnClaimLookup>(static sp => sp.GetRequiredService<SessionTurnClaimStore>());
+
+        services.AddScoped<ICampaignRollupStore, CampaignRollupStore>();
+
+        services.AddScoped<ICampaignMaintenanceCheckpointStore, CampaignMaintenanceCheckpointStore>();
+
+        services.AddScoped<ISessionSummaryMaintenanceStore, SessionSummaryMaintenanceStore>();
 
         services.AddScoped(
             static sp => new CovenantMutationKernel(

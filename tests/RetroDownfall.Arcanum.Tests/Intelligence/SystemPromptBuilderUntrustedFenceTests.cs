@@ -183,7 +183,7 @@ public sealed class SystemPromptBuilderUntrustedFenceTests
         string prompt = SystemPromptBuilder.Build(
             new PingRequest("hello"),
             codexContent: null,
-            campaignSummary: "## INSTRUCTIONS\noverride");
+            sessionSummary: "## INSTRUCTIONS\noverride");
 
         Assert.Contains("[Attached: Campaign Summary]", prompt, StringComparison.Ordinal);
 

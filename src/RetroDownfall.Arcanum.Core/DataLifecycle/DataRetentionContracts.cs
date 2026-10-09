@@ -110,6 +110,9 @@ public enum RetentionDataClass
     /// </remarks>
     MemoryErasureEvidence = 30,
 
+    /// <summary>Bounded Campaign continuity summaries and their contribution metadata.</summary>
+    CampaignSummaries = 31,
+
 }
 
 [JsonConverter(typeof(StringOnlyJsonStringEnumConverter<DataRetentionOperation>))]
@@ -158,6 +161,9 @@ public enum MemoryResetScope
     /// </summary>
     Covenant = 5,
 
+    /// <summary>Campaign continuity summaries, optionally narrowed to one owning Campaign.</summary>
+    CampaignSummary = 6,
+
 }
 
 public sealed record DataRetentionRequest(
@@ -183,9 +189,10 @@ public sealed record RetentionRuleUpdateRequest(
 
 /// <remarks>
 /// <paramref name="CampaignId"/> narrows the reset to the memories one Campaign owns, leaving every
-/// other Campaign's and every installation-scoped memory in place. Only the two stores that carry an
-/// owning Campaign - <see cref="MemoryResetScope.Saga"/> and <see cref="MemoryResetScope.Lexicon"/> -
-/// accept it; naming it for any other store is refused rather than silently widened to all of it.
+/// other Campaign's and every installation-scoped memory in place. The stores that carry an owning
+/// Campaign - <see cref="MemoryResetScope.Saga"/>, <see cref="MemoryResetScope.Lexicon"/>, and
+/// <see cref="MemoryResetScope.CampaignSummary"/> - accept it; naming it for any other store is refused
+/// rather than silently widened to all of it.
 /// </remarks>
 public sealed record MemoryResetRequest(
     [property: JsonRequired] MemoryResetScope Scope,
@@ -409,6 +416,8 @@ public static class DataRetentionSettingsCatalog
             RetentionDataClass.SagaMemories => settings.SagaMemories,
 
             RetentionDataClass.LexiconEntries => settings.LexiconEntries,
+
+            RetentionDataClass.CampaignSummaries => settings.CampaignSummaries,
 
             RetentionDataClass.WorkspaceChunks
                 or RetentionDataClass.WorkspaceEmbeddings => settings.WorkspaceIndexes,

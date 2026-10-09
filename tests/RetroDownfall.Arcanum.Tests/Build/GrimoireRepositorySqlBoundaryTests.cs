@@ -22,15 +22,34 @@ public sealed class GrimoireRepositorySqlBoundaryTests
                 new("ReadBusyTimeout", "CreateCommand", 1),
                 new("SetBusyTimeout", "CreateCommand", 1),
             ],
-            // Turn commit owns one admitted BEGIN IMMEDIATE transaction. These commands must
-            // participate in that transaction before an EF ambient transaction exists.
+            // Turn commit owns one admitted BEGIN IMMEDIATE transaction, also attached to EF.
+            // Its explicit-owner commands use that exact transaction: the capacity helper attaches
+            // it through CovenantMutationTransaction, and interruption commits with the reply guard.
             ["GrimoireRepository.TurnCommit.cs"] =
             [
                 new("CommitWithinImmediateTransactionAsync", "GetDbConnection", 1),
                 new("CommitWithinImmediateTransactionAsync", "BeginTransaction", 1),
+                new("EnsureFinalizationCapacityAsync", "CreateCommand", 1),
                 new("SeedSessionCapacityRowAsync", "CreateCommand", 1),
                 new("ReadFinalizationGuardAsync", "CreateCommand", 1),
                 new("InsertFinalizationGuardAsync", "CreateCommand", 1),
+                new("RecordClaimInterruptionAsync", "CreateCommand", 1),
+            ],
+            // Claim input and begin obtain the scoped connection only to acquire its ordinary
+            // admission lease. Begin attaches the lease's BEGIN IMMEDIATE transaction to the same
+            // EF context; every input/read/write command still goes through the factory.
+            ["GrimoireRepository.SessionTurnClaimBegin.cs"] =
+            [
+                new("ReadClaimInputAsync", "GetDbConnection", 1),
+                new("BeginClaimedWithinAsync", "GetDbConnection", 1),
+                new("BeginClaimedWithinAsync", "BeginTransaction", 1),
+            ],
+            // Replay admits the scoped connection and attaches one deferred read transaction to EF.
+            // All factory commands prove cleanliness and read the bounded body in that same snapshot.
+            ["GrimoireRepository.SessionTurnClaimReplay.cs"] =
+            [
+                new("ReadCleanClaimedReplyWithinAsync", "GetDbConnection", 1),
+                new("ReadCleanClaimedReplyWithinAsync", "BeginTransaction", 1),
             ],
             // Session usage accounting owns one admitted BEGIN IMMEDIATE transaction so its exact
             // decimal read-modify-write cannot interleave. There is no EF ambient transaction for
@@ -110,6 +129,63 @@ public sealed class GrimoireRepositorySqlBoundaryTests
             static violation => violation.Contains(
                 "Run.BeginTransaction",
                 StringComparison.Ordinal));
+    }
+
+    [Theory]
+    [InlineData("lease.Connection", "SqliteTransaction", "BeginTransaction")]
+    [InlineData("unadmitted.Owner", "Microsoft.Data.Sqlite.SqliteTransaction", "BeginTransactionAsync")]
+    public void Detector_rejects_native_transaction_results_on_member_receivers(
+        string receiver,
+        string transactionType,
+        string invocationName)
+    {
+        string source =
+            "partial class GrimoireRepository { async Task Run() { "
+            + $"await using {transactionType} transaction = "
+            + (invocationName == "BeginTransactionAsync" ? "await " : string.Empty)
+            + $"{receiver}.{invocationName}(); "
+            + "} }";
+
+        string violation = Assert.Single(FindBoundaryViolations(
+            [new RepositorySource("GrimoireRepository.Lease.cs", source)],
+            EmptyEscapes()));
+
+        Assert.Equal(
+            $"GrimoireRepository.Lease.cs: unreviewed direct-SQL escape Run.{invocationName} appears 1 time(s).",
+            violation);
+    }
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(2)]
+    public void A_member_transaction_allowance_requires_exactly_the_reviewed_call_count(int callCount)
+    {
+        string source =
+            "partial class GrimoireRepository { void Run() { "
+            + "using SqliteTransaction first = lease.Connection.BeginTransaction(); "
+            + (callCount == 2 ? "using SqliteTransaction second = other.Owner.BeginTransaction(); " : string.Empty)
+            + "} }";
+
+        IReadOnlyDictionary<string, DirectSqlAllowance[]> escapes =
+            new Dictionary<string, DirectSqlAllowance[]>(StringComparer.Ordinal)
+            {
+                ["GrimoireRepository.Lease.cs"] = [new("Run", "BeginTransaction", 1)],
+            };
+
+        string[] violations = FindBoundaryViolations(
+            [new RepositorySource("GrimoireRepository.Lease.cs", source)],
+            escapes);
+
+        if (callCount == 1)
+        {
+            Assert.Empty(violations);
+        }
+        else
+        {
+            Assert.Equal(
+                "GrimoireRepository.Lease.cs: Run.BeginTransaction allows exactly 1 call(s), found 2.",
+                Assert.Single(violations));
+        }
     }
 
     [Fact]
@@ -298,6 +374,10 @@ public sealed class GrimoireRepositorySqlBoundaryTests
         type.ToString().Equals("SqliteConnection", StringComparison.Ordinal)
         || type.ToString().EndsWith(".SqliteConnection", StringComparison.Ordinal);
 
+    private static bool IsSqliteTransactionType(TypeSyntax type) =>
+        type.ToString().Equals("SqliteTransaction", StringComparison.Ordinal)
+        || type.ToString().EndsWith(".SqliteTransaction", StringComparison.Ordinal);
+
     private static bool IsDirectSqlInvocation(
         InvocationExpressionSyntax invocation,
         IReadOnlySet<string> sqliteConnectionIdentifiers)
@@ -319,6 +399,15 @@ public sealed class GrimoireRepositorySqlBoundaryTests
             or "BeginTransaction" or "BeginTransactionAsync"))
         {
             return false;
+        }
+
+        // An explicitly native transaction result proves the SQL lane even when its connection
+        // is reached through a lease or another owner. A property name alone proves no authority.
+        if (invocationName is "BeginTransaction" or "BeginTransactionAsync"
+            && invocation.Ancestors().OfType<VariableDeclarationSyntax>().FirstOrDefault() is { } declaration
+            && IsSqliteTransactionType(declaration.Type))
+        {
+            return true;
         }
 
         return invocation.Expression is MemberAccessExpressionSyntax member

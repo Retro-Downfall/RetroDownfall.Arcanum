@@ -15,7 +15,8 @@ namespace RetroDownfall.Arcanum.Tests.Data.Schema;
 /// </summary>
 /// <remarks>
 /// Each case installs to the head this binary declares, so the version-12 installation crosses every
-/// later step as well; versions 14 and 15 declare no sweep, so the one-step, no-sweep assertions still hold.
+/// later step as well. The one-step, no-sweep case first verifies the exact version-13 transition;
+/// the helper completes any later bounded sweep before asserting the installation reached the head.
 /// </remarks>
 public sealed class MemoryErasureSchemaEvolutionTests
 {
@@ -68,6 +69,16 @@ public sealed class MemoryErasureSchemaEvolutionTests
         await using SqliteConnection connection = await file.OpenAsync(CancellationToken.None);
 
         await InstallAsync(connection, CoreSchemaVersionTwelveFixture.ChainSet(), 12);
+
+        GrimoireSchemaInstallResult versionThirteen = await GrimoireSchemaTestInstaller.InstallAsync(
+            connection, CoreSchemaVersionThirteenFixture.ChainSet(), 1536, CancellationToken.None);
+
+        Assert.Equal(GrimoireSchemaTierHealth.Healthy, versionThirteen.Core.Health);
+
+        Assert.Equal(13, versionThirteen.Core.SchemaVersion);
+
+        Assert.Null(await GrimoireSchemaTransitionJournal.ReadAsync(
+            connection, null, GrimoireSchemaTransactionTier.Core, CancellationToken.None));
 
         await InstallAsync(connection, GrimoireSchemaVersionChains.Default, GrimoireSchemaVersionChains.CoreSchemaVersion);
 
@@ -173,8 +184,31 @@ public sealed class MemoryErasureSchemaEvolutionTests
 
     private static async Task InstallAsync(SqliteConnection connection, GrimoireSchemaVersionChainSet chains, int version)
     {
-        GrimoireSchemaInstallResult result = await GrimoireSchemaTestInstaller.InstallAsync(
-            connection, chains, 1536, CancellationToken.None);
+        GrimoireSchemaInstaller installer = GrimoireSchemaTestInstaller.Create(chains);
+
+        GrimoireSchemaInitializationContext context = GrimoireSchemaTestInstaller.CreateContext();
+
+        GrimoireSchemaInstallResult result = await installer.InstallAsync(
+            connection, 1536, context, CancellationToken.None);
+
+        if (result.Core.Health is GrimoireSchemaTierHealth.TransitionIncomplete)
+        {
+            GrimoireSchemaTransitionJournalRow journal = Assert.IsType<GrimoireSchemaTransitionJournalRow>(
+                await GrimoireSchemaTransitionJournal.ReadAsync(
+                    connection, null, GrimoireSchemaTransactionTier.Core, CancellationToken.None));
+
+            GrimoireSchemaBackfillRunner runner = new(installer, TimeProvider.System);
+
+            _ = await runner.AdvanceAsync(
+                connection,
+                chains.ForTier(GrimoireSchemaTransactionTier.Core),
+                journal,
+                context,
+                maxBatches: 128,
+                CancellationToken.None);
+
+            result = await installer.InstallAsync(connection, 1536, context, CancellationToken.None);
+        }
 
         Assert.Equal(GrimoireSchemaTierHealth.Healthy, result.Core.Health);
 

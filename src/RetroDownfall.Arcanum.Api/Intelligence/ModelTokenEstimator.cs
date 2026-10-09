@@ -16,7 +16,7 @@ namespace RetroDownfall.Arcanum.Api.Intelligence;
 /// inferred here; callers reconcile that independent post-call authority onto the returned
 /// <see cref="ContextTokenBreakdown"/>.
 /// </summary>
-public sealed class ModelTokenEstimator : IModelTokenEstimator
+public sealed partial class ModelTokenEstimator : IModelTokenEstimator
 {
     private const int DefaultPerToolOverheadTokens = 8;
 
@@ -369,7 +369,55 @@ public sealed class ModelTokenEstimator : IModelTokenEstimator
     {
         string text = message.Text ?? string.Empty;
 
-        if (attribution is { HasCovenantContent: true }
+        TokenEstimate? renderedRemainder = null;
+
+        if (attribution is { HasRollupContent: true }
+            && string.Equals(attribution.Prompt, text, StringComparison.Ordinal))
+        {
+            SystemPromptTokenAttribution partition = SystemPromptTokenAttribution.Compute(tokenizer, attribution);
+
+            int renderedTotal = partition.OffsetExact ? partition.TotalTokens : tokenizer.CountTokens(text);
+
+            if (profile.Type is ModelTokenizationProfileType.UnknownFallback)
+            {
+                renderedTotal = Math.Max(renderedTotal, Encoding.UTF8.GetByteCount(text));
+            }
+
+            TokenEstimateClassification classification = profile.Type is ModelTokenizationProfileType.ExactLocalTokenizer
+                && partition.OffsetExact
+                    ? TokenEstimateClassification.Exact
+                    : TokenEstimateClassification.Estimated;
+
+            int allocated = 0;
+
+            (CovenantPromptAttribution Attribution, ContextTokenSource Source)[] typedSources =
+            [
+                (CovenantPromptAttribution.CampaignRollup, ContextTokenSource.CampaignRollup),
+                (CovenantPromptAttribution.SessionRollup, ContextTokenSource.SessionRollup),
+                (CovenantPromptAttribution.CovenantConfirmed, ContextTokenSource.CovenantConfirmed),
+                (CovenantPromptAttribution.CovenantProposed, ContextTokenSource.CovenantProposed),
+            ];
+
+            foreach ((CovenantPromptAttribution category, ContextTokenSource typedSource) in typedSources)
+            {
+                int count = profile.Type is ModelTokenizationProfileType.UnknownFallback
+                    ? attribution.Spans.Where(span => span.Attribution == category)
+                        .Sum(span => Encoding.UTF8.GetByteCount(attribution.Prompt.AsSpan(span.Utf16Start, span.Utf16Length)))
+                    : partition[category];
+
+                count = Math.Clamp(count, 0, renderedTotal - allocated);
+
+                Add(estimates, typedSource, count, classification, profile.Confidence);
+
+                allocated += count;
+            }
+
+            renderedRemainder = new TokenEstimate(renderedTotal - allocated, classification, profile.ProfileId, profile.Confidence);
+
+            text = attribution.ExcludingRollupsAndCovenant();
+        }
+
+        else if (attribution is { HasCovenantContent: true }
             && string.Equals(attribution.Prompt, text, StringComparison.Ordinal))
         {
             AddText(
@@ -439,7 +487,7 @@ public sealed class ModelTokenEstimator : IModelTokenEstimator
 
         AddText(sections, source, text[segmentStart..], profile, tokenizer);
 
-        TokenEstimate whole = CountText(text, profile, tokenizer);
+        TokenEstimate whole = renderedRemainder ?? CountText(text, profile, tokenizer);
         long sectionTotal = SumAll(sections);
         long excess = Math.Max(0, sectionTotal - whole.TokenCount);
         if (excess > 0)
@@ -963,8 +1011,12 @@ public sealed class ModelTokenEstimator : IModelTokenEstimator
         return -1;
     }
 
-    internal static string FormatValue(object? value)
+    internal static string FormatValue(object? value) => FormatValue(value, out _);
+
+    internal static string FormatValue(object? value, out bool fullyRepresented)
     {
+        fullyRepresented = true;
+
         if (value is null)
         {
             return "null";
@@ -986,29 +1038,30 @@ public sealed class ModelTokenEstimator : IModelTokenEstimator
         }
 
         StringBuilder builder = new();
-        AppendValue(builder, value);
+        fullyRepresented = AppendValue(builder, value);
         return builder.ToString();
     }
 
-    private static void AppendValue(StringBuilder builder, object? value)
+    private static bool AppendValue(StringBuilder builder, object? value)
     {
         switch (value)
         {
             case null:
                 _ = builder.Append("null");
-                return;
+                return true;
             case string text:
                 _ = builder.Append(text);
-                return;
+                return true;
             case JsonElement element:
                 _ = builder.Append(element.GetRawText());
-                return;
+                return true;
             case JsonDocument document:
                 _ = builder.Append(document.RootElement.GetRawText());
-                return;
+                return true;
             case IDictionary<string, object?> dictionary:
                 _ = builder.Append('{');
                 bool first = true;
+                bool dictionaryComplete = true;
                 foreach ((string key, object? item) in dictionary.OrderBy(static pair => pair.Key, StringComparer.Ordinal))
                 {
                     if (!first)
@@ -1018,14 +1071,15 @@ public sealed class ModelTokenEstimator : IModelTokenEstimator
 
                     first = false;
                     _ = builder.Append(key).Append(':');
-                    AppendValue(builder, item);
+                    dictionaryComplete &= AppendValue(builder, item);
                 }
 
                 _ = builder.Append('}');
-                return;
+                return dictionaryComplete;
             case IReadOnlyDictionary<string, object?> readOnlyDictionary:
                 _ = builder.Append('{');
                 bool firstReadOnly = true;
+                bool readOnlyComplete = true;
                 foreach ((string key, object? item) in readOnlyDictionary.OrderBy(
                     static pair => pair.Key,
                     StringComparer.Ordinal))
@@ -1037,14 +1091,15 @@ public sealed class ModelTokenEstimator : IModelTokenEstimator
 
                     firstReadOnly = false;
                     _ = builder.Append(key).Append(':');
-                    AppendValue(builder, item);
+                    readOnlyComplete &= AppendValue(builder, item);
                 }
 
                 _ = builder.Append('}');
-                return;
+                return readOnlyComplete;
             case IEnumerable sequence when value is not string:
                 _ = builder.Append('[');
                 bool firstItem = true;
+                bool sequenceComplete = true;
                 foreach (object? item in sequence)
                 {
                     if (!firstItem)
@@ -1053,17 +1108,80 @@ public sealed class ModelTokenEstimator : IModelTokenEstimator
                     }
 
                     firstItem = false;
-                    AppendValue(builder, item);
+                    sequenceComplete &= AppendValue(builder, item);
                 }
 
                 _ = builder.Append(']');
-                return;
-            case IFormattable formattable:
-                _ = builder.Append(formattable.ToString(null, CultureInfo.InvariantCulture));
-                return;
+                return sequenceComplete;
+            case byte scalar0:
+                _ = builder.Append(scalar0.ToString(null, CultureInfo.InvariantCulture));
+                return true;
+            case sbyte scalar1:
+                _ = builder.Append(scalar1.ToString(null, CultureInfo.InvariantCulture));
+                return true;
+            case short scalar2:
+                _ = builder.Append(scalar2.ToString(null, CultureInfo.InvariantCulture));
+                return true;
+            case ushort scalar3:
+                _ = builder.Append(scalar3.ToString(null, CultureInfo.InvariantCulture));
+                return true;
+            case int scalar4:
+                _ = builder.Append(scalar4.ToString(null, CultureInfo.InvariantCulture));
+                return true;
+            case uint scalar5:
+                _ = builder.Append(scalar5.ToString(null, CultureInfo.InvariantCulture));
+                return true;
+            case long scalar6:
+                _ = builder.Append(scalar6.ToString(null, CultureInfo.InvariantCulture));
+                return true;
+            case ulong scalar7:
+                _ = builder.Append(scalar7.ToString(null, CultureInfo.InvariantCulture));
+                return true;
+            case float scalar8:
+                _ = builder.Append(scalar8.ToString(null, CultureInfo.InvariantCulture));
+                return true;
+            case double scalar9:
+                _ = builder.Append(scalar9.ToString(null, CultureInfo.InvariantCulture));
+                return true;
+            case decimal scalar10:
+                _ = builder.Append(scalar10.ToString(null, CultureInfo.InvariantCulture));
+                return true;
+            case DateTime scalar11:
+                _ = builder.Append(scalar11.ToString(null, CultureInfo.InvariantCulture));
+                return true;
+            case DateTimeOffset scalar12:
+                _ = builder.Append(scalar12.ToString(null, CultureInfo.InvariantCulture));
+                return true;
+            case DateOnly scalar13:
+                _ = builder.Append(scalar13.ToString(null, CultureInfo.InvariantCulture));
+                return true;
+            case TimeOnly scalar14:
+                _ = builder.Append(scalar14.ToString(null, CultureInfo.InvariantCulture));
+                return true;
+            case TimeSpan scalar15:
+                _ = builder.Append(scalar15.ToString(null, CultureInfo.InvariantCulture));
+                return true;
+            case Guid scalar16:
+                _ = builder.Append(scalar16.ToString(null, CultureInfo.InvariantCulture));
+                return true;
+            case IntPtr scalar17:
+                _ = builder.Append(scalar17.ToString(null, CultureInfo.InvariantCulture));
+                return true;
+            case UIntPtr scalar18:
+                _ = builder.Append(scalar18.ToString(null, CultureInfo.InvariantCulture));
+                return true;
+            case bool flag:
+                _ = builder.Append(flag.ToString());
+                return true;
+            case char character:
+                _ = builder.Append(character);
+                return true;
+            case Enum enumeration:
+                _ = builder.Append(enumeration.ToString());
+                return true;
             default:
-                _ = builder.Append(value.ToString());
-                return;
+                _ = builder.Append("[opaque metadata]");
+                return false;
         }
     }
 

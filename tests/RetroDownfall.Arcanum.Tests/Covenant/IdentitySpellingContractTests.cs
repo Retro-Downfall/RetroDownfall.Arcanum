@@ -311,6 +311,32 @@ internal sealed class IdentitySpellingHarness : IAsyncDisposable
 
         }
 
+        // The mapping names a real destination owner. The transfer store verifies that owner before
+        // writing the imported Session's canonical Campaign binding.
+        await using (SqliteConnection connection = await BackupRestoreDatabaseWorker
+            .OpenAsync(
+                Path.Combine(destinationRoot, "arcanum.db"),
+                destinationSecret,
+                readOnly: false,
+                cancellationToken)
+            .ConfigureAwait(false))
+        {
+            await using SqliteCommand campaignOwner = connection.CreateCommand();
+
+            campaignOwner.CommandText =
+                """
+                INSERT INTO "Campaigns" ("Id", "Name", "NameLower", "Path", "Type", "Settings", "CreatedAt", "UpdatedAt")
+                VALUES ($campaign, 'Import destination', 'import destination', $path, 0, '{}',
+                        '2026-01-01T00:00:00.0000000Z', '2026-01-01T00:00:00.0000000Z');
+                """;
+
+            _ = campaignOwner.Parameters.AddWithValue("$campaign", destinationCampaignId.ToString("D").ToUpperInvariant());
+
+            _ = campaignOwner.Parameters.AddWithValue("$path", destinationRoot);
+
+            _ = await campaignOwner.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
+
         CovenantSelectiveImportServices services = new(
             new GrantingProtectedTransferGate(),
             new ProtectedArtifactTransferStore(CovenantSqliteConnectionInitializer.Instance, TimeProvider.System));

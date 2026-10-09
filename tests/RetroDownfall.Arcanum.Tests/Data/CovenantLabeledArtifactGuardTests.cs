@@ -80,6 +80,56 @@ public sealed class CovenantLabeledArtifactGuardTests : IAsyncLifetime
 
     }
 
+    [SkippableTheory]
+    [InlineData("single", "lower")]
+    [InlineData("single", "dashless")]
+    [InlineData("single", "different")]
+    [InlineData("batch", "lower")]
+    [InlineData("batch", "dashless")]
+    [InlineData("batch", "different")]
+    public async Task Transaction_admission_honors_exact_Guid_label_aliases_without_widening_to_other_identities(string arm, string spelling)
+    {
+        RequireSqlCipher();
+
+        Guid selected = Guid.NewGuid();
+
+        Guid labelled = spelling == "different" ? Guid.NewGuid() : selected;
+
+        string persisted = labelled.ToString(spelling == "dashless" ? "N" : "D").ToLowerInvariant();
+
+        ICovenantLabeledArtifactTransactionGuard guard = CreateGuard();
+
+        await using SqliteTransaction transaction = await BeginAsync();
+
+        await SeedLabelAsync(SensitiveArtifactKind.CampaignRollup, labelled, CancellationToken.None,
+            transaction, storedIdentity: persisted);
+
+        Result admitted = arm == "single"
+            ? await guard.EnsureUnlabeledAsync(SensitiveArtifactKind.CampaignRollup, selected,
+                transaction.Connection!, transaction, CancellationToken.None)
+            : await guard.EnsureAllUnlabeledAsync(SensitiveArtifactKind.CampaignRollup, [selected],
+                transaction.Connection!, transaction, CancellationToken.None);
+
+        Assert.Equal(spelling == "different", admitted.IsSuccess);
+
+        if (spelling != "different")
+        {
+            Assert.Equal(ErrorCodes.Covenant.ForbiddenAuthority, admitted.Error.Code);
+        }
+
+        await using SqliteCommand retained = transaction.Connection!.CreateCommand();
+
+        retained.Transaction = transaction;
+
+        retained.CommandText = "SELECT COUNT(*) FROM artifact_sensitivity WHERE ArtifactKindCode = $kind AND ArtifactId = $identity;";
+
+        _ = retained.Parameters.AddWithValue("$kind", (long)SensitiveArtifactKind.CampaignRollup);
+
+        _ = retained.Parameters.AddWithValue("$identity", persisted);
+
+        Assert.Equal(1L, await retained.ExecuteScalarAsync());
+    }
+
     [SkippableFact]
 
     public async Task An_unlabeled_artifact_passes_the_guard_untouched()
@@ -592,7 +642,8 @@ public sealed class CovenantLabeledArtifactGuardTests : IAsyncLifetime
         SensitiveArtifactKind kind,
         Guid artifactId,
         CancellationToken cancellationToken,
-        SqliteTransaction? transaction = null)
+        SqliteTransaction? transaction = null,
+        string? storedIdentity = null)
     {
 
         SqliteConnection connection = (SqliteConnection)_db!.Database.GetDbConnection();
@@ -623,7 +674,7 @@ public sealed class CovenantLabeledArtifactGuardTests : IAsyncLifetime
 
         _ = command.Parameters.AddWithValue("$kind", (int)kind);
 
-        _ = command.Parameters.AddWithValue("$artifact", artifactId.ToString("D").ToUpperInvariant());
+        _ = command.Parameters.AddWithValue("$artifact", storedIdentity ?? artifactId.ToString("D").ToUpperInvariant());
 
         _ = command.Parameters.AddWithValue("$generations", Enumerable.Repeat((byte)7, 16).ToArray());
 
