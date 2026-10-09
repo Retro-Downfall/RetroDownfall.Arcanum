@@ -1,8 +1,11 @@
+using System.Reflection;
 using System.Security.Cryptography;
 
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Runtime.InteropServices;
+
+using Microsoft.Win32.SafeHandles;
 
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
@@ -29,6 +32,10 @@ public sealed class WorkspaceSearchToolTests : IAsyncLifetime
 
     public async Task DisposeAsync()
     {
+
+        SecureFileReader.AfterRegularFileOpenedForTests = null;
+
+        FileHandleIdentityInterop.TryGetHandleMetadataForTests = null;
 
         await _workspace.DisposeAsync();
 
@@ -1050,6 +1057,88 @@ public sealed class WorkspaceSearchToolTests : IAsyncLifetime
                 cancellationToken: cancellation.Token));
     }
 
+    [Fact]
+    public async Task Search_cancellation_after_file_open_closes_the_owned_handle()
+    {
+        string searchPath = _workspace.WriteFile("cancel-after-open.txt", "needle");
+
+        Assert.True(FileHandleIdentityInterop.TryGetPathMetadata(
+            searchPath,
+            out FileHandleMetadata targetMetadata));
+
+        MethodInfo? kernelMetadataMethod = typeof(FileHandleIdentityInterop).GetMethod(
+            "TryGetHandleMetadataIgnoringTestSeam",
+            BindingFlags.Static | BindingFlags.NonPublic);
+
+        Assert.NotNull(kernelMetadataMethod);
+
+        ReadKernelHandleMetadata readKernelMetadata =
+            kernelMetadataMethod.CreateDelegate<ReadKernelHandleMetadata>();
+
+        SafeFileHandle? ownedHandle = null;
+
+        Func<SafeFileHandle, FileHandleMetadata?>? previousMetadataHook =
+            FileHandleIdentityInterop.TryGetHandleMetadataForTests;
+
+        Action<string>? previousOpenHook = SecureFileReader.AfterRegularFileOpenedForTests;
+
+        using CancellationTokenSource cancellation = new();
+
+        // Capture the real stream-owned handle while preserving every kernel metadata check.
+        // Keeping this reference alive prevents finalization from standing in for search disposal.
+        FileHandleIdentityInterop.TryGetHandleMetadataForTests = handle =>
+        {
+            if (!readKernelMetadata(handle, out FileHandleMetadata metadata))
+            {
+                return null;
+            }
+
+            if (FileHandleIdentity.IdentitiesMatch(metadata.Identity, targetMetadata.Identity))
+            {
+                ownedHandle = handle;
+            }
+
+            return metadata;
+        };
+
+        SecureFileReader.AfterRegularFileOpenedForTests = path =>
+        {
+            if (string.Equals(path, searchPath, StringComparison.Ordinal))
+            {
+                Assert.NotNull(ownedHandle);
+
+                Assert.False(ownedHandle.IsInvalid);
+
+                Assert.False(ownedHandle.IsClosed);
+
+                cancellation.Cancel();
+            }
+        };
+
+        try
+        {
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(
+                () => SearchAsync(
+                    "needle",
+                    WorkspaceSearchMode.Regex,
+                    caseSensitive: true,
+                    cancellationToken: cancellation.Token)
+                    .WaitAsync(TimeSpan.FromSeconds(10)));
+
+            Assert.NotNull(ownedHandle);
+
+            Assert.True(ownedHandle.IsClosed, "The cancelled search left its owned file handle open.");
+        }
+        finally
+        {
+            SecureFileReader.AfterRegularFileOpenedForTests = previousOpenHook;
+
+            FileHandleIdentityInterop.TryGetHandleMetadataForTests = previousMetadataHook;
+
+            ownedHandle?.Dispose();
+        }
+    }
+
     [Theory]
     [InlineData((int)WorkspaceSearchPhase.Traversal)]
     [InlineData((int)WorkspaceSearchPhase.GlobMatch)]
@@ -1247,6 +1336,10 @@ public sealed class WorkspaceSearchToolTests : IAsyncLifetime
                 cancellationToken: cancellation.Token));
 
     }
+
+    private delegate bool ReadKernelHandleMetadata(
+        SafeFileHandle handle,
+        out FileHandleMetadata metadata);
 
     private Task<WorkspaceSearchToolResultEnvelope> SearchAsync(
         string pattern,
