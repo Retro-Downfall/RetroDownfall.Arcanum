@@ -20,7 +20,7 @@ jobs:
       - name: Checkout exact qualified source
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
-          ref: 'fa904781cfb9417031d55d6460902c2002a2ead1'
+          ref: '9d2939d3e2bf172e8cceea5c1a17ac77bf737da1'
       - name: Setup .NET
         uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9
         with:
@@ -31,7 +31,7 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $actualSha = git rev-parse HEAD
           Write-Host "Checked-out candidate: $actualSha"
-          if ($actualSha -ne 'fa904781cfb9417031d55d6460902c2002a2ead1') { throw 'Candidate checkout mismatch.' }
+          if ($actualSha -ne '9d2939d3e2bf172e8cceea5c1a17ac77bf737da1') { throw 'Candidate checkout mismatch.' }
           $info = (& dotnet --info) -join "`n"
           Write-Host $info
           $match = [regex]::Match($info, '(?m)^\s*RID:\s*(?<rid>\S+)\s*$')
@@ -61,6 +61,6 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: long-rest-${{ matrix.rid }}-fa904781cfb9417031d55d6460902c2002a2ead1
+          name: long-rest-${{ matrix.rid }}-9d2939d3e2bf172e8cceea5c1a17ac77bf737da1
           path: windows-long-rest-results/*.trx
           if-no-files-found: error
