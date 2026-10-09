@@ -145,7 +145,20 @@ public sealed partial class WorkspaceIndexingServiceTests
 
         string file = _workspace.WriteFile("one.cs", "class One {}");
 
-        FakeWorkspaceFileWatcherFactory watchers = new();
+        HeldWatcherCreation replacement = new();
+
+        int attempts = 0;
+
+        FakeWorkspaceFileWatcherFactory watchers = new()
+        {
+            BeforeReturn = () =>
+            {
+                if (Interlocked.Increment(ref attempts) == 2)
+                {
+                    replacement.Hold();
+                }
+            },
+        };
 
         WorkspaceIndexingService service = CreateService(new FakeWeaveService(), out _, watcherFactory: watchers);
 
@@ -164,7 +177,15 @@ public sealed partial class WorkspaceIndexingServiceTests
             watchers.Created[0].TriggerError(new IOException("The first watcher failed."));
 
             // The first failure is retried at once.
-            await WaitForWorkspaceConditionAsync(() => watchers.Created.Count == 2);
+            await replacement.WaitUntilEnteredAsync();
+
+            Task ready = WaitForWorkspaceConditionAsync(() => watchers.Created.Count == 2 && service.GetRuntimeStatus(_workspace.Root).Watching);
+
+            Assert.False(ready.IsCompleted, "the unpublished replacement completed readiness");
+
+            replacement.Release();
+
+            await ready.WaitAsync(TimeSpan.FromSeconds(30));
 
             watchers.Created[1].TriggerChanged(file);
 
@@ -179,7 +200,9 @@ public sealed partial class WorkspaceIndexingServiceTests
         }
         finally
         {
-            await service.StopAsync(CancellationToken.None);
+            replacement.Release();
+
+            await service.StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(30));
         }
     }
 
@@ -194,7 +217,28 @@ public sealed partial class WorkspaceIndexingServiceTests
 
         string file = _workspace.WriteFile("one.cs", "class One {}");
 
-        FakeWorkspaceFileWatcherFactory watchers = new();
+        HeldWatcherCreation second = new();
+
+        HeldWatcherCreation third = new();
+
+        int attempts = 0;
+
+        FakeWorkspaceFileWatcherFactory watchers = new()
+        {
+            BeforeReturn = () =>
+            {
+                int attempt = Interlocked.Increment(ref attempts);
+
+                if (attempt == 2)
+                {
+                    second.Hold();
+                }
+                else if (attempt == 3)
+                {
+                    third.Hold();
+                }
+            },
+        };
 
         WorkspaceIndexingService service = CreateService(new FakeWeaveService(), out _, watcherFactory: watchers);
 
@@ -212,20 +256,40 @@ public sealed partial class WorkspaceIndexingServiceTests
 
             watchers.Created[0].TriggerError(new IOException("The first watcher failed."));
 
-            await WaitForWorkspaceConditionAsync(() => watchers.Created.Count == 2);
+            await second.WaitUntilEnteredAsync();
+
+            Task secondReady = WaitForWorkspaceConditionAsync(() => watchers.Created.Count == 2 && service.GetRuntimeStatus(_workspace.Root).Watching);
+
+            Assert.False(secondReady.IsCompleted, "the unpublished second watcher completed readiness");
+
+            second.Release();
+
+            await secondReady.WaitAsync(TimeSpan.FromSeconds(30));
 
             watchers.Created[1].TriggerChanged(file);
 
             watchers.Created[1].TriggerError(new IOException("The second watcher failed after a healthy event."));
 
             // Healthy in between, so this is a first failure again: retried at once, not after an hour.
-            await WaitForWorkspaceConditionAsync(() => watchers.Created.Count == 3);
+            await third.WaitUntilEnteredAsync();
+
+            Task thirdReady = WaitForWorkspaceConditionAsync(() => watchers.Created.Count == 3 && service.GetRuntimeStatus(_workspace.Root).Watching);
+
+            Assert.False(thirdReady.IsCompleted, "the unpublished third watcher completed readiness");
+
+            third.Release();
+
+            await thirdReady.WaitAsync(TimeSpan.FromSeconds(30));
 
             Assert.Equal(1, service.ActiveWatcherCount);
         }
         finally
         {
-            await service.StopAsync(CancellationToken.None);
+            second.Release();
+
+            third.Release();
+
+            await service.StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(30));
         }
     }
 
@@ -241,11 +305,20 @@ public sealed partial class WorkspaceIndexingServiceTests
 
         int attempts = 0;
 
+        HeldWatcherCreation immediateRetry = new();
+
         FakeWorkspaceFileWatcherFactory watchers = new()
         {
             BeforeReturn = () =>
             {
-                if (Interlocked.Increment(ref attempts) <= 2)
+                int attempt = Interlocked.Increment(ref attempts);
+
+                if (attempt == 2)
+                {
+                    immediateRetry.Hold();
+                }
+
+                if (attempt <= 2)
                 {
                     throw new InvalidOperationException("The inotify watch budget is exhausted.");
                 }
@@ -283,13 +356,29 @@ public sealed partial class WorkspaceIndexingServiceTests
 
         try
         {
+            await immediateRetry.WaitUntilEnteredAsync();
+
+            Task<bool> ready = BecomesTrueAsync(() => Task.FromResult(service.GetRuntimeStatus(_workspace.Root).Watching), TimeSpan.FromSeconds(10));
+
+            Assert.False(ready.IsCompleted, "the doomed immediate retry completed readiness");
+
+            immediateRetry.Release();
+
             Assert.True(
-                await BecomesTrueAsync(() => Task.FromResult(service.ActiveWatcherCount == 1), TimeSpan.FromSeconds(10)),
+                await ready.WaitAsync(TimeSpan.FromSeconds(30)),
                 "The watcher was not re-created: the loop slept through its retry deadline.");
+
+            Assert.Equal(3, watchers.Created.Count);
+
+            Assert.Equal(1, service.ActiveWatcherCount);
+
+            Assert.True(service.GetRuntimeStatus(_workspace.Root).Watching);
         }
         finally
         {
-            await service.StopAsync(CancellationToken.None);
+            immediateRetry.Release();
+
+            await service.StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(30));
         }
     }
 
@@ -304,13 +393,24 @@ public sealed partial class WorkspaceIndexingServiceTests
 
         int attempts = 0;
 
+        int holdReopenedRetry = 0;
+
+        HeldWatcherCreation reopenedRetry = new();
+
         FakeWorkspaceFileWatcherFactory watchers = new()
         {
             BeforeReturn = () =>
             {
-                if (Interlocked.Increment(ref attempts) <= 2)
+                int attempt = Interlocked.Increment(ref attempts);
+
+                if (attempt <= 2)
                 {
                     throw new InvalidOperationException("The inotify watch budget is exhausted.");
+                }
+
+                if (attempt == 3 && Volatile.Read(ref holdReopenedRetry) == 1)
+                {
+                    reopenedRetry.Hold();
                 }
             },
         };
@@ -339,15 +439,33 @@ public sealed partial class WorkspaceIndexingServiceTests
 
             Assert.Equal(0, service.ActiveWatcherCount);
 
+            Volatile.Write(ref holdReopenedRetry, 1);
+
             Assert.True((await closed.CompleteAsync(CovenantExclusiveLeaseDisposition.RollbackAndReopen, CancellationToken.None)).IsSuccess);
 
+            await reopenedRetry.WaitUntilEnteredAsync();
+
+            Task<bool> ready = BecomesTrueAsync(() => Task.FromResult(service.GetRuntimeStatus(_workspace.Root).Watching), TimeSpan.FromSeconds(10));
+
+            Assert.False(ready.IsCompleted, "the unpublished post-maintenance watcher completed readiness");
+
+            reopenedRetry.Release();
+
             Assert.True(
-                await BecomesTrueAsync(() => Task.FromResult(service.ActiveWatcherCount == 1), TimeSpan.FromSeconds(10)),
+                await ready.WaitAsync(TimeSpan.FromSeconds(30)),
                 "The watcher was not re-created after maintenance reopened Grimoire admission.");
+
+            Assert.Equal(3, watchers.Created.Count);
+
+            Assert.Equal(1, service.ActiveWatcherCount);
+
+            Assert.True(service.GetRuntimeStatus(_workspace.Root).Watching);
         }
         finally
         {
-            await service.StopAsync(CancellationToken.None);
+            reopenedRetry.Release();
+
+            await service.StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(30));
         }
     }
 
@@ -367,6 +485,28 @@ public sealed partial class WorkspaceIndexingServiceTests
         catch (OperationCanceledException) when (deadline.IsCancellationRequested)
         {
             return false;
+        }
+    }
+
+    /// <summary>Holds a factory callback before its watcher can be published to runtime status.</summary>
+    private sealed class HeldWatcherCreation
+    {
+        private readonly TaskCompletionSource _entered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        private readonly TaskCompletionSource _release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        internal Task WaitUntilEnteredAsync() => _entered.Task.WaitAsync(TimeSpan.FromSeconds(30));
+
+        internal void Hold()
+        {
+            _ = _entered.TrySetResult();
+
+            _release.Task.GetAwaiter().GetResult();
+        }
+
+        internal void Release()
+        {
+            _ = _release.TrySetResult();
         }
     }
 }

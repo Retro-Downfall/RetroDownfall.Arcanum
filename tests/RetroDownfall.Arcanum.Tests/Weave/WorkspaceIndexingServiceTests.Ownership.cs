@@ -366,11 +366,24 @@ public sealed partial class WorkspaceIndexingServiceTests
 
         int attempts = 0;
 
+        TaskCompletionSource secondEntered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        TaskCompletionSource releaseSecond = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
         FakeWorkspaceFileWatcherFactory watchers = new()
         {
             BeforeReturn = () =>
             {
-                if (Interlocked.Increment(ref attempts) <= 2)
+                int attempt = Interlocked.Increment(ref attempts);
+
+                if (attempt == 2)
+                {
+                    _ = secondEntered.TrySetResult();
+
+                    releaseSecond.Task.GetAwaiter().GetResult();
+                }
+
+                if (attempt <= 2)
                 {
                     throw new InvalidOperationException("The inotify watch budget is exhausted.");
                 }
@@ -387,15 +400,29 @@ public sealed partial class WorkspaceIndexingServiceTests
 
         try
         {
-            await WaitForWorkspaceConditionAsync(() => service.ActiveWatcherCount == 1);
+            await secondEntered.Task.WaitAsync(TimeSpan.FromSeconds(30));
+
+            // Creation reserves watcher capacity before the factory returns. A held, doomed attempt
+            // must not complete the readiness observation meant to prove a successful retry.
+            Task ready = WaitForWorkspaceConditionAsync(() => service.GetRuntimeStatus(_workspace.Root).Watching);
+
+            Assert.False(ready.IsCompleted, "the unfinished watcher reservation completed readiness");
+
+            _ = releaseSecond.TrySetResult();
+
+            await ready.WaitAsync(TimeSpan.FromSeconds(30));
 
             Assert.Equal(3, watchers.Created.Count);
+
+            Assert.Equal(1, service.ActiveWatcherCount);
 
             Assert.True(service.GetRuntimeStatus(_workspace.Root).Watching);
         }
         finally
         {
-            await service.StopAsync(CancellationToken.None);
+            _ = releaseSecond.TrySetResult();
+
+            await service.StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(30));
         }
     }
 
