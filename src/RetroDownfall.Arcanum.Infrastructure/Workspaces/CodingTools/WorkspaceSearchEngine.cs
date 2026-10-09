@@ -424,8 +424,6 @@ internal sealed class WorkspaceSearchEngine
 
             }
 
-            Checkpoint();
-
             SearchState.MatchCheckpoint matchCheckpoint =
                 state.CreateMatchCheckpoint();
 
@@ -434,6 +432,8 @@ internal sealed class WorkspaceSearchEngine
 
                 await using (stream)
                 {
+
+                    Checkpoint();
 
                     if (!TryValidateSearchFile(
                             root,

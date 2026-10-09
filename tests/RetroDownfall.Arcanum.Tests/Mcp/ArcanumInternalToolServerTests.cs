@@ -1,4 +1,6 @@
+using System.Collections.Concurrent;
 using System.Globalization;
+using System.Reflection;
 using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
@@ -56,6 +58,8 @@ public sealed partial class ArcanumInternalToolServerTests : IAsyncLifetime
     public async Task DisposeAsync()
     {
         SecureFileReader.AfterOpenForTests = null;
+
+        SecureFileReader.AfterRegularFileOpenedForTests = null;
 
         await _workspace.DisposeAsync();
     }
@@ -605,31 +609,19 @@ public sealed partial class ArcanumInternalToolServerTests : IAsyncLifetime
         Assert.Equal("invalid_root", invalidRootJson.RootElement.GetProperty("code").GetString());
     }
 
-    // A notifications/cancelled whose requestId is not yet in the server's in-flight map is dropped
-    // in silence, and nothing orders the two inbound lines: RunAsync hands every line to its own
-    // Task.Run, so the cancel can be handled before the tools/call has registered its
-    // CancellationTokenSource. A search that is never cancelled still ends -- in its own regex
-    // timeout -- but a timeout is reported as a non-error "timed_out" envelope, so a dropped cancel
-    // surfaces here as IsError false rather than as a hang.
-    //
-    // So this waits for proof of registration instead of sleeping and hoping. A second tools/call
-    // carrying the same id is rejected only when the id is already present in that map, so reading
-    // that rejection establishes that the winner's CancellationTokenSource is registered and the
-    // cancel below cannot be dropped. Both writes carry identical arguments, which is what makes the
-    // handshake indifferent to which of the two wins the id: the winner is the long-running call
-    // either way, and the loser is the rejection.
-    //
-    // The 100_000-'a' file and the 1_000 ms timeout are what hold the winner in flight across the
-    // handshake; they are not being measured. NonBacktracking rejects the lookahead, so the search
-    // falls back to the backtracking engine, which cannot finish this pattern against input with no
-    // 'b' -- it runs until the per-match timeout. Shortening either one shrinks the interval the
-    // cancel has to arrive in.
+    // A duplicate rejection proves registration only while the original call remains in flight.
+    // Hold the real regex search at its exact file-open boundary so its finite match timeout cannot
+    // expire before the duplicate worker is dispatched. Observe the notification cancelling the
+    // registered token before releasing that handler; writing the notification alone does not order
+    // its dispatch against the search worker. Regex matching and timeout behaviour have their own
+    // WorkspaceSearchToolTests; this exercises cancellation of the registered MCP search request.
     [Fact]
     public async Task NotificationsCancelled_cancels_in_flight_search_workspace_regex()
     {
-        _workspace.WriteFile(
+        string searchPath = _workspace.WriteFile(
             "expensive-search.txt",
             new string('a', 100_000) + "!");
+
         CodingToolsSettings codingTools = ArcanumRuntimeDefaults.CodingTools with
         {
             Search = ArcanumRuntimeDefaults.CodingTools.Search with
@@ -637,9 +629,6 @@ public sealed partial class ArcanumInternalToolServerTests : IAsyncLifetime
                 RegexTimeoutMilliseconds = 1_000,
             },
         };
-
-        await using TestMcpSession session = await CreateSessionAsync(
-            codingToolsSettings: codingTools);
 
         JsonElement arguments = JsonSerializer.SerializeToElement(
             new SearchWorkspaceParams
@@ -659,35 +648,81 @@ public sealed partial class ArcanumInternalToolServerTests : IAsyncLifetime
 
         const int requestId = 6464;
 
-        await session.WriteRequestWithFixedIdAsync(requestId, "tools/call", callParams);
-        await session.WriteRequestWithFixedIdAsync(requestId, "tools/call", callParams);
+        TaskCompletionSource searchOpened = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        JsonRpcResponse rejected = await session.ReadNextResponseAsync()
-            .WaitAsync(TimeSpan.FromSeconds(10));
+        TaskCompletionSource releaseSearch = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        Assert.NotNull(rejected.Error);
-        Assert.Equal(-32600, rejected.Error!.Code);
+        SecureFileReader.AfterRegularFileOpenedForTests = path =>
+        {
+            if (string.Equals(path, searchPath, StringComparison.Ordinal))
+            {
+                searchOpened.TrySetResult();
 
-        await session.SendCancelNotificationAsync(requestId);
+                releaseSearch.Task.GetAwaiter().GetResult();
+            }
+        };
 
-        JsonRpcResponse response = await session.ReadNextResponseAsync()
-            .WaitAsync(TimeSpan.FromSeconds(10));
+        TestMcpSession? session = null;
 
-        Assert.Null(response.Error);
+        try
+        {
+            session = await CreateSessionAsync(codingToolsSettings: codingTools);
 
-        McpToolsCallResultWire result = JsonSerializer.Deserialize(
-            response.Result!.Value,
-            McpJsonSerializerContext.Default.McpToolsCallResultWire)!;
+            await session.WriteRequestWithFixedIdAsync(requestId, "tools/call", callParams);
 
-        Assert.True(result.IsError);
+            await searchOpened.Task.WaitAsync(TimeSpan.FromSeconds(10));
 
-        // The two ways this call can end are told apart only by their text: a regex timeout is a
-        // non-error envelope today, and naming the cancellation keeps the test red if that is ever
-        // reclassified as an error, instead of letting the timeout stand in for the cancellation.
-        Assert.Contains(
-            "cancelled",
-            Assert.Single(result.Content).Text,
-            StringComparison.OrdinalIgnoreCase);
+            await session.WriteRequestWithFixedIdAsync(requestId, "tools/call", callParams);
+
+            JsonRpcResponse rejected = await session.ReadNextResponseAsync()
+                .WaitAsync(TimeSpan.FromSeconds(10));
+
+            Assert.NotNull(rejected.Error);
+            Assert.Equal(-32600, rejected.Error!.Code);
+
+            TaskCompletionSource cancellationObserved = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+            using CancellationTokenRegistration cancellationRegistration =
+                session.ObserveToolCancellation(requestId, cancellationObserved);
+
+            await session.SendCancelNotificationAsync(requestId);
+
+            await cancellationObserved.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+            releaseSearch.TrySetResult();
+
+            JsonRpcResponse response = await session.ReadNextResponseAsync()
+                .WaitAsync(TimeSpan.FromSeconds(10));
+
+            Assert.Null(response.Error);
+
+            McpToolsCallResultWire result = JsonSerializer.Deserialize(
+                response.Result!.Value,
+                McpJsonSerializerContext.Default.McpToolsCallResultWire)!;
+
+            Assert.True(result.IsError);
+
+            Assert.Contains(
+                "cancelled",
+                Assert.Single(result.Content).Text,
+                StringComparison.OrdinalIgnoreCase);
+
+            JsonRpcResponse followUp = await session.SendRequestAsync("tools/list", null)
+                .WaitAsync(TimeSpan.FromSeconds(10));
+
+            Assert.Null(followUp.Error);
+        }
+        finally
+        {
+            releaseSearch.TrySetResult();
+
+            SecureFileReader.AfterRegularFileOpenedForTests = null;
+
+            if (session is not null)
+            {
+                await session.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(10));
+            }
+        }
     }
 
     [Fact]
@@ -5659,6 +5694,30 @@ public sealed partial class ArcanumInternalToolServerTests : IAsyncLifetime
         }
 
         public Task<JsonRpcResponse> ReadNextResponseAsync() => ReadResponseAsync();
+
+        // Observe the exact server-owned token without cancelling it. The file-open barrier keeps
+        // this request registered, and only the real wire notification may signal this observation.
+        public CancellationTokenRegistration ObserveToolCancellation(
+            int requestId,
+            TaskCompletionSource cancellationObserved)
+        {
+            FieldInfo? field = typeof(ArcanumInternalToolServer).GetField(
+                "_inFlightToolCalls",
+                BindingFlags.Instance | BindingFlags.NonPublic);
+
+            ConcurrentDictionary<string, CancellationTokenSource> inFlight =
+                Assert.IsType<ConcurrentDictionary<string, CancellationTokenSource>>(field?.GetValue(server));
+
+            Assert.True(inFlight.TryGetValue(
+                requestId.ToString(CultureInfo.InvariantCulture),
+                out CancellationTokenSource? toolScope));
+
+            Assert.NotNull(toolScope);
+
+            return toolScope.Token.Register(
+                static state => ((TaskCompletionSource)state!).TrySetResult(),
+                cancellationObserved);
+        }
 
         private async Task<JsonRpcResponse> ReadResponseAsync()
         {
