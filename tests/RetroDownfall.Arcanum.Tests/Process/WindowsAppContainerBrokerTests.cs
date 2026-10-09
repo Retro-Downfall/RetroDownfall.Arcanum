@@ -56,6 +56,8 @@ public sealed class WindowsAppContainerBrokerTests : IDisposable
 
         Assert.True(File.Exists(executable), $"Published executable does not exist: {executable}");
 
+        WindowsAppContainerAclTests.InitializeModernInheritance(_workspace);
+
         string daclBefore = Sddl(_workspace);
         int profilesBefore = ArcanumProfileCount();
 
@@ -95,7 +97,9 @@ public sealed class WindowsAppContainerBrokerTests : IDisposable
         Assert.True(
             result.Outcome == CappedChildProcessOutcome.Completed,
             $"Outcome {result.Outcome}; exit {result.ExitCode}; stderr: {result.Stderr.Text}; detail: {result.FilesystemSandboxDenialMessage}");
-        Assert.Equal(0, result.ExitCode);
+        Assert.True(
+            result.ExitCode == 0,
+            $"Broker exited {result.ExitCode}; stdout: {result.Stdout.Text}; stderr: {result.Stderr.Text}; detail: {result.FilesystemSandboxDenialMessage}");
         Assert.Contains("broker-ok", result.Stdout.Text, StringComparison.Ordinal);
         Assert.Equal(daclBefore, Sddl(_workspace));
         Assert.Equal(profilesBefore, ArcanumProfileCount());

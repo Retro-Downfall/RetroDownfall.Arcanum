@@ -32,7 +32,7 @@ internal static partial class WindowsAppContainerLauncher
 
     private const uint ExtendedStartupInfoPresent = 0x00080000;
 
-    private const uint ProcThreadAttributeSecurityCapabilities = 0x00020005;
+    private const uint ProcThreadAttributeSecurityCapabilities = 0x00020009;
 
     private const uint ProcThreadAttributeHandleList = 0x00020002;
 
@@ -201,6 +201,7 @@ internal static partial class WindowsAppContainerLauncher
         {
             DirectoryInfo directory = new(path);
             DirectorySecurity security = directory.GetAccessControl(AccessControlSections.Access);
+
             security.PurgeAccessRules(identity);
             directory.SetAccessControl(security);
             return true;
