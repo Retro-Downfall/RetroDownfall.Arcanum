@@ -239,14 +239,21 @@ public sealed partial class LongRestMaintenanceTests
         await CleanReviewRegisteredPassAsync(f, coordinator, foreignWork, foreignRecorded, "clean-review-foreign-gate");
 
         // The actual coordinator presents whatever fresh B lease it was handed, while the independent
-        // facts/store authority stays gate A. Gate A is consulted and refuses at the pre-check; the
-        // clean store is never reached, so nothing below may have moved.
+        // facts/store authority stays gate A. Gate A is consulted exactly once, at the coordinator pre-check,
+        // and refuses; the clean store is never reached (a second attestation would be the store's), so nothing
+        // below may have moved.
         Assert.Contains(foreignRecorded.InnerWorkLeases, lease =>
             lease.Kind == GrimoireWorkKind.LongRunningOperationRecovery && lease.Generation == f.Admission.CurrentGeneration);
 
-        Assert.NotEmpty(factsGateA.DrainedAttestations);
+        RecordingGrimoireWorkAdmissionGate.DrainedAttestation refused = Assert.Single(factsGateA.DrainedAttestations);
 
-        Assert.All(factsGateA.DrainedAttestations, attestation => Assert.False(attestation.Attested));
+        Assert.False(refused.Attested);
+
+        Assert.Equal(GrimoireWorkKind.LongRunningOperationRecovery, refused.Kind);
+
+        Assert.Equal(previous.Fence.AdmissionGeneration, refused.Previous);
+
+        Assert.Equal(f.Admission.CurrentGeneration, refused.Current);
 
         Assert.Equal(0, handoff.Calls);
 

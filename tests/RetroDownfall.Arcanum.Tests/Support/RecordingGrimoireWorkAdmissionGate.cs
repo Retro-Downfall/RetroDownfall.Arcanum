@@ -20,6 +20,8 @@ internal sealed class RecordingGrimoireWorkAdmissionGate(
 
     private readonly List<DrainedAttestation> _drainedAttestations = [];
 
+    private int _drainedAttestationOrdinal;
+
     private int _effectGroupAttempts;
 
     private int _generationWaits;
@@ -79,6 +81,14 @@ internal sealed class RecordingGrimoireWorkAdmissionGate(
 
     internal Action BeforeEffectGroupAdmission { get; set; } = static () => { };
 
+    /// <summary>
+    /// Runs before each drained attestation with that attestation's 1-based position in this gate's sequence.
+    /// It may drive a real edge on the inner gate (for example <c>BeginOrResumeExclusive</c>) and may only refuse:
+    /// returning <see langword="false"/> ANDs the verdict down without consulting the inner gate, and returning
+    /// <see langword="true"/> leaves the verdict to the inner gate. It can never grant.
+    /// </summary>
+    internal Func<int, bool> BeforeDrainedAttestation { get; set; } = static _ => true;
+
     internal Action<long> AfterOpenGenerationObserved { get; set; } = static _ => { };
 
     internal Func<ValueTask> BeforeWorkLeaseDisposalAsync { get; set; } =
@@ -95,7 +105,12 @@ internal sealed class RecordingGrimoireWorkAdmissionGate(
     /// </summary>
     public bool AttestDrainedMaintenance(IGrimoireWorkLease lease, long previousGeneration, long currentGeneration)
     {
-        bool attested = lease is RecordingWorkLease recording
+        int ordinal = Interlocked.Increment(ref _drainedAttestationOrdinal);
+
+        // The hook runs first and only ever narrows: a refusal never reaches the inner gate, and a pass leaves the
+        // verdict to the inner gate, so no hook can manufacture an attestation the real gate would not give.
+        bool attested = BeforeDrainedAttestation(ordinal)
+            && lease is RecordingWorkLease recording
             && ReferenceEquals(recording.Owner, this)
             && inner.AttestDrainedMaintenance(recording.Inner, previousGeneration, currentGeneration);
 

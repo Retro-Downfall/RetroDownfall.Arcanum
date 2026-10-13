@@ -149,10 +149,18 @@ public sealed partial class LongRestMaintenanceTests
         }
         else if (change is "undrained" or "broken-lineage")
         {
-            // The gate itself refused the interval at the pre-check: nothing was attested, nothing reached a store.
-            Assert.NotEmpty(attested);
+            // The gate itself refused the interval at the coordinator pre-check, so the coordinator never entered
+            // the clean store: exactly one attestation was asked for, and it refused. A pre-check that let the case
+            // through would reach a store and add a second attestation here.
+            RecordingGrimoireWorkAdmissionGate.DrainedAttestation refused = Assert.Single(attested);
 
-            Assert.DoesNotContain(attested, static attestation => attestation.Attested);
+            Assert.False(refused.Attested);
+
+            Assert.Equal(GrimoireWorkKind.LongRunningOperationRecovery, refused.Kind);
+
+            Assert.Equal(original.Fence.AdmissionGeneration, refused.Previous);
+
+            Assert.Equal(f.Admission.CurrentGeneration, refused.Current);
         }
         else if (change == "protected")
         {

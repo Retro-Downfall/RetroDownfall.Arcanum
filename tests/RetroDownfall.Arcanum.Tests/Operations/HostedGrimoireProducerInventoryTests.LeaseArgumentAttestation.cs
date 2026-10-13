@@ -13,9 +13,11 @@ public sealed partial class HostedGrimoireProducerInventoryTests
 {
     // The production shape of Presented-Lease Attestation: the acquired lease travels by value into a sealed
     // facts reader, which forwards it to the ABSTRACT gate member that the DI alias binds to the sealed gate. The
-    // concrete body is a lock plus `lease is ConcreteLease work && reads`. A later internal abstract facet passes
-    // the same lease to a store, and a physical send follows. The checker must keep granting the acquired Work
-    // across the attestation, and it must stop granting it the moment the real bound body does anything else.
+    // concrete body mirrors GrimoireConnectionAdmissionGate.AttestDrainedMaintenance and its WorkLease getters term
+    // for term: a lock, the state enum compare, the Contains lookup, the Volatile-backed release flag, the scope
+    // flag, the lock-backed revocation getter and the CTS-backed revocation token. A later internal abstract facet
+    // passes the same lease to a store, and a physical send follows. The checker must keep granting the acquired
+    // Work across the attestation, and it must stop granting it the moment the real bound body does anything else.
     private const string LeaseAttestationGate = "RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireConnectionAdmissionGate";
 
     private const string LeaseAttestationCallee = LeaseAttestationGate + ".AttestDrainedMaintenance";
@@ -23,7 +25,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests
     private const string LeaseAttestationFile = "System.IO.File.Delete";
 
     // Shared data layer: the sealed gate with the abstract attestation, the sealed facts reader, and the
-    // internal abstract facet implemented by the store. `bodyPrefix` is spliced before the real predicate.
+    // internal abstract facet implemented by the store. `bodyPrefix` is spliced before the production-shaped predicate.
     private static string LeaseAttestationDataLayer(string shape, bool storeGroup = true)
     {
         string bodyPrefix = shape switch
@@ -72,6 +74,10 @@ public sealed partial class HostedGrimoireProducerInventoryTests
 
                     private long _drainedAbortFloor = 1;
 
+                    private ProbeGateState _state = ProbeGateState.Ordinary;
+
+                    private enum ProbeGateState { Ordinary, Closing, Closed }
+
                     public bool TryAcquireWorkLease(GrimoireWorkKind kind, out IGrimoireWorkLease lease)
                     {
                         lock (_sync)
@@ -93,7 +99,9 @@ public sealed partial class HostedGrimoireProducerInventoryTests
                             {{bodyPrefix}}
 
                             return lease is ConcreteWorkLease work && ReferenceEquals(work.Gate, this)
-                                && _workLeases.Contains(work) && !work.IsReleased && !work.RevocationPending
+                                && _state == ProbeGateState.Ordinary && _workLeases.Contains(work)
+                                && !work.IsReleased && !work.ScopeDisposed && !work.RevocationPending
+                                && !work.MaintenanceRevocation.IsCancellationRequested
                                 && currentGeneration == _generation && work.Generation == currentGeneration
                                 && previousGeneration >= _drainedAbortFloor && previousGeneration < currentGeneration;
                         }
@@ -105,11 +113,28 @@ public sealed partial class HostedGrimoireProducerInventoryTests
 
                         internal long Generation { get; } = generation;
 
-                        internal bool IsReleased { get; set; }
+                        private int _released;
+
+                        internal System.Threading.CancellationTokenSource Revocation { get; } = new();
+
+                        internal bool IsReleased => System.Threading.Volatile.Read(ref _released) != 0;
+
+                        internal bool ScopeDisposed { get; set; }
 
                         internal bool RevocationPending { get; set; }
 
-                        public bool MaintenanceRevocationPending => RevocationPending;
+                        public System.Threading.CancellationToken MaintenanceRevocation => Revocation.Token;
+
+                        public bool MaintenanceRevocationPending
+                        {
+                            get
+                            {
+                                lock (Gate._sync)
+                                {
+                                    return RevocationPending;
+                                }
+                            }
+                        }
 
                         public bool TryBeginExternalEffectGroup(out System.IDisposable group)
                         {
@@ -118,11 +143,11 @@ public sealed partial class HostedGrimoireProducerInventoryTests
                             return true;
                         }
 
-                        public void Dispose() => IsReleased = true;
+                        public void Dispose() => System.Threading.Interlocked.Exchange(ref _released, 1);
 
                         public System.Threading.Tasks.ValueTask DisposeAsync()
                         {
-                            IsReleased = true;
+                            System.Threading.Interlocked.Exchange(ref _released, 1);
 
                             return default;
                         }
