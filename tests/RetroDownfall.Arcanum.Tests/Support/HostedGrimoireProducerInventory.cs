@@ -29638,6 +29638,7 @@ internal static partial class HostedGrimoireProducerInventory
                     model,
                     context)
                 || IsReviewedLongRestHistogramObservation(method, node, model, context)
+                || IsReviewedArcanumTokenHistogramObservation(method, node, model, context)
                 || IsReviewedCodeOwnedSdkConstruction(method, node, model, context)
                 || IsReviewedConcreteTokenizerCall(method, node, model, context)
                 || IsReviewedCampaignEncodingMethod(method, node, model, context)
@@ -29781,6 +29782,75 @@ internal static partial class HostedGrimoireProducerInventory
             // arguments/getters/wrappers and listener work remain traversed or refused; ambient/static initialization,
             // reflection/loader/native behavior and third-party observer closure remain unproved.
             return Origin(receiver, context.Model, new(SymbolEqualityComparer.Default), context);
+        }
+
+        // Exact reviewed contract (Triage Ladder D4) for the three Arcanum token-count instruments. Each is a
+        // static readonly Histogram<long> of ArcanumMetrics, created from the exact ArcanumMetrics.Meter by
+        // CreateHistogram<long> under one of these constant names. The recorded value and its tags are
+        // evaluated, and any authored work in them is traversed, where they are written; they need only the
+        // argument-boundary rule. Listeners run synchronously and may do work or throw, as for every
+        // histogram here, and nothing in this contract waives that limit or any producer authority.
+        private static readonly HashSet<string> ArcanumTokenHistogramNames = new(StringComparer.Ordinal)
+        {
+            "arcanum_estimated_input_tokens",
+            "arcanum_provider_reported_input_tokens",
+            "arcanum_input_token_estimation_variance",
+        };
+
+        private static bool IsExactArcanumTokenHistogramRecord(IMethodSymbol method) =>
+            !method.IsStatic && method.Name == "Record" && method.Arity == 0 && method.ReturnsVoid
+            && method.ContainingType.TypeArguments is [{ SpecialType: SpecialType.System_Int64 }]
+            && IsExactFrameworkType(method.ContainingType, "System.Diagnostics.Metrics.Histogram`1", typeof(System.Diagnostics.Metrics.Histogram<>).Assembly.GetName())
+            && method.Parameters.Length is >= 1 and <= 4
+            && method.Parameters[0] is { RefKind: RefKind.None, Type.SpecialType: SpecialType.System_Int64 }
+            && method.Parameters.Skip(1).All(static tag => tag is { RefKind: RefKind.None, IsParams: false }
+                && tag.Type is INamedTypeSymbol { TypeArguments: [{ SpecialType: SpecialType.System_String }, { SpecialType: SpecialType.System_Object }] } pair
+                && IsExactFrameworkType(pair, "System.Collections.Generic.KeyValuePair`2", typeof(KeyValuePair<,>).Assembly.GetName()));
+
+        private bool IsReviewedArcanumTokenHistogramObservation(IMethodSymbol method, SyntaxNode? node, SemanticModel? model, AuthoredMember? context)
+        {
+            if (!IsExactArcanumTokenHistogramRecord(method)
+                || context is null || node is not InvocationExpressionSyntax
+                || model?.GetOperation(node) is not IInvocationOperation { Instance.Syntax: ExpressionSyntax receiver } invocation
+                || !invocation.Arguments.All(ArgumentBoundaryUsesOnlyBuiltInConversions)
+                || model.GetSymbolInfo(StripTransparentExpression(receiver)).Symbol is not IFieldSymbol field) return false;
+
+            bool ExactMeter(IFieldSymbol meter)
+            {
+                if (!meter.IsReadOnly || !meter.IsStatic || meter.Name != "Meter"
+                    || TypeKey(meter.ContainingType) != "RetroDownfall.Arcanum.Core.Telemetry.ArcanumMetrics"
+                    || !IsExactFrameworkType(meter.Type, "System.Diagnostics.Metrics.Meter", typeof(System.Diagnostics.Metrics.Meter).Assembly.GetName())
+                    || HasAuthoredStorageWrite(meter)
+                    || meter.DeclaringSyntaxReferences is not [SyntaxReference declaration]
+                    || declaration.GetSyntax() is not VariableDeclaratorSyntax { Initializer.Value: { } value }
+                    || !semanticModels.TryGetValue(value.SyntaxTree, out SemanticModel? meterModel)
+                    || meterModel.GetOperation(value) is not IObjectCreationOperation { Constructor: { } constructor, Initializer: null } creation) return false;
+
+                return IsExactFrameworkType(constructor.ContainingType, "System.Diagnostics.Metrics.Meter", typeof(System.Diagnostics.Metrics.Meter).Assembly.GetName())
+                    && HasExactParameterTypes(constructor, "System.String", "System.String")
+                    && creation.Arguments is [{ Value.ConstantValue: { HasValue: true, Value: "Arcanum" } },
+                        { Value.ConstantValue: { HasValue: true, Value: "0.1.0" } }];
+            }
+
+            if (!field.IsReadOnly || !field.IsStatic || HasAuthoredStorageWrite(field)
+                || TypeKey(field.ContainingType) != "RetroDownfall.Arcanum.Core.Telemetry.ArcanumMetrics"
+                || field.Type is not INamedTypeSymbol { TypeArguments: [{ SpecialType: SpecialType.System_Int64 }] }
+                || !IsExactFrameworkType(field.Type, "System.Diagnostics.Metrics.Histogram`1", typeof(System.Diagnostics.Metrics.Histogram<>).Assembly.GetName())
+                || field.DeclaringSyntaxReferences is not [SyntaxReference declaration]
+                || declaration.GetSyntax() is not VariableDeclaratorSyntax { Initializer.Value: { } initializer }
+                || !semanticModels.TryGetValue(initializer.SyntaxTree, out SemanticModel? fieldModel)
+                || fieldModel.GetOperation(initializer) is not IInvocationOperation { Instance: IFieldReferenceOperation meterReference } created) return false;
+
+            IMethodSymbol factory = created.TargetMethod;
+
+            return !factory.IsStatic && factory.Name == "CreateHistogram" && factory.Arity == 1
+                && factory.TypeArguments is [{ SpecialType: SpecialType.System_Int64 }]
+                && IsExactFrameworkType(factory.ContainingType, "System.Diagnostics.Metrics.Meter", typeof(System.Diagnostics.Metrics.Meter).Assembly.GetName())
+                && factory.ReturnType is INamedTypeSymbol { TypeArguments: [{ SpecialType: SpecialType.System_Int64 }] } returned
+                && IsExactFrameworkType(returned, "System.Diagnostics.Metrics.Histogram`1", typeof(System.Diagnostics.Metrics.Histogram<>).Assembly.GetName())
+                && created.Arguments.Where(static argument => argument.ArgumentKind == ArgumentKind.Explicit).ToArray() is [{ Value.ConstantValue: { HasValue: true, Value: string name } }, ..]
+                && ArcanumTokenHistogramNames.Contains(name)
+                && ExactMeter(meterReference.Field);
         }
 
         private bool IsReviewedCodeOwnedSdkConstruction(
