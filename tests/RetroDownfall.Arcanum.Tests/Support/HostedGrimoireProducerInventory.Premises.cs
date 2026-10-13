@@ -18,6 +18,12 @@ internal enum HostedProducerPremises : byte
     // runtime type, so the virtual SqliteConnection.CreateCommand and the Sqlite-typed cleanup resolve to the
     // reviewed framework contract. Abstract Db* types are never mapped to Sqlite.
     SqliteSealedByUse = 1,
+
+    // No type declared in an analysed source assembly implements an enumeration contract or declares a
+    // GetEnumerator or GetAsyncEnumerator member. A value statically typed as a framework collection interface
+    // (IEnumerable<T>, IReadOnlyList<T>, ...) then has no authored runtime type, so enumerating it reaches no
+    // authored enumeration member. Compiler-generated iterators stay traversed where they are produced.
+    AuthoredEnumerablesAbsentByUse = 2,
 }
 
 internal sealed record HostedProducerPremiseLedger(
@@ -65,6 +71,20 @@ internal static partial class HostedGrimoireProducerInventory
             else
             {
                 violations.AddRange(findings.Select(static finding => new HostedProducerInventoryDiagnostic("HOSTED_PREMISE_VIOLATED", "SqliteSealedByUse", finding)));
+            }
+        }
+
+        if ((requested & HostedProducerPremises.AuthoredEnumerablesAbsentByUse) != 0)
+        {
+            string[] findings = VerifyAuthoredEnumerablesAbsent(compilations);
+
+            if (findings.Length == 0)
+            {
+                granted |= HostedProducerPremises.AuthoredEnumerablesAbsentByUse;
+            }
+            else
+            {
+                violations.AddRange(findings.Select(static finding => new HostedProducerInventoryDiagnostic("HOSTED_PREMISE_VIOLATED", "AuthoredEnumerablesAbsentByUse", finding)));
             }
         }
 
@@ -223,6 +243,8 @@ internal static partial class HostedGrimoireProducerInventory
     private sealed partial class ProducerGraph
     {
         private bool SqliteSealedByUse => premises.Holds(HostedProducerPremises.SqliteSealedByUse);
+
+        private bool AuthoredEnumerablesAbsentByUse => premises.Holds(HostedProducerPremises.AuthoredEnumerablesAbsentByUse);
 
         // A static type that is exactly one of the three Sqlite family classes. Under SqliteSealedByUse it is
         // also the exact runtime type of every value of that static type. Abstract DbConnection, DbCommand,
