@@ -25737,12 +25737,22 @@ internal static partial class HostedGrimoireProducerInventory
                                     (SyntaxNode Site, int Position)? scopedConsumption = lazyCompletion is null && node is InvocationExpressionSyntax scopedCall && IsLazySequence(exactTarget.Symbol.ReturnType)
                                         ? ScopedEnumeratorConsumption(member, scopedCall) : null;
 
-                                    bool lazyOwned = lazyCompletion is not null && WorkAt(member, lazyCompletion, operationId, ordinary?.WorkKind, inheritedWork) == workAdmitted && EffectAt(member, lazyCompletion, operationId, inheritedEffect) == effectGroup
+                                    bool lazyOwned = lazyCompletion is not null
+                                            && LazyConsumptionPositions(lazyCompletion).All(lazyPosition => WorkAt(member, lazyCompletion, operationId, ordinary?.WorkKind, inheritedWork, lazyPosition) == workAdmitted && EffectAt(member, lazyCompletion, operationId, inheritedEffect, lazyPosition) == effectGroup)
                                         || scopedConsumption is { } scoped
                                             && WorkAt(member, scoped.Site, operationId, ordinary?.WorkKind, inheritedWork, scoped.Position) == workAdmitted
                                             && EffectAt(member, scoped.Site, operationId, inheritedEffect, scoped.Position) == effectGroup;
 
-                                    bool detached = IsAwaitable(exactTarget.Symbol.ReturnType) && !joined || IsLazySequence(exactTarget.Symbol.ReturnType) && !lazyOwned;
+                                    // An iterator that returns an enumerator runs its body on the MoveNext calls that follow. That is owned only
+                                    // by the enumeration of the loop that called the provider returning it; anywhere else it is unowned.
+                                    bool lazyEnumerator = node is InvocationExpressionSyntax && IsLazyEnumerator(exactTarget.Symbol.ReturnType) && IsIteratorMember(exactTarget);
+
+                                    if (lazyEnumerator && OwnsLazyEnumeratorCall(node))
+                                    {
+                                        lazyOwned = true;
+                                    }
+
+                                    bool detached = IsAwaitable(exactTarget.Symbol.ReturnType) && !joined || IsLazySequence(exactTarget.Symbol.ReturnType) && !lazyOwned || lazyEnumerator && !lazyOwned;
 
                                     // An asynchronous sequence's body runs where it is consumed. When no consumption can be proven, the
                                     // body is traversed with no frontier, and the refusal is owed only if that traversal finds a site.
@@ -29483,6 +29493,26 @@ internal static partial class HostedGrimoireProducerInventory
                 && definition.Name is "Aggregate" or "All" or "Any" or "Average" or "Contains" or "Count" or "ElementAt" or "ElementAtOrDefault" or "First" or "FirstOrDefault" or "Last" or "LastOrDefault" or "LongCount" or "Max" or "MaxBy" or "Min" or "MinBy" or "SequenceEqual" or "Single" or "SingleOrDefault" or "Sum" or "ToArray" or "ToDictionary" or "ToHashSet" or "ToList" or "ToLookup";
         }
 
+        // A lazy sequence's body runs on every MoveNext of its consumer, wherever the consumer resumes it, so the Work
+        // and effect group it ran under must be live at every one of those points. A consuming loop resumes it
+        // after its operand, after each pass of its body (the back-edge) and when it ends; any other consumer
+        // consumes it in one step.
+        private static int?[] LazyConsumptionPositions(SyntaxNode completion)
+        {
+            if (completion is not CommonForEachStatementSyntax loop)
+            {
+                return [null];
+            }
+
+            int entry = loop.Expression.Span.End + 1;
+
+            int backEdge = Math.Max(entry, loop.Statement.Span.End);
+
+            int exit = Math.Max(backEdge, loop.Span.End);
+
+            return [entry, backEdge, exit];
+        }
+
         private SyntaxNode? LazyCompletionPoint(AuthoredMember member, InvocationExpressionSyntax source)
         {
             SyntaxNode? Consumption(SyntaxNode expression)
@@ -29535,7 +29565,8 @@ internal static partial class HostedGrimoireProducerInventory
                 && suppliedParameter.Ordinal < consumer.Symbol.Parameters.Length
                 && ConsumesLazyParameterSynchronously(
                     consumer,
-                    consumer.Symbol.Parameters[suppliedParameter.Ordinal]))
+                    consumer.Symbol.Parameters[suppliedParameter.Ordinal])
+                && !ConsumerMayHoldTheAdmission(member, consumerCall, argument))
             {
                 return consumerCall;
             }
@@ -29565,6 +29596,13 @@ internal static partial class HostedGrimoireProducerInventory
 
             return uses is [IdentifierNameSyntax use] ? Consumption(use) : null;
         }
+
+        // The sequence runs in the consumer's loop, wherever that loop and its body put the lease. A consumer that is
+        // handed anything that carries the admission (another argument, or the receiver it is called on) can end it
+        // between two MoveNext calls, so the Work live at the call says nothing about the body.
+        private bool ConsumerMayHoldTheAdmission(AuthoredMember member, InvocationExpressionSyntax consumerCall, ArgumentSyntax lazyArgument) =>
+            consumerCall.ArgumentList.Arguments.Any(other => other != lazyArgument && MayCarryAdmissionHandle(member, other.Expression))
+            || consumerCall.Expression is MemberAccessExpressionSyntax { Expression: { } receiver } && MayCarryAdmissionHandle(member, receiver);
 
         private static bool ConsumesLazyParameterSynchronously(
             AuthoredMember consumer,
@@ -32933,7 +32971,14 @@ internal static partial class HostedGrimoireProducerInventory
                                 model.GetSymbolInfo(argument.Expression).Symbol,
                                 local));
 
+                    // A tuple deconstruction reassigns each local it names, but its left side is a tuple, not the
+                    // local, so the assignments above never see it.
+                    bool deconstructed = root.DescendantNodes()
+                        .OfType<AssignmentExpressionSyntax>()
+                        .Any(assignment => DeconstructsInto(assignment, model, local));
+
                     if (mutatedByReference
+                        || deconstructed
                         || assignments.Any(static assignment =>
                             !assignment.IsKind(
                                 SyntaxKind.SimpleAssignmentExpression)))
@@ -32968,7 +33013,14 @@ internal static partial class HostedGrimoireProducerInventory
                 .Any(assignment => SymbolEqualityComparer.Default.Equals(
                     semanticModels[assignment.SyntaxTree]
                         .GetSymbolInfo(assignment.Left).Symbol,
-                    storage)) == true;
+                    storage)
+                    || DeconstructsInto(assignment, semanticModels[assignment.SyntaxTree], storage)) == true;
+
+        // True when the assignment is a tuple deconstruction that names the storage among its targets.
+        private static bool DeconstructsInto(AssignmentExpressionSyntax assignment, SemanticModel model, ISymbol storage) =>
+            assignment.Left is TupleExpressionSyntax tuple
+            && tuple.DescendantNodes().OfType<IdentifierNameSyntax>().Any(name =>
+                SymbolEqualityComparer.Default.Equals(model.GetSymbolInfo(name).Symbol, storage));
 
         private static ExpressionSyntax StripTransparentExpression(
             ExpressionSyntax expression) => expression switch

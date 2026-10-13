@@ -111,6 +111,23 @@ internal static partial class HostedGrimoireProducerInventory
         return anchors;
     }
 
+    // The framework runtime types the implementer-only members above are trusted for. A member declared by an
+    // unsealed framework type (GenericAcl, ReadOnlyCollectionBase, SortedSet<T>) calls abstract or virtual
+    // members of its subclass, so it is safe to run only when the value is exactly one of these types: an
+    // authored subclass that overrides those members is not, whatever the declaring type is.
+    private static readonly IReadOnlyDictionary<string, AssemblyName> ExactEnumerationRuntimeAnchors = BuildExactEnumerationRuntimeAnchors();
+
+    private static IReadOnlyDictionary<string, AssemblyName> BuildExactEnumerationRuntimeAnchors() =>
+        new Dictionary<string, AssemblyName>(StringComparer.Ordinal)
+        {
+            ["System.Collections.Generic.SortedSet`1"] = typeof(SortedSet<>).Assembly.GetName(),
+            ["System.Collections.Generic.SortedSet`1.Enumerator"] = typeof(SortedSet<>).Assembly.GetName(),
+            ["System.Collections.Immutable.ImmutableArray`1.Builder"] = typeof(System.Collections.Immutable.ImmutableArray<>).Assembly.GetName(),
+            ["System.Security.AccessControl.RawAcl"] = typeof(System.Security.AccessControl.RawAcl).Assembly.GetName(),
+            ["System.Security.AccessControl.AuthorizationRuleCollection"] = typeof(System.Security.AccessControl.AuthorizationRuleCollection).Assembly.GetName(),
+            ["System.Security.AccessControl.AceEnumerator"] = typeof(System.Security.AccessControl.AceEnumerator).Assembly.GetName(),
+        };
+
     // The enumeration contracts whose implementations the Authored Enumerables Absent premise excludes from
     // the analysed source, and the contracts under which a value may be assumed non-authored once it holds.
     private static readonly IReadOnlySet<string> EnumerationContracts = new HashSet<string>(StringComparer.Ordinal)
@@ -167,7 +184,10 @@ internal static partial class HostedGrimoireProducerInventory
         {
             foreach (INamedTypeSymbol type in SourceTypes(compilation.Assembly.GlobalNamespace))
             {
-                if (type.TypeKind is not (TypeKind.Class or TypeKind.Struct or TypeKind.Interface))
+                // A C# 14 extension block is exposed as a nested type of its own kind whose members are the block's
+                // members, and as implicitly declared implementation methods of the static class that holds it. Both
+                // are read, so an extension GetEnumerator is found whichever way the symbols present it.
+                if (type.TypeKind is not (TypeKind.Class or TypeKind.Struct or TypeKind.Interface or TypeKind.Extension))
                 {
                     continue;
                 }
@@ -198,9 +218,8 @@ internal static partial class HostedGrimoireProducerInventory
 
                 foreach (IMethodSymbol method in type.GetMembers().OfType<IMethodSymbol>())
                 {
-                    if (!method.IsImplicitlyDeclared
-                        && (method.Name.EndsWith("GetEnumerator", StringComparison.Ordinal)
-                            || method.Name.EndsWith("GetAsyncEnumerator", StringComparison.Ordinal)))
+                    if (method.Name.EndsWith("GetEnumerator", StringComparison.Ordinal)
+                        || method.Name.EndsWith("GetAsyncEnumerator", StringComparison.Ordinal))
                     {
                         findings.Add($"'{name}' of '{compilation.AssemblyName}' declares {method.Name}, so a foreach over a value of an authored type runs authored enumeration members.");
                     }
@@ -232,6 +251,20 @@ internal static partial class HostedGrimoireProducerInventory
             || type is INamedTypeSymbol named
                 && ClosedEnumerationImplementerAnchors.TryGetValue(TypeKey(named), out AssemblyName? anchor)
                 && IsExactFrameworkType(named, TypeKey(named), anchor);
+
+        private static bool IsExactEnumerationRuntimeType(ITypeSymbol? type) =>
+            type is INamedTypeSymbol named
+            && ExactEnumerationRuntimeAnchors.TryGetValue(TypeKey(named), out AssemblyName? anchor)
+            && IsExactFrameworkType(named, TypeKey(named), anchor);
+
+        // A framework implementation resolved for a runtime type is trusted when the type that declares it is closed
+        // (its members are non-virtual, so no subclass replaces them), or when the runtime type itself is one of the
+        // exact framework types and the declaring type is a reviewed implementer. The declaring type alone never
+        // decides: an authored subclass of GenericAcl, ReadOnlyCollectionBase or SortedSet<T> inherits their members
+        // and supplies the abstract and virtual ones they call.
+        private static bool IsTrustedFrameworkEnumerationImplementation(ITypeSymbol runtimeType, ISymbol implementation) =>
+            IsClosedFrameworkEnumerationType(implementation.ContainingType)
+            || IsExactEnumerationRuntimeType(runtimeType) && IsClosedEnumerationImplementer(implementation.ContainingType);
 
         // True for a framework collection interface whose implementation set is, under the Authored Enumerables Absent
         // premise, free of authored types. A trusted framework identity is required: an authored interface of the
@@ -286,7 +319,9 @@ internal static partial class HostedGrimoireProducerInventory
             IReadOnlyList<IMethodSymbol> Conversions,
             bool Bound);
 
-        private sealed record EnumerationTarget(string Step, AuthoredMember Member, EnumerationStepTiming Timing);
+        // LazyIterators are the calls, among the return expressions of an enumerator provider, to authored iterator
+        // methods that return the enumerator: their bodies run on the MoveNext calls that follow, not at the call.
+        private sealed record EnumerationTarget(string Step, AuthoredMember Member, EnumerationStepTiming Timing, IReadOnlyList<SyntaxNode>? LazyIterators = null);
 
         private enum EnumerationStepTiming : byte
         {
@@ -305,8 +340,11 @@ internal static partial class HostedGrimoireProducerInventory
 
         private sealed record EnumerationResolution(
             IReadOnlyList<EnumerationTarget> Targets,
-            IReadOnlyList<string> Unresolved,
-            bool AuthoredCandidate);
+            IReadOnlyList<string> Unresolved);
+
+        // The calls to authored iterator methods that an enumerator provider returns, while the provider is traversed at a
+        // loop whose frontier is proved to hold across every MoveNext. Scoped to that traversal.
+        private readonly HashSet<SyntaxNode> ownedLazyEnumeratorCalls = new(ReferenceEqualityComparer.Instance);
 
         // A binding depends only on the syntax and the semantic model that binds it, never on a traversal state.
         private readonly Dictionary<SyntaxNode, (SemanticModel Model, EnumerationBinding Binding)> enumerationBindings = new(ReferenceEqualityComparer.Instance);
@@ -517,9 +555,12 @@ internal static partial class HostedGrimoireProducerInventory
 
             expression = StripTransparentExpression(expression);
 
-            // A cast that selects a user-defined conversion changes the runtime value: what the operator returns is
-            // not what the cast wraps, so the wrapped expression says nothing about it.
-            if (!ReferenceEquals(written, expression) && HasUserDefinedConversion(model, written))
+            // A user-defined conversion changes the runtime value: what the operator returns is not what it converts,
+            // so the converted expression says nothing about it. That holds for a written cast and equally for an
+            // implicit conversion the context applies (an initializer, a return, an argument binding).
+            if (HasUserDefinedConversion(model, written)
+                || model.GetConversion(written).IsUserDefined
+                || model.GetConversion(expression).IsUserDefined)
             {
                 return false;
             }
@@ -538,11 +579,13 @@ internal static partial class HostedGrimoireProducerInventory
                     return selection.Arms.All(arm => ProveEnumerationLeaf(arm.Expression, model, path, context, proof));
 
                 case ThrowExpressionSyntax:
-                case DefaultExpressionSyntax:
                     return true;
 
+                case DefaultExpressionSyntax:
+                    return ProveDefaultValue(expression, written, model, proof);
+
                 case LiteralExpressionSyntax literal when literal.IsKind(SyntaxKind.NullLiteralExpression) || literal.IsKind(SyntaxKind.DefaultLiteralExpression):
-                    return true;
+                    return ProveDefaultValue(expression, written, model, proof);
 
                 case CollectionExpressionSyntax:
                     return IsFrameworkCollectionExpression(model, expression);
@@ -573,7 +616,7 @@ internal static partial class HostedGrimoireProducerInventory
                 return false;
             }
 
-            if (IsClosedFrameworkEnumerationType(type))
+            if (IsClosedFrameworkEnumerationType(type) || IsFrameworkOwnedSequenceProperty(expression, model))
             {
                 return true;
             }
@@ -629,6 +672,48 @@ internal static partial class HostedGrimoireProducerInventory
             }
 
             return Flow();
+        }
+
+        // AggregateException.InnerExceptions is a read-only view over the array the exception copied from its
+        // constructor arguments. The list is framework-owned and its elements are exceptions that are never enumerated
+        // as sequences, so enumerating it runs no authored code. It is the one reviewed read-only view: any other view
+        // wraps whatever list it was given. The property is not virtual, so an authored subclass cannot replace it.
+        private static bool IsFrameworkOwnedSequenceProperty(ExpressionSyntax expression, SemanticModel model) =>
+            expression is MemberAccessExpressionSyntax
+            && model.GetSymbolInfo(expression).Symbol is IPropertySymbol { Name: "InnerExceptions", IsVirtual: false, IsOverride: false } property
+            && IsExactFrameworkType(property.ContainingType, "System.AggregateException", typeof(AggregateException).Assembly.GetName());
+
+        // The default of a value type is a real value whose own members run, so it is an exact candidate. The
+        // default of a reference type is null: it has no instance members to run, and the static or extension
+        // GetEnumerator that a null receiver can still reach is the compiler-selected member, which the binding
+        // follows whatever the operand is. A type parameter is neither, and stays unproven.
+        private static bool ProveDefaultValue(ExpressionSyntax expression, ExpressionSyntax written, SemanticModel model, EnumerationProof proof)
+        {
+            // A null or default literal inside a cast carries no type of its own; the cast that wraps it does.
+            Microsoft.CodeAnalysis.TypeInfo info = model.GetTypeInfo(expression);
+
+            Microsoft.CodeAnalysis.TypeInfo outer = model.GetTypeInfo(written);
+
+            ITypeSymbol? type = info.Type ?? info.ConvertedType ?? outer.Type ?? outer.ConvertedType;
+
+            if (type is null || type.TypeKind is TypeKind.Error or TypeKind.Dynamic or TypeKind.TypeParameter)
+            {
+                return false;
+            }
+
+            if (type.IsReferenceType)
+            {
+                return true;
+            }
+
+            if (type is INamedTypeSymbol { IsValueType: true } valueType)
+            {
+                proof.Candidates.Add(valueType);
+
+                return true;
+            }
+
+            return false;
         }
 
         private static bool HasUserDefinedConversion(SemanticModel model, ExpressionSyntax expression)
@@ -742,6 +827,14 @@ internal static partial class HostedGrimoireProducerInventory
                 return null;
             }
 
+            // Only a reviewed operator builds a new sequence out of nothing but the sequences, and the callback
+            // results, it is given. A framework call that returns an element or a stored value (First, ElementAt, a
+            // service lookup, a volatile read) can hand back a sequence the proof never saw, so it is unproven.
+            if (!IsReviewedSequenceOperator(method))
+            {
+                return false;
+            }
+
             if (model.GetOperation(call) is not IInvocationOperation invocation)
             {
                 return false;
@@ -777,15 +870,160 @@ internal static partial class HostedGrimoireProducerInventory
 
                 proof.RemainingWork = exposure.RemainingWork;
 
-                if (!proved
-                    || exposure.Candidates.Any(static candidate => !candidate.Locations.Any(static location => location.IsInSource)
-                        && !IsClosedEnumerationImplementer(candidate)))
+                if (!proved || !HasAcceptableExposedCandidates(exposure))
                 {
                     return false;
                 }
             }
 
+            // A callback result that the operator enumerates (the sequence SelectMany flattens) is a sequence the
+            // value it returns will enumerate, so what the callback returns is proved the same way.
+            if (EnumeratesCallbackResult(method))
+            {
+                foreach (IArgumentOperation argument in invocation.Arguments.Where(static argument => IsSequenceReturningDelegate(argument.Parameter?.Type)))
+                {
+                    EnumerationProof results = new() { RemainingWork = proof.RemainingWork };
+
+                    bool proved = ProveCallbackResults(argument.Value, model, context, results);
+
+                    proof.RemainingWork = results.RemainingWork;
+
+                    if (!proved || !HasAcceptableExposedCandidates(results))
+                    {
+                        return false;
+                    }
+                }
+            }
+
             return true;
+        }
+
+        private static bool HasAcceptableExposedCandidates(EnumerationProof exposure) =>
+            !exposure.Candidates.Any(static candidate => !candidate.Locations.Any(static location => location.IsInSource)
+                && !IsClosedEnumerationImplementer(candidate));
+
+        // The framework operators that build a new sequence from the sequences (and callback results) they are given and
+        // return neither an element nor a stored value of what they were given. Nothing outside this table is
+        // followed through: an operator that returns an element, such as First or ElementAt, is not here.
+        private static readonly IReadOnlySet<string> ReviewedSequenceOperators = new HashSet<string>(StringComparer.Ordinal)
+        {
+            "Append",
+            "AsEnumerable",
+            "Cast",
+            "Chunk",
+            "Concat",
+            "DefaultIfEmpty",
+            "Distinct",
+            "DistinctBy",
+            "Empty",
+            "Except",
+            "ExceptBy",
+            "GroupBy",
+            "GroupJoin",
+            "Intersect",
+            "IntersectBy",
+            "Join",
+            "OfType",
+            "Order",
+            "OrderBy",
+            "OrderByDescending",
+            "OrderDescending",
+            "Prepend",
+            "Range",
+            "Repeat",
+            "Reverse",
+            "Select",
+            "SelectMany",
+            "Skip",
+            "SkipLast",
+            "SkipWhile",
+            "Take",
+            "TakeLast",
+            "TakeWhile",
+            "ThenBy",
+            "ThenByDescending",
+            "Union",
+            "UnionBy",
+            "Where",
+            "Zip",
+        };
+
+        private static bool IsReviewedSequenceOperator(IMethodSymbol method)
+        {
+            IMethodSymbol definition = method.ReducedFrom ?? method;
+
+            if (IsExactFrameworkType(definition.ContainingType, "System.Linq.Enumerable", typeof(Enumerable).Assembly.GetName()))
+            {
+                return ReviewedSequenceOperators.Contains(definition.Name);
+            }
+
+            if (IsExactFrameworkType(definition.ContainingType, "System.Linq.ImmutableArrayExtensions", typeof(System.Linq.ImmutableArrayExtensions).Assembly.GetName()))
+            {
+                return definition.Name is "Select" or "SelectMany" or "Where";
+            }
+
+            // The one asynchronous wrapper the call classification reviews: the other wrappers of an asynchronous
+            // sequence are unclassified at their own call, so they are never followed here.
+            return IsExactFrameworkType(definition.ContainingType, "System.Threading.Tasks.TaskAsyncEnumerableExtensions", typeof(System.Threading.Tasks.TaskAsyncEnumerableExtensions).Assembly.GetName())
+                && definition.Name == "ConfigureAwait";
+        }
+
+        // The one framework family that enumerates a sequence its callback returns. Every other member that takes a
+        // callback runs it for its own result, and what it returns is not enumerated by the member.
+        private static bool EnumeratesCallbackResult(IMethodSymbol method)
+        {
+            IMethodSymbol definition = method.ReducedFrom ?? method;
+
+            return definition.Name == "SelectMany"
+                && (IsExactFrameworkType(definition.ContainingType, "System.Linq.Enumerable", typeof(Enumerable).Assembly.GetName())
+                    || IsExactFrameworkType(definition.ContainingType, "System.Linq.ImmutableArrayExtensions", typeof(System.Linq.ImmutableArrayExtensions).Assembly.GetName()));
+        }
+
+        private static bool IsSequenceReturningDelegate(ITypeSymbol? type) =>
+            type is INamedTypeSymbol { TypeKind: TypeKind.Delegate, DelegateInvokeMethod: { } invoke }
+            && IsEnumerableValueType(invoke.ReturnType);
+
+        // The values a callback argument returns, proved the way an operand is. A lambda or anonymous method is read in
+        // the tree that holds it, a method group through the authored method it names; a callback whose returns cannot
+        // be found, or a framework method, leaves them unproven.
+        private bool ProveCallbackResults(IOperation delegateValue, SemanticModel model, AuthoredMember? context, EnumerationProof results)
+        {
+            ExpressionSyntax[] values;
+
+            SemanticModel valueModel = model;
+
+            AuthoredMember? valueContext = context;
+
+            switch (delegateValue.Syntax)
+            {
+                case AnonymousFunctionExpressionSyntax { ExpressionBody: { } expressionBody }:
+                    values = [expressionBody];
+
+                    break;
+
+                case AnonymousFunctionExpressionSyntax { Block: { } block }:
+                    values = [.. block.DescendantNodes(static node => node is not AnonymousFunctionExpressionSyntax and not LocalFunctionStatementSyntax)
+                        .OfType<ReturnStatementSyntax>()
+                        .Select(static returned => returned.Expression)
+                        .OfType<ExpressionSyntax>()];
+
+                    break;
+
+                case ExpressionSyntax group when model.GetSymbolInfo(group).Symbol is IMethodSymbol named && Resolve(named, model.Compilation) is { } target:
+                    values = ReturnedExpressions(target.Syntax);
+
+                    valueModel = target.Model;
+
+                    valueContext = target;
+
+                    break;
+
+                default:
+                    return false;
+            }
+
+            return values.Length != 0
+                && values.All(value => ProveEnumerationLeaf(value, valueModel, new HashSet<ISymbol>(SymbolEqualityComparer.Default), valueContext, results));
         }
 
         // A framework collection or enumerator interface, or the reviewed ConfigureAwait wrapper over an async
@@ -810,6 +1048,13 @@ internal static partial class HostedGrimoireProducerInventory
         }
 
         private static bool IsAsyncSequence(ITypeSymbol type) => TypeKey(type) == "System.Collections.Generic.IAsyncEnumerable`1";
+
+        // An iterator method that returns an enumerator is as lazy as one that returns a sequence: its body runs on the
+        // MoveNext calls that follow the call, not at the call.
+        private static bool IsLazyEnumerator(ITypeSymbol type) =>
+            TypeKey(type) is "System.Collections.IEnumerator" or "System.Collections.Generic.IEnumerator`1" or "System.Collections.Generic.IAsyncEnumerator`1";
+
+        private bool OwnsLazyEnumeratorCall(SyntaxNode call) => ownedLazyEnumeratorCalls.Contains(call);
 
         // A lazy sequence consumed only through an enumerator that a using declaration or statement owns. Its body
         // runs between the declaration and the end of that scope, where the enumerator is disposed, so the Work live
@@ -884,6 +1129,24 @@ internal static partial class HostedGrimoireProducerInventory
                 && leftType.ContainingAssembly?.Identity.Name == rightType.ContainingAssembly?.Identity.Name
                 && (left is not IMethodSymbol leftMethod || right is IMethodSymbol rightMethod && leftMethod.Parameters.Length == rightMethod.Parameters.Length);
 
+        private static bool IsSameEnumerationType(ITypeSymbol left, ITypeSymbol right) =>
+            SymbolEqualityComparer.Default.Equals(left.OriginalDefinition, right.OriginalDefinition)
+            || left.OriginalDefinition.ToDisplayString() == right.OriginalDefinition.ToDisplayString()
+                && left.ContainingAssembly?.Identity.Name == right.ContainingAssembly?.Identity.Name;
+
+        private static bool DerivesFromEnumerationContainer(ITypeSymbol runtimeType, ITypeSymbol container)
+        {
+            for (ITypeSymbol? type = runtimeType; type is not null; type = type.BaseType)
+            {
+                if (IsSameEnumerationType(type, container))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
         // The implementation the runtime type selects for a slot the compiler bound statically.
         private static ISymbol? EnumerationImplementation(ITypeSymbol runtimeType, ISymbol slot)
         {
@@ -911,6 +1174,13 @@ internal static partial class HostedGrimoireProducerInventory
                     }
                 }
 
+                return null;
+            }
+
+            // An instance member belongs to the type that declares it and to the types derived from it. A candidate
+            // that is neither (a value reached through an unmodeled conversion, say) has no such member to run.
+            if (!slot.IsStatic && !DerivesFromEnumerationContainer(runtimeType, slot.ContainingType))
+            {
                 return null;
             }
 
@@ -966,33 +1236,181 @@ internal static partial class HostedGrimoireProducerInventory
             target.Syntax is not AccessorDeclarationSyntax { Body: null, ExpressionBody: null }
             && target.Syntax is not MethodDeclarationSyntax { Body: null, ExpressionBody: null };
 
+        // The collection interfaces whose members spread lowering and enumerating framework members call instead of
+        // the enumerator: Count and CopyTo to size and fill a result, Contains and the indexer to answer a query
+        // without walking the sequence. The members of these contracts that change the collection are never called
+        // by an operator that only reads it.
+        private static readonly IReadOnlySet<string> CollectionContracts = new HashSet<string>(StringComparer.Ordinal)
+        {
+            "System.Collections.ICollection",
+            "System.Collections.IList",
+            "System.Collections.IDictionary",
+            "System.Collections.Generic.ICollection`1",
+            "System.Collections.Generic.IList`1",
+            "System.Collections.Generic.ISet`1",
+            "System.Collections.Generic.IDictionary`2",
+            "System.Collections.Generic.IReadOnlyCollection`1",
+            "System.Collections.Generic.IReadOnlyList`1",
+            "System.Collections.Generic.IReadOnlySet`1",
+            "System.Collections.Generic.IReadOnlyDictionary`2",
+        };
+
+        private static readonly IReadOnlySet<string> CollectionMutators = new HashSet<string>(StringComparer.Ordinal)
+        {
+            "Add",
+            "Clear",
+            "Insert",
+            "Remove",
+            "RemoveAt",
+            "ExceptWith",
+            "IntersectWith",
+            "SymmetricExceptWith",
+            "UnionWith",
+        };
+
+        // The authored implementations of the read members of every collection interface the exact candidate
+        // implements. A member without source is a framework member, which the candidate's framework base type owns.
+        private IEnumerable<AuthoredMember> AuthoredCollectionMembers(INamedTypeSymbol candidate, Compilation compilation)
+        {
+            HashSet<ISymbol> seen = new(SymbolEqualityComparer.Default);
+
+            foreach (INamedTypeSymbol contract in candidate.AllInterfaces)
+            {
+                if (!CollectionContracts.Contains(TypeKey(contract)) || contract.Locations.Any(static location => location.IsInSource))
+                {
+                    continue;
+                }
+
+                foreach (ISymbol contractMember in contract.GetMembers())
+                {
+                    IMethodSymbol? slot = contractMember switch
+                    {
+                        IMethodSymbol { MethodKind: MethodKind.Ordinary } method when !CollectionMutators.Contains(method.Name) => method,
+                        IPropertySymbol { GetMethod: { } getter } => getter,
+                        _ => null,
+                    };
+
+                    if (slot is null)
+                    {
+                        continue;
+                    }
+
+                    ISymbol? implementation = candidate.FindImplementationForInterfaceMember(contractMember is IPropertySymbol ? contractMember : slot);
+
+                    AuthoredMember? target = EnumerationAuthoredMember(implementation, compilation);
+
+                    if (target is not null && HasEnumerationBody(target) && seen.Add(target.Symbol))
+                    {
+                        yield return target;
+                    }
+                }
+            }
+        }
+
         // Resolves every authored member the site can execute. A candidate that cannot be followed to a
         // closed framework member or an authored body is listed as unresolved; nothing is assumed for it.
-        private EnumerationResolution ResolveEnumerationTargets(AuthoredMember member, EnumerationBinding binding, EnumerationClosure closure)
+        // A spread and an enumerating framework member also run the read members of an authored collection.
+        private EnumerationResolution ResolveEnumerationTargets(AuthoredMember member, EnumerationBinding binding, EnumerationClosure closure, bool collectionMembers = false)
         {
             List<EnumerationTarget> targets = [];
 
             List<string> unresolved = [];
 
-            bool authoredCandidate = false;
-
-            if (closure.Kind != EnumerationClosureKind.Candidates)
+            if (closure.Kind == EnumerationClosureKind.Unproven)
             {
-                return new(targets, unresolved, false);
+                return new(targets, unresolved);
+            }
+
+            if (collectionMembers)
+            {
+                foreach (INamedTypeSymbol candidate in closure.Candidates.Where(static candidate => candidate.Locations.Any(static location => location.IsInSource)))
+                {
+                    foreach (AuthoredMember collectionMember in AuthoredCollectionMembers(candidate, member.Model.Compilation))
+                    {
+                        targets.Add(new("collection@" + Normalize(collectionMember.Symbol), collectionMember, EnumerationStepTiming.Entry));
+                    }
+                }
             }
 
             if (!binding.Bound || binding.GetEnumerator is not { } getEnumerator)
             {
-                // Exact candidates cannot be followed without the compiler-selected members.
-                unresolved.Add((binding.OperandType?.ToDisplayString() ?? "<unbound>") + ".GetEnumerator");
+                if (closure.Kind == EnumerationClosureKind.Candidates)
+                {
+                    // Exact candidates cannot be followed without the compiler-selected members.
+                    unresolved.Add((binding.OperandType?.ToDisplayString() ?? "<unbound>") + ".GetEnumerator");
+                }
 
-                return new(targets, unresolved, closure.Candidates.Any(static candidate => candidate.Locations.Any(static location => location.IsInSource)));
+                return new(targets, unresolved);
+            }
+
+            // Follows an authored enumerator provider: its body runs at the loop, and the enumerator it returns is
+            // proved so that MoveNext, Current and Dispose are resolved on the exact enumerator types.
+            void FollowProvider(AuthoredMember provider)
+            {
+                if (!HasEnumerationBody(provider))
+                {
+                    unresolved.Add(Normalize(getEnumerator));
+
+                    return;
+                }
+
+                if (IsIteratorMember(provider))
+                {
+                    targets.Add(new("lazy@" + Normalize(provider.Symbol), provider, EnumerationStepTiming.Lazy));
+
+                    return;
+                }
+
+                ExpressionSyntax[] returned = ReturnedExpressions(provider.Syntax);
+
+                SyntaxNode[] lazyIterators = [.. returned
+                    .Select(static value => StripTransparentExpression(value))
+                    .OfType<InvocationExpressionSyntax>()
+                    .Where(call => provider.Model.GetSymbolInfo(call).Symbol is IMethodSymbol callee
+                        && Resolve(callee, provider.Model.Compilation) is { } iterator
+                        && IsIteratorMember(iterator)
+                        && IsLazyEnumerator(callee.ReturnType))];
+
+                targets.Add(new("enumerator@" + Normalize(provider.Symbol), provider, EnumerationStepTiming.Entry, lazyIterators.Length == 0 ? null : lazyIterators));
+
+                EnumerationProof enumeratorProof = new();
+
+                if (returned.Length == 0
+                    || !returned.All(value => ProveEnumerationLeaf(value, provider.Model, new HashSet<ISymbol>(SymbolEqualityComparer.Default), provider, enumeratorProof)))
+                {
+                    unresolved.Add(Normalize(binding.MoveNext!));
+
+                    return;
+                }
+
+                foreach (INamedTypeSymbol enumerator in enumeratorProof.Candidates.Distinct(SymbolEqualityComparer.Default).OfType<INamedTypeSymbol>())
+                {
+                    ResolveEnumeratorStep(member, binding.MoveNext, enumerator, "moveNext", EnumerationStepTiming.Iteration, targets, unresolved);
+
+                    ResolveEnumeratorStep(member, binding.Current, enumerator, "current", EnumerationStepTiming.Iteration, targets, unresolved);
+
+                    ResolveEnumeratorStep(member, binding.Dispose, enumerator, "dispose", EnumerationStepTiming.Exit, targets, unresolved);
+                }
+            }
+
+            // An authored extension or static GetEnumerator is chosen by the operand's static type, so it runs whatever
+            // the operand is at run time, a closed framework collection or a null included.
+            IMethodSymbol selected = getEnumerator.ReducedFrom ?? getEnumerator;
+
+            if (selected.IsStatic && Resolve(selected, member.Model.Compilation) is { } selectedProvider)
+            {
+                FollowProvider(selectedProvider);
+
+                return new(targets, unresolved);
+            }
+
+            if (closure.Kind != EnumerationClosureKind.Candidates)
+            {
+                return new(targets, unresolved);
             }
 
             foreach (INamedTypeSymbol candidate in closure.Candidates)
             {
-                authoredCandidate |= candidate.Locations.Any(static location => location.IsInSource);
-
                 ISymbol? enumeratorSlot = EnumerationImplementation(candidate, getEnumerator);
 
                 AuthoredMember? enumeratorTarget = EnumerationAuthoredMember(enumeratorSlot, member.Model.Compilation);
@@ -1007,8 +1425,9 @@ internal static partial class HostedGrimoireProducerInventory
                 if (enumeratorTarget is null)
                 {
                     // A framework implementation is classified only when the framework type that declares it is
-                    // closed; what the candidate type is named, or derives from, does not matter.
-                    if (!IsClosedEnumerationImplementer(enumeratorSlot.ContainingType))
+                    // closed, or the candidate is itself the exact framework type that declares it; a name, or a
+                    // base type, does not make an authored subclass the framework type.
+                    if (!IsTrustedFrameworkEnumerationImplementation(candidate, enumeratorSlot))
                     {
                         unresolved.Add(Normalize(getEnumerator));
                     }
@@ -1016,45 +1435,10 @@ internal static partial class HostedGrimoireProducerInventory
                     continue;
                 }
 
-                if (!HasEnumerationBody(enumeratorTarget))
-                {
-                    unresolved.Add(Normalize(getEnumerator));
-
-                    continue;
-                }
-
-                if (IsIteratorMember(enumeratorTarget))
-                {
-                    targets.Add(new("lazy@" + Normalize(enumeratorTarget.Symbol), enumeratorTarget, EnumerationStepTiming.Lazy));
-
-                    continue;
-                }
-
-                targets.Add(new("enumerator@" + Normalize(enumeratorTarget.Symbol), enumeratorTarget, EnumerationStepTiming.Entry));
-
-                EnumerationProof enumeratorProof = new();
-
-                ExpressionSyntax[] returned = ReturnedExpressions(enumeratorTarget.Syntax);
-
-                if (returned.Length == 0
-                    || !returned.All(value => ProveEnumerationLeaf(value, enumeratorTarget.Model, new HashSet<ISymbol>(SymbolEqualityComparer.Default), enumeratorTarget, enumeratorProof)))
-                {
-                    unresolved.Add(Normalize(binding.MoveNext!));
-
-                    continue;
-                }
-
-                foreach (INamedTypeSymbol enumerator in enumeratorProof.Candidates.Distinct(SymbolEqualityComparer.Default).OfType<INamedTypeSymbol>())
-                {
-                    ResolveEnumeratorStep(member, binding.MoveNext, enumerator, "moveNext", EnumerationStepTiming.Iteration, targets, unresolved);
-
-                    ResolveEnumeratorStep(member, binding.Current, enumerator, "current", EnumerationStepTiming.Iteration, targets, unresolved);
-
-                    ResolveEnumeratorStep(member, binding.Dispose, enumerator, "dispose", EnumerationStepTiming.Exit, targets, unresolved);
-                }
+                FollowProvider(enumeratorTarget);
             }
 
-            return new(targets, unresolved, authoredCandidate);
+            return new(targets, unresolved);
         }
 
         private void ResolveEnumeratorStep(
@@ -1096,7 +1480,7 @@ internal static partial class HostedGrimoireProducerInventory
                 return;
             }
 
-            if (!IsClosedEnumerationImplementer(implementation.ContainingType))
+            if (!IsTrustedFrameworkEnumerationImplementation(enumerator, implementation))
             {
                 unresolved.Add(Normalize(slot));
             }
@@ -1136,7 +1520,7 @@ internal static partial class HostedGrimoireProducerInventory
                 return evidence;
             }
 
-            EnumerationResolution resolution = ResolveEnumerationTargets(member, binding, closure);
+            EnumerationResolution resolution = ResolveEnumerationTargets(member, binding, closure, collectionMembers: node is SpreadElementSyntax);
 
             foreach (string callee in resolution.Unresolved.Distinct(StringComparer.Ordinal))
             {
@@ -1194,18 +1578,41 @@ internal static partial class HostedGrimoireProducerInventory
                     ? BindArguments(member, [(binding.Operand, target.Member.Symbol.Parameters[0], RefKind.None)], target.Member)
                     : target.Member;
 
-                evidence = MergeEvidence(
-                    evidence,
-                    Traverse(
-                        bound,
-                        rootType,
-                        site + "/" + target.Step,
-                        active,
-                        lifecycle,
-                        work,
-                        effect,
-                        completionOwned: binding.Asynchronous,
-                        recoveryEffect: work is not null && effect is not null ? recoveryEffect : null));
+                // An iterator method that an enumerator provider returns runs its body on the MoveNext calls that
+                // follow, from the first until the loop ends. Its body is owned by the provider's traversal only when
+                // the frontier live at the operand is the one live at every one of those points; otherwise the call
+                // stays unowned, and is refused and traversed with no frontier.
+                SyntaxNode[] ownedIterators = target.LazyIterators is { } lazyIterators && Across(entry, backEdge, exit) == FrontierAt(entry)
+                    ? [.. lazyIterators]
+                    : [];
+
+                foreach (SyntaxNode ownedIterator in ownedIterators)
+                {
+                    ownedLazyEnumeratorCalls.Add(ownedIterator);
+                }
+
+                try
+                {
+                    evidence = MergeEvidence(
+                        evidence,
+                        Traverse(
+                            bound,
+                            rootType,
+                            site + "/" + target.Step,
+                            active,
+                            lifecycle,
+                            work,
+                            effect,
+                            completionOwned: binding.Asynchronous,
+                            recoveryEffect: work is not null && effect is not null ? recoveryEffect : null));
+                }
+                finally
+                {
+                    foreach (SyntaxNode ownedIterator in ownedIterators)
+                    {
+                        ownedLazyEnumeratorCalls.Remove(ownedIterator);
+                    }
+                }
             }
 
             foreach (IMethodSymbol conversion in binding.Conversions)
@@ -1238,13 +1645,15 @@ internal static partial class HostedGrimoireProducerInventory
         }
 
         // Authored enumerators a framework member can run when it enumerates a sequence it was given. The sequence
-        // is followed to its exact runtime types; one whose runtime type cannot be followed is not claimed here (the
-        // member's own site classification stands). A sequence that can be an authored type is refused unless every
-        // enumeration member that type provides is free of producer sites by the same transitive scan an opaque
-        // callback body gets.
+        // is followed to its exact runtime types. A sequence that can be an authored type is refused unless every
+        // enumeration member that type provides, and every read member of the collection interfaces it implements,
+        // is free of producer sites by the same transitive scan an opaque callback body gets. A sequence whose
+        // runtime type cannot be followed is refused too when the member declares a sequence parameter for it: the
+        // member enumerates it, and nothing says that what it runs is not authored. The result a SelectMany-style
+        // callback returns is a sequence the member enumerates, and is judged the same way.
         private bool FrameworkMemberRunsAuthoredEnumerator(AuthoredMember member, SyntaxNode node, IMethodSymbol method, out string detail)
         {
-            detail = string.Empty;
+            detail = Normalize(method) + "; Opaque enumerable semantics cannot prove execution or completion ownership.";
 
             IEnumerable<IArgumentOperation> arguments = member.Model.GetOperation(node) switch
             {
@@ -1255,9 +1664,25 @@ internal static partial class HostedGrimoireProducerInventory
 
             foreach (IArgumentOperation argument in arguments)
             {
-                if (argument.Value.Syntax is not ExpressionSyntax value
-                    || value == node
-                    || member.Model.GetTypeInfo(value).Type is not { } valueType
+                if (argument.Value.Syntax is not ExpressionSyntax value || value == node)
+                {
+                    continue;
+                }
+
+                if (EnumeratesCallbackResult(method) && IsSequenceReturningDelegate(argument.Parameter?.Type))
+                {
+                    EnumerationProof results = new();
+
+                    if (!ProveCallbackResults(argument.Value, member.Model, member, results)
+                        || CandidatesRunProducerSite(member, value, null, results))
+                    {
+                        return true;
+                    }
+
+                    continue;
+                }
+
+                if (member.Model.GetTypeInfo(value).Type is not { } valueType
                     || !IsEnumerableValueType(valueType)
                     || IsClosedFrameworkEnumerationType(valueType))
                 {
@@ -1268,37 +1693,122 @@ internal static partial class HostedGrimoireProducerInventory
 
                 if (!ProveEnumerationLeaf(value, member.Model, new HashSet<ISymbol>(SymbolEqualityComparer.Default), member, proof))
                 {
+                    if (argument.Parameter is { } parameter && IsEnumerableValueType(parameter.Type))
+                    {
+                        return true;
+                    }
+
                     continue;
                 }
 
-                INamedTypeSymbol[] candidates = [.. proof.Candidates
-                    .Distinct(SymbolEqualityComparer.Default)
-                    .OfType<INamedTypeSymbol>()
-                    .Where(static candidate => candidate.Locations.Any(static location => location.IsInSource))];
-
-                if (candidates.Length == 0)
+                if (CandidatesRunProducerSite(member, value, valueType, proof))
                 {
-                    continue;
-                }
-
-                bool asynchronous = valueType.AllInterfaces.Concat([valueType]).Any(static contract => TypeKey(contract) == "System.Collections.Generic.IAsyncEnumerable`1")
-                    && !valueType.AllInterfaces.Concat([valueType]).Any(static contract => TypeKey(contract) is "System.Collections.Generic.IEnumerable`1" or "System.Collections.IEnumerable");
-
-                EnumerationBinding binding = BindEnumerationExpression(member, value, value.SpanStart, asynchronous);
-
-                EnumerationResolution resolution = ResolveEnumerationTargets(member, binding, new(EnumerationClosureKind.Candidates, candidates));
-
-                if (resolution.AuthoredCandidate
-                    && (resolution.Unresolved.Count != 0
-                        || resolution.Targets.Any(target => ContainsPotentialProducerSite(target.Member))))
-                {
-                    detail = Normalize(method) + "; Opaque enumerable semantics cannot prove execution or completion ownership.";
-
                     return true;
                 }
             }
 
             return false;
+        }
+
+        private bool CandidatesRunProducerSite(AuthoredMember member, ExpressionSyntax value, ITypeSymbol? valueType, EnumerationProof proof)
+        {
+            INamedTypeSymbol[] candidates = [.. proof.Candidates
+                .Distinct(SymbolEqualityComparer.Default)
+                .OfType<INamedTypeSymbol>()];
+
+            if (candidates.Length == 0)
+            {
+                return false;
+            }
+
+            // A candidate whose enumeration members cannot be followed to a closed framework member or an authored body
+            // is as unproven as an operand nothing proves: a framework type outside the reviewed set, such as a
+            // read-only view, forwards to whatever list it wraps.
+            bool Refuses(EnumerationResolution resolution) =>
+                resolution.Unresolved.Count != 0
+                || resolution.Targets.Any(target => ContainsPotentialProducerSite(target.Member));
+
+            // Count, CopyTo, Contains and the indexer run instead of the enumerator when the member can size or query
+            // the collection without walking it.
+            if (candidates.Any(candidate => AuthoredCollectionMembers(candidate, member.Model.Compilation).Any(collectionMember => ContainsPotentialProducerSite(collectionMember))))
+            {
+                return true;
+            }
+
+            // A sequence written as an argument is bound the way a loop over it would be. The result of a callback is
+            // not a written operand: it is enumerated through the contract alone.
+            if (valueType is not null)
+            {
+                bool asynchronous = valueType.AllInterfaces.Concat([valueType]).Any(static contract => TypeKey(contract) == "System.Collections.Generic.IAsyncEnumerable`1")
+                    && !valueType.AllInterfaces.Concat([valueType]).Any(static contract => TypeKey(contract) is "System.Collections.Generic.IEnumerable`1" or "System.Collections.IEnumerable");
+
+                EnumerationBinding binding = BindEnumerationExpression(member, value, value.SpanStart, asynchronous);
+
+                if (Refuses(ResolveEnumerationTargets(member, binding, new(EnumerationClosureKind.Candidates, candidates))))
+                {
+                    return true;
+                }
+            }
+
+            // The framework member enumerates through the contract, not through the pattern the compiler would bind for
+            // a loop over the same value: a type may implement the contract explicitly, with a body of its own.
+            foreach (INamedTypeSymbol candidate in candidates)
+            {
+                foreach (EnumerationBinding contractBinding in ContractBindings(candidate, value))
+                {
+                    if (Refuses(ResolveEnumerationTargets(member, contractBinding, new(EnumerationClosureKind.Candidates, [candidate]))))
+                    {
+                        return true;
+                    }
+                }
+            }
+
+            return false;
+        }
+
+        // The bindings of the enumeration contracts a type implements, taken from the type's own interface symbols so
+        // that they belong to the same compilation as the type: GetEnumerator of IEnumerable<T> and IEnumerable with
+        // MoveNext, Current and Dispose of the enumerators they return, and GetAsyncEnumerator of IAsyncEnumerable<T>
+        // with MoveNextAsync, Current and DisposeAsync.
+        private static IEnumerable<EnumerationBinding> ContractBindings(INamedTypeSymbol candidate, ExpressionSyntax operand)
+        {
+            foreach (INamedTypeSymbol contract in candidate.AllInterfaces)
+            {
+                bool asynchronous = TypeKey(contract) == "System.Collections.Generic.IAsyncEnumerable`1";
+
+                if (!asynchronous && TypeKey(contract) is not ("System.Collections.Generic.IEnumerable`1" or "System.Collections.IEnumerable"))
+                {
+                    continue;
+                }
+
+                IMethodSymbol? getEnumerator = contract.GetMembers(asynchronous ? "GetAsyncEnumerator" : "GetEnumerator").OfType<IMethodSymbol>().FirstOrDefault();
+
+                if (getEnumerator?.ReturnType is not INamedTypeSymbol enumerator)
+                {
+                    continue;
+                }
+
+                INamedTypeSymbol[] enumeratorContracts = [enumerator, .. enumerator.AllInterfaces];
+
+                IMethodSymbol? moveNext = enumeratorContracts
+                    .Where(item => TypeKey(item) == (asynchronous ? "System.Collections.Generic.IAsyncEnumerator`1" : "System.Collections.IEnumerator"))
+                    .SelectMany(static item => item.GetMembers().OfType<IMethodSymbol>())
+                    .FirstOrDefault(static method => method.Name is "MoveNext" or "MoveNextAsync");
+
+                IMethodSymbol? dispose = enumeratorContracts
+                    .Where(item => TypeKey(item) == (asynchronous ? "System.IAsyncDisposable" : "System.IDisposable"))
+                    .SelectMany(static item => item.GetMembers().OfType<IMethodSymbol>())
+                    .FirstOrDefault(static method => method.Name is "Dispose" or "DisposeAsync");
+
+                IPropertySymbol[] currents = [.. enumeratorContracts
+                    .Where(item => TypeKey(item) is "System.Collections.IEnumerator" or "System.Collections.Generic.IEnumerator`1" or "System.Collections.Generic.IAsyncEnumerator`1")
+                    .SelectMany(static item => item.GetMembers("Current").OfType<IPropertySymbol>())];
+
+                foreach (IPropertySymbol current in currents.Length == 0 ? [] : currents)
+                {
+                    yield return new(operand, candidate, asynchronous, getEnumerator, moveNext, current, dispose, [], moveNext is not null);
+                }
+            }
         }
 
         // The authored members a foreach or spread inside a scanned body can run. Used by the transitive producer
@@ -1309,12 +1819,12 @@ internal static partial class HostedGrimoireProducerInventory
 
             EnumerationClosure closure = ClassifyEnumeration(member, binding);
 
-            if (closure.Kind != EnumerationClosureKind.Candidates)
+            if (closure.Kind == EnumerationClosureKind.Unproven)
             {
                 return false;
             }
 
-            EnumerationResolution resolution = ResolveEnumerationTargets(member, binding, closure);
+            EnumerationResolution resolution = ResolveEnumerationTargets(member, binding, closure, collectionMembers: node is SpreadElementSyntax);
 
             return resolution.Targets.Any(target => ContainsPotentialProducerSite(target.Member, path));
         }
