@@ -378,22 +378,10 @@ public sealed class LongRunningOperationReconciler
                             operationScope.ServiceProvider
                                 .GetRequiredService<ILongRunningOperationClassifiedRecoveryLeaseAcquisition>();
 
-                        ILongRunningOperationRecoveryHandler[] scopedMatches =
-                        [
-                            .. operationScope.ServiceProvider
-                                .GetKeyedServices<ILongRunningOperationRecoveryHandler>(operation.Kind),
-                        ];
-
-                        if (scopedMatches.Length > 1
-                            || (scopedMatches.Length == 1
-                                && !string.Equals(scopedMatches[0].Kind, operation.Kind, StringComparison.Ordinal)))
-                        {
-                            throw new InvalidOperationException(
-                                $"Recovery handler registrations do not uniquely match operation kind '{operation.Kind}'.");
-                        }
-
                         Dictionary<string, ILongRunningOperationRecoveryHandler> scopedHandlers =
-                            scopedMatches.ToDictionary(static handler => handler.Kind, StringComparer.Ordinal);
+                            operationScope.ServiceProvider
+                                .GetServices<ILongRunningOperationRecoveryHandler>()
+                                .ToDictionary(static handler => handler.Kind, StringComparer.Ordinal);
 
                         await SettleAsync(
                             scopedStore,

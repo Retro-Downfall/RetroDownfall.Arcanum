@@ -708,16 +708,10 @@ public static class ServiceCollectionExtensions
                 new DeferredBackupOperationStore(serviceProvider),
                 ResolveCovenantBackupServices(serviceProvider)));
 
-        services.TryAddScoped<BackupCreateRecoveryHandler>();
-
         services.TryAddEnumerable(
-            ServiceDescriptor.Scoped<ILongRunningOperationRecoveryHandler, BackupCreateRecoveryHandler>(
-                static sp => sp.GetRequiredService<BackupCreateRecoveryHandler>()));
-
-        services.TryAddEnumerable(
-            ServiceDescriptor.KeyedScoped<ILongRunningOperationRecoveryHandler, BackupCreateRecoveryHandler>(
-                LongRunningOperationKinds.BackupCreate,
-                static (sp, _) => sp.GetRequiredService<BackupCreateRecoveryHandler>()));
+            ServiceDescriptor.Scoped<
+                ILongRunningOperationRecoveryHandler,
+                BackupCreateRecoveryHandler>());
 
         services.TryAddScoped<IBackupRestoreService>(serviceProvider =>
             new BackupRestoreService(
@@ -1353,23 +1347,12 @@ public static class ServiceCollectionExtensions
         services.AddScoped<IDataRetentionHostedSweep>(
             static provider => provider.GetRequiredService<DataRetentionService>());
 
-        services.AddScoped<DataRetentionRecoveryHandler>();
-
-        services.AddScoped<ILongRunningOperationRecoveryHandler>(static sp =>
-            sp.GetRequiredService<DataRetentionRecoveryHandler>());
-
-        services.AddKeyedScoped<ILongRunningOperationRecoveryHandler>(
-            LongRunningOperationKinds.DataRetentionPrune,
-            static (sp, _) => sp.GetRequiredService<DataRetentionRecoveryHandler>());
+        services.AddScoped<ILongRunningOperationRecoveryHandler, DataRetentionRecoveryHandler>();
 
         services.AddScoped<DataRetentionMutationRecoveryHandler>();
 
         services.AddScoped<ILongRunningOperationRecoveryHandler>(static sp =>
             sp.GetRequiredService<DataRetentionMutationRecoveryHandler>());
-
-        services.AddKeyedScoped<ILongRunningOperationRecoveryHandler>(
-            LongRunningOperationKinds.DataRetentionMutation,
-            static (sp, _) => sp.GetRequiredService<DataRetentionMutationRecoveryHandler>());
 
         services.AddScoped<IAuthenticatedCovenantErasureRecoveryHandler>(static sp =>
             sp.GetRequiredService<DataRetentionMutationRecoveryHandler>());
@@ -1378,10 +1361,6 @@ public static class ServiceCollectionExtensions
 
         services.AddScoped<ILongRunningOperationRecoveryHandler>(static sp =>
             sp.GetRequiredService<DataRetentionFactoryResetRecoveryHandler>());
-
-        services.AddKeyedScoped<ILongRunningOperationRecoveryHandler>(
-            LongRunningOperationKinds.DataRetentionFactoryReset,
-            static (sp, _) => sp.GetRequiredService<DataRetentionFactoryResetRecoveryHandler>());
 
         services.AddScoped<IAuthenticatedCovenantErasureRecoveryHandler>(static sp =>
             sp.GetRequiredService<DataRetentionFactoryResetRecoveryHandler>());
@@ -1400,67 +1379,29 @@ public static class ServiceCollectionExtensions
 
         services.AddInstallationResetRecoveryAwareHostedService<DataRetentionSweepHostedService>();
 
-        services.AddScoped(static sp =>
-        {
-            ILongRunningOperationStore store = sp.GetRequiredService<ILongRunningOperationStore>();
-
-            ILongRunningOperationRecoveryHandler[] handlers =
-            [
-                .. sp.GetServices<ILongRunningOperationRecoveryHandler>(),
-            ];
-
-            LongRunningOperationReconciler reconciler = new(
-                store,
-                handlers,
-                sp.GetRequiredService<TimeProvider>(),
-                sp.GetRequiredService<ILogger<LongRunningOperationReconciler>>(),
-                sp.GetRequiredService<LongRunningOperationOwnership>(),
-                sp.GetRequiredService<ILongRunningOperationGenericRecoveryDiscovery>(),
-                sp.GetRequiredService<ILongRunningOperationClassifiedRecoveryLeaseAcquisition>(),
-                sp.GetRequiredService<IServiceScopeFactory>());
-
-            ValidateRecoveryHandlerAliases(sp, handlers);
-
-            return reconciler;
-        });
-
+        services.AddScoped(static sp => new LongRunningOperationReconciler(
+            sp.GetRequiredService<ILongRunningOperationStore>(),
+            sp.GetServices<ILongRunningOperationRecoveryHandler>(),
+            sp.GetRequiredService<TimeProvider>(),
+            sp.GetRequiredService<ILogger<LongRunningOperationReconciler>>(),
+            sp.GetRequiredService<LongRunningOperationOwnership>(),
+            sp.GetRequiredService<ILongRunningOperationGenericRecoveryDiscovery>(),
+            sp.GetRequiredService<ILongRunningOperationClassifiedRecoveryLeaseAcquisition>(),
+            sp.GetRequiredService<IServiceScopeFactory>()));
         services.AddScoped<IDurableOperationDiagnostics, DurableOperationDiagnostics>();
 
         // Issue #40: every kind in LongRunningOperationRecoveryRegistry owns a handler, so a stranded
         // operation reaches explicit recovery instead of falling through to "handler missing". A kind is
         // registered only together with the production code that creates its rows.
-        services.AddScoped<SubagentRecoveryHandler>();
-
-        services.AddScoped<ILongRunningOperationRecoveryHandler>(static sp =>
-            sp.GetRequiredService<SubagentRecoveryHandler>());
-
-        services.AddKeyedScoped<ILongRunningOperationRecoveryHandler>(
-            LongRunningOperationKinds.Subagent,
-            static (sp, _) => sp.GetRequiredService<SubagentRecoveryHandler>());
+        services.AddScoped<ILongRunningOperationRecoveryHandler, SubagentRecoveryHandler>();
 
         services.AddScoped<IBlobEncryptionMetadataStore, BlobEncryptionMetadataStore>();
         services.AddScoped<BlobEncryptionFileProcessor>();
         services.AddScoped<BlobEncryptionLifecycleService>();
         services.AddScoped<IBlobEncryptionLifecycleService>(
             static sp => sp.GetRequiredService<BlobEncryptionLifecycleService>());
-
-        services.AddScoped<BlobEncryptionMigrationRecoveryHandler>();
-
-        services.AddScoped<ILongRunningOperationRecoveryHandler>(static sp =>
-            sp.GetRequiredService<BlobEncryptionMigrationRecoveryHandler>());
-
-        services.AddKeyedScoped<ILongRunningOperationRecoveryHandler>(
-            LongRunningOperationKinds.BlobEncryptionMigration,
-            static (sp, _) => sp.GetRequiredService<BlobEncryptionMigrationRecoveryHandler>());
-
-        services.AddScoped<BlobEncryptionKeyRotationRecoveryHandler>();
-
-        services.AddScoped<ILongRunningOperationRecoveryHandler>(static sp =>
-            sp.GetRequiredService<BlobEncryptionKeyRotationRecoveryHandler>());
-
-        services.AddKeyedScoped<ILongRunningOperationRecoveryHandler>(
-            LongRunningOperationKinds.BlobEncryptionKeyRotation,
-            static (sp, _) => sp.GetRequiredService<BlobEncryptionKeyRotationRecoveryHandler>());
+        services.AddScoped<ILongRunningOperationRecoveryHandler, BlobEncryptionMigrationRecoveryHandler>();
+        services.AddScoped<ILongRunningOperationRecoveryHandler, BlobEncryptionKeyRotationRecoveryHandler>();
 
         services.AddScoped<IUploadedFileRepository, UploadedFileRepository>();
 
@@ -1507,14 +1448,7 @@ public static class ServiceCollectionExtensions
 
         services.AddScoped<ILongRestSweepCoordinator>(static sp => sp.GetRequiredService<LongRestSweepCoordinator>());
 
-        services.AddScoped<LongRestSweepRecoveryHandler>();
-
-        services.AddScoped<ILongRunningOperationRecoveryHandler>(static sp =>
-            sp.GetRequiredService<LongRestSweepRecoveryHandler>());
-
-        services.AddKeyedScoped<ILongRunningOperationRecoveryHandler>(
-            LongRunningOperationKinds.LongRestSweep,
-            static (sp, _) => sp.GetRequiredService<LongRestSweepRecoveryHandler>());
+        services.AddScoped<ILongRunningOperationRecoveryHandler, LongRestSweepRecoveryHandler>();
 
         services.AddScoped<ISagaMemoryReviewService, SagaMemoryReviewService>();
 
@@ -1656,25 +1590,8 @@ public static class ServiceCollectionExtensions
         // Delegated spend is read from those same durable records, so the day's external cost survives
         // the process that spent it and is never confused with local spend (issue #69).
         services.AddScoped<IExternalSpendLedger, A2AExternalSpendLedger>();
-
-        services.AddScoped<A2AInboundSendingRecoveryHandler>();
-
-        services.AddScoped<ILongRunningOperationRecoveryHandler>(static sp =>
-            sp.GetRequiredService<A2AInboundSendingRecoveryHandler>());
-
-        services.AddKeyedScoped<ILongRunningOperationRecoveryHandler>(
-            LongRunningOperationKinds.A2AInboundSending,
-            static (sp, _) => sp.GetRequiredService<A2AInboundSendingRecoveryHandler>());
-
-        services.AddScoped<A2AOutboundSendingRecoveryHandler>();
-
-        services.AddScoped<ILongRunningOperationRecoveryHandler>(static sp =>
-            sp.GetRequiredService<A2AOutboundSendingRecoveryHandler>());
-
-        services.AddKeyedScoped<ILongRunningOperationRecoveryHandler>(
-            LongRunningOperationKinds.A2AOutboundSending,
-            static (sp, _) => sp.GetRequiredService<A2AOutboundSendingRecoveryHandler>());
-
+        services.AddScoped<ILongRunningOperationRecoveryHandler, A2AInboundSendingRecoveryHandler>();
+        services.AddScoped<ILongRunningOperationRecoveryHandler, A2AOutboundSendingRecoveryHandler>();
         // Push notifications, off unless an operator turns them on: inbound, a peer's callback is honoured
         // and validated like any other egress; outbound, a Sending can stop holding a concurrency slot
         // while the remote works (issue #67).
@@ -1839,29 +1756,6 @@ public static class ServiceCollectionExtensions
         services.AddArcanumResilience();
 
         return services;
-    }
-
-    private static void ValidateRecoveryHandlerAliases(
-        IServiceProvider serviceProvider,
-        IReadOnlyList<ILongRunningOperationRecoveryHandler> handlers)
-    {
-        foreach (ILongRunningOperationRecoveryHandler handler in handlers)
-        {
-            string kind = handler.Kind;
-
-            ILongRunningOperationRecoveryHandler[] matches =
-            [
-                .. serviceProvider.GetKeyedServices<ILongRunningOperationRecoveryHandler>(kind),
-            ];
-
-            if (matches.Length != 1
-                || !ReferenceEquals(matches[0], handler)
-                || !string.Equals(matches[0].Kind, kind, StringComparison.Ordinal))
-            {
-                throw new InvalidOperationException(
-                    $"Recovery handler aliases for operation kind '{kind}' must resolve the same single scoped instance.");
-            }
-        }
     }
 
     /// <summary>
@@ -2675,23 +2569,9 @@ public static class ServiceCollectionExtensions
 
         // The two recovery handlers the registry requires for the kinds this slice adds. Registering
         // a kind without its handler is the exact drift the coverage suite fails on.
-        services.AddScoped<CovenantIndexRebuildRecoveryHandler>();
+        services.AddScoped<ILongRunningOperationRecoveryHandler, CovenantIndexRebuildRecoveryHandler>();
 
-        services.AddScoped<ILongRunningOperationRecoveryHandler>(static sp =>
-            sp.GetRequiredService<CovenantIndexRebuildRecoveryHandler>());
-
-        services.AddKeyedScoped<ILongRunningOperationRecoveryHandler>(
-            LongRunningOperationKinds.CovenantIndexRebuild,
-            static (sp, _) => sp.GetRequiredService<CovenantIndexRebuildRecoveryHandler>());
-
-        services.AddScoped<CovenantFamilyReinitializeRecoveryHandler>();
-
-        services.AddScoped<ILongRunningOperationRecoveryHandler>(static sp =>
-            sp.GetRequiredService<CovenantFamilyReinitializeRecoveryHandler>());
-
-        services.AddKeyedScoped<ILongRunningOperationRecoveryHandler>(
-            LongRunningOperationKinds.CovenantFamilyReinitialize,
-            static (sp, _) => sp.GetRequiredService<CovenantFamilyReinitializeRecoveryHandler>());
+        services.AddScoped<ILongRunningOperationRecoveryHandler, CovenantFamilyReinitializeRecoveryHandler>();
 
         return services;
     }
