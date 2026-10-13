@@ -8,6 +8,8 @@ using Xunit;
 
 namespace RetroDownfall.Arcanum.Tests.Operations;
 
+// The EnumeratorModeling fixtures: the implicit enumerator calls of foreach, await foreach and spread elements, the
+// Implicit Enumeration contract of docs/Arcanum.DESIGN.md. EnumeratorCompleteness holds the adversarial twins.
 public sealed partial class HostedGrimoireProducerInventoryTests
 {
     private const string EnumerationEffect = "System.IO.File.Delete(\"enumeration-effect\"); ";

@@ -8,9 +8,10 @@ using Xunit;
 
 namespace RetroDownfall.Arcanum.Tests.Operations;
 
-// The completeness claim of Implicit Enumeration: every authored member that a foreach, an await foreach, a
-// spread or an enumerating framework member runs without a written call is either reported as a site under the
-// frontiers live where it runs, or refused. Each shape here ran authored code unseen before it was modeled.
+// The EnumeratorCompleteness fixtures. The completeness claim of Implicit Enumeration: every authored member that
+// a foreach, an await foreach, a spread or an enumerating framework member runs without a written call is either
+// reported as a site under the frontiers live where it runs, or refused. Each shape here ran authored code unseen
+// before it was modeled.
 public sealed partial class HostedGrimoireProducerInventoryTests
 {
     private static bool EnumerationRefusedAt(HostedProducerDiscovery<HostedProducerSite> result, CSharpCompilation compilation, string code = "HOSTED_SITE_UNCLASSIFIED")
@@ -59,6 +60,62 @@ public sealed partial class HostedGrimoireProducerInventoryTests
         Assert.Equal(keepsWork, site.WorkFrontierCapsuleId is not null);
 
         Assert.Equal(!keepsWork, EnumerationFrontierMissing(result, "HOSTED_SITE_WORK_FRONTIER_MISSING"));
+    }
+
+    // A lazy operator's callback runs on every MoveNext of the loop that consumes it, so it is judged at the same three
+    // points an iterator operand is.
+    [Theory]
+    [InlineData("foreach (int item in System.Linq.Enumerable.Select(new int[] { 1, 2 }, value => { " + EnumerationEffect + "return value; })) { _ = item; }", true)]
+    [InlineData("foreach (int item in System.Linq.Enumerable.Select(new int[] { 1, 2 }, value => { " + EnumerationEffect + "return value; })) { _ = item; lease.Dispose(); }", false)]
+    [InlineData("var items = System.Linq.Enumerable.Where(new int[] { 1, 2 }, value => { " + EnumerationEffect + "return true; }); foreach (int item in items) { _ = item; }", true)]
+    [InlineData("var items = System.Linq.Enumerable.Where(new int[] { 1, 2 }, value => { " + EnumerationEffect + "return true; }); foreach (int item in items) { _ = item; lease.Dispose(); }", false)]
+    [InlineData("foreach (int item in System.Linq.Enumerable.Select(new int[] { 1, 2 }, value => { " + EnumerationEffect + "return value; })) { _ = item; } lease.Dispose();", true)]
+    public void LazyCallbackOperandKeepsItsWorkOnlyWhileTheLeaseOutlivesTheLoop(string statement, bool keepsWork)
+    {
+        HostedProducerDiscovery<HostedProducerSite> result = EnumerationDiscover(EnumerationCompile(R2Admission + statement + " await Task.CompletedTask;", string.Empty));
+
+        HostedProducerSite[] sites = EnumerationDeleteSites(result);
+
+        if (keepsWork)
+        {
+            Assert.NotNull(Assert.Single(sites).WorkFrontierCapsuleId);
+        }
+        else
+        {
+            Assert.True(EnumerationAnyRefusal(result) || sites.Length != 0 && sites.All(static site => site.WorkFrontierCapsuleId is null), string.Join(global::System.Environment.NewLine, sites.Select(static site => site.Callee + " " + site.WorkFrontierCapsuleId)));
+        }
+    }
+
+    // A lazy filesystem sequence reads the directory on every MoveNext of the loop that consumes it.
+    [Theory]
+    [InlineData("foreach (string entry in System.IO.Directory.EnumerateFiles(\"enumeration-directory\")) { _ = entry; }", true)]
+    [InlineData("foreach (string entry in System.IO.Directory.EnumerateFiles(\"enumeration-directory\")) { _ = entry; lease.Dispose(); }", false)]
+    [InlineData("var entries = System.IO.Directory.EnumerateFiles(\"enumeration-directory\"); foreach (string entry in entries) { _ = entry; lease.Dispose(); }", false)]
+    public void LazyFilesystemSequenceKeepsItsWorkOnlyWhileTheLeaseOutlivesTheLoop(string statement, bool owned)
+    {
+        HostedProducerDiscovery<HostedProducerSite> result = EnumerationDiscover(EnumerationCompile(R2Admission + statement + " await Task.CompletedTask;", string.Empty));
+
+        Assert.Equal(!owned, result.Diagnostics.Any(static diagnostic => diagnostic.Code == "HOSTED_CALLBACK_OWNERSHIP_UNPROVEN"));
+
+        HostedProducerSite site = Assert.Single(result.Items, static candidate => candidate.RootType == "Worker" && candidate.Callee == "System.IO.Directory.EnumerateFiles");
+
+        Assert.Equal(owned, site.WorkFrontierCapsuleId is not null);
+    }
+
+    [Theory]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    public void ConfiguredAsyncIteratorOperandKeepsItsWorkOnlyWhileTheLeaseOutlivesTheLoop(bool disposesInBody, bool keepsWork)
+    {
+        string helpers = "static class Source { internal static async System.Collections.Generic.IAsyncEnumerable<int> Items() { yield return 1; await Task.CompletedTask; " + EnumerationEffect + "yield return 2; } }";
+
+        string body = R2Admission + "await foreach (int item in Source.Items().ConfigureAwait(false)) { _ = item; " + (disposesInBody ? "lease.Dispose(); " : string.Empty) + "} await Task.CompletedTask;";
+
+        HostedProducerDiscovery<HostedProducerSite> result = EnumerationDiscover(EnumerationCompile(body, helpers));
+
+        HostedProducerSite site = Assert.Single(EnumerationDeleteSites(result));
+
+        Assert.Equal(keepsWork, site.WorkFrontierCapsuleId is not null);
     }
 
     [Fact]
