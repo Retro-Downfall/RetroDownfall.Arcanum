@@ -952,7 +952,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests
     [Trait("Category", "HostedProducerProductionAnalysis")]
     public void Production_universe_satisfies_SqliteSealedByUse()
     {
-        Assert.Equal(HostedProducerPremises.SqliteSealedByUse, HostedGrimoireProducerInventory.ProductionPremises);
+        Assert.Equal(HostedProducerPremises.SqliteSealedByUse | HostedProducerPremises.AuthoredEnumerablesAbsentByUse, HostedGrimoireProducerInventory.ProductionPremises);
 
         HostedProducerPremiseLedger ledger = HostedGrimoireProducerInventory.VerifyPremises(
             HostedGrimoireProducerInventory.ProductionCompilations, HostedProducerPremises.SqliteSealedByUse);
@@ -1033,6 +1033,209 @@ public sealed partial class HostedGrimoireProducerInventoryTests
         }
 
         Assert.Empty(offenders);
+    }
+
+    [Fact]
+    [Trait("Category", "HostedProducerProductionAnalysis")]
+    public void Production_universe_satisfies_AuthoredEnumerablesAbsentByUse()
+    {
+        HostedProducerPremiseLedger ledger = HostedGrimoireProducerInventory.VerifyPremises(
+            HostedGrimoireProducerInventory.ProductionCompilations, HostedProducerPremises.AuthoredEnumerablesAbsentByUse);
+
+        Assert.Empty(ledger.Violations);
+
+        Assert.True(ledger.Holds(HostedProducerPremises.AuthoredEnumerablesAbsentByUse));
+
+        Assert.True(HostedGrimoireProducerInventory.ProductionPremises.HasFlag(HostedProducerPremises.AuthoredEnumerablesAbsentByUse));
+    }
+
+    private const string EnumerationPremiseInputs = """
+        static class UnprovedEnumerableInput
+        {
+            internal static System.Collections.Generic.IEnumerable<int> Items { get; set; } = null!;
+
+            internal static System.Collections.Generic.IReadOnlyList<int> List { get; set; } = null!;
+
+            internal static System.Collections.Generic.IAsyncEnumerable<int> Async { get; set; } = null!;
+
+            internal static System.Collections.ObjectModel.ReadOnlyCollection<int> Collection { get; set; } = null!;
+        }
+        """;
+
+    private static CSharpCompilation EnumerationPremiseFixture(string body, string extra = "", params MetadataReference[] additionalReferences)
+    {
+        CSharpCompilation compilation = CompileWithProductionReferencePack(R2Source(R2Admission + body + " await Task.CompletedTask;", EnumerationPremiseInputs + "\n" + extra), "RetroDownfall.Arcanum.Api");
+
+        if (additionalReferences.Length != 0)
+        {
+            compilation = compilation.AddReferences(additionalReferences);
+        }
+
+        Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        return compilation;
+    }
+
+    private static bool EnumerationPremiseUnclassified(HostedProducerDiscovery<HostedProducerSite> result, CSharpCompilation compilation)
+    {
+        SyntaxTree tree = Assert.Single(compilation.SyntaxTrees);
+
+        SyntaxNode site = tree.GetRoot().DescendantNodes().First(static node => node is CommonForEachStatementSyntax or SpreadElementSyntax);
+
+        return result.Diagnostics.Any(diagnostic => diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED" && diagnostic.Identity == tree.FilePath + ":" + site.SpanStart);
+    }
+
+    private static HostedProducerDiscovery<HostedProducerSite> EnumerationPremiseRequested(CSharpCompilation compilation) =>
+        PremiseRequested(compilation, HostedProducerPremises.AuthoredEnumerablesAbsentByUse);
+
+    // Strict discovery refuses an interface-typed receiver nothing proves. Once the universe declares no
+    // authored enumerable, the same receiver cannot dispatch to one and the production entry classifies it.
+    [Theory]
+    [InlineData("foreach (int item in UnprovedEnumerableInput.Items) { _ = item; }")]
+    [InlineData("foreach (int item in UnprovedEnumerableInput.List) { _ = item; }")]
+    [InlineData("int[] values = [.. UnprovedEnumerableInput.Items]; _ = values;")]
+    [InlineData("await foreach (int item in UnprovedEnumerableInput.Async) { _ = item; }")]
+    [InlineData("await foreach (int item in UnprovedEnumerableInput.Async.ConfigureAwait(false)) { _ = item; }")]
+    [InlineData("foreach (int item in System.Linq.Enumerable.Select(UnprovedEnumerableInput.Items, value => value)) { _ = item; }")]
+    public void AuthoredEnumerablesAbsentClassifiesAnUnprovenFrameworkCollectionInterface(string statement)
+    {
+        CSharpCompilation compilation = EnumerationPremiseFixture(statement);
+
+        Assert.True(EnumerationPremiseUnclassified(PremiseStrict(compilation), compilation));
+
+        HostedProducerPremiseLedger ledger = HostedGrimoireProducerInventory.VerifyPremises([compilation], HostedProducerPremises.AuthoredEnumerablesAbsentByUse);
+
+        Assert.True(ledger.Holds(HostedProducerPremises.AuthoredEnumerablesAbsentByUse), string.Join(global::System.Environment.NewLine, ledger.Violations));
+
+        HostedProducerDiscovery<HostedProducerSite> premised = EnumerationPremiseRequested(compilation);
+
+        Assert.False(EnumerationPremiseUnclassified(premised, compilation));
+
+        Assert.Empty(premised.Diagnostics);
+    }
+
+    // The negative twins: any authored enumeration member anywhere in the analysed source withholds the
+    // premise, and the unproven receiver then stays refused, exactly as under strict discovery.
+    [Theory]
+    [InlineData("interface-enumerable", "sealed class Elsewhere : System.Collections.Generic.IEnumerable<int> { public System.Collections.Generic.IEnumerator<int> GetEnumerator() => throw new NotSupportedException(); System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator(); }")]
+    [InlineData("async-enumerable", "sealed class Elsewhere : System.Collections.Generic.IAsyncEnumerable<int> { public System.Collections.Generic.IAsyncEnumerator<int> GetAsyncEnumerator(System.Threading.CancellationToken token = default) => throw new NotSupportedException(); }")]
+    [InlineData("pattern-only", "sealed class Elsewhere { public System.Collections.Generic.List<int>.Enumerator GetEnumerator() => default; }")]
+    [InlineData("authored-enumerator", "struct Elsewhere : System.Collections.Generic.IEnumerator<int> { public bool MoveNext() => false; public int Current => 0; object System.Collections.IEnumerator.Current => Current; public void Reset() { } public void Dispose() { } }")]
+    [InlineData("authored-interface", "interface IElsewhere : System.Collections.Generic.IEnumerable<int> { }")]
+    [InlineData("default-interface-member", "interface IElsewhere { System.Collections.Generic.IEnumerator<int> GetEnumerator() => throw new NotSupportedException(); }")]
+    [InlineData("extension-enumerator", "static class Extensions { public static System.Collections.Generic.IEnumerator<int> GetEnumerator(this Elsewhere value) => throw new NotSupportedException(); } sealed class Elsewhere { }")]
+    [InlineData("framework-derived", "sealed class Elsewhere : System.Collections.Generic.List<int> { }")]
+    [InlineData("nested", "static class Outer { internal sealed class Elsewhere : System.Collections.IEnumerable { public System.Collections.IEnumerator GetEnumerator() => throw new NotSupportedException(); } }")]
+    public void AuthoredEnumerablesAbsentIsWithheldWhenTheUniverseDeclaresAnEnumerationMember(string shape, string declaration)
+    {
+        CSharpCompilation compilation = EnumerationPremiseFixture("foreach (int item in UnprovedEnumerableInput.Items) { _ = item; }", declaration);
+
+        HostedProducerPremiseLedger ledger = HostedGrimoireProducerInventory.VerifyPremises([compilation], HostedProducerPremises.AuthoredEnumerablesAbsentByUse);
+
+        Assert.False(ledger.Holds(HostedProducerPremises.AuthoredEnumerablesAbsentByUse), shape);
+
+        Assert.NotEmpty(ledger.Violations);
+
+        Assert.All(ledger.Violations, static violation =>
+        {
+            Assert.Equal("HOSTED_PREMISE_VIOLATED", violation.Code);
+
+            Assert.Equal("AuthoredEnumerablesAbsentByUse", violation.Identity);
+        });
+
+        HostedProducerDiscovery<HostedProducerSite> premised = EnumerationPremiseRequested(compilation);
+
+        Assert.NotEmpty(PremiseViolations(premised));
+
+        Assert.True(EnumerationPremiseUnclassified(premised, compilation));
+
+        Assert.Equal(PremiseStrict(compilation).Diagnostics, PremiseWithoutViolations(premised));
+    }
+
+    [Fact]
+    public void AuthoredEnumerablesAbsentIsWithheldForAnUnresolvedSourceBaseType()
+    {
+        CSharpCompilation unresolved = CSharpCompilation.Create(
+            "PremiseUnresolvedEnumerable",
+            [CSharpSyntaxTree.ParseText("sealed class Elsewhere : MissingBase { }", path: "src/Fixture.cs")],
+            PremiseFrameworkReferences(),
+            new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
+
+        HostedProducerPremiseLedger ledger = HostedGrimoireProducerInventory.VerifyPremises([unresolved], HostedProducerPremises.AuthoredEnumerablesAbsentByUse);
+
+        Assert.False(ledger.Holds(HostedProducerPremises.AuthoredEnumerablesAbsentByUse));
+
+        Assert.Contains("unresolved base type", Assert.Single(ledger.Violations).Detail, StringComparison.Ordinal);
+
+        CSharpCompilation resolved = CSharpCompilation.Create(
+            "PremiseResolvedEnumerable",
+            [CSharpSyntaxTree.ParseText("class MissingBase { } sealed class Elsewhere : MissingBase { }", path: "src/Fixture.cs")],
+            PremiseFrameworkReferences(),
+            new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
+
+        HostedProducerPremiseLedger control = HostedGrimoireProducerInventory.VerifyPremises([resolved], HostedProducerPremises.AuthoredEnumerablesAbsentByUse);
+
+        Assert.True(control.Holds(HostedProducerPremises.AuthoredEnumerablesAbsentByUse), string.Join(global::System.Environment.NewLine, control.Violations));
+    }
+
+    // The premise is about interface-typed receivers only. A concrete framework type outside the closed set keeps
+    // its own members, and an interface that merely shares a framework interface's name is not that interface.
+    [Fact]
+    public void AuthoredEnumerablesAbsentDoesNotCoverAConcreteFrameworkTypeOutsideTheClosedSet()
+    {
+        CSharpCompilation compilation = EnumerationPremiseFixture("foreach (int item in UnprovedEnumerableInput.Collection) { _ = item; }");
+
+        Assert.True(EnumerationPremiseUnclassified(PremiseStrict(compilation), compilation));
+
+        HostedProducerDiscovery<HostedProducerSite> premised = EnumerationPremiseRequested(compilation);
+
+        Assert.Empty(PremiseViolations(premised));
+
+        Assert.True(EnumerationPremiseUnclassified(premised, compilation));
+    }
+
+    [Fact]
+    public void AuthoredEnumerablesAbsentDoesNotCoverAnInterfaceFromAnotherAssemblyThatSharesAFrameworkName()
+    {
+        CSharpCompilation foreign = CompileWithProductionReferencePack(
+            "namespace System.Linq { public interface IGrouping<TKey, TElement> : System.Collections.Generic.IEnumerable<TElement> { TKey Key { get; } } } namespace Unreviewed { public static class ForeignFactory { public static System.Linq.IGrouping<int, int> Make() => null!; } }",
+            "RetroDownfall.Arcanum.Api").WithAssemblyName("Unreviewed.Linq");
+
+        using MemoryStream image = new();
+
+        Microsoft.CodeAnalysis.Emit.EmitResult emitted = foreign.Emit(image);
+
+        Assert.True(emitted.Success, string.Join(global::System.Environment.NewLine, emitted.Diagnostics));
+
+        CSharpCompilation compilation = EnumerationPremiseFixture("foreach (int item in Unreviewed.ForeignFactory.Make()) { _ = item; }", string.Empty, MetadataReference.CreateFromImage(image.ToArray()));
+
+        HostedProducerDiscovery<HostedProducerSite> premised = EnumerationPremiseRequested(compilation);
+
+        Assert.Empty(PremiseViolations(premised));
+
+        Assert.True(EnumerationPremiseUnclassified(premised, compilation));
+    }
+
+    [Fact]
+    public void AuthoredEnumerablesAbsentAndSqliteSealedByUseAreGrantedIndependently()
+    {
+        CSharpCompilation compilation = EnumerationPremiseFixture("foreach (int item in UnprovedEnumerableInput.Items) { _ = item; }", "sealed class Elsewhere : System.Collections.Generic.IEnumerable<int> { public System.Collections.Generic.IEnumerator<int> GetEnumerator() => throw new NotSupportedException(); System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator(); }");
+
+        HostedProducerPremiseLedger both = HostedGrimoireProducerInventory.VerifyPremises([compilation], HostedProducerPremises.SqliteSealedByUse | HostedProducerPremises.AuthoredEnumerablesAbsentByUse);
+
+        Assert.True(both.Holds(HostedProducerPremises.SqliteSealedByUse));
+
+        Assert.False(both.Holds(HostedProducerPremises.AuthoredEnumerablesAbsentByUse));
+
+        Assert.Equal(HostedProducerPremises.SqliteSealedByUse, both.Granted);
+
+        Assert.NotEmpty(both.Violations);
+
+        HostedProducerPremiseLedger onlySqlite = HostedGrimoireProducerInventory.VerifyPremises([compilation], HostedProducerPremises.SqliteSealedByUse);
+
+        Assert.False(onlySqlite.Holds(HostedProducerPremises.AuthoredEnumerablesAbsentByUse));
+
+        Assert.Empty(onlySqlite.Violations);
     }
 
     private static HostedProducerOperationEntry PremiseRoot(string type, string member) =>

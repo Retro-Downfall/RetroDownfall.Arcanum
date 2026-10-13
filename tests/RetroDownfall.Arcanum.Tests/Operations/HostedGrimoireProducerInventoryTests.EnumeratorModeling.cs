@@ -337,6 +337,58 @@ public sealed partial class HostedGrimoireProducerInventoryTests
         Assert.Empty(EnumerationDeleteSites(result));
     }
 
+    // The production compilations resolve the framework through its reference assemblies, not the runtime
+    // ones, so the closed set must be recognised through the same identity mapping the other reviewed
+    // framework types use.
+    [Theory]
+    [InlineData("foreach (int item in new System.Collections.Generic.List<int>()) { _ = item; }")]
+    [InlineData("foreach (int item in new int[] { 1 }) { _ = item; }")]
+    [InlineData("foreach (int item in System.Collections.Immutable.ImmutableArray<int>.Empty) { _ = item; }")]
+    [InlineData("foreach (var pair in new System.Collections.Generic.Dictionary<int, int>()) { _ = pair; }")]
+    [InlineData("foreach (int item in new System.Collections.Generic.Dictionary<int, int>().Values) { _ = item; }")]
+    [InlineData("foreach (int item in new System.Collections.Generic.HashSet<int>()) { _ = item; }")]
+    [InlineData("foreach (var pair in new System.Collections.Concurrent.ConcurrentDictionary<int, int>()) { _ = pair; }")]
+    [InlineData("foreach (char item in \"text\") { _ = item; }")]
+    [InlineData("foreach (var item in System.Text.Json.JsonDocument.Parse(\"[]\").RootElement.EnumerateArray()) { _ = item; }")]
+    [InlineData("foreach (int item in System.Linq.Enumerable.Range(0, 1)) { _ = item; }")]
+    [InlineData("System.Collections.Generic.IReadOnlyList<int> items = new System.Collections.Generic.List<int>(); foreach (int item in items) { _ = item; }")]
+    public void ClosedFrameworkCollectionsAreRecognisedAgainstTheProductionReferencePack(string statement)
+    {
+        CSharpCompilation compilation = CompileWithProductionReferencePack(R2Source(R2Admission + statement + " await Task.CompletedTask;"), "RetroDownfall.Arcanum.Api");
+
+        Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        HostedProducerDiscovery<HostedProducerSite> result = EnumerationDiscover(compilation);
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic => diagnostic.Code is "HOSTED_SITE_UNCLASSIFIED" or "HOSTED_CALLBACK_OWNERSHIP_UNPROVEN");
+    }
+
+    // A value followed through a field or property initializer in another file is proved against that file's
+    // semantic model, never the model of the member that reads it.
+    [Theory]
+    [InlineData("internal static readonly System.Collections.Generic.IEnumerable<int> Items = System.Linq.Enumerable.ToList(new int[] { 1 });", true)]
+    [InlineData("internal static System.Collections.Generic.IEnumerable<int> Items => Make(); private static System.Collections.Generic.List<int> Make() => new System.Collections.Generic.List<int>();", true)]
+    [InlineData("internal static readonly System.Collections.Generic.IEnumerable<int> Items = System.Linq.Enumerable.Select(new int[] { 1 }, value => value);", true)]
+    [InlineData("internal static readonly System.Collections.Generic.IEnumerable<int> Items = Unproved.Items;", false)]
+    [InlineData("internal static System.Collections.Generic.IEnumerable<int> Items => Make(); private static System.Collections.Generic.IEnumerable<int> Make() => Unproved.Items;", false)]
+    public void ValueFollowedThroughAnotherSyntaxTreeIsProvedInThatTree(string declaration, bool closed)
+    {
+        string other = "static class Unproved { internal static System.Collections.Generic.IEnumerable<int> Items { get; set; } = null!; } static class Shared { " + declaration + " }";
+
+        CSharpCompilation compilation = Compile(R2Source(R2Admission + "foreach (int item in Shared.Items) { _ = item; } await Task.CompletedTask;"))
+            .AddSyntaxTrees(CSharpSyntaxTree.ParseText(other, path: "src/Shared.cs"));
+
+        Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        HostedProducerDiscovery<HostedProducerSite> result = EnumerationDiscover(compilation);
+
+        SyntaxTree tree = compilation.SyntaxTrees.Single(static candidate => candidate.FilePath == "src/Fixture.cs");
+
+        SyntaxNode loop = tree.GetRoot().DescendantNodes().First(static node => node is CommonForEachStatementSyntax);
+
+        Assert.Equal(!closed, result.Diagnostics.Any(diagnostic => diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED" && diagnostic.Identity == tree.FilePath + ":" + loop.SpanStart));
+    }
+
     // A static type that is not a closed framework collection is never classified by its name or shape.
     [Fact]
     public void AuthoredSubclassThatHidesGetEnumeratorIsTraversedNotClassifiedAsTheFrameworkList()

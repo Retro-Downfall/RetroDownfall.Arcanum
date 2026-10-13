@@ -218,11 +218,7 @@ internal static partial class HostedGrimoireProducerInventory
             // Every runtime type the operand can have is one of the exact candidate types.
             Candidates = 2,
 
-            // The authored-enumerables-absent premise holds and the operand is a framework collection
-            // interface, so no authored runtime type exists.
-            ClosedByPremise = 3,
-
-            Unproven = 4,
+            Unproven = 3,
         }
 
         private sealed record EnumerationClosure(EnumerationClosureKind Kind, IReadOnlyList<INamedTypeSymbol> Candidates)
@@ -276,7 +272,24 @@ internal static partial class HostedGrimoireProducerInventory
             IReadOnlyList<string> Unresolved,
             bool AuthoredCandidate);
 
+        // A binding depends only on the syntax and its semantic model, never on a traversal state.
+        private readonly Dictionary<SyntaxNode, EnumerationBinding> enumerationBindings = new(ReferenceEqualityComparer.Instance);
+
         private EnumerationBinding BindEnumeration(AuthoredMember member, SyntaxNode node)
+        {
+            if (enumerationBindings.TryGetValue(node, out EnumerationBinding? cached))
+            {
+                return cached;
+            }
+
+            EnumerationBinding binding = BindEnumerationUncached(member, node);
+
+            enumerationBindings[node] = binding;
+
+            return binding;
+        }
+
+        private EnumerationBinding BindEnumerationUncached(AuthoredMember member, SyntaxNode node)
         {
             if (node is CommonForEachStatementSyntax loop)
             {
@@ -388,9 +401,7 @@ internal static partial class HostedGrimoireProducerInventory
                     : new(EnumerationClosureKind.Candidates, candidates);
             }
 
-            return AuthoredEnumerablesAbsentByUse && IsPremiseCoveredEnumerationInterface(type)
-                ? EnumerationClosure.Of(EnumerationClosureKind.ClosedByPremise)
-                : EnumerationClosure.Of(EnumerationClosureKind.Unproven);
+            return EnumerationClosure.Of(EnumerationClosureKind.Unproven);
         }
 
         private static bool IsSequenceOrEnumeratorType(ITypeSymbol type) =>
@@ -511,13 +522,33 @@ internal static partial class HostedGrimoireProducerInventory
                 return true;
             }
 
-            return HasOnlyReviewedValueSources(
+            if (HasOnlyReviewedValueSources(
                 expression,
                 model,
                 path,
                 context,
-                (source, sourceModel, sourcePath, sourceContext) => ProveEnumerationLeaf(source, sourceModel, sourcePath, sourceContext, proof));
+                (source, sourceModel, sourcePath, sourceContext) => ProveEnumerationLeaf(source, sourceModel, sourcePath, sourceContext, proof)))
+            {
+                return true;
+            }
+
+            // Authored Enumerables Absent: the storage could not be followed, but no authored type provides
+            // enumeration members, so a value of a framework collection interface is not an authored one.
+            return AuthoredEnumerablesAbsentByUse && IsPremiseCoveredEnumerationInterface(type);
         }
+
+        // The exact framework Enumerable.ToList and Enumerable.ToArray: each builds a fresh list or array, so the value
+        // is closed whatever the source was. Enumerating that source is the call's own concern.
+        private static bool IsFrameworkMaterialization(IMethodSymbol method) =>
+            (method.ReducedFrom ?? method) is
+            {
+                IsStatic: true,
+                Arity: 1,
+                Parameters: [IParameterSymbol parameter],
+                Name: "ToList" or "ToArray",
+            } materializer
+            && TypeKey(parameter.Type) == "System.Collections.Generic.IEnumerable`1"
+            && IsExactFrameworkType(materializer.ContainingType, "System.Linq.Enumerable", typeof(Enumerable).Assembly.GetName());
 
         // Null means the call produces a value this proof does not follow through the call (a framework or external
         // member returning a concrete type outside the closed set), so the caller judges the value by its type.
@@ -534,7 +565,7 @@ internal static partial class HostedGrimoireProducerInventory
                 return false;
             }
 
-            if (context is not null && IsExactFrameworkCollectionMaterialization(context, call))
+            if (IsFrameworkMaterialization(method))
             {
                 return true;
             }
@@ -558,7 +589,11 @@ internal static partial class HostedGrimoireProducerInventory
                 {
                     ExpressionSyntax[] returned = ReturnedExpressions(target.Syntax);
 
-                    AuthoredMember calleeContext = context is null ? target : BindInvocationContext(context, call, target);
+                    // The caller's bindings are valid only for a call written in the caller's own syntax tree: a
+                    // value followed through a field or property initializer comes from another file.
+                    AuthoredMember calleeContext = context is not null && context.Model.SyntaxTree == call.SyntaxTree
+                        ? BindInvocationContext(context, call, target)
+                        : target;
 
                     return returned.Length != 0
                         && returned.All(value => ProveEnumerationLeaf(value, target.Model, new HashSet<ISymbol>(SymbolEqualityComparer.Default), calleeContext, proof));
@@ -962,7 +997,9 @@ internal static partial class HostedGrimoireProducerInventory
 
         // Authored enumerators a framework member can run when it enumerates a sequence it was given. The sequence
         // is followed to its exact runtime types; one whose runtime type cannot be followed is not claimed here (the
-        // member's own site classification stands).
+        // member's own site classification stands). A sequence that can be an authored type is refused unless every
+        // enumeration member that type provides is free of producer sites by the same transitive scan an opaque
+        // callback body gets.
         private bool FrameworkMemberRunsAuthoredEnumerator(AuthoredMember member, SyntaxNode node, IMethodSymbol method, out string detail)
         {
             detail = string.Empty;
@@ -985,21 +1022,31 @@ internal static partial class HostedGrimoireProducerInventory
                     continue;
                 }
 
-                EnumerationBinding binding = BindEnumerationExpression(member, value, value.SpanStart, asynchronous: false);
+                EnumerationProof proof = new();
 
-                if (!binding.Bound)
+                if (!ProveEnumerationLeaf(value, member.Model, new HashSet<ISymbol>(SymbolEqualityComparer.Default), member, proof))
                 {
                     continue;
                 }
 
-                EnumerationClosure closure = ClassifyEnumeration(member, binding);
+                INamedTypeSymbol[] candidates = [.. proof.Candidates
+                    .Distinct(SymbolEqualityComparer.Default)
+                    .OfType<INamedTypeSymbol>()
+                    .Where(static candidate => candidate.Locations.Any(static location => location.IsInSource))];
 
-                if (closure.Kind != EnumerationClosureKind.Candidates)
+                if (candidates.Length == 0)
                 {
                     continue;
                 }
 
-                EnumerationResolution resolution = ResolveEnumerationTargets(member, binding, closure);
+                bool asynchronous = valueType.AllInterfaces.Concat([valueType]).Any(static contract => TypeKey(contract) == "System.Collections.Generic.IAsyncEnumerable`1")
+                    && !valueType.AllInterfaces.Concat([valueType]).Any(static contract => TypeKey(contract) is "System.Collections.Generic.IEnumerable`1" or "System.Collections.IEnumerable");
+
+                EnumerationBinding binding = BindEnumerationExpression(member, value, value.SpanStart, asynchronous);
+
+                EnumerationResolution resolution = binding.Bound
+                    ? ResolveEnumerationTargets(member, binding, new(EnumerationClosureKind.Candidates, candidates))
+                    : new([], ["<unbound>"], true);
 
                 if (resolution.AuthoredCandidate
                     && (resolution.Unresolved.Count != 0
