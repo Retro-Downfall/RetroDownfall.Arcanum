@@ -24890,6 +24890,7 @@ internal static partial class HostedGrimoireProducerInventory
                     // the first use of the context's services all the same.
                     if (node is IdentifierNameSyntax { Parent: MemberAccessExpressionSyntax receiverAccess } receiverName
                         && ReferenceEquals(receiverAccess.Expression, receiverName)
+                        && IsExactEfDbContext(member.Symbol.ContainingType)
                         && !IsLongRestSdkFactoryReceiverProperty(node, member)
                         && member.Model.GetSymbolInfo(receiverName).Symbol is IPropertySymbol receiverProperty
                         && DbContextFirstUseConfiguring(member, node, receiverProperty) is { } receiverConfiguring)

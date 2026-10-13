@@ -41223,8 +41223,9 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
                 private static System.IO.MemoryStream Start() { START }
                 private static System.IO.MemoryStream Mixed() => DateTime.UtcNow.Ticks > 0 ? new System.IO.MemoryStream() : Unknown();
                 private static System.IO.MemoryStream MixedOwned() => DateTime.UtcNow.Ticks > 0 ? new System.IO.MemoryStream() : Start();
-                private static extern System.IO.MemoryStream Unknown();
-                private static extern void Escape(ref System.IO.MemoryStream bytes);
+                private static System.IO.MemoryStream Slot { get; set; } = null!;
+                private static System.IO.MemoryStream Unknown() => Slot;
+                private static void Escape(ref System.IO.MemoryStream bytes) { bytes = Slot; }
                 private static void Write(System.IO.MemoryStream bytes, byte[] data) => bytes.Write(data, 0, data.Length);
                 private static byte[] Payload() { System.IO.File.Delete("argument"); return new byte[] { 1 }; }
             }
@@ -41267,7 +41268,10 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
         }
         else
         {
-            Assert.True(result.Diagnostics.Any(static diagnostic => diagnostic.Code is "HOSTED_DISPOSAL_TARGET_UNRESOLVED" or "HOSTED_SITE_UNCLASSIFIED"), diagnostics);
+            // The opaque origin is an authored settable property, not an extern call, so no other refusal can
+            // stand in for the lane: the unproven writer's own disposal must be the unresolved target.
+            Assert.True(result.Diagnostics.Any(static diagnostic => diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED"
+                && diagnostic.Detail.StartsWith("System.IO.MemoryStream.Dispose;", StringComparison.Ordinal)), diagnostics);
         }
     }
 
