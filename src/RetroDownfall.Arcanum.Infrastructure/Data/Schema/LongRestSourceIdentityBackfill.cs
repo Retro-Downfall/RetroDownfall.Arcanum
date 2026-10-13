@@ -19,42 +19,46 @@ internal sealed class LongRestSourceIdentityBackfill : IGrimoireSchemaBackfill
 
         ArgumentNullException.ThrowIfNull(transaction);
 
-        await using SqliteCommand command = connection.CreateCommand();
-
-        command.Transaction = transaction;
-
-        command.CommandText = """
-            SELECT Id FROM saga_memories
-            WHERE ($cursor IS NULL OR Id > $cursor)
-                AND NOT EXISTS (SELECT 1 FROM long_rest_sources source WHERE source.MemoryId = saga_memories.Id)
-            ORDER BY Id LIMIT $limit;
-            """;
-
-        _ = command.Parameters.AddWithValue("$cursor", (object?)cursor ?? DBNull.Value);
-
-        _ = command.Parameters.AddWithValue("$limit", MaxRowsPerBatch);
-
         List<string> identities = [];
 
-        await using (SqliteDataReader reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
+        await using (SqliteCommand select = connection.CreateCommand())
         {
+            select.Transaction = transaction;
+
+            select.CommandText = """
+                SELECT Id FROM saga_memories
+                WHERE ($cursor IS NULL OR Id > $cursor)
+                    AND NOT EXISTS (SELECT 1 FROM long_rest_sources source WHERE source.MemoryId = saga_memories.Id)
+                ORDER BY Id LIMIT $limit;
+                """;
+
+            _ = select.Parameters.AddWithValue("$cursor", (object?)cursor ?? DBNull.Value);
+
+            _ = select.Parameters.AddWithValue("$limit", MaxRowsPerBatch);
+
+            await using SqliteDataReader reader = await select.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+
             while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             {
                 identities.Add(reader.GetString(0));
             }
         }
 
-        command.Parameters.Clear();
+        // A second command instead of clearing the first one's parameters keeps each command's
+        // parameter set fixed for its whole life, which is the shape the hosted inventory classifies.
+        await using SqliteCommand insert = connection.CreateCommand();
 
-        command.CommandText = "INSERT INTO long_rest_sources (MemoryId, MutationEpoch) VALUES ($memory, 1) ON CONFLICT(MemoryId) DO NOTHING;";
+        insert.Transaction = transaction;
 
-        SqliteParameter memory = command.Parameters.Add("$memory", SqliteType.Text);
+        insert.CommandText = "INSERT INTO long_rest_sources (MemoryId, MutationEpoch) VALUES ($memory, 1) ON CONFLICT(MemoryId) DO NOTHING;";
+
+        SqliteParameter memory = insert.Parameters.Add("$memory", SqliteType.Text);
 
         foreach (string identity in identities)
         {
             memory.Value = identity;
 
-            _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            _ = await insert.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         }
 
         return new GrimoireSchemaBackfillBatch(

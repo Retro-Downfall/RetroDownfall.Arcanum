@@ -30676,10 +30676,13 @@ internal static partial class HostedGrimoireProducerInventory
 
             if (method.MethodKind == MethodKind.Constructor) return model.GetOperation(node) is IObjectCreationOperation { Initializer: null };
 
+            // The receiver must still be an exact default-constructed queue, so its priority comparison is the
+            // pure primitive tuple comparison. The arguments need only the argument-boundary rule: they are
+            // evaluated and traversed where they are written, and the queue merely stores and orders them.
             return model.GetOperation(node) is IInvocationOperation invocation
                 && invocation.Instance?.Syntax is ExpressionSyntax receiver
                 && HasExactDefaultPrimitiveQueueOrigin(receiver, context)
-                && invocation.Arguments.All(argument => HasReviewedValueConversions(argument.Value, context));
+                && invocation.Arguments.All(ArgumentBoundaryUsesOnlyBuiltInConversions);
         }
 
         private bool IsReviewedPrimitiveQueueProperty(IPropertySymbol property, bool mutation, SyntaxNode? node, AuthoredMember? context) =>

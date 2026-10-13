@@ -1,4 +1,5 @@
 using System.Text.Json;
+using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Tests.Support;
 
@@ -100,5 +101,38 @@ public sealed class ResultTests
         Assert.True(result.IsFailure);
 
         Assert.Equal(error, result.Error);
+    }
+
+    [Fact]
+    public void ErrorIsNone_IsTheSameAnswerAsRecordEqualityWithNone()
+    {
+        Error[] errors =
+        [
+            Error.None,
+            new(string.Empty, string.Empty),
+            default,
+            new("Test.Failed", string.Empty),
+            new(string.Empty, "Message only."),
+            new("Test.Failed", "Nope."),
+            new(string.Empty, string.Empty, Array.Empty<ConfigurationValidationError>()),
+            new(string.Empty, string.Empty, [new ConfigurationValidationError("/pointer", "detail")]),
+        ];
+
+        foreach (Error error in errors)
+        {
+            Assert.Equal(error == Error.None, error.IsNone);
+        }
+
+        Assert.True(Error.None.IsNone);
+
+        Assert.False(default(Error).IsNone);
+    }
+
+    [Fact]
+    public void ErrorIsNone_IsNotPartOfTheSerializedShape()
+    {
+        string json = JsonSerializer.Serialize(new Error("Test.Failed", "Nope."), AdHocJson.Options);
+
+        Assert.DoesNotContain("IsNone", json, StringComparison.OrdinalIgnoreCase);
     }
 }

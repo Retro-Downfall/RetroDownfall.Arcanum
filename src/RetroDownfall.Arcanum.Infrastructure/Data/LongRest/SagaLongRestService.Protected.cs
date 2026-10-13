@@ -176,11 +176,11 @@ internal sealed partial class SagaLongRestService
                 return InvalidReceipt();
             }
 
-            partition = new((byte[])reader[0]);
+            partition = new((byte[])reader.GetValue(0));
 
             if (reader.GetInt32(1) == (int)GenerationProvenanceMode.Exact)
             {
-                byte[] raw = (byte[])reader[2];
+                byte[] raw = (byte[])reader.GetValue(2);
 
                 if (raw.Length is < 16 or > 128 || raw.Length % 16 != 0 || !reader.IsDBNull(3))
                 {
@@ -196,14 +196,14 @@ internal sealed partial class SagaLongRestService
             }
             else if (reader.GetInt32(1) == (int)GenerationProvenanceMode.BloomOverflow && reader.IsDBNull(2))
             {
-                provenance = GenerationProvenance.CreateBloom((byte[])reader[3]);
+                provenance = GenerationProvenance.CreateBloom((byte[])reader.GetValue(3));
             }
             else
             {
                 return InvalidReceipt();
             }
 
-            if (ProtectedEvidenceDigest(new((byte[])reader[4]), inputHash) != new CovenantDigest((byte[])reader[5]))
+            if (ProtectedEvidenceDigest(new((byte[])reader.GetValue(4)), inputHash) != new CovenantDigest((byte[])reader.GetValue(5)))
             {
                 return InvalidReceipt();
             }
@@ -227,9 +227,9 @@ internal sealed partial class SagaLongRestService
                 ArtifactSensitivityLabel label = JsonSerializer.Deserialize(reader.GetString(9), LongRestJsonContext.Default.ArtifactSensitivityLabel) ?? throw new InvalidDataException();
 
                 if (snapshot.MemoryId != reader.GetString(1) || snapshot.ClaimId != reader.GetString(2) || snapshot.VersionId != reader.GetString(3)
-                    || label.LabelId != Guid.Parse(reader.GetString(4)) || label.LabelDigest != new CovenantDigest((byte[])reader[5])
-                    || label.ArtifactRevision != checked((ulong)reader.GetInt64(6)) || label.ArtifactContentDigest != new CovenantDigest((byte[])reader[7])
-                    || label.SensitivityDigest != new CovenantDigest((byte[])reader[8]))
+                    || label.LabelId != Guid.Parse(reader.GetString(4)) || label.LabelDigest != new CovenantDigest((byte[])reader.GetValue(5))
+                    || label.ArtifactRevision != checked((ulong)reader.GetInt64(6)) || label.ArtifactContentDigest != new CovenantDigest((byte[])reader.GetValue(7))
+                    || label.SensitivityDigest != new CovenantDigest((byte[])reader.GetValue(8)))
                 {
                     return InvalidReceipt();
                 }

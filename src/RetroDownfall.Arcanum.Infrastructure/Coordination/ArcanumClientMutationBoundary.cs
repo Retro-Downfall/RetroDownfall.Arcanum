@@ -25,7 +25,7 @@ public sealed class ArcanumClientMutationResult<T>
     {
 
         if (disposition is ArcanumClientMutationDisposition.Completed
-            && error != Error.None)
+            && !error.IsNone)
         {
 
             throw new ArgumentException(
@@ -35,7 +35,7 @@ public sealed class ArcanumClientMutationResult<T>
         }
 
         if (disposition is not ArcanumClientMutationDisposition.Completed
-            && error == Error.None)
+            && error.IsNone)
         {
 
             throw new ArgumentException(
