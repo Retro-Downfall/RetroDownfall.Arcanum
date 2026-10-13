@@ -21,28 +21,9 @@ internal static partial class HostedGrimoireProducerInventory
 
             canonical = false;
 
-            if (selected.Name is not ("op_Equality" or "op_Inequality")
-                || operands is not [IOperation { Syntax: ExpressionSyntax left }, IOperation { Syntax: ExpressionSyntax right }]
-                || !TryRecordEqualitySource(selected.ContainingType, caller.Model.Compilation,
-                    out INamedTypeSymbol record, out Compilation compilation)) return false;
-
-            IMethodSymbol[] operators = record.GetMembers().OfType<IMethodSymbol>()
-                .Where(static method => method.Name is "op_Equality" or "op_Inequality").ToArray();
-
-            if (operators.Length != 2 || operators.Any(method => !method.IsImplicitlyDeclared
-                    || !method.IsStatic || method.MethodKind != MethodKind.UserDefinedOperator
-                    || method.ReturnType.SpecialType != SpecialType.System_Boolean
-                    || method.Parameters.Length != 2
-                    || method.Parameters.Any(parameter => parameter.RefKind != RefKind.None
-                        || !SymbolEqualityComparer.Default.Equals(parameter.Type, record))
-                    || method.DeclaringSyntaxReferences.Any(reference => reference.GetSyntax() is not RecordDeclarationSyntax))
-                || operators.SingleOrDefault(method => method.Name == selected.Name) is not { } sourceOperator
-                || MethodKey(sourceOperator) != MethodKey(selected)) return false;
-
-            IMethodSymbol[] equals = record.GetMembers("Equals").OfType<IMethodSymbol>()
-                .Where(method => IsRecordEqualitySlot(method, record)).ToArray();
-
-            if (equals is not [IMethodSymbol typedEquals]) return false;
+            if (operands is not [IOperation { Syntax: ExpressionSyntax left }, IOperation { Syntax: ExpressionSyntax right }]
+                || !TryAuthenticateRecordEqualityOperator(caller, selected,
+                    out INamedTypeSymbol record, out Compilation compilation, out IMethodSymbol typedEquals)) return false;
 
             CleanupProvenanceContext proof = new();
 
@@ -172,6 +153,54 @@ internal static partial class HostedGrimoireProducerInventory
             }
         }
 
+        // The compiler-generated operator pair of one authenticated source record, and the single typed
+        // Equals slot it forwards to. Nothing here depends on the operands.
+        private bool TryAuthenticateRecordEqualityOperator(AuthoredMember caller, IMethodSymbol selected,
+            out INamedTypeSymbol record, out Compilation compilation, out IMethodSymbol typedEquals)
+        {
+            record = null!;
+
+            compilation = null!;
+
+            typedEquals = null!;
+
+            if (selected.Name is not ("op_Equality" or "op_Inequality")
+                || !TryRecordEqualitySource(selected.ContainingType, caller.Model.Compilation, out record, out compilation)) return false;
+
+            INamedTypeSymbol authenticated = record;
+
+            IMethodSymbol[] operators = authenticated.GetMembers().OfType<IMethodSymbol>()
+                .Where(static method => method.Name is "op_Equality" or "op_Inequality").ToArray();
+
+            if (operators.Length != 2 || operators.Any(method => !method.IsImplicitlyDeclared
+                    || !method.IsStatic || method.MethodKind != MethodKind.UserDefinedOperator
+                    || method.ReturnType.SpecialType != SpecialType.System_Boolean
+                    || method.Parameters.Length != 2
+                    || method.Parameters.Any(parameter => parameter.RefKind != RefKind.None
+                        || !SymbolEqualityComparer.Default.Equals(parameter.Type, authenticated))
+                    || method.DeclaringSyntaxReferences.Any(reference => reference.GetSyntax() is not RecordDeclarationSyntax))
+                || operators.SingleOrDefault(method => method.Name == selected.Name) is not { } sourceOperator
+                || MethodKey(sourceOperator) != MethodKey(selected)) return false;
+
+            IMethodSymbol[] equals = authenticated.GetMembers("Equals").OfType<IMethodSymbol>()
+                .Where(method => IsRecordEqualitySlot(method, authenticated)).ToArray();
+
+            if (equals is not [IMethodSymbol slot]) return false;
+
+            typedEquals = slot;
+
+            return true;
+        }
+
+        // Whether an operand's provenance can matter for this operator. It cannot when the record is
+        // closed-value and no authored typed Equals it reaches can contain a producer site: the canonical
+        // traversal then reads no operand and loses no precision. An authored Equals that can reach a site
+        // keeps the demand, so a conditional effect that exact construction proves dead stays dead.
+        private bool IsProvenanceFreeClosedValueRecordEquality(AuthoredMember caller, IMethodSymbol selected) =>
+            TryAuthenticateRecordEqualityOperator(caller, selected, out INamedTypeSymbol record, out Compilation compilation, out IMethodSymbol typedEquals)
+            && TryClosedValueEqualityTargets(caller, record, compilation, typedEquals, new CleanupProvenanceContext(), out List<AuthoredMember> authored)
+            && !authored.Any(target => ContainsPotentialProducerSite(target));
+
         // Closed-Value Equality. A record whose every instance field is a handle-incapable
         // leaf (or a nested closed-value record) cannot carry a lease, a group or any other
         // admission handle through its comparison, whatever expression produced the operands.
@@ -181,7 +210,7 @@ internal static partial class HostedGrimoireProducerInventory
         // arguments, so the argument-binding components of the traversal state are blank while
         // the recovery context, the frontiers and every other component stay the caller's.
         private bool TryClosedValueEqualityTargets(AuthoredMember caller, INamedTypeSymbol record, Compilation compilation,
-            IMethodSymbol typedEquals, CleanupProvenanceContext proof, out List<AuthoredMember> targets)
+            IMethodSymbol typedEquals, CleanupProvenanceContext proof, out List<AuthoredMember> targets, bool collect = true)
         {
             targets = [];
 
@@ -189,7 +218,7 @@ internal static partial class HostedGrimoireProducerInventory
 
             List<AuthoredMember> discovered = [];
 
-            if (!ClosedRecord(record, compilation, typedEquals, collect: true)) return false;
+            if (!ClosedRecord(record, compilation, typedEquals, collect)) return false;
 
             targets = discovered;
 

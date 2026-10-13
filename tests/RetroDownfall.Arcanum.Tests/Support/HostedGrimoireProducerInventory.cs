@@ -38316,28 +38316,25 @@ internal static partial class HostedGrimoireProducerInventory
                     || node is not AnonymousFunctionExpressionSyntax and not LocalFunctionStatementSyntax)
                 .OfType<ExpressionSyntax>())
             {
+                // A closed-value record whose authored Equals can reach no producer site reads no operand
+                // provenance: the canonical traversal binds that Equals with no arguments. Every other
+                // record still needs the actual argument preserved. Keeping the demand for a pure
+                // closed-value comparison would split every caller of a one-line comparison helper into
+                // one state per call site.
                 if (UserDefinedOperatorAt(target, expression) is { Method: { IsImplicitlyDeclared: true,
                         ContainingType.IsRecord: true, Name: "op_Equality" or "op_Inequality" } } equality
                     && equality.Operands.Any(operand => operand.Syntax is ExpressionSyntax source
                         && ExpressionDependsOnSymbol(target, source, parameter,
-                            new HashSet<ISymbol>(SymbolEqualityComparer.Default), symbols: dependencySymbols)))
+                            new HashSet<ISymbol>(SymbolEqualityComparer.Default), symbols: dependencySymbols))
+                    && !IsProvenanceFreeClosedValueRecordEquality(target, equality.Method))
                 {
                     // Preserve the actual argument before an authored Equals receiver
                     // is bound; a concrete record type alone does not identify its fields.
                     return true;
                 }
 
-                foreach (IConversionOperation conversion in UserConversionsAt(target, expression))
-                {
-                    if (conversion.OperatorMethod is { } method
-                        && IsExactFrameworkScalarConversionOperator(method)
-                        && conversion.Operand.Syntax is ExpressionSyntax operand
-                        && ExpressionDependsOnSymbol(target, operand, parameter,
-                            new HashSet<ISymbol>(SymbolEqualityComparer.Default), symbols: dependencySymbols))
-                    {
-                        return true;
-                    }
-                }
+                // The Structural Operand Rule classifies an exact framework scalar conversion from its own
+                // operand syntax, so it never reads the value a caller passed for one of its formals.
             }
 
             if (target.Syntax.DescendantNodesAndSelf(node =>
@@ -38374,11 +38371,15 @@ internal static partial class HostedGrimoireProducerInventory
                     _ => (null, []),
                 };
 
+                // Only the consumers that still read a caller's value keep the demand: the Long Rest
+                // histogram arguments (hierarchy observation) and the primitive queue receiver (its default
+                // origin). The pure float intrinsics and the queue arguments need only the argument boundary.
                 if (selected.Method is { } method
-                    && (IsExactFloatVectorSignature(method) || IsExactPrimitiveQueueMember(method) || IsExactLongRestHistogramRecord(method))
-                    && (selected.Arguments.Any(argument => argument.Value.Syntax is ExpressionSyntax expression
-                            && ExpressionDependsOnSymbol(target, expression, parameter,
-                                new HashSet<ISymbol>(SymbolEqualityComparer.Default), symbols: dependencySymbols))
+                    && (IsExactPrimitiveQueueMember(method) || IsExactLongRestHistogramRecord(method))
+                    && (IsExactLongRestHistogramRecord(method)
+                            && selected.Arguments.Any(argument => argument.Value.Syntax is ExpressionSyntax expression
+                                && ExpressionDependsOnSymbol(target, expression, parameter,
+                                    new HashSet<ISymbol>(SymbolEqualityComparer.Default), symbols: dependencySymbols))
                         || IsExactPrimitiveQueueMember(method) && target.Model.GetOperation(use) is IInvocationOperation
                             { Instance.Syntax: ExpressionSyntax receiver }
                             && ExpressionDependsOnSymbol(target, receiver, parameter,
