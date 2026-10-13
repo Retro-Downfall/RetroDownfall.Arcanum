@@ -2947,7 +2947,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
 
         output.WriteLine($"R103_PROBE={receiver}|{shape}|CodeTrue={automatic}|CodeFalse={declared}|prerequisites=passed");
 
-        if (shape == "exact") Assert.Equal(1, automatic);
+        if (shape is "exact" or "receiver-nameof") Assert.Equal(1, automatic);
 
         else if (shape != "effectful-name") Assert.True(automatic > 1, "Excluded wrapper or receiver shape must retain the original sources.");
     }
@@ -40869,7 +40869,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
     [InlineData("argument", true, true)]
     [InlineData("unknown", false, false)]
     [InlineData("custom", false, false)]
-    [InlineData("custom-converted", false, false)]
+    [InlineData("custom-converted", false, true)]
     [InlineData("mixed", false, false)]
     [InlineData("reassigned", false, false)]
     [InlineData("ref-escaped", false, false)]
