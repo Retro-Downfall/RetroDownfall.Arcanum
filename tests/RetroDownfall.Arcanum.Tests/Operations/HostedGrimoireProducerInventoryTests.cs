@@ -41047,8 +41047,22 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
                 && result.Diagnostics.Any(static diagnostic => diagnostic.Code == "HOSTED_SITE_EFFECT_FRONTIER_MISSING"
                     && diagnostic.Detail == "System.IO.File.Delete");
 
+            // The pure intrinsic table demands only the argument-boundary rule. A local whose value
+            // comes from an opaque member no longer refuses the numeric call itself, but that opaque
+            // member keeps its own unclassified refusal, so the gate still fails closed.
+            string? opaqueSource = shape switch
+            {
+                "unknown-array-consumer-conversion" => "NumericProbe.Mutate",
+                "ref-conversion" => "NumericProbe.Escape",
+                "unknown-local-conversion" => "NumericProbe.Unknown",
+                "external-local-conversion" => "ExternalNumericProbe.op_Implicit",
+                _ => null,
+            };
+
             Assert.True(discoveredEffect || result.Diagnostics.Any(diagnostic =>
-                diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED" && diagnostic.Detail == callee));
+                diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED" && diagnostic.Detail == callee)
+                || opaqueSource is not null && result.Diagnostics.Any(diagnostic =>
+                    diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED" && diagnostic.Detail == opaqueSource));
 
             return;
         }

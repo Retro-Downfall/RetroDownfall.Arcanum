@@ -370,7 +370,8 @@ public sealed partial class HostedGrimoireProducerInventoryTests
         SemanticModel model,
         IMethodSymbol authoredEquals,
         BinaryExpressionSyntax comparison,
-        string marker)
+        string marker,
+        string? canonicalRecord = null)
     {
         MethodDeclarationSyntax declaration = Assert.Single(tree.GetRoot().DescendantNodes().OfType<MethodDeclarationSyntax>(),
             syntax => SymbolEqualityComparer.Default.Equals(model.GetDeclaredSymbol(syntax), authoredEquals));
@@ -389,7 +390,10 @@ public sealed partial class HostedGrimoireProducerInventoryTests
 
         string effectCoordinate = "/site@" + tree.FilePath + ":" + effectSyntax.SpanStart;
 
-        string operatorBoundary = "/operator@" + tree.FilePath + ":" + comparison.SpanStart;
+        // Exact-construction certification names the site; Canonical Equals Traversal names the type.
+        string operatorBoundary = canonicalRecord is null
+            ? "/operator@" + tree.FilePath + ":" + comparison.SpanStart
+            : "/equals@" + canonicalRecord;
 
         HostedProducerSite[] physical = result.Items.Where(site => site.RootType == "Worker"
             && site.Callee == "System.IO.File.Delete").ToArray();

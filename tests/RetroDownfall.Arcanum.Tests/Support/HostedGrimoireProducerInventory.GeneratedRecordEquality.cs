@@ -6,6 +6,8 @@ using Microsoft.CodeAnalysis.CSharp.Syntax;
 
 using Microsoft.CodeAnalysis.Operations;
 
+using System.Reflection;
+
 namespace RetroDownfall.Arcanum.Tests.Support;
 
 internal static partial class HostedGrimoireProducerInventory
@@ -13,40 +15,47 @@ internal static partial class HostedGrimoireProducerInventory
     private sealed partial class ProducerGraph
     {
         private bool TryGeneratedRecordEqualityTargets(AuthoredMember caller, IMethodSymbol selected,
-            IOperation[] operands, out List<AuthoredMember> targets)
+            IOperation[] operands, out List<AuthoredMember> targets, out bool canonical, bool lifted = false)
         {
             targets = [];
 
-            if (selected.Name is not ("op_Equality" or "op_Inequality")
-                || operands is not [IOperation { Syntax: ExpressionSyntax left }, IOperation { Syntax: ExpressionSyntax right }]
-                || !TryRecordEqualitySource(selected.ContainingType, caller.Model.Compilation,
-                    out INamedTypeSymbol record, out Compilation compilation)) return false;
+            canonical = false;
 
-            IMethodSymbol[] operators = record.GetMembers().OfType<IMethodSymbol>()
-                .Where(static method => method.Name is "op_Equality" or "op_Inequality").ToArray();
-
-            if (operators.Length != 2 || operators.Any(method => !method.IsImplicitlyDeclared
-                    || !method.IsStatic || method.MethodKind != MethodKind.UserDefinedOperator
-                    || method.ReturnType.SpecialType != SpecialType.System_Boolean
-                    || method.Parameters.Length != 2
-                    || method.Parameters.Any(parameter => parameter.RefKind != RefKind.None
-                        || !SymbolEqualityComparer.Default.Equals(parameter.Type, record))
-                    || method.DeclaringSyntaxReferences.Any(reference => reference.GetSyntax() is not RecordDeclarationSyntax))
-                || operators.SingleOrDefault(method => method.Name == selected.Name) is not { } sourceOperator
-                || MethodKey(sourceOperator) != MethodKey(selected)) return false;
-
-            IMethodSymbol[] equals = record.GetMembers("Equals").OfType<IMethodSymbol>()
-                .Where(method => IsRecordEqualitySlot(method, record)).ToArray();
-
-            if (equals is not [IMethodSymbol typedEquals]) return false;
+            if (operands is not [IOperation { Syntax: ExpressionSyntax left }, IOperation { Syntax: ExpressionSyntax right }]
+                || !TryAuthenticateRecordEqualityOperator(caller, selected,
+                    out INamedTypeSymbol record, out Compilation compilation, out IMethodSymbol typedEquals)) return false;
 
             CleanupProvenanceContext proof = new();
+
+            // A lifted comparison of nullable operands calls the same operator only on two present
+            // values, so the closed-value field walk covers it exactly; exact-construction
+            // certification of nullable operands is not attempted.
+            if (lifted)
+            {
+                if (!TryClosedValueEqualityTargets(caller, record, compilation, typedEquals, proof, out List<AuthoredMember> liftedTargets)) return false;
+
+                targets = liftedTargets;
+
+                canonical = true;
+
+                return true;
+            }
 
             HashSet<BoundTypeIdentity> path = [];
 
             List<AuthoredMember> discovered = [];
 
             bool complete = Visit(record, compilation, typedEquals, new(caller, left), new(caller, right));
+
+            if (!complete
+                && TryClosedValueEqualityTargets(caller, record, compilation, typedEquals, proof, out List<AuthoredMember> closed))
+            {
+                targets = closed;
+
+                canonical = true;
+
+                return true;
+            }
 
             targets = discovered;
 
@@ -142,6 +151,206 @@ internal static partial class HostedGrimoireProducerInventory
                     path.Remove(identity);
                 }
             }
+        }
+
+        // The compiler-generated operator pair of one authenticated source record, and the single typed
+        // Equals slot it forwards to. Nothing here depends on the operands.
+        private bool TryAuthenticateRecordEqualityOperator(AuthoredMember caller, IMethodSymbol selected,
+            out INamedTypeSymbol record, out Compilation compilation, out IMethodSymbol typedEquals)
+        {
+            record = null!;
+
+            compilation = null!;
+
+            typedEquals = null!;
+
+            if (selected.Name is not ("op_Equality" or "op_Inequality")
+                || !TryRecordEqualitySource(selected.ContainingType, caller.Model.Compilation, out record, out compilation)) return false;
+
+            INamedTypeSymbol authenticated = record;
+
+            IMethodSymbol[] operators = authenticated.GetMembers().OfType<IMethodSymbol>()
+                .Where(static method => method.Name is "op_Equality" or "op_Inequality").ToArray();
+
+            if (operators.Length != 2 || operators.Any(method => !method.IsImplicitlyDeclared
+                    || !method.IsStatic || method.MethodKind != MethodKind.UserDefinedOperator
+                    || method.ReturnType.SpecialType != SpecialType.System_Boolean
+                    || method.Parameters.Length != 2
+                    || method.Parameters.Any(parameter => parameter.RefKind != RefKind.None
+                        || !SymbolEqualityComparer.Default.Equals(parameter.Type, authenticated))
+                    || method.DeclaringSyntaxReferences.Any(reference => reference.GetSyntax() is not RecordDeclarationSyntax))
+                || operators.SingleOrDefault(method => method.Name == selected.Name) is not { } sourceOperator
+                || MethodKey(sourceOperator) != MethodKey(selected)) return false;
+
+            IMethodSymbol[] equals = authenticated.GetMembers("Equals").OfType<IMethodSymbol>()
+                .Where(method => IsRecordEqualitySlot(method, authenticated)).ToArray();
+
+            if (equals is not [IMethodSymbol slot]) return false;
+
+            typedEquals = slot;
+
+            return true;
+        }
+
+        // Whether an operand's provenance can matter for this operator. It cannot when the record is
+        // closed-value and no authored typed Equals it reaches can contain a producer site: the canonical
+        // traversal then reads no operand and loses no precision. An authored Equals that can reach a site
+        // keeps the demand, so a conditional effect that exact construction proves dead stays dead.
+        private bool IsProvenanceFreeClosedValueRecordEquality(AuthoredMember caller, IMethodSymbol selected) =>
+            TryAuthenticateRecordEqualityOperator(caller, selected, out INamedTypeSymbol record, out Compilation compilation, out IMethodSymbol typedEquals)
+            && TryClosedValueEqualityTargets(caller, record, compilation, typedEquals, new CleanupProvenanceContext(), out List<AuthoredMember> authored)
+            && !authored.Any(target => ContainsPotentialProducerSite(target));
+
+        // Closed-Value Equality. A record whose every instance field is a handle-incapable
+        // leaf (or a nested closed-value record) cannot carry a lease, a group or any other
+        // admission handle through its comparison, whatever expression produced the operands.
+        // The operand expressions are still traversed where they are written; only the
+        // operator's own body is certified. Every authored typed Equals reached through the
+        // field walk is returned for Canonical Equals Traversal: the caller binds it with no
+        // arguments, so the argument-binding components of the traversal state are blank while
+        // the recovery context, the frontiers and every other component stay the caller's.
+        private bool TryClosedValueEqualityTargets(AuthoredMember caller, INamedTypeSymbol record, Compilation compilation,
+            IMethodSymbol typedEquals, CleanupProvenanceContext proof, out List<AuthoredMember> targets, bool collect = true)
+        {
+            targets = [];
+
+            HashSet<BoundTypeIdentity> path = [];
+
+            List<AuthoredMember> discovered = [];
+
+            if (!ClosedRecord(record, compilation, typedEquals, collect)) return false;
+
+            targets = discovered;
+
+            return true;
+
+            bool ClosedRecord(INamedTypeSymbol type, Compilation owner, IMethodSymbol equality, bool collect)
+            {
+                BoundTypeIdentity identity = TypeIdentity(type, owner);
+
+                if (proof.RemainingWork-- <= 0 || !path.Add(identity)) return false;
+
+                try
+                {
+                    bool authored = !equality.IsImplicitlyDeclared;
+
+                    if (authored)
+                    {
+                        // An authored typed Equals is traversed, never skipped. Under an authored
+                        // parent the nested comparison is whatever that body does, and that body
+                        // is itself traversed, so only a synthesized parent collects nested targets.
+                        if (collect)
+                        {
+                            if (Resolve(equality, owner) is not { } member) return false;
+
+                            discovered.Add(BindArguments(caller, [], member));
+                        }
+                    }
+                    else if (equality.DeclaringSyntaxReferences.Any(reference => reference.GetSyntax() is not RecordDeclarationSyntax))
+                    {
+                        return false;
+                    }
+
+                    foreach (IFieldSymbol field in type.GetMembers().OfType<IFieldSymbol>().Where(static field => !field.IsStatic))
+                    {
+                        if (!ClosedType(field.Type, owner, collect: !authored && collect)) return false;
+                    }
+
+                    return true;
+                }
+                finally
+                {
+                    path.Remove(identity);
+                }
+            }
+
+            bool ClosedType(ITypeSymbol type, Compilation owner, bool collect)
+            {
+                if (proof.RemainingWork-- <= 0) return false;
+
+                if (IsClosedValueLeaf(type, owner, proof)) return true;
+
+                if (type is INamedTypeSymbol { IsGenericType: true, TypeArguments: [ITypeSymbol inner] } nullable
+                    && nullable.OriginalDefinition.SpecialType == SpecialType.System_Nullable_T
+                    && IsExactFrameworkType(nullable, "System.Nullable`1", typeof(object).Assembly.GetName()))
+                {
+                    return ClosedType(inner, owner, collect);
+                }
+
+                return type is INamedTypeSymbol named
+                    && TryRecordEqualitySource(named, owner, out INamedTypeSymbol nested, out Compilation nestedOwner)
+                    && ExactRecordEquatableImplementation(nested, nestedOwner) is { } effective
+                    && ClosedRecord(nested, nestedOwner, effective, collect);
+            }
+        }
+
+        // Exact CoreLib identities only. A source-authored lookalike, an interface, object, a
+        // delegate, a type parameter, a non-record class or an unreviewed struct is not a leaf.
+        private bool IsClosedValueLeaf(ITypeSymbol type, Compilation compilation, CleanupProvenanceContext proof)
+        {
+            AssemblyName core = typeof(object).Assembly.GetName();
+
+            string? special = type.SpecialType switch
+            {
+                SpecialType.System_Boolean => "System.Boolean",
+                SpecialType.System_Char => "System.Char",
+                SpecialType.System_SByte => "System.SByte",
+                SpecialType.System_Byte => "System.Byte",
+                SpecialType.System_Int16 => "System.Int16",
+                SpecialType.System_UInt16 => "System.UInt16",
+                SpecialType.System_Int32 => "System.Int32",
+                SpecialType.System_UInt32 => "System.UInt32",
+                SpecialType.System_Int64 => "System.Int64",
+                SpecialType.System_UInt64 => "System.UInt64",
+                SpecialType.System_Decimal => "System.Decimal",
+                SpecialType.System_Single => "System.Single",
+                SpecialType.System_Double => "System.Double",
+                SpecialType.System_String => "System.String",
+                SpecialType.System_DateTime => "System.DateTime",
+                _ => null,
+            };
+
+            if (special is not null)
+            {
+                return SymbolEqualityComparer.Default.Equals(type, compilation.GetSpecialType(type.SpecialType))
+                    && IsExactFrameworkType(type, special, core);
+            }
+
+            // An enumeration is a value-only type whatever assembly declares it.
+            if (IsClosedFiniteEnum(type)) return true;
+
+            if (type is IArrayTypeSymbol { Rank: 1, ElementType: { } element })
+            {
+                return proof.RemainingWork-- > 0 && IsClosedValueLeaf(element, compilation, proof);
+            }
+
+            if (type is not INamedTypeSymbol named) return false;
+
+            if (named.IsTupleType)
+            {
+                return proof.RemainingWork-- > 0
+                    && named.TupleElements.Length is >= 2 and <= 7
+                    && IsExactFrameworkType(named.OriginalDefinition, "System.ValueTuple`" + named.TupleElements.Length, core)
+                    && named.TupleElements.All(tuple => IsClosedValueLeaf(tuple.Type, compilation, proof));
+            }
+
+            if (named.IsGenericType)
+            {
+                return proof.RemainingWork-- > 0
+                    && named.TypeArguments is [ITypeSymbol item]
+                    && IsExactFrameworkType(named, "System.Collections.Immutable.ImmutableArray`1",
+                        typeof(System.Collections.Immutable.ImmutableArray<>).Assembly.GetName())
+                    && IsClosedValueLeaf(item, compilation, proof);
+            }
+
+            return named.TypeKind == TypeKind.Struct
+                && (IsExactFrameworkType(named, "System.Guid", core)
+                    || IsExactFrameworkType(named, "System.DateTimeOffset", core)
+                    || IsExactFrameworkType(named, "System.TimeSpan", core)
+                    || IsExactFrameworkType(named, "System.Int128", core)
+                    || IsExactFrameworkType(named, "System.UInt128", core)
+                    || IsExactFrameworkType(named, "System.Index", core)
+                    || IsExactFrameworkType(named, "System.Range", core));
         }
 
         private bool TryRecordEqualitySource(INamedTypeSymbol type, Compilation consuming,

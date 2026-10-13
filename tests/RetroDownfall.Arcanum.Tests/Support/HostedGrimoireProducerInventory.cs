@@ -1051,6 +1051,17 @@ internal static partial class HostedGrimoireProducerInventory
         "System.Version",
     };
 
+    // ReviewedIntrinsicExternalTypes is keyed by name. A name the compilation binds as a Roslyn special type
+    // (System.Double, System.Int32, System.String, ...) has an exact identity from the compilation's own core
+    // library that a same-named type from another assembly never has, so those names are accepted only when
+    // the type is that special type.
+    private static readonly IReadOnlySet<string> ReviewedSpecialTypeNames = ReviewedIntrinsicExternalTypes
+        .Where(static name => Enum.TryParse(name.Replace('.', '_'), out SpecialType special) && special != SpecialType.None)
+        .ToHashSet(StringComparer.Ordinal);
+
+    private static bool HasExactSpecialTypeIdentity(ITypeSymbol type) =>
+        !ReviewedSpecialTypeNames.Contains(TypeKey(type)) || type.OriginalDefinition.SpecialType != SpecialType.None;
+
     // Reviewed against the pinned Microsoft.Extensions.AI 10.8.1 source at
     // dotnet/extensions e9be58acf7ef5e001b6685c8d505e5963c2a9ffe. These accessors
     // store or return values without enumerating them or invoking supplied code.
@@ -24827,8 +24838,17 @@ internal static partial class HostedGrimoireProducerInventory
                         {
                             List<AuthoredMember> equalityTargets = [];
 
-                            bool equalityCertified = !selectedOperation.Unsupported
-                                && TryGeneratedRecordEqualityTargets(member, selectedOperator, selectedOperation.Operands, out equalityTargets);
+                            bool canonicalEquality = false;
+
+                            bool liftedEquality = selectedOperation.Unsupported
+                                && member.Model.GetOperation(node) is IBinaryOperation
+                                {
+                                    IsLifted: true,
+                                    OperatorKind: BinaryOperatorKind.Equals or BinaryOperatorKind.NotEquals,
+                                };
+
+                            bool equalityCertified = (!selectedOperation.Unsupported || liftedEquality)
+                                && TryGeneratedRecordEqualityTargets(member, selectedOperator, selectedOperation.Operands, out equalityTargets, out canonicalEquality, liftedEquality);
 
                             if (equalityCertified || equalityTargets.Count != 0)
                             {
@@ -24843,7 +24863,8 @@ internal static partial class HostedGrimoireProducerInventory
                                 bool operandLifetimeUnproven = !equalityCertified
                                     || (workAdmitted is not null || effectGroup is not null || recoveryEffect is not null)
                                         && equalityTargets.Any(equalityTarget => selectedOperation.Operands.Any(operand =>
-                                                ConversionOperandHasUnsupportedLifetime(member, operand, equalityTarget, operandProof)));
+                                                ConversionOperandHasUnsupportedLifetime(member, operand, equalityTarget, operandProof,
+                                                    typeInitializationProven: canonicalEquality)));
 
                                 if (operandLifetimeUnproven)
                                 {
@@ -24856,12 +24877,19 @@ internal static partial class HostedGrimoireProducerInventory
 
                                 foreach (AuthoredMember equalityTarget in equalityTargets)
                                 {
+                                    // Canonical Equals Traversal names the body by its root and type, so every
+                                    // comparison site under one root and frontier reaches the one state.
+                                    string equalityOperation = canonicalEquality
+                                        ? RootOperation(operationId) + "/equals@" + TypeKey(equalityTarget.Symbol.ContainingType)
+                                        : operationId + "/operator@" + Location(node);
+
                                     emittedEvidence = MergeEvidence(emittedEvidence,
-                                        Traverse(equalityTarget, rootType, operationId + "/operator@" + Location(node), active, lifecycle,
+                                        Traverse(equalityTarget, rootType, equalityOperation, active, lifecycle,
                                             workAdmitted, effectGroup,
                                             recoveryEffect: operandLifetimeUnproven ? null : recoveryEffect));
                                 }
                             }
+
                             if (!equalityCertified && !IsReviewedEffectFreeExternalMember(selectedOperator, node, member.Model, member))
                             {
                                 RefuseTraversalCompletion();
@@ -26494,7 +26522,7 @@ internal static partial class HostedGrimoireProducerInventory
             return emittedEvidence;
         }
 
-        private bool ConversionOperandHasUnsupportedLifetime(AuthoredMember member, IOperation operand, AuthoredMember conversionTarget, CleanupProvenanceContext? sharedProof = null)
+        private bool ConversionOperandHasUnsupportedLifetime(AuthoredMember member, IOperation operand, AuthoredMember conversionTarget, CleanupProvenanceContext? sharedProof = null, bool typeInitializationProven = false)
         {
             CleanupProvenanceContext proof = sharedProof ?? new();
 
@@ -26639,7 +26667,10 @@ internal static partial class HostedGrimoireProducerInventory
                 return false;
             }
 
-            return !HasInitializationFreeEntry(conversionTarget.Symbol.ContainingType) || Inspect(member, operand);
+            // A closed-value record target has already proved that neither it nor any nested record
+            // declares a static constructor or static initializer, so no hidden type initialization
+            // can run before its Equals. The operand walk below is unchanged.
+            return !(typeInitializationProven || HasInitializationFreeEntry(conversionTarget.Symbol.ContainingType)) || Inspect(member, operand);
         }
 
         private static (IMethodSymbol Method, IOperation[] Operands, bool Unsupported)? UserDefinedOperatorAt(AuthoredMember member, SyntaxNode node)
@@ -29662,6 +29693,7 @@ internal static partial class HostedGrimoireProducerInventory
                     model,
                     context)
                 || IsReviewedLongRestHistogramObservation(method, node, model, context)
+                || IsReviewedArcanumTokenHistogramObservation(method, node, model, context)
                 || IsReviewedCodeOwnedSdkConstruction(method, node, model, context)
                 || IsReviewedConcreteTokenizerCall(method, node, model, context)
                 || IsReviewedCampaignEncodingMethod(method, node, model, context)
@@ -29805,6 +29837,159 @@ internal static partial class HostedGrimoireProducerInventory
             // arguments/getters/wrappers and listener work remain traversed or refused; ambient/static initialization,
             // reflection/loader/native behavior and third-party observer closure remain unproved.
             return Origin(receiver, context.Model, new(SymbolEqualityComparer.Default), context);
+        }
+
+        // Exact reviewed contract (Triage Ladder D4) for the three Arcanum token-count instruments. Each is a
+        // static readonly Histogram<long> of ArcanumMetrics, created from the exact ArcanumMetrics.Meter by
+        // the exact CreateHistogram<long>(string, string?, string?) overload with constant arguments, under
+        // one of these constant names. The recorded value is evaluated, and any authored work in it is
+        // traversed, where it is written; it needs only the argument-boundary rule. Each tag is narrower
+        // (IsReviewedArcanumTokenTag), because the first-party Prometheus listener runs synchronously inside
+        // Record and formats every tag value with Convert.ToString: an authored ToString or IFormattable on
+        // a tag value would be executable work that no traversal of this call site reaches. Other listeners
+        // run synchronously and may do work or throw, as for every histogram here, and nothing in this
+        // contract waives that limit or any producer authority.
+        private static readonly HashSet<string> ArcanumTokenHistogramNames = new(StringComparer.Ordinal)
+        {
+            "arcanum_estimated_input_tokens",
+            "arcanum_provider_reported_input_tokens",
+            "arcanum_input_token_estimation_variance",
+        };
+
+        private static bool IsExactArcanumTokenHistogramRecord(IMethodSymbol method) =>
+            !method.IsStatic && method.Name == "Record" && method.Arity == 0 && method.ReturnsVoid
+            && method.ContainingType.TypeArguments is [{ SpecialType: SpecialType.System_Int64 }]
+            && IsExactFrameworkType(method.ContainingType, "System.Diagnostics.Metrics.Histogram`1", typeof(System.Diagnostics.Metrics.Histogram<>).Assembly.GetName())
+            && method.Parameters.Length is >= 1 and <= 4
+            && method.Parameters[0] is { RefKind: RefKind.None, Type.SpecialType: SpecialType.System_Int64 }
+            && method.Parameters.Skip(1).All(static tag => tag is { RefKind: RefKind.None, IsParams: false }
+                && tag.Type is INamedTypeSymbol { TypeArguments: [{ SpecialType: SpecialType.System_String }, { SpecialType: SpecialType.System_Object }] } pair
+                && IsExactFrameworkType(pair, "System.Collections.Generic.KeyValuePair`2", typeof(KeyValuePair<,>).Assembly.GetName()));
+
+        private bool IsReviewedArcanumTokenHistogramObservation(IMethodSymbol method, SyntaxNode? node, SemanticModel? model, AuthoredMember? context)
+        {
+            if (!IsExactArcanumTokenHistogramRecord(method)
+                || context is null || node is not InvocationExpressionSyntax
+                || model?.GetOperation(node) is not IInvocationOperation { Instance.Syntax: ExpressionSyntax receiver } invocation
+                || !invocation.Arguments.All(ArgumentBoundaryUsesOnlyBuiltInConversions)
+                || !invocation.Arguments.Where(static argument => argument.Parameter?.Ordinal != 0)
+                    .All(argument => IsReviewedArcanumTokenTag(argument, context))
+                || model.GetSymbolInfo(StripTransparentExpression(receiver)).Symbol is not IFieldSymbol field) return false;
+
+            bool ExactMeter(IFieldSymbol meter)
+            {
+                if (!meter.IsReadOnly || !meter.IsStatic || meter.Name != "Meter"
+                    || TypeKey(meter.ContainingType) != "RetroDownfall.Arcanum.Core.Telemetry.ArcanumMetrics"
+                    || !IsExactFrameworkType(meter.Type, "System.Diagnostics.Metrics.Meter", typeof(System.Diagnostics.Metrics.Meter).Assembly.GetName())
+                    || HasAuthoredStorageWrite(meter)
+                    || meter.DeclaringSyntaxReferences is not [SyntaxReference declaration]
+                    || declaration.GetSyntax() is not VariableDeclaratorSyntax { Initializer.Value: { } value }
+                    || !semanticModels.TryGetValue(value.SyntaxTree, out SemanticModel? meterModel)
+                    || meterModel.GetOperation(value) is not IObjectCreationOperation { Constructor: { } constructor, Initializer: null } creation) return false;
+
+                return IsExactFrameworkType(constructor.ContainingType, "System.Diagnostics.Metrics.Meter", typeof(System.Diagnostics.Metrics.Meter).Assembly.GetName())
+                    && HasExactParameterTypes(constructor, "System.String", "System.String")
+                    && creation.Arguments is [{ Value.ConstantValue: { HasValue: true, Value: "Arcanum" } },
+                        { Value.ConstantValue: { HasValue: true, Value: "0.1.0" } }];
+            }
+
+            if (!field.IsReadOnly || !field.IsStatic || HasAuthoredStorageWrite(field)
+                || TypeKey(field.ContainingType) != "RetroDownfall.Arcanum.Core.Telemetry.ArcanumMetrics"
+                || field.Type is not INamedTypeSymbol { TypeArguments: [{ SpecialType: SpecialType.System_Int64 }] }
+                || !IsExactFrameworkType(field.Type, "System.Diagnostics.Metrics.Histogram`1", typeof(System.Diagnostics.Metrics.Histogram<>).Assembly.GetName())
+                || field.DeclaringSyntaxReferences is not [SyntaxReference declaration]
+                || declaration.GetSyntax() is not VariableDeclaratorSyntax { Initializer.Value: { } initializer }
+                || !semanticModels.TryGetValue(initializer.SyntaxTree, out SemanticModel? fieldModel)
+                || fieldModel.GetOperation(initializer) is not IInvocationOperation { Instance: IFieldReferenceOperation meterReference } created) return false;
+
+            IMethodSymbol factory = created.TargetMethod;
+
+            // Only the (name, unit, description) overload is reviewed: the instrument-tags and advice overloads
+            // carry authored data into the instrument, and a constant argument keeps static initialization free
+            // of work that no traversal reaches.
+            return !factory.IsStatic && factory.Name == "CreateHistogram" && factory.Arity == 1
+                && factory.TypeArguments is [{ SpecialType: SpecialType.System_Int64 }]
+                && IsExactFrameworkType(factory.ContainingType, "System.Diagnostics.Metrics.Meter", typeof(System.Diagnostics.Metrics.Meter).Assembly.GetName())
+                && HasExactParameterTypes(factory, "System.String", "System.String", "System.String")
+                && factory.ReturnType is INamedTypeSymbol { TypeArguments: [{ SpecialType: SpecialType.System_Int64 }] } returned
+                && IsExactFrameworkType(returned, "System.Diagnostics.Metrics.Histogram`1", typeof(System.Diagnostics.Metrics.Histogram<>).Assembly.GetName())
+                && created.Arguments is [
+                    { ArgumentKind: ArgumentKind.Explicit, Value.ConstantValue: { HasValue: true, Value: string name } },
+                    { ArgumentKind: ArgumentKind.Explicit, Value.ConstantValue: { HasValue: true, Value: null or string } },
+                    { ArgumentKind: ArgumentKind.Explicit, Value.ConstantValue: { HasValue: true, Value: null or string } }]
+                && ArcanumTokenHistogramNames.Contains(name)
+                && ExactMeter(meterReference.Field);
+        }
+
+        // A tag is either an inline KeyValuePair<string, object?> creation or a never-reassigned local whose
+        // only definition is one. The key is a constant and the value is statically System.String (or a null
+        // or string constant), so the object the listener formats is a string or null and never a type with an
+        // authored ToString or IFormattable. Authored work that produces the string is traversed where written.
+        private bool IsReviewedArcanumTokenTag(IArgumentOperation argument, AuthoredMember context)
+        {
+            IOperation tag = argument.Value;
+
+            while (tag is IParenthesizedOperation parenthesized) tag = parenthesized.Operand;
+
+            if (tag is ILocalReferenceOperation { Local: { RefKind: RefKind.None, IsConst: false } local })
+            {
+                if (local.DeclaringSyntaxReferences is not [SyntaxReference declaration]
+                    || declaration.GetSyntax() is not VariableDeclaratorSyntax { Initializer.Value: { } initializer }
+                    || initializer.SyntaxTree != context.Model.SyntaxTree
+                    || !IsExactTokenTagType(local.Type)
+                    || HasCollectionValueReplacement(context, local)
+                    || context.Model.SyntaxTree.GetRoot().DescendantNodes().OfType<PrefixUnaryExpressionSyntax>()
+                        .Any(address => address.IsKind(SyntaxKind.AddressOfExpression)
+                            && SyntaxReferencesSymbol(context.Model, address.Operand, local))
+                    || context.Model.GetOperation(initializer) is not { } initial) return false;
+
+                tag = initial;
+
+                while (tag is IParenthesizedOperation parenthesizedInitial) tag = parenthesizedInitial.Operand;
+            }
+
+            return tag is IObjectCreationOperation { Initializer: null, Constructor: { MethodKind: MethodKind.Constructor } constructor } creation
+                && IsExactTokenTagType(constructor.ContainingType)
+                && constructor.Parameters.Length == 2
+                && creation.Arguments.SingleOrDefault(static item => item.Parameter?.Ordinal == 0) is { } key
+                && creation.Arguments.SingleOrDefault(static item => item.Parameter?.Ordinal == 1) is { } value
+                && creation.Arguments.Length == 2
+                && ArgumentBoundaryUsesOnlyBuiltInConversions(key)
+                && key.Value.ConstantValue is { HasValue: true, Value: string }
+                && ArgumentBoundaryUsesOnlyBuiltInConversions(value)
+                && IsStringOrNullTagValue(value.Value);
+        }
+
+        private static bool IsExactTokenTagType(ITypeSymbol? type) =>
+            type is INamedTypeSymbol { TypeArguments: [{ SpecialType: SpecialType.System_String }, { SpecialType: SpecialType.System_Object }] } pair
+            && IsExactFrameworkType(pair, "System.Collections.Generic.KeyValuePair`2", typeof(KeyValuePair<,>).Assembly.GetName());
+
+        // Looks through parentheses and the reference or boxing conversions to object; what remains must be
+        // statically System.String, or a constant that is null or a string. A boxed value, an object-typed
+        // value and a value of any other class or struct type are refused.
+        private static bool IsStringOrNullTagValue(IOperation value)
+        {
+            for (int depth = 0; depth < 64; depth++)
+            {
+                switch (value)
+                {
+                    case IParenthesizedOperation parenthesized:
+                        value = parenthesized.Operand;
+
+                        continue;
+
+                    case IConversionOperation { OperatorMethod: null, Conversion.IsUserDefined: false, Type.SpecialType: SpecialType.System_Object } conversion:
+                        value = conversion.Operand;
+
+                        continue;
+                }
+
+                return value.ConstantValue.HasValue
+                    ? value.ConstantValue.Value is null or string
+                    : value.Type?.SpecialType == SpecialType.System_String;
+            }
+
+            return false;
         }
 
         private bool IsReviewedCodeOwnedSdkConstruction(
@@ -30368,6 +30553,7 @@ internal static partial class HostedGrimoireProducerInventory
 
             if (!ReviewedIntrinsicExternalTypes.Contains(
                     TypeKey(method.ContainingType))
+                || !HasExactSpecialTypeIdentity(method.ContainingType)
                 || method.Parameters.Any(static parameter =>
                     parameter.RefKind != RefKind.None
                     || parameter.Type.TypeKind == TypeKind.Delegate))
@@ -30453,12 +30639,78 @@ internal static partial class HostedGrimoireProducerInventory
                 && IsExactFrameworkType(method.ContainingType, "System.Index", typeof(Index).Assembly.GetName())
                 && IsExactFrameworkType(method.ReturnType, "System.Index", typeof(Index).Assembly.GetName());
 
-            bool int128 = method is { IsStatic: true, Arity: 0, Name: "op_Implicit", Parameters: [{ RefKind: RefKind.None, Type.SpecialType: SpecialType.System_Int32 or SpecialType.System_Int64 }] }
+            bool int128 = method is { IsStatic: true, Arity: 0, Name: "op_Implicit", Parameters: [{ RefKind: RefKind.None, Type.SpecialType: SpecialType.System_SByte or SpecialType.System_Byte or SpecialType.System_Int16 or SpecialType.System_UInt16 or SpecialType.System_Int32 or SpecialType.System_UInt32 or SpecialType.System_Int64 or SpecialType.System_UInt64 }] }
                 && IsExactFrameworkType(method.ContainingType, "System.Int128", typeof(Int128).Assembly.GetName())
                 && IsExactFrameworkType(method.ReturnType, "System.Int128", typeof(Int128).Assembly.GetName());
 
             return index || int128;
         }
+
+        // Exact framework scalar binary operators: Int128 arithmetic and CancellationToken equality.
+        private static bool IsExactFrameworkScalarBinaryOperator(IMethodSymbol method)
+        {
+            bool int128 = method is { IsStatic: true, Arity: 0, MethodKind: MethodKind.UserDefinedOperator, Name: "op_Addition" or "op_Subtraction" or "op_Multiply" or "op_Division" }
+                && method.Parameters is [{ RefKind: RefKind.None } leftInt, { RefKind: RefKind.None } rightInt]
+                && IsExactFrameworkType(method.ContainingType, "System.Int128", typeof(Int128).Assembly.GetName())
+                && IsExactFrameworkType(method.ReturnType, "System.Int128", typeof(Int128).Assembly.GetName())
+                && IsExactFrameworkType(leftInt.Type, "System.Int128", typeof(Int128).Assembly.GetName())
+                && IsExactFrameworkType(rightInt.Type, "System.Int128", typeof(Int128).Assembly.GetName());
+
+            bool token = method is { IsStatic: true, Arity: 0, MethodKind: MethodKind.UserDefinedOperator, Name: "op_Equality" or "op_Inequality", ReturnType.SpecialType: SpecialType.System_Boolean }
+                && method.Parameters is [{ RefKind: RefKind.None } leftToken, { RefKind: RefKind.None } rightToken]
+                && IsExactFrameworkType(method.ContainingType, "System.Threading.CancellationToken", typeof(CancellationToken).Assembly.GetName())
+                && IsExactFrameworkType(leftToken.Type, "System.Threading.CancellationToken", typeof(CancellationToken).Assembly.GetName())
+                && IsExactFrameworkType(rightToken.Type, "System.Threading.CancellationToken", typeof(CancellationToken).Assembly.GetName());
+
+            return int128 || token;
+        }
+
+        // Framework value conversions that may appear inside an operand without making it an
+        // authored conversion: the exact scalar operators above, and the exact float Span carriers.
+        private static bool IsReviewedFrameworkValueConversion(IMethodSymbol method) =>
+            IsExactFrameworkScalarConversionOperator(method)
+            || method is { IsStatic: true, Arity: 0, MethodKind: MethodKind.Conversion, Name: "op_Implicit", Parameters: [{ RefKind: RefKind.None }] }
+                && (IsExactFloatCarrier(method.ContainingType, "System.Span`1")
+                    || IsExactFloatCarrier(method.ContainingType, "System.ReadOnlySpan`1"));
+
+        // Structural Operand Rule. The operand expression contains no user-defined conversion at
+        // the operator boundary: only parentheses and conversions are walked, and every selected
+        // conversion operator must be an exact framework value conversion. Everything beneath
+        // that boundary (calls, property reads, locals, operators) is traversed where it is
+        // written, so no execution is hidden by accepting the framework operator itself.
+        private static bool OperandUsesOnlyBuiltInConversions(IOperation operand)
+        {
+            for (int depth = 0; depth < 64; depth++)
+            {
+                switch (operand)
+                {
+                    case IParenthesizedOperation parenthesized:
+                        operand = parenthesized.Operand;
+
+                        continue;
+
+                    case IConversionOperation conversion:
+                        IMethodSymbol? selected = conversion.OperatorMethod ?? conversion.Conversion.MethodSymbol;
+
+                        if (selected is null ? conversion.Conversion.IsUserDefined : !IsReviewedFrameworkValueConversion(selected)) return false;
+
+                        operand = conversion.Operand;
+
+                        continue;
+
+                    default:
+                        return true;
+                }
+            }
+
+            return false;
+        }
+
+        private static bool ArgumentBoundaryUsesOnlyBuiltInConversions(IArgumentOperation argument) =>
+            argument.Parameter is { RefKind: RefKind.None }
+            && argument.InConversion.MethodSymbol is null
+            && argument.OutConversion.MethodSymbol is null
+            && OperandUsesOnlyBuiltInConversions(argument.Value);
 
         private bool IsReviewedExactFrameworkScalarOperator(
             IMethodSymbol method,
@@ -30466,13 +30718,22 @@ internal static partial class HostedGrimoireProducerInventory
             SemanticModel? model,
             AuthoredMember? context)
         {
-            if (!IsExactFrameworkScalarConversionOperator(method)
-                || context is null || node is null || model is null) return false;
+            if (context is null || node is null || model is null) return false;
 
-            IConversionOperation? conversion = UserConversionsAt(context, node)
-                .FirstOrDefault(candidate => SymbolEqualityComparer.Default.Equals(candidate.OperatorMethod, method));
+            if (IsExactFrameworkScalarConversionOperator(method))
+            {
+                IConversionOperation? conversion = UserConversionsAt(context, node)
+                    .FirstOrDefault(candidate => SymbolEqualityComparer.Default.Equals(candidate.OperatorMethod, method));
 
-            return conversion is not null && HasReviewedValueConversions(conversion.Operand, context);
+                return conversion is not null && OperandUsesOnlyBuiltInConversions(conversion.Operand);
+            }
+
+            return IsExactFrameworkScalarBinaryOperator(method)
+                && node is BinaryExpressionSyntax
+                && model.GetOperation(node) is IBinaryOperation { IsLifted: false, OperatorMethod: { } selected } binary
+                && SymbolEqualityComparer.Default.Equals(selected, method)
+                && OperandUsesOnlyBuiltInConversions(binary.LeftOperand)
+                && OperandUsesOnlyBuiltInConversions(binary.RightOperand);
         }
 
         private static bool IsExactFloatCarrier(ITypeSymbol type, string metadataName) =>
@@ -30626,10 +30887,13 @@ internal static partial class HostedGrimoireProducerInventory
 
             if (method.MethodKind == MethodKind.Constructor) return model.GetOperation(node) is IObjectCreationOperation { Initializer: null };
 
+            // The receiver must still be an exact default-constructed queue, so its priority comparison is the
+            // pure primitive tuple comparison. The arguments need only the argument-boundary rule: they are
+            // evaluated and traversed where they are written, and the queue merely stores and orders them.
             return model.GetOperation(node) is IInvocationOperation invocation
                 && invocation.Instance?.Syntax is ExpressionSyntax receiver
                 && HasExactDefaultPrimitiveQueueOrigin(receiver, context)
-                && invocation.Arguments.All(argument => HasReviewedValueConversions(argument.Value, context));
+                && invocation.Arguments.All(ArgumentBoundaryUsesOnlyBuiltInConversions);
         }
 
         private bool IsReviewedPrimitiveQueueProperty(IPropertySymbol property, bool mutation, SyntaxNode? node, AuthoredMember? context) =>
@@ -30669,13 +30933,26 @@ internal static partial class HostedGrimoireProducerInventory
             return finite || constructor || dot;
         }
 
+        // The pure intrinsic table: float and double IsFinite, the Vector<float>(ReadOnlySpan<float>)
+        // constructor and Vector.Dot<float>. Each is an exact framework identity with no effect and
+        // no handle; the argument-boundary rule (no ref or out parameter, no user-defined
+        // conversion at the boundary) is the whole demand, because the argument expressions are
+        // themselves traversed where they are written.
+        private static bool IsExactDoubleFiniteSignature(IMethodSymbol method) =>
+            method.IsStatic
+            && method.Name == "IsFinite"
+            && method.Arity == 0
+            && method.ReturnType.SpecialType == SpecialType.System_Boolean
+            && HasExactParameterTypes(method, "System.Double")
+            && IsExactFrameworkType(method.ContainingType, "System.Double", typeof(double).Assembly.GetName());
+
         private bool IsReviewedFloatVectorMember(
             IMethodSymbol method,
             SyntaxNode? node,
             SemanticModel? model,
             AuthoredMember? context)
         {
-            if (!IsExactFloatVectorSignature(method))
+            if (!IsExactFloatVectorSignature(method) && !IsExactDoubleFiniteSignature(method))
             {
                 return false;
             }
@@ -30688,7 +30965,7 @@ internal static partial class HostedGrimoireProducerInventory
             };
 
             return node is not null && model is not null
-                && arguments.All(argument => HasReviewedValueConversions(argument.Value, context));
+                && arguments.All(ArgumentBoundaryUsesOnlyBuiltInConversions);
         }
 
         private bool HasReviewedValueConversions(IOperation value, AuthoredMember? member, bool hierarchyObservation = false)
@@ -37841,37 +38118,57 @@ internal static partial class HostedGrimoireProducerInventory
             return true;
         }
 
+        // Runtime Type Identity Comparison. Type == and != are classified when each operand is a
+        // typeof expression or an exact System.Object.GetType() call, so both sides are always
+        // RuntimeType values and the comparison is reference identity. An arbitrary Type value can
+        // be any subclass whose Equals is authored, so it stays unclassified.
         private static bool IsReviewedExactTypeOfEqualityOperator(
             IMethodSymbol method,
             SyntaxNode? node,
             SemanticModel? model)
         {
             return node is BinaryExpressionSyntax
-                {
-                    Left: TypeOfExpressionSyntax,
-                    Right: TypeOfExpressionSyntax,
-                }
                 && model?.GetOperation(node) is IBinaryOperation
                 {
-                    OperatorKind: BinaryOperatorKind.Equals,
+                    OperatorKind: BinaryOperatorKind.Equals or BinaryOperatorKind.NotEquals,
                     IsLifted: false,
                     Type.SpecialType: SpecialType.System_Boolean,
                     OperatorMethod: { } selected,
-                    LeftOperand: ITypeOfOperation left,
-                    RightOperand: ITypeOfOperation right,
-                }
+                    LeftOperand: { } left,
+                    RightOperand: { } right,
+                } comparison
                 && SymbolEqualityComparer.Default.Equals(selected, method)
                 && IsEnumTailFrameworkMethod(model.Compilation, method, "System.Type")
                 && method.MethodKind == MethodKind.UserDefinedOperator
-                && method.Name == "op_Equality"
+                && method.Name == (comparison.OperatorKind == BinaryOperatorKind.Equals ? "op_Equality" : "op_Inequality")
                 && method.IsStatic
                 && method.Arity == 0
                 && method.Parameters is [var first, var second]
                 && method.ReturnType.SpecialType == SpecialType.System_Boolean
                 && SymbolEqualityComparer.Default.Equals(first.Type, method.ContainingType)
                 && SymbolEqualityComparer.Default.Equals(second.Type, method.ContainingType)
-                && SymbolEqualityComparer.Default.Equals(left.Type, method.ContainingType)
-                && SymbolEqualityComparer.Default.Equals(right.Type, method.ContainingType);
+                && IsRuntimeTypeIdentityOperand(left, method.ContainingType, model.Compilation)
+                && IsRuntimeTypeIdentityOperand(right, method.ContainingType, model.Compilation);
+        }
+
+        private static bool IsRuntimeTypeIdentityOperand(IOperation operand, INamedTypeSymbol type, Compilation compilation)
+        {
+            if (!SymbolEqualityComparer.Default.Equals(operand.Type, type)) return false;
+
+            if (operand is ITypeOfOperation) return operand.Syntax is TypeOfExpressionSyntax;
+
+            return operand is IInvocationOperation
+            {
+                TargetMethod: { } getType,
+                Instance: { } receiver,
+                IsVirtual: false,
+                Arguments.Length: 0,
+            } call
+                && call.Syntax is InvocationExpressionSyntax
+                && getType is { Name: "GetType", MethodKind: MethodKind.Ordinary, IsStatic: false, Arity: 0, Parameters.IsEmpty: true }
+                && SymbolEqualityComparer.Default.Equals(getType.ReturnType, type)
+                && IsEnumTailFrameworkMethod(compilation, getType, "System.Object")
+                && OperandUsesOnlyBuiltInConversions(receiver);
         }
 
         private static bool IsEnumTailFrameworkMethod(Compilation compilation, IMethodSymbol method, string metadataType)
@@ -38160,28 +38457,25 @@ internal static partial class HostedGrimoireProducerInventory
                     || node is not AnonymousFunctionExpressionSyntax and not LocalFunctionStatementSyntax)
                 .OfType<ExpressionSyntax>())
             {
+                // A closed-value record whose authored Equals can reach no producer site reads no operand
+                // provenance: the canonical traversal binds that Equals with no arguments. Every other
+                // record still needs the actual argument preserved. Keeping the demand for a pure
+                // closed-value comparison would split every caller of a one-line comparison helper into
+                // one state per call site.
                 if (UserDefinedOperatorAt(target, expression) is { Method: { IsImplicitlyDeclared: true,
                         ContainingType.IsRecord: true, Name: "op_Equality" or "op_Inequality" } } equality
                     && equality.Operands.Any(operand => operand.Syntax is ExpressionSyntax source
                         && ExpressionDependsOnSymbol(target, source, parameter,
-                            new HashSet<ISymbol>(SymbolEqualityComparer.Default), symbols: dependencySymbols)))
+                            new HashSet<ISymbol>(SymbolEqualityComparer.Default), symbols: dependencySymbols))
+                    && !IsProvenanceFreeClosedValueRecordEquality(target, equality.Method))
                 {
                     // Preserve the actual argument before an authored Equals receiver
                     // is bound; a concrete record type alone does not identify its fields.
                     return true;
                 }
 
-                foreach (IConversionOperation conversion in UserConversionsAt(target, expression))
-                {
-                    if (conversion.OperatorMethod is { } method
-                        && IsExactFrameworkScalarConversionOperator(method)
-                        && conversion.Operand.Syntax is ExpressionSyntax operand
-                        && ExpressionDependsOnSymbol(target, operand, parameter,
-                            new HashSet<ISymbol>(SymbolEqualityComparer.Default), symbols: dependencySymbols))
-                    {
-                        return true;
-                    }
-                }
+                // The Structural Operand Rule classifies an exact framework scalar conversion from its own
+                // operand syntax, so it never reads the value a caller passed for one of its formals.
             }
 
             if (target.Syntax.DescendantNodesAndSelf(node =>
@@ -38218,11 +38512,15 @@ internal static partial class HostedGrimoireProducerInventory
                     _ => (null, []),
                 };
 
+                // Only the consumers that still read a caller's value keep the demand: the Long Rest
+                // histogram arguments (hierarchy observation) and the primitive queue receiver (its default
+                // origin). The pure float intrinsics and the queue arguments need only the argument boundary.
                 if (selected.Method is { } method
-                    && (IsExactFloatVectorSignature(method) || IsExactPrimitiveQueueMember(method) || IsExactLongRestHistogramRecord(method))
-                    && (selected.Arguments.Any(argument => argument.Value.Syntax is ExpressionSyntax expression
-                            && ExpressionDependsOnSymbol(target, expression, parameter,
-                                new HashSet<ISymbol>(SymbolEqualityComparer.Default), symbols: dependencySymbols))
+                    && (IsExactPrimitiveQueueMember(method) || IsExactLongRestHistogramRecord(method))
+                    && (IsExactLongRestHistogramRecord(method)
+                            && selected.Arguments.Any(argument => argument.Value.Syntax is ExpressionSyntax expression
+                                && ExpressionDependsOnSymbol(target, expression, parameter,
+                                    new HashSet<ISymbol>(SymbolEqualityComparer.Default), symbols: dependencySymbols))
                         || IsExactPrimitiveQueueMember(method) && target.Model.GetOperation(use) is IInvocationOperation
                             { Instance.Syntax: ExpressionSyntax receiver }
                             && ExpressionDependsOnSymbol(target, receiver, parameter,

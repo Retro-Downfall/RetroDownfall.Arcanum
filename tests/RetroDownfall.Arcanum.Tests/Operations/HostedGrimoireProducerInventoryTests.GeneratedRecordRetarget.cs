@@ -29,15 +29,18 @@ public sealed partial class HostedGrimoireProducerInventoryTests
             return;
         }
 
-        // Distinct execution-closure obligation: a refusal cannot substitute for
-        // the returned record's actual conditional Equals execution.
-        AssertAuthoredEqualsPhysicalEffect(result, tree, model, equality, comparison, "retargeted-record-equality");
+        // Distinct execution-closure obligation: certification cannot substitute for the returned
+        // record's actual conditional Equals execution. The record has only a closed scalar field, so
+        // Canonical Equals Traversal reaches the authored Equals for the converted receiver too, and the
+        // effect keeps its type-named boundary instead of the site-named exact-construction boundary.
+        AssertAuthoredEqualsPhysicalEffect(result, tree, model, equality, comparison, "retargeted-record-equality",
+            canonicalRecord: "RetargetedRecord");
     }
 
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public void RepeatedRecordConversionKeepsTheGeneratedComparisonOwnRefusal(bool retargeted)
+    public void RepeatedRecordConversionCertifiesTheClosedValueComparisonWithoutErasingItsEquals(bool retargeted)
     {
         var (compilation, tree, _, _, comparison) = InspectRepeatedRecordReceiver(retargeted);
 
@@ -54,8 +57,13 @@ public sealed partial class HostedGrimoireProducerInventoryTests
 
         string coordinate = tree.FilePath + ":" + comparison.SpanStart;
 
-        Assert.Contains(result.Diagnostics, diagnostic => diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED"
+        // The converted receiver cannot be certified by exact construction, but its only field is a
+        // closed scalar, so the generated comparison itself carries no handle and is certified; the
+        // authored Equals it reaches is still traversed, which the test above pins.
+        Assert.DoesNotContain(result.Diagnostics, diagnostic => diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED"
             && diagnostic.Identity == coordinate && diagnostic.Detail == "RetargetedRecord.op_Equality");
+
+        Assert.Contains(result.Items, static site => site.Callee == "System.IO.File.Delete");
     }
 
     private static (CSharpCompilation Compilation, SyntaxTree Tree, SemanticModel Model,
