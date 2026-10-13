@@ -7,7 +7,7 @@ using Attestation = RetroDownfall.Arcanum.Tests.Support.RecordingGrimoireWorkAdm
 namespace RetroDownfall.Arcanum.Tests.LongRest;
 
 /// <summary>
-/// Clean adoption is Long Rest policy: the fence reader requires a Long Rest work kind before it consults the
+/// Clean adoption is Long Rest policy: the fence reader requires the Long Rest sweep work kind before it consults the
 /// gate, and the generic gate predicate carries no kind clause at all.
 /// </summary>
 public sealed class LongRestLiveFenceReaderCleanAttestationTests
@@ -22,7 +22,7 @@ public sealed class LongRestLiveFenceReaderCleanAttestationTests
 
             foreach (GrimoireWorkKind kind in Enum.GetValues<GrimoireWorkKind>())
             {
-                if (kind is not (GrimoireWorkKind.LongRestSweep or GrimoireWorkKind.LongRunningOperationRecovery)) kinds.Add(kind);
+                if (kind != GrimoireWorkKind.LongRestSweep) kinds.Add(kind);
             }
 
             return kinds;
@@ -68,21 +68,6 @@ public sealed class LongRestLiveFenceReaderCleanAttestationTests
         Assert.False(reader.AttestCleanAdmission(lease, 1, 3));
 
         Assert.Equal(3, gate.DrainedAttestations.Count);
-    }
-
-    [Fact]
-    public async Task The_recovery_kind_is_forwarded_until_recovery_stops_running_the_sweep()
-    {
-        // Transitional: the startup recovery path still runs a clean sweep under its kind-14 recovery lease.
-        // Park-and-Readmit Recovery (WS3) removes that path, drops this arm of the reader's kind check and
-        // turns this test into a refusal-before-the-gate case.
-        (RecordingGrimoireWorkAdmissionGate gate, LongRestLiveFenceReader reader) = await DrainedAsync();
-
-        await using IGrimoireWorkLease lease = Acquire(gate, GrimoireWorkKind.LongRunningOperationRecovery);
-
-        Assert.True(reader.AttestCleanAdmission(lease, 1, 2));
-
-        Assert.Equal(new Attestation(GrimoireWorkKind.LongRunningOperationRecovery, 1, 2, true), Assert.Single(gate.DrainedAttestations));
     }
 
     [Fact]

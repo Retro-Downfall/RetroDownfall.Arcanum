@@ -434,7 +434,7 @@ public sealed partial class LongRestSweepSchedulingTests
             Queue = new();
 
             Coordinator = new(F.Operations, Sweeps, F.H.Store, F.Epoch, Facts, F.Maintenance, F.Gate,
-                Ownership, Queue, F.Services.GetRequiredService<IServiceScopeFactory>(), F.Clock, F.WorkAdmission);
+                Ownership, Queue, F.Services.GetRequiredService<IServiceScopeFactory>(), F.Clock, F.RecordedAdmission);
 
             Service = new(new BorrowedScopes(this), Queue, F.Epoch, F.Admission, Log);
         }
@@ -583,7 +583,7 @@ public sealed partial class LongRestSweepSchedulingTests
 
             public object? GetService(Type type)
             {
-                if (type == typeof(ILongRestSweepCoordinator)) return owner.Coordinator;
+                if (type == typeof(ILongRestAdmittedSweep)) return owner.Coordinator;
 
                 if (type == typeof(ILongRunningOperationStore)) return owner.F.Operations;
 
@@ -592,8 +592,6 @@ public sealed partial class LongRestSweepSchedulingTests
                 if (type == typeof(ILongRestDiscoveryStore)) return owner.F.H.Store;
 
                 if (type == typeof(ILongRestConfigurationProvider)) return owner.F.Epoch;
-
-                if (type == typeof(LongRestWorkAdmission)) return owner.F.WorkAdmission;
 
                 if (type == typeof(LongRestLiveFenceReader)) return owner.Facts;
 

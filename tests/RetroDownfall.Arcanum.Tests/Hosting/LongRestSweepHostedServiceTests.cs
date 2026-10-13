@@ -65,7 +65,7 @@ public sealed class LongRestSweepHostedServiceTests
     }
 
     [Fact]
-    public async Task Real_host_holds_admission_through_scope_disposal_and_never_supplies_capability()
+    public async Task Real_host_holds_admission_through_scope_disposal_and_hands_its_exact_lease_by_value()
     {
         using Harness h = new();
 
@@ -73,11 +73,29 @@ public sealed class LongRestSweepHostedServiceTests
 
         Assert.Equal(["scope", "resume", "scope-dispose", "lease-dispose"], h.Events);
 
-        Assert.Equal(h.Operation, h.Coordinator.Operation);
+        Assert.Equal(h.Operation, h.Sweep.Operation);
 
-        Assert.Null(h.Coordinator.Capability);
-
+        // Exactly one Long Rest lease was minted, and it is the one the port was handed, live and unrevoked.
         Assert.Equal([GrimoireWorkKind.LongRestSweep], h.Gate.RequestedWorkKinds);
+
+        Assert.Single(h.Gate.InnerWorkLeases);
+
+        Assert.Equal(GrimoireWorkKind.LongRestSweep, h.Sweep.AdmissionKind);
+
+        Assert.Equal(h.Inner.CurrentGeneration, h.Sweep.AdmissionGeneration);
+
+        Assert.False(h.Sweep.RevocationPending);
+    }
+
+    [Fact]
+    public void The_admitted_sweep_port_carries_the_lease_and_no_capability()
+    {
+        System.Reflection.MethodInfo member = Assert.Single(typeof(ILongRestAdmittedSweep).GetMethods());
+
+        Assert.Equal(nameof(ILongRestAdmittedSweep.ResumeAdmittedAsync), member.Name);
+
+        Assert.Equal([typeof(Guid), typeof(IGrimoireWorkLease), typeof(CancellationToken)],
+            member.GetParameters().Select(static parameter => parameter.ParameterType));
     }
 
     [Fact]
@@ -131,7 +149,7 @@ public sealed class LongRestSweepHostedServiceTests
 
         await run.WaitAsync(TimeSpan.FromSeconds(10));
 
-        Assert.Equal(h.Operation, h.Coordinator.Operation);
+        Assert.Equal(h.Operation, h.Sweep.Operation);
 
         Assert.Equal(1, h.Events.Count(value => value == "resume"));
     }
@@ -152,7 +170,7 @@ public sealed class LongRestSweepHostedServiceTests
 
         private LongRestConfigurationEpoch Epoch { get; }
 
-        internal Coordinator Coordinator { get; }
+        internal Sweep Sweep { get; }
 
         internal LongRestSweepHostedService Service { get; }
 
@@ -170,9 +188,9 @@ public sealed class LongRestSweepHostedServiceTests
 
             Gate.BeforeWorkLeaseDisposalAsync = () => { Events.Add("lease-dispose"); Disposed.TrySetResult(); return ValueTask.CompletedTask; };
 
-            Coordinator = new(Events);
+            Sweep = new(Events);
 
-            Service = new(new Scopes(Events, Coordinator, Gate), Queue, Epoch, Gate, NullLoggerFactory.Instance);
+            Service = new(new Scopes(Events, Sweep), Queue, Epoch, Gate, NullLoggerFactory.Instance);
         }
 
         public void Dispose()
@@ -183,22 +201,21 @@ public sealed class LongRestSweepHostedServiceTests
         }
     }
 
-    private sealed class Scopes(List<string> events, Coordinator coordinator, IGrimoireConnectionAdmissionGate gate) : IServiceScopeFactory
+    private sealed class Scopes(List<string> events, Sweep sweep) : IServiceScopeFactory
     {
         public IServiceScope CreateScope()
         {
             events.Add("scope");
 
-            return new Scope(events, coordinator, new LongRestWorkAdmission(gate));
+            return new Scope(events, sweep);
         }
     }
 
-    private sealed class Scope(List<string> events, Coordinator coordinator, LongRestWorkAdmission admission) : IServiceScope, IServiceProvider, IAsyncDisposable
+    private sealed class Scope(List<string> events, Sweep sweep) : IServiceScope, IServiceProvider, IAsyncDisposable
     {
         public IServiceProvider ServiceProvider => this;
 
-        public object? GetService(Type serviceType) => serviceType == typeof(ILongRestSweepCoordinator) ? coordinator
-            : serviceType == typeof(LongRestWorkAdmission) ? admission : null;
+        public object? GetService(Type serviceType) => serviceType == typeof(ILongRestAdmittedSweep) ? sweep : null;
 
         public void Dispose() => throw new InvalidOperationException("Async scope disposal is required.");
 
@@ -210,23 +227,27 @@ public sealed class LongRestSweepHostedServiceTests
         }
     }
 
-    private sealed class Coordinator(List<string> events) : ILongRestSweepCoordinator
+    private sealed class Sweep(List<string> events) : ILongRestAdmittedSweep
     {
         internal Guid Operation { get; private set; }
 
-        internal LongRestMaintenanceCapability? Capability { get; private set; }
+        internal GrimoireWorkKind? AdmissionKind { get; private set; }
 
-        public Task<Result<LongRunningOperationDto>> RequestAsync(CanonicalCampaignContext scope, CancellationToken ct) => throw new NotSupportedException();
+        internal long AdmissionGeneration { get; private set; }
 
-        public Task<Result<LongRunningOperationDto>> RequestAsync(CanonicalCampaignContext scope, LongRestSweepScope partition, CancellationToken ct) => throw new NotSupportedException();
+        internal bool RevocationPending { get; private set; }
 
-        public Task<Result<LongRestSweepProgress>> ResumeAsync(Guid operationId, LongRestMaintenanceCapability? capability, CancellationToken ct)
+        public Task<Result<LongRestSweepProgress>> ResumeAdmittedAsync(Guid operationId, IGrimoireWorkLease admission, CancellationToken ct)
         {
             events.Add("resume");
 
             Operation = operationId;
 
-            Capability = capability;
+            AdmissionKind = admission.Kind;
+
+            AdmissionGeneration = admission.Generation;
+
+            RevocationPending = admission.MaintenanceRevocationPending;
 
             return Task.FromResult(Result<LongRestSweepProgress>.Success(new(operationId, Guid.NewGuid(), LongRestSweepScopeKind.Global, null,
                 LongRestSweepPhase.Completed, 0, null, null)));

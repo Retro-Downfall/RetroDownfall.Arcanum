@@ -173,7 +173,7 @@ public sealed partial class LongRestMaintenanceTests
 
             Assert.All(attested, attestation =>
             {
-                Assert.Equal(GrimoireWorkKind.LongRunningOperationRecovery, attestation.Kind);
+                Assert.Equal(GrimoireWorkKind.LongRestSweep, attestation.Kind);
 
                 Assert.Equal(originalPrevious, attestation.Previous);
 

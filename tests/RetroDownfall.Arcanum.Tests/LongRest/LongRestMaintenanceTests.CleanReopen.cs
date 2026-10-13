@@ -97,9 +97,9 @@ public sealed partial class LongRestMaintenanceTests
         {
             f.Handler.ChatText = DecisionOrSummary(f.Handler.LastBody!);
 
-            Assert.Equal(f.Admission.CurrentGeneration, f.WorkAdmission.Lease.Generation);
+            Assert.Equal(f.Admission.CurrentGeneration, f.SweepLease.Generation);
 
-            Assert.False(f.WorkAdmission.Lease.MaintenanceRevocation.IsCancellationRequested);
+            Assert.False(f.SweepLease.MaintenanceRevocation.IsCancellationRequested);
 
             actualRecoveryOwner = (await f.Operations.GetAsync(f.Operation))!.LeaseOwner;
 
@@ -127,6 +127,11 @@ public sealed partial class LongRestMaintenanceTests
         Assert.Contains(f.RecordedAdmission.InnerWorkLeases.Skip(leasesBefore), lease =>
             lease.Kind == GrimoireWorkKind.LongRunningOperationRecovery && lease.Generation == f.Admission.CurrentGeneration);
 
+        // Recovery runs a clean sweep under a Long Rest lease of its own, minted at the current generation. A
+        // protected row is parked before any sweep runs, so it mints none.
+        Assert.Equal(change != "protected", f.RecordedAdmission.InnerWorkLeases.Skip(leasesBefore).Any(lease =>
+            lease.Kind == GrimoireWorkKind.LongRestSweep && lease.Generation == f.Admission.CurrentGeneration));
+
         RecordingGrimoireWorkAdmissionGate.DrainedAttestation[] attested = f.RecordedAdmission.DrainedAttestations.Skip(attestationsBefore).ToArray();
 
         if (allowed)
@@ -140,7 +145,7 @@ public sealed partial class LongRestMaintenanceTests
             {
                 Assert.True(attestation.Attested);
 
-                Assert.Equal(GrimoireWorkKind.LongRunningOperationRecovery, attestation.Kind);
+                Assert.Equal(GrimoireWorkKind.LongRestSweep, attestation.Kind);
 
                 Assert.Equal(original.Fence.AdmissionGeneration, attestation.Previous);
 
@@ -156,7 +161,7 @@ public sealed partial class LongRestMaintenanceTests
 
             Assert.False(refused.Attested);
 
-            Assert.Equal(GrimoireWorkKind.LongRunningOperationRecovery, refused.Kind);
+            Assert.Equal(GrimoireWorkKind.LongRestSweep, refused.Kind);
 
             Assert.Equal(original.Fence.AdmissionGeneration, refused.Previous);
 
@@ -281,7 +286,7 @@ public sealed partial class LongRestMaintenanceTests
 
             Assert.False(run.IsCompleted);
 
-            Assert.False(f.WorkAdmission.Lease.MaintenanceRevocation.IsCancellationRequested);
+            Assert.False(f.SweepLease.MaintenanceRevocation.IsCancellationRequested);
 
             if (drained)
             {

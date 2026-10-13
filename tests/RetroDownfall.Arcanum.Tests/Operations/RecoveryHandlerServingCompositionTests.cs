@@ -14,6 +14,7 @@ using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.DependencyInjection;
 using RetroDownfall.Arcanum.Infrastructure.Operations;
+using RetroDownfall.Arcanum.Infrastructure.Operations.LongRest;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 using RetroDownfall.Arcanum.Tests.Support;
 
@@ -54,7 +55,12 @@ public sealed class RecoveryHandlerServingCompositionTests
 
         builder.Services.AddArcanumInfrastructure(new ConfigurationBuilder().Build());
 
-        builder.Services.AddScoped<ILongRestMaintenance, UnreachedLongRestMaintenance>();
+        builder.Services.AddScoped<UnreachedLongRestMaintenance>();
+
+        builder.Services.AddScoped<ILongRestMaintenance>(static sp => sp.GetRequiredService<UnreachedLongRestMaintenance>());
+
+        builder.Services.AddScoped<RetroDownfall.Arcanum.Infrastructure.Operations.LongRest.ILongRestAdmittedMaintenance>(
+            static sp => sp.GetRequiredService<UnreachedLongRestMaintenance>());
 
         builder.Services.AddSingleton(sp => new LongRestConfigurationEpoch(
             sp.GetRequiredService<IOptionsMonitor<ArcanumSettings>>(),
@@ -94,6 +100,52 @@ public sealed class RecoveryHandlerServingCompositionTests
             {
                 ValidateScopes = true,
             });
+    }
+
+    /// <summary>
+    /// The admitted ports are forwarding aliases, not second registrations: inside one scope the hosted worker's port
+    /// and the public contract reach the same coordinator and the same maintenance, and a fresh scope builds its own.
+    /// </summary>
+    [Fact]
+    public async Task Serving_api_composition_exposes_the_admitted_ports_as_scoped_aliases_of_one_coordinator_and_one_maintenance()
+    {
+        using ArcanumTestHomeScope home = new("arcanum-recovery-registry-composition");
+
+        Assert.StartsWith(home.Root, ArcanumPaths.AttachmentsDirectory, StringComparison.Ordinal);
+
+        SqliteNativeRuntime.Instance.Initialize();
+
+        ServiceCollection services = [];
+
+        _ = services.AddArcanumApiServices(new ConfigurationBuilder().Build());
+
+        await using ServiceProvider provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
+
+        Assert.IsType<GrimoireDbPassphraseSource>(provider.GetRequiredService<IGrimoireDbPassphraseSource>())
+            .SetPassphrase("recovery-registry-composition-validation");
+
+        await using AsyncServiceScope scope = provider.CreateAsyncScope();
+
+        object coordinator = scope.ServiceProvider.GetRequiredService<LongRestSweepCoordinator>();
+
+        Assert.Same(coordinator, scope.ServiceProvider.GetRequiredService<ILongRestSweepCoordinator>());
+
+        Assert.Same(coordinator, scope.ServiceProvider.GetRequiredService<ILongRestAdmittedSweep>());
+
+        object maintenance = scope.ServiceProvider.GetRequiredService<LongRestMaintenance>();
+
+        Assert.Same(maintenance, scope.ServiceProvider.GetRequiredService<ILongRestMaintenance>());
+
+        Assert.Same(maintenance, scope.ServiceProvider.GetRequiredService<ILongRestAdmittedMaintenance>());
+
+        await using AsyncServiceScope other = provider.CreateAsyncScope();
+
+        Assert.NotSame(coordinator, other.ServiceProvider.GetRequiredService<ILongRestAdmittedSweep>());
+
+        Assert.NotSame(maintenance, other.ServiceProvider.GetRequiredService<ILongRestAdmittedMaintenance>());
+
+        // The holder is gone from the composition: nothing can be asked to bind a lease.
+        Assert.DoesNotContain(services, static descriptor => descriptor.ServiceType.Name == "LongRestWorkAdmission");
     }
 
     private static async Task AssertOneHandlerPerRegistryKindAsync(

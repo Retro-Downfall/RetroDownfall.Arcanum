@@ -24,7 +24,7 @@ public sealed partial class LongRestMaintenanceTests
 
         string pageEnd = Assert.IsType<string>(await f.H.ScalarAsync("SELECT MemoryId FROM long_rest_discovery_leaves ORDER BY MemoryId LIMIT 1 OFFSET 127;"));
 
-        LongRestSweepProgress yielded = LongRestSweepHarness.Require(await f.Maintenance.ProcessAsync(f.Operation, "fixture-worker", null, CancellationToken.None));
+        LongRestSweepProgress yielded = LongRestSweepHarness.Require(await f.ProcessAsync(f.Operation, "fixture-worker", null, CancellationToken.None));
 
         // This behavioral assertion fails before any reference to the proposed private column.
         Assert.Equal(LongRestSweepPhase.Discover, yielded.Phase);
@@ -85,7 +85,7 @@ public sealed partial class LongRestMaintenanceTests
     {
         await using MaintenanceFixture f = await PrepareSparseDiscoveryAsync(twoEligible: true);
 
-        LongRestSweepProgress first = LongRestSweepHarness.Require(await f.Maintenance.ProcessAsync(f.Operation, "fixture-worker", null, CancellationToken.None));
+        LongRestSweepProgress first = LongRestSweepHarness.Require(await f.ProcessAsync(f.Operation, "fixture-worker", null, CancellationToken.None));
 
         Assert.Equal(LongRestSweepPhase.Discover, first.Phase);
 
@@ -101,7 +101,7 @@ public sealed partial class LongRestMaintenanceTests
 
         int sends = f.Handler.SendCount;
 
-        LongRestSweepProgress page = LongRestSweepHarness.Require(await f.Maintenance.ProcessAsync(f.Operation, "fixture-worker", null, CancellationToken.None));
+        LongRestSweepProgress page = LongRestSweepHarness.Require(await f.ProcessAsync(f.Operation, "fixture-worker", null, CancellationToken.None));
 
         // Baseline returns the later paid anchor in this call; it cannot silently satisfy this yield.
         Assert.Equal(sends, f.Handler.SendCount);
@@ -142,7 +142,7 @@ public sealed partial class LongRestMaintenanceTests
 
         Assert.Equal(sends, f.Handler.SendCount);
 
-        LongRestSweepHarness.Require(await f.Maintenance.ProcessAsync(f.Operation, "fixture-worker", null, CancellationToken.None));
+        LongRestSweepHarness.Require(await f.ProcessAsync(f.Operation, "fixture-worker", null, CancellationToken.None));
 
         LongRestSweep later = await ReadScanSweepAsync(f);
 
@@ -219,7 +219,7 @@ public sealed partial class LongRestMaintenanceTests
         {
             try
             {
-                var refused = await f.Maintenance.ProcessAsync(f.Operation, "fixture-worker", null, cancellation.Token);
+                var refused = await f.ProcessAsync(f.Operation, "fixture-worker", null, cancellation.Token);
 
                 Assert.True(refused.IsFailure);
             }
@@ -240,7 +240,7 @@ public sealed partial class LongRestMaintenanceTests
 
         Assert.Equal(before, unchanged);
 
-        LongRestSweepProgress retried = LongRestSweepHarness.Require(await f.Maintenance.ProcessAsync(f.Operation, "fixture-worker", null, CancellationToken.None));
+        LongRestSweepProgress retried = LongRestSweepHarness.Require(await f.ProcessAsync(f.Operation, "fixture-worker", null, CancellationToken.None));
 
         // Baseline drains the corpus and completes here, so RED is a behavior failure, not missing SQL.
         Assert.Equal(LongRestSweepPhase.Discover, retried.Phase);
@@ -291,7 +291,7 @@ public sealed partial class LongRestMaintenanceTests
 
                 Assert.True(generation.Phase is LongRestSweepPhase.Capture or LongRestSweepPhase.Hierarchy or LongRestSweepPhase.Publish);
 
-                LongRestSweepHarness.Require(await f.Maintenance.ProcessAsync(f.Operation, "fixture-worker", null, CancellationToken.None));
+                LongRestSweepHarness.Require(await f.ProcessAsync(f.Operation, "fixture-worker", null, CancellationToken.None));
             }
 
             throw new InvalidOperationException("Fixture did not publish its real hierarchy within the bounded setup.");

@@ -111,7 +111,7 @@ public sealed partial class LongRestMaintenanceTests
 
             closingLinearized.Task.WaitAsync(TimeSpan.FromSeconds(10)).GetAwaiter().GetResult();
 
-            paidLeaseUnnotified = !f.WorkAdmission.Lease.MaintenanceRevocation.IsCancellationRequested;
+            paidLeaseUnnotified = !f.SweepLease.MaintenanceRevocation.IsCancellationRequested;
 
             // Return to the recording wrapper's REAL inner effect-group CAS while Closing.
         };
@@ -183,7 +183,7 @@ public sealed partial class LongRestMaintenanceTests
 
         for (int unit = 0; unit < precedingUnits; unit++)
         {
-            LongRestSweepHarness.Require(await f.Maintenance.ProcessAsync(f.Operation, "fixture-worker", null, CancellationToken.None));
+            LongRestSweepHarness.Require(await f.ProcessAsync(f.Operation, "fixture-worker", null, CancellationToken.None));
         }
 
         int loss = 0;
@@ -217,7 +217,7 @@ public sealed partial class LongRestMaintenanceTests
         Result<LongRestSweepProgress>? result = null;
 
         Exception? failure = await Record.ExceptionAsync(async () =>
-            result = await f.Maintenance.ProcessAsync(f.Operation, "fixture-worker", null, CancellationToken.None));
+            result = await f.ProcessAsync(f.Operation, "fixture-worker", null, CancellationToken.None));
 
         Assert.True(failure is null or OperationCanceledException);
 

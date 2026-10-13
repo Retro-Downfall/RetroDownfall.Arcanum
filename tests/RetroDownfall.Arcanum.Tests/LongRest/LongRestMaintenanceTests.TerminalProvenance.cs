@@ -35,9 +35,9 @@ public sealed partial class LongRestMaintenanceTests
         if (state == LongRestDispatchAttemptState.Invalid) f.Handler.ChatText = "{}";
         else f.Handler.Status = HttpStatusCode.BadRequest;
 
-        LongRestSweepHarness.Require(await f.Maintenance.ProcessAsync(f.Operation, "fixture-worker", null, CancellationToken.None));
+        LongRestSweepHarness.Require(await f.ProcessAsync(f.Operation, "fixture-worker", null, CancellationToken.None));
 
-        Assert.True((await f.Maintenance.ProcessAsync(f.Operation, "fixture-worker", null, CancellationToken.None)).IsFailure);
+        Assert.True((await f.ProcessAsync(f.Operation, "fixture-worker", null, CancellationToken.None)).IsFailure);
 
         Assert.NotNull(originalSent);
 

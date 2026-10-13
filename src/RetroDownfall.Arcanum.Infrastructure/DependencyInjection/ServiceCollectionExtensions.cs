@@ -1432,8 +1432,6 @@ public static class ServiceCollectionExtensions
 
         services.AddSingleton<LongRestSweepQueue>();
 
-        services.AddScoped<LongRestWorkAdmission>();
-
         services.AddScoped<LongRestLiveFenceReader>();
 
         services.AddScoped<LongRestDiscoveryStore>();
@@ -1447,6 +1445,8 @@ public static class ServiceCollectionExtensions
         services.AddScoped<LongRestSweepCoordinator>();
 
         services.AddScoped<ILongRestSweepCoordinator>(static sp => sp.GetRequiredService<LongRestSweepCoordinator>());
+
+        services.AddScoped<ILongRestAdmittedSweep>(static sp => sp.GetRequiredService<LongRestSweepCoordinator>());
 
         services.AddScoped<ILongRunningOperationRecoveryHandler, LongRestSweepRecoveryHandler>();
 

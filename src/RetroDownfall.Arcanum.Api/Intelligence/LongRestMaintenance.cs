@@ -11,6 +11,7 @@ using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.Tower;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Data.LongRest;
+using RetroDownfall.Arcanum.Infrastructure.Operations.LongRest;
 
 namespace RetroDownfall.Arcanum.Api.Intelligence;
 
@@ -18,7 +19,7 @@ namespace RetroDownfall.Arcanum.Api.Intelligence;
 internal sealed partial class LongRestMaintenance(LongRestConfigurationEpoch epoch, ILongRestDiscoveryStore discovery,
     ILongRestSweepStore sweeps, ILongRestAttemptStore attempts, LongRestLiveFenceReader facts, ICovenantOperationGate gate,
     ILongRestProvider provider, IModelTokenEstimator estimator, ICovenantDisclosureJournal disclosures,
-    LongRestWorkAdmission workAdmission, IServiceScopeFactory scopes, TimeProvider timeProvider) : ILongRestMaintenance
+    IServiceScopeFactory scopes, TimeProvider timeProvider) : ILongRestMaintenance, ILongRestAdmittedMaintenance
 {
     public async Task<Result<LongRestMaintenanceCapability>> CreateCapabilityAsync(Guid operationId, ArcanumInvocationContext invocation,
         SessionTurnClaimLease claim, CanonicalCampaignContext scope, CovenantTurnLease lease, CancellationToken ct)
@@ -85,25 +86,17 @@ internal sealed partial class LongRestMaintenance(LongRestConfigurationEpoch epo
         }
     }
 
-    public async Task<Result<LongRestSweepProgress>> ProcessAsync(Guid operationId, string workerOwner, LongRestMaintenanceCapability? capability, CancellationToken ct)
-    {
-        ct.ThrowIfCancellationRequested();
-
-        if (workAdmission.HasLease)
-        {
-            return await ProcessAdmittedAsync(operationId, workerOwner, capability, workAdmission.Lease, ct).ConfigureAwait(false);
-        }
-
-        await using IGrimoireWorkLease acquired = workAdmission.Acquire(ct);
-
-        using IDisposable binding = workAdmission.Bind(acquired);
-
-        return await ProcessAdmittedAsync(operationId, workerOwner, capability, acquired, ct).ConfigureAwait(false);
-    }
-
-    private async Task<Result<LongRestSweepProgress>> ProcessAdmittedAsync(Guid operationId, string workerOwner,
+    /// <summary>One bounded unit under the lease the coordinator passed by value; this maintenance never stores or disposes it.</summary>
+    public async Task<Result<LongRestSweepProgress>> ProcessAdmittedAsync(Guid operationId, string workerOwner,
         LongRestMaintenanceCapability? capability, IGrimoireWorkLease admission, CancellationToken ct)
     {
+        // Admission Kind Guard: every Long Rest lease is a Long Rest sweep lease, and nothing else may carry a paid unit.
+        if (admission is null) throw new ArgumentNullException(nameof(admission));
+
+        if (admission.Kind != GrimoireWorkKind.LongRestSweep) throw new ArgumentException("Long Rest work requires a Long Rest sweep admission.", nameof(admission));
+
+        ct.ThrowIfCancellationRequested();
+
         using CancellationTokenSource lifetime = CancellationTokenSource.CreateLinkedTokenSource(ct, admission.MaintenanceRevocation);
 
         ct = lifetime.Token;
@@ -139,7 +132,7 @@ internal sealed partial class LongRestMaintenance(LongRestConfigurationEpoch epo
 
                 if (work is not null)
                 {
-                    await FoldAsync(generation, work, capability, workerOwner, ct).ConfigureAwait(false);
+                    await FoldAsync(generation, work, capability, workerOwner, admission, ct).ConfigureAwait(false);
                 }
                 else
                 {
@@ -158,7 +151,7 @@ internal sealed partial class LongRestMaintenance(LongRestConfigurationEpoch epo
 
                 if (work is not null)
                 {
-                    await AdjudicateAsync(generation, sweep, work, capability, workerOwner, ct).ConfigureAwait(false);
+                    await AdjudicateAsync(generation, sweep, work, capability, workerOwner, admission, ct).ConfigureAwait(false);
                 }
             }
             else if (generation.Phase != LongRestSweepPhase.Completed)
@@ -178,7 +171,7 @@ internal sealed partial class LongRestMaintenance(LongRestConfigurationEpoch epo
     }
 
     private async Task FoldAsync(LongRestDiscoveryGeneration generation, LongRestHierarchyWork work,
-        LongRestMaintenanceCapability? capability, string workerOwner, CancellationToken ct)
+        LongRestMaintenanceCapability? capability, string workerOwner, IGrimoireWorkLease admission, CancellationToken ct)
     {
         LongRestAcceptedHierarchySummary? summary = work.AcceptedSummary;
 
@@ -192,7 +185,7 @@ internal sealed partial class LongRestMaintenance(LongRestConfigurationEpoch epo
         {
             Guid node = Guid.NewGuid();
 
-            summary = await ExecutePaidAsync(generation, Require(LongRestProviderPayload.Summary(work.Fold)), provenance, capability, workerOwner,
+            summary = await ExecutePaidAsync(generation, Require(LongRestProviderPayload.Summary(work.Fold)), provenance, capability, workerOwner, admission,
                 async (paid, completion, token, committedOnly) =>
                 {
                     LongRestAcceptedHierarchySummary accepted = new(generation.GenerationId, node, work.Fold,
@@ -203,7 +196,7 @@ internal sealed partial class LongRestMaintenance(LongRestConfigurationEpoch epo
                 }, ct).ConfigureAwait(false);
         }
 
-        await ExecutePaidAsync(generation, Require(LongRestProviderPayload.Embedding(work.Fold.Work, summary.Summary)), provenance, capability, workerOwner,
+        await ExecutePaidAsync(generation, Require(LongRestProviderPayload.Embedding(work.Fold.Work, summary.Summary)), provenance, capability, workerOwner, admission,
             async (embedded, completion, token, committedOnly) =>
             {
                 byte[] bytes = EmbeddingBlobCodec.Encode(embedded.Result.Vector.ToArray());
@@ -217,7 +210,7 @@ internal sealed partial class LongRestMaintenance(LongRestConfigurationEpoch epo
     }
 
     private async Task AdjudicateAsync(LongRestDiscoveryGeneration generation, LongRestSweep sweep, LongRestSweepWork work,
-        LongRestMaintenanceCapability? capability, string workerOwner, CancellationToken ct)
+        LongRestMaintenanceCapability? capability, string workerOwner, IGrimoireWorkLease admission, CancellationToken ct)
     {
         if (work.AcceptedAdjudication is { } retained)
         {
@@ -240,7 +233,7 @@ internal sealed partial class LongRestMaintenance(LongRestConfigurationEpoch epo
         GenerationProvenance provenance = work.Inputs.Aggregate(GenerationProvenance.CreateExact([]), (value, input) => value.Merge(input.Provenance));
 
         LongRestAdjudication accepted = await ExecutePaidAsync(generation,
-            Require(LongRestProviderPayload.Adjudication(work.Identity, work.Inputs)), provenance, capability, workerOwner,
+            Require(LongRestProviderPayload.Adjudication(work.Identity, work.Inputs)), provenance, capability, workerOwner, admission,
             async (paid, completion, token, committedOnly) =>
             {
                 LongRestProtectedEvidence? protection = generation.Scope.ProtectedPartitionDigest is { } partition

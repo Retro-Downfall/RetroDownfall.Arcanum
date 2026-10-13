@@ -13,8 +13,9 @@ namespace RetroDownfall.Arcanum.Infrastructure.Operations.LongRest;
 /// <summary>Serializes durable sweep progress under one acquired worker; request authority stays live.</summary>
 internal sealed partial class LongRestSweepCoordinator(ILongRunningOperationStore operations, ILongRestSweepStore sweeps,
     ILongRestDiscoveryStore discovery, ILongRestConfigurationProvider configuration, LongRestLiveFenceReader facts,
-    ILongRestMaintenance maintenance, ICovenantOperationGate gate, LongRunningOperationOwnership ownership,
-    LongRestSweepQueue queue, IServiceScopeFactory scopes, TimeProvider timeProvider, LongRestWorkAdmission workAdmission) : ILongRestSweepCoordinator
+    ILongRestAdmittedMaintenance maintenance, ICovenantOperationGate gate, LongRunningOperationOwnership ownership,
+    LongRestSweepQueue queue, IServiceScopeFactory scopes, TimeProvider timeProvider,
+    IGrimoireConnectionAdmissionGate admissionGate) : ILongRestSweepCoordinator, ILongRestAdmittedSweep
 {
     internal const string AuthorizedRequestRequired = "long_rest.authorized_request_required";
 
@@ -92,23 +93,42 @@ internal sealed partial class LongRestSweepCoordinator(ILongRunningOperationStor
         }
     }
 
+    /// <summary>
+    /// The Session request path: it carries its own capability, so it mints its own Long Rest work lease, uses it for
+    /// exactly this call and disposes it. The hosted worker never comes through here.
+    /// </summary>
     public async Task<Result<LongRestSweepProgress>> ResumeAsync(Guid operationId, LongRestMaintenanceCapability? capability, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
 
-        if (workAdmission.HasLease)
+        // Synchronous acquisition keeps the gate's ambient admitted lifetime in this execution context.
+        if (!admissionGate.TryAcquireWorkLease(GrimoireWorkKind.LongRestSweep, out IGrimoireWorkLease? admitted))
         {
-            return await ResumeAdmittedAsync(operationId, capability, workAdmission.Lease, ct).ConfigureAwait(false);
+            ct.ThrowIfCancellationRequested();
+
+            // A known work kind is refused only after maintenance has closed admission.
+            throw new LongRestMaintenanceDeferredException(CancellationToken.None);
         }
 
-        await using IGrimoireWorkLease acquired = workAdmission.Acquire(ct);
+        await using IGrimoireWorkLease acquired = admitted ?? throw new InvalidOperationException("Long Rest admission returned no lease.");
 
-        using IDisposable binding = workAdmission.Bind(acquired);
-
-        return await ResumeAdmittedAsync(operationId, capability, acquired, ct).ConfigureAwait(false);
+        return await ResumeCoreAsync(operationId, capability, acquired, ct).ConfigureAwait(false);
     }
 
-    private async Task<Result<LongRestSweepProgress>> ResumeAdmittedAsync(Guid operationId,
+    /// <summary>The hosted worker's door: the worker's own lease arrives by value, and no capability can.</summary>
+    public async Task<Result<LongRestSweepProgress>> ResumeAdmittedAsync(Guid operationId, IGrimoireWorkLease admission, CancellationToken ct)
+    {
+        // Admission Kind Guard: every Long Rest lease is a Long Rest sweep lease, and nothing else may carry the sweep.
+        if (admission is null) throw new ArgumentNullException(nameof(admission));
+
+        if (admission.Kind != GrimoireWorkKind.LongRestSweep) throw new ArgumentException("Long Rest work requires a Long Rest sweep admission.", nameof(admission));
+
+        ct.ThrowIfCancellationRequested();
+
+        return await ResumeCoreAsync(operationId, null, admission, ct).ConfigureAwait(false);
+    }
+
+    private async Task<Result<LongRestSweepProgress>> ResumeCoreAsync(Guid operationId,
         LongRestMaintenanceCapability? capability, IGrimoireWorkLease admission, CancellationToken ct)
     {
         using CancellationTokenSource lifetime = CancellationTokenSource.CreateLinkedTokenSource(ct, admission.MaintenanceRevocation);
@@ -145,7 +165,7 @@ internal sealed partial class LongRestSweepCoordinator(ILongRunningOperationStor
 
             if (!lease.Acquired) return Unavailable();
 
-            RunResult result = await RunOwnedAsync(lease.Operation, capability, ct).ConfigureAwait(false);
+            RunResult result = await RunOwnedAsync(lease.Operation, capability, admission, ct).ConfigureAwait(false);
 
             LongRunningOperation latest = await OwnedAsync(operationId, owner, CancellationToken.None, allowCancelling: true).ConfigureAwait(false);
 
@@ -173,14 +193,16 @@ internal sealed partial class LongRestSweepCoordinator(ILongRunningOperationStor
     {
         ct.ThrowIfCancellationRequested();
 
-        if (workAdmission.HasLease)
+        // Recovery runs a clean sweep under its own Long Rest lease: the recovery lease that called it is not carried.
+        if (!admissionGate.TryAcquireWorkLease(GrimoireWorkKind.LongRestSweep, out IGrimoireWorkLease? admitted))
         {
-            return await RecoverAdmittedAsync(operation, workAdmission.Lease, ct).ConfigureAwait(false);
+            ct.ThrowIfCancellationRequested();
+
+            // A known work kind is refused only after maintenance has closed admission.
+            throw new LongRestMaintenanceDeferredException(CancellationToken.None);
         }
 
-        await using IGrimoireWorkLease acquired = workAdmission.Acquire(ct);
-
-        using IDisposable binding = workAdmission.Bind(acquired);
+        await using IGrimoireWorkLease acquired = admitted ?? throw new InvalidOperationException("Long Rest admission returned no lease.");
 
         return await RecoverAdmittedAsync(operation, acquired, ct).ConfigureAwait(false);
     }
@@ -196,7 +218,7 @@ internal sealed partial class LongRestSweepCoordinator(ILongRunningOperationStor
 
         try
         {
-            RunResult result = await RunOwnedAsync(operation, null, ct).ConfigureAwait(false);
+            RunResult result = await RunOwnedAsync(operation, null, admission, ct).ConfigureAwait(false);
 
             LongRunningOperation latest = await OwnedAsync(operation.Id, operation.LeaseOwner!, ct, allowCancelling: true).ConfigureAwait(false);
 

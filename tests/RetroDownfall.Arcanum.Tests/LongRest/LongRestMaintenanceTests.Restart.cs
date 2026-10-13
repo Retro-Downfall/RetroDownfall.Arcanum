@@ -116,7 +116,7 @@ public sealed partial class LongRestMaintenanceTests
             {
                 if (claim)
                 {
-                    await f.Maintenance.ProcessAsync(f.Operation, "fixture-worker", capability, callerCancellation.Token);
+                    await f.ProcessAsync(f.Operation, "fixture-worker", capability, callerCancellation.Token);
                 }
                 else
                 {
@@ -835,7 +835,7 @@ public sealed partial class LongRestMaintenanceTests
             return Task.CompletedTask;
         };
 
-        Assert.True((await f.Maintenance.ProcessAsync(f.Operation, "fixture-worker", oldCapability, CancellationToken.None)).IsFailure);
+        Assert.True((await f.ProcessAsync(f.Operation, "fixture-worker", oldCapability, CancellationToken.None)).IsFailure);
 
         string original = (string)(await f.H.ScalarAsync("SELECT EvidenceJson FROM long_rest_accepted_summaries;"))!;
 
@@ -907,13 +907,13 @@ public sealed partial class LongRestMaintenanceTests
             return Task.CompletedTask;
         };
 
-        LongRestSweepHarness.Require(await f.Maintenance.ProcessAsync(f.Operation, "fixture-worker", capability, CancellationToken.None));
+        LongRestSweepHarness.Require(await f.ProcessAsync(f.Operation, "fixture-worker", capability, CancellationToken.None));
 
-        LongRestSweepHarness.Require(await f.Maintenance.ProcessAsync(f.Operation, "fixture-worker", capability, CancellationToken.None));
+        LongRestSweepHarness.Require(await f.ProcessAsync(f.Operation, "fixture-worker", capability, CancellationToken.None));
 
         await f.H.ExecuteAsync("CREATE TEMP TRIGGER fixture_stop_decision BEFORE UPDATE OF DispositionCode ON long_rest_work_items WHEN OLD.KindCode = 3 AND NEW.DispositionCode = 2 BEGIN SELECT RAISE(ABORT, 'fixture interrupted after accepted decision'); END;");
 
-        Assert.True((await f.Maintenance.ProcessAsync(f.Operation, "fixture-worker", capability, CancellationToken.None)).IsFailure);
+        Assert.True((await f.ProcessAsync(f.Operation, "fixture-worker", capability, CancellationToken.None)).IsFailure);
 
         string original = (string)(await f.H.ScalarAsync("SELECT EvidenceJson FROM long_rest_adjudications;") )!;
 

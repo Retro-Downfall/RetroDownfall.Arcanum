@@ -26,14 +26,14 @@ public sealed partial class LongRestMaintenanceTests
 
         for (int unit = 0; unit < precedingUnits; unit++)
         {
-            LongRestSweepHarness.Require(await f.Maintenance.ProcessAsync(f.Operation, "fixture-worker", null, CancellationToken.None));
+            LongRestSweepHarness.Require(await f.ProcessAsync(f.Operation, "fixture-worker", null, CancellationToken.None));
         }
 
         // A real SQLite rollback at the retained-output write, after the real SDK has billed.
         // The table is one of the three fixed theory literals above, never external input.
         await f.H.ExecuteAsync($"CREATE TEMP TRIGGER fixture_abort_paid_artifact BEFORE INSERT ON {table} BEGIN SELECT RAISE(ABORT, 'fixture retained artifact refused'); END;");
 
-        var result = await f.Maintenance.ProcessAsync(f.Operation, "fixture-worker", null, CancellationToken.None);
+        var result = await f.ProcessAsync(f.Operation, "fixture-worker", null, CancellationToken.None);
 
         Assert.True(result.IsFailure);
 

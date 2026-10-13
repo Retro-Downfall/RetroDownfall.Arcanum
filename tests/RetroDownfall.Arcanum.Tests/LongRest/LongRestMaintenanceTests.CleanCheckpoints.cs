@@ -160,7 +160,11 @@ public sealed partial class LongRestMaintenanceTests
         Assert.Contains(f.RecordedAdmission.InnerWorkLeases.Skip(leasesBefore), lease =>
             lease.Kind == GrimoireWorkKind.LongRunningOperationRecovery && lease.Generation == f.Admission.CurrentGeneration);
 
-        // Every attestation presents the recovery lease and the interval from the ORIGINAL previous admission
+        // Recovery runs the clean sweep under a Long Rest lease of its own, minted at the current generation.
+        Assert.Contains(f.RecordedAdmission.InnerWorkLeases.Skip(leasesBefore), lease =>
+            lease.Kind == GrimoireWorkKind.LongRestSweep && lease.Generation == f.Admission.CurrentGeneration);
+
+        // Every attestation presents the sweep lease recovery minted and the interval from the ORIGINAL previous admission
         // to the current one: the coordinator pre-check, then each store validation (two attestations apiece).
         RecordingGrimoireWorkAdmissionGate.DrainedAttestation[] attested = f.RecordedAdmission.DrainedAttestations.Skip(attestationsBefore).ToArray();
 
@@ -172,7 +176,7 @@ public sealed partial class LongRestMaintenanceTests
         {
             Assert.True(attestation.Attested);
 
-            Assert.Equal(GrimoireWorkKind.LongRunningOperationRecovery, attestation.Kind);
+            Assert.Equal(GrimoireWorkKind.LongRestSweep, attestation.Kind);
 
             Assert.Equal(original.Fence.AdmissionGeneration, attestation.Previous);
 

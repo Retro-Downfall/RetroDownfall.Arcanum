@@ -4,7 +4,6 @@ using Microsoft.Extensions.Logging;
 
 using RetroDownfall.Arcanum.Core.LongRest;
 using RetroDownfall.Arcanum.Infrastructure.Data;
-using RetroDownfall.Arcanum.Infrastructure.Data.LongRest;
 using RetroDownfall.Arcanum.Infrastructure.Operations.LongRest;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Hosting;
@@ -153,11 +152,9 @@ internal sealed class LongRestSweepHostedService(IServiceScopeFactory scopes, Lo
 
                 await using AsyncServiceScope scope = scopes.CreateAsyncScope();
 
-                using IDisposable binding = scope.ServiceProvider.GetRequiredService<LongRestWorkAdmission>().Bind(lease);
+                ILongRestAdmittedSweep sweep = scope.ServiceProvider.GetRequiredService<ILongRestAdmittedSweep>();
 
-                ILongRestSweepCoordinator coordinator = scope.ServiceProvider.GetRequiredService<ILongRestSweepCoordinator>();
-
-                await coordinator.ResumeAsync(operation, null, ct).ConfigureAwait(false);
+                await sweep.ResumeAdmittedAsync(operation, lease, ct).ConfigureAwait(false);
 
                 return;
             }

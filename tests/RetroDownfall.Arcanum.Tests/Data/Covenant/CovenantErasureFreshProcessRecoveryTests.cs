@@ -270,8 +270,13 @@ public sealed class CovenantErasureFreshProcessRecoveryTests
         builder.Services.AddArcanumInfrastructure(new ConfigurationBuilder().Build());
 
         // Inference is outside this fixture; fail explicitly if Long Rest provider work is reached.
-        builder.Services.AddScoped<RetroDownfall.Arcanum.Core.LongRest.ILongRestMaintenance,
-            RetroDownfall.Arcanum.Tests.Support.UnreachedLongRestMaintenance>();
+        builder.Services.AddScoped<RetroDownfall.Arcanum.Tests.Support.UnreachedLongRestMaintenance>();
+
+        builder.Services.AddScoped<RetroDownfall.Arcanum.Core.LongRest.ILongRestMaintenance>(
+            static sp => sp.GetRequiredService<RetroDownfall.Arcanum.Tests.Support.UnreachedLongRestMaintenance>());
+
+        builder.Services.AddScoped<RetroDownfall.Arcanum.Infrastructure.Operations.LongRest.ILongRestAdmittedMaintenance>(
+            static sp => sp.GetRequiredService<RetroDownfall.Arcanum.Tests.Support.UnreachedLongRestMaintenance>());
 
         // This Infrastructure-only container supplies the API-owned configuration boundary,
         // just as it supplies the inference ports above. Use the actual process epoch.

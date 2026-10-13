@@ -365,9 +365,6 @@ public sealed class LongRestTurnPreparationLifetimeTests
 
             return inner.CreateCapabilityAsync(operation, invocation, claim, scope, lease, ct);
         }
-
-        public Task<Result<LongRestSweepProgress>> ProcessAsync(Guid operation, string owner, LongRestMaintenanceCapability? capability, CancellationToken ct) =>
-            inner.ProcessAsync(operation, owner, capability, ct);
     }
 
     private sealed class RenewingCoordinator(LongRestMaintenanceTests.MaintenanceFixture f) : ILongRestSweepCoordinator

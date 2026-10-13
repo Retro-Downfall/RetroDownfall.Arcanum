@@ -14,22 +14,20 @@ namespace RetroDownfall.Arcanum.Api.Intelligence;
 internal sealed partial class LongRestMaintenance
 {
     private async Task<T> ExecutePaidAsync<T>(LongRestDiscoveryGeneration generation, LongRestProviderPayload payload,
-        GenerationProvenance provenance, LongRestMaintenanceCapability? capability, string workerOwner,
+        GenerationProvenance provenance, LongRestMaintenanceCapability? capability, string workerOwner, IGrimoireWorkLease admission,
         Func<PaidResult, LongRestDispatchCompletion, CancellationToken, bool, Task<T>> accept, CancellationToken ct)
     {
         await EnsureCurrentAsync(generation, capability, workerOwner, ct).ConfigureAwait(false);
 
-        IGrimoireWorkLease ownedWork = workAdmission.Lease;
-
-        if (!ownedWork.TryBeginExternalEffectGroup(out IGrimoireExternalEffectGroup? group) || group is null)
+        if (!admission.TryBeginExternalEffectGroup(out IGrimoireExternalEffectGroup? group) || group is null)
         {
             ct.ThrowIfCancellationRequested();
 
             (capability?.Revocation ?? CancellationToken.None).ThrowIfCancellationRequested();
 
-            if (ownedWork.MaintenanceRevocationPending)
+            if (admission.MaintenanceRevocationPending)
             {
-                throw new LongRestMaintenanceDeferredException(ownedWork.MaintenanceRevocation);
+                throw new LongRestMaintenanceDeferredException(admission.MaintenanceRevocation);
             }
 
             throw new Refused(Stale());
@@ -60,7 +58,7 @@ internal sealed partial class LongRestMaintenance
 
         LongRestDispatchAttempt attempt = Require(await attempts.PrepareAttemptAsync(payload.Work, payload.Kind, payloadDigest, destination, ct).ConfigureAwait(false));
 
-        using CancellationTokenSource dispatch = CancellationTokenSource.CreateLinkedTokenSource(ct, ownedWork.MaintenanceRevocation,
+        using CancellationTokenSource dispatch = CancellationTokenSource.CreateLinkedTokenSource(ct, admission.MaintenanceRevocation,
             capability?.Revocation ?? CancellationToken.None);
 
         using CancellationTokenSource stop = new();

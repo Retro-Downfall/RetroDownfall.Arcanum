@@ -3,13 +3,15 @@ using Microsoft.Extensions.DependencyInjection;
 using RetroDownfall.Arcanum.Core.LongRest;
 using RetroDownfall.Arcanum.Core.Operations;
 using RetroDownfall.Arcanum.Core.Tower;
+using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Data.LongRest;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Operations.LongRest;
 
 internal sealed partial class LongRestSweepCoordinator
 {
-    private async Task<RunResult> RunOwnedAsync(LongRunningOperation operation, LongRestMaintenanceCapability? capability, CancellationToken ct)
+    private async Task<RunResult> RunOwnedAsync(LongRunningOperation operation, LongRestMaintenanceCapability? capability,
+        IGrimoireWorkLease admission, CancellationToken ct)
     {
         string owner = operation.LeaseOwner ?? throw new Refused(Unavailable());
 
@@ -83,10 +85,10 @@ internal sealed partial class LongRestSweepCoordinator
                 {
                     if (previous.Fence != current && previous.Fence.Configuration.BootId == current.Configuration.BootId
                         && stored.Scope.ProtectedPartitionDigest is null && discovery is ILongRestCompletedCheckpointReconciliation completedRecovery
-                        && facts.AttestCleanAdmission(workAdmission.Lease, previous.Fence.AdmissionGeneration, current.AdmissionGeneration))
+                        && facts.AttestCleanAdmission(admission, previous.Fence.AdmissionGeneration, current.AdmissionGeneration))
                     {
                         LongRestSweep historical = Require(await completedRecovery.ReconcileCompletedCheckpointAsync(previous, current,
-                            options.Recipe.Value, owner, facts, workAdmission.Lease, dispatch.Token).ConfigureAwait(false));
+                            options.Recipe.Value, owner, facts, admission, dispatch.Token).ConfigureAwait(false));
 
                         return new(Progress(historical), LongRunningOperationRecoveryResult.Completed());
                     }
@@ -104,9 +106,9 @@ internal sealed partial class LongRestSweepCoordinator
                     if (previous is not null && previous.Fence != current
                         && previous.Fence.Configuration.BootId == current.Configuration.BootId
                         && stored.Scope.ProtectedPartitionDigest is null && discovery is ILongRestCleanReadmission clean
-                        && facts.AttestCleanAdmission(workAdmission.Lease, previous.Fence.AdmissionGeneration, current.AdmissionGeneration))
+                        && facts.AttestCleanAdmission(admission, previous.Fence.AdmissionGeneration, current.AdmissionGeneration))
                     {
-                        Require(await clean.ReadmitCleanAsync(previous, current, options.Recipe.Value, owner, facts, workAdmission.Lease, dispatch.Token).ConfigureAwait(false));
+                        Require(await clean.ReadmitCleanAsync(previous, current, options.Recipe.Value, owner, facts, admission, dispatch.Token).ConfigureAwait(false));
                     }
                     else
                     {
@@ -132,7 +134,7 @@ internal sealed partial class LongRestSweepCoordinator
                 {
                     await OwnedAsync(operation.Id, owner, dispatch.Token).ConfigureAwait(false);
 
-                    progress = Require(await maintenance.ProcessAsync(operation.Id, owner, capability, dispatch.Token).ConfigureAwait(false));
+                    progress = Require(await maintenance.ProcessAdmittedAsync(operation.Id, owner, capability, admission, dispatch.Token).ConfigureAwait(false));
 
                     await OwnedAsync(operation.Id, owner, dispatch.Token).ConfigureAwait(false);
 
