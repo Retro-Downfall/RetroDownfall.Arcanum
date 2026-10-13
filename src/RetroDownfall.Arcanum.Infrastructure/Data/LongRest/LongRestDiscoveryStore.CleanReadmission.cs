@@ -13,14 +13,14 @@ internal interface ILongRestCleanReadmission
 {
     Task<Result<LongRestDiscoveryGeneration>> ReadmitCleanAsync(LongRestDiscoveryGeneration expected, LongRestSweepFence current,
         LongRestRecipeIdentity recipe, string workerOwner, LongRestLiveFenceReader facts,
-        GrimoireConnectionAdmissionGate.DrainedMaintenanceProof proof, CancellationToken ct);
+        IGrimoireWorkLease admission, CancellationToken ct);
 }
 
 internal sealed partial class LongRestDiscoveryStore : ILongRestCleanReadmission
 {
     public async Task<Result<LongRestDiscoveryGeneration>> ReadmitCleanAsync(LongRestDiscoveryGeneration expected, LongRestSweepFence current,
         LongRestRecipeIdentity recipe, string workerOwner, LongRestLiveFenceReader facts,
-        GrimoireConnectionAdmissionGate.DrainedMaintenanceProof proof, CancellationToken ct)
+        IGrimoireWorkLease admission, CancellationToken ct)
     {
         try
         {
@@ -35,13 +35,16 @@ internal sealed partial class LongRestDiscoveryStore : ILongRestCleanReadmission
 
                 if (generation != expected || generation.Scope.ProtectedPartitionDigest is not null || generation.Recipe != recipe
                     || generation.Phase is LongRestSweepPhase.Completed or LongRestSweepPhase.Invalidated or LongRestSweepPhase.Deferred or LongRestSweepPhase.Retired
-                    || generation.Fence with { AdmissionGeneration = current.AdmissionGeneration } != current
-                    || proof.PreviousGeneration != generation.Fence.AdmissionGeneration || proof.CurrentGeneration != current.AdmissionGeneration)
+                    || generation.Fence with { AdmissionGeneration = current.AdmissionGeneration } != current)
                 {
                     throw new InvalidDataException();
                 }
 
-                await ValidateCleanOwnerAsync(connection, transaction, generation, current, workerOwner, facts, proof, ct).ConfigureAwait(false);
+                // The interval the lease must attest starts at the admission this generation was captured under.
+                // It is read once from the reloaded row: the adopted fence below no longer carries it.
+                long previousAdmission = generation.Fence.AdmissionGeneration;
+
+                await ValidateCleanOwnerAsync(connection, transaction, generation, current, workerOwner, facts, admission, previousAdmission, ct).ConfigureAwait(false);
 
                 await using (SqliteCommand ownership = Command(connection, transaction, """
                     SELECT EXISTS(SELECT 1 FROM long_rest_sweeps WHERE OperationId = $operation AND GenerationId = $generation
@@ -67,7 +70,7 @@ internal sealed partial class LongRestDiscoveryStore : ILongRestCleanReadmission
 
                 await ProveCleanWorkAsync(connection, transaction, generation, ct).ConfigureAwait(false);
 
-                await ValidateCleanOwnerAsync(connection, transaction, generation, current, workerOwner, facts, proof, ct).ConfigureAwait(false);
+                await ValidateCleanOwnerAsync(connection, transaction, generation, current, workerOwner, facts, admission, previousAdmission, ct).ConfigureAwait(false);
 
                 await AdoptCleanWorkAsync(connection, transaction, generation, current, ct).ConfigureAwait(false);
 
@@ -84,7 +87,7 @@ internal sealed partial class LongRestDiscoveryStore : ILongRestCleanReadmission
 
                 await VerifyFrozenSourcesAsync(connection, transaction, adopted, null, ct).ConfigureAwait(false);
 
-                await ValidateCleanOwnerAsync(connection, transaction, adopted, current, workerOwner, facts, proof, ct).ConfigureAwait(false);
+                await ValidateCleanOwnerAsync(connection, transaction, adopted, current, workerOwner, facts, admission, previousAdmission, ct).ConfigureAwait(false);
 
                 await transaction.CommitAsync(ct).ConfigureAwait(false);
 
@@ -99,11 +102,11 @@ internal sealed partial class LongRestDiscoveryStore : ILongRestCleanReadmission
 
     private async Task ValidateCleanOwnerAsync(SqliteConnection connection, SqliteTransaction transaction,
         LongRestDiscoveryGeneration generation, LongRestSweepFence current, string workerOwner, LongRestLiveFenceReader facts,
-        GrimoireConnectionAdmissionGate.DrainedMaintenanceProof proof, CancellationToken ct)
+        IGrimoireWorkLease admission, long previousAdmission, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
 
-        ValidateCleanLease(facts, proof, ct);
+        ValidateCleanLease(facts, admission, previousAdmission, current.AdmissionGeneration, ct);
 
         if (!await facts.ValidateRequestFenceWithinAsync(connection, transaction, current, ct).ConfigureAwait(false)
             || !facts.IsCleanRecipeCurrent(generation.Recipe)
@@ -112,16 +115,17 @@ internal sealed partial class LongRestDiscoveryStore : ILongRestCleanReadmission
             throw new InvalidDataException();
         }
 
-        ValidateCleanLease(facts, proof, ct);
+        ValidateCleanLease(facts, admission, previousAdmission, current.AdmissionGeneration, ct);
     }
 
-    private static void ValidateCleanLease(LongRestLiveFenceReader facts, GrimoireConnectionAdmissionGate.DrainedMaintenanceProof proof, CancellationToken ct)
+    private static void ValidateCleanLease(LongRestLiveFenceReader facts, IGrimoireWorkLease admission,
+        long previousAdmission, long currentAdmission, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
 
-        if (facts.AttestCleanAdmission(proof)) return;
+        if (facts.AttestCleanAdmission(admission, previousAdmission, currentAdmission)) return;
 
-        if (proof.MaintenanceRevocationPending) throw new LongRestMaintenanceDeferredException(CancellationToken.None);
+        if (admission.MaintenanceRevocationPending) throw new LongRestMaintenanceDeferredException(CancellationToken.None);
 
         throw new InvalidDataException();
     }

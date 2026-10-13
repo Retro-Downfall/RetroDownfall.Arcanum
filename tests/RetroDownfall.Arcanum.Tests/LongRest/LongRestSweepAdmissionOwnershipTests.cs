@@ -302,6 +302,8 @@ public sealed class LongRestSweepAdmissionOwnershipTests
 
         public CancellationToken MaintenanceRevocation => CancellationToken.None;
 
+        public bool MaintenanceRevocationPending => MaintenanceRevocation.IsCancellationRequested;
+
         internal int Disposals { get; private set; }
 
         internal Func<ValueTask>? BeforeDisposal { get; set; }
@@ -327,6 +329,8 @@ public sealed class LongRestSweepAdmissionOwnershipTests
         internal Action? DuringAcquisition { get; set; }
 
         public long CurrentGeneration => 1;
+
+        public bool AttestDrainedMaintenance(IGrimoireWorkLease lease, long previousGeneration, long currentGeneration) => false;
 
         public bool TryAcquireWorkLease(GrimoireWorkKind kind, out IGrimoireWorkLease? lease)
         {

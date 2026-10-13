@@ -52,6 +52,8 @@ internal sealed class BatchAdmissionGate : IGrimoireConnectionAdmissionGate
 
     public long CurrentGeneration => ObservedGeneration ?? Inner.CurrentGeneration;
 
+    public bool AttestDrainedMaintenance(IGrimoireWorkLease lease, long previousGeneration, long currentGeneration) => false;
+
     internal IGrimoireClosingOwner Close()
     {
         Result<IGrimoireClosingOwner> result = Inner.BeginOrResumeExclusive(new(
@@ -124,6 +126,8 @@ internal sealed class BatchAdmissionGate : IGrimoireConnectionAdmissionGate
         public long Generation => inner.Generation;
 
         public CancellationToken MaintenanceRevocation => inner.MaintenanceRevocation;
+
+        public bool MaintenanceRevocationPending => MaintenanceRevocation.IsCancellationRequested;
 
         public bool TryBeginExternalEffectGroup(out IGrimoireExternalEffectGroup? effectGroup)
         {

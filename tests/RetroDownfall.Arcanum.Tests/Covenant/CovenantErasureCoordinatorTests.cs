@@ -2855,6 +2855,8 @@ public sealed class CovenantErasureCoordinatorTests
 
         public long CurrentGeneration => inner.CurrentGeneration;
 
+        public bool AttestDrainedMaintenance(IGrimoireWorkLease lease, long previousGeneration, long currentGeneration) => false;
+
         public bool TryAcquireRequestLease(
             GrimoireRequestKind kind,
             out IGrimoireRequestLease? lease) => inner.TryAcquireRequestLease(kind, out lease);

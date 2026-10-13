@@ -18,6 +18,10 @@ internal sealed class RecordingGrimoireWorkAdmissionGate(
 
     private readonly List<long> _observedGenerationWaits = [];
 
+    private readonly List<DrainedAttestation> _drainedAttestations = [];
+
+    private int _drainedAttestationOrdinal;
+
     private int _effectGroupAttempts;
 
     private int _generationWaits;
@@ -46,6 +50,18 @@ internal sealed class RecordingGrimoireWorkAdmissionGate(
         }
     }
 
+    /// <summary>Every drained-maintenance attestation this gate was asked for, in order, with its verdict.</summary>
+    internal IReadOnlyList<DrainedAttestation> DrainedAttestations
+    {
+        get
+        {
+            lock (_observationsGate)
+            {
+                return _drainedAttestations.ToArray();
+            }
+        }
+    }
+
     internal int EffectGroupAttempts => Volatile.Read(ref _effectGroupAttempts);
 
     internal int GenerationWaits => Volatile.Read(ref _generationWaits);
@@ -65,6 +81,14 @@ internal sealed class RecordingGrimoireWorkAdmissionGate(
 
     internal Action BeforeEffectGroupAdmission { get; set; } = static () => { };
 
+    /// <summary>
+    /// Runs before each drained attestation with that attestation's 1-based position in this gate's sequence.
+    /// It may drive a real edge on the inner gate (for example <c>BeginOrResumeExclusive</c>) and may only refuse:
+    /// returning <see langword="false"/> ANDs the verdict down without consulting the inner gate, and returning
+    /// <see langword="true"/> leaves the verdict to the inner gate. It can never grant.
+    /// </summary>
+    internal Func<int, bool> BeforeDrainedAttestation { get; set; } = static _ => true;
+
     internal Action<long> AfterOpenGenerationObserved { get; set; } = static _ => { };
 
     internal Func<ValueTask> BeforeWorkLeaseDisposalAsync { get; set; } =
@@ -75,7 +99,28 @@ internal sealed class RecordingGrimoireWorkAdmissionGate(
 
     public long CurrentGeneration => inner.CurrentGeneration;
 
-    public bool AttestDrainedMaintenance(GrimoireConnectionAdmissionGate.DrainedMaintenanceProof proof) => inner.AttestDrainedMaintenance(proof);
+    /// <summary>
+    /// Forwards only a lease this gate itself wrapped, unwrapped to the inner gate's own lease.
+    /// A wrapper minted by any other gate, or a lease this gate never saw, is refused.
+    /// </summary>
+    public bool AttestDrainedMaintenance(IGrimoireWorkLease lease, long previousGeneration, long currentGeneration)
+    {
+        int ordinal = Interlocked.Increment(ref _drainedAttestationOrdinal);
+
+        // The hook runs first and only ever narrows: a refusal never reaches the inner gate, and a pass leaves the
+        // verdict to the inner gate, so no hook can manufacture an attestation the real gate would not give.
+        bool attested = BeforeDrainedAttestation(ordinal)
+            && lease is RecordingWorkLease recording
+            && ReferenceEquals(recording.Owner, this)
+            && inner.AttestDrainedMaintenance(recording.Inner, previousGeneration, currentGeneration);
+
+        lock (_observationsGate)
+        {
+            _drainedAttestations.Add(new(lease?.Kind, previousGeneration, currentGeneration, attested));
+        }
+
+        return attested;
+    }
 
     public bool TryAcquireRequestLease(
         GrimoireRequestKind kind,
@@ -174,10 +219,16 @@ internal sealed class RecordingGrimoireWorkAdmissionGate(
             revalidateDurableOwnerAsync,
             cancellationToken);
 
+    internal readonly record struct DrainedAttestation(GrimoireWorkKind? Kind, long Previous, long Current, bool Attested);
+
     private sealed class RecordingWorkLease(
         RecordingGrimoireWorkAdmissionGate gate,
         IGrimoireWorkLease inner) : IGrimoireWorkLease
     {
+        internal RecordingGrimoireWorkAdmissionGate Owner => gate;
+
+        internal IGrimoireWorkLease Inner => inner;
+
         public GrimoireWorkKind Kind => inner.Kind;
 
         public long Generation => inner.Generation;
@@ -185,9 +236,6 @@ internal sealed class RecordingGrimoireWorkAdmissionGate(
         public CancellationToken MaintenanceRevocation => inner.MaintenanceRevocation;
 
         public bool MaintenanceRevocationPending => inner.MaintenanceRevocationPending;
-
-        public GrimoireConnectionAdmissionGate.DrainedMaintenanceProof? ProveDrainedMaintenance(long previousGeneration) =>
-            inner.ProveDrainedMaintenance(previousGeneration);
 
         public bool TryBeginExternalEffectGroup(
             out IGrimoireExternalEffectGroup? effectGroup)

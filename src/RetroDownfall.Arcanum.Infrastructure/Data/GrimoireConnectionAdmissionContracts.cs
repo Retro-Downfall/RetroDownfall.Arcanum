@@ -174,7 +174,16 @@ internal interface IGrimoireConnectionAdmissionGate
 {
     long CurrentGeneration { get; }
 
-    bool AttestDrainedMaintenance(GrimoireConnectionAdmissionGate.DrainedMaintenanceProof proof) => false;
+    /// <summary>
+    /// Attests, under the gate's own lock and at the moment of the call, that the presented lease is a still-live
+    /// work lease minted by this very gate and that every generation since <paramref name="previousGeneration"/>
+    /// was a fully drained, non-destructive abort. Nothing is stored or returned: authority is the lease itself.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately abstract. A default body would be the one a caller's analysis walks instead of the gate's own.
+    /// The predicate carries no work-kind clause; which kinds may adopt is the caller's policy.
+    /// </remarks>
+    bool AttestDrainedMaintenance(IGrimoireWorkLease lease, long previousGeneration, long currentGeneration);
 
     bool TryAcquireRequestLease(
         GrimoireRequestKind kind,
@@ -304,10 +313,7 @@ internal interface IGrimoireWorkLease : IAsyncDisposable
     CancellationToken MaintenanceRevocation { get; }
 
     /// <summary>The lease's maintenance obligation, including before cancellation callbacks run.</summary>
-    bool MaintenanceRevocationPending => MaintenanceRevocation.IsCancellationRequested;
-
-    /// <summary>Proves contiguous fully drained, non-destructive aborts on this exact live lease.</summary>
-    GrimoireConnectionAdmissionGate.DrainedMaintenanceProof? ProveDrainedMaintenance(long previousGeneration) => null;
+    bool MaintenanceRevocationPending { get; }
 
     bool TryBeginExternalEffectGroup(
         out IGrimoireExternalEffectGroup? effectGroup);
