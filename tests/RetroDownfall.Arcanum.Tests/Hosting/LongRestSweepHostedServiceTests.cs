@@ -190,7 +190,7 @@ public sealed class LongRestSweepHostedServiceTests
 
             Sweep = new(Events);
 
-            Service = new(new Scopes(Events, Sweep), Queue, Epoch, Gate, NullLoggerFactory.Instance);
+            Service = new(new Scopes(Events, Sweep), Queue, Epoch, Gate, TimeProvider.System, NullLoggerFactory.Instance);
         }
 
         public void Dispose()

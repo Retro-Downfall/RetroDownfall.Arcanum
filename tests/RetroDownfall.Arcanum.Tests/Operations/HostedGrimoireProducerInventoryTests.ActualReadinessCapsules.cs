@@ -11,6 +11,8 @@ public sealed partial class HostedGrimoireProducerInventoryTests
 {
     private const string ActualLongRestHolderType = "RetroDownfall.Arcanum.Infrastructure.Data.LongRest.LongRestWorkAdmission";
 
+    private const string ActualLongRestParkHandlerType = "RetroDownfall.Arcanum.Infrastructure.Operations.LongRest.LongRestSweepRecoveryHandler";
+
     private const string ActualLongRestCoordinatorType = "RetroDownfall.Arcanum.Infrastructure.Operations.LongRest.LongRestSweepCoordinator";
 
     private const string ActualLongRestSweepPort = "RetroDownfall.Arcanum.Infrastructure.Operations.LongRest.ILongRestAdmittedSweep";
@@ -28,7 +30,6 @@ public sealed partial class HostedGrimoireProducerInventoryTests
     /// <summary>The real members that carry the one Long Rest lease from its mint to the physical send, with their key calls.</summary>
     private sealed record ActualLongRestSpine(
         ActualLongRestMember Worker, InvocationExpressionSyntax WorkerAcquisition,
-        ActualLongRestMember Recover, InvocationExpressionSyntax RecoverAcquisition,
         ActualLongRestMember Paid, InvocationExpressionSyntax GroupCall,
         ActualLongRestMember Chat, InvocationExpressionSyntax ChatSend,
         ActualLongRestMember Embedding, InvocationExpressionSyntax EmbeddingSend);
@@ -88,16 +89,14 @@ public sealed partial class HostedGrimoireProducerInventoryTests
             Assert.Contains(metrics.RootTraversals, metric => metric.RootType == root && metric.AnalyzedStates > 0);
         }
 
-        HostedProducerOperationEntry startup = Assert.Single(selected.Single(static entry => entry.ServiceType == "LongRunningOperationStartupHostedService").Operations,
-            static operation => operation.Authority == HostedProducerAuthorityKind.PreReadinessStartup);
-
+        // Recovery only parks Long Rest sweeps, so the readiness root no longer reaches a Long Rest send: the hosted
+        // worker's kind-17 acquisition is the one paid door and the only root this subset routes.
         HostedProducerOperationEntry sweep = Assert.Single(selected.Single(static entry => entry.ServiceType == "LongRestSweepHostedService").Operations,
             static operation => operation.Authority == HostedProducerAuthorityKind.OrdinaryHostedWork);
 
-        AssertRoute("LongRunningOperationStartupHostedService", startup, spine.Recover, spine.RecoverAcquisition);
         AssertRoute("LongRestSweepHostedService", sweep, spine.Worker, spine.WorkerAcquisition);
 
-        output.WriteLine("ACTUAL_LONG_REST_SUBSET originalCatalogRoots=2 assertedAuthorities=2 physicalBranchesPerAuthority=2 compilerOwnershipShells=2 fullAggregateQualification=false");
+        output.WriteLine("ACTUAL_LONG_REST_SUBSET originalCatalogRoots=2 assertedAuthorities=1 physicalBranchesPerAuthority=2 compilerOwnershipShells=2 fullAggregateQualification=false");
 
         void AssertRoute(string root, HostedProducerOperationEntry authority,
             ActualLongRestMember workMember, InvocationExpressionSyntax workCall)
@@ -165,9 +164,9 @@ public sealed partial class HostedGrimoireProducerInventoryTests
 
     }
 
-    // The lease is minted twice in production and never stored: by the hosted worker, and inline by the recovery
-    // entry that still runs a clean sweep. Both hand the acquired local by value to an admitted helper, the Session
-    // shell does the same for its own lease, and every later use takes the lease as a parameter.
+    // The lease is minted twice in production and never stored: by the hosted worker, and inline by the Session shell.
+    // Both hand the acquired local by value to an admitted helper, and every later use takes the lease as a parameter.
+    // Recovery mints none: the Pure Park Handler has no dependencies, so no recovery entry reaches the coordinator.
     private static ActualLongRestSpine ReadActualLongRestSpine()
     {
         IReadOnlyList<CSharpCompilation> compilations = HostedGrimoireProducerInventory.ProductionCompilations;
@@ -204,14 +203,23 @@ public sealed partial class HostedGrimoireProducerInventoryTests
 
         Assert.DoesNotContain(worker.Syntax.DescendantNodes().OfType<IdentifierNameSyntax>(), static name => name.Identifier.ValueText is "Bind" or "LongRestWorkAdmission");
 
-        // The two self-admitting shells mint their own lease inline and join the helper under it.
+        // The Session shell mints its own lease inline and joins the helper under it.
         ActualLongRestMember resume = ActualLongRestMemberOf(infrastructure, ActualLongRestCoordinatorType, "ResumeAsync");
 
         AssertSelfAdmittingShell(resume, "ResumeCoreAsync");
 
-        ActualLongRestMember recover = ActualLongRestMemberOf(infrastructure, ActualLongRestCoordinatorType, "RecoverAsync");
+        // Recovery never runs a sweep: the coordinator has no recovery entry, and the registered handler cannot name it.
+        INamedTypeSymbol coordinatorType = Assert.IsAssignableFrom<INamedTypeSymbol>(infrastructure.GetTypeByMetadataName(ActualLongRestCoordinatorType));
 
-        InvocationExpressionSyntax recoverAcquisition = AssertSelfAdmittingShell(recover, "RecoverAdmittedAsync");
+        Assert.Empty(coordinatorType.GetMembers("RecoverAsync"));
+
+        Assert.Empty(coordinatorType.GetMembers("RecoverAdmittedAsync"));
+
+        INamedTypeSymbol parkHandler = Assert.IsAssignableFrom<INamedTypeSymbol>(infrastructure.GetTypeByMetadataName(ActualLongRestParkHandlerType));
+
+        Assert.Empty(Assert.Single(parkHandler.InstanceConstructors).Parameters);
+
+        Assert.Empty(parkHandler.GetMembers().OfType<IFieldSymbol>());
 
         // The hosted port is a guarded forwarder to the same core, with no capability.
         ActualLongRestMember port = ActualLongRestMemberOf(infrastructure, ActualLongRestCoordinatorType, "ResumeAdmittedAsync");
@@ -278,7 +286,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests
 
         InvocationExpressionSyntax embeddingSend = ActualLongRestCallOf(embedding, "Microsoft.Extensions.AI.IEmbeddingGenerator`2", "GenerateAsync");
 
-        return new(worker, workerAcquisition, recover, recoverAcquisition, paid, groupCall, chat, chatSend, embedding, embeddingSend);
+        return new(worker, workerAcquisition, paid, groupCall, chat, chatSend, embedding, embeddingSend);
     }
 
     private static ActualLongRestMember ActualLongRestMemberOf(Compilation compilation, string typeName, string methodName)

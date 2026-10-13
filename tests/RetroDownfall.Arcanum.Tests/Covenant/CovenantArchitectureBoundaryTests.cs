@@ -232,14 +232,6 @@ public sealed class CovenantArchitectureBoundaryTests
                 ],
                 [2]),
             new(
-                "RetroDownfall.Arcanum.Infrastructure.Operations.LongRest.LongRestSweepRecoveryHandler",
-                LongRunningOperationKinds.LongRestSweep,
-                [1],
-                [
-                    "Microsoft.Extensions.AI.IChatClient.GetResponseAsync",
-                    "Microsoft.Extensions.AI.IEmbeddingGenerator`2.GenerateAsync"
-                ]),
-            new(
                 "RetroDownfall.Arcanum.Infrastructure.A2A.A2AOutboundSendingRecoveryHandler",
                 LongRunningOperationKinds.A2AOutboundSending,
                 [1],
@@ -343,11 +335,9 @@ public sealed class CovenantArchitectureBoundaryTests
                         RecoveryOperation(contract.Kind, checkpointVersion),
                         ownerEvidence: null);
 
-                LongRunningRecoveryAdmissionKind expected = contract.Kind == LongRunningOperationKinds.LongRestSweep && checkpointVersion == 1
-                    ? LongRunningRecoveryAdmissionKind.OrdinaryPerUnitExternalEffect
-                    : LongRunningRecoveryAdmissionKind.OrdinaryExternalEffect;
-
-                Assert.Equal(expected, decision.Kind);
+                Assert.True(
+                    decision.Kind is LongRunningRecoveryAdmissionKind.OrdinaryExternalEffect,
+                    $"{contract.HandlerType} checkpoint V{checkpointVersion} reaches an external effect but was classified {decision.Kind}.");
             }
 
             foreach (int checkpointVersion in contract.OwnerBoundCheckpointVersions ?? [])
@@ -363,11 +353,15 @@ public sealed class CovenantArchitectureBoundaryTests
             }
         }
 
-        Assert.Equal(
-            LongRunningRecoveryAdmissionKind.OrdinaryDbOnly,
-            LongRunningOperationRecoveryAdmission.Classify(
-                RecoveryOperation(LongRunningOperationKinds.LongRestSweep, 0),
-                ownerEvidence: null).Kind);
+        // The Long Rest handler only parks, so recovery never reaches a provider and both checkpoint versions are DB-only.
+        foreach (int checkpointVersion in new[] { 0, 1 })
+        {
+            Assert.Equal(
+                LongRunningRecoveryAdmissionKind.OrdinaryDbOnly,
+                LongRunningOperationRecoveryAdmission.Classify(
+                    RecoveryOperation(LongRunningOperationKinds.LongRestSweep, checkpointVersion),
+                    ownerEvidence: null).Kind);
+        }
 
         Assert.Equal(
             LongRunningRecoveryAdmissionKind.OrdinaryDbOnly,

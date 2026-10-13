@@ -8,8 +8,12 @@ namespace RetroDownfall.Arcanum.Core.LongRest;
 
 public interface ILongRestSweepStore
 {
-    /// <summary>One exact-current, never-claimed clean request; a candidate only, never execution authority.</summary>
-    Task<Result<Guid?>> FindNextPendingCleanAsync(LongRestConfigurationStamp configuration, Guid? afterOperationId, CancellationToken ct);
+    /// <summary>
+    /// The next clean sweep the worker may drive: an exact-current, never-claimed request, or a parked clean sweep whose
+    /// fault is resumable, whose failure budget is unspent and whose cooldown has elapsed. A candidate only, never
+    /// execution authority; the result also carries when the next cooling parked sweep becomes due.
+    /// </summary>
+    Task<Result<LongRestRunnableSweep>> FindNextRunnableCleanAsync(LongRestConfigurationStamp configuration, Guid? afterOperationId, CancellationToken ct);
 
     Task<Result<LongRestSweep>> BeginOrResumeAsync(Guid operationId, LongRestSweepScope scope, LongRestConfigurationStamp configuration, CancellationToken ct);
 

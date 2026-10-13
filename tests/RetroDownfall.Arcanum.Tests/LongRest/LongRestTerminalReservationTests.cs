@@ -164,7 +164,7 @@ public sealed class LongRestTerminalReservationTests
             Assert.True(acquired.Operation.LeaseExpiresAt <= clock.GetUtcNow());
         }
 
-        LongRunningOperationReconciler reconciler = new(f.Operations, [new LongRestSweepRecoveryHandler(f.Coordinator)],
+        LongRunningOperationReconciler reconciler = new(f.Operations, [new LongRestSweepRecoveryHandler()],
             clock, NullLogger<LongRunningOperationReconciler>.Instance, new LongRunningOperationOwnership());
 
         await reconciler.ReconcileNowAsync("terminal-reservation-fixture-owner");

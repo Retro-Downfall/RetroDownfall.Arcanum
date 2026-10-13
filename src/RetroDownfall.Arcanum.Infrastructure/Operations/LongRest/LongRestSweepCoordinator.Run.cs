@@ -19,11 +19,11 @@ internal sealed partial class LongRestSweepCoordinator
 
         LongRestOperationScope stored = Require(await facts.ReadScopeAsync(operation.Id, ct).ConfigureAwait(false));
 
-        LongRestSweepProgress progress = Deferred(operation, stored.Scope, "long_rest.interrupted");
+        LongRestSweepProgress progress = Deferred(operation, stored.Scope, LongRestParkCodes.Interrupted);
 
         if (operation.State == LongRunningOperationState.Cancelling)
         {
-            return new(progress, LongRunningOperationRecoveryResult.Abandoned("long_rest.cancelled"));
+            return new(progress, LongRunningOperationRecoveryResult.Abandoned(LongRestParkCodes.Cancelled));
         }
 
         LongRestSweepCheckpoint checkpoint = operation.CheckpointVersion == 0
@@ -156,7 +156,7 @@ internal sealed partial class LongRestSweepCoordinator
             catch (OperationCanceledException) when (!ct.IsCancellationRequested)
             {
                 return new(progress, LongRunningOperationRecoveryResult.RequiresAttention(stored.Scope.ProtectedPartitionDigest is null
-                    ? "long_rest.worker_unavailable" : AuthorizedRequestRequired));
+                    ? LongRestParkCodes.WorkerUnavailable : AuthorizedRequestRequired));
             }
             finally
             {

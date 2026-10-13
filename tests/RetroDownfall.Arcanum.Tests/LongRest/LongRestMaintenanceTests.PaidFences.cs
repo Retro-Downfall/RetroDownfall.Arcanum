@@ -17,7 +17,7 @@ namespace RetroDownfall.Arcanum.Tests.LongRest;
 public sealed partial class LongRestMaintenanceTests
 {
     [Fact]
-    public async Task Paid_fence_direct_reconcile_admission_refusal_preserves_running_debt_without_recovery_failed()
+    public async Task Paid_fence_direct_reconcile_while_admission_closes_still_parks_without_entering_the_coordinator()
     {
         await using MaintenanceFixture f = await MaintenanceFixture.CreateAsync(protectedSources: false);
 
@@ -33,23 +33,23 @@ public sealed partial class LongRestMaintenanceTests
         {
             acquired = operation;
 
-            // Real classified acquisition is committed, but the actual registered handler has
-            // not entered its coordinator or acquired ordinary work. The caller stays active.
+            // Real classified acquisition is committed and admission then closes while the caller stays active. The
+            // registered handler is pure, so it neither acquires ordinary work nor depends on the gate: it parks.
             closing = LongRestSweepHarness.Require(f.Admission.BeginOrResumeExclusive(PaidOwnershipClosingOwner()));
         });
 
-        LongRunningOperationReconciler reconciler = new(f.Operations, [new LongRestSweepRecoveryHandler(f.Coordinator)],
+        LongRunningOperationReconciler reconciler = new(f.Operations, [new LongRestSweepRecoveryHandler()],
             TimeProvider.System, NullLogger<LongRunningOperationReconciler>.Instance, new LongRunningOperationOwnership(),
             f.Operations, acquisition, scopeFactory: null);
 
         try
         {
-            Exception? failure = await Record.ExceptionAsync(() => reconciler.ReconcileNowAsync(
-                "fixture-direct-paid-recovery", maxOperations: 1, maxConcurrency: 1, cancellationToken: caller.Token));
-
-            Assert.True(failure is null or OperationCanceledException);
+            LongRunningOperationReconciliationSummary summary = await reconciler.ReconcileNowAsync(
+                "fixture-direct-paid-recovery", maxOperations: 1, maxConcurrency: 1, cancellationToken: caller.Token);
 
             Assert.False(caller.IsCancellationRequested);
+
+            Assert.Equal(1, summary.RequiresAttention);
 
             Assert.NotNull(acquired);
 
@@ -59,11 +59,13 @@ public sealed partial class LongRestMaintenanceTests
 
             LongRunningOperation latest = (await f.Operations.GetAsync(f.Operation))!;
 
-            Assert.Equal(LongRunningOperationState.Running, latest.State);
+            Assert.Equal(LongRunningOperationState.ReconciliationRequired, latest.State);
 
-            Assert.Null(latest.TerminalErrorCode);
+            Assert.Equal(LongRestParkCodes.Interrupted, latest.TerminalErrorCode);
 
-            Assert.Equal(acquired.Revision, latest.Revision);
+            Assert.NotEqual(LongRunningOperationErrorCodes.RecoveryFailed, latest.TerminalErrorCode);
+
+            Assert.Null(latest.LeaseOwner);
 
             Assert.Equal(acquired.CheckpointPayload, latest.CheckpointPayload);
 
@@ -137,9 +139,10 @@ public sealed partial class LongRestMaintenanceTests
 
             LongRunningOperation latest = (await f.Operations.GetAsync(f.Operation))!;
 
-            Assert.Equal(LongRunningOperationState.Running, latest.State);
+            // Maintenance refused the send, so the worker yielded: a park under the free yield code, never a terminal failure.
+            Assert.Equal(LongRunningOperationState.ReconciliationRequired, latest.State);
 
-            Assert.Null(latest.TerminalErrorCode);
+            Assert.Equal(LongRestParkCodes.MaintenanceDeferred, latest.TerminalErrorCode);
         }
         finally
         {

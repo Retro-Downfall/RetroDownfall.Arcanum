@@ -217,7 +217,7 @@ internal sealed partial class LongRestSweepStore
             UPDATE long_rest_sweeps SET CommittedItemCursor = $cursor, CommittedWorkDigest = $work,
                 DiscoveryCursor = CASE WHEN $cursor IS NULL THEN DiscoveryCursor
                     WHEN DiscoveryCursor IS NULL OR DiscoveryCursor < $cursor THEN $cursor ELSE DiscoveryCursor END,
-                Revision = Revision + 1, UpdatedAtUtc = $at
+                ReadmitCount = 0, Revision = Revision + 1, UpdatedAtUtc = $at
             WHERE OperationId = $operation AND GenerationId = $generation AND Revision = $revision;
             """, ("$cursor", cursor), ("$work", LongRestDiscoveryHash.Work(current.Identity).Value.Bytes),
             ("$at", UtcInstantText.Format(timeProvider.GetUtcNow())), ("$operation", expected.OperationId.ToString("N")),

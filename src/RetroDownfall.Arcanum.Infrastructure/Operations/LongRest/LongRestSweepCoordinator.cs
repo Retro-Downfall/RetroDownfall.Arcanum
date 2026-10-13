@@ -17,7 +17,7 @@ internal sealed partial class LongRestSweepCoordinator(ILongRunningOperationStor
     LongRestSweepQueue queue, IServiceScopeFactory scopes, TimeProvider timeProvider,
     IGrimoireConnectionAdmissionGate admissionGate) : ILongRestSweepCoordinator, ILongRestAdmittedSweep
 {
-    internal const string AuthorizedRequestRequired = "long_rest.authorized_request_required";
+    internal const string AuthorizedRequestRequired = LongRestParkCodes.AuthorizedRequestRequired;
 
     private static readonly TimeSpan LeaseDuration = TimeSpan.FromMinutes(5);
 
@@ -129,13 +129,17 @@ internal sealed partial class LongRestSweepCoordinator(ILongRunningOperationStor
     }
 
     private async Task<Result<LongRestSweepProgress>> ResumeCoreAsync(Guid operationId,
-        LongRestMaintenanceCapability? capability, IGrimoireWorkLease admission, CancellationToken ct)
+        LongRestMaintenanceCapability? capability, IGrimoireWorkLease admission, CancellationToken caller)
     {
-        using CancellationTokenSource lifetime = CancellationTokenSource.CreateLinkedTokenSource(ct, admission.MaintenanceRevocation);
+        using CancellationTokenSource lifetime = CancellationTokenSource.CreateLinkedTokenSource(caller, admission.MaintenanceRevocation);
 
-        ct = lifetime.Token;
+        CancellationToken ct = lifetime.Token;
 
         if (!configuration.Capture().Enabled || !ownership.TryClaim(operationId, out Guid ownershipToken)) return Unavailable();
+
+        string? owner = null;
+
+        bool isProtected = false;
 
         try
         {
@@ -145,32 +149,61 @@ internal sealed partial class LongRestSweepCoordinator(ILongRunningOperationStor
 
             LongRestOperationScope stored = Require(await facts.ReadScopeAsync(operationId, ct).ConfigureAwait(false));
 
-            if (operation.State == LongRunningOperationState.ReconciliationRequired)
-            {
-                if (capability is null || operation.TerminalErrorCode != AuthorizedRequestRequired)
-                {
-                    return Deferred(operation, stored.Scope, AuthorizedRequestRequired);
-                }
+            isProtected = stored.Scope.ProtectedPartitionDigest is not null;
 
-                await ValidateCapabilityAsync(operationId, stored.Scope, capability, CurrentOptions(), ct).ConfigureAwait(false);
-
-                if (!await operations.ResetForRetryAsync(operationId, operation.Revision, timeProvider.GetUtcNow(), ct).ConfigureAwait(false)) return Unavailable();
-            }
+            owner = Guid.NewGuid().ToString("N");
 
             DateTimeOffset now = timeProvider.GetUtcNow();
 
-            string owner = Guid.NewGuid().ToString("N");
+            LongRunningOperation running;
 
-            LongRunningOperationLeaseResult lease = await operations.TryAcquireLeaseAsync(operationId, owner, now, now.Add(LeaseDuration), ct).ConfigureAwait(false);
+            int readmitCount = 0;
 
-            if (!lease.Acquired) return Unavailable();
+            if (operation.State == LongRunningOperationState.ReconciliationRequired)
+            {
+                // A parked sweep is readmitted only by the authority class that owns it: the worker readmits a clean
+                // sweep parked with a resumable fault, and a fresh Session capability readmits a protected one.
+                string code = operation.TerminalErrorCode ?? string.Empty;
 
-            RunResult result = await RunOwnedAsync(lease.Operation, capability, admission, ct).ConfigureAwait(false);
+                bool own = isProtected
+                    ? capability is not null && code == AuthorizedRequestRequired
+                    : capability is null && LongRestFaultPolicy.Classify(code) == LongRestFaultClass.ResumeLater;
+
+                if (!own) return Deferred(operation, stored.Scope, isProtected ? AuthorizedRequestRequired : code);
+
+                LongRestSweepConfiguration options = CurrentOptions();
+
+                if (isProtected) await ValidateCapabilityAsync(operationId, stored.Scope, capability!, options, ct).ConfigureAwait(false);
+
+                if (sweeps is not ILongRestParkedReadmission readmission) return Unavailable();
+
+                // One atomic transaction: ReconciliationRequired straight to Running, never through Pending.
+                LongRestReadmission? readmitted = Require(await readmission.TryReadmitParkedAsync(operationId, operation.Revision, stored.Scope,
+                    options.Stamp, owner, now, now.Add(LeaseDuration), ct).ConfigureAwait(false));
+
+                if (readmitted is null) return Deferred(operation, stored.Scope, code);
+
+                running = readmitted.Operation;
+
+                readmitCount = readmitted.ReadmitCount;
+            }
+            else
+            {
+                LongRunningOperationLeaseResult lease = await operations.TryAcquireLeaseAsync(operationId, owner, now, now.Add(LeaseDuration), ct).ConfigureAwait(false);
+
+                if (!lease.Acquired) return Unavailable();
+
+                running = lease.Operation;
+            }
+
+            RunResult result = await RunOwnedAsync(running, capability, admission, ct).ConfigureAwait(false);
 
             LongRunningOperation latest = await OwnedAsync(operationId, owner, CancellationToken.None, allowCancelling: true).ConfigureAwait(false);
 
             LongRunningOperationRecoveryResult outcome = latest.State == LongRunningOperationState.Cancelling
-                ? LongRunningOperationRecoveryResult.Abandoned("long_rest.cancelled") : result.Outcome;
+                ? LongRunningOperationRecoveryResult.Abandoned(LongRestParkCodes.Cancelled) : ApplyFaultPolicy(result.Outcome, isProtected, readmitCount);
+
+            if (outcome.State == LongRunningOperationState.ReconciliationRequired) await MarkParkedAsync(operationId).ConfigureAwait(false);
 
             if (!await operations.TryTransitionAsync(operationId, latest.Revision, owner, outcome.State, timeProvider.GetUtcNow(), outcome.ErrorCode, CancellationToken.None).ConfigureAwait(false))
             {
@@ -183,59 +216,63 @@ internal sealed partial class LongRestSweepCoordinator(ILongRunningOperationStor
         {
             return refusal.Error;
         }
+        catch (OperationCanceledException exception) when (owner is not null && (exception is LongRestMaintenanceDeferredException
+            || !caller.IsCancellationRequested && admission.MaintenanceRevocation.IsCancellationRequested))
+        {
+            // Maintenance yielded the work it was holding. Park it where its own authority class will find it again;
+            // when even that write is refused, the lease expiry and the interrupted code are the fallback.
+            await ParkAfterDeferralAsync(operationId, owner, isProtected).ConfigureAwait(false);
+
+            if (exception is LongRestMaintenanceDeferredException) throw;
+
+            throw new LongRestMaintenanceDeferredException(admission.MaintenanceRevocation);
+        }
         finally
         {
             ownership.Release(operationId, ownershipToken);
         }
     }
 
-    internal async Task<LongRunningOperationRecoveryResult> RecoverAsync(LongRunningOperation operation, CancellationToken ct)
+    /// <summary>
+    /// A resumable fault that spends the last of the Sweep Failure Budget stops being resumable: the park becomes a
+    /// needs-operator park under its own code. A protected sweep has no budget, and maintenance yields spend none.
+    /// </summary>
+    private static LongRunningOperationRecoveryResult ApplyFaultPolicy(LongRunningOperationRecoveryResult outcome, bool isProtected, int readmitCount) =>
+        outcome.State == LongRunningOperationState.ReconciliationRequired && !isProtected
+            && LongRestFaultPolicy.Classify(outcome.ErrorCode) == LongRestFaultClass.ResumeLater
+            && outcome.ErrorCode is not (LongRestParkCodes.MaintenanceDeferred or LongRestParkCodes.ReadmitRequested)
+            && !LongRestFaultPolicy.CanReadmit(readmitCount)
+            ? LongRunningOperationRecoveryResult.RequiresAttention(LongRestParkCodes.ReadmitExhausted) : outcome;
+
+    private async Task MarkParkedAsync(Guid operationId)
     {
-        ct.ThrowIfCancellationRequested();
-
-        // Recovery runs a clean sweep under its own Long Rest lease: the recovery lease that called it is not carried.
-        if (!admissionGate.TryAcquireWorkLease(GrimoireWorkKind.LongRestSweep, out IGrimoireWorkLease? admitted))
-        {
-            ct.ThrowIfCancellationRequested();
-
-            // A known work kind is refused only after maintenance has closed admission.
-            throw new LongRestMaintenanceDeferredException(CancellationToken.None);
-        }
-
-        await using IGrimoireWorkLease acquired = admitted ?? throw new InvalidOperationException("Long Rest admission returned no lease.");
-
-        return await RecoverAdmittedAsync(operation, acquired, ct).ConfigureAwait(false);
+        // The stamp only starts a cooldown. A missed stamp makes the park immediately eligible, and the budget still bounds it.
+        if (sweeps is ILongRestParkedReadmission parking) _ = await parking.MarkParkedAsync(operationId, timeProvider.GetUtcNow(), CancellationToken.None).ConfigureAwait(false);
     }
 
-    private async Task<LongRunningOperationRecoveryResult> RecoverAdmittedAsync(LongRunningOperation operation,
-        IGrimoireWorkLease admission, CancellationToken caller)
+    private async Task ParkAfterDeferralAsync(Guid operationId, string? owner, bool isProtected)
     {
-        using CancellationTokenSource lifetime = CancellationTokenSource.CreateLinkedTokenSource(caller, admission.MaintenanceRevocation);
-
-        CancellationToken ct = lifetime.Token;
-
-        if (!ownership.TryClaim(operation.Id, out Guid ownershipToken)) return LongRunningOperationRecoveryResult.RequiresAttention("long_rest.worker_unavailable");
+        if (owner is null) return;
 
         try
         {
-            RunResult result = await RunOwnedAsync(operation, null, admission, ct).ConfigureAwait(false);
+            LongRunningOperation latest = await OwnedAsync(operationId, owner, CancellationToken.None, allowCancelling: true).ConfigureAwait(false);
 
-            LongRunningOperation latest = await OwnedAsync(operation.Id, operation.LeaseOwner!, ct, allowCancelling: true).ConfigureAwait(false);
+            // A sweep that never saved its first checkpoint has nothing to resume. It keeps its lease, and when that lapses
+            // recovery abandons it as never started, which a fresh request then replaces.
+            if (latest.CheckpointVersion == 0) return;
 
-            return latest.State == LongRunningOperationState.Cancelling
-                ? LongRunningOperationRecoveryResult.Abandoned("long_rest.cancelled") : result.Outcome;
+            LongRunningOperationRecoveryResult parked = latest.State == LongRunningOperationState.Cancelling
+                ? LongRunningOperationRecoveryResult.Abandoned(LongRestParkCodes.Cancelled)
+                : LongRunningOperationRecoveryResult.RequiresAttention(isProtected ? AuthorizedRequestRequired : LongRestParkCodes.MaintenanceDeferred);
+
+            if (parked.State == LongRunningOperationState.ReconciliationRequired) await MarkParkedAsync(operationId).ConfigureAwait(false);
+
+            _ = await operations.TryTransitionAsync(operationId, latest.Revision, owner, parked.State, timeProvider.GetUtcNow(), parked.ErrorCode, CancellationToken.None).ConfigureAwait(false);
         }
-        catch (OperationCanceledException) when (!caller.IsCancellationRequested && admission.MaintenanceRevocation.IsCancellationRequested)
+        catch (Exception)
         {
-            throw new LongRestMaintenanceDeferredException(admission.MaintenanceRevocation);
-        }
-        catch (Refused refusal)
-        {
-            return LongRunningOperationRecoveryResult.RequiresAttention(refusal.Error.Code);
-        }
-        finally
-        {
-            ownership.Release(operation.Id, ownershipToken);
+            // Best effort by design: the caller rethrows the deferral either way.
         }
     }
 

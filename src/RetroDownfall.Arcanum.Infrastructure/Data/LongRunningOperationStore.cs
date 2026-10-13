@@ -5,6 +5,7 @@ using System.Security.Cryptography;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using RetroDownfall.Arcanum.Core.Covenant;
+using RetroDownfall.Arcanum.Core.LongRest;
 using RetroDownfall.Arcanum.Core.Operations;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Infrastructure.Backup;
@@ -814,7 +815,7 @@ internal sealed partial class LongRunningOperationStore(
                         "LeaseOwner" = @owner,
                         "LeaseExpiresAt" = @lease,
                         "AttemptCount" = "AttemptCount" + 1,
-                        "TerminalErrorCode" = NULL,
+                        "TerminalErrorCode" = CASE WHEN "Kind" = @longRest AND "State" = @pending AND "AttemptCount" > 0 THEN @readmitRequested ELSE NULL END,
                         "Revision" = "Revision" + 1
                     WHERE "Id" = @id
                       AND (
@@ -863,6 +864,7 @@ internal sealed partial class LongRunningOperationStore(
                         RETURNING {SelectColumns}
                       """;
                 Add(cmd, "@longRest", LongRunningOperationKinds.LongRestSweep);
+                Add(cmd, "@readmitRequested", LongRestParkCodes.ReadmitRequested);
                 Add(cmd, "@running", (int)LongRunningOperationState.Running);
                 Add(cmd, "@pending", (int)LongRunningOperationState.Pending);
                 Add(cmd, "@waiting", (int)LongRunningOperationState.Waiting);

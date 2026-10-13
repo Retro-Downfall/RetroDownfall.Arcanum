@@ -128,6 +128,12 @@ public sealed record LongRestSweep(
     string? CommittedItemCursor,
     CovenantDigest? CommittedWorkDigest);
 
+/// <summary>
+/// One worker discovery step: the next clean sweep it may drive, if any, and the earliest instant a parked sweep that is
+/// still cooling becomes readmittable. The candidate is a hint only; readmission re-proves everything atomically.
+/// </summary>
+public sealed record LongRestRunnableSweep(Guid? OperationId, DateTimeOffset? NextDueAt);
+
 public sealed record LongRestSweepProgress(
     Guid OperationId,
     Guid GenerationId,

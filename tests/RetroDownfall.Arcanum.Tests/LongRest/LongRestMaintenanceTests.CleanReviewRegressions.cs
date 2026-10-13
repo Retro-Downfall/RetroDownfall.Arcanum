@@ -174,13 +174,14 @@ public sealed partial class LongRestMaintenanceTests
 
                 Assert.Equal(2, f.Payloads.Count);
 
+                // Maintenance closed at the handoff, so the worker parked the adopted sweep under its free yield code.
                 LongRunningOperation operation = (await f.Operations.GetAsync(f.Operation))!;
 
-                Assert.Equal(LongRunningOperationState.Running, operation.State);
+                Assert.Equal(LongRunningOperationState.ReconciliationRequired, operation.State);
 
-                Assert.Null(operation.TerminalErrorCode);
+                Assert.Equal(LongRestParkCodes.MaintenanceDeferred, operation.TerminalErrorCode);
 
-                Assert.Equal($"clean-review-adoption-{adoption}", operation.LeaseOwner);
+                Assert.Null(operation.LeaseOwner);
 
                 Assert.Equal(checkpointBefore, operation.CheckpointPayload);
 
@@ -292,19 +293,25 @@ public sealed partial class LongRestMaintenanceTests
         new(f.Operations, new LongRestSweepStore(f.H.Saga.Context, f.Clock), f.H.Store, f.Epoch, CleanReviewFacts(f, factsAdmission), handoff,
             f.Gate, new LongRunningOperationOwnership(), new LongRestSweepQueue(), f.Services.GetRequiredService<IServiceScopeFactory>(), f.Clock, leaseGate);
 
+    // Recovery only parks the expired sweep (under the recovery lease minted from the same gate), and the hosted worker's
+    // door then readmits the parked clean sweep under a Long Rest lease of its own from that gate.
     private static async Task CleanReviewRegisteredPassAsync(MaintenanceFixture f, LongRestSweepCoordinator coordinator,
         IGrimoireConnectionAdmissionGate gate, string owner)
     {
-        await f.H.ExecuteAsync("UPDATE LongRunningOperations SET LeaseExpiresAt = '2000-01-01T00:00:00.0000000Z' WHERE Id = $operation;",
+        await f.H.ExecuteAsync("UPDATE LongRunningOperations SET LeaseExpiresAt = '2000-01-01T00:00:00.0000000Z' WHERE Id = $operation AND LeaseOwner IS NOT NULL;",
             ("$operation", f.Operation.ToString("N")));
 
-        LongRunningOperationStartupHostedService recovery = new(new CleanReviewRecoveryScopes(f, coordinator), f.Clock,
+        LongRunningOperationStartupHostedService recovery = new(new ParkingRecoveryScopes(f), f.Clock,
             new LongRunningOperationReconciliationStatus(), gate, NullLogger<LongRunningOperationStartupHostedService>.Instance);
 
         try
         {
-            Exception? stopped = await Record.ExceptionAsync(() => recovery.RunBackgroundPassAsync(
-                f.Clock.GetUtcNow(), owner, CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(10)));
+            Exception? stopped = await Record.ExceptionAsync(async () =>
+            {
+                await recovery.RunBackgroundPassAsync(f.Clock.GetUtcNow(), owner, CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(10));
+
+                await ResumeAdmittedWithAsync(coordinator, gate, f.Operation, CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(10));
+            });
 
             Assert.True(stopped is null or OperationCanceledException, stopped?.ToString());
         }
@@ -372,7 +379,7 @@ public sealed partial class LongRestMaintenanceTests
             "SELECT * FROM long_rest_provider_effects ORDER BY WorkItemId;",
             "SELECT * FROM long_rest_accepted_summaries ORDER BY WorkItemId;",
             "SELECT * FROM BillableOperations ORDER BY Id;",
-            "SELECT * FROM long_rest_sweeps ORDER BY OperationId;",
+            "SELECT OperationId, GenerationId, ScopeKindCode, CampaignId, PartitionDigest, ConfigurationJson, PhaseCode, Revision, CommittedItemCursor, DiscoveryCursor, CommittedWorkDigest, UpdatedAtUtc FROM long_rest_sweeps ORDER BY OperationId;",
             "SELECT * FROM long_rest_work_inputs ORDER BY WorkItemId, Ordinal;",
             "SELECT * FROM long_rest_discovery_nodes ORDER BY NodeId;",
             "SELECT * FROM long_rest_discovery_embeddings ORDER BY NodeId;",
@@ -444,40 +451,6 @@ public sealed partial class LongRestMaintenanceTests
             Assert.True(admission.MaintenanceRevocationPending);
 
             throw new LongRestMaintenanceDeferredException(admission.MaintenanceRevocation);
-        }
-    }
-
-    private sealed class CleanReviewRecoveryScopes(MaintenanceFixture fixture, LongRestSweepCoordinator coordinator) : IServiceScopeFactory
-    {
-        public IServiceScope CreateScope() => new CleanReviewRecoveryScope(fixture, coordinator,
-            fixture.Services.GetRequiredService<IServiceScopeFactory>().CreateScope());
-    }
-
-    private sealed class CleanReviewRecoveryScope(MaintenanceFixture fixture, LongRestSweepCoordinator coordinator,
-        IServiceScope inner) : IServiceScope, IServiceProvider, IAsyncDisposable
-    {
-        public IServiceProvider ServiceProvider => this;
-
-        public object? GetService(Type type)
-        {
-            if (type == typeof(ILongRunningOperationGenericRecoveryDiscovery)) return fixture.Operations;
-
-            if (type == typeof(LongRunningOperationReconciler)) return new LongRunningOperationReconciler(fixture.Operations,
-                [new LongRestSweepRecoveryHandler(coordinator)], fixture.Clock, NullLogger<LongRunningOperationReconciler>.Instance,
-                new LongRunningOperationOwnership());
-
-            return inner.ServiceProvider.GetService(type);
-        }
-
-        public void Dispose() => inner.Dispose();
-
-        public ValueTask DisposeAsync()
-        {
-            if (inner is IAsyncDisposable asynchronous) return asynchronous.DisposeAsync();
-
-            inner.Dispose();
-
-            return ValueTask.CompletedTask;
         }
     }
 }

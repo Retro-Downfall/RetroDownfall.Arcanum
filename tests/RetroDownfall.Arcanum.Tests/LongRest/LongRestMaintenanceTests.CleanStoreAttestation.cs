@@ -143,7 +143,11 @@ public sealed partial class LongRestMaintenanceTests
 
         try
         {
-            (LongRunningOperationReconciliationSummary? summary, Exception? stopped) = await RunCleanStorePassAsync(f);
+            f.Payloads.Clear();
+
+            RecoveredSweep recovered = await RecoverThenReadmitAsync(f, "clean-store-attestation");
+
+            Exception? stopped = recovered.Fault;
 
             // Nothing the refused validation guarded may have survived: the transaction rolled back whole.
             CleanStoreSnapshot after = await CaptureCleanStoreAsync(f);
@@ -187,19 +191,24 @@ public sealed partial class LongRestMaintenanceTests
                 // Maintenance classifies from the lease's own revocation obligation: deferred, never a terminal refusal.
                 Assert.IsType<LongRestMaintenanceDeferredException>(stopped);
 
-                Assert.Null(summary);
+                Assert.Null(recovered.Readmission);
 
-                Assert.Equal(LongRunningOperationState.Running, (await f.Operations.GetAsync(f.Operation))!.State);
+                // The yield parks the sweep under its own free code for the worker to readmit after reopen.
+                LongRunningOperation yielded = (await f.Operations.GetAsync(f.Operation))!;
+
+                Assert.Equal(LongRunningOperationState.ReconciliationRequired, yielded.State);
+
+                Assert.Equal(LongRestParkCodes.MaintenanceDeferred, yielded.TerminalErrorCode);
             }
             else
             {
                 Assert.Null(stopped);
 
-                Assert.NotNull(summary);
+                Assert.NotNull(recovered.Readmission);
 
-                Assert.Equal(0, summary.Completed);
+                Assert.Equal(0, recovered.Completed);
 
-                Assert.Equal(1, summary.RequiresAttention);
+                Assert.Equal(1, recovered.RequiresAttention);
 
                 Assert.NotEqual(LongRunningOperationState.Completed, (await f.Operations.GetAsync(f.Operation))!.State);
             }
@@ -217,33 +226,6 @@ public sealed partial class LongRestMaintenanceTests
 
                 await closing.DisposeAsync();
             }
-        }
-    }
-
-    // Only the durable lease deadline is expired; the same registered handler, coordinator, gate, stores and worker run.
-    private static async Task<(LongRunningOperationReconciliationSummary? Summary, Exception? Stopped)> RunCleanStorePassAsync(MaintenanceFixture f)
-    {
-        await f.H.ExecuteAsync("UPDATE LongRunningOperations SET LeaseExpiresAt = '2000-01-01T00:00:00.0000000Z' WHERE Id = $operation;",
-            ("$operation", f.Operation.ToString("N")));
-
-        f.Payloads.Clear();
-
-        LongRunningOperationStartupHostedService recovery = new(new PaidRecoveryScopes(f), TimeProvider.System,
-            new LongRunningOperationReconciliationStatus(), f.RecordedAdmission,
-            NullLogger<LongRunningOperationStartupHostedService>.Instance);
-
-        LongRunningOperationReconciliationSummary? summary = null;
-
-        try
-        {
-            Exception? stopped = await Record.ExceptionAsync(async () => summary = await recovery.RunBackgroundPassAsync(
-                DateTimeOffset.UtcNow, "clean-store-attestation", CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(10)));
-
-            return (summary, stopped);
-        }
-        finally
-        {
-            await recovery.StopAsync(CancellationToken.None);
         }
     }
 

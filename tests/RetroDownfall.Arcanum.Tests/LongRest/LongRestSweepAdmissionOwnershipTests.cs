@@ -20,11 +20,11 @@ namespace RetroDownfall.Arcanum.Tests.LongRest;
 
 public sealed class LongRestSweepAdmissionOwnershipTests
 {
-    public static TheoryData<string> SelfAdmittingEntries => new() { "resume", "recover" };
+    public static TheoryData<string> SelfAdmittingEntries => new() { "resume" };
 
     public static TheoryData<string> AdmittedEntries => new() { "resume-admitted", "maintenance-admitted" };
 
-    public static TheoryData<string> AllEntries => new() { "resume", "recover", "resume-admitted", "maintenance-admitted" };
+    public static TheoryData<string> AllEntries => new() { "resume", "resume-admitted", "maintenance-admitted" };
 
     public static TheoryData<string, object> WrongKinds
     {
@@ -129,11 +129,8 @@ public sealed class LongRestSweepAdmissionOwnershipTests
 
     [Theory]
     [InlineData("resume", "refused")]
-    [InlineData("recover", "refused")]
     [InlineData("resume", "cancelled-refusal")]
-    [InlineData("recover", "cancelled-refusal")]
     [InlineData("resume", "null-success")]
-    [InlineData("recover", "null-success")]
     public async Task Acquisition_refusals_stop_before_admitted_work(string entryPoint, string mode)
     {
         Harness h = new(entryPoint);
@@ -214,6 +211,18 @@ public sealed class LongRestSweepAdmissionOwnershipTests
         Assert.Equal(0, wrong.Disposals);
     }
 
+    [Fact]
+    public void The_coordinator_has_no_recovery_entry_because_recovery_only_parks()
+    {
+        Assert.DoesNotContain(typeof(LongRestSweepCoordinator).GetMethods(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic
+            | System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.DeclaredOnly),
+            static method => method.Name.Contains("Recover", StringComparison.Ordinal));
+
+        Assert.Equal(
+            [nameof(ILongRestAdmittedSweep.ResumeAdmittedAsync)],
+            typeof(ILongRestAdmittedSweep).GetMethods().Select(static method => method.Name));
+    }
+
     [Theory]
     [MemberData(nameof(AdmittedEntries))]
     public async Task A_missing_lease_is_refused_at_both_admitted_entries(string entryPoint)
@@ -264,13 +273,7 @@ public sealed class LongRestSweepAdmissionOwnershipTests
         /// <param name="lease">The caller's lease for the admitted entries; the self-admitting entries mint their own.</param>
         internal async Task InvokeAsync(CancellationToken ct, IGrimoireWorkLease? lease = null)
         {
-            if (_entryPoint == "recover")
-            {
-                LongRunningOperationRecoveryResult result = await _coordinator.RecoverAsync(_operation, ct);
-
-                Assert.Equal("long_rest.worker_unavailable", result.ErrorCode);
-            }
-            else if (_entryPoint == "maintenance-admitted")
+            if (_entryPoint == "maintenance-admitted")
             {
                 Result<LongRestSweepProgress> result = await _maintenance.ProcessAdmittedAsync(_operation.Id, "unused", null, lease!, ct);
 
@@ -290,7 +293,7 @@ public sealed class LongRestSweepAdmissionOwnershipTests
 
         internal async Task InvokeExpectedOutcomeAsync(IGrimoireWorkLease? lease = null)
         {
-            if (_entryPoint is "recover" or "maintenance-admitted") await InvokeAsync(CancellationToken.None, lease);
+            if (_entryPoint is "maintenance-admitted") await InvokeAsync(CancellationToken.None, lease);
             else await Assert.ThrowsAsync<ConfigurationProbeException>(() => InvokeAsync(CancellationToken.None, lease));
         }
     }

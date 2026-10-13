@@ -33,7 +33,7 @@ public sealed partial class LongRestMaintenanceTests
             return Task.CompletedTask;
         };
 
-        LongRunningOperationReconciliationSummary recovered = await RecoverCleanAssociationAsync(f);
+        RecoveredSweep recovered = await RecoverCleanAssociationAsync(f);
 
         Assert.Equal(1, recovered.Completed);
 
@@ -115,7 +115,7 @@ public sealed partial class LongRestMaintenanceTests
 
         object? effect = await f.H.ScalarAsync(CleanEffectSnapshotSql);
 
-        LongRunningOperationReconciliationSummary recovered = await RecoverCleanAssociationAsync(f);
+        RecoveredSweep recovered = await RecoverCleanAssociationAsync(f);
 
         Assert.Equal(0, recovered.Completed);
 
@@ -212,7 +212,7 @@ public sealed partial class LongRestMaintenanceTests
 
         f.Handler.InsideSendWithCancellation = null;
 
-        LongRunningOperationReconciliationSummary recovered = await RecoverCleanAssociationAsync(f);
+        RecoveredSweep recovered = await RecoverCleanAssociationAsync(f);
 
         Assert.Equal(0, recovered.Completed);
 
@@ -281,25 +281,8 @@ public sealed partial class LongRestMaintenanceTests
         END;
         """;
 
-    private static async Task<LongRunningOperationReconciliationSummary> RecoverCleanAssociationAsync(MaintenanceFixture f)
-    {
-        await f.H.ExecuteAsync("UPDATE LongRunningOperations SET LeaseExpiresAt = '2000-01-01T00:00:00.0000000Z' WHERE Id = $operation;",
-            ("$operation", f.Operation.ToString("N")));
-
-        LongRunningOperationStartupHostedService recovery = new(new PaidRecoveryScopes(f), TimeProvider.System,
-            new LongRunningOperationReconciliationStatus(), f.RecordedAdmission,
-            NullLogger<LongRunningOperationStartupHostedService>.Instance);
-
-        try
-        {
-            return await recovery.RunBackgroundPassAsync(DateTimeOffset.UtcNow, "clean-association-recovery", CancellationToken.None)
-                .WaitAsync(TimeSpan.FromSeconds(10));
-        }
-        finally
-        {
-            await recovery.StopAsync(CancellationToken.None);
-        }
-    }
+    private static Task<RecoveredSweep> RecoverCleanAssociationAsync(MaintenanceFixture f) =>
+        RecoverThenReadmitAsync(f, "clean-association-recovery");
 
     private const string CleanEffectSnapshotSql = """
         SELECT json_group_array(json(Row)) FROM (

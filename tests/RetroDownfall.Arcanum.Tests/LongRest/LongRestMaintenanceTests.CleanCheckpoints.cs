@@ -153,14 +153,14 @@ public sealed partial class LongRestMaintenanceTests
 
         int attestationsBefore = f.RecordedAdmission.DrainedAttestations.Count;
 
-        // The existing helper expires only the durable deadline after unwind, then uses a
-        // fresh runtime pass with classified acquisition, reconciler and registered handler.
-        LongRunningOperationReconciliationSummary recovered = await RecoverCleanAssociationAsync(f);
+        // The helper expires only the durable deadline after unwind. A fresh runtime pass with classified acquisition, the
+        // reconciler and the registered handler parks the sweep, and the hosted worker's discovery and door then readmit it.
+        RecoveredSweep recovered = await RecoverCleanAssociationAsync(f);
 
         Assert.Contains(f.RecordedAdmission.InnerWorkLeases.Skip(leasesBefore), lease =>
             lease.Kind == GrimoireWorkKind.LongRunningOperationRecovery && lease.Generation == f.Admission.CurrentGeneration);
 
-        // Recovery runs the clean sweep under a Long Rest lease of its own, minted at the current generation.
+        // The worker runs the readmitted sweep under a Long Rest lease of its own, minted at the current generation.
         Assert.Contains(f.RecordedAdmission.InnerWorkLeases.Skip(leasesBefore), lease =>
             lease.Kind == GrimoireWorkKind.LongRestSweep && lease.Generation == f.Admission.CurrentGeneration);
 
@@ -207,7 +207,8 @@ public sealed partial class LongRestMaintenanceTests
 
         Assert.Null(final.TerminalErrorCode);
 
-        Assert.Equal(interrupted.AttemptCount + 1, final.AttemptCount);
+        // One attempt for the recovery lease that parked it and one for the worker's atomic readmission.
+        Assert.Equal(interrupted.AttemptCount + 2, final.AttemptCount);
 
         LongRestSweepCheckpoint caughtUp = LongRestSweepHarness.Require(
             LongRestSweepCheckpointCodec.Decode(f.Operation, final.CheckpointPayload!));

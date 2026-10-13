@@ -8,20 +8,34 @@ using RetroDownfall.Arcanum.Infrastructure.Operations.LongRest;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Hosting;
 
-/// <summary>Drains exact-current clean pending work; queue identities are only coalesced wake hints.</summary>
+/// <summary>
+/// Drains exact-current clean work: never-claimed requests, and parked clean sweeps whose fault is resumable, whose
+/// failure budget is unspent and whose cooldown has elapsed. Queue identities are only coalesced wake hints; a Parked
+/// Rescan timer also wakes it, because nothing signals a cooldown that expires or a recovery that parks a sweep.
+/// </summary>
 internal sealed class LongRestSweepHostedService(IServiceScopeFactory scopes, LongRestSweepQueue queue,
     ILongRestConfigurationProvider configuration, IGrimoireConnectionAdmissionGate admission,
-    ILoggerFactory logging) : BackgroundService
+    TimeProvider timeProvider, ILoggerFactory logging) : BackgroundService
 {
+    /// <summary>The longest the worker sleeps between scans when no queue hint arrives.</summary>
+    internal static readonly TimeSpan ParkedRescanInterval = TimeSpan.FromSeconds(60);
+
+    /// <summary>The shortest timer sleep, so a sweep that is due but refused is not retried in a busy loop.</summary>
+    internal static readonly TimeSpan MinimumRescanDelay = TimeSpan.FromSeconds(1);
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        Task<Guid>? hint = null;
+
         try
         {
             while (!stoppingToken.IsCancellationRequested)
             {
+                DateTimeOffset? due = null;
+
                 try
                 {
-                    await DrainPendingAsync(stoppingToken).ConfigureAwait(false);
+                    due = await DrainPendingAsync(stoppingToken).ConfigureAwait(false);
                 }
                 catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
                 {
@@ -33,8 +47,24 @@ internal sealed class LongRestSweepHostedService(IServiceScopeFactory scopes, Lo
                 }
 
                 // Requests signal after persistence. Retain a pending hint through the whole pass:
-                // an insertion behind its cursor must start another pass from the beginning.
-                _ = await queue.ReadAsync(stoppingToken).ConfigureAwait(false);
+                // an insertion behind its cursor must start another pass from the beginning. The hint channel
+                // is single-reader, so one read stays pending across timer wakes instead of being abandoned.
+                hint ??= queue.ReadAsync(stoppingToken).AsTask();
+
+                using CancellationTokenSource rescan = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
+
+                Task timer = Task.Delay(RescanDelay(due), timeProvider, rescan.Token);
+
+                Task woke = await Task.WhenAny(hint, timer).ConfigureAwait(false);
+
+                await rescan.CancelAsync().ConfigureAwait(false);
+
+                if (woke == hint)
+                {
+                    _ = await hint.ConfigureAwait(false);
+
+                    hint = null;
+                }
             }
         }
         catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
@@ -42,7 +72,17 @@ internal sealed class LongRestSweepHostedService(IServiceScopeFactory scopes, Lo
         }
     }
 
-    private async Task DrainPendingAsync(CancellationToken ct)
+    private TimeSpan RescanDelay(DateTimeOffset? due)
+    {
+        if (due is not { } at) return ParkedRescanInterval;
+
+        TimeSpan untilDue = at - timeProvider.GetUtcNow();
+
+        return untilDue < MinimumRescanDelay ? MinimumRescanDelay : untilDue < ParkedRescanInterval ? untilDue : ParkedRescanInterval;
+    }
+
+    /// <returns>When the next cooling parked sweep becomes due, if one is known.</returns>
+    private async Task<DateTimeOffset?> DrainPendingAsync(CancellationToken ct)
     {
         LongRestSweepConfiguration expected = configuration.Capture();
 
@@ -52,16 +92,19 @@ internal sealed class LongRestSweepHostedService(IServiceScopeFactory scopes, Lo
         {
             ct.ThrowIfCancellationRequested();
 
-            Guid? operation = await FindNextPendingAsync(expected.Stamp, cursor, ct).ConfigureAwait(false);
+            LongRestRunnableSweep? found = await FindNextPendingAsync(expected.Stamp, cursor, ct).ConfigureAwait(false);
 
-            if (operation is null || !configuration.IsCurrent(expected.Stamp) || !configuration.Capture().Enabled) return;
+            if (found is not { OperationId: { } operation } || !configuration.IsCurrent(expected.Stamp) || !configuration.Capture().Enabled)
+            {
+                return found?.NextDueAt;
+            }
 
             // A refused candidate must not monopolize this pass or be retried in a busy loop.
             cursor = operation;
 
             try
             {
-                await RunOneAsync(operation.Value, ct).ConfigureAwait(false);
+                await RunOneAsync(operation, ct).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
@@ -72,9 +115,11 @@ internal sealed class LongRestSweepHostedService(IServiceScopeFactory scopes, Lo
                 LogFailure(exception);
             }
         }
+
+        return null;
     }
 
-    private async Task<Guid?> FindNextPendingAsync(LongRestConfigurationStamp expected, Guid? cursor, CancellationToken ct)
+    private async Task<LongRestRunnableSweep?> FindNextPendingAsync(LongRestConfigurationStamp expected, Guid? cursor, CancellationToken ct)
     {
         while (configuration.Capture().Enabled && configuration.IsCurrent(expected))
         {
@@ -101,7 +146,7 @@ internal sealed class LongRestSweepHostedService(IServiceScopeFactory scopes, Lo
 
                 ILongRestSweepStore store = scope.ServiceProvider.GetRequiredService<ILongRestSweepStore>();
 
-                var result = await store.FindNextPendingCleanAsync(expected, cursor, read.Token).ConfigureAwait(false);
+                var result = await store.FindNextRunnableCleanAsync(expected, cursor, read.Token).ConfigureAwait(false);
 
                 if (result.IsFailure) throw new InvalidOperationException("The pending Long Rest lookup was unavailable.");
 

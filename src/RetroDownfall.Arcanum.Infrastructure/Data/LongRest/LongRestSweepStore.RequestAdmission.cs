@@ -18,7 +18,7 @@ internal interface ILongRestSweepRequestAdmission
 
 internal sealed partial class LongRestSweepStore : ILongRestSweepRequestAdmission
 {
-    private const string StaleRequestConfiguration = "long_rest.stale_configuration";
+    private const string StaleRequestConfiguration = LongRestParkCodes.StaleConfiguration;
 
     public async Task<Result<LongRunningOperation>> AdmitRequestAsync(LongRestSweepScope scope, LongRestSweepFence fence,
         LongRestLiveFenceReader facts, LongRunningOperationOwnership ownership, CancellationToken ct)
@@ -30,6 +30,10 @@ internal sealed partial class LongRestSweepStore : ILongRestSweepRequestAdmissio
                 || (scope.Kind == LongRestSweepScopeKind.Campaign) != fence.CanonicalScope.IsCampaignBound) throw new InvalidDataException();
 
             return await SqliteBusyRetry.ExecuteAsync(() => AdmitOnceAsync(scope, fence, facts, ownership, ct), ct).ConfigureAwait(false);
+        }
+        catch (SweepParkedException)
+        {
+            return new Error(ErrorCodes.LongRest.SweepParked, "The active sweep for this scope is parked and needs an operator to retry or cancel it.");
         }
         catch (Exception exception) when (exception is SqliteException or InvalidDataException or ArgumentException
             or FormatException or OverflowException or JsonException or InvalidOperationException)
@@ -67,16 +71,41 @@ internal sealed partial class LongRestSweepStore : ILongRestSweepRequestAdmissio
                     ?? throw new InvalidDataException();
 
                 if (operation.Kind != LongRunningOperationKinds.LongRestSweep
-                    || operation.State == LongRunningOperationState.Completed
-                    || operation.State == LongRunningOperationState.ReconciliationRequired
-                        && operation.TerminalErrorCode != "long_rest.authorized_request_required") throw new InvalidDataException();
+                    || operation.State == LongRunningOperationState.Completed) throw new InvalidDataException();
 
                 LongRestConfigurationStamp stored = JsonSerializer.Deserialize(active.ConfigurationJson, LongRestJsonContext.Default.LongRestConfigurationStamp)
                     ?? throw new InvalidDataException();
 
                 if (!stored.IsValid) throw new InvalidDataException();
 
-                if (operation.State is LongRunningOperationState.Failed or LongRunningOperationState.Abandoned)
+                if (operation.State == LongRunningOperationState.ReconciliationRequired)
+                {
+                    // Parked-Is-Active: a parked sweep still owns its scope. A request never claims, resets or runs it.
+                    if (stored.ValueDigest == fence.Configuration.ValueDigest
+                        && (stored == fence.Configuration || stored.BootId != fence.Configuration.BootId))
+                    {
+                        // Only the boot differs: the sweep is returned unchanged for its own authority class to readmit.
+                        if (!IsResumablePark(scope, operation, active)) throw new SweepParkedException();
+
+                        admitted = operation;
+                    }
+                    else
+                    {
+                        // The configuration value moved on, so this park can never resume. Retire it as a terminal sweep.
+                        if (operation.RecoveryPolicy != LongRunningOperationRecoveryPolicy.ResumeFromCheckpoint
+                            || operation.LeaseOwner is not null || operation.LeaseExpiresAt is not null
+                            || !ownership.TryClaim(operation.Id, out token)) throw new InvalidDataException();
+
+                        claimed = operation.Id;
+
+                        LongRunningOperation abandoned = await AbandonParkedWithinAsync(connection, transaction, operation, ct).ConfigureAwait(false);
+
+                        await RetireTerminalRequestWithinAsync(connection, transaction, scope, active, abandoned, ct).ConfigureAwait(false);
+
+                        admitted = await CreateRequestWithinAsync(connection, transaction, scope, stamp, ct).ConfigureAwait(false);
+                    }
+                }
+                else if (operation.State is LongRunningOperationState.Failed or LongRunningOperationState.Abandoned)
                 {
                     if (operation.RecoveryPolicy != LongRunningOperationRecoveryPolicy.ResumeFromCheckpoint
                         || operation.CompletedAt is null || operation.LeaseOwner is not null || operation.LeaseExpiresAt is not null
@@ -146,6 +175,36 @@ internal sealed partial class LongRestSweepStore : ILongRestSweepRequestAdmissio
         {
             if (claimed != Guid.Empty) ownership.Release(claimed, token);
         }
+    }
+
+    /// <summary>
+    /// Whether the parked sweep is one its own authority class will readmit. A protected sweep waits for a fresh Session
+    /// request. A clean sweep waits for the worker, unless its fault is not resumable or its failure budget is spent.
+    /// </summary>
+    private static bool IsResumablePark(LongRestSweepScope scope, LongRunningOperation operation, ActiveRequest active)
+    {
+        if (scope.ProtectedPartitionDigest is not null) return operation.TerminalErrorCode == LongRestParkCodes.AuthorizedRequestRequired;
+
+        if (LongRestFaultPolicy.Classify(operation.TerminalErrorCode) != LongRestFaultClass.ResumeLater) return false;
+
+        return operation.TerminalErrorCode is LongRestParkCodes.MaintenanceDeferred or LongRestParkCodes.ReadmitRequested
+            || LongRestFaultPolicy.CanReadmit(active.ReadmitCount);
+    }
+
+    private async Task<LongRunningOperation> AbandonParkedWithinAsync(SqliteConnection connection, SqliteTransaction transaction,
+        LongRunningOperation operation, CancellationToken ct)
+    {
+        await using SqliteCommand abandon = Command(connection, transaction, """
+            UPDATE LongRunningOperations SET State = $abandoned, CompletedAt = $at, TerminalErrorCode = $error, Revision = Revision + 1
+            WHERE Id = $operation AND Revision = $revision AND Kind = $kind AND RecoveryPolicy = $policy AND State = $attention
+                AND LeaseOwner IS NULL AND LeaseExpiresAt IS NULL;
+            """, ("$operation", operation.Id.ToString("N")), ("$revision", operation.Revision), ("$kind", LongRunningOperationKinds.LongRestSweep),
+            ("$policy", (int)LongRunningOperationRecoveryPolicy.ResumeFromCheckpoint), ("$attention", (int)LongRunningOperationState.ReconciliationRequired),
+            ("$abandoned", (int)LongRunningOperationState.Abandoned), ("$at", UtcInstantText.Format(timeProvider.GetUtcNow())), ("$error", StaleRequestConfiguration));
+
+        if (await abandon.ExecuteNonQueryAsync(ct).ConfigureAwait(false) != 1) throw new InvalidDataException();
+
+        return await LongRunningOperationStore.ReadWithinAsync(connection, transaction, operation.Id, ct).ConfigureAwait(false) ?? throw new InvalidDataException();
     }
 
     private async Task RetireTerminalRequestWithinAsync(SqliteConnection connection, SqliteTransaction transaction,
@@ -227,7 +286,7 @@ internal sealed partial class LongRestSweepStore : ILongRestSweepRequestAdmissio
         LongRestSweepScope scope, CancellationToken ct)
     {
         await using SqliteCommand command = Command(connection, transaction, """
-            SELECT OperationId, ConfigurationJson, Revision, GenerationId, PhaseCode FROM long_rest_sweeps
+            SELECT OperationId, ConfigurationJson, Revision, GenerationId, PhaseCode, ReadmitCount FROM long_rest_sweeps
             WHERE ScopeKindCode = $scope AND CampaignId IS $campaign AND PartitionDigest IS $partition
                 AND PhaseCode NOT IN (6, 7, 9) LIMIT 1;
             """, ("$scope", (int)scope.Kind), ("$campaign", scope.CampaignId is { } campaign ? Format(campaign) : null),
@@ -237,7 +296,7 @@ internal sealed partial class LongRestSweepStore : ILongRestSweepRequestAdmissio
 
         return await reader.ReadAsync(ct).ConfigureAwait(false)
             ? new(Guid.Parse(reader.GetString(0)), reader.GetString(1), reader.GetInt64(2),
-                reader.IsDBNull(3) ? null : Guid.Parse(reader.GetString(3)), (LongRestSweepPhase)reader.GetInt32(4)) : null;
+                reader.IsDBNull(3) ? null : Guid.Parse(reader.GetString(3)), (LongRestSweepPhase)reader.GetInt32(4), checked((int)reader.GetInt64(5))) : null;
     }
 
     private static async Task<bool> IsNeverStartedCleanAsync(SqliteConnection connection, SqliteTransaction transaction,
@@ -281,5 +340,8 @@ internal sealed partial class LongRestSweepStore : ILongRestSweepRequestAdmissio
         if (await update.ExecuteNonQueryAsync(ct).ConfigureAwait(false) != 1) throw new InvalidDataException();
     }
 
-    private sealed record ActiveRequest(Guid OperationId, string ConfigurationJson, long Revision, Guid? GenerationId, LongRestSweepPhase Phase);
+    private sealed record ActiveRequest(Guid OperationId, string ConfigurationJson, long Revision, Guid? GenerationId, LongRestSweepPhase Phase,
+        int ReadmitCount);
+
+    private sealed class SweepParkedException : Exception;
 }

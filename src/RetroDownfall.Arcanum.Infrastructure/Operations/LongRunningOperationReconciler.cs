@@ -2,7 +2,6 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using RetroDownfall.Arcanum.Core.Operations;
 using RetroDownfall.Arcanum.Core.Telemetry;
-using RetroDownfall.Arcanum.Infrastructure.Data.LongRest;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Operations;
 
@@ -709,11 +708,6 @@ public sealed class LongRunningOperationReconciler
             _logger.LogWarning(ex, "Operation {OperationId} has a corrupt recovery checkpoint.", operation.Id);
             return LongRunningOperationRecoveryResult.RequiresAttention(
                 LongRunningOperationErrorCodes.CorruptCheckpoint);
-        }
-        catch (LongRestMaintenanceDeferredException) when (operation.Kind == LongRunningOperationKinds.LongRestSweep && operation.CheckpointVersion == 1)
-        {
-            // Maintenance yielded admitted clean work; its exact owner/checkpoint remains debt.
-            throw;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {

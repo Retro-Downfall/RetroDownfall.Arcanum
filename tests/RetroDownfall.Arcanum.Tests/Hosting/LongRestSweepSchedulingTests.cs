@@ -436,7 +436,7 @@ public sealed partial class LongRestSweepSchedulingTests
             Coordinator = new(F.Operations, Sweeps, F.H.Store, F.Epoch, Facts, F.Maintenance, F.Gate,
                 Ownership, Queue, F.Services.GetRequiredService<IServiceScopeFactory>(), F.Clock, F.RecordedAdmission);
 
-            Service = new(new BorrowedScopes(this), Queue, F.Epoch, F.Admission, Log);
+            Service = new(new BorrowedScopes(this), Queue, F.Epoch, F.Admission, F.Clock, Log);
         }
 
         internal async Task<Guid> RequestAsync(CanonicalCampaignContext scope) =>

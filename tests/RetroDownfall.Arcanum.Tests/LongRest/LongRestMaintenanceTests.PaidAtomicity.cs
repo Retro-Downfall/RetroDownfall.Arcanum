@@ -129,7 +129,12 @@ public sealed partial class LongRestMaintenanceTests
 
         Assert.Equal(1, f.Handler.SendCount);
 
-        Assert.Equal(LongRunningOperationState.Running, (await f.Operations.GetAsync(f.Operation))!.State);
+        // The worker yielded to maintenance after the summary committed: parked under the free yield code, not terminal.
+        LongRunningOperation yielded = (await f.Operations.GetAsync(f.Operation))!;
+
+        Assert.Equal(LongRunningOperationState.ReconciliationRequired, yielded.State);
+
+        Assert.Equal(LongRestParkCodes.MaintenanceDeferred, yielded.TerminalErrorCode);
 
         Assert.Equal(0L, await f.H.ScalarAsync("SELECT count(*) FROM long_rest_discovery_embeddings;"));
 

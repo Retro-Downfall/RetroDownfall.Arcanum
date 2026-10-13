@@ -105,7 +105,7 @@ internal static class UtcInstantColumnInventory
             .Append(new UtcInstantTable("long_rest_discovery_generations", ["CreatedAtUtc"]))
             .Append(new UtcInstantTable("long_rest_accepted_summaries", ["CreatedAtUtc"]))
             .Append(new UtcInstantTable("long_rest_adjudications", ["CreatedAtUtc"]))
-            .Append(new UtcInstantTable("long_rest_sweeps", ["UpdatedAtUtc"]))
+            .Append(new UtcInstantTable("long_rest_sweeps", ["ParkedAt", "UpdatedAtUtc"]))
             .Append(new UtcInstantTable("long_rest_provider_effects", ["UpdatedAtUtc"]))
             .OrderBy(static table => table.TableName, StringComparer.Ordinal),
     ];

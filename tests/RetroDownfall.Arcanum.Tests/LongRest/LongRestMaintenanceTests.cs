@@ -413,6 +413,26 @@ public sealed partial class LongRestMaintenanceTests
             return await Maintenance.ProcessAdmittedAsync(operationId, workerOwner, capability, lease, ct);
         }
 
+        /// <summary>
+        /// Drives the hosted worker's door the way its loop does: a fresh Long Rest sweep lease from this fixture's gate,
+        /// passed by value to the coordinator's admitted entry and disposed afterwards.
+        /// </summary>
+        internal async Task<Result<LongRestSweepProgress>> ResumeAdmittedAsync(Guid operationId, CancellationToken ct)
+        {
+            ct.ThrowIfCancellationRequested();
+
+            if (!RecordedAdmission.TryAcquireWorkLease(GrimoireWorkKind.LongRestSweep, out IGrimoireWorkLease? admitted))
+            {
+                ct.ThrowIfCancellationRequested();
+
+                throw new LongRestMaintenanceDeferredException(CancellationToken.None);
+            }
+
+            await using IGrimoireWorkLease lease = admitted!;
+
+            return await Coordinator.ResumeAdmittedAsync(operationId, lease, ct);
+        }
+
         internal async Task RebootAsync()
         {
             Guid priorBoot = Epoch.Capture().Stamp.BootId;
@@ -442,7 +462,8 @@ public sealed partial class LongRestMaintenanceTests
                 InvocationAttendance.Attended, CovenantContextPolicy.Default, ToolPolicy.NoTools,
                 CovenantReadAuthorityEpoch.CreateForTests(Guid.NewGuid(), Authority.Snapshot.RuntimeAuthorityGeneration, Authority.Snapshot.AuthorityEpoch)).Value;
 
-            await H.ExecuteAsync("UPDATE LongRunningOperations SET LeaseExpiresAt = '2000-01-01T00:00:00.0000000Z';");
+            // A restart lapses every lease that was held. A parked sweep holds none, and keeps holding none.
+            await H.ExecuteAsync("UPDATE LongRunningOperations SET LeaseExpiresAt = '2000-01-01T00:00:00.0000000Z' WHERE LeaseOwner IS NOT NULL;");
 
             Compose();
         }
