@@ -16,7 +16,7 @@ internal static partial class HostedGrimoireProducerInventory
 {
     // The premises every production discovery requests. Fixtures cannot name this constant's effect:
     // they reach the engine only through DiscoverProducerSites, which fixes the premises at None.
-    internal const HostedProducerPremises ProductionPremises = HostedProducerPremises.SqliteSealedByUse;
+    internal const HostedProducerPremises ProductionPremises = HostedProducerPremises.SqliteSealedByUse | HostedProducerPremises.AuthoredEnumerablesAbsentByUse;
 
     // A root subset narrows a production run to named roots without touching any limit, scan or refusal. A
     // selector is a hosted service type name (every declared operation of that service), a declared

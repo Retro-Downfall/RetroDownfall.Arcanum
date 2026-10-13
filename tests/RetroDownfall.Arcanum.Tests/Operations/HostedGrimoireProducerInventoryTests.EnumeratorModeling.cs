@@ -400,6 +400,144 @@ public sealed partial class HostedGrimoireProducerInventoryTests
         Assert.Contains(result.Diagnostics, static diagnostic => diagnostic.Code is "HOSTED_SITE_UNCLASSIFIED" or "HOSTED_CALL_TARGET_UNRESOLVED");
     }
 
+    [Fact]
+    public void AuthoredGenericEnumerableIsTraversedThroughItsConstructedInterfaceMembers()
+    {
+        string helpers = "sealed class Box<T> : System.Collections.Generic.IEnumerable<T> { "
+            + "public System.Collections.Generic.IEnumerator<T> GetEnumerator() { " + EnumerationEffect + "return new BoxEnumerator<T>(); } "
+            + "System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator(); } "
+            + "sealed class BoxEnumerator<T> : System.Collections.Generic.IEnumerator<T> { "
+            + "public bool MoveNext() => false; public T Current => default!; object System.Collections.IEnumerator.Current => Current!; public void Reset() { } public void Dispose() { } }";
+
+        HostedProducerSite site = Assert.Single(EnumerationDeleteSites(EnumerationDiscover(EnumerationCompile(R2Admission + "foreach (int item in new Box<int>()) { _ = item; } await Task.CompletedTask;", helpers))));
+
+        Assert.NotNull(site.WorkFrontierCapsuleId);
+    }
+
+    [Fact]
+    public void AuthoredAsyncIteratorBehindConfigureAwaitIsOwnedByTheAwaitForeach()
+    {
+        string helpers = "static class Source { internal static async System.Collections.Generic.IAsyncEnumerable<int> Items() { " + EnumerationEffect + "await Task.CompletedTask; yield return 1; } }";
+
+        string body = R2Admission + "await foreach (int item in Source.Items().ConfigureAwait(false)) { _ = item; } await Task.CompletedTask;";
+
+        HostedProducerDiscovery<HostedProducerSite> result = EnumerationDiscover(EnumerationCompile(body, helpers));
+
+        HostedProducerSite site = Assert.Single(EnumerationDeleteSites(result));
+
+        Assert.NotNull(site.WorkFrontierCapsuleId);
+
+        Assert.Empty(result.Diagnostics);
+    }
+
+    [Fact]
+    public void AuthoredAsyncIteratorBehindConfigureAwaitEnumeratedAfterDisposalLosesTheWork()
+    {
+        string helpers = "static class Source { internal static async System.Collections.Generic.IAsyncEnumerable<int> Items() { " + EnumerationEffect + "await Task.CompletedTask; yield return 1; } }";
+
+        string body = R2Admission + "var items = Source.Items(); lease.Dispose(); await foreach (int item in items.ConfigureAwait(false)) { _ = item; } await Task.CompletedTask;";
+
+        HostedProducerDiscovery<HostedProducerSite> result = EnumerationDiscover(EnumerationCompile(body, helpers));
+
+        HostedProducerSite site = Assert.Single(EnumerationDeleteSites(result));
+
+        Assert.Null(site.WorkFrontierCapsuleId);
+    }
+
+    // An interface-typed local fed by an authored iterator is the iterator's own enumerator: the body is
+    // traversed once, where the iterator is called, never a second time at the loop.
+    [Fact]
+    public void InterfaceTypedLocalFedByAnAuthoredIteratorIsNotTraversedTwice()
+    {
+        string helpers = "static class Source { internal static System.Collections.Generic.IEnumerable<int> Items() { " + EnumerationEffect + "yield return 1; } }";
+
+        string body = R2Admission + "System.Collections.Generic.IEnumerable<int> items = Source.Items(); foreach (int item in items) { _ = item; } await Task.CompletedTask;";
+
+        HostedProducerDiscovery<HostedProducerSite> result = EnumerationDiscover(EnumerationCompile(body, helpers));
+
+        HostedProducerSite site = Assert.Single(EnumerationDeleteSites(result));
+
+        Assert.NotNull(site.WorkFrontierCapsuleId);
+
+        Assert.Empty(result.Diagnostics);
+    }
+
+    // A framework sequence built over a closed collection stays closed; the same operator over an unproven
+    // sequence is refused, so the closed shape is the only thing accepted.
+    [Theory]
+    [InlineData("foreach (int item in System.Linq.Enumerable.Select(new int[] { 1 }, value => value)) { _ = item; }", true)]
+    [InlineData("foreach (int item in System.Linq.Enumerable.Where(new System.Collections.Generic.List<int>(), value => value > 0)) { _ = item; }", true)]
+    [InlineData("foreach (int item in System.Linq.Enumerable.Select(UnprovedEnumerableInput.Items, value => value)) { _ = item; }", false)]
+    [InlineData("foreach (int item in System.Linq.Enumerable.Concat(new int[] { 1 }, UnprovedEnumerableInput.Items)) { _ = item; }", false)]
+    public void FrameworkSequenceOperatorIsClosedOnlyOverClosedSequences(string statement, bool closed)
+    {
+        string helpers = "static class UnprovedEnumerableInput { internal static System.Collections.Generic.IEnumerable<int> Items { get; set; } = null!; }";
+
+        CSharpCompilation compilation = EnumerationCompile(R2Admission + statement + " await Task.CompletedTask;", helpers);
+
+        HostedProducerDiscovery<HostedProducerSite> result = EnumerationDiscover(compilation);
+
+        SyntaxTree tree = Assert.Single(compilation.SyntaxTrees);
+
+        SyntaxNode loop = tree.GetRoot().DescendantNodes().First(static node => node is CommonForEachStatementSyntax);
+
+        Assert.Equal(!closed, result.Diagnostics.Any(diagnostic => diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED" && diagnostic.Identity == tree.FilePath + ":" + loop.SpanStart));
+    }
+
+    // A type that only shares a framework collection's name is not that collection: the unreviewed assembly's
+    // members run unseen, so the loop is refused.
+    [Fact]
+    public void ForeignTypeSharingAClosedCollectionNameIsNotClosed()
+    {
+        CSharpCompilation foreign = Compile("namespace System.Collections.Generic { public sealed class Queue<T> { public Enumerator GetEnumerator() => default; public struct Enumerator { public bool MoveNext() { System.IO.File.Delete(\"foreign-enumeration\"); return false; } public T Current => default!; } } } "
+            + "namespace Unreviewed { public static class ForeignFactory { public static System.Collections.Generic.Queue<int> Make() => new System.Collections.Generic.Queue<int>(); } }")
+            .WithAssemblyName("Unreviewed.Collections");
+
+        using MemoryStream image = new();
+
+        Microsoft.CodeAnalysis.Emit.EmitResult emitted = foreign.Emit(image);
+
+        Assert.True(emitted.Success, string.Join(global::System.Environment.NewLine, emitted.Diagnostics));
+
+        CSharpCompilation compilation = Compile(R2Source(R2Admission + "foreach (int item in Unreviewed.ForeignFactory.Make()) { _ = item; } await Task.CompletedTask;"))
+            .AddReferences(MetadataReference.CreateFromImage(image.ToArray()));
+
+        Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        HostedProducerDiscovery<HostedProducerSite> result = EnumerationDiscover(compilation);
+
+        SyntaxTree tree = Assert.Single(compilation.SyntaxTrees);
+
+        SyntaxNode loop = tree.GetRoot().DescendantNodes().First(static node => node is CommonForEachStatementSyntax);
+
+        Assert.Contains(result.Diagnostics, diagnostic => diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED" && diagnostic.Identity == tree.FilePath + ":" + loop.SpanStart);
+    }
+
+    // An opaque callback that enumerates an authored sequence inside its body is judged by what that
+    // enumerator can do, exactly as if the enumerator's call were written in the body.
+    [Theory]
+    [InlineData("MoveNext", true)]
+    [InlineData("GetEnumerator", true)]
+    [InlineData("none", false)]
+    public void OpaqueCallbackBodyThatEnumeratesAnAuthoredSequenceIsJudgedByThatEnumerator(string effectMember, bool refused)
+    {
+        string body = R2Admission + "GC.KeepAlive((Action)(() => { foreach (int item in new Probe()) { _ = item; } })); await Task.CompletedTask;";
+
+        HostedProducerDiscovery<HostedProducerSite> result = EnumerationDiscover(EnumerationCompile(body, InterfaceEnumerable(effectMember)));
+
+        Assert.Equal(refused, result.Diagnostics.Any(static diagnostic => diagnostic.Code == "HOSTED_CALLBACK_OWNERSHIP_UNPROVEN"));
+    }
+
+    [Theory]
+    [InlineData("foreach (long item in new int[] { 1 }) { _ = item; }")]
+    [InlineData("foreach (object item in new System.Collections.Generic.List<int>()) { _ = item; }")]
+    public void BuiltInForeachElementConversionsAddNoCall(string statement)
+    {
+        HostedProducerDiscovery<HostedProducerSite> result = EnumerationDiscover(EnumerationCompile(R2Admission + statement + " await Task.CompletedTask;", InterfaceEnumerable("none")));
+
+        Assert.Empty(result.Diagnostics);
+    }
+
     // A foreach element conversion is a user-defined call per iteration, written nowhere in the body.
     [Fact]
     public void AuthoredElementConversionOfAForeachIsTraversedPerIteration()

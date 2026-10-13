@@ -24995,6 +24995,16 @@ internal static partial class HostedGrimoireProducerInventory
 
                         string callee = Normalize(method);
 
+                        if ((node is InvocationExpressionSyntax or BaseObjectCreationExpressionSyntax)
+                            && Resolve(method, member.Model.Compilation) is null
+                            && method.Locations.All(static location => !location.IsInSource)
+                            && FrameworkMemberRunsAuthoredEnumerator(member, node, method, out string enumerationDetail))
+                        {
+                            RefuseTraversalCompletion();
+
+                            diagnostics.Add(new("HOSTED_CALLBACK_OWNERSHIP_UNPROVEN", RootOperation(operationId) + "/enumerable@" + Location(node), enumerationDetail));
+                        }
+
                         if (node is InvocationExpressionSyntax explicitCleanup
                             && (IsTrustedFrameworkCleanupSlot(method)
                                 || IsExactSdkSessionCleanup(method))
@@ -26300,6 +26310,23 @@ internal static partial class HostedGrimoireProducerInventory
                         RefuseTraversalCompletion();
 
                         diagnostics.Add(new("HOSTED_CALL_TARGET_UNRESOLVED", Location(node), node.ToString()));
+                    }
+
+                    if (node is CommonForEachStatementSyntax or SpreadElementSyntax)
+                    {
+                        emittedEvidence = MergeEvidence(
+                            emittedEvidence,
+                            TraverseEnumeration(
+                                member,
+                                node,
+                                rootType,
+                                operationId,
+                                active,
+                                lifecycle,
+                                ordinary?.WorkKind,
+                                inheritedWork,
+                                inheritedEffect,
+                                recoveryEffect));
                     }
 
                     if (node is UsingStatementSyntax { Expression: { } resource } expressionUsing)
@@ -29419,7 +29446,7 @@ internal static partial class HostedGrimoireProducerInventory
                     && definition.Name is "Select" or "Where";
         }
 
-        private static bool IsLazySequence(ITypeSymbol type) => TypeKey(type) is "System.Collections.IEnumerable" or "System.Collections.Generic.IEnumerable`1";
+        private static bool IsLazySequence(ITypeSymbol type) => TypeKey(type) is "System.Collections.IEnumerable" or "System.Collections.Generic.IEnumerable`1" or "System.Collections.Generic.IAsyncEnumerable`1";
 
         private static bool IsIteratorMember(AuthoredMember member) => member.Syntax.DescendantNodesAndSelf(node => node == member.Syntax || node is not AnonymousFunctionExpressionSyntax and not LocalFunctionStatementSyntax).Any(static node => node is YieldStatementSyntax);
 
@@ -34200,6 +34227,12 @@ internal static partial class HostedGrimoireProducerInventory
             {
                 foreach (SyntaxNode node in member.Syntax.DescendantNodesAndSelf(candidate => candidate == member.Syntax || candidate is not AnonymousFunctionExpressionSyntax and not LocalFunctionStatementSyntax))
                 {
+                    if (node is CommonForEachStatementSyntax or SpreadElementSyntax
+                        && EnumerationReachesProducerSite(member, node, path))
+                    {
+                        return true;
+                    }
+
                     if (member.Model.GetSymbolInfo(node).Symbol is IMethodSymbol method)
                     {
                         string callee = Normalize(method);
