@@ -345,4 +345,80 @@ public sealed partial class HostedGrimoireProducerInventoryTests
 
         Assert.Empty(result.Diagnostics);
     }
+
+    [Theory]
+    [InlineData("cancellation-equality", "counterfeit::System.Threading.CancellationToken left = default; _ = left == left;", "System.Threading.CancellationToken.op_Equality")]
+    [InlineData("cancellation-inequality", "counterfeit::System.Threading.CancellationToken left = default; _ = left != left;", "System.Threading.CancellationToken.op_Inequality")]
+    [InlineData("int128-addition", "counterfeit::System.Int128 left = default; _ = left + left;", "System.Int128.op_Addition")]
+    [InlineData("int128-implicit", "counterfeit::System.Int128 value = 3;", "System.Int128.op_Implicit")]
+    [InlineData("index-implicit", "counterfeit::System.Index value = 3;", "System.Index.op_Implicit")]
+    public void FrameworkScalarOperatorsFromAnUnreviewedAssemblyStayUnclassified(string shape, string body, string callee)
+    {
+        Assert.NotEmpty(shape);
+
+        const string lookalikes = """
+            namespace System.Threading
+            {
+                public readonly struct CancellationToken
+                {
+                    public static bool operator ==(CancellationToken left, CancellationToken right) => true;
+
+                    public static bool operator !=(CancellationToken left, CancellationToken right) => false;
+
+                    public override bool Equals(object? other) => true;
+
+                    public override int GetHashCode() => 0;
+                }
+            }
+
+            namespace System
+            {
+                public readonly struct Int128
+                {
+                    public static Int128 operator +(Int128 left, Int128 right) => default;
+
+                    public static implicit operator Int128(int value) => default;
+                }
+
+                public readonly struct Index
+                {
+                    public static implicit operator Index(int value) => default;
+                }
+            }
+            """;
+
+        CSharpCompilation foreign = CompileWithProductionReferencePack(lookalikes, "RetroDownfall.Arcanum.Api").WithAssemblyName("Untrusted.Scalars");
+
+        using MemoryStream image = new();
+
+        Assert.True(foreign.Emit(image).Success);
+
+        CSharpCompilation compilation = CompileWithProductionReferencePack("extern alias counterfeit; " + R2Source(body + " await Task.CompletedTask;"), "RetroDownfall.Arcanum.Api")
+            .AddReferences(MetadataReference.CreateFromImage(image.ToArray(), new MetadataReferenceProperties(aliases: ["counterfeit"])));
+
+        Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        // The operator is a metadata method whose declaring assembly is not the trusted CoreLib identity.
+        SyntaxTree tree = Assert.Single(compilation.SyntaxTrees);
+
+        SemanticModel model = compilation.GetSemanticModel(tree);
+
+        IMethodSymbol selected = Assert.Single(tree.GetRoot().DescendantNodes().Select(node => model.GetOperation(node)).OfType<IOperation>()
+            .SelectMany(static operation => operation.DescendantsAndSelf())
+            .Select(static operation => operation switch
+            {
+                IBinaryOperation { OperatorMethod: { } method } => method,
+                IConversionOperation { OperatorMethod: { } method } => method,
+                _ => null,
+            }).OfType<IMethodSymbol>().Distinct(SymbolEqualityComparer.Default).Cast<IMethodSymbol>());
+
+        Assert.Equal("Untrusted.Scalars", selected.ContainingAssembly.Name);
+
+        Assert.Empty(selected.DeclaringSyntaxReferences);
+
+        HostedProducerDiscovery<HostedProducerSite> result = HostedGrimoireProducerInventory.DiscoverProducerSites(
+            [compilation], new(["Worker"], []), [new("Worker", [OrdinaryRoot()])], []);
+
+        Assert.Contains(result.Diagnostics, diagnostic => diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED" && diagnostic.Detail == callee);
+    }
 }

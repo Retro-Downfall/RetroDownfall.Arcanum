@@ -586,4 +586,37 @@ public sealed partial class HostedGrimoireProducerInventoryTests
 
         Assert.Equal(!certified, unclassified);
     }
+
+    [Theory]
+    [InlineData("System.Guid")]
+    [InlineData("System.DateTimeOffset")]
+    [InlineData("System.Int128")]
+    [InlineData("System.Index")]
+    public void ClosedValueEqualityRefusesALeafNamedLikeCoreLibFromAnUnreviewedAssembly(string leaf)
+    {
+        int split = leaf.LastIndexOf('.');
+
+        string lookalike = "namespace " + leaf[..split] + " { public readonly struct " + leaf[(split + 1)..] + " : System.IEquatable<" + leaf[(split + 1)..] + "> { public bool Equals(" + leaf[(split + 1)..] + " other) => true; } }";
+
+        CSharpCompilation foreign = CompileWithProductionReferencePack(lookalike, "RetroDownfall.Arcanum.Api").WithAssemblyName("Untrusted.Leaves");
+
+        using MemoryStream image = new();
+
+        Assert.True(foreign.Emit(image).Success);
+
+        string source = "extern alias counterfeit;\n#nullable enable\n" + R2Source(
+            "_ = LeafSource.Left == LeafSource.Right; await Task.CompletedTask;",
+            "public readonly record struct LeafProbe(counterfeit::" + leaf + " Field); static class LeafSource { public static LeafProbe Left => default; public static LeafProbe Right => default; }");
+
+        CSharpCompilation compilation = CompileWithProductionReferencePack(source, "RetroDownfall.Arcanum.Api")
+            .AddReferences(MetadataReference.CreateFromImage(image.ToArray(), new MetadataReferenceProperties(aliases: ["counterfeit"])));
+
+        Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        HostedProducerDiscovery<HostedProducerSite> result = HostedGrimoireProducerInventory.DiscoverProducerSites(
+            [compilation], new(["Worker"], []), [new("Worker", [OrdinaryRoot()])], []);
+
+        Assert.Contains(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED"
+            && diagnostic.Detail == "LeafProbe.op_Equality");
+    }
 }
