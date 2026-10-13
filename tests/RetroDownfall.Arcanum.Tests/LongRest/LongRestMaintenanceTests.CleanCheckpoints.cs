@@ -5,6 +5,7 @@ using RetroDownfall.Arcanum.Core.Operations;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Operations.LongRest;
 using RetroDownfall.Arcanum.Tests.Fixtures;
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.LongRest;
 
@@ -150,12 +151,33 @@ public sealed partial class LongRestMaintenanceTests
 
         int leasesBefore = f.RecordedAdmission.InnerWorkLeases.Count;
 
+        int attestationsBefore = f.RecordedAdmission.DrainedAttestations.Count;
+
         // The existing helper expires only the durable deadline after unwind, then uses a
         // fresh runtime pass with classified acquisition, reconciler and registered handler.
         LongRunningOperationReconciliationSummary recovered = await RecoverCleanAssociationAsync(f);
 
         Assert.Contains(f.RecordedAdmission.InnerWorkLeases.Skip(leasesBefore), lease =>
             lease.Kind == GrimoireWorkKind.LongRunningOperationRecovery && lease.Generation == f.Admission.CurrentGeneration);
+
+        // Every attestation presents the recovery lease and the interval from the ORIGINAL previous admission
+        // to the current one: the coordinator pre-check, then each store validation (two attestations apiece).
+        RecordingGrimoireWorkAdmissionGate.DrainedAttestation[] attested = f.RecordedAdmission.DrainedAttestations.Skip(attestationsBefore).ToArray();
+
+        int minimum = generationCompleted ? 13 : 7;
+
+        Assert.True(attested.Length >= minimum, $"expected at least {minimum} attestations, saw {attested.Length}");
+
+        Assert.All(attested, attestation =>
+        {
+            Assert.True(attestation.Attested);
+
+            Assert.Equal(GrimoireWorkKind.LongRunningOperationRecovery, attestation.Kind);
+
+            Assert.Equal(original.Fence.AdmissionGeneration, attestation.Previous);
+
+            Assert.Equal(f.Admission.CurrentGeneration, attestation.Current);
+        });
 
         Assert.Equal(2, f.Handler.SendCount);
 

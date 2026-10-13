@@ -3014,6 +3014,8 @@ public sealed class McpConnectionManagerBootstrapIdempotencyTests : IAsyncLifeti
 
         public long CurrentGeneration => inner.CurrentGeneration;
 
+        public bool AttestDrainedMaintenance(IGrimoireWorkLease lease, long previousGeneration, long currentGeneration) => false;
+
         public int RefusalWaits => Volatile.Read(ref _refusalWaits);
 
         public bool TryAcquireRequestLease(
@@ -3122,6 +3124,8 @@ public sealed class McpConnectionManagerBootstrapIdempotencyTests : IAsyncLifeti
             public long Generation => innerWork.Generation;
 
             public CancellationToken MaintenanceRevocation => maintenanceRevocation;
+
+            public bool MaintenanceRevocationPending => MaintenanceRevocation.IsCancellationRequested;
 
             public bool TryBeginExternalEffectGroup(
                 out IGrimoireExternalEffectGroup? effectGroup)

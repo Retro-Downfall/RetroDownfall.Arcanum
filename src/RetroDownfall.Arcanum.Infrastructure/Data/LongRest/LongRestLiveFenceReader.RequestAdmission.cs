@@ -9,7 +9,18 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.LongRest;
 
 internal sealed partial class LongRestLiveFenceReader
 {
-    internal bool AttestCleanAdmission(GrimoireConnectionAdmissionGate.DrainedMaintenanceProof proof) => admission.AttestDrainedMaintenance(proof);
+    /// <summary>
+    /// Attests that the presented lease is a live Long Rest lease and that every admission generation since
+    /// <paramref name="previousGeneration"/> was a fully drained, non-destructive abort. Which work kinds may carry a
+    /// clean sweep across such an abort is Long Rest policy, so it is decided here and never inside the generic gate.
+    /// </summary>
+    /// <remarks>
+    /// The startup recovery path still runs a clean sweep under its own recovery lease, so that kind is accepted
+    /// until recovery only parks the sweep and the hosted worker alone readmits it.
+    /// </remarks>
+    internal bool AttestCleanAdmission(IGrimoireWorkLease lease, long previousGeneration, long currentGeneration) =>
+        lease.Kind is GrimoireWorkKind.LongRestSweep or GrimoireWorkKind.LongRunningOperationRecovery
+        && admission.AttestDrainedMaintenance(lease, previousGeneration, currentGeneration);
 
     internal bool IsCleanRecipeCurrent(LongRestRecipeIdentity expected)
     {

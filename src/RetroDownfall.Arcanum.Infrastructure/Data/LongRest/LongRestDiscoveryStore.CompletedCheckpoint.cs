@@ -13,14 +13,14 @@ internal interface ILongRestCompletedCheckpointReconciliation
 {
     Task<Result<LongRestSweep>> ReconcileCompletedCheckpointAsync(LongRestDiscoveryGeneration expected, LongRestSweepFence current,
         LongRestRecipeIdentity recipe, string workerOwner, LongRestLiveFenceReader facts,
-        GrimoireConnectionAdmissionGate.DrainedMaintenanceProof proof, CancellationToken ct);
+        IGrimoireWorkLease admission, CancellationToken ct);
 }
 
 internal sealed partial class LongRestDiscoveryStore : ILongRestCompletedCheckpointReconciliation
 {
     public async Task<Result<LongRestSweep>> ReconcileCompletedCheckpointAsync(LongRestDiscoveryGeneration expected, LongRestSweepFence current,
         LongRestRecipeIdentity recipe, string workerOwner, LongRestLiveFenceReader facts,
-        GrimoireConnectionAdmissionGate.DrainedMaintenanceProof proof, CancellationToken ct)
+        IGrimoireWorkLease admission, CancellationToken ct)
     {
         try
         {
@@ -39,12 +39,15 @@ internal sealed partial class LongRestDiscoveryStore : ILongRestCompletedCheckpo
                 if (generation != expected || !generation.Published || generation.Phase != LongRestSweepPhase.Completed
                     || generation.Scope.ProtectedPartitionDigest is not null || generation.Recipe != recipe
                     || generation.Fence with { AdmissionGeneration = current.AdmissionGeneration } != current
-                    || proof.PreviousGeneration != generation.Fence.AdmissionGeneration || proof.CurrentGeneration != current.AdmissionGeneration
                     || sweep.OperationId != generation.OperationId || sweep.GenerationId != generation.GenerationId
                     || sweep.Scope != generation.Scope || sweep.Phase != LongRestSweepPhase.Completed)
                 {
                     throw new InvalidDataException();
                 }
+
+                // The interval the lease must attest starts at the admission this generation was captured under,
+                // read once from the reloaded row. A completed checkpoint is never adopted, so it cannot move.
+                long previousAdmission = generation.Fence.AdmissionGeneration;
 
                 await using (SqliteCommand ownership = Command(connection, transaction, """
                     SELECT EXISTS(SELECT 1 FROM long_rest_sweeps WHERE OperationId = $operation AND GenerationId = $generation
@@ -74,7 +77,7 @@ internal sealed partial class LongRestDiscoveryStore : ILongRestCompletedCheckpo
                     if ((long)(await coordinates.ExecuteScalarAsync(ct).ConfigureAwait(false))! != 1) throw new InvalidDataException();
                 }
 
-                await ValidateCompletedCheckpointProofAsync(connection, transaction, generation, current, workerOwner, facts, proof, ct).ConfigureAwait(false);
+                await ValidateCompletedCheckpointProofAsync(connection, transaction, generation, current, workerOwner, facts, admission, previousAdmission, ct).ConfigureAwait(false);
 
                 long revision;
 
@@ -99,7 +102,7 @@ internal sealed partial class LongRestDiscoveryStore : ILongRestCompletedCheckpo
 
                 byte[] payload = LongRestSweepCheckpointCodec.Encode(checkpoint).Value;
 
-                await ValidateCompletedCheckpointProofAsync(connection, transaction, generation, current, workerOwner, facts, proof, ct).ConfigureAwait(false);
+                await ValidateCompletedCheckpointProofAsync(connection, transaction, generation, current, workerOwner, facts, admission, previousAdmission, ct).ConfigureAwait(false);
 
                 DateTimeOffset now = timeProvider.GetUtcNow();
 
@@ -113,7 +116,7 @@ internal sealed partial class LongRestDiscoveryStore : ILongRestCompletedCheckpo
 
                 if (await save.ExecuteNonQueryAsync(ct).ConfigureAwait(false) != 1) throw new InvalidDataException();
 
-                await ValidateCompletedCheckpointProofAsync(connection, transaction, generation, current, workerOwner, facts, proof, ct).ConfigureAwait(false);
+                await ValidateCompletedCheckpointProofAsync(connection, transaction, generation, current, workerOwner, facts, admission, previousAdmission, ct).ConfigureAwait(false);
 
                 await transaction.CommitAsync(ct).ConfigureAwait(false);
 
@@ -130,9 +133,9 @@ internal sealed partial class LongRestDiscoveryStore : ILongRestCompletedCheckpo
 
     private async Task ValidateCompletedCheckpointProofAsync(SqliteConnection connection, SqliteTransaction transaction,
         LongRestDiscoveryGeneration generation, LongRestSweepFence current, string workerOwner, LongRestLiveFenceReader facts,
-        GrimoireConnectionAdmissionGate.DrainedMaintenanceProof proof, CancellationToken ct)
+        IGrimoireWorkLease admission, long previousAdmission, CancellationToken ct)
     {
-        await ValidateCleanOwnerAsync(connection, transaction, generation, current, workerOwner, facts, proof, ct).ConfigureAwait(false);
+        await ValidateCleanOwnerAsync(connection, transaction, generation, current, workerOwner, facts, admission, previousAdmission, ct).ConfigureAwait(false);
 
         await ValidateCompletedCorpusMetadataAsync(connection, transaction, generation, generation.Scope, ct).ConfigureAwait(false);
 
@@ -142,7 +145,7 @@ internal sealed partial class LongRestDiscoveryStore : ILongRestCompletedCheckpo
 
         await ValidateCompletedReceiptLinksAsync(connection, transaction, generation, ct).ConfigureAwait(false);
 
-        await ValidateCleanOwnerAsync(connection, transaction, generation, current, workerOwner, facts, proof, ct).ConfigureAwait(false);
+        await ValidateCleanOwnerAsync(connection, transaction, generation, current, workerOwner, facts, admission, previousAdmission, ct).ConfigureAwait(false);
     }
 
     private static async Task ValidateCompletedReceiptLinksAsync(SqliteConnection connection, SqliteTransaction transaction,

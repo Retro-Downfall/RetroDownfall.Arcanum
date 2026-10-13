@@ -804,6 +804,8 @@ public sealed class LongRunningOperationStartupHostedServiceTests
 
         public long CurrentGeneration => Volatile.Read(ref _generation);
 
+        public bool AttestDrainedMaintenance(IGrimoireWorkLease lease, long previousGeneration, long currentGeneration) => false;
+
         public bool TryAcquireWorkLease(GrimoireWorkKind kind, out IGrimoireWorkLease? lease)
         {
             Assert.Equal(GrimoireWorkKind.LongRunningOperationRecovery, kind);
@@ -877,6 +879,8 @@ public sealed class LongRunningOperationStartupHostedServiceTests
             public long Generation => generation;
 
             public CancellationToken MaintenanceRevocation => CancellationToken.None;
+
+            public bool MaintenanceRevocationPending => MaintenanceRevocation.IsCancellationRequested;
 
             public bool TryBeginExternalEffectGroup(out IGrimoireExternalEffectGroup? effectGroup)
             {

@@ -151,7 +151,7 @@ public sealed class LongRestTerminalReservationRefusalTests
     {
         FixedCovenantConnectionSource connections = new(f.H.Connection);
 
-        LongRestLiveFenceReader facts = new(f.H.Saga.Context, f.Runtime, f.Admission, f.Epoch,
+        LongRestLiveFenceReader facts = new(f.H.Saga.Context, f.Runtime, f.RecordedAdmission, f.Epoch,
             new CampaignAvailabilityReader(connections), new CampaignPathIdentityReader(connections, null!));
 
         LongRestSweepFence fence = Require(await facts.CaptureAsync(f.Scope, f.Epoch.Capture().Stamp, null, CancellationToken.None));

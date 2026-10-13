@@ -83,10 +83,10 @@ internal sealed partial class LongRestSweepCoordinator
                 {
                     if (previous.Fence != current && previous.Fence.Configuration.BootId == current.Configuration.BootId
                         && stored.Scope.ProtectedPartitionDigest is null && discovery is ILongRestCompletedCheckpointReconciliation completedRecovery
-                        && workAdmission.Lease.ProveDrainedMaintenance(previous.Fence.AdmissionGeneration) is { } completedProof)
+                        && facts.AttestCleanAdmission(workAdmission.Lease, previous.Fence.AdmissionGeneration, current.AdmissionGeneration))
                     {
                         LongRestSweep historical = Require(await completedRecovery.ReconcileCompletedCheckpointAsync(previous, current,
-                            options.Recipe.Value, owner, facts, completedProof, dispatch.Token).ConfigureAwait(false));
+                            options.Recipe.Value, owner, facts, workAdmission.Lease, dispatch.Token).ConfigureAwait(false));
 
                         return new(Progress(historical), LongRunningOperationRecoveryResult.Completed());
                     }
@@ -104,9 +104,9 @@ internal sealed partial class LongRestSweepCoordinator
                     if (previous is not null && previous.Fence != current
                         && previous.Fence.Configuration.BootId == current.Configuration.BootId
                         && stored.Scope.ProtectedPartitionDigest is null && discovery is ILongRestCleanReadmission clean
-                        && workAdmission.Lease.ProveDrainedMaintenance(previous.Fence.AdmissionGeneration) is { } proof)
+                        && facts.AttestCleanAdmission(workAdmission.Lease, previous.Fence.AdmissionGeneration, current.AdmissionGeneration))
                     {
-                        Require(await clean.ReadmitCleanAsync(previous, current, options.Recipe.Value, owner, facts, proof, dispatch.Token).ConfigureAwait(false));
+                        Require(await clean.ReadmitCleanAsync(previous, current, options.Recipe.Value, owner, facts, workAdmission.Lease, dispatch.Token).ConfigureAwait(false));
                     }
                     else
                     {

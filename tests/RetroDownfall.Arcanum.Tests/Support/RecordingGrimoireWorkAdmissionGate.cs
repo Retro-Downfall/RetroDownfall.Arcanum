@@ -18,6 +18,8 @@ internal sealed class RecordingGrimoireWorkAdmissionGate(
 
     private readonly List<long> _observedGenerationWaits = [];
 
+    private readonly List<DrainedAttestation> _drainedAttestations = [];
+
     private int _effectGroupAttempts;
 
     private int _generationWaits;
@@ -42,6 +44,18 @@ internal sealed class RecordingGrimoireWorkAdmissionGate(
             lock (_observationsGate)
             {
                 return _innerWorkLeases.ToArray();
+            }
+        }
+    }
+
+    /// <summary>Every drained-maintenance attestation this gate was asked for, in order, with its verdict.</summary>
+    internal IReadOnlyList<DrainedAttestation> DrainedAttestations
+    {
+        get
+        {
+            lock (_observationsGate)
+            {
+                return _drainedAttestations.ToArray();
             }
         }
     }
@@ -75,7 +89,23 @@ internal sealed class RecordingGrimoireWorkAdmissionGate(
 
     public long CurrentGeneration => inner.CurrentGeneration;
 
-    public bool AttestDrainedMaintenance(GrimoireConnectionAdmissionGate.DrainedMaintenanceProof proof) => inner.AttestDrainedMaintenance(proof);
+    /// <summary>
+    /// Forwards only a lease this gate itself wrapped, unwrapped to the inner gate's own lease.
+    /// A wrapper minted by any other gate, or a lease this gate never saw, is refused.
+    /// </summary>
+    public bool AttestDrainedMaintenance(IGrimoireWorkLease lease, long previousGeneration, long currentGeneration)
+    {
+        bool attested = lease is RecordingWorkLease recording
+            && ReferenceEquals(recording.Owner, this)
+            && inner.AttestDrainedMaintenance(recording.Inner, previousGeneration, currentGeneration);
+
+        lock (_observationsGate)
+        {
+            _drainedAttestations.Add(new(lease?.Kind, previousGeneration, currentGeneration, attested));
+        }
+
+        return attested;
+    }
 
     public bool TryAcquireRequestLease(
         GrimoireRequestKind kind,
@@ -174,10 +204,16 @@ internal sealed class RecordingGrimoireWorkAdmissionGate(
             revalidateDurableOwnerAsync,
             cancellationToken);
 
+    internal readonly record struct DrainedAttestation(GrimoireWorkKind? Kind, long Previous, long Current, bool Attested);
+
     private sealed class RecordingWorkLease(
         RecordingGrimoireWorkAdmissionGate gate,
         IGrimoireWorkLease inner) : IGrimoireWorkLease
     {
+        internal RecordingGrimoireWorkAdmissionGate Owner => gate;
+
+        internal IGrimoireWorkLease Inner => inner;
+
         public GrimoireWorkKind Kind => inner.Kind;
 
         public long Generation => inner.Generation;
@@ -185,9 +221,6 @@ internal sealed class RecordingGrimoireWorkAdmissionGate(
         public CancellationToken MaintenanceRevocation => inner.MaintenanceRevocation;
 
         public bool MaintenanceRevocationPending => inner.MaintenanceRevocationPending;
-
-        public GrimoireConnectionAdmissionGate.DrainedMaintenanceProof? ProveDrainedMaintenance(long previousGeneration) =>
-            inner.ProveDrainedMaintenance(previousGeneration);
 
         public bool TryBeginExternalEffectGroup(
             out IGrimoireExternalEffectGroup? effectGroup)

@@ -7,6 +7,7 @@ using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
 using RetroDownfall.Arcanum.Infrastructure.Operations;
 using RetroDownfall.Arcanum.Tests.Fixtures;
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.LongRest;
 
@@ -88,6 +89,8 @@ public sealed partial class LongRestMaintenanceTests
 
         int leasesBefore = f.RecordedAdmission.InnerWorkLeases.Count;
 
+        int attestationsBefore = f.RecordedAdmission.DrainedAttestations.Count;
+
         string? actualRecoveryOwner = null;
 
         f.Handler.InsideSend = async () =>
@@ -123,6 +126,38 @@ public sealed partial class LongRestMaintenanceTests
 
         Assert.Contains(f.RecordedAdmission.InnerWorkLeases.Skip(leasesBefore), lease =>
             lease.Kind == GrimoireWorkKind.LongRunningOperationRecovery && lease.Generation == f.Admission.CurrentGeneration);
+
+        RecordingGrimoireWorkAdmissionGate.DrainedAttestation[] attested = f.RecordedAdmission.DrainedAttestations.Skip(attestationsBefore).ToArray();
+
+        if (allowed)
+        {
+            // The coordinator pre-check and the three store validations (two attestations each) all attest the
+            // interval from the ORIGINAL previous admission. The third validation runs on the already adopted
+            // fence, so a store that attested "the fence's own admission" there would fail this.
+            Assert.True(attested.Length >= 7, $"expected the pre-check and three validations, saw {attested.Length} attestations");
+
+            Assert.All(attested, attestation =>
+            {
+                Assert.True(attestation.Attested);
+
+                Assert.Equal(GrimoireWorkKind.LongRunningOperationRecovery, attestation.Kind);
+
+                Assert.Equal(original.Fence.AdmissionGeneration, attestation.Previous);
+
+                Assert.Equal(f.Admission.CurrentGeneration, attestation.Current);
+            });
+        }
+        else if (change is "undrained" or "broken-lineage")
+        {
+            // The gate itself refused the interval at the pre-check: nothing was attested, nothing reached a store.
+            Assert.NotEmpty(attested);
+
+            Assert.DoesNotContain(attested, static attestation => attestation.Attested);
+        }
+        else if (change == "protected")
+        {
+            Assert.Empty(attested);
+        }
 
         Assert.Equal(retained.Evidence, await f.H.ScalarAsync("SELECT EvidenceJson FROM long_rest_accepted_summaries;"));
 

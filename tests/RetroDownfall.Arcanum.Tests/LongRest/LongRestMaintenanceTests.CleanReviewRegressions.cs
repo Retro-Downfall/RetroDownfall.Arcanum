@@ -126,8 +126,30 @@ public sealed partial class LongRestMaintenanceTests
             {
                 long admitted = f.Admission.CurrentGeneration;
 
+                long originalPrevious = previous.Fence.AdmissionGeneration;
+
+                int attestationsBefore = f.RecordedAdmission.DrainedAttestations.Count;
+
                 await CleanReviewRegisteredPassAsync(f, coordinator, f.WorkAdmission, f.RecordedAdmission,
                     $"clean-review-adoption-{adoption}");
+
+                // The pre-check plus the three store validations (two attestations each) all attest the
+                // interval from the ORIGINAL previous admission to the admitted one. The third validation runs on
+                // the already adopted fence, which no longer carries the original previous admission.
+                RecordingGrimoireWorkAdmissionGate.DrainedAttestation[] attested = f.RecordedAdmission.DrainedAttestations.Skip(attestationsBefore).ToArray();
+
+                Assert.True(attested.Length >= 7, $"expected the pre-check and three validations, saw {attested.Length} attestations");
+
+                Assert.All(attested, attestation =>
+                {
+                    Assert.True(attestation.Attested);
+
+                    Assert.Equal(GrimoireWorkKind.LongRunningOperationRecovery, attestation.Kind);
+
+                    Assert.Equal(originalPrevious, attestation.Previous);
+
+                    Assert.Equal(admitted, attestation.Current);
+                });
 
                 // Baseline compound liveness RED stops here on its first adoption. Only after
                 // that guard passes can the second iteration qualify the retained terminal edge.
@@ -201,7 +223,10 @@ public sealed partial class LongRestMaintenanceTests
 
         CleanReviewMaintenance handoff = new(f, foreignWork, closeAtHandoff: false);
 
-        LongRestSweepCoordinator coordinator = CleanReviewCoordinator(f, foreignWork, handoff);
+        // The independent facts and store authority stay on gate A; only the lease comes from gate B.
+        RecordingGrimoireWorkAdmissionGate factsGateA = new(f.Admission);
+
+        LongRestSweepCoordinator coordinator = CleanReviewCoordinator(f, foreignWork, handoff, factsGateA);
 
         string immutable = await CleanReviewImmutableAsync(f);
 
@@ -213,10 +238,15 @@ public sealed partial class LongRestMaintenanceTests
 
         await CleanReviewRegisteredPassAsync(f, coordinator, foreignWork, foreignRecorded, "clean-review-foreign-gate");
 
-        // No future proof symbols: the actual coordinator consumes whatever its real fresh
-        // B lease supplies, while the independent facts/store authority stays real gate A.
+        // The actual coordinator presents whatever fresh B lease it was handed, while the independent
+        // facts/store authority stays gate A. Gate A is consulted and refuses at the pre-check; the
+        // clean store is never reached, so nothing below may have moved.
         Assert.Contains(foreignRecorded.InnerWorkLeases, lease =>
             lease.Kind == GrimoireWorkKind.LongRunningOperationRecovery && lease.Generation == f.Admission.CurrentGeneration);
+
+        Assert.NotEmpty(factsGateA.DrainedAttestations);
+
+        Assert.All(factsGateA.DrainedAttestations, attestation => Assert.False(attestation.Attested));
 
         Assert.Equal(0, handoff.Calls);
 
@@ -239,16 +269,19 @@ public sealed partial class LongRestMaintenanceTests
         Assert.Equal(0L, await f.H.ScalarAsync("SELECT count(*) FROM long_rest_provider_effects WHERE StateCode IN (1, 2, 3);"));
     }
 
-    private static LongRestLiveFenceReader CleanReviewFacts(MaintenanceFixture f)
+    // The facts reader attests through the same gate object that minted the coordinator's lease, as the
+    // production singleton does. Only the foreign-gate case deliberately points the facts at another gate.
+    private static LongRestLiveFenceReader CleanReviewFacts(MaintenanceFixture f, IGrimoireConnectionAdmissionGate? admission = null)
     {
         FixedCovenantConnectionSource connections = new(f.H.Connection);
 
-        return new(f.H.Saga.Context, f.Runtime, f.Admission, f.Epoch,
+        return new(f.H.Saga.Context, f.Runtime, admission ?? f.RecordedAdmission, f.Epoch,
             new CampaignAvailabilityReader(connections), new CampaignPathIdentityReader(connections, null!));
     }
 
-    private static LongRestSweepCoordinator CleanReviewCoordinator(MaintenanceFixture f, LongRestWorkAdmission work, ILongRestMaintenance handoff) =>
-        new(f.Operations, new LongRestSweepStore(f.H.Saga.Context, f.Clock), f.H.Store, f.Epoch, CleanReviewFacts(f), handoff,
+    private static LongRestSweepCoordinator CleanReviewCoordinator(MaintenanceFixture f, LongRestWorkAdmission work, ILongRestMaintenance handoff,
+        IGrimoireConnectionAdmissionGate? factsAdmission = null) =>
+        new(f.Operations, new LongRestSweepStore(f.H.Saga.Context, f.Clock), f.H.Store, f.Epoch, CleanReviewFacts(f, factsAdmission), handoff,
             f.Gate, new LongRunningOperationOwnership(), new LongRestSweepQueue(), f.Services.GetRequiredService<IServiceScopeFactory>(), f.Clock, work);
 
     private static async Task CleanReviewRegisteredPassAsync(MaintenanceFixture f, LongRestSweepCoordinator coordinator,

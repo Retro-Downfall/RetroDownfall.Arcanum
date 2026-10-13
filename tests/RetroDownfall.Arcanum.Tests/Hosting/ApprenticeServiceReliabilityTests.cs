@@ -4278,6 +4278,8 @@ public sealed partial class ApprenticeServiceReliabilityTests
 
         public long CurrentGeneration => _recording.CurrentGeneration;
 
+        public bool AttestDrainedMaintenance(IGrimoireWorkLease lease, long previousGeneration, long currentGeneration) => false;
+
         public bool TryAcquireRequestLease(
             GrimoireRequestKind kind,
             out IGrimoireRequestLease? lease) =>

@@ -1985,55 +1985,20 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
         internal void SignalTerminalWhileLocked() => _terminal.TrySetResult();
     }
 
-    /// <summary>Authenticates a proof against this gate and its still-live work lease.</summary>
-    public bool AttestDrainedMaintenance(DrainedMaintenanceProof proof) => proof.IsCurrentFor(this);
-
-    /// <summary>Bound to a concrete gate-owned lease; stored coordinates alone cannot construct authority.</summary>
-    internal sealed class DrainedMaintenanceProof
+    /// <summary>
+    /// Authenticates the presented lease against this gate at the moment of the call. Authority is the live lease
+    /// object itself: stored coordinates, a wrapper or another gate's lease can never satisfy it.
+    /// </summary>
+    public bool AttestDrainedMaintenance(IGrimoireWorkLease lease, long previousGeneration, long currentGeneration)
     {
-        private readonly GrimoireConnectionAdmissionGate _gate;
-
-        private readonly IGrimoireWorkLease _lease;
-
-        internal DrainedMaintenanceProof(GrimoireConnectionAdmissionGate gate, IGrimoireWorkLease lease, long previousGeneration)
+        lock (_sync)
         {
-            _gate = gate;
-
-            _lease = lease;
-
-            PreviousGeneration = previousGeneration;
-
-            CurrentGeneration = lease.Generation;
-        }
-
-        internal long PreviousGeneration { get; }
-
-        internal long CurrentGeneration { get; }
-
-        internal bool MaintenanceRevocationPending
-        {
-            get
-            {
-                lock (_gate._sync)
-                {
-                    return _lease is WorkLease lease && ReferenceEquals(lease.Gate, _gate) && lease.RevocationPending;
-                }
-            }
-        }
-
-        internal bool IsCurrent => IsCurrentFor(_gate);
-
-        internal bool IsCurrentFor(GrimoireConnectionAdmissionGate expected)
-        {
-            lock (_gate._sync)
-            {
-                return ReferenceEquals(expected, _gate) && _lease is WorkLease lease && ReferenceEquals(lease.Gate, _gate)
-                        && _gate._state == GateState.Ordinary && _gate._workLeases.Contains(lease)
-                        && !lease.IsReleased && !lease.ScopeDisposed && !lease.RevocationPending
-                        && !lease.MaintenanceRevocation.IsCancellationRequested
-                        && CurrentGeneration == _gate._generation && lease.Generation == CurrentGeneration
-                        && PreviousGeneration >= _gate._drainedAbortFloor && PreviousGeneration < CurrentGeneration;
-            }
+            return lease is WorkLease work && ReferenceEquals(work.Gate, this)
+                && _state == GateState.Ordinary && _workLeases.Contains(work)
+                && !work.IsReleased && !work.ScopeDisposed && !work.RevocationPending
+                && !work.MaintenanceRevocation.IsCancellationRequested
+                && currentGeneration == _generation && work.Generation == currentGeneration
+                && previousGeneration >= _drainedAbortFloor && previousGeneration < currentGeneration;
         }
     }
 
@@ -2090,13 +2055,6 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
                     return RevocationPending;
                 }
             }
-        }
-
-        public DrainedMaintenanceProof? ProveDrainedMaintenance(long previousGeneration)
-        {
-            DrainedMaintenanceProof proof = new(Gate, this, previousGeneration);
-
-            return proof.IsCurrent ? proof : null;
         }
 
         public bool TryBeginExternalEffectGroup(

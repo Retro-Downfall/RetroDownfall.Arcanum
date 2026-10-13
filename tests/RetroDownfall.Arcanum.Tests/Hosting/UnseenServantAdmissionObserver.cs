@@ -21,6 +21,8 @@ internal sealed class UnseenServantAdmissionObserver(
 
     public long CurrentGeneration => inner.CurrentGeneration;
 
+    public bool AttestDrainedMaintenance(IGrimoireWorkLease lease, long previousGeneration, long currentGeneration) => false;
+
     public bool TryAcquireWorkLease(GrimoireWorkKind kind, out IGrimoireWorkLease? lease)
     {
         lock (_gate)
@@ -74,6 +76,8 @@ internal sealed class UnseenServantAdmissionObserver(
         public long Generation => inner.Generation;
 
         public CancellationToken MaintenanceRevocation => inner.MaintenanceRevocation;
+
+        public bool MaintenanceRevocationPending => MaintenanceRevocation.IsCancellationRequested;
 
         public bool TryBeginExternalEffectGroup(out IGrimoireExternalEffectGroup? effectGroup)
         {

@@ -1609,6 +1609,8 @@ internal sealed class GrimoireMaintenanceAdmissionObserver(
 
     public long CurrentGeneration => inner.CurrentGeneration;
 
+    public bool AttestDrainedMaintenance(IGrimoireWorkLease lease, long previousGeneration, long currentGeneration) => false;
+
     internal IGrimoireRequestLease InnerRequest(IGrimoireRequestLease lease) =>
         _requests.TryGetValue(lease, out IGrimoireRequestLease? actual) ? actual : lease;
 
@@ -1915,6 +1917,8 @@ internal sealed class GrimoireMaintenanceAdmissionObserver(
         public long Generation => actual.Generation;
 
         public CancellationToken MaintenanceRevocation => actual.MaintenanceRevocation;
+
+        public bool MaintenanceRevocationPending => MaintenanceRevocation.IsCancellationRequested;
 
         public bool TryBeginExternalEffectGroup(out IGrimoireExternalEffectGroup? effectGroup)
         {

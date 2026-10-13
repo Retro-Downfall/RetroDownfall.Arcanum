@@ -249,7 +249,7 @@ public sealed partial class LongRestMaintenanceTests
 
             FixedCovenantConnectionSource connections = new(f.H.Connection);
 
-            LongRestLiveFenceReader facts = new(f.H.Saga.Context, f.Runtime, f.Admission, f.Epoch,
+            LongRestLiveFenceReader facts = new(f.H.Saga.Context, f.Runtime, f.RecordedAdmission, f.Epoch,
                 new CampaignAvailabilityReader(connections), new CampaignPathIdentityReader(connections, null!));
 
             LongRestSweepFence fence = LongRestSweepHarness.Require(await facts.CaptureAsync(f.Scope, f.Epoch.Capture().Stamp, null, CancellationToken.None));
@@ -291,7 +291,7 @@ public sealed partial class LongRestMaintenanceTests
 
                 FixedCovenantConnectionSource independent = new((SqliteConnection)db.Database.GetDbConnection());
 
-                return new LongRestLiveFenceReader(db, f.Runtime, f.Admission, f.Epoch,
+                return new LongRestLiveFenceReader(db, f.Runtime, f.RecordedAdmission, f.Epoch,
                     new CampaignAvailabilityReader(independent), new CampaignPathIdentityReader(independent, null!));
             });
 
@@ -368,7 +368,7 @@ public sealed partial class LongRestMaintenanceTests
         {
             FixedCovenantConnectionSource connections = new(H.Connection);
 
-            LongRestLiveFenceReader facts = new(H.Saga.Context, Runtime, Admission, Epoch,
+            LongRestLiveFenceReader facts = new(H.Saga.Context, Runtime, RecordedAdmission, Epoch,
                 new CampaignAvailabilityReader(connections), new CampaignPathIdentityReader(connections, null!));
 
             LongRestSweepStore sweeps = new(H.Saga.Context, Clock);
