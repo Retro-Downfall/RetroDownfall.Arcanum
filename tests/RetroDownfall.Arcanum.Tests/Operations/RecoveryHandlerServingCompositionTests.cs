@@ -8,6 +8,7 @@ using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.LongRest;
 using RetroDownfall.Arcanum.Core.Operations;
+using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Data;
@@ -22,6 +23,13 @@ namespace RetroDownfall.Arcanum.Tests.Operations;
 /// The serve host's recovery composition, built the way the host builds it and then resolved:
 /// the reconciler must come out of a fresh scope with exactly one handler for each registry kind.
 /// </summary>
+/// <remarks>
+/// Resolving every handler constructs <c>SessionAttachmentStore</c>, whose constructor creates the
+/// attachments directory under <see cref="ArcanumPaths"/>. Each test therefore opens an
+/// <see cref="ArcanumTestHomeScope"/> before the first path access so the composition never touches the
+/// developer's real profile; the scope edits process-wide environment variables, hence the collection.
+/// </remarks>
+[Collection("ProcessEnvironment")]
 public sealed class RecoveryHandlerServingCompositionTests
 {
     /// <summary>
@@ -32,6 +40,8 @@ public sealed class RecoveryHandlerServingCompositionTests
     [Fact]
     public async Task Serving_infrastructure_composition_validates_on_build_and_resolves_one_handler_per_registry_kind()
     {
+        using ArcanumTestHomeScope home = new("arcanum-recovery-registry-composition");
+
         HostApplicationBuilder builder = Host.CreateApplicationBuilder();
 
         builder.Services.AddSingleton<IWeaveService>(static _ => null!);
@@ -54,6 +64,7 @@ public sealed class RecoveryHandlerServingCompositionTests
             static sp => sp.GetRequiredService<LongRestConfigurationEpoch>());
 
         await AssertOneHandlerPerRegistryKindAsync(
+            home,
             builder.Services,
             new ServiceProviderOptions
             {
@@ -70,11 +81,14 @@ public sealed class RecoveryHandlerServingCompositionTests
     [Fact]
     public async Task Serving_api_composition_resolves_one_handler_per_registry_kind_with_scopes_validated()
     {
+        using ArcanumTestHomeScope home = new("arcanum-recovery-registry-composition");
+
         ServiceCollection services = [];
 
         _ = services.AddArcanumApiServices(new ConfigurationBuilder().Build());
 
         await AssertOneHandlerPerRegistryKindAsync(
+            home,
             services,
             new ServiceProviderOptions
             {
@@ -83,9 +97,14 @@ public sealed class RecoveryHandlerServingCompositionTests
     }
 
     private static async Task AssertOneHandlerPerRegistryKindAsync(
+        ArcanumTestHomeScope home,
         IServiceCollection services,
         ServiceProviderOptions options)
     {
+        // Requiring the scope as a parameter keeps a future test from resolving handlers against the
+        // developer's real profile; this pins that the redirect is the one in force.
+        Assert.StartsWith(home.Root, ArcanumPaths.AttachmentsDirectory, StringComparison.Ordinal);
+
         SqliteNativeRuntime.Instance.Initialize();
 
         await using ServiceProvider provider = services.BuildServiceProvider(options);
