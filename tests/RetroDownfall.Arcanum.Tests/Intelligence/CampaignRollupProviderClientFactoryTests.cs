@@ -21,10 +21,7 @@ public sealed class CampaignRollupProviderClientFactoryTests
 
         settings.Providers[0].Models = models;
 
-        OwnedClients clients = new(new RecordingProvider(HttpStatusCode.OK));
-
-        CampaignRollupProviderClientFactory factory = new(new TestOptionsMonitor<ArcanumSettings>(settings),
-            EnvironmentOnlyProviderApiKeyResolver.Instance) { OwnedHttpClientForTests = clients.Create };
+        using CampaignRollupProviderClientFactory factory = Factory(settings, new RecordingProvider(HttpStatusCode.OK));
 
         Result<ChatClientLease?> resolved = await factory.ResolveClientAsync(null, CancellationToken.None);
 
@@ -59,11 +56,9 @@ public sealed class CampaignRollupProviderClientFactoryTests
             configured.ContextWindowLimit = 2048;
         }
 
-        OwnedClients clients = new(new RecordingProvider(HttpStatusCode.OK));
-
         CallbackKeyResolver keys = new(changeDuringKeyResolution ? ChangeConfiguration : null);
 
-        CampaignRollupProviderClientFactory factory = new(new TestOptionsMonitor<ArcanumSettings>(settings), keys);
+        using CampaignRollupProviderClientFactory factory = new(new TestOptionsMonitor<ArcanumSettings>(settings), keys, new RecordingProvider(HttpStatusCode.OK));
 
         Result<ChatClientLease?> resolved = await factory.ResolveClientAsync(null, CancellationToken.None);
 
@@ -97,10 +92,7 @@ public sealed class CampaignRollupProviderClientFactoryTests
     {
         RecordingProvider handler = new(status);
 
-        OwnedClients clients = new(handler);
-
-        CampaignRollupProviderClientFactory factory = new(new TestOptionsMonitor<ArcanumSettings>(Settings()),
-            EnvironmentOnlyProviderApiKeyResolver.Instance) { OwnedHttpClientForTests = clients.Create };
+        using CampaignRollupProviderClientFactory factory = Factory(Settings(), handler);
 
         Result<ChatClientLease?> resolved = await factory.ResolveClientAsync(null, CancellationToken.None);
 
@@ -118,8 +110,6 @@ public sealed class CampaignRollupProviderClientFactoryTests
 
         _ = await Assert.ThrowsAnyAsync<Exception>(() => lease.ChatClient.GetResponseAsync(
             [new ChatMessage(ChatRole.User, "Decisions from a completed contribution.")], options));
-
-        Assert.Equal(1, clients.Created);
 
         Assert.Equal(1, handler.CallCount);
 
@@ -143,47 +133,38 @@ public sealed class CampaignRollupProviderClientFactoryTests
     }
 
     [Fact]
-    public async Task Each_lease_owns_a_distinct_client_that_disposing_the_lease_disposes()
+    public async Task Leases_share_the_scope_client_leave_it_open_and_the_factory_disposes_it_once()
     {
-        OwnedClients clients = new(new RecordingProvider(HttpStatusCode.OK));
+        RecordingProvider handler = new(HttpStatusCode.BadRequest);
 
-        CampaignRollupProviderClientFactory factory = new(new TestOptionsMonitor<ArcanumSettings>(Settings()),
-            EnvironmentOnlyProviderApiKeyResolver.Instance) { OwnedHttpClientForTests = clients.Create };
+        CampaignRollupProviderClientFactory factory = Factory(Settings(), handler);
 
-        using ChatClientLease first = Assert.IsType<ChatClientLease>((await factory.ResolveClientAsync(null, CancellationToken.None)).Value);
+        ChatClientLease first = Assert.IsType<ChatClientLease>((await factory.ResolveClientAsync(null, CancellationToken.None)).Value);
 
         ChatClientLease second = Assert.IsType<ChatClientLease>((await factory.ResolveClientAsync(null, CancellationToken.None)).Value);
 
-        Assert.Equal(2, clients.Created);
+        first.Dispose();
 
-        Assert.NotSame(clients.Clients[0], clients.Clients[1]);
+        // A lease does not own the scope client, so disposing it leaves the sibling lease sendable.
+        Assert.False(handler.Disposed);
 
-        Assert.All(clients.Clients, static client => Assert.False(client.Disposed));
+        _ = await Assert.ThrowsAnyAsync<Exception>(() => second.ChatClient.GetResponseAsync([new ChatMessage(ChatRole.User, "probe")]));
+
+        Assert.Equal(1, handler.CallCount);
 
         second.Dispose();
 
-        Assert.False(clients.Clients[0].Disposed);
+        Assert.False(handler.Disposed);
 
-        Assert.True(clients.Clients[1].Disposed);
-    }
+        factory.Dispose();
 
-    [Fact]
-    public async Task A_lease_that_cannot_be_built_disposes_the_client_it_just_created()
-    {
-        ArcanumSettings settings = Settings();
+        factory.Dispose();
 
-        settings.Providers[0].Endpoint = "not a uri";
+        Assert.True(handler.Disposed);
 
-        OwnedClients clients = new(new RecordingProvider(HttpStatusCode.OK));
+        Assert.Equal(1, handler.DisposeCount);
 
-        CampaignRollupProviderClientFactory factory = new(new TestOptionsMonitor<ArcanumSettings>(settings),
-            EnvironmentOnlyProviderApiKeyResolver.Instance) { OwnedHttpClientForTests = clients.Create };
-
-        _ = await Assert.ThrowsAnyAsync<UriFormatException>(() => factory.ResolveClientAsync(null, CancellationToken.None));
-
-        Assert.Equal(1, clients.Created);
-
-        Assert.True(Assert.Single(clients.Clients).Disposed);
+        await Assert.ThrowsAsync<ObjectDisposedException>(() => factory.ResolveClientAsync(null, CancellationToken.None));
     }
 
     [Fact]
@@ -199,23 +180,25 @@ public sealed class CampaignRollupProviderClientFactoryTests
 
         Assert.DoesNotContain("CreateClient(", factory, StringComparison.Ordinal);
 
+        Assert.Contains("_httpClient = CreateOwnedHttpClient()", factory, StringComparison.Ordinal);
+
         string bootstrapper = File.ReadAllText(Path.Combine(root, "src", "RetroDownfall.Arcanum.Api", "ApiBootstrapper.cs"));
 
-        Assert.DoesNotContain("CampaignRollupProvider", bootstrapper.Replace("ICampaignRollupProviderClientFactory", string.Empty, StringComparison.Ordinal)
-            .Replace("CampaignRollupProviderClientFactory", string.Empty, StringComparison.Ordinal), StringComparison.Ordinal);
+        Assert.DoesNotContain("AddHttpClient(CampaignRollupProvider", bootstrapper, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("\"CampaignRollupProvider\"", bootstrapper, StringComparison.Ordinal);
     }
 
     [Fact]
-    public async Task Opaque_familiar_transport_is_deferred_without_creating_a_client()
+    public async Task Opaque_familiar_transport_is_deferred_without_sending()
     {
         ArcanumSettings settings = Settings();
 
         settings.Providers[0].Type = AiProviderKind.CodexCli;
 
-        OwnedClients clients = new(new RecordingProvider(HttpStatusCode.OK));
+        RecordingProvider handler = new(HttpStatusCode.OK);
 
-        CampaignRollupProviderClientFactory factory = new(new TestOptionsMonitor<ArcanumSettings>(settings),
-            EnvironmentOnlyProviderApiKeyResolver.Instance) { OwnedHttpClientForTests = clients.Create };
+        using CampaignRollupProviderClientFactory factory = Factory(settings, handler);
 
         Result<ChatClientLease?> resolved = await factory.ResolveClientAsync(null, CancellationToken.None);
 
@@ -223,8 +206,11 @@ public sealed class CampaignRollupProviderClientFactoryTests
 
         Assert.Null(resolved.Value);
 
-        Assert.Equal(0, clients.Created);
+        Assert.Equal(0, handler.CallCount);
     }
+
+    private static CampaignRollupProviderClientFactory Factory(ArcanumSettings settings, RecordingProvider handler) =>
+        new(new TestOptionsMonitor<ArcanumSettings>(settings), EnvironmentOnlyProviderApiKeyResolver.Instance, handler);
 
     private static ArcanumSettings Settings() => new()
     {
@@ -240,34 +226,6 @@ public sealed class CampaignRollupProviderClientFactoryTests
             },
         ],
     };
-
-    private sealed class OwnedClients(RecordingProvider handler)
-    {
-        public int Created => Clients.Count;
-
-        public List<TrackedClient> Clients { get; } = [];
-
-        public HttpClient Create()
-        {
-            TrackedClient client = new(handler);
-
-            Clients.Add(client);
-
-            return client;
-        }
-    }
-
-    private sealed class TrackedClient(HttpMessageHandler handler) : HttpClient(handler, disposeHandler: false)
-    {
-        public bool Disposed { get; private set; }
-
-        protected override void Dispose(bool disposing)
-        {
-            Disposed = true;
-
-            base.Dispose(disposing);
-        }
-    }
 
     private sealed class CallbackModels(ModelEntry[] values) : IReadOnlyList<ModelEntry>
     {
@@ -285,7 +243,10 @@ public sealed class CampaignRollupProviderClientFactoryTests
             }
         }
 
-        public IEnumerator<ModelEntry> GetEnumerator() => ((IEnumerable<ModelEntry>)values).GetEnumerator();
+        public IEnumerator<ModelEntry> GetEnumerator()
+        {
+            return ((IEnumerable<ModelEntry>)values).GetEnumerator();
+        }
 
         System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
     }
@@ -306,6 +267,10 @@ public sealed class CampaignRollupProviderClientFactoryTests
 
         public string? LastBody { get; private set; }
 
+        public int DisposeCount { get; private set; }
+
+        public bool Disposed => DisposeCount != 0;
+
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
             CallCount++;
@@ -316,6 +281,16 @@ public sealed class CampaignRollupProviderClientFactoryTests
             {
                 Content = new StringContent("""{"error":{"message":"strict unsupported","type":"provider_error","code":"test"}}""", Encoding.UTF8, "application/json"),
             };
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing)
+            {
+                DisposeCount++;
+            }
+
+            base.Dispose(disposing);
         }
     }
 }

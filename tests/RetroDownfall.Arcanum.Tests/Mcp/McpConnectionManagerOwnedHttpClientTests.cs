@@ -1,6 +1,6 @@
 using System.Net;
 
-using ModelContextProtocol.Client;
+using System.Reflection;
 
 using RetroDownfall.Arcanum.Core.Mcp;
 
@@ -15,14 +15,30 @@ namespace RetroDownfall.Arcanum.Tests.Mcp;
 public sealed class McpConnectionManagerOwnedHttpClientTests
 {
     [Fact]
-    public async Task A_failed_HTTP_start_disposes_the_client_its_transport_owned()
+    public async Task The_manager_owns_one_client_with_no_overall_deadline_and_disposes_it_with_itself()
     {
         ProbeHandler primary = new();
 
-        await using McpConnectionManager manager = McpConnectionManagerHarness.Create();
+        McpConnectionManager manager = McpConnectionManagerHarness.Create(httpHandler: primary, managerOwnsHttpHandler: true);
 
-        // The manager builds its own client over this primary handler; the response bound still wraps it.
-        manager.PrimaryHttpHandlerForTests = () => primary;
+        HttpClient client = Assert.IsType<HttpClient>(typeof(McpConnectionManager)
+            .GetField("httpClient", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(manager));
+
+        Assert.Equal(Timeout.InfiniteTimeSpan, client.Timeout);
+
+        Assert.False(primary.Disposed);
+
+        await manager.DisposeAsync();
+
+        Assert.True(primary.Disposed, "Disposing the manager must dispose the owned client and its handler chain.");
+    }
+
+    [Fact]
+    public async Task A_failed_HTTP_start_leaves_the_shared_client_usable_for_the_next_start()
+    {
+        ProbeHandler primary = new();
+
+        await using McpConnectionManager manager = McpConnectionManagerHarness.Create(httpHandler: primary, managerOwnsHttpHandler: true);
 
         await manager.RegisterFromConfigAsync(
             new McpConfig
@@ -30,61 +46,35 @@ public sealed class McpConnectionManagerOwnedHttpClientTests
                 McpServers = new Dictionary<string, McpServerConfig>(StringComparer.Ordinal)
                 {
                     // A public address literal passes the egress policy without any DNS lookup.
-                    ["remote"] = new() { Url = "https://93.184.216.34/mcp" },
+                    ["first"] = new() { Url = "https://93.184.216.34/mcp" },
+                    ["second"] = new() { Url = "https://93.184.216.35/mcp" },
                 },
             },
             scopeWorkingDirectory: null,
             CancellationToken.None);
 
-        Result started = await manager.StartAsync("remote", workingDirectory: null);
+        Result first = await manager.StartAsync("first", workingDirectory: null);
 
-        Assert.True(started.IsFailure);
+        Assert.True(first.IsFailure);
 
-        Assert.Equal("Mcp.StartFailed", started.Error.Code);
+        Assert.Equal("Mcp.StartFailed", first.Error.Code);
 
-        Assert.True(primary.Requests > 0, "The start never reached the owned HTTP client.");
+        int afterFirst = primary.Requests;
 
-        Assert.True(primary.Disposed, "The failed start left the owned client and its handler chain undisposed.");
-    }
+        Assert.True(afterFirst > 0, "The start never reached the owned HTTP client.");
 
-    [Fact]
-    public async Task A_session_wrapper_releases_its_owned_resource_even_when_the_handshake_never_ran()
-    {
-        int disposals = 0;
+        // The client is shared by every transport, so one session's teardown must not dispose it.
+        Assert.False(primary.Disposed);
 
-        using HttpClient transportClient = new();
+        Result second = await manager.StartAsync("second", workingDirectory: null);
 
-        HttpClientTransport transport = new(
-            new HttpClientTransportOptions
-            {
-                Endpoint = new Uri("https://93.184.216.34/mcp"),
-                TransportMode = HttpTransportMode.StreamableHttp,
-            },
-            transportClient,
-            loggerFactory: null,
-            ownsHttpClient: false);
+        Assert.True(second.IsFailure);
 
-        SdkMcpClientWrapper wrapper = new(
-            transport,
-            new McpClientOptions(),
-            initializationTimeout: TimeSpan.FromSeconds(30),
-            toolOutputCapBytes: 65536,
-            maxToolsTotalBytes: 1_048_576,
-            elicitationSink: new McpElicitationSink(),
-            ownedResource: new DisposeCounter(() => disposals++));
+        Assert.Equal("Mcp.StartFailed", second.Error.Code);
 
-        Assert.Equal(0, disposals);
+        Assert.True(primary.Requests > afterFirst, "The second start did not reach the shared client.");
 
-        await wrapper.DisposeAsync();
-
-        await wrapper.DisposeAsync();
-
-        Assert.Equal(1, disposals);
-    }
-
-    private sealed class DisposeCounter(Action disposed) : IDisposable
-    {
-        public void Dispose() => disposed();
+        Assert.False(primary.Disposed);
     }
 
     private sealed class ProbeHandler : HttpMessageHandler

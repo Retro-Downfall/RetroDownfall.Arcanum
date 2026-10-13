@@ -430,22 +430,6 @@ public sealed class McpHttpResponseBoundHandlerTests
     }
 
     [Fact]
-    public void The_owned_HTTP_client_has_no_overall_request_deadline_and_owns_its_handler()
-    {
-        DisposalProbe primary = new();
-
-        using (HttpClient client = McpConnectionManager.CreateOwnedHttpClient(TimeSpan.FromSeconds(30), primary))
-        {
-            Assert.Equal(Timeout.InfiniteTimeSpan, client.Timeout);
-
-            Assert.False(primary.Disposed);
-        }
-
-        // Disposing the owned client disposes the whole chain, so no connection outlives it.
-        Assert.True(primary.Disposed);
-    }
-
-    [Fact]
     public void The_owned_HTTP_pipeline_wraps_a_scripted_primary_without_replacing_the_bound()
     {
         DisposalProbe primary = new();

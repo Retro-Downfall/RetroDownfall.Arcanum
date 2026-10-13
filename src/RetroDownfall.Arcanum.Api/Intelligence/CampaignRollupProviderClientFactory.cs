@@ -18,22 +18,57 @@ public interface ICampaignRollupProviderClientFactory
 }
 
 /// <summary>
-/// One explicit physical maintenance attempt, without transport mutation or automatic retry. Each lease owns
-/// the <see cref="HttpClient"/> it sends through: the client is built here from an explicit handler chain (the
-/// pinned provider egress handler), so no named <see cref="IHttpClientFactory"/> client, shared pool or factory
-/// handler rotation sits between the SDK call and the wire, and disposing the lease closes its connection.
+/// One explicit physical maintenance attempt, without transport mutation or automatic retry. The scoped factory
+/// owns one <see cref="HttpClient"/> built from an explicit handler chain (the pinned provider egress handler),
+/// exactly as <see cref="LongRestProviderClientFactory"/> does: no named <see cref="IHttpClientFactory"/> client
+/// or shared factory pool sits between the SDK call and the wire. The client is reused by every lease of the
+/// scope, leases leave it open, and scope disposal closes its connections.
 /// </summary>
-public sealed class CampaignRollupProviderClientFactory(
-    IOptionsMonitor<ArcanumSettings> settings,
-    IProviderApiKeyResolver apiKeyResolver) : ICampaignRollupProviderClientFactory
+public sealed class CampaignRollupProviderClientFactory : ICampaignRollupProviderClientFactory, IDisposable
 {
-    /// <summary>Test seam: supplies the client a lease owns instead of the guarded one. Never set in production.</summary>
-    internal Func<HttpClient>? OwnedHttpClientForTests { get; init; }
+    private readonly IOptionsMonitor<ArcanumSettings> _settings;
+
+    private readonly IProviderApiKeyResolver _apiKeyResolver;
+
+    private readonly HttpClient _httpClient;
+
+    private int _disposed;
+
+    public CampaignRollupProviderClientFactory(IOptionsMonitor<ArcanumSettings> settings, IProviderApiKeyResolver apiKeyResolver)
+    {
+        ArgumentNullException.ThrowIfNull(settings);
+
+        ArgumentNullException.ThrowIfNull(apiKeyResolver);
+
+        _settings = settings;
+
+        _apiKeyResolver = apiKeyResolver;
+
+        _httpClient = CreateOwnedHttpClient();
+    }
+
+    // Alternate owned-handler test path. Production DI selects the public constructor.
+    internal CampaignRollupProviderClientFactory(IOptionsMonitor<ArcanumSettings> settings, IProviderApiKeyResolver apiKeyResolver, HttpMessageHandler handler)
+    {
+        ArgumentNullException.ThrowIfNull(settings);
+
+        ArgumentNullException.ThrowIfNull(apiKeyResolver);
+
+        ArgumentNullException.ThrowIfNull(handler);
+
+        _settings = settings;
+
+        _apiKeyResolver = apiKeyResolver;
+
+        _httpClient = new HttpClient(handler, disposeHandler: true) { Timeout = Timeout.InfiniteTimeSpan };
+    }
 
     public async Task<Result<ChatClientLease?>> ResolveClientAsync(string? targetModel, CancellationToken cancellationToken)
     {
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
+
         ArcanumSettings configuration = JsonSerializer.Deserialize(
-            JsonSerializer.SerializeToUtf8Bytes(settings.CurrentValue, ConfigurationJsonContext.Default.ArcanumSettings),
+            JsonSerializer.SerializeToUtf8Bytes(_settings.CurrentValue, ConfigurationJsonContext.Default.ArcanumSettings),
             ConfigurationJsonContext.Default.ArcanumSettings)!;
 
         if (!ProviderResolver.TryResolveProviderForModel(configuration, targetModel, out ProviderSettings? provider, out string model)
@@ -51,29 +86,23 @@ public sealed class CampaignRollupProviderClientFactory(
             JsonSerializer.SerializeToUtf8Bytes(provider, ConfigurationJsonContext.Default.ProviderSettings),
             ConfigurationJsonContext.Default.ProviderSettings)!;
 
-        string? key = await apiKeyResolver.ResolveAsync(provider, cancellationToken).ConfigureAwait(false);
+        string? key = await _apiKeyResolver.ResolveAsync(provider, cancellationToken).ConfigureAwait(false);
 
-        HttpClient http = OwnedHttpClientForTests?.Invoke() ?? CreateOwnedHttpClient();
-
-        try
+        OpenAIClientOptions options = new()
         {
-            OpenAIClientOptions options = new()
-            {
-                Endpoint = new Uri(provider.Endpoint),
-                Transport = new HttpClientPipelineTransport(http),
-                RetryPolicy = new ClientRetryPolicy(0),
-            };
+            Endpoint = new Uri(provider.Endpoint),
+            Transport = new HttpClientPipelineTransport(_httpClient),
+            RetryPolicy = new ClientRetryPolicy(0),
+        };
 
-            OpenAI.Chat.ChatClient client = new(model, new ApiKeyCredential(key ?? "no-key"), options);
+        OpenAI.Chat.ChatClient client = new(model, new ApiKeyCredential(key ?? "no-key"), options);
 
-            return Result<ChatClientLease?>.Success(new(client.AsIChatClient(), provider, model, ownedHttpClient: http));
-        }
-        catch
-        {
-            http.Dispose();
+        return Result<ChatClientLease?>.Success(new(client.AsIChatClient(), provider, model, ownedHttpClient: null));
+    }
 
-            throw;
-        }
+    public void Dispose()
+    {
+        if (Interlocked.Exchange(ref _disposed, 1) == 0) _httpClient.Dispose();
     }
 
     private static HttpClient CreateOwnedHttpClient()

@@ -2,6 +2,8 @@ using System.Net;
 using System.Net.Sockets;
 using System.Text;
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Api.Intelligence;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -19,7 +21,7 @@ public sealed class CampaignRollupOwnedTransportLoopbackTests
     {
         await using LoopbackProvider server = new();
 
-        CampaignRollupProviderClientFactory factory = Factory(server.Endpoint);
+        using CampaignRollupProviderClientFactory factory = Factory(server.Endpoint);
 
         using CancellationTokenSource deadline = new(TimeSpan.FromSeconds(20));
 
@@ -31,11 +33,11 @@ public sealed class CampaignRollupOwnedTransportLoopbackTests
     }
 
     [Fact]
-    public async Task Requests_equal_SDK_calls_across_leases_and_each_lease_closes_its_own_connection()
+    public async Task Requests_equal_SDK_calls_across_leases_on_the_scope_connection()
     {
         await using LoopbackProvider server = new();
 
-        CampaignRollupProviderClientFactory factory = Factory(server.Endpoint);
+        using CampaignRollupProviderClientFactory factory = Factory(server.Endpoint);
 
         using CancellationTokenSource deadline = new(TimeSpan.FromSeconds(30));
 
@@ -44,16 +46,12 @@ public sealed class CampaignRollupOwnedTransportLoopbackTests
             await Call(factory, deadline.Token);
 
             Assert.Equal(call, server.RequestCount);
-
-            Assert.Equal(call, server.ConnectionCount);
-
-            // The lease is disposed, which disposes the client it owns and so closes its pooled connection.
-            Task closed = await Task.WhenAny(server.Closed(call), Task.Delay(TimeSpan.FromSeconds(10)));
-
-            Assert.Same(server.Closed(call), closed);
         }
 
-        Assert.Equal(3, server.RequestCount);
+        // Disposing a lease leaves the scope client, and the connection it holds, open for the next lease.
+        Assert.Equal(1, server.ConnectionCount);
+
+        Assert.False(server.Closed(1).IsCompleted);
     }
 
     [Fact]
@@ -61,7 +59,7 @@ public sealed class CampaignRollupOwnedTransportLoopbackTests
     {
         await using LoopbackProvider server = new();
 
-        CampaignRollupProviderClientFactory factory = Factory(server.Endpoint);
+        using CampaignRollupProviderClientFactory factory = Factory(server.Endpoint);
 
         using CancellationTokenSource deadline = new(TimeSpan.FromSeconds(20));
 
@@ -81,12 +79,58 @@ public sealed class CampaignRollupOwnedTransportLoopbackTests
         Assert.Equal(1, server.ConnectionCount);
     }
 
+    [Fact]
+    public async Task Scope_disposal_closes_the_keep_alive_connection_after_the_SDK_call_has_joined()
+    {
+        await using LoopbackProvider server = new();
+
+        using ServiceProvider services = Services(server.Endpoint);
+
+        using CancellationTokenSource deadline = new(TimeSpan.FromSeconds(20));
+
+        using (IServiceScope scope = services.CreateScope())
+        {
+            ICampaignRollupProviderClientFactory factory = scope.ServiceProvider.GetRequiredService<ICampaignRollupProviderClientFactory>();
+
+            Result<ChatClientLease?> resolved = await factory.ResolveClientAsync(null, deadline.Token);
+
+            using ChatClientLease lease = Assert.IsType<ChatClientLease>(resolved.Value);
+
+            ChatResponse response = await lease.ChatClient.GetResponseAsync([new ChatMessage(ChatRole.User, "probe")], cancellationToken: deadline.Token);
+
+            Assert.Equal("ok", response.Text);
+
+            Assert.Equal(1, server.RequestCount);
+
+            Assert.False(server.Closed(1).IsCompleted);
+        }
+
+        // One finite absence-of-disposal guard; this is not a DNS timing claim.
+        Task closed = await Task.WhenAny(server.Closed(1), Task.Delay(TimeSpan.FromSeconds(10)));
+
+        Assert.Same(server.Closed(1), closed);
+    }
+
+    // Production registers no named client for the factory: only its two collaborators are needed.
+    private static ServiceProvider Services(string endpoint)
+    {
+        ServiceCollection services = new();
+
+        services.AddSingleton<IOptionsMonitor<ArcanumSettings>>(new TestOptionsMonitor<ArcanumSettings>(Settings(endpoint)));
+
+        services.AddSingleton<IProviderApiKeyResolver>(new Keys());
+
+        services.AddScoped<ICampaignRollupProviderClientFactory, CampaignRollupProviderClientFactory>();
+
+        return services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
+    }
+
     [Theory]
     [InlineData("http://169.254.169.254/v1")]
     [InlineData("http://[fe80::1]/v1")]
     public async Task The_pinned_egress_handler_refuses_a_link_local_provider_endpoint(string endpoint)
     {
-        CampaignRollupProviderClientFactory factory = Factory(endpoint);
+        using CampaignRollupProviderClientFactory factory = Factory(endpoint);
 
         using CancellationTokenSource deadline = new(TimeSpan.FromSeconds(20));
 
@@ -110,21 +154,23 @@ public sealed class CampaignRollupOwnedTransportLoopbackTests
     }
 
     private static CampaignRollupProviderClientFactory Factory(string endpoint) => new(
-        new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings
-        {
-            DefaultModel = "model",
-            Providers =
-            [
-                new ProviderSettings
-                {
-                    Name = "loopback",
-                    Type = AiProviderKind.OpenAICompatible,
-                    Endpoint = endpoint,
-                    Models = ["model"],
-                },
-            ],
-        }),
+        new TestOptionsMonitor<ArcanumSettings>(Settings(endpoint)),
         new Keys());
+
+    private static ArcanumSettings Settings(string endpoint) => new()
+    {
+        DefaultModel = "model",
+        Providers =
+        [
+            new ProviderSettings
+            {
+                Name = "loopback",
+                Type = AiProviderKind.OpenAICompatible,
+                Endpoint = endpoint,
+                Models = ["model"],
+            },
+        ],
+    };
 
     private static async Task Call(CampaignRollupProviderClientFactory factory, CancellationToken token)
     {
