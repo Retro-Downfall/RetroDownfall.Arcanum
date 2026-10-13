@@ -724,6 +724,31 @@ public sealed partial class HostedGrimoireProducerInventoryTests
     }
 
     [Fact]
+    [Trait("Category", "HostedProducerProductionAnalysis")]
+    public void The_production_entry_runs_only_the_named_roots_under_the_production_premise()
+    {
+        HostedProducerDiscovery<HostedProducerSite> scoped = HostedGrimoireProducerInventory.DiscoverProductionSites(
+            HostedProducerProductionPartition.Primary, ["PidFileService"]);
+
+        Assert.NotEmpty(scoped.Items);
+
+        Assert.All(scoped.Items, static site => Assert.Equal("PidFileService", site.RootType));
+
+        Assert.DoesNotContain(scoped.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_PREMISE_VIOLATED");
+
+        Assert.Empty(scoped.Diagnostics);
+
+        HostedProducerDiscovery<HostedProducerSite> additional = HostedGrimoireProducerInventory.DiscoverProductionSites(
+            HostedProducerProductionPartition.Additional, ["RetroDownfall.Arcanum.Infrastructure.Backup.BackupRestoreStagingIndex.Add"]);
+
+        Assert.NotEmpty(additional.Items);
+
+        Assert.All(additional.Items, static site => Assert.Equal("RetroDownfall.Arcanum.Infrastructure.Backup.BackupRestoreStagingIndex", site.RootType));
+
+        Assert.DoesNotContain(additional.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_PREMISE_VIOLATED");
+    }
+
+    [Fact]
     public void OnlyTheProductionEntryAndTheClosedWorldFixturesRequestPremises()
     {
         System.Reflection.MethodInfo[] discoveries = [.. typeof(HostedGrimoireProducerInventory)
