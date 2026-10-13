@@ -1033,6 +1033,17 @@ internal static partial class HostedGrimoireProducerInventory
         "System.Version",
     };
 
+    // ReviewedIntrinsicExternalTypes is keyed by name. A name the compilation binds as a Roslyn special type
+    // (System.Double, System.Int32, System.String, ...) has an exact identity from the compilation's own core
+    // library that a same-named type from another assembly never has, so those names are accepted only when
+    // the type is that special type.
+    private static readonly IReadOnlySet<string> ReviewedSpecialTypeNames = ReviewedIntrinsicExternalTypes
+        .Where(static name => Enum.TryParse(name.Replace('.', '_'), out SpecialType special) && special != SpecialType.None)
+        .ToHashSet(StringComparer.Ordinal);
+
+    private static bool HasExactSpecialTypeIdentity(ITypeSymbol type) =>
+        !ReviewedSpecialTypeNames.Contains(TypeKey(type)) || type.OriginalDefinition.SpecialType != SpecialType.None;
+
     // Reviewed against the pinned Microsoft.Extensions.AI 10.8.1 source at
     // dotnet/extensions e9be58acf7ef5e001b6685c8d505e5963c2a9ffe. These accessors
     // store or return values without enumerating them or invoking supplied code.
@@ -30497,6 +30508,7 @@ internal static partial class HostedGrimoireProducerInventory
 
             if (!ReviewedIntrinsicExternalTypes.Contains(
                     TypeKey(method.ContainingType))
+                || !HasExactSpecialTypeIdentity(method.ContainingType)
                 || method.Parameters.Any(static parameter =>
                     parameter.RefKind != RefKind.None
                     || parameter.Type.TypeKind == TypeKind.Delegate))

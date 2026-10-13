@@ -350,6 +350,9 @@ public sealed partial class HostedGrimoireProducerInventoryTests
     [InlineData("cancellation-equality", "counterfeit::System.Threading.CancellationToken left = default; _ = left == left;", "System.Threading.CancellationToken.op_Equality")]
     [InlineData("cancellation-inequality", "counterfeit::System.Threading.CancellationToken left = default; _ = left != left;", "System.Threading.CancellationToken.op_Inequality")]
     [InlineData("int128-addition", "counterfeit::System.Int128 left = default; _ = left + left;", "System.Int128.op_Addition")]
+    [InlineData("int128-subtraction", "counterfeit::System.Int128 left = default; _ = left - left;", "System.Int128.op_Subtraction")]
+    [InlineData("int128-multiplication", "counterfeit::System.Int128 left = default; _ = left * left;", "System.Int128.op_Multiply")]
+    [InlineData("int128-division", "counterfeit::System.Int128 left = default; _ = left / left;", "System.Int128.op_Division")]
     [InlineData("int128-implicit", "counterfeit::System.Int128 value = 3;", "System.Int128.op_Implicit")]
     [InlineData("index-implicit", "counterfeit::System.Index value = 3;", "System.Index.op_Implicit")]
     public void FrameworkScalarOperatorsFromAnUnreviewedAssemblyStayUnclassified(string shape, string body, string callee)
@@ -376,6 +379,12 @@ public sealed partial class HostedGrimoireProducerInventoryTests
                 public readonly struct Int128
                 {
                     public static Int128 operator +(Int128 left, Int128 right) => default;
+
+                    public static Int128 operator -(Int128 left, Int128 right) => default;
+
+                    public static Int128 operator *(Int128 left, Int128 right) => default;
+
+                    public static Int128 operator /(Int128 left, Int128 right) => default;
 
                     public static implicit operator Int128(int value) => default;
                 }
@@ -420,5 +429,82 @@ public sealed partial class HostedGrimoireProducerInventoryTests
             [compilation], new(["Worker"], []), [new("Worker", [OrdinaryRoot()])], []);
 
         Assert.Contains(result.Diagnostics, diagnostic => diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED" && diagnostic.Detail == callee);
+    }
+
+    // The pure intrinsic table names exact framework identities; a same-named static from another assembly
+    // is an unclassified external call, however harmless its body looks. System.Double, System.Int32 and
+    // System.String are also in the name-keyed reviewed intrinsic set, which accepts them only when the
+    // compilation binds the type as the special type its own core library defines.
+    [Theory]
+    [InlineData("single-is-finite", "counterfeit::System.Single value = default; _ = counterfeit::System.Single.IsFinite(value);", "System.Single.IsFinite")]
+    [InlineData("double-is-finite", "counterfeit::System.Double value = default; _ = counterfeit::System.Double.IsFinite(value);", "System.Double.IsFinite")]
+    [InlineData("int32-max", "counterfeit::System.Int32 value = default; _ = counterfeit::System.Int32.Max(value, value);", "System.Int32.Max")]
+    [InlineData("string-concat", "counterfeit::System.String text = null!; _ = counterfeit::System.String.Concat(text, text);", "System.String.Concat")]
+    public void FrameworkIntrinsicsFromAnUnreviewedAssemblyStayUnclassified(string shape, string body, string callee)
+    {
+        Assert.NotEmpty(shape);
+
+        const string lookalikes = """
+            namespace System
+            {
+                public readonly struct Single
+                {
+                    public static bool IsFinite(Single value) => true;
+                }
+
+                public readonly struct Double
+                {
+                    public static bool IsFinite(Double value) => true;
+                }
+
+                public readonly struct Int32
+                {
+                    public static Int32 Max(Int32 left, Int32 right) => left;
+                }
+
+                public sealed class String
+                {
+                    public static String Concat(String left, String right) => left;
+                }
+            }
+            """;
+
+        CSharpCompilation foreign = CompileWithProductionReferencePack(lookalikes, "RetroDownfall.Arcanum.Api").WithAssemblyName("Untrusted.Intrinsics");
+
+        using MemoryStream image = new();
+
+        Assert.True(foreign.Emit(image).Success);
+
+        CSharpCompilation compilation = CompileWithProductionReferencePack("extern alias counterfeit; " + R2Source(body + " await Task.CompletedTask;"), "RetroDownfall.Arcanum.Api")
+            .AddReferences(MetadataReference.CreateFromImage(image.ToArray(), new MetadataReferenceProperties(aliases: ["counterfeit"])));
+
+        Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        SyntaxTree tree = Assert.Single(compilation.SyntaxTrees);
+
+        SemanticModel model = compilation.GetSemanticModel(tree);
+
+        IMethodSymbol selected = Assert.Single(tree.GetRoot().DescendantNodes().OfType<InvocationExpressionSyntax>()
+            .Select(invocation => model.GetSymbolInfo(invocation).Symbol).OfType<IMethodSymbol>(),
+            static method => method.ContainingAssembly.Name == "Untrusted.Intrinsics");
+
+        Assert.Equal(SpecialType.None, selected.ContainingType.SpecialType);
+
+        HostedProducerDiscovery<HostedProducerSite> result = HostedGrimoireProducerInventory.DiscoverProducerSites(
+            [compilation], new(["Worker"], []), [new("Worker", [OrdinaryRoot()])], []);
+
+        Assert.Contains(result.Diagnostics, diagnostic => diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED" && diagnostic.Detail == callee);
+    }
+
+    // The same names bound to the real framework types stay accepted, so the rows above refuse the
+    // counterfeit assembly and not the member.
+    [Fact]
+    public void FrameworkIntrinsicsFromTheCoreLibraryStayClassified()
+    {
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(R2Source(
+            "float single = 1f; double number = 2d; int count = 3; string text = \"a\"; "
+            + "_ = float.IsFinite(single); _ = double.IsFinite(number); _ = int.Max(count, count); _ = string.Concat(text, text); await Task.CompletedTask;"));
+
+        Assert.Empty(result.Diagnostics);
     }
 }
