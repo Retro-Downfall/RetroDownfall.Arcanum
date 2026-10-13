@@ -146,10 +146,12 @@ public sealed partial class HostedGrimoireProducerInventoryTests
     [Theory]
     [InlineData("primary-exact", true)]
     [InlineData("explicit-exact", true)]
+    [InlineData("explicit-extra-parameter", true)]
     [InlineData("authored-base-exact", true)]
     [InlineData("base-ctor-options", false)]
     [InlineData("base-ctor-options-wrapped", false)]
     [InlineData("base-ctor-options-assigned", false)]
+    [InlineData("non-generic-options", false)]
     [InlineData("explicit-no-initializer", false)]
     [InlineData("explicit-parameterless-base", false)]
     [InlineData("explicit-this-chain", false)]
@@ -166,6 +168,8 @@ public sealed partial class HostedGrimoireProducerInventoryTests
             contextMembers: shape switch
             {
                 "explicit-exact" => "public BlobContext(Microsoft.EntityFrameworkCore.DbContextOptions<BlobContext> options) : base(options) { }",
+                "explicit-extra-parameter" => "public BlobContext(Microsoft.EntityFrameworkCore.DbContextOptions<BlobContext> options, IServiceProvider? services = null) : base(options) { }",
+                "non-generic-options" => "public BlobContext(Microsoft.EntityFrameworkCore.DbContextOptions options) : base(options) { }",
                 "explicit-no-initializer" => "public BlobContext(Microsoft.EntityFrameworkCore.DbContextOptions<BlobContext> options) { }",
                 "explicit-parameterless-base" => "public BlobContext(Microsoft.EntityFrameworkCore.DbContextOptions<BlobContext> options) : base() { }",
                 "explicit-this-chain" => "public BlobContext(Microsoft.EntityFrameworkCore.DbContextOptions<BlobContext> options) : this(options, 0) { } private BlobContext(Microsoft.EntityFrameworkCore.DbContextOptions<BlobContext> options, int extra) : base(BlobInput.Options) { }",
@@ -186,7 +190,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests
 
         string header = shape switch
         {
-            "explicit-exact" or "explicit-no-initializer" or "explicit-parameterless-base" or "explicit-this-chain" =>
+            "explicit-exact" or "explicit-extra-parameter" or "non-generic-options" or "explicit-no-initializer" or "explicit-parameterless-base" or "explicit-this-chain" =>
                 "public sealed class BlobContext : Microsoft.EntityFrameworkCore.DbContext",
             "base-ctor-options" => SqliteIndexerContextHeader.Replace("DbContext(options)", "DbContext(BlobInput.Options)", StringComparison.Ordinal),
             "base-ctor-options-wrapped" => SqliteIndexerContextHeader.Replace("DbContext(options)", "DbContext(BlobOptionsSwap.Swap(options))", StringComparison.Ordinal),
@@ -211,6 +215,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests
     [Theory]
     [InlineData("no-replacement", true)]
     [InlineData("setdbconnection-invocation", false)]
+    [InlineData("setdbconnection-extension-syntax", false)]
     [InlineData("setdbconnection-method-group", false)]
     [InlineData("setdbconnection-unreached-method-group", false)]
     [InlineData("setconnectionstring-method-group", false)]
@@ -222,6 +227,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests
         string prefix = shape switch
         {
             "setdbconnection-invocation" => "Microsoft.EntityFrameworkCore.RelationalDatabaseFacadeExtensions.SetDbConnection(db.Database, BlobInput.Connection, false); ",
+            "setdbconnection-extension-syntax" => "db.Database.SetDbConnection(BlobInput.Connection); ",
             "setdbconnection-method-group" => "System.Action<Microsoft.EntityFrameworkCore.Infrastructure.DatabaseFacade, System.Data.Common.DbConnection?, bool> swap = Microsoft.EntityFrameworkCore.RelationalDatabaseFacadeExtensions.SetDbConnection; swap(db.Database, BlobInput.Connection, false); ",
             "setconnectionstring-method-group" => "System.Action<Microsoft.EntityFrameworkCore.Infrastructure.DatabaseFacade, string?> swap = Microsoft.EntityFrameworkCore.RelationalDatabaseFacadeExtensions.SetConnectionString; swap(db.Database, \"Data Source=:memory:\"); ",
             "relational-connection-set" => "IServiceProvider services = ((Microsoft.EntityFrameworkCore.Infrastructure.IInfrastructure<IServiceProvider>)db).Instance; Microsoft.EntityFrameworkCore.Storage.IRelationalConnection rc = (Microsoft.EntityFrameworkCore.Storage.IRelationalConnection)services.GetService(typeof(Microsoft.EntityFrameworkCore.Storage.IRelationalConnection))!; rc.DbConnection = BlobInput.Connection; ",
@@ -246,7 +252,8 @@ public sealed partial class HostedGrimoireProducerInventoryTests
             contextExpression: "db",
             helpers: helpers);
 
-        AssertSqliteIndexerCertificate(source, shape, database);
+        // The extension-method spelling needs the namespace in scope; nothing else changes.
+        AssertSqliteIndexerCertificate(shape == "setdbconnection-extension-syntax" ? "using Microsoft.EntityFrameworkCore;\n" + source : source, shape, database);
     }
 
     [Theory]

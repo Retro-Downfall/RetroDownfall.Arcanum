@@ -44262,6 +44262,13 @@ internal static partial class HostedGrimoireProducerInventory
             return null;
         }
 
+        // The interfaces the framework context implements: a member read through one of them is
+        // the context's own member, whichever spelling reaches it.
+        private static readonly HashSet<string> DbContextInterfaceKeys = typeof(Microsoft.EntityFrameworkCore.DbContext)
+            .GetInterfaces()
+            .Select(static contract => contract.Namespace + "." + contract.Name)
+            .ToHashSet(StringComparer.Ordinal);
+
         /// <summary>
         /// EF runs the authored OnConfiguring at the first use of a context's services, whichever
         /// member that is and however the receiver is written: spelled out, reached through
@@ -44273,13 +44280,6 @@ internal static partial class HostedGrimoireProducerInventory
         /// traversal inherits no work, effect or recovery admission: its effects are unadmitted
         /// wherever the hook fires.
         /// </summary>
-        // The interfaces the framework context implements: a member read through one of them is
-        // the context's own member, whichever spelling reaches it.
-        private static readonly HashSet<string> DbContextInterfaceKeys = typeof(Microsoft.EntityFrameworkCore.DbContext)
-            .GetInterfaces()
-            .Select(static contract => contract.Namespace + "." + contract.Name)
-            .ToHashSet(StringComparer.Ordinal);
-
         private AuthoredMember? DbContextFirstUseConfiguring(
             AuthoredMember member,
             SyntaxNode node,
