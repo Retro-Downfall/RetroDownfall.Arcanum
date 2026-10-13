@@ -43935,10 +43935,6 @@ internal static partial class HostedGrimoireProducerInventory
         }
 
         /// <summary>
-        /// H3: EF lets a caller replace a built context's connection or provider services
-        /// after resolution. Any such call anywhere refuses the closed certificate.
-        /// </summary>
-        /// <summary>
         /// EF's accessor extensions hand out the context's internal services, which can be used to
         /// replace its connection or provider. The one reviewed read is the logger factory the
         /// connection interceptor uses to report a failed open: a read-only view with no setter.
@@ -43959,6 +43955,10 @@ internal static partial class HostedGrimoireProducerInventory
                     typeof(Microsoft.EntityFrameworkCore.Infrastructure.AccessorExtensions).Assembly.GetName());
         }
 
+        /// <summary>
+        /// H3: EF lets a caller replace a built context's connection or provider services
+        /// after resolution. Any such call anywhere refuses the closed certificate.
+        /// </summary>
         private bool HasDbContextConnectionReplacement()
         {
             foreach ((InvocationExpressionSyntax call, SemanticModel model) in invocations)
