@@ -61,11 +61,24 @@ public sealed partial class LongRestMaintenanceTests
 
         LongRunningOperation deferred = (await f.Operations.GetAsync(f.Operation))!;
 
-        Assert.Equal(LongRunningOperationState.Running, deferred.State);
+        if (change == "undrained")
+        {
+            // An abort before the group drained ends the host's run by cancellation: the worker keeps its lease.
+            Assert.Equal(LongRunningOperationState.Running, deferred.State);
 
-        Assert.Null(deferred.TerminalErrorCode);
+            Assert.Null(deferred.TerminalErrorCode);
 
-        Assert.NotNull(deferred.LeaseOwner);
+            Assert.NotNull(deferred.LeaseOwner);
+        }
+        else
+        {
+            // The worker yielded to maintenance and parked the sweep for its own authority class; it holds no lease any more.
+            Assert.Equal(LongRunningOperationState.ReconciliationRequired, deferred.State);
+
+            Assert.Equal(change == "protected" ? LongRestParkCodes.AuthorizedRequestRequired : LongRestParkCodes.MaintenanceDeferred, deferred.TerminalErrorCode);
+
+            Assert.Null(deferred.LeaseOwner);
+        }
 
         Assert.Equal(1, deferred.CheckpointVersion);
 
@@ -81,8 +94,9 @@ public sealed partial class LongRestMaintenanceTests
         }
 
         // Only the durable lease deadline is advanced after the real old worker and group drained.
-        // The same process, gate, epoch, runtime, stores and registered recovery handler remain alive.
-        await f.H.ExecuteAsync("UPDATE LongRunningOperations SET LeaseExpiresAt = '2000-01-01T00:00:00.0000000Z' WHERE Id = $operation;",
+        // The same process, gate, epoch, runtime, stores and registered recovery handler remain alive. Recovery parks the
+        // sweep, and the hosted worker's discovery then readmits the parked clean sweep under a Long Rest lease of its own.
+        await f.H.ExecuteAsync("UPDATE LongRunningOperations SET LeaseExpiresAt = '2000-01-01T00:00:00.0000000Z' WHERE Id = $operation AND LeaseOwner IS NOT NULL;",
             ("$operation", f.Operation.ToString("N")));
 
         f.Payloads.Clear();
@@ -97,9 +111,9 @@ public sealed partial class LongRestMaintenanceTests
         {
             f.Handler.ChatText = DecisionOrSummary(f.Handler.LastBody!);
 
-            Assert.Equal(f.Admission.CurrentGeneration, f.WorkAdmission.Lease.Generation);
+            Assert.Equal(f.Admission.CurrentGeneration, f.SweepLease.Generation);
 
-            Assert.False(f.WorkAdmission.Lease.MaintenanceRevocation.IsCancellationRequested);
+            Assert.False(f.SweepLease.MaintenanceRevocation.IsCancellationRequested);
 
             actualRecoveryOwner = (await f.Operations.GetAsync(f.Operation))!.LeaseOwner;
 
@@ -108,24 +122,15 @@ public sealed partial class LongRestMaintenanceTests
             Assert.NotEqual(deferred.LeaseOwner, actualRecoveryOwner);
         };
 
-        LongRunningOperationStartupHostedService recovery = new(new PaidRecoveryScopes(f), TimeProvider.System,
-            new LongRunningOperationReconciliationStatus(), f.RecordedAdmission,
-            NullLogger<LongRunningOperationStartupHostedService>.Instance);
-
-        LongRunningOperationReconciliationSummary summary;
-
-        try
-        {
-            summary = await recovery.RunBackgroundPassAsync(DateTimeOffset.UtcNow, "same-boot-clean-reopen", CancellationToken.None)
-                .WaitAsync(TimeSpan.FromSeconds(10));
-        }
-        finally
-        {
-            await recovery.StopAsync(CancellationToken.None);
-        }
+        RecoveredSweep summary = await RecoverThenReadmitAsync(f, "same-boot-clean-reopen");
 
         Assert.Contains(f.RecordedAdmission.InnerWorkLeases.Skip(leasesBefore), lease =>
             lease.Kind == GrimoireWorkKind.LongRunningOperationRecovery && lease.Generation == f.Admission.CurrentGeneration);
+
+        // The worker runs a clean sweep under a Long Rest lease of its own, minted at the current generation. A
+        // protected row is parked for a fresh Session request and never offered to the worker, so it mints none.
+        Assert.Equal(change != "protected", f.RecordedAdmission.InnerWorkLeases.Skip(leasesBefore).Any(lease =>
+            lease.Kind == GrimoireWorkKind.LongRestSweep && lease.Generation == f.Admission.CurrentGeneration));
 
         RecordingGrimoireWorkAdmissionGate.DrainedAttestation[] attested = f.RecordedAdmission.DrainedAttestations.Skip(attestationsBefore).ToArray();
 
@@ -140,7 +145,7 @@ public sealed partial class LongRestMaintenanceTests
             {
                 Assert.True(attestation.Attested);
 
-                Assert.Equal(GrimoireWorkKind.LongRunningOperationRecovery, attestation.Kind);
+                Assert.Equal(GrimoireWorkKind.LongRestSweep, attestation.Kind);
 
                 Assert.Equal(original.Fence.AdmissionGeneration, attestation.Previous);
 
@@ -156,7 +161,7 @@ public sealed partial class LongRestMaintenanceTests
 
             Assert.False(refused.Attested);
 
-            Assert.Equal(GrimoireWorkKind.LongRunningOperationRecovery, refused.Kind);
+            Assert.Equal(GrimoireWorkKind.LongRestSweep, refused.Kind);
 
             Assert.Equal(original.Fence.AdmissionGeneration, refused.Previous);
 
@@ -186,7 +191,10 @@ public sealed partial class LongRestMaintenanceTests
 
             Assert.Equal(0, summary.RequiresAttention);
 
-            Assert.Equal("same-boot-clean-reopen", actualRecoveryOwner);
+            // The worker's atomic readmission leased the row to a fresh worker identity, not to the recovery pass.
+            Assert.True(Guid.TryParseExact(actualRecoveryOwner, "N", out _));
+
+            Assert.NotEqual("same-boot-clean-reopen", actualRecoveryOwner);
 
             Assert.NotEmpty(f.Payloads);
 
@@ -281,7 +289,7 @@ public sealed partial class LongRestMaintenanceTests
 
             Assert.False(run.IsCompleted);
 
-            Assert.False(f.WorkAdmission.Lease.MaintenanceRevocation.IsCancellationRequested);
+            Assert.False(f.SweepLease.MaintenanceRevocation.IsCancellationRequested);
 
             if (drained)
             {

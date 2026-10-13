@@ -26,14 +26,14 @@ public sealed partial class LongRestMaintenanceTests
 
         for (int unit = 0; unit < precedingUnits; unit++)
         {
-            LongRestSweepHarness.Require(await f.Maintenance.ProcessAsync(f.Operation, "fixture-worker", null, CancellationToken.None));
+            LongRestSweepHarness.Require(await f.ProcessAsync(f.Operation, "fixture-worker", null, CancellationToken.None));
         }
 
         // A real SQLite rollback at the retained-output write, after the real SDK has billed.
         // The table is one of the three fixed theory literals above, never external input.
         await f.H.ExecuteAsync($"CREATE TEMP TRIGGER fixture_abort_paid_artifact BEFORE INSERT ON {table} BEGIN SELECT RAISE(ABORT, 'fixture retained artifact refused'); END;");
 
-        var result = await f.Maintenance.ProcessAsync(f.Operation, "fixture-worker", null, CancellationToken.None);
+        var result = await f.ProcessAsync(f.Operation, "fixture-worker", null, CancellationToken.None);
 
         Assert.True(result.IsFailure);
 
@@ -129,7 +129,12 @@ public sealed partial class LongRestMaintenanceTests
 
         Assert.Equal(1, f.Handler.SendCount);
 
-        Assert.Equal(LongRunningOperationState.Running, (await f.Operations.GetAsync(f.Operation))!.State);
+        // The worker yielded to maintenance after the summary committed: parked under the free yield code, not terminal.
+        LongRunningOperation yielded = (await f.Operations.GetAsync(f.Operation))!;
+
+        Assert.Equal(LongRunningOperationState.ReconciliationRequired, yielded.State);
+
+        Assert.Equal(LongRestParkCodes.MaintenanceDeferred, yielded.TerminalErrorCode);
 
         Assert.Equal(0L, await f.H.ScalarAsync("SELECT count(*) FROM long_rest_discovery_embeddings;"));
 
@@ -150,7 +155,8 @@ public sealed partial class LongRestMaintenanceTests
 
         await f.RebootAsync();
 
-        var result = LongRestSweepHarness.Require(await f.Coordinator.ResumeAsync(f.Operation, null, CancellationToken.None));
+        // The parked clean sweep belongs to the hosted worker, so the worker's door readmits it after the reboot.
+        var result = LongRestSweepHarness.Require(await f.ResumeAdmittedAsync(f.Operation, CancellationToken.None));
 
         Assert.Equal(LongRestSweepPhase.Completed, result.Phase);
 

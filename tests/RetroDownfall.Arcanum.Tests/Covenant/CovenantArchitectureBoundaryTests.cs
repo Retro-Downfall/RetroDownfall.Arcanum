@@ -232,14 +232,6 @@ public sealed class CovenantArchitectureBoundaryTests
                 ],
                 [2]),
             new(
-                "RetroDownfall.Arcanum.Infrastructure.Operations.LongRest.LongRestSweepRecoveryHandler",
-                LongRunningOperationKinds.LongRestSweep,
-                [1],
-                [
-                    "Microsoft.Extensions.AI.IChatClient.GetResponseAsync",
-                    "Microsoft.Extensions.AI.IEmbeddingGenerator`2.GenerateAsync"
-                ]),
-            new(
                 "RetroDownfall.Arcanum.Infrastructure.A2A.A2AOutboundSendingRecoveryHandler",
                 LongRunningOperationKinds.A2AOutboundSending,
                 [1],
@@ -343,11 +335,9 @@ public sealed class CovenantArchitectureBoundaryTests
                         RecoveryOperation(contract.Kind, checkpointVersion),
                         ownerEvidence: null);
 
-                LongRunningRecoveryAdmissionKind expected = contract.Kind == LongRunningOperationKinds.LongRestSweep && checkpointVersion == 1
-                    ? LongRunningRecoveryAdmissionKind.OrdinaryPerUnitExternalEffect
-                    : LongRunningRecoveryAdmissionKind.OrdinaryExternalEffect;
-
-                Assert.Equal(expected, decision.Kind);
+                Assert.True(
+                    decision.Kind is LongRunningRecoveryAdmissionKind.OrdinaryExternalEffect,
+                    $"{contract.HandlerType} checkpoint V{checkpointVersion} reaches an external effect but was classified {decision.Kind}.");
             }
 
             foreach (int checkpointVersion in contract.OwnerBoundCheckpointVersions ?? [])
@@ -363,11 +353,15 @@ public sealed class CovenantArchitectureBoundaryTests
             }
         }
 
-        Assert.Equal(
-            LongRunningRecoveryAdmissionKind.OrdinaryDbOnly,
-            LongRunningOperationRecoveryAdmission.Classify(
-                RecoveryOperation(LongRunningOperationKinds.LongRestSweep, 0),
-                ownerEvidence: null).Kind);
+        // The Long Rest handler only parks, so recovery never reaches a provider and both checkpoint versions are DB-only.
+        foreach (int checkpointVersion in new[] { 0, 1 })
+        {
+            Assert.Equal(
+                LongRunningRecoveryAdmissionKind.OrdinaryDbOnly,
+                LongRunningOperationRecoveryAdmission.Classify(
+                    RecoveryOperation(LongRunningOperationKinds.LongRestSweep, checkpointVersion),
+                    ownerEvidence: null).Kind);
+        }
 
         Assert.Equal(
             LongRunningRecoveryAdmissionKind.OrdinaryDbOnly,
@@ -1086,8 +1080,13 @@ public sealed class CovenantArchitectureBoundaryTests
         builder.Services.AddArcanumInfrastructure(new ConfigurationBuilder().Build());
 
         // Inference is outside this fixture; fail explicitly if Long Rest provider work is reached.
-        builder.Services.AddScoped<RetroDownfall.Arcanum.Core.LongRest.ILongRestMaintenance,
-            RetroDownfall.Arcanum.Tests.Support.UnreachedLongRestMaintenance>();
+        builder.Services.AddScoped<RetroDownfall.Arcanum.Tests.Support.UnreachedLongRestMaintenance>();
+
+        builder.Services.AddScoped<RetroDownfall.Arcanum.Core.LongRest.ILongRestMaintenance>(
+            static sp => sp.GetRequiredService<RetroDownfall.Arcanum.Tests.Support.UnreachedLongRestMaintenance>());
+
+        builder.Services.AddScoped<RetroDownfall.Arcanum.Infrastructure.Operations.LongRest.ILongRestAdmittedMaintenance>(
+            static sp => sp.GetRequiredService<RetroDownfall.Arcanum.Tests.Support.UnreachedLongRestMaintenance>());
 
         // This Infrastructure-only container supplies the API-owned configuration boundary,
         // just as it supplies the inference ports above. Use the actual process epoch.

@@ -1,5 +1,6 @@
 using System.Data.Common;
 using System.Reflection;
+using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -354,6 +355,92 @@ public sealed class LongRunningOperationStartupHostedServiceTests
         Assert.True(order.IndexOf("handler") < order.LastIndexOf("scope-dispose"));
         Assert.True(order.LastIndexOf("scope-dispose") < order.IndexOf("group-dispose"));
         Assert.True(order.IndexOf("group-dispose") < order.LastIndexOf("work-dispose"));
+    }
+
+    [Fact]
+    public async Task An_external_effect_handler_with_an_active_group_can_open_a_connection_after_the_real_gate_enters_Closing()
+    {
+        // The Finisher Ambient Fix: the startup service acquires its recovery lease inline, so the lifetime the gate keeps in
+        // the caller's execution context survives into the scope and the handler it settles. An async acquisition helper
+        // would have restored the caller's context on return and lost it.
+        FakeTimeProvider time = new();
+        FakeLongRunningOperationStore store = new(time);
+        LongRunningOperation seeded = store.Seed(
+            LongRunningOperationKinds.BlobEncryptionMigration,
+            LongRunningOperationRecoveryPolicy.RestartIdempotently);
+        GrimoireConnectionAdmissionGate gate = new(TimeProvider.System);
+        IGrimoireClosingOwner? closing = null;
+        Exception? finisherOpen = new InvalidOperationException("The handler never ran.");
+        Exception? unrelatedOpen = null;
+        RecordingRecoveryHandler handler = new(
+            LongRunningOperationKinds.BlobEncryptionMigration,
+            supportedCheckpointVersion: 0,
+            _ =>
+            {
+                closing = gate.BeginOrResumeExclusive(new(
+                    Guid.NewGuid(),
+                    CovenantExclusiveOperation.CovenantReset,
+                    new CovenantDigest(new byte[32]))).Value;
+
+                using SqliteConnection finisher = new();
+
+                finisherOpen = Record.Exception(() =>
+                {
+                    using IGrimoireConnectionOpenTicket ticket = gate.AcquireOrdinaryOpen(finisher);
+
+                    ticket.MarkFailed();
+                });
+
+                // Control: a connection opened outside this execution context is refused while the gate is Closing. A dedicated
+                // thread started with the flow suppressed cannot inherit any ambient lifetime, unlike a pooled one.
+                Exception? refused = null;
+
+                using (ExecutionContext.SuppressFlow())
+                {
+                    Thread unrelated = new(() => refused = Record.Exception(() =>
+                    {
+                        using IGrimoireConnectionOpenTicket ticket = gate.AcquireOrdinaryOpen(new SqliteConnection());
+
+                        ticket.MarkFailed();
+                    }));
+
+                    unrelated.Start();
+
+                    unrelated.Join();
+                }
+
+                unrelatedOpen = refused;
+
+                return LongRunningOperationRecoveryResult.Completed();
+            });
+        RecoveryScopeFactory scopes = new(
+            store,
+            Reconciler(store, time, handler),
+            [],
+            () => true);
+        LongRunningOperationStartupHostedService host = Host(scopes, time, gate);
+
+        try
+        {
+            LongRunningOperationReconciliationSummary summary = await host.RunBackgroundPassAsync(
+                time.GetUtcNow(),
+                "background-owner",
+                CancellationToken.None);
+
+            Assert.Equal(1, summary.Completed);
+
+            Assert.Equal(LongRunningOperationState.Completed, Assert.Single(store.Operations, operation => operation.Id == seeded.Id).State);
+
+            Assert.NotNull(closing);
+
+            Assert.Null(finisherOpen);
+
+            Assert.IsType<GrimoireMaintenanceUnavailableException>(unrelatedOpen);
+        }
+        finally
+        {
+            if (closing is not null) await closing.DisposeAsync();
+        }
     }
 
     [Fact]

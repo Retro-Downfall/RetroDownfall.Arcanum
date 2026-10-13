@@ -280,7 +280,7 @@ public sealed partial class LongRestMaintenanceTests
 
     private static LongRestSweepHostedService PaidOwnershipHost(MaintenanceFixture fixture) =>
         new(fixture.Services.GetRequiredService<IServiceScopeFactory>(), new LongRestSweepQueue(),
-            fixture.Epoch, fixture.RecordedAdmission, NullLoggerFactory.Instance);
+            fixture.Epoch, fixture.RecordedAdmission, fixture.Clock, NullLoggerFactory.Instance);
 
     private static CovenantExclusiveRecoveryOwner PaidOwnershipClosingOwner() =>
         new(Guid.NewGuid(), CovenantExclusiveOperation.CovenantReset, new CovenantDigest(new byte[32]));

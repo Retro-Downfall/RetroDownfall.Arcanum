@@ -16,6 +16,10 @@ internal sealed class RecordingGrimoireWorkAdmissionGate(
 
     private readonly List<IGrimoireWorkLease> _innerWorkLeases = [];
 
+    private readonly List<IGrimoireWorkLease> _issuedWorkLeases = [];
+
+    private readonly List<IGrimoireWorkLease> _effectGroupLeases = [];
+
     private readonly List<long> _observedGenerationWaits = [];
 
     private readonly List<DrainedAttestation> _drainedAttestations = [];
@@ -46,6 +50,30 @@ internal sealed class RecordingGrimoireWorkAdmissionGate(
             lock (_observationsGate)
             {
                 return _innerWorkLeases.ToArray();
+            }
+        }
+    }
+
+    /// <summary>The wrapper leases this gate handed to its callers, in issue order: the instances callers actually hold.</summary>
+    internal IReadOnlyList<IGrimoireWorkLease> IssuedWorkLeases
+    {
+        get
+        {
+            lock (_observationsGate)
+            {
+                return _issuedWorkLeases.ToArray();
+            }
+        }
+    }
+
+    /// <summary>The issued lease instance each external-effect group attempt was made on, in attempt order.</summary>
+    internal IReadOnlyList<IGrimoireWorkLease> EffectGroupLeases
+    {
+        get
+        {
+            lock (_observationsGate)
+            {
+                return _effectGroupLeases.ToArray();
             }
         }
     }
@@ -143,12 +171,16 @@ internal sealed class RecordingGrimoireWorkAdmissionGate(
             return false;
         }
 
+        RecordingWorkLease issued = new(this, admitted!);
+
         lock (_observationsGate)
         {
             _innerWorkLeases.Add(admitted!);
+
+            _issuedWorkLeases.Add(issued);
         }
 
-        lease = new RecordingWorkLease(this, admitted!);
+        lease = issued;
 
         return true;
     }
@@ -241,6 +273,11 @@ internal sealed class RecordingGrimoireWorkAdmissionGate(
             out IGrimoireExternalEffectGroup? effectGroup)
         {
             Interlocked.Increment(ref gate._effectGroupAttempts);
+
+            lock (gate._observationsGate)
+            {
+                gate._effectGroupLeases.Add(this);
+            }
 
             gate.BeforeEffectGroupAdmission();
 

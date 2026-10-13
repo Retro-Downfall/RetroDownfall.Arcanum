@@ -1,11 +1,17 @@
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using RetroDownfall.Arcanum.Core.LongRest;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Operations;
+using RetroDownfall.Arcanum.Infrastructure.Data;
+using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
+using RetroDownfall.Arcanum.Infrastructure.Repositories;
+using RetroDownfall.Arcanum.Tests.Data.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Data.LongRest;
 using RetroDownfall.Arcanum.Infrastructure.Operations;
 using RetroDownfall.Arcanum.Infrastructure.Operations.LongRest;
 using RetroDownfall.Arcanum.Tests.Fixtures;
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.LongRest;
 
@@ -25,13 +31,41 @@ public sealed class LongRestLateCancellationTests
             return Task.CompletedTask;
         };
 
-        await f.H.ExecuteAsync("UPDATE LongRunningOperations SET LeaseExpiresAt = '2000-01-01T00:00:00.0000000Z' WHERE Id = $id;",
-            ("$id", f.Operation.ToString("N")));
+        // Recovery parks the interrupted sweep. The worker then readmits it and completes every durable stage, and the
+        // operator's cancellation lands after the final checkpoint but before the final operation transition.
+        await LongRestMaintenanceTests.ParkExpiredSweepAsync(f, "completion-cancellation-fixture-owner");
 
-        LongRunningOperationReconciler reconciler = new(f.Operations, [new CancelAfterCompletedHandler(f)],
-            TimeProvider.System, NullLogger<LongRunningOperationReconciler>.Instance, new LongRunningOperationOwnership());
+        FixedCovenantConnectionSource connections = new(f.H.Connection);
 
-        await reconciler.ReconcileNowAsync("completion-cancellation-fixture-owner");
+        // The operator's cancellation lands the moment the sweep's final Completed checkpoint is durable, before any transition.
+        HookedLongRunningOperationStore operations = new(f.Operations)
+        {
+            AfterCheckpointSaved = async (id, payload) =>
+            {
+                if (payload is null || LongRestSweepCheckpointCodec.Decode(id, payload) is not { IsSuccess: true } decoded
+                    || decoded.Value.Phase != LongRestSweepPhase.Completed) return;
+
+                LongRunningOperation latest = (await f.Operations.GetAsync(id))!;
+
+                Assert.True(await f.Operations.RequestCancellationAsync(id, latest.Revision, DateTimeOffset.UtcNow));
+            },
+        };
+
+        LongRestSweepCoordinator coordinator = new(operations,
+            new LongRestSweepStore(f.H.Saga.Context, f.Clock), f.H.Store, f.Epoch,
+            new LongRestLiveFenceReader(f.H.Saga.Context, f.Runtime, f.RecordedAdmission, f.Epoch,
+                new CampaignAvailabilityReader(connections), new CampaignPathIdentityReader(connections, null!)),
+            f.Maintenance, f.Gate, new LongRunningOperationOwnership(), new LongRestSweepQueue(),
+            f.Services.GetRequiredService<IServiceScopeFactory>(), f.Clock, f.RecordedAdmission);
+
+        Assert.True(f.RecordedAdmission.TryAcquireWorkLease(GrimoireWorkKind.LongRestSweep, out IGrimoireWorkLease? admitted));
+
+        await using (IGrimoireWorkLease lease = admitted!)
+        {
+            LongRestSweepProgress progress = LongRestSweepHarness.Require(await coordinator.ResumeAdmittedAsync(f.Operation, lease, CancellationToken.None));
+
+            Assert.Equal(LongRestParkCodes.Cancelled, progress.DeferredReason);
+        }
 
         LongRunningOperation terminal = (await f.Operations.GetAsync(f.Operation))!;
 
@@ -50,26 +84,6 @@ public sealed class LongRestLateCancellationTests
         Assert.NotEqual(terminal.Id, replacement.Id);
 
         AssertOperationSnapshot(terminal, (await f.Operations.GetAsync(terminal.Id))!);
-    }
-
-    private sealed class CancelAfterCompletedHandler(LongRestMaintenanceTests.MaintenanceFixture fixture) : ILongRunningOperationRecoveryHandler
-    {
-        public string Kind => LongRunningOperationKinds.LongRestSweep;
-
-        public int SupportedCheckpointVersion => 1;
-
-        public async Task<LongRunningOperationRecoveryResult> RecoverAsync(LongRunningOperation operation, CancellationToken cancellationToken)
-        {
-            LongRunningOperationRecoveryResult completed = await fixture.Coordinator.RecoverAsync(operation, cancellationToken);
-
-            Assert.Equal(LongRunningOperationState.Completed, completed.State);
-
-            LongRunningOperation latest = (await fixture.Operations.GetAsync(operation.Id, cancellationToken))!;
-
-            Assert.True(await fixture.Operations.RequestCancellationAsync(operation.Id, latest.Revision, DateTimeOffset.UtcNow, cancellationToken));
-
-            return completed;
-        }
     }
 
     private static void AssertOperationSnapshot(LongRunningOperation expected, LongRunningOperation actual)

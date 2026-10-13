@@ -65,5 +65,5 @@ internal static class LongRestSweepCheckpointCodec
             ? checkpoint.Phase is null && checkpoint.Revision == 0 && checkpoint.CommittedItemCursor is null && checkpoint.CommittedWorkDigest is null
             : checkpoint.GenerationId != Guid.Empty && checkpoint.Phase is >= LongRestSweepPhase.Capture and <= LongRestSweepPhase.Deferred);
 
-    private static Error Invalid() => new("long_rest.checkpoint_invalid", "The Long Rest checkpoint cannot be resumed.");
+    private static Error Invalid() => new(LongRestParkCodes.CheckpointInvalid, "The Long Rest checkpoint cannot be resumed.");
 }

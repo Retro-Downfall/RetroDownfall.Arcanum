@@ -91,9 +91,9 @@ public sealed class LongRestTerminalReservationRefusalTests
 
         // Two bounded real units capture and fold the two-source fixture. The transport is
         // the fixture's counting SDK handler; native attempt/accepted rows are production stores.
-        Require(await f.Maintenance.ProcessAsync(f.Operation, "fixture-worker", null, CancellationToken.None));
+        Require(await f.ProcessAsync(f.Operation, "fixture-worker", null, CancellationToken.None));
 
-        Require(await f.Maintenance.ProcessAsync(f.Operation, "fixture-worker", null, CancellationToken.None));
+        Require(await f.ProcessAsync(f.Operation, "fixture-worker", null, CancellationToken.None));
 
         Assert.True((long)(await f.H.ScalarAsync("SELECT sum(PaidCount) FROM long_rest_provider_effects;"))! > 0);
 

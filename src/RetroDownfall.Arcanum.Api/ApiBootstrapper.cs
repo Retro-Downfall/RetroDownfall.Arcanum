@@ -564,7 +564,11 @@ public static class ApiBootstrapper
 
         services.AddScoped<RetroDownfall.Arcanum.Core.LongRest.ILongRestProvider, LongRestProvider>();
 
-        services.AddScoped<RetroDownfall.Arcanum.Core.LongRest.ILongRestMaintenance, LongRestMaintenance>();
+        services.AddScoped<LongRestMaintenance>();
+
+        services.AddScoped<RetroDownfall.Arcanum.Core.LongRest.ILongRestMaintenance>(static sp => sp.GetRequiredService<LongRestMaintenance>());
+
+        services.AddScoped<RetroDownfall.Arcanum.Infrastructure.Operations.LongRest.ILongRestAdmittedMaintenance>(static sp => sp.GetRequiredService<LongRestMaintenance>());
 
         services.AddScoped<ICampaignRollupProviderClientFactory, CampaignRollupProviderClientFactory>();
 

@@ -69,33 +69,30 @@ public sealed partial class LongRestMaintenanceTests
 
         string[] before = await OwnedCompletionHistoryAsync(f);
 
-        // The old process has joined and released its claim. Expire only its durable deadline;
-        // the actual reconciler must acquire a fresh Running lease and call the registered owner.
-        await f.H.ExecuteAsync("UPDATE LongRunningOperations SET LeaseExpiresAt = '2000-01-01T00:00:00.0000000Z' WHERE Id = $operation;",
-            ("$operation", f.Operation.ToString("N")));
+        // The old process has joined and released its claim. Recovery only parks the interrupted sweep: it neither
+        // replays a stage nor completes the row, because finishing is the worker's authority.
+        await ParkExpiredSweepAsync(f, "owned-completion-recovery");
 
-        OwnedCompletedRecoveryWitness handler = new(f);
+        LongRunningOperation parked = (await f.Operations.GetAsync(f.Operation))!;
 
-        LongRunningOperationReconciler reconciler = new(f.Operations, [handler], f.Clock,
-            NullLogger<LongRunningOperationReconciler>.Instance, new LongRunningOperationOwnership());
+        Assert.Equal(interrupted.AttemptCount + 1, parked.AttemptCount);
 
-        LongRunningOperationReconciliationSummary result = await reconciler.ReconcileNowAsync("owned-completion-recovery");
+        Assert.Equal(sends, f.Handler.SendCount);
 
-        Assert.NotNull(handler.Acquired);
+        Assert.Equal(before, await OwnedCompletionHistoryAsync(f));
 
-        Assert.Equal(LongRunningOperationState.Running, handler.Acquired!.State);
+        // The hosted worker readmits it atomically under its own Long Rest lease and finishes the final transition.
+        LongRestSweepProgress progress = LongRestSweepHarness.Require(await f.ResumeAdmittedAsync(f.Operation, CancellationToken.None));
 
-        Assert.Equal("owned-completion-recovery", handler.Acquired.LeaseOwner);
+        Assert.Equal(LongRestSweepPhase.Completed, progress.Phase);
 
-        Assert.Equal(interrupted.AttemptCount + 1, handler.Acquired.AttemptCount);
-
-        Assert.Equal(1, result.Completed);
-
-        Assert.Equal(0, result.RequiresAttention);
+        Assert.Null(progress.DeferredReason);
 
         LongRunningOperation final = (await f.Operations.GetAsync(f.Operation))!;
 
         Assert.Equal(LongRunningOperationState.Completed, final.State);
+
+        Assert.Equal(parked.AttemptCount + 1, final.AttemptCount);
 
         Assert.Null(final.TerminalErrorCode);
 
@@ -108,24 +105,6 @@ public sealed partial class LongRestMaintenanceTests
         Assert.Equal(before, await OwnedCompletionHistoryAsync(f));
 
         Assert.Equal(f.Operation, LongRestSweepHarness.Require(await f.Coordinator.RequestAsync(f.Scope, CancellationToken.None)).Id);
-    }
-
-    private sealed class OwnedCompletedRecoveryWitness(MaintenanceFixture fixture) : ILongRunningOperationRecoveryHandler
-    {
-        private readonly LongRestSweepRecoveryHandler _registered = new(fixture.Coordinator);
-
-        internal LongRunningOperation? Acquired;
-
-        public string Kind => _registered.Kind;
-
-        public int SupportedCheckpointVersion => _registered.SupportedCheckpointVersion;
-
-        public Task<LongRunningOperationRecoveryResult> RecoverAsync(LongRunningOperation operation, CancellationToken cancellationToken)
-        {
-            Acquired = operation;
-
-            return _registered.RecoverAsync(operation, cancellationToken);
-        }
     }
 
     private static async Task<string[]> OwnedCompletionHistoryAsync(MaintenanceFixture f)

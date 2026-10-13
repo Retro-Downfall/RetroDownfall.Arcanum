@@ -1,4 +1,5 @@
 using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 
 using RetroDownfall.Arcanum.Infrastructure.Data;
@@ -8,6 +9,34 @@ namespace RetroDownfall.Arcanum.Tests.Operations;
 
 public sealed partial class HostedGrimoireProducerInventoryTests
 {
+    private const string ActualLongRestHolderType = "RetroDownfall.Arcanum.Infrastructure.Data.LongRest.LongRestWorkAdmission";
+
+    private const string ActualLongRestParkHandlerType = "RetroDownfall.Arcanum.Infrastructure.Operations.LongRest.LongRestSweepRecoveryHandler";
+
+    private const string ActualLongRestCoordinatorType = "RetroDownfall.Arcanum.Infrastructure.Operations.LongRest.LongRestSweepCoordinator";
+
+    private const string ActualLongRestSweepPort = "RetroDownfall.Arcanum.Infrastructure.Operations.LongRest.ILongRestAdmittedSweep";
+
+    private const string ActualLongRestMaintenanceType = "RetroDownfall.Arcanum.Api.Intelligence.LongRestMaintenance";
+
+    private const string ActualLongRestGateType = "RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireConnectionAdmissionGate";
+
+    private const string ActualLongRestLeaseType = "RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireWorkLease";
+
+    private const string ActualLongRestWorkerType = "RetroDownfall.Arcanum.Infrastructure.Hosting.LongRestSweepHostedService";
+
+    private readonly record struct ActualLongRestMember(SemanticModel Model, IMethodSymbol Symbol, MethodDeclarationSyntax Syntax);
+
+    /// <summary>The real members that carry the one Long Rest lease from its mint to the physical send, with their key calls.</summary>
+    private sealed record ActualLongRestSpine(
+        ActualLongRestMember Worker, InvocationExpressionSyntax WorkerAcquisition,
+        ActualLongRestMember Paid, InvocationExpressionSyntax GroupCall,
+        ActualLongRestMember Chat, InvocationExpressionSyntax ChatSend,
+        ActualLongRestMember Embedding, InvocationExpressionSyntax EmbeddingSend);
+
+    [Fact]
+    public void ActualLongRestSpineCarriesOneLeaseByValueFromMintToExternalEffectGroup() => ReadActualLongRestSpine();
+
     [Fact]
     [Trait("Category", "HostedProducerProductionAnalysis")]
     public void ActualLongRestReadinessAndOrdinaryRootsRetainPhysicalDispatchCapsules()
@@ -35,118 +64,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests
                 || registration.EndsWith("." + root, StringComparison.Ordinal));
         }
 
-        const string holderType = "RetroDownfall.Arcanum.Infrastructure.Data.LongRest.LongRestWorkAdmission";
-
-        const string coordinatorType = "RetroDownfall.Arcanum.Infrastructure.Operations.LongRest.LongRestSweepCoordinator";
-
-        const string maintenanceType = "RetroDownfall.Arcanum.Api.Intelligence.LongRestMaintenance";
-
-        const string gateType = "RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireConnectionAdmissionGate";
-
-        const string leaseType = "RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireWorkLease";
-
-        const string workerType = "RetroDownfall.Arcanum.Infrastructure.Hosting.LongRestSweepHostedService";
-
-        var infrastructure = Assert.Single(compilations, static compilation => compilation.AssemblyName == "RetroDownfall.Arcanum.Infrastructure");
-
-        var api = Assert.Single(compilations, static compilation => compilation.AssemblyName == "RetroDownfall.Arcanum.Api");
-
-        // These are the real three owning/borrowing entry points, not replacement fixture classes.
-        AssertOwnedShell(infrastructure, coordinatorType, "ResumeAsync", "ResumeAdmittedAsync");
-        AssertOwnedShell(infrastructure, coordinatorType, "RecoverAsync", "RecoverAdmittedAsync");
-        AssertOwnedShell(api, maintenanceType, "ProcessAsync", "ProcessAdmittedAsync");
-
-        Assert.Equal(17, (int)GrimoireWorkKind.LongRestSweep);
-
-        var holderBind = Member(infrastructure, holderType, "Bind");
-
-        AssignmentExpressionSyntax storageWrite = Assert.Single(holderBind.Syntax.DescendantNodes().OfType<AssignmentExpressionSyntax>());
-
-        IFieldSymbol storage = Assert.IsAssignableFrom<IFieldSymbol>(holderBind.Model.GetSymbolInfo(storageWrite.Left).Symbol);
-
-        Assert.Equal(Accessibility.Private, storage.DeclaredAccessibility);
-        Assert.False(storage.IsStatic);
-        Assert.True(SymbolEqualityComparer.Default.Equals(holderBind.Symbol.Parameters[0], holderBind.Model.GetSymbolInfo(storageWrite.Right).Symbol));
-
-        IPropertySymbol leaseProperty = Assert.Single(holderBind.Symbol.ContainingType.GetMembers("Lease").OfType<IPropertySymbol>());
-
-        PropertyDeclarationSyntax leaseSyntax = Assert.IsType<PropertyDeclarationSyntax>(Assert.Single(leaseProperty.DeclaringSyntaxReferences).GetSyntax());
-
-        BinaryExpressionSyntax requiredLease = Assert.IsType<BinaryExpressionSyntax>(leaseSyntax.ExpressionBody!.Expression);
-
-        Assert.True(SymbolEqualityComparer.Default.Equals(storage, infrastructure.GetSemanticModel(leaseSyntax.SyntaxTree).GetSymbolInfo(requiredLease.Left).Symbol));
-        Assert.IsType<ThrowExpressionSyntax>(requiredLease.Right);
-
-        var acquire = Member(infrastructure, holderType, "Acquire");
-
-        InvocationExpressionSyntax acquisition = Call(acquire, gateType, "TryAcquireWorkLease");
-
-        Assert.Equal(GrimoireWorkKind.LongRestSweep, (GrimoireWorkKind)Convert.ToInt32(
-            Assert.IsAssignableFrom<IFieldSymbol>(acquire.Model.GetSymbolInfo(acquisition.ArgumentList.Arguments[0].Expression).Symbol).ConstantValue));
-
-        var ordinary = Member(infrastructure, workerType, "RunOneAsync");
-
-        InvocationExpressionSyntax ordinaryAcquisition = Call(ordinary, gateType, "TryAcquireWorkLease");
-
-        Assert.Equal(GrimoireWorkKind.LongRestSweep, (GrimoireWorkKind)Convert.ToInt32(
-            Assert.IsAssignableFrom<IFieldSymbol>(ordinary.Model.GetSymbolInfo(ordinaryAcquisition.ArgumentList.Arguments[0].Expression).Symbol).ConstantValue));
-
-        InvocationExpressionSyntax ordinaryBind = Call(ordinary, holderType, "Bind");
-
-        LocalDeclarationStatementSyntax ordinaryBinding = Assert.Single(ordinaryBind.Ancestors().OfType<LocalDeclarationStatementSyntax>());
-
-        Assert.NotEqual(0, ordinaryBinding.UsingKeyword.RawKind);
-
-        ILocalSymbol borrowedLease = Assert.IsAssignableFrom<ILocalSymbol>(ordinary.Model.GetSymbolInfo(ordinaryBind.ArgumentList.Arguments[0].Expression).Symbol);
-
-        VariableDeclaratorSyntax retainedLease = Assert.IsType<VariableDeclaratorSyntax>(Assert.Single(borrowedLease.DeclaringSyntaxReferences).GetSyntax());
-
-        LocalDeclarationStatementSyntax retainedLeaseDeclaration = Assert.IsType<LocalDeclarationStatementSyntax>(retainedLease.Parent!.Parent);
-
-        Assert.NotEqual(0, retainedLeaseDeclaration.AwaitKeyword.RawKind);
-        Assert.NotEqual(0, retainedLeaseDeclaration.UsingKeyword.RawKind);
-
-        SingleVariableDesignationSyntax admittedVariable = Assert.Single(ordinaryAcquisition.ArgumentList.Arguments[1].DescendantNodes().OfType<SingleVariableDesignationSyntax>());
-
-        ExpressionSyntax admittedValue = Assert.IsType<PostfixUnaryExpressionSyntax>(retainedLease.Initializer!.Value).Operand;
-
-        Assert.True(SymbolEqualityComparer.Default.Equals(ordinary.Model.GetDeclaredSymbol(admittedVariable), ordinary.Model.GetSymbolInfo(admittedValue).Symbol));
-        Assert.Same(retainedLeaseDeclaration.Parent, ordinaryBinding.Parent);
-        Assert.True(retainedLeaseDeclaration.SpanStart < ordinaryBinding.SpanStart);
-
-        var paid = Member(api, maintenanceType, "ExecutePaidAsync");
-
-        InvocationExpressionSyntax groupCall = Call(paid, leaseType, "TryBeginExternalEffectGroup");
-
-        ILocalSymbol groupReceiver = Assert.IsAssignableFrom<ILocalSymbol>(paid.Model.GetSymbolInfo(
-            Assert.IsType<MemberAccessExpressionSyntax>(groupCall.Expression).Expression).Symbol);
-
-        VariableDeclaratorSyntax groupLease = Assert.IsType<VariableDeclaratorSyntax>(Assert.Single(groupReceiver.DeclaringSyntaxReferences).GetSyntax());
-
-        IPropertySymbol holderLease = Assert.IsAssignableFrom<IPropertySymbol>(paid.Model.GetSymbolInfo(groupLease.Initializer!.Value).Symbol);
-
-        Assert.True(SymbolEqualityComparer.Default.Equals(holderLease.ContainingType, api.GetTypeByMetadataName(holderType)));
-        Assert.Equal("Lease", holderLease.Name);
-
-        SingleVariableDesignationSyntax groupVariable = Assert.Single(groupCall.ArgumentList.Arguments[0].DescendantNodes().OfType<SingleVariableDesignationSyntax>());
-
-        ISymbol groupSymbol = paid.Model.GetDeclaredSymbol(groupVariable)!;
-
-        LocalDeclarationStatementSyntax retainedGroup = Assert.Single(paid.Syntax.DescendantNodes().OfType<LocalDeclarationStatementSyntax>(), declaration =>
-            declaration.AwaitKeyword.RawKind != 0 && declaration.UsingKeyword.RawKind != 0
-            && declaration.Declaration.Variables.Any(variable => variable.Initializer is { } initializer
-                && SymbolEqualityComparer.Default.Equals(paid.Model.GetSymbolInfo(initializer.Value).Symbol, groupSymbol)));
-
-        Assert.Same(paid.Syntax.Body, retainedGroup.Parent);
-        Assert.True(groupCall.SpanStart < retainedGroup.SpanStart);
-
-        var chat = Member(api, "RetroDownfall.Arcanum.Api.Intelligence.ModelCallExecutor", "ExecuteLongRestChatAsync");
-
-        InvocationExpressionSyntax chatSend = Call(chat, "Microsoft.Extensions.AI.IChatClient", "GetResponseAsync");
-
-        var embedding = Member(api, "RetroDownfall.Arcanum.Api.Intelligence.ModelCallExecutor", "ExecuteLongRestEmbeddingAsync");
-
-        InvocationExpressionSyntax embeddingSend = Call(embedding, "Microsoft.Extensions.AI.IEmbeddingGenerator`2", "GenerateAsync");
+        ActualLongRestSpine spine = ReadActualLongRestSpine();
 
         HostedProducerDiscovery<HostedProducerSite> discovery = HostedGrimoireProducerInventory.ProductionSiteDiscovery;
 
@@ -171,19 +89,17 @@ public sealed partial class HostedGrimoireProducerInventoryTests
             Assert.Contains(metrics.RootTraversals, metric => metric.RootType == root && metric.AnalyzedStates > 0);
         }
 
-        HostedProducerOperationEntry startup = Assert.Single(selected.Single(static entry => entry.ServiceType == "LongRunningOperationStartupHostedService").Operations,
-            static operation => operation.Authority == HostedProducerAuthorityKind.PreReadinessStartup);
-
+        // Recovery only parks Long Rest sweeps, so the readiness root no longer reaches a Long Rest send: the hosted
+        // worker's kind-17 acquisition is the one paid door and the only root this subset routes.
         HostedProducerOperationEntry sweep = Assert.Single(selected.Single(static entry => entry.ServiceType == "LongRestSweepHostedService").Operations,
             static operation => operation.Authority == HostedProducerAuthorityKind.OrdinaryHostedWork);
 
-        AssertRoute("LongRunningOperationStartupHostedService", startup, acquire, acquisition);
-        AssertRoute("LongRestSweepHostedService", sweep, ordinary, ordinaryAcquisition);
+        AssertRoute("LongRestSweepHostedService", sweep, spine.Worker, spine.WorkerAcquisition);
 
-        output.WriteLine("ACTUAL_LONG_REST_SUBSET originalCatalogRoots=2 assertedAuthorities=2 physicalBranchesPerAuthority=2 compilerOwnershipShells=3 fullAggregateQualification=false");
+        output.WriteLine("ACTUAL_LONG_REST_SUBSET originalCatalogRoots=2 assertedAuthorities=1 physicalBranchesPerAuthority=2 compilerOwnershipShells=2 fullAggregateQualification=false");
 
         void AssertRoute(string root, HostedProducerOperationEntry authority,
-            (SemanticModel Model, IMethodSymbol Symbol, MethodDeclarationSyntax Syntax) workMember, InvocationExpressionSyntax workCall)
+            ActualLongRestMember workMember, InvocationExpressionSyntax workCall)
         {
             HostedProducerSite[] work = Sites(workMember, workCall, HostedProducerSiteKind.EffectFrontier);
 
@@ -195,7 +111,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests
                 Assert.Equal(workCapsule, site.WorkFrontierCapsuleId);
             });
 
-            HostedProducerSite[] groups = Sites(paid, groupCall, HostedProducerSiteKind.EffectFrontier);
+            HostedProducerSite[] groups = Sites(spine.Paid, spine.GroupCall, HostedProducerSiteKind.EffectFrontier);
 
             string groupCapsule = Assert.Single(groups.Select(static site => site.CapsuleId).Distinct(StringComparer.Ordinal));
 
@@ -205,8 +121,8 @@ public sealed partial class HostedGrimoireProducerInventoryTests
                 Assert.Equal(groupCapsule, site.EffectFrontierCapsuleId);
             });
 
-            foreach (HostedProducerSite send in Sites(chat, chatSend, HostedProducerSiteKind.ProviderCall)
-                .Concat(Sites(embedding, embeddingSend, HostedProducerSiteKind.ProviderCall)))
+            foreach (HostedProducerSite send in Sites(spine.Chat, spine.ChatSend, HostedProducerSiteKind.ProviderCall)
+                .Concat(Sites(spine.Embedding, spine.EmbeddingSend, HostedProducerSiteKind.ProviderCall)))
             {
                 Assert.Equal(workCapsule, send.WorkFrontierCapsuleId);
                 Assert.Equal(groupCapsule, send.EffectFrontierCapsuleId);
@@ -225,7 +141,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests
             Assert.True(failures.Length == 0, string.Join(global::System.Environment.NewLine,
                 failures.Select(static diagnostic => $"{diagnostic.Code}: {diagnostic.Identity}: {diagnostic.Detail}")));
 
-            HostedProducerSite[] Sites((SemanticModel Model, IMethodSymbol Symbol, MethodDeclarationSyntax Syntax) member,
+            HostedProducerSite[] Sites(ActualLongRestMember member,
                 InvocationExpressionSyntax call, HostedProducerSiteKind kind)
             {
                 string identity = Assert.IsType<string>(member.Symbol.GetDocumentationCommentId());
@@ -246,65 +162,250 @@ public sealed partial class HostedGrimoireProducerInventoryTests
             }
         }
 
-        static (SemanticModel Model, IMethodSymbol Symbol, MethodDeclarationSyntax Syntax) Member(Compilation compilation, string typeName, string methodName)
+    }
+
+    // The lease is minted twice in production and never stored: by the hosted worker, and inline by the Session shell.
+    // Both hand the acquired local by value to an admitted helper, and every later use takes the lease as a parameter.
+    // Recovery mints none: the Pure Park Handler has no dependencies, so no recovery entry reaches the coordinator.
+    private static ActualLongRestSpine ReadActualLongRestSpine()
+    {
+        IReadOnlyList<CSharpCompilation> compilations = HostedGrimoireProducerInventory.ProductionCompilations;
+
+        CSharpCompilation core = Assert.Single(compilations, static compilation => compilation.AssemblyName == "RetroDownfall.Arcanum.Core");
+
+        CSharpCompilation infrastructure = Assert.Single(compilations, static compilation => compilation.AssemblyName == "RetroDownfall.Arcanum.Infrastructure");
+
+        CSharpCompilation api = Assert.Single(compilations, static compilation => compilation.AssemblyName == "RetroDownfall.Arcanum.Api");
+
+        Assert.Equal(17, (int)GrimoireWorkKind.LongRestSweep);
+
+        // The holder and its public Core process member are gone.
+        Assert.Null(infrastructure.GetTypeByMetadataName(ActualLongRestHolderType));
+
+        INamedTypeSymbol corePort = Assert.IsAssignableFrom<INamedTypeSymbol>(core.GetTypeByMetadataName("RetroDownfall.Arcanum.Core.LongRest.ILongRestMaintenance"));
+
+        Assert.Empty(corePort.GetMembers("ProcessAsync"));
+
+        // The hosted worker: acquire, retain with await using, hand the retained local to the port. Nothing is bound.
+        ActualLongRestMember worker = ActualLongRestMemberOf(infrastructure, ActualLongRestWorkerType, "RunOneAsync");
+
+        InvocationExpressionSyntax workerAcquisition = ActualLongRestCallOf(worker, ActualLongRestGateType, "TryAcquireWorkLease");
+
+        AssertLongRestSweepKind(worker, workerAcquisition);
+
+        ILocalSymbol retained = AssertRetainedLease(worker, workerAcquisition);
+
+        InvocationExpressionSyntax handoff = ActualLongRestCallOf(worker, ActualLongRestSweepPort, "ResumeAdmittedAsync");
+
+        Assert.True(SymbolEqualityComparer.Default.Equals(retained, worker.Model.GetSymbolInfo(handoff.ArgumentList.Arguments[1].Expression).Symbol));
+
+        Assert.Contains(handoff.Ancestors(), static ancestor => ancestor is AwaitExpressionSyntax);
+
+        Assert.DoesNotContain(worker.Syntax.DescendantNodes().OfType<IdentifierNameSyntax>(), static name => name.Identifier.ValueText is "Bind" or "LongRestWorkAdmission");
+
+        // The Session shell mints its own lease inline and joins the helper under it.
+        ActualLongRestMember resume = ActualLongRestMemberOf(infrastructure, ActualLongRestCoordinatorType, "ResumeAsync");
+
+        AssertSelfAdmittingShell(resume, "ResumeCoreAsync");
+
+        // Recovery never runs a sweep: the coordinator has no recovery entry, and the registered handler cannot name it.
+        INamedTypeSymbol coordinatorType = Assert.IsAssignableFrom<INamedTypeSymbol>(infrastructure.GetTypeByMetadataName(ActualLongRestCoordinatorType));
+
+        Assert.Empty(coordinatorType.GetMembers("RecoverAsync"));
+
+        Assert.Empty(coordinatorType.GetMembers("RecoverAdmittedAsync"));
+
+        INamedTypeSymbol parkHandler = Assert.IsAssignableFrom<INamedTypeSymbol>(infrastructure.GetTypeByMetadataName(ActualLongRestParkHandlerType));
+
+        Assert.Empty(Assert.Single(parkHandler.InstanceConstructors).Parameters);
+
+        Assert.Empty(parkHandler.GetMembers().OfType<IFieldSymbol>());
+
+        // The hosted port is a guarded forwarder to the same core, with no capability.
+        ActualLongRestMember port = ActualLongRestMemberOf(infrastructure, ActualLongRestCoordinatorType, "ResumeAdmittedAsync");
+
+        AssertAdmissionKindGuard(port);
+
+        IParameterSymbol portLease = LeaseParameter(port);
+
+        InvocationExpressionSyntax forwarded = Assert.Single(port.Syntax.DescendantNodes().OfType<InvocationExpressionSyntax>(),
+            call => port.Model.GetSymbolInfo(call).Symbol is IMethodSymbol { Name: "ResumeCoreAsync" });
+
+        Assert.Equal("null", forwarded.ArgumentList.Arguments[1].Expression.ToString());
+
+        Assert.True(SymbolEqualityComparer.Default.Equals(portLease, port.Model.GetSymbolInfo(forwarded.ArgumentList.Arguments[2].Expression).Symbol));
+
+        // The owned run takes the lease formal and passes only that formal to every lease-bearing call.
+        ActualLongRestMember owned = ActualLongRestMemberOf(infrastructure, ActualLongRestCoordinatorType, "RunOwnedAsync");
+
+        AssertLeaseOnlyFlowsFromTheFormal(owned, expectedCalls: 5, callees: ["AttestCleanAdmission", "AttestCleanAdmission",
+            "ReconcileCompletedCheckpointAsync", "ReadmitCleanAsync", "ProcessAdmittedAsync"]);
+
+        // The admitted maintenance does the same and begins each group on its own parameter.
+        ActualLongRestMember process = ActualLongRestMemberOf(api, ActualLongRestMaintenanceType, "ProcessAdmittedAsync");
+
+        AssertAdmissionKindGuard(process);
+
+        AssertLeaseOnlyFlowsFromTheFormal(process, expectedCalls: 2, callees: ["FoldAsync", "AdjudicateAsync"]);
+
+        AssertLeaseOnlyFlowsFromTheFormal(ActualLongRestMemberOf(api, ActualLongRestMaintenanceType, "FoldAsync"), expectedCalls: 2,
+            callees: ["ExecutePaidAsync", "ExecutePaidAsync"]);
+
+        AssertLeaseOnlyFlowsFromTheFormal(ActualLongRestMemberOf(api, ActualLongRestMaintenanceType, "AdjudicateAsync"), expectedCalls: 1,
+            callees: ["ExecutePaidAsync"]);
+
+        ActualLongRestMember paid = ActualLongRestMemberOf(api, ActualLongRestMaintenanceType, "ExecutePaidAsync");
+
+        InvocationExpressionSyntax groupCall = ActualLongRestCallOf(paid, ActualLongRestLeaseType, "TryBeginExternalEffectGroup");
+
+        IParameterSymbol paidLease = LeaseParameter(paid);
+
+        Assert.True(SymbolEqualityComparer.Default.Equals(paidLease, paid.Model.GetSymbolInfo(
+            Assert.IsType<MemberAccessExpressionSyntax>(groupCall.Expression).Expression).Symbol));
+
+        // The local function that runs before each send and every other closure leave the lease alone.
+        AssertNoClosureCapturesLease(paid, paidLease);
+
+        SingleVariableDesignationSyntax groupVariable = Assert.Single(groupCall.ArgumentList.Arguments[0].DescendantNodes().OfType<SingleVariableDesignationSyntax>());
+
+        ISymbol groupSymbol = paid.Model.GetDeclaredSymbol(groupVariable)!;
+
+        LocalDeclarationStatementSyntax retainedGroup = Assert.Single(paid.Syntax.DescendantNodes().OfType<LocalDeclarationStatementSyntax>(), declaration =>
+            declaration.AwaitKeyword.RawKind != 0 && declaration.UsingKeyword.RawKind != 0
+            && declaration.Declaration.Variables.Any(variable => variable.Initializer is { } initializer
+                && SymbolEqualityComparer.Default.Equals(paid.Model.GetSymbolInfo(initializer.Value).Symbol, groupSymbol)));
+
+        Assert.Same(paid.Syntax.Body, retainedGroup.Parent);
+        Assert.True(groupCall.SpanStart < retainedGroup.SpanStart);
+
+        var chat = ActualLongRestMemberOf(api, "RetroDownfall.Arcanum.Api.Intelligence.ModelCallExecutor", "ExecuteLongRestChatAsync");
+
+        InvocationExpressionSyntax chatSend = ActualLongRestCallOf(chat, "Microsoft.Extensions.AI.IChatClient", "GetResponseAsync");
+
+        var embedding = ActualLongRestMemberOf(api, "RetroDownfall.Arcanum.Api.Intelligence.ModelCallExecutor", "ExecuteLongRestEmbeddingAsync");
+
+        InvocationExpressionSyntax embeddingSend = ActualLongRestCallOf(embedding, "Microsoft.Extensions.AI.IEmbeddingGenerator`2", "GenerateAsync");
+
+        return new(worker, workerAcquisition, paid, groupCall, chat, chatSend, embedding, embeddingSend);
+    }
+
+    private static ActualLongRestMember ActualLongRestMemberOf(Compilation compilation, string typeName, string methodName)
+    {
+        INamedTypeSymbol type = Assert.IsAssignableFrom<INamedTypeSymbol>(compilation.GetTypeByMetadataName(typeName));
+
+        IMethodSymbol method = Assert.Single(type.GetMembers(methodName).OfType<IMethodSymbol>());
+
+        MethodDeclarationSyntax syntax = Assert.IsType<MethodDeclarationSyntax>(Assert.Single(method.DeclaringSyntaxReferences).GetSyntax());
+
+        return new(compilation.GetSemanticModel(syntax.SyntaxTree), method, syntax);
+    }
+
+    private static InvocationExpressionSyntax ActualLongRestCallOf(ActualLongRestMember member, string typeName, string methodName)
+    {
+        INamedTypeSymbol type = Assert.IsAssignableFrom<INamedTypeSymbol>(member.Model.Compilation.GetTypeByMetadataName(typeName));
+
+        return Assert.Single(member.Syntax.DescendantNodes().OfType<InvocationExpressionSyntax>(), call =>
+            member.Model.GetSymbolInfo(call).Symbol is IMethodSymbol called && called.Name == methodName
+            && SymbolEqualityComparer.Default.Equals(called.ContainingType.OriginalDefinition, type));
+    }
+
+    private static IParameterSymbol LeaseParameter(ActualLongRestMember member) => Assert.Single(member.Symbol.Parameters,
+        parameter => parameter.Type.ToDisplayString() == ActualLongRestLeaseType && parameter.Name == "admission");
+
+    private static void AssertLongRestSweepKind(ActualLongRestMember member, InvocationExpressionSyntax acquisition) =>
+        Assert.Equal(GrimoireWorkKind.LongRestSweep, (GrimoireWorkKind)Convert.ToInt32(
+            Assert.IsAssignableFrom<IFieldSymbol>(member.Model.GetSymbolInfo(acquisition.ArgumentList.Arguments[0].Expression).Symbol).ConstantValue));
+
+    // `await using IGrimoireWorkLease x = <the acquisition's out value>`, directly in the member body, after the acquisition.
+    private static ILocalSymbol AssertRetainedLease(ActualLongRestMember member, InvocationExpressionSyntax acquisition)
+    {
+        SingleVariableDesignationSyntax admittedVariable = Assert.Single(acquisition.ArgumentList.Arguments[1].DescendantNodes().OfType<SingleVariableDesignationSyntax>());
+
+        ISymbol admitted = member.Model.GetDeclaredSymbol(admittedVariable)!;
+
+        LocalDeclarationStatementSyntax declaration = Assert.Single(member.Syntax.DescendantNodes().OfType<LocalDeclarationStatementSyntax>(), candidate =>
+            candidate.AwaitKeyword.RawKind != 0 && candidate.UsingKeyword.RawKind != 0
+            && candidate.Declaration.Variables.Single().Initializer!.Value.DescendantNodesAndSelf().OfType<IdentifierNameSyntax>()
+                .Any(name => SymbolEqualityComparer.Default.Equals(member.Model.GetSymbolInfo(name).Symbol, admitted)));
+
+        Assert.True(acquisition.SpanStart < declaration.SpanStart);
+
+        return Assert.IsAssignableFrom<ILocalSymbol>(member.Model.GetDeclaredSymbol(declaration.Declaration.Variables.Single()));
+    }
+
+    private static InvocationExpressionSyntax AssertSelfAdmittingShell(ActualLongRestMember entry, string helperName)
+    {
+        InvocationExpressionSyntax acquisition = ActualLongRestCallOf(entry, ActualLongRestGateType, "TryAcquireWorkLease");
+
+        AssertLongRestSweepKind(entry, acquisition);
+
+        // The acquisition is the condition of a statement of the entry's own body, so the gate's ambient lifetime is this context's.
+        IfStatementSyntax gate = Assert.IsType<IfStatementSyntax>(acquisition.Ancestors().OfType<StatementSyntax>().First());
+
+        Assert.Same(entry.Syntax.Body, gate.Parent);
+
+        ILocalSymbol acquired = AssertRetainedLease(entry, acquisition);
+
+        var helper = ActualLongRestMemberOf(entry.Model.Compilation, ActualLongRestCoordinatorType, helperName);
+
+        IParameterSymbol lease = Assert.Single(helper.Symbol.Parameters, parameter => parameter.Type.ToDisplayString() == ActualLongRestLeaseType);
+
+        InvocationExpressionSyntax ownedJoin = Assert.Single(entry.Syntax.DescendantNodes().OfType<InvocationExpressionSyntax>(), call =>
+            SymbolEqualityComparer.Default.Equals(entry.Model.GetSymbolInfo(call).Symbol, helper.Symbol)
+            && SymbolEqualityComparer.Default.Equals(entry.Model.GetSymbolInfo(call.ArgumentList.Arguments[lease.Ordinal].Expression).Symbol, acquired));
+
+        Assert.Contains(ownedJoin.Ancestors(), static ancestor => ancestor is AwaitExpressionSyntax);
+        Assert.Contains(ownedJoin.Ancestors(), static ancestor => ancestor is ReturnStatementSyntax);
+        Assert.DoesNotContain(entry.Syntax.DescendantNodes().OfType<IdentifierNameSyntax>(), static name => name.Identifier.ValueText is "Bind" or "LongRestWorkAdmission");
+
+        return acquisition;
+    }
+
+    // Both admitted entries refuse a missing lease and any lease that is not a Long Rest sweep lease before doing work.
+    private static void AssertAdmissionKindGuard(ActualLongRestMember entry)
+    {
+        Assert.Equal(RefKind.None, LeaseParameter(entry).RefKind);
+
+        Assert.Equal("if (admission is null) throw new ArgumentNullException(nameof(admission));", entry.Syntax.Body!.Statements[0].ToString());
+
+        Assert.StartsWith("if (admission.Kind != GrimoireWorkKind.LongRestSweep) throw new ArgumentException(", entry.Syntax.Body.Statements[1].ToString(), StringComparison.Ordinal);
+    }
+
+    // Every call in the member that receives a lease receives its own lease formal, and no function inside it closes over the lease.
+    private static void AssertLeaseOnlyFlowsFromTheFormal(ActualLongRestMember member, int expectedCalls, string[] callees)
+    {
+        IParameterSymbol formal = LeaseParameter(member);
+
+        // `nameof(admission)` in the guard is a constant, not a use of the lease.
+        InvocationExpressionSyntax[] carrying = [.. member.Syntax.DescendantNodes().OfType<InvocationExpressionSyntax>().Where(call =>
+            !member.Model.GetConstantValue(call).HasValue && call.ArgumentList.Arguments.Any(argument => member.Model.GetTypeInfo(argument.Expression).Type?.ToDisplayString() == ActualLongRestLeaseType))];
+
+        Assert.True(carrying.Length == expectedCalls, $"{member.Symbol.Name} passes a lease in {carrying.Length} calls, expected {expectedCalls}: "
+            + string.Join(" | ", carrying.Select(static call => call.Expression.ToString())));
+
+        Assert.Equal(callees.Order(StringComparer.Ordinal),
+            carrying.Select(call => Assert.IsAssignableFrom<IMethodSymbol>(member.Model.GetSymbolInfo(call).Symbol).Name).Order(StringComparer.Ordinal));
+
+        foreach (InvocationExpressionSyntax call in carrying)
         {
-            INamedTypeSymbol type = Assert.IsAssignableFrom<INamedTypeSymbol>(compilation.GetTypeByMetadataName(typeName));
+            ArgumentSyntax[] leaseArguments = [.. call.ArgumentList.Arguments.Where(argument =>
+                member.Model.GetTypeInfo(argument.Expression).Type?.ToDisplayString() == ActualLongRestLeaseType)];
 
-            IMethodSymbol method = Assert.Single(type.GetMembers(methodName).OfType<IMethodSymbol>());
+            ArgumentSyntax leaseArgument = Assert.Single(leaseArguments);
 
-            MethodDeclarationSyntax syntax = Assert.IsType<MethodDeclarationSyntax>(Assert.Single(method.DeclaringSyntaxReferences).GetSyntax());
-
-            return (compilation.GetSemanticModel(syntax.SyntaxTree), method, syntax);
+            Assert.True(SymbolEqualityComparer.Default.Equals(formal, member.Model.GetSymbolInfo(leaseArgument.Expression).Symbol),
+                $"{member.Symbol.Name} passes {leaseArgument.Expression} instead of its lease formal.");
         }
 
-        static InvocationExpressionSyntax Call((SemanticModel Model, IMethodSymbol Symbol, MethodDeclarationSyntax Syntax) member, string typeName, string methodName)
+        AssertNoClosureCapturesLease(member, formal);
+    }
+
+    private static void AssertNoClosureCapturesLease(ActualLongRestMember member, IParameterSymbol formal)
+    {
+        foreach (SyntaxNode closure in member.Syntax.DescendantNodes().Where(static node => node is AnonymousFunctionExpressionSyntax or LocalFunctionStatementSyntax))
         {
-            INamedTypeSymbol type = Assert.IsAssignableFrom<INamedTypeSymbol>(member.Model.Compilation.GetTypeByMetadataName(typeName));
-
-            return Assert.Single(member.Syntax.DescendantNodes().OfType<InvocationExpressionSyntax>(), call =>
-                member.Model.GetSymbolInfo(call).Symbol is IMethodSymbol called && called.Name == methodName
-                && SymbolEqualityComparer.Default.Equals(called.ContainingType.OriginalDefinition, type));
-        }
-
-        static void AssertOwnedShell(Compilation compilation, string typeName, string entryName, string helperName)
-        {
-            var entry = Member(compilation, typeName, entryName);
-
-            InvocationExpressionSyntax acquireCall = Call(entry, holderType, "Acquire");
-
-            InvocationExpressionSyntax bindCall = Call(entry, holderType, "Bind");
-
-            LocalDeclarationStatementSyntax acquiredDeclaration = Assert.Single(acquireCall.Ancestors().OfType<LocalDeclarationStatementSyntax>());
-
-            LocalDeclarationStatementSyntax bindingDeclaration = Assert.Single(bindCall.Ancestors().OfType<LocalDeclarationStatementSyntax>());
-
-            Assert.NotEqual(0, acquiredDeclaration.AwaitKeyword.RawKind);
-            Assert.NotEqual(0, acquiredDeclaration.UsingKeyword.RawKind);
-            Assert.NotEqual(0, bindingDeclaration.UsingKeyword.RawKind);
-            Assert.Same(entry.Syntax.Body, acquiredDeclaration.Parent);
-            Assert.Same(entry.Syntax.Body, bindingDeclaration.Parent);
-            Assert.True(acquiredDeclaration.SpanStart < bindingDeclaration.SpanStart);
-
-            ISymbol acquired = entry.Model.GetDeclaredSymbol(Assert.Single(acquiredDeclaration.Declaration.Variables))!;
-
-            Assert.True(SymbolEqualityComparer.Default.Equals(acquired,
-                entry.Model.GetSymbolInfo(bindCall.ArgumentList.Arguments[0].Expression).Symbol));
-            Assert.True(SymbolEqualityComparer.Default.Equals(
-                entry.Model.GetSymbolInfo(Assert.IsType<MemberAccessExpressionSyntax>(acquireCall.Expression).Expression).Symbol,
-                entry.Model.GetSymbolInfo(Assert.IsType<MemberAccessExpressionSyntax>(bindCall.Expression).Expression).Symbol));
-
-            var helper = Member(compilation, typeName, helperName);
-
-            IParameterSymbol lease = Assert.Single(helper.Symbol.Parameters, parameter =>
-                SymbolEqualityComparer.Default.Equals(parameter.Type, compilation.GetTypeByMetadataName(leaseType)));
-
-            InvocationExpressionSyntax ownedJoin = Assert.Single(entry.Syntax.DescendantNodes().OfType<InvocationExpressionSyntax>(), call =>
-                SymbolEqualityComparer.Default.Equals(entry.Model.GetSymbolInfo(call).Symbol, helper.Symbol)
-                && SymbolEqualityComparer.Default.Equals(entry.Model.GetSymbolInfo(call.ArgumentList.Arguments[lease.Ordinal].Expression).Symbol, acquired));
-
-            Assert.True(bindingDeclaration.SpanStart < ownedJoin.SpanStart);
-            Assert.Contains(ownedJoin.Ancestors(), static ancestor => ancestor is AwaitExpressionSyntax);
-            Assert.Contains(ownedJoin.Ancestors(), static ancestor => ancestor is ReturnStatementSyntax);
+            Assert.DoesNotContain(closure.DescendantNodes().OfType<IdentifierNameSyntax>(), name =>
+                SymbolEqualityComparer.Default.Equals(member.Model.GetSymbolInfo(name).Symbol, formal));
         }
     }
 }

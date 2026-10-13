@@ -1223,6 +1223,13 @@ public static class ErrorCodes
         public const string InvalidOutput = "LongRest.InvalidOutput";
 
         public const string CancelledAfterPayment = "LongRest.CancelledAfterPayment";
+
+        /// <summary>
+        /// A request found the active sweep for its scope parked in a way no automatic path may resume: its failure
+        /// budget is spent or its fault needs an operator (until the turn policy retires them, this includes a
+        /// restart-generation fault). The message names the parked operation, which the operator retries or cancels.
+        /// </summary>
+        public const string SweepParked = "LongRest.SweepParked";
     }
 
 }

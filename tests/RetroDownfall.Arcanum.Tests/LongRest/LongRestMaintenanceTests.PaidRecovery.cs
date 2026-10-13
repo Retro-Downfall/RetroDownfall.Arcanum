@@ -1,8 +1,8 @@
-using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 
 using RetroDownfall.Arcanum.Core.Operations;
 using RetroDownfall.Arcanum.Infrastructure.Data;
+using RetroDownfall.Arcanum.Infrastructure.Hosting;
 using RetroDownfall.Arcanum.Infrastructure.Operations;
 using RetroDownfall.Arcanum.Infrastructure.Operations.LongRest;
 
@@ -11,17 +11,20 @@ namespace RetroDownfall.Arcanum.Tests.LongRest;
 public sealed partial class LongRestMaintenanceTests
 {
     [Fact]
-    public async Task Paid_recovery_registered_handler_owns_one_group_for_summary_and_yields_without_terminal_failure()
+    public async Task Paid_readmission_by_the_hosted_worker_owns_one_group_for_summary_and_yields_by_parking_for_maintenance()
     {
         await using MaintenanceFixture f = await MaintenanceFixture.CreateAsync(protectedSources: false);
 
-        await f.H.ExecuteAsync("UPDATE LongRunningOperations SET LeaseExpiresAt = '2000-01-01T00:00:00.0000000Z';");
+        // Recovery only parks the interrupted sweep: no provider call and no group belong to it.
+        await ParkExpiredSweepAsync(f, "fixture-runtime-recovery");
+
+        Assert.Equal(0, f.Handler.SendCount);
+
+        Assert.Equal(0, f.RecordedAdmission.EffectGroupAttempts);
 
         using CancellationTokenSource stopping = new();
 
-        LongRunningOperationStartupHostedService service = new(new PaidRecoveryScopes(f), TimeProvider.System,
-            new LongRunningOperationReconciliationStatus(), f.RecordedAdmission,
-            NullLogger<LongRunningOperationStartupHostedService>.Instance);
+        using LongRestSweepHostedService host = PaidOwnershipHost(f);
 
         TaskCompletionSource entered = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -44,8 +47,7 @@ public sealed partial class LongRestMaintenanceTests
             await release.Task.WaitAsync(token);
         };
 
-        Task<Exception?> run = Record.ExceptionAsync(() => service.RunBackgroundPassAsync(
-            DateTimeOffset.UtcNow, "fixture-runtime-recovery", stopping.Token));
+        Task<Exception?> run = Record.ExceptionAsync(() => host.RunOneAsync(f.Operation, stopping.Token));
 
         try
         {
@@ -69,8 +71,6 @@ public sealed partial class LongRestMaintenanceTests
 
             await run.WaitAsync(TimeSpan.FromSeconds(10));
 
-            await service.StopAsync(CancellationToken.None);
-
             if (closing is not null) await closing.DisposeAsync();
         }
 
@@ -86,45 +86,37 @@ public sealed partial class LongRestMaintenanceTests
 
         Assert.Equal(1L, await f.H.ScalarAsync("SELECT sum(PaidCount) FROM long_rest_provider_effects;"));
 
-        Assert.Equal(LongRunningOperationState.Running, (await f.Operations.GetAsync(f.Operation))!.State);
+        // The yield to maintenance is a park under its own free code, never a terminal failure.
+        LongRunningOperation parked = (await f.Operations.GetAsync(f.Operation))!;
 
-        Assert.Null((await f.Operations.GetAsync(f.Operation))!.TerminalErrorCode);
+        Assert.Equal(LongRunningOperationState.ReconciliationRequired, parked.State);
+
+        Assert.Equal("long_rest.maintenance_deferred", parked.TerminalErrorCode);
+
+        Assert.Null(parked.LeaseOwner);
     }
 
-    // Only scope routing is adapted to the existing native fixture. Discovery, classified lease
-    // acquisition, reconciler, registered handler, coordinator, gate and all paid work are real.
-    private sealed class PaidRecoveryScopes(MaintenanceFixture fixture) : IServiceScopeFactory
+    /// <summary>Expires the fixture worker's lease and runs the real reconciler with the registered pure handler once.</summary>
+    internal static async Task ParkExpiredSweepAsync(MaintenanceFixture f, string owner)
     {
-        public IServiceScope CreateScope() => new PaidRecoveryScope(fixture,
-            fixture.Services.GetRequiredService<IServiceScopeFactory>().CreateScope());
-    }
+        await f.H.ExecuteAsync("UPDATE LongRunningOperations SET LeaseExpiresAt = '2000-01-01T00:00:00.0000000Z' WHERE Id = $operation AND LeaseOwner IS NOT NULL;",
+            ("$operation", f.Operation.ToString("N")));
 
-    private sealed class PaidRecoveryScope(MaintenanceFixture fixture, IServiceScope inner) : IServiceScope, IServiceProvider, IAsyncDisposable
-    {
-        public IServiceProvider ServiceProvider => this;
+        LongRunningOperationReconciler reconciler = new(f.Operations, [new LongRestSweepRecoveryHandler()], f.Clock,
+            NullLogger<LongRunningOperationReconciler>.Instance, new LongRunningOperationOwnership());
 
-        public object? GetService(Type serviceType)
-        {
-            if (serviceType == typeof(ILongRunningOperationGenericRecoveryDiscovery)) return fixture.Operations;
+        LongRunningOperationReconciliationSummary summary = await reconciler.ReconcileNowAsync(owner);
 
-            if (serviceType == typeof(LongRunningOperationReconciler))
-            {
-                return new LongRunningOperationReconciler(fixture.Operations, [new LongRestSweepRecoveryHandler(fixture.Coordinator)],
-                    TimeProvider.System, NullLogger<LongRunningOperationReconciler>.Instance, new LongRunningOperationOwnership());
-            }
+        Assert.Equal(1, summary.RequiresAttention);
 
-            return inner.ServiceProvider.GetService(serviceType);
-        }
+        LongRunningOperation parked = (await f.Operations.GetAsync(f.Operation))!;
 
-        public void Dispose() => inner.Dispose();
+        Assert.Equal(LongRunningOperationState.ReconciliationRequired, parked.State);
 
-        public ValueTask DisposeAsync() => inner is IAsyncDisposable asynchronous ? asynchronous.DisposeAsync() : DisposeSynchronously();
+        Assert.Equal("long_rest.interrupted", parked.TerminalErrorCode);
 
-        private ValueTask DisposeSynchronously()
-        {
-            inner.Dispose();
+        Assert.Null(parked.LeaseOwner);
 
-            return ValueTask.CompletedTask;
-        }
+        Assert.Null(parked.LeaseExpiresAt);
     }
 }

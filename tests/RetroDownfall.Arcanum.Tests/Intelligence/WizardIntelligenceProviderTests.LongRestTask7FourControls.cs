@@ -762,9 +762,6 @@ public sealed partial class WizardIntelligenceProviderTests
 
             return inner.CreateCapabilityAsync(operation, invocation, claim, scope, lease, ct);
         }
-
-        public Task<Result<LongRestSweepProgress>> ProcessAsync(Guid operation, string owner, LongRestMaintenanceCapability? capability, CancellationToken ct) =>
-            inner.ProcessAsync(operation, owner, capability, ct);
     }
 
     private sealed class Task7CoordinatorProbe(ILongRestSweepCoordinator inner) : ILongRestSweepCoordinator

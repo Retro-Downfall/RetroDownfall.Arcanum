@@ -35,9 +35,9 @@ public sealed partial class LongRestMaintenanceTests
         if (state == LongRestDispatchAttemptState.Invalid) f.Handler.ChatText = "{}";
         else f.Handler.Status = HttpStatusCode.BadRequest;
 
-        LongRestSweepHarness.Require(await f.Maintenance.ProcessAsync(f.Operation, "fixture-worker", null, CancellationToken.None));
+        LongRestSweepHarness.Require(await f.ProcessAsync(f.Operation, "fixture-worker", null, CancellationToken.None));
 
-        Assert.True((await f.Maintenance.ProcessAsync(f.Operation, "fixture-worker", null, CancellationToken.None)).IsFailure);
+        Assert.True((await f.ProcessAsync(f.Operation, "fixture-worker", null, CancellationToken.None)).IsFailure);
 
         Assert.NotNull(originalSent);
 
@@ -113,7 +113,13 @@ public sealed partial class LongRestMaintenanceTests
 
             Assert.Single(f.Payloads);
 
-            Assert.Equal(LongRunningOperationState.Running, (await f.Operations.GetAsync(f.Operation))!.State);
+            // A maintenance close at the handoff parks the sweep under its free yield code; the last pass is cancelled by
+            // the host instead, which leaves the readmitted sweep Running under the worker's lease.
+            LongRunningOperation settled = (await f.Operations.GetAsync(f.Operation))!;
+
+            Assert.Equal(pass < 2 ? LongRunningOperationState.ReconciliationRequired : LongRunningOperationState.Running, settled.State);
+
+            if (pass < 2) Assert.Equal(LongRestParkCodes.MaintenanceDeferred, settled.TerminalErrorCode);
 
             Assert.Equal(Convert.ToHexString(LongRestSweepHarness.Require(LongRestDiscoveryHash.Work(original with { Fence = current.Fence })).Bytes),
                 await f.H.ScalarAsync("SELECT hex(WorkDigest) FROM long_rest_work_items WHERE KindCode = 2;"));
@@ -123,7 +129,7 @@ public sealed partial class LongRestMaintenanceTests
 
         f.Payloads.Clear();
 
-        LongRunningOperationReconciliationSummary recovered = await RecoverCleanAssociationAsync(f);
+        RecoveredSweep recovered = await RecoverCleanAssociationAsync(f);
 
         Assert.Equal(1, recovered.Completed);
 
@@ -197,7 +203,7 @@ public sealed partial class LongRestMaintenanceTests
 
     private static async Task<LongRestDiscoveryGeneration> ProvenancePassBeforePrepareAsync(MaintenanceFixture f, bool close, string owner)
     {
-        await f.H.ExecuteAsync("UPDATE LongRunningOperations SET LeaseExpiresAt = '2000-01-01T00:00:00.0000000Z' WHERE Id = $operation;",
+        await f.H.ExecuteAsync("UPDATE LongRunningOperations SET LeaseExpiresAt = '2000-01-01T00:00:00.0000000Z' WHERE Id = $operation AND LeaseOwner IS NOT NULL;",
             ("$operation", f.Operation.ToString("N")));
 
         using CancellationTokenSource stopping = new();
@@ -214,13 +220,18 @@ public sealed partial class LongRestMaintenanceTests
             else stopping.Cancel();
         };
 
-        LongRunningOperationStartupHostedService recovery = new(new PaidRecoveryScopes(f), f.Clock,
+        LongRunningOperationStartupHostedService recovery = new(new ParkingRecoveryScopes(f), f.Clock,
             new LongRunningOperationReconciliationStatus(), f.RecordedAdmission, NullLogger<LongRunningOperationStartupHostedService>.Instance);
 
         try
         {
-            Exception? stopped = await Record.ExceptionAsync(() => recovery.RunBackgroundPassAsync(
-                f.Clock.GetUtcNow(), owner, stopping.Token).WaitAsync(TimeSpan.FromSeconds(10)));
+            // Recovery only parks the expired sweep; the hosted worker's door then drives it to the effect-group boundary.
+            await recovery.RunBackgroundPassAsync(f.Clock.GetUtcNow(), owner, CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(10));
+
+            Assert.Equal(LongRunningOperationState.ReconciliationRequired, (await f.Operations.GetAsync(f.Operation))!.State);
+
+            Exception? stopped = await Record.ExceptionAsync(() => ResumeAdmittedWithAsync(f.Coordinator, f.RecordedAdmission,
+                f.Operation, stopping.Token).WaitAsync(TimeSpan.FromSeconds(10)));
 
             Assert.True(stopped is null or OperationCanceledException, stopped?.ToString());
 

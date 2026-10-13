@@ -51,7 +51,7 @@ public sealed partial class LongRestMaintenanceTests
 
         f.RepeatDispatch = true;
 
-        LongRestSweepHarness.Require(await f.Maintenance.ProcessAsync(f.Operation, "fixture-worker", capability, CancellationToken.None));
+        LongRestSweepHarness.Require(await f.ProcessAsync(f.Operation, "fixture-worker", capability, CancellationToken.None));
 
         Assert.Equal(2, f.Handler.SendCount);
 
@@ -86,7 +86,7 @@ public sealed partial class LongRestMaintenanceTests
             }
         };
 
-        await Record.ExceptionAsync(() => f.Maintenance.ProcessAsync(f.Operation, "fixture-worker", capability, CancellationToken.None));
+        await Record.ExceptionAsync(() => f.ProcessAsync(f.Operation, "fixture-worker", capability, CancellationToken.None));
 
         Assert.Equal(0, f.Handler.SendCount);
 
@@ -151,7 +151,7 @@ public sealed partial class LongRestMaintenanceTests
 
         clock.Advance(TimeSpan.FromMinutes(4));
 
-        LongRestSweepHarness.Require(await f.Maintenance.ProcessAsync(f.Operation, "fixture-worker", capability, CancellationToken.None));
+        LongRestSweepHarness.Require(await f.ProcessAsync(f.Operation, "fixture-worker", capability, CancellationToken.None));
 
         Assert.True(capability.Claim.LeaseDeadlineUtc > original);
 
@@ -179,7 +179,7 @@ public sealed partial class LongRestMaintenanceTests
         Assert.True(await f.Operations.SaveCheckpointAsync(f.Operation, "fixture-worker", 1, 1,
             LongRestSweepCheckpointCodec.Encode(checkpoint).Value, null, "Long Rest", DateTimeOffset.UtcNow));
 
-        await Record.ExceptionAsync(() => f.Maintenance.ProcessAsync(f.Operation, "fixture-worker", capability, CancellationToken.None));
+        await Record.ExceptionAsync(() => f.ProcessAsync(f.Operation, "fixture-worker", capability, CancellationToken.None));
 
         Assert.Equal(0, f.Handler.SendCount);
     }
@@ -193,7 +193,7 @@ public sealed partial class LongRestMaintenanceTests
 
         await f.H.ExecuteAsync("UPDATE LongRunningOperations SET LeaseOwner = 'stolen-between-units';");
 
-        await Record.ExceptionAsync(() => f.Maintenance.ProcessAsync(f.Operation, "fixture-worker", capability, CancellationToken.None));
+        await Record.ExceptionAsync(() => f.ProcessAsync(f.Operation, "fixture-worker", capability, CancellationToken.None));
 
         Assert.Equal(0, f.Handler.SendCount);
 
@@ -211,7 +211,7 @@ public sealed partial class LongRestMaintenanceTests
 
         f.Completing = () => { if (Interlocked.Increment(ref completed) == 1) throw new IOException("fixture final accounting refusal"); };
 
-        await Record.ExceptionAsync(() => f.Maintenance.ProcessAsync(f.Operation, "fixture-worker", capability, CancellationToken.None));
+        await Record.ExceptionAsync(() => f.ProcessAsync(f.Operation, "fixture-worker", capability, CancellationToken.None));
 
         Assert.NotNull(f.ProviderResult);
 
@@ -251,7 +251,7 @@ public sealed partial class LongRestMaintenanceTests
                 : "UPDATE LongRunningOperations SET CheckpointVersion = 0;");
         };
 
-        await Record.ExceptionAsync(() => f.Maintenance.ProcessAsync(f.Operation, "fixture-worker", capability, CancellationToken.None));
+        await Record.ExceptionAsync(() => f.ProcessAsync(f.Operation, "fixture-worker", capability, CancellationToken.None));
 
         Assert.Equal(0, f.Handler.SendCount);
 
@@ -270,14 +270,14 @@ public sealed partial class LongRestMaintenanceTests
 
         Assert.True((await capability.ConsumeAsync(f.Operation, f.Partition, f.Epoch.Capture().Stamp, CancellationToken.None)).IsSuccess);
 
-        LongRestSweepHarness.Require(await f.Maintenance.ProcessAsync(f.Operation, "fixture-worker", capability, CancellationToken.None));
+        LongRestSweepHarness.Require(await f.ProcessAsync(f.Operation, "fixture-worker", capability, CancellationToken.None));
 
         using CancellationTokenSource cancelled = new();
 
         if (mutation == "cancellation") f.PaidRecorded = cancelled.Cancel;
         else f.Handler.InsideSend = () => MutateAsync(f, "configuration");
 
-        await Record.ExceptionAsync(() => f.Maintenance.ProcessAsync(f.Operation, "fixture-worker", capability, cancelled.Token));
+        await Record.ExceptionAsync(() => f.ProcessAsync(f.Operation, "fixture-worker", capability, cancelled.Token));
 
         Assert.Equal(1L, await f.H.ScalarAsync("SELECT count(*) FROM long_rest_provider_effects WHERE StateCode = 5 AND PaidCount = 1 AND InputTokens = 17 AND OutputTokens = 3 AND CompletionJson IS NOT NULL;"));
 
@@ -296,11 +296,11 @@ public sealed partial class LongRestMaintenanceTests
 
         Assert.True((await capability.ConsumeAsync(f.Operation, f.Partition, f.Epoch.Capture().Stamp, CancellationToken.None)).IsSuccess);
 
-        LongRestSweepHarness.Require(await f.Maintenance.ProcessAsync(f.Operation, "fixture-worker", capability, CancellationToken.None));
+        LongRestSweepHarness.Require(await f.ProcessAsync(f.Operation, "fixture-worker", capability, CancellationToken.None));
 
         f.PaidRecorded = () => throw new IOException("fixture accounting refusal");
 
-        await Record.ExceptionAsync(() => f.Maintenance.ProcessAsync(f.Operation, "fixture-worker", capability, CancellationToken.None));
+        await Record.ExceptionAsync(() => f.ProcessAsync(f.Operation, "fixture-worker", capability, CancellationToken.None));
 
         Assert.NotNull(f.ProviderResult);
 
@@ -336,7 +336,7 @@ public sealed partial class LongRestMaintenanceTests
 
         Result<LongRestSweepProgress>? result = null;
 
-        Exception? failure = await Record.ExceptionAsync(async () => result = await f.Maintenance.ProcessAsync(f.Operation, "fixture-worker", capability, CancellationToken.None));
+        Exception? failure = await Record.ExceptionAsync(async () => result = await f.ProcessAsync(f.Operation, "fixture-worker", capability, CancellationToken.None));
 
         Assert.True(result?.IsFailure is true || failure is OperationCanceledException);
 
@@ -369,7 +369,7 @@ public sealed partial class LongRestMaintenanceTests
 
         Result<LongRestSweepProgress>? result = null;
 
-        Exception? failure = await Record.ExceptionAsync(async () => result = await f.Maintenance.ProcessAsync(f.Operation, "fixture-worker", capability, cancellation.Token));
+        Exception? failure = await Record.ExceptionAsync(async () => result = await f.ProcessAsync(f.Operation, "fixture-worker", capability, cancellation.Token));
 
         Assert.True(result?.IsFailure is true || failure is OperationCanceledException);
 
@@ -409,7 +409,7 @@ public sealed partial class LongRestMaintenanceTests
 
         else f.Handler.InsideSend = () => MutateAsync(f, mutation);
 
-        _ = await Record.ExceptionAsync(() => f.Maintenance.ProcessAsync(f.Operation, "fixture-worker", capability, cancellation.Token));
+        _ = await Record.ExceptionAsync(() => f.ProcessAsync(f.Operation, "fixture-worker", capability, cancellation.Token));
 
         Assert.Equal(1L, await f.H.ScalarAsync("SELECT count(*) FROM BillableOperations;"));
 
@@ -433,7 +433,7 @@ public sealed partial class LongRestMaintenanceTests
 
         Assert.True((await capability.ConsumeAsync(f.Operation, f.Partition, f.Epoch.Capture().Stamp, CancellationToken.None)).IsSuccess);
 
-        Assert.True((await f.Maintenance.ProcessAsync(f.Operation, "fixture-worker", capability, CancellationToken.None)).IsSuccess);
+        Assert.True((await f.ProcessAsync(f.Operation, "fixture-worker", capability, CancellationToken.None)).IsSuccess);
 
         return capability;
     }

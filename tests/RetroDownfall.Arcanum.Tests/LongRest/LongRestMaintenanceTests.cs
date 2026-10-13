@@ -60,13 +60,13 @@ public sealed partial class LongRestMaintenanceTests
 
         Assert.True((await capability.ConsumeAsync(f.Operation, f.Partition, f.Epoch.Capture().Stamp, CancellationToken.None)).IsSuccess);
 
-        var capture = await f.Maintenance.ProcessAsync(f.Operation, "fixture-worker", capability, CancellationToken.None);
+        var capture = await f.ProcessAsync(f.Operation, "fixture-worker", capability, CancellationToken.None);
 
         Assert.True(capture.IsSuccess, capture.IsFailure ? capture.Error.Code : "");
 
         Assert.Equal(0, f.Handler.SendCount);
 
-        var fold = await f.Maintenance.ProcessAsync(f.Operation, "fixture-worker", capability, CancellationToken.None);
+        var fold = await f.ProcessAsync(f.Operation, "fixture-worker", capability, CancellationToken.None);
 
         Assert.True(fold.IsSuccess, fold.IsFailure ? fold.Error.Code : "");
 
@@ -142,8 +142,6 @@ public sealed partial class LongRestMaintenanceTests
 
         internal LongRestMaintenance Maintenance = null!;
 
-        internal LongRestWorkAdmission WorkAdmission = null!;
-
         internal SessionTurnClaimLease Claim = null!;
 
         internal ArcanumInvocationContext Invocation = null!;
@@ -182,8 +180,6 @@ public sealed partial class LongRestMaintenanceTests
             f.Clock = clock ?? TimeProvider.System;
 
             f.RecordedAdmission = new(f.Admission);
-
-            f.WorkAdmission = new(f.RecordedAdmission);
 
             f.H = await LongRestSweepHarness.CreateAsync();
 
@@ -313,7 +309,7 @@ public sealed partial class LongRestMaintenanceTests
 
             services.AddScoped<ILongRestSweepCoordinator>(_ => f.Coordinator);
 
-            services.AddScoped(_ => f.WorkAdmission);
+            services.AddScoped<ILongRestAdmittedSweep>(_ => f.Coordinator);
 
             f.Services = services.BuildServiceProvider();
 
@@ -384,13 +380,57 @@ public sealed partial class LongRestMaintenanceTests
                 new ModelCallExecutor(estimator, Options), Epoch, new PaidWriter(new TurnRunWriter(H.Saga.Context), () => PaidRecorded?.Invoke(), () => Completing?.Invoke()),
                 new BudgetReservationService(H.Saga.Context, Options));
 
-            Maintenance = new(Epoch, H.Store, sweeps, attempts, facts, Gate, new ObservedProvider(provider, result => ProviderResult = result, () => RepeatDispatch, payload => Payloads.Add(payload), ct => DispatchObserved?.Invoke(ct), () => ProviderReturned?.Invoke() ?? Task.CompletedTask), estimator, Journal, WorkAdmission,
+            Maintenance = new(Epoch, H.Store, sweeps, attempts, facts, Gate, new ObservedProvider(provider, result => ProviderResult = result, () => RepeatDispatch, payload => Payloads.Add(payload), ct => DispatchObserved?.Invoke(ct), () => ProviderReturned?.Invoke() ?? Task.CompletedTask), estimator, Journal,
                 Services.GetRequiredService<IServiceScopeFactory>(), Clock);
 
             Operations = new(H.Saga.Context, TestOrdinaryConnectionFactory.For(H.Saga.Context));
 
             Coordinator = new(Operations, sweeps, H.Store, Epoch, facts, Maintenance, Gate,
-                new LongRunningOperationOwnership(), new LongRestSweepQueue(), Services.GetRequiredService<IServiceScopeFactory>(), Clock, WorkAdmission);
+                new LongRunningOperationOwnership(), new LongRestSweepQueue(), Services.GetRequiredService<IServiceScopeFactory>(), Clock, RecordedAdmission);
+        }
+
+        /// <summary>The newest real Long Rest sweep lease this fixture's gate has issued: the one the active work holds.</summary>
+        internal IGrimoireWorkLease SweepLease => RecordedAdmission.InnerWorkLeases.Last(static lease => lease.Kind == GrimoireWorkKind.LongRestSweep);
+
+        /// <summary>
+        /// Runs one bounded unit the way the coordinator does: under a Long Rest lease from this fixture's gate that is
+        /// passed by value to the admitted maintenance and disposed afterwards.
+        /// </summary>
+        internal async Task<Result<LongRestSweepProgress>> ProcessAsync(Guid operationId, string workerOwner,
+            LongRestMaintenanceCapability? capability, CancellationToken ct)
+        {
+            ct.ThrowIfCancellationRequested();
+
+            if (!RecordedAdmission.TryAcquireWorkLease(GrimoireWorkKind.LongRestSweep, out IGrimoireWorkLease? admitted))
+            {
+                ct.ThrowIfCancellationRequested();
+
+                throw new LongRestMaintenanceDeferredException(CancellationToken.None);
+            }
+
+            await using IGrimoireWorkLease lease = admitted!;
+
+            return await Maintenance.ProcessAdmittedAsync(operationId, workerOwner, capability, lease, ct);
+        }
+
+        /// <summary>
+        /// Drives the hosted worker's door the way its loop does: a fresh Long Rest sweep lease from this fixture's gate,
+        /// passed by value to the coordinator's admitted entry and disposed afterwards.
+        /// </summary>
+        internal async Task<Result<LongRestSweepProgress>> ResumeAdmittedAsync(Guid operationId, CancellationToken ct)
+        {
+            ct.ThrowIfCancellationRequested();
+
+            if (!RecordedAdmission.TryAcquireWorkLease(GrimoireWorkKind.LongRestSweep, out IGrimoireWorkLease? admitted))
+            {
+                ct.ThrowIfCancellationRequested();
+
+                throw new LongRestMaintenanceDeferredException(CancellationToken.None);
+            }
+
+            await using IGrimoireWorkLease lease = admitted!;
+
+            return await Coordinator.ResumeAdmittedAsync(operationId, lease, ct);
         }
 
         internal async Task RebootAsync()
@@ -422,7 +462,8 @@ public sealed partial class LongRestMaintenanceTests
                 InvocationAttendance.Attended, CovenantContextPolicy.Default, ToolPolicy.NoTools,
                 CovenantReadAuthorityEpoch.CreateForTests(Guid.NewGuid(), Authority.Snapshot.RuntimeAuthorityGeneration, Authority.Snapshot.AuthorityEpoch)).Value;
 
-            await H.ExecuteAsync("UPDATE LongRunningOperations SET LeaseExpiresAt = '2000-01-01T00:00:00.0000000Z';");
+            // A restart lapses every lease that was held. A parked sweep holds none, and keeps holding none.
+            await H.ExecuteAsync("UPDATE LongRunningOperations SET LeaseExpiresAt = '2000-01-01T00:00:00.0000000Z' WHERE LeaseOwner IS NOT NULL;");
 
             Compose();
         }

@@ -6,7 +6,6 @@ using Microsoft.Extensions.Logging;
 
 using RetroDownfall.Arcanum.Core.Operations;
 using RetroDownfall.Arcanum.Infrastructure.Data;
-using RetroDownfall.Arcanum.Infrastructure.Data.LongRest;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Operations;
 
@@ -387,20 +386,13 @@ internal sealed class LongRunningOperationStartupHostedService(
                 {
                     scope = scopeFactory.CreateAsyncScope();
                     scopeCreated = true;
-                    using IDisposable? binding = decision.Kind is LongRunningRecoveryAdmissionKind.OrdinaryPerUnitExternalEffect
-                        ? scope.ServiceProvider.GetRequiredService<LongRestWorkAdmission>().Bind(lease) : null;
-
-                    using CancellationTokenSource dispatch = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken,
-                        decision.Kind is LongRunningRecoveryAdmissionKind.OrdinaryPerUnitExternalEffect
-                            ? lease.MaintenanceRevocation : CancellationToken.None);
-
                     LongRunningOperationReconciler reconciler = scope.ServiceProvider
                         .GetRequiredService<LongRunningOperationReconciler>();
 
                     return await reconciler.SettleDiscoveredRuntimeAsync(
                         operation,
                         ownerId,
-                        dispatch.Token).ConfigureAwait(false);
+                        cancellationToken).ConfigureAwait(false);
                 }
             }
             finally

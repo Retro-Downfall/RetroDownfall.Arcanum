@@ -13,6 +13,4 @@ namespace RetroDownfall.Arcanum.Core.LongRest;
 public interface ILongRestMaintenance
 {
     Task<Result<LongRestMaintenanceCapability>> CreateCapabilityAsync(Guid operationId, ArcanumInvocationContext invocation, SessionTurnClaimLease claim, CanonicalCampaignContext scope, CovenantTurnLease lease, CancellationToken ct);
-
-    Task<Result<LongRestSweepProgress>> ProcessAsync(Guid operationId, string workerOwner, LongRestMaintenanceCapability? capability, CancellationToken ct);
 }

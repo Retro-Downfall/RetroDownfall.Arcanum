@@ -10,6 +10,8 @@ CREATE TABLE IF NOT EXISTS long_rest_sweeps (
     CommittedItemCursor TEXT NULL,
     DiscoveryCursor TEXT NULL,
     CommittedWorkDigest BLOB NULL CHECK (CommittedWorkDigest IS NULL OR length(CommittedWorkDigest) = 32),
+    ReadmitCount INTEGER NOT NULL DEFAULT 0 CHECK (typeof(ReadmitCount) = 'integer' AND ReadmitCount >= 0),
+    ParkedAt TEXT NULL,
     UpdatedAtUtc TEXT NOT NULL,
     CHECK ((ScopeKindCode = 1 AND CampaignId IS NULL) OR (ScopeKindCode = 2 AND length(CampaignId) = 36))
 );

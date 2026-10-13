@@ -173,7 +173,7 @@ internal sealed partial class LongRestSweepStore
         ct.ThrowIfCancellationRequested();
 
         await using SqliteCommand advance = Command(connection, transaction, """
-            UPDATE long_rest_sweeps SET DiscoveryCursor = $cursor, PhaseCode = $phase, Revision = Revision + 1, UpdatedAtUtc = $at
+            UPDATE long_rest_sweeps SET DiscoveryCursor = $cursor, PhaseCode = $phase, ReadmitCount = 0, Revision = Revision + 1, UpdatedAtUtc = $at
             WHERE OperationId = $operation AND GenerationId = $generation AND Revision = $revision AND PhaseCode = $previousPhase
                 AND DiscoveryCursor IS $previous
                 AND NOT EXISTS (SELECT 1 FROM long_rest_work_items WHERE GenerationId = $generation AND OperationId = $operation

@@ -220,10 +220,14 @@ public sealed partial class HostedGrimoireProducerInventoryTests
 
         foreach (string expected in new[] { "await using IGrimoireWorkLease lease = admitted!",
             "await using AsyncServiceScope scope = scopes.CreateAsyncScope()",
-            "scope.ServiceProvider.GetRequiredService<LongRestWorkAdmission>().Bind(lease)",
-            "scope.ServiceProvider.GetRequiredService<ILongRestSweepCoordinator>()",
-            "await coordinator.ResumeAsync(operation, null, ct).ConfigureAwait(false)" })
+            "scope.ServiceProvider.GetRequiredService<ILongRestAdmittedSweep>()",
+            "await sweep.ResumeAdmittedAsync(operation, lease, ct).ConfigureAwait(false)" })
             Assert.Contains(expected, run.ToString(), StringComparison.Ordinal);
+
+        // The lease travels by value: no holder is resolved and nothing is bound.
+        Assert.DoesNotContain("Bind(", run.ToString(), StringComparison.Ordinal);
+
+        Assert.DoesNotContain("LongRestWorkAdmission", run.ToString(), StringComparison.Ordinal);
     }
 
     private void AssertConsumedHistoricalFactory(string shape)

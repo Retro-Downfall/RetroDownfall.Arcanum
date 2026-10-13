@@ -20,7 +20,7 @@ public sealed class LongRestTerminalReservationTests
 
         for (int step = 0; step < 3; step++)
         {
-            LongRestSweepHarness.Require(await f.Maintenance.ProcessAsync(f.Operation, "fixture-worker", null, CancellationToken.None));
+            LongRestSweepHarness.Require(await f.ProcessAsync(f.Operation, "fixture-worker", null, CancellationToken.None));
         }
 
         LongRestDiscoveryGeneration original = LongRestSweepHarness.Require(await f.H.Store.ReadGenerationMetadataAsync(f.Operation, CancellationToken.None))!;
@@ -164,7 +164,7 @@ public sealed class LongRestTerminalReservationTests
             Assert.True(acquired.Operation.LeaseExpiresAt <= clock.GetUtcNow());
         }
 
-        LongRunningOperationReconciler reconciler = new(f.Operations, [new LongRestSweepRecoveryHandler(f.Coordinator)],
+        LongRunningOperationReconciler reconciler = new(f.Operations, [new LongRestSweepRecoveryHandler()],
             clock, NullLogger<LongRunningOperationReconciler>.Instance, new LongRunningOperationOwnership());
 
         await reconciler.ReconcileNowAsync("terminal-reservation-fixture-owner");

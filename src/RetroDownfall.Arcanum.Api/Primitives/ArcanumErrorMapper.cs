@@ -58,7 +58,8 @@ internal static class ArcanumErrorMapper
                 StatusCodes.Status404NotFound,
 
             ErrorCodes.LongRest.StaleInput
-                or ErrorCodes.LongRest.MissingClaim =>
+                or ErrorCodes.LongRest.MissingClaim
+                or ErrorCodes.LongRest.SweepParked =>
                 StatusCodes.Status409Conflict,
 
             ErrorCodes.LongRest.Unavailable

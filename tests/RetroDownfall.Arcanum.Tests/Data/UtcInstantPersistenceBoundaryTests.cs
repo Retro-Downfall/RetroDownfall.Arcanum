@@ -536,6 +536,8 @@ public sealed class UtcInstantPersistenceBoundaryTests
             "src/RetroDownfall.Arcanum.Infrastructure/Data/LongRest/LongRestDiscoveryStore.CompletedCheckpoint.cs",
             "src/RetroDownfall.Arcanum.Infrastructure/Data/LongRest/LongRestDiscoveryStore.cs",
             "src/RetroDownfall.Arcanum.Infrastructure/Data/LongRest/LongRestSweepStore.Accepted.cs",
+            "src/RetroDownfall.Arcanum.Infrastructure/Data/LongRest/LongRestSweepStore.Pending.cs",
+            "src/RetroDownfall.Arcanum.Infrastructure/Data/LongRest/LongRestSweepStore.Readmission.cs",
             "src/RetroDownfall.Arcanum.Infrastructure/Data/LongRest/LongRestSweepStore.RequestAdmission.cs",
             "src/RetroDownfall.Arcanum.Infrastructure/Data/LongRest/LongRestSweepStore.Work.cs",
             "src/RetroDownfall.Arcanum.Infrastructure/Data/LongRest/LongRestSweepStore.cs",
