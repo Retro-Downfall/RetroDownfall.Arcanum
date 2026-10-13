@@ -251,7 +251,7 @@ internal sealed partial class SagaLongRestService
                     return InvalidReceipt();
                 }
 
-                string hash = Convert.ToHexString((byte[])reader.GetValue(4));
+                string hash = Convert.ToHexString((byte[])reader[4]);
 
                 if (snapshot is null || snapshot.MemoryId != reader.GetString(1) || snapshot.VersionId != reader.GetString(2)
                     || (int)snapshot.ContentHashFormat != reader.GetInt32(3) || snapshot.ContentHash != hash

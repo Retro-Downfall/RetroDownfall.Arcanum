@@ -76,7 +76,7 @@ internal sealed partial class SagaLongRestService
                     "The retained version has no verifiable content binding."));
             }
 
-            string hash = Convert.ToHexString((byte[])reader.GetValue(4));
+            string hash = Convert.ToHexString((byte[])reader[4]);
 
             Guid? campaign = GuidValue(reader, 8);
 
