@@ -238,7 +238,11 @@ public sealed partial class HostedGrimoireProducerInventoryTests
 
         string conversionCoordinate = tree.FilePath + ":" + frameworkConversion.Syntax.SpanStart;
 
-        Assert.Contains(result.Diagnostics, diagnostic => diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED"
+        // Structural Operand Rule: the framework conversion inside the callee consumes a bare formal, so
+        // it no longer demands that every incoming source be a primitive. It grants no authority and hides
+        // no execution: the incoming conversion or call is traversed or refused where it is written,
+        // which the execution-boundary assertions below keep pinned.
+        Assert.DoesNotContain(result.Diagnostics, diagnostic => diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED"
             && diagnostic.Detail == (shape == "index" ? "System.Index.op_Implicit" : "System.Int128.op_Implicit")
             && diagnostic.Identity == conversionCoordinate);
 

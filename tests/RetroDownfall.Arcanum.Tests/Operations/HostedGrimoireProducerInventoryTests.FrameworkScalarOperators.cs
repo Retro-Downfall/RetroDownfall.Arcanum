@@ -132,4 +132,217 @@ public sealed partial class HostedGrimoireProducerInventoryTests
         Assert.Contains(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_SITE_EFFECT_FRONTIER_MISSING"
             && diagnostic.Detail == "System.IO.File.Delete");
     }
+
+    private const string ScalarOperandHelper = """
+        static class ScalarProbe
+        {
+            public static float Pure() => 1f;
+
+            public static double PureDouble() => 1d;
+
+            public static int Offset() => 1;
+
+            public static CancellationToken Token() => default;
+
+            public static ReadOnlySpan<float> Span() => new float[64];
+
+            public static System.Numerics.Vector<float> Vector() => default;
+        }
+
+        sealed class ScalarConversionOperand
+        {
+            public static implicit operator int(ScalarConversionOperand value)
+            {
+                System.IO.File.Delete("scalar-operand-conversion");
+
+                return 1;
+            }
+
+            public static implicit operator CancellationToken(ScalarConversionOperand value)
+            {
+                System.IO.File.Delete("scalar-operand-token-conversion");
+
+                return default;
+            }
+
+            public static implicit operator float(ScalarConversionOperand value)
+            {
+                System.IO.File.Delete("scalar-operand-float-conversion");
+
+                return 1f;
+            }
+        }
+        """;
+
+    [Theory]
+    [InlineData("index-call", "string text = \"abcdef\"; _ = text[Math.Min(text.Length, 3)..];")]
+    [InlineData("index-property-chain", "byte[] bytes = new byte[8]; _ = bytes[System.Text.Encoding.UTF8.Preamble.Length..];")]
+    [InlineData("index-local", "string text = \"abcdef\"; int start = 1; _ = text[start..];")]
+    [InlineData("index-helper-call", "string text = \"abcdef\"; _ = text[ScalarProbe.Offset()..];")]
+    [InlineData("index-end", "string text = \"abcdef\"; _ = text[..ScalarProbe.Offset()];")]
+    [InlineData("index-both-ends", "string text = \"abcdef\"; _ = text[ScalarProbe.Offset()..(ScalarProbe.Offset() + 2)];")]
+    [InlineData("int128-chain", "long value = 5; int percentage = 3; System.Int128 rounded = ((System.Int128)value * percentage + 99) / 100; _ = rounded;")]
+    [InlineData("int128-subtract", "long left = 5; int right = 3; _ = (System.Int128)left - right;")]
+    [InlineData("int128-call-operands", "_ = (System.Int128)ScalarProbe.Offset() + ScalarProbe.Offset();")]
+    [InlineData("int128-unsigned-sources", "ulong big = 5; uint mid = 2; ushort small = 1; byte tiny = 1; _ = (System.Int128)big + mid + small + tiny;")]
+    [InlineData("cancellation-equals", "CancellationToken copy = token; _ = copy == token; _ = copy != token;")]
+    [InlineData("cancellation-call-operand", "_ = ScalarProbe.Token() == token; _ = token != ScalarProbe.Token();")]
+    [InlineData("finite-float-call", "_ = float.IsFinite(ScalarProbe.Pure());")]
+    [InlineData("finite-float-expression", "_ = float.IsFinite(ScalarProbe.Pure() * 2f + 1f);")]
+    [InlineData("finite-double-call", "_ = double.IsFinite(2d * ScalarProbe.PureDouble());")]
+    [InlineData("finite-lambda-parameter", "float[] values = [1f]; _ = values.Any(value => !float.IsFinite(value));")]
+    [InlineData("vector-span-call", "_ = new System.Numerics.Vector<float>(ScalarProbe.Span());")]
+    [InlineData("vector-slice-call", "ReadOnlySpan<float> data = new float[64]; _ = new System.Numerics.Vector<float>(data.Slice(ScalarProbe.Offset(), 8));")]
+    [InlineData("vector-dot-call", "System.Numerics.Vector<float> value = default; _ = System.Numerics.Vector.Dot<float>(value, ScalarProbe.Vector());")]
+    public void StructuralOperandRuleAcceptsExactFrameworkScalarOperatorsWithBuiltInOperands(string shape, string body)
+    {
+        Assert.NotEmpty(shape);
+
+        CSharpCompilation compilation = Compile("using System.Linq; " + R2Source(body + " await Task.CompletedTask;", ScalarOperandHelper));
+
+        Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        HostedProducerDiscovery<HostedProducerSite> result = HostedGrimoireProducerInventory.DiscoverProducerSites(
+            [compilation], new(["Worker"], []), [new("Worker", [OrdinaryRoot()])], []);
+
+        Assert.Empty(result.Diagnostics);
+
+        Assert.Empty(result.Items);
+    }
+
+    [Theory]
+    [InlineData("index-boundary", "string text = \"abcdef\"; _ = text[(int)new ScalarConversionOperand()..];", "System.Index.op_Implicit")]
+    [InlineData("int128-boundary", "_ = (System.Int128)(int)new ScalarConversionOperand();", "System.Int128.op_Implicit")]
+    [InlineData("int128-arithmetic-boundary", "System.Int128 left = 1; _ = left + (int)new ScalarConversionOperand();", "System.Int128.op_Addition")]
+    [InlineData("cancellation-boundary", "CancellationToken copy = token; _ = copy == new ScalarConversionOperand();", "System.Threading.CancellationToken.op_Equality")]
+    [InlineData("finite-boundary", "_ = float.IsFinite(new ScalarConversionOperand());", "System.Single.IsFinite")]
+    [InlineData("finite-explicit-boundary", "_ = float.IsFinite((float)new ScalarConversionOperand());", "System.Single.IsFinite")]
+    public void StructuralOperandRuleRefusesAUserConversionAtTheOperatorBoundary(string shape, string body, string callee)
+    {
+        Assert.NotEmpty(shape);
+
+        CSharpCompilation compilation = Compile("using System.Linq; " + R2Source(body + " await Task.CompletedTask;", ScalarOperandHelper));
+
+        Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        HostedProducerDiscovery<HostedProducerSite> result = HostedGrimoireProducerInventory.DiscoverProducerSites(
+            [compilation], new(["Worker"], []), [new("Worker", [OrdinaryRoot()])], []);
+
+        Assert.Contains(result.Diagnostics, diagnostic => diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED" && diagnostic.Detail == callee);
+
+        // The authored conversion stays traversed as ordinary executable work.
+        Assert.Contains(result.Items, static site => site.Callee == "System.IO.File.Delete");
+    }
+
+    [Theory]
+    [InlineData("index-local", "string text = \"abcdef\"; int start = new ScalarConversionOperand(); _ = text[start..];")]
+    [InlineData("int128-local", "int amount = new ScalarConversionOperand(); _ = (System.Int128)amount + 1;")]
+    [InlineData("finite-local", "float amount = new ScalarConversionOperand(); _ = float.IsFinite(amount);")]
+    public void StructuralOperandRuleStillTraversesAConversionBehindALocalOperand(string shape, string body)
+    {
+        Assert.NotEmpty(shape);
+
+        CSharpCompilation compilation = Compile("using System.Linq; " + R2Source(body + " await Task.CompletedTask;", ScalarOperandHelper));
+
+        Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        HostedProducerDiscovery<HostedProducerSite> result = HostedGrimoireProducerInventory.DiscoverProducerSites(
+            [compilation], new(["Worker"], []), [new("Worker", [OrdinaryRoot()])], []);
+
+        Assert.Contains(result.Items, static site => site.Callee == "System.IO.File.Delete");
+
+        Assert.Contains(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_SITE_WORK_FRONTIER_MISSING"
+            && diagnostic.Detail == "System.IO.File.Delete");
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED");
+    }
+
+    [Fact]
+    public void AuthoredInt128LookalikeArithmeticRemainsExecutableWork()
+    {
+        const string helper = """
+            namespace System
+            {
+                public readonly struct Int128
+                {
+                    public static Int128 operator +(Int128 left, Int128 right)
+                    {
+                        System.IO.File.Delete("int128-arithmetic-lookalike");
+
+                        return default;
+                    }
+
+                    public static implicit operator Int128(int value) => default;
+                }
+            }
+            """;
+
+        string source = R2Source("System.Int128 left = 1; _ = left + 2; await Task.CompletedTask;", helper);
+
+        CSharpCompilation compilation = Compile(source);
+
+        Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        SyntaxTree tree = Assert.Single(compilation.SyntaxTrees);
+
+        SemanticModel model = compilation.GetSemanticModel(tree);
+
+        BinaryExpressionSyntax addition = Assert.Single(tree.GetRoot().DescendantNodes().OfType<BinaryExpressionSyntax>(),
+            static binary => binary.IsKind(SyntaxKind.AddExpression));
+
+        IBinaryOperation operation = Assert.IsAssignableFrom<IBinaryOperation>(model.GetOperation(addition));
+
+        IMethodSymbol selected = Assert.IsAssignableFrom<IMethodSymbol>(operation.OperatorMethod);
+
+        Assert.Equal("System.Int128", selected.ContainingType.ToDisplayString());
+
+        Assert.NotEmpty(selected.DeclaringSyntaxReferences);
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(source);
+
+        Assert.Contains(result.Items, static site => site.Callee == "System.IO.File.Delete");
+
+        Assert.Contains(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_SITE_WORK_FRONTIER_MISSING"
+            && diagnostic.Detail == "System.IO.File.Delete");
+    }
+
+    [Fact]
+    public void FrameworkScalarOperatorsAreCompilerBoundToTheExactCoreLibraryIdentities()
+    {
+        const string body = "long value = 5; System.Int128 total = (System.Int128)value * 2 + 1; CancellationToken copy = token; _ = copy == token; _ = total; await Task.CompletedTask;";
+
+        CSharpCompilation compilation = Compile(R2Source(body));
+
+        Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        SyntaxTree tree = Assert.Single(compilation.SyntaxTrees);
+
+        SemanticModel model = compilation.GetSemanticModel(tree);
+
+        IMethodSymbol[] operators = tree.GetRoot().DescendantNodes().OfType<BinaryExpressionSyntax>()
+            .Select(binary => model.GetOperation(binary))
+            .OfType<IBinaryOperation>()
+            .Select(static operation => operation.OperatorMethod)
+            .OfType<IMethodSymbol>()
+            .ToArray();
+
+        Assert.Contains(operators, static method => method.ContainingType.ToDisplayString() == "System.Int128" && method.Name == "op_Addition");
+
+        Assert.Contains(operators, static method => method.ContainingType.ToDisplayString() == "System.Int128" && method.Name == "op_Multiply");
+
+        Assert.Contains(operators, static method => method.ContainingType.ToDisplayString() == "System.Threading.CancellationToken" && method.Name == "op_Equality");
+
+        Assert.All(operators, static method =>
+        {
+            Assert.Empty(method.DeclaringSyntaxReferences);
+
+            Assert.True(method.IsStatic);
+
+            Assert.Equal(MethodKind.UserDefinedOperator, method.MethodKind);
+        });
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(R2Source(body));
+
+        Assert.Empty(result.Diagnostics);
+    }
 }
