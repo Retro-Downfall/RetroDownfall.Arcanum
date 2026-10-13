@@ -25354,22 +25354,30 @@ internal static partial class HostedGrimoireProducerInventory
 
                             SyntaxNode? completion = awaitableReturn ? CompletionPoint(member, callbackCall, completionOwned) : lazyCallback ? LazyCompletionPoint(member, callbackCall) : synchronousCallback ? callbackCall : null;
 
+                            // A lazy operator runs its callbacks on every MoveNext of its consumer, so a consuming loop is judged at
+                            // its operand, its back-edge and its end, exactly as a lazy iterator result is.
+                            int?[] completionPositions = completion is not null && lazyCallback
+                                ? LazyConsumptionPositions(completion)
+                                : [null];
+
                             string? completionWork = completion is null
                                 ? null
-                                : WorkAt(
+                                : CommonFrontier(completionPositions.Select(completionPosition => WorkAt(
                                     member,
                                     completion,
                                     operationId,
                                     ordinary?.WorkKind,
-                                    inheritedWork);
+                                    inheritedWork,
+                                    completionPosition)));
 
                             string? completionEffect = completion is null
                                 ? null
-                                : EffectAt(
+                                : CommonFrontier(completionPositions.Select(completionPosition => EffectAt(
                                     member,
                                     completion,
                                     operationId,
-                                    inheritedEffect);
+                                    inheritedEffect,
+                                    completionPosition)));
 
                             bool owned = knownCallback
                                 && completion is not null
@@ -25540,7 +25548,11 @@ internal static partial class HostedGrimoireProducerInventory
 
                                 bool ownedByIteratorConsumer = consumption is null && completionOwned && IsIteratorMember(member);
 
-                                string? consumedWork = ownedByIteratorConsumer ? workAdmitted : consumption is null ? null : WorkAt(member, consumption, operationId, ordinary?.WorkKind, inheritedWork);
+                                string? consumedWork = ownedByIteratorConsumer
+                                    ? workAdmitted
+                                    : consumption is null
+                                        ? null
+                                        : CommonFrontier(LazyConsumptionPositions(consumption).Select(consumedPosition => WorkAt(member, consumption, operationId, ordinary?.WorkKind, inheritedWork, consumedPosition)));
 
                                 if ((!ownedByIteratorConsumer && consumption is null) || consumedWork != workAdmitted)
                                 {
@@ -29511,6 +29523,14 @@ internal static partial class HostedGrimoireProducerInventory
             int exit = Math.Max(backEdge, loop.Span.End);
 
             return [entry, backEdge, exit];
+        }
+
+        // The frontier several positions share, or null when any two differ.
+        private static string? CommonFrontier(IEnumerable<string?> frontiers)
+        {
+            string?[] all = [.. frontiers];
+
+            return all.Length != 0 && all.All(frontier => frontier == all[0]) ? all[0] : null;
         }
 
         private SyntaxNode? LazyCompletionPoint(AuthoredMember member, InvocationExpressionSyntax source)
