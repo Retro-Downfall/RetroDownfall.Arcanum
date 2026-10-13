@@ -109,6 +109,45 @@ public class TheForgeJsonContextTests
 
     }
 
+    // Error.IsNone is a computed convenience read from the three fields Error.None fixes. It is
+    // [JsonIgnore], so the source-generated Forge context writes and reads exactly code, message and details.
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Error_IsNone_IsNotPartOfTheWireShape(bool withDetails)
+    {
+
+        Error error = withDetails
+            ? new("Test.Failed", "Nope.", [new ConfigurationValidationError("/pointer", "detail")])
+            : new("Test.Failed", "Nope.");
+
+        string json = JsonSerializer.Serialize(error, TheForgeJsonContext.Default.Error);
+
+        using JsonDocument document = JsonDocument.Parse(json);
+
+        Assert.DoesNotContain(document.RootElement.EnumerateObject(),
+            static property => property.Name.Equals("isNone", StringComparison.OrdinalIgnoreCase));
+
+        Assert.Equal("Test.Failed", document.RootElement.GetProperty("code").GetString());
+
+        Assert.Equal("Nope.", document.RootElement.GetProperty("message").GetString());
+
+        Error? roundTripped = JsonSerializer.Deserialize(json, TheForgeJsonContext.Default.Error);
+
+        Assert.NotNull(roundTripped);
+
+        Assert.Equal(error.Code, roundTripped.Value.Code);
+
+        Assert.Equal(error.Message, roundTripped.Value.Message);
+
+        Assert.Equal(error.Details ?? [], roundTripped.Value.Details ?? []);
+
+        Assert.False(roundTripped.Value.IsNone);
+
+        Assert.Equal(json, JsonSerializer.Serialize(roundTripped.Value, TheForgeJsonContext.Default.Error));
+
+    }
+
     [Fact]
     public void ApiResponse_Failure_OmitsDataAndCarriesError()
     {
