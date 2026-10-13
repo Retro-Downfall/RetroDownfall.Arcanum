@@ -236,9 +236,14 @@ public sealed class A2AClientService : IA2AClientService
                     {
                         // The answer is remote-authored: one this client cannot read is a cancel that failed,
                         // not an exception out of the cancel verb.
+                        _logger.LogWarning(
+                            "cancel_sending: could not cancel remote task {TaskId} ({ExceptionType}).",
+                            taskId,
+                            ex.GetType().Name);
+
                         return Result<A2ADispatchResult>.Failure(new Error(
                             ErrorCodes.Sending.AgentUnreachable,
-                            $"Could not cancel remote task '{taskId}': {ex.Message}"));
+                            $"Could not cancel remote task '{taskId}'."));
                     }
                 })
             .ConfigureAwait(false);
@@ -387,10 +392,12 @@ public sealed class A2AClientService : IA2AClientService
         {
             // A card is remote-authored: a body that is not JSON, or that carries a malformed value, is an
             // invalid card, not an unhandled exception out of the tool call.
-            _logger.LogWarning(ex, "dispatch_sending: failed to resolve Agent Card at {AgentUrl}.", discoveryUrl);
+            _logger.LogWarning(
+                "dispatch_sending: failed to resolve the remote Agent Card ({ExceptionType}).",
+                ex.GetType().Name);
 
             return Result<ConnectedPeer>.Failure(
-                new Error(ErrorCodes.Sending.AgentCardInvalid, $"Could not resolve the remote agent's Agent Card: {ex.Message}"));
+                new Error(ErrorCodes.Sending.AgentCardInvalid, "Could not resolve the remote agent's Agent Card."));
         }
 
         AgentInterface[] interfaces = [.. (card.SupportedInterfaces ?? []).Where(static i => !string.IsNullOrWhiteSpace(i.Url))];
@@ -438,8 +445,12 @@ public sealed class A2AClientService : IA2AClientService
         }
         catch (Exception ex) when (ex is A2AException or ArgumentException or InvalidOperationException)
         {
+            _logger.LogWarning(
+                "dispatch_sending: the remote Agent Card has no supported protocol binding ({ExceptionType}).",
+                ex.GetType().Name);
+
             return Result<ConnectedPeer>.Failure(
-                new Error(ErrorCodes.Sending.AgentCardInvalid, $"The remote Agent Card advertises no protocol binding this client supports: {ex.Message}"));
+                new Error(ErrorCodes.Sending.AgentCardInvalid, "The remote Agent Card advertises no protocol binding this client supports."));
         }
 
         return Result<ConnectedPeer>.Success(new ConnectedPeer(client, card));
@@ -600,10 +611,12 @@ public sealed class A2AClientService : IA2AClientService
         }
         catch (Exception ex) when (ex is HttpRequestException or A2AException or JsonException)
         {
-            _logger.LogWarning(ex, "dispatch_sending: failed to send message to the remote agent.");
+            _logger.LogWarning(
+                "dispatch_sending: failed to send message to the remote agent ({ExceptionType}).",
+                ex.GetType().Name);
 
             return Result<A2ADispatchResult>.Failure(
-                new Error(ErrorCodes.Sending.AgentUnreachable, $"Failed to send the Sending to the remote agent: {ex.Message}"));
+                new Error(ErrorCodes.Sending.AgentUnreachable, "Failed to send the Sending to the remote agent."));
         }
 
         if (response.PayloadCase == SendMessageResponseCase.Message)
@@ -711,11 +724,14 @@ public sealed class A2AClientService : IA2AClientService
             // The ledger entry deliberately stays open: reconciliation will try to cancel it.
             StopRenewing(ledgerEntry);
 
-            _logger.LogWarning(ex, "dispatch_sending: lost contact with the remote agent while polling task {TaskId}.", task.Id);
+            _logger.LogWarning(
+                "dispatch_sending: lost contact with the remote agent while polling task {TaskId} ({ExceptionType}).",
+                task.Id,
+                ex.GetType().Name);
 
             return Result<A2ADispatchResult>.Failure(new Error(
                 ErrorCodes.Sending.AgentUnreachable,
-                $"Lost contact with the remote agent while awaiting task '{task.Id}': {ex.Message}. "
+                $"Lost contact with the remote agent while awaiting task '{task.Id}'. "
                 + "The remote task may still be running; it was not cancelled."));
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -727,11 +743,14 @@ public sealed class A2AClientService : IA2AClientService
             // release its budget reservation.
             StopRenewing(ledgerEntry);
 
-            _logger.LogWarning(ex, "dispatch_sending: the remote agent answered task {TaskId} with an unreadable response.", task.Id);
+            _logger.LogWarning(
+                "dispatch_sending: the remote agent answered task {TaskId} with an unreadable response ({ExceptionType}).",
+                task.Id,
+                ex.GetType().Name);
 
             return Result<A2ADispatchResult>.Failure(new Error(
                 ErrorCodes.Sending.AgentUnreachable,
-                $"The remote agent sent an unreadable response while awaiting task '{task.Id}': {ex.Message}. "
+                $"The remote agent sent an unreadable response while awaiting task '{task.Id}'. "
                 + "The remote task may still be running; it was not cancelled."));
         }
         finally
@@ -897,10 +916,10 @@ public sealed class A2AClientService : IA2AClientService
             // HTTP error: it must not reach the catch-all that follows an accepted task, which ends the whole
             // Sending as lost contact and leaves the remote task running.
             _logger.LogInformation(
-                ex,
-                "dispatch_sending: the peer would not register a callback for remote task {TaskId}; "
-                + "waiting inline instead.",
-                remoteTaskId);
+                "dispatch_sending: the peer would not register a callback for remote task {TaskId} "
+                + "({ExceptionType}); waiting inline instead.",
+                remoteTaskId,
+                ex.GetType().Name);
 
             return null;
         }
@@ -1278,9 +1297,10 @@ public sealed class A2AClientService : IA2AClientService
             // A frame the peer sent that is not JSON is the same failure as a stream it refused or dropped:
             // the Sending is still running on the far side, so it degrades to the poll.
             _logger.LogInformation(
-                ex,
-                "dispatch_sending: could not follow remote task {TaskId} by subscription; falling back to polling.",
-                task.Id);
+                "dispatch_sending: could not follow remote task {TaskId} by subscription "
+                + "({ExceptionType}); falling back to polling.",
+                task.Id,
+                ex.GetType().Name);
         }
 
         return null;
@@ -1433,9 +1453,10 @@ public sealed class A2AClientService : IA2AClientService
         catch (Exception ex)
         {
             _logger.LogInformation(
-                ex,
-                "dispatch_sending: could not cancel remote A2A task {TaskId} after local cancellation.",
-                taskId);
+                "dispatch_sending: could not cancel remote A2A task {TaskId} after local cancellation "
+                + "({ExceptionType}).",
+                taskId,
+                ex.GetType().Name);
         }
     }
 

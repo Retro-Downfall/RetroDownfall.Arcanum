@@ -541,15 +541,23 @@ public sealed class LexiconErasureTests(GrimoireFixture fixture)
 
         GrimoireSchemaInstallResult result = await installer.InstallAsync(connection, 64, context, Token);
 
-        if (result.Core.Health is GrimoireSchemaTierHealth.TransitionIncomplete)
+        int completedThrough = -1;
+
+        for (int pass = 0; result.Core.Health is GrimoireSchemaTierHealth.TransitionIncomplete && pass < version; pass++)
         {
             GrimoireSchemaTransitionJournalRow journal = Assert.IsType<GrimoireSchemaTransitionJournalRow>(
                 await GrimoireSchemaTransitionJournal.ReadAsync(
                     connection, null, GrimoireSchemaTransactionTier.Core, Token));
 
+            Assert.Equal(version, journal.TargetVersion);
+
+            Assert.InRange(journal.CompletedThroughVersion, completedThrough + 1, version - 1);
+
+            completedThrough = journal.CompletedThroughVersion;
+
             GrimoireSchemaBackfillRunner runner = new(installer, TimeProvider.System);
 
-            _ = await runner.AdvanceAsync(
+            GrimoireSchemaBackfillProgress progress = await runner.AdvanceAsync(
                 connection,
                 chains.ForTier(GrimoireSchemaTransactionTier.Core),
                 journal,
@@ -557,12 +565,20 @@ public sealed class LexiconErasureTests(GrimoireFixture fixture)
                 maxBatches: 128,
                 Token);
 
+            Assert.True(progress.StepComplete, $"The bounded fixture backfill did not complete {journal.BackfillName}.");
+
             result = await installer.InstallAsync(connection, 64, context, Token);
         }
 
-        Assert.Equal(GrimoireSchemaTierHealth.Healthy, result.Core.Health);
+        GrimoireSchemaTransitionJournalRow? remaining = await GrimoireSchemaTransitionJournal.ReadAsync(
+            connection, null, GrimoireSchemaTransactionTier.Core, Token);
+
+        Assert.True(result.Core.Health == GrimoireSchemaTierHealth.Healthy,
+            $"Schema health {result.Core.Health}; installed {result.Core.SchemaVersion}; completed {remaining?.CompletedThroughVersion}; target {remaining?.TargetVersion}; backfill {remaining?.BackfillName}; diagnostic {result.Core.DiagnosticCode}.");
 
         Assert.Equal(version, result.Core.SchemaVersion);
+
+        Assert.Null(remaining);
     }
 
     /// <summary>The <c>lexicon_fts_data</c> blocks that still carry a sentinel. Assertion-only.</summary>

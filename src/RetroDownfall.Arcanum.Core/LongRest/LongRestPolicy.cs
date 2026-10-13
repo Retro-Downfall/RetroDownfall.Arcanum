@@ -120,11 +120,12 @@ public static class LongRestPolicy
             superseded.Select(snapshot => snapshot.VersionId).ToArray());
     }
 
-    private static LongRestReason Decide(
+    internal static LongRestReason Decide(
         LongRestTransformationKind kind,
         LongRestSnapshot[] snapshots,
         LongRestSnapshot survivor,
-        LongRestSnapshot[] eliminated)
+        LongRestSnapshot[] eliminated,
+        LongRestProtectedEvidence? protectedEvidence = null)
     {
         if (snapshots.Length == 1)
         {
@@ -147,7 +148,7 @@ public static class LongRestPolicy
             return LongRestReason.DifferentScope;
         }
 
-        if (snapshots.Any(snapshot => snapshot.Sensitivity != ContentSensitivity.None || snapshot.HasSensitivityLabel))
+        if (protectedEvidence is null && snapshots.Any(snapshot => snapshot.Sensitivity != ContentSensitivity.None || snapshot.HasSensitivityLabel))
         {
             return LongRestReason.Protected;
         }
@@ -185,7 +186,7 @@ public static class LongRestPolicy
         return LongRestReason.None;
     }
 
-    private static Result<LongRestSnapshot[]> Prepare(LongRestRequest request, IReadOnlyList<LongRestSnapshot> snapshots)
+    internal static Result<LongRestSnapshot[]> Prepare(LongRestRequest request, IReadOnlyList<LongRestSnapshot> snapshots)
     {
         Result validRequest = ValidateRequest(request);
 
@@ -309,7 +310,7 @@ public static class LongRestPolicy
     private static bool ValidRelation(AnnalDependencyRelation relation) =>
         relation is AnnalDependencyRelation.Supersedes or AnnalDependencyRelation.DerivedFrom or AnnalDependencyRelation.Corroborates;
 
-    private static int OriginPriority(AnnalOrigin origin) => origin switch
+    internal static int OriginPriority(AnnalOrigin origin) => origin switch
     {
         AnnalOrigin.OperatorStated => 0,
 
@@ -322,7 +323,7 @@ public static class LongRestPolicy
         _ => throw new ArgumentOutOfRangeException(nameof(origin)),
     };
 
-    private static LongRestReceiptTarget Target(LongRestSnapshot snapshot) =>
+    internal static LongRestReceiptTarget Target(LongRestSnapshot snapshot) =>
         new(snapshot.MemoryId, snapshot.ClaimId, snapshot.VersionId, snapshot.Revision, snapshot.ContentHashFormat, snapshot.ContentHash);
 
     private static Result Invalid(string message) => Result.Failure(new Error("LongRest.InvalidRequest", message));

@@ -74,15 +74,17 @@ internal static class ArcanumInvocationContexts
 
         ArgumentNullException.ThrowIfNull(request);
 
+        ArcanumSettings? settings = httpContext.RequestServices?.GetService<IOptionsMonitor<ArcanumSettings>>()?.CurrentValue;
+
         bool campaignTurn = !InferenceContextBuilder.HasStatelessMessages(request)
-            && campaign is { IsCampaignBound: true }
+            && campaign is { } canonical && canonical != default
             && ResolveContextPolicy(httpContext) is CovenantContextPolicy.Default
-            && httpContext.RequestServices?.GetService<IOptionsMonitor<ArcanumSettings>>()
-                ?.CurrentValue.Features.CampaignRollups is true;
+            && (settings?.Features.LongRest is true
+                || (settings?.Features.CampaignRollups is true && canonical.IsCampaignBound));
 
         if (campaignTurn)
         {
-            // Campaign turns use their durable claim and authoritative native answer for replay.
+            // Maintenance turns use their durable claim and authoritative native answer for replay.
             // Mark before preparation can await: even an idle stream's first heartbeat seals headers.
             CovenantRequestFeatures.MarkProtectedResponse(httpContext);
         }

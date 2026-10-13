@@ -30,6 +30,7 @@ public sealed class HostedRuntimeRegistrationTests
         "DataRetentionSweepHostedService",
         "A2ASendingLeaseRenewer",
         "Loremaster",
+        "LongRestSweepHostedService",
         "ApprenticeService",
         "McpServerBootstrapHostedService",
         "ProviderHealthProbeService",

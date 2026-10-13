@@ -334,6 +334,100 @@ public sealed class ContinuousIntegrationWorkflowTests
             TimeSpan.FromSeconds(5));
     }
 
+    [Theory]
+    [InlineData("windows-suite", "win-x64")]
+    [InlineData("windows-arm64-suite", "win-arm64")]
+    public void Both_windows_lanes_execute_the_long_rest_contracts_with_retained_trx(string jobId, string rid)
+    {
+        WorkflowJob lane = Assert.Single(ContinuousIntegrationJobs(FindRepositoryRoot()), job => job.Id == jobId);
+
+        string[] steps = lane.Body.Replace("\r\n", "\n", StringComparison.Ordinal)
+            .Split("      - name:", StringSplitOptions.None);
+
+        string execution = Assert.Single(steps, static step => step.Contains("Test Long Rest", StringComparison.Ordinal));
+
+        Assert.Contains("dotnet test tests/RetroDownfall.Arcanum.Tests/RetroDownfall.Arcanum.Tests.csproj", execution, StringComparison.Ordinal);
+
+        Assert.Contains("-c Release --no-build --no-restore", execution, StringComparison.Ordinal);
+
+        Assert.Contains("--blame-hang-timeout 15m --blame-hang-dump-type none", execution, StringComparison.Ordinal);
+
+        Assert.Contains("Category!=Perf", execution, StringComparison.Ordinal);
+
+        Assert.Contains("Category!=HostedProducerAnalysis", execution, StringComparison.Ordinal);
+
+        (string Operator, string Name)[] entries = TestFilterEntry.Matches(execution)
+            .Select(static match => (match.Groups["operator"].Value, match.Groups["name"].Value))
+            .ToArray();
+
+        Assert.Equal(
+            new[]
+            {
+                ("~", "RetroDownfall.Arcanum.Tests.LongRest."),
+                ("~", "RetroDownfall.Arcanum.Tests.Intelligence.LongRest"),
+                ("=", "RetroDownfall.Arcanum.Tests.Platform.WindowsCiSurfaceTests.Windows_ci_lane_uses_the_expected_native_runtime_identifier"),
+            }.OrderBy(static entry => entry.Item2, StringComparer.Ordinal),
+            entries.OrderBy(static entry => entry.Name, StringComparer.Ordinal));
+
+        // Resolve the selection against the compiled tests, so an empty renamed pattern cannot
+        // produce a green lane that has stopped exercising discovery, recovery or provider contracts.
+        IReadOnlyList<TestMethodIdentity> methods = ArcanumTestMethods();
+
+        foreach ((string filterOperator, string name) in entries)
+        {
+            Assert.Contains(methods, method => filterOperator == "="
+                ? string.Equals(method.FullName, name, StringComparison.Ordinal)
+                : method.FullName.Contains(name, StringComparison.Ordinal));
+        }
+
+        Assert.Contains("--logger \"trx;LogFileName=long-rest-" + rid + ".trx\"", execution, StringComparison.Ordinal);
+
+        Assert.Contains("--results-directory .tmp/windows-long-rest-" + rid, execution, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("continue-on-error:", execution, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("        if:", execution, StringComparison.Ordinal);
+
+        string artifact = Assert.Single(steps, step => step.Contains("name: windows-long-rest-" + rid, StringComparison.Ordinal));
+
+        Assert.Contains("uses: actions/upload-artifact@", artifact, StringComparison.Ordinal);
+
+        Assert.Contains("if: always()", artifact, StringComparison.Ordinal);
+
+        Assert.Contains("path: .tmp/windows-long-rest-" + rid + "/", artifact, StringComparison.Ordinal);
+
+        Assert.Contains("if-no-files-found: error", artifact, StringComparison.Ordinal);
+
+        Assert.Contains("retention-days: 14", artifact, StringComparison.Ordinal);
+
+        Assert.True(Array.IndexOf(steps, artifact) > Array.IndexOf(steps, execution));
+    }
+
+    [Theory]
+    [InlineData("windows-suite", "win-x64")]
+    [InlineData("windows-arm64-suite", "win-arm64")]
+    public void Both_windows_lanes_require_the_sdk_and_test_process_to_be_native(string jobId, string rid)
+    {
+        WorkflowJob lane = Assert.Single(ContinuousIntegrationJobs(FindRepositoryRoot()), job => job.Id == jobId);
+
+        Assert.Contains("ARCANUM_EXPECTED_WINDOWS_RID: " + rid, lane.Body, StringComparison.Ordinal);
+
+        string[] steps = lane.Body.Replace("\r\n", "\n", StringComparison.Ordinal)
+            .Split("      - name:", StringSplitOptions.None);
+
+        string sdk = Assert.Single(steps, step => step.Contains("Assert the SDK is native to " + rid, StringComparison.Ordinal));
+
+        Assert.Contains("dotnet --info", sdk, StringComparison.Ordinal);
+
+        Assert.Contains("$match.Groups['rid'].Value -ne '" + rid + "'", sdk, StringComparison.Ordinal);
+
+        Assert.Contains(".tmp/windows-long-rest-" + rid + "/sdk-info.txt", sdk, StringComparison.Ordinal);
+
+        string build = Assert.Single(steps, static step => step.Contains("Restore and build Arcanum + Compendium", StringComparison.Ordinal));
+
+        Assert.True(Array.IndexOf(steps, sdk) < Array.IndexOf(steps, build));
+    }
+
     private const string ArcanumTestNamespacePrefix = "RetroDownfall.Arcanum.Tests.";
 
     private const string CompendiumTestNamespacePrefix = "RetroDownfall.Compendium.Ux.Tests.";

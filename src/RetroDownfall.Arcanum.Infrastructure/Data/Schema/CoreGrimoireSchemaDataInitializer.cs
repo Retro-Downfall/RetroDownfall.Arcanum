@@ -80,6 +80,8 @@ internal sealed class CoreGrimoireSchemaDataInitializer : IGrimoireSchemaDataIni
             .ConfigureAwait(false);
 
         await ConvergeLexiconSecureDeleteAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
+
+        await ConvergeLongRestSecureDeleteAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -505,6 +507,48 @@ internal sealed class CoreGrimoireSchemaDataInitializer : IGrimoireSchemaDataIni
         {
             throw new InvalidOperationException(
                 "The Lexicon FTS5 index did not report secure-delete after it was enabled.");
+        }
+    }
+
+    private static async Task ConvergeLongRestSecureDeleteAsync(
+        SqliteConnection connection, SqliteTransaction transaction, CancellationToken cancellationToken)
+    {
+        await using SqliteCommand command = connection.CreateCommand();
+
+        command.Transaction = transaction;
+
+        command.CommandText = "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'long_rest_clean_fts';";
+
+        if (Convert.ToInt64(await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false), CultureInfo.InvariantCulture) == 0)
+        {
+            return;
+        }
+
+        foreach (string table in new[] { "long_rest_clean_fts", "long_rest_protected_fts" })
+        {
+            command.CommandText = $"SELECT v FROM {table}_config WHERE k = 'secure-delete';";
+
+            object? prior = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+
+            bool enabled = prior is not null and not DBNull && Convert.ToInt64(prior, CultureInfo.InvariantCulture) == 1;
+
+            command.CommandText = $"INSERT INTO {table}({table}, rank) VALUES ('secure-delete', 1);";
+
+            _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+
+            if (!enabled)
+            {
+                command.CommandText = $"INSERT INTO {table}({table}) VALUES ('optimize');";
+
+                _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            }
+
+            command.CommandText = $"SELECT v FROM {table}_config WHERE k = 'secure-delete';";
+
+            if (Convert.ToInt64(await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false), CultureInfo.InvariantCulture) != 1)
+            {
+                throw new InvalidOperationException("The Long Rest index did not confirm secure-delete.");
+            }
         }
     }
 

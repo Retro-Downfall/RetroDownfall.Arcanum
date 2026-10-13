@@ -8,14 +8,20 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 PROJECT="$REPO_ROOT/src/RetroDownfall.Arcanum.Cli/RetroDownfall.Arcanum.Cli.csproj"
 CONFIGURATION=Release
 RID=""
+RETAIN_PUBLISH_DIR=""
+RETAIN_OWNED=0
+VERIFICATION_COMPLETE=0
 
 usage() {
   cat <<'EOF'
-Usage: verify-shipping-publish.sh [--rid <shipping-rid>] [--configuration <name>]
+Usage: verify-shipping-publish.sh [--rid <shipping-rid>] [--configuration <name>] [--retain-publish-dir <directory>]
 
 Publishes the self-contained Native AOT Arcanum host, fails on any publish warning, then delegates
 the exact published apphost to the reusable deterministic in-process provider stub gate.
 This CI-safe contract smoke never contacts Ollama or any other real inference model.
+With --retain-publish-dir, copies the validated whole publish closure to a fresh leaf under an
+existing parent. Reports retained success only after private temporary cleanup succeeds.
+Without this option, all publish contents are removed after verification.
 EOF
 }
 
@@ -29,6 +35,10 @@ while [[ $# -gt 0 ]]; do
       CONFIGURATION="${2:?}"
       shift 2
       ;;
+    --retain-publish-dir)
+      RETAIN_PUBLISH_DIR="${2:?--retain-publish-dir requires a directory}"
+      shift 2
+      ;;
     -h | --help)
       usage
       exit 0
@@ -40,6 +50,23 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+if [[ -n "$RETAIN_PUBLISH_DIR" ]]; then
+  RETAIN_PARENT="$(dirname "$RETAIN_PUBLISH_DIR")"
+  RETAIN_LEAF="$(basename "$RETAIN_PUBLISH_DIR")"
+
+  if ! RETAIN_PARENT="$(cd "$RETAIN_PARENT" && pwd -P)"; then
+    echo "error: --retain-publish-dir requires an existing parent directory" >&2
+    exit 2
+  fi
+
+  RETAIN_PUBLISH_DIR="${RETAIN_PARENT%/}/$RETAIN_LEAF"
+
+  if [[ -e "$RETAIN_PUBLISH_DIR" || -L "$RETAIN_PUBLISH_DIR" ]]; then
+    echo "error: --retain-publish-dir must name a fresh leaf: $RETAIN_PUBLISH_DIR" >&2
+    exit 2
+  fi
+fi
 
 for command in dotnet rg; do
   if ! command -v "$command" >/dev/null 2>&1; then
@@ -70,11 +97,11 @@ cleanup() {
 
   for attempt in 1 2 3; do
     if [[ ! -e "$WORK" ]]; then
-      exit "$final_status"
+      break
     fi
 
     if rm -rf "$WORK" && [[ ! -e "$WORK" ]]; then
-      exit "$final_status"
+      break
     fi
 
     if [[ "$attempt" -lt 3 ]]; then
@@ -82,15 +109,58 @@ cleanup() {
     fi
   done
 
-  echo "error: could not remove shipping verification temporary directory after three attempts: $WORK (original status: $original_status)" >&2
+  if [[ -e "$WORK" ]]; then
+    echo "error: could not remove shipping verification temporary directory after three attempts: $WORK (original status: $original_status)" >&2
 
-  if [[ "$original_status" -eq 0 ]]; then
+    if [[ "$final_status" -eq 0 ]]; then
+      final_status=1
+    fi
+  fi
+
+  if [[ "$VERIFICATION_COMPLETE" -ne 1 && "$final_status" -eq 0 ]]; then
     final_status=1
+  fi
+
+  if [[ "$RETAIN_OWNED" -eq 1 && "$final_status" -ne 0 ]]; then
+    for attempt in 1 2 3; do
+      if [[ ! -e "$RETAIN_PUBLISH_DIR" && ! -L "$RETAIN_PUBLISH_DIR" ]]; then
+        break
+      fi
+
+      if rm -rf "$RETAIN_PUBLISH_DIR" && [[ ! -e "$RETAIN_PUBLISH_DIR" && ! -L "$RETAIN_PUBLISH_DIR" ]]; then
+        break
+      fi
+
+      if [[ "$attempt" -lt 3 ]]; then
+        sleep "0.$attempt"
+      fi
+    done
+
+    if [[ -e "$RETAIN_PUBLISH_DIR" || -L "$RETAIN_PUBLISH_DIR" ]]; then
+      echo "error: could not remove owned retained publish after three attempts; unusable failed-run artifact: $RETAIN_PUBLISH_DIR (original status: $original_status)" >&2
+    fi
+  fi
+
+  if [[ "$final_status" -eq 0 ]]; then
+    if [[ "$RETAIN_OWNED" -eq 1 ]]; then
+      echo "==> Retained qualified publish: $RETAIN_PUBLISH_DIR"
+    fi
+
+    echo "==> Shipping publish is Native AOT, warning-free, and its first-session provider contract is healthy"
   fi
 
   exit "$final_status"
 }
 trap cleanup EXIT
+
+WORK_ROOT="$(cd "$WORK" && pwd -P)"
+
+case "$RETAIN_PUBLISH_DIR" in
+  "$WORK_ROOT" | "$WORK_ROOT"/*)
+    echo "error: --retain-publish-dir must be outside the private temporary tree: $RETAIN_PUBLISH_DIR" >&2
+    exit 2
+    ;;
+esac
 
 PUBLISH_DIR="$WORK/publish"
 PUBLISH_LOG="$WORK/publish.log"
@@ -139,7 +209,7 @@ require_property SelfContained true
 require_property PublishSingleFile false
 
 echo "==> Publishing warning-free Native AOT Arcanum ($RID)"
-dotnet publish "$PROJECT" \
+if dotnet publish "$PROJECT" \
   -c "$CONFIGURATION" \
   -r "$RID" \
   --self-contained true \
@@ -147,7 +217,11 @@ dotnet publish "$PROJECT" \
   --disable-build-servers \
   -m:1 \
   -o "$PUBLISH_DIR" \
-  2>&1 | tee "$PUBLISH_LOG"
+  2>&1 | tee "$PUBLISH_LOG"; then
+  :
+else
+  exit "$?"
+fi
 
 reject_warnings "$PUBLISH_LOG"
 
@@ -292,8 +366,29 @@ if [[ -n "$HOSTPOLICY_MATCH" ]]; then
 fi
 
 echo "==> Delegating the exact shipping publish to the reusable apphost gate"
-bash "$SCRIPT_DIR/verify-published-apphost.sh" \
+if bash "$SCRIPT_DIR/verify-published-apphost.sh" \
   --executable "$EXECUTABLE" \
-  --configuration "$CONFIGURATION"
+  --configuration "$CONFIGURATION"; then
+  :
+else
+  exit "$?"
+fi
 
-echo "==> Shipping publish is Native AOT, warning-free, and its first-session provider contract is healthy"
+if [[ -n "$RETAIN_PUBLISH_DIR" ]]; then
+  if mkdir "$RETAIN_PUBLISH_DIR"; then
+    RETAIN_OWNED=1
+  else
+    echo "error: could not create fresh retained publish directory: $RETAIN_PUBLISH_DIR" >&2
+    exit 1
+  fi
+
+  if cp -a "$PUBLISH_DIR/." "$RETAIN_PUBLISH_DIR/"; then
+    :
+  else
+    copy_status=$?
+    echo "error: could not retain the validated publish closure: $RETAIN_PUBLISH_DIR" >&2
+    exit "$copy_status"
+  fi
+fi
+
+VERIFICATION_COMPLETE=1

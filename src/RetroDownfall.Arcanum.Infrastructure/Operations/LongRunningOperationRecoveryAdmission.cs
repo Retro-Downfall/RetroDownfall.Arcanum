@@ -11,6 +11,7 @@ internal enum LongRunningRecoveryAdmissionKind : byte
     OwnerBoundOffline = 3,
     OwnerBoundAwaitingExactOwner = 4,
     UnsupportedCheckpointVersion = 5,
+    OrdinaryPerUnitExternalEffect = 6,
 }
 
 internal readonly record struct LongRunningRecoveryAdmissionDecision(
@@ -27,6 +28,8 @@ internal static class LongRunningOperationRecoveryAdmission
 
         LongRunningRecoveryAdmissionKind kind = (operation.Kind, operation.CheckpointVersion) switch
         {
+            (LongRunningOperationKinds.LongRestSweep, 0) => LongRunningRecoveryAdmissionKind.OrdinaryDbOnly,
+            (LongRunningOperationKinds.LongRestSweep, 1) => LongRunningRecoveryAdmissionKind.OrdinaryPerUnitExternalEffect,
             (LongRunningOperationKinds.Subagent, 0) => LongRunningRecoveryAdmissionKind.OrdinaryDbOnly,
             (LongRunningOperationKinds.BlobEncryptionMigration, 0 or 1) => LongRunningRecoveryAdmissionKind.OrdinaryExternalEffect,
             (LongRunningOperationKinds.BlobEncryptionKeyRotation, 0 or 1) => LongRunningRecoveryAdmissionKind.OrdinaryExternalEffect,

@@ -13,6 +13,39 @@ namespace RetroDownfall.Arcanum.Tests.Weave.Tapestry;
 /// </summary>
 public sealed class SphericalKMeansTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Actual_cluster_projection_preserves_members_centroids_and_ordinals(bool reverse)
+    {
+        string[] ids = ["z", "b", "a", "x", "d", "c"];
+
+        int[] assignments = [0, 2, 2, 0, 3, 3];
+
+        float[][] centroids = [[1, 0], [0, 0], [0, 1], [-1, 0]];
+
+        if (reverse)
+        {
+            Array.Reverse(ids);
+
+            Array.Reverse(assignments);
+        }
+
+        var method = typeof(SphericalKMeans).GetMethod("BuildClusters", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
+
+        var actual = (SphericalKMeansCluster[])method.Invoke(null, [ids, assignments, centroids])!;
+
+        Assert.Equal(new[] { new[] { "a", "b" }, new[] { "c", "d" }, new[] { "x", "z" } }, actual.Select(static item => item.MemberIds.ToArray()));
+
+        Assert.Equal(new[] { 0, 1, 2 }, actual.Select(static item => item.Ordinal));
+
+        Assert.Same(centroids[2], actual[0].Centroid);
+
+        Assert.Same(centroids[3], actual[1].Centroid);
+
+        Assert.Same(centroids[0], actual[2].Centroid);
+    }
+
     private static SphericalKMeansPoint Point(string id, params float[] vector) => new(id, vector);
 
     [Fact]

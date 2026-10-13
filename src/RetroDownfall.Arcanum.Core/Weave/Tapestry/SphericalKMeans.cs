@@ -756,7 +756,7 @@ public static class SphericalKMeans
             members[assignments[index]].Add(ids[index]);
         }
 
-        List<SphericalKMeansCluster> clusters = [];
+        List<(string FirstMember, SphericalKMeansCluster Cluster)> clusters = [];
 
         for (int index = 0; index < members.Length; index++)
         {
@@ -767,17 +767,17 @@ public static class SphericalKMeans
 
             members[index].Sort(StringComparer.Ordinal);
 
-            clusters.Add(new SphericalKMeansCluster(0, members[index], centroids[index]));
+            clusters.Add((members[index][0], new SphericalKMeansCluster(0, members[index], centroids[index])));
         }
 
         clusters.Sort(static (left, right) =>
-            StringComparer.Ordinal.Compare(left.MemberIds[0], right.MemberIds[0]));
+            StringComparer.Ordinal.Compare(left.FirstMember, right.FirstMember));
 
         SphericalKMeansCluster[] result = new SphericalKMeansCluster[clusters.Count];
 
         for (int index = 0; index < clusters.Count; index++)
         {
-            result[index] = clusters[index] with { Ordinal = index };
+            result[index] = clusters[index].Cluster with { Ordinal = index };
         }
 
         return result;

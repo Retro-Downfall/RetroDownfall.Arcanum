@@ -1,4 +1,5 @@
 using RetroDownfall.Arcanum.Core.Annals;
+using RetroDownfall.Arcanum.Infrastructure.Data.LongRest;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Data.Annals;
 
@@ -30,7 +31,8 @@ internal static class AnnalsErasurePlan
 
     /// <summary>Every claim belonging to one store, leaving the other store's untouched.</summary>
     internal static IReadOnlyList<AnnalsErasureStep> ForStore(AnnalSubjectStore subjectStore) =>
-        Build($"SubjectStoreCode = {(int)subjectStore}", (int)subjectStore);
+        Build($"SubjectStoreCode = {(int)subjectStore}", (int)subjectStore, sourcePredicate: "1 = 1",
+            generationIdQuery: "SELECT GenerationId FROM long_rest_discovery_generations");
 
     /// <summary>
     /// Every claim over the subject rows one query selects, which is how a Campaign-targeted reset
@@ -47,12 +49,15 @@ internal static class AnnalsErasurePlan
         Build(
             $"SubjectStoreCode = {(int)subjectStore} AND SubjectId IN ({subjectIdQuery})",
             (int)subjectStore,
-            headPredicate: $"ClaimId IN (SELECT ClaimId FROM annal_claims WHERE SubjectStoreCode = {(int)subjectStore} AND SubjectId IN ({subjectIdQuery}))");
+            headPredicate: $"ClaimId IN (SELECT ClaimId FROM annal_claims WHERE SubjectStoreCode = {(int)subjectStore} AND SubjectId IN ({subjectIdQuery}))",
+            sourcePredicate: $"MemoryId IN ({subjectIdQuery})");
 
     private static IReadOnlyList<AnnalsErasureStep> Build(
         string claimPredicate,
         int subjectStoreCode,
-        string? headPredicate = null)
+        string? headPredicate = null,
+        string? sourcePredicate = null,
+        string? generationIdQuery = null)
     {
 
         string claimScope = $"SELECT ClaimId FROM annal_claims WHERE {claimPredicate}";
@@ -66,8 +71,20 @@ internal static class AnnalsErasurePlan
 
         string receiptScope = $"SELECT ReceiptId FROM long_rest_receipts WHERE {receiptPredicate}";
 
+        string generationScope = generationIdQuery
+            ?? $"SELECT GenerationId FROM long_rest_discovery_leaves WHERE VersionId IN ({versionScope}) OR {sourcePredicate}";
+
         return
         [
+            .. subjectStoreCode == (int)AnnalSubjectStore.Saga
+                ? (AnnalsErasureStep[])[.. LongRestLifecycle.GenerationSteps(generationScope),
+                    new AnnalsErasureStep("long_rest_sources", sourcePredicate!, RequiredFromCoreVersion: 18)]
+                : [],
+
+            new("long_rest_protected_receipt_inputs", $"ReceiptId IN ({receiptScope})", RequiredFromCoreVersion: 18),
+
+            new("long_rest_protected_receipt_evidence", $"ReceiptId IN ({receiptScope})", RequiredFromCoreVersion: 18),
+
             // Delete the whole receipt while all input coordinates are still available. Its child
             // cascades are followed by explicit orphan cleanup, so erasure also works when a caller
             // has not enabled foreign keys and never leaves a partial immutable manifest behind.

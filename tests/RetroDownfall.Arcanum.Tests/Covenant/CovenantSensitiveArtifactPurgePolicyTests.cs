@@ -38,6 +38,36 @@ public sealed class CovenantSensitiveArtifactPurgePolicyTests
         Assert.Contains("checkpoint", result.Value.Policy, StringComparison.OrdinalIgnoreCase);
     }
 
+    [Fact]
+    public void Long_rest_discovery_uses_atomic_derived_purge_without_canonical_evidence_mutation()
+    {
+        Result<CovenantSensitiveArtifactPurgeRule> result = CovenantSensitiveArtifactPurgePolicy.Resolve(SensitiveArtifactKind.LongRestDiscovery);
+
+        Assert.True(result.IsSuccess, result.Error.Message);
+
+        CovenantSensitiveArtifactPurgeRule rule = result.Value;
+
+        Assert.Equal(16, rule.Code);
+
+        Assert.Equal(CovenantArtifactPurgeExecutor.DatabaseTransaction, rule.Executor);
+
+        Assert.True(rule.DeletesDerivedProjections);
+
+        Assert.True(rule.RemovesLabelWithContent);
+
+        Assert.False(rule.RepairsCurrentPointer);
+
+        Assert.False(rule.RepairsSessionSensitivityState);
+
+        Assert.False(rule.AppendsErasureReceipt);
+
+        Assert.False(rule.RequiresDurableTerminalEvidenceFirst);
+
+        Assert.False(rule.PreservesFinalizationAndClaimEvidence);
+
+        Assert.False(rule.PreservesReplayDenialEvidence);
+    }
+
     [Theory]
     [InlineData(SensitiveArtifactKind.AssistantEntry, 1)]
     [InlineData(SensitiveArtifactKind.TurnEvidence, 2)]
@@ -54,6 +84,7 @@ public sealed class CovenantSensitiveArtifactPurgePolicyTests
     [InlineData(SensitiveArtifactKind.IdempotencyClaim, 13)]
     [InlineData(SensitiveArtifactKind.CampaignRollup, 14)]
     [InlineData(SensitiveArtifactKind.CampaignContribution, 15)]
+    [InlineData(SensitiveArtifactKind.LongRestDiscovery, 16)]
     public void Purge_registry_has_one_literal_rule_for_every_artifact_kind(
         SensitiveArtifactKind kind,
         byte code)
@@ -118,7 +149,7 @@ public sealed class CovenantSensitiveArtifactPurgePolicyTests
     public void Purge_registry_is_exhaustive_over_all_kinds_and_rejects_anything_else()
     {
 
-        Assert.Equal(15, CovenantSensitiveArtifactPurgePolicy.All.Count);
+        Assert.Equal(16, CovenantSensitiveArtifactPurgePolicy.All.Count);
 
         Assert.Equal(
             Enum.GetValues<SensitiveArtifactKind>().OrderBy(static kind => (byte)kind),
@@ -126,10 +157,10 @@ public sealed class CovenantSensitiveArtifactPurgePolicyTests
 
         Assert.False(CovenantSensitiveArtifactPurgePolicy.IsCovered((SensitiveArtifactKind)0));
 
-        Assert.False(CovenantSensitiveArtifactPurgePolicy.IsCovered((SensitiveArtifactKind)16));
+        Assert.False(CovenantSensitiveArtifactPurgePolicy.IsCovered((SensitiveArtifactKind)17));
 
         Result<CovenantSensitiveArtifactPurgeRule> unknown =
-            CovenantSensitiveArtifactPurgePolicy.Resolve((SensitiveArtifactKind)16);
+            CovenantSensitiveArtifactPurgePolicy.Resolve((SensitiveArtifactKind)17);
 
         Assert.True(unknown.IsFailure);
 

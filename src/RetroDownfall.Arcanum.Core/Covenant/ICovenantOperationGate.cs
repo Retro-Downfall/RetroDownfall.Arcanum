@@ -35,6 +35,10 @@ public interface ICovenantOperationGate
         CanonicalCampaignContext campaign,
         CancellationToken cancellationToken);
 
+    /// <summary>Validates the exact still-live borrowed wrapper issued by this gate.</summary>
+    ValueTask<Result> ValidateTurnLeaseAsync(CovenantTurnLease lease, CancellationToken cancellationToken) =>
+        ValueTask.FromResult(Result.Failure(new Error(ErrorCodes.Covenant.ForbiddenAuthority, "This gate cannot verify borrowed turn ownership.")));
+
     ValueTask<Result<CovenantMcpLease>> AcquireMcpAsync(
         CovenantOperationScope scope,
         CancellationToken cancellationToken);

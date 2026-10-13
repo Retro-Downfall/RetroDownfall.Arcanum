@@ -169,6 +169,75 @@ public sealed class PidFileServiceTests : IDisposable
         bool[] outcomes = await Task.WhenAll(claims);
 
         Assert.Single(outcomes, static claimed => claimed);
+
+        Assert.Equal(global::System.Environment.ProcessId.ToString(CultureInfo.InvariantCulture), (await File.ReadAllTextAsync(PidPath)).Trim());
+
+        Assert.Empty(Directory.EnumerateFiles(Path.GetDirectoryName(PidPath)!, "*.claim"));
+    }
+
+    [Fact]
+    public async Task A_refused_claim_leaves_the_live_owner_and_no_private_publication_file()
+    {
+        WriteOwner(4242, writtenAt: DateTimeOffset.UtcNow);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => Service(LiveSince(DateTimeOffset.UtcNow.AddHours(-1))).StartAsync(CancellationToken.None));
+
+        Assert.Equal("4242", (await File.ReadAllTextAsync(PidPath)).Trim());
+
+        Assert.Empty(Directory.EnumerateFiles(Path.GetDirectoryName(PidPath)!, "*.claim"));
+    }
+
+    [Fact]
+    public async Task A_cancelled_fresh_claim_waiting_for_the_gate_does_not_publish_or_remove_the_gate()
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(PidPath)!);
+
+        using FileStream held = new(PidPath + PidFileService.ReplacementGateSuffix, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
+
+        using CancellationTokenSource cancelled = new();
+
+        Task start = Service(LiveSince(DateTimeOffset.UtcNow.AddHours(-1))).StartAsync(cancelled.Token);
+
+        Assert.False(start.IsCompleted);
+
+        cancelled.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => start);
+
+        Assert.False(File.Exists(PidPath));
+
+        Assert.True(File.Exists(PidPath + PidFileService.ReplacementGateSuffix));
+
+        Assert.Empty(Directory.EnumerateFiles(Path.GetDirectoryName(PidPath)!, "*.claim"));
+    }
+
+    [Fact]
+    public async Task A_precancelled_fresh_claim_does_not_publish()
+    {
+        using CancellationTokenSource cancelled = new();
+
+        cancelled.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => Service(LiveSince(DateTimeOffset.UtcNow.AddHours(-1))).StartAsync(cancelled.Token));
+
+        Assert.False(File.Exists(PidPath));
+
+        Assert.Empty(Directory.EnumerateFiles(Path.GetDirectoryName(PidPath)!, "*.claim"));
+    }
+
+    [SkippableFact]
+    [UnsupportedOSPlatform("windows")]
+    public async Task A_published_claim_is_owner_only()
+    {
+        Skip.If(OperatingSystem.IsWindows(), "Uses Unix file permissions.");
+
+        await Service(LiveSince(DateTimeOffset.UtcNow.AddHours(-1))).StartAsync(CancellationToken.None);
+
+        Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite, File.GetUnixFileMode(PidPath));
+
+        Assert.Empty(Directory.EnumerateFiles(Path.GetDirectoryName(PidPath)!, "*.claim"));
     }
 
     [Fact]
@@ -286,27 +355,13 @@ public sealed class PidFileServiceTests : IDisposable
             FileAccess.ReadWrite,
             FileShare.None);
 
-        using ManualResetEventSlim lookedAgain = new();
-
-        int lookUps = 0;
-
-        PidFileService service = Service(
-            _ =>
-            {
-                // The second look means the first attempt found the gate busy and waited.
-                if (Interlocked.Increment(ref lookUps) >= 2)
-                {
-                    lookedAgain.Set();
-                }
-
-                return null;
-            });
+        PidFileService service = Service(static _ => null);
 
         Task start = service.StartAsync(CancellationToken.None);
 
-        Assert.True(lookedAgain.Wait(TimeSpan.FromSeconds(30)));
-
         Assert.False(start.IsCompleted, "The starter replaced the file while another held the gate.");
+
+        Assert.Equal("4242", (await File.ReadAllTextAsync(PidPath)).Trim());
 
         await held.DisposeAsync();
 

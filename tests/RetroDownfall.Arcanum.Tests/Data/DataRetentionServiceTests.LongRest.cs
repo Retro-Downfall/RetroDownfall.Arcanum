@@ -27,7 +27,9 @@ public sealed partial class DataRetentionServiceTests
 
         DataRetentionPlan plan = await service.PlanAsync(request);
 
-        Assert.Equal(2L, plan.DerivedRecords);
+        Assert.Equal(1, await CountTableRowsAsync("long_rest_sources"));
+
+        Assert.Equal(3L, plan.DerivedRecords);
 
         Result<DataRetentionApplyResult> applied = await service.ApplyAsync(new(request, plan.PlanId));
 
@@ -36,6 +38,8 @@ public sealed partial class DataRetentionServiceTests
         Assert.Equal(plan.DerivedRecords, applied.Value.DerivedRecordsDeleted);
 
         Assert.Equal(0, await CountTableRowsAsync("annal_claims"));
+
+        Assert.Equal(0, await CountTableRowsAsync("long_rest_sources"));
     }
 
     [SkippableTheory]
@@ -82,11 +86,13 @@ public sealed partial class DataRetentionServiceTests
 
         long selected = bothAged ? 2 : 1;
 
-        // Existing Saga inventory counts each embedding and claim. The transformation adds one
+        Assert.Equal(3, await CountTableRowsAsync("long_rest_sources"));
+
+        // Existing Saga inventory counts each embedding, claim, and source identity. The transformation adds one
         // receipt, two input snapshots, and (when applied) one exact-version suppression.
         Assert.Equal(selected, plan.Rows);
 
-        Assert.Equal((selected * 2) + 3 + (appliedReceipt ? 1 : 0), plan.DerivedRecords);
+        Assert.Equal((selected * 3) + 3 + (appliedReceipt ? 1 : 0), plan.DerivedRecords);
 
         Result<DataRetentionApplyResult> applied = await service.ApplyAsync(new(request, plan.PlanId));
 
@@ -103,6 +109,12 @@ public sealed partial class DataRetentionServiceTests
         Assert.Equal(0, await CountTableRowsAsync("long_rest_suppressions"));
 
         Assert.Equal(bothAged ? 1 : 2, await CountTableRowsAsync("saga_memories"));
+
+        Assert.Equal(0, await CampaignScalarCountAsync($"SELECT COUNT(*) FROM long_rest_sources WHERE MemoryId = '{source}';"));
+
+        Assert.Equal(1, await CampaignScalarCountAsync($"SELECT COUNT(*) FROM long_rest_sources WHERE MemoryId = '{bystander}';"));
+
+        Assert.Equal(bothAged ? 0 : 1, await CampaignScalarCountAsync($"SELECT COUNT(*) FROM long_rest_sources WHERE MemoryId = '{survivor}';"));
 
         Assert.Equal(1, await CountAnnalClaimsAsync(1, bystander));
 

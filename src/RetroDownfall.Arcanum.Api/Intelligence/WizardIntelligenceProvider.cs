@@ -1692,11 +1692,7 @@ public sealed partial class WizardIntelligenceProvider(
 
         CampaignRollupTurnSnapshot? campaignTurn = null;
 
-        if ((settings.Value.ResolveIntelligence().EnableCampaignRollups
-            && invocationContext.Surface is ArcanumExecutionSurface.SessionBackedOperatorTurn
-            && invocationContext.ContextPolicy is not CovenantContextPolicy.None
-            && invocationContext.Campaign is { IsCampaignBound: true }
-            && !InferenceContextBuilder.HasStatelessMessages(request))
+        if (CampaignRollupTurnPreparer.IsLiveEligible(settings.Value, request, invocationContext)
             || (TurnIdempotencyAmbient.RequestIdentity is not null && campaignRollups is not null))
         {
             if (campaignRollups is null || covenantScope is null)

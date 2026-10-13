@@ -445,7 +445,7 @@ public sealed class CampaignRollupStoreTests
 
             await database.InstallCoreObjectsAsync([
                 "Campaigns", "Sessions", "Entries", "session_campaign_bindings", "artifact_sensitivity", "session_sensitivity_state", "assistant_entry_finalizations", "session_turn_claims",
-                "artifact_sensitivity_guard_delete", "artifact_sensitivity_guard_update",
+                .. CovenantSchemaScratchDatabase.ArtifactSensitivityDeleteGuardObjects, "artifact_sensitivity_guard_update",
             ], CancellationToken.None);
 
             foreach (GrimoireSchemaObject item in GrimoireSchemaCatalog.CoreObjects.Where(item => item.Name.StartsWith("campaign_", StringComparison.Ordinal)))

@@ -14,17 +14,26 @@ public sealed partial class ModelTokenEstimator
         ArgumentNullException.ThrowIfNull(provider);
         ArgumentNullException.ThrowIfNull(payload);
 
+        return EstimateClosedChat(provider, canonicalModel, payload.SystemPrompt, payload.UserPrompt,
+            [CampaignMaintenancePayload.SchemaName, CampaignMaintenancePayload.SchemaDescription, CampaignMaintenancePayload.SchemaJson],
+            CampaignMaintenancePayload.MaxOutputTokens) with
+        {
+            PayloadFingerprint = CampaignMaintenancePayloadFingerprint.Compute(payload),
+        };
+    }
+
+    private ContextTokenBreakdown EstimateClosedChat(ProviderSettings provider, string canonicalModel,
+        string systemPrompt, string userPrompt, string[] schemaParts, int maxOutputTokens)
+    {
         ResolvedModelTokenizationProfile profile = ResolveUsableProfile(ResolveProfile(provider, canonicalModel), out _);
         InferenceTextCounter counter = _tokenizerResolver.Resolve(profile.TokenizerId).Counter;
         Dictionary<ContextTokenSource, MutableEstimate> estimates = [];
 
-        TokenEstimate system = CountCampaignText(payload.SystemPrompt, profile, counter);
-        TokenEstimate user = CountCampaignText(payload.UserPrompt, profile, counter);
+        TokenEstimate system = CountCampaignText(systemPrompt, profile, counter);
+        TokenEstimate user = CountCampaignText(userPrompt, profile, counter);
 
         Add(estimates, ContextTokenSource.SystemCodexSpell, system.TokenCount, system.Classification, system.Confidence);
         Add(estimates, ContextTokenSource.CurrentPrompt, user.TokenCount, user.Classification, user.Confidence);
-
-        string[] schemaParts = [CampaignMaintenancePayload.SchemaName, CampaignMaintenancePayload.SchemaDescription, CampaignMaintenancePayload.SchemaJson];
 
         foreach (string part in schemaParts)
         {
@@ -42,7 +51,7 @@ public sealed partial class ModelTokenEstimator
             : PercentageCeiling(SumInput(estimates), profile.SafetyMarginPercent);
 
         Add(estimates, ContextTokenSource.SafetyMargin, safetyMargin, TokenEstimateClassification.Estimated, profile.Confidence);
-        Add(estimates, ContextTokenSource.ReservedAnswer, CampaignMaintenancePayload.MaxOutputTokens, TokenEstimateClassification.Reserved, 1d);
+        Add(estimates, ContextTokenSource.ReservedAnswer, maxOutputTokens, TokenEstimateClassification.Reserved, 1d);
         Add(estimates, ContextTokenSource.ReservedReasoning, 0, TokenEstimateClassification.Reserved, 1d);
 
         List<ContextTokenComponent> components = [];
@@ -74,13 +83,12 @@ public sealed partial class ModelTokenEstimator
             Components = components,
             MessageTokenCounts = [SaturatingAdd(system.TokenCount, profile.PerMessageOverheadTokens), SaturatingAdd(user.TokenCount, profile.PerMessageOverheadTokens)],
             InputTokens = input,
-            ReservedTokens = CampaignMaintenancePayload.MaxOutputTokens,
-            ReservedAnswerTokens = CampaignMaintenancePayload.MaxOutputTokens,
+            ReservedTokens = maxOutputTokens,
+            ReservedAnswerTokens = maxOutputTokens,
             ReservedReasoningTokens = 0,
-            TotalTokens = SaturatingAdd(input, CampaignMaintenancePayload.MaxOutputTokens),
+            TotalTokens = SaturatingAdd(input, maxOutputTokens),
             OverallClassification = unknown ? TokenEstimateClassification.Unknown : estimated ? TokenEstimateClassification.Estimated : TokenEstimateClassification.Exact,
             SafetyMarginTokens = safetyMargin,
-            PayloadFingerprint = CampaignMaintenancePayloadFingerprint.Compute(payload),
         };
     }
 

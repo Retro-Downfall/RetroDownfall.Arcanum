@@ -26,6 +26,34 @@ public sealed class GenericSettingsPreservationTests : IDisposable
     }
 
     [Fact]
+    public async Task Editing_long_rest_gate_preserves_its_independent_opt_in()
+    {
+        await SeedAsync(new ArcanumSettings());
+
+        ConfigurationViewModel vm = CreateViewModel();
+
+        await WaitForLoadAsync(vm);
+
+        GenericSettingFieldViewModel gate = Field(vm, ConfigSection.Features, "features.longRest");
+
+        Assert.False(gate.BoolValue);
+
+        gate.BoolValue = true;
+
+        using JsonDocument published = JsonDocument.Parse(JsonSerializer.Serialize(vm.BuildSettings(), ConfigurationJsonContext.Default.ArcanumSettings));
+
+        Assert.True(published.RootElement.GetProperty("features").GetProperty("longRest").GetBoolean());
+
+        Assert.False(vm.BuildSettings().Features.CampaignRollups);
+
+        gate.BoolValue = false;
+
+        using JsonDocument disabled = JsonDocument.Parse(JsonSerializer.Serialize(vm.BuildSettings(), ConfigurationJsonContext.Default.ArcanumSettings));
+
+        Assert.False(disabled.RootElement.GetProperty("features").GetProperty("longRest").GetBoolean());
+    }
+
+    [Fact]
     public async Task Editing_campaign_rollup_gate_and_retention_fields_survives_settings_publication()
     {
         await SeedAsync(new ArcanumSettings());

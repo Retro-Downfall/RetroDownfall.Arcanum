@@ -1,5 +1,7 @@
 using System.Reflection;
 using RetroDownfall.Arcanum.Core.Annals;
+using RetroDownfall.Arcanum.Core.LongRest;
+using RetroDownfall.Arcanum.Api.Intelligence;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Logging;
 using RetroDownfall.Arcanum.Core.Storage;
@@ -30,6 +32,14 @@ public sealed class CovenantDerivedOutputInventoryTests
     /// </remarks>
     private static readonly Type[] GovernedContracts =
     [
+        typeof(ILongRestDiscoveryStore),
+
+        typeof(ILongRestSweepStore),
+
+        typeof(ILongRestMaintenance),
+
+        typeof(ILongRestProvider),
+
         typeof(IArtifactSensitivityLedger),
 
         typeof(ISessionSummaryArtifactStore),
@@ -42,6 +52,8 @@ public sealed class CovenantDerivedOutputInventoryTests
     private static readonly Assembly[] ShippingAssemblies =
     [
         typeof(CovenantDerivedOutputInventory).Assembly,
+
+        typeof(LongRestMaintenance).Assembly,
 
         typeof(ArtifactSensitivityLedger).Assembly,
     ];

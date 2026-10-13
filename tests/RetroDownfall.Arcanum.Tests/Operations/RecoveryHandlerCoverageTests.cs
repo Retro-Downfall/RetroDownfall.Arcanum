@@ -10,6 +10,7 @@ using RetroDownfall.Arcanum.Infrastructure.Backup;
 using RetroDownfall.Arcanum.Infrastructure.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Operations;
+using RetroDownfall.Arcanum.Infrastructure.Operations.LongRest;
 using RetroDownfall.Arcanum.Infrastructure.Storage;
 using RetroDownfall.Arcanum.Tests.Support;
 
@@ -24,7 +25,7 @@ namespace RetroDownfall.Arcanum.Tests.Operations;
 /// provider, so it catches both halves of the failure mode (a kind nobody handles, and a handler
 /// that exists but was never registered) without constructing a Grimoire.
 /// </remarks>
-public sealed class RecoveryHandlerCoverageTests
+public sealed partial class RecoveryHandlerCoverageTests
 {
     private static readonly Type[] SelfSettlingHandlers =
     [
@@ -40,6 +41,7 @@ public sealed class RecoveryHandlerCoverageTests
     private static readonly IReadOnlyDictionary<string, Type> ExpectedHandlers =
         new Dictionary<string, Type>(StringComparer.Ordinal)
         {
+            [LongRunningOperationKinds.LongRestSweep] = typeof(LongRestSweepRecoveryHandler),
             [LongRunningOperationKinds.Subagent] = typeof(SubagentRecoveryHandler),
             [LongRunningOperationKinds.BlobEncryptionMigration] = typeof(BlobEncryptionMigrationRecoveryHandler),
             [LongRunningOperationKinds.BlobEncryptionKeyRotation] = typeof(BlobEncryptionKeyRotationRecoveryHandler),
@@ -62,6 +64,8 @@ public sealed class RecoveryHandlerCoverageTests
     private static readonly IReadOnlyDictionary<string, string> ProductionProducers =
         new Dictionary<string, string>(StringComparer.Ordinal)
         {
+            [LongRunningOperationKinds.LongRestSweep] =
+                "src/RetroDownfall.Arcanum.Infrastructure/Operations/LongRest/LongRestSweepCoordinator.cs",
             [LongRunningOperationKinds.Subagent] =
                 "src/RetroDownfall.Arcanum.Api/Intelligence/Subagents/SubagentRunner.cs",
             [LongRunningOperationKinds.BlobEncryptionMigration] =
@@ -127,40 +131,72 @@ public sealed class RecoveryHandlerCoverageTests
             .Single(field => field.IsLiteral && string.Equals((string?)field.GetRawConstantValue(), kind, StringComparison.Ordinal))
             .Name;
 
-    private static IReadOnlyList<Type> RegisteredHandlerTypes()
+    private static IReadOnlyList<Type> RegisteredHandlerTypes(ServiceCollection? services = null)
     {
-        IConfiguration configuration = new ConfigurationBuilder().Build();
-        ServiceCollection services = [];
+        services ??= RealServices();
 
-        // AddArcanumApiServices composes Infrastructure itself; this is the serve host's real graph.
-        _ = services.AddArcanumApiServices(configuration);
+        List<Type> registered =
+        [
+            .. services
+                .Where(static descriptor => !descriptor.IsKeyedService
+                    && descriptor.ServiceType == typeof(ILongRunningOperationRecoveryHandler))
+                .Select(static descriptor => descriptor.ImplementationType)
+                .OfType<Type>(),
+        ];
 
-        Type[] direct = services
-            .Where(static descriptor =>
-                descriptor.ServiceType == typeof(ILongRunningOperationRecoveryHandler))
-            .Select(static descriptor => descriptor.ImplementationType)
-            .OfType<Type>()
-            .ToArray();
+        foreach (Type handlerType in ExpectedHandlers.Values)
+        {
+            if (!HasSingleScopedConcreteHandler(services, handlerType))
+            {
+                continue;
+            }
 
-        return [.. direct, .. SelfSettlingHandlers];
+            object concrete = RuntimeHelpers.GetUninitializedObject(handlerType);
+
+            object[] matches = InvokeAliases(
+                services,
+                typeof(ILongRunningOperationRecoveryHandler),
+                new AliasProbeProvider(handlerType, concrete));
+
+            if (matches.Length == 1 && ReferenceEquals(concrete, matches[0]))
+            {
+                registered.Add(handlerType);
+            }
+        }
+
+        return registered;
     }
 
     /// <summary>
-    /// Every registered <see cref="ILongRunningOperationRecoveryHandler"/> descriptor beyond one per
-    /// expected kind, closed-generic or factory alike. A factory registration's
-    /// <see cref="ServiceDescriptor.ImplementationType"/> is null, so grouping by that property — the
-    /// way <see cref="RegisteredHandlerTypes"/> projects it — silently drops a factory-registered
-    /// duplicate from the inventory; counting descriptors for the service type instead is what keeps
-    /// one visible regardless of how it was registered.
+    /// Count unkeyed descriptors regardless of implementation type/factory, and separately reject
+    /// multiple keyed descriptors for any one key. Keyed aliases cannot hide an unkeyed duplicate.
     /// </summary>
     private static string[] DuplicateHandlerRegistrations(IServiceCollection services)
     {
-        int registeredDescriptors = services.Count(
-            static descriptor => descriptor.ServiceType == typeof(ILongRunningOperationRecoveryHandler));
+        ServiceDescriptor[] handlers = services
+            .Where(static descriptor => descriptor.ServiceType == typeof(ILongRunningOperationRecoveryHandler))
+            .ToArray();
 
-        return registeredDescriptors > ExpectedHandlers.Count
-            ? [$"{registeredDescriptors} handler descriptors are registered for {ExpectedHandlers.Count} expected kinds."]
-            : [];
+        int unkeyedCount = handlers.Count(static descriptor => !descriptor.IsKeyedService);
+
+        List<string> failures = [];
+
+        if (unkeyedCount > ExpectedHandlers.Count)
+        {
+            failures.Add($"{unkeyedCount} unkeyed handler descriptors are registered for {ExpectedHandlers.Count} expected kinds.");
+        }
+
+        foreach (IGrouping<object?, ServiceDescriptor> group in handlers
+            .Where(static descriptor => descriptor.IsKeyedService)
+            .GroupBy(static descriptor => descriptor.ServiceKey))
+        {
+            if (group.Count() > 1)
+            {
+                failures.Add($"{group.Count()} keyed handler descriptors are registered for '{group.Key}'.");
+            }
+        }
+
+        return failures.ToArray();
     }
 
     [Fact]
@@ -275,7 +311,7 @@ public sealed class RecoveryHandlerCoverageTests
         foreach (Type handlerType in SelfSettlingHandlers)
         {
             ServiceDescriptor[] concrete = services
-                .Where(descriptor => descriptor.ServiceType == handlerType)
+                .Where(descriptor => !descriptor.IsKeyedService && descriptor.ServiceType == handlerType)
                 .ToArray();
 
             if (concrete.Length != 1
@@ -322,7 +358,8 @@ public sealed class RecoveryHandlerCoverageTests
         Type serviceType,
         IServiceProvider probe) =>
         services
-            .Where(descriptor => descriptor.ServiceType == serviceType
+            .Where(descriptor => !descriptor.IsKeyedService
+                && descriptor.ServiceType == serviceType
                 && descriptor.Lifetime == ServiceLifetime.Scoped
                 && descriptor.ImplementationFactory is not null)
             .Select(descriptor =>

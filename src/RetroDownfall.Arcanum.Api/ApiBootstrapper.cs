@@ -559,6 +559,17 @@ public static class ApiBootstrapper
             static client => client.Timeout = Timeout.InfiniteTimeSpan)
             .ConfigurePrimaryHttpMessageHandler(static () => OutboundUrlGuard.CreateProviderEgressHandler());
 
+        services.AddSingleton(sp => new LongRestConfigurationEpoch(sp.GetRequiredService<IOptionsMonitor<ArcanumSettings>>(),
+            sp.GetRequiredService<RetroDownfall.Arcanum.Infrastructure.Data.Covenant.CovenantProcessBootIdentity>().BootId));
+
+        services.AddSingleton<RetroDownfall.Arcanum.Core.LongRest.ILongRestConfigurationProvider>(sp => sp.GetRequiredService<LongRestConfigurationEpoch>());
+
+        services.AddScoped<LongRestProviderClientFactory>();
+
+        services.AddScoped<RetroDownfall.Arcanum.Core.LongRest.ILongRestProvider, LongRestProvider>();
+
+        services.AddScoped<RetroDownfall.Arcanum.Core.LongRest.ILongRestMaintenance, LongRestMaintenance>();
+
         services.AddScoped<ICampaignRollupProviderClientFactory, CampaignRollupProviderClientFactory>();
 
         services.AddScoped<ICampaignRollupMaintenance, CampaignRollupMaintenance>();

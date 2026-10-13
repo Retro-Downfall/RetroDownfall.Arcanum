@@ -447,7 +447,7 @@ public sealed class CovenantManagedFileErasureKernelTests
                         // The guards are the contract: they own the closed edge list, the
                         // authorization selection, and the label-before-producer-before-work-item
                         // ordering. Installing the tables without them would exercise C# alone.
-                        "artifact_sensitivity_guard_delete",
+                        .. CovenantSchemaScratchDatabase.ArtifactSensitivityDeleteGuardObjects,
                         "artifact_sensitivity_guard_update",
                         "managed_file_write_intents_guard_insert",
                         "managed_file_write_intents_guard_update",

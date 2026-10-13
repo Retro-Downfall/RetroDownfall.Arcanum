@@ -25,6 +25,8 @@ internal enum GrimoirePathAuthority : byte
     NativeRuntimeValidation = 8,
 
     NotGrimoire = 9,
+
+    ClosedCommittedRestore = 10,
 }
 
 internal enum GrimoireAcquisitionKind : byte
@@ -44,6 +46,8 @@ internal enum GrimoireAcquisitionKind : byte
     DesignTimeOrNativeValidation = 8,
 
     NonGrimoireCandidate = 9,
+
+    ClosedRestoreVerification = 10,
 }
 
 internal enum AcquisitionConstructKind : byte
@@ -110,6 +114,8 @@ internal enum ExactNonServingProofKind : byte
     NativeRuntimeValidation = 6,
 
     NegativeNonDatabaseProof = 7,
+
+    ExactClosedRestoreOwner = 8,
 }
 
 internal enum InventoryFailureCode : byte
@@ -1047,6 +1053,167 @@ internal static class GrimoireConnectionAcquisitionScanner
     internal static IReadOnlyList<GrimoireAcquisitionCatalogEntry> Catalog() =>
         BindProofEvidence(
         [
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Data/LongRest/LongRestDiscoveryStore.CompletedCheckpoint.cs", "LongRestDiscoveryStore", "ReconcileCompletedCheckpointAsync(7)", AcquisitionConstructKind.ProviderOpen, "OpenAsync", 1, "OpenAsync(ct)"),
+            GrimoirePathAuthority.LiveGrimoire,
+            GrimoireAcquisitionKind.ServingRawOrdinary,
+            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
+            null),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Data/LongRest/LongRestDiscoveryStore.Hierarchy.cs", "LongRestDiscoveryStore", "ReadNextFoldAsync(3)", AcquisitionConstructKind.ProviderOpen, "OpenAsync", 1, "OpenAsync(cancellationToken)"),
+            GrimoirePathAuthority.LiveGrimoire,
+            GrimoireAcquisitionKind.ServingRawOrdinary,
+            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
+            null),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Data/LongRest/LongRestDiscoveryStore.Hierarchy.cs", "LongRestDiscoveryStore", "PublishAsync(5)", AcquisitionConstructKind.ProviderOpen, "OpenAsync", 1, "OpenAsync(cancellationToken)"),
+            GrimoirePathAuthority.LiveGrimoire,
+            GrimoireAcquisitionKind.ServingRawOrdinary,
+            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
+            null),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Data/LongRest/LongRestDiscoveryStore.cs", "LongRestDiscoveryStore", "StartOrResumeAsync(5)", AcquisitionConstructKind.ProviderOpen, "OpenAsync", 1, "OpenAsync(cancellationToken)"),
+            GrimoirePathAuthority.LiveGrimoire,
+            GrimoireAcquisitionKind.ServingRawOrdinary,
+            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
+            null),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Data/LongRest/LongRestDiscoveryStore.cs", "LongRestDiscoveryStore", "OpenAsync(1)", AcquisitionConstructKind.ProviderOpen, "db.Database.OpenConnectionAsync", 1, "db.Database.OpenConnectionAsync(cancellationToken)"),
+            GrimoirePathAuthority.LiveGrimoire,
+            GrimoireAcquisitionKind.ServingRawOrdinary,
+            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
+            null),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Data/LongRest/LongRestLiveFenceReader.cs", "LongRestLiveFenceReader", "CaptureAsync(4)", AcquisitionConstructKind.ProviderOpen, "db.Database.OpenConnectionAsync", 1, "db.Database.OpenConnectionAsync(ct)"),
+            GrimoirePathAuthority.LiveGrimoire,
+            GrimoireAcquisitionKind.ServingRawOrdinary,
+            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
+            null),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Data/LongRest/LongRestDiscoveryStore.Partitions.cs", "LongRestDiscoveryStore", "ReadNextProtectedPartitionAsync(3)", AcquisitionConstructKind.ProviderOpen, "OpenAsync", 1, "OpenAsync(ct)"),
+            GrimoirePathAuthority.LiveGrimoire,
+            GrimoireAcquisitionKind.ServingRawOrdinary,
+            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
+            null),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Data/LongRest/LongRestDiscoveryStore.Accepted.cs", "LongRestDiscoveryStore", "CommitAcceptedHierarchySummaryCoreAsync(6)", AcquisitionConstructKind.ProviderOpen, "OpenAsync", 1, "OpenAsync(cancellationToken)"),
+            GrimoirePathAuthority.LiveGrimoire,
+            GrimoireAcquisitionKind.ServingRawOrdinary,
+            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
+            null),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Data/LongRest/LongRestDiscoveryStore.Accepted.cs", "LongRestDiscoveryStore", "CommitFoldCoreAsync(6)", AcquisitionConstructKind.ProviderOpen, "OpenAsync", 1, "OpenAsync(cancellationToken)"),
+            GrimoirePathAuthority.LiveGrimoire,
+            GrimoireAcquisitionKind.ServingRawOrdinary,
+            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
+            null),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Data/LongRest/LongRestSweepStore.RequestAdmission.cs", "LongRestSweepStore", "AdmitOnceAsync(5)", AcquisitionConstructKind.ProviderOpen, "db.Database.OpenConnectionAsync", 1, "db.Database.OpenConnectionAsync(ct)"),
+            GrimoirePathAuthority.LiveGrimoire,
+            GrimoireAcquisitionKind.ServingRawOrdinary,
+            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
+            null),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Data/LongRest/LongRestSweepStore.Pending.cs", "LongRestSweepStore", "FindNextPendingCleanAsync(3)", AcquisitionConstructKind.ProviderOpen, "db.Database.OpenConnectionAsync", 1, "db.Database.OpenConnectionAsync(ct)"),
+            GrimoirePathAuthority.LiveGrimoire,
+            GrimoireAcquisitionKind.ServingRawOrdinary,
+            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
+            null),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Data/LongRest/LongRestDiscoveryStore.Sources.cs", "LongRestDiscoveryStore", "CaptureNextSourcePageAsync(4)", AcquisitionConstructKind.ProviderOpen, "OpenAsync", 1, "OpenAsync(cancellationToken)"),
+            GrimoirePathAuthority.LiveGrimoire,
+            GrimoireAcquisitionKind.ServingRawOrdinary,
+            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
+            null),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Data/LongRest/LongRestDiscoveryStore.Candidates.cs", "LongRestDiscoveryStore", "DiscoverAsync(4)", AcquisitionConstructKind.ProviderOpen, "OpenAsync", 1, "OpenAsync(cancellationToken)"),
+            GrimoirePathAuthority.LiveGrimoire,
+            GrimoireAcquisitionKind.ServingRawOrdinary,
+            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
+            null),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Data/LongRest/LongRestAttemptStore.cs", "LongRestAttemptStore", "WithinAsync(2)", AcquisitionConstructKind.ProviderOpen, "db.Database.OpenConnectionAsync", 1, "db.Database.OpenConnectionAsync(ct)"),
+            GrimoirePathAuthority.LiveGrimoire,
+            GrimoireAcquisitionKind.ServingRawOrdinary,
+            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
+            null),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Data/LongRest/LongRestLiveFenceReader.Stored.cs", "LongRestLiveFenceReader", "ReadScopeAsync(2)", AcquisitionConstructKind.ProviderOpen, "OpenAsync", 1, "OpenAsync(ct)"),
+            GrimoirePathAuthority.LiveGrimoire,
+            GrimoireAcquisitionKind.ServingRawOrdinary,
+            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
+            null),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Data/LongRest/LongRestLiveFenceReader.Stored.cs", "LongRestLiveFenceReader", "ValidateClaimAsync(4)", AcquisitionConstructKind.ProviderOpen, "OpenAsync", 1, "OpenAsync(ct)"),
+            GrimoirePathAuthority.LiveGrimoire,
+            GrimoireAcquisitionKind.ServingRawOrdinary,
+            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
+            null),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Data/LongRest/LongRestLiveFenceReader.Stored.cs", "LongRestLiveFenceReader", "ValidateGenerationAsync(4)", AcquisitionConstructKind.ProviderOpen, "OpenAsync", 1, "OpenAsync(ct)"),
+            GrimoirePathAuthority.LiveGrimoire,
+            GrimoireAcquisitionKind.ServingRawOrdinary,
+            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
+            null),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Data/LongRest/LongRestLiveFenceReader.Stored.cs", "LongRestLiveFenceReader", "ValidateRetainedSourceMetadataAsync(2)", AcquisitionConstructKind.ProviderOpen, "OpenAsync", 1, "OpenAsync(ct)"),
+            GrimoirePathAuthority.LiveGrimoire,
+            GrimoireAcquisitionKind.ServingRawOrdinary,
+            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
+            null),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Data/LongRest/LongRestLiveFenceReader.Stored.cs", "LongRestLiveFenceReader", "OpenAsync(1)", AcquisitionConstructKind.ProviderOpen, "db.Database.OpenConnectionAsync", 1, "db.Database.OpenConnectionAsync(ct)"),
+            GrimoirePathAuthority.LiveGrimoire,
+            GrimoireAcquisitionKind.ServingRawOrdinary,
+            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
+            null),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Data/LongRest/LongRestLiveFenceReader.Worker.cs", "LongRestLiveFenceReader", "ReadWorkerAsync(4)", AcquisitionConstructKind.ProviderOpen, "OpenAsync", 1, "OpenAsync(ct)"),
+            GrimoirePathAuthority.LiveGrimoire,
+            GrimoireAcquisitionKind.ServingRawOrdinary,
+            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
+            null),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Data/LongRest/LongRestDiscoveryStore.Metadata.cs", "LongRestDiscoveryStore", "ReadGenerationMetadataAsync(2)", AcquisitionConstructKind.ProviderOpen, "OpenAsync", 1, "OpenAsync(ct)"),
+            GrimoirePathAuthority.LiveGrimoire,
+            GrimoireAcquisitionKind.ServingRawOrdinary,
+            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
+            null),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Data/LongRest/LongRestDiscoveryStore.CleanReadmission.cs", "LongRestDiscoveryStore", "ReadmitCleanAsync(7)", AcquisitionConstructKind.ProviderOpen, "OpenAsync", 1, "OpenAsync(ct)"),
+            GrimoirePathAuthority.LiveGrimoire,
+            GrimoireAcquisitionKind.ServingRawOrdinary,
+            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
+            null),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Data/LongRest/LongRestSweepStore.cs", "LongRestSweepStore", "WithinAsync(2)", AcquisitionConstructKind.ProviderOpen, "db.Database.OpenConnectionAsync", 1, "db.Database.OpenConnectionAsync(ct)"),
+            GrimoirePathAuthority.LiveGrimoire,
+            GrimoireAcquisitionKind.ServingRawOrdinary,
+            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
+            null),
+
         new(
             new("src/RetroDownfall.Arcanum.Cli/Infrastructure/CliCommandTree.Configuration.cs", "CliCommandTree", "BuildConfig(1)", AcquisitionConstructKind.ProviderOpen, "handler.Value.Open", 0, "handler.Value.Open()"),
             GrimoirePathAuthority.NotGrimoire,
@@ -2035,6 +2202,13 @@ internal static class GrimoireConnectionAcquisitionScanner
             GrimoireAcquisitionKind.ServingRawOrdinary,
             GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
             null),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Backup/BackupRestoreCovenantCoordinator.cs", "BackupRestoreCovenantCoordinator", "CompleteCommittedAsync(5)", AcquisitionConstructKind.ProviderOpen, "BackupRestoreDatabaseWorker.OpenAsync", 4, "BackupRestoreDatabaseWorker.OpenAsync(candidate.Database.Path,committedGrimoireSecret,readOnly:true,cancellationToken)"),
+            GrimoirePathAuthority.ClosedCommittedRestore,
+            GrimoireAcquisitionKind.ClosedRestoreVerification,
+            GrimoireRuntimeAdmissionRoute.ExactNonServingProof,
+            new(ExactNonServingProofKind.ExactClosedRestoreOwner, "BackupRestoreCovenantCoordinator.CompleteCommittedAsync(5)", 0)),
 
         new(
             new("src/RetroDownfall.Arcanum.Infrastructure/Backup/BackupRestoreService.cs", "BackupRestoreService", "PrepareStagedGenerationAsync(13)", AcquisitionConstructKind.ProviderOpen, "BackupRestoreDatabaseWorker.OpenAsync", 4, "BackupRestoreDatabaseWorker.OpenAsync(stagedDatabase,grimoireSecret,readOnly:false,cancellationToken)"),
@@ -4507,6 +4681,11 @@ internal static class GrimoireConnectionAcquisitionScanner
                 entry.AcquisitionKind == GrimoireAcquisitionKind.DesignTimeOrNativeValidation
                 && entry.RuntimeRoute == GrimoireRuntimeAdmissionRoute.ExactNonServingProof
                 && HasProof(entry, ExactNonServingProofKind.NativeRuntimeValidation),
+
+            GrimoirePathAuthority.ClosedCommittedRestore =>
+                entry.AcquisitionKind == GrimoireAcquisitionKind.ClosedRestoreVerification
+                && entry.RuntimeRoute == GrimoireRuntimeAdmissionRoute.ExactNonServingProof
+                && HasProof(entry, ExactNonServingProofKind.ExactClosedRestoreOwner),
 
             GrimoirePathAuthority.NotGrimoire =>
                 entry.AcquisitionKind == GrimoireAcquisitionKind.NonGrimoireCandidate

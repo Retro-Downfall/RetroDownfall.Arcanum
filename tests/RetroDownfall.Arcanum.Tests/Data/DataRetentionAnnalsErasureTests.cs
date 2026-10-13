@@ -337,8 +337,10 @@ public sealed partial class DataRetentionServiceTests
             .Where(static item => item.DataClass == RetentionDataClass.SagaMemories)
             .Sum(static item => item.DerivedRecords);
 
-        // The embedding plus the claim. Without the claim in the count this is 1.
-        Assert.Equal(2, sagaDerived);
+        Assert.Equal(1, await CountTableRowsAsync("long_rest_sources"));
+
+        // The embedding, claim, and source identity.
+        Assert.Equal(3, sagaDerived);
 
         Core.Primitives.Result<DataRetentionApplyResult> applied = await service.ApplyAsync(
             new DataRetentionApplyRequest(request, plan.PlanId),
@@ -349,6 +351,10 @@ public sealed partial class DataRetentionServiceTests
         Assert.True(applied.Value.Reconciled);
 
         Assert.Equal(0, await CountAnnalClaimsAsync(1, memory));
+
+        Assert.Equal(plan.DerivedRecords, applied.Value.DerivedRecordsDeleted);
+
+        Assert.Equal(0, await CountTableRowsAsync("long_rest_sources"));
 
         Assert.Equal(0, await CountTableRowsAsync("annal_versions"));
 

@@ -488,7 +488,7 @@ public sealed class FullInstallationResetManagedFileReconcilerTests
                         "campaign_path_identities",
                         "managed_file_write_intents",
                         "local_erasure_work_items",
-                        "artifact_sensitivity_guard_delete",
+                        .. CovenantSchemaScratchDatabase.ArtifactSensitivityDeleteGuardObjects,
                         "artifact_sensitivity_guard_update",
                         "managed_file_write_intents_guard_insert",
                         "managed_file_write_intents_guard_update",

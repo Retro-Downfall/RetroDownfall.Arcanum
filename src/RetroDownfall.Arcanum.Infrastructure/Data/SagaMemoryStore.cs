@@ -735,6 +735,16 @@ internal sealed partial class SagaMemoryStore(
                     }
                 }
 
+                // Before source-mutating provenance and canonical deletion: the exact generation
+                // selector still needs its leaves. Ungated so disabling Annals cannot strand a claim.
+                // A missing subject rolls this work back with the canonical delete below.
+                await AnnalsClaimWriter.DeleteClaimsForSubjectAsync(
+                    connection,
+                    transaction,
+                    AnnalSubjectStore.Saga,
+                    id,
+                    cancellationToken).ConfigureAwait(false);
+
                 await using DbCommand memoryCmd = connection.CreateCommand();
 
                 memoryCmd.Transaction = transaction;
@@ -778,16 +788,6 @@ internal sealed partial class SagaMemoryStore(
                 _ = await SagaVectorMirror.DeleteAsync(connection, transaction, id, cancellationToken)
                     .ConfigureAwait(false);
 
-                // Deliberately ungated. A claim written while the Annals was enabled has to stay
-                // removable after it is disabled, or turning the feature off would strand records no
-                // surface can reach and no reset can clear.
-                await AnnalsClaimWriter.DeleteClaimsForSubjectAsync(
-                    connection,
-                    transaction,
-                    AnnalSubjectStore.Saga,
-                    id,
-                    cancellationToken).ConfigureAwait(false);
-
                 await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
 
                 return true;
@@ -820,6 +820,14 @@ internal sealed partial class SagaMemoryStore(
                         throw new LabeledArtifactRefusalException(none.Error);
                     }
                 }
+
+                // Close Saga's exact graph before provenance/canonical deletion invalidates its
+                // leaves. The same store boundary leaves every Lexicon claim untouched.
+                await AnnalsClaimWriter.DeleteClaimsForStoreAsync(
+                    connection,
+                    transaction,
+                    AnnalSubjectStore.Saga,
+                    cancellationToken).ConfigureAwait(false);
 
                 await using DbCommand memoryCmd = connection.CreateCommand();
 
@@ -856,14 +864,6 @@ internal sealed partial class SagaMemoryStore(
                 // Whatever the accelerator flag says, for the same reason DeleteAsync's mirror delete is.
                 _ = await SagaVectorMirror.DeleteAllAsync(connection, transaction, cancellationToken)
                     .ConfigureAwait(false);
-
-                // Saga's claims and no others. The Lexicon's stay exactly where they are, which is what
-                // makes a store-scoped reset mean what the operator asked for.
-                await AnnalsClaimWriter.DeleteClaimsForStoreAsync(
-                    connection,
-                    transaction,
-                    AnnalSubjectStore.Saga,
-                    cancellationToken).ConfigureAwait(false);
 
                 await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
             },

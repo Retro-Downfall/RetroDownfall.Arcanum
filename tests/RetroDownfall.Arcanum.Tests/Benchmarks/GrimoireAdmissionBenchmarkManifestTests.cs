@@ -153,7 +153,27 @@ public sealed class GrimoireAdmissionBenchmarkManifestTests
 
         Assert.EndsWith("GrimoireConnectionAdmissionEpoch.cs", optional.Path, StringComparison.Ordinal);
 
-        Assert.Equal(617, catalog.Count(static entry => entry.Path.EndsWith(".sql", StringComparison.Ordinal)));
+        Assert.Equal(719, catalog.Count(static entry => entry.Path.EndsWith(".sql", StringComparison.Ordinal)));
+
+        const string schemaPath = "src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/";
+
+        const string resourcePrefix = "RetroDownfall.Arcanum.Infrastructure.Data.Schema.";
+
+        string[] selectedSchema = catalog
+            .Where(static entry => entry.Path.StartsWith(schemaPath, StringComparison.Ordinal)
+                && entry.Path.EndsWith(".sql", StringComparison.Ordinal))
+            .Select(static entry => resourcePrefix + entry.Path[schemaPath.Length..].Replace('/', '.'))
+            .Order(StringComparer.Ordinal)
+            .ToArray();
+
+        string[] embeddedSchema = typeof(RetroDownfall.Arcanum.Infrastructure.Data.ArcanumDbContext).Assembly
+            .GetManifestResourceNames()
+            .Where(static name => name.StartsWith(resourcePrefix, StringComparison.Ordinal)
+                && name.EndsWith(".sql", StringComparison.Ordinal))
+            .Order(StringComparer.Ordinal)
+            .ToArray();
+
+        Assert.Equal(selectedSchema, embeddedSchema);
 
         using JsonDocument manifest = JsonDocument.Parse(File.ReadAllText(Path.Combine(
             root,

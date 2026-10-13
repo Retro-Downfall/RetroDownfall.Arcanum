@@ -248,8 +248,9 @@ public static class GrimoireDatabaseBootstrapper
         // Before the guarded directory is even created. A restore that died between its two renames
         // leaves no live root at all, and creating an empty one here would occupy the name the rollback
         // has to move back into (§10.19.8).
-        await RecoverRestoreTopologyAsync(
+        IReadOnlyList<BackupRestoreRecoveryReport> legacyRestoreTopology = await RecoverRestoreTopologyAsync(
             scopeFactory,
+            secretStore,
             heldInstallationLock,
             grimoireDirectory,
             cancellationToken).ConfigureAwait(false);
@@ -356,6 +357,19 @@ public static class GrimoireDatabaseBootstrapper
             hostProcessToolsDecision,
             cancellationToken).ConfigureAwait(false);
 
+        if (heldInstallationLock is not null)
+        {
+            Result legacyCompleted = await BackupRestoreRecovery.CompleteLegacyCommittedBeforeReadinessAsync(
+                heldInstallationLock, grimoireDirectory, legacyRestoreTopology, installConnection, cancellationToken)
+                .ConfigureAwait(false);
+
+            if (legacyCompleted.IsFailure)
+            {
+                throw new GrimoireDatabaseUnavailableException(
+                    "The committed legacy restore catalog could not be verified; its recovery evidence is retained.");
+            }
+        }
+
         // After host-tools classification and core convergence, and before every database-dependent
         // recovery below it. An active restore journal means the authority this installation now runs
         // under has not been revalidated, and none of those passes may open against it.
@@ -363,6 +377,7 @@ public static class GrimoireDatabaseBootstrapper
             scopeFactory,
             heldInstallationLock,
             grimoireDirectory,
+            installConnection,
             cancellationToken).ConfigureAwait(false);
 
         // After the schema and restore authority are settled, with no transaction open on the install
@@ -478,24 +493,23 @@ public static class GrimoireDatabaseBootstrapper
     /// dropping that sweep would strand every restore interrupted by this build; running it while an
     /// authenticated journal is active would let the weaker of the two paths decide.</para>
     /// </remarks>
-    private static async Task RecoverRestoreTopologyAsync(
+    private static async Task<IReadOnlyList<BackupRestoreRecoveryReport>> RecoverRestoreTopologyAsync(
         IServiceScopeFactory scopeFactory,
+        ISecretStore secretStore,
         ArcanumMaintenanceLock? heldInstallationLock,
         string grimoireDirectory,
         CancellationToken cancellationToken)
     {
         if (heldInstallationLock is null)
         {
-            return;
+            return [];
         }
 
         await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
 
         if (TryCreateRestoreRecovery(scope, grimoireDirectory, withAuthority: false) is not { } recovery)
         {
-            ResolveInterruptedRestores(grimoireDirectory);
-
-            return;
+            return await ResolveInterruptedRestoresAsync(grimoireDirectory, secretStore, cancellationToken).ConfigureAwait(false);
         }
 
         Result<BackupRestorePhysicalRecoveryOutcome> topology = await recovery
@@ -515,8 +529,10 @@ public static class GrimoireDatabaseBootstrapper
 
         if (topology.Value is BackupRestorePhysicalRecoveryOutcome.NoActiveJournal)
         {
-            ResolveInterruptedRestores(grimoireDirectory);
+            return await ResolveInterruptedRestoresAsync(grimoireDirectory, secretStore, cancellationToken).ConfigureAwait(false);
         }
+
+        return [];
     }
 
     /// <summary>
@@ -532,6 +548,7 @@ public static class GrimoireDatabaseBootstrapper
         IServiceScopeFactory scopeFactory,
         ArcanumMaintenanceLock? heldInstallationLock,
         string grimoireDirectory,
+        SqliteConnection committedDatabase,
         CancellationToken cancellationToken)
     {
         if (heldInstallationLock is null)
@@ -541,7 +558,7 @@ public static class GrimoireDatabaseBootstrapper
 
         await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
 
-        if (TryCreateRestoreRecovery(scope, grimoireDirectory, withAuthority: true) is not { } recovery)
+        if (TryCreateRestoreRecovery(scope, grimoireDirectory, withAuthority: true, committedDatabase) is not { } recovery)
         {
             return;
         }
@@ -586,7 +603,8 @@ public static class GrimoireDatabaseBootstrapper
     private static BackupRestoreRecovery? TryCreateRestoreRecovery(
         AsyncServiceScope scope,
         string grimoireDirectory,
-        bool withAuthority)
+        bool withAuthority,
+        SqliteConnection? committedDatabase = null)
     {
         if (scope.ServiceProvider.GetService<IOsCredentialStore>() is not { } credentials)
         {
@@ -604,7 +622,8 @@ public static class GrimoireDatabaseBootstrapper
                 new BackupRestoreJournalKeyProvider(credentials),
                 new BackupRestoreJournalInstallationIdentityProvider(credentials)),
             withAuthority ? scope.ServiceProvider.GetService<CovenantOperationGate>() : null,
-            withAuthority ? scope.ServiceProvider.GetService<ICampaignPathMarkerLifecycle>() : null);
+            withAuthority ? scope.ServiceProvider.GetService<ICampaignPathMarkerLifecycle>() : null,
+            committedDatabase);
     }
 
     /// <summary>
@@ -615,14 +634,17 @@ public static class GrimoireDatabaseBootstrapper
     /// installation lock and before the database is opened, so the host never bootstraps against a
     /// half-swapped tree, and each resolution is logged so an operator can see what happened.
     /// </remarks>
-    private static void ResolveInterruptedRestores(string grimoireDirectory)
+    private static async Task<IReadOnlyList<BackupRestoreRecoveryReport>> ResolveInterruptedRestoresAsync(string grimoireDirectory,
+        ISecretStore secretStore, CancellationToken cancellationToken)
     {
         try
         {
             bool reconciliationRequired = false;
 
-            foreach (BackupRestoreRecoveryReport report in
-                     BackupRestoreRecovery.Resolve(grimoireDirectory))
+            IReadOnlyList<BackupRestoreRecoveryReport> reports = await BackupRestoreRecovery.ResolveAsync(
+                grimoireDirectory, secretStore, cancellationToken).ConfigureAwait(false);
+
+            foreach (BackupRestoreRecoveryReport report in reports)
             {
                 Log.Warning(
                     "Interrupted Arcanum restore resolved as {Outcome} at phase {Phase}: {Detail}",
@@ -630,8 +652,9 @@ public static class GrimoireDatabaseBootstrapper
                     report.Phase,
                     report.Detail);
 
-                reconciliationRequired |= report.Outcome
-                    is BackupRestoreRecoveryOutcome.ReconciliationRequired;
+                reconciliationRequired |= report.Outcome is not (BackupRestoreRecoveryOutcome.Discarded
+                    or BackupRestoreRecoveryOutcome.RolledBack or BackupRestoreRecoveryOutcome.CommitCompleted
+                    or BackupRestoreRecoveryOutcome.CommittedDatabaseVerificationRequired);
             }
 
             if (reconciliationRequired)
@@ -643,8 +666,14 @@ public static class GrimoireDatabaseBootstrapper
                 throw new GrimoireDatabaseUnavailableException(
                     "An interrupted Arcanum restore could not be resolved. See logs for recovery steps.");
             }
+
+            return reports;
         }
         catch (GrimoireDatabaseUnavailableException)
+        {
+            throw;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             throw;
         }

@@ -1,8 +1,12 @@
+using Microsoft.Data.Sqlite;
+
 using RetroDownfall.Arcanum.Core.Backup;
 
 using RetroDownfall.Arcanum.Core.Covenant;
 
 using RetroDownfall.Arcanum.Core.Primitives;
+
+using RetroDownfall.Arcanum.Core.Security;
 
 using RetroDownfall.Arcanum.Infrastructure.Covenant;
 
@@ -25,13 +29,26 @@ internal enum BackupRestoreRecoveryOutcome
 
     /// <summary>The commit landed but post-commit work is unverifiable; an operator must decide.</summary>
     ReconciliationRequired = 3,
+
+    /// <summary>Topology is committed; bootstrap must verify its exact catalog before cleanup.</summary>
+    CommittedDatabaseVerificationRequired = 4,
 }
 
 internal sealed record BackupRestoreRecoveryReport(
     string StagingRoot,
     BackupRestoreRecoveryOutcome Outcome,
     BackupRestorePhase Phase,
-    string Detail);
+    string Detail,
+    BackupRestoreLegacyCommittedCandidate? PendingCommittedDatabase = null);
+
+internal sealed record BackupRestoreLegacyCommittedCandidate(
+    string StagingRoot,
+    BackupRestoreJournalRecord Journal,
+    IdentityOwnedFileSystemArtifact Staging,
+    IdentityOwnedFileSystemArtifact Live,
+    IdentityOwnedFileSystemArtifact Database,
+    IdentityOwnedFileSystemArtifact JournalFile,
+    IdentityOwnedFileSystemArtifact? Displaced);
 
 /// <summary>
 /// Resolves restore staging left behind by a process that died mid-restore.
@@ -66,6 +83,9 @@ internal sealed class BackupRestoreRecovery : IBackupRestoreStartupRecovery
 
     private readonly ICampaignPathMarkerLifecycle? _markers;
 
+    // Borrowed from bootstrap after topology/key/schema verification; recovery never owns or closes it.
+    private readonly SqliteConnection? _committedDatabase;
+
     /// <summary>
     /// Binds one recovery to the installation it may recover and to the collaborators it borrows.
     /// </summary>
@@ -78,7 +98,8 @@ internal sealed class BackupRestoreRecovery : IBackupRestoreStartupRecovery
         string guardedDirectory,
         BackupRestoreJournalAnchorStore anchors,
         CovenantOperationGate? gate,
-        ICampaignPathMarkerLifecycle? markers)
+        ICampaignPathMarkerLifecycle? markers,
+        SqliteConnection? committedDatabase = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(guardedDirectory);
 
@@ -91,6 +112,8 @@ internal sealed class BackupRestoreRecovery : IBackupRestoreStartupRecovery
         _gate = gate;
 
         _markers = markers;
+
+        _committedDatabase = committedDatabase;
     }
 
     /// <inheritdoc />
@@ -297,6 +320,35 @@ internal sealed class BackupRestoreRecovery : IBackupRestoreStartupRecovery
                 "A restore that displaced the installation left no plain journal at Reconcile, so nothing "
                 + "proves local secret protection was rebuilt for the new generation; the displaced "
                 + "installation is kept and admission stays closed."));
+        }
+
+        try
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (_committedDatabase is null
+                || _committedDatabase.State is not System.Data.ConnectionState.Open
+                || !string.Equals(NoFollowPathTopology.NormalizeMacOsSystemAlias(Path.GetFullPath(_committedDatabase.DataSource)),
+                    NoFollowPathTopology.NormalizeMacOsSystemAlias(Path.Combine(_guardedDirectory, "arcanum.db")),
+                    OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal))
+            {
+                return Kept(BackupRestoreLongRestSanitation.Unknown().Error);
+            }
+
+            Result sanitized = await BackupRestoreLongRestSanitation.VerifyCommittedAsync(_committedDatabase, cancellationToken)
+                .ConfigureAwait(false);
+
+            if (sanitized.IsFailure)
+            {
+                return Kept(sanitized.Error);
+            }
+        }
+        catch (Exception exception) when (exception is SqliteException or InvalidDataException or InvalidOperationException
+            or IOException or UnauthorizedAccessException or ArgumentException)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            return Kept(BackupRestoreLongRestSanitation.Unknown().Error);
         }
 
         if (active.Publication.Payload.MarkerCleanup is not { } checkpoint)
@@ -575,7 +627,11 @@ internal sealed class BackupRestoreRecovery : IBackupRestoreStartupRecovery
         BackupRestoreProfileNamespace Profile,
         BackupRestoreJournalPublication Publication);
 
-    public static IReadOnlyList<BackupRestoreRecoveryReport> Resolve(string grimoireDirectory)
+    public static IReadOnlyList<BackupRestoreRecoveryReport> Resolve(string grimoireDirectory) =>
+        ResolveAsync(grimoireDirectory, secretStore: null, CancellationToken.None).GetAwaiter().GetResult();
+
+    internal static Task<IReadOnlyList<BackupRestoreRecoveryReport>> ResolveAsync(string grimoireDirectory,
+        ISecretStore? secretStore, CancellationToken cancellationToken)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(grimoireDirectory);
 
@@ -585,7 +641,7 @@ internal sealed class BackupRestoreRecovery : IBackupRestoreStartupRecovery
 
         if (parent is null)
         {
-            return [];
+            return Task.FromResult<IReadOnlyList<BackupRestoreRecoveryReport>>([]);
         }
 
         IReadOnlyList<string> indexed = BackupRestoreStagingIndex.Read(grimoireDirectory);
@@ -609,6 +665,8 @@ internal sealed class BackupRestoreRecovery : IBackupRestoreStartupRecovery
                 continue;
             }
 
+            cancellationToken.ThrowIfCancellationRequested();
+
             reports.Add(ResolveOne(stagingRoot, journal, liveRoot));
         }
 
@@ -619,7 +677,7 @@ internal sealed class BackupRestoreRecovery : IBackupRestoreStartupRecovery
             PruneIndex(grimoireDirectory, indexedRoots);
         }
 
-        return reports;
+        return Task.FromResult<IReadOnlyList<BackupRestoreRecoveryReport>>(reports);
     }
 
     /// <summary>
@@ -804,6 +862,11 @@ internal sealed class BackupRestoreRecovery : IBackupRestoreStartupRecovery
         // displace. (A new-profile commit, which moves it elsewhere, was resolved above.)
         if (!stagedExists && liveExists && !displacedExists)
         {
+            if (journal.ConflictMode == BackupRestoreConflictMode.ReplaceInstallation)
+            {
+                return DeferCommittedLegacyDatabase(stagingRoot, journal);
+            }
+
             Discard(stagingRoot, journal);
 
             return new BackupRestoreRecoveryReport(
@@ -823,6 +886,133 @@ internal sealed class BackupRestoreRecovery : IBackupRestoreStartupRecovery
             + $"behind (staged {Presence(stagedExists)}, live {Presence(liveExists)}, displaced "
             + $"{Presence(displacedExists)}). Staging was left untouched at {stagingRoot} for an operator "
             + "to resolve.");
+    }
+
+    private static BackupRestoreRecoveryReport UnprovenLongRest(string stagingRoot, BackupRestoreJournalRecord journal) =>
+        new(stagingRoot, BackupRestoreRecoveryOutcome.ReconciliationRequired, journal.Phase,
+            "The committed restored database has no proven Long Rest sanitation postcondition; staging and the journal are retained.");
+
+    // This phase reads only no-follow filesystem metadata. It neither reads a secret nor opens SQLite.
+    private static BackupRestoreRecoveryReport DeferCommittedLegacyDatabase(string stagingRoot,
+        BackupRestoreJournalRecord journal)
+    {
+        string database = Path.Combine(journal.LiveRoot, "arcanum.db");
+
+        if (LegacyPathAbsent(database))
+        {
+            Discard(stagingRoot, journal);
+
+            return new(stagingRoot, BackupRestoreRecoveryOutcome.CommitCompleted, journal.Phase,
+                "The commit had no database; only staging cleanup remained.");
+        }
+
+        if (!IdentityOwnedFileSystemCleanup.TryCapturePath(stagingRoot, FileSystemObjectKind.Directory, out var staging)
+            || staging.Metadata.Identity != new FileHandleIdentity(journal.StagingVolumeId, journal.StagingFileId)
+            || !IdentityOwnedFileSystemCleanup.TryCapturePath(journal.LiveRoot, FileSystemObjectKind.Directory, out var live)
+            || !IdentityOwnedFileSystemCleanup.TryCapturePath(database, FileSystemObjectKind.RegularFile, out var file)
+            || !IdentityOwnedFileSystemCleanup.TryCapturePath(Path.Combine(stagingRoot, BackupRestoreJournal.FileName),
+                FileSystemObjectKind.RegularFile, out var journalFile)
+            || !LegacyPathAbsent(journal.StagedRoot)) return UnprovenLongRest(stagingRoot, journal);
+
+        IdentityOwnedFileSystemArtifact? displaced = null;
+
+        if (!LegacyPathAbsent(journal.DisplacedRoot))
+        {
+            if (!IdentityOwnedFileSystemCleanup.TryCapturePath(journal.DisplacedRoot, FileSystemObjectKind.Directory,
+                out var prior)) return UnprovenLongRest(stagingRoot, journal);
+
+            displaced = prior;
+        }
+
+        return new(stagingRoot, BackupRestoreRecoveryOutcome.CommittedDatabaseVerificationRequired, journal.Phase,
+            "The committed topology is retained until bootstrap proves its Long Rest sanitation postcondition.",
+            new(stagingRoot, journal, staging, live, file, journalFile, displaced));
+    }
+
+    private static bool LegacyPathAbsent(string path)
+    {
+        try
+        {
+            _ = File.GetAttributes(path);
+
+            return false;
+        }
+        catch (Exception absent) when (absent is FileNotFoundException or DirectoryNotFoundException)
+        {
+            return true;
+        }
+        catch (Exception unknown) when (unknown is IOException or UnauthorizedAccessException)
+        {
+            return false;
+        }
+    }
+
+    private static bool LegacyCandidateCurrent(BackupRestoreLegacyCommittedCandidate candidate, string guardedDirectory)
+    {
+        bool Same(IdentityOwnedFileSystemArtifact artifact) =>
+            IdentityOwnedFileSystemCleanup.TryCapturePath(artifact.Path, artifact.Metadata.Kind, out var current)
+                && current.Metadata.Identity == artifact.Metadata.Identity
+                && current.Metadata.Kind == artifact.Metadata.Kind
+                && (artifact.Metadata.Kind != FileSystemObjectKind.RegularFile
+                    || (current.Metadata.HardLinkCount == 1 && artifact.Metadata.HardLinkCount == 1));
+
+        return candidate.Journal.ConflictMode == BackupRestoreConflictMode.ReplaceInstallation
+            && candidate.Journal.Phase >= BackupRestorePhase.Commit && candidate.Journal.SecretReinstatementFailure is null
+            && (candidate.Journal.Phase > BackupRestorePhase.Commit || candidate.Displaced is null)
+            && BackupRestoreJournal.ValidateForRecovery(candidate.StagingRoot, guardedDirectory, candidate.Journal).IsSuccess
+            && BackupRestoreJournal.TryRead(candidate.StagingRoot) == candidate.Journal
+            && Same(candidate.Staging) && Same(candidate.Live) && Same(candidate.Database) && Same(candidate.JournalFile)
+            && LegacyPathAbsent(candidate.Journal.StagedRoot)
+            && (candidate.Displaced is { } displaced ? Same(displaced) : LegacyPathAbsent(candidate.Journal.DisplacedRoot));
+    }
+
+    // Borrows the classified bootstrap connection. This method never opens, closes, or owns a database.
+    internal static async Task<Result> CompleteLegacyCommittedBeforeReadinessAsync(
+        ArcanumMaintenanceLock heldInstallationLock, string guardedDirectory,
+        IReadOnlyList<BackupRestoreRecoveryReport> topologyReports, SqliteConnection committedDatabase,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(heldInstallationLock);
+
+        heldInstallationLock.AssertHeldFor(guardedDirectory);
+
+        try
+        {
+            foreach (BackupRestoreRecoveryReport report in topologyReports.Where(static report =>
+                report.Outcome == BackupRestoreRecoveryOutcome.CommittedDatabaseVerificationRequired))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                if (report.PendingCommittedDatabase is not { } candidate
+                    || committedDatabase.State != System.Data.ConnectionState.Open
+                    || !string.Equals(NoFollowPathTopology.NormalizeMacOsSystemAlias(Path.GetFullPath(committedDatabase.DataSource)),
+                        NoFollowPathTopology.NormalizeMacOsSystemAlias(Path.Combine(guardedDirectory, "arcanum.db")),
+                        OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal)
+                    || !LegacyCandidateCurrent(candidate, guardedDirectory)) return BackupRestoreLongRestSanitation.Unknown();
+
+                Result verified = await BackupRestoreLongRestSanitation.VerifyCommittedAsync(committedDatabase, cancellationToken)
+                    .ConfigureAwait(false);
+
+                if (verified.IsFailure) return verified;
+
+                cancellationToken.ThrowIfCancellationRequested();
+
+                heldInstallationLock.AssertHeldFor(guardedDirectory);
+
+                if (!LegacyCandidateCurrent(candidate, guardedDirectory)) return BackupRestoreLongRestSanitation.Unknown();
+
+                Discard(candidate.StagingRoot, candidate.Journal);
+            }
+
+            return Result.Success();
+        }
+        catch (Exception exception) when (exception is SqliteException or IOException or UnauthorizedAccessException
+            or InvalidDataException or InvalidOperationException or ArgumentException)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            return BackupRestoreLongRestSanitation.Unknown();
+        }
     }
 
     /// <summary>
@@ -846,6 +1036,11 @@ internal sealed class BackupRestoreRecovery : IBackupRestoreStartupRecovery
     {
         if (!stagedExists && liveExists)
         {
+            if (journal.ConflictMode == BackupRestoreConflictMode.ReplaceInstallation)
+            {
+                return DeferCommittedLegacyDatabase(stagingRoot, journal);
+            }
+
             Discard(stagingRoot, journal);
 
             return new BackupRestoreRecoveryReport(
@@ -872,9 +1067,9 @@ internal sealed class BackupRestoreRecovery : IBackupRestoreStartupRecovery
     /// The commit is one rename of <c>staged/</c> onto the new profile root, so staging alone tells the
     /// two outcomes apart: <c>staged/</c> still present is a commit that never began, or one whose
     /// reversal put the restored tree back, and <c>staged/</c> gone is a commit that landed (past
-    /// <c>Commit</c>, one whose post-commit work may not have finished, which the new root then shows). Either way
-    /// staging holds nothing anyone had before the restore, and only it is removed; the new root and the
-    /// default installation are never touched. A displaced root is a shape no new-profile restore leaves,
+    /// <c>Commit</c>, one whose post-commit work may not have finished). The legacy journal does not
+    /// name that new root, so a committed outcome cannot prove its Long Rest sanitation and stays
+    /// unresolved; the new root and the default installation are never touched. A displaced root is a shape no new-profile restore leaves,
     /// so that staging is kept for an operator.
     /// </remarks>
     private static BackupRestoreRecoveryReport ResolveNewProfileCommit(
@@ -893,20 +1088,19 @@ internal sealed class BackupRestoreRecovery : IBackupRestoreStartupRecovery
                 + "root. Staging was left untouched at " + stagingRoot + " for an operator to resolve.");
         }
 
+        if (!stagedExists)
+        {
+            return UnprovenLongRest(stagingRoot, journal);
+        }
+
         Discard(stagingRoot, journal);
 
-        return stagedExists
-            ? new BackupRestoreRecoveryReport(
-                stagingRoot,
-                BackupRestoreRecoveryOutcome.RolledBack,
-                journal.Phase,
-                "The new-profile restored generation never left staging, or its reversal put it back; "
-                + "staging was removed and the current installation was never modified.")
-            : new BackupRestoreRecoveryReport(
-                stagingRoot,
-                BackupRestoreRecoveryOutcome.CommitCompleted,
-                journal.Phase,
-                "The new-profile commit had completed; only staging cleanup remained.");
+        return new BackupRestoreRecoveryReport(
+            stagingRoot,
+            BackupRestoreRecoveryOutcome.RolledBack,
+            journal.Phase,
+            "The new-profile restored generation never left staging, or its reversal put it back; "
+            + "staging was removed and the current installation was never modified.");
     }
 
     /// <summary>

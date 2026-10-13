@@ -135,7 +135,7 @@ internal static class GrimoireSchemaVersionChains
     /// <para>Version 17 adds immutable, request-bound Long Rest transformation receipts and exact-version
     /// Saga suppression links. Every table starts empty; existing subjects and claims are unchanged.</para>
     /// </remarks>
-    internal const int CoreSchemaVersion = 17;
+    internal const int CoreSchemaVersion = 18;
 
     /// <summary>The version of Covenant's authoritative tables this binary declares.</summary>
     /// <remarks>
@@ -282,6 +282,9 @@ internal static class GrimoireSchemaVersionChains
             [(GrimoireSchemaTransactionTier.Core, 17)] =
                 "C29DE2AB1E2D134F8F2C1D989F908127CBAE8B1EF417BAE149ABE8FC1BEC4E5C",
 
+            [(GrimoireSchemaTransactionTier.Core, 18)] =
+                "91088B7AAFED7C79D0D737836E96071D4F7586535BE49596226F33E9ACA08ACA",
+
             [(GrimoireSchemaTransactionTier.CovenantCanonical, 2)] =
                 "7F906C4C832FDF824EC3B6A56431E9E6098DC9BB83EDA5BAE02EC62CE3B4E105",
 
@@ -356,6 +359,8 @@ internal static class GrimoireSchemaVersionChains
             [(GrimoireSchemaTransactionTier.Core, 12)] = new AnnalReviewEventBackfill(),
 
             [(GrimoireSchemaTransactionTier.Core, 16)] = new CampaignForkFrontierBackfill(),
+
+            [(GrimoireSchemaTransactionTier.Core, 18)] = new LongRestSourceIdentityBackfill(),
 
             [(GrimoireSchemaTransactionTier.CovenantCanonical, 5)] = new CovenantReviewEventBackfill(),
         };

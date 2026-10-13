@@ -2,10 +2,12 @@ using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
+using System.Net.Http.Json;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using RetroDownfall.Arcanum.Api.Security;
+using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Serialization;
@@ -30,6 +32,22 @@ public sealed class PublishedArcanumOllamaQualificationTests
     private const string ProviderKeyVariable = "ARCANUM_OLLAMA_QUALIFICATION_PROVIDER_KEY";
 
     private const string SuccessReceiptVariable = "ARCANUM_OLLAMA_QUALIFICATION_RECEIPT";
+
+    private const string PerplexityModeVariable = "ARCANUM_OLLAMA_QUALIFICATION_PERPLEXITY";
+
+    private const string PerplexitySourceVariable = "ARCANUM_OLLAMA_QUALIFICATION_PERPLEXITY_KEY_VARIABLE";
+
+    internal const string PerplexityKeyVariable = "ARCANUM_OLLAMA_QUALIFICATION_PERPLEXITY_KEY";
+
+    private const string PerplexitySuccessReceipt = "local-ollama-aot-perplexity-qualification:v1";
+
+    private const string SearchQuery = "What is the purpose of NASA Voyager?";
+
+    private const string SearchRecallPrompt =
+        "Do not call any tools or perform another search. The pinned durable-fact file is authoritative. "
+        + "Recall the conversation marker from turn one and parse the earlier web_search result. "
+        + "Reply with exactly MARKER=<conversation marker>; TOKEN=<CURRENT_TOKEN>; "
+        + "CITATION_INDEX=<first retained citation index>; CITATION_URL=<first retained citation URL> and no other text.";
 
     private const string SuccessReceipt = "local-ollama-aot-qualification:v1";
 
@@ -83,6 +101,18 @@ public sealed class PublishedArcanumOllamaQualificationTests
                 global::System.Environment.GetEnvironmentVariable(GithubActionsVariable)),
             "Real-model qualification is local-only and cannot run in GitHub Actions.");
 
+        string? searchMode = global::System.Environment.GetEnvironmentVariable(PerplexityModeVariable);
+
+        Assert.True(searchMode is null or "0" or "1", "Perplexity qualification requires the exact mode opt-in 1.");
+
+        bool perplexity = searchMode == "1";
+
+        string? perplexityKey = perplexity
+            ? LocalOllamaQualificationGuards.RequirePerplexityCredential(
+                global::System.Environment.GetEnvironmentVariable(PerplexitySourceVariable) ?? "ARCANUM_PERPLEXITY_API_KEY",
+                global::System.Environment.GetEnvironmentVariable)
+            : null;
+
         string executable = RequireEnvironmentPath(PublishedExecutableVariable);
         string sourceImage = RequireEnvironmentPath(ImageVariable);
         string model = global::System.Environment.GetEnvironmentVariable(ModelVariable)?.Trim()
@@ -93,6 +123,8 @@ public sealed class PublishedArcanumOllamaQualificationTests
         string conversationMarker = CreateOpaqueToken();
         string wrongToken = CreateOpaqueToken();
         string rightToken = CreateOpaqueToken();
+
+        string searchMarker = CreateOpaqueToken();
 
         Assert.False(string.IsNullOrWhiteSpace(model), $"{ModelVariable} must not be empty.");
         Assert.NotEqual(wrongToken, rightToken);
@@ -125,6 +157,23 @@ public sealed class PublishedArcanumOllamaQualificationTests
         PublishedHost? firstHost = null;
         PublishedHost? restartedHost = null;
 
+        LocalOllamaQualificationGuards.PerplexitySearchEvidence? searchEvidence = null;
+
+        LocalOllamaQualificationGuards.NativeSearchEvidence? nativeSearch = null;
+
+        JsonElement[]? beforeRestartRows = null;
+
+        string firstPrompt = FirstTurnPrompt(conversationMarker);
+
+        string firstReply = $"SESSION_READY; MARKER={conversationMarker}";
+
+        string searchPrompt = SearchTurnPrompt(searchMarker);
+
+        string secondPrompt = perplexity ? SearchRecallPrompt : SecondTurnPrompt;
+
+        string?[] SensitiveValues() =>
+            [perplexityKey, firstHost?.DisclosedMasterApiKey, restartedHost?.DisclosedMasterApiKey];
+
         try
         {
             isolation.Prepare();
@@ -150,9 +199,10 @@ public sealed class PublishedArcanumOllamaQualificationTests
                 workspace,
                 hostPort,
                 endpoint,
-                model);
+                model,
+                perplexity);
 
-            TestEnvironment environment = new(isolation, workspace);
+            TestEnvironment environment = new(isolation, workspace, perplexityKey);
 
             portReservation.Stop();
             portReservation.Dispose();
@@ -194,7 +244,7 @@ public sealed class PublishedArcanumOllamaQualificationTests
                 "--max-tokens",
                 InitialTurnMaxTokens,
                 "--unattended",
-                FirstTurnPrompt(conversationMarker));
+                firstPrompt);
 
             Assert.Equal(
                 $"SESSION_READY; MARKER={conversationMarker}",
@@ -204,6 +254,29 @@ public sealed class PublishedArcanumOllamaQualificationTests
                 executable,
                 environment,
                 expectedEntryCount: 2);
+
+            JsonElement[] initialRows = await ReadDurableRowsAsync(executable, environment, sessionId);
+
+            Assert.True(LocalOllamaQualificationGuards.TryReadLocalTranscript(
+                initialRows, sessionId, [firstPrompt], [firstReply]),
+                "The original CLI first turn must retain exactly its marker-only user/reply pair.");
+
+            if (perplexity)
+            {
+                nativeSearch = await RunNativeSearchAsync(hostPort, masterApiKey, model, workspace,
+                    sessionId, searchPrompt, searchMarker);
+
+                JsonElement[] rows = await ReadDurableRowsAsync(executable, environment, sessionId);
+
+                Assert.True(LocalOllamaQualificationGuards.TryReadPerplexityTranscript(
+                    rows, sessionId, [firstPrompt, searchPrompt], [firstReply, nativeSearch.Answer],
+                    SearchQuery, out searchEvidence, nativeSearch),
+                    "The native continuation must persist its reserved user/reply pair followed by exactly the observed search wrappers.");
+
+                Assert.True(LocalOllamaQualificationGuards.SameDurableRows(initialRows, rows[..2]),
+                    "The streamed continuation must preserve the original marker turn's identities and content.");
+            }
+
             JsonElement firstVersion = ParseObject((await RunCliAsync(
                 executable,
                 environment,
@@ -257,13 +330,30 @@ public sealed class PublishedArcanumOllamaQualificationTests
                 "--temperature",
                 "0",
                 "--max-tokens",
-                ContextRecallMaxTokens,
+                perplexity ? "1024" : ContextRecallMaxTokens,
                 "--unattended",
-                SecondTurnPrompt);
+                secondPrompt);
 
-            Assert.Equal(
-                $"MARKER={conversationMarker}; TOKEN={wrongToken}",
-                NormalizeModelAnswer(secondTurn.StandardOutput));
+            string expectedSecondReply = $"MARKER={conversationMarker}; TOKEN={wrongToken}"
+                + (searchEvidence is null ? string.Empty
+                    : $"; CITATION_INDEX={searchEvidence.CitationIndex}; CITATION_URL={searchEvidence.CitationUrl}");
+
+            Assert.Equal(expectedSecondReply, NormalizeModelAnswer(secondTurn.StandardOutput));
+
+            beforeRestartRows = await ReadDurableRowsAsync(executable, environment, sessionId);
+
+            if (searchEvidence is not null)
+            {
+                await AssertPersistedSearchAsync(executable, environment, sessionId,
+                    [firstPrompt, searchPrompt, secondPrompt], [firstReply, nativeSearch!.Answer, expectedSecondReply],
+                    searchEvidence, nativeSearch, beforeRestartRows);
+            }
+            else
+            {
+                Assert.True(LocalOllamaQualificationGuards.TryReadLocalTranscript(
+                    beforeRestartRows, sessionId, [firstPrompt, secondPrompt], [firstReply, expectedSecondReply]),
+                    "Local recall must retain exactly two adjacent user/reply pairs.");
+            }
 
             await File.WriteAllBytesAsync(sourceFact, secondFactBytes);
 
@@ -389,9 +479,21 @@ public sealed class PublishedArcanumOllamaQualificationTests
             Guid restartedSessionId = await ReadOnlySessionIdAsync(
                 executable,
                 environment,
-                expectedEntryCount: 4);
+                expectedEntryCount: perplexity ? 8 : 4);
 
             Assert.Equal(sessionId, restartedSessionId);
+
+            JsonElement[] restartedRows = await ReadDurableRowsAsync(executable, environment, sessionId);
+
+            Assert.True(LocalOllamaQualificationGuards.SameDurableRows(beforeRestartRows, restartedRows),
+                "Every pre-restart entry must retain its exact identity, session and content after restart.");
+
+            if (searchEvidence is not null)
+            {
+                await AssertPersistedSearchAsync(executable, environment, sessionId,
+                    [firstPrompt, searchPrompt, secondPrompt], [firstReply, nativeSearch!.Answer, expectedSecondReply],
+                    searchEvidence, nativeSearch, restartedRows);
+            }
 
             await AssertAttachmentHistoryAsync(
                 executable,
@@ -464,23 +566,30 @@ public sealed class PublishedArcanumOllamaQualificationTests
                     normalizedVisionAnswer,
                     conversationMarker,
                     rightToken),
-                "The third turn must preserve its exact structure and opaque values while identifying the fixture. "
+                "The final vision turn must preserve its exact structure and opaque values while identifying the fixture. "
                 + $"Actual answer: {normalizedVisionAnswer}");
 
-            await AssertThreeDurableTurnsAsync(
+            await AssertDurableTurnsAsync(
                 executable,
                 environment,
                 sessionId,
                 conversationMarker,
                 wrongToken,
-                rightToken);
+                rightToken,
+                searchEvidence,
+                nativeSearch,
+                searchPrompt,
+                beforeRestartRows);
 
             await StopHostAsync(api, restartedHost, TimeSpan.FromSeconds(45));
 
             AssertNoPlaintextCredentialFiles(
                 isolation.ProcessTemporaryDirectory,
                 masterApiKey,
-                ProviderKey);
+                ProviderKey,
+                perplexityKey,
+                firstHost.DisclosedMasterApiKey,
+                restartedHost.DisclosedMasterApiKey);
         }
         catch (Exception exception)
         {
@@ -490,7 +599,8 @@ public sealed class PublishedArcanumOllamaQualificationTests
                     + "context replacement, not in-place transcript or extracted-memory editing.",
                     exception,
                     ProviderKey,
-                    masterApiKey);
+                    masterApiKey,
+                    SensitiveValues());
             primaryFailure = wrappedFailure;
             throw wrappedFailure;
         }
@@ -502,13 +612,15 @@ public sealed class PublishedArcanumOllamaQualificationTests
                 restartedHost,
                 "restarted",
                 cleanupFailures,
-                masterApiKey);
+                masterApiKey,
+                SensitiveValues());
 
             await CollectHostCleanupFailuresAsync(
                 firstHost,
                 "initial",
                 cleanupFailures,
-                masterApiKey);
+                masterApiKey,
+                SensitiveValues());
 
             if (api is not null)
             {
@@ -523,7 +635,8 @@ public sealed class PublishedArcanumOllamaQualificationTests
                             "Local qualification API-client cleanup failed.",
                             cleanupFailure,
                             ProviderKey,
-                            masterApiKey));
+                            masterApiKey,
+                            SensitiveValues()));
                 }
             }
 
@@ -541,7 +654,8 @@ public sealed class PublishedArcanumOllamaQualificationTests
                             "Local qualification port-reservation cleanup failed.",
                             cleanupFailure,
                             ProviderKey,
-                            masterApiKey));
+                            masterApiKey,
+                            SensitiveValues()));
                 }
             }
 
@@ -556,7 +670,8 @@ public sealed class PublishedArcanumOllamaQualificationTests
                         "Local qualification temporary cleanup failed.",
                         cleanupFailure,
                         ProviderKey,
-                        masterApiKey);
+                        masterApiKey,
+                        SensitiveValues());
 
                 cleanupFailures.Add(sanitizedCleanupFailure);
             }
@@ -586,7 +701,7 @@ public sealed class PublishedArcanumOllamaQualificationTests
         {
             await File.WriteAllTextAsync(
                 receiptPath,
-                SuccessReceipt + global::System.Environment.NewLine);
+                (perplexity ? PerplexitySuccessReceipt : SuccessReceipt) + global::System.Environment.NewLine);
         }
     }
 
@@ -594,7 +709,8 @@ public sealed class PublishedArcanumOllamaQualificationTests
         PublishedHost? host,
         string phase,
         ICollection<Exception> cleanupFailures,
-        string? masterApiKey)
+        string? masterApiKey,
+        params string?[] additionalSecrets)
     {
         if (host is null)
         {
@@ -617,7 +733,8 @@ public sealed class PublishedArcanumOllamaQualificationTests
                     $"Local qualification {phase} published-host cleanup failed.",
                     cleanupFailure,
                     ProviderKey,
-                    masterApiKey));
+                    masterApiKey,
+                    [.. additionalSecrets, host.DisclosedMasterApiKey]));
         }
     }
 
@@ -826,31 +943,46 @@ public sealed class PublishedArcanumOllamaQualificationTests
                 StringComparison.OrdinalIgnoreCase));
     }
 
-    private static async Task AssertThreeDurableTurnsAsync(
+    private static async Task AssertDurableTurnsAsync(
         string executable,
         TestEnvironment environment,
         Guid sessionId,
         string conversationMarker,
         string wrongToken,
-        string rightToken)
+        string rightToken,
+        LocalOllamaQualificationGuards.PerplexitySearchEvidence? searchEvidence,
+        LocalOllamaQualificationGuards.NativeSearchEvidence? nativeSearch,
+        string searchPrompt,
+        JsonElement[] beforeRestartRows)
     {
-        CliResult result = await RunCliAsync(
-            executable,
-            environment,
-            TimeSpan.FromSeconds(45),
-            "--json",
-            "--plain",
-            "--print",
-            "--no-context",
-            "session",
-            "entries",
-            sessionId.ToString("D"),
-            "--limit",
-            "10");
-        JsonElement entries = ParseArray(result.StandardOutput);
-        JsonElement[] rows = entries.EnumerateArray().Reverse().ToArray();
+        JsonElement[] rows = await ReadDurableRowsAsync(executable, environment, sessionId);
+
+        Assert.True(LocalOllamaQualificationGuards.SameDurableRows(beforeRestartRows, rows[..beforeRestartRows.Length]),
+            "The final vision continuation must preserve every original durable entry identity and payload.");
+
+        if (searchEvidence is not null)
+        {
+            string visionReply = NormalizeModelAnswer(rows[^1].GetProperty("content").GetString() ?? string.Empty);
+
+            Assert.True(LocalOllamaQualificationGuards.IsExpectedVisionAnswer(visionReply, conversationMarker, rightToken),
+                "The durable final vision turn must preserve its structure, opaque values, and fixture identification.");
+
+            await AssertPersistedSearchAsync(executable, environment, sessionId,
+                [FirstTurnPrompt(conversationMarker), searchPrompt, SearchRecallPrompt, LocalOllamaQualificationGuards.VisionPrompt],
+                [$"SESSION_READY; MARKER={conversationMarker}", nativeSearch!.Answer,
+                    $"MARKER={conversationMarker}; TOKEN={wrongToken}; CITATION_INDEX={searchEvidence.CitationIndex}; CITATION_URL={searchEvidence.CitationUrl}",
+                    visionReply], searchEvidence, nativeSearch, rows);
+
+            return;
+        }
 
         Assert.Equal(6, rows.Length);
+
+        Assert.True(LocalOllamaQualificationGuards.TryReadLocalTranscript(rows, sessionId,
+            [FirstTurnPrompt(conversationMarker), SecondTurnPrompt, LocalOllamaQualificationGuards.VisionPrompt],
+            [$"SESSION_READY; MARKER={conversationMarker}", $"MARKER={conversationMarker}; TOKEN={wrongToken}",
+                NormalizeModelAnswer(rows[^1].GetProperty("content").GetString()!)]),
+            "Local vision qualification must preserve three complete pairs with unique entry identities.");
 
         Assert.Equal(
             $"SESSION_READY; MARKER={conversationMarker}",
@@ -880,6 +1012,48 @@ public sealed class PublishedArcanumOllamaQualificationTests
             "The durable third turn must retain its exact structure, opaque values, and fixture identification.");
     }
 
+    private static async Task<JsonElement[]> ReadDurableRowsAsync(
+        string executable,
+        TestEnvironment environment,
+        Guid sessionId)
+    {
+        CliResult result = await RunCliAsync(
+            executable,
+            environment,
+            TimeSpan.FromSeconds(45),
+            "--json",
+            "--plain",
+            "--print",
+            "--no-context",
+            "session",
+            "entries",
+            sessionId.ToString("D"),
+            "--limit",
+            "10");
+        JsonElement entries = ParseArray(result.StandardOutput);
+
+        return entries.EnumerateArray().Reverse().ToArray();
+    }
+
+    private static async Task AssertPersistedSearchAsync(
+        string executable,
+        TestEnvironment environment,
+        Guid sessionId,
+        string[] prompts,
+        string[] replies,
+        LocalOllamaQualificationGuards.PerplexitySearchEvidence expectedEvidence,
+        LocalOllamaQualificationGuards.NativeSearchEvidence transport,
+        JsonElement[]? observedRows = null)
+    {
+        JsonElement[] rows = observedRows ?? await ReadDurableRowsAsync(executable, environment, sessionId);
+
+        Assert.True(LocalOllamaQualificationGuards.TryReadPerplexityTranscript(
+            rows, sessionId, prompts, replies, SearchQuery, out var actualEvidence, transport),
+            "The search exchange and exact parsed citation recall must remain ordered and durable with no new tools.");
+
+        Assert.Equal(expectedEvidence, actualEvidence);
+    }
+
     private static string ReadDurableReply(
         IReadOnlyList<JsonElement> rows,
         int rowOffset,
@@ -903,12 +1077,13 @@ public sealed class PublishedArcanumOllamaQualificationTests
         return NormalizeModelAnswer(assistant.GetProperty("content").GetString() ?? string.Empty);
     }
 
-    private static async Task WriteConfigurationAsync(
+    internal static async Task WriteConfigurationAsync(
         string path,
         string workspace,
         int hostPort,
         Uri endpoint,
-        string model)
+        string model,
+        bool perplexity = false)
     {
         ArcanumConfigurationFile configuration = new()
         {
@@ -928,7 +1103,7 @@ public sealed class PublishedArcanumOllamaQualificationTests
                         Type = AiProviderKind.OpenAICompatible,
                         Endpoint = endpoint.AbsoluteUri,
                         CredentialEnvironmentVariable = ProviderKeyVariable,
-                        Models = [new ModelEntry(model, SupportsVision: true, SupportsTools: false)],
+                        Models = [new ModelEntry(model, SupportsVision: true, SupportsTools: perplexity)],
                         ContextWindowLimit = 131_072,
                     },
                 ],
@@ -949,7 +1124,7 @@ public sealed class PublishedArcanumOllamaQualificationTests
                     Scrying = true,
                     Attachments = true,
                     ClientTools = false,
-                    WebBrowsing = false,
+                    WebBrowsing = perplexity,
                     Reasoning = false,
                     ReasoningSummaries = false,
                     Guardrails = false,
@@ -961,6 +1136,15 @@ public sealed class PublishedArcanumOllamaQualificationTests
                     Conclave = false,
                     A2AServer = false,
                     A2AClient = false,
+                },
+                Integrations = new IntegrationSettings
+                {
+                    WebResearch = new WebResearchIntegrationSettings
+                    {
+                        SearchProvider = "perplexity",
+                        PerplexityModel = "sonar",
+                        CredentialEnvironmentVariable = perplexity ? PerplexityKeyVariable : null,
+                    },
                 },
                 Security = new SecuritySettings
                 {
@@ -1005,7 +1189,7 @@ public sealed class PublishedArcanumOllamaQualificationTests
 
         using HttpClient client = new(handler, disposeHandler: false)
         {
-            Timeout = Timeout.InfiniteTimeSpan,
+            Timeout = global::System.Threading.Timeout.InfiniteTimeSpan,
         };
 
         using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(30));
@@ -1061,6 +1245,52 @@ public sealed class PublishedArcanumOllamaQualificationTests
         Assert.Equal(expectedConfigurationPath, data.GetProperty("configPath").GetString());
         Assert.Equal(expectedPort, data.GetProperty("port").GetInt32());
         Assert.False(data.GetProperty("listenAny").GetBoolean());
+    }
+
+    private static async Task<LocalOllamaQualificationGuards.NativeSearchEvidence> RunNativeSearchAsync(
+        int hostPort,
+        string masterApiKey,
+        string model,
+        string workspace,
+        Guid sessionId,
+        string prompt,
+        string searchMarker)
+    {
+        using HttpClient client = new(LocalOllamaQualificationGuards.CreateLoopbackOnlyHttpHandler())
+        {
+            BaseAddress = new Uri($"http://127.0.0.1:{hostPort}/"),
+            Timeout = global::System.Threading.Timeout.InfiniteTimeSpan,
+        };
+
+        client.DefaultRequestHeaders.Add(ArcanumApiHeaders.ApiKey, masterApiKey);
+
+        using CancellationTokenSource deadline = new(TurnBudget);
+
+        PingRequest ping = new(prompt, Model: model, WorkingDirectory: workspace, SessionId: sessionId,
+            UnattendedMode: true, Temperature: 0, MaxOutputTokens: 1024);
+
+        using HttpRequestMessage request = new(HttpMethod.Post, "api/intelligence/ping-stream")
+        {
+            Content = JsonContent.Create(ping, ArcanumJsonContext.Default.PingRequest),
+        };
+
+        using HttpResponseMessage response = await client.SendAsync(request,
+            HttpCompletionOption.ResponseHeadersRead, deadline.Token);
+
+        Assert.True(response.IsSuccessStatusCode, "The native search continuation must return successful HTTP status.");
+
+        Assert.Equal("application/x-ndjson", response.Content.Headers.ContentType?.MediaType);
+
+        await using Stream stream = await response.Content.ReadAsStreamAsync(deadline.Token);
+
+        using StreamReader reader = new(stream, new UTF8Encoding(false, true), detectEncodingFromByteOrderMarks: false);
+
+        var evidence = await LocalOllamaQualificationGuards.ReadNativeSearchAsync(
+            reader, sessionId, SearchQuery, searchMarker, deadline.Token);
+
+        Assert.NotNull(evidence);
+
+        return evidence;
     }
 
     private static HttpClient CreateApiClient(
@@ -1294,9 +1524,15 @@ public sealed class PublishedArcanumOllamaQualificationTests
     private static string FirstTurnPrompt(string conversationMarker) =>
         $"Reply with exactly SESSION_READY; MARKER={conversationMarker} and no other text.";
 
+    private static string SearchTurnPrompt(string searchMarker) =>
+        $"Invoke the native web_search tool exactly once with query {SearchQuery} and wait for its result. "
+        + "Do not use any other tool. Parse the actual first retained citation in that result. "
+        + $"Reply with exactly SEARCH_READY; MARKER={searchMarker}; "
+        + "CITATION_INDEX=<first retained citation index>; CITATION_URL=<first retained citation URL> and no other text.";
+
     // Some small local models wrap an otherwise exact answer in one inline-code pair or one
     // triple-backtick fence. Nothing inside the answer is normalized or rewritten.
-    private static string NormalizeModelAnswer(string value)
+    internal static string NormalizeModelAnswer(string value)
     {
         string answer = value.Trim();
 
@@ -1432,9 +1668,10 @@ public sealed class PublishedArcanumOllamaQualificationTests
         string StandardError,
         IReadOnlyList<Exception> Failures);
 
-    private sealed record TestEnvironment(
+    internal sealed record TestEnvironment(
         PublishedTestProcessIsolation Isolation,
-        string Workspace)
+        string Workspace,
+        string? PerplexityKey = null)
     {
         public string TestHome => Isolation.TestHome;
 
@@ -1442,7 +1679,8 @@ public sealed class PublishedArcanumOllamaQualificationTests
 
         public ProcessStartInfo CreateStartInfo(
             string executable,
-            IEnumerable<string> arguments)
+            IEnumerable<string> arguments,
+            bool isHost = false)
         {
             ProcessStartInfo start = new(executable)
             {
@@ -1480,6 +1718,11 @@ public sealed class PublishedArcanumOllamaQualificationTests
             start.Environment["XDG_DATA_HOME"] = Path.Combine(TestHome, ".local", "share");
             start.Environment["XDG_CACHE_HOME"] = Path.Combine(TestHome, ".cache");
 
+            if (isHost && PerplexityKey is not null)
+            {
+                start.Environment[PerplexityKeyVariable] = PerplexityKey;
+            }
+
             Isolation.ApplyTemporaryEnvironment(start);
 
             return start;
@@ -1487,7 +1730,7 @@ public sealed class PublishedArcanumOllamaQualificationTests
 
         public string Redact(string value)
         {
-            return LocalOllamaQualificationGuards.Redact(value, ProviderKey, MasterApiKey);
+            return LocalOllamaQualificationGuards.Redact(value, ProviderKey, MasterApiKey, PerplexityKey);
         }
 
         public InvalidOperationException CreateSanitizedFailure(
@@ -1497,7 +1740,8 @@ public sealed class PublishedArcanumOllamaQualificationTests
                 context,
                 failure,
                 ProviderKey,
-                MasterApiKey);
+                MasterApiKey,
+                PerplexityKey);
 
         private static void CopyIfPresent(
             ProcessStartInfo start,
@@ -1519,6 +1763,8 @@ public sealed class PublishedArcanumOllamaQualificationTests
 
         private readonly string? _knownMasterApiKey;
 
+        private readonly TestEnvironment _environment;
+
         private readonly TaskCompletionSource<string> _masterApiKey =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -1533,8 +1779,11 @@ public sealed class PublishedArcanumOllamaQualificationTests
 
         private PublishedHost(
             DiagnosticsProcess process,
-            string? knownMasterApiKey)
+            string? knownMasterApiKey,
+            TestEnvironment environment)
         {
+            _environment = environment;
+
             _process = process;
             _knownMasterApiKey = knownMasterApiKey;
             _standardOutput = PumpAsync(process.StandardOutput, observeStartup: true);
@@ -1552,11 +1801,12 @@ public sealed class PublishedArcanumOllamaQualificationTests
         {
             ProcessStartInfo start = environment.CreateStartInfo(
                 executable,
-                ["serve", "--plain"]);
+                ["serve", "--plain"],
+                isHost: true);
             DiagnosticsProcess process = DiagnosticsProcess.Start(start)
                 ?? throw new InvalidOperationException("The published Arcanum host did not start.");
 
-            return new PublishedHost(process, knownMasterApiKey);
+            return new PublishedHost(process, knownMasterApiKey, environment);
         }
 
         public async Task<string> WaitForInitialReadyAsync(TimeSpan timeout)
@@ -1672,7 +1922,9 @@ public sealed class PublishedArcanumOllamaQualificationTests
                 context,
                 failure,
                 ProviderKey,
-                DisclosedMasterApiKey ?? _knownMasterApiKey);
+                _knownMasterApiKey,
+                DisclosedMasterApiKey,
+                _environment.PerplexityKey);
 
         private async Task PumpAsync(
             StreamReader reader,
@@ -1687,7 +1939,9 @@ public sealed class PublishedArcanumOllamaQualificationTests
                     Enqueue(LocalOllamaQualificationGuards.Redact(
                         line,
                         ProviderKey,
-                        key));
+                        key,
+                        _knownMasterApiKey,
+                        _environment.PerplexityKey));
                 }
                 else
                 {
@@ -1718,10 +1972,8 @@ public sealed class PublishedArcanumOllamaQualificationTests
 
         private string Redact(string line)
         {
-            string? masterApiKey = _knownMasterApiKey;
-            string redacted = LocalOllamaQualificationGuards.Redact(line, ProviderKey, masterApiKey);
-
-            return LocalOllamaQualificationGuards.Redact(redacted, ProviderKey, DisclosedMasterApiKey);
+            return LocalOllamaQualificationGuards.Redact(
+                line, ProviderKey, _knownMasterApiKey, DisclosedMasterApiKey, _environment.PerplexityKey);
         }
 
         private string SafeDiagnostics() =>

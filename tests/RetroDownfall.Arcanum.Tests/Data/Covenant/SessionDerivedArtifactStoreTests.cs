@@ -203,7 +203,7 @@ public sealed class SessionDerivedArtifactStoreTests
                         "Campaigns",
                         "Sessions",
                         "artifact_sensitivity",
-                        "artifact_sensitivity_guard_delete",
+                        .. CovenantSchemaScratchDatabase.ArtifactSensitivityDeleteGuardObjects,
                         "artifact_sensitivity_guard_update",
                         "session_sensitivity_state",
                         "session_summary_artifacts",

@@ -1207,6 +1207,22 @@ public static class ErrorCodes
         public const string Unavailable = "LongRest.Unavailable";
 
         public const string IntegrityFailure = "LongRest.IntegrityFailure";
+
+        public const string CurrentnessLost = "LongRest.CurrentnessLost";
+
+        public const string InvalidAdmission = "LongRest.InvalidAdmission";
+
+        public const string AccountingCompletionRefused = "LongRest.AccountingCompletionRefused";
+
+        public const string StaleFence = "LongRest.StaleFence";
+
+        public const string AccountingRefused = "LongRest.AccountingRefused";
+
+        public const string ConfigurationChanged = "LongRest.ConfigurationChanged";
+
+        public const string InvalidOutput = "LongRest.InvalidOutput";
+
+        public const string CancelledAfterPayment = "LongRest.CancelledAfterPayment";
     }
 
 }

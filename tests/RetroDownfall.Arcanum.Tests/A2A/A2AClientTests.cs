@@ -9,6 +9,7 @@ using Microsoft.AspNetCore.Routing;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
 using RetroDownfall.Arcanum.Core.Configuration;
@@ -140,7 +141,7 @@ public sealed class A2AClientTests
     [Fact]
     public async Task DispatchSendingAsync_RemoteRejects_ReturnsTaskRejected()
     {
-        using TestServer server = await CreateFakeRemoteAgentServerAsync(new RejectingAgentHandler("no thanks"));
+        using TestServer server = await CreateFakeRemoteAgentServerAsync(new RejectingAgentHandler("no thanks; dummy-a2a-secret-marker-91"));
 
         using HttpMessageHandler handler = server.CreateHandler();
 
@@ -151,6 +152,9 @@ public sealed class A2AClientTests
         Assert.True(result.IsFailure);
 
         Assert.Equal("Sending.TaskRejected", result.Error.Code);
+
+        // A peer's rejection reason is business data, even when it resembles sensitive exception text.
+        Assert.Equal("no thanks; dummy-a2a-secret-marker-91", result.Error.Message);
     }
 
     [Fact]
@@ -533,10 +537,10 @@ public sealed class A2AClientTests
 
         Assert.Equal(ErrorCodes.Sending.AgentUnreachable, result.Error.Code);
 
-        Assert.Contains(
-            A2AClientService.MaxRpcResponseBytes.ToString(System.Globalization.CultureInfo.InvariantCulture),
-            result.Error.Message,
-            StringComparison.Ordinal);
+        Assert.Matches(@"\A(?:Failed to send the Sending to the remote agent\.|Lost contact with the remote agent while awaiting task '[^'\r\n]+'\. The remote task may still be running; it was not cancelled\.)\z",
+            result.Error.Message);
+
+        Assert.DoesNotContain(oversizedAnswer, result.Error.Message, StringComparison.Ordinal);
     }
 
     /// <summary>
@@ -598,6 +602,318 @@ public sealed class A2AClientTests
         Assert.Equal(ErrorCodes.Sending.AgentUnreachable, result.Error.Code);
     }
 
+    [Theory]
+    [InlineData("discovery", ErrorCodes.Sending.AgentCardInvalid, "Could not resolve the remote agent's Agent Card")]
+    [InlineData("send", ErrorCodes.Sending.AgentUnreachable, "Failed to send the Sending to the remote agent")]
+    [InlineData("cancel", ErrorCodes.Sending.AgentUnreachable, "Could not cancel remote task")]
+    public async Task ExternalHttpException_ReturnsSafeFailureAndLogsSafeDiagnostics(
+        string operation,
+        string errorCode,
+        string safeMessagePrefix)
+    {
+        const string sensitiveMarker = "dummy-a2a-secret-marker-91";
+
+        using RecordingHttpHandler handler = new(request =>
+            operation == "discovery" || request.Method != HttpMethod.Get
+                ? Task.FromException<HttpResponseMessage>(new HttpRequestException(sensitiveMarker))
+                : Task.FromResult(CardResponse(BuildFakeCard())));
+
+        using CapturedLogProvider logs = new();
+
+        using ILoggerFactory loggerFactory = LoggerFactory.Create(builder => builder.AddProvider(logs));
+
+        A2AClientService client = CreateClient(
+            handler,
+            EnabledSettings(),
+            logger: loggerFactory.CreateLogger<A2AClientService>());
+
+        Result result;
+
+        if (operation == "cancel")
+        {
+            result = await client.CancelRemoteTaskAsync(DiscoveryUrl, "remote-task-1")
+                .WaitAsync(TimeSpan.FromSeconds(30));
+        }
+        else
+        {
+            Result<A2ADispatchResult> dispatch = await client.DispatchSendingAsync("do the thing", null, DiscoveryUrl)
+                .WaitAsync(TimeSpan.FromSeconds(30));
+
+            result = dispatch.IsFailure ? Result.Failure(dispatch.Error) : Result.Success();
+        }
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(errorCode, result.Error.Code);
+
+        Assert.StartsWith(safeMessagePrefix, result.Error.Message, StringComparison.Ordinal);
+
+        Assert.DoesNotContain(sensitiveMarker, result.Error.Message, StringComparison.Ordinal);
+
+        // Capture both formatted structured state and the attached exception, which a sink can render.
+        Assert.NotEmpty(logs.Entries);
+
+        Assert.All(logs.Entries, entry =>
+        {
+            Assert.DoesNotContain(sensitiveMarker, entry.Message, StringComparison.Ordinal);
+
+            Assert.Null(entry.Exception);
+        });
+
+        Assert.Contains(logs.Entries, entry =>
+            entry.Message.Contains(nameof(HttpRequestException), StringComparison.Ordinal)
+            && entry.Message.Contains(operation == "discovery" ? "Agent Card" : operation, StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Theory]
+    [InlineData("poll", false)]
+    [InlineData("poll", true)]
+    [InlineData("subscription", false)]
+    [InlineData("callback", false)]
+    public async Task AcceptedTask_ExternalFailureKeepsItsOutcomeAndSafeDiagnostics(string operation, bool unreadable)
+    {
+        const string marker = "dummy-a2a-secret-marker-91";
+
+        using GateAgentHandler agent = new(1);
+
+        AgentCard card = BuildFakeCard();
+
+        card.Capabilities = new AgentCapabilities
+        {
+            Streaming = operation == "subscription",
+            PushNotifications = operation == "callback",
+        };
+
+        using TestServer server = await CreateFakeRemoteAgentServerAsync(agent, card);
+
+        using HttpMessageHandler serverHandler = server.CreateHandler();
+
+        string method = operation switch
+        {
+            "subscription" => "SubscribeToTask",
+            "callback" => "CreateTaskPushNotificationConfig",
+            _ => "GetTask",
+        };
+
+        int failures = 0;
+
+        int cancellations = 0;
+
+        string? remoteTaskId = null;
+
+        using InterceptingHttpHandler handler = new(serverHandler, async (request, cancellationToken) =>
+        {
+            string body = request.Content is null
+                ? string.Empty
+                : await request.Content.ReadAsStringAsync(cancellationToken);
+
+            if (body.Contains("\"CancelTask\"", StringComparison.Ordinal))
+            {
+                Interlocked.Increment(ref cancellations);
+            }
+
+            if (!body.Contains($"\"{method}\"", StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            Interlocked.Increment(ref failures);
+
+            if (operation == "poll")
+            {
+                using System.Text.Json.JsonDocument document = System.Text.Json.JsonDocument.Parse(body);
+
+                remoteTaskId = document.RootElement.GetProperty("params").GetProperty("id").GetString();
+            }
+            else
+            {
+                agent.Release("legitimate reply; dummy-a2a-secret-marker-91");
+            }
+
+            if (unreadable)
+            {
+                throw new InvalidOperationException(marker);
+            }
+
+            throw new HttpRequestException(marker);
+        });
+
+        using CapturedLogProvider logs = new();
+
+        using ILoggerFactory loggerFactory = LoggerFactory.Create(builder => builder.AddProvider(logs));
+
+        ArcanumSettings settings = EnabledSettings();
+
+        settings.Integrations!.A2A!.PushNotifications = operation == "callback";
+
+        settings.Integrations.A2A.PushCallbackBaseUrl = $"https://{FakeAgentHost}";
+
+        A2AClientService client = new(
+            new FakeHttpClientFactory(handler),
+            new TestOptionsMonitor<ArcanumSettings>(settings),
+            loggerFactory.CreateLogger<A2AClientService>(),
+            DeterministicDns(),
+            callbacks: new A2ASendingCallbackRegistry(NullLogger<A2ASendingCallbackRegistry>.Instance));
+
+        try
+        {
+            Result<A2ADispatchResult> result = await client.DispatchSendingAsync(
+                "long running work",
+                null,
+                DiscoveryUrl,
+                mode: operation == "callback" ? A2ADispatchMode.Callback : A2ADispatchMode.Blocking)
+                .WaitAsync(TimeSpan.FromSeconds(30));
+
+            Assert.True(failures > 0, "The intended SDK operation was never intercepted.");
+
+            if (operation == "poll")
+            {
+                Assert.True(result.IsFailure);
+
+                Assert.Equal(ErrorCodes.Sending.AgentUnreachable, result.Error.Code);
+
+                Assert.False(string.IsNullOrEmpty(remoteTaskId));
+
+                Assert.Contains(remoteTaskId!, result.Error.Message, StringComparison.Ordinal);
+
+                Assert.Contains("The remote task may still be running; it was not cancelled.", result.Error.Message, StringComparison.Ordinal);
+
+                Assert.DoesNotContain(marker, result.Error.Message, StringComparison.Ordinal);
+
+                Assert.Equal(0, cancellations);
+            }
+            else
+            {
+                Assert.True(result.IsSuccess, result.IsFailure ? result.Error.Message : string.Empty);
+
+                Assert.Equal("legitimate reply; dummy-a2a-secret-marker-91", result.Value.ResponseText);
+            }
+
+            AssertSafeExternalLogs(logs, unreadable ? nameof(InvalidOperationException) : nameof(HttpRequestException));
+        }
+        finally
+        {
+            agent.Release("test cleanup");
+        }
+    }
+
+    [Fact]
+    public async Task LocalCancellation_WhenRemoteCancelFails_StillPropagatesAndLogsSafely()
+    {
+        using GateAgentHandler agent = new(1);
+
+        AgentCard card = BuildFakeCard();
+
+        card.Capabilities = new AgentCapabilities { Streaming = false, PushNotifications = false };
+
+        using TestServer server = await CreateFakeRemoteAgentServerAsync(agent, card);
+
+        using HttpMessageHandler serverHandler = server.CreateHandler();
+
+        TaskCompletionSource following = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        int cancelAttempts = 0;
+
+        using InterceptingHttpHandler handler = new(serverHandler, async (request, cancellationToken) =>
+        {
+            string body = request.Content is null
+                ? string.Empty
+                : await request.Content.ReadAsStringAsync(cancellationToken);
+
+            if (body.Contains("\"GetTask\"", StringComparison.Ordinal))
+            {
+                following.TrySetResult();
+
+                await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+            }
+
+            if (body.Contains("\"CancelTask\"", StringComparison.Ordinal))
+            {
+                Interlocked.Increment(ref cancelAttempts);
+
+                throw new HttpRequestException("dummy-a2a-secret-marker-91");
+            }
+        });
+
+        using CapturedLogProvider logs = new();
+
+        using ILoggerFactory loggerFactory = LoggerFactory.Create(builder => builder.AddProvider(logs));
+
+        A2AClientService client = CreateClient(handler, EnabledSettings(), logger: loggerFactory.CreateLogger<A2AClientService>());
+
+        using CancellationTokenSource cancellation = new();
+
+        Task<Result<A2ADispatchResult>> dispatch = client.DispatchSendingAsync(
+            "long running work", null, DiscoveryUrl, cancellationToken: cancellation.Token);
+
+        try
+        {
+            await following.Task.WaitAsync(TimeSpan.FromSeconds(30));
+
+            await cancellation.CancelAsync();
+
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => dispatch.WaitAsync(TimeSpan.FromSeconds(30)));
+
+            Assert.Equal(1, cancelAttempts);
+
+            AssertSafeExternalLogs(logs, nameof(HttpRequestException));
+        }
+        finally
+        {
+            await cancellation.CancelAsync();
+
+            agent.Release("test cleanup");
+        }
+    }
+
+    [Fact]
+    public async Task UnsupportedRemoteBinding_ReturnsSafeAgentCardFailure()
+    {
+        AgentCard card = BuildFakeCard();
+
+        card.SupportedInterfaces![0].ProtocolBinding = "dummy-a2a-secret-marker-91";
+
+        using RecordingHttpHandler handler = new(_ => Task.FromResult(CardResponse(card)));
+
+        using CapturedLogProvider logs = new();
+
+        using ILoggerFactory loggerFactory = LoggerFactory.Create(builder => builder.AddProvider(logs));
+
+        A2AClientService client = CreateClient(handler, EnabledSettings(), logger: loggerFactory.CreateLogger<A2AClientService>());
+
+        Result<A2ADispatchResult> result = await client.DispatchSendingAsync("do the thing", null, DiscoveryUrl)
+            .WaitAsync(TimeSpan.FromSeconds(30));
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Sending.AgentCardInvalid, result.Error.Code);
+
+        Assert.Equal("The remote Agent Card advertises no protocol binding this client supports.", result.Error.Message);
+
+        Assert.NotEmpty(logs.Entries);
+
+        Assert.All(logs.Entries, entry =>
+        {
+            Assert.DoesNotContain("dummy-a2a-secret-marker-91", entry.Message, StringComparison.Ordinal);
+
+            Assert.Null(entry.Exception);
+        });
+    }
+
+    private static void AssertSafeExternalLogs(CapturedLogProvider logs, string exceptionType)
+    {
+        Assert.NotEmpty(logs.Entries);
+
+        Assert.All(logs.Entries, entry =>
+        {
+            Assert.DoesNotContain("dummy-a2a-secret-marker-91", entry.Message, StringComparison.Ordinal);
+
+            Assert.Null(entry.Exception);
+        });
+
+        Assert.Contains(logs.Entries, entry => entry.Message.Contains(exceptionType, StringComparison.Ordinal));
+    }
+
     private static HttpResponseMessage CardResponse(AgentCard card)
     {
         ByteArrayContent content = new(System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(
@@ -622,11 +938,12 @@ public sealed class A2AClientTests
     private static A2AClientService CreateClient(
         HttpMessageHandler handler,
         ArcanumSettings settings,
-        TimeSpan? discoveryTimeout = null) =>
+        TimeSpan? discoveryTimeout = null,
+        ILogger<A2AClientService>? logger = null) =>
         new(
             new FakeHttpClientFactory(handler),
             new TestOptionsMonitor<ArcanumSettings>(settings),
-            NullLogger<A2AClientService>.Instance,
+            logger ?? NullLogger<A2AClientService>.Instance,
             DeterministicDns())
         {
             DiscoveryTimeout = discoveryTimeout ?? A2AClientService.DefaultDiscoveryTimeout,
@@ -898,6 +1215,18 @@ public sealed class A2AClientTests
         public override void SetLength(long value) => throw new NotSupportedException();
 
         public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+    }
+
+    private sealed class InterceptingHttpHandler(
+        HttpMessageHandler inner,
+        Func<HttpRequestMessage, CancellationToken, Task> intercept) : DelegatingHandler(inner)
+    {
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            await intercept(request, cancellationToken).ConfigureAwait(false);
+
+            return await base.SendAsync(request, cancellationToken).ConfigureAwait(false);
+        }
     }
 
     private sealed class RecordingHttpHandler(Func<HttpRequestMessage, Task<HttpResponseMessage>> responder) : HttpMessageHandler

@@ -2,6 +2,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using RetroDownfall.Arcanum.Core.Operations;
 using RetroDownfall.Arcanum.Core.Telemetry;
+using RetroDownfall.Arcanum.Infrastructure.Data.LongRest;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Operations;
 
@@ -377,10 +378,22 @@ public sealed class LongRunningOperationReconciler
                             operationScope.ServiceProvider
                                 .GetRequiredService<ILongRunningOperationClassifiedRecoveryLeaseAcquisition>();
 
+                        ILongRunningOperationRecoveryHandler[] scopedMatches =
+                        [
+                            .. operationScope.ServiceProvider
+                                .GetKeyedServices<ILongRunningOperationRecoveryHandler>(operation.Kind),
+                        ];
+
+                        if (scopedMatches.Length > 1
+                            || (scopedMatches.Length == 1
+                                && !string.Equals(scopedMatches[0].Kind, operation.Kind, StringComparison.Ordinal)))
+                        {
+                            throw new InvalidOperationException(
+                                $"Recovery handler registrations do not uniquely match operation kind '{operation.Kind}'.");
+                        }
+
                         Dictionary<string, ILongRunningOperationRecoveryHandler> scopedHandlers =
-                            operationScope.ServiceProvider
-                                .GetServices<ILongRunningOperationRecoveryHandler>()
-                                .ToDictionary(static handler => handler.Kind, StringComparer.Ordinal);
+                            scopedMatches.ToDictionary(static handler => handler.Kind, StringComparer.Ordinal);
 
                         await SettleAsync(
                             scopedStore,
@@ -601,6 +614,11 @@ public sealed class LongRunningOperationReconciler
             CancellationToken.None).ConfigureAwait(false)
             ?? leased;
 
+        if (latest.Kind == LongRunningOperationKinds.LongRestSweep && latest.State == LongRunningOperationState.Cancelling)
+        {
+            result = LongRunningOperationRecoveryResult.Abandoned("long_rest.cancelled");
+        }
+
         bool transitioned = await operationStore.TryTransitionAsync(
             leased.Id,
             latest.Revision,
@@ -703,6 +721,11 @@ public sealed class LongRunningOperationReconciler
             _logger.LogWarning(ex, "Operation {OperationId} has a corrupt recovery checkpoint.", operation.Id);
             return LongRunningOperationRecoveryResult.RequiresAttention(
                 LongRunningOperationErrorCodes.CorruptCheckpoint);
+        }
+        catch (LongRestMaintenanceDeferredException) when (operation.Kind == LongRunningOperationKinds.LongRestSweep && operation.CheckpointVersion == 1)
+        {
+            // Maintenance yielded admitted clean work; its exact owner/checkpoint remains debt.
+            throw;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {

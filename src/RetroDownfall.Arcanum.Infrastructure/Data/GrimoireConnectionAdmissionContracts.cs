@@ -174,6 +174,8 @@ internal interface IGrimoireConnectionAdmissionGate
 {
     long CurrentGeneration { get; }
 
+    bool AttestDrainedMaintenance(GrimoireConnectionAdmissionGate.DrainedMaintenanceProof proof) => false;
+
     bool TryAcquireRequestLease(
         GrimoireRequestKind kind,
         out IGrimoireRequestLease? lease);
@@ -274,6 +276,8 @@ internal enum GrimoireWorkKind : byte
     ProviderHealthProbe = 15,
 
     McpServerBootstrap = 16,
+
+    LongRestSweep = 17,
 }
 
 /// <summary>
@@ -298,6 +302,12 @@ internal interface IGrimoireWorkLease : IAsyncDisposable
     long Generation { get; }
 
     CancellationToken MaintenanceRevocation { get; }
+
+    /// <summary>The lease's maintenance obligation, including before cancellation callbacks run.</summary>
+    bool MaintenanceRevocationPending => MaintenanceRevocation.IsCancellationRequested;
+
+    /// <summary>Proves contiguous fully drained, non-destructive aborts on this exact live lease.</summary>
+    GrimoireConnectionAdmissionGate.DrainedMaintenanceProof? ProveDrainedMaintenance(long previousGeneration) => null;
 
     bool TryBeginExternalEffectGroup(
         out IGrimoireExternalEffectGroup? effectGroup);

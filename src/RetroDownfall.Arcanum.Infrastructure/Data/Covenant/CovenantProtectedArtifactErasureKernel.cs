@@ -7,6 +7,7 @@ using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.DataLifecycle;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Infrastructure.Data.Annals;
+using RetroDownfall.Arcanum.Infrastructure.Data.LongRest;
 using RetroDownfall.Arcanum.Infrastructure.Weave;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
@@ -33,7 +34,8 @@ internal sealed record CovenantArtifactPurgeTarget(
     AnnalSubjectStore? AnnalStore = null,
     int? RequiredFromCoreVersion = null,
     string? AdditionalPredicate = null,
-    string? RowIdentity = null)
+    string? RowIdentity = null,
+    bool LongRestNode = false)
 {
     /// <summary>This target's delete, keyed by an already-normalised parameter.</summary>
     internal string DeleteBy(string parameter) => $"DELETE FROM {Table} WHERE {Predicate(parameter)};";
@@ -47,7 +49,7 @@ internal sealed record CovenantArtifactPurgeTarget(
 
     private string Predicate(string parameter)
     {
-        string keyed = AnnalStore is { } store
+        string keyed = LongRestNode ? LongRestLifecycle.Predicate(Table, parameter) : AnnalStore is { } store
             ? AnnalsErasurePlan.ForSubjectQuery(
                 store,
                 $"SELECT SubjectId FROM annal_claims WHERE {CovenantIdentitySql.Keyed("SubjectId", parameter)}")
@@ -159,6 +161,13 @@ internal static class CovenantArtifactPurgePlans
             SensitiveArtifactKind.CampaignContribution,
             [new CovenantArtifactPurgeTarget("campaign_maintenance_checkpoints", "OutputArtifactId", AdditionalPredicate: "OutputArtifactKindCode = 15", RowIdentity: "ClaimId || ':' || StepCode || ':' || hex(InputManifestDigest)")],
             new CovenantArtifactPurgeTarget("campaign_contribution_artifacts", "ArtifactId"),
+            CurrentPointerTable: null,
+            RedactionSql: null),
+
+        [SensitiveArtifactKind.LongRestDiscovery] = new(
+            SensitiveArtifactKind.LongRestDiscovery,
+            LongRestLifecycle.Projections,
+            LongRestLifecycle.Artifact,
             CurrentPointerTable: null,
             RedactionSql: null),
 
@@ -368,6 +377,18 @@ internal sealed class CovenantProtectedArtifactErasureKernel(
                 await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
 
                 return Blocked(CovenantErasureBlocker.ManualOwnershipMismatch);
+            }
+
+            if (item.Kind == SensitiveArtifactKind.LongRestDiscovery)
+            {
+                Result<ArtifactSensitivityLabel?> current = await ArtifactSensitivityLedger.ReadLabelWithinAsync(
+                    connection, transaction, item.Kind, item.ArtifactId, cancellationToken).ConfigureAwait(false);
+
+                if (current.IsFailure || current.Value is null
+                    || (await LongRestLifecycle.ValidateArtifactAsync(connection, transaction, current.Value, cancellationToken).ConfigureAwait(false)).IsFailure)
+                {
+                    return Blocked(CovenantErasureBlocker.IntegrityFailure);
+                }
             }
 
             CovenantOperationScope[] dependentOwners = await CampaignSummaryLifecycle.ReadDependencyOwnersAsync(

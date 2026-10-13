@@ -84,8 +84,10 @@ public sealed partial class DataRetentionServiceTests
 
         DataRetentionPlan plan = await service.PlanAsync(request, CancellationToken.None);
 
-        // Nine with a plain mirror under every table: the legacy one's row is not counted.
-        Assert.Equal(8, plan.DerivedRecords);
+        Assert.Equal(1, await CountAllAsync("long_rest_sources"));
+
+        // Ten with a plain mirror under every table: the legacy one's row is not counted.
+        Assert.Equal(9, plan.DerivedRecords);
 
         Result<DataRetentionApplyResult> result = await service.ApplyAsync(
             new DataRetentionApplyRequest(request, plan.PlanId),
@@ -96,6 +98,8 @@ public sealed partial class DataRetentionServiceTests
         Assert.True(result.Value.Reconciled);
 
         Assert.Equal(plan.DerivedRecords, result.Value.DerivedRecordsDeleted);
+
+        Assert.Equal(0, await CountAllAsync("long_rest_sources"));
 
         Assert.Equal(0, await CountAllAsync("entry_embeddings"));
 

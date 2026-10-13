@@ -5941,31 +5941,7 @@ internal sealed partial class DataRetentionService
                 return CandidateDeleteResult.Empty;
             }
 
-            if (vectorTableExists)
-            {
-                derived += await ExecuteAsync(
-                    connection,
-                    transaction,
-                    "DELETE FROM saga_memory_embeddings_vec WHERE MemoryId = @id",
-                    cancellationToken,
-                    ("@id", memoryId)).ConfigureAwait(false);
-            }
-
-            derived += await ExecuteAsync(
-                connection,
-                transaction,
-                "DELETE FROM saga_memory_embeddings WHERE MemoryId = @id",
-                cancellationToken,
-                ("@id", memoryId)).ConfigureAwait(false);
-
-            provenance = await ExecuteAsync(
-                connection,
-                transaction,
-                "DELETE FROM saga_memory_attachment_provenance WHERE MemoryId = @id",
-                cancellationToken,
-                ("@id", memoryId)).ConfigureAwait(false);
-
-            // Before the memory row, because the claim is found through the row that names it. The
+            // Before embedding, provenance or canonical mutations invalidate generation selectors. The
             // rows-zero arm below rolls the whole transaction back, so a candidate the delete's own
             // WHERE refuses keeps its claim along with its memory.
             derived += await CountInTransactionAsync(
@@ -5995,6 +5971,30 @@ internal sealed partial class DataRetentionService
                 AnnalSubjectStore.Saga,
                 memoryId,
                 cancellationToken).ConfigureAwait(false);
+
+            if (vectorTableExists)
+            {
+                derived += await ExecuteAsync(
+                    connection,
+                    transaction,
+                    "DELETE FROM saga_memory_embeddings_vec WHERE MemoryId = @id",
+                    cancellationToken,
+                    ("@id", memoryId)).ConfigureAwait(false);
+            }
+
+            derived += await ExecuteAsync(
+                connection,
+                transaction,
+                "DELETE FROM saga_memory_embeddings WHERE MemoryId = @id",
+                cancellationToken,
+                ("@id", memoryId)).ConfigureAwait(false);
+
+            provenance = await ExecuteAsync(
+                connection,
+                transaction,
+                "DELETE FROM saga_memory_attachment_provenance WHERE MemoryId = @id",
+                cancellationToken,
+                ("@id", memoryId)).ConfigureAwait(false);
 
             // The pin is re-proved here rather than trusted from the plan. A plan is a measurement, and
             // a measurement that authorizes a later delete has to hold at the moment it is used --

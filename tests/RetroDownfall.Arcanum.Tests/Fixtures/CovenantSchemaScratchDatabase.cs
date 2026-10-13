@@ -317,6 +317,22 @@ public sealed class CovenantSchemaScratchDatabase : IAsyncDisposable
     private const string OwnerDeletionEventsObjectName = "owner_deletion_events";
 
     /// <summary>
+    /// Explicit read dependencies of the current label-delete guard. SQLite resolves every trigger
+    /// reference when preparing a delete, even when an existing authorization satisfies its guard.
+    /// Focused fixtures opt into this exact closure instead of installing the entire Core catalog.
+    /// </summary>
+    internal static IReadOnlyList<string> ArtifactSensitivityDeleteGuardObjects { get; } =
+    [
+        "long_rest_discovery_nodes",
+        "long_rest_discovery_embeddings",
+        "long_rest_discovery_edges",
+        "long_rest_clean_fts",
+        "long_rest_protected_fts",
+        "long_rest_accepted_summaries",
+        "artifact_sensitivity_guard_delete",
+    ];
+
+    /// <summary>
     /// The provider has to be installed before the first connection is constructed. Doing it here
     /// rather than in each suite keeps a filtered run from depending on some earlier test in the run
     /// having initialized it.

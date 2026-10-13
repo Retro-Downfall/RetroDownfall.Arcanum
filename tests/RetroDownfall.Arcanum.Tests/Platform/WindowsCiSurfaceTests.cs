@@ -1,4 +1,7 @@
 using System.Reflection;
+using System.Runtime.InteropServices;
+
+using Xunit.Abstractions;
 using RetroDownfall.Arcanum.Secrets.Security;
 
 namespace RetroDownfall.Arcanum.Tests.Platform;
@@ -18,7 +21,7 @@ namespace RetroDownfall.Arcanum.Tests.Platform;
 /// <c>ARCANUM_REQUIRE_MACOS_WORKSPACE_CHECK</c> guard.
 /// </para>
 /// </remarks>
-public sealed class WindowsCiSurfaceTests
+public sealed class WindowsCiSurfaceTests(ITestOutputHelper output)
 {
 
     private const string RequireVariable = "ARCANUM_REQUIRE_WINDOWS_SUITE";
@@ -161,6 +164,31 @@ public sealed class WindowsCiSurfaceTests
             + "this assembly is actually gated on the platform any more and this lane exercises no "
             + "Windows-only code path. Restore the skip-gated class or retire this lane deliberately.");
 
+    }
+
+    [Fact]
+    public void Windows_ci_lane_uses_the_expected_native_runtime_identifier()
+    {
+        if (!WindowsLaneRequired())
+        {
+            return;
+        }
+
+        string expectedRid = global::System.Environment.GetEnvironmentVariable("ARCANUM_EXPECTED_WINDOWS_RID") ?? string.Empty;
+
+        Assert.Contains(expectedRid, new[] { "win-x64", "win-arm64" });
+
+        Architecture expectedArchitecture = expectedRid == "win-arm64" ? Architecture.Arm64 : Architecture.X64;
+
+        output.WriteLine($"Expected RID: {expectedRid}; runtime RID: {RuntimeInformation.RuntimeIdentifier}; process architecture: {RuntimeInformation.ProcessArchitecture}; OS architecture: {RuntimeInformation.OSArchitecture}");
+
+        Assert.True(OperatingSystem.IsWindows());
+
+        Assert.Equal(expectedRid, RuntimeInformation.RuntimeIdentifier);
+
+        Assert.Equal(expectedArchitecture, RuntimeInformation.ProcessArchitecture);
+
+        Assert.Equal(expectedArchitecture, RuntimeInformation.OSArchitecture);
     }
 
     private static MethodInfo[] TestMethods(Type type) =>

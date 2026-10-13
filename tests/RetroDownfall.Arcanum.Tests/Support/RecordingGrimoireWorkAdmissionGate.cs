@@ -75,6 +75,8 @@ internal sealed class RecordingGrimoireWorkAdmissionGate(
 
     public long CurrentGeneration => inner.CurrentGeneration;
 
+    public bool AttestDrainedMaintenance(GrimoireConnectionAdmissionGate.DrainedMaintenanceProof proof) => inner.AttestDrainedMaintenance(proof);
+
     public bool TryAcquireRequestLease(
         GrimoireRequestKind kind,
         out IGrimoireRequestLease? lease) =>
@@ -181,6 +183,11 @@ internal sealed class RecordingGrimoireWorkAdmissionGate(
         public long Generation => inner.Generation;
 
         public CancellationToken MaintenanceRevocation => inner.MaintenanceRevocation;
+
+        public bool MaintenanceRevocationPending => inner.MaintenanceRevocationPending;
+
+        public GrimoireConnectionAdmissionGate.DrainedMaintenanceProof? ProveDrainedMaintenance(long previousGeneration) =>
+            inner.ProveDrainedMaintenance(previousGeneration);
 
         public bool TryBeginExternalEffectGroup(
             out IGrimoireExternalEffectGroup? effectGroup)

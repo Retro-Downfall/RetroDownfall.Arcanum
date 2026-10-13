@@ -47,6 +47,7 @@ public sealed partial class GrimoireConnectionAdmissionGateTests
         GrimoireWorkKind.LongRunningOperationRecovery,
         GrimoireWorkKind.ProviderHealthProbe,
         GrimoireWorkKind.McpServerBootstrap,
+        GrimoireWorkKind.LongRestSweep,
     };
 
     [Fact]
@@ -74,7 +75,7 @@ public sealed partial class GrimoireConnectionAdmissionGateTests
 
     [Theory]
     [InlineData(0)]
-    [InlineData(17)]
+    [InlineData(18)]
     public void ZeroAndUndefinedWorkKindsAreRejected(byte value)
     {
         GrimoireConnectionAdmissionGate gate = CreateGate();

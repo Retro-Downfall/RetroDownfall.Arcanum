@@ -73,12 +73,46 @@ internal sealed class CanonicalCampaignContextResolver(
 
         }
 
-        return CanonicalCampaignResolutionPolicy.Resolve(
+        Result<CanonicalCampaignContext> resolved = CanonicalCampaignResolutionPolicy.Resolve(
             session.Value?.Binding,
             request.ExplicitCampaignId,
             workspace.Value,
             workingDirectorySupplied,
             generation);
+
+        if (resolved.IsFailure || !resolved.Value.IsCampaignBound)
+        {
+            return resolved;
+        }
+
+        CanonicalCampaignContext canonical = resolved.Value;
+
+        Result<RegisteredCampaignIdentity?> registered = await paths.FindByCampaignAsync(
+            canonical.CampaignId!.Value, cancellationToken).ConfigureAwait(false);
+
+        if (registered.IsFailure)
+        {
+            return registered.Error;
+        }
+
+        if (registered.Value is { } root)
+        {
+            if (root.CampaignId != canonical.CampaignId || root.PolicyVersion == 0
+                || root.Revision <= 0 || !root.PhysicalIdentityDigest.IsValid
+                || (workspace.Value is { } observed && (observed.CampaignId != root.CampaignId
+                    || observed.PolicyVersion != root.PolicyVersion || observed.Revision != root.Revision
+                    || observed.PhysicalIdentityDigest != root.PhysicalIdentityDigest)))
+            {
+                return new Error(ErrorCodes.Covenant.StaleSnapshot, "The registered Campaign root changed during resolution.");
+            }
+
+            return CanonicalCampaignContext.Create(canonical.Binding, canonical.CampaignAvailabilityGeneration,
+                root.PolicyVersion, root.Revision, root.PhysicalIdentityDigest);
+        }
+
+        return workspace.Value is null
+            ? resolved
+            : new Error(ErrorCodes.Covenant.StaleSnapshot, "The resolved Campaign root is no longer registered.");
 
     }
 

@@ -18,9 +18,10 @@ public sealed class InternalsVisibleToInventoryTests
 {
     [Theory]
 
+    // API composition alone issues and renews authenticated Long Rest live capabilities.
     [InlineData(
         "src/RetroDownfall.Arcanum.Core/RetroDownfall.Arcanum.Core.csproj",
-        "RetroDownfall.Arcanum.Covenant.Benchmarks,RetroDownfall.Arcanum.Tests")]
+        "RetroDownfall.Arcanum.Api,RetroDownfall.Arcanum.Covenant.Benchmarks,RetroDownfall.Arcanum.Tests")]
 
     [InlineData(
         "src/RetroDownfall.Arcanum.Infrastructure/RetroDownfall.Arcanum.Infrastructure.csproj",

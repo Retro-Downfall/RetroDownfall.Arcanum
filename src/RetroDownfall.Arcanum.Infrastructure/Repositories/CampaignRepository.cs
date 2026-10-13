@@ -14,6 +14,7 @@ using RetroDownfall.Arcanum.Core.Serialization;
 using RetroDownfall.Arcanum.Core.Workspaces;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
+using RetroDownfall.Arcanum.Infrastructure.Data.LongRest;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Repositories;
 
@@ -342,6 +343,9 @@ public sealed class CampaignRepository : ICampaignRepository
 
             using IDisposable ownerCleanup = CovenantSqliteConnectionInitializer.Instance.Authorize(
                 (SqliteConnection)transaction.Connection!, CovenantSqliteAuthorizationKind.OwnerCleanup);
+
+            _ = await LongRestLifecycle.ClearCampaignAsync(
+                transaction.Connection!, transaction, id, cancellationToken).ConfigureAwait(false);
 
             _ = await CampaignSummaryLifecycle.ClearCampaignAsync(
                 transaction.Connection!, transaction, id, removeOwner: true, cancellationToken).ConfigureAwait(false);

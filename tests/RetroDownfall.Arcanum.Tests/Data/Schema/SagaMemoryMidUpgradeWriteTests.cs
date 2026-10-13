@@ -588,6 +588,12 @@ public sealed class SagaMemoryMidUpgradeWriteTests
         {
         }
 
+        Assert.Equal(
+            GrimoireSchemaVersionChains.CoreSchemaVersion,
+            await GrimoireCoreSchemaVersion.ReadAsync(connection, CancellationToken.None));
+
+        Assert.Empty(await GrimoireSchemaTransitionJournal.ReadAllAsync(connection, CancellationToken.None));
+
         Assert.Equal(1, await CountAsync(connection, "SELECT COUNT(*) FROM saga_retirement_suppressions;"));
 
         string root = Path.Combine(
@@ -599,6 +605,27 @@ public sealed class SagaMemoryMidUpgradeWriteTests
 
             _ = Directory.CreateDirectory(root);
 
+            // This context omits the production connection interceptor. Initialize the exact
+            // reset connection after the historical retirement/backfill window, with no authority grant.
+            SqliteConnection resetConnection = (SqliteConnection)db.Database.GetDbConnection();
+
+            if (resetConnection.State != System.Data.ConnectionState.Open)
+            {
+                await db.Database.OpenConnectionAsync(CancellationToken.None);
+            }
+
+            await CovenantSqliteConnectionInitializer.Instance.InitializeAsync(
+                resetConnection, CovenantSqliteConnectionMode.ReadWrite, CancellationToken.None);
+
+            await using (SqliteCommand guard = resetConnection.CreateCommand())
+            {
+                guard.CommandText = "SELECT arcanum_artifact_replacement_authorized();";
+
+                Assert.Equal(0L, await guard.ExecuteScalarAsync(CancellationToken.None));
+            }
+
+            TestCapturingLogger<DataRetentionService> retentionLog = new();
+
             DataRetentionService retention = new(
                 db,
                 new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings()),
@@ -606,7 +633,7 @@ public sealed class SagaMemoryMidUpgradeWriteTests
                     db,
                     TestOrdinaryConnectionFactory.For(db)),
                 TimeProvider.System,
-                NullLogger<DataRetentionService>.Instance,
+                retentionLog,
                 FixtureLabeledArtifactGuard.For(db),
                 root,
                 root,
@@ -623,7 +650,14 @@ public sealed class SagaMemoryMidUpgradeWriteTests
                 new DataRetentionApplyRequest(request, plan.PlanId),
                 CancellationToken.None);
 
-            Assert.True(applied.IsSuccess, applied.IsFailure ? applied.Error.Message : string.Empty);
+            Assert.True(
+                applied.IsSuccess,
+                applied.IsFailure
+                    ? applied.Error.Code + ": " + string.Join("; ", retentionLog.Entries.Select(static entry =>
+                        entry.Exception is SqliteException sql
+                            ? "SQLite " + sql.SqliteErrorCode + "/" + sql.SqliteExtendedErrorCode + ": " + sql.Message
+                            : entry.Exception?.GetType().Name ?? entry.Message))
+                    : string.Empty);
 
             Assert.True(applied.Value.Reconciled);
 

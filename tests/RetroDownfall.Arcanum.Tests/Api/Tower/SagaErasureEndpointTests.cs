@@ -90,6 +90,8 @@ public sealed class SagaErasureEndpointTests
 
         string[] erased = [target, firstTwin, secondTwin];
 
+        Assert.Equal(3, await CountForIdsAsync(factory, "SELECT count(*) FROM long_rest_sources WHERE MemoryId IN ({0})", erased));
+
         long before = await PlanRowsAsync(factory, erased);
 
         SagaErasePrepareRequest prepare = await PrepareRequestAsync(client, target, Guid.NewGuid());
@@ -180,6 +182,10 @@ public sealed class SagaErasureEndpointTests
         await AssertShownAsync(client, otherScope, T);
 
         await AssertShownAsync(client, otherText, Other);
+
+        Assert.Equal(0, await CountForIdsAsync(factory, "SELECT count(*) FROM long_rest_sources WHERE MemoryId IN ({0})", erased));
+
+        Assert.Equal(2, await CountForIdsAsync(factory, "SELECT count(*) FROM long_rest_sources WHERE MemoryId IN ({0})", [otherText, otherScope]));
 
         Assert.Equal(0, await CountForIdsAsync(factory, "SELECT count(*) FROM saga_memory_embeddings WHERE MemoryId IN ({0})", erased));
 
@@ -1425,6 +1431,8 @@ public sealed class SagaErasureEndpointTests
 
         Assert.True(await CountForIdsAsync(factory, DecisionReceipts, ids) > 0);
 
+        Assert.Equal(1, await CountForIdsAsync(factory, "SELECT count(*) FROM long_rest_sources WHERE MemoryId IN ({0})", ids));
+
         long before = await PlanRowsAsync(factory, ids);
 
         MemoryErasureRoundTrip<SagaEraseRequest> erased = await driver.EraseSagaAsync(target);
@@ -1440,6 +1448,8 @@ public sealed class SagaErasureEndpointTests
         Assert.Equal(0, await CountForIdsAsync(factory, ReviewEvents, ids));
 
         Assert.Equal(0, await CountForIdsAsync(factory, DecisionReceipts, ids));
+
+        Assert.Equal(0, await CountForIdsAsync(factory, "SELECT count(*) FROM long_rest_sources WHERE MemoryId IN ({0})", ids));
 
         Assert.Equal(0, await PlanRowsAsync(factory, ids, requireRows: false));
 
@@ -1553,6 +1563,8 @@ public sealed class SagaErasureEndpointTests
                 "SELECT count(*) FROM annal_versions WHERE ClaimId IN (SELECT ClaimId FROM annal_claims WHERE SubjectStoreCode = 1 AND SubjectId IN ({0}))",
                 [target]));
 
+        Assert.Equal(1, await CountForIdsAsync(factory, "SELECT count(*) FROM long_rest_sources WHERE MemoryId IN ({0})", [target]));
+
         long before = await PlanRowsAsync(factory, [target]);
 
         MemoryErasureRoundTrip<SagaEraseRequest> erased = await driver.EraseSagaAsync(target);
@@ -1573,6 +1585,8 @@ public sealed class SagaErasureEndpointTests
         Assert.True(replayed.Replayed);
 
         Assert.Equal(erased.Result.Local.RemovedRowCount, replayed.Local.RemovedRowCount);
+
+        Assert.Equal(0, await CountForIdsAsync(factory, "SELECT count(*) FROM long_rest_sources WHERE MemoryId IN ({0})", [target]));
 
         Assert.Equal(0, await PlanRowsAsync(factory, [target], requireRows: false));
 
@@ -1985,6 +1999,7 @@ public sealed class SagaErasureEndpointTests
             "SELECT count(*) FROM saga_memory_embeddings WHERE MemoryId IN ({0})",
             "SELECT count(*) FROM saga_memory_attachment_provenance WHERE MemoryId IN ({0})",
             "SELECT count(*) FROM saga_memories WHERE Id IN ({0})",
+            "SELECT count(*) FROM long_rest_sources WHERE MemoryId IN ({0})",
         ];
 
         long total = 0;

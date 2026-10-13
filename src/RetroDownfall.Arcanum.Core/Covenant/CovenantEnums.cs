@@ -196,7 +196,9 @@ public enum SensitiveArtifactKind : byte
     ManagedWorkspaceFile = 12,
     IdempotencyClaim = 13,
     CampaignRollup = 14,
-    CampaignContribution = 15
+    CampaignContribution = 15,
+
+    LongRestDiscovery = 16
 }
 
 [JsonConverter(typeof(StringOnlyJsonStringEnumConverter<CovenantEgressDestination>))]
@@ -258,7 +260,9 @@ public enum CovenantMaintenanceStep : byte
     Saga = 3,
     Lexicon = 4,
     CampaignRollup = 5,
-    CampaignContribution = 6
+    CampaignContribution = 6,
+
+    LongRest = 7
 }
 
 [JsonConverter(typeof(StringOnlyJsonStringEnumConverter<CovenantMaintenanceCheckpoint>))]

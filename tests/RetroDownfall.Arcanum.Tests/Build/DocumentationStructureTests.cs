@@ -18,7 +18,7 @@ namespace RetroDownfall.Arcanum.Tests.Build;
 public sealed class DocumentationStructureTests
 {
     [Theory]
-    [InlineData("docs/Arcanum.DESIGN.md", "**Complete hosted-producer inventory (23 services).**")]
+    [InlineData("docs/Arcanum.DESIGN.md", "**Authored hosted-producer inventory (24 services).**")]
     [InlineData("docs/Arcanum.DESIGN.md", "one effect group per existing 64-line accounting page")]
     [InlineData("docs/Arcanum.DESIGN.md", "the actual shared global-initialization task")]
     [InlineData("docs/Arcanum.Engineering.md", "The hosted Grimoire producer inventory is a bidirectional source contract")]

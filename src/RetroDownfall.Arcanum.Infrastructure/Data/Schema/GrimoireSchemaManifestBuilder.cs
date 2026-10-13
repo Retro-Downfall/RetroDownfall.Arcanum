@@ -71,6 +71,17 @@ internal static class GrimoireSchemaManifestBuilder
 
         }
 
+        if (transactionTier == GrimoireSchemaTransactionTier.Core)
+        {
+            foreach (string owner in new[] { "long_rest_clean_fts", "long_rest_protected_fts" })
+            {
+                if (definitions.Any(definition => definition.Name == owner))
+                {
+                    resolved.AddRange(LongRestFtsSyntheticManifest.For(owner));
+                }
+            }
+        }
+
         return new GrimoireSchemaManifest(
             family,
             transactionTier,

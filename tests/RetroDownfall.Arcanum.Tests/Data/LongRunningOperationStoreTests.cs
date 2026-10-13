@@ -52,6 +52,80 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
         }
     }
 
+    [Fact]
+    public async Task Expired_long_rest_public_cancellation_survives_new_owner_acquisition()
+    {
+        RequireSqlCipher();
+
+        LongRunningOperationStore store = Store(_db!);
+
+        DateTimeOffset started = new(2026, 10, 10, 0, 0, 0, TimeSpan.Zero);
+
+        LongRunningOperation operation = await CreateAsync(store, started);
+
+        LongRunningOperationLeaseResult original = await store.TryAcquireLeaseAsync(operation.Id, "old-owner", started, started.AddMinutes(1));
+
+        Assert.True(await store.RequestCancellationAsync(operation.Id, original.Operation.Revision, started));
+
+        await using var command = _db!.Database.GetDbConnection().CreateCommand();
+
+        command.CommandText = "UPDATE LongRunningOperations SET Kind = 'long-rest-sweep' WHERE Id = $id;";
+
+        var parameter = command.CreateParameter();
+
+        parameter.ParameterName = "$id";
+
+        parameter.Value = operation.Id.ToString("N");
+
+        command.Parameters.Add(parameter);
+
+        Assert.Equal(1, await command.ExecuteNonQueryAsync());
+
+        Assert.Equal("long-rest-sweep", (await store.GetAsync(operation.Id))!.Kind);
+
+        LongRunningOperationLeaseResult resumed = await store.TryAcquireLeaseAsync(operation.Id, "new-owner", started.AddMinutes(2), started.AddMinutes(3));
+
+        Assert.True(resumed.Acquired);
+
+        Assert.Equal(LongRunningOperationState.Cancelling, resumed.Operation.State);
+
+        Assert.Equal("new-owner", resumed.Operation.LeaseOwner);
+    }
+
+    [Fact]
+    public async Task Real_ledger_operation_identity_is_consumed_by_Long_Rest_scope_store()
+    {
+        RequireSqlCipher();
+
+        LongRunningOperationStore store = Store(_db!);
+
+        LongRunningOperation operation = await CreateAsync(store, DateTimeOffset.UtcNow);
+
+        await using var command = _db!.Database.GetDbConnection().CreateCommand();
+
+        command.CommandText = "UPDATE LongRunningOperations SET Kind = 'long-rest-sweep' WHERE Id = $id;";
+
+        var parameter = command.CreateParameter();
+
+        parameter.ParameterName = "$id";
+
+        parameter.Value = operation.Id.ToString("N");
+
+        command.Parameters.Add(parameter);
+
+        Assert.Equal(1, await command.ExecuteNonQueryAsync());
+
+        var sweep = new RetroDownfall.Arcanum.Infrastructure.Data.LongRest.LongRestSweepStore(_db!, TimeProvider.System);
+
+        var scope = RetroDownfall.Arcanum.Core.LongRest.LongRestSweepScope.Create(new(RetroDownfall.Arcanum.Core.LongRest.LongRestSweepScopeKind.Global, null)).Value;
+
+        var result = await sweep.BeginOrResumeAsync(operation.Id, scope, new(Guid.NewGuid(), 0, new CovenantDigest(new byte[32])), CancellationToken.None);
+
+        Assert.True(result.IsSuccess, result.IsFailure ? result.Error.Code : null);
+
+        Assert.Equal(operation.Id, result.Value.OperationId);
+    }
+
     [Theory]
     [InlineData(LongRunningOperationState.Running)]
     [InlineData(LongRunningOperationState.Waiting)]

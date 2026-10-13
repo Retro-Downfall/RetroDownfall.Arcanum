@@ -8,13 +8,15 @@ using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.LongRest;
+using RetroDownfall.Arcanum.Core.Operations;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.Tower;
 
 namespace RetroDownfall.Arcanum.Api.Intelligence;
 
-/// <summary>One frozen Campaign artifact, shared by every dispatch of a logical turn.</summary>
+/// <summary>One claimed maintenance snapshot and optional Campaign artifact for every dispatch of a logical turn.</summary>
 public sealed class CampaignRollupTurnSnapshot(
     CampaignRollupArtifact? artifact,
     CanonicalCampaignContext campaign,
@@ -25,7 +27,10 @@ public sealed class CampaignRollupTurnSnapshot(
     CovenantTurnLease? authority,
     SessionTurnClaimLease? claimLease = null,
     ISessionTurnClaimCoordinator? claims = null,
-    CovenantDigest? frozenConfigurationDigest = null) : IAsyncDisposable
+    CovenantDigest? frozenConfigurationDigest = null,
+    bool requiresRollups = true,
+    LongRestConfigurationStamp? longRestStamp = null,
+    ILongRestConfigurationProvider? longRestConfiguration = null) : IAsyncDisposable
 {
     private readonly CovenantDigest _configurationDigest = frozenConfigurationDigest
         ?? CampaignRollupTurnPreparer.ConfigurationDigest(settings.CurrentValue);
@@ -46,16 +51,32 @@ public sealed class CampaignRollupTurnSnapshot(
 
     public void MarkBegun() => _begun = true;
 
-    public async Task<Result> ValidateAsync(CancellationToken cancellationToken)
+    private Result ValidateConfiguration()
     {
-        if (!settings.CurrentValue.ResolveIntelligence().EnableCampaignRollups)
+        ArcanumSettings configuration = settings.CurrentValue;
+
+        if ((requiresRollups && !configuration.ResolveIntelligence().EnableCampaignRollups)
+            || CampaignRollupTurnPreparer.ConfigurationDigest(configuration) != _configurationDigest)
         {
-            return new Error(ErrorCodes.Covenant.StaleSnapshot, "Campaign summary injection was disabled during this turn.");
+            return new Error(ErrorCodes.Covenant.StaleSnapshot, "The configuration bound to this turn changed.");
         }
 
-        if (CampaignRollupTurnPreparer.ConfigurationDigest(settings.CurrentValue) != _configurationDigest)
+        if (longRestStamp is not null && (!configuration.Features.LongRest
+            || longRestConfiguration is null || !longRestConfiguration.IsCurrent(longRestStamp)))
         {
-            return new Error(ErrorCodes.Covenant.StaleSnapshot, "The configuration bound to this Campaign turn changed.");
+            return new Error(ErrorCodes.Covenant.StaleSnapshot, "The maintenance configuration accepted by this turn is no longer current.");
+        }
+
+        return Result.Success();
+    }
+
+    public async Task<Result> ValidateAsync(CancellationToken cancellationToken)
+    {
+        Result configuration = ValidateConfiguration();
+
+        if (configuration.IsFailure)
+        {
+            return configuration;
         }
 
         if (Authority is not null)
@@ -81,9 +102,19 @@ public sealed class CampaignRollupTurnSnapshot(
             return new Error(ErrorCodes.Covenant.StaleSnapshot, "This turn's canonical Campaign identity changed.");
         }
 
-        return Artifact is null
-            ? Result.Success()
-            : await store.ValidateAsync(Artifact, Authority, cancellationToken).ConfigureAwait(false);
+        if (Artifact is not null)
+        {
+            Result artifact = await store.ValidateAsync(Artifact, Authority, cancellationToken).ConfigureAwait(false);
+
+            if (artifact.IsFailure)
+            {
+                return artifact;
+            }
+        }
+
+        // Every awaited validator can observe a configuration transition. Recheck the full
+        // settings and the monotonic Long Rest stamp at the actual successful dispatch boundary.
+        return ValidateConfiguration();
     }
 
     public async ValueTask DisposeAsync()
@@ -121,8 +152,19 @@ public sealed class CampaignRollupTurnPreparer(
     ICovenantAuthoritySnapshotProvider? authoritySnapshot = null,
     ISessionTurnClaimLookup? lookup = null,
     IProtectedAssistantArtifactReader? protectedReplies = null,
-    ISessionTurnClaimReplayStore? replayStore = null)
+    ISessionTurnClaimReplayStore? replayStore = null,
+    ILongRestSweepCoordinator? longRest = null,
+    ILongRestMaintenance? longRestMaintenance = null,
+    ILongRestDiscoveryStore? longRestDiscovery = null,
+    ILongRestConfigurationProvider? longRestConfiguration = null)
 {
+
+    internal static bool IsLiveEligible(ArcanumSettings configuration, PingRequest request, ArcanumInvocationContext invocation) =>
+        invocation.Surface is ArcanumExecutionSurface.SessionBackedOperatorTurn
+        && invocation.ContextPolicy is CovenantContextPolicy.Default
+        && invocation.Campaign is { } canonical && canonical != default
+        && !InferenceContextBuilder.HasStatelessMessages(request)
+        && (configuration.Features.LongRest || (configuration.ResolveIntelligence().EnableCampaignRollups && canonical.IsCampaignBound));
 
     public async Task<Result<CampaignRollupTurnSnapshot?>> PrepareLiveAsync(
         PingRequest request,
@@ -133,11 +175,9 @@ public sealed class CampaignRollupTurnPreparer(
     {
         TurnIdempotencyRequestIdentity? accepted = TurnIdempotencyAmbient.RequestIdentity;
 
-        if (!settings.CurrentValue.ResolveIntelligence().EnableCampaignRollups
-            || invocation.Surface is not ArcanumExecutionSurface.SessionBackedOperatorTurn
-            || invocation.ContextPolicy is CovenantContextPolicy.None
-            || invocation.Campaign is not { IsCampaignBound: true } campaign
-            || InferenceContextBuilder.HasStatelessMessages(request))
+        ArcanumSettings preparationSettings = settings.CurrentValue;
+
+        if (!IsLiveEligible(preparationSettings, request, invocation))
         {
             if (accepted is not null)
             {
@@ -163,7 +203,15 @@ public sealed class CampaignRollupTurnPreparer(
             return Result<CampaignRollupTurnSnapshot?>.Success(null);
         }
 
-        if (maintenance is null || claimBegin is null || claims is null
+        CanonicalCampaignContext campaign = invocation.Campaign!.Value;
+
+        bool maintainRollups = preparationSettings.ResolveIntelligence().EnableCampaignRollups && campaign.IsCampaignBound;
+
+        bool maintainLongRest = preparationSettings.Features.LongRest;
+
+        LongRestConfigurationStamp? acceptedLongRestStamp = maintainLongRest ? longRestConfiguration?.Capture().Stamp : null;
+
+        if (claimBegin is null || claims is null
             || authoritySnapshot?.Current is not { } origin
             || !Guid.TryParse(origin.InstallationIdentity, out Guid installationId)
             || installationId == Guid.Empty)
@@ -171,7 +219,7 @@ public sealed class CampaignRollupTurnPreparer(
             return new Error(ErrorCodes.Covenant.OperatorAuthorityUnavailable, "Campaign summary maintenance has no established turn authority.");
         }
 
-        CovenantDigest configurationDigest = ConfigurationDigest(settings.CurrentValue);
+        CovenantDigest configurationDigest = ConfigurationDigest(preparationSettings);
 
         if (requestConfigurationDigest is { } scopedConfiguration && scopedConfiguration != configurationDigest)
         {
@@ -272,6 +320,11 @@ public sealed class CampaignRollupTurnPreparer(
         {
             if (invocation.CanReadCovenant)
             {
+                if (gate is null)
+                {
+                    return new Error(ErrorCodes.Covenant.Unavailable, "The authenticated turn lease is unavailable.");
+                }
+
                 Result<CovenantTurnLease> acquired = await gate.AcquireTurnAsync(campaign, cancellationToken).ConfigureAwait(false);
 
                 if (acquired.IsFailure)
@@ -293,7 +346,8 @@ public sealed class CampaignRollupTurnPreparer(
             {
                 Result<PromptTurnResult> replay = await ReplayAsync(lease, authority, cancellationToken).ConfigureAwait(false);
 
-                CampaignRollupTurnSnapshot replaySnapshot = new(null, campaign, boundRequest, store, settings, resolver, authority, lease, claims, configurationDigest)
+                CampaignRollupTurnSnapshot replaySnapshot = new(null, campaign, boundRequest, store, settings, resolver, authority, lease, claims, configurationDigest,
+                    requiresRollups: maintainRollups)
                 {
                     Replay = replay,
                 };
@@ -303,67 +357,220 @@ public sealed class CampaignRollupTurnPreparer(
                 return Result<CampaignRollupTurnSnapshot?>.Success(replaySnapshot);
             }
 
-            async Task<Result<CampaignRollupMaintenanceCapability?>> CapabilityAsync()
+            if (maintainRollups && maintenance is null)
             {
-                if (ConfigurationDigest(settings.CurrentValue) != configurationDigest)
+                return new Error(ErrorCodes.Covenant.Unavailable, "Campaign summary maintenance is unavailable.");
+            }
+
+            LongRestConfigurationStamp? longRestStamp = null;
+
+            if (maintainLongRest)
+            {
+                if (longRest is null || longRestConfiguration is null
+                    || (authority is not null && (longRestMaintenance is null || longRestDiscovery is null)))
                 {
-                    return new Error(ErrorCodes.Covenant.StaleSnapshot, "The configuration accepted by this Campaign claim changed before maintenance.");
+                    return new Error(ErrorCodes.LongRest.Unavailable, "Long Rest turn maintenance is unavailable.");
                 }
 
-                if (authority is null)
+                LongRestSweepConfiguration configuration = longRestConfiguration.Capture();
+
+                if (!configuration.Enabled || !configuration.Stamp.IsValid
+                    || acceptedLongRestStamp != configuration.Stamp)
                 {
-                    return Result<CampaignRollupMaintenanceCapability?>.Success(null);
+                    return new Error(ErrorCodes.Covenant.StaleSnapshot, "Long Rest changed before turn maintenance.");
                 }
 
-                Result<CampaignRollupMaintenanceCapability> prepared = await maintenance.CreateCapabilityAsync(
-                    invocation, lease, campaign, authority, cancellationToken).ConfigureAwait(false);
-
-                return prepared.IsFailure ? prepared.Error : Result<CampaignRollupMaintenanceCapability?>.Success(prepared.Value);
+                longRestStamp = acceptedLongRestStamp;
             }
 
-            Result<CampaignRollupMaintenanceCapability?> sessionCapability = await CapabilityAsync().ConfigureAwait(false);
-
-            if (sessionCapability.IsFailure)
+            Result CurrentConfiguration()
             {
-                return sessionCapability.Error;
+                if (ConfigurationDigest(settings.CurrentValue) != configurationDigest
+                    || (longRestStamp is not null && !longRestConfiguration!.IsCurrent(longRestStamp)))
+                {
+                    return new Error(ErrorCodes.Covenant.StaleSnapshot, "The configuration accepted by this turn changed during maintenance.");
+                }
+
+                return Result.Success();
             }
 
-            Result<CampaignRollupMaintenanceResult> contributed = await maintenance.ProcessSessionAsync(
-                sessionId, input.Value.HistoryRevision, sessionCapability.Value, cancellationToken).ConfigureAwait(false);
-
-            if (contributed.IsFailure)
+            if (CurrentConfiguration() is { IsFailure: true } beforeMaintenance)
             {
-                return contributed.Error;
+                return beforeMaintenance.Error;
             }
 
-            Result<CampaignRollupMaintenanceCapability?> campaignCapability = await CapabilityAsync().ConfigureAwait(false);
-
-            if (campaignCapability.IsFailure)
+            if (maintainLongRest)
             {
-                return campaignCapability.Error;
+                Result<LongRunningOperationDto> clean = await longRest!.RequestAsync(campaign, cancellationToken).ConfigureAwait(false);
+
+                if (clean.IsFailure)
+                {
+                    return clean.Error;
+                }
+
+                // Clean work belongs to the existing independently owned background worker.
+                // Only exact protected partitions must finish under this pending Session claim.
+                if (authority is not null)
+                {
+                    CovenantDigest? after = null;
+
+                    while (true)
+                    {
+                        if (CurrentConfiguration() is { IsFailure: true } currentConfiguration)
+                        {
+                            return currentConfiguration.Error;
+                        }
+
+                        Result live = await gate.ValidateTurnLeaseAsync(authority, cancellationToken).ConfigureAwait(false);
+
+                        if (live.IsFailure)
+                        {
+                            return live.Error;
+                        }
+
+                        Result<CovenantDigest?> candidate = await longRestDiscovery!.ReadNextProtectedPartitionAsync(
+                            campaign, after, cancellationToken).ConfigureAwait(false);
+
+                        if (candidate.IsFailure)
+                        {
+                            return candidate.Error;
+                        }
+
+                        if (candidate.Value is not { } partitionDigest)
+                        {
+                            break;
+                        }
+
+                        Result<LongRestSweepScope> partition = LongRestSweepScope.Create(new(
+                            campaign.IsCampaignBound ? LongRestSweepScopeKind.Campaign : LongRestSweepScopeKind.Global,
+                            campaign.CampaignId), partitionDigest);
+
+                        if (partition.IsFailure)
+                        {
+                            return partition.Error;
+                        }
+
+                        Result<LongRunningOperationDto> operation = await longRest!.RequestAsync(
+                            campaign, partition.Value, cancellationToken).ConfigureAwait(false);
+
+                        if (operation.IsFailure)
+                        {
+                            return operation.Error;
+                        }
+
+                        if (operation.Value.State is not LongRunningOperationState.Completed)
+                        {
+                            Result<LongRestMaintenanceCapability> prepared = await longRestMaintenance!.CreateCapabilityAsync(
+                                operation.Value.Id, invocation, lease, campaign, authority, cancellationToken).ConfigureAwait(false);
+
+                            if (prepared.IsFailure)
+                            {
+                                return prepared.Error;
+                            }
+
+                            LongRestMaintenanceCapability capability = prepared.Value;
+
+                            Result<LongRestSweepProgress> resumed;
+
+                            try
+                            {
+                                resumed = await longRest!.ResumeAsync(operation.Value.Id, capability, cancellationToken).ConfigureAwait(false);
+                            }
+                            finally
+                            {
+                                lease = capability.Claim;
+                            }
+
+                            if (resumed.IsFailure)
+                            {
+                                return resumed.Error;
+                            }
+
+                            if (resumed.Value.Phase is not LongRestSweepPhase.Completed || resumed.Value.DeferredReason is not null)
+                            {
+                                return new Error(ErrorCodes.LongRest.Unavailable, "Long Rest protected maintenance remains deferred.");
+                            }
+                        }
+
+                        after = partitionDigest;
+                    }
+                }
             }
 
-            Result<CampaignRollupMaintenanceResult> folded = await maintenance.ProcessCampaignAsync(
-                campaign.CampaignId!.Value, campaignCapability.Value, cancellationToken).ConfigureAwait(false);
+            CampaignRollupArtifact? artifact = null;
 
-            if (folded.IsFailure)
+            if (maintainRollups)
             {
-                return folded.Error;
+                async Task<Result<CampaignRollupMaintenanceCapability?>> CapabilityAsync()
+                {
+                    if (CurrentConfiguration() is { IsFailure: true } current)
+                    {
+                        return current.Error;
+                    }
+
+                    if (authority is null)
+                    {
+                        return Result<CampaignRollupMaintenanceCapability?>.Success(null);
+                    }
+
+                    Result<CampaignRollupMaintenanceCapability> prepared = await maintenance!.CreateCapabilityAsync(
+                        invocation, lease, campaign, authority, cancellationToken).ConfigureAwait(false);
+
+                    return prepared.IsFailure ? prepared.Error : Result<CampaignRollupMaintenanceCapability?>.Success(prepared.Value);
+                }
+
+                Result<CampaignRollupMaintenanceCapability?> sessionCapability = await CapabilityAsync().ConfigureAwait(false);
+
+                if (sessionCapability.IsFailure)
+                {
+                    return sessionCapability.Error;
+                }
+
+                Result<CampaignRollupMaintenanceResult> contributed = await maintenance!.ProcessSessionAsync(
+                    sessionId, input.Value.HistoryRevision, sessionCapability.Value, cancellationToken).ConfigureAwait(false);
+
+                if (contributed.IsFailure)
+                {
+                    return contributed.Error;
+                }
+
+                Result<CampaignRollupMaintenanceCapability?> campaignCapability = await CapabilityAsync().ConfigureAwait(false);
+
+                if (campaignCapability.IsFailure)
+                {
+                    return campaignCapability.Error;
+                }
+
+                Result<CampaignRollupMaintenanceResult> folded = await maintenance!.ProcessCampaignAsync(
+                    campaign.CampaignId!.Value, campaignCapability.Value, cancellationToken).ConfigureAwait(false);
+
+                if (folded.IsFailure)
+                {
+                    return folded.Error;
+                }
+
+                if (CurrentConfiguration() is { IsFailure: true } beforeRead)
+                {
+                    return beforeRead.Error;
+                }
+
+                Result<CampaignRollupArtifact?> current = await store.ReadCurrentAsync(campaign.CampaignId.Value, authority, cancellationToken).ConfigureAwait(false);
+
+                if (current.IsFailure)
+                {
+                    return current.Error;
+                }
+
+                artifact = current.Value;
             }
 
-            if (ConfigurationDigest(settings.CurrentValue) != configurationDigest)
+            if (CurrentConfiguration() is { IsFailure: true } finalConfiguration)
             {
-                return new Error(ErrorCodes.Covenant.StaleSnapshot, "The configuration accepted by this Campaign claim changed during maintenance.");
+                return finalConfiguration.Error;
             }
 
-            Result<CampaignRollupArtifact?> current = await store.ReadCurrentAsync(campaign.CampaignId.Value, authority, cancellationToken).ConfigureAwait(false);
-
-            if (current.IsFailure)
-            {
-                return current.Error;
-            }
-
-            CampaignRollupTurnSnapshot snapshot = new(current.Value, campaign, boundRequest, store, settings, resolver, authority, lease, claims, configurationDigest);
+            CampaignRollupTurnSnapshot snapshot = new(artifact, campaign, boundRequest, store, settings, resolver, authority, lease, claims,
+                configurationDigest, maintainRollups, longRestStamp, longRestConfiguration);
 
             transferred = true;
 
@@ -373,15 +580,20 @@ public sealed class CampaignRollupTurnPreparer(
         {
             if (!transferred)
             {
-                if (lease.IsExecutable)
+                try
                 {
-                    _ = await claims.CompleteAsync(lease,
-                        SessionTurnClaimOutcome.Discarded(ErrorCodes.Hub.SessionTurnRestoredInterrupted, 409, []), CancellationToken.None).ConfigureAwait(false);
+                    if (lease.IsExecutable)
+                    {
+                        _ = await claims.CompleteAsync(lease,
+                            SessionTurnClaimOutcome.Discarded(ErrorCodes.Hub.SessionTurnRestoredInterrupted, 409, []), CancellationToken.None).ConfigureAwait(false);
+                    }
                 }
-
-                if (authority is not null)
+                finally
                 {
-                    await authority.DisposeAsync().ConfigureAwait(false);
+                    if (authority is not null)
+                    {
+                        await authority.DisposeAsync().ConfigureAwait(false);
+                    }
                 }
             }
         }
@@ -418,6 +630,27 @@ public sealed class CampaignRollupTurnPreparer(
     private static CovenantDigest Dependencies(CovenantDigest requestDigest, PingRequest request, CanonicalCampaignContext campaign, CovenantAuthoritySnapshot authority, CovenantDigest configurationDigest)
     {
         using IncrementalHash hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+
+        if (!campaign.IsCampaignBound)
+        {
+            hash.AppendData("Arcanum.GlobalTurn.Dependencies.v1\0"u8);
+
+            hash.AppendData(requestDigest.Bytes);
+
+            hash.AppendData(SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(request, ArcanumJsonContext.Default.PingRequest)));
+
+            Span<byte> globalCounters = stackalloc byte[16];
+
+            BinaryPrimitives.WriteInt64BigEndian(globalCounters, authority.RuntimeAuthorityGeneration);
+
+            BinaryPrimitives.WriteInt64BigEndian(globalCounters[8..], authority.AuthorityEpoch);
+
+            hash.AppendData(globalCounters);
+
+            hash.AppendData(configurationDigest.Bytes);
+
+            return new(hash.GetHashAndReset());
+        }
 
         hash.AppendData("Arcanum.CampaignTurn.Dependencies.v1\0"u8);
 

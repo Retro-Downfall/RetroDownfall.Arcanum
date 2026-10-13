@@ -216,7 +216,9 @@ public sealed partial class DataRetentionServiceTests
             request,
             CancellationToken.None);
 
-        Assert.Equal(9, plan.DerivedRecords);
+        Assert.Equal(1, await CountAllAsync("long_rest_sources"));
+
+        Assert.Equal(10, plan.DerivedRecords);
 
         Result<DataRetentionApplyResult> result = await service.ApplyAsync(
             new DataRetentionApplyRequest(request, plan.PlanId),
@@ -237,6 +239,8 @@ public sealed partial class DataRetentionServiceTests
         Assert.Equal(0, await CountAllAsync("workspace_file_embeddings_vec"));
 
         Assert.Equal(0, await CountAllAsync("saga_memories"));
+
+        Assert.Equal(0, await CountAllAsync("long_rest_sources"));
 
         Assert.Equal(0, await CountAllAsync("saga_memory_embeddings"));
 

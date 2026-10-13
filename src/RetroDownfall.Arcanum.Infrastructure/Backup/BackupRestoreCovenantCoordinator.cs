@@ -426,6 +426,70 @@ internal sealed class BackupRestoreCovenantCoordinator
         return Result.Success();
     }
 
+    private sealed record ClosedCommittedDatabaseCandidate(
+        BackupRestoreCovenantSession Session,
+        ArcanumMaintenanceLock InstallationLock,
+        string GuardedDirectory,
+        BackupRestoreJournalPublication Publication,
+        BackupRestoreJournalPayloadV2 Payload,
+        IdentityOwnedFileSystemArtifact Live,
+        IdentityOwnedFileSystemArtifact Database);
+
+    private Result<ClosedCommittedDatabaseCandidate> CreateClosedCommittedCandidate(
+        BackupRestoreCovenantSession session, ArcanumMaintenanceLock heldInstallationLock, string guardedDirectory)
+    {
+        ClosedCommittedDatabaseCandidate? candidate = null;
+
+        Result proof = session.Lease.ExecuteWhileHeld(() =>
+        {
+            heldInstallationLock.AssertHeldFor(guardedDirectory);
+
+            if (_services.Anchors.RequireCurrentPublication(heldInstallationLock, guardedDirectory, session.Profile, session.Publication).IsFailure
+                || session.Dispositioned || session.Payload.Phase < BackupRestorePhase.Reconcile
+                || session.Payload.ConflictMode != BackupRestoreConflictMode.ReplaceInstallation
+                || session.Payload.RecoveryOwner() is not { IsSuccess: true } owner
+                || owner.Value != session.Owner || session.Lease.Snapshot.RecoveryOwner != session.Owner
+                || session.Lease.Snapshot.Kind != CovenantLeaseKind.Exclusive
+                || session.Lease.Snapshot.Coverage != CovenantLeaseCoverage.Installation
+                || BackupRestorePhysicalTopology.Reconcile(session.Payload, guardedDirectory, allowEffects: false)
+                    is not { IsSuccess: true, Value: BackupRestoreTopologyState.PostSwap }
+                || !IdentityOwnedFileSystemCleanup.TryCapturePath(guardedDirectory, FileSystemObjectKind.Directory, out var live)
+                || !IdentityOwnedFileSystemCleanup.TryCapturePath(Path.Combine(guardedDirectory, "arcanum.db"),
+                    FileSystemObjectKind.RegularFile, out var database)) return BackupRestoreLongRestSanitation.Unknown();
+
+            candidate = new(session, heldInstallationLock, guardedDirectory, session.Publication, session.Payload, live, database);
+
+            return Result.Success();
+        });
+
+        return proof.IsSuccess && candidate is not null
+            ? Result<ClosedCommittedDatabaseCandidate>.Success(candidate)
+            : Result<ClosedCommittedDatabaseCandidate>.Failure(proof.IsFailure ? proof.Error : BackupRestoreLongRestSanitation.Unknown().Error);
+    }
+
+    private Result ValidateClosedCommittedCandidate(ClosedCommittedDatabaseCandidate candidate) =>
+        candidate.Session.Lease.ExecuteWhileHeld(() =>
+        {
+            candidate.InstallationLock.AssertHeldFor(candidate.GuardedDirectory);
+
+            return _services.Anchors.RequireCurrentPublication(candidate.InstallationLock, candidate.GuardedDirectory,
+                    candidate.Session.Profile, candidate.Publication).IsSuccess
+                && !candidate.Session.Dispositioned && candidate.Session.Publication == candidate.Publication
+                && candidate.Session.Payload == candidate.Payload
+                && candidate.Session.Payload.RecoveryOwner() is { IsSuccess: true } owner
+                && owner.Value == candidate.Session.Owner && candidate.Session.Lease.Snapshot.RecoveryOwner == candidate.Session.Owner
+                && candidate.Session.Lease.Snapshot.Kind == CovenantLeaseKind.Exclusive
+                && candidate.Session.Lease.Snapshot.Coverage == CovenantLeaseCoverage.Installation
+                && BackupRestorePhysicalTopology.Reconcile(candidate.Payload, candidate.GuardedDirectory, allowEffects: false)
+                    is { IsSuccess: true, Value: BackupRestoreTopologyState.PostSwap }
+                && IdentityOwnedFileSystemCleanup.TryCapturePath(candidate.Live.Path, FileSystemObjectKind.Directory, out var live)
+                && live.Metadata.Identity == candidate.Live.Metadata.Identity
+                && live.Metadata.Kind == candidate.Live.Metadata.Kind
+                && IdentityOwnedFileSystemCleanup.TryCapturePath(candidate.Database.Path, FileSystemObjectKind.RegularFile, out var database)
+                && database.Metadata == candidate.Database.Metadata
+                    ? Result.Success() : BackupRestoreLongRestSanitation.Unknown();
+        });
+
     /// <summary>
     /// Reconciles this restore's marker children in the new live database and reopens admission once.
     /// </summary>
@@ -439,9 +503,46 @@ internal sealed class BackupRestoreCovenantCoordinator
         BackupRestoreCovenantSession session,
         ArcanumMaintenanceLock heldInstallationLock,
         string guardedDirectory,
+        string committedGrimoireSecret,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(session);
+
+        ArgumentNullException.ThrowIfNull(heldInstallationLock);
+
+        heldInstallationLock.AssertHeldFor(guardedDirectory);
+
+        Result<ClosedCommittedDatabaseCandidate> admitted = CreateClosedCommittedCandidate(
+            session, heldInstallationLock, guardedDirectory);
+
+        if (admitted.IsFailure) return admitted.Error;
+
+        ClosedCommittedDatabaseCandidate candidate = admitted.Value;
+
+        try
+        {
+            await using (SqliteConnection committedDatabase = await BackupRestoreDatabaseWorker.OpenAsync(
+                candidate.Database.Path, committedGrimoireSecret, readOnly: true, cancellationToken)
+                .ConfigureAwait(false))
+            {
+                if (ValidateClosedCommittedCandidate(candidate).IsFailure) return BackupRestoreLongRestSanitation.Unknown();
+
+                Result sanitized = await BackupRestoreLongRestSanitation.VerifyCommittedAsync(committedDatabase, cancellationToken)
+                    .ConfigureAwait(false);
+
+                if (sanitized.IsFailure)
+                {
+                    return sanitized;
+                }
+            }
+        }
+        catch (Exception exception) when (exception is SqliteException or IOException or UnauthorizedAccessException
+            or InvalidDataException or InvalidOperationException or System.Security.Cryptography.CryptographicException)
+        {
+            return BackupRestoreLongRestSanitation.Unknown();
+        }
+
+        if (ValidateClosedCommittedCandidate(candidate).IsFailure) return BackupRestoreLongRestSanitation.Unknown();
 
         if (session.Checkpoint is not { } checkpoint)
         {

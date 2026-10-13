@@ -34,6 +34,7 @@ using RetroDownfall.Arcanum.Core.Storage;
 
 using RetroDownfall.Arcanum.Infrastructure.Data.Annals;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
+using RetroDownfall.Arcanum.Infrastructure.Data.LongRest;
 
 using RetroDownfall.Arcanum.Infrastructure.Covenant;
 
@@ -2428,7 +2429,7 @@ internal sealed partial class DataRetentionService(
                 0,
                 0,
                 0,
-                snapshot.SagaExtractionWatermarkCount),
+                snapshot.SagaExtractionWatermarkCount + snapshot.LongRestDiscoveryCount),
             new(
                 RetentionDataClass.SessionEntryEmbeddings,
                 0,
@@ -3120,6 +3121,9 @@ internal sealed partial class DataRetentionService(
             using (CovenantSqliteConnectionInitializer.Instance.Authorize(
                 (SqliteConnection)connection, CovenantSqliteAuthorizationKind.SessionRetention))
             {
+                derivedDeleted += await LongRestLifecycle.ClearSessionAsync(
+                    connection, transaction, sessionId, cancellationToken).ConfigureAwait(false);
+
                 derivedDeleted += await SessionSummaryLifecycle.ClearAsync(
                     connection, transaction, sessionId, cancellationToken).ConfigureAwait(false);
 
@@ -3679,6 +3683,13 @@ internal sealed partial class DataRetentionService(
                 }
             }
 
+            if (scope == MemoryResetScope.Saga)
+            {
+                // Count the logical targets once, before generation/receipt triggers and FK cascades.
+                // Direct affected-row counts omit companions those mechanisms already removed.
+                deleted = currentRows;
+            }
+
             await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
         }
         catch
@@ -3836,6 +3847,9 @@ internal sealed partial class DataRetentionService(
         SessionSummaryClosureSnapshot summaries = await SessionSummaryLifecycle.ReadClosureAsync(
             connection, null, sessionId, cancellationToken).ConfigureAwait(false);
 
+        long longRestDiscovery = await LongRestLifecycle.ReadSessionClosureAsync(
+            connection, null, sessionId, cancellationToken).ConfigureAwait(false);
+
         return new SessionPlanSnapshot(
             status,
             [.. entryIds],
@@ -3852,7 +3866,8 @@ internal sealed partial class DataRetentionService(
             attachments.Sum(static attachment => attachment.VectorEmbeddingCount),
             attachments.Sum(static attachment => attachment.IndexStateCount),
             campaignContinuity,
-            summaries);
+            summaries,
+            longRestDiscovery);
     }
 
     private async Task<AttachmentPlanSnapshot?> ReadAttachmentSnapshotAsync(
@@ -4093,6 +4108,9 @@ internal sealed partial class DataRetentionService(
         SessionSummaryClosureSnapshot summaries = await SessionSummaryLifecycle.ReadClosureAsync(
             connection, transaction, sessionId, cancellationToken).ConfigureAwait(false);
 
+        long longRestDiscovery = await LongRestLifecycle.ReadSessionClosureAsync(
+            connection, transaction, sessionId, cancellationToken).ConfigureAwait(false);
+
         return new SessionPlanSnapshot(
             status,
             [.. entryIds],
@@ -4109,7 +4127,8 @@ internal sealed partial class DataRetentionService(
             attachmentSnapshots.Sum(static attachment => attachment.VectorEmbeddingCount),
             attachmentSnapshots.Sum(static attachment => attachment.IndexStateCount),
             campaignContinuity,
-            summaries);
+            summaries,
+            longRestDiscovery);
     }
 
     private async Task<AttachmentPlanSnapshot?> ReadAttachmentSnapshotInTransactionAsync(
@@ -4361,7 +4380,8 @@ internal sealed partial class DataRetentionService(
             + snapshot.AttachmentVectorEmbeddingCount
             + snapshot.AttachmentIndexStateCount
             + snapshot.CampaignContinuity.Rows
-            + snapshot.Summaries.Rows;
+            + snapshot.Summaries.Rows
+            + snapshot.LongRestDiscoveryCount;
 
         if (rows != plan.Rows
             || files != plan.Files
@@ -4382,6 +4402,7 @@ internal sealed partial class DataRetentionService(
                 StringComparison.OrdinalIgnoreCase)
             && snapshot.CampaignContinuity == expectedSnapshot.CampaignContinuity
             && snapshot.Summaries == expectedSnapshot.Summaries
+            && snapshot.LongRestDiscoveryCount == expectedSnapshot.LongRestDiscoveryCount
             && snapshot.EntryIds
                 .Order()
                 .SequenceEqual(expectedSnapshot.EntryIds.Order())
@@ -7929,7 +7950,8 @@ internal sealed partial class DataRetentionService(
         long AttachmentVectorEmbeddingCount,
         long AttachmentIndexStateCount,
         CampaignSummaryClosureSnapshot CampaignContinuity,
-        SessionSummaryClosureSnapshot Summaries);
+        SessionSummaryClosureSnapshot Summaries,
+        long LongRestDiscoveryCount);
 
     private readonly record struct IdSetBatch(
         string Predicate,

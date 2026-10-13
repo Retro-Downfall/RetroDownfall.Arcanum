@@ -17,7 +17,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data;
 /// Raw-SQL operation ledger stored inside the encrypted Grimoire. All ownership and lifecycle
 /// mutations are compare-and-swap updates; no process-local lock is required for correctness.
 /// </summary>
-internal sealed class LongRunningOperationStore(
+internal sealed partial class LongRunningOperationStore(
     ArcanumDbContext db,
     IGrimoireOrdinaryConnectionFactory connections,
     ICovenantConnectionDrain? covenantDrain = null)
@@ -78,74 +78,12 @@ internal sealed class LongRunningOperationStore(
                 nameof(request));
         }
 
-        Guid id = Guid.NewGuid();
-        string kind = Bound(request.Kind, MaxKindLength);
-        string summary = Bound(request.PublicSummary, MaxSummaryLength);
+        return SqliteBusyRetry.ExecuteAsync(async () =>
+        {
+            DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
-        return SqliteBusyRetry.ExecuteAsync(
-            async () =>
-            {
-                DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
-
-                await using DbCommand cmd = connection.CreateCommand();
-                cmd.CommandText =
-                    """
-                    INSERT INTO "LongRunningOperations"
-                        ("Id", "Kind", "State", "RecoveryPolicy", "RootOperationId", "ParentOperationId",
-                         "SessionId", "RunId", "InferenceRunId", "BudgetReservationId", "IdempotencyClaimId",
-                         "CreatedAt", "StartedAt", "HeartbeatAt", "CompletedAt", "LeaseOwner", "LeaseExpiresAt",
-                         "AttemptCount", "CheckpointVersion", "CheckpointPayload", "CheckpointReference",
-                         "PublicSummary", "TerminalErrorCode", "Revision")
-                    VALUES
-                        (@id, @kind, @state, @policy, @root, @parent,
-                         @session, @run, @inference, @reservation, @claim,
-                         @created, NULL, NULL, NULL, NULL, NULL,
-                         0, 0, NULL, NULL, @summary, NULL, 0)
-                    """;
-
-                Add(cmd, "@id", Format(id));
-                Add(cmd, "@kind", kind);
-                Add(cmd, "@state", (int)LongRunningOperationState.Pending);
-                Add(cmd, "@policy", (int)request.RecoveryPolicy);
-                Add(cmd, "@root", FormatNullable(request.RootOperationId));
-                Add(cmd, "@parent", FormatNullable(request.ParentOperationId));
-                Add(cmd, "@session", FormatReferenceNullable(request.SessionId));
-                Add(cmd, "@run", FormatReferenceNullable(request.RunId));
-                Add(cmd, "@inference", FormatReferenceNullable(request.InferenceRunId));
-                Add(cmd, "@reservation", FormatNullable(request.BudgetReservationId));
-                Add(cmd, "@claim", FormatNullable(request.IdempotencyClaimId));
-                _ = UtcInstantSql.AddParameter(cmd, "@created", request.CreatedAt);
-                Add(cmd, "@summary", summary);
-
-                _ = await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
-                return new LongRunningOperation(
-                    id,
-                    kind,
-                    LongRunningOperationState.Pending,
-                    request.RecoveryPolicy,
-                    request.RootOperationId,
-                    request.ParentOperationId,
-                    request.SessionId,
-                    request.RunId,
-                    request.InferenceRunId,
-                    request.BudgetReservationId,
-                    request.IdempotencyClaimId,
-                    request.CreatedAt,
-                    StartedAt: null,
-                    HeartbeatAt: null,
-                    CompletedAt: null,
-                    LeaseOwner: null,
-                    LeaseExpiresAt: null,
-                    AttemptCount: 0,
-                    CheckpointVersion: 0,
-                    CheckpointPayload: null,
-                    CheckpointReference: null,
-                    summary,
-                    TerminalErrorCode: null,
-                    Revision: 0);
-            },
-            cancellationToken);
+            return await CreateWithinAsync(connection, null, request, cancellationToken).ConfigureAwait(false);
+        }, cancellationToken);
     }
 
     public Task<LongRunningOperationRequestIdentityResult> ResolveOrCreateAsync(
@@ -870,7 +808,7 @@ internal sealed class LongRunningOperationStore(
                 cmd.CommandText =
                     """
                     UPDATE "LongRunningOperations"
-                    SET "State" = @running,
+                    SET "State" = CASE WHEN "Kind" = @longRest AND "State" = @cancelling THEN @cancelling ELSE @running END,
                         "StartedAt" = COALESCE("StartedAt", @now),
                         "HeartbeatAt" = @now,
                         "LeaseOwner" = @owner,
@@ -924,6 +862,7 @@ internal sealed class LongRunningOperationStore(
 
                         RETURNING {SelectColumns}
                       """;
+                Add(cmd, "@longRest", LongRunningOperationKinds.LongRestSweep);
                 Add(cmd, "@running", (int)LongRunningOperationState.Running);
                 Add(cmd, "@pending", (int)LongRunningOperationState.Pending);
                 Add(cmd, "@waiting", (int)LongRunningOperationState.Waiting);

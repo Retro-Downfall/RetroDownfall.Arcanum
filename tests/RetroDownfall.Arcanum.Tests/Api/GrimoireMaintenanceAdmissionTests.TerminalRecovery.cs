@@ -1378,6 +1378,20 @@ public sealed partial class GrimoireMaintenanceAdmissionTests
 
         await connection.OpenAsync(cancellationToken);
 
+        if (mutation is "missing-row")
+        {
+            // Cascading deletes compile the new artifact guard even when no derived row exists.
+            // Register real default-deny policy; do not grant authority to this corruption fixture.
+            await CovenantSqliteConnectionInitializer.Instance.InitializeAsync(
+                connection, CovenantSqliteConnectionMode.ReadWrite, cancellationToken);
+
+            await using SqliteCommand guard = connection.CreateCommand();
+
+            guard.CommandText = "SELECT arcanum_artifact_replacement_authorized();";
+
+            Assert.Equal(0L, await guard.ExecuteScalarAsync(cancellationToken));
+        }
+
         await using SqliteCommand command = connection.CreateCommand();
 
         byte[]? launchPayload = mutation is

@@ -32,6 +32,8 @@ public enum LongRunningOperationRecoveryPolicy
 /// </summary>
 public static class LongRunningOperationKinds
 {
+    public const string LongRestSweep = "long-rest-sweep";
+
     public const string Subagent = "subagent";
     public const string BlobEncryptionMigration = "blob-encryption-migration";
     public const string BlobEncryptionKeyRotation = "blob-encryption-key-rotation";

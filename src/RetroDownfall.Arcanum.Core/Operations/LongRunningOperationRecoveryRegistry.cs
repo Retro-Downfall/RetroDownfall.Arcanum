@@ -54,6 +54,16 @@ public static class LongRunningOperationRecoveryRegistry
         new[]
         {
             new LongRunningOperationRecoveryDescriptor(
+                LongRunningOperationKinds.LongRestSweep,
+                LongRunningOperationRecoveryPolicy.ResumeFromCheckpoint,
+                Owner: "LongRestSweepCoordinator",
+                MinCheckpointVersion: 0,
+                MaxCheckpointVersion: 1,
+                LongRunningOperationStartupPriority.Readiness,
+                RecoveryIntent: "Resume clean committed sweep work. Protected debt waits for a fresh eligible authenticated request.",
+                ManualRepairGuidance: "Inspect the operation. A protected parked sweep requires a fresh eligible authenticated Session request; retry alone grants no authority."),
+
+            new LongRunningOperationRecoveryDescriptor(
                 LongRunningOperationKinds.Subagent,
                 LongRunningOperationRecoveryPolicy.AbandonSafely,
                 Owner: "SubagentRunner",

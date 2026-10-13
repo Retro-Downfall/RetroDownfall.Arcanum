@@ -120,6 +120,34 @@ public static class CovenantDerivedOutputInventory
             + "never a key, a fragment, a digest, or a Campaign identity."),
 
         new(
+            "long-rest-discovery",
+            "RetroDownfall.Arcanum.Infrastructure.Data.LongRest.LongRestDiscoveryStore",
+            null,
+            DerivedOutputPolicy.PropagateLabel,
+            "Hierarchy summaries and embeddings retain exact source labels and provenance in their committed generation under current request authority."),
+
+        new(
+            "long-rest-sweep",
+            "RetroDownfall.Arcanum.Infrastructure.Data.LongRest.LongRestSweepStore",
+            null,
+            DerivedOutputPolicy.PropagateLabel,
+            "Canonical sweep projections commit their exact protected source label and provenance with the accepted source association."),
+
+        new(
+            "long-rest-maintenance",
+            "RetroDownfall.Arcanum.Api.Intelligence.LongRestMaintenance",
+            null,
+            DerivedOutputPolicy.ProtectedReadRequired,
+            "Each protected source read and physical dispatch requires the exact borrowed request lease, live claim and current full source proof."),
+
+        new(
+            "long-rest-provider",
+            "RetroDownfall.Arcanum.Api.Intelligence.LongRestProvider",
+            null,
+            DerivedOutputPolicy.ProtectedReadRequired,
+            "A closed provider payload crosses the SDK boundary only after its exact current maintenance callback authorizes this physical send."),
+
+        new(
             "host-process-tools-transition",
             "RetroDownfall.Arcanum.Infrastructure.Security.HostProcessToolsTransitionService",
             null,

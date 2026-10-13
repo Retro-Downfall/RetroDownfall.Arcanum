@@ -10,8 +10,8 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.LongRest;
 
 internal sealed partial class SagaLongRestService
 {
-    private static async Task<Result<LoadedSnapshot>> ReadSnapshotAsync(
-        DbConnection connection, DbTransaction transaction, LongRestTarget target, CancellationToken cancellationToken)
+    internal static async Task<Result<LoadedSnapshot>> ReadSnapshotAsync(
+        DbConnection connection, DbTransaction transaction, LongRestTarget target, CancellationToken cancellationToken, bool materializeContent = true)
     {
         await using DbCommand command = connection.CreateCommand();
 
@@ -35,7 +35,7 @@ internal sealed partial class SagaLongRestService
                    EXISTS (SELECT 1 FROM long_rest_suppressions s WHERE s.SourceVersionId = v.VersionId),
                    EXISTS (SELECT 1 FROM long_rest_receipts r WHERE r.OutcomeCode = 1 AND r.SurvivorVersionId = v.VersionId),
                    m.ScopeKindCode, m.CampaignId,
-                   CASE WHEN v.SensitivityCode = 0 AND NOT EXISTS (
+                   CASE WHEN @materialize = 1 AND v.SensitivityCode = 0 AND NOT EXISTS (
                        SELECT 1 FROM artifact_sensitivity a WHERE a.ArtifactKindCode = 6
                        AND lower(replace(a.ArtifactId, '-', '')) = lower(replace(m.Id, '-', '')))
                        THEN m.Content ELSE NULL END
@@ -45,6 +45,8 @@ internal sealed partial class SagaLongRestService
             JOIN saga_memories m ON m.Id = c.SubjectId
             WHERE v.VersionId = @version AND c.SubjectId = @memory
             """;
+
+        Add(command, "@materialize", materializeContent ? 1 : 0);
 
         Add(command, "@version", target.ExpectedVersionId);
 

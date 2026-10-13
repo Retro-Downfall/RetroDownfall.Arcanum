@@ -21,7 +21,7 @@ public sealed class PidFileService : IHostedService
     private static readonly TimeSpan ClaimInProgressDelay = TimeSpan.FromMilliseconds(50);
 
     /// <summary>
-    /// Appended to the PID file path to name the lock that serialises replacing a stale file. It is retained and
+    /// Appended to the PID file path to name the lock that serialises claim publication and stale replacement. It is retained and
     /// never deleted, so a starter waiting on it can never be holding a handle to a file another starter unlinked.
     /// </summary>
     internal const string ReplacementGateSuffix = ".replace.lock";
@@ -69,7 +69,23 @@ public sealed class PidFileService : IHostedService
 
         for (int attempt = 1; attempt <= MaxClaimAttempts; attempt++)
         {
-            ClaimAttempt claim = TryClaim(_path);
+            ct.ThrowIfCancellationRequested();
+
+            FileStream? gate = TryTakeReplacementGate(_path);
+
+            if (gate is null)
+            {
+                await Task.Delay(ClaimInProgressDelay, ct).ConfigureAwait(false);
+
+                continue;
+            }
+
+            ClaimAttempt claim;
+
+            using (gate)
+            {
+                claim = TryPublishClaimUnderGate(_path);
+            }
 
             if (claim is ClaimAttempt.Claimed)
             {
@@ -167,36 +183,83 @@ public sealed class PidFileService : IHostedService
     }
 
     /// <summary>
-    /// Creates the PID file only if it does not exist (an atomic exclusive create), holding it closed to
-    /// readers until the PID is written so a competing starter reads the whole claim or none of it.
+    /// Writes and closes a private sibling before publishing it while the caller holds the replacement gate.
+    /// Readers see the complete PID only: Unix share locks are acquired after creation and cannot
+    /// keep a newly created public file unreadable during that interval.
     /// </summary>
-    private static ClaimAttempt TryClaim(string path)
+    private static ClaimAttempt TryPublishClaimUnderGate(string path)
     {
-        FileStream stream;
-
-        try
-        {
-            stream = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None);
-        }
-        catch (IOException) when (File.Exists(path))
+        if (File.Exists(path))
         {
             return ClaimAttempt.Exists;
         }
-        catch (UnauthorizedAccessException)
+
+        string temporaryPath = path + "." + Guid.NewGuid().ToString("N") + ".claim";
+
+        FileStreamOptions options = new()
         {
-            return ClaimAttempt.Denied;
+            Mode = FileMode.CreateNew,
+
+            Access = FileAccess.Write,
+
+            Share = FileShare.None,
+        };
+
+        if (!OperatingSystem.IsWindows())
+        {
+            options.UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite;
         }
 
-        using (stream)
+        bool ownsTemporary = false;
+
+        try
         {
-            stream.Write(
-                Encoding.ASCII.GetBytes(
-                    Environment.ProcessId.ToString(CultureInfo.InvariantCulture)));
+            FileStream stream;
 
-            stream.Flush(flushToDisk: true);
+            try
+            {
+                stream = new FileStream(temporaryPath, options);
+
+                ownsTemporary = true;
+            }
+            catch (UnauthorizedAccessException)
+            {
+                return ClaimAttempt.Denied;
+            }
+
+            using (stream)
+            {
+                stream.Write(
+                    Encoding.ASCII.GetBytes(
+                        Environment.ProcessId.ToString(CultureInfo.InvariantCulture)));
+
+                stream.Flush(flushToDisk: true);
+            }
+
+            try
+            {
+                File.Move(temporaryPath, path, overwrite: false);
+
+                ownsTemporary = false;
+            }
+            catch (IOException) when (File.Exists(path))
+            {
+                return ClaimAttempt.Exists;
+            }
+            catch (UnauthorizedAccessException)
+            {
+                return ClaimAttempt.Denied;
+            }
+
+            return ClaimAttempt.Claimed;
         }
-
-        return ClaimAttempt.Claimed;
+        finally
+        {
+            if (ownsTemporary && File.Exists(temporaryPath))
+            {
+                File.Delete(temporaryPath);
+            }
+        }
     }
 
     /// <summary>
@@ -234,13 +297,13 @@ public sealed class PidFileService : IHostedService
                     $"Could not remove the stale PID file at '{path}': {reason} Remove it by hand and start again.");
             }
 
-            return TryClaim(path) is ClaimAttempt.Claimed;
+            return TryPublishClaimUnderGate(path) is ClaimAttempt.Claimed;
         }
     }
 
     /// <summary>
     /// Takes the exclusive replacement gate beside the PID file, or returns <see langword="null"/> when another
-    /// starter holds it. Any other failure to open it is reported with the remedy rather than ignored, because
+    /// starter holds it. Both fresh publication and stale replacement require this gate. Any other failure to open it is reported with the remedy rather than ignored, because
     /// replacing a stale file without the gate would reopen the race it exists to close.
     /// </summary>
     private static FileStream? TryTakeReplacementGate(string path)

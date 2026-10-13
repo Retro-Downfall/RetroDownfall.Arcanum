@@ -54,6 +54,9 @@
 
     <InternalsVisibleTo Include="RetroDownfall.Arcanum.Tests" />
 
+    <!-- Long Rest live capability issuance belongs to authenticated API composition. -->
+    <InternalsVisibleTo Include="RetroDownfall.Arcanum.Api" />
+
     <!-- The benchmark host admits its turns the way a live host does. Deriving a read-authority epoch
          from the running authority is internal on purpose, and a benchmark that skipped that check
          would be measuring a turn no host would have admitted. -->

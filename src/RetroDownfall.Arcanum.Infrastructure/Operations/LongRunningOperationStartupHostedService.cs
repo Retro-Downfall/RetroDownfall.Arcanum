@@ -6,6 +6,7 @@ using Microsoft.Extensions.Logging;
 
 using RetroDownfall.Arcanum.Core.Operations;
 using RetroDownfall.Arcanum.Infrastructure.Data;
+using RetroDownfall.Arcanum.Infrastructure.Data.LongRest;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Operations;
 
@@ -359,7 +360,17 @@ internal sealed class LongRunningOperationStartupHostedService(
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            IGrimoireWorkLease lease = await AcquireWorkLeaseAsync(cancellationToken).ConfigureAwait(false);
+            long observedGeneration = admissionGate.CurrentGeneration;
+
+            // Acquire in this execution context so scopes and per-unit finishers inherit admission.
+            if (!admissionGate.TryAcquireWorkLease(GrimoireWorkKind.LongRunningOperationRecovery, out IGrimoireWorkLease? admitted))
+            {
+                await admissionGate.WaitForOpenGenerationAfterRefusalAsync(observedGeneration, cancellationToken).ConfigureAwait(false);
+
+                continue;
+            }
+
+            IGrimoireWorkLease lease = admitted!;
             IGrimoireExternalEffectGroup? group = null;
             AsyncServiceScope scope = default;
             bool scopeCreated = false;
@@ -376,13 +387,20 @@ internal sealed class LongRunningOperationStartupHostedService(
                 {
                     scope = scopeFactory.CreateAsyncScope();
                     scopeCreated = true;
+                    using IDisposable? binding = decision.Kind is LongRunningRecoveryAdmissionKind.OrdinaryPerUnitExternalEffect
+                        ? scope.ServiceProvider.GetRequiredService<LongRestWorkAdmission>().Bind(lease) : null;
+
+                    using CancellationTokenSource dispatch = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken,
+                        decision.Kind is LongRunningRecoveryAdmissionKind.OrdinaryPerUnitExternalEffect
+                            ? lease.MaintenanceRevocation : CancellationToken.None);
+
                     LongRunningOperationReconciler reconciler = scope.ServiceProvider
                         .GetRequiredService<LongRunningOperationReconciler>();
 
                     return await reconciler.SettleDiscoveredRuntimeAsync(
                         operation,
                         ownerId,
-                        cancellationToken).ConfigureAwait(false);
+                        dispatch.Token).ConfigureAwait(false);
                 }
             }
             finally

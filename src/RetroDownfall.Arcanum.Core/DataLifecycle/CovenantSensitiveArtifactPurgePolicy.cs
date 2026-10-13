@@ -91,7 +91,7 @@ public sealed record CovenantSensitiveArtifactPurgeRule(
 /// The one exhaustive code-to-policy table for deleting a Covenant-derived artifact.
 /// </summary>
 /// <remarks>
-/// Thirteen kinds, thirteen literal rules, one owner. Retention purge, family reinitialize, and
+/// Sixteen kinds, sixteen literal rules, one owner. Retention purge, family reinitialize, and
 /// Covenant reset all delete the same artifacts for different reasons, and three independent switch
 /// statements over the same enum is how one of them ends up preserving evidence the other two remove.
 /// Every erasure path resolves its policy here or does not run.
@@ -332,6 +332,22 @@ public static class CovenantSensitiveArtifactPurgePolicy
                 "Delete the Session contribution, dependent Campaign summaries, source manifests, output "
                 + "checkpoints, and labels in one transaction; retire current pointers, preserve sequence and "
                 + "source-generation tombstones, and repair Session sensitivity state."),
+
+        new(
+            SensitiveArtifactKind.LongRestDiscovery,
+            Code: 16,
+            CovenantArtifactPurgeExecutor.DatabaseTransaction,
+            DeletesDerivedProjections: true,
+            RepairsCurrentPointer: false,
+            RepairsSessionSensitivityState: false,
+            AppendsErasureReceipt: false,
+            RequiresDurableTerminalEvidenceFirst: false,
+            PreservesFinalizationAndClaimEvidence: false,
+            PreservesReplayDenialEvidence: false,
+            Policy:
+                "Delete the derived generation's nodes, vectors, edges, search projections, work payloads, "
+                + "and labels in one transaction; preserve canonical source history and Long Rest receipts "
+                + "until participant erasure."),
     ];
 
     private static readonly Dictionary<SensitiveArtifactKind, CovenantSensitiveArtifactPurgeRule> ByKind =
@@ -356,7 +372,7 @@ public static class CovenantSensitiveArtifactPurgePolicy
                     ErrorCodes.Covenant.ManualRecoveryRequired,
                     "This build has no protected-artifact purge policy for the requested artifact kind."));
 
-    /// <summary>Whether a value is one of the thirteen kinds this table covers.</summary>
+    /// <summary>Whether a value is one of the sixteen kinds this table covers.</summary>
     public static bool IsCovered(SensitiveArtifactKind kind) => ByKind.ContainsKey(kind);
 
 }

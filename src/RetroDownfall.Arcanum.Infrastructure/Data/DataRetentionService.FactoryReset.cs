@@ -57,6 +57,22 @@ internal sealed partial class DataRetentionService
         new("lexicon_entries", RetentionDataClass.LexiconEntries, FactoryRecordKind.Physical),
         new("lexicon_fts", RetentionDataClass.LexiconEntries, FactoryRecordKind.Derived),
         new("lexicon_fact_attachment_provenance", RetentionDataClass.LexiconEntries, FactoryRecordKind.Derived),
+        new("long_rest_discovery_generations", RetentionDataClass.Annals, FactoryRecordKind.Derived),
+        new("long_rest_clean_fts", RetentionDataClass.Annals, FactoryRecordKind.Derived),
+        new("long_rest_protected_fts", RetentionDataClass.Annals, FactoryRecordKind.Derived),
+        new("long_rest_discovery_embeddings", RetentionDataClass.Annals, FactoryRecordKind.Derived),
+        new("long_rest_discovery_edges", RetentionDataClass.Annals, FactoryRecordKind.Derived),
+        new("long_rest_accepted_summaries", RetentionDataClass.Annals, FactoryRecordKind.Derived),
+        new("long_rest_adjudications", RetentionDataClass.Annals, FactoryRecordKind.Derived),
+        new("long_rest_provider_effects", RetentionDataClass.Annals, FactoryRecordKind.Derived),
+        new("long_rest_work_inputs", RetentionDataClass.Annals, FactoryRecordKind.Derived),
+        new("long_rest_work_items", RetentionDataClass.Annals, FactoryRecordKind.Derived),
+        new("long_rest_discovery_nodes", RetentionDataClass.Annals, FactoryRecordKind.Derived),
+        new("long_rest_discovery_leaves", RetentionDataClass.Annals, FactoryRecordKind.Derived),
+        new("long_rest_sweeps", RetentionDataClass.Annals, FactoryRecordKind.Derived),
+        new("long_rest_sources", RetentionDataClass.Annals, FactoryRecordKind.Derived),
+        new("long_rest_protected_receipt_inputs", RetentionDataClass.Annals, FactoryRecordKind.Derived),
+        new("long_rest_protected_receipt_evidence", RetentionDataClass.Annals, FactoryRecordKind.Derived),
         new("long_rest_suppressions", RetentionDataClass.Annals, FactoryRecordKind.Derived),
         new("long_rest_receipt_inputs", RetentionDataClass.Annals, FactoryRecordKind.Derived),
         new("long_rest_receipts", RetentionDataClass.Annals, FactoryRecordKind.Derived),
@@ -91,6 +107,22 @@ internal sealed partial class DataRetentionService
 
     private static readonly FactoryTablePlan[] FactoryDeletionTables =
     [
+        new("long_rest_discovery_generations", RetentionDataClass.Annals, FactoryRecordKind.Derived),
+        new("long_rest_clean_fts", RetentionDataClass.Annals, FactoryRecordKind.Derived),
+        new("long_rest_protected_fts", RetentionDataClass.Annals, FactoryRecordKind.Derived),
+        new("long_rest_discovery_embeddings", RetentionDataClass.Annals, FactoryRecordKind.Derived),
+        new("long_rest_discovery_edges", RetentionDataClass.Annals, FactoryRecordKind.Derived),
+        new("long_rest_accepted_summaries", RetentionDataClass.Annals, FactoryRecordKind.Derived),
+        new("long_rest_adjudications", RetentionDataClass.Annals, FactoryRecordKind.Derived),
+        new("long_rest_provider_effects", RetentionDataClass.Annals, FactoryRecordKind.Derived),
+        new("long_rest_work_inputs", RetentionDataClass.Annals, FactoryRecordKind.Derived),
+        new("long_rest_work_items", RetentionDataClass.Annals, FactoryRecordKind.Derived),
+        new("long_rest_discovery_nodes", RetentionDataClass.Annals, FactoryRecordKind.Derived),
+        new("long_rest_discovery_leaves", RetentionDataClass.Annals, FactoryRecordKind.Derived),
+        new("long_rest_sweeps", RetentionDataClass.Annals, FactoryRecordKind.Derived),
+        new("long_rest_sources", RetentionDataClass.Annals, FactoryRecordKind.Derived),
+        new("long_rest_protected_receipt_inputs", RetentionDataClass.Annals, FactoryRecordKind.Derived),
+        new("long_rest_protected_receipt_evidence", RetentionDataClass.Annals, FactoryRecordKind.Derived),
         new("session_attachment_embeddings_vec", RetentionDataClass.AttachmentEmbeddings, FactoryRecordKind.Derived),
         new("entry_embeddings_vec", RetentionDataClass.SessionEntryEmbeddings, FactoryRecordKind.Derived),
         new("workspace_file_embeddings_vec", RetentionDataClass.WorkspaceEmbeddings, FactoryRecordKind.Derived),
@@ -323,6 +355,17 @@ internal sealed partial class DataRetentionService
 
             long derivedDeleted = 0;
 
+            // Measure every logical derived target in the writer transaction before any source,
+            // generation, receipt or FK trigger can remove it. FTS shadows are not inventory targets.
+            foreach (FactoryTablePlan table in FactoryPlanTables.Where(static table => table.Kind == FactoryRecordKind.Derived))
+            {
+                if (await FactoryTableExistsAsync(connection, transaction, table.Table, cancellationToken).ConfigureAwait(false))
+                {
+                    derivedDeleted += await CountInTransactionAsync(
+                        connection, transaction, table.Table, table.Predicate, cancellationToken).ConfigureAwait(false);
+                }
+            }
+
             foreach (FactoryTablePlan table in FactoryDeletionTables)
             {
                 if (!await FactoryTableExistsAsync(
@@ -334,16 +377,6 @@ internal sealed partial class DataRetentionService
                     continue;
                 }
 
-                // The entry trigger owns its external-content index deletion. Clearing FTS first
-                // makes the trigger delete the same tokens twice (SQLITE_CORRUPT). Count the index
-                // before its owner goes so apply still agrees exactly with the factory inventory.
-                if (string.Equals(table.Table, "lexicon_entries", StringComparison.Ordinal))
-                {
-                    derivedDeleted += await CountInTransactionAsync(
-                        connection, transaction, "lexicon_fts", predicate: null, cancellationToken)
-                        .ConfigureAwait(false);
-                }
-
                 int deleted = await ClearFactoryTableAsync(
                     connection,
                     transaction,
@@ -353,10 +386,6 @@ internal sealed partial class DataRetentionService
                 if (table.Kind == FactoryRecordKind.Physical)
                 {
                     physicalDeleted += deleted;
-                }
-                else
-                {
-                    derivedDeleted += deleted;
                 }
             }
 

@@ -104,6 +104,16 @@ public sealed class NullableInterfaceConstructorDefaultTests
 
         ["src/RetroDownfall.Arcanum.Api/Intelligence/CampaignRollupTurnPreparer.cs:CampaignRollupTurnSnapshot:claims"] = "preview snapshots own no claim and need no coordinator; every live snapshot is constructed by the preparer with its required registered coordinator, which terminalizes an unbegun claim on disposal",
 
+        ["src/RetroDownfall.Arcanum.Api/Intelligence/CampaignRollupTurnPreparer.cs:CampaignRollupTurnPreparer:longRest"] = "inspection and gate-off preparation need no sweep coordinator; eligible Long Rest preparation refuses before requesting maintenance or sending if absent, and the composed host registers ILongRestSweepCoordinator",
+
+        ["src/RetroDownfall.Arcanum.Api/Intelligence/CampaignRollupTurnPreparer.cs:CampaignRollupTurnPreparer:longRestConfiguration"] = "inspection and gate-off preparation need no Long Rest epoch; enabled live maintenance refuses before its request when absent, and ApiBootstrapper registers the shared configuration epoch",
+
+        ["src/RetroDownfall.Arcanum.Api/Intelligence/CampaignRollupTurnPreparer.cs:CampaignRollupTurnPreparer:longRestDiscovery"] = "inspection and clean work need no protected-partition discovery; a protected live turn refuses before discovery or maintenance when absent, and the composed host registers the scoped discovery store",
+
+        ["src/RetroDownfall.Arcanum.Api/Intelligence/CampaignRollupTurnPreparer.cs:CampaignRollupTurnPreparer:longRestMaintenance"] = "inspection and clean queue handoff need no protected maintenance capability; a protected live turn refuses before maintenance when absent, and ApiBootstrapper registers the scoped service",
+
+        ["src/RetroDownfall.Arcanum.Api/Intelligence/CampaignRollupTurnPreparer.cs:CampaignRollupTurnSnapshot:longRestConfiguration"] = "preview and replay snapshots with no Long Rest stamp need no epoch; a stamped snapshot refuses validation before authority or source reads if absent, and live preparation supplies the registered epoch",
+
         ["src/RetroDownfall.Arcanum.Api/Intelligence/ContextCompressionService.cs:ContextCompressionService:modelTokenEstimator"] = "the null coalesces to a constructed default at the use site, so no host runs without a IModelTokenEstimator",
 
         ["src/RetroDownfall.Arcanum.Api/Intelligence/ContextCompressionService.cs:ContextCompressionService:purger"] = "the owner is registered by ApiBootstrapper (IContextCompressionService, scoped) and ICovenantSensitiveArtifactPurger by the Covenant registrations in AddArcanumInfrastructure; the `_purger is null` check in the compaction path skips the group-safe purge entirely (and is what keeps the null-forgiving dereference in PurgeSelectedEntriesAsync unreached), so the container supplying it is what keeps that purge reachable",
@@ -117,6 +127,10 @@ public sealed class NullableInterfaceConstructorDefaultTests
         ["src/RetroDownfall.Arcanum.Api/Intelligence/GrimoireTurnWriter.cs:GrimoireTurnWriter:claimedBeginStore"] = "legacy unclaimed fixtures need only the ordinary begin port; supplying a claim selects required atomic begin and refuses if the claim port is absent, and the composed host supplies it",
 
         ["src/RetroDownfall.Arcanum.Api/Intelligence/GrimoireTurnWriter.cs:GrimoireTurnWriter:claims"] = "legacy unclaimed fixtures own no durable claim; supplying a claim requires this coordinator before begin and finalization, and the composed host supplies it",
+
+        ["src/RetroDownfall.Arcanum.Api/Intelligence/LongRestProvider.cs:LongRestProvider:audit"] = "optional paid-call observation sink; durable usage accounting is required and awaited before this best-effort audit, whose errors cannot erase paid spend; the composed host registers IInferenceAuditLogger",
+
+        ["src/RetroDownfall.Arcanum.Api/Intelligence/LongRestProvider.cs:LongRestProvider:logger"] = "diagnostic sink; null-safe safe-exception logging observes failures without changing admission, accounting or publication refusal",
 
         ["src/RetroDownfall.Arcanum.Api/Intelligence/ModelCallExecutor.cs:ModelCallExecutor:logger"] = "diagnostic sink; absence degrades logging, not a guard",
 

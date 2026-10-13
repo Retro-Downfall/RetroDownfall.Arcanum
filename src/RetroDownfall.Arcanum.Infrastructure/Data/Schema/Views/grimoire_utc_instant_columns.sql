@@ -123,4 +123,9 @@ UNION ALL SELECT 'tapestry_generations' AS TableName, 'CompletedAt' AS ColumnNam
 UNION ALL SELECT 'tapestry_generations' AS TableName, 'StartedAt' AS ColumnName
 UNION ALL SELECT 'tapestry_nodes' AS TableName, 'CreatedAt' AS ColumnName
 UNION ALL SELECT 'workspace_file_chunks' AS TableName, 'FileLastWriteTime' AS ColumnName
-UNION ALL SELECT 'workspace_file_chunks' AS TableName, 'IndexedAt' AS ColumnName;
+UNION ALL SELECT 'workspace_file_chunks' AS TableName, 'IndexedAt' AS ColumnName
+UNION ALL SELECT 'long_rest_discovery_generations' AS TableName, 'CreatedAtUtc' AS ColumnName
+UNION ALL SELECT 'long_rest_accepted_summaries' AS TableName, 'CreatedAtUtc' AS ColumnName
+UNION ALL SELECT 'long_rest_adjudications' AS TableName, 'CreatedAtUtc' AS ColumnName
+UNION ALL SELECT 'long_rest_sweeps' AS TableName, 'UpdatedAtUtc' AS ColumnName
+UNION ALL SELECT 'long_rest_provider_effects' AS TableName, 'UpdatedAtUtc' AS ColumnName;

@@ -131,6 +131,36 @@ internal sealed partial class BackupRestoreJournalAnchorStore(
                 location.Value);
     }
 
+    // Reuses the exact location/anchor/envelope evidence already authenticated by publication.
+    // This selects no disposition and neither writes evidence nor opens a database.
+    internal Result RequireCurrentPublication(ArcanumMaintenanceLock heldInstallationLock,
+        string guardedDirectory, BackupRestoreProfileNamespace profileNamespace,
+        BackupRestoreJournalPublication publication)
+    {
+        heldInstallationLock.AssertHeldFor(guardedDirectory);
+
+        Result<BackupRestoreJournalLocation> location = ResolveLocation(profileNamespace,
+            publication.Anchor.InstallationId, publication.Anchor.OperationId, publication.Location.StagingRoot);
+
+        if (location.IsFailure) return location.Error;
+
+        if (location.Value != publication.Location || publication.Anchor.State != BackupRestoreJournalAnchorState.Active)
+            return new Error(ErrorCodes.Covenant.RevisionConflict, "The restore publication no longer names its active location.");
+
+        Result anchor = RequireAnchorMatches(profileNamespace, publication.Anchor);
+
+        if (anchor.IsFailure) return anchor;
+
+        Result<BackupRestoreJournalEnvelopeV2> envelope = ReadJournal(publication.Location);
+
+        if (envelope.IsFailure) return envelope.Error;
+
+        Result<CovenantDigest> digest = BackupRestoreJournalAuthenticator.EnvelopeDigest(envelope.Value);
+
+        return digest.IsSuccess && digest.Value == publication.EnvelopeDigest && digest.Value == publication.Anchor.EnvelopeDigest
+            ? Result.Success() : new Error(ErrorCodes.Covenant.IntegrityFailure, "The restore publication is not the journal revision on disk.");
+    }
+
     /// <summary>
     /// Opens a new operation: an <c>Active</c> revision-zero anchor, then envelope revision one.
     /// </summary>
