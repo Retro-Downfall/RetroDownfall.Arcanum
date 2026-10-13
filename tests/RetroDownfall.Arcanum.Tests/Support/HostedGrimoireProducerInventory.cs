@@ -24885,6 +24885,30 @@ internal static partial class HostedGrimoireProducerInventory
                         }
                     }
 
+                    // An implicit-this DbContext property used as the receiver of a further member
+                    // (`Database.CanConnect()`) is not visited as a property read below, but it is
+                    // the first use of the context's services all the same.
+                    if (node is IdentifierNameSyntax { Parent: MemberAccessExpressionSyntax receiverAccess } receiverName
+                        && ReferenceEquals(receiverAccess.Expression, receiverName)
+                        && !IsLongRestSdkFactoryReceiverProperty(node, member)
+                        && member.Model.GetSymbolInfo(receiverName).Symbol is IPropertySymbol receiverProperty
+                        && DbContextFirstUseConfiguring(member, node, receiverProperty) is { } receiverConfiguring)
+                    {
+                        int? receiverPosition = member.ScopedLeaseInstance is not null ? node.Span.End : null;
+
+                        emittedEvidence = MergeEvidence(
+                            emittedEvidence,
+                            Traverse(
+                                receiverConfiguring,
+                                rootType,
+                                operationId + "/call@" + Location(node),
+                                active,
+                                lifecycle,
+                                WorkAt(member, node, operationId, ordinary?.WorkKind, inheritedWork, receiverPosition),
+                                EffectAt(member, node, operationId, inheritedEffect, receiverPosition),
+                                recoveryEffect: recoveryEffect));
+                    }
+
                     ISymbol? symbol = node is InvocationExpressionSyntax
                         or ObjectCreationExpressionSyntax
                         or ImplicitObjectCreationExpressionSyntax
@@ -24931,11 +24955,8 @@ internal static partial class HostedGrimoireProducerInventory
 
                         // H7: EF runs OnConfiguring at the first use of the context's services,
                         // whichever DbContext member that is; judge it at every such use.
-                        if (node is InvocationExpressionSyntax { Expression: MemberAccessExpressionSyntax contextUse }
-                            && !method.IsStatic
-                            && TypeKey((method.ReducedFrom ?? method).ContainingType) == "Microsoft.EntityFrameworkCore.DbContext"
-                            && method.Name is not ("Dispose" or "DisposeAsync")
-                            && UnclosedDbContextOnConfiguring(member, contextUse.Expression) is { } firstUseConfiguring)
+                        if (node is InvocationExpressionSyntax
+                            && DbContextFirstUseConfiguring(member, node, method) is { } firstUseConfiguring)
                         {
                             emittedEvidence = MergeEvidence(
                                 emittedEvidence,
@@ -25934,10 +25955,7 @@ internal static partial class HostedGrimoireProducerInventory
                         }
 
                         if (!propertyMutation
-                            && !property.IsStatic
-                            && TypeKey(property.ContainingType) == "Microsoft.EntityFrameworkCore.DbContext"
-                            && node is MemberAccessExpressionSyntax databaseAccess
-                            && UnclosedDbContextOnConfiguring(member, databaseAccess.Expression) is { } onConfiguring)
+                            && DbContextFirstUseConfiguring(member, node, property) is { } onConfiguring)
                         {
                             // EF runs the authored OnConfiguring on first use of the context's
                             // services, under whatever admission is current at that use.
@@ -30354,6 +30372,7 @@ internal static partial class HostedGrimoireProducerInventory
                 || IsReviewedExactBoundedExternalMember(method)
                 || IsExactEmbeddingSdkAdapterFactory(method)
                 || IsReviewedDatabaseSupportMember(method)
+                || IsReviewedProviderNeutralOptionsBuilderMember(method)
                 || IsReviewedRuntimeCleanup(method)
                 || IsReviewedFloatVectorMember(method, node, model, context)
                 || IsReviewedExactFrameworkScalarOperator(method, node, model, context)
@@ -32976,6 +32995,7 @@ internal static partial class HostedGrimoireProducerInventory
             || IsReviewedExactGeneratedEmbeddingRead(property, mutation)
             || IsReviewedExactStoredExternalProperty(property, mutation)
             || IsReviewedDatabaseSupportMember(property, mutation)
+            || !mutation && IsReviewedProviderNeutralOptionsBuilderMember(property)
             || ReviewedNonProducerExternalMembers.Contains(
                 Normalize(property) + (mutation ? " setter" : string.Empty));
 
@@ -42039,6 +42059,54 @@ internal static partial class HostedGrimoireProducerInventory
                 && !type.Locations.Any(static location => location.IsInSource);
         }
 
+        private static readonly string[] MicrosoftPublicKeyTokens =
+        [
+            "adb9793829ddae60",
+            "b03f5f7f11d50a3a",
+            "31bf3856ad364e35",
+            "cc7b13ffcd2ddd51",
+            "b77a5c561934e089",
+            "7cec85d7bea7798e",
+        ];
+
+        private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, AssemblyName?>
+            hostLoadedAssemblies = new(StringComparer.Ordinal);
+
+        /// <summary>
+        /// A metadata assembly is the Microsoft framework only when it is, by name, version,
+        /// culture and public key token, exactly the signed assembly this test host loaded. A
+        /// simple name that merely starts with "Microsoft." is not an identity.
+        /// </summary>
+        private static bool IsHostResolvedMicrosoftAssembly(AssemblyIdentity actual)
+        {
+            if (actual.PublicKeyToken.IsDefaultOrEmpty
+                || !MicrosoftPublicKeyTokens.Contains(
+                    Convert.ToHexString(actual.PublicKeyToken.ToArray()).ToLowerInvariant()))
+            {
+                return false;
+            }
+
+            AssemblyName? trusted = hostLoadedAssemblies.GetOrAdd(
+                actual.Name,
+                static name =>
+                {
+                    try
+                    {
+                        return Assembly.Load(new AssemblyName(name)).GetName();
+                    }
+                    catch (Exception exception) when (exception is
+                        System.IO.FileNotFoundException
+                        or System.IO.FileLoadException
+                        or BadImageFormatException)
+                    {
+                        return null;
+                    }
+                });
+
+            return trusted is not null
+                && AssemblyIdentityMatches(actual, trusted);
+        }
+
         private static bool AssemblyIdentityMatches(
             AssemblyIdentity actual,
             AssemblyName trusted)
@@ -43272,19 +43340,11 @@ internal static partial class HostedGrimoireProducerInventory
                         method,
                         "Microsoft.Extensions.DependencyInjection.EntityFrameworkServiceCollectionExtensions",
                         definition.Name,
-                        "Microsoft.EntityFrameworkCore")
-                    && !method.TypeArguments.Any(argument => SameBoundType(
-                        argument,
-                        model.Compilation,
-                        dbContext,
-                        consumingCompilation)))
+                        "Microsoft.EntityFrameworkCore"))
                 {
-                    continue;
-                }
-
-                if (definition.Name is "AddDbContext" or "AddDbContextPool")
-                {
-                    // The selected registrations are validated individually.
+                    // Exactly EF's registration: for this context the selected registrations are
+                    // validated individually, and for any other context it cannot touch this one.
+                    // A helper that only borrows the name is judged like any other helper below.
                     continue;
                 }
 
@@ -43322,11 +43382,10 @@ internal static partial class HostedGrimoireProducerInventory
                     return true;
                 }
 
-                bool framework = definition.ContainingAssembly.Name.StartsWith(
-                    "Microsoft.",
-                    StringComparison.Ordinal);
-
-                if (!framework && !IsExactProductionFrameworkServiceBuilder(method))
+                // A name that starts with "Microsoft." proves nothing: only the signed assembly this
+                // test host itself loaded, by exact identity, is the framework.
+                if (!IsHostResolvedMicrosoftAssembly(definition.ContainingAssembly.Identity)
+                    && !IsExactProductionFrameworkServiceBuilder(method))
                 {
                     return true;
                 }
@@ -43518,9 +43577,16 @@ internal static partial class HostedGrimoireProducerInventory
                         consumingCompilation);
             }
 
-            return false;
+            // EF may take interceptors from the application's container as well as from the
+            // builder, so a registered interceptor is a competing source of authored callbacks.
+            return key == "Microsoft.EntityFrameworkCore.Diagnostics.IInterceptor"
+                || named.AllInterfaces.Any(static inherited =>
+                    TypeKey(inherited) == "Microsoft.EntityFrameworkCore.Diagnostics.IInterceptor");
         }
 
+        // Provider-neutral settings that run no authored code of their own. UseLoggerFactory is
+        // deliberately absent: EF hands every event to the factory's authored loggers, a callback
+        // lane this analysis does not traverse, so a custom factory refuses the certificate.
         private static readonly HashSet<string> NonProviderOptionsBuilderMembers =
         [
             "ConfigureWarnings",
@@ -43529,9 +43595,31 @@ internal static partial class HostedGrimoireProducerInventory
             "EnableSensitiveDataLogging",
             "EnableDetailedErrors",
             "UseQueryTrackingBehavior",
-            "UseLoggerFactory",
             "EnableThreadSafetyChecks",
             "ConfigureLoggingCacheTime",
+        ];
+
+        // The only interceptor callbacks an authored interceptor may implement and still leave
+        // the certificate standing: they observe a connection EF already owns and cannot hand
+        // back a different connection, command or reader.
+        private static readonly HashSet<string> ConnectionLifecycleInterceptorCallbacks =
+        [
+            "ConnectionOpening",
+            "ConnectionOpeningAsync",
+            "ConnectionOpened",
+            "ConnectionOpenedAsync",
+            "ConnectionClosing",
+            "ConnectionClosingAsync",
+            "ConnectionClosed",
+            "ConnectionClosedAsync",
+            "ConnectionFailed",
+            "ConnectionFailedAsync",
+            "ConnectionCanceled",
+            "ConnectionCanceledAsync",
+            "ConnectionDisposing",
+            "ConnectionDisposingAsync",
+            "ConnectionDisposed",
+            "ConnectionDisposedAsync",
         ];
 
         private static bool IsOptionsBuilderValue(IOperation? operation)
@@ -43849,6 +43937,27 @@ internal static partial class HostedGrimoireProducerInventory
         /// H3: EF lets a caller replace a built context's connection or provider services
         /// after resolution. Any such call anywhere refuses the closed certificate.
         /// </summary>
+        /// <summary>
+        /// EF's accessor extensions hand out the context's internal services, which can be used to
+        /// replace its connection or provider. The one reviewed read is the logger factory the
+        /// connection interceptor uses to report a failed open: a read-only view with no setter.
+        /// </summary>
+        private static bool IsReviewedAccessorLoggerFactoryRead(IMethodSymbol method)
+        {
+            IMethodSymbol definition = method.ReducedFrom ?? method;
+
+            return definition.Name == "GetService"
+                && method.TypeArguments is [{ } service]
+                && IsExactFrameworkType(
+                    service,
+                    "Microsoft.Extensions.Logging.ILoggerFactory",
+                    typeof(Microsoft.Extensions.Logging.ILoggerFactory).Assembly.GetName())
+                && !definition.Locations.Any(static location => location.IsInSource)
+                && AssemblyIdentityMatches(
+                    definition.ContainingAssembly.Identity,
+                    typeof(Microsoft.EntityFrameworkCore.Infrastructure.AccessorExtensions).Assembly.GetName());
+        }
+
         private bool HasDbContextConnectionReplacement()
         {
             foreach ((InvocationExpressionSyntax call, SemanticModel model) in invocations)
@@ -43865,13 +43974,54 @@ internal static partial class HostedGrimoireProducerInventory
                 if (type == "Microsoft.EntityFrameworkCore.RelationalDatabaseFacadeExtensions"
                         && definition.Name is "SetDbConnection" or "SetConnectionString"
                     || type == "Microsoft.EntityFrameworkCore.Infrastructure.AccessorExtensions"
-                        && (definition.Name != "GetService"
-                            || method.TypeArguments is not [{ } service]
-                            || service.ContainingNamespace?.ToDisplayString().StartsWith("Microsoft.EntityFrameworkCore", StringComparison.Ordinal) != false)
+                        && !IsReviewedAccessorLoggerFactoryRead(method)
                     || type == "Microsoft.EntityFrameworkCore.Storage.IRelationalConnection"
                     || definition.Name is "UseServiceProviderFactory" or "ConfigureContainer")
                 {
                     return true;
+                }
+            }
+
+            return false;
+        }
+
+        /// <summary>
+        /// Interface mapping names the base class's virtual member when a derived interceptor
+        /// only overrides it, so an authored callback is the implementation itself or any
+        /// authored override of it in the interceptor's own hierarchy.
+        /// </summary>
+        private static bool HasAuthoredCallback(
+            INamedTypeSymbol created,
+            IMethodSymbol implementation)
+        {
+            if (implementation.Locations.Any(static location => location.IsInSource))
+            {
+                return true;
+            }
+
+            for (INamedTypeSymbol? current = created;
+                current is not null && current.SpecialType != SpecialType.System_Object;
+                current = current.BaseType)
+            {
+                foreach (IMethodSymbol candidate in current.GetMembers(implementation.Name).OfType<IMethodSymbol>())
+                {
+                    if (!candidate.IsOverride
+                        || !candidate.Locations.Any(static location => location.IsInSource))
+                    {
+                        continue;
+                    }
+
+                    for (IMethodSymbol? overridden = candidate.OverriddenMethod;
+                        overridden is not null;
+                        overridden = overridden.OverriddenMethod)
+                    {
+                        if (SymbolEqualityComparer.Default.Equals(
+                            overridden.OriginalDefinition,
+                            implementation.OriginalDefinition))
+                        {
+                            return true;
+                        }
+                    }
                 }
             }
 
@@ -43924,6 +44074,37 @@ internal static partial class HostedGrimoireProducerInventory
                         return false;
                     }
                 }
+
+                // Every other authored interceptor callback runs code the certificate cannot read:
+                // only the connection-lifecycle callbacks of IDbConnectionInterceptor are reviewed.
+                // Command, transaction, SaveChanges, materialization, query and identity-resolution
+                // interceptors, and any callback that could return a replacement object, refuse.
+                if (model.Compilation.GetTypeByMetadataName(
+                        "Microsoft.EntityFrameworkCore.Diagnostics.IInterceptor") is not
+                    INamedTypeSymbol interceptorRoot)
+                {
+                    return false;
+                }
+
+                foreach (INamedTypeSymbol contract in created.AllInterfaces.Where(candidate =>
+                    SymbolEqualityComparer.Default.Equals(candidate, interceptorRoot)
+                    || candidate.AllInterfaces.Any(inherited => SymbolEqualityComparer.Default.Equals(inherited, interceptorRoot))))
+                {
+                    bool reviewedContract = TypeKey(contract) == "Microsoft.EntityFrameworkCore.Diagnostics.IDbConnectionInterceptor"
+                        && AssemblyIdentityMatches(
+                            contract.ContainingAssembly.Identity,
+                            typeof(Microsoft.EntityFrameworkCore.Diagnostics.IDbConnectionInterceptor).Assembly.GetName());
+
+                    foreach (IMethodSymbol slot in contract.GetMembers().OfType<IMethodSymbol>())
+                    {
+                        if (created.FindImplementationForInterfaceMember(slot) is IMethodSymbol implementation
+                            && HasAuthoredCallback(created, implementation)
+                            && !(reviewedContract && ConnectionLifecycleInterceptorCallbacks.Contains(slot.Name)))
+                        {
+                            return false;
+                        }
+                    }
+                }
             }
 
             // Only inline interceptor allocations are reviewed; a stored or returned
@@ -43965,6 +44146,13 @@ internal static partial class HostedGrimoireProducerInventory
                 return null;
             }
 
+            return AuthoredOnConfiguring(type, member.Model.Compilation);
+        }
+
+        private AuthoredMember? AuthoredOnConfiguring(
+            INamedTypeSymbol type,
+            Compilation compilation)
+        {
             for (INamedTypeSymbol? current = type;
                 current is not null
                 && TypeKey(current) != "Microsoft.EntityFrameworkCore.DbContext";
@@ -43973,7 +44161,7 @@ internal static partial class HostedGrimoireProducerInventory
                 foreach (IMethodSymbol method in current.GetMembers("OnConfiguring").OfType<IMethodSymbol>())
                 {
                     if (method.IsOverride
-                        && Resolve(method, member.Model.Compilation) is { } authored)
+                        && Resolve(method, compilation) is { } authored)
                     {
                         return authored;
                     }
@@ -43982,6 +44170,128 @@ internal static partial class HostedGrimoireProducerInventory
 
             return null;
         }
+
+        /// <summary>
+        /// EF runs the authored OnConfiguring at the first use of a context's services, whichever
+        /// member that is and however the receiver is written: spelled out, reached through
+        /// <c>?.</c>, implied (<c>this</c> inside a derived context), a member the derived
+        /// context declares itself, or EF's accessor extensions. Judge it at every such use.
+        /// </summary>
+        private AuthoredMember? DbContextFirstUseConfiguring(
+            AuthoredMember member,
+            SyntaxNode node,
+            ISymbol used)
+        {
+            ISymbol definition = used is IMethodSymbol method
+                ? method.ReducedFrom ?? method
+                : used;
+
+            string owner = TypeKey(definition.ContainingType);
+
+            bool contextMember = owner == "Microsoft.EntityFrameworkCore.DbContext"
+                && !definition.IsStatic
+                && definition.Name is not ("Dispose" or "DisposeAsync");
+
+            bool derivedMember = !definition.IsStatic
+                && definition.ContainingType is { } derivedOwner
+                && IsExactEfDbContext(derivedOwner)
+                && definition.DeclaringSyntaxReferences.Length != 0;
+
+            bool accessor = owner == "Microsoft.EntityFrameworkCore.Infrastructure.AccessorExtensions"
+                || owner == "Microsoft.EntityFrameworkCore.Infrastructure.IInfrastructure`1"
+                    && definition.Name == "Instance";
+
+            if (!contextMember && !derivedMember && !accessor)
+            {
+                return null;
+            }
+
+            ExpressionSyntax? receiver;
+
+            bool implicitThis;
+
+            if (accessor && member.Model.GetOperation(node) is IInvocationOperation accessorCall)
+            {
+                receiver = ExactInvocationReceiverOrFirstArgument(accessorCall);
+
+                implicitThis = false;
+            }
+            else
+            {
+                (receiver, implicitThis) = DbContextUseReceiver(node);
+            }
+
+            if (receiver is BaseExpressionSyntax)
+            {
+                receiver = null;
+
+                implicitThis = true;
+            }
+
+            if (implicitThis)
+            {
+                // A member the derived context declares is judged where it is called on a known
+                // receiver; the implied instance of its own body is not known here.
+                return derivedMember
+                    ? null
+                    : ImplicitDbContextOnConfiguring(member);
+            }
+
+            return receiver is null
+                ? null
+                : UnclosedDbContextOnConfiguring(member, receiver);
+        }
+
+        /// <summary>
+        /// The instance behind an implied <c>this</c> is whichever receiver reached the member, so
+        /// a registration that configured it cannot be assumed: an OnConfiguring that is not the
+        /// provider-complete guard always runs and is judged at the use. A guard-closed fallback
+        /// only runs for an unconfigured instance and is judged at the call that has a receiver.
+        /// </summary>
+        private AuthoredMember? ImplicitDbContextOnConfiguring(AuthoredMember member)
+        {
+            INamedTypeSymbol type = member.Symbol.ContainingType;
+
+            return member.Symbol.IsStatic
+                || !IsExactEfDbContext(type)
+                || HasClosedDbContextOnConfiguring(type)
+                    ? null
+                    : AuthoredOnConfiguring(type, member.Model.Compilation);
+        }
+
+        private static (ExpressionSyntax? Receiver, bool ImplicitThis) DbContextUseReceiver(SyntaxNode node)
+        {
+            SyntaxNode name = node is InvocationExpressionSyntax call
+                ? call.Expression
+                : node;
+
+            switch (name)
+            {
+                case MemberAccessExpressionSyntax access:
+                    return (access.Expression, false);
+
+                case MemberBindingExpressionSyntax binding:
+                    return (ConditionalAccessReceiver(binding), false);
+
+                case IdentifierNameSyntax or GenericNameSyntax:
+                    return name.Parent switch
+                    {
+                        MemberBindingExpressionSyntax binding => (ConditionalAccessReceiver(binding), false),
+                        MemberAccessExpressionSyntax access when ReferenceEquals(access.Name, name) =>
+                            (access.Expression, false),
+                        _ => (null, true),
+                    };
+
+                default:
+                    return (null, false);
+            }
+        }
+
+        private static ExpressionSyntax? ConditionalAccessReceiver(SyntaxNode binding) =>
+            binding.Ancestors()
+                .OfType<ConditionalAccessExpressionSyntax>()
+                .FirstOrDefault(access => access.WhenNotNull.Span.Contains(binding.Span))
+                ?.Expression;
 
         private bool HasClosedDbContextOnConfiguring(INamedTypeSymbol dbContext)
         {
@@ -57020,6 +57330,29 @@ internal static partial class HostedGrimoireProducerInventory
                 && AssemblyIdentityMatches(
                     property.ContainingAssembly.Identity,
                     typeof(Microsoft.Data.Sqlite.SqliteDataReader).Assembly.GetName());
+
+        /// <summary>
+        /// The members of EF's own options builder that an unconfigured context's OnConfiguring
+        /// fallback may call without selecting a provider, a connection or a service: they record
+        /// state on the builder and run no code of their own. Reviewed by exact assembly identity,
+        /// so a same-named type or member from another assembly or from source stays unclassified.
+        /// </summary>
+        private static bool IsReviewedProviderNeutralOptionsBuilderMember(ISymbol member)
+        {
+            ISymbol definition = member is IMethodSymbol method
+                ? method.ReducedFrom ?? method
+                : member;
+
+            return TypeKey(definition.ContainingType) is
+                    "Microsoft.EntityFrameworkCore.DbContextOptionsBuilder"
+                    or "Microsoft.EntityFrameworkCore.DbContextOptionsBuilder`1"
+                && definition.Name is "IsConfigured" or "AddInterceptors" or "UseModel"
+                && !definition.IsStatic
+                && !definition.Locations.Any(static location => location.IsInSource)
+                && AssemblyIdentityMatches(
+                    definition.ContainingAssembly.Identity,
+                    typeof(Microsoft.EntityFrameworkCore.DbContextOptionsBuilder).Assembly.GetName());
+        }
 
         private static bool IsReviewedDatabaseSupportMember(IMethodSymbol method)
         {
