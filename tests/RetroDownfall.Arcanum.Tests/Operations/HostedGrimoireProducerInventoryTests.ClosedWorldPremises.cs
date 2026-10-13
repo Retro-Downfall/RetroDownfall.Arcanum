@@ -139,14 +139,37 @@ public sealed partial class HostedGrimoireProducerInventoryTests
     private static HostedProducerInventoryDiagnostic[] PremiseWithoutViolations(HostedProducerDiscovery<HostedProducerSite> result) =>
         [.. result.Diagnostics.Where(static diagnostic => diagnostic.Code != "HOSTED_PREMISE_VIOLATED")];
 
-    private static PortableExecutableReference PremiseLibrary(string name, string source)
-    {
-        CSharpCompilation pack = CompileWithProductionReferencePack("class Pack { }", "RetroDownfall.Arcanum.Api");
+    private static PortableExecutableReference PremiseLibrary(string name, string source) =>
+        PremiseLibrary(name, source, CompileWithProductionReferencePack("class Pack { }", "RetroDownfall.Arcanum.Api").References);
 
+    // Every managed assembly of the shared runtime directory and nothing else: nothing here can resolve
+    // Microsoft.Data.Sqlite, and the set is closed, so no framework type has an unresolved base. A subset of
+    // the framework would leave unrelated unresolved bases, which the premise correctly refuses on their own.
+    private static MetadataReference[] PremiseFrameworkReferences() =>
+    [
+        .. Directory.EnumerateFiles(Path.GetDirectoryName(typeof(object).Assembly.Location)!, "*.dll")
+            .Where(static path =>
+            {
+                try
+                {
+                    _ = System.Reflection.AssemblyName.GetAssemblyName(path);
+
+                    return true;
+                }
+                catch (BadImageFormatException)
+                {
+                    return false;
+                }
+            })
+            .Select(static path => (MetadataReference)MetadataReference.CreateFromFile(path)),
+    ];
+
+    private static PortableExecutableReference PremiseLibrary(string name, string source, IEnumerable<MetadataReference> references)
+    {
         CSharpCompilation library = CSharpCompilation.Create(
             name,
             [CSharpSyntaxTree.ParseText(source, path: "src/" + name + ".cs")],
-            pack.References,
+            references,
             new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
 
         using MemoryStream image = new();
@@ -598,14 +621,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests
             "PremiseUnresolvedLibrary",
             "public sealed class PremiseHolder { public Microsoft.Data.Sqlite.SqliteConnection? Connection; }");
 
-        // Only the framework assemblies: nothing here can resolve Microsoft.Data.Sqlite.
-        MetadataReference[] framework =
-        [
-            .. ((string)AppContext.GetData("TRUSTED_PLATFORM_ASSEMBLIES")!)
-                .Split(Path.PathSeparator)
-                .Where(static path => Path.GetFileName(path) is { } file && (file.StartsWith("System.", StringComparison.Ordinal) || file is "netstandard.dll" or "mscorlib.dll"))
-                .Select(static path => (MetadataReference)MetadataReference.CreateFromFile(path)),
-        ];
+        MetadataReference[] framework = PremiseFrameworkReferences();
 
         CSharpCompilation unresolved = CSharpCompilation.Create(
             "PremiseUnresolvedFixture",
@@ -633,6 +649,44 @@ public sealed partial class HostedGrimoireProducerInventoryTests
         MetadataReference pclRaw = MetadataReference.CreateFromFile(typeof(SQLitePCL.raw).Assembly.Location);
 
         CSharpCompilation resolved = unresolved.AddReferences(sqlite, pclRaw);
+
+        HostedProducerPremiseLedger control = HostedGrimoireProducerInventory.VerifyPremises([resolved], HostedProducerPremises.SqliteSealedByUse);
+
+        Assert.True(control.Holds(HostedProducerPremises.SqliteSealedByUse), string.Join(global::System.Environment.NewLine, control.Violations));
+    }
+
+    [Fact]
+    public void AnUnresolvedBaseTypeInAReferenceThatNeverNamesTheProviderStillRefusesThePremise()
+    {
+        MetadataReference[] framework = PremiseFrameworkReferences();
+
+        PortableExecutableReference middle = PremiseLibrary("PremiseMiddle", "public class Middle { }", framework);
+
+        PortableExecutableReference leaf = PremiseLibrary("PremiseLeaf", "public class Leaf : Middle { }", [.. framework, middle]);
+
+        // The analysed compilation references the leaf but not the assembly that holds its base class, and
+        // nothing about the leaf mentions the provider: only a scan of every reference can see that its
+        // ancestry cannot be excluded from deriving from a provider class.
+        CSharpCompilation unresolved = CSharpCompilation.Create(
+            "PremiseUnresolvedBase",
+            [CSharpSyntaxTree.ParseText("class Empty { }", path: "src/Fixture.cs")],
+            [.. framework, leaf],
+            new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
+
+        HostedProducerPremiseLedger ledger = HostedGrimoireProducerInventory.VerifyPremises([unresolved], HostedProducerPremises.SqliteSealedByUse);
+
+        Assert.False(ledger.Holds(HostedProducerPremises.SqliteSealedByUse));
+
+        HostedProducerInventoryDiagnostic violation = Assert.Single(ledger.Violations);
+
+        Assert.Equal("SqliteSealedByUse", violation.Identity);
+
+        Assert.Contains("Leaf", violation.Detail, StringComparison.Ordinal);
+
+        Assert.Contains("unresolved base type", violation.Detail, StringComparison.Ordinal);
+
+        // The positive control resolves the base's assembly: nothing else changed.
+        CSharpCompilation resolved = unresolved.AddReferences(middle);
 
         HostedProducerPremiseLedger control = HostedGrimoireProducerInventory.VerifyPremises([resolved], HostedProducerPremises.SqliteSealedByUse);
 
@@ -683,6 +737,191 @@ public sealed partial class HostedGrimoireProducerInventoryTests
         Assert.Equal(strict.Diagnostics, PremiseWithoutViolations(premised));
 
         Assert.Equal(strict.Items, premised.Items);
+    }
+
+    [Fact]
+    public void ASubclassReachedOnlyThroughATypeForwardingFacadeViolatesTheSealedByUsePremise()
+    {
+        MetadataReference[] framework = PremiseFrameworkReferences();
+
+        // The subclass is compiled against a facade that declares its own SqliteConnection. The analysed
+        // compilation references a facade of the same identity that only forwards that name to the real
+        // provider type, so the subclass's base resolves to the real SqliteConnection although the
+        // subclass's own assembly names nothing but the facade.
+        PortableExecutableReference compileTimeFacade = PremiseLibrary("PremiseFacade", "namespace Microsoft.Data.Sqlite { public class SqliteConnection { } }", framework);
+
+        PortableExecutableReference evil = PremiseLibrary("PremiseEvil", "public sealed class EvilConnection : Microsoft.Data.Sqlite.SqliteConnection { }", [.. framework, compileTimeFacade]);
+
+        PortableExecutableReference forwarder = PremiseLibrary("PremiseFacade", "[assembly: System.Runtime.CompilerServices.TypeForwardedTo(typeof(Microsoft.Data.Sqlite.SqliteConnection))]");
+
+        CSharpCompilation compilation = PremiseFixture("PremiseFactory.Invoke(UnprovedSqliteInput.Value); await Task.CompletedTask;", PremiseReceiverFactories, forwarder, evil);
+
+        SyntaxTree tree = Assert.Single(compilation.SyntaxTrees);
+
+        InvocationExpressionSyntax factory = PremiseCreateCommand(tree, "connection");
+
+        // The shape under test: the base resolves to the real provider type, yet the subclass's assembly
+        // never references Microsoft.Data.Sqlite, so a scan keyed on that reference could not see it.
+        INamedTypeSymbol evilType = Assert.IsAssignableFrom<INamedTypeSymbol>(compilation.GetTypeByMetadataName("EvilConnection"));
+
+        Assert.Empty(evilType.DeclaringSyntaxReferences);
+
+        Assert.Equal("Microsoft.Data.Sqlite.SqliteConnection", evilType.BaseType!.ToDisplayString());
+
+        Assert.Equal("Microsoft.Data.Sqlite", evilType.BaseType.ContainingAssembly.Name);
+
+        Assert.DoesNotContain(
+            evilType.ContainingAssembly.Modules.SelectMany(static module => module.ReferencedAssemblies),
+            static identity => identity.Name == "Microsoft.Data.Sqlite");
+
+        HostedProducerPremiseLedger ledger = HostedGrimoireProducerInventory.VerifyPremises([compilation], HostedProducerPremises.SqliteSealedByUse);
+
+        Assert.False(ledger.Holds(HostedProducerPremises.SqliteSealedByUse));
+
+        HostedProducerInventoryDiagnostic violation = Assert.Single(ledger.Violations);
+
+        Assert.Equal("HOSTED_PREMISE_VIOLATED", violation.Code);
+
+        Assert.Equal("SqliteSealedByUse", violation.Identity);
+
+        Assert.Contains("EvilConnection", violation.Detail, StringComparison.Ordinal);
+
+        HostedProducerDiscovery<HostedProducerSite> strict = PremiseStrict(compilation);
+
+        HostedProducerDiscovery<HostedProducerSite> premised = PremiseRequested(compilation);
+
+        Assert.Single(PremiseViolations(premised));
+
+        Assert.True(PremiseUnclassified(premised, tree, factory));
+
+        Assert.Equal(strict.Diagnostics, PremiseWithoutViolations(premised));
+
+        Assert.Equal(strict.Items, premised.Items);
+
+        // The positive control keeps the facade and drops only the subclass: the subclass alone refuses the premise.
+        CSharpCompilation control = PremiseFixture("PremiseFactory.Invoke(UnprovedSqliteInput.Value); await Task.CompletedTask;", PremiseReceiverFactories, forwarder);
+
+        HostedProducerPremiseLedger granted = HostedGrimoireProducerInventory.VerifyPremises([control], HostedProducerPremises.SqliteSealedByUse);
+
+        Assert.True(granted.Holds(HostedProducerPremises.SqliteSealedByUse), string.Join(global::System.Environment.NewLine, granted.Violations));
+    }
+
+    [Theory]
+    [InlineData("internal sealed class HiddenTopLevel : Microsoft.Data.Sqlite.SqliteConnection { }", "HiddenTopLevel")]
+    [InlineData("public static class HiddenOuter { private sealed class PrivateNested : Microsoft.Data.Sqlite.SqliteCommand { } }", "PrivateNested")]
+    [InlineData("public static class HiddenOuter { internal sealed class InternalNested : Microsoft.Data.Sqlite.SqliteConnection { } }", "InternalNested")]
+    public void AnInaccessibleSubclassInAPortableExecutableReferenceViolatesTheSealedByUsePremise(string library, string subclass)
+    {
+        // An internal or private subclass is still a dispatch target: the library can hand an instance back
+        // through a public member typed as the provider class.
+        CSharpCompilation compilation = PremiseFixture("await Task.CompletedTask;", PremiseReceiverFactories, PremiseLibrary("PremiseHiddenLibrary", library));
+
+        HostedProducerPremiseLedger ledger = HostedGrimoireProducerInventory.VerifyPremises([compilation], HostedProducerPremises.SqliteSealedByUse);
+
+        Assert.False(ledger.Holds(HostedProducerPremises.SqliteSealedByUse));
+
+        Assert.Contains(ledger.Violations, violation => violation.Code == "HOSTED_PREMISE_VIOLATED"
+            && violation.Identity == "SqliteSealedByUse"
+            && violation.Detail.Contains(subclass, StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void AReferenceThatFailsToLoadIsUnresolvedAndKeepsStrictBehavior()
+    {
+        MetadataReference garbage = MetadataReference.CreateFromImage(new byte[8], filePath: "Garbage.dll");
+
+        CSharpCompilation compilation = CompileWithProductionReferencePack(
+            R2Source("PremiseFactory.Invoke(UnprovedSqliteInput.Value); await Task.CompletedTask;", PremiseInputs + "\n" + PremiseReceiverFactories),
+            "RetroDownfall.Arcanum.Api").AddReferences(garbage);
+
+        // The shape under test: the compiler reports the image and binds no symbol for it.
+        Assert.Contains(compilation.GetDiagnostics(), static diagnostic => diagnostic.Id == "CS0009");
+
+        Assert.Null(compilation.GetAssemblyOrModuleSymbol(garbage));
+
+        SyntaxTree tree = Assert.Single(compilation.SyntaxTrees);
+
+        InvocationExpressionSyntax factory = PremiseCreateCommand(tree, "connection");
+
+        HostedProducerPremiseLedger ledger = HostedGrimoireProducerInventory.VerifyPremises([compilation], HostedProducerPremises.SqliteSealedByUse);
+
+        Assert.False(ledger.Holds(HostedProducerPremises.SqliteSealedByUse));
+
+        HostedProducerInventoryDiagnostic violation = Assert.Single(ledger.Violations);
+
+        Assert.Equal("HOSTED_PREMISE_VIOLATED", violation.Code);
+
+        Assert.Equal("SqliteSealedByUse", violation.Identity);
+
+        Assert.Contains("Garbage.dll", violation.Detail, StringComparison.Ordinal);
+
+        Assert.Contains("unresolved", violation.Detail, StringComparison.OrdinalIgnoreCase);
+
+        HostedProducerDiscovery<HostedProducerSite> strict = PremiseStrict(compilation);
+
+        HostedProducerDiscovery<HostedProducerSite> premised = PremiseRequested(compilation);
+
+        Assert.Single(PremiseViolations(premised));
+
+        Assert.True(PremiseUnclassified(premised, tree, factory));
+
+        Assert.Equal(strict.Diagnostics, PremiseWithoutViolations(premised));
+    }
+
+    [Fact]
+    public void ADuplicateOfABoundReferenceIsNotAnUnresolvedReference()
+    {
+        // Two different images of one assembly identity. The compiler binds one and silently ignores the
+        // other, so analysed code can only ever see the bound one. The ignored image is readable and its
+        // identity is exactly that of a loaded assembly: it is a duplicate, not an unresolved reference.
+        PortableExecutableReference ignored = PremiseLibrary("PremiseDuplicate", "public class DuplicateIgnored { }");
+
+        PortableExecutableReference bound = PremiseLibrary("PremiseDuplicate", "public class DuplicateBound { }");
+
+        CSharpCompilation compilation = CompileWithProductionReferencePack("class Pack { }", "RetroDownfall.Arcanum.Api").AddReferences(ignored, bound);
+
+        Assert.Empty(compilation.GetDiagnostics());
+
+        Assert.Null(compilation.GetAssemblyOrModuleSymbol(ignored));
+
+        Assert.NotNull(compilation.GetAssemblyOrModuleSymbol(bound));
+
+        HostedProducerPremiseLedger ledger = HostedGrimoireProducerInventory.VerifyPremises([compilation], HostedProducerPremises.SqliteSealedByUse);
+
+        Assert.True(ledger.Holds(HostedProducerPremises.SqliteSealedByUse), string.Join(global::System.Environment.NewLine, ledger.Violations));
+    }
+
+    [Fact]
+    public void AnUnboundImageThatIsNotAnExactDuplicateOfALoadedAssemblyIsUnresolved()
+    {
+        // The twin of the duplicate: the same simple name at another version is equivalent to the loaded
+        // weak-named assembly for the compiler (CS1704), which binds nothing for the earlier image. It is
+        // not an exact duplicate, and the premise accepts only an exact identity match, so it stays unresolved.
+        PortableExecutableReference earlier = PremiseLibrary("PremiseDuplicate", "public class DuplicateEarlier { }");
+
+        PortableExecutableReference otherVersion = PremiseLibrary(
+            "PremiseDuplicate",
+            "[assembly: System.Reflection.AssemblyVersion(\"2.0.0.0\")] public class DuplicateOther { }");
+
+        CSharpCompilation compilation = CompileWithProductionReferencePack("class Pack { }", "RetroDownfall.Arcanum.Api").AddReferences(earlier, otherVersion);
+
+        Assert.Contains(compilation.GetDiagnostics(), static diagnostic => diagnostic.Id == "CS1704");
+
+        Assert.Null(compilation.GetAssemblyOrModuleSymbol(earlier));
+
+        Assert.NotNull(compilation.GetAssemblyOrModuleSymbol(otherVersion));
+
+        HostedProducerPremiseLedger ledger = HostedGrimoireProducerInventory.VerifyPremises([compilation], HostedProducerPremises.SqliteSealedByUse);
+
+        Assert.False(ledger.Holds(HostedProducerPremises.SqliteSealedByUse));
+
+        HostedProducerInventoryDiagnostic violation = Assert.Single(ledger.Violations);
+
+        Assert.Equal("SqliteSealedByUse", violation.Identity);
+
+        Assert.Contains("PremiseDuplicate", violation.Detail, StringComparison.Ordinal);
+
+        Assert.Contains("unresolved", violation.Detail, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

@@ -13,10 +13,10 @@ internal enum HostedProducerPremises : byte
 {
     None = 0,
 
-    // No subclass of SqliteConnection, SqliteCommand or SqliteTransaction exists in any analysed source, in
-    // Microsoft.Data.Sqlite, or in any reference that references it. A static Sqlite-typed expression is then
-    // its own exact runtime type, so the virtual SqliteConnection.CreateCommand and the Sqlite-typed cleanup
-    // resolve to the reviewed framework contract. Abstract Db* types are never mapped to Sqlite.
+    // No subclass of SqliteConnection, SqliteCommand or SqliteTransaction exists in any analysed source or in
+    // any reference the analysed compilations resolve. A static Sqlite-typed expression is then its own exact
+    // runtime type, so the virtual SqliteConnection.CreateCommand and the Sqlite-typed cleanup resolve to the
+    // reviewed framework contract. Abstract Db* types are never mapped to Sqlite.
     SqliteSealedByUse = 1,
 }
 
@@ -44,8 +44,8 @@ internal static partial class HostedGrimoireProducerInventory
     // Counts verifications so a test can prove a discovery verifies once and shares the verdict.
     internal static int PremiseVerifications => Volatile.Read(ref premiseVerifications);
 
-    // An unbudgeted, finite enumeration of every type of the assemblies that can hold a subclass. It never
-    // consults the traversal budgets, and a premise it cannot decide is not granted.
+    // An unbudgeted, finite enumeration of every type of every assembly the analysed compilations resolve. It
+    // never consults the traversal budgets, and a premise it cannot decide is not granted.
     internal static HostedProducerPremiseLedger VerifyPremises(IReadOnlyList<CSharpCompilation> compilations, HostedProducerPremises requested)
     {
         _ = Interlocked.Increment(ref premiseVerifications);
@@ -81,6 +81,8 @@ internal static partial class HostedGrimoireProducerInventory
         {
             List<IAssemblySymbol> resolved = [];
 
+            List<MetadataReference> unbound = [];
+
             foreach (MetadataReference reference in compilation.References)
             {
                 ISymbol? bound = compilation.GetAssemblyOrModuleSymbol(reference);
@@ -94,9 +96,22 @@ internal static partial class HostedGrimoireProducerInventory
                     // A module reference contributes types to the assembly yet cannot be enumerated as one.
                     findings.Add($"Reference '{reference.Display}' of '{compilation.AssemblyName}' is a module, not an assembly whose types can be enumerated (unresolved reference).");
                 }
+                else
+                {
+                    unbound.Add(reference);
+                }
+            }
 
-                // A reference the compilation never bound (a duplicate of an assembly identity it already
-                // holds) contributes no symbol, so it cannot hold a subclass any analysed code can see.
+            // A reference that binds no symbol is either an image the compiler could not load or an image whose
+            // identity the compiler already holds from another reference. Only the second contributes nothing
+            // analysed code can see; an image whose identity cannot be read, or is not exactly a loaded
+            // assembly's, is unresolved.
+            foreach (MetadataReference reference in unbound)
+            {
+                if (!IsExactDuplicateOfLoadedAssembly(reference, resolved))
+                {
+                    findings.Add($"Reference '{reference.Display}' of '{compilation.AssemblyName}' was not loaded by the compilation and is not an exact duplicate of a loaded assembly, so its types cannot be enumerated (unresolved reference).");
+                }
             }
 
             bool sqliteResolved = resolved.Any(assembly => assembly.Identity.Name == sqliteAssembly);
@@ -111,12 +126,12 @@ internal static partial class HostedGrimoireProducerInventory
                     continue;
                 }
 
-                bool referencesSqlite = assembly.Modules.Any(module => module.ReferencedAssemblies.Any(identity => identity.Name == sqliteAssembly));
+                // Every resolved reference is scanned, not only the ones that name the provider. A subclass
+                // whose base is reached through a type-forwarding facade names only the facade in its own
+                // metadata, yet the compilation resolves that base to the provider type.
+                scanned.Add(assembly);
 
-                if (assembly.Identity.Name == sqliteAssembly || referencesSqlite)
-                {
-                    scanned.Add(assembly);
-                }
+                bool referencesSqlite = assembly.Modules.Any(module => module.ReferencedAssemblies.Any(identity => identity.Name == sqliteAssembly));
 
                 if (referencesSqlite && !sqliteResolved)
                 {
@@ -154,6 +169,55 @@ internal static partial class HostedGrimoireProducerInventory
         }
 
         return [.. findings.Order(StringComparer.Ordinal)];
+    }
+
+    // True when the reference's own metadata names exactly the identity (name, version, culture, public key
+    // token) of an assembly the compilation loaded. An image that cannot be read is never a duplicate.
+    private static bool IsExactDuplicateOfLoadedAssembly(MetadataReference reference, IReadOnlyList<IAssemblySymbol> loaded)
+    {
+        System.Reflection.AssemblyName? declared = TryReadDeclaredIdentity(reference);
+
+        if (declared is null)
+        {
+            return false;
+        }
+
+        byte[] token = declared.GetPublicKeyToken() ?? [];
+
+        foreach (IAssemblySymbol assembly in loaded)
+        {
+            AssemblyIdentity identity = assembly.Identity;
+
+            if (string.Equals(identity.Name, declared.Name, StringComparison.Ordinal)
+                && identity.Version == declared.Version
+                && string.Equals(identity.CultureName, declared.CultureName ?? string.Empty, StringComparison.Ordinal)
+                && !identity.PublicKeyToken.IsDefault
+                && identity.PublicKeyToken.AsSpan().SequenceEqual(token))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static System.Reflection.AssemblyName? TryReadDeclaredIdentity(MetadataReference reference)
+    {
+        try
+        {
+            if (reference is PortableExecutableReference portable
+                && portable.GetMetadata() is AssemblyMetadata assemblyMetadata
+                && assemblyMetadata.GetModules() is { Length: > 0 } modules)
+            {
+                return modules[0].GetMetadataReader().GetAssemblyDefinition().GetAssemblyName();
+            }
+        }
+        catch (Exception exception) when (exception is BadImageFormatException or InvalidOperationException or IOException)
+        {
+            // An image the compiler could not load cannot be read here either.
+        }
+
+        return null;
     }
 
     private sealed partial class ProducerGraph
