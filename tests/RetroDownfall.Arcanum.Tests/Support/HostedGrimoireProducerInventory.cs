@@ -24785,8 +24785,15 @@ internal static partial class HostedGrimoireProducerInventory
 
                             bool canonicalEquality = false;
 
-                            bool equalityCertified = !selectedOperation.Unsupported
-                                && TryGeneratedRecordEqualityTargets(member, selectedOperator, selectedOperation.Operands, out equalityTargets, out canonicalEquality);
+                            bool liftedEquality = selectedOperation.Unsupported
+                                && member.Model.GetOperation(node) is IBinaryOperation
+                                {
+                                    IsLifted: true,
+                                    OperatorKind: BinaryOperatorKind.Equals or BinaryOperatorKind.NotEquals,
+                                };
+
+                            bool equalityCertified = (!selectedOperation.Unsupported || liftedEquality)
+                                && TryGeneratedRecordEqualityTargets(member, selectedOperator, selectedOperation.Operands, out equalityTargets, out canonicalEquality, liftedEquality);
 
                             if (equalityCertified || equalityTargets.Count != 0)
                             {

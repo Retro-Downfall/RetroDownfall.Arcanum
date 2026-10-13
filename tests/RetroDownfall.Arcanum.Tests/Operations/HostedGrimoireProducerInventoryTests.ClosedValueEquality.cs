@@ -502,10 +502,22 @@ public sealed partial class HostedGrimoireProducerInventoryTests
     }
 
     [Fact]
-    public void ClosedValueEqualityDoesNotCertifyALiftedComparison()
+    public void ClosedValueEqualityCertifiesALiftedComparisonOfAClosedValueRecord()
     {
         const string helper = """
-            public readonly record struct LiftedProbe(int Number);
+            public readonly record struct LiftedProbe
+            {
+                private readonly int _number;
+
+                public bool Equals(LiftedProbe other)
+                {
+                    System.IO.File.Delete("lifted-equals-effect");
+
+                    return _number == other._number;
+                }
+
+                public override int GetHashCode() => _number;
+            }
 
             static class LiftedSource
             {
@@ -515,9 +527,33 @@ public sealed partial class HostedGrimoireProducerInventoryTests
             }
             """;
 
-        var (_, result, _) = ClosedValueDiscover("_ = LiftedSource.Left == LiftedSource.Right;", helper);
+        var (_, result, _) = ClosedValueDiscover("_ = LiftedSource.Left == LiftedSource.Right; _ = LiftedSource.Left != LiftedSource.Right;", helper);
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED");
+
+        // The authored Equals the lifted operator reaches is traversed, not skipped.
+        Assert.Contains(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_SITE_WORK_FRONTIER_MISSING"
+            && diagnostic.Detail == "System.IO.File.Delete"
+            && diagnostic.Identity.Contains("/equals@", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void ClosedValueEqualityDoesNotCertifyALiftedComparisonOfAHandleCapableRecord()
+    {
+        const string helper = """
+            public readonly record struct LiftedHandleProbe(int Number, System.IDisposable Handle);
+
+            static class LiftedHandleSource
+            {
+                public static LiftedHandleProbe? Left => default;
+
+                public static LiftedHandleProbe? Right => default;
+            }
+            """;
+
+        var (_, result, _) = ClosedValueDiscover("_ = LiftedHandleSource.Left == LiftedHandleSource.Right;", helper);
 
         Assert.Contains(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED"
-            && diagnostic.Detail == "LiftedProbe.op_Equality");
+            && diagnostic.Detail == "LiftedHandleProbe.op_Equality");
     }
 }

@@ -15,7 +15,7 @@ internal static partial class HostedGrimoireProducerInventory
     private sealed partial class ProducerGraph
     {
         private bool TryGeneratedRecordEqualityTargets(AuthoredMember caller, IMethodSymbol selected,
-            IOperation[] operands, out List<AuthoredMember> targets, out bool canonical)
+            IOperation[] operands, out List<AuthoredMember> targets, out bool canonical, bool lifted = false)
         {
             targets = [];
 
@@ -45,6 +45,20 @@ internal static partial class HostedGrimoireProducerInventory
             if (equals is not [IMethodSymbol typedEquals]) return false;
 
             CleanupProvenanceContext proof = new();
+
+            // A lifted comparison of nullable operands calls the same operator only on two present
+            // values, so the closed-value field walk covers it exactly; exact-construction
+            // certification of nullable operands is not attempted.
+            if (lifted)
+            {
+                if (!TryClosedValueEqualityTargets(caller, record, compilation, typedEquals, proof, out List<AuthoredMember> liftedTargets)) return false;
+
+                targets = liftedTargets;
+
+                canonical = true;
+
+                return true;
+            }
 
             HashSet<BoundTypeIdentity> path = [];
 
