@@ -592,6 +592,9 @@ public sealed partial class HostedGrimoireProducerInventoryTests
     [InlineData("System.DateTimeOffset")]
     [InlineData("System.Int128")]
     [InlineData("System.Index")]
+    [InlineData("System.TimeSpan")]
+    [InlineData("System.UInt128")]
+    [InlineData("System.Range")]
     public void ClosedValueEqualityRefusesALeafNamedLikeCoreLibFromAnUnreviewedAssembly(string leaf)
     {
         int split = leaf.LastIndexOf('.');
@@ -618,5 +621,138 @@ public sealed partial class HostedGrimoireProducerInventoryTests
 
         Assert.Contains(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED"
             && diagnostic.Detail == "LeafProbe.op_Equality");
+    }
+
+    // The container leaves (ImmutableArray, value tuples, Nullable) are matched by exact framework identity
+    // too, so a same-named generic struct from another assembly is not a leaf and its record stays refused.
+    [Theory]
+    [InlineData("System.Collections.Immutable", "ImmutableArray<T>", "counterfeit::System.Collections.Immutable.ImmutableArray<int>", "")]
+    [InlineData("System", "ValueTuple<T1, T2>", "counterfeit::System.ValueTuple<int, int>", "")]
+    [InlineData("System", "Nullable<T>", "counterfeit::System.Nullable<int>", " where T : struct")]
+    public void ClosedValueEqualityRefusesAContainerNamedLikeCoreLibFromAnUnreviewedAssembly(string container, string declaration, string field, string constraint)
+    {
+        string simple = declaration[..declaration.IndexOf('<', StringComparison.Ordinal)];
+
+        string lookalike = "namespace " + container + " { public struct " + declaration + " : System.IEquatable<" + declaration + ">" + constraint
+            + " { public bool Equals(" + declaration + " other) => true; } }";
+
+        CSharpCompilation foreign = CompileWithProductionReferencePack(lookalike, "RetroDownfall.Arcanum.Api").WithAssemblyName("Untrusted.Containers");
+
+        using MemoryStream image = new();
+
+        Assert.True(foreign.Emit(image).Success, simple);
+
+        string source = "extern alias counterfeit;\n#nullable enable\n" + R2Source(
+            "_ = ContainerSource.Left == ContainerSource.Right; await Task.CompletedTask;",
+            "public readonly record struct ContainerProbe(" + field + " Field); static class ContainerSource { public static ContainerProbe Left => default; public static ContainerProbe Right => default; }");
+
+        CSharpCompilation compilation = CompileWithProductionReferencePack(source, "RetroDownfall.Arcanum.Api")
+            .AddReferences(MetadataReference.CreateFromImage(image.ToArray(), new MetadataReferenceProperties(aliases: ["counterfeit"])));
+
+        Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        HostedProducerDiscovery<HostedProducerSite> result = HostedGrimoireProducerInventory.DiscoverProducerSites(
+            [compilation], new(["Worker"], []), [new("Worker", [OrdinaryRoot()])], []);
+
+        Assert.Contains(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED"
+            && diagnostic.Detail == "ContainerProbe.op_Equality");
+    }
+
+    // The leaves the rule accepts, each with a positive row so the twins above refuse a name, not a shape.
+    [Theory]
+    [InlineData("System.UInt128")]
+    [InlineData("System.TimeSpan")]
+    [InlineData("System.Range")]
+    [InlineData("System.Collections.Immutable.ImmutableArray<int>")]
+    [InlineData("(int, int)")]
+    [InlineData("int?")]
+    public void ClosedValueEqualityCertifiesTheExactFrameworkLeaves(string field)
+    {
+        var (_, result, _) = ClosedValueDiscover(
+            "_ = ExactLeafSource.Left == ExactLeafSource.Right;",
+            "public readonly record struct ExactLeafProbe(" + field + " Field); static class ExactLeafSource { public static ExactLeafProbe Left => default; public static ExactLeafProbe Right => default; }");
+
+        Assert.Empty(result.Diagnostics);
+    }
+
+    // A record with static initialization is not a closed value: its static constructor, static field
+    // initializers and static property initializers run once, when the type is first used, and nothing
+    // traverses them. Closed-Value Equality, nested closed-value records and the record-struct Equals
+    // lifetime bypass all rest on TryRecordEqualitySource refusing such a record, so each shape below must
+    // keep its generated operators unclassified and must never certify an authored Equals under the
+    // admitted Work or Effect. "none" is the control: the same fixture without the static member is certified.
+    [Theory]
+    [InlineData("struct", "none")]
+    [InlineData("struct", "static-constructor")]
+    [InlineData("struct", "static-field-initializer")]
+    [InlineData("struct", "static-property-initializer")]
+    [InlineData("class", "none")]
+    [InlineData("class", "static-constructor")]
+    [InlineData("class", "static-field-initializer")]
+    [InlineData("class", "static-property-initializer")]
+    [InlineData("nested-struct", "none")]
+    [InlineData("nested-struct", "static-constructor")]
+    [InlineData("nested-struct", "static-field-initializer")]
+    [InlineData("nested-struct", "static-property-initializer")]
+    [InlineData("nested-class", "none")]
+    [InlineData("nested-class", "static-constructor")]
+    [InlineData("nested-class", "static-field-initializer")]
+    [InlineData("nested-class", "static-property-initializer")]
+    public void ClosedValueEqualityRefusesARecordWithStaticInitializationAndNeverCertifiesItsEquals(string position, string member)
+    {
+        bool isClass = position.EndsWith("class", StringComparison.Ordinal);
+
+        string name = position.StartsWith("nested", StringComparison.Ordinal) ? "StaticNested" : "StaticProbe";
+
+        string staticMember = member switch
+        {
+            "static-constructor" => "static " + name + "() { System.IO.File.Delete(\"static-constructor-effect\"); } ",
+            "static-field-initializer" => "private static readonly int Marker = StaticEffects.Touch(); ",
+            "static-property-initializer" => "private static int Marker { get; } = StaticEffects.Touch(); ",
+            _ => string.Empty,
+        };
+
+        // The authored typed Equals is effectful, so a certified comparison would traverse it canonically
+        // under the caller's admitted Work and Effect and its File.Delete would carry both capsules.
+        string record = isClass
+            ? "public sealed record class " + name + " { public int Value { get; init; } " + staticMember
+                + "public bool Equals(" + name + "? other) { System.IO.File.Delete(\"static-probe-equals\"); return other is not null && Value == other.Value; } public override int GetHashCode() => Value; }"
+            : "public readonly record struct " + name + " { private readonly int _value; " + staticMember
+                + "public bool Equals(" + name + " other) { System.IO.File.Delete(\"static-probe-equals\"); return _value == other._value; } public override int GetHashCode() => _value; }";
+
+        bool nested = position.StartsWith("nested", StringComparison.Ordinal);
+
+        string compared = nested ? "StaticOuter" : name;
+
+        string outer = nested ? " public readonly record struct StaticOuter(" + name + " Inner, int Number);" : string.Empty;
+
+        string nullable = isClass && !nested ? "null!" : "default";
+
+        string helper = "static class StaticEffects { public static int Touch() { System.IO.File.Delete(\"static-initializer-effect\"); return 1; } } "
+            + record + outer
+            + " static class StaticSource { public static " + compared + " Left => " + nullable + "; public static " + compared + " Right => " + nullable + "; }";
+
+        var (_, result, _) = ClosedValueDiscover(
+            compared + " left = StaticSource.Left; " + compared + " right = StaticSource.Right; " + R2Admission + "_ = left == right; _ = left != right;", helper);
+
+        bool certified = member == "none";
+
+        foreach (string op in new[] { "op_Equality", "op_Inequality" })
+        {
+            Assert.Equal(!certified, result.Diagnostics.Any(diagnostic => diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED"
+                && diagnostic.Detail == compared + "." + op));
+        }
+
+        IEnumerable<HostedProducerSite> equalsEffects = result.Items.Where(static site => site.Callee == "System.IO.File.Delete"
+            && site.WorkFrontierCapsuleId is not null && site.EffectFrontierCapsuleId is not null);
+
+        if (certified)
+        {
+            Assert.Contains(equalsEffects, static site => site.Member == "Equals");
+        }
+        else
+        {
+            Assert.DoesNotContain(equalsEffects, static site => site.Member == "Equals");
+        }
     }
 }

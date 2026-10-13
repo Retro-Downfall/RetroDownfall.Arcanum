@@ -53,12 +53,16 @@ public sealed partial class HostedGrimoireProducerInventoryTests
             return;
         }
 
-        // A refusal stays at the queue call, or the authored work it would have hidden is reported.
-        Assert.True(result.Diagnostics.Any(static diagnostic => diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED"
-                && diagnostic.Detail == "System.Collections.Generic.PriorityQueue`2.Enqueue")
-            || result.Items.Any(static site => site.Callee == "System.IO.File.Delete")
-                && result.Diagnostics.Any(static diagnostic => diagnostic.Code == "HOSTED_SITE_WORK_FRONTIER_MISSING"
-                    && diagnostic.Detail == "System.IO.File.Delete"));
+        // The refusal is at the queue call itself. The authored work in a refused argument is reported
+        // separately, so reporting it would otherwise satisfy this assertion whether or not the queue call
+        // were refused.
+        Assert.Contains(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED"
+            && diagnostic.Detail == "System.Collections.Generic.PriorityQueue`2.Enqueue");
+
+        if (shape == "element-boundary-conversion")
+        {
+            Assert.Contains(result.Items, static site => site.Callee == "System.IO.File.Delete");
+        }
     }
 
     [Fact]
