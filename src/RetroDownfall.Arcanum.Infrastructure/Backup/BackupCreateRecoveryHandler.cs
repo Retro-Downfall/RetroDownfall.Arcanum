@@ -16,7 +16,7 @@ internal sealed class BackupCreateRecoveryHandler : ILongRunningOperationRecover
 
     public int SupportedCheckpointVersion => 2;
 
-    public async Task<LongRunningOperationRecoveryResult> RecoverAsync(
+    public Task<LongRunningOperationRecoveryResult> RecoverAsync(
         LongRunningOperation operation,
         CancellationToken cancellationToken)
     {
@@ -27,13 +27,13 @@ internal sealed class BackupCreateRecoveryHandler : ILongRunningOperationRecover
         if (operation.CheckpointVersion == 0
             && operation.CheckpointPayload is null)
         {
-            return LongRunningOperationRecoveryResult.Abandoned();
+            return Task.FromResult(LongRunningOperationRecoveryResult.Abandoned());
         }
 
         if (operation.CheckpointVersion != SupportedCheckpointVersion
             || operation.CheckpointPayload is null)
         {
-            return await CorruptCheckpoint().ConfigureAwait(false);
+            return Task.FromResult(CorruptCheckpoint());
         }
 
         BackupOperationCheckpoint? checkpoint;
@@ -48,7 +48,7 @@ internal sealed class BackupCreateRecoveryHandler : ILongRunningOperationRecover
             exception is JsonException
                 or NotSupportedException)
         {
-            return await CorruptCheckpoint().ConfigureAwait(false);
+            return Task.FromResult(CorruptCheckpoint());
         }
 
         if (checkpoint is null
@@ -58,12 +58,12 @@ internal sealed class BackupCreateRecoveryHandler : ILongRunningOperationRecover
                 operation.CheckpointReference,
                 out string stagingPath))
         {
-            return await CorruptCheckpoint().ConfigureAwait(false);
+            return Task.FromResult(CorruptCheckpoint());
         }
 
         if (!PathEntryExists(stagingPath))
         {
-            return LongRunningOperationRecoveryResult.Abandoned();
+            return Task.FromResult(LongRunningOperationRecoveryResult.Abandoned());
         }
 
         if (!checkpoint.StagingVolumeId.HasValue
@@ -74,8 +74,8 @@ internal sealed class BackupCreateRecoveryHandler : ILongRunningOperationRecover
             // when it is provably the empty, owner-only directory a creation that stopped at mkdir
             // leaves; anything else keeps the operator in the loop.
             return TryRemoveUnrecordedEmptyStaging(stagingPath)
-                ? LongRunningOperationRecoveryResult.Abandoned()
-                : await CleanupFailed().ConfigureAwait(false);
+                ? Task.FromResult(LongRunningOperationRecoveryResult.Abandoned())
+                : Task.FromResult(CleanupFailed());
         }
 
         cancellationToken.ThrowIfCancellationRequested();
@@ -86,10 +86,10 @@ internal sealed class BackupCreateRecoveryHandler : ILongRunningOperationRecover
                 checkpoint.StagingFileId.Value)
             || !PathEntryExists(stagingPath))
         {
-            return LongRunningOperationRecoveryResult.Abandoned();
+            return Task.FromResult(LongRunningOperationRecoveryResult.Abandoned());
         }
 
-        return await CleanupFailed().ConfigureAwait(false);
+        return Task.FromResult(CleanupFailed());
     }
 
     /// <summary>
@@ -242,13 +242,11 @@ internal sealed class BackupCreateRecoveryHandler : ILongRunningOperationRecover
         }
     }
 
-    private static Task<LongRunningOperationRecoveryResult> CorruptCheckpoint() =>
-        Task.FromResult(
-            LongRunningOperationRecoveryResult.RequiresAttention(
-                LongRunningOperationErrorCodes.CorruptCheckpoint));
+    private static LongRunningOperationRecoveryResult CorruptCheckpoint() =>
+        LongRunningOperationRecoveryResult.RequiresAttention(
+            LongRunningOperationErrorCodes.CorruptCheckpoint);
 
-    private static Task<LongRunningOperationRecoveryResult> CleanupFailed() =>
-        Task.FromResult(
-            LongRunningOperationRecoveryResult.RequiresAttention(
-                StagingCleanupFailed));
+    private static LongRunningOperationRecoveryResult CleanupFailed() =>
+        LongRunningOperationRecoveryResult.RequiresAttention(
+            StagingCleanupFailed);
 }
