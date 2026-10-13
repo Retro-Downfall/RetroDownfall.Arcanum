@@ -993,7 +993,7 @@ public sealed class ConfigurationValidator(
 
             bool isFamiliar = FamiliarProviders.IsFamiliar(provider.Type);
 
-            IReadOnlyList<ModelEntry> models = provider.Models ?? [];
+            ModelEntry[] models = provider.Models ?? [];
 
             if (isFamiliar)
             {
@@ -1014,7 +1014,7 @@ public sealed class ConfigurationValidator(
 
                 // A Familiar's catalogue belongs to the vendor, not to arcanum.json — requiring a
                 // models array here would defeat the automatic availability the kind exists for.
-                if (models.Count == 0)
+                if (models.Length == 0)
                 {
                     errors.Add(new ConfigurationValidationError(
                         providerPointer,
@@ -1022,7 +1022,7 @@ public sealed class ConfigurationValidator(
                 }
             }
 
-            for (int modelIndex = 0; modelIndex < models.Count; modelIndex++)
+            for (int modelIndex = 0; modelIndex < models.Length; modelIndex++)
             {
                 ModelEntry model = models[modelIndex];
 

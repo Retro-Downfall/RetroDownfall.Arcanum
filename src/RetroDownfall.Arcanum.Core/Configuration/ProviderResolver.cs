@@ -24,9 +24,9 @@ public static class ProviderResolver
 
         HashSet<string> seen = new(StringComparer.OrdinalIgnoreCase);
 
-        IReadOnlyList<ModelEntry> models = provider.Models ?? [];
+        ModelEntry[] models = provider.Models ?? [];
 
-        for (int i = 0; i < models.Count; i++)
+        for (int i = 0; i < models.Length; i++)
         {
             string model = models[i].Name;
 
@@ -132,9 +132,9 @@ public static class ProviderResolver
             return false;
         }
 
-        IReadOnlyList<ModelEntry> models = provider.Models ?? [];
+        ModelEntry[] models = provider.Models ?? [];
 
-        for (int i = 0; i < models.Count; i++)
+        for (int i = 0; i < models.Length; i++)
         {
             if (ModelNameMatches(models[i].Name, modelName))
             {

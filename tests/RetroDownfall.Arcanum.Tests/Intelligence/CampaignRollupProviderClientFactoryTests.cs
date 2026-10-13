@@ -13,13 +13,13 @@ namespace RetroDownfall.Arcanum.Tests.Intelligence;
 public sealed class CampaignRollupProviderClientFactoryTests
 {
     [Fact]
-    public async Task Model_resolution_indexes_the_materialized_configuration_without_caller_collection_callbacks()
+    public async Task Model_resolution_leases_an_independent_materialized_copy_of_the_configured_models()
     {
         ArcanumSettings settings = Settings();
 
-        CallbackModels models = new([new ModelEntry("model")]);
+        ModelEntry[] configured = [new ModelEntry("model")];
 
-        settings.Providers[0].Models = models;
+        settings.Providers[0].Models = configured;
 
         using CampaignRollupProviderClientFactory factory = Factory(settings, new RecordingProvider(HttpStatusCode.OK));
 
@@ -33,9 +33,13 @@ public sealed class CampaignRollupProviderClientFactoryTests
 
         Assert.Equal("provider", lease.Provider.Name);
 
-        Assert.Equal(0, models.IndexerCalls);
+        Assert.NotSame(configured, lease.Provider.Models);
 
-        Assert.NotSame(models, lease.Provider.Models);
+        ModelEntry leased = Assert.Single(lease.Provider.Models);
+
+        Assert.NotSame(configured[0], leased);
+
+        Assert.Equal("model", leased.Name);
     }
 
     [Theory]
@@ -226,30 +230,6 @@ public sealed class CampaignRollupProviderClientFactoryTests
             },
         ],
     };
-
-    private sealed class CallbackModels(ModelEntry[] values) : IReadOnlyList<ModelEntry>
-    {
-        public int IndexerCalls { get; private set; }
-
-        public int Count => values.Length;
-
-        public ModelEntry this[int index]
-        {
-            get
-            {
-                IndexerCalls++;
-
-                return values[index];
-            }
-        }
-
-        public IEnumerator<ModelEntry> GetEnumerator()
-        {
-            return ((IEnumerable<ModelEntry>)values).GetEnumerator();
-        }
-
-        System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
-    }
 
     private sealed class CallbackKeyResolver(Action? callback) : IProviderApiKeyResolver
     {

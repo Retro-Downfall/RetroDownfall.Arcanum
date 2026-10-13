@@ -30492,7 +30492,6 @@ internal static partial class HostedGrimoireProducerInventory
                     node,
                     model,
                     context)
-                || IsReviewedCampaignModelIndexer(property, mutation, node, model, context)
                 || IsReviewedPrimitiveQueueProperty(property, mutation, node, context)
                 || IsReviewedExactMeAiDimensionsProperty(property, mutation)
                 || IsReviewedNonProducerExternalMember(property, mutation))

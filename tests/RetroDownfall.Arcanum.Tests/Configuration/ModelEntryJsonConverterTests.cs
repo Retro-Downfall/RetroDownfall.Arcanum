@@ -343,7 +343,7 @@ public sealed class ModelEntryJsonConverterTests
 
         Assert.NotNull(provider);
 
-        Assert.Equal(2, provider!.Models.Count);
+        Assert.Equal(2, provider!.Models.Length);
 
         Assert.Equal("gpt-4o", provider.Models[0].Name);
 

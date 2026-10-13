@@ -1329,7 +1329,7 @@ Closed audit items (writer reuse, scan/cache bounds, Loremaster counter, MCP lin
 
 ### 10.2.4 Scrying — the vision/multimodality capability gate
 
-**Model capability declaration:** each `Arcanum:Providers[].models` entry is a **`ModelEntry`** (`Name`, `SupportsVision`, optional `Reasoning`); the JSON binder (`ModelEntryJsonConverter`) accepts either a bare string (optional capabilities absent) or an object. `ProviderResolver.SupportsVision(ArcanumSettings, string?)` / `SupportsVision(ProviderSettings, string?)` resolve capability by exact (case-insensitive) model-name match against configured `models` entries.
+**Model capability declaration:** each `Arcanum:Providers[].models` entry is a **`ModelEntry`** (`Name`, `SupportsVision`, optional `Reasoning`); the JSON binder (`ModelEntryJsonConverter`) accepts either a bare string (optional capabilities absent) or an object. `ProviderResolver.SupportsVision(ArcanumSettings, string?)` / `SupportsVision(ProviderSettings, string?)` resolve capability by exact (case-insensitive) model-name match against configured `models` entries. `ProviderSettings.Models` is declared `ModelEntry[]` (default `[]`), like `HiddenModels`, so the resolver and the validator walk an exact array by element access instead of applying an interface indexer to a collection whose implementation they do not own; the wire shape is unchanged, a JSON array.
 
 **Gate placement — before any inference token:** `ScryingValidator` (`Core.Intelligence`) is the single validation surface shared by every inference entry point:
 
