@@ -29786,10 +29786,14 @@ internal static partial class HostedGrimoireProducerInventory
 
         // Exact reviewed contract (Triage Ladder D4) for the three Arcanum token-count instruments. Each is a
         // static readonly Histogram<long> of ArcanumMetrics, created from the exact ArcanumMetrics.Meter by
-        // CreateHistogram<long> under one of these constant names. The recorded value and its tags are
-        // evaluated, and any authored work in them is traversed, where they are written; they need only the
-        // argument-boundary rule. Listeners run synchronously and may do work or throw, as for every
-        // histogram here, and nothing in this contract waives that limit or any producer authority.
+        // the exact CreateHistogram<long>(string, string?, string?) overload with constant arguments, under
+        // one of these constant names. The recorded value is evaluated, and any authored work in it is
+        // traversed, where it is written; it needs only the argument-boundary rule. Each tag is narrower
+        // (IsReviewedArcanumTokenTag), because the first-party Prometheus listener runs synchronously inside
+        // Record and formats every tag value with Convert.ToString: an authored ToString or IFormattable on
+        // a tag value would be executable work that no traversal of this call site reaches. Other listeners
+        // run synchronously and may do work or throw, as for every histogram here, and nothing in this
+        // contract waives that limit or any producer authority.
         private static readonly HashSet<string> ArcanumTokenHistogramNames = new(StringComparer.Ordinal)
         {
             "arcanum_estimated_input_tokens",
@@ -29813,6 +29817,8 @@ internal static partial class HostedGrimoireProducerInventory
                 || context is null || node is not InvocationExpressionSyntax
                 || model?.GetOperation(node) is not IInvocationOperation { Instance.Syntax: ExpressionSyntax receiver } invocation
                 || !invocation.Arguments.All(ArgumentBoundaryUsesOnlyBuiltInConversions)
+                || !invocation.Arguments.Where(static argument => argument.Parameter?.Ordinal != 0)
+                    .All(argument => IsReviewedArcanumTokenTag(argument, context))
                 || model.GetSymbolInfo(StripTransparentExpression(receiver)).Symbol is not IFieldSymbol field) return false;
 
             bool ExactMeter(IFieldSymbol meter)
@@ -29843,14 +29849,92 @@ internal static partial class HostedGrimoireProducerInventory
 
             IMethodSymbol factory = created.TargetMethod;
 
+            // Only the (name, unit, description) overload is reviewed: the instrument-tags and advice overloads
+            // carry authored data into the instrument, and a constant argument keeps static initialization free
+            // of work that no traversal reaches.
             return !factory.IsStatic && factory.Name == "CreateHistogram" && factory.Arity == 1
                 && factory.TypeArguments is [{ SpecialType: SpecialType.System_Int64 }]
                 && IsExactFrameworkType(factory.ContainingType, "System.Diagnostics.Metrics.Meter", typeof(System.Diagnostics.Metrics.Meter).Assembly.GetName())
+                && HasExactParameterTypes(factory, "System.String", "System.String", "System.String")
                 && factory.ReturnType is INamedTypeSymbol { TypeArguments: [{ SpecialType: SpecialType.System_Int64 }] } returned
                 && IsExactFrameworkType(returned, "System.Diagnostics.Metrics.Histogram`1", typeof(System.Diagnostics.Metrics.Histogram<>).Assembly.GetName())
-                && created.Arguments.Where(static argument => argument.ArgumentKind == ArgumentKind.Explicit).ToArray() is [{ Value.ConstantValue: { HasValue: true, Value: string name } }, ..]
+                && created.Arguments is [
+                    { ArgumentKind: ArgumentKind.Explicit, Value.ConstantValue: { HasValue: true, Value: string name } },
+                    { ArgumentKind: ArgumentKind.Explicit, Value.ConstantValue: { HasValue: true, Value: null or string } },
+                    { ArgumentKind: ArgumentKind.Explicit, Value.ConstantValue: { HasValue: true, Value: null or string } }]
                 && ArcanumTokenHistogramNames.Contains(name)
                 && ExactMeter(meterReference.Field);
+        }
+
+        // A tag is either an inline KeyValuePair<string, object?> creation or a never-reassigned local whose
+        // only definition is one. The key is a constant and the value is statically System.String (or a null
+        // or string constant), so the object the listener formats is a string or null and never a type with an
+        // authored ToString or IFormattable. Authored work that produces the string is traversed where written.
+        private bool IsReviewedArcanumTokenTag(IArgumentOperation argument, AuthoredMember context)
+        {
+            IOperation tag = argument.Value;
+
+            while (tag is IParenthesizedOperation parenthesized) tag = parenthesized.Operand;
+
+            if (tag is ILocalReferenceOperation { Local: { RefKind: RefKind.None, IsConst: false } local })
+            {
+                if (local.DeclaringSyntaxReferences is not [SyntaxReference declaration]
+                    || declaration.GetSyntax() is not VariableDeclaratorSyntax { Initializer.Value: { } initializer }
+                    || initializer.SyntaxTree != context.Model.SyntaxTree
+                    || !IsExactTokenTagType(local.Type)
+                    || HasCollectionValueReplacement(context, local)
+                    || context.Model.SyntaxTree.GetRoot().DescendantNodes().OfType<PrefixUnaryExpressionSyntax>()
+                        .Any(address => address.IsKind(SyntaxKind.AddressOfExpression)
+                            && SyntaxReferencesSymbol(context.Model, address.Operand, local))
+                    || context.Model.GetOperation(initializer) is not { } initial) return false;
+
+                tag = initial;
+
+                while (tag is IParenthesizedOperation parenthesizedInitial) tag = parenthesizedInitial.Operand;
+            }
+
+            return tag is IObjectCreationOperation { Initializer: null, Constructor: { MethodKind: MethodKind.Constructor } constructor } creation
+                && IsExactTokenTagType(constructor.ContainingType)
+                && constructor.Parameters.Length == 2
+                && creation.Arguments.SingleOrDefault(static item => item.Parameter?.Ordinal == 0) is { } key
+                && creation.Arguments.SingleOrDefault(static item => item.Parameter?.Ordinal == 1) is { } value
+                && creation.Arguments.Length == 2
+                && ArgumentBoundaryUsesOnlyBuiltInConversions(key)
+                && key.Value.ConstantValue is { HasValue: true, Value: string }
+                && ArgumentBoundaryUsesOnlyBuiltInConversions(value)
+                && IsStringOrNullTagValue(value.Value);
+        }
+
+        private static bool IsExactTokenTagType(ITypeSymbol? type) =>
+            type is INamedTypeSymbol { TypeArguments: [{ SpecialType: SpecialType.System_String }, { SpecialType: SpecialType.System_Object }] } pair
+            && IsExactFrameworkType(pair, "System.Collections.Generic.KeyValuePair`2", typeof(KeyValuePair<,>).Assembly.GetName());
+
+        // Looks through parentheses and the reference or boxing conversions to object; what remains must be
+        // statically System.String, or a constant that is null or a string. A boxed value, an object-typed
+        // value and a value of any other class or struct type are refused.
+        private static bool IsStringOrNullTagValue(IOperation value)
+        {
+            for (int depth = 0; depth < 64; depth++)
+            {
+                switch (value)
+                {
+                    case IParenthesizedOperation parenthesized:
+                        value = parenthesized.Operand;
+
+                        continue;
+
+                    case IConversionOperation { OperatorMethod: null, Conversion.IsUserDefined: false, Type.SpecialType: SpecialType.System_Object } conversion:
+                        value = conversion.Operand;
+
+                        continue;
+                }
+
+                return value.ConstantValue.HasValue
+                    ? value.ConstantValue.Value is null or string
+                    : value.Type?.SpecialType == SpecialType.System_String;
+            }
+
+            return false;
         }
 
         private bool IsReviewedCodeOwnedSdkConstruction(
