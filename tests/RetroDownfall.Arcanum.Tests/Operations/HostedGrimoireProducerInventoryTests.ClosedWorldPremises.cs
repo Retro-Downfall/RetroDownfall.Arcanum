@@ -1321,4 +1321,43 @@ public sealed partial class HostedGrimoireProducerInventoryTests
             Assert.Contains(selectors[^1], refused.Message, StringComparison.Ordinal);
         }
     }
+
+    // ---------------------------------------------------------------------------------------------------
+    // C# 14 extension blocks declare enumeration members that Roslyn exposes only as a nested extension type and
+    // an implicitly declared implementation method, so the premise scan reads both.
+
+    [Theory]
+    [InlineData("extension-block-enumerator", "static class Extensions { extension(Elsewhere value) { public System.Collections.Generic.IEnumerator<int> GetEnumerator() => throw new NotSupportedException(); } } sealed class Elsewhere { }")]
+    [InlineData("extension-block-async-enumerator", "static class Extensions { extension(Elsewhere value) { public System.Collections.Generic.IAsyncEnumerator<int> GetAsyncEnumerator(System.Threading.CancellationToken token = default) => throw new NotSupportedException(); } } sealed class Elsewhere { }")]
+    [InlineData("extension-block-over-interface", "static class Extensions { extension(System.Collections.Generic.IAsyncEnumerable<int> value) { public System.Collections.Generic.List<int>.Enumerator GetEnumerator() => default; } }")]
+    public void AuthoredEnumerablesAbsentIsWithheldForAnExtensionBlockEnumerationMember(string shape, string declaration)
+    {
+        CSharpCompilation compilation = EnumerationPremiseFixture("foreach (int item in UnprovedEnumerableInput.Items) { _ = item; }", declaration);
+
+        HostedProducerPremiseLedger ledger = HostedGrimoireProducerInventory.VerifyPremises([compilation], HostedProducerPremises.AuthoredEnumerablesAbsentByUse);
+
+        Assert.False(ledger.Holds(HostedProducerPremises.AuthoredEnumerablesAbsentByUse), shape);
+
+        Assert.NotEmpty(ledger.Violations);
+
+        HostedProducerDiscovery<HostedProducerSite> premised = EnumerationPremiseRequested(compilation);
+
+        Assert.NotEmpty(PremiseViolations(premised));
+
+        Assert.True(EnumerationPremiseUnclassified(premised, compilation));
+    }
+
+    [Fact]
+    public void AuthoredEnumerablesAbsentIsGrantedForAnExtensionBlockWithoutAnEnumerationMember()
+    {
+        CSharpCompilation compilation = EnumerationPremiseFixture(
+            "foreach (int item in UnprovedEnumerableInput.Items) { _ = item; }",
+            "static class Extensions { extension(string value) { public int Twice => value.Length * 2; } }");
+
+        HostedProducerPremiseLedger ledger = HostedGrimoireProducerInventory.VerifyPremises([compilation], HostedProducerPremises.AuthoredEnumerablesAbsentByUse);
+
+        Assert.True(ledger.Holds(HostedProducerPremises.AuthoredEnumerablesAbsentByUse), string.Join(global::System.Environment.NewLine, ledger.Violations));
+
+        Assert.False(EnumerationPremiseUnclassified(EnumerationPremiseRequested(compilation), compilation));
+    }
 }
