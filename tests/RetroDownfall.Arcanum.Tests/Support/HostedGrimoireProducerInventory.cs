@@ -25734,14 +25734,24 @@ internal static partial class HostedGrimoireProducerInventory
 
                                     SyntaxNode? lazyCompletion = node is InvocationExpressionSyntax lazyCall && IsLazySequence(exactTarget.Symbol.ReturnType) ? LazyCompletionPoint(member, lazyCall) : null;
 
-                                    bool lazyOwned = lazyCompletion is not null && WorkAt(member, lazyCompletion, operationId, ordinary?.WorkKind, inheritedWork) == workAdmitted && EffectAt(member, lazyCompletion, operationId, inheritedEffect) == effectGroup;
+                                    (SyntaxNode Site, int Position)? scopedConsumption = lazyCompletion is null && node is InvocationExpressionSyntax scopedCall && IsLazySequence(exactTarget.Symbol.ReturnType)
+                                        ? ScopedEnumeratorConsumption(member, scopedCall) : null;
+
+                                    bool lazyOwned = lazyCompletion is not null && WorkAt(member, lazyCompletion, operationId, ordinary?.WorkKind, inheritedWork) == workAdmitted && EffectAt(member, lazyCompletion, operationId, inheritedEffect) == effectGroup
+                                        || scopedConsumption is { } scoped
+                                            && WorkAt(member, scoped.Site, operationId, ordinary?.WorkKind, inheritedWork, scoped.Position) == workAdmitted
+                                            && EffectAt(member, scoped.Site, operationId, inheritedEffect, scoped.Position) == effectGroup;
 
                                     bool detached = IsAwaitable(exactTarget.Symbol.ReturnType) && !joined || IsLazySequence(exactTarget.Symbol.ReturnType) && !lazyOwned;
 
-                                    SyntaxNode? targetCompletion = IsAwaitable(exactTarget.Symbol.ReturnType) ? directCompletion
-                                        : IsLazySequence(exactTarget.Symbol.ReturnType) ? lazyCompletion : node;
+                                    // An asynchronous sequence's body runs where it is consumed. When no consumption can be proven, the
+                                    // body is traversed with no frontier, and the refusal is owed only if that traversal finds a site.
+                                    bool deferredAsyncRefusal = detached && IsAsyncSequence(exactTarget.Symbol.ReturnType) && !IsAwaitable(exactTarget.Symbol.ReturnType);
 
-                                    if (detached)
+                                    SyntaxNode? targetCompletion = IsAwaitable(exactTarget.Symbol.ReturnType) ? directCompletion
+                                        : IsLazySequence(exactTarget.Symbol.ReturnType) ? lazyCompletion ?? scopedConsumption?.Site : node;
+
+                                    if (detached && !deferredAsyncRefusal)
                                     {
                                         RefuseTraversalCompletion();
 
@@ -25817,6 +25827,13 @@ internal static partial class HostedGrimoireProducerInventory
                                         targetEvidence = MergeEvidence(targetEvidence, exactEvidence);
 
                                         emittedEvidence = MergeEvidence(emittedEvidence, exactEvidence);
+
+                                        if (deferredAsyncRefusal && exactEvidence != TraversalEvidence.NoEvidence)
+                                        {
+                                            RefuseTraversalCompletion();
+
+                                            diagnostics.Add(new("HOSTED_CALLBACK_OWNERSHIP_UNPROVEN", operationId + "/call@" + Location(node), callee + "; An awaitable or lazy helper must complete within its caller's retained lifetime."));
+                                        }
                                     }
                                 }
 

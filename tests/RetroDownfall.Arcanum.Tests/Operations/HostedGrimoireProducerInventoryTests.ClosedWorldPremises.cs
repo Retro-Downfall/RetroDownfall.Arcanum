@@ -1059,6 +1059,18 @@ public sealed partial class HostedGrimoireProducerInventoryTests
             internal static System.Collections.Generic.IAsyncEnumerable<int> Async { get; set; } = null!;
 
             internal static System.Collections.ObjectModel.ReadOnlyCollection<int> Collection { get; set; } = null!;
+
+            internal static System.Collections.Generic.IReadOnlyList<int> Never()
+            {
+                throw new System.NotSupportedException();
+            }
+
+            internal static async System.Threading.Tasks.Task<System.Collections.Generic.IReadOnlyList<int>> LoadAsync()
+            {
+                await System.Threading.Tasks.Task.CompletedTask;
+
+                return List;
+            }
         }
         """;
 
@@ -1097,6 +1109,11 @@ public sealed partial class HostedGrimoireProducerInventoryTests
     [InlineData("await foreach (int item in UnprovedEnumerableInput.Async) { _ = item; }")]
     [InlineData("await foreach (int item in UnprovedEnumerableInput.Async.ConfigureAwait(false)) { _ = item; }")]
     [InlineData("foreach (int item in System.Linq.Enumerable.Select(UnprovedEnumerableInput.Items, value => value)) { _ = item; }")]
+    [InlineData("int[] values = [.. await UnprovedEnumerableInput.LoadAsync()]; _ = values;")]
+    [InlineData("foreach (int item in await UnprovedEnumerableInput.LoadAsync()) { _ = item; }")]
+    [InlineData("foreach (int item in System.Linq.Enumerable.OrderBy(UnprovedEnumerableInput.Items, value => value)) { _ = item; }")]
+    [InlineData("foreach (int item in UnprovedEnumerableInput.Never()) { _ = item; }")]
+    [InlineData("int[] values = [.. UnprovedEnumerableInput.Never()]; _ = values;")]
     public void AuthoredEnumerablesAbsentClassifiesAnUnprovenFrameworkCollectionInterface(string statement)
     {
         CSharpCompilation compilation = EnumerationPremiseFixture(statement);

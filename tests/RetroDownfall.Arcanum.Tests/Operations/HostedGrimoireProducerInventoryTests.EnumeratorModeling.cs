@@ -352,6 +352,10 @@ public sealed partial class HostedGrimoireProducerInventoryTests
     [InlineData("foreach (var item in System.Text.Json.JsonDocument.Parse(\"[]\").RootElement.EnumerateArray()) { _ = item; }")]
     [InlineData("foreach (int item in System.Linq.Enumerable.Range(0, 1)) { _ = item; }")]
     [InlineData("System.Collections.Generic.IReadOnlyList<int> items = new System.Collections.Generic.List<int>(); foreach (int item in items) { _ = item; }")]
+    [InlineData("var builder = System.Collections.Immutable.ImmutableArray.CreateBuilder<int>(); foreach (int item in builder) { _ = item; }")]
+    [InlineData("var builder = System.Collections.Immutable.ImmutableArray.CreateBuilder<int>(); System.Collections.Generic.IReadOnlyList<int> view = builder; foreach (int item in view) { _ = item; }")]
+    [InlineData("var set = new System.Collections.Generic.SortedSet<string>(System.StringComparer.Ordinal); foreach (string item in set) { _ = item; }")]
+    [InlineData("foreach (System.Text.RegularExpressions.Match match in System.Text.RegularExpressions.Regex.Matches(\"a\", \"a\")) { _ = match; }")]
     public void ClosedFrameworkCollectionsAreRecognisedAgainstTheProductionReferencePack(string statement)
     {
         CSharpCompilation compilation = CompileWithProductionReferencePack(R2Source(R2Admission + statement + " await Task.CompletedTask;"), "RetroDownfall.Arcanum.Api");
@@ -387,6 +391,229 @@ public sealed partial class HostedGrimoireProducerInventoryTests
         SyntaxNode loop = tree.GetRoot().DescendantNodes().First(static node => node is CommonForEachStatementSyntax);
 
         Assert.Equal(!closed, result.Diagnostics.Any(diagnostic => diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED" && diagnostic.Identity == tree.FilePath + ":" + loop.SpanStart));
+    }
+
+    // A virtual GetEnumerator runs the override of the exact runtime type, never the base body the static type names.
+    [Theory]
+    [InlineData("foreach (int item in new Derived()) { _ = item; }", "derived", true)]
+    [InlineData("Base source = new Derived(); foreach (int item in source) { _ = item; }", "derived", true)]
+    [InlineData("Base source = new Derived(); foreach (int item in source) { _ = item; }", "base", false)]
+    [InlineData("Base source = new Base(); foreach (int item in source) { _ = item; }", "base", true)]
+    [InlineData("Base source = new Base(); foreach (int item in source) { _ = item; }", "derived", false)]
+    public void VirtualGetEnumeratorRunsTheOverrideOfTheExactRuntimeType(string statement, string effectIn, bool reported)
+    {
+        string helpers = "class Base : System.Collections.Generic.IEnumerable<int> { "
+            + "public virtual System.Collections.Generic.IEnumerator<int> GetEnumerator() { " + (effectIn == "base" ? EnumerationEffect : string.Empty) + "return new ProbeEnumerator(); } "
+            + "System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator(); } "
+            + "sealed class Derived : Base { public override System.Collections.Generic.IEnumerator<int> GetEnumerator() { " + (effectIn == "derived" ? EnumerationEffect : string.Empty) + "return new ProbeEnumerator(); } } "
+            + "sealed class ProbeEnumerator : System.Collections.Generic.IEnumerator<int> { public bool MoveNext() => false; public int Current => 0; object System.Collections.IEnumerator.Current => Current; public void Reset() { } public void Dispose() { } }";
+
+        HostedProducerDiscovery<HostedProducerSite> result = EnumerationDiscover(EnumerationCompile(R2Admission + statement + " await Task.CompletedTask;", helpers));
+
+        Assert.Equal(reported, EnumerationDeleteSites(result).Length == 1);
+    }
+
+    // A sealed class that is its own enumerator is followed through GetEnumerator's returned `this`.
+    [Theory]
+    [InlineData("MoveNext")]
+    [InlineData("Current")]
+    [InlineData("Dispose")]
+    public void SelfEnumeratingSealedClassIsTraversedThroughItsReturnedThis(string effectMember)
+    {
+        string helpers = "sealed class Probe : System.Collections.Generic.IEnumerable<int>, System.Collections.Generic.IEnumerator<int> { "
+            + "public System.Collections.Generic.IEnumerator<int> GetEnumerator() => this; "
+            + "System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => this; "
+            + "public bool MoveNext() { " + EnumerationEffectIn(effectMember, "MoveNext") + "return false; } "
+            + "public int Current { get { " + EnumerationEffectIn(effectMember, "Current") + "return 0; } } "
+            + "object System.Collections.IEnumerator.Current => Current; public void Reset() { } "
+            + "public void Dispose() { " + EnumerationEffectIn(effectMember, "Dispose") + "} }";
+
+        AssertEnumerationSite(EnumerationDiscover(EnumerationCompile(R2Admission + "foreach (int item in new Probe()) { _ = item; } await Task.CompletedTask;", helpers)), admitted: true);
+    }
+
+    // Closed is a reviewed list, not "a framework type": wrappers that forward to a caller-supplied list run that
+    // list's enumerator, so a framework collection outside the list is refused even with a known allocation.
+    [Theory]
+    [InlineData("foreach (int item in new System.Collections.ObjectModel.ReadOnlyCollection<int>(new System.Collections.Generic.List<int>())) { _ = item; }")]
+    [InlineData("foreach (int item in new System.Collections.ObjectModel.Collection<int>()) { _ = item; }")]
+    [InlineData("int[] values = [.. new System.Collections.Generic.LinkedList<int>()]; _ = values;")]
+    public void FrameworkCollectionOutsideTheClosedSetIsRefusedEvenWithAKnownAllocation(string statement)
+    {
+        CSharpCompilation compilation = EnumerationCompile(R2Admission + statement + " await Task.CompletedTask;", InterfaceEnumerable("none"));
+
+        HostedProducerDiscovery<HostedProducerSite> result = EnumerationDiscover(compilation);
+
+        SyntaxTree tree = Assert.Single(compilation.SyntaxTrees);
+
+        SyntaxNode site = tree.GetRoot().DescendantNodes().First(static node => node is CommonForEachStatementSyntax or SpreadElementSyntax);
+
+        Assert.Contains(result.Diagnostics, diagnostic => diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED" && diagnostic.Identity == tree.FilePath + ":" + site.SpanStart);
+    }
+
+    // Types whose enumeration is safe only for their exact runtime type: an allocation or a sealed static type
+    // is accepted, a storage location typed as the unsealed collection is not (it could hold a comparer-calling view).
+    [Theory]
+    [InlineData("var set = new System.Collections.Generic.SortedSet<string>(System.StringComparer.Ordinal); foreach (string item in set) { _ = item; }", true)]
+    [InlineData("var set = new System.Collections.Generic.SortedSet<string>(System.StringComparer.Ordinal); string[] values = [.. set]; _ = values;", true)]
+    [InlineData("foreach (int item in new System.Collections.Generic.SortedSet<int>().GetViewBetween(1, 2)) { _ = item; }", false)]
+    [InlineData("foreach (int item in UnprovedSets.Set) { _ = item; }", false)]
+    [InlineData("foreach (System.Security.AccessControl.GenericAce ace in new System.Security.AccessControl.RawAcl(2, 0)) { _ = ace; }", true)]
+    [InlineData("foreach (System.Security.AccessControl.AuthorizationRule rule in new System.Security.AccessControl.DirectorySecurity().GetAccessRules(true, true, typeof(System.Security.Principal.SecurityIdentifier))) { _ = rule; }", true)]
+    [InlineData("foreach (System.Security.AccessControl.GenericAce ace in UnprovedSets.Acl) { _ = ace; }", false)]
+    [InlineData("foreach (System.Text.RegularExpressions.Match match in System.Text.RegularExpressions.Regex.Matches(\"a\", \"a\")) { _ = match; }", true)]
+    [InlineData("var builder = System.Collections.Immutable.ImmutableArray.CreateBuilder<int>(); foreach (int item in builder) { _ = item; }", true)]
+    [InlineData("var builder = System.Collections.Immutable.ImmutableArray.CreateBuilder<int>(); System.Collections.Generic.IReadOnlyList<int> view = builder; foreach (int item in view) { _ = item; }", true)]
+    [InlineData("var builder = System.Collections.Immutable.ImmutableList.CreateBuilder<int>(); foreach (int item in builder) { _ = item; }", false)]
+    public void ExactTypeOnlyFrameworkCollectionsAreAcceptedOnlyForTheirExactType(string statement, bool accepted)
+    {
+        string helpers = "static class UnprovedSets { internal static System.Collections.Generic.SortedSet<int> Set { get; set; } = null!; internal static System.Security.AccessControl.GenericAcl Acl { get; set; } = null!; }";
+
+        CSharpCompilation compilation = EnumerationCompile(R2Admission + statement + " await Task.CompletedTask;", helpers);
+
+        HostedProducerDiscovery<HostedProducerSite> result = EnumerationDiscover(compilation);
+
+        SyntaxTree tree = Assert.Single(compilation.SyntaxTrees);
+
+        SyntaxNode site = tree.GetRoot().DescendantNodes().First(static node => node is CommonForEachStatementSyntax or SpreadElementSyntax);
+
+        Assert.Equal(!accepted, result.Diagnostics.Any(diagnostic => diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED" && diagnostic.Identity == tree.FilePath + ":" + site.SpanStart));
+    }
+
+    // A scoped enumerator is the whole consumption of a lazy sequence: the body runs between its declaration and
+    // the end of its scope, so the Work live at that end is what the body ran under.
+    [Theory]
+    [InlineData("await using var e = Source.Items().GetAsyncEnumerator(token); while (await e.MoveNextAsync().ConfigureAwait(false)) { _ = e.Current; }", true)]
+    [InlineData("await using (var e = Source.Items().GetAsyncEnumerator(token)) { while (await e.MoveNextAsync()) { _ = e.Current; } }", true)]
+    [InlineData("await using var e = Source.Items().GetAsyncEnumerator(token); while (await e.MoveNextAsync()) { lease.Dispose(); }", false)]
+    [InlineData("await using var e = Source.Items().GetAsyncEnumerator(token); Keep(e);", false)]
+    [InlineData("await using var e = Source.Items().GetAsyncEnumerator(token); Func<System.Threading.Tasks.ValueTask<bool>> next = () => e.MoveNextAsync(); await next();", false)]
+    [InlineData("await using var e = Source.Items().GetAsyncEnumerator(token); await e.DisposeAsync();", false)]
+    [InlineData("var e = Source.Items().GetAsyncEnumerator(token); while (await e.MoveNextAsync()) { _ = e.Current; }", false)]
+    public void AsyncIteratorConsumedThroughAUsingScopedEnumeratorKeepsItsWorkOnlyWhileTheScopeIsProven(string statement, bool owned)
+    {
+        string helpers = "static class Source { internal static async System.Collections.Generic.IAsyncEnumerable<int> Items() { " + EnumerationEffect + "await Task.CompletedTask; yield return 1; } } "
+            + "static class Sink { internal static void Keep(System.Collections.Generic.IAsyncEnumerator<int> value) { } }";
+
+        string body = R2Admission + statement.Replace("Keep(e)", "Sink.Keep(e)", StringComparison.Ordinal) + " await Task.CompletedTask;";
+
+        HostedProducerDiscovery<HostedProducerSite> result = EnumerationDiscover(EnumerationCompile(body, helpers));
+
+        HostedProducerSite site = Assert.Single(EnumerationDeleteSites(result));
+
+        Assert.Equal(owned, site.WorkFrontierCapsuleId is not null);
+
+        Assert.Equal(!owned, result.Diagnostics.Any(static diagnostic => diagnostic.Code == "HOSTED_CALLBACK_OWNERSHIP_UNPROVEN"));
+    }
+
+    [Theory]
+    [InlineData("using var e = Source.Items().GetEnumerator(); while (e.MoveNext()) { _ = e.Current; }", true)]
+    [InlineData("using var e = Source.Items().GetEnumerator(); while (e.MoveNext()) { lease.Dispose(); }", false)]
+    [InlineData("using var e = Source.Items().GetEnumerator(); Sink.Keep(e);", false)]
+    public void IteratorConsumedThroughAUsingScopedEnumeratorKeepsItsWorkOnlyWhileTheScopeIsProven(string statement, bool owned)
+    {
+        string helpers = "static class Source { internal static System.Collections.Generic.IEnumerable<int> Items() { " + EnumerationEffect + "yield return 1; } } "
+            + "static class Sink { internal static void Keep(System.Collections.Generic.IEnumerator<int> value) { } }";
+
+        HostedProducerDiscovery<HostedProducerSite> result = EnumerationDiscover(EnumerationCompile(R2Admission + statement + " await Task.CompletedTask;", helpers));
+
+        HostedProducerSite site = Assert.Single(EnumerationDeleteSites(result));
+
+        Assert.Equal(owned, site.WorkFrontierCapsuleId is not null);
+    }
+
+    // A returned asynchronous sequence is consumed by the caller of the returning method. That matters only when
+    // its body can reach a producer site; a body that cannot is not refused.
+    [Theory]
+    [InlineData(true, true)]
+    [InlineData(false, false)]
+    public void ReturnedAsyncSequenceIsRefusedOnlyWhenItsBodyCanReachAProducerSite(bool effect, bool refused)
+    {
+        string helpers = "static class Source { internal static async System.Collections.Generic.IAsyncEnumerable<int> Items() { " + (effect ? EnumerationEffect : string.Empty) + "await Task.CompletedTask; yield return 1; } "
+            + "internal static System.Collections.Generic.IAsyncEnumerable<int> Forward() => Items(); }";
+
+        HostedProducerDiscovery<HostedProducerSite> result = EnumerationDiscover(EnumerationCompile(R2Admission + "_ = Source.Forward(); await Task.CompletedTask;", helpers));
+
+        Assert.Equal(refused, result.Diagnostics.Any(static diagnostic => diagnostic.Code == "HOSTED_CALLBACK_OWNERSHIP_UNPROVEN"));
+    }
+
+    // The synchronous rule is unchanged: a returned lazy sequence is refused whatever its body does.
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void ReturnedSynchronousSequenceIsStillRefusedWhateverItsBodyDoes(bool effect)
+    {
+        string helpers = "static class Source { internal static System.Collections.Generic.IEnumerable<int> Items() { " + (effect ? EnumerationEffect : string.Empty) + "yield return 1; } "
+            + "internal static System.Collections.Generic.IEnumerable<int> Forward() => Items(); }";
+
+        HostedProducerDiscovery<HostedProducerSite> result = EnumerationDiscover(EnumerationCompile(R2Admission + "_ = Source.Forward(); await Task.CompletedTask;", helpers));
+
+        Assert.Contains(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_CALLBACK_OWNERSHIP_UNPROVEN");
+    }
+
+    // A sequence given to a framework operator is enumerated by the framework value the operator returns, through
+    // the given sequence's own members. The loop over that value is closed only when what it wraps is acceptable:
+    // an authored one is the enumerating-member rule's concern at the call, a framework one must be closed.
+    [Theory]
+    [InlineData("MoveNext", true)]
+    [InlineData("none", false)]
+    public void LoopOverAFrameworkOperatorWrappingAnAuthoredSequenceIsJudgedAtTheOperatorCall(string effectMember, bool refused)
+    {
+        CSharpCompilation compilation = EnumerationCompile(R2Admission + "foreach (int item in System.Linq.Enumerable.Select(new Probe(), value => value)) { _ = item; } await Task.CompletedTask;", InterfaceEnumerable(effectMember));
+
+        HostedProducerDiscovery<HostedProducerSite> result = EnumerationDiscover(compilation);
+
+        Assert.Equal(refused, result.Diagnostics.Any(static diagnostic => diagnostic.Code == "HOSTED_CALLBACK_OWNERSHIP_UNPROVEN"));
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED");
+    }
+
+    [Fact]
+    public void LoopOverAFrameworkOperatorWrappingAnUnreviewedFrameworkCollectionIsRefused()
+    {
+        CSharpCompilation compilation = EnumerationCompile(R2Admission + "foreach (int item in System.Linq.Enumerable.Select(new System.Collections.ObjectModel.ReadOnlyCollection<int>(new System.Collections.Generic.List<int>()), value => value)) { _ = item; } await Task.CompletedTask;", InterfaceEnumerable("none"));
+
+        HostedProducerDiscovery<HostedProducerSite> result = EnumerationDiscover(compilation);
+
+        SyntaxTree tree = Assert.Single(compilation.SyntaxTrees);
+
+        SyntaxNode loop = tree.GetRoot().DescendantNodes().First(static node => node is CommonForEachStatementSyntax);
+
+        Assert.Contains(result.Diagnostics, diagnostic => diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED" && diagnostic.Identity == tree.FilePath + ":" + loop.SpanStart);
+    }
+
+    // A value followed through a caller in another project carries that project's symbols. Roslyn does not equate
+    // symbols of different compilations, so the callee's loop slots are matched to the candidate by identity.
+    [Theory]
+    [InlineData("MoveNext", true)]
+    [InlineData("none", false)]
+    public void AuthoredSequenceHandedToALoopInAnotherCompilationIsStillTraversed(string effectMember, bool reported)
+    {
+        // Fresh metadata references, so the library's framework symbols are not the application's (the project
+        // compilations of the production universe load their references separately in the same way).
+        MetadataReference[] separateReferences = [.. ((string)AppContext.GetData("TRUSTED_PLATFORM_ASSEMBLIES")!).Split(Path.PathSeparator).Select(static path => MetadataReference.CreateFromFile(path))];
+
+        CSharpCompilation library = CSharpCompilation.Create(
+            "Library",
+            [CSharpSyntaxTree.ParseText("public static class Policy { public static void Prepare(System.Collections.Generic.IReadOnlyList<int> items) { foreach (int item in items) { _ = item; } } }", path: "src/Library.cs")],
+            separateReferences,
+            new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
+
+        string probe = "sealed class Probe : System.Collections.Generic.IReadOnlyList<int> { public int Count => 0; public int this[int index] => 0; "
+            + "public System.Collections.Generic.IEnumerator<int> GetEnumerator() { return new ProbeEnumerator(); } "
+            + "System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator(); } "
+            + "sealed class ProbeEnumerator : System.Collections.Generic.IEnumerator<int> { public bool MoveNext() { " + EnumerationEffectIn(effectMember, "MoveNext") + "return false; } public int Current => 0; object System.Collections.IEnumerator.Current => Current; public void Reset() { } public void Dispose() { } }";
+
+        CSharpCompilation app = Compile(R2Source(R2Admission + "Policy.Prepare(new Probe()); await Task.CompletedTask;", probe))
+            .AddReferences(library.ToMetadataReference());
+
+        Assert.Empty(app.GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        HostedProducerDiscovery<HostedProducerSite> result = HostedGrimoireProducerInventory.DiscoverProducerSites(
+            [library, app], new(["Worker"], []), [new("Worker", [OrdinaryRoot()])], []);
+
+        Assert.Equal(reported, EnumerationDeleteSites(result).Length == 1);
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED");
     }
 
     // A static type that is not a closed framework collection is never classified by its name or shape.
