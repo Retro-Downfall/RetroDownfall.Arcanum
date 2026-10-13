@@ -24640,9 +24640,9 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
         string helper = "internal interface IClosedCleanup : System.IDisposable, System.IAsyncDisposable { } "
             + "internal sealed class ClosedCleanup : IClosedCleanup { public void Dispose() => System.IO.File.Exists(\"wrong-public\"); void System.IDisposable.Dispose() => System.IO.File.Delete(\"selected-interface\"); public System.Threading.Tasks.ValueTask DisposeAsync() { System.IO.File.Exists(\"wrong-public\"); return default; } System.Threading.Tasks.ValueTask System.IAsyncDisposable.DisposeAsync() { System.IO.File.Delete(\"selected-interface\"); return default; } } "
             + (multipleImplementations ? "internal sealed class OtherClosedCleanup : IClosedCleanup { public void Dispose() { } public System.Threading.Tasks.ValueTask DisposeAsync() => default; } " : "")
-            + "internal static class ClosedCleanupForwarder { internal static extern IClosedCleanup Unknown(); internal static async System.Threading.Tasks.Task Run(IClosedCleanup value) { " + cleanup + " } }";
+            + "internal static class ClosedCleanupForwarder { internal static IClosedCleanup Value { get; set; } = null!; internal static async System.Threading.Tasks.Task Run(IClosedCleanup value) { " + cleanup + " } }";
 
-        string source = R2Source("await ClosedCleanupForwarder.Run(ClosedCleanupForwarder.Unknown());", helper);
+        string source = R2Source("await ClosedCleanupForwarder.Run(ClosedCleanupForwarder.Value);", helper);
 
         Assert.Empty(Compile(source).GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
 
@@ -27557,7 +27557,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
 
         if (!unresolved)
         {
-            Assert.Empty(result.Diagnostics);
+            AssertOnlyUnprovenFactoryBorrowedCreateCommand(source, result);
 
             Assert.Contains(result.Items, static site => site.EnclosingType == "FactoryConsumer" && site.Callee == "System.IO.File.Exists");
         }
@@ -27734,10 +27734,29 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
 
         if (!unresolved)
         {
-            Assert.Empty(result.Diagnostics);
+            AssertOnlyUnprovenFactoryBorrowedCreateCommand(source, result);
 
             Assert.Contains(result.Items, static site => site.EnclosingType == "OptionalConsumer" && site.Callee == "System.IO.File.Exists");
         }
+    }
+
+    // The virtual metadata SqliteConnection.CreateCommand() slot needs a closed receiver at each call;
+    // a factory-call receiver is an opaque factory and stays unclassified (DESIGN, SqliteConnection.CreateCommand paragraph).
+    private static void AssertOnlyUnprovenFactoryBorrowedCreateCommand(string source, HostedProducerDiscovery<HostedProducerSite> result)
+    {
+        const string receiverCall = "_factory.Borrow().CreateCommand()";
+
+        int offset = source.IndexOf(receiverCall, StringComparison.Ordinal);
+
+        Assert.True(offset >= 0 && offset == source.LastIndexOf(receiverCall, StringComparison.Ordinal));
+
+        HostedProducerInventoryDiagnostic refusal = Assert.Single(result.Diagnostics);
+
+        Assert.Equal("HOSTED_SITE_UNCLASSIFIED", refusal.Code);
+
+        Assert.Equal("src/Fixture.cs:" + offset, refusal.Identity);
+
+        Assert.Equal("Microsoft.Data.Sqlite.SqliteConnection.CreateCommand", refusal.Detail);
     }
 
     [Fact]
