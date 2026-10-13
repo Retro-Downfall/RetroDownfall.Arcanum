@@ -39114,6 +39114,13 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
         WidenedSqliteBlobIndexerRequiresCompleteConfiguredReceiverAndLiveFrontier(shape, false, true);
 
     [Theory]
+    [InlineData("x-builder-alias", false, true)]
+    [InlineData("x-factory", false, true)]
+    [InlineData("x-typeof-replace", false, true)]
+    [InlineData("x-unrelated-descriptor", true, true)]
+    [InlineData("x-second-unconfigured", true, true)]
+    [InlineData("x-onconfiguring-guard", true, true)]
+    [InlineData("x-onconfiguring-inverted", false, true)]
     [InlineData("exact", true, true)]
     [InlineData("helper", true, true)]
     [InlineData("argument-effect", true, true)]
@@ -39240,6 +39247,23 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
         registration = shape.EndsWith("-before", StringComparison.Ordinal) ? replacement + registration : registration + replacement;
 
         if (shape == "registration-opaque") registration += "BlobInput.MutateServices(services); ";
+
+        if (shape == "x-builder-alias") registration = "services.AddDbContext<BlobContext>((sp, options) => { " + options + "; Microsoft.EntityFrameworkCore.DbContextOptionsBuilder alias = options; alias.UseInternalServiceProvider(BlobInput.Provider()); }); ";
+
+        if (shape == "x-factory") registration += "services.AddDbContextFactory<BlobContext>(options => " + options + "); ";
+
+        if (shape == "x-typeof-replace") registration += "services.Add(new ServiceDescriptor(typeof(BlobContext), sp => new BlobContext(BlobInput.Options()), ServiceLifetime.Scoped)); ";
+
+        if (shape == "x-unrelated-descriptor") registration += "services.AddSingleton<UnrelatedService>(); ";
+
+        if (shape == "x-second-unconfigured") registration += "services.AddDbContext<OtherContext>((sp, o) => o.EnableDetailedErrors()); ";
+
+        if (shape is "x-onconfiguring-guard" or "x-onconfiguring-inverted") helpers = helpers.Replace(
+            "Microsoft.EntityFrameworkCore.DbContext(options) { }",
+            "Microsoft.EntityFrameworkCore.DbContext(options) { protected override void OnConfiguring(Microsoft.EntityFrameworkCore.DbContextOptionsBuilder builder) { "
+                + (shape == "x-onconfiguring-guard" ? "if (builder.IsConfigured) return; builder.UseInternalServiceProvider(BlobInput.Provider());" : "if (!builder.IsConfigured) { builder.UseInternalServiceProvider(BlobInput.Provider()); }") + " } }", StringComparison.Ordinal);
+
+        helpers += " public sealed class UnrelatedService { } public sealed class OtherContext(Microsoft.EntityFrameworkCore.DbContextOptions<OtherContext> options) : Microsoft.EntityFrameworkCore.DbContext(options) { } ";
 
         if (shape.StartsWith("onconfiguring-", StringComparison.Ordinal)) helpers = helpers.Replace(
             "Microsoft.EntityFrameworkCore.DbContext(options) { }",

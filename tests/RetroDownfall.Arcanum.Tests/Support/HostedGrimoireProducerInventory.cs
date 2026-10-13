@@ -2490,6 +2490,12 @@ internal static partial class HostedGrimoireProducerInventory
 
             internal bool SuppressOrdinaryStorageConditions { get; init; }
 
+            /// <summary>
+            /// Demands the final-provider certificate for a container-built DbContext rather than
+            /// the registration-only provenance cleanup tracking uses. Never shares the stable cache.
+            /// </summary>
+            internal bool ClosedSqliteProvider { get; init; }
+
             internal Dictionary<CleanupEnvironmentCacheIdentity, CleanupProvenance> Cache { get; } = [];
 
             internal HashSet<CleanupEnvironmentCacheIdentity> CompleteActive { get; } = [];
@@ -24923,6 +24929,27 @@ internal static partial class HostedGrimoireProducerInventory
 
                         string callee = Normalize(method);
 
+                        // H7: EF runs OnConfiguring at the first use of the context's services,
+                        // whichever DbContext member that is; judge it at every such use.
+                        if (node is InvocationExpressionSyntax { Expression: MemberAccessExpressionSyntax contextUse }
+                            && !method.IsStatic
+                            && TypeKey((method.ReducedFrom ?? method).ContainingType) == "Microsoft.EntityFrameworkCore.DbContext"
+                            && method.Name is not ("Dispose" or "DisposeAsync")
+                            && UnclosedDbContextOnConfiguring(member, contextUse.Expression) is { } firstUseConfiguring)
+                        {
+                            emittedEvidence = MergeEvidence(
+                                emittedEvidence,
+                                Traverse(
+                                    firstUseConfiguring,
+                                    rootType,
+                                    operationId + "/call@" + Location(node),
+                                    active,
+                                    lifecycle,
+                                    workAdmitted,
+                                    effectGroup,
+                                    recoveryEffect: recoveryEffect));
+                        }
+
                         if (node is InvocationExpressionSyntax explicitCleanup
                             && (IsTrustedFrameworkCleanupSlot(method)
                                 || IsExactSdkSessionCleanup(method))
@@ -25904,6 +25931,27 @@ internal static partial class HostedGrimoireProducerInventory
                             }
 
                             continue;
+                        }
+
+                        if (!propertyMutation
+                            && !property.IsStatic
+                            && TypeKey(property.ContainingType) == "Microsoft.EntityFrameworkCore.DbContext"
+                            && node is MemberAccessExpressionSyntax databaseAccess
+                            && UnclosedDbContextOnConfiguring(member, databaseAccess.Expression) is { } onConfiguring)
+                        {
+                            // EF runs the authored OnConfiguring on first use of the context's
+                            // services, under whatever admission is current at that use.
+                            emittedEvidence = MergeEvidence(
+                                emittedEvidence,
+                                Traverse(
+                                    onConfiguring,
+                                    rootType,
+                                    operationId + "/call@" + Location(node),
+                                    active,
+                                    lifecycle,
+                                    workAdmitted,
+                                    effectGroup,
+                                    recoveryEffect: recoveryEffect));
                         }
 
                         HostedProducerSiteKind? externalPropertyKind =
@@ -42857,6 +42905,10 @@ internal static partial class HostedGrimoireProducerInventory
                 context);
 
             if (!contextProvenance.Complete
+                || context.ClosedSqliteProvider
+                    && !IsContainerResolvedDbContextInstance(
+                        member,
+                        contextExpression)
                 || contextProvenance.Candidates is not
                     [CleanupTypeCandidate { Type: INamedTypeSymbol dbContext }]
                 || dbContext is not
@@ -42871,6 +42923,10 @@ internal static partial class HostedGrimoireProducerInventory
                 || !HasExactSqliteDbContextRegistration(
                     dbContext,
                     member.Model.Compilation)
+                || context.ClosedSqliteProvider
+                    && !HasClosedSqliteDbContextConfiguration(
+                        dbContext,
+                        member.Model.Compilation)
                 || member.Model.Compilation.GetTypeByMetadataName(
                     "Microsoft.Data.Sqlite.SqliteConnection") is not
                     INamedTypeSymbol sqliteConnection
@@ -42887,6 +42943,1117 @@ internal static partial class HostedGrimoireProducerInventory
             return ExactTrustedMetadataProvenance(
                 member,
                 sqliteConnection);
+        }
+
+        /// <summary>
+        /// The type-only provenance above cannot tell a container-resolved context from a
+        /// caller-created one: a registration's UseSqlite only configures the instances the
+        /// container builds. Every terminal source of the value must be an exact dependency
+        /// the container injects or an exact framework service resolution.
+        /// </summary>
+        private bool IsContainerResolvedDbContextInstance(
+            AuthoredMember member,
+            ExpressionSyntax contextExpression)
+        {
+            CleanupValueFlow flow = CleanupValueFlowOf(
+                member,
+                contextExpression,
+                new CleanupProvenanceContext());
+
+            return flow.Complete
+                && flow.Values.Count != 0
+                && flow.Values.All(IsContainerResolvedDbContextSource);
+        }
+
+        private bool IsContainerResolvedDbContextSource(BoundValueSource source)
+        {
+            ExpressionSyntax value = StripTransparentExpression(
+                source.Expression);
+
+            ISymbol? symbol = source.Caller.Model.GetSymbolInfo(value).Symbol;
+
+            if (symbol is IParameterSymbol
+                {
+                    ContainingSymbol: IMethodSymbol
+                    {
+                        MethodKind: MethodKind.Constructor,
+                    },
+                    Type: INamedTypeSymbol
+                    {
+                        IsAbstract: false,
+                        IsSealed: true,
+                    } dependencyType,
+                } dependency)
+            {
+                return IsExactRegisteredConstructorDependency(
+                    source.Caller,
+                    dependency,
+                    dependencyType);
+            }
+
+            // H1: an exact GetRequiredService on an unproven IServiceProvider is not the
+            // host container (authored or extern providers can return any instance).
+            if (value is not InvocationExpressionSyntax
+                {
+                    Expression: MemberAccessExpressionSyntax { Expression: { } providerExpression },
+                }
+                || symbol is not IMethodSymbol resolver
+                || resolver.Name is not ("GetRequiredService" or "GetService")
+                || !IsExactFrameworkMethod(
+                    resolver,
+                    "Microsoft.Extensions.DependencyInjection.ServiceProviderServiceExtensions",
+                    resolver.Name,
+                    "Microsoft.Extensions.DependencyInjection.Abstractions"))
+            {
+                return false;
+            }
+
+            // The receiver must be the container's own provider: a registration factory's
+            // provider parameter, an injected provider or scope factory of an exactly activated
+            // owner, or the ServiceProvider of a scope created from one of those.
+            return IsContainerProviderValue(source.Caller, providerExpression, 0);
+        }
+
+        private bool IsContainerProviderValue(
+            AuthoredMember caller,
+            ExpressionSyntax expression,
+            int depth)
+        {
+            if (depth > 4)
+            {
+                return false;
+            }
+
+            ExpressionSyntax stripped = StripTransparentExpression(expression);
+
+            if (IsContainerProviderSource(new BoundValueSource(caller, stripped), depth, direct: true) is true)
+            {
+                return true;
+            }
+
+            CleanupValueFlow flow = CleanupValueFlowOf(
+                caller,
+                stripped,
+                new CleanupProvenanceContext());
+
+            return flow.Complete
+                && flow.Values.Count != 0
+                && flow.Values.All(value => IsContainerProviderSource(value, depth, direct: false) is true);
+        }
+
+        private bool? IsContainerProviderSource(
+            BoundValueSource source,
+            int depth,
+            bool direct)
+        {
+            ExpressionSyntax value = StripTransparentExpression(
+                source.Expression);
+
+            ISymbol? symbol = source.Caller.Model.GetSymbolInfo(value).Symbol;
+
+            // A directly named parameter may be reassigned; accept it directly only when the
+            // factory body never writes it.
+            if (IsRegistrationFactoryProvider(symbol)
+                && (!direct || ParameterNeverWritten((IParameterSymbol)symbol!)))
+            {
+                return true;
+            }
+
+            if (symbol is IParameterSymbol
+                {
+                    ContainingSymbol: IMethodSymbol { MethodKind: MethodKind.Constructor },
+                } dependency
+                && (!direct || PrimaryConstructorParameterNeverWritten(dependency))
+                && TypeKey(dependency.Type) is "System.IServiceProvider"
+                    or "Microsoft.Extensions.DependencyInjection.IServiceScopeFactory")
+            {
+                return IsExactRegisteredConstructorDependency(
+                    source.Caller,
+                    dependency,
+                    dependency.Type);
+            }
+
+            if (value is MemberAccessExpressionSyntax { Expression: { } scope }
+                && symbol is IPropertySymbol { Name: "ServiceProvider", IsStatic: false } property
+                && TypeKey(property.ContainingType) is "Microsoft.Extensions.DependencyInjection.IServiceScope"
+                    or "Microsoft.Extensions.DependencyInjection.AsyncServiceScope"
+                && !property.Locations.Any(static location => location.IsInSource)
+                && AssemblyIdentityMatches(
+                    property.ContainingAssembly.Identity,
+                    typeof(Microsoft.Extensions.DependencyInjection.IServiceScope).Assembly.GetName()))
+            {
+                CleanupValueFlow scopes = CleanupValueFlowOf(
+                    source.Caller,
+                    scope,
+                    new CleanupProvenanceContext());
+
+                return scopes.Complete
+                    && scopes.Values.Count != 0
+                    && scopes.Values.All(created => IsContainerScopeCreation(created, depth));
+            }
+
+            return direct ? null : false;
+        }
+
+        private bool PrimaryConstructorParameterNeverWritten(IParameterSymbol parameter) =>
+            parameter.ContainingSymbol is IMethodSymbol { ContainingType: { } owner }
+            && owner.DeclaringSyntaxReferences.Length != 0
+            && ParameterNeverWrittenWithin(parameter, owner.DeclaringSyntaxReferences.Select(static reference => reference.GetSyntax()));
+
+        private bool ParameterNeverWritten(IParameterSymbol parameter) =>
+            parameter.DeclaringSyntaxReferences is [{ } reference]
+            && reference.GetSyntax().FirstAncestorOrSelf<AnonymousFunctionExpressionSyntax>() is { } function
+            && ParameterNeverWrittenWithin(parameter, [function]);
+
+        private bool ParameterNeverWrittenWithin(IParameterSymbol parameter, IEnumerable<SyntaxNode> scopes)
+        {
+            foreach (SyntaxNode declaration in scopes)
+            {
+                if (!semanticModels.TryGetValue(declaration.SyntaxTree, out SemanticModel? model))
+                {
+                    return false;
+                }
+
+                foreach (IdentifierNameSyntax name in declaration.DescendantNodes().OfType<IdentifierNameSyntax>())
+                {
+                    if (name.Identifier.ValueText != parameter.Name
+                        || !SymbolEqualityComparer.Default.Equals(model.GetSymbolInfo(name).Symbol, parameter))
+                    {
+                        continue;
+                    }
+
+                    SyntaxNode? parent = name.Parent;
+
+                    while (parent is ParenthesizedExpressionSyntax)
+                    {
+                        parent = parent.Parent;
+                    }
+
+                    if (parent is AssignmentExpressionSyntax assignment && assignment.Left.Span.Contains(name.Span)
+                        || parent is ArgumentSyntax { RefKindKeyword.RawKind: not 0 }
+                        || parent is PrefixUnaryExpressionSyntax or PostfixUnaryExpressionSyntax
+                        || parent is RefExpressionSyntax)
+                    {
+                        return false;
+                    }
+                }
+            }
+
+            return true;
+        }
+
+        private bool IsContainerScopeCreation(
+            BoundValueSource source,
+            int depth)
+        {
+            if (StripTransparentExpression(source.Expression) is not InvocationExpressionSyntax creation
+                || source.Caller.Model.GetSymbolInfo(creation).Symbol is not IMethodSymbol method
+                || source.Caller.Model.GetOperation(creation) is not IInvocationOperation operation
+                || ExactInvocationReceiverOrFirstArgument(operation) is not { } factory)
+            {
+                return false;
+            }
+
+            IMethodSymbol definition = method.ReducedFrom ?? method;
+
+            bool exact = definition.Name is "CreateScope" or "CreateAsyncScope"
+                && (IsExactFrameworkMethod(
+                        method,
+                        "Microsoft.Extensions.DependencyInjection.ServiceProviderServiceExtensions",
+                        definition.Name,
+                        "Microsoft.Extensions.DependencyInjection.Abstractions")
+                    || TypeKey(definition.ContainingType) == "Microsoft.Extensions.DependencyInjection.IServiceScopeFactory"
+                        && !definition.Locations.Any(static location => location.IsInSource)
+                        && AssemblyIdentityMatches(
+                            definition.ContainingAssembly.Identity,
+                            typeof(Microsoft.Extensions.DependencyInjection.IServiceScopeFactory).Assembly.GetName()));
+
+            return exact
+                && IsContainerProviderValue(source.Caller, factory, depth + 1);
+        }
+
+        private bool IsRegistrationFactoryProvider(ISymbol? symbol)
+        {
+            if (symbol is not IParameterSymbol
+                {
+                    Ordinal: 0,
+                    ContainingSymbol: IMethodSymbol { MethodKind: MethodKind.AnonymousFunction },
+                    DeclaringSyntaxReferences: [{ } providerReference],
+                } provider
+                || TypeKey(provider.Type) != "System.IServiceProvider"
+                || providerReference.GetSyntax().FirstAncestorOrSelf<AnonymousFunctionExpressionSyntax>() is not
+                {
+                    Parent: ArgumentSyntax { Parent: ArgumentListSyntax { Parent: InvocationExpressionSyntax registration } },
+                } factory
+                || !semanticModels.TryGetValue(factory.SyntaxTree, out SemanticModel? registrationModel)
+                || registrationModel.GetSymbolInfo(registration).Symbol is not IMethodSymbol registrationMethod)
+            {
+                return false;
+            }
+
+            string name = (registrationMethod.ReducedFrom ?? registrationMethod).Name;
+
+            return IsExactFrameworkMethod(
+                    registrationMethod,
+                    "Microsoft.Extensions.DependencyInjection.ServiceCollectionServiceExtensions",
+                    name,
+                    "Microsoft.Extensions.DependencyInjection.Abstractions")
+                || IsExactFrameworkMethod(
+                    registrationMethod,
+                    "Microsoft.Extensions.DependencyInjection.Extensions.ServiceCollectionDescriptorExtensions",
+                    name,
+                    "Microsoft.Extensions.DependencyInjection.Abstractions");
+        }
+
+        // ---- Final options/provider closure for a container-built DbContext (issue #91).
+
+        private IReadOnlyList<(InvocationExpressionSyntax Call, SemanticModel Model, IMethodSymbol Method)>?
+            serviceCollectionMutations;
+
+        private IReadOnlyList<(InvocationExpressionSyntax Call, SemanticModel Model, IMethodSymbol Method)>
+            ServiceCollectionMutations()
+        {
+            if (serviceCollectionMutations is not null)
+            {
+                return serviceCollectionMutations;
+            }
+
+            List<(InvocationExpressionSyntax Call, SemanticModel Model, IMethodSymbol Method)> found = [];
+
+            foreach ((InvocationExpressionSyntax call, SemanticModel model) in invocations)
+            {
+                if (model.GetSymbolInfo(call).Symbol is not IMethodSymbol method)
+                {
+                    continue;
+                }
+
+                IMethodSymbol definition = method.ReducedFrom ?? method;
+
+                bool touchesCollection = definition.Parameters.Any(static parameter =>
+                        IsServiceCollectionType(parameter.Type))
+                    || call.Expression is MemberAccessExpressionSyntax
+                    {
+                        Expression: { } receiver,
+                    }
+                    && model.GetTypeInfo(receiver).Type is { } receiverType
+                    && IsServiceCollectionType(receiverType);
+
+                if (touchesCollection)
+                {
+                    found.Add((call, model, method));
+                }
+            }
+
+            serviceCollectionMutations = found;
+
+            return found;
+        }
+
+        private static bool IsServiceCollectionType(ITypeSymbol type) =>
+            TypeKey(type) is "Microsoft.Extensions.DependencyInjection.IServiceCollection"
+                or "Microsoft.Extensions.DependencyInjection.ServiceCollection";
+
+        /// <summary>
+        /// A context resolved from the container is configured by exactly the descriptors the
+        /// composition leaves in the collection. Any other descriptor for the context or its
+        /// options, or any collection mutation this analysis cannot read, can replace them.
+        /// </summary>
+        private bool HasCompetingDbContextServiceDescriptor(
+            INamedTypeSymbol dbContext,
+            Compilation consumingCompilation)
+        {
+            foreach ((InvocationExpressionSyntax call, SemanticModel model, IMethodSymbol method)
+                in ServiceCollectionMutations())
+            {
+                IMethodSymbol definition = method.ReducedFrom ?? method;
+
+                if (definition.Name is "AddDbContext" or "AddDbContextPool"
+                    && IsExactFrameworkMethod(
+                        method,
+                        "Microsoft.Extensions.DependencyInjection.EntityFrameworkServiceCollectionExtensions",
+                        definition.Name,
+                        "Microsoft.EntityFrameworkCore")
+                    && !method.TypeArguments.Any(argument => SameBoundType(
+                        argument,
+                        model.Compilation,
+                        dbContext,
+                        consumingCompilation)))
+                {
+                    continue;
+                }
+
+                if (definition.Name is "AddDbContext" or "AddDbContextPool")
+                {
+                    // The selected registrations are validated individually.
+                    continue;
+                }
+
+                if (definition.DeclaringSyntaxReferences.Length != 0)
+                {
+                    if (definition.IsExtern
+                        || definition.IsAbstract
+                        || definition.ContainingType.TypeKind == TypeKind.Interface
+                        || definition.DeclaringSyntaxReferences.Any(static reference =>
+                            reference.GetSyntax() is BaseMethodDeclarationSyntax
+                            {
+                                Body: null,
+                                ExpressionBody: null,
+                            }))
+                    {
+                        return true;
+                    }
+
+                    // An inspectable authored helper registers through the calls its body
+                    // makes; the concrete types reaching it are read at this call site.
+                    if (method.TypeArguments.Any(argument => IsDbContextRelevantServiceType(
+                            argument,
+                            model.Compilation,
+                            dbContext,
+                            consumingCompilation)))
+                    {
+                        return true;
+                    }
+
+                    continue;
+                }
+
+                if (definition.MethodKind == MethodKind.DelegateInvoke)
+                {
+                    return true;
+                }
+
+                bool framework = definition.ContainingAssembly.Name.StartsWith(
+                    "Microsoft.",
+                    StringComparison.Ordinal);
+
+                if (!framework && !IsExactProductionFrameworkServiceBuilder(method))
+                {
+                    return true;
+                }
+
+                if (definition.Name is "Clear" or "RemoveAt")
+                {
+                    return true;
+                }
+
+                foreach (ITypeSymbol? serviceType in MutatedServiceTypes(call, model, method))
+                {
+                    if (IsDbContextRelevantServiceType(
+                        serviceType,
+                        model.Compilation,
+                        dbContext,
+                        consumingCompilation))
+                    {
+                        return true;
+                    }
+                }
+            }
+
+            return false;
+        }
+
+        private static IEnumerable<ITypeSymbol?> MutatedServiceTypes(
+            InvocationExpressionSyntax call,
+            SemanticModel model,
+            IMethodSymbol method)
+        {
+            IMethodSymbol definition = method.ReducedFrom ?? method;
+
+            bool descriptorLevel = definition.Name is "Add" or "TryAdd" or "TryAddEnumerable"
+                or "Replace" or "Remove" or "RemoveAll" or "Insert";
+
+            if (!descriptorLevel)
+            {
+                if (method.TypeArguments.Length != 0)
+                {
+                    yield return method.TypeArguments[0];
+
+                    yield break;
+                }
+
+                foreach (ArgumentSyntax argument in call.ArgumentList.Arguments)
+                {
+                    if (model.GetTypeInfo(argument.Expression).Type is { } argumentType
+                        && TypeKey(argumentType) == "System.Type")
+                    {
+                        yield return TypeOfOperand(argument.Expression, model);
+
+                        yield break;
+                    }
+                }
+
+                yield break;
+            }
+
+            if (method.TypeArguments.Length != 0)
+            {
+                yield return method.TypeArguments[0];
+
+                yield break;
+            }
+
+            bool sawDescriptor = false;
+
+            foreach (ArgumentSyntax argument in call.ArgumentList.Arguments)
+            {
+                ITypeSymbol? type = model.GetTypeInfo(argument.Expression).Type;
+
+                if (type is null)
+                {
+                    continue;
+                }
+
+                if (TypeKey(type) == "System.Type")
+                {
+                    sawDescriptor = true;
+
+                    yield return TypeOfOperand(argument.Expression, model);
+
+                    continue;
+                }
+
+                if (TypeKey(type) != "Microsoft.Extensions.DependencyInjection.ServiceDescriptor")
+                {
+                    continue;
+                }
+
+                sawDescriptor = true;
+
+                yield return DescriptorServiceType(argument.Expression, model);
+            }
+
+            if (!sawDescriptor)
+            {
+                yield return null;
+            }
+        }
+
+        private static ITypeSymbol? TypeOfOperand(ExpressionSyntax expression, SemanticModel model) =>
+            expression is TypeOfExpressionSyntax typeOf
+                ? model.GetTypeInfo(typeOf.Type).Type
+                : null;
+
+        private static ITypeSymbol? DescriptorServiceType(ExpressionSyntax expression, SemanticModel model)
+        {
+            if (expression is BaseObjectCreationExpressionSyntax creation
+                && model.GetSymbolInfo(creation).Symbol is IMethodSymbol constructor
+                && TypeKey(constructor.ContainingType) == "Microsoft.Extensions.DependencyInjection.ServiceDescriptor"
+                && creation.ArgumentList?.Arguments.FirstOrDefault()?.Expression is { } first)
+            {
+                return TypeOfOperand(first, model);
+            }
+
+            if (expression is InvocationExpressionSyntax factory
+                && model.GetSymbolInfo(factory).Symbol is IMethodSymbol describe
+                && TypeKey(describe.ContainingType) == "Microsoft.Extensions.DependencyInjection.ServiceDescriptor")
+            {
+                if (describe.TypeArguments.Length != 0)
+                {
+                    return describe.TypeArguments[0];
+                }
+
+                return factory.ArgumentList.Arguments.FirstOrDefault()?.Expression is { } typeArgument
+                    ? TypeOfOperand(typeArgument, model)
+                    : null;
+            }
+
+            return null;
+        }
+
+        private bool IsDbContextRelevantServiceType(
+            ITypeSymbol? serviceType,
+            Compilation serviceCompilation,
+            INamedTypeSymbol dbContext,
+            Compilation consumingCompilation)
+        {
+            if (serviceType is ITypeParameterSymbol
+                {
+                    ContainingSymbol: IMethodSymbol { DeclaringSyntaxReferences.Length: > 0 },
+                })
+            {
+                // Bound by the generic helper's own call sites.
+                return false;
+            }
+
+            if (serviceType is null or ITypeParameterSymbol)
+            {
+                return true;
+            }
+
+            if (serviceType is not INamedTypeSymbol named)
+            {
+                return false;
+            }
+
+            if (named.IsUnboundGenericType
+                || SameBoundType(
+                    named,
+                    serviceCompilation,
+                    dbContext,
+                    consumingCompilation))
+            {
+                return true;
+            }
+
+            string key = TypeKey(named);
+
+            if (key is "Microsoft.EntityFrameworkCore.DbContextOptions"
+                or "System.IServiceProvider"
+                or "Microsoft.Extensions.DependencyInjection.IServiceScopeFactory"
+                or "Microsoft.Extensions.DependencyInjection.IServiceProviderIsService"
+                or "Microsoft.Extensions.DependencyInjection.IKeyedServiceProvider")
+            {
+                return true;
+            }
+
+            if (key == "Microsoft.EntityFrameworkCore.DbContextOptions`1"
+                || key.EndsWith(".IDbContextOptionsConfiguration`1", StringComparison.Ordinal))
+            {
+                return named.TypeArguments is not [ITypeSymbol context]
+                    || context is ITypeParameterSymbol
+                    || SameBoundType(
+                        context,
+                        serviceCompilation,
+                        dbContext,
+                        consumingCompilation);
+            }
+
+            return false;
+        }
+
+        private static readonly HashSet<string> NonProviderOptionsBuilderMembers =
+        [
+            "ConfigureWarnings",
+            "AddInterceptors",
+            "UseModel",
+            "EnableSensitiveDataLogging",
+            "EnableDetailedErrors",
+            "UseQueryTrackingBehavior",
+            "UseLoggerFactory",
+            "EnableThreadSafetyChecks",
+            "ConfigureLoggingCacheTime",
+        ];
+
+        private static bool IsOptionsBuilderValue(IOperation? operation)
+        {
+            while (operation is IConversionOperation conversion)
+            {
+                if (IsOptionsBuilderType(conversion.Operand.Type))
+                {
+                    return true;
+                }
+
+                operation = conversion.Operand;
+            }
+
+            return operation is not null && IsOptionsBuilderType(operation.Type);
+        }
+
+        private static bool IsOptionsBuilderType(ITypeSymbol? type) =>
+            type is not null
+            && TypeKey(type) is "Microsoft.EntityFrameworkCore.DbContextOptionsBuilder"
+                or "Microsoft.EntityFrameworkCore.DbContextOptionsBuilder`1"
+                or "Microsoft.EntityFrameworkCore.Infrastructure.IDbContextOptionsBuilderInfrastructure";
+
+        /// <summary>
+        /// The provider a registration selects is final only when every use of the options
+        /// builder is the exact SQLite selection, a reviewed provider-neutral setting, or an
+        /// authored helper that satisfies the same rule. Any other use, alias or escape
+        /// could select another provider or hide a connection.
+        /// </summary>
+        private bool BuilderScopeCannotChangeProvider(
+            SyntaxNode scope,
+            SemanticModel model,
+            HashSet<GraphMemberIdentity> path)
+        {
+            IOperation? root = model.GetOperation(scope);
+
+            if (root is null)
+            {
+                return false;
+            }
+
+            foreach (IOperation operation in root.DescendantsAndSelf())
+            {
+                // H5: every builder-valued operation must be consumed by an analysed
+                // invocation, a property read, a discard, or a named-method return. Arrays,
+                // params, tuples, lambda returns and other carriers are escapes.
+                if (IsOptionsBuilderType(operation.Type)
+                    && !BuilderValueConsumedInScope(operation))
+                {
+                    return false;
+                }
+
+                switch (operation)
+                {
+                    case IInvocationOperation invocation
+                        when IsOptionsBuilderValue(invocation.Instance)
+                            || invocation.Arguments.Any(argument => IsOptionsBuilderValue(argument.Value)):
+                    {
+                        IMethodSymbol method = invocation.TargetMethod;
+
+                        IMethodSymbol definition = method.ReducedFrom ?? method;
+
+                        if (IsExactSqliteOptionsBuilderCall(method))
+                        {
+                            // H2: only the connection-string overload selects SQLite's own
+                            // connection; a DbConnection argument can be any (derived) connection.
+                            if (definition.Parameters is not [_, { Type.SpecialType: SpecialType.System_String }, ..])
+                            {
+                                return false;
+                            }
+
+                            break;
+                        }
+
+                        if (TypeKey(definition.ContainingType) is
+                                "Microsoft.EntityFrameworkCore.DbContextOptionsBuilder"
+                                or "Microsoft.EntityFrameworkCore.DbContextOptionsBuilder`1"
+                            && NonProviderOptionsBuilderMembers.Contains(definition.Name)
+                            && !definition.Locations.Any(static location => location.IsInSource)
+                            && AssemblyIdentityMatches(
+                                definition.ContainingAssembly.Identity,
+                                typeof(Microsoft.EntityFrameworkCore.DbContextOptionsBuilder).Assembly.GetName()))
+                        {
+                            if (definition.Name == "AddInterceptors"
+                                && !InterceptorsCannotReplaceConnection(invocation, model))
+                            {
+                                return false;
+                            }
+
+                            break;
+                        }
+
+                        if (Resolve(method, model.Compilation) is { } target)
+                        {
+                            // H5b: the helper must receive the builder as a builder; an
+                            // object/generic parameter hides later uses from this walk.
+                            if (invocation.Arguments.Any(argument => IsOptionsBuilderValue(argument.Value)
+                                && !IsOptionsBuilderType(argument.Parameter?.Type)))
+                            {
+                                return false;
+                            }
+
+                            GraphMemberIdentity identity = MemberIdentity(target);
+
+                            if (!path.Add(identity))
+                            {
+                                break;
+                            }
+
+                            try
+                            {
+                                if (!BuilderScopeCannotChangeProvider(target.Syntax, target.Model, path))
+                                {
+                                    return false;
+                                }
+                            }
+                            finally
+                            {
+                                _ = path.Remove(identity);
+                            }
+
+                            break;
+                        }
+
+                        return false;
+                    }
+
+                    case IObjectCreationOperation creation
+                        when creation.Arguments.Any(argument => IsOptionsBuilderValue(argument.Value)):
+                    case ISimpleAssignmentOperation assignment
+                        when IsOptionsBuilderValue(assignment.Value)
+                            && assignment.Target is not IDiscardOperation:
+                    case IVariableInitializerOperation initializer
+                        when IsOptionsBuilderValue(initializer.Value):
+                        return false;
+                }
+            }
+
+            return true;
+        }
+
+        // ---- Final-provider closure helpers (judge hardening).
+
+        private static bool InsideNestedFunction(IOperation operation)
+        {
+            for (IOperation? current = operation.Parent; current is not null; current = current.Parent)
+            {
+                if (current is IAnonymousFunctionOperation or ILocalFunctionOperation)
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private static bool BuilderValueConsumedInScope(IOperation value)
+        {
+            if (value is IDiscardOperation)
+            {
+                return true;
+            }
+
+            IOperation current = value;
+
+            while (current.Parent is IConversionOperation conversion)
+            {
+                current = conversion;
+            }
+
+            if (!ReferenceEquals(current, value) && IsOptionsBuilderType(current.Type))
+            {
+                // The outer builder-typed conversion is judged on its own visit.
+                return true;
+            }
+
+            return current.Parent switch
+            {
+                null => true,
+                IInvocationOperation invocation => ReferenceEquals(invocation.Instance, current),
+                IArgumentOperation { Parent: IInvocationOperation } => true,
+                IExpressionStatementOperation => true,
+                ISimpleAssignmentOperation { Target: IDiscardOperation } assignment =>
+                    ReferenceEquals(assignment.Value, current),
+                IPropertyReferenceOperation property =>
+                    ReferenceEquals(property.Instance, current) && !property.Property.IsIndexer,
+                IReturnOperation returned => !InsideNestedFunction(returned),
+                _ => false,
+            };
+        }
+
+        private bool? serviceCollectionValueEscapes;
+
+        /// <summary>
+        /// H6: the descriptor scan reads only invocations on IServiceCollection-typed
+        /// receivers or parameters. Any other view of the collection (cast, IList parameter,
+        /// indexer, conditional access, carrier, lambda return, opaque constructor) or an
+        /// authored collection implementation can install a descriptor that scan never sees.
+        /// </summary>
+        private bool ServiceCollectionValueEscapes()
+        {
+            if (serviceCollectionValueEscapes is bool cached)
+            {
+                return cached;
+            }
+
+            bool escapes = false;
+
+            foreach ((SyntaxTree tree, SemanticModel model) in semanticModels)
+            {
+                foreach (SyntaxNode node in tree.GetRoot().DescendantNodes())
+                {
+                    if (node is BaseTypeDeclarationSyntax declaration
+                        && model.GetDeclaredSymbol(declaration) is INamedTypeSymbol declared
+                        && declared.AllInterfaces.Any(static candidate => IsServiceCollectionType(candidate)))
+                    {
+                        escapes = true;
+
+                        break;
+                    }
+
+                    if (node is not (IdentifierNameSyntax or MemberAccessExpressionSyntax
+                            or InvocationExpressionSyntax or BaseObjectCreationExpressionSyntax
+                            or ElementAccessExpressionSyntax or ThisExpressionSyntax)
+                        || node.Parent is MemberAccessExpressionSyntax { Name: var name } && ReferenceEquals(name, node)
+                        || model.GetOperation(node) is not { } operation
+                        || operation.Type is null
+                        || !IsServiceCollectionType(operation.Type))
+                    {
+                        continue;
+                    }
+
+                    if (!ServiceCollectionValueConsumed(operation))
+                    {
+                        escapes = true;
+
+                        break;
+                    }
+                }
+
+                if (escapes)
+                {
+                    break;
+                }
+            }
+
+            serviceCollectionValueEscapes = escapes;
+
+            return escapes;
+        }
+
+        private static bool ServiceCollectionValueConsumed(IOperation value)
+        {
+            IOperation current = value;
+
+            // Conversions and conditional/coalesce branches that keep the collection type are
+            // transparent carriers: the combined value is judged where it is consumed.
+            while (current.Parent is IConversionOperation
+                || current.Parent is IConditionalOperation conditional
+                    && !ReferenceEquals(conditional.Condition, current)
+                    && conditional.Type is { } conditionalType
+                    && IsServiceCollectionType(conditionalType)
+                || current.Parent is ICoalesceOperation coalesce
+                    && coalesce.Type is { } coalesceType
+                    && IsServiceCollectionType(coalesceType))
+            {
+                current = current.Parent;
+            }
+
+            if (current.Type is not null && !IsServiceCollectionType(current.Type))
+            {
+                // A widened view is only accepted for the exact null guard.
+                return current.Parent is IArgumentOperation
+                {
+                    Parent: IInvocationOperation
+                    {
+                        TargetMethod: { Name: "ThrowIfNull", ContainingType: { } guardType },
+                    },
+                }
+                    && TypeKey(guardType) == "System.ArgumentNullException"
+                    && !guardType.Locations.Any(static location => location.IsInSource);
+            }
+
+            return current.Parent switch
+            {
+                null => true,
+                IInvocationOperation invocation => ReferenceEquals(invocation.Instance, current),
+                IArgumentOperation { Parameter.Type: { } parameterType, Parent: IInvocationOperation }
+                    when IsServiceCollectionType(parameterType) => true,
+                IArgumentOperation
+                {
+                    Parameter.Type: { } parameterType,
+                    Parent: IObjectCreationOperation { Constructor: { } constructor },
+                } when IsServiceCollectionType(parameterType) =>
+                    constructor.Locations.Any(static location => location.IsInSource),
+                IExpressionStatementOperation => true,
+                ISimpleAssignmentOperation assignment =>
+                    ReferenceEquals(assignment.Target, current)
+                    || assignment.Target is IDiscardOperation
+                    || assignment.Target.Type is { } target && IsServiceCollectionType(target)
+                        && (assignment.Target is ILocalReferenceOperation or IParameterReferenceOperation
+                            || assignment.Target is IMemberReferenceOperation reference
+                                && reference.Member.Locations.Any(static location => location.IsInSource)),
+                IVariableInitializerOperation { Parent: IVariableDeclaratorOperation { Symbol.Type: { } local } } =>
+                    IsServiceCollectionType(local),
+                IPropertyReferenceOperation property =>
+                    ReferenceEquals(property.Instance, current) && !property.Property.IsIndexer,
+                IReturnOperation returned => !InsideNestedFunction(returned),
+                IIsPatternOperation or IIsNullOperation => true,
+                _ => false,
+            };
+        }
+
+        /// <summary>
+        /// H3: EF lets a caller replace a built context's connection or provider services
+        /// after resolution. Any such call anywhere refuses the closed certificate.
+        /// </summary>
+        private bool HasDbContextConnectionReplacement()
+        {
+            foreach ((InvocationExpressionSyntax call, SemanticModel model) in invocations)
+            {
+                if (model.GetSymbolInfo(call).Symbol is not IMethodSymbol method)
+                {
+                    continue;
+                }
+
+                IMethodSymbol definition = method.ReducedFrom ?? method;
+
+                string type = TypeKey(definition.ContainingType);
+
+                if (type == "Microsoft.EntityFrameworkCore.RelationalDatabaseFacadeExtensions"
+                        && definition.Name is "SetDbConnection" or "SetConnectionString"
+                    || type == "Microsoft.EntityFrameworkCore.Infrastructure.AccessorExtensions"
+                        && (definition.Name != "GetService"
+                            || method.TypeArguments is not [{ } service]
+                            || service.ContainingNamespace?.ToDisplayString().StartsWith("Microsoft.EntityFrameworkCore", StringComparison.Ordinal) != false)
+                    || type == "Microsoft.EntityFrameworkCore.Storage.IRelationalConnection"
+                    || definition.Name is "UseServiceProviderFactory" or "ConfigureContainer")
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private bool InterceptorsCannotReplaceConnection(
+            IInvocationOperation invocation,
+            SemanticModel model)
+        {
+            foreach (IOperation creation in invocation.Descendants().Where(static operation =>
+                operation is IObjectCreationOperation))
+            {
+                if (((IObjectCreationOperation)creation).Type is not INamedTypeSymbol created
+                    || AuthoredCompilationIdentity(created, model.Compilation) is null)
+                {
+                    return false;
+                }
+
+                for (INamedTypeSymbol? current = created;
+                    current is not null && current.SpecialType != SpecialType.System_Object;
+                    current = current.BaseType)
+                {
+                    if (current.GetMembers().OfType<IMethodSymbol>().Any(static method =>
+                        method.IsOverride
+                        && method.Name is "ConnectionCreating" or "ConnectionCreatingAsync"
+                            or "ConnectionCreated" or "ConnectionCreatedAsync"))
+                    {
+                        return false;
+                    }
+                }
+
+                // H4: an implicit or explicit interface implementation replaces the
+                // connection just as an override does; IsOverride is false for both.
+                if (model.Compilation.GetTypeByMetadataName(
+                        "Microsoft.EntityFrameworkCore.Diagnostics.IDbConnectionInterceptor") is not
+                    INamedTypeSymbol connectionInterceptor)
+                {
+                    return false;
+                }
+
+                foreach (IMethodSymbol slot in connectionInterceptor.GetMembers().OfType<IMethodSymbol>()
+                    .Where(static slot => slot.Name is "ConnectionCreating" or "ConnectionCreatingAsync"
+                        or "ConnectionCreated" or "ConnectionCreatedAsync"))
+                {
+                    if (created.FindImplementationForInterfaceMember(slot) is { } implementation
+                        && !SymbolEqualityComparer.Default.Equals(implementation, slot)
+                        && implementation.Locations.Any(static location => location.IsInSource))
+                    {
+                        return false;
+                    }
+                }
+            }
+
+            // Only inline interceptor allocations are reviewed; a stored or returned
+            // interceptor value is an unknown type.
+            return invocation.Arguments
+                .SelectMany(static argument => argument.Value is IArrayCreationOperation array
+                    ? array.Initializer?.ElementValues ?? []
+                    : [argument.Value])
+                .All(static value =>
+                {
+                    while (value is IConversionOperation conversion)
+                    {
+                        value = conversion.Operand;
+                    }
+
+                    return value is IObjectCreationOperation or IArrayCreationOperation;
+                });
+        }
+
+        /// <summary>
+        /// An authored OnConfiguring runs after the container's options are built. Only the
+        /// provider-complete guard (no provider-selecting or effectful statement before
+        /// the early return) leaves the registration's provider final.
+        /// </summary>
+        private AuthoredMember? UnclosedDbContextOnConfiguring(
+            AuthoredMember member,
+            ExpressionSyntax receiver)
+        {
+            CleanupProvenance provenance = CleanupProvenanceOf(
+                member,
+                receiver,
+                new CleanupProvenanceContext());
+
+            if (!provenance.Complete
+                || provenance.Candidates is not [CleanupTypeCandidate { Type: INamedTypeSymbol type }]
+                || IsContainerResolvedDbContextInstance(member, receiver)
+                    && HasClosedDbContextOnConfiguring(type))
+            {
+                return null;
+            }
+
+            for (INamedTypeSymbol? current = type;
+                current is not null
+                && TypeKey(current) != "Microsoft.EntityFrameworkCore.DbContext";
+                current = current.BaseType)
+            {
+                foreach (IMethodSymbol method in current.GetMembers("OnConfiguring").OfType<IMethodSymbol>())
+                {
+                    if (method.IsOverride
+                        && Resolve(method, member.Model.Compilation) is { } authored)
+                    {
+                        return authored;
+                    }
+                }
+            }
+
+            return null;
+        }
+
+        private bool HasClosedDbContextOnConfiguring(INamedTypeSymbol dbContext)
+        {
+            for (INamedTypeSymbol? current = dbContext;
+                current is not null
+                && TypeKey(current) != "Microsoft.EntityFrameworkCore.DbContext";
+                current = current.BaseType)
+            {
+                foreach (IMethodSymbol method in current.GetMembers("OnConfiguring").OfType<IMethodSymbol>())
+                {
+                    if (!method.IsOverride)
+                    {
+                        continue;
+                    }
+
+                    if (method.DeclaringSyntaxReferences.Length != 1
+                        || method.DeclaringSyntaxReferences[0].GetSyntax() is not MethodDeclarationSyntax
+                        {
+                            Body: { } body,
+                        } declaration
+                        || method.Parameters is not [IParameterSymbol builder]
+                        || !StartsWithConfiguredGuard(body, builder, declaration.SyntaxTree))
+                    {
+                        return false;
+                    }
+                }
+            }
+
+            return true;
+        }
+
+        private bool StartsWithConfiguredGuard(
+            BlockSyntax body,
+            IParameterSymbol builder,
+            SyntaxTree tree)
+        {
+            if (!semanticModels.TryGetValue(tree, out SemanticModel? model))
+            {
+                return false;
+            }
+
+            foreach (StatementSyntax statement in body.Statements)
+            {
+                if (statement is ExpressionStatementSyntax
+                    {
+                        Expression: AssignmentExpressionSyntax
+                        {
+                            Left: IdentifierNameSyntax { Identifier.ValueText: "_" },
+                            Right: IdentifierNameSyntax or ThisExpressionSyntax
+                        },
+                    })
+                {
+                    continue;
+                }
+
+                return statement is IfStatementSyntax
+                    {
+                        Else: null,
+                        Condition: MemberAccessExpressionSyntax
+                        {
+                            Name.Identifier.ValueText: "IsConfigured",
+                            Expression: IdentifierNameSyntax guarded,
+                        },
+                        Statement: ReturnStatementSyntax { Expression: null }
+                            or BlockSyntax { Statements: [ReturnStatementSyntax { Expression: null }] },
+                    }
+                    && SymbolEqualityComparer.Default.Equals(
+                        model.GetSymbolInfo(guarded).Symbol,
+                        builder);
+            }
+
+            return false;
         }
 
         private static bool IsExactEfDbContext(INamedTypeSymbol type)
@@ -42925,12 +44092,30 @@ internal static partial class HostedGrimoireProducerInventory
                 return cached;
             }
 
+            ResolvedRegistration[] registrations = SqliteDbContextRegistrations(
+                dbContext,
+                consumingCompilation);
+
+            bool result = registrations.Length != 0
+                && registrations.All(candidate =>
+                    RegistrationConfiguresExactSqliteProvider(
+                        candidate.Call,
+                        candidate.Model));
+
+            sqliteDbContextRegistrations.Add(identity, result);
+
+            return result;
+        }
+
+        private ResolvedRegistration[] SqliteDbContextRegistrations(
+            INamedTypeSymbol dbContext,
+            Compilation consumingCompilation)
+        {
             BoundContractIdentity registrationKey = new(
                 dbContext.ContainingAssembly.Identity,
                 TypeKey(dbContext));
 
-            ResolvedRegistration[] registrations =
-                (sqliteDbContextRegistrationCalls.TryGetValue(
+            return (sqliteDbContextRegistrationCalls.TryGetValue(
                         registrationKey,
                         out List<ResolvedRegistration>? candidates)
                     ? candidates
@@ -42960,17 +44145,64 @@ internal static partial class HostedGrimoireProducerInventory
                                 consumingCompilation));
                     })
                     .ToArray();
+        }
+
+        private readonly Dictionary<BoundTypeIdentity, bool>
+            closedSqliteDbContextConfigurations = [];
+
+        /// <summary>
+        /// The selected registrations alone configure a container-built context's final options:
+        /// no builder escape or provider change, no competing descriptor, and no authored
+        /// OnConfiguring that can run past the provider-complete guard.
+        /// </summary>
+        private bool HasClosedSqliteDbContextConfiguration(
+            INamedTypeSymbol dbContext,
+            Compilation consumingCompilation)
+        {
+            BoundTypeIdentity identity = TypeIdentity(
+                dbContext,
+                consumingCompilation);
+
+            if (closedSqliteDbContextConfigurations.TryGetValue(
+                    identity,
+                    out bool cached))
+            {
+                return cached;
+            }
+
+            ResolvedRegistration[] registrations = SqliteDbContextRegistrations(
+                dbContext,
+                consumingCompilation);
 
             bool result = registrations.Length != 0
                 && registrations.All(candidate =>
-                    RegistrationConfiguresExactSqliteProvider(
+                    RegistrationBuilderCannotChangeProvider(
                         candidate.Call,
-                        candidate.Model));
+                        candidate.Model))
+                && !HasCompetingDbContextServiceDescriptor(
+                    dbContext,
+                    consumingCompilation)
+                && HasClosedDbContextOnConfiguring(dbContext)
+                && !HasDbContextConnectionReplacement()
+                && !ServiceCollectionValueEscapes();
 
-            sqliteDbContextRegistrations.Add(identity, result);
+            closedSqliteDbContextConfigurations.Add(identity, result);
 
             return result;
         }
+
+        private bool RegistrationBuilderCannotChangeProvider(
+            InvocationExpressionSyntax registration,
+            SemanticModel model) =>
+            registration.ArgumentList.Arguments
+                .SelectMany(static argument => argument.Expression
+                    .DescendantNodesAndSelf()
+                    .OfType<AnonymousFunctionExpressionSyntax>())
+                .ToArray() is [AnonymousFunctionExpressionSyntax callback]
+            && BuilderScopeCannotChangeProvider(
+                callback,
+                model,
+                []);
 
         private bool RegistrationConfiguresExactSqliteProvider(
             InvocationExpressionSyntax registration,
@@ -44497,6 +45729,7 @@ internal static partial class HostedGrimoireProducerInventory
                 CompleteCleanupEnvironmentIdentity(member, identity);
 
             if (!context.CollectionIndexerProof
+                && !context.ClosedSqliteProvider
                 && cacheIdentity is { } stableIdentity
                 && completeCleanupProvenance.TryGetValue(
                     stableIdentity,
@@ -44556,7 +45789,7 @@ internal static partial class HostedGrimoireProducerInventory
             {
                 context.Cache[completeCacheIdentity] = result;
 
-                if (result.Complete && !context.CollectionIndexerProof)
+                if (result.Complete && !context.CollectionIndexerProof && !context.ClosedSqliteProvider)
                 {
                     completeCleanupProvenance.TryAdd(
                         completeCacheIdentity,
@@ -55767,7 +57000,10 @@ internal static partial class HostedGrimoireProducerInventory
                 || !IsExactFrameworkType(property.ContainingType, "System.Data.Common.DbDataReader", typeof(System.Data.Common.DbDataReader).Assembly.GetName())
                 || member.Model.GetOperation(node) is not IPropertyReferenceOperation { Instance.Syntax: ExpressionSyntax receiver }) return false;
 
-            CleanupProvenance provenance = CleanupProvenanceOf(member, receiver, new CleanupProvenanceContext());
+            CleanupProvenance provenance = CleanupProvenanceOf(
+                member,
+                receiver,
+                new CleanupProvenanceContext { ClosedSqliteProvider = true });
 
             // A widened declaration or cast is not a SQLite certificate. Keep this as an
             // database effect only when the existing complete factory chain is exact. Work
