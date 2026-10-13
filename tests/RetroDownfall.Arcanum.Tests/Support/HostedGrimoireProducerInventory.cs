@@ -34834,7 +34834,7 @@ internal static partial class HostedGrimoireProducerInventory
 
             if (target.Symbol.IsStatic)
             {
-                return bound with { ScopedLeaseInstance = null };
+                return bound.ScopedLeaseInstance is null ? bound : bound with { ScopedLeaseInstance = null };
             }
 
             if (target.ScopedLeaseInstance is not null) return bound;

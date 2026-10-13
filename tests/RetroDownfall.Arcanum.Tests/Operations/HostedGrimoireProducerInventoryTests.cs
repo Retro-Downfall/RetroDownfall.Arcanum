@@ -23874,9 +23874,9 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
                 .RetainedAdmissions,
             static candidate => candidate.Member == "M:AdmissionDemandTarget.Run");
 
-        Assert.Equal(4, metric.AuthorityQueries);
+        Assert.Equal(2, metric.AuthorityQueries);
 
-        Assert.Equal(4, metric.OriginFreeFastPathReturns);
+        Assert.Equal(2, metric.OriginFreeFastPathReturns);
 
         Assert.Equal(0, metric.SemanticQueries);
     }
@@ -25349,7 +25349,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
                 "M:ExactCleanupConstructionTarget.Run(",
                 StringComparison.Ordinal));
 
-        Assert.Equal(3, metric.FingerprintRequests);
+        Assert.Equal(2, metric.FingerprintRequests);
 
         Assert.Equal(1, metric.FingerprintBuilds);
     }
@@ -26034,11 +26034,11 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
                 "M:TokenFastPathTarget.Retain(",
                 StringComparison.Ordinal));
 
-        Assert.Equal(128, retain.InternerRequests);
+        Assert.Equal(64, retain.InternerRequests);
 
-        Assert.Equal(64, retain.InternerContextBuilds);
+        Assert.Equal(32, retain.InternerContextBuilds);
 
-        Assert.Equal(64, retain.InternerTraversalIdentityBuilds);
+        Assert.Equal(32, retain.InternerTraversalIdentityBuilds);
 
         Assert.Equal(1, retain.FingerprintBuilds);
 
