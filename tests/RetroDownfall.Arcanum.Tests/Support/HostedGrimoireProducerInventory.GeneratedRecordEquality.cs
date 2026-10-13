@@ -253,7 +253,7 @@ internal static partial class HostedGrimoireProducerInventory
 
                     foreach (IFieldSymbol field in type.GetMembers().OfType<IFieldSymbol>().Where(static field => !field.IsStatic))
                     {
-                        if (proof.RemainingWork-- <= 0 || !ClosedType(field.Type, owner, collect: !authored && collect)) return false;
+                        if (!ClosedType(field.Type, owner, collect: !authored && collect)) return false;
                     }
 
                     return true;
@@ -288,8 +288,6 @@ internal static partial class HostedGrimoireProducerInventory
         // delegate, a type parameter, a non-record class or an unreviewed struct is not a leaf.
         private bool IsClosedValueLeaf(ITypeSymbol type, Compilation compilation, CleanupProvenanceContext proof)
         {
-            if (proof.RemainingWork-- <= 0) return false;
-
             AssemblyName core = typeof(object).Assembly.GetName();
 
             string? special = type.SpecialType switch
@@ -323,21 +321,23 @@ internal static partial class HostedGrimoireProducerInventory
 
             if (type is IArrayTypeSymbol { Rank: 1, ElementType: { } element })
             {
-                return IsClosedValueLeaf(element, compilation, proof);
+                return proof.RemainingWork-- > 0 && IsClosedValueLeaf(element, compilation, proof);
             }
 
             if (type is not INamedTypeSymbol named) return false;
 
             if (named.IsTupleType)
             {
-                return named.TupleElements.Length is >= 2 and <= 7
+                return proof.RemainingWork-- > 0
+                    && named.TupleElements.Length is >= 2 and <= 7
                     && IsExactFrameworkType(named.OriginalDefinition, "System.ValueTuple`" + named.TupleElements.Length, core)
                     && named.TupleElements.All(tuple => IsClosedValueLeaf(tuple.Type, compilation, proof));
             }
 
             if (named.IsGenericType)
             {
-                return named.TypeArguments is [ITypeSymbol item]
+                return proof.RemainingWork-- > 0
+                    && named.TypeArguments is [ITypeSymbol item]
                     && IsExactFrameworkType(named, "System.Collections.Immutable.ImmutableArray`1",
                         typeof(System.Collections.Immutable.ImmutableArray<>).Assembly.GetName())
                     && IsClosedValueLeaf(item, compilation, proof);

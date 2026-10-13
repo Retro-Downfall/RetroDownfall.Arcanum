@@ -556,4 +556,34 @@ public sealed partial class HostedGrimoireProducerInventoryTests
         Assert.Contains(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED"
             && diagnostic.Detail == "LiftedHandleProbe.op_Equality");
     }
+
+    [Theory]
+    [InlineData(6, 10, 10, true)]
+    [InlineData(0, 0, 240, true)]
+    [InlineData(0, 0, 300, false)]
+    public void ClosedValueFieldWalkIsChargedToTheSharedProofBudgetAndFailsClosedWhenItIsSpent(int nested, int fieldsEach, int ownFields, bool certified)
+    {
+        // The authored typed Equals keeps exact-construction certification out of the way, so the closed-value
+        // walk alone decides. It is charged once per type node to the shared per-site budget. Spending that
+        // budget never certifies a record: the comparison keeps its unclassified diagnostic.
+        string nestedMembers = string.Join(", ", Enumerable.Range(0, fieldsEach).Select(static index => "int F" + index));
+
+        string nestedTypes = string.Concat(Enumerable.Range(0, nested).Select(index => "public sealed record class Nested" + index + "(" + nestedMembers + "); "));
+
+        string members = string.Join(", ", Enumerable.Range(0, nested).Select(static index => "Nested" + index + " N" + index)
+            .Concat(Enumerable.Range(0, ownFields).Select(static index => "int O" + index)));
+
+        string helper = nestedTypes
+            + "public readonly record struct Outer(" + members + ") { public bool Equals(Outer other) => O0 == other.O0 && N0 is null == other.N0 is null; public override int GetHashCode() => O0; } "
+            + "static class WideSource { public static Outer Left => default; public static Outer Right => default; }";
+
+        helper = helper.Replace("O0 == other.O0 && N0 is null == other.N0 is null", ownFields > 0 ? "O0 == other.O0" : "N0 == other.N0", StringComparison.Ordinal);
+
+        var (_, result, _) = ClosedValueDiscover("_ = WideSource.Left == WideSource.Right;", helper);
+
+        bool unclassified = result.Diagnostics.Any(static diagnostic => diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED"
+            && diagnostic.Detail == "Outer.op_Equality");
+
+        Assert.Equal(!certified, unclassified);
+    }
 }
