@@ -237,7 +237,7 @@ public sealed partial class McpConnectionManager
     // absolute http/https URI; plaintext http is refused unless the host is in
     // Arcanum:Integrations:Mcp:AllowedHttpHosts; and the SSRF policy (loopback / private / link-local blocking
     // with DNS-rebind pinning) is enforced up front via OutboundUrlGuard and again at connect time
-    // by the named client's egress handler.
+    // by the egress handler of the manager's owned HTTP client.
     private async Task<Result<Uri>> ResolveValidatedHttpEndpointAsync(McpServerConfig cfg, CancellationToken cancellationToken)
     {
         string? url = cfg.Url;

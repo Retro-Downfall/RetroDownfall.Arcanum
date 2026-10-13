@@ -43,7 +43,7 @@ public sealed partial class McpConnectionManager :
 
     /// <summary>
     /// Used only to create the in-process internal tool server's logger. It is deliberately never handed
-    /// to the Streamable HTTP or stdio SDK clients: the named <c>McpHttp</c> client strips every logger
+    /// to the Streamable HTTP or stdio SDK clients: the owned HTTP client carries no logging handler
     /// because hosted MCP endpoints embed bearer tokens in the URL path, and SDK client logs could copy
     /// that endpoint into the rolling log and <c>GET /api/logs</c>.
     /// </summary>

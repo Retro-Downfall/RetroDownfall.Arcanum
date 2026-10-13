@@ -308,8 +308,12 @@ public static class OutboundUrlGuard
             // defeat address validation/pinning for the original destination.
             UseProxy = false,
 
-            // SocketsHttpHandler.ConnectTimeout is ignored once ConnectCallback is set, so the bound is
-            // applied inside the callback instead.
+            // SocketsHttpHandler.ConnectTimeout still bounds a ConnectCallback: the handler cancels the token it
+            // passes to the callback when the timeout elapses, and the caller sees a TaskCanceledException
+            // whose inner exception is a TimeoutException. The connectTimeout parameter adds this guard's
+            // own bound inside the callback, which also covers resolution and surfaces as an
+            // HttpRequestException ("Timed out resolving ..." or "Could not connect ...") rather than as a
+            // cancellation.
             ConnectCallback = (context, cancellationToken) =>
                 EgressConnectCallbackAsync(
                     context,
