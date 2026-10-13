@@ -9,6 +9,7 @@ using RetroDownfall.Arcanum.Infrastructure.A2A;
 using RetroDownfall.Arcanum.Infrastructure.Backup;
 using RetroDownfall.Arcanum.Infrastructure.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Data;
+using RetroDownfall.Arcanum.Infrastructure.DependencyInjection;
 using RetroDownfall.Arcanum.Infrastructure.Operations;
 using RetroDownfall.Arcanum.Infrastructure.Operations.LongRest;
 using RetroDownfall.Arcanum.Infrastructure.Storage;
@@ -25,7 +26,7 @@ namespace RetroDownfall.Arcanum.Tests.Operations;
 /// provider, so it catches both halves of the failure mode (a kind nobody handles, and a handler
 /// that exists but was never registered) without constructing a Grimoire.
 /// </remarks>
-public sealed partial class RecoveryHandlerCoverageTests
+public sealed class RecoveryHandlerCoverageTests
 {
     private static readonly Type[] SelfSettlingHandlers =
     [
@@ -131,72 +132,40 @@ public sealed partial class RecoveryHandlerCoverageTests
             .Single(field => field.IsLiteral && string.Equals((string?)field.GetRawConstantValue(), kind, StringComparison.Ordinal))
             .Name;
 
-    private static IReadOnlyList<Type> RegisteredHandlerTypes(ServiceCollection? services = null)
+    private static IReadOnlyList<Type> RegisteredHandlerTypes()
     {
-        services ??= RealServices();
+        IConfiguration configuration = new ConfigurationBuilder().Build();
+        ServiceCollection services = [];
 
-        List<Type> registered =
-        [
-            .. services
-                .Where(static descriptor => !descriptor.IsKeyedService
-                    && descriptor.ServiceType == typeof(ILongRunningOperationRecoveryHandler))
-                .Select(static descriptor => descriptor.ImplementationType)
-                .OfType<Type>(),
-        ];
+        // AddArcanumApiServices composes Infrastructure itself; this is the serve host's real graph.
+        _ = services.AddArcanumApiServices(configuration);
 
-        foreach (Type handlerType in ExpectedHandlers.Values)
-        {
-            if (!HasSingleScopedConcreteHandler(services, handlerType))
-            {
-                continue;
-            }
+        Type[] direct = services
+            .Where(static descriptor =>
+                descriptor.ServiceType == typeof(ILongRunningOperationRecoveryHandler))
+            .Select(static descriptor => descriptor.ImplementationType)
+            .OfType<Type>()
+            .ToArray();
 
-            object concrete = RuntimeHelpers.GetUninitializedObject(handlerType);
-
-            object[] matches = InvokeAliases(
-                services,
-                typeof(ILongRunningOperationRecoveryHandler),
-                new AliasProbeProvider(handlerType, concrete));
-
-            if (matches.Length == 1 && ReferenceEquals(concrete, matches[0]))
-            {
-                registered.Add(handlerType);
-            }
-        }
-
-        return registered;
+        return [.. direct, .. SelfSettlingHandlers];
     }
 
     /// <summary>
-    /// Count unkeyed descriptors regardless of implementation type/factory, and separately reject
-    /// multiple keyed descriptors for any one key. Keyed aliases cannot hide an unkeyed duplicate.
+    /// Every registered <see cref="ILongRunningOperationRecoveryHandler"/> descriptor beyond one per
+    /// expected kind, closed-generic or factory alike. A factory registration's
+    /// <see cref="ServiceDescriptor.ImplementationType"/> is null, so grouping by that property — the
+    /// way <see cref="RegisteredHandlerTypes"/> projects it — silently drops a factory-registered
+    /// duplicate from the inventory; counting descriptors for the service type instead is what keeps
+    /// one visible regardless of how it was registered.
     /// </summary>
     private static string[] DuplicateHandlerRegistrations(IServiceCollection services)
     {
-        ServiceDescriptor[] handlers = services
-            .Where(static descriptor => descriptor.ServiceType == typeof(ILongRunningOperationRecoveryHandler))
-            .ToArray();
+        int registeredDescriptors = services.Count(
+            static descriptor => descriptor.ServiceType == typeof(ILongRunningOperationRecoveryHandler));
 
-        int unkeyedCount = handlers.Count(static descriptor => !descriptor.IsKeyedService);
-
-        List<string> failures = [];
-
-        if (unkeyedCount > ExpectedHandlers.Count)
-        {
-            failures.Add($"{unkeyedCount} unkeyed handler descriptors are registered for {ExpectedHandlers.Count} expected kinds.");
-        }
-
-        foreach (IGrouping<object?, ServiceDescriptor> group in handlers
-            .Where(static descriptor => descriptor.IsKeyedService)
-            .GroupBy(static descriptor => descriptor.ServiceKey))
-        {
-            if (group.Count() > 1)
-            {
-                failures.Add($"{group.Count()} keyed handler descriptors are registered for '{group.Key}'.");
-            }
-        }
-
-        return failures.ToArray();
+        return registeredDescriptors > ExpectedHandlers.Count
+            ? [$"{registeredDescriptors} handler descriptors are registered for {ExpectedHandlers.Count} expected kinds."]
+            : [];
     }
 
     [Fact]
@@ -295,6 +264,342 @@ public sealed partial class RecoveryHandlerCoverageTests
         Assert.NotEmpty(DuplicateHandlerRegistrations(services));
     }
 
+    /// <summary>
+    /// The recovery registry is unkeyed. A keyed descriptor for the handler contract, for a concrete
+    /// handler, or whose implementation is a handler would give the same handler a second door that the
+    /// reconciler's <c>GetServices</c> set never sees, so the serving container carries none.
+    /// </summary>
+    [Fact]
+    public void Recovery_registry_has_no_keyed_handler_descriptors()
+    {
+        Assert.Empty(KeyedHandlerDescriptors(RealServices()));
+    }
+
+    [Theory]
+    [InlineData("contract")]
+    [InlineData("contract-implementation")]
+    [InlineData("contract-factory")]
+    [InlineData("concrete-handler")]
+    [InlineData("authenticated-contract")]
+    [InlineData("handler-enumerable")]
+    [InlineData("object-keyed-by-handler-implementation")]
+    public void A_keyed_handler_descriptor_of_any_shape_is_flagged(string shape)
+    {
+        ServiceCollection services = RealServices();
+
+        switch (shape)
+        {
+            case "contract":
+                services.AddKeyedScoped<ILongRunningOperationRecoveryHandler, BackupCreateRecoveryHandler>(
+                    LongRunningOperationKinds.BackupCreate);
+
+                break;
+
+            case "contract-implementation":
+                services.AddKeyedScoped(
+                    typeof(ILongRunningOperationRecoveryHandler),
+                    LongRunningOperationKinds.BackupCreate,
+                    typeof(BackupCreateRecoveryHandler));
+
+                break;
+
+            case "contract-factory":
+                services.AddKeyedScoped<ILongRunningOperationRecoveryHandler>(
+                    LongRunningOperationKinds.BackupCreate,
+                    static (_, _) => throw new NotSupportedException("Descriptor-only control."));
+
+                break;
+
+            case "concrete-handler":
+                services.AddKeyedScoped<BackupCreateRecoveryHandler>(LongRunningOperationKinds.BackupCreate);
+
+                break;
+
+            case "authenticated-contract":
+                services.AddKeyedScoped<IAuthenticatedCovenantErasureRecoveryHandler>(
+                    LongRunningOperationKinds.DataRetentionMutation,
+                    static (_, _) => throw new NotSupportedException("Descriptor-only control."));
+
+                break;
+
+            case "handler-enumerable":
+                services.AddKeyedScoped<IEnumerable<ILongRunningOperationRecoveryHandler>>(
+                    LongRunningOperationKinds.BackupCreate,
+                    static (_, _) => throw new NotSupportedException("Descriptor-only control."));
+
+                break;
+
+            default:
+                services.AddKeyedScoped<object, BackupCreateRecoveryHandler>(LongRunningOperationKinds.BackupCreate);
+
+                break;
+        }
+
+        Assert.Single(KeyedHandlerDescriptors(services));
+    }
+
+    /// <summary>
+    /// Each owning handler is reachable through exactly one unkeyed registration, and that registration
+    /// is its own: a plain scoped <c>ILongRunningOperationRecoveryHandler</c> descriptor naming the
+    /// handler type, with no second concrete door. The two owner-bound Covenant handlers keep the one
+    /// documented shape, a scoped concrete registration with one alias per contract.
+    /// </summary>
+    [Fact]
+    public void Every_serving_handler_has_exactly_one_unkeyed_registration()
+    {
+        Assert.Empty(UnkeyedRegistrationFailures(RealServices()));
+    }
+
+    [Fact]
+    public void Repeated_shared_backup_composition_keeps_exactly_one_unkeyed_registration()
+    {
+        ServiceCollection services = [];
+
+        services.AddArcanumBackup();
+
+        services.AddArcanumBackup();
+
+        ServiceDescriptor registration = Assert.Single(
+            services,
+            static descriptor => descriptor.ServiceType == typeof(ILongRunningOperationRecoveryHandler));
+
+        Assert.False(registration.IsKeyedService);
+
+        Assert.Equal(ServiceLifetime.Scoped, registration.Lifetime);
+
+        Assert.Equal(typeof(BackupCreateRecoveryHandler), registration.ImplementationType);
+
+        Assert.DoesNotContain(services, static descriptor => descriptor.ServiceType == typeof(BackupCreateRecoveryHandler));
+    }
+
+    [Theory]
+    [InlineData("missing")]
+    [InlineData("duplicate")]
+    [InlineData("duplicate-factory")]
+    [InlineData("extra-concrete-door")]
+    [InlineData("keyed-only")]
+    [InlineData("factory-alias-of-plain-handler")]
+    [InlineData("singleton-lifetime")]
+    [InlineData("factory-only")]
+    [InlineData("instance-only")]
+    [InlineData("owner-bound-plain")]
+    public void A_handler_without_exactly_one_plain_unkeyed_registration_is_flagged(string shape)
+    {
+        ServiceCollection services = RealServices();
+
+        Assert.Empty(UnkeyedRegistrationFailures(services));
+
+        int expectedDescriptorCount = services.Count;
+
+        ServiceDescriptor subagent = Assert.Single(
+            services,
+            static descriptor => !descriptor.IsKeyedService
+                && descriptor.ServiceType == typeof(ILongRunningOperationRecoveryHandler)
+                && descriptor.ImplementationType == typeof(SubagentRecoveryHandler));
+
+        switch (shape)
+        {
+            case "missing":
+                services.Remove(subagent);
+
+                break;
+
+            case "owner-bound-plain":
+                // The descriptor count is unchanged, so only the owner-bound alias branch can flag this.
+                ReplaceOwnerBoundAliasWithPlainRegistration(services);
+
+                Assert.Equal(expectedDescriptorCount, services.Count);
+
+                Assert.Contains(
+                    "has 0 unkeyed aliases of its concrete instance",
+                    Assert.Single(UnkeyedRegistrationFailures(services)),
+                    StringComparison.Ordinal);
+
+                break;
+
+            case "duplicate":
+                services.AddScoped<ILongRunningOperationRecoveryHandler, SubagentRecoveryHandler>();
+
+                break;
+
+            case "duplicate-factory":
+                services.AddScoped<ILongRunningOperationRecoveryHandler>(
+                    static _ => throw new NotSupportedException("This probe registration is never resolved."));
+
+                break;
+
+            case "extra-concrete-door":
+                services.AddScoped<SubagentRecoveryHandler>();
+
+                break;
+
+            case "factory-only":
+                // A factory or an instance descriptor has no ImplementationType, so it can never be the
+                // handler's own plain registration; the descriptor count stays at one per kind.
+                services.Remove(subagent);
+
+                services.AddScoped<ILongRunningOperationRecoveryHandler>(
+                    static _ => throw new NotSupportedException("This probe registration is never resolved."));
+
+                Assert.Equal(expectedDescriptorCount, services.Count);
+
+                break;
+
+            case "instance-only":
+                services.Remove(subagent);
+
+                services.AddSingleton<ILongRunningOperationRecoveryHandler>(
+                    (SubagentRecoveryHandler)RuntimeHelpers.GetUninitializedObject(typeof(SubagentRecoveryHandler)));
+
+                Assert.Equal(expectedDescriptorCount, services.Count);
+
+                break;
+
+            case "keyed-only":
+                services.Remove(subagent);
+
+                services.AddKeyedScoped<ILongRunningOperationRecoveryHandler, SubagentRecoveryHandler>(
+                    LongRunningOperationKinds.Subagent);
+
+                break;
+
+            case "factory-alias-of-plain-handler":
+                services.Remove(subagent);
+
+                services.AddScoped<SubagentRecoveryHandler>();
+
+                services.AddScoped<ILongRunningOperationRecoveryHandler>(
+                    static provider => provider.GetRequiredService<SubagentRecoveryHandler>());
+
+                break;
+
+            default:
+                services.Remove(subagent);
+
+                services.AddSingleton<ILongRunningOperationRecoveryHandler, SubagentRecoveryHandler>();
+
+                break;
+        }
+
+        Assert.NotEmpty(UnkeyedRegistrationFailures(services));
+    }
+
+    /// <summary>
+    /// Swaps the owner-bound mutation handler's factory alias for a plain
+    /// <c>AddScoped&lt;IH, DataRetentionMutationRecoveryHandler&gt;()</c> registration, which keeps the
+    /// unkeyed handler descriptor count at one per kind while taking away the alias of the shared
+    /// concrete instance.
+    /// </summary>
+    private static void ReplaceOwnerBoundAliasWithPlainRegistration(IServiceCollection services)
+    {
+        object concrete = RuntimeHelpers.GetUninitializedObject(typeof(DataRetentionMutationRecoveryHandler));
+
+        AliasProbeProvider probe = new(typeof(DataRetentionMutationRecoveryHandler), concrete);
+
+        ServiceDescriptor alias = Assert.Single(
+            services,
+            descriptor => !descriptor.IsKeyedService
+                && descriptor.ServiceType == typeof(ILongRunningOperationRecoveryHandler)
+                && ResolvesProbedConcrete(descriptor, probe, concrete));
+
+        services.Remove(alias);
+
+        services.AddScoped<ILongRunningOperationRecoveryHandler, DataRetentionMutationRecoveryHandler>();
+    }
+
+    private static string[] KeyedHandlerDescriptors(IServiceCollection services) =>
+    [
+        .. services
+            .Where(static descriptor => descriptor.IsKeyedService
+                && (IsHandlerContractOrImplementation(descriptor.ServiceType)
+                    || IsHandlerContractOrImplementation(descriptor.KeyedImplementationType)))
+            .Select(static descriptor =>
+                $"{descriptor.ServiceType.Name} keyed by '{descriptor.ServiceKey}'"),
+    ];
+
+    /// <remarks>
+    /// <see cref="IAuthenticatedCovenantErasureRecoveryHandler"/> extends the handler contract, so
+    /// the first clause already covers it and the <c>authenticated-contract</c> twin pins that: it turns
+    /// red if the interface ever stops extending the contract. The enumerable is the one handler-shaped
+    /// service type that is not assignable to the contract.
+    /// </remarks>
+    private static bool IsHandlerContractOrImplementation(Type? type) =>
+        type is not null
+        && (typeof(ILongRunningOperationRecoveryHandler).IsAssignableFrom(type)
+            || type == typeof(IEnumerable<ILongRunningOperationRecoveryHandler>));
+
+    private static bool ResolvesProbedConcrete(ServiceDescriptor descriptor, IServiceProvider probe, object concrete)
+    {
+        if (descriptor.Lifetime != ServiceLifetime.Scoped || descriptor.ImplementationFactory is null)
+        {
+            return false;
+        }
+
+        try
+        {
+            return ReferenceEquals(concrete, descriptor.ImplementationFactory(probe));
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+    }
+
+    private static string[] UnkeyedRegistrationFailures(IServiceCollection services)
+    {
+        ServiceDescriptor[] unkeyed =
+        [
+            .. services.Where(static descriptor => !descriptor.IsKeyedService
+                && descriptor.ServiceType == typeof(ILongRunningOperationRecoveryHandler)),
+        ];
+
+        List<string> failures = [];
+
+        if (unkeyed.Length != ExpectedHandlers.Count)
+        {
+            failures.Add($"{unkeyed.Length} unkeyed handler descriptors are registered for {ExpectedHandlers.Count} expected kinds.");
+        }
+
+        foreach ((string kind, Type handlerType) in ExpectedHandlers)
+        {
+            if (Array.IndexOf(SelfSettlingHandlers, handlerType) >= 0)
+            {
+                object concrete = RuntimeHelpers.GetUninitializedObject(handlerType);
+
+                AliasProbeProvider probe = new(handlerType, concrete);
+
+                int aliases = unkeyed.Count(descriptor => ResolvesProbedConcrete(descriptor, probe, concrete));
+
+                if (aliases != 1)
+                {
+                    failures.Add($"{kind}: {handlerType.Name} has {aliases} unkeyed aliases of its concrete instance, not one.");
+                }
+
+                continue;
+            }
+
+            ServiceDescriptor[] own =
+            [
+                .. unkeyed.Where(descriptor => descriptor.ImplementationType == handlerType),
+            ];
+
+            // A factory or instance descriptor has no ImplementationType, so it never matches `own`: it
+            // surfaces as own.Length == 0 here (factory-only, instance-only) or as an extra descriptor in
+            // the count check above (duplicate-factory). Only the lifetime is left to check on a match.
+            if (own.Length != 1 || own[0].Lifetime != ServiceLifetime.Scoped)
+            {
+                failures.Add($"{kind}: {handlerType.Name} needs exactly one plain scoped unkeyed handler registration, found {own.Length}.");
+            }
+
+            if (services.Any(descriptor => descriptor.ServiceType == handlerType))
+            {
+                failures.Add($"{kind}: {handlerType.Name} must not also be registered as its own service type.");
+            }
+        }
+
+        return [.. failures];
+    }
+
     private static ServiceCollection RealServices()
     {
         ServiceCollection services = [];
@@ -311,7 +616,7 @@ public sealed partial class RecoveryHandlerCoverageTests
         foreach (Type handlerType in SelfSettlingHandlers)
         {
             ServiceDescriptor[] concrete = services
-                .Where(descriptor => !descriptor.IsKeyedService && descriptor.ServiceType == handlerType)
+                .Where(descriptor => descriptor.ServiceType == handlerType)
                 .ToArray();
 
             if (concrete.Length != 1
@@ -358,8 +663,7 @@ public sealed partial class RecoveryHandlerCoverageTests
         Type serviceType,
         IServiceProvider probe) =>
         services
-            .Where(descriptor => !descriptor.IsKeyedService
-                && descriptor.ServiceType == serviceType
+            .Where(descriptor => descriptor.ServiceType == serviceType
                 && descriptor.Lifetime == ServiceLifetime.Scoped
                 && descriptor.ImplementationFactory is not null)
             .Select(descriptor =>

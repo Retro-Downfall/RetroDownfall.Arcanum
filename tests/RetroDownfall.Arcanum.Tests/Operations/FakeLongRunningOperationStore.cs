@@ -704,7 +704,7 @@ internal sealed class RecordingServiceScopeFactory(
         return new Scope(this);
     }
 
-    private sealed class Scope(RecordingServiceScopeFactory owner) : IServiceScope, IServiceProvider, IKeyedServiceProvider
+    private sealed class Scope(RecordingServiceScopeFactory owner) : IServiceScope, IServiceProvider
     {
         public IServiceProvider ServiceProvider => this;
 
@@ -724,27 +724,6 @@ internal sealed class RecordingServiceScopeFactory(
                 ? owner._handlers
                 : null;
         }
-
-        public object? GetKeyedService(Type serviceType, object? serviceKey)
-        {
-            if (serviceType != typeof(ILongRunningOperationRecoveryHandler)
-                && serviceType != typeof(IEnumerable<ILongRunningOperationRecoveryHandler>))
-            {
-                return null;
-            }
-
-            ILongRunningOperationRecoveryHandler[] matches = serviceKey is string kind
-                ? [.. owner._handlers.Where(handler => string.Equals(handler.Kind, kind, StringComparison.Ordinal))]
-                : [];
-
-            return serviceType == typeof(IEnumerable<ILongRunningOperationRecoveryHandler>)
-                ? matches
-                : matches.LastOrDefault();
-        }
-
-        public object GetRequiredKeyedService(Type serviceType, object? serviceKey) =>
-            GetKeyedService(serviceType, serviceKey)
-            ?? throw new InvalidOperationException($"No keyed service '{serviceType}' is registered for '{serviceKey}'.");
 
         public void Dispose() => Interlocked.Increment(ref owner._disposed);
     }

@@ -13,7 +13,6 @@ namespace RetroDownfall.Arcanum.Tests.Operations;
 public sealed partial class HostedGrimoireProducerInventoryTests
 {
     [Theory]
-    [InlineData("known-selected")]
     [InlineData("unkeyed-safe")]
     [InlineData("selected-holder")]
     [InlineData("unknown-key")]
@@ -834,7 +833,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests
 
             Assert.EndsWith(Coordinate(groupSyntax), group.OperationId);
 
-            if (shape is "known-selected" or "unkeyed-safe")
+            if (unkeyedSafe)
             {
                 Assert.Equal(acquired.CapsuleId, group.WorkFrontierCapsuleId);
 
@@ -867,7 +866,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests
             }
         }
 
-        if (shape is "known-selected" or "unkeyed-safe")
+        if (unkeyedSafe)
         {
             Assert.NotEqual(physical[0].EffectFrontierCapsuleId, physical[1].EffectFrontierCapsuleId);
 
