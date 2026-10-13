@@ -753,6 +753,16 @@ internal static partial class HostedGrimoireProducerInventory
             : containingNamespace + "." + type.MetadataName;
     }
 
+    private static int connectionReplacementScans;
+
+    private static long connectionReplacementScanTicks;
+
+    // Counts whole-tree connection-replacement scans so a test can prove a discovery scans once and shares the verdict.
+    internal static int ConnectionReplacementScans => Volatile.Read(ref connectionReplacementScans);
+
+    // The wall-clock time those scans took, summed over every scan, so the cost of the fact is observable.
+    internal static TimeSpan ConnectionReplacementScanTime => TimeSpan.FromTicks(Volatile.Read(ref connectionReplacementScanTicks));
+
     private static readonly IReadOnlyDictionary<string, HostedProducerSiteKind> Vocabulary = new Dictionary<string, HostedProducerSiteKind>(StringComparer.Ordinal)
     {
         ["Microsoft.Extensions.AI.IChatClient.GetResponseAsync"] = (HostedProducerSiteKind)3,
@@ -2066,7 +2076,11 @@ internal static partial class HostedGrimoireProducerInventory
             ? HostedProducerPremiseLedger.None
             : VerifyPremises(compilations, premises);
 
-        ProducerGraph CreateGraph() => new(compilations, evaluationEnvironmentMaximumMembers, evaluationEnvironmentMaximumDepth, traversalMaximumDepth, maximumAnalyzedStatesPerRoot, auditRecoveryReachabilityParity, admittedStateObserver, nestedReuseObserver, ledger);
+        // Facts about the analysed compilations alone: computed at most once per discovery, by a scan that does not
+        // depend on which isolated worker asks first, and shared by every worker graph.
+        InventoryFacts facts = new(compilations);
+
+        ProducerGraph CreateGraph() => new(compilations, evaluationEnvironmentMaximumMembers, evaluationEnvironmentMaximumDepth, traversalMaximumDepth, maximumAnalyzedStatesPerRoot, auditRecoveryReachabilityParity, admittedStateObserver, nestedReuseObserver, ledger, facts);
 
         return HostedProducerRootWorkers.OnAnalysisStack(() => rootWorkers == 1
             ? CreateGraph().Discover(registrations, catalog, nonHostedCatalog, recoverySelectionProbe)
@@ -3208,6 +3222,8 @@ internal static partial class HostedGrimoireProducerInventory
 
         private readonly HostedProducerPremiseLedger premises;
 
+        private readonly InventoryFacts facts;
+
         internal ProducerGraph(
             IReadOnlyList<CSharpCompilation> compilations,
             int evaluationEnvironmentMaximumMembers,
@@ -3217,9 +3233,12 @@ internal static partial class HostedGrimoireProducerInventory
             bool auditRecoveryReachabilityParity,
             Action<HostedProducerAdmittedStateObservation>? admittedStateObserver = null,
             Action<int, int, int, int, bool>? nestedReuseObserver = null,
-            HostedProducerPremiseLedger? premises = null)
+            HostedProducerPremiseLedger? premises = null,
+            InventoryFacts? facts = null)
         {
             this.premises = premises ?? HostedProducerPremiseLedger.None;
+
+            this.facts = facts ?? new InventoryFacts(compilations);
 
             foreach (HostedProducerInventoryDiagnostic violation in this.premises.Violations)
             {
@@ -3253,7 +3272,7 @@ internal static partial class HostedGrimoireProducerInventory
                         continue;
                     }
 
-                    SemanticModel model = compilation.GetSemanticModel(tree);
+                    SemanticModel model = this.facts.SemanticModelOf(compilation, tree);
 
                     semanticModels.Add(tree, model);
 
@@ -44469,48 +44488,61 @@ internal static partial class HostedGrimoireProducerInventory
                     typeof(Microsoft.EntityFrameworkCore.Infrastructure.AccessorExtensions).Assembly.GetName());
         }
 
-        private bool? dbContextConnectionReplacement;
-
         /// <summary>
         /// H3: EF lets a caller replace a built context's connection or provider services after
         /// resolution. Every reference to a member that can do so refuses the closed certificate,
         /// whether it is invoked, converted to a delegate, assigned through, or never reached: the
-        /// scan reads each simple name's bound symbol, not the shape of the call around it.
+        /// scan reads each simple name's bound symbol, not the shape of the call around it. The
+        /// verdict is a property of the analysed compilations alone, so it is computed once per
+        /// discovery and shared by every isolated root worker (see <see cref="InventoryFacts"/>).
         /// </summary>
-        private bool HasDbContextConnectionReplacement()
+        private bool HasDbContextConnectionReplacement() => facts.DbContextConnectionReplacement;
+
+        internal static bool ScanForDbContextConnectionReplacement(IReadOnlyList<CSharpCompilation> compilations, Func<CSharpCompilation, SyntaxTree, SemanticModel> modelOf)
         {
-            if (dbContextConnectionReplacement is bool cached)
+            _ = Interlocked.Increment(ref connectionReplacementScans);
+
+            long started = System.Diagnostics.Stopwatch.GetTimestamp();
+
+            try
             {
-                return cached;
+                return ScanForDbContextConnectionReplacementCore(compilations, modelOf);
             }
-
-            bool found = false;
-
-            foreach ((SyntaxTree tree, SemanticModel model) in semanticModels)
+            finally
             {
-                foreach (SimpleNameSyntax name in tree.GetRoot().DescendantNodes().OfType<SimpleNameSyntax>())
+                _ = Interlocked.Add(ref connectionReplacementScanTicks, System.Diagnostics.Stopwatch.GetElapsedTime(started).Ticks);
+            }
+        }
+
+        private static bool ScanForDbContextConnectionReplacementCore(IReadOnlyList<CSharpCompilation> compilations, Func<CSharpCompilation, SyntaxTree, SemanticModel> modelOf)
+        {
+            foreach (CSharpCompilation compilation in compilations)
+            {
+                foreach (SyntaxTree tree in compilation.SyntaxTrees)
                 {
-                    SymbolInfo info = model.GetSymbolInfo(name);
-
-                    if (info.Symbol is { } symbol
-                            ? IsDbContextConnectionReplacementMember(symbol)
-                            : info.CandidateSymbols.Any(IsDbContextConnectionReplacementMember))
+                    // The same trees the graph analyses: its own source, never generated build output.
+                    if (!tree.FilePath.StartsWith("src/", StringComparison.Ordinal) || tree.FilePath.Contains("/obj/", StringComparison.Ordinal))
                     {
-                        found = true;
+                        continue;
+                    }
 
-                        break;
+                    SemanticModel model = modelOf(compilation, tree);
+
+                    foreach (SimpleNameSyntax name in tree.GetRoot().DescendantNodes().OfType<SimpleNameSyntax>())
+                    {
+                        SymbolInfo info = model.GetSymbolInfo(name);
+
+                        if (info.Symbol is { } symbol
+                                ? IsDbContextConnectionReplacementMember(symbol)
+                                : info.CandidateSymbols.Any(IsDbContextConnectionReplacementMember))
+                        {
+                            return true;
+                        }
                     }
                 }
-
-                if (found)
-                {
-                    break;
-                }
             }
 
-            dbContextConnectionReplacement = found;
-
-            return found;
+            return false;
         }
 
         private static bool IsDbContextConnectionReplacementMember(ISymbol symbol)
