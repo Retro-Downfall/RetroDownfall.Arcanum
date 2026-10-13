@@ -8,7 +8,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
-    public void CampaignModelProductionResolverNeedsNoIndexerProofForOwnedOrUnownedSettings(bool owned)
+    public void CampaignModelProductionSelectorPreservesOnlyOwnedJsonSettings(bool owned)
     {
         const string settings = "RetroDownfall.Arcanum.Core.Configuration.ArcanumSettings";
 
@@ -41,14 +41,18 @@ public sealed partial class HostedGrimoireProducerInventoryTests
 
         Assert.Single(result.Items, static site => site.Callee == "System.IO.File.Exists" && site.SourcePath == "src/Fixture.cs");
 
-        // ProviderResolver walks one array snapshot of each provider's models, so it applies no
-        // IReadOnlyList indexer to any configuration collection, owned or not. The ownership analysis that
-        // used to be exercised here is pinned by the fixture-level indexer shapes of the next tests.
         bool unresolved = result.Diagnostics.Any(static diagnostic =>
             diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED"
             && diagnostic.Detail == "System.Collections.Generic.IReadOnlyList`1.this[]");
 
-        Assert.False(unresolved, string.Join(System.Environment.NewLine, result.Diagnostics));
+        if (owned)
+        {
+            Assert.False(unresolved, string.Join(System.Environment.NewLine, result.Diagnostics));
+        }
+        else
+        {
+            Assert.True(unresolved, string.Join(System.Environment.NewLine, result.Diagnostics));
+        }
     }
 
     [Theory]

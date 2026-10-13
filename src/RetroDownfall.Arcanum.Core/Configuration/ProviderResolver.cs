@@ -17,14 +17,6 @@ public static class ProviderResolver
         string.Equals(configuredModel, needle, StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
-    /// One array snapshot of the provider's configured models. Resolution walks the snapshot by array element
-    /// access, so it never calls an <see cref="IReadOnlyList{T}"/> indexer on a configuration collection whose
-    /// implementation it does not own.
-    /// </summary>
-    private static ModelEntry[] ModelEntries(ProviderSettings provider) =>
-        provider.Models is ModelEntry[] entries ? entries : [.. provider.Models ?? []];
-
-    /// <summary>
     /// Returns the configured <see cref="ProviderSettings.Models"/> names for the provider.
     /// </summary>
     public static IEnumerable<string> EnumerateAdvertisedModels(ProviderSettings provider)
@@ -32,9 +24,9 @@ public static class ProviderResolver
 
         HashSet<string> seen = new(StringComparer.OrdinalIgnoreCase);
 
-        ModelEntry[] models = ModelEntries(provider);
+        IReadOnlyList<ModelEntry> models = provider.Models ?? [];
 
-        for (int i = 0; i < models.Length; i++)
+        for (int i = 0; i < models.Count; i++)
         {
             string model = models[i].Name;
 
@@ -140,9 +132,9 @@ public static class ProviderResolver
             return false;
         }
 
-        ModelEntry[] models = ModelEntries(provider);
+        IReadOnlyList<ModelEntry> models = provider.Models ?? [];
 
-        for (int i = 0; i < models.Length; i++)
+        for (int i = 0; i < models.Count; i++)
         {
             if (ModelNameMatches(models[i].Name, modelName))
             {
