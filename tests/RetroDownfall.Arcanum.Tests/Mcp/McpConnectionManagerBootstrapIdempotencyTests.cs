@@ -2502,7 +2502,7 @@ public sealed class McpConnectionManagerBootstrapIdempotencyTests : IAsyncLifeti
             scopeFactory,
             NullLogger<UnseenServantPacer>.Instance);
 
-        return new McpConnectionManager(
+        McpConnectionManager manager = new(
             NullLogger<McpConnectionManager>.Instance,
             new HumanPromptRegistry(),
             scopeFactory,
@@ -2510,8 +2510,14 @@ public sealed class McpConnectionManagerBootstrapIdempotencyTests : IAsyncLifeti
             eventBus ?? new FakeEventBus(),
             new AlwaysTrustedWorkspaceStore(),
             settings,
-            NullLoggerFactory.Instance,
-            httpHandler is null ? null : new NonOwningHttpHandler(httpHandler));
+            NullLoggerFactory.Instance);
+
+        if (httpHandler is not null)
+        {
+            manager.UseHttpPrimaryHandlerForTests(new NonOwningHttpHandler(httpHandler));
+        }
+
+        return manager;
     }
 
     private static async Task WaitUntilAsync(

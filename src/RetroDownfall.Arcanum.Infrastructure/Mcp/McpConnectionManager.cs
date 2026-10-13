@@ -63,7 +63,7 @@ public sealed partial class McpConnectionManager :
 
     // The one client every Streamable HTTP transport sends through, built from an explicit handler chain in
     // the constructor (never resolved from a named factory) and disposed with the manager.
-    private readonly HttpClient httpClient;
+    private HttpClient httpClient;
 
     private const string GlobalPartitionKey = "__arcanum_mcp_global__";
 
@@ -167,25 +167,6 @@ public sealed partial class McpConnectionManager :
         ITrustedMcpWorkspaceStore trustedMcpWorkspaces,
         IOptionsMonitor<ArcanumSettings> settings,
         ILoggerFactory loggerFactory)
-        : this(logger, humanPromptRegistry, scopeFactory, pacer, eventBus, trustedMcpWorkspaces, settings, loggerFactory, primaryHttpHandler: null)
-    {
-    }
-
-    /// <summary>
-    /// Test path: <paramref name="primaryHttpHandler"/> replaces the SSRF-guarded primary handler of the owned
-    /// HTTP client so a scenario can script the server; the response bound still wraps it. Production DI selects
-    /// the public constructor.
-    /// </summary>
-    internal McpConnectionManager(
-        ILogger<McpConnectionManager> logger,
-        IHumanPromptRegistry humanPromptRegistry,
-        IServiceScopeFactory scopeFactory,
-        IUnseenServantPacer pacer,
-        IEventBus eventBus,
-        ITrustedMcpWorkspaceStore trustedMcpWorkspaces,
-        IOptionsMonitor<ArcanumSettings> settings,
-        ILoggerFactory loggerFactory,
-        HttpMessageHandler? primaryHttpHandler)
     {
         ArgumentNullException.ThrowIfNull(loggerFactory);
 
@@ -217,11 +198,32 @@ public sealed partial class McpConnectionManager :
         // because a Streamable HTTP session is long-lived: the connect bound and the per-message response
         // bound are the limits.
         httpClient = new HttpClient(
+            CreateOwnedHttpPipeline(GetClampedMcpHttpConnectTimeout()),
+            disposeHandler: true)
+        {
+            Timeout = Timeout.InfiniteTimeSpan,
+        };
+    }
+
+    /// <summary>
+    /// Test seam: replaces the SSRF-guarded primary handler of the owned HTTP client with a scripted one so a
+    /// scenario can drive the Streamable HTTP transport. The response bound still wraps it. Call it before any
+    /// server starts. Never called in production.
+    /// </summary>
+    internal void UseHttpPrimaryHandlerForTests(HttpMessageHandler primaryHttpHandler)
+    {
+        ArgumentNullException.ThrowIfNull(primaryHttpHandler);
+
+        HttpClient previous = httpClient;
+
+        httpClient = new HttpClient(
             CreateOwnedHttpPipeline(GetClampedMcpHttpConnectTimeout(), primaryHttpHandler),
             disposeHandler: true)
         {
             Timeout = Timeout.InfiniteTimeSpan,
         };
+
+        previous.Dispose();
     }
 
     /// <inheritdoc />
