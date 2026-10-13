@@ -7248,7 +7248,7 @@ internal sealed partial class DataRetentionService(
             : LongRunningOperationRecoveryResult.Completed();
     }
 
-    internal Task<LongRunningOperationRecoveryResult> RecoverMutationAuthenticatedAsync(
+    internal async Task<LongRunningOperationRecoveryResult> RecoverMutationAuthenticatedAsync(
         LongRunningOperation operation,
         CovenantErasureCoordinator.AuthenticatedCovenantErasureRecoveryAdmission admission,
         CancellationToken cancellationToken)
@@ -7266,9 +7266,10 @@ internal sealed partial class DataRetentionService(
                    operation.CheckpointReference,
                    "retention-mutation:" + operation.Id.ToString("N"),
                    StringComparison.Ordinal)
-            ? RecoverCovenantResetMutationAsync(operation, admission, cancellationToken)
-            : Task.FromResult(LongRunningOperationRecoveryResult.RequiresAttention(
-                ErrorCodes.Covenant.ManualRecoveryRequired));
+            ? await RecoverCovenantResetMutationAsync(operation, admission, cancellationToken)
+                .ConfigureAwait(false)
+            : LongRunningOperationRecoveryResult.RequiresAttention(
+                ErrorCodes.Covenant.ManualRecoveryRequired);
     }
 
     /// <summary>

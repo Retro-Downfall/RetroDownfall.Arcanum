@@ -16,7 +16,7 @@ internal sealed class BackupCreateRecoveryHandler : ILongRunningOperationRecover
 
     public int SupportedCheckpointVersion => 2;
 
-    public Task<LongRunningOperationRecoveryResult> RecoverAsync(
+    public async Task<LongRunningOperationRecoveryResult> RecoverAsync(
         LongRunningOperation operation,
         CancellationToken cancellationToken)
     {
@@ -27,13 +27,13 @@ internal sealed class BackupCreateRecoveryHandler : ILongRunningOperationRecover
         if (operation.CheckpointVersion == 0
             && operation.CheckpointPayload is null)
         {
-            return Task.FromResult(LongRunningOperationRecoveryResult.Abandoned());
+            return LongRunningOperationRecoveryResult.Abandoned();
         }
 
         if (operation.CheckpointVersion != SupportedCheckpointVersion
             || operation.CheckpointPayload is null)
         {
-            return CorruptCheckpoint();
+            return await CorruptCheckpoint().ConfigureAwait(false);
         }
 
         BackupOperationCheckpoint? checkpoint;
@@ -48,7 +48,7 @@ internal sealed class BackupCreateRecoveryHandler : ILongRunningOperationRecover
             exception is JsonException
                 or NotSupportedException)
         {
-            return CorruptCheckpoint();
+            return await CorruptCheckpoint().ConfigureAwait(false);
         }
 
         if (checkpoint is null
@@ -58,12 +58,12 @@ internal sealed class BackupCreateRecoveryHandler : ILongRunningOperationRecover
                 operation.CheckpointReference,
                 out string stagingPath))
         {
-            return CorruptCheckpoint();
+            return await CorruptCheckpoint().ConfigureAwait(false);
         }
 
         if (!PathEntryExists(stagingPath))
         {
-            return Task.FromResult(LongRunningOperationRecoveryResult.Abandoned());
+            return LongRunningOperationRecoveryResult.Abandoned();
         }
 
         if (!checkpoint.StagingVolumeId.HasValue
@@ -74,8 +74,8 @@ internal sealed class BackupCreateRecoveryHandler : ILongRunningOperationRecover
             // when it is provably the empty, owner-only directory a creation that stopped at mkdir
             // leaves; anything else keeps the operator in the loop.
             return TryRemoveUnrecordedEmptyStaging(stagingPath)
-                ? Task.FromResult(LongRunningOperationRecoveryResult.Abandoned())
-                : CleanupFailed();
+                ? LongRunningOperationRecoveryResult.Abandoned()
+                : await CleanupFailed().ConfigureAwait(false);
         }
 
         cancellationToken.ThrowIfCancellationRequested();
@@ -86,10 +86,10 @@ internal sealed class BackupCreateRecoveryHandler : ILongRunningOperationRecover
                 checkpoint.StagingFileId.Value)
             || !PathEntryExists(stagingPath))
         {
-            return Task.FromResult(LongRunningOperationRecoveryResult.Abandoned());
+            return LongRunningOperationRecoveryResult.Abandoned();
         }
 
-        return CleanupFailed();
+        return await CleanupFailed().ConfigureAwait(false);
     }
 
     /// <summary>
