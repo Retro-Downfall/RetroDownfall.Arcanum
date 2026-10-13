@@ -365,60 +365,132 @@ public sealed class McpHttpResponseBoundHandlerTests
         };
     }
 
-    [Fact]
-    public void The_McpHttp_named_client_pipeline_applies_the_bound()
+    private static List<HttpMessageHandler> Pipeline(HttpMessageHandler outermost)
     {
-        ServiceCollection services = [];
+        List<HttpMessageHandler> pipeline = [outermost];
 
-        services.AddArcanumInfrastructure(new ConfigurationBuilder().Build());
-
-        using ServiceProvider provider = services.BuildServiceProvider();
-
-        using HttpMessageHandler handler = provider
-            .GetRequiredService<IHttpMessageHandlerFactory>()
-            .CreateHandler(McpConnectionManager.McpHttpClientName);
-
-        List<Type> pipeline = [];
-
-        for (HttpMessageHandler? current = handler;
-            current is DelegatingHandler delegating;
-            current = delegating.InnerHandler)
+        for (HttpMessageHandler? current = outermost;
+            current is DelegatingHandler { InnerHandler: { } inner };
+            current = inner)
         {
-            pipeline.Add(delegating.GetType());
+            pipeline.Add(inner);
         }
 
-        Assert.Contains(typeof(McpHttpResponseBoundHandler), pipeline);
+        return pipeline;
     }
 
     [Fact]
-    public void The_McpHttp_named_client_bound_is_the_manager_frame_cap_plus_the_framing_allowance()
+    public void The_owned_HTTP_pipeline_applies_the_bound_over_the_untrusted_egress_handler()
     {
-        ServiceCollection services = [];
+        TimeSpan connect = TimeSpan.FromSeconds(7);
 
-        services.AddArcanumInfrastructure(new ConfigurationBuilder().Build());
+        using HttpMessageHandler handler = McpConnectionManager.CreateOwnedHttpPipeline(connect);
 
-        using ServiceProvider provider = services.BuildServiceProvider();
+        List<HttpMessageHandler> pipeline = Pipeline(handler);
 
-        using HttpMessageHandler handler = provider
-            .GetRequiredService<IHttpMessageHandlerFactory>()
-            .CreateHandler(McpConnectionManager.McpHttpClientName);
+        // The bound is outermost, the guarded egress handler is the only primary, and nothing else is chained.
+        Assert.Equal(2, pipeline.Count);
 
-        McpHttpResponseBoundHandler? bound = null;
+        Assert.IsType<McpHttpResponseBoundHandler>(pipeline[0]);
 
-        for (HttpMessageHandler? current = handler;
-            current is DelegatingHandler delegating;
-            current = delegating.InnerHandler)
-        {
-            bound ??= delegating as McpHttpResponseBoundHandler;
-        }
+        SocketsHttpHandler primary = Assert.IsType<SocketsHttpHandler>(pipeline[1]);
 
-        Assert.NotNull(bound);
+        // OutboundUrlGuard.CreateUntrustedEgressHandler: redirects and proxies off, DNS pinned at connect time.
+        Assert.False(primary.AllowAutoRedirect);
+
+        Assert.False(primary.UseProxy);
+
+        Assert.NotNull(primary.ConnectCallback);
+
+        Assert.Equal(connect, primary.ConnectTimeout);
+    }
+
+    [Fact]
+    public void The_owned_HTTP_pipeline_carries_no_logging_handler()
+    {
+        // Hosted MCP endpoints commonly carry a bearer token in a path segment; default client logging would
+        // copy it into the rolling log, so the owned pipeline must never gain a logging handler.
+        using HttpMessageHandler handler = McpConnectionManager.CreateOwnedHttpPipeline(TimeSpan.FromSeconds(30));
+
+        Assert.DoesNotContain(Pipeline(handler), static current => current.GetType().Name.Contains("Logging", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void The_owned_HTTP_pipeline_bound_is_the_manager_frame_cap_plus_the_framing_allowance()
+    {
+        using HttpMessageHandler handler = McpConnectionManager.CreateOwnedHttpPipeline(TimeSpan.FromSeconds(30));
+
+        McpHttpResponseBoundHandler bound = Assert.IsType<McpHttpResponseBoundHandler>(Pipeline(handler)[0]);
 
         // The in-process transport and the HTTP bound enforce one code-owned cap; they must read it from
         // the same place so neither can drift when the cap changes.
         Assert.Equal(
             McpSecurityLimits.MaxJsonRpcLineBytes + McpHttpResponseBoundHandler.FramingAllowanceBytes,
             bound.BoundBytes);
+    }
+
+    [Fact]
+    public void The_owned_HTTP_client_has_no_overall_request_deadline_and_owns_its_handler()
+    {
+        DisposalProbe primary = new();
+
+        using (HttpClient client = McpConnectionManager.CreateOwnedHttpClient(TimeSpan.FromSeconds(30), primary))
+        {
+            Assert.Equal(Timeout.InfiniteTimeSpan, client.Timeout);
+
+            Assert.False(primary.Disposed);
+        }
+
+        // Disposing the owned client disposes the whole chain, so no connection outlives it.
+        Assert.True(primary.Disposed);
+    }
+
+    [Fact]
+    public void The_owned_HTTP_pipeline_wraps_a_scripted_primary_without_replacing_the_bound()
+    {
+        DisposalProbe primary = new();
+
+        using HttpMessageHandler handler = McpConnectionManager.CreateOwnedHttpPipeline(TimeSpan.FromSeconds(30), primary);
+
+        List<HttpMessageHandler> pipeline = Pipeline(handler);
+
+        Assert.IsType<McpHttpResponseBoundHandler>(pipeline[0]);
+
+        Assert.Same(primary, pipeline[1]);
+    }
+
+    [Fact]
+    public void No_Mcp_source_builds_a_client_from_the_named_client_factory()
+    {
+        string mcp = Path.Combine(
+            global::RetroDownfall.Arcanum.Tests.Support.TestRepositoryPaths.RepositoryRoot(),
+            "src",
+            "RetroDownfall.Arcanum.Infrastructure",
+            "Mcp");
+
+        foreach (string file in Directory.EnumerateFiles(mcp, "*.cs", SearchOption.AllDirectories))
+        {
+            string text = File.ReadAllText(file);
+
+            Assert.DoesNotContain("IHttpClientFactory", text, StringComparison.Ordinal);
+
+            Assert.DoesNotContain("CreateClient(", text, StringComparison.Ordinal);
+        }
+    }
+
+    private sealed class DisposalProbe : HttpMessageHandler
+    {
+        internal bool Disposed { get; private set; }
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
+        protected override void Dispose(bool disposing)
+        {
+            Disposed = true;
+
+            base.Dispose(disposing);
+        }
     }
 
     [Fact]
@@ -447,8 +519,8 @@ public sealed class McpHttpResponseBoundHandlerTests
             }
         }
 
-        // McpSecurityLimits.MaxJsonRpcLineBytes owns the clamp; the connection manager and the McpHttp
-        // client registration both use it instead of repeating it.
+        // McpSecurityLimits.MaxJsonRpcLineBytes owns the clamp; the connection manager and the owned HTTP
+        // pipeline both use it instead of repeating it.
         Assert.Equal([Path.Combine("Mcp", "McpSecurityLimits.cs")], readers.Order(StringComparer.Ordinal));
     }
 

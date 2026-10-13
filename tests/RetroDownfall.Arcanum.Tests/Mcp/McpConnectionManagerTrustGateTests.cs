@@ -1278,7 +1278,6 @@ public sealed class McpConnectionManagerTrustGateTests : IAsyncLifetime
             pacer,
             new FakeEventBus(),
             trustStore,
-            new FakeHttpClientFactory(),
             new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings()),
             NullLoggerFactory.Instance);
 

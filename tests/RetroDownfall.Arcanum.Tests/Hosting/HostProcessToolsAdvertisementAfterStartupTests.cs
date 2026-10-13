@@ -275,7 +275,6 @@ public sealed class HostProcessToolsAdvertisementAfterStartupTests : IAsyncLifet
             pacer,
             new SilentEventBus(),
             new UntrustedWorkspaceStore(),
-            new FakeHttpClientFactory(),
             new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings()),
             NullLoggerFactory.Instance);
 

@@ -54,9 +54,13 @@ internal static class McpConnectionManagerHarness
             pacer,
             eventBus ?? new SilentEventBus(),
             trustStore ?? new UntrustedWorkspaceStore(),
-            new FakeHttpClientFactory(httpHandler),
             new TestOptionsMonitor<ArcanumSettings>(settings ?? new ArcanumSettings()),
             loggerFactory ?? NullLoggerFactory.Instance);
+
+        if (httpHandler is not null)
+        {
+            manager.PrimaryHttpHandlerForTests = () => new NonOwningHttpHandler(httpHandler);
+        }
 
         manager.ConfigureGlobalAdmission(
             new GrimoireConnectionAdmissionGate(TimeProvider.System));

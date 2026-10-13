@@ -155,7 +155,7 @@ public sealed partial class McpConnectionManager
         };
     }
 
-    private SdkMcpClientWrapper CreateSdkMcpClientWrapper(IClientTransport clientTransport)
+    private SdkMcpClientWrapper CreateSdkMcpClientWrapper(IClientTransport clientTransport, IDisposable? ownedResource = null)
     {
         // One sink per connection: the handler built into the options and the wrapper that enters
         // each tool call share it, which is how a server-initiated request finds its turn.
@@ -167,24 +167,102 @@ public sealed partial class McpConnectionManager
             GetClampedMcpInitializationTimeout(),
             GetClampedToolOutputCapBytes(),
             GetClampedMcpMaxToolsTotalBytes(),
-            elicitationSink);
+            elicitationSink,
+            loggerFactory: null,
+            ownedResource);
     }
+
+    /// <summary>
+    /// Test seam: supplies the primary handler of the owned HTTP transport client in place of the SSRF-guarded
+    /// egress handler, so a scenario can script the server. The response bound still wraps it. Never set in
+    /// production.
+    /// </summary>
+    internal Func<HttpMessageHandler>? PrimaryHttpHandlerForTests { get; set; }
+
+    /// <summary>
+    /// Owned Client Construction: the pipeline the Streamable HTTP transport sends through, built from an
+    /// explicit handler chain instead of a named factory client. The primary handler is
+    /// the untrusted-egress handler (redirects and proxies off, DNS pinned, loopback, private and link-local
+    /// refused), and it is wrapped by the per-message response bound. There is deliberately no logging handler:
+    /// a hosted endpoint commonly carries its bearer token in a path segment that default client logging would
+    /// copy into the rolling log.
+    /// </summary>
+    internal static HttpMessageHandler CreateOwnedHttpPipeline(TimeSpan connectTimeout, HttpMessageHandler? primaryForTests = null)
+    {
+        HttpMessageHandler primary = primaryForTests ?? CreateEgressHandler(connectTimeout);
+
+        try
+        {
+            return new McpHttpResponseBoundHandler(McpSecurityLimits.MaxJsonRpcLineBytes) { InnerHandler = primary };
+        }
+        catch
+        {
+            primary.Dispose();
+
+            throw;
+        }
+    }
+
+    private static SocketsHttpHandler CreateEgressHandler(TimeSpan connectTimeout)
+    {
+        SocketsHttpHandler handler = OutboundUrlGuard.CreateUntrustedEgressHandler();
+
+        try
+        {
+            handler.ConnectTimeout = connectTimeout;
+
+            return handler;
+        }
+        catch
+        {
+            handler.Dispose();
+
+            throw;
+        }
+    }
+
+    private TimeSpan GetClampedMcpHttpConnectTimeout() =>
+        TimeSpan.FromSeconds(ArcanumSettingClamps.McpHttpConnectTimeoutSeconds(
+            settings.CurrentValue.ResolveMcp().HttpConnectTimeoutSeconds));
+
+    /// <summary>
+    /// The owned client over <see cref="CreateOwnedHttpPipeline"/>. It has no overall request deadline because a
+    /// Streamable HTTP session is long-lived; the connect bound and the per-message response bound are the
+    /// limits.
+    /// </summary>
+    internal static HttpClient CreateOwnedHttpClient(TimeSpan connectTimeout, HttpMessageHandler? primaryForTests = null) =>
+        new(CreateOwnedHttpPipeline(connectTimeout, primaryForTests), disposeHandler: true)
+        {
+            Timeout = Timeout.InfiniteTimeSpan,
+        };
 
     private SdkMcpClientWrapper CreateHttpMcpClient(Uri endpoint)
     {
-        HttpClient httpClient = httpClientFactory.CreateClient(McpHttpClientName);
+        // The session wrapper owns this client: disposing the wrapper, including after a start that never
+        // completed its handshake, disposes the handler chain and closes its pooled connections, so no
+        // connection outlives the server entry that opened it.
+        HttpClient httpClient = CreateOwnedHttpClient(GetClampedMcpHttpConnectTimeout(), PrimaryHttpHandlerForTests?.Invoke());
 
-        HttpClientTransport transport = new(
-            new HttpClientTransportOptions
-            {
-                Endpoint = endpoint,
-                TransportMode = HttpTransportMode.StreamableHttp,
-            },
-            httpClient,
-            loggerFactory: null,
-            ownsHttpClient: false);
+        try
+        {
+            HttpClientTransport transport = new(
+                new HttpClientTransportOptions
+                {
+                    Endpoint = endpoint,
+                    TransportMode = HttpTransportMode.StreamableHttp,
+                },
+                httpClient,
+                loggerFactory: null,
+                ownsHttpClient: false);
 
-        return CreateSdkMcpClientWrapper(transport);
+            return CreateSdkMcpClientWrapper(transport, ownedResource: httpClient);
+        }
+        catch
+        {
+            httpClient.Dispose();
+
+            throw;
+        }
     }
 
     // W-MCP-HTTP: validates a Streamable HTTP endpoint before connecting. The URL must be an

@@ -8,6 +8,7 @@ using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.Serialization;
+using RetroDownfall.Arcanum.Infrastructure.Security;
 
 namespace RetroDownfall.Arcanum.Api.Intelligence;
 
@@ -16,13 +17,18 @@ public interface ICampaignRollupProviderClientFactory
     Task<Result<ChatClientLease?>> ResolveClientAsync(string? targetModel, CancellationToken cancellationToken);
 }
 
-/// <summary>One explicit physical maintenance attempt, without transport mutation or automatic retry.</summary>
+/// <summary>
+/// One explicit physical maintenance attempt, without transport mutation or automatic retry. Each lease owns
+/// the <see cref="HttpClient"/> it sends through: the client is built here from an explicit handler chain (the
+/// pinned provider egress handler), so no named <see cref="IHttpClientFactory"/> client, shared pool or factory
+/// handler rotation sits between the SDK call and the wire, and disposing the lease closes its connection.
+/// </summary>
 public sealed class CampaignRollupProviderClientFactory(
-    IHttpClientFactory httpClientFactory,
     IOptionsMonitor<ArcanumSettings> settings,
     IProviderApiKeyResolver apiKeyResolver) : ICampaignRollupProviderClientFactory
 {
-    public const string HttpClientName = "CampaignRollupProvider";
+    /// <summary>Test seam: supplies the client a lease owns instead of the guarded one. Never set in production.</summary>
+    internal Func<HttpClient>? OwnedHttpClientForTests { get; init; }
 
     public async Task<Result<ChatClientLease?>> ResolveClientAsync(string? targetModel, CancellationToken cancellationToken)
     {
@@ -47,17 +53,46 @@ public sealed class CampaignRollupProviderClientFactory(
 
         string? key = await apiKeyResolver.ResolveAsync(provider, cancellationToken).ConfigureAwait(false);
 
-        HttpClient http = httpClientFactory.CreateClient(HttpClientName);
+        HttpClient http = OwnedHttpClientForTests?.Invoke() ?? CreateOwnedHttpClient();
 
-        OpenAIClientOptions options = new()
+        try
         {
-            Endpoint = new Uri(provider.Endpoint),
-            Transport = new HttpClientPipelineTransport(http),
-            RetryPolicy = new ClientRetryPolicy(0),
-        };
+            OpenAIClientOptions options = new()
+            {
+                Endpoint = new Uri(provider.Endpoint),
+                Transport = new HttpClientPipelineTransport(http),
+                RetryPolicy = new ClientRetryPolicy(0),
+            };
 
-        OpenAI.Chat.ChatClient client = new(model, new ApiKeyCredential(key ?? "no-key"), options);
+            OpenAI.Chat.ChatClient client = new(model, new ApiKeyCredential(key ?? "no-key"), options);
 
-        return Result<ChatClientLease?>.Success(new(client.AsIChatClient(), provider, model, ownedHttpClient: null));
+            return Result<ChatClientLease?>.Success(new(client.AsIChatClient(), provider, model, ownedHttpClient: http));
+        }
+        catch
+        {
+            http.Dispose();
+
+            throw;
+        }
+    }
+
+    private static HttpClient CreateOwnedHttpClient()
+    {
+        SocketsHttpHandler handler = OutboundUrlGuard.CreateProviderEgressHandler();
+
+        try
+        {
+            handler.PooledConnectionLifetime = TimeSpan.FromMinutes(2);
+
+            handler.PooledConnectionIdleTimeout = TimeSpan.FromMinutes(1);
+
+            return new HttpClient(handler, disposeHandler: true) { Timeout = Timeout.InfiniteTimeSpan };
+        }
+        catch
+        {
+            handler.Dispose();
+
+            throw;
+        }
     }
 }

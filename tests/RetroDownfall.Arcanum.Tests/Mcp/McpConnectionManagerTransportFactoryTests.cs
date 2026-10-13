@@ -256,7 +256,6 @@ public sealed class McpConnectionManagerTransportFactoryTests
             pacer,
             new FakeEventBus(),
             new UntrustedWorkspaceStore(),
-            new FakeHttpClientFactory(),
             new TestOptionsMonitor<ArcanumSettings>(settings),
             NullLoggerFactory.Instance);
 

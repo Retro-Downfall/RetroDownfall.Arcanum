@@ -18,7 +18,7 @@ internal static class BackupRestoreLongRestSanitation
 
         try
         {
-            if (await GrimoireCoreSchemaVersion.ReadAsync(connection, ct, transaction).ConfigureAwait(false) < 18)
+            if (await GrimoireCoreSchemaVersion.ReadAsync(connection, transaction, ct).ConfigureAwait(false) < 18)
             {
                 Result legacy = await VerifyLegacyAbsenceAsync(connection, transaction, ct).ConfigureAwait(false);
 
@@ -89,7 +89,7 @@ internal static class BackupRestoreLongRestSanitation
     {
         // A pre-v18 database may prove the whole new family absent. At v18 every shared
         // inventory target is mandatory; a missing or malformed target is an error, not zero.
-        if (await GrimoireCoreSchemaVersion.ReadAsync(connection, ct, transaction).ConfigureAwait(false) < 18)
+        if (await GrimoireCoreSchemaVersion.ReadAsync(connection, transaction, ct).ConfigureAwait(false) < 18)
         {
             return await VerifyLegacyAbsenceAsync(connection, transaction, ct).ConfigureAwait(false);
         }

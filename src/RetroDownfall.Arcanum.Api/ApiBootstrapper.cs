@@ -555,10 +555,6 @@ public static class ApiBootstrapper
 
         services.AddSingleton<IChatClientFactory, ChatClientFactory>();
 
-        services.AddHttpClient(CampaignRollupProviderClientFactory.HttpClientName,
-            static client => client.Timeout = Timeout.InfiniteTimeSpan)
-            .ConfigurePrimaryHttpMessageHandler(static () => OutboundUrlGuard.CreateProviderEgressHandler());
-
         services.AddSingleton(sp => new LongRestConfigurationEpoch(sp.GetRequiredService<IOptionsMonitor<ArcanumSettings>>(),
             sp.GetRequiredService<RetroDownfall.Arcanum.Infrastructure.Data.Covenant.CovenantProcessBootIdentity>().BootId));
 

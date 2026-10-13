@@ -59,12 +59,7 @@ public sealed partial class McpConnectionManager :
 
     private readonly ITrustedMcpWorkspaceStore trustedMcpWorkspaces;
 
-    private readonly IHttpClientFactory httpClientFactory;
-
     private readonly IOptionsMonitor<ArcanumSettings> settings;
-
-    /// <summary>Named <see cref="HttpClient"/> for the Streamable HTTP MCP transport (SSRF-guarded egress).</summary>
-    public const string McpHttpClientName = "McpHttp";
 
     private const string GlobalPartitionKey = "__arcanum_mcp_global__";
 
@@ -166,7 +161,6 @@ public sealed partial class McpConnectionManager :
         IUnseenServantPacer pacer,
         IEventBus eventBus,
         ITrustedMcpWorkspaceStore trustedMcpWorkspaces,
-        IHttpClientFactory httpClientFactory,
         IOptionsMonitor<ArcanumSettings> settings,
         ILoggerFactory loggerFactory)
     {
@@ -185,8 +179,6 @@ public sealed partial class McpConnectionManager :
         this.eventBus = eventBus;
 
         this.trustedMcpWorkspaces = trustedMcpWorkspaces;
-
-        this.httpClientFactory = httpClientFactory;
 
         this.settings = settings;
 

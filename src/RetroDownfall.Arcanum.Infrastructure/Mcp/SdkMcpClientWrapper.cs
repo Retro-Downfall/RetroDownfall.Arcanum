@@ -35,6 +35,11 @@ internal sealed class SdkMcpClientWrapper : IMcpClient
 
     private readonly McpElicitationSink _elicitationSink;
 
+    // A resource the caller built only for this session, such as the HTTP client the Streamable HTTP
+    // transport sends through. It is released with the session even when the handshake never produced an
+    // SDK client, because a failed start leaves no other owner to close its connections.
+    private readonly IDisposable? _ownedResource;
+
     /// <summary>
     /// How many consecutive <c>tools/list</c> pages may contribute no accounted tool metadata before
     /// the walk is abandoned. The cumulative <c>maxToolsTotalBytes</c> budget is the physical bound
@@ -75,7 +80,8 @@ internal sealed class SdkMcpClientWrapper : IMcpClient
         long toolOutputCapBytes,
         int maxToolsTotalBytes,
         McpElicitationSink elicitationSink,
-        ILoggerFactory? loggerFactory = null)
+        ILoggerFactory? loggerFactory = null,
+        IDisposable? ownedResource = null)
     {
         ArgumentNullException.ThrowIfNull(clientTransport);
 
@@ -111,6 +117,8 @@ internal sealed class SdkMcpClientWrapper : IMcpClient
         _elicitationSink = elicitationSink;
 
         _loggerFactory = loggerFactory;
+
+        _ownedResource = ownedResource;
     }
 
     /// <inheritdoc />
@@ -371,9 +379,16 @@ internal sealed class SdkMcpClientWrapper : IMcpClient
         {
         }
 
-        if (_sdkClient is not null)
+        try
         {
-            await _sdkClient.DisposeAsync().ConfigureAwait(false);
+            if (_sdkClient is not null)
+            {
+                await _sdkClient.DisposeAsync().ConfigureAwait(false);
+            }
+        }
+        finally
+        {
+            _ownedResource?.Dispose();
         }
 
         _completionCts.Dispose();
