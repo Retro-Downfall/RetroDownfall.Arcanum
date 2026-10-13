@@ -39130,7 +39130,10 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
     [InlineData("onconfiguring-effect")]
     [InlineData("onconfiguring-provider")]
     public void SqliteBlobIndexerRequiresActualInstanceOptionsAndProviderClosure(string shape) =>
-        WidenedSqliteBlobIndexerRequiresCompleteConfiguredReceiverAndLiveFrontier(shape, false, true);
+        // An OnConfiguring effect is unadmitted wherever EF can first use the context: the use that
+        // really triggers it may be a later consumer of a DbSet or facade read inside the admission,
+        // so no admission current at the read is inherited (WS0F review).
+        WidenedSqliteBlobIndexerRequiresCompleteConfiguredReceiverAndLiveFrontier(shape, false, shape != "onconfiguring-effect");
 
     [Theory]
     [InlineData("x-builder-alias", false, true)]

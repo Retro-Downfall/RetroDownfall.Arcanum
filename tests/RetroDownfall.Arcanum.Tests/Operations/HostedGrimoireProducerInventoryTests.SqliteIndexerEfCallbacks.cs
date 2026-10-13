@@ -34,33 +34,11 @@ public sealed partial class HostedGrimoireProducerInventoryTests
     [InlineData("delegate-dispatch", true, false)]
     [InlineData("interface-dispatch", false, false)]
     [InlineData("created-closed-guard", true, false)]
-    [InlineData("admitted-implicit-property", false, false)]
+    [InlineData("implicit-property-inside-admission", true, false)]
     [InlineData("container-closed-guard", false, true)]
     public void SqliteBlobIndexerOnConfiguringRunsAtEveryDbContextUse(string shape, bool unadmittedEffect, bool database)
     {
-        string touch = shape switch
-        {
-            "this-database" => "public void Touch() { _ = this.Database; }",
-            "implicit-method" => "public void Touch() { _ = Set<BlobRow>(); }",
-            "implicit-receiver" => "public void Touch() { _ = Database.CanConnect(); }",
-            "implicit-property" or "delegate-dispatch" or "interface-dispatch" or "created-closed-guard" or "container-closed-guard" or "admitted-implicit-property" =>
-                "public void Touch() { _ = Database; }",
-            _ => string.Empty,
-        };
-
-        string early = shape switch
-        {
-            "explicit-set" => "_ = db.Set<BlobRow>(); ",
-            "explicit-database" => "_ = db.Database; ",
-            "conditional-property" => "_ = db?.Database; ",
-            "conditional-method" => "_ = db?.Set<BlobRow>(); ",
-            "accessor-extension" => "_ = Microsoft.EntityFrameworkCore.Infrastructure.AccessorExtensions.GetService<Microsoft.EntityFrameworkCore.Infrastructure.IDbContextOptions>(db); ",
-            "delegate-dispatch" => "System.Action touch = db.Touch; touch(); ",
-            "interface-dispatch" => "IBlobTouch touch = db; touch.Touch(); ",
-            "created-closed-guard" => "BlobContext created = new(BlobInput.Options); created.Touch(); ",
-            "admitted-implicit-property" => string.Empty,
-            _ => "db.Touch(); ",
-        };
+        (string touch, string early) = OnConfiguringUseForm(shape);
 
         HostedProducerDiscovery<HostedProducerSite> result = DiscoverSqliteIndexerProbe(
             SqliteIndexerSource(
@@ -72,7 +50,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests
                     ? SqliteIndexerDeleteFallback
                     : "System.IO.File.Delete(\"on-configuring\");",
                 early: early,
-                pipelinePrefix: shape == "admitted-implicit-property" ? "db.Touch(); " : string.Empty,
+                pipelinePrefix: shape == "implicit-property-inside-admission" ? "db.Touch(); " : string.Empty,
                 contextExpression: shape == "created-closed-guard" ? "created" : "db",
                 helpers: "public interface IBlobTouch { void Touch(); }"));
 
@@ -81,6 +59,11 @@ public sealed partial class HostedGrimoireProducerInventoryTests
         Assert.Equal(database, IsSqliteIndexerClassified(result));
 
         HostedProducerSite[] deletes = result.Items.Where(static site => site.Callee == "System.IO.File.Delete").ToArray();
+
+        foreach (HostedProducerSite delete in deletes)
+        {
+            output.WriteLine("SQLITE-INDEXER delete op=" + delete.OperationId + " work=" + (delete.WorkFrontierCapsuleId is not null));
+        }
 
         if (shape == "interface-dispatch")
         {
@@ -106,6 +89,87 @@ public sealed partial class HostedGrimoireProducerInventoryTests
             || result.Diagnostics.Any(static diagnostic => diagnostic.Code == "HOSTED_SITE_WORK_FRONTIER_MISSING" && diagnostic.Detail == "System.IO.File.Delete");
 
         Assert.Equal(unadmittedEffect, unadmitted);
+    }
+
+    // The ways a caller can first use a context's services. `touch` is the member the derived
+    // context declares for the forms that need one and `early` is the statement under test.
+    private static (string Touch, string Early) OnConfiguringUseForm(string shape) => (
+        shape switch
+        {
+            "this-database" => "public void Touch() { _ = this.Database; }",
+            "implicit-method" => "public void Touch() { _ = Set<BlobRow>(); }",
+            "implicit-receiver" => "public void Touch() { _ = Database.CanConnect(); }",
+            "implicit-property" or "delegate-dispatch" or "interface-dispatch" or "created-closed-guard" or "container-closed-guard" or "implicit-property-inside-admission" =>
+                "public void Touch() { _ = Database; }",
+            _ => string.Empty,
+        },
+        shape switch
+        {
+            "no-use" or "implicit-property-inside-admission" => string.Empty,
+            "explicit-set" => "_ = db.Set<BlobRow>(); ",
+            "explicit-database" => "_ = db.Database; ",
+            "conditional-property" => "_ = db?.Database; ",
+            "conditional-method" => "_ = db?.Set<BlobRow>(); ",
+            "accessor-extension" => "_ = Microsoft.EntityFrameworkCore.Infrastructure.AccessorExtensions.GetService<Microsoft.EntityFrameworkCore.Infrastructure.IDbContextOptions>(db); ",
+            "delegate-dispatch" => "System.Action touch = db.Touch; touch(); ",
+            "interface-dispatch" => "IBlobTouch touch = db; touch.Touch(); ",
+            "created-closed-guard" => "BlobContext created = new(BlobInput.Options); created.Touch(); ",
+            "explicit-interface-member" => "_ = ((Microsoft.EntityFrameworkCore.Internal.IDbContextDependencies)db).StateManager; ",
+            _ => "db.Touch(); ",
+        });
+
+    // Which use form enters OnConfiguring. The pipeline is removed so that nothing but the use under
+    // test touches the context: an OnConfiguring effect can then appear only if that form enters it,
+    // and it is unadmitted wherever it does (the first use that really triggers it is not the read).
+    [Theory]
+    [InlineData("no-use", false)]
+    [InlineData("explicit-set", true)]
+    [InlineData("explicit-database", true)]
+    [InlineData("this-database", true)]
+    [InlineData("implicit-property", true)]
+    [InlineData("implicit-method", true)]
+    [InlineData("implicit-receiver", true)]
+    [InlineData("conditional-property", true)]
+    [InlineData("conditional-method", true)]
+    [InlineData("accessor-extension", true)]
+    [InlineData("explicit-interface-member", true)]
+    [InlineData("delegate-dispatch", true)]
+    [InlineData("created-closed-guard", true)]
+    [InlineData("interface-dispatch", false)]
+    [InlineData("container-closed-guard", false)]
+    public void SqliteBlobIndexerOnConfiguringIsEnteredAtEveryDbContextUseForm(string shape, bool entered)
+    {
+        (string touch, string early) = OnConfiguringUseForm(shape);
+
+        string source = SqliteIndexerSource(
+            SqliteIndexerUseSqlite,
+            registration: string.Empty,
+            contextBases: shape == "interface-dispatch" ? ", IBlobTouch" : string.Empty,
+            contextMembers: touch,
+            onConfiguring: shape is "created-closed-guard" or "container-closed-guard"
+                ? SqliteIndexerDeleteFallback
+                : "System.IO.File.Delete(\"on-configuring\");",
+            early: early,
+            pipelinePrefix: string.Empty,
+            contextExpression: "db",
+            helpers: "public interface IBlobTouch { void Touch(); }");
+
+        const string pipelineCall = "await BlobPipeline.RunAsync(db, token); }";
+
+        Assert.Contains(pipelineCall, source, StringComparison.Ordinal);
+
+        HostedProducerDiscovery<HostedProducerSite> result = DiscoverSqliteIndexerProbe(source.Replace(pipelineCall, "}", StringComparison.Ordinal));
+
+        HostedProducerSite[] deletes = result.Items.Where(static site => site.Callee == "System.IO.File.Delete").ToArray();
+
+        Assert.Equal(entered, deletes.Length != 0);
+
+        Assert.All(deletes, static site => Assert.Null(site.WorkFrontierCapsuleId));
+
+        if (shape == "interface-dispatch")
+        {
+            Assert.Contains(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_CALL_TARGET_UNRESOLVED" && diagnostic.Detail == "IBlobTouch.Touch");
+        }
     }
 
     [Theory]

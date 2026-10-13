@@ -17,7 +17,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests
     [InlineData("j-lambda-escape", false)]
     [InlineData("j-tuple-escape", false)]
     [InlineData("j-list-cast", false)]
-    [InlineData("j-list-extern", false)]
+    [InlineData("j-list-escape", false)]
     [InlineData("j-indexer-set", false)]
     [InlineData("j-custom-provider", false)]
     [InlineData("j-usesqlite-connection", false)]
@@ -42,10 +42,10 @@ public sealed partial class HostedGrimoireProducerInventoryTests
 
         string options = shape switch
         {
-            "j-nested-sqlite-action" => "Microsoft.EntityFrameworkCore.SqliteDbContextOptionsBuilderExtensions.UseSqlite(options, \"Data Source=:memory:\", sqlite => ((Microsoft.EntityFrameworkCore.Infrastructure.IRelationalDbContextOptionsBuilderInfrastructure)sqlite).OptionsBuilder.UseInternalServiceProvider(BlobInput.Provider()))",
+            "j-nested-sqlite-action" => "Microsoft.EntityFrameworkCore.SqliteDbContextOptionsBuilderExtensions.UseSqlite(options, \"Data Source=:memory:\", sqlite => ((Microsoft.EntityFrameworkCore.Infrastructure.IRelationalDbContextOptionsBuilderInfrastructure)sqlite).OptionsBuilder.UseInternalServiceProvider(BlobInput.Provider))",
             "j-iface-interceptor" => useSqlite + ".AddInterceptors(new SwapInterceptor())",
             "j-explicit-interceptor" => useSqlite + ".AddInterceptors(new ExplicitSwapInterceptor())",
-            "j-usesqlite-connection" => "Microsoft.EntityFrameworkCore.SqliteDbContextOptionsBuilderExtensions.UseSqlite(options, BlobInput.Connection())",
+            "j-usesqlite-connection" => "Microsoft.EntityFrameworkCore.SqliteDbContextOptionsBuilderExtensions.UseSqlite(options, BlobInput.Connection)",
             "j-usesqlite-derived" => "Microsoft.EntityFrameworkCore.SqliteDbContextOptionsBuilderExtensions.UseSqlite(options, new BlobDerivedConnection())",
             _ => useSqlite,
         };
@@ -63,16 +63,16 @@ public sealed partial class HostedGrimoireProducerInventoryTests
 
         registration += shape switch
         {
-            "j-list-cast" => "((System.Collections.Generic.IList<ServiceDescriptor>)services).Add(ServiceDescriptor.Scoped<BlobContext>(sp => new BlobContext(BlobInput.Options()))); ",
-            "j-list-extern" => "BlobInput.MutateList(services); ",
-            "j-indexer-set" => "services[services.Count - 1] = ServiceDescriptor.Scoped<BlobContext>(sp => new BlobContext(BlobInput.Options())); ",
+            "j-list-cast" => "((System.Collections.Generic.IList<ServiceDescriptor>)services).Add(ServiceDescriptor.Scoped<BlobContext>(sp => new BlobContext(BlobInput.Options))); ",
+            "j-list-escape" => "BlobInput.MutateList(services); ",
+            "j-indexer-set" => "services[services.Count - 1] = ServiceDescriptor.Scoped<BlobContext>(sp => new BlobContext(BlobInput.Options)); ",
             _ => "",
         };
 
         registration += shape switch
         {
             "j-factory-sp-field" => "services.AddScoped<BlobHolder>(sp => new BlobHolder(sp.GetRequiredService<BlobContext>())); ",
-            "j-factory-sp-reassigned" => "services.AddScoped<BlobHolder>(sp => { sp = BlobInput.Provider(); return new BlobHolder(sp.GetRequiredService<BlobContext>()); }); ",
+            "j-factory-sp-reassigned" => "services.AddScoped<BlobHolder>(sp => { sp = BlobInput.Provider; return new BlobHolder(sp.GetRequiredService<BlobContext>()); }); ",
             _ => "",
         };
 
@@ -83,13 +83,13 @@ public sealed partial class HostedGrimoireProducerInventoryTests
                 : "";
 
         registration += shape == "j-factory-activation"
-            ? "services.AddHostedService<Worker>(sp => new Worker(new BlobContext(BlobInput.Options())));"
+            ? "services.AddHostedService<Worker>(sp => new Worker(new BlobContext(BlobInput.Options)));"
             : shape == "j-activator"
-                ? "services.AddHostedService<Worker>(sp => Microsoft.Extensions.DependencyInjection.ActivatorUtilities.CreateInstance<Worker>(sp, new BlobContext(BlobInput.Options())));"
+                ? "services.AddHostedService<Worker>(sp => Microsoft.Extensions.DependencyInjection.ActivatorUtilities.CreateInstance<Worker>(sp, new BlobContext(BlobInput.Options)));"
                 : "services.AddHostedService<Worker>();";
 
         string prefix = shape == "j-setdbconnection"
-            ? "Microsoft.EntityFrameworkCore.RelationalDatabaseFacadeExtensions.SetDbConnection(db.Database, BlobInput.Connection()); "
+            ? "Microsoft.EntityFrameworkCore.RelationalDatabaseFacadeExtensions.SetDbConnection(db.Database, BlobInput.Connection); "
             : "";
 
         string connectionSource = shape is "j-helper-connection-custom" or "j-helper-connection-exact"
@@ -121,37 +121,38 @@ public sealed partial class HostedGrimoireProducerInventoryTests
 
             public sealed class SwapInterceptor : Microsoft.EntityFrameworkCore.Diagnostics.IDbConnectionInterceptor
             {
-                public System.Data.Common.DbConnection ConnectionCreated(Microsoft.EntityFrameworkCore.Diagnostics.ConnectionCreatedEventData eventData, System.Data.Common.DbConnection result) => BlobInput.Connection();
+                public System.Data.Common.DbConnection ConnectionCreated(Microsoft.EntityFrameworkCore.Diagnostics.ConnectionCreatedEventData eventData, System.Data.Common.DbConnection result) => BlobInput.Connection;
             }
 
             public sealed class ExplicitSwapInterceptor : Microsoft.EntityFrameworkCore.Diagnostics.IDbConnectionInterceptor
             {
-                System.Data.Common.DbConnection Microsoft.EntityFrameworkCore.Diagnostics.IDbConnectionInterceptor.ConnectionCreated(Microsoft.EntityFrameworkCore.Diagnostics.ConnectionCreatedEventData eventData, System.Data.Common.DbConnection result) => BlobInput.Connection();
+                System.Data.Common.DbConnection Microsoft.EntityFrameworkCore.Diagnostics.IDbConnectionInterceptor.ConnectionCreated(Microsoft.EntityFrameworkCore.Diagnostics.ConnectionCreatedEventData eventData, System.Data.Common.DbConnection result) => BlobInput.Connection;
             }
 
             public sealed class BlobHolder(BlobContext db) { private readonly BlobContext _db = db; public Task RunAsync(CancellationToken token) => BlobPipeline.RunAsync(_db, token); }
             public sealed class ProviderHolder(IServiceProvider provider) { public IServiceProvider Provider { get; } = provider; }
             public sealed class FakeScopes : Microsoft.Extensions.DependencyInjection.IServiceScopeFactory
             {
-                public Microsoft.Extensions.DependencyInjection.IServiceScope CreateScope() => BlobInput.Scope();
+                public Microsoft.Extensions.DependencyInjection.IServiceScope CreateScope() => BlobInput.Scope;
             }
 
             public sealed class FakeProvider : IServiceProvider
             {
-                public object? GetService(Type serviceType) => new BlobContext(BlobInput.Options());
+                public object? GetService(Type serviceType) => new BlobContext(BlobInput.Options);
             }
 
             internal static class BlobInput
             {
-                internal static extern Microsoft.EntityFrameworkCore.DbContextOptions<BlobContext> Options();
-                internal static extern IServiceProvider Provider();
-                internal static extern Microsoft.Extensions.DependencyInjection.IServiceScope Scope();
-                internal static extern System.Data.Common.DbConnection Connection();
-                internal static extern void MutateMany(params object[] items);
-                internal static extern void MutateArray(object[] items);
-                internal static extern void Defer(Func<Microsoft.EntityFrameworkCore.DbContextOptionsBuilder> builder);
-                internal static extern void MutateTuple((Microsoft.EntityFrameworkCore.DbContextOptionsBuilder, int) pair);
-                internal static extern void MutateList(System.Collections.Generic.IList<ServiceDescriptor> list);
+                internal static Microsoft.EntityFrameworkCore.DbContextOptions<BlobContext> Options { get; set; } = null!;
+                internal static IServiceProvider Provider { get; set; } = null!;
+                internal static Microsoft.Extensions.DependencyInjection.IServiceScope Scope { get; set; } = null!;
+                internal static System.Data.Common.DbConnection Connection { get; set; } = null!;
+                internal static object? Sink { get; set; }
+                internal static void MutateMany(params object[] items) { Sink = items; }
+                internal static void MutateArray(object[] items) { Sink = items; }
+                internal static void Defer(Func<Microsoft.EntityFrameworkCore.DbContextOptionsBuilder> builder) { Sink = builder; }
+                internal static void MutateTuple((Microsoft.EntityFrameworkCore.DbContextOptionsBuilder, int) pair) { Sink = pair; }
+                internal static void MutateList(System.Collections.Generic.IList<ServiceDescriptor> list) { Sink = list; }
             }
 
             internal static class BlobConnections
@@ -227,6 +228,9 @@ public sealed partial class HostedGrimoireProducerInventoryTests
         Assert.True(reached);
 
         Assert.Equal(database, classified);
+
+        // A refused certificate is the indexer's own refusal, not an unrelated one.
+        Assert.Equal(!database, result.Diagnostics.Any(static diagnostic => diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED" && diagnostic.Detail == callee));
 
         if (shape.StartsWith("j-onconfiguring-", StringComparison.Ordinal))
         {

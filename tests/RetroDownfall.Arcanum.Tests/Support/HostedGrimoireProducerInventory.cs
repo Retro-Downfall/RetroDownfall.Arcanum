@@ -24895,8 +24895,8 @@ internal static partial class HostedGrimoireProducerInventory
                         && member.Model.GetSymbolInfo(receiverName).Symbol is IPropertySymbol receiverProperty
                         && DbContextFirstUseConfiguring(member, node, receiverProperty) is { } receiverConfiguring)
                     {
-                        int? receiverPosition = member.ScopedLeaseInstance is not null ? node.Span.End : null;
-
+                        // EF runs OnConfiguring at the first service use, which is not this read, so no
+                        // admission current here is inherited (see DbContextFirstUseConfiguring).
                         emittedEvidence = MergeEvidence(
                             emittedEvidence,
                             Traverse(
@@ -24905,9 +24905,9 @@ internal static partial class HostedGrimoireProducerInventory
                                 operationId + "/call@" + Location(node),
                                 active,
                                 lifecycle,
-                                WorkAt(member, node, operationId, ordinary?.WorkKind, inheritedWork, receiverPosition),
-                                EffectAt(member, node, operationId, inheritedEffect, receiverPosition),
-                                recoveryEffect: recoveryEffect));
+                                null,
+                                null,
+                                recoveryEffect: null));
                     }
 
                     ISymbol? symbol = node is InvocationExpressionSyntax
@@ -24967,9 +24967,9 @@ internal static partial class HostedGrimoireProducerInventory
                                     operationId + "/call@" + Location(node),
                                     active,
                                     lifecycle,
-                                    workAdmitted,
-                                    effectGroup,
-                                    recoveryEffect: recoveryEffect));
+                                    null,
+                                    null,
+                                    recoveryEffect: null));
                         }
 
                         if (node is InvocationExpressionSyntax explicitCleanup
@@ -25958,8 +25958,9 @@ internal static partial class HostedGrimoireProducerInventory
                         if (!propertyMutation
                             && DbContextFirstUseConfiguring(member, node, property) is { } onConfiguring)
                         {
-                            // EF runs the authored OnConfiguring on first use of the context's
-                            // services, under whatever admission is current at that use.
+                            // EF runs the authored OnConfiguring on the first use of the context's
+                            // services, which can be a later consumer of a value read here, so no
+                            // admission current at this read is inherited.
                             emittedEvidence = MergeEvidence(
                                 emittedEvidence,
                                 Traverse(
@@ -25968,9 +25969,9 @@ internal static partial class HostedGrimoireProducerInventory
                                     operationId + "/call@" + Location(node),
                                     active,
                                     lifecycle,
-                                    workAdmitted,
-                                    effectGroup,
-                                    recoveryEffect: recoveryEffect));
+                                    null,
+                                    null,
+                                    recoveryEffect: null));
                         }
 
                         HostedProducerSiteKind? externalPropertyKind =
@@ -43054,10 +43055,13 @@ internal static partial class HostedGrimoireProducerInventory
                     } dependencyType,
                 } dependency)
             {
-                return IsExactRegisteredConstructorDependency(
-                    source.Caller,
-                    dependency,
-                    dependencyType);
+                // The value flow follows storage but not a write to the captured parameter itself, so
+                // a parameter that anything in its type writes is not the instance the container injected.
+                return ConstructorParameterNeverWritten(dependency)
+                    && IsExactRegisteredConstructorDependency(
+                        source.Caller,
+                        dependency,
+                        dependencyType);
             }
 
             // H1: an exact GetRequiredService on an unproven IServiceProvider is not the
@@ -43120,10 +43124,10 @@ internal static partial class HostedGrimoireProducerInventory
 
             ISymbol? symbol = source.Caller.Model.GetSymbolInfo(value).Symbol;
 
-            // A directly named parameter may be reassigned; accept it directly only when the
-            // factory body never writes it.
+            // A parameter the factory body writes anywhere is not the container, whether it is
+            // named here or reached through an alias that captured it after the write.
             if (IsRegistrationFactoryProvider(symbol)
-                && (!direct || ParameterNeverWritten((IParameterSymbol)symbol!)))
+                && ParameterNeverWritten((IParameterSymbol)symbol!))
             {
                 return true;
             }
@@ -43132,7 +43136,7 @@ internal static partial class HostedGrimoireProducerInventory
                 {
                     ContainingSymbol: IMethodSymbol { MethodKind: MethodKind.Constructor },
                 } dependency
-                && (!direct || PrimaryConstructorParameterNeverWritten(dependency))
+                && ConstructorParameterNeverWritten(dependency)
                 && TypeKey(dependency.Type) is "System.IServiceProvider"
                     or "Microsoft.Extensions.DependencyInjection.IServiceScopeFactory")
             {
@@ -43164,7 +43168,7 @@ internal static partial class HostedGrimoireProducerInventory
             return direct ? null : false;
         }
 
-        private bool PrimaryConstructorParameterNeverWritten(IParameterSymbol parameter) =>
+        private bool ConstructorParameterNeverWritten(IParameterSymbol parameter) =>
             parameter.ContainingSymbol is IMethodSymbol { ContainingType: { } owner }
             && owner.DeclaringSyntaxReferences.Length != 0
             && ParameterNeverWrittenWithin(parameter, owner.DeclaringSyntaxReferences.Select(static reference => reference.GetSyntax()));
@@ -43191,17 +43195,7 @@ internal static partial class HostedGrimoireProducerInventory
                         continue;
                     }
 
-                    SyntaxNode? parent = name.Parent;
-
-                    while (parent is ParenthesizedExpressionSyntax)
-                    {
-                        parent = parent.Parent;
-                    }
-
-                    if (parent is AssignmentExpressionSyntax assignment && assignment.Left.Span.Contains(name.Span)
-                        || parent is ArgumentSyntax { RefKindKeyword.RawKind: not 0 }
-                        || parent is PrefixUnaryExpressionSyntax or PostfixUnaryExpressionSyntax
-                        || parent is RefExpressionSyntax)
+                    if (IsParameterReferenceWritten(model, name))
                     {
                         return false;
                     }
@@ -43209,6 +43203,55 @@ internal static partial class HostedGrimoireProducerInventory
             }
 
             return true;
+        }
+
+        /// <summary>
+        /// A write is judged on the operation the compiler binds, not on the shape of the syntax around
+        /// the name: an assignment (simple, compound, coalescing or deconstructing, however deeply the
+        /// target tuple nests), a ref, out or in argument, an increment, an address-of, or a ref alias
+        /// all change what the parameter holds. A reference the compiler gives no operation is refused
+        /// unless it only names the parameter.
+        /// </summary>
+        private static bool IsParameterReferenceWritten(SemanticModel model, IdentifierNameSyntax name)
+        {
+            SyntaxNode? parent = name.Parent;
+
+            while (parent is ParenthesizedExpressionSyntax)
+            {
+                parent = parent.Parent;
+            }
+
+            if (parent is ArgumentSyntax { RefKindKeyword.RawKind: not 0 }
+                or RefExpressionSyntax
+                or PrefixUnaryExpressionSyntax { RawKind: (int)SyntaxKind.AddressOfExpression })
+            {
+                return true;
+            }
+
+            if (model.GetOperation(name) is not { } reference)
+            {
+                return !name.Ancestors().OfType<InvocationExpressionSyntax>().Any(static invocation =>
+                    invocation.Expression is IdentifierNameSyntax { Identifier.ValueText: "nameof" });
+            }
+
+            IOperation node = reference;
+
+            while (node.Parent is ITupleOperation)
+            {
+                node = node.Parent;
+            }
+
+            return node.Parent switch
+            {
+                IAssignmentOperation assignment => ReferenceEquals(assignment.Target, node)
+                    || assignment is ISimpleAssignmentOperation { IsRef: true } && ReferenceEquals(assignment.Value, node),
+                IIncrementOrDecrementOperation => true,
+                IAddressOfOperation => true,
+                IArgumentOperation argument => argument.Parameter is null || argument.Parameter.RefKind != RefKind.None,
+                IVariableInitializerOperation { Parent: IVariableDeclaratorOperation declarator } =>
+                    declarator.Symbol.RefKind != RefKind.None,
+                _ => false,
+            };
         }
 
         private bool IsContainerScopeCreation(
@@ -43955,35 +43998,82 @@ internal static partial class HostedGrimoireProducerInventory
                     typeof(Microsoft.EntityFrameworkCore.Infrastructure.AccessorExtensions).Assembly.GetName());
         }
 
+        private bool? dbContextConnectionReplacement;
+
         /// <summary>
-        /// H3: EF lets a caller replace a built context's connection or provider services
-        /// after resolution. Any such call anywhere refuses the closed certificate.
+        /// H3: EF lets a caller replace a built context's connection or provider services after
+        /// resolution. Every reference to a member that can do so refuses the closed certificate,
+        /// whether it is invoked, converted to a delegate, assigned through, or never reached: the
+        /// scan reads each simple name's bound symbol, not the shape of the call around it.
         /// </summary>
         private bool HasDbContextConnectionReplacement()
         {
-            foreach ((InvocationExpressionSyntax call, SemanticModel model) in invocations)
+            if (dbContextConnectionReplacement is bool cached)
             {
-                if (model.GetSymbolInfo(call).Symbol is not IMethodSymbol method)
+                return cached;
+            }
+
+            bool found = false;
+
+            foreach ((SyntaxTree tree, SemanticModel model) in semanticModels)
+            {
+                foreach (SimpleNameSyntax name in tree.GetRoot().DescendantNodes().OfType<SimpleNameSyntax>())
                 {
-                    continue;
+                    SymbolInfo info = model.GetSymbolInfo(name);
+
+                    if (info.Symbol is { } symbol
+                            ? IsDbContextConnectionReplacementMember(symbol)
+                            : info.CandidateSymbols.Any(IsDbContextConnectionReplacementMember))
+                    {
+                        found = true;
+
+                        break;
+                    }
                 }
 
-                IMethodSymbol definition = method.ReducedFrom ?? method;
-
-                string type = TypeKey(definition.ContainingType);
-
-                if (type == "Microsoft.EntityFrameworkCore.RelationalDatabaseFacadeExtensions"
-                        && definition.Name is "SetDbConnection" or "SetConnectionString"
-                    || type == "Microsoft.EntityFrameworkCore.Infrastructure.AccessorExtensions"
-                        && !IsReviewedAccessorLoggerFactoryRead(method)
-                    || type == "Microsoft.EntityFrameworkCore.Storage.IRelationalConnection"
-                    || definition.Name is "UseServiceProviderFactory" or "ConfigureContainer")
+                if (found)
                 {
-                    return true;
+                    break;
                 }
             }
 
-            return false;
+            dbContextConnectionReplacement = found;
+
+            return found;
+        }
+
+        private static bool IsDbContextConnectionReplacementMember(ISymbol symbol)
+        {
+            if (symbol is INamedTypeSymbol)
+            {
+                return false;
+            }
+
+            ISymbol definition = symbol is IMethodSymbol method
+                ? method.ReducedFrom ?? method
+                : symbol;
+
+            if (definition is IMethodSymbol { Name: "UseServiceProviderFactory" or "ConfigureContainer" })
+            {
+                return true;
+            }
+
+            if (definition.ContainingType is not { } type)
+            {
+                return false;
+            }
+
+            string key = TypeKey(type);
+
+            return key == "Microsoft.EntityFrameworkCore.RelationalDatabaseFacadeExtensions"
+                    && definition.Name is "SetDbConnection" or "SetConnectionString"
+                || key == "Microsoft.EntityFrameworkCore.Infrastructure.AccessorExtensions"
+                    && !(symbol is IMethodSymbol read && IsReviewedAccessorLoggerFactoryRead(read))
+                || key == "Microsoft.EntityFrameworkCore.Infrastructure.IInfrastructure`1"
+                    && definition.Name == "Instance"
+                || key == "Microsoft.EntityFrameworkCore.Storage.IRelationalConnection"
+                || type.AllInterfaces.Any(static inherited =>
+                    TypeKey(inherited) == "Microsoft.EntityFrameworkCore.Storage.IRelationalConnection");
         }
 
         /// <summary>
@@ -44176,8 +44266,20 @@ internal static partial class HostedGrimoireProducerInventory
         /// EF runs the authored OnConfiguring at the first use of a context's services, whichever
         /// member that is and however the receiver is written: spelled out, reached through
         /// <c>?.</c>, implied (<c>this</c> inside a derived context), a member the derived
-        /// context declares itself, or EF's accessor extensions. Judge it at every such use.
+        /// context declares itself, one of the interfaces the context implements, or EF's accessor
+        /// extensions. Judge it at every such use. The use that really triggers it can be a later
+        /// consumer of a value read here (a <c>DbSet</c>, an <c>IQueryable</c> built from one, the
+        /// <c>DatabaseFacade</c>), after the admission current at the read has ended, so the
+        /// traversal inherits no work, effect or recovery admission: its effects are unadmitted
+        /// wherever the hook fires.
         /// </summary>
+        // The interfaces the framework context implements: a member read through one of them is
+        // the context's own member, whichever spelling reaches it.
+        private static readonly HashSet<string> DbContextInterfaceKeys = typeof(Microsoft.EntityFrameworkCore.DbContext)
+            .GetInterfaces()
+            .Select(static contract => contract.Namespace + "." + contract.Name)
+            .ToHashSet(StringComparer.Ordinal);
+
         private AuthoredMember? DbContextFirstUseConfiguring(
             AuthoredMember member,
             SyntaxNode node,
@@ -44189,7 +44291,9 @@ internal static partial class HostedGrimoireProducerInventory
 
             string owner = TypeKey(definition.ContainingType);
 
-            bool contextMember = owner == "Microsoft.EntityFrameworkCore.DbContext"
+            bool contextMember = (owner == "Microsoft.EntityFrameworkCore.DbContext"
+                    || definition.ContainingType is { TypeKind: TypeKind.Interface }
+                        && DbContextInterfaceKeys.Contains(owner))
                 && !definition.IsStatic
                 && definition.Name is not ("Dispose" or "DisposeAsync");
 
@@ -44458,6 +44562,134 @@ internal static partial class HostedGrimoireProducerInventory
                     .ToArray();
         }
 
+        /// <summary>
+        /// The registration configures the <c>DbContextOptions&lt;T&gt;</c> the container injects, so a
+        /// container-built context is configured by it only when the one constructor the container can
+        /// use hands exactly that parameter, unchanged, to EF's <c>DbContext(DbContextOptions)</c>
+        /// constructor, directly or through authored constructors that each forward their own
+        /// parameter. A context that passes other options to its base class, or whose constructor the
+        /// container may not select, reads a provider its registration never chose.
+        /// </summary>
+        private bool ContextForwardsInjectedOptions(INamedTypeSymbol dbContext)
+        {
+            if (dbContext.InstanceConstructors.Where(static constructor => !constructor.IsStatic).ToArray() is not [IMethodSymbol only]
+                || only.DeclaredAccessibility != Accessibility.Public)
+            {
+                return false;
+            }
+
+            return only.Parameters
+                    .Where(parameter => IsDbContextOptions(parameter.Type, dbContext))
+                    .ToArray() is [IParameterSymbol options]
+                && ConstructorForwardsOptions(only, options, 0);
+        }
+
+        private static bool IsDbContextOptions(ITypeSymbol type, INamedTypeSymbol? generic)
+        {
+            if (type is not INamedTypeSymbol named
+                || !AssemblyIdentityMatches(
+                    named.ContainingAssembly.Identity,
+                    typeof(Microsoft.EntityFrameworkCore.DbContextOptions).Assembly.GetName())
+                || named.Locations.Any(static location => location.IsInSource))
+            {
+                return false;
+            }
+
+            return generic is null
+                ? TypeKey(named) is "Microsoft.EntityFrameworkCore.DbContextOptions"
+                    or "Microsoft.EntityFrameworkCore.DbContextOptions`1"
+                : TypeKey(named) == "Microsoft.EntityFrameworkCore.DbContextOptions`1"
+                    && named.TypeArguments is [ITypeSymbol argument]
+                    && SymbolEqualityComparer.Default.Equals(argument, generic);
+        }
+
+        private bool ConstructorForwardsOptions(
+            IMethodSymbol constructor,
+            IParameterSymbol options,
+            int depth)
+        {
+            if (depth > 8
+                || constructor.DeclaringSyntaxReferences is not [{ } reference]
+                || !ConstructorParameterNeverWritten(options)
+                || !semanticModels.TryGetValue(reference.SyntaxTree, out SemanticModel? model))
+            {
+                return false;
+            }
+
+            SyntaxNode? initializer = reference.GetSyntax() switch
+            {
+                ConstructorDeclarationSyntax declaration => declaration.Initializer,
+                TypeDeclarationSyntax { ParameterList: not null } declaration =>
+                    declaration.BaseList?.Types.OfType<PrimaryConstructorBaseTypeSyntax>().SingleOrDefault(),
+                ParameterListSyntax { Parent: TypeDeclarationSyntax declaration } =>
+                    declaration.BaseList?.Types.OfType<PrimaryConstructorBaseTypeSyntax>().SingleOrDefault(),
+                _ => null,
+            };
+
+            // An absent initializer is the implicit parameterless base call: nothing is forwarded.
+            ArgumentListSyntax? arguments = initializer switch
+            {
+                ConstructorInitializerSyntax constructorInitializer => constructorInitializer.ArgumentList,
+                PrimaryConstructorBaseTypeSyntax primary => primary.ArgumentList,
+                _ => null,
+            };
+
+            if (arguments is null
+                || model.GetSymbolInfo(initializer!).Symbol is not IMethodSymbol target
+                || target.MethodKind != MethodKind.Constructor)
+            {
+                return false;
+            }
+
+            IParameterSymbol? forwarded = null;
+
+            for (int index = 0; index < arguments.Arguments.Count; index++)
+            {
+                ArgumentSyntax argument = arguments.Arguments[index];
+
+                if (StripTransparentExpression(argument.Expression) is not IdentifierNameSyntax name
+                    || !SymbolEqualityComparer.Default.Equals(model.GetSymbolInfo(name).Symbol, options))
+                {
+                    continue;
+                }
+
+                IParameterSymbol? receiving = argument.NameColon is { } named
+                    ? target.Parameters.FirstOrDefault(parameter => parameter.Name == named.Name.Identifier.ValueText)
+                    : index < target.Parameters.Length ? target.Parameters[index] : null;
+
+                if (receiving is null || receiving.IsParams || forwarded is not null)
+                {
+                    return false;
+                }
+
+                forwarded = receiving;
+            }
+
+            if (forwarded is null)
+            {
+                return false;
+            }
+
+            INamedTypeSymbol targetType = target.ContainingType;
+
+            if (TypeKey(targetType) == "Microsoft.EntityFrameworkCore.DbContext"
+                && targetType.Locations.All(static location => !location.IsInSource)
+                && AssemblyIdentityMatches(
+                    targetType.ContainingAssembly.Identity,
+                    typeof(Microsoft.EntityFrameworkCore.DbContext).Assembly.GetName()))
+            {
+                return forwarded.Ordinal == 0
+                    && target.Parameters.Length == 1
+                    && IsDbContextOptions(forwarded.Type, null)
+                    && TypeKey(forwarded.Type) == "Microsoft.EntityFrameworkCore.DbContextOptions";
+            }
+
+            return IsDbContextOptions(forwarded.Type, null)
+                && target.DeclaringSyntaxReferences.Length != 0
+                && IsExactEfDbContext(targetType)
+                && ConstructorForwardsOptions(target, forwarded, depth + 1);
+        }
+
         private readonly Dictionary<BoundTypeIdentity, bool>
             closedSqliteDbContextConfigurations = [];
 
@@ -44494,6 +44726,7 @@ internal static partial class HostedGrimoireProducerInventory
                     dbContext,
                     consumingCompilation)
                 && HasClosedDbContextOnConfiguring(dbContext)
+                && ContextForwardsInjectedOptions(dbContext)
                 && !HasDbContextConnectionReplacement()
                 && !ServiceCollectionValueEscapes();
 
