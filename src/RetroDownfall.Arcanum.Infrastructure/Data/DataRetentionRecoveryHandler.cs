@@ -10,9 +10,9 @@ internal sealed class DataRetentionRecoveryHandler(
 
     public int SupportedCheckpointVersion => 2;
 
-    public Task<LongRunningOperationRecoveryResult> RecoverAsync(
+    public async Task<LongRunningOperationRecoveryResult> RecoverAsync(
         LongRunningOperation operation,
         CancellationToken cancellationToken) =>
-        service.RecoverPruneAsync(operation, cancellationToken);
+        await service.RecoverPruneAsync(operation, cancellationToken).ConfigureAwait(false);
 
 }

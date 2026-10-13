@@ -33,7 +33,7 @@ internal sealed class BackupCreateRecoveryHandler : ILongRunningOperationRecover
         if (operation.CheckpointVersion != SupportedCheckpointVersion
             || operation.CheckpointPayload is null)
         {
-            return CorruptCheckpoint();
+            return Task.FromResult(CorruptCheckpoint());
         }
 
         BackupOperationCheckpoint? checkpoint;
@@ -48,7 +48,7 @@ internal sealed class BackupCreateRecoveryHandler : ILongRunningOperationRecover
             exception is JsonException
                 or NotSupportedException)
         {
-            return CorruptCheckpoint();
+            return Task.FromResult(CorruptCheckpoint());
         }
 
         if (checkpoint is null
@@ -58,7 +58,7 @@ internal sealed class BackupCreateRecoveryHandler : ILongRunningOperationRecover
                 operation.CheckpointReference,
                 out string stagingPath))
         {
-            return CorruptCheckpoint();
+            return Task.FromResult(CorruptCheckpoint());
         }
 
         if (!PathEntryExists(stagingPath))
@@ -75,7 +75,7 @@ internal sealed class BackupCreateRecoveryHandler : ILongRunningOperationRecover
             // leaves; anything else keeps the operator in the loop.
             return TryRemoveUnrecordedEmptyStaging(stagingPath)
                 ? Task.FromResult(LongRunningOperationRecoveryResult.Abandoned())
-                : CleanupFailed();
+                : Task.FromResult(CleanupFailed());
         }
 
         cancellationToken.ThrowIfCancellationRequested();
@@ -89,7 +89,7 @@ internal sealed class BackupCreateRecoveryHandler : ILongRunningOperationRecover
             return Task.FromResult(LongRunningOperationRecoveryResult.Abandoned());
         }
 
-        return CleanupFailed();
+        return Task.FromResult(CleanupFailed());
     }
 
     /// <summary>
@@ -242,13 +242,11 @@ internal sealed class BackupCreateRecoveryHandler : ILongRunningOperationRecover
         }
     }
 
-    private static Task<LongRunningOperationRecoveryResult> CorruptCheckpoint() =>
-        Task.FromResult(
-            LongRunningOperationRecoveryResult.RequiresAttention(
-                LongRunningOperationErrorCodes.CorruptCheckpoint));
+    private static LongRunningOperationRecoveryResult CorruptCheckpoint() =>
+        LongRunningOperationRecoveryResult.RequiresAttention(
+            LongRunningOperationErrorCodes.CorruptCheckpoint);
 
-    private static Task<LongRunningOperationRecoveryResult> CleanupFailed() =>
-        Task.FromResult(
-            LongRunningOperationRecoveryResult.RequiresAttention(
-                StagingCleanupFailed));
+    private static LongRunningOperationRecoveryResult CleanupFailed() =>
+        LongRunningOperationRecoveryResult.RequiresAttention(
+            StagingCleanupFailed);
 }

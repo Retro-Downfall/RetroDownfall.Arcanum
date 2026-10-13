@@ -660,7 +660,7 @@ internal sealed partial class DataRetentionService
         }
     }
 
-    internal Task<LongRunningOperationRecoveryResult> RecoverFactoryResetAuthenticatedAsync(
+    internal async Task<LongRunningOperationRecoveryResult> RecoverFactoryResetAuthenticatedAsync(
         LongRunningOperation operation,
         CovenantErasureCoordinator.AuthenticatedCovenantErasureRecoveryAdmission admission,
         CancellationToken cancellationToken)
@@ -680,9 +680,10 @@ internal sealed partial class DataRetentionService
                        operation.Kind,
                        operation.Id),
                    StringComparison.Ordinal)
-            ? RecoverCovenantFactoryErasureAsync(operation, admission, cancellationToken)
-            : Task.FromResult(LongRunningOperationRecoveryResult.RequiresAttention(
-                ErrorCodes.Covenant.ManualRecoveryRequired));
+            ? await RecoverCovenantFactoryErasureAsync(operation, admission, cancellationToken)
+                .ConfigureAwait(false)
+            : LongRunningOperationRecoveryResult.RequiresAttention(
+                ErrorCodes.Covenant.ManualRecoveryRequired);
     }
 
     /// <summary>

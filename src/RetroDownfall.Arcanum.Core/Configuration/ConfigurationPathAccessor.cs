@@ -20,10 +20,12 @@ public static class ConfigurationPathAccessor
     private const string RedactionMask = "***";
 
     /// <summary>
-    /// Generic collection shapes an ordered settings property may declare. <see cref="IReadOnlyList{T}"/>
-    /// belongs here because <see cref="ProviderSettings.Models"/> declares it: omitting it makes every
-    /// <c>providers.N.models.M.*</c> descriptor path unresolvable through <c>arcanum config get/set</c>
-    /// and through an <c>ARCANUM_Arcanum__…</c> override.
+    /// Generic collection shapes an ordered settings property may declare, besides an array.
+    /// <see cref="IReadOnlyList{T}"/> belongs here because <see cref="WardSettings.ForbiddenArts"/>
+    /// declares it: omitting it makes that property's indexed descriptor paths unresolvable through
+    /// <c>arcanum config get/set</c> and through an <c>ARCANUM_Arcanum__…</c> override.
+    /// <see cref="ProviderSettings.Models"/> is an array, so its <c>providers.N.models.M.*</c> paths
+    /// resolve through the array branch of <c>TryGetElementType</c>.
     /// </summary>
     private static readonly Type[] IndexedCollectionDefinitions =
     [

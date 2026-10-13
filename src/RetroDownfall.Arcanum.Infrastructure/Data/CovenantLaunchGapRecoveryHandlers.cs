@@ -40,42 +40,44 @@ internal sealed class CovenantLaunchGapRecovery
             covenantErasureCoordinator: covenantErasureCoordinator);
     }
 
-    public Task<LongRunningOperationRecoveryResult> RecoverMutationAsync(
+    public async Task<LongRunningOperationRecoveryResult> RecoverMutationAsync(
         LongRunningOperation operation,
         CancellationToken cancellationToken) =>
         operation.CheckpointVersion == CovenantOfflineTransitionLaunchV4.CurrentVersion
-            ? _retention.RecoverMutationAsync(operation, cancellationToken)
-            : Task.FromResult(LongRunningOperationRecoveryResult.RequiresAttention(
-                LongRunningOperationErrorCodes.UnsupportedCheckpointVersion));
+            ? await _retention.RecoverMutationAsync(operation, cancellationToken).ConfigureAwait(false)
+            : LongRunningOperationRecoveryResult.RequiresAttention(
+                LongRunningOperationErrorCodes.UnsupportedCheckpointVersion);
 
-    public Task<LongRunningOperationRecoveryResult> RecoverMutationAuthenticatedAsync(
+    public async Task<LongRunningOperationRecoveryResult> RecoverMutationAuthenticatedAsync(
         LongRunningOperation operation,
         CovenantErasureCoordinator.AuthenticatedCovenantErasureRecoveryAdmission admission,
         CancellationToken cancellationToken) =>
         operation.CheckpointVersion == CovenantOfflineTransitionLaunchV4.CurrentVersion
-            ? _retention.RecoverMutationAuthenticatedAsync(operation, admission, cancellationToken)
-            : Task.FromResult(LongRunningOperationRecoveryResult.RequiresAttention(
-                LongRunningOperationErrorCodes.UnsupportedCheckpointVersion));
+            ? await _retention.RecoverMutationAuthenticatedAsync(operation, admission, cancellationToken)
+                .ConfigureAwait(false)
+            : LongRunningOperationRecoveryResult.RequiresAttention(
+                LongRunningOperationErrorCodes.UnsupportedCheckpointVersion);
 
-    public Task<LongRunningOperationRecoveryResult> RecoverFactoryResetAsync(
+    public async Task<LongRunningOperationRecoveryResult> RecoverFactoryResetAsync(
         LongRunningOperation operation,
         CancellationToken cancellationToken) =>
         operation.CheckpointVersion == DataRetentionFactoryTransitionLaunchV2.CurrentVersion
-            ? _retention.RecoverFactoryResetAsync(operation, cancellationToken)
-            : Task.FromResult(LongRunningOperationRecoveryResult.RequiresAttention(
-                LongRunningOperationErrorCodes.UnsupportedCheckpointVersion));
+            ? await _retention.RecoverFactoryResetAsync(operation, cancellationToken).ConfigureAwait(false)
+            : LongRunningOperationRecoveryResult.RequiresAttention(
+                LongRunningOperationErrorCodes.UnsupportedCheckpointVersion);
 
-    public Task<LongRunningOperationRecoveryResult> RecoverFactoryResetAuthenticatedAsync(
+    public async Task<LongRunningOperationRecoveryResult> RecoverFactoryResetAuthenticatedAsync(
         LongRunningOperation operation,
         CovenantErasureCoordinator.AuthenticatedCovenantErasureRecoveryAdmission admission,
         CancellationToken cancellationToken) =>
         operation.CheckpointVersion == DataRetentionFactoryTransitionLaunchV2.CurrentVersion
-            ? _retention.RecoverFactoryResetAuthenticatedAsync(
-                operation,
-                admission,
-                cancellationToken)
-            : Task.FromResult(LongRunningOperationRecoveryResult.RequiresAttention(
-                LongRunningOperationErrorCodes.UnsupportedCheckpointVersion));
+            ? await _retention.RecoverFactoryResetAuthenticatedAsync(
+                    operation,
+                    admission,
+                    cancellationToken)
+                .ConfigureAwait(false)
+            : LongRunningOperationRecoveryResult.RequiresAttention(
+                LongRunningOperationErrorCodes.UnsupportedCheckpointVersion);
 }
 
 /// <summary>Finishes only an adopted Covenant-reset launch gap.</summary>
@@ -86,16 +88,17 @@ internal sealed class CovenantLaunchGapMutationRecoveryHandler(
 
     public int SupportedCheckpointVersion => CovenantOfflineTransitionLaunchV4.CurrentVersion;
 
-    public Task<LongRunningOperationRecoveryResult> RecoverAsync(
+    public async Task<LongRunningOperationRecoveryResult> RecoverAsync(
         LongRunningOperation operation,
         CancellationToken cancellationToken) =>
-        recovery.RecoverMutationAsync(operation, cancellationToken);
+        await recovery.RecoverMutationAsync(operation, cancellationToken).ConfigureAwait(false);
 
-    public Task<LongRunningOperationRecoveryResult> RecoverAuthenticatedAsync(
+    public async Task<LongRunningOperationRecoveryResult> RecoverAuthenticatedAsync(
         LongRunningOperation operation,
         CovenantErasureCoordinator.AuthenticatedCovenantErasureRecoveryAdmission admission,
         CancellationToken cancellationToken) =>
-        recovery.RecoverMutationAuthenticatedAsync(operation, admission, cancellationToken);
+        await recovery.RecoverMutationAuthenticatedAsync(operation, admission, cancellationToken)
+            .ConfigureAwait(false);
 }
 
 /// <summary>Finishes only an adopted healthy-catalog factory-erasure launch gap.</summary>
@@ -106,14 +109,15 @@ internal sealed class CovenantLaunchGapFactoryResetRecoveryHandler(
 
     public int SupportedCheckpointVersion => DataRetentionFactoryTransitionLaunchV2.CurrentVersion;
 
-    public Task<LongRunningOperationRecoveryResult> RecoverAsync(
+    public async Task<LongRunningOperationRecoveryResult> RecoverAsync(
         LongRunningOperation operation,
         CancellationToken cancellationToken) =>
-        recovery.RecoverFactoryResetAsync(operation, cancellationToken);
+        await recovery.RecoverFactoryResetAsync(operation, cancellationToken).ConfigureAwait(false);
 
-    public Task<LongRunningOperationRecoveryResult> RecoverAuthenticatedAsync(
+    public async Task<LongRunningOperationRecoveryResult> RecoverAuthenticatedAsync(
         LongRunningOperation operation,
         CovenantErasureCoordinator.AuthenticatedCovenantErasureRecoveryAdmission admission,
         CancellationToken cancellationToken) =>
-        recovery.RecoverFactoryResetAuthenticatedAsync(operation, admission, cancellationToken);
+        await recovery.RecoverFactoryResetAuthenticatedAsync(operation, admission, cancellationToken)
+            .ConfigureAwait(false);
 }

@@ -29,7 +29,7 @@ public sealed record ProviderSettings
     /// </summary>
     public string? Command { get; set; }
 
-    public IReadOnlyList<ModelEntry> Models { get; set; } = [];
+    public ModelEntry[] Models { get; set; } = [];
 
     /// <summary>
     /// Model ids omitted from listings and pickers for this provider. Empty — the default — means
