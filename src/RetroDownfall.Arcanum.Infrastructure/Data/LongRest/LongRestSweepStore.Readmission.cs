@@ -26,8 +26,13 @@ internal interface ILongRestParkedReadmission
     Task<Result<LongRestReadmission?>> TryReadmitParkedAsync(Guid operationId, long expectedRevision, LongRestSweepScope scope,
         LongRestConfigurationStamp configuration, string workerOwner, DateTimeOffset now, DateTimeOffset leaseExpiresAt, CancellationToken ct);
 
-    /// <summary>Stamps when the owning worker parked the sweep, which starts the cooldown the next readmission must wait out.</summary>
-    Task<Result> MarkParkedAsync(Guid operationId, DateTimeOffset parkedAt, CancellationToken ct);
+    /// <summary>
+    /// Stamps when the owning worker parked the sweep, which starts the cooldown the next readmission must wait out, and
+    /// returns the Sweep Failure Budget the park leaves behind. Both happen in one transaction, so the count is the durable
+    /// one: committed progress during the run has already reset it, and the park must read that rather than the count
+    /// the readmission left.
+    /// </summary>
+    Task<Result<int>> MarkParkedAsync(Guid operationId, DateTimeOffset parkedAt, CancellationToken ct);
 }
 
 internal sealed partial class LongRestSweepStore : ILongRestParkedReadmission
@@ -86,9 +91,9 @@ internal sealed partial class LongRestSweepStore : ILongRestParkedReadmission
             // An operator retry is an explicit decision: it ignores the cooldown and starts a fresh budget.
             readmitCount = 0;
         }
-        else if (code == LongRestParkCodes.MaintenanceDeferred)
+        else if (LongRestFaultPolicy.IsFreePark(code))
         {
-            // Yielding to maintenance is not a failure: it neither waits nor spends budget.
+            // The other free park, a yield to maintenance, is not a failure: it neither waits nor spends budget.
             readmitCount = sweep.ReadmitCount;
         }
         else
@@ -117,10 +122,10 @@ internal sealed partial class LongRestSweepStore : ILongRestParkedReadmission
         }
 
         await using (SqliteCommand budget = Command(connection, transaction, """
-            UPDATE long_rest_sweeps SET ReadmitCount = $count, ParkedAt = NULL
+            UPDATE long_rest_sweeps SET ReadmitCount = $count, ParkedAt = $at
             WHERE OperationId = $operation AND Revision = $revision AND PartitionDigest IS $partition
                 AND PhaseCode NOT IN ($invalidated, $retired);
-            """, ("$count", readmitCount), ("$operation", operationId.ToString("N")), ("$revision", sweep.Revision),
+            """, ("$count", readmitCount), ("$at", at), ("$operation", operationId.ToString("N")), ("$revision", sweep.Revision),
             ("$partition", scope.ProtectedPartitionDigest?.Bytes), ("$invalidated", (int)LongRestSweepPhase.Invalidated),
             ("$retired", (int)LongRestSweepPhase.Retired)))
         {
@@ -133,22 +138,26 @@ internal sealed partial class LongRestSweepStore : ILongRestParkedReadmission
         return new LongRestReadmission(running, readmitCount);
     }, ct);
 
-    public async Task<Result> MarkParkedAsync(Guid operationId, DateTimeOffset parkedAt, CancellationToken ct)
+    public async Task<Result<int>> MarkParkedAsync(Guid operationId, DateTimeOffset parkedAt, CancellationToken ct)
     {
         if (operationId == Guid.Empty) return new Error(ErrorCodes.LongRest.StaleInput, "The sweep could not prove its exact current work and immutable accepted evidence.");
 
-        Result<bool> marked = await WithinAsync(async (connection, transaction) =>
+        return await WithinAsync(async (connection, transaction) =>
         {
-            await ExecuteAsync(connection, transaction, """
+            await using (SqliteCommand stamp = Command(connection, transaction, """
                 UPDATE long_rest_sweeps SET ParkedAt = $at
                 WHERE OperationId = $operation AND PhaseCode NOT IN ($invalidated, $retired);
-                """, ct, ("$at", UtcInstantText.Format(parkedAt)), ("$operation", operationId.ToString("N")),
-                ("$invalidated", (int)LongRestSweepPhase.Invalidated), ("$retired", (int)LongRestSweepPhase.Retired)).ConfigureAwait(false);
+                """, ("$at", UtcInstantText.Format(parkedAt)), ("$operation", operationId.ToString("N")),
+                ("$invalidated", (int)LongRestSweepPhase.Invalidated), ("$retired", (int)LongRestSweepPhase.Retired)))
+            {
+                if (await stamp.ExecuteNonQueryAsync(ct).ConfigureAwait(false) != 1) throw new InvalidDataException();
+            }
 
-            return true;
+            await using SqliteCommand budget = Command(connection, transaction, "SELECT ReadmitCount FROM long_rest_sweeps WHERE OperationId = $operation;",
+                ("$operation", operationId.ToString("N")));
+
+            return await budget.ExecuteScalarAsync(ct).ConfigureAwait(false) is long count ? checked((int)count) : throw new InvalidDataException();
         }, ct).ConfigureAwait(false);
-
-        return marked.IsSuccess ? Result.Success() : marked.Error;
     }
 
     private static async Task<ParkedSweep?> ReadParkedSweepAsync(SqliteConnection connection, SqliteTransaction transaction, Guid operationId,

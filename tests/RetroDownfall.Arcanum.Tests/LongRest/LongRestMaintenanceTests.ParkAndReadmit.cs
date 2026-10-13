@@ -209,7 +209,8 @@ public sealed partial class LongRestMaintenanceTests
 
         Assert.Equal(0L, await f.H.ScalarAsync("SELECT ReadmitCount FROM long_rest_sweeps;"));
 
-        Assert.Equal(DBNull.Value, await f.H.ScalarAsync("SELECT ParkedAt FROM long_rest_sweeps;"));
+        // Readmission restarts the park clock at the readmission instant; completion leaves it as a harmless record.
+        Assert.NotEqual(DBNull.Value, await f.H.ScalarAsync("SELECT ParkedAt FROM long_rest_sweeps;"));
     }
 
     [Fact]
@@ -672,6 +673,9 @@ public sealed partial class LongRestMaintenanceTests
 
         Assert.Equal(ErrorCodes.LongRest.SweepParked, requested.Error.Code);
 
+        // The refusal names the parked operation (a content-free identifier) so the remedy can be run against it.
+        Assert.Contains(f.Operation.ToString("D"), requested.Error.Message, StringComparison.Ordinal);
+
         Assert.Equal(before, await ParkedSnapshotAsync(f));
 
         Assert.Equal(changes, (long)(await f.H.ScalarAsync("SELECT total_changes();"))!);
@@ -816,14 +820,26 @@ public sealed partial class LongRestMaintenanceTests
     }
 
     /// <summary>
+    /// Lapses the fixture sweep's lease the way elapsed time would. Recovery adopts a row only after its lease has lapsed,
+    /// which is five minutes after the last renewal, so a readmission stamp the lease outlived is that much older too.
+    /// </summary>
+    internal static async Task LapseLeaseAsync(MaintenanceFixture f)
+    {
+        await f.H.ExecuteAsync("UPDATE LongRunningOperations SET LeaseExpiresAt = '2000-01-01T00:00:00.0000000Z' WHERE Id = $operation AND LeaseOwner IS NOT NULL;",
+            ("$operation", f.Operation.ToString("N")));
+
+        await f.H.ExecuteAsync("UPDATE long_rest_sweeps SET ParkedAt = $at WHERE OperationId = $operation AND ParkedAt IS NOT NULL;",
+            ("$at", UtcInstantText.Format(f.Clock.GetUtcNow() - TimeSpan.FromMinutes(5))), ("$operation", f.Operation.ToString("N")));
+    }
+
+    /// <summary>
     /// Expires the sweep's lease and runs the registered recovery pass, which only parks it; then drives the hosted worker's
     /// real discovery and its admitted door against whatever it finds, exactly as the worker's loop does.
     /// </summary>
     internal static async Task<RecoveredSweep> RecoverThenReadmitAsync(MaintenanceFixture f, string recoveryOwner,
         LongRestSweepCoordinator? coordinator = null, IGrimoireConnectionAdmissionGate? gate = null)
     {
-        await f.H.ExecuteAsync("UPDATE LongRunningOperations SET LeaseExpiresAt = '2000-01-01T00:00:00.0000000Z' WHERE Id = $operation AND LeaseOwner IS NOT NULL;",
-            ("$operation", f.Operation.ToString("N")));
+        await LapseLeaseAsync(f);
 
         LongRunningOperationStartupHostedService recovery = new(new ParkingRecoveryScopes(f), TimeProvider.System,
             new LongRunningOperationReconciliationStatus(), gate ?? f.RecordedAdmission,

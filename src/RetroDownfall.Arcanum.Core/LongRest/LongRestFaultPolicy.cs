@@ -8,7 +8,10 @@ public enum LongRestFaultClass : byte
     /// <summary>Transient: the same sweep may be readmitted by its own authority class after the cooldown.</summary>
     ResumeLater = 1,
 
-    /// <summary>The captured generation can never complete; a fresh request should start a new one.</summary>
+    /// <summary>
+    /// The captured generation can never complete, so a fresh request should start a new one. Until the turn policy
+    /// retires these parks, request admission refuses a parked sweep with one of these codes as <c>LongRest.SweepParked</c>.
+    /// </summary>
     RestartGeneration = 2,
 
     /// <summary>Nothing automatic may continue this sweep; an operator retries or cancels it.</summary>
@@ -51,8 +54,9 @@ public static class LongRestParkCodes
 
 /// <summary>
 /// The pure classifier that maps every Long Rest fault code to what may happen next, and the Sweep Failure Budget that
-/// bounds clean readmission. The coordinator's outcome mapping, the readmission SQL parameters and the request-time
-/// parked-sweep rule all read this one table, so no code is listed twice.
+/// bounds clean readmission. The coordinator's outcome mapping, worker discovery, Atomic Readmission and the request-time
+/// parked-sweep rule all read this one table (the classes, the free-park set and the budget arithmetic), so no code is
+/// listed twice.
 /// </summary>
 public static class LongRestFaultPolicy
 {
@@ -121,6 +125,16 @@ public static class LongRestFaultPolicy
     [
         .. KnownCodes.Where(static pair => pair.Value == LongRestFaultClass.ResumeLater).Select(static pair => pair.Key).Order(StringComparer.Ordinal),
     ];
+
+    /// <summary>
+    /// The parks that are not failures: a yield to maintenance and an operator retry. Neither waits out a cooldown and
+    /// neither spends Sweep Failure Budget, so they stay readmittable even when the budget is spent. Every one is
+    /// <see cref="LongRestFaultClass.ResumeLater"/>.
+    /// </summary>
+    public static IReadOnlyList<string> FreeParkCodes { get; } = [LongRestParkCodes.MaintenanceDeferred, LongRestParkCodes.ReadmitRequested];
+
+    /// <summary>True when <paramref name="code"/> is a free park: it neither waits for a cooldown nor spends budget.</summary>
+    public static bool IsFreePark(string? code) => code is not null && FreeParkCodes.Contains(code, StringComparer.Ordinal);
 
     /// <summary>Classifies a fault code. A missing, malformed or unrecognized code always needs an operator.</summary>
     public static LongRestFaultClass Classify(string? code) =>

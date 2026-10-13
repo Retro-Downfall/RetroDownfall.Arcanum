@@ -155,7 +155,8 @@ public sealed partial class LongRestMaintenanceTests
 
         await f.RebootAsync();
 
-        var result = LongRestSweepHarness.Require(await f.Coordinator.ResumeAsync(f.Operation, null, CancellationToken.None));
+        // The parked clean sweep belongs to the hosted worker, so the worker's door readmits it after the reboot.
+        var result = LongRestSweepHarness.Require(await f.ResumeAdmittedAsync(f.Operation, CancellationToken.None));
 
         Assert.Equal(LongRestSweepPhase.Completed, result.Phase);
 

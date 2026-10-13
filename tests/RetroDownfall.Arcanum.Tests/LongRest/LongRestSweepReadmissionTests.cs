@@ -243,7 +243,46 @@ public sealed class LongRestSweepReadmissionTests
 
         Assert.Equal((long)expectedBudget, await f.H.ScalarAsync("SELECT ReadmitCount FROM long_rest_sweeps;"));
 
-        Assert.Equal(DBNull.Value, await f.H.ScalarAsync("SELECT ParkedAt FROM long_rest_sweeps;"));
+        // The park clock restarts at the readmission, so a park nobody stamped cools from its last readmission.
+        Assert.Equal(UtcInstantText.Format(Epoch), await f.H.ScalarAsync("SELECT ParkedAt FROM long_rest_sweeps;"));
+    }
+
+    [Fact]
+    public async Task A_crash_park_nobody_stamped_cools_down_from_its_last_readmission()
+    {
+        ManualWallClockTimeProvider clock = new(Epoch);
+
+        await using LongRestMaintenanceTests.MaintenanceFixture f = await LongRestMaintenanceTests.MaintenanceFixture.CreateAsync(
+            clock: clock, protectedSources: false);
+
+        await ParkAsync(f, LongRestParkCodes.Interrupted, 0, null);
+
+        LongRunningOperation parked = (await f.Operations.GetAsync(f.Operation))!;
+
+        Assert.NotNull(LongRestSweepHarness.Require(await Store(f, clock).TryReadmitParkedAsync(f.Operation, parked.Revision,
+            f.Partition, f.Epoch.Capture().Stamp, "worker-owner", Epoch, Epoch.AddMinutes(5), CancellationToken.None)));
+
+        // The process dies mid-run and the pure recovery handler parks the row again. It cannot stamp the sweep, so the
+        // only clock left is the readmission's own.
+        await f.H.ExecuteAsync("UPDATE LongRunningOperations SET State = $attention, LeaseOwner = NULL, LeaseExpiresAt = NULL, "
+            + "TerminalErrorCode = $code, Revision = Revision + 1 WHERE Id = $id;", ("$attention", (int)LongRunningOperationState.ReconciliationRequired),
+            ("$code", LongRestParkCodes.Interrupted), ("$id", f.Operation.ToString("N")));
+
+        TimeSpan cooldown = LongRestFaultPolicy.Cooldown(1);
+
+        clock.Advance(cooldown - TimeSpan.FromSeconds(1));
+
+        LongRestRunnableSweep cooling = LongRestSweepHarness.Require(await Store(f, clock)
+            .FindNextRunnableCleanAsync(f.Epoch.Capture().Stamp, null, CancellationToken.None));
+
+        Assert.Null(cooling.OperationId);
+
+        Assert.Equal(Epoch + cooldown, cooling.NextDueAt);
+
+        clock.Advance(TimeSpan.FromSeconds(1));
+
+        Assert.Equal(f.Operation, LongRestSweepHarness.Require(await Store(f, clock)
+            .FindNextRunnableCleanAsync(f.Epoch.Capture().Stamp, null, CancellationToken.None)).OperationId);
     }
 
     [Fact]
@@ -288,7 +327,7 @@ public sealed class LongRestSweepReadmissionTests
     }
 
     [Fact]
-    public async Task Atomic_readmission_is_invisible_to_expiry_discovery_before_during_and_after()
+    public async Task Atomic_readmission_is_invisible_to_expiry_discovery_before_and_after()
     {
         ManualWallClockTimeProvider clock = new(Epoch);
 
@@ -304,7 +343,8 @@ public sealed class LongRestSweepReadmissionTests
         Assert.NotNull(LongRestSweepHarness.Require(await Store(f, clock).TryReadmitParkedAsync(f.Operation, parked.Revision,
             f.Partition, f.Epoch.Capture().Stamp, "worker-owner", Epoch, Epoch.AddMinutes(5), CancellationToken.None)));
 
-        // Running under a live lease: nothing for expiry discovery to adopt, at any instant inside the lease.
+        // Running under a live lease: nothing for expiry discovery to adopt, at any instant inside the lease. The instant
+        // between the two writes is covered by Atomic_readmission_never_passes_through_Pending, which watches every write.
         Assert.DoesNotContain(await f.Operations.FindExpiredAsync(Epoch.AddMinutes(4), 100), operation => operation.Id == f.Operation);
     }
 
@@ -466,6 +506,31 @@ public sealed class LongRestSweepReadmissionTests
         Assert.True((await Store(f, clock).MarkParkedAsync(Guid.Empty, Epoch, CancellationToken.None)).IsFailure);
 
         Assert.Equal(UtcInstantText.Format(Epoch), await f.H.ScalarAsync("SELECT ParkedAt FROM long_rest_sweeps;"));
+    }
+
+    [Fact]
+    public async Task Marking_a_park_returns_the_durable_budget_it_leaves_behind_and_refuses_a_closed_sweep()
+    {
+        ManualWallClockTimeProvider clock = new(Epoch);
+
+        await using LongRestMaintenanceTests.MaintenanceFixture f = await LongRestMaintenanceTests.MaintenanceFixture.CreateAsync(
+            clock: clock, protectedSources: false);
+
+        Assert.Equal(0, LongRestSweepHarness.Require(await Store(f, clock).MarkParkedAsync(f.Operation, Epoch, CancellationToken.None)));
+
+        // The count is read where the stamp is written, so whatever progress has done to it since the readmission shows.
+        await f.H.ExecuteAsync("UPDATE long_rest_sweeps SET ReadmitCount = 3;");
+
+        Assert.Equal(3, LongRestSweepHarness.Require(await Store(f, clock).MarkParkedAsync(f.Operation, Epoch.AddSeconds(5), CancellationToken.None)));
+
+        Assert.Equal(UtcInstantText.Format(Epoch.AddSeconds(5)), await f.H.ScalarAsync("SELECT ParkedAt FROM long_rest_sweeps;"));
+
+        // A retired sweep has no park to stamp: the write fails closed and leaves the row alone.
+        await f.H.ExecuteAsync("UPDATE long_rest_sweeps SET PhaseCode = 9;");
+
+        Assert.True((await Store(f, clock).MarkParkedAsync(f.Operation, Epoch.AddSeconds(9), CancellationToken.None)).IsFailure);
+
+        Assert.Equal(UtcInstantText.Format(Epoch.AddSeconds(5)), await f.H.ScalarAsync("SELECT ParkedAt FROM long_rest_sweeps;"));
     }
 
     [Fact]

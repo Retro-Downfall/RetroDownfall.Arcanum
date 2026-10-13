@@ -112,7 +112,7 @@ internal sealed partial class LongRestSweepCoordinator(ILongRunningOperationStor
 
         await using IGrimoireWorkLease acquired = admitted ?? throw new InvalidOperationException("Long Rest admission returned no lease.");
 
-        return await ResumeCoreAsync(operationId, capability, acquired, ct).ConfigureAwait(false);
+        return await ResumeCoreAsync(operationId, capability, acquired, false, ct).ConfigureAwait(false);
     }
 
     /// <summary>The hosted worker's door: the worker's own lease arrives by value, and no capability can.</summary>
@@ -125,11 +125,13 @@ internal sealed partial class LongRestSweepCoordinator(ILongRunningOperationStor
 
         ct.ThrowIfCancellationRequested();
 
-        return await ResumeCoreAsync(operationId, null, admission, ct).ConfigureAwait(false);
+        return await ResumeCoreAsync(operationId, null, admission, true, ct).ConfigureAwait(false);
     }
 
+    // hostedWorker is true only when the hosted worker's own port called: the one entry that may readmit a parked clean
+    // sweep. The Session shell never sets it, whatever capability it carries.
     private async Task<Result<LongRestSweepProgress>> ResumeCoreAsync(Guid operationId,
-        LongRestMaintenanceCapability? capability, IGrimoireWorkLease admission, CancellationToken caller)
+        LongRestMaintenanceCapability? capability, IGrimoireWorkLease admission, bool hostedWorker, CancellationToken caller)
     {
         using CancellationTokenSource lifetime = CancellationTokenSource.CreateLinkedTokenSource(caller, admission.MaintenanceRevocation);
 
@@ -161,13 +163,13 @@ internal sealed partial class LongRestSweepCoordinator(ILongRunningOperationStor
 
             if (operation.State == LongRunningOperationState.ReconciliationRequired)
             {
-                // A parked sweep is readmitted only by the authority class that owns it: the worker readmits a clean
+                // A parked sweep is readmitted only by the authority class that owns it: the hosted worker readmits a clean
                 // sweep parked with a resumable fault, and a fresh Session capability readmits a protected one.
                 string code = operation.TerminalErrorCode ?? string.Empty;
 
                 bool own = isProtected
                     ? capability is not null && code == AuthorizedRequestRequired
-                    : capability is null && LongRestFaultPolicy.Classify(code) == LongRestFaultClass.ResumeLater;
+                    : hostedWorker && capability is null && LongRestFaultPolicy.Classify(code) == LongRestFaultClass.ResumeLater;
 
                 if (!own) return Deferred(operation, stored.Scope, isProtected ? AuthorizedRequestRequired : code);
 
@@ -201,9 +203,16 @@ internal sealed partial class LongRestSweepCoordinator(ILongRunningOperationStor
             LongRunningOperation latest = await OwnedAsync(operationId, owner, CancellationToken.None, allowCancelling: true).ConfigureAwait(false);
 
             LongRunningOperationRecoveryResult outcome = latest.State == LongRunningOperationState.Cancelling
-                ? LongRunningOperationRecoveryResult.Abandoned(LongRestParkCodes.Cancelled) : ApplyFaultPolicy(result.Outcome, isProtected, readmitCount);
+                ? LongRunningOperationRecoveryResult.Abandoned(LongRestParkCodes.Cancelled) : result.Outcome;
 
-            if (outcome.State == LongRunningOperationState.ReconciliationRequired) await MarkParkedAsync(operationId).ConfigureAwait(false);
+            if (outcome.State == LongRunningOperationState.ReconciliationRequired)
+            {
+                // The budget is read where the park is stamped, not taken from the readmission: committed progress during the run
+                // has since reset it, and a stale count would turn a resumable fault into a needs-operator park.
+                int budget = await MarkParkedAsync(operationId, readmitCount).ConfigureAwait(false);
+
+                outcome = ApplyFaultPolicy(outcome, isProtected, budget);
+            }
 
             if (!await operations.TryTransitionAsync(operationId, latest.Revision, owner, outcome.State, timeProvider.GetUtcNow(), outcome.ErrorCode, CancellationToken.None).ConfigureAwait(false))
             {
@@ -235,19 +244,28 @@ internal sealed partial class LongRestSweepCoordinator(ILongRunningOperationStor
 
     /// <summary>
     /// A resumable fault that spends the last of the Sweep Failure Budget stops being resumable: the park becomes a
-    /// needs-operator park under its own code. A protected sweep has no budget, and maintenance yields spend none.
+    /// needs-operator park under its own code. A protected sweep has no budget, and free parks spend none. The count is the
+    /// durable budget as the park left it, after any progress the run committed.
     /// </summary>
     private static LongRunningOperationRecoveryResult ApplyFaultPolicy(LongRunningOperationRecoveryResult outcome, bool isProtected, int readmitCount) =>
         outcome.State == LongRunningOperationState.ReconciliationRequired && !isProtected
             && LongRestFaultPolicy.Classify(outcome.ErrorCode) == LongRestFaultClass.ResumeLater
-            && outcome.ErrorCode is not (LongRestParkCodes.MaintenanceDeferred or LongRestParkCodes.ReadmitRequested)
+            && !LongRestFaultPolicy.IsFreePark(outcome.ErrorCode)
             && !LongRestFaultPolicy.CanReadmit(readmitCount)
             ? LongRunningOperationRecoveryResult.RequiresAttention(LongRestParkCodes.ReadmitExhausted) : outcome;
 
-    private async Task MarkParkedAsync(Guid operationId)
+    /// <summary>
+    /// Stamps the park and returns the durable Sweep Failure Budget. A missed stamp leaves the readmission's own stamp as the
+    /// cooldown clock, and the budget still bounds the sweep; when the count cannot be read the caller's is used, which
+    /// only progress can have lowered, so the fallback errs toward asking for an operator.
+    /// </summary>
+    private async Task<int> MarkParkedAsync(Guid operationId, int readmitCount)
     {
-        // The stamp only starts a cooldown. A missed stamp makes the park immediately eligible, and the budget still bounds it.
-        if (sweeps is ILongRestParkedReadmission parking) _ = await parking.MarkParkedAsync(operationId, timeProvider.GetUtcNow(), CancellationToken.None).ConfigureAwait(false);
+        if (sweeps is not ILongRestParkedReadmission parking) return readmitCount;
+
+        Result<int> parked = await parking.MarkParkedAsync(operationId, timeProvider.GetUtcNow(), CancellationToken.None).ConfigureAwait(false);
+
+        return parked.IsSuccess ? parked.Value : readmitCount;
     }
 
     private async Task ParkAfterDeferralAsync(Guid operationId, string? owner, bool isProtected)
@@ -266,7 +284,7 @@ internal sealed partial class LongRestSweepCoordinator(ILongRunningOperationStor
                 ? LongRunningOperationRecoveryResult.Abandoned(LongRestParkCodes.Cancelled)
                 : LongRunningOperationRecoveryResult.RequiresAttention(isProtected ? AuthorizedRequestRequired : LongRestParkCodes.MaintenanceDeferred);
 
-            if (parked.State == LongRunningOperationState.ReconciliationRequired) await MarkParkedAsync(operationId).ConfigureAwait(false);
+            if (parked.State == LongRunningOperationState.ReconciliationRequired) _ = await MarkParkedAsync(operationId, 0).ConfigureAwait(false);
 
             _ = await operations.TryTransitionAsync(operationId, latest.Revision, owner, parked.State, timeProvider.GetUtcNow(), parked.ErrorCode, CancellationToken.None).ConfigureAwait(false);
         }

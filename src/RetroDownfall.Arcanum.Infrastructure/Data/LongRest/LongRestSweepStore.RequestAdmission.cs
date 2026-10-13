@@ -31,9 +31,11 @@ internal sealed partial class LongRestSweepStore : ILongRestSweepRequestAdmissio
 
             return await SqliteBusyRetry.ExecuteAsync(() => AdmitOnceAsync(scope, fence, facts, ownership, ct), ct).ConfigureAwait(false);
         }
-        catch (SweepParkedException)
+        catch (SweepParkedException parked)
         {
-            return new Error(ErrorCodes.LongRest.SweepParked, "The active sweep for this scope is parked and needs an operator to retry or cancel it.");
+            // The identifier is content-free and is what `operation retry` and `operation cancel` take.
+            return new Error(ErrorCodes.LongRest.SweepParked,
+                $"The active sweep for this scope (operation {parked.OperationId:D}) is parked and needs an operator to retry or cancel it.");
         }
         catch (Exception exception) when (exception is SqliteException or InvalidDataException or ArgumentException
             or FormatException or OverflowException or JsonException or InvalidOperationException)
@@ -81,17 +83,22 @@ internal sealed partial class LongRestSweepStore : ILongRestSweepRequestAdmissio
                 if (operation.State == LongRunningOperationState.ReconciliationRequired)
                 {
                     // Parked-Is-Active: a parked sweep still owns its scope. A request never claims, resets or runs it.
+                    // It keeps that scope while its generation can still revalidate against the current stamp: the stamp is
+                    // identical, or only the boot differs (a restart is why it parked). The same rule retires a never-started
+                    // sweep, and it is the one historical validation applies to the generation's own fence.
                     if (stored.ValueDigest == fence.Configuration.ValueDigest
                         && (stored == fence.Configuration || stored.BootId != fence.Configuration.BootId))
                     {
-                        // Only the boot differs: the sweep is returned unchanged for its own authority class to readmit.
-                        if (!IsResumablePark(scope, operation, active)) throw new SweepParkedException();
+                        // The sweep is returned unchanged for its own authority class to readmit.
+                        if (!IsResumablePark(scope, operation, active)) throw new SweepParkedException(operation.Id);
 
                         admitted = operation;
                     }
                     else
                     {
-                        // The configuration value moved on, so this park can never resume. Retire it as a terminal sweep.
+                        // The value digest changed, or only the epoch did inside one boot (a configuration flip A to B to A bumps
+                        // it twice), so the generation can no longer revalidate and this park can never resume. Retire it as a
+                        // terminal sweep and replace it.
                         if (operation.RecoveryPolicy != LongRunningOperationRecoveryPolicy.ResumeFromCheckpoint
                             || operation.LeaseOwner is not null || operation.LeaseExpiresAt is not null
                             || !ownership.TryClaim(operation.Id, out token)) throw new InvalidDataException();
@@ -187,8 +194,7 @@ internal sealed partial class LongRestSweepStore : ILongRestSweepRequestAdmissio
 
         if (LongRestFaultPolicy.Classify(operation.TerminalErrorCode) != LongRestFaultClass.ResumeLater) return false;
 
-        return operation.TerminalErrorCode is LongRestParkCodes.MaintenanceDeferred or LongRestParkCodes.ReadmitRequested
-            || LongRestFaultPolicy.CanReadmit(active.ReadmitCount);
+        return LongRestFaultPolicy.IsFreePark(operation.TerminalErrorCode) || LongRestFaultPolicy.CanReadmit(active.ReadmitCount);
     }
 
     private async Task<LongRunningOperation> AbandonParkedWithinAsync(SqliteConnection connection, SqliteTransaction transaction,
@@ -343,5 +349,8 @@ internal sealed partial class LongRestSweepStore : ILongRestSweepRequestAdmissio
     private sealed record ActiveRequest(Guid OperationId, string ConfigurationJson, long Revision, Guid? GenerationId, LongRestSweepPhase Phase,
         int ReadmitCount);
 
-    private sealed class SweepParkedException : Exception;
+    private sealed class SweepParkedException(Guid operationId) : Exception
+    {
+        internal Guid OperationId { get; } = operationId;
+    }
 }

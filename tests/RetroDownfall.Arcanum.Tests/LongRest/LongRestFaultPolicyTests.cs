@@ -108,6 +108,34 @@ public sealed class LongRestFaultPolicyTests
         Assert.DoesNotContain(LongRestParkCodes.ReadmitExhausted, LongRestFaultPolicy.ResumeLaterCodes);
     }
 
+    [Fact]
+    public void The_free_park_set_is_exactly_the_maintenance_yield_and_the_operator_retry_and_each_is_resumable()
+    {
+        string[] expected = [LongRestParkCodes.MaintenanceDeferred, LongRestParkCodes.ReadmitRequested];
+
+        Assert.Equal(expected.Order(StringComparer.Ordinal), LongRestFaultPolicy.FreeParkCodes.Order(StringComparer.Ordinal));
+
+        Assert.All(LongRestFaultPolicy.FreeParkCodes, static code =>
+        {
+            Assert.True(LongRestFaultPolicy.IsFreePark(code));
+
+            Assert.Equal(LongRestFaultClass.ResumeLater, LongRestFaultPolicy.Classify(code));
+
+            Assert.Contains(code, LongRestFaultPolicy.ResumeLaterCodes);
+        });
+
+        // Every other code, resumable or not, pays for its readmission.
+        Assert.All(LongRestFaultPolicy.KnownCodes.Keys.Except(expected), static code => Assert.False(LongRestFaultPolicy.IsFreePark(code), code));
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("long_rest.maintenance_deferred ")]
+    [InlineData("LONG_REST.READMIT_REQUESTED")]
+    [InlineData("long_rest.something_new")]
+    public void A_missing_or_malformed_code_is_never_a_free_park(string? code) => Assert.False(LongRestFaultPolicy.IsFreePark(code));
+
     [Theory]
     [InlineData(0, 30)]
     [InlineData(1, 60)]

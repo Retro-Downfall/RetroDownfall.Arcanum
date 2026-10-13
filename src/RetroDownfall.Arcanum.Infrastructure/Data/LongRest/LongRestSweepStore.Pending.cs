@@ -15,8 +15,8 @@ internal sealed partial class LongRestSweepStore
     // Parked clean sweeps the worker may drive again: the fault policy's resumable codes, passed as parameters.
     private static readonly string[] ResumeLaterCodes = [.. LongRestFaultPolicy.ResumeLaterCodes];
 
-    // Parks that are not failures: neither spends the Sweep Failure Budget nor waits out a cooldown.
-    private static readonly string[] FreeParkCodes = [LongRestParkCodes.MaintenanceDeferred, LongRestParkCodes.ReadmitRequested];
+    // Parks that are not failures: neither spends the Sweep Failure Budget nor waits out a cooldown. The policy owns the set.
+    private static readonly string[] FreeParkCodes = [.. LongRestFaultPolicy.FreeParkCodes];
 
     // A bounded read of the sweeps still cooling, to name when the next one is due.
     private const int CoolingSweepLimit = 256;
