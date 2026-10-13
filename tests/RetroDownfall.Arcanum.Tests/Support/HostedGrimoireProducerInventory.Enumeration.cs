@@ -513,7 +513,16 @@ internal static partial class HostedGrimoireProducerInventory
                 return false;
             }
 
+            ExpressionSyntax written = expression;
+
             expression = StripTransparentExpression(expression);
+
+            // A cast that selects a user-defined conversion changes the runtime value: what the operator returns is
+            // not what the cast wraps, so the wrapped expression says nothing about it.
+            if (!ReferenceEquals(written, expression) && HasUserDefinedConversion(model, written))
+            {
+                return false;
+            }
 
             switch (expression)
             {
@@ -592,20 +601,65 @@ internal static partial class HostedGrimoireProducerInventory
                 return invocationProof;
             }
 
-            if (type is INamedTypeSymbol exact
-                && (exact.TypeKind == TypeKind.Struct || exact is { TypeKind: TypeKind.Class, IsSealed: true }))
-            {
-                proof.Candidates.Add(exact);
-
-                return true;
-            }
-
-            return HasOnlyReviewedValueSources(
+            bool Flow() => HasOnlyReviewedValueSources(
                 expression,
                 model,
                 path,
                 context,
                 (source, sourceModel, sourcePath, sourceContext) => ProveEnumerationLeaf(source, sourceModel, sourcePath, sourceContext, proof));
+
+            if (type is INamedTypeSymbol exact
+                && (exact.TypeKind == TypeKind.Struct || exact is { TypeKind: TypeKind.Class, IsSealed: true }))
+            {
+                // An authored type, or a framework type whose members are trusted, is its own exact candidate. Any other
+                // framework value type (a stored wrapper such as the ConfigureAwait struct) is first followed to where it
+                // was built, and is an exact candidate only when that cannot be followed.
+                int recorded = proof.Candidates.Count;
+
+                if (exact.Locations.Any(static location => location.IsInSource)
+                    || IsClosedEnumerationImplementer(exact)
+                    || !Flow())
+                {
+                    proof.Candidates.RemoveRange(recorded, proof.Candidates.Count - recorded);
+
+                    proof.Candidates.Add(exact);
+                }
+
+                return true;
+            }
+
+            return Flow();
+        }
+
+        private static bool HasUserDefinedConversion(SemanticModel model, ExpressionSyntax expression)
+        {
+            IOperation? operation = model.GetOperation(expression);
+
+            while (operation is not null)
+            {
+                switch (operation)
+                {
+                    case IConversionOperation conversion:
+                        if (conversion.OperatorMethod is not null || conversion.Conversion.IsUserDefined)
+                        {
+                            return true;
+                        }
+
+                        operation = conversion.Operand;
+
+                        break;
+
+                    case IParenthesizedOperation parenthesized:
+                        operation = parenthesized.Operand;
+
+                        break;
+
+                    default:
+                        return false;
+                }
+            }
+
+            return false;
         }
 
         // The exact framework Enumerable.ToList and Enumerable.ToArray: each builds a fresh list or array, so the value

@@ -616,6 +616,59 @@ public sealed partial class HostedGrimoireProducerInventoryTests
         Assert.DoesNotContain(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED");
     }
 
+    // A ConfigureAwait wrapper kept in a local is followed to the sequence it wraps, not trusted by its own type.
+    [Theory]
+    [InlineData("var configured = Source.Items().ConfigureAwait(false); await foreach (int item in configured) { _ = item; }", true)]
+    [InlineData("var configured = Unproved.Items.ConfigureAwait(false); await foreach (int item in configured) { _ = item; }", false)]
+    public void StoredConfigureAwaitWrapperIsFollowedToTheSequenceItWraps(string statement, bool closed)
+    {
+        string helpers = "static class Source { internal static async System.Collections.Generic.IAsyncEnumerable<int> Items() { " + EnumerationEffect + "await Task.CompletedTask; yield return 1; } } "
+            + "static class Unproved { internal static System.Collections.Generic.IAsyncEnumerable<int> Items { get; set; } = null!; }";
+
+        CSharpCompilation compilation = EnumerationCompile(R2Admission + statement + " await Task.CompletedTask;", helpers);
+
+        HostedProducerDiscovery<HostedProducerSite> result = EnumerationDiscover(compilation);
+
+        SyntaxTree tree = Assert.Single(compilation.SyntaxTrees);
+
+        SyntaxNode loop = tree.GetRoot().DescendantNodes().First(static node => node is CommonForEachStatementSyntax);
+
+        Assert.Equal(!closed, result.Diagnostics.Any(diagnostic => diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED" && diagnostic.Identity == tree.FilePath + ":" + loop.SpanStart));
+
+        if (closed)
+        {
+            Assert.NotNull(Assert.Single(EnumerationDeleteSites(result)).WorkFrontierCapsuleId);
+
+            Assert.Empty(result.Diagnostics);
+        }
+    }
+
+    // A cast through a user-defined conversion hands the loop whatever the operator returns, not the cast operand.
+    [Theory]
+    [InlineData("foreach (int item in (Base)new Convertible()) { _ = item; }", false)]
+    [InlineData("foreach (int item in (Base)new Derived()) { _ = item; }", true)]
+    public void CastThroughAUserDefinedConversionIsNotFollowedToItsOperand(string statement, bool followed)
+    {
+        string helpers = "class Base : System.Collections.Generic.IEnumerable<int> { "
+            + "public virtual System.Collections.Generic.IEnumerator<int> GetEnumerator() { return new ProbeEnumerator(); } "
+            + "System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator(); } "
+            + "sealed class Derived : Base { public override System.Collections.Generic.IEnumerator<int> GetEnumerator() { " + EnumerationEffect + "return new ProbeEnumerator(); } } "
+            + "sealed class Convertible { public static explicit operator Base(Convertible value) => new Derived(); } "
+            + "sealed class ProbeEnumerator : System.Collections.Generic.IEnumerator<int> { public bool MoveNext() => false; public int Current => 0; object System.Collections.IEnumerator.Current => Current; public void Reset() { } public void Dispose() { } }";
+
+        CSharpCompilation compilation = EnumerationCompile(R2Admission + statement + " await Task.CompletedTask;", helpers);
+
+        HostedProducerDiscovery<HostedProducerSite> result = EnumerationDiscover(compilation);
+
+        SyntaxTree tree = Assert.Single(compilation.SyntaxTrees);
+
+        SyntaxNode loop = tree.GetRoot().DescendantNodes().First(static node => node is CommonForEachStatementSyntax);
+
+        Assert.Equal(!followed, result.Diagnostics.Any(diagnostic => diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED" && diagnostic.Identity == tree.FilePath + ":" + loop.SpanStart));
+
+        Assert.Equal(followed, EnumerationDeleteSites(result).Length == 1);
+    }
+
     // A static type that is not a closed framework collection is never classified by its name or shape.
     [Fact]
     public void AuthoredSubclassThatHidesGetEnumeratorIsTraversedNotClassifiedAsTheFrameworkList()
