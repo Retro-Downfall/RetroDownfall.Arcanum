@@ -572,30 +572,48 @@ internal static partial class HostedGrimoireProducerInventory
         return new([.. ReviewedCapsules.Value.Diagnostics, .. ValidateManifestRoots(ReviewedCapsules.Value.Sites), .. validation.Diagnostics]);
     }
 
-    private static HostedProducerDiscovery<HostedProducerSite> DiscoverProductionSites()
-    {
-        HostedProducerDiscovery<string> registrations = DiscoverApplicationHostedServices(ProductionCompilations);
+    private static HostedProducerDiscovery<HostedProducerSite> DiscoverProductionSites() =>
+        DiscoverProductionSites(HostedProducerProductionPartition.Primary);
 
-        return DiscoverProducerSites(ProductionCompilations, registrations, Catalog, NonHostedCatalog,
-            rootWorkers: HostedProducerRootWorkers.ParseCount(global::System.Environment.GetEnvironmentVariable("ARCANUM_HOSTED_ANALYSIS_ROOT_WORKERS")));
-    }
+    private static HostedProducerDiscovery<HostedProducerSite> DiscoverAdditionalProductionSites() =>
+        DiscoverProductionSites(HostedProducerProductionPartition.Additional);
 
-    private static HostedProducerDiscovery<HostedProducerSite> DiscoverAdditionalProductionSites()
+    // The Production Discovery Entry: the one place that discovers the production partitions. It is the only
+    // production caller that requests premises (always ProductionPremises, never a parameter), so the primary
+    // run, the additional run and any scoped run (a root subset) share exactly one classification regime.
+    internal static HostedProducerDiscovery<HostedProducerSite> DiscoverProductionSites(
+        HostedProducerProductionPartition partition,
+        IReadOnlyCollection<string>? rootSubset = null)
     {
+        int rootWorkers = HostedProducerRootWorkers.ParseCount(global::System.Environment.GetEnvironmentVariable("ARCANUM_HOSTED_ANALYSIS_ROOT_WORKERS"));
+
+        if (partition == HostedProducerProductionPartition.Primary)
+        {
+            HostedProducerDiscovery<string> registrations = DiscoverApplicationHostedServices(ProductionCompilations);
+
+            ProductionRootSelection primary = SelectProductionRoots(rootSubset, registrations, Catalog, NonHostedCatalog);
+
+            return DiscoverProducerSitesUnderPremises(ProductionPremises, ProductionCompilations, primary.Registrations, primary.Catalog, primary.NonHostedCatalog,
+                rootWorkers: rootWorkers);
+        }
+
         using HostedProducerPhaseProgress preparation = HostedProducerPhaseProgress.Start("additional-preparation", 0);
 
         IReadOnlyList<NonHostedProducerChainEntry> roots = AdditionalProductionRoots;
 
         preparation.Complete();
 
+        ProductionRootSelection additional = SelectProductionRoots(rootSubset, new([], []), [], roots);
+
         using HostedProducerPhaseProgress traversal = HostedProducerPhaseProgress.Start("additional-traversal", 0);
 
-        HostedProducerDiscovery<HostedProducerSite> result = DiscoverProducerSites(
+        HostedProducerDiscovery<HostedProducerSite> result = DiscoverProducerSitesUnderPremises(
+            ProductionPremises,
             ProductionCompilations,
-            new([], []),
-            [],
-            roots,
-            rootWorkers: HostedProducerRootWorkers.ParseCount(global::System.Environment.GetEnvironmentVariable("ARCANUM_HOSTED_ANALYSIS_ROOT_WORKERS")));
+            additional.Registrations,
+            additional.Catalog,
+            additional.NonHostedCatalog,
+            rootWorkers: rootWorkers);
 
         traversal.Complete();
 
@@ -2018,14 +2036,26 @@ internal static partial class HostedGrimoireProducerInventory
 
     internal static HostedProducerDiscovery<HostedProducerSite> DiscoverProducerSites(IReadOnlyList<CSharpCompilation> compilations, HostedProducerDiscovery<string> registrations) => DiscoverProducerSites(compilations, registrations, Catalog, NonHostedCatalog);
 
-    internal static HostedProducerDiscovery<HostedProducerSite> DiscoverProducerSites(IReadOnlyList<CSharpCompilation> compilations, HostedProducerDiscovery<string> registrations, IReadOnlyList<HostedProducerServiceEntry> catalog, IReadOnlyList<NonHostedProducerChainEntry> nonHostedCatalog, int evaluationEnvironmentMaximumMembers = DefaultEvaluationEnvironmentMaximumMembers, int evaluationEnvironmentMaximumDepth = DefaultEvaluationEnvironmentMaximumDepth, int traversalMaximumDepth = DefaultTraversalMaximumDepth, int maximumAnalyzedStatesPerRoot = DefaultMaximumAnalyzedStatesPerRoot, HostedProducerRecoverySelectionProbe? recoverySelectionProbe = null, bool auditRecoveryReachabilityParity = false, int rootWorkers = 1, bool reverseRootFamilies = false, Action<HostedProducerAdmittedStateObservation>? admittedStateObserver = null, Action<int, int, int, int, bool>? nestedReuseObserver = null)
+    // Fixtures never request premises: this overload has no premise parameter, so every caller that does not
+    // use the premise seam below runs with HostedProducerPremises.None and today's strict behaviour.
+    internal static HostedProducerDiscovery<HostedProducerSite> DiscoverProducerSites(IReadOnlyList<CSharpCompilation> compilations, HostedProducerDiscovery<string> registrations, IReadOnlyList<HostedProducerServiceEntry> catalog, IReadOnlyList<NonHostedProducerChainEntry> nonHostedCatalog, int evaluationEnvironmentMaximumMembers = DefaultEvaluationEnvironmentMaximumMembers, int evaluationEnvironmentMaximumDepth = DefaultEvaluationEnvironmentMaximumDepth, int traversalMaximumDepth = DefaultTraversalMaximumDepth, int maximumAnalyzedStatesPerRoot = DefaultMaximumAnalyzedStatesPerRoot, HostedProducerRecoverySelectionProbe? recoverySelectionProbe = null, bool auditRecoveryReachabilityParity = false, int rootWorkers = 1, bool reverseRootFamilies = false, Action<HostedProducerAdmittedStateObservation>? admittedStateObserver = null, Action<int, int, int, int, bool>? nestedReuseObserver = null) =>
+        DiscoverProducerSitesUnderPremises(HostedProducerPremises.None, compilations, registrations, catalog, nonHostedCatalog, evaluationEnvironmentMaximumMembers, evaluationEnvironmentMaximumDepth, traversalMaximumDepth, maximumAnalyzedStatesPerRoot, recoverySelectionProbe, auditRecoveryReachabilityParity, rootWorkers, reverseRootFamilies, admittedStateObserver, nestedReuseObserver);
+
+    // The only seam that accepts premises. Its callers are the Production Discovery Entry and the
+    // ClosedWorldPremises fixtures; an architecture pin keeps it that way.
+    internal static HostedProducerDiscovery<HostedProducerSite> DiscoverProducerSitesUnderPremises(HostedProducerPremises premises, IReadOnlyList<CSharpCompilation> compilations, HostedProducerDiscovery<string> registrations, IReadOnlyList<HostedProducerServiceEntry> catalog, IReadOnlyList<NonHostedProducerChainEntry> nonHostedCatalog, int evaluationEnvironmentMaximumMembers = DefaultEvaluationEnvironmentMaximumMembers, int evaluationEnvironmentMaximumDepth = DefaultEvaluationEnvironmentMaximumDepth, int traversalMaximumDepth = DefaultTraversalMaximumDepth, int maximumAnalyzedStatesPerRoot = DefaultMaximumAnalyzedStatesPerRoot, HostedProducerRecoverySelectionProbe? recoverySelectionProbe = null, bool auditRecoveryReachabilityParity = false, int rootWorkers = 1, bool reverseRootFamilies = false, Action<HostedProducerAdmittedStateObservation>? admittedStateObserver = null, Action<int, int, int, int, bool>? nestedReuseObserver = null)
     {
         if (rootWorkers is not (1 or 2 or 3))
         {
             throw new ArgumentOutOfRangeException(nameof(rootWorkers));
         }
 
-        ProducerGraph CreateGraph() => new(compilations, evaluationEnvironmentMaximumMembers, evaluationEnvironmentMaximumDepth, traversalMaximumDepth, maximumAnalyzedStatesPerRoot, auditRecoveryReachabilityParity, admittedStateObserver, nestedReuseObserver);
+        // Verified once per discovery, by an unbudgeted enumeration; every isolated worker graph shares the verdict.
+        HostedProducerPremiseLedger ledger = premises == HostedProducerPremises.None
+            ? HostedProducerPremiseLedger.None
+            : VerifyPremises(compilations, premises);
+
+        ProducerGraph CreateGraph() => new(compilations, evaluationEnvironmentMaximumMembers, evaluationEnvironmentMaximumDepth, traversalMaximumDepth, maximumAnalyzedStatesPerRoot, auditRecoveryReachabilityParity, admittedStateObserver, nestedReuseObserver, ledger);
 
         return HostedProducerRootWorkers.OnAnalysisStack(() => rootWorkers == 1
             ? CreateGraph().Discover(registrations, catalog, nonHostedCatalog, recoverySelectionProbe)
@@ -3159,6 +3189,8 @@ internal static partial class HostedGrimoireProducerInventory
 
         private readonly Action<int, int, int, int, bool>? nestedReuseObserver;
 
+        private readonly HostedProducerPremiseLedger premises;
+
         internal ProducerGraph(
             IReadOnlyList<CSharpCompilation> compilations,
             int evaluationEnvironmentMaximumMembers,
@@ -3167,8 +3199,16 @@ internal static partial class HostedGrimoireProducerInventory
             int maximumAnalyzedStatesPerRoot,
             bool auditRecoveryReachabilityParity,
             Action<HostedProducerAdmittedStateObservation>? admittedStateObserver = null,
-            Action<int, int, int, int, bool>? nestedReuseObserver = null)
+            Action<int, int, int, int, bool>? nestedReuseObserver = null,
+            HostedProducerPremiseLedger? premises = null)
         {
+            this.premises = premises ?? HostedProducerPremiseLedger.None;
+
+            foreach (HostedProducerInventoryDiagnostic violation in this.premises.Violations)
+            {
+                diagnostics.Add(violation);
+            }
+
             this.evaluationEnvironmentMaximumMembers =
                 evaluationEnvironmentMaximumMembers;
 
@@ -7897,6 +7937,10 @@ internal static partial class HostedGrimoireProducerInventory
             // A base invocation selects the metadata body directly; it cannot
             // dispatch to the source subclass's override.
             if (!invocation.IsVirtual) return true;
+
+            // SqliteSealedByUse: no subclass of SqliteConnection exists in the analysed universe, so the
+            // virtual slot selects the reviewed framework body for a receiver of any provenance.
+            if (SqliteSealedByUse) return true;
 
             CleanupProvenanceContext proof = new();
 
@@ -30303,6 +30347,7 @@ internal static partial class HostedGrimoireProducerInventory
             if (CompletionOwnedExternalAwaitables.Contains(Normalize(method))
                 || ReviewedBoundedIntrinsicMembers.Contains(Normalize(method))
                 || ReviewedNonProducerExternalMembers.Contains(Normalize(method))
+                || IsReviewedExactNativeImport(method)
                 || IsReviewedExactBoundedExternalMember(method)
                 || IsExactEmbeddingSdkAdapterFactory(method)
                 || IsReviewedDatabaseSupportMember(method)
@@ -42556,10 +42601,17 @@ internal static partial class HostedGrimoireProducerInventory
                 return null;
             }
 
-            CleanupProvenance receiverProvenance = CleanupProvenanceOf(
-                member,
-                receiver,
-                context);
+            // SqliteSealedByUse: a receiver whose static type is exactly SqliteConnection or SqliteCommand
+            // is that exact runtime type whatever its provenance. A receiver typed as an abstract Db* type
+            // gets no such shortcut and keeps the provenance proof.
+            CleanupProvenance receiverProvenance = SqliteSealedByUse
+                && member.Model.GetTypeInfo(receiver).Type is { } sealedReceiver
+                && IsSqliteSealedFamilyClass(sealedReceiver)
+                    ? ExactCleanupProvenance(member, sealedReceiver)
+                    : CleanupProvenanceOf(
+                        member,
+                        receiver,
+                        context);
 
             if (!receiverProvenance.Complete
                 || receiverProvenance.Candidates is not
@@ -43576,7 +43628,8 @@ internal static partial class HostedGrimoireProducerInventory
                     TypeKind: TypeKind.Class,
                     IsAbstract: false,
                     IsSealed: true,
-                });
+                }
+                || SqliteSealedByUse && IsSqliteSealedFamilyClass(staticType));
 
             IMethodSymbol? externalCleanup = exactCandidates.Length == 0
                 && closedInterfaceTarget is null

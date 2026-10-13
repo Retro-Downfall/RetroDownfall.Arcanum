@@ -170,10 +170,56 @@ public sealed partial class McpConnectionManager
             elicitationSink);
     }
 
+    /// <summary>
+    /// Owned Client Construction: the pipeline the Streamable HTTP transport sends through, built from an
+    /// explicit handler chain instead of a named factory client. The primary handler is
+    /// the untrusted-egress handler (redirects and proxies off, DNS pinned, loopback, private and link-local
+    /// refused), and it is wrapped by the per-message response bound. There is deliberately no logging handler:
+    /// a hosted endpoint commonly carries its bearer token in a path segment that default client logging would
+    /// copy into the rolling log. <paramref name="primaryForTests"/> replaces only the primary handler.
+    /// </summary>
+    internal static HttpMessageHandler CreateOwnedHttpPipeline(TimeSpan connectTimeout, HttpMessageHandler? primaryForTests = null)
+    {
+        HttpMessageHandler primary = primaryForTests ?? CreateEgressHandler(connectTimeout);
+
+        try
+        {
+            return new McpHttpResponseBoundHandler(McpSecurityLimits.MaxJsonRpcLineBytes) { InnerHandler = primary };
+        }
+        catch
+        {
+            primary.Dispose();
+
+            throw;
+        }
+    }
+
+    private static SocketsHttpHandler CreateEgressHandler(TimeSpan connectTimeout)
+    {
+        SocketsHttpHandler handler = OutboundUrlGuard.CreateUntrustedEgressHandler();
+
+        try
+        {
+            handler.ConnectTimeout = connectTimeout;
+
+            return handler;
+        }
+        catch
+        {
+            handler.Dispose();
+
+            throw;
+        }
+    }
+
+    private TimeSpan GetClampedMcpHttpConnectTimeout() =>
+        TimeSpan.FromSeconds(ArcanumSettingClamps.McpHttpConnectTimeoutSeconds(
+            settings.CurrentValue.ResolveMcp().HttpConnectTimeoutSeconds));
+
     private SdkMcpClientWrapper CreateHttpMcpClient(Uri endpoint)
     {
-        HttpClient httpClient = httpClientFactory.CreateClient(McpHttpClientName);
-
+        // The manager owns the one HTTP client every Streamable HTTP transport sends through, so a transport
+        // never owns or disposes it.
         HttpClientTransport transport = new(
             new HttpClientTransportOptions
             {
@@ -191,7 +237,7 @@ public sealed partial class McpConnectionManager
     // absolute http/https URI; plaintext http is refused unless the host is in
     // Arcanum:Integrations:Mcp:AllowedHttpHosts; and the SSRF policy (loopback / private / link-local blocking
     // with DNS-rebind pinning) is enforced up front via OutboundUrlGuard and again at connect time
-    // by the named client's egress handler.
+    // by the egress handler of the manager's owned HTTP client.
     private async Task<Result<Uri>> ResolveValidatedHttpEndpointAsync(McpServerConfig cfg, CancellationToken cancellationToken)
     {
         string? url = cfg.Url;

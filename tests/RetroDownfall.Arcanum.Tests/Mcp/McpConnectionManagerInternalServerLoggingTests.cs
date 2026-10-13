@@ -116,8 +116,8 @@ public sealed class McpConnectionManagerInternalServerLoggingTests
 
         _ = await manager.GetAvailableToolsAsync(workspace.Root);
 
-        // The McpHttp client strips every logger because hosted endpoints embed bearer tokens in the
-        // URL path; the manager's factory may therefore serve only the internal server's category.
+        // The owned HTTP client carries no logging handler because hosted endpoints embed bearer tokens in
+        // the URL path; the manager's factory may therefore serve only the internal server's category.
         Assert.All(
             loggers.CreatedCategories,
             static category => Assert.EndsWith(

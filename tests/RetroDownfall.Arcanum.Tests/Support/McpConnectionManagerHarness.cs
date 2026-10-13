@@ -35,7 +35,8 @@ internal static class McpConnectionManagerHarness
         ILogger<McpConnectionManager>? logger = null,
         ITrustedMcpWorkspaceStore? trustStore = null,
         IEventBus? eventBus = null,
-        HttpMessageHandler? httpHandler = null)
+        HttpMessageHandler? httpHandler = null,
+        bool managerOwnsHttpHandler = false)
     {
         IServiceScopeFactory scopeFactory = new ServiceCollection()
             .BuildServiceProvider()
@@ -54,9 +55,13 @@ internal static class McpConnectionManagerHarness
             pacer,
             eventBus ?? new SilentEventBus(),
             trustStore ?? new UntrustedWorkspaceStore(),
-            new FakeHttpClientFactory(httpHandler),
             new TestOptionsMonitor<ArcanumSettings>(settings ?? new ArcanumSettings()),
             loggerFactory ?? NullLoggerFactory.Instance);
+
+        if (httpHandler is not null)
+        {
+            manager.UseHttpPrimaryHandlerForTests(managerOwnsHttpHandler ? httpHandler : new NonOwningHttpHandler(httpHandler));
+        }
 
         manager.ConfigureGlobalAdmission(
             new GrimoireConnectionAdmissionGate(TimeProvider.System));

@@ -174,7 +174,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests
     public void CampaignModelProductionFactoryPreservesOwnedModelIndexerProof()
     {
         string source = R2Source(R2Admission
-            + "_ = await new RetroDownfall.Arcanum.Api.Intelligence.CampaignRollupProviderClientFactory(null!, null!, null!).ResolveClientAsync(null, token); "
+            + "_ = await new RetroDownfall.Arcanum.Api.Intelligence.CampaignRollupProviderClientFactory(null!, null!).ResolveClientAsync(null, token); "
             + "System.IO.File.Exists(\"production-factory-model-control\");");
 
         HostedProducerProductionOverlay overlay = HostedGrimoireProducerInventory.GetProductionOverlay(

@@ -21,10 +21,7 @@ public sealed class CampaignRollupProviderClientFactoryTests
 
         settings.Providers[0].Models = models;
 
-        RecordingFactory clients = new(new RecordingProvider(HttpStatusCode.OK));
-
-        CampaignRollupProviderClientFactory factory = new(clients, new TestOptionsMonitor<ArcanumSettings>(settings),
-            EnvironmentOnlyProviderApiKeyResolver.Instance);
+        using CampaignRollupProviderClientFactory factory = Factory(settings, new RecordingProvider(HttpStatusCode.OK));
 
         Result<ChatClientLease?> resolved = await factory.ResolveClientAsync(null, CancellationToken.None);
 
@@ -59,11 +56,9 @@ public sealed class CampaignRollupProviderClientFactoryTests
             configured.ContextWindowLimit = 2048;
         }
 
-        RecordingFactory clients = new(new RecordingProvider(HttpStatusCode.OK));
-
         CallbackKeyResolver keys = new(changeDuringKeyResolution ? ChangeConfiguration : null);
 
-        CampaignRollupProviderClientFactory factory = new(clients, new TestOptionsMonitor<ArcanumSettings>(settings), keys);
+        using CampaignRollupProviderClientFactory factory = new(new TestOptionsMonitor<ArcanumSettings>(settings), keys, new RecordingProvider(HttpStatusCode.OK));
 
         Result<ChatClientLease?> resolved = await factory.ResolveClientAsync(null, CancellationToken.None);
 
@@ -97,10 +92,7 @@ public sealed class CampaignRollupProviderClientFactoryTests
     {
         RecordingProvider handler = new(status);
 
-        RecordingFactory clients = new(handler);
-
-        CampaignRollupProviderClientFactory factory = new(clients, new TestOptionsMonitor<ArcanumSettings>(Settings()),
-            EnvironmentOnlyProviderApiKeyResolver.Instance);
+        using CampaignRollupProviderClientFactory factory = Factory(Settings(), handler);
 
         Result<ChatClientLease?> resolved = await factory.ResolveClientAsync(null, CancellationToken.None);
 
@@ -118,8 +110,6 @@ public sealed class CampaignRollupProviderClientFactoryTests
 
         _ = await Assert.ThrowsAnyAsync<Exception>(() => lease.ChatClient.GetResponseAsync(
             [new ChatMessage(ChatRole.User, "Decisions from a completed contribution.")], options));
-
-        Assert.Equal(CampaignRollupProviderClientFactory.HttpClientName, clients.RequestedName);
 
         Assert.Equal(1, handler.CallCount);
 
@@ -143,16 +133,72 @@ public sealed class CampaignRollupProviderClientFactoryTests
     }
 
     [Fact]
-    public async Task Opaque_familiar_transport_is_deferred_without_creating_a_client()
+    public async Task Leases_share_the_scope_client_leave_it_open_and_the_factory_disposes_it_once()
+    {
+        RecordingProvider handler = new(HttpStatusCode.BadRequest);
+
+        CampaignRollupProviderClientFactory factory = Factory(Settings(), handler);
+
+        ChatClientLease first = Assert.IsType<ChatClientLease>((await factory.ResolveClientAsync(null, CancellationToken.None)).Value);
+
+        ChatClientLease second = Assert.IsType<ChatClientLease>((await factory.ResolveClientAsync(null, CancellationToken.None)).Value);
+
+        first.Dispose();
+
+        // A lease does not own the scope client, so disposing it leaves the sibling lease sendable.
+        Assert.False(handler.Disposed);
+
+        _ = await Assert.ThrowsAnyAsync<Exception>(() => second.ChatClient.GetResponseAsync([new ChatMessage(ChatRole.User, "probe")]));
+
+        Assert.Equal(1, handler.CallCount);
+
+        second.Dispose();
+
+        Assert.False(handler.Disposed);
+
+        factory.Dispose();
+
+        factory.Dispose();
+
+        Assert.True(handler.Disposed);
+
+        Assert.Equal(1, handler.DisposeCount);
+
+        await Assert.ThrowsAsync<ObjectDisposedException>(() => factory.ResolveClientAsync(null, CancellationToken.None));
+    }
+
+    [Fact]
+    public void The_factory_depends_on_no_named_client_factory()
+    {
+        Assert.DoesNotContain(
+            typeof(CampaignRollupProviderClientFactory).GetConstructors().SelectMany(static constructor => constructor.GetParameters()),
+            static parameter => parameter.ParameterType == typeof(IHttpClientFactory));
+
+        string root = global::RetroDownfall.Arcanum.Tests.Support.TestRepositoryPaths.RepositoryRoot();
+
+        string factory = File.ReadAllText(Path.Combine(root, "src", "RetroDownfall.Arcanum.Api", "Intelligence", "CampaignRollupProviderClientFactory.cs"));
+
+        Assert.DoesNotContain("CreateClient(", factory, StringComparison.Ordinal);
+
+        Assert.Contains("_httpClient = CreateOwnedHttpClient()", factory, StringComparison.Ordinal);
+
+        string bootstrapper = File.ReadAllText(Path.Combine(root, "src", "RetroDownfall.Arcanum.Api", "ApiBootstrapper.cs"));
+
+        Assert.DoesNotContain("AddHttpClient(CampaignRollupProvider", bootstrapper, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("\"CampaignRollupProvider\"", bootstrapper, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Opaque_familiar_transport_is_deferred_without_sending()
     {
         ArcanumSettings settings = Settings();
 
         settings.Providers[0].Type = AiProviderKind.CodexCli;
 
-        RecordingFactory clients = new(new RecordingProvider(HttpStatusCode.OK));
+        RecordingProvider handler = new(HttpStatusCode.OK);
 
-        CampaignRollupProviderClientFactory factory = new(clients, new TestOptionsMonitor<ArcanumSettings>(settings),
-            EnvironmentOnlyProviderApiKeyResolver.Instance);
+        using CampaignRollupProviderClientFactory factory = Factory(settings, handler);
 
         Result<ChatClientLease?> resolved = await factory.ResolveClientAsync(null, CancellationToken.None);
 
@@ -160,8 +206,11 @@ public sealed class CampaignRollupProviderClientFactoryTests
 
         Assert.Null(resolved.Value);
 
-        Assert.Null(clients.RequestedName);
+        Assert.Equal(0, handler.CallCount);
     }
+
+    private static CampaignRollupProviderClientFactory Factory(ArcanumSettings settings, RecordingProvider handler) =>
+        new(new TestOptionsMonitor<ArcanumSettings>(settings), EnvironmentOnlyProviderApiKeyResolver.Instance, handler);
 
     private static ArcanumSettings Settings() => new()
     {
@@ -177,18 +226,6 @@ public sealed class CampaignRollupProviderClientFactoryTests
             },
         ],
     };
-
-    private sealed class RecordingFactory(RecordingProvider handler) : IHttpClientFactory
-    {
-        public string? RequestedName { get; private set; }
-
-        public HttpClient CreateClient(string name)
-        {
-            RequestedName = name;
-
-            return new HttpClient(handler, disposeHandler: false);
-        }
-    }
 
     private sealed class CallbackModels(ModelEntry[] values) : IReadOnlyList<ModelEntry>
     {
@@ -206,7 +243,10 @@ public sealed class CampaignRollupProviderClientFactoryTests
             }
         }
 
-        public IEnumerator<ModelEntry> GetEnumerator() => ((IEnumerable<ModelEntry>)values).GetEnumerator();
+        public IEnumerator<ModelEntry> GetEnumerator()
+        {
+            return ((IEnumerable<ModelEntry>)values).GetEnumerator();
+        }
 
         System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
     }
@@ -227,6 +267,10 @@ public sealed class CampaignRollupProviderClientFactoryTests
 
         public string? LastBody { get; private set; }
 
+        public int DisposeCount { get; private set; }
+
+        public bool Disposed => DisposeCount != 0;
+
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
             CallCount++;
@@ -237,6 +281,16 @@ public sealed class CampaignRollupProviderClientFactoryTests
             {
                 Content = new StringContent("""{"error":{"message":"strict unsupported","type":"provider_error","code":"test"}}""", Encoding.UTF8, "application/json"),
             };
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing)
+            {
+                DisposeCount++;
+            }
+
+            base.Dispose(disposing);
         }
     }
 }
