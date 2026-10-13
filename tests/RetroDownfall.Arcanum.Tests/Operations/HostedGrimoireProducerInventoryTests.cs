@@ -2947,7 +2947,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
 
         output.WriteLine($"R103_PROBE={receiver}|{shape}|CodeTrue={automatic}|CodeFalse={declared}|prerequisites=passed");
 
-        if (shape == "exact") Assert.Equal(1, automatic);
+        if (shape is "exact" or "receiver-nameof") Assert.Equal(1, automatic);
 
         else if (shape != "effectful-name") Assert.True(automatic > 1, "Excluded wrapper or receiver shape must retain the original sources.");
     }
@@ -23874,9 +23874,9 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
                 .RetainedAdmissions,
             static candidate => candidate.Member == "M:AdmissionDemandTarget.Run");
 
-        Assert.Equal(4, metric.AuthorityQueries);
+        Assert.Equal(2, metric.AuthorityQueries);
 
-        Assert.Equal(4, metric.OriginFreeFastPathReturns);
+        Assert.Equal(2, metric.OriginFreeFastPathReturns);
 
         Assert.Equal(0, metric.SemanticQueries);
     }
@@ -24640,9 +24640,9 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
         string helper = "internal interface IClosedCleanup : System.IDisposable, System.IAsyncDisposable { } "
             + "internal sealed class ClosedCleanup : IClosedCleanup { public void Dispose() => System.IO.File.Exists(\"wrong-public\"); void System.IDisposable.Dispose() => System.IO.File.Delete(\"selected-interface\"); public System.Threading.Tasks.ValueTask DisposeAsync() { System.IO.File.Exists(\"wrong-public\"); return default; } System.Threading.Tasks.ValueTask System.IAsyncDisposable.DisposeAsync() { System.IO.File.Delete(\"selected-interface\"); return default; } } "
             + (multipleImplementations ? "internal sealed class OtherClosedCleanup : IClosedCleanup { public void Dispose() { } public System.Threading.Tasks.ValueTask DisposeAsync() => default; } " : "")
-            + "internal static class ClosedCleanupForwarder { internal static extern IClosedCleanup Unknown(); internal static async System.Threading.Tasks.Task Run(IClosedCleanup value) { " + cleanup + " } }";
+            + "internal static class ClosedCleanupForwarder { internal static IClosedCleanup Value { get; set; } = null!; internal static async System.Threading.Tasks.Task Run(IClosedCleanup value) { " + cleanup + " } }";
 
-        string source = R2Source("await ClosedCleanupForwarder.Run(ClosedCleanupForwarder.Unknown());", helper);
+        string source = R2Source("await ClosedCleanupForwarder.Run(ClosedCleanupForwarder.Value);", helper);
 
         Assert.Empty(Compile(source).GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
 
@@ -25349,7 +25349,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
                 "M:ExactCleanupConstructionTarget.Run(",
                 StringComparison.Ordinal));
 
-        Assert.Equal(3, metric.FingerprintRequests);
+        Assert.Equal(2, metric.FingerprintRequests);
 
         Assert.Equal(1, metric.FingerprintBuilds);
     }
@@ -26034,11 +26034,11 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
                 "M:TokenFastPathTarget.Retain(",
                 StringComparison.Ordinal));
 
-        Assert.Equal(128, retain.InternerRequests);
+        Assert.Equal(64, retain.InternerRequests);
 
-        Assert.Equal(64, retain.InternerContextBuilds);
+        Assert.Equal(32, retain.InternerContextBuilds);
 
-        Assert.Equal(64, retain.InternerTraversalIdentityBuilds);
+        Assert.Equal(32, retain.InternerTraversalIdentityBuilds);
 
         Assert.Equal(1, retain.FingerprintBuilds);
 
@@ -27557,7 +27557,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
 
         if (!unresolved)
         {
-            Assert.Empty(result.Diagnostics);
+            AssertOnlyUnprovenFactoryBorrowedCreateCommand(source, result);
 
             Assert.Contains(result.Items, static site => site.EnclosingType == "FactoryConsumer" && site.Callee == "System.IO.File.Exists");
         }
@@ -27734,10 +27734,29 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
 
         if (!unresolved)
         {
-            Assert.Empty(result.Diagnostics);
+            AssertOnlyUnprovenFactoryBorrowedCreateCommand(source, result);
 
             Assert.Contains(result.Items, static site => site.EnclosingType == "OptionalConsumer" && site.Callee == "System.IO.File.Exists");
         }
+    }
+
+    // The virtual metadata SqliteConnection.CreateCommand() slot needs a closed receiver at each call;
+    // a factory-call receiver is an opaque factory and stays unclassified (DESIGN, SqliteConnection.CreateCommand paragraph).
+    private static void AssertOnlyUnprovenFactoryBorrowedCreateCommand(string source, HostedProducerDiscovery<HostedProducerSite> result)
+    {
+        const string receiverCall = "_factory.Borrow().CreateCommand()";
+
+        int offset = source.IndexOf(receiverCall, StringComparison.Ordinal);
+
+        Assert.True(offset >= 0 && offset == source.LastIndexOf(receiverCall, StringComparison.Ordinal));
+
+        HostedProducerInventoryDiagnostic refusal = Assert.Single(result.Diagnostics);
+
+        Assert.Equal("HOSTED_SITE_UNCLASSIFIED", refusal.Code);
+
+        Assert.Equal("src/Fixture.cs:" + offset, refusal.Identity);
+
+        Assert.Equal("Microsoft.Data.Sqlite.SqliteConnection.CreateCommand", refusal.Detail);
     }
 
     [Fact]
@@ -39111,9 +39130,19 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
     [InlineData("onconfiguring-effect")]
     [InlineData("onconfiguring-provider")]
     public void SqliteBlobIndexerRequiresActualInstanceOptionsAndProviderClosure(string shape) =>
-        WidenedSqliteBlobIndexerRequiresCompleteConfiguredReceiverAndLiveFrontier(shape, false, true);
+        // An OnConfiguring effect is unadmitted wherever EF can first use the context: the use that
+        // really triggers it may be a later consumer of a DbSet or facade read inside the admission,
+        // so no admission current at the read is inherited (WS0F review).
+        WidenedSqliteBlobIndexerRequiresCompleteConfiguredReceiverAndLiveFrontier(shape, false, shape != "onconfiguring-effect");
 
     [Theory]
+    [InlineData("x-builder-alias", false, true)]
+    [InlineData("x-factory", false, true)]
+    [InlineData("x-typeof-replace", false, true)]
+    [InlineData("x-unrelated-descriptor", true, true)]
+    [InlineData("x-second-unconfigured", true, true)]
+    [InlineData("x-onconfiguring-guard", true, true)]
+    [InlineData("x-onconfiguring-inverted", false, true)]
     [InlineData("exact", true, true)]
     [InlineData("helper", true, true)]
     [InlineData("argument-effect", true, true)]
@@ -39240,6 +39269,23 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
         registration = shape.EndsWith("-before", StringComparison.Ordinal) ? replacement + registration : registration + replacement;
 
         if (shape == "registration-opaque") registration += "BlobInput.MutateServices(services); ";
+
+        if (shape == "x-builder-alias") registration = "services.AddDbContext<BlobContext>((sp, options) => { " + options + "; Microsoft.EntityFrameworkCore.DbContextOptionsBuilder alias = options; alias.UseInternalServiceProvider(BlobInput.Provider()); }); ";
+
+        if (shape == "x-factory") registration += "services.AddDbContextFactory<BlobContext>(options => " + options + "); ";
+
+        if (shape == "x-typeof-replace") registration += "services.Add(new ServiceDescriptor(typeof(BlobContext), sp => new BlobContext(BlobInput.Options()), ServiceLifetime.Scoped)); ";
+
+        if (shape == "x-unrelated-descriptor") registration += "services.AddSingleton<UnrelatedService>(); ";
+
+        if (shape == "x-second-unconfigured") registration += "services.AddDbContext<OtherContext>((sp, o) => o.EnableDetailedErrors()); ";
+
+        if (shape is "x-onconfiguring-guard" or "x-onconfiguring-inverted") helpers = helpers.Replace(
+            "Microsoft.EntityFrameworkCore.DbContext(options) { }",
+            "Microsoft.EntityFrameworkCore.DbContext(options) { protected override void OnConfiguring(Microsoft.EntityFrameworkCore.DbContextOptionsBuilder builder) { "
+                + (shape == "x-onconfiguring-guard" ? "if (builder.IsConfigured) return; builder.UseInternalServiceProvider(BlobInput.Provider());" : "if (!builder.IsConfigured) { builder.UseInternalServiceProvider(BlobInput.Provider()); }") + " } }", StringComparison.Ordinal);
+
+        helpers += " public sealed class UnrelatedService { } public sealed class OtherContext(Microsoft.EntityFrameworkCore.DbContextOptions<OtherContext> options) : Microsoft.EntityFrameworkCore.DbContext(options) { } ";
 
         if (shape.StartsWith("onconfiguring-", StringComparison.Ordinal)) helpers = helpers.Replace(
             "Microsoft.EntityFrameworkCore.DbContext(options) { }",
@@ -40826,7 +40872,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
     [InlineData("argument", true, true)]
     [InlineData("unknown", false, false)]
     [InlineData("custom", false, false)]
-    [InlineData("custom-converted", false, false)]
+    [InlineData("custom-converted", false, true)]
     [InlineData("mixed", false, false)]
     [InlineData("reassigned", false, false)]
     [InlineData("ref-escaped", false, false)]
@@ -41194,8 +41240,9 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
                 private static System.IO.MemoryStream Start() { START }
                 private static System.IO.MemoryStream Mixed() => DateTime.UtcNow.Ticks > 0 ? new System.IO.MemoryStream() : Unknown();
                 private static System.IO.MemoryStream MixedOwned() => DateTime.UtcNow.Ticks > 0 ? new System.IO.MemoryStream() : Start();
-                private static extern System.IO.MemoryStream Unknown();
-                private static extern void Escape(ref System.IO.MemoryStream bytes);
+                private static System.IO.MemoryStream Slot { get; set; } = null!;
+                private static System.IO.MemoryStream Unknown() => Slot;
+                private static void Escape(ref System.IO.MemoryStream bytes) { bytes = Slot; }
                 private static void Write(System.IO.MemoryStream bytes, byte[] data) => bytes.Write(data, 0, data.Length);
                 private static byte[] Payload() { System.IO.File.Delete("argument"); return new byte[] { 1 }; }
             }
@@ -41238,7 +41285,10 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
         }
         else
         {
-            Assert.True(result.Diagnostics.Any(static diagnostic => diagnostic.Code is "HOSTED_DISPOSAL_TARGET_UNRESOLVED" or "HOSTED_SITE_UNCLASSIFIED"), diagnostics);
+            // The opaque origin is an authored settable property, not an extern call, so no other refusal can
+            // stand in for the lane: the unproven writer's own disposal must be the unresolved target.
+            Assert.True(result.Diagnostics.Any(static diagnostic => diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED"
+                && diagnostic.Detail.StartsWith("System.IO.MemoryStream.Dispose;", StringComparison.Ordinal)), diagnostics);
         }
     }
 
