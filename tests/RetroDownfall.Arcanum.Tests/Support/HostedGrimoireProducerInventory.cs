@@ -3814,6 +3814,19 @@ internal static partial class HostedGrimoireProducerInventory
                     BoundValueSource normalizedSource =
                         NormalizeEvaluationValueSource(source);
 
+                    if (TryConstantValueIdentity(normalizedSource, out string constantIdentity))
+                    {
+                        AppendIdentitySegment(references, "value-constant");
+
+                        AppendIdentitySegment(
+                            references,
+                            BindingSymbolIdentity(symbol, member));
+
+                        AppendIdentitySegment(references, constantIdentity);
+
+                        continue;
+                    }
+
                     AuthoredMember projectedCaller =
                         ProjectEvaluationEnvironment(
                             normalizedSource.Caller,
@@ -4043,6 +4056,19 @@ internal static partial class HostedGrimoireProducerInventory
                 {
                     BoundValueSource normalizedSource =
                         NormalizeEvaluationValueSource(source);
+
+                    if (TryConstantValueIdentity(normalizedSource, out string constantIdentity))
+                    {
+                        AppendIdentitySegment(references, "value-constant");
+
+                        AppendIdentitySegment(
+                            references,
+                            BindingSymbolIdentity(symbol, member));
+
+                        AppendIdentitySegment(references, constantIdentity);
+
+                        continue;
+                    }
 
                     AuthoredMember projectedCaller =
                         ProjectEvaluationEnvironment(
@@ -4390,6 +4416,17 @@ internal static partial class HostedGrimoireProducerInventory
                 {
                     BoundValueSource normalizedSource =
                         NormalizeEvaluationValueSource(source);
+
+                    if (TryConstantValueIdentity(normalizedSource, out string constantIdentity))
+                    {
+                        AppendIdentitySegment(value, "value-constant");
+
+                        AppendIdentitySegment(value, BindingSymbolIdentity(symbol, member));
+
+                        AppendIdentitySegment(value, constantIdentity);
+
+                        continue;
+                    }
 
                     AuthoredMember projectedCaller =
                         ProjectEvaluationEnvironment(
