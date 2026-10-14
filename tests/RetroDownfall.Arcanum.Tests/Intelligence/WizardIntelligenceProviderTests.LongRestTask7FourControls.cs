@@ -98,7 +98,9 @@ public sealed partial class WizardIntelligenceProviderTests
         CampaignWizardMaintenance maintenance = new();
 
         CampaignRollupTurnPreparer disabled = new(rollups, new TestOptionsMonitor<ArcanumSettings>(settings),
-            new LongRestTask7ScopeResolver(CanonicalCampaignContext.GlobalOnly), null!, maintenance, claims,
+            new LongRestTask7ScopeResolver(CanonicalCampaignContext.GlobalOnly), null!,
+            UnreachedLongRestPorts.Coordinator, UnreachedLongRestPorts.Maintenance, UnreachedLongRestPorts.Discovery, UnreachedLongRestPorts.Configuration,
+            maintenance, claims,
             currentRepository, claims, new CampaignRollupTurnSnapshotTests.Authority(), new CampaignWizardLookup());
 
         ScriptingChatClient baselineChat = new();

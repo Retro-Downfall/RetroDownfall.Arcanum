@@ -208,9 +208,15 @@ public sealed partial class LongRestMaintenanceTests
 
                 Assert.Equal(0, recovered.Completed);
 
-                Assert.Equal(1, recovered.RequiresAttention);
+                // The refused attestation is a restart-generation fault, so the clean sweep is retired (Abandoned) rather than parked:
+                // the captured generation can never complete, and the next request starts a new one.
+                Assert.Equal(0, recovered.RequiresAttention);
 
-                Assert.NotEqual(LongRunningOperationState.Completed, (await f.Operations.GetAsync(f.Operation))!.State);
+                LongRunningOperation retired = (await f.Operations.GetAsync(f.Operation))!;
+
+                Assert.Equal(LongRunningOperationState.Abandoned, retired.State);
+
+                Assert.Equal(LongRestFaultClass.RestartGeneration, LongRestFaultPolicy.Classify(retired.TerminalErrorCode));
             }
         }
         finally

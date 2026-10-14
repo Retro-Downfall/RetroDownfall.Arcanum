@@ -1706,11 +1706,23 @@ public sealed partial class WizardIntelligenceProvider(
                 yield break;
             }
 
+            CampaignPreparationProgress preparationProgress = new();
+
             covenantScope.CampaignPreparation ??= campaignRollups.PrepareLiveAsync(
                 request, invocationContext, streaming, inferenceToken,
-                CampaignRollupTurnPreparer.ConfigurationDigest(settings.Value));
+                CampaignRollupTurnPreparer.ConfigurationDigest(settings.Value), preparationProgress);
 
-            Result<CampaignRollupTurnSnapshot?> prepared = await covenantScope.CampaignPreparation.ConfigureAwait(false);
+            Task<Result<CampaignRollupTurnSnapshot?>> preparation = covenantScope.CampaignPreparation;
+
+            // Protected Long Rest maintenance finishes under this turn before the assistant begins, and can take a while. Say so once,
+            // before it starts; a turn with no protected partition never reaches this event.
+            if (!preparation.IsCompleted
+                && await Task.WhenAny(preparation, preparationProgress.ProtectedMaintenanceStarted).ConfigureAwait(false) != preparation)
+            {
+                yield return new IntelligenceEvent(IntelligenceEventType.Status, "Finishing protected memory maintenance...");
+            }
+
+            Result<CampaignRollupTurnSnapshot?> prepared = await preparation.ConfigureAwait(false);
 
             if (prepared.IsFailure)
             {

@@ -52,7 +52,9 @@ public sealed class LongRestTurnPreparationTests
             CovenantContextPolicy.Default, ToolPolicy.NoTools, null).Value;
 
         CampaignRollupTurnPreparer preparer = new(store, new TestOptionsMonitor<ArcanumSettings>(settings),
-            new CampaignRollupTurnSnapshotTests.Resolver(), null!, new CampaignRollupTurnSnapshotTests.RefusingMaintenance(),
+            new CampaignRollupTurnSnapshotTests.Resolver(), null!,
+            UnreachedLongRestPorts.Coordinator, UnreachedLongRestPorts.Maintenance, UnreachedLongRestPorts.Discovery, UnreachedLongRestPorts.Configuration,
+            new CampaignRollupTurnSnapshotTests.RefusingMaintenance(),
             new CampaignRollupTurnSnapshotTests.InputStore(), null, claims, new CampaignRollupTurnSnapshotTests.Authority());
 
         Result<CampaignRollupTurnSnapshot?> result = await preparer.PrepareLiveAsync(
@@ -149,7 +151,9 @@ public sealed class LongRestTurnPreparationTests
         RefusingClaims claims = new();
 
         CampaignRollupTurnPreparer preparer = new(store, new TestOptionsMonitor<ArcanumSettings>(settings),
-            new CampaignRollupTurnSnapshotTests.Resolver(), null!, new CampaignRollupTurnSnapshotTests.RefusingMaintenance(),
+            new CampaignRollupTurnSnapshotTests.Resolver(), null!,
+            UnreachedLongRestPorts.Coordinator, UnreachedLongRestPorts.Maintenance, UnreachedLongRestPorts.Discovery, UnreachedLongRestPorts.Configuration,
+            new CampaignRollupTurnSnapshotTests.RefusingMaintenance(),
             new CampaignRollupTurnSnapshotTests.InputStore(), null, claims, new CampaignRollupTurnSnapshotTests.Authority());
 
         ArcanumInvocationContext invocation = ArcanumInvocationContext.Create(surface,

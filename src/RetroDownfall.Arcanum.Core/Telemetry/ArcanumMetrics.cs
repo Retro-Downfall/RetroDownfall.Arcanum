@@ -235,4 +235,35 @@ public static class ArcanumMetrics
         "s",
         "Wall-clock duration of outbound A2A Sendings measured from dispatch to settle");
 
+    /// <summary>
+    /// Long Rest sweeps parked by the owning worker or a fresh Session request. Label: <c>class</c>, the fault class of the code
+    /// the park was stamped with (<c>resume_later</c>, <c>restart_generation</c> or <c>needs_operator</c>). A restart-generation
+    /// park of a clean sweep is recorded as it is retired. Never carries a code, an identity or any content.
+    /// </summary>
+    public static readonly Counter<long> LongRestSweepParkedTotal = Meter.CreateCounter<long>(
+        "arcanum.long_rest.sweep.parked",
+        "{sweeps}",
+        "Long Rest sweeps parked, by fault class");
+
+    /// <summary>Parked Long Rest sweeps readmitted to Running by their own authority class (the worker for clean, a fresh capability for protected).</summary>
+    public static readonly Counter<long> LongRestSweepReadmittedTotal = Meter.CreateCounter<long>(
+        "arcanum.long_rest.sweep.readmitted",
+        "{sweeps}",
+        "Parked Long Rest sweeps readmitted");
+
+    /// <summary>Resumable Long Rest faults that spent the last of the Sweep Failure Budget and became needs-operator parks.</summary>
+    public static readonly Counter<long> LongRestSweepBudgetExhaustedTotal = Meter.CreateCounter<long>(
+        "arcanum.long_rest.sweep.budget_exhausted",
+        "{sweeps}",
+        "Long Rest sweeps whose failure budget was spent");
+
+    /// <summary>
+    /// Session turns whose clean Long Rest scheduling was refused with a Long Rest error and which proceeded anyway. Label:
+    /// <c>code</c>, the closed <c>LongRest.*</c> error code. Never carries an identity or any content.
+    /// </summary>
+    public static readonly Counter<long> LongRestCleanScheduleRefusedTotal = Meter.CreateCounter<long>(
+        "arcanum.long_rest.clean_schedule_refused",
+        "{turns}",
+        "Session turns that proceeded after clean Long Rest scheduling was refused");
+
 }

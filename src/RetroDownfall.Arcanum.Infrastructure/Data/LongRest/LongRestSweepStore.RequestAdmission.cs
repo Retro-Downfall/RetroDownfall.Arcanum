@@ -31,6 +31,11 @@ internal sealed partial class LongRestSweepStore : ILongRestSweepRequestAdmissio
 
             return await SqliteBusyRetry.ExecuteAsync(() => AdmitOnceAsync(scope, fence, facts, ownership, ct), ct).ConfigureAwait(false);
         }
+        catch (OperationBusyException)
+        {
+            // Another executor in this process owns the sweep this request would have to replace. Nothing was written.
+            return new Error(ErrorCodes.LongRest.OperationBusy, "Another executor in this process owns the active sweep for this scope right now.");
+        }
         catch (SweepParkedException parked)
         {
             // The identifier is content-free and is what `operation retry` and `operation cancel` take.
@@ -100,8 +105,9 @@ internal sealed partial class LongRestSweepStore : ILongRestSweepRequestAdmissio
                         // it twice), so the generation can no longer revalidate and this park can never resume. Retire it as a
                         // terminal sweep and replace it.
                         if (operation.RecoveryPolicy != LongRunningOperationRecoveryPolicy.ResumeFromCheckpoint
-                            || operation.LeaseOwner is not null || operation.LeaseExpiresAt is not null
-                            || !ownership.TryClaim(operation.Id, out token)) throw new InvalidDataException();
+                            || operation.LeaseOwner is not null || operation.LeaseExpiresAt is not null) throw new InvalidDataException();
+
+                        if (!ownership.TryClaim(operation.Id, out token)) throw new OperationBusyException();
 
                         claimed = operation.Id;
 
@@ -115,8 +121,9 @@ internal sealed partial class LongRestSweepStore : ILongRestSweepRequestAdmissio
                 else if (operation.State is LongRunningOperationState.Failed or LongRunningOperationState.Abandoned)
                 {
                     if (operation.RecoveryPolicy != LongRunningOperationRecoveryPolicy.ResumeFromCheckpoint
-                        || operation.CompletedAt is null || operation.LeaseOwner is not null || operation.LeaseExpiresAt is not null
-                        || !ownership.TryClaim(operation.Id, out token)) throw new InvalidDataException();
+                        || operation.CompletedAt is null || operation.LeaseOwner is not null || operation.LeaseExpiresAt is not null) throw new InvalidDataException();
+
+                    if (!ownership.TryClaim(operation.Id, out token)) throw new OperationBusyException();
 
                     claimed = operation.Id;
 
@@ -130,8 +137,9 @@ internal sealed partial class LongRestSweepStore : ILongRestSweepRequestAdmissio
                 }
                 else
                 {
-                    if (scope.ProtectedPartitionDigest is not null || stored.ValueDigest != fence.Configuration.ValueDigest
-                        || !ownership.TryClaim(operation.Id, out token)) throw new InvalidDataException();
+                    if (scope.ProtectedPartitionDigest is not null || stored.ValueDigest != fence.Configuration.ValueDigest) throw new InvalidDataException();
+
+                    if (!ownership.TryClaim(operation.Id, out token)) throw new OperationBusyException();
 
                     claimed = operation.Id;
 
@@ -348,6 +356,8 @@ internal sealed partial class LongRestSweepStore : ILongRestSweepRequestAdmissio
 
     private sealed record ActiveRequest(Guid OperationId, string ConfigurationJson, long Revision, Guid? GenerationId, LongRestSweepPhase Phase,
         int ReadmitCount);
+
+    private sealed class OperationBusyException : Exception;
 
     private sealed class SweepParkedException(Guid operationId) : Exception
     {
