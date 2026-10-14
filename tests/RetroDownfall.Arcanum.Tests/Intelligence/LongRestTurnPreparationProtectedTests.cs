@@ -176,7 +176,7 @@ public sealed class LongRestTurnPreparationProtectedTests
     }
 
     [Fact]
-    public async Task The_progress_signal_completes_before_the_first_protected_request_when_a_protected_partition_exists()
+    public async Task The_progress_signal_completes_before_the_first_protected_resume_when_a_protected_partition_has_debt()
     {
         await using LongRestMaintenanceTests.MaintenanceFixture f = await LongRestMaintenanceTests.MaintenanceFixture.CreateAsync(ownWorker: false);
 
@@ -184,13 +184,13 @@ public sealed class LongRestTurnPreparationProtectedTests
 
         CampaignPreparationProgress progress = new();
 
-        bool signalledBeforeRequest = false;
+        bool signalledBeforeResume = false;
 
         Decorated coordinator = new(f.Coordinator)
         {
-            Partition = () =>
+            Resume = () =>
             {
-                signalledBeforeRequest = progress.ProtectedMaintenanceStarted.IsCompleted;
+                signalledBeforeResume = progress.ProtectedMaintenanceStarted.IsCompleted;
 
                 return new Error(ErrorCodes.LongRest.Unavailable, "Stop here.");
             },
@@ -206,13 +206,17 @@ public sealed class LongRestTurnPreparationProtectedTests
 
         Assert.Equal(1, coordinator.PartitionRequests);
 
-        Assert.True(signalledBeforeRequest);
+        Assert.Equal(1, coordinator.Resumes);
+
+        Assert.True(signalledBeforeResume);
 
         Assert.True(progress.ProtectedMaintenanceStarted.IsCompletedSuccessfully);
+
+        Assert.Equal(0, f.Handler.SendCount);
     }
 
     [Fact]
-    public async Task A_held_progress_signal_makes_the_first_protected_request_wait_for_the_acknowledgement()
+    public async Task A_held_progress_signal_makes_the_first_protected_resume_wait_for_the_acknowledgement()
     {
         await using LongRestMaintenanceTests.MaintenanceFixture f = await LongRestMaintenanceTests.MaintenanceFixture.CreateAsync(ownWorker: false);
 
@@ -220,7 +224,7 @@ public sealed class LongRestTurnPreparationProtectedTests
 
         CampaignPreparationProgress progress = new(holdUntilAcknowledged: true);
 
-        Decorated coordinator = new(f.Coordinator) { Partition = () => new Error(ErrorCodes.LongRest.Unavailable, "Stop here.") };
+        Decorated coordinator = new(f.Coordinator) { Resume = () => new Error(ErrorCodes.LongRest.Unavailable, "Stop here.") };
 
         (CampaignRollupTurnPreparer preparer, GrimoireRepository _, CampaignRollupTurnSnapshotTests.ProbeStore _, Guid session) = await BuildAsync(f, coordinator);
 
@@ -230,12 +234,12 @@ public sealed class LongRestTurnPreparationProtectedTests
 
         await progress.ProtectedMaintenanceStarted.WaitAsync(TimeSpan.FromSeconds(10));
 
-        // Told, but held: the protected partition has not been requested while the caller has yet to acknowledge.
+        // Told, but held: the protected work has not been resumed while the caller has yet to acknowledge.
         await Task.Delay(200);
 
         Assert.False(preparing.IsCompleted);
 
-        Assert.Equal(0, coordinator.PartitionRequests);
+        Assert.Equal(0, coordinator.Resumes);
 
         progress.AcknowledgeProtectedMaintenance();
 
@@ -243,7 +247,7 @@ public sealed class LongRestTurnPreparationProtectedTests
 
         Assert.True(result.IsFailure);
 
-        Assert.Equal(1, coordinator.PartitionRequests);
+        Assert.Equal(1, coordinator.Resumes);
     }
 
     [Fact]
@@ -266,6 +270,120 @@ public sealed class LongRestTurnPreparationProtectedTests
         await using CampaignRollupTurnSnapshot snapshot = result.Value!;
 
         Assert.Equal(0, coordinator.PartitionRequests);
+
+        Assert.False(progress.ProtectedMaintenanceStarted.IsCompleted);
+    }
+
+    // An unresolved recipe (here a FastModel that matches no provider) cannot run Long Rest. A clean-only turn is unaffected, because clean
+    // work belongs to the worker and its refusal is skipped. A turn that must finish a protected partition first still ends, because a
+    // protected failure is fatal: only exact protected work finishing under the pending claim lets maintenance end. The reporting says so.
+    [Fact]
+    public async Task An_unresolved_recipe_ends_a_turn_that_has_a_protected_partition_before_any_send()
+    {
+        await using LongRestMaintenanceTests.MaintenanceFixture f = await LongRestMaintenanceTests.MaintenanceFixture.CreateAsync(ownWorker: false);
+
+        LongRestSweepHarness.Require(await f.Coordinator.ResumeAsync(f.Operation, null, CancellationToken.None));
+
+        f.Options.Set(f.Options.CurrentValue with { FastModel = "no-such-fast-model" });
+
+        Decorated coordinator = new(f.Coordinator);
+
+        (CampaignRollupTurnPreparer preparer, GrimoireRepository _, CampaignRollupTurnSnapshotTests.ProbeStore _, Guid session) = await BuildAsync(f, coordinator);
+
+        Result<CampaignRollupTurnSnapshot?> result = await preparer.PrepareLiveAsync(
+            new("Continue.", Model: "model", SessionId: session, CampaignId: f.CampaignId, SkipSpellRouting: true, DisableAllTools: true),
+            f.Invocation, false, CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.LongRest.Unavailable, result.Error.Code);
+
+        Assert.Equal(1, coordinator.PartitionRequests);
+
+        Assert.Equal(0, f.Handler.SendCount);
+
+        Assert.Equal(0L, await PendingClaimsAsync(f.H.Connection, session));
+    }
+
+    [Fact]
+    public async Task An_unresolved_recipe_does_not_end_a_turn_that_has_only_clean_scope()
+    {
+        await using LongRestMaintenanceTests.MaintenanceFixture f = await LongRestMaintenanceTests.MaintenanceFixture.CreateAsync(ownWorker: false, protectedSources: false);
+
+        f.Options.Set(f.Options.CurrentValue with { FastModel = "no-such-fast-model" });
+
+        Decorated coordinator = new(f.Coordinator);
+
+        (CampaignRollupTurnPreparer preparer, GrimoireRepository _, CampaignRollupTurnSnapshotTests.ProbeStore _, Guid session) = await BuildAsync(f, coordinator);
+
+        Result<CampaignRollupTurnSnapshot?> result = await preparer.PrepareLiveAsync(
+            new("Continue.", Model: "model", SessionId: session, CampaignId: f.CampaignId, SkipSpellRouting: true, DisableAllTools: true),
+            f.Invocation, false, CancellationToken.None);
+
+        Assert.True(result.IsSuccess, result.IsFailure ? result.Error.Code : null);
+
+        await using CampaignRollupTurnSnapshot snapshot = result.Value!;
+
+        Assert.Equal(1, coordinator.CleanRequests);
+
+        Assert.Equal(0, coordinator.PartitionRequests);
+
+        Assert.Equal(0, f.Handler.SendCount);
+    }
+
+    [Fact]
+    public async Task The_progress_signal_never_completes_when_the_protected_partition_is_already_completed()
+    {
+        await using LongRestMaintenanceTests.MaintenanceFixture f = await LongRestMaintenanceTests.MaintenanceFixture.CreateAsync(ownWorker: false);
+
+        LongRestSweepHarness.Require(await f.Coordinator.ResumeAsync(f.Operation, null, CancellationToken.None));
+
+        f.Handler.InsideSend = () =>
+        {
+            f.Handler.ChatText = f.Handler.LastBody!.Contains("survivorVersionId", StringComparison.Ordinal)
+                ? "{\"kind\":\"NoChange\",\"survivorVersionId\":null}" : "{\"summary\":\"Accepted summary.\"}";
+
+            return Task.CompletedTask;
+        };
+
+        // The first turn finishes the protected debt under its pending claim.
+        (CampaignRollupTurnPreparer first, GrimoireRepository _, CampaignRollupTurnSnapshotTests.ProbeStore _, Guid firstSession) = await BuildAsync(f, f.Coordinator);
+
+        Result<CampaignRollupTurnSnapshot?> finished = await first.PrepareLiveAsync(
+            new("Finish.", Model: "model", SessionId: firstSession, CampaignId: f.CampaignId, SkipSpellRouting: true, DisableAllTools: true),
+            f.Invocation, false, CancellationToken.None);
+
+        Assert.True(finished.IsSuccess, finished.IsFailure ? finished.Error.Code : null);
+
+        await finished.Value!.DisposeAsync();
+
+        Assert.Equal(LongRunningOperationState.Completed, (await f.Operations.GetAsync(f.Operation))!.State);
+
+        int sends = f.Handler.SendCount;
+
+        Assert.True(sends > 0);
+
+        // The next turn still has a protected partition with sources, but its sweep is already completed: there is no maintenance
+        // to announce, so the caller is not told and nothing is sent.
+        CampaignPreparationProgress progress = new();
+
+        Decorated coordinator = new(f.Coordinator);
+
+        (CampaignRollupTurnPreparer second, GrimoireRepository _, CampaignRollupTurnSnapshotTests.ProbeStore _, Guid secondSession) = await BuildAsync(f, coordinator);
+
+        Result<CampaignRollupTurnSnapshot?> result = await second.PrepareLiveAsync(
+            new("Continue.", Model: "model", SessionId: secondSession, CampaignId: f.CampaignId, SkipSpellRouting: true, DisableAllTools: true),
+            f.Invocation, false, CancellationToken.None, progress: progress);
+
+        Assert.True(result.IsSuccess, result.IsFailure ? result.Error.Code : null);
+
+        await using CampaignRollupTurnSnapshot snapshot = result.Value!;
+
+        Assert.Equal(1, coordinator.PartitionRequests);
+
+        Assert.Equal(0, coordinator.Resumes);
+
+        Assert.Equal(sends, f.Handler.SendCount);
 
         Assert.False(progress.ProtectedMaintenanceStarted.IsCompleted);
     }

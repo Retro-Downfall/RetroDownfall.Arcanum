@@ -145,7 +145,8 @@ public sealed class CampaignRollupTurnSnapshot(
 /// Lets the caller of <see cref="CampaignRollupTurnPreparer.PrepareLiveAsync"/> learn, while preparation is still running, that
 /// protected Long Rest maintenance is about to run under this turn, so a streaming client can be told before a long wait. With
 /// <paramref name="holdUntilAcknowledged"/> the preparer also waits, for a bounded time, until the caller acknowledges that it
-/// has told the client, so the telling genuinely precedes the first protected request instead of racing it.
+/// has told the client, so the telling genuinely precedes the first paid protected work instead of racing it. Only a streaming
+/// caller has a client to tell, so only a streaming caller asks to be held.
 /// </summary>
 public sealed class CampaignPreparationProgress(bool holdUntilAcknowledged = false)
 {
@@ -155,7 +156,10 @@ public sealed class CampaignPreparationProgress(bool holdUntilAcknowledged = fal
 
     private readonly TaskCompletionSource _acknowledged = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-    /// <summary>Completes once, when the first protected partition of the turn is about to be requested.</summary>
+    /// <summary>
+    /// Completes once, when the first protected partition of the turn that still has maintenance to finish is about to be resumed. A
+    /// partition whose sweep is already completed has none, and never completes it.
+    /// </summary>
     public Task ProtectedMaintenanceStarted => _protectedMaintenance.Task;
 
     /// <summary>The caller has told its client; a preparer that was holding for it continues.</summary>
@@ -505,12 +509,6 @@ public sealed class CampaignRollupTurnPreparer(
                             return partition.Error;
                         }
 
-                        // Protected maintenance finishes under this turn's pending claim, so the caller is told before it begins.
-                        if (progress is not null)
-                        {
-                            await progress.SignalProtectedMaintenanceAsync(cancellationToken).ConfigureAwait(false);
-                        }
-
                         // Clean-Only Busy Skip: a busy protected partition is not skipped. Only exact protected work finishing
                         // under the request keeps pending maintenance from ending with a protected partition unfinished.
                         Result<LongRunningOperationDto> operation = await longRest.RequestAsync(
@@ -523,6 +521,13 @@ public sealed class CampaignRollupTurnPreparer(
 
                         if (operation.Value.State is not LongRunningOperationState.Completed)
                         {
+                            // Protected maintenance finishes under this turn's pending claim, so the caller is told once it is known to
+                            // be coming (a partition whose sweep is already completed has none) and before the first paid work of it.
+                            if (progress is not null)
+                            {
+                                await progress.SignalProtectedMaintenanceAsync(cancellationToken).ConfigureAwait(false);
+                            }
+
                             Result<LongRestMaintenanceCapability> prepared = await longRestMaintenance.CreateCapabilityAsync(
                                 operation.Value.Id, invocation, lease, campaign, authority, cancellationToken).ConfigureAwait(false);
 

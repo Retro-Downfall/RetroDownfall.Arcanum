@@ -1706,7 +1706,8 @@ public sealed partial class WizardIntelligenceProvider(
                 yield break;
             }
 
-            CampaignPreparationProgress preparationProgress = new(holdUntilAcknowledged: true);
+            // Only a streaming turn has a client to tell, so only a streaming turn holds the preparer for the telling.
+            CampaignPreparationProgress preparationProgress = new(holdUntilAcknowledged: streaming);
 
             covenantScope.CampaignPreparation ??= campaignRollups.PrepareLiveAsync(
                 request, invocationContext, streaming, inferenceToken,
@@ -1715,8 +1716,9 @@ public sealed partial class WizardIntelligenceProvider(
             Task<Result<CampaignRollupTurnSnapshot?>> preparation = covenantScope.CampaignPreparation;
 
             // Protected Long Rest maintenance finishes under this turn before the assistant begins, and can take a while. Say so once,
-            // before it starts; a turn with no protected partition never reaches this event.
-            if (!preparation.IsCompleted
+            // before it starts, to a client that is streaming; a turn with no protected maintenance to finish never reaches this event.
+            if (streaming
+                && !preparation.IsCompleted
                 && await Task.WhenAny(preparation, preparationProgress.ProtectedMaintenanceStarted).ConfigureAwait(false) != preparation)
             {
                 try
