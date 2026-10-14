@@ -15,7 +15,8 @@ namespace RetroDownfall.Arcanum.Tests.Configuration;
 
 /// <summary>
 /// "LongRest: enabled but recipe unresolved" is one fact with one set of predicates: the validator warning, the doctor row, the
-/// health row and the runtime epoch's recipe all read <see cref="LongRestRecipeResolver"/>. It is a warning, never a refusal.
+/// health row and the runtime epoch's recipe all read <see cref="LongRestRecipeResolver"/>. It is a warning, never a startup
+/// refusal, and an ordinary turn is unaffected; a turn that must finish protected Long Rest maintenance first still ends.
 /// </summary>
 public sealed class LongRestRecipeReadinessTests
 {
