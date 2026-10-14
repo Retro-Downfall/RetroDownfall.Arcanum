@@ -34417,16 +34417,45 @@ internal static partial class HostedGrimoireProducerInventory
         }
 
         // The scan of a member from a fresh path depends only on its syntax and semantic model, so a root scan is
-        // computed once. A scan that continues a path ends where it meets the path, so it is never cached.
+        // computed once. A scan that continues a path ends where it meets the path, so it is never cached. A root scan
+        // that is asked for again while it is being computed (a body whose implicit call resolves to the body itself)
+        // ends there as a scan meeting its own path does, and a result that was cut that way is not cached.
         private readonly Dictionary<GraphMemberIdentity, bool> producerSiteScans = [];
+
+        private readonly HashSet<GraphMemberIdentity> producerSiteScansInProgress = [];
+
+        private int producerSiteScanCuts;
 
         private bool ContainsPotentialProducerSite(AuthoredMember member)
         {
             GraphMemberIdentity identity = MemberIdentity(member);
 
-            if (!producerSiteScans.TryGetValue(identity, out bool reaches))
+            if (producerSiteScans.TryGetValue(identity, out bool reaches))
             {
-                producerSiteScans[identity] = reaches = ContainsPotentialProducerSite(member, []);
+                return reaches;
+            }
+
+            if (!producerSiteScansInProgress.Add(identity))
+            {
+                producerSiteScanCuts++;
+
+                return false;
+            }
+
+            int cutsBefore = producerSiteScanCuts;
+
+            try
+            {
+                reaches = ContainsPotentialProducerSite(member, []);
+            }
+            finally
+            {
+                producerSiteScansInProgress.Remove(identity);
+            }
+
+            if (producerSiteScanCuts == cutsBefore)
+            {
+                producerSiteScans[identity] = reaches;
             }
 
             return reaches;

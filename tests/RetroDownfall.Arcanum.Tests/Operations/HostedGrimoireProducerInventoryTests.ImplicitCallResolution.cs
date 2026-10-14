@@ -8,7 +8,7 @@ using Xunit;
 
 namespace RetroDownfall.Arcanum.Tests.Operations;
 
-// The resolution half of the Implicit Call Census: which members an implicit call runs. The corpus pins that every
+// The ImplicitCallResolution fixtures: the resolution half of the Implicit Call Census: which members an implicit call runs. The corpus pins that every
 // construct is traversed or refused; these fixtures pin the precision (framework forms stay classified, a virtual
 // member runs the override of the exact runtime type, a generated record member runs only the accessors the record
 // declares) and the construction entry.
@@ -459,5 +459,34 @@ public sealed partial class HostedGrimoireProducerInventoryTests
         HostedProducerDiscovery<HostedProducerSite> result = EnumerationDiscover(CensusCompileSource("GC.KeepAlive((Action)(() => { " + loop + " }));", helpers));
 
         Assert.Equal(refused, result.Diagnostics.Any(static diagnostic => diagnostic.Code == "HOSTED_CALLBACK_OWNERSHIP_UNPROVEN"));
+    }
+
+    // The base constructor of the Serilog file lifecycle hooks keeps nothing and runs nothing; the base constructor of
+    // another external class is not reviewed by that rule.
+    [Fact]
+    public void SerilogFileHooksBaseConstructorIsReviewed()
+    {
+        string hooks = "sealed class Hooks : Serilog.Sinks.File.FileLifecycleHooks { }";
+
+        CSharpCompilation compilation = CompileWithProductionReferencePack(R2Source(R2Admission + "_ = new Hooks(); await Task.CompletedTask;", hooks), "RetroDownfall.Arcanum.Infrastructure");
+
+        Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        HostedProducerDiscovery<HostedProducerSite> result = EnumerationDiscover(compilation);
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic => diagnostic.Detail.Contains("FileLifecycleHooks..ctor", StringComparison.Ordinal));
+    }
+
+    // A type whose initializer creates the type, or formats a value that can be the type, asks for its own scan while it
+    // is being scanned; the request ends where it began and the analysis terminates.
+    [Theory]
+    [InlineData("_ = new Node();", "sealed class Node { private readonly Node? next = new Node(); }")]
+    [InlineData("_ = new Node();", "sealed class Node { private readonly string text = $\"{Unproved.Anything}\"; public override string ToString() => $\"{Unproved.Anything}\" + text; } static class Unproved { public static object Anything { get; set; } = null!; }")]
+    [InlineData("string text = $\"{Unproved.Anything}\"; _ = text;", "sealed class Node { public override string ToString() => $\"{Unproved.Anything}\"; } static class Unproved { public static object Anything { get; set; } = null!; }")]
+    public void SelfReferentialInitializersAndFormattersTerminate(string statement, string helpers)
+    {
+        HostedProducerDiscovery<HostedProducerSite> result = EnumerationDiscover(CensusCompileSource(statement, helpers));
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_TRAVERSAL_STATE_LIMIT_EXCEEDED");
     }
 }

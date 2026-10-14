@@ -428,6 +428,12 @@ internal static partial class HostedGrimoireProducerInventory
 
                 Inspect(model, operation, Add, Refuse);
 
+                // The argument of nameof is never evaluated.
+                if (operation is INameOfOperation)
+                {
+                    return;
+                }
+
                 foreach (IOperation child in operation.ChildOperations)
                 {
                     if (child is IAnonymousFunctionOperation { Syntax: AnonymousFunctionExpressionSyntax } or ILocalFunctionOperation)
@@ -453,6 +459,13 @@ internal static partial class HostedGrimoireProducerInventory
             void RefuseSite(string detail) => refuse(operation, "HOSTED_SITE_UNCLASSIFIED", detail, ImplicitCallKind.Unsupported);
 
             void RefuseTarget(string detail) => refuse(operation, "HOSTED_CALL_TARGET_UNRESOLVED", detail, ImplicitCallKind.Unsupported);
+
+            // An operator or a conversion over a dynamic operand binds at run time, and the one it binds can be any
+            // authored one.
+            if (BindsAtRunTime(operation))
+            {
+                RefuseTarget("A dynamic operand binds " + operation.Kind + " at run time.");
+            }
 
             switch (operation)
             {
@@ -702,6 +715,23 @@ internal static partial class HostedGrimoireProducerInventory
         }
 
         // The written operands of an operator or a conversion, paired with the parameters of the method they bind to.
+        private static bool IsDynamic(IOperation? operation) => operation?.Type?.TypeKind == TypeKind.Dynamic;
+
+        // Whether the operation selects its operator or conversion at run time because an operand is dynamic (C# does
+        // not deconstruct a dynamic value). The dynamic invocation, member access, indexer and creation have lanes or refusals of their own.
+        private static bool BindsAtRunTime(IOperation operation) => operation switch
+        {
+            IUnaryOperation { OperatorMethod: null } unary => IsDynamic(unary.Operand),
+            IBinaryOperation { OperatorMethod: null } binary => IsDynamic(binary.LeftOperand) || IsDynamic(binary.RightOperand),
+            ICompoundAssignmentOperation { OperatorMethod: null } compound => IsDynamic(compound.Target) || IsDynamic(compound.Value),
+            IIncrementOrDecrementOperation { OperatorMethod: null } increment => IsDynamic(increment.Target),
+            IConversionOperation { OperatorMethod: null } conversion => IsDynamic(conversion.Operand)
+                && conversion.Type is { } target
+                && target.TypeKind != TypeKind.Dynamic
+                && target.SpecialType != SpecialType.System_Object,
+            _ => false,
+        };
+
         private static IReadOnlyList<(ExpressionSyntax Expression, IParameterSymbol Parameter)> OperandArguments(IMethodSymbol method, params IOperation[] operands)
         {
             IMethodSymbol selected = method.ReducedFrom ?? method;
@@ -725,7 +755,9 @@ internal static partial class HostedGrimoireProducerInventory
             Action<ImplicitCallKind, IOperation, SyntaxNode, IReadOnlyList<ImplicitCallStep>> add,
             Action<string> refuse)
         {
-            if (invocation.Syntax is InvocationExpressionSyntax || HasAncestor<ITranslatedQueryOperation>(invocation))
+            // A written invocation is the invocation lane's, and the framework query operator a query clause calls is
+            // judged with the query's callbacks; an Add or an append written inside a clause is an invocation of its own.
+            if (invocation.Syntax is InvocationExpressionSyntax or QueryClauseSyntax or SelectOrGroupClauseSyntax or QueryBodySyntax or QueryExpressionSyntax)
             {
                 return;
             }

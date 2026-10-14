@@ -188,6 +188,15 @@ internal static partial class HostedGrimoireProducerInventory
 
                 if (method.MethodKind == MethodKind.Constructor && !method.IsStatic && method.ContainingType.Locations.Any(static location => location.IsInSource))
                 {
+                    // A constructor declared with a body of its own that did not resolve to an authored member is not the
+                    // implicit or primary constructor the construction entry stands for.
+                    if (method.DeclaringSyntaxReferences.Any(static reference => reference.GetSyntax() is ConstructorDeclarationSyntax))
+                    {
+                        Unresolved.Add(Normalize(method));
+
+                        return;
+                    }
+
                     graph.AddConstructionEntry(member, method, this);
 
                     return;
@@ -520,6 +529,9 @@ internal static partial class HostedGrimoireProducerInventory
 
             List<AuthoredMember> initializers = [];
 
+            // An initializer that creates its own type asks for this list while it is being built; that request ends here.
+            initializerMembers[type] = initializers;
+
             foreach (SyntaxReference reference in type.DeclaringSyntaxReferences)
             {
                 if (reference.GetSyntax() is not TypeDeclarationSyntax declaration || !semanticModels.TryGetValue(declaration.SyntaxTree, out SemanticModel? model))
@@ -550,8 +562,6 @@ internal static partial class HostedGrimoireProducerInventory
                     }
                 }
             }
-
-            initializerMembers[type] = initializers;
 
             return initializers;
         }
@@ -638,7 +648,7 @@ internal static partial class HostedGrimoireProducerInventory
 
         // The members ToString of a value of the type runs when a record prints it: the framework value types that
         // print nothing authored add nothing, an exact authored type adds its ToString and formatting members, and a
-        // type nothing proves is unresolved.
+        // type that is not exact adds those of every authored formatter assignable to it.
         private void AddFormatting(AuthoredMember member, ITypeSymbol type, ImplicitTargetCollector targets)
         {
             if (IsIntrinsicFormatType(type))

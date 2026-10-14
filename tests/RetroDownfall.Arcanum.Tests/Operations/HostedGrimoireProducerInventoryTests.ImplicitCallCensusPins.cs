@@ -8,7 +8,7 @@ using Xunit;
 
 namespace RetroDownfall.Arcanum.Tests.Operations;
 
-// The pins of the Implicit Call Census. The census is a safety net only while it is complete, so the Roslyn
+// The ImplicitCallCensusPins fixtures: the pins of the Implicit Call Census. The census is a safety net only while it is complete, so the Roslyn
 // surface it classifies is pinned: a kind, or a member that carries a symbol or a conversion, that a Roslyn upgrade
 // adds fails here until someone has decided what it means for the traversal.
 public sealed partial class HostedGrimoireProducerInventoryTests
@@ -100,5 +100,37 @@ public sealed partial class HostedGrimoireProducerInventoryTests
         HostedGrimoireProducerInventory.ImplicitCallKind[] missing = [.. Enum.GetValues<HostedGrimoireProducerInventory.ImplicitCallKind>().Where(kind => !exercised.Contains(kind) && !defensive.Contains(kind))];
 
         Assert.True(missing.Length == 0, "Implicit call kinds the corpus never produces: " + string.Join(", ", missing));
+    }
+
+    // The census over every production member body: the operations it cannot follow are exactly the ones listed here.
+    // A construct that binds at run time, new T(), a function pointer call or an operation Roslyn does not model would
+    // make the traversal refuse whichever root reaches it, so the production source declares none of them.
+    [Fact]
+    public void ProductionMemberBodiesContainNoOperationTheCensusCannotFollow()
+    {
+        List<string> refusals = [];
+
+        foreach (CSharpCompilation compilation in HostedGrimoireProducerInventory.ProductionCompilations)
+        {
+            foreach (SyntaxTree tree in compilation.SyntaxTrees.Where(static tree => tree.FilePath.StartsWith("src/", StringComparison.Ordinal) && !tree.FilePath.Contains("/obj/", StringComparison.Ordinal)))
+            {
+                SemanticModel model = compilation.GetSemanticModel(tree);
+
+                foreach (SyntaxNode member in tree.GetRoot().DescendantNodes().Where(static node => node is BaseMethodDeclarationSyntax { Body: not null } or BaseMethodDeclarationSyntax { ExpressionBody: not null } or AccessorDeclarationSyntax { Body: not null } or AccessorDeclarationSyntax { ExpressionBody: not null }))
+                {
+                    foreach (HostedGrimoireProducerInventory.ImplicitCall call in HostedGrimoireProducerInventory.CollectImplicitCalls(model, member).Where(static call => call.RefusalCode is not null))
+                    {
+                        refusals.Add(tree.FilePath + ":" + call.Anchor.SpanStart + " " + call.RefusalCode + " " + call.RefusalDetail);
+                    }
+                }
+            }
+        }
+
+        foreach (string refusal in refusals.Distinct(StringComparer.Ordinal).Take(40))
+        {
+            output.WriteLine("CENSUS-REFUSAL " + refusal);
+        }
+
+        Assert.True(refusals.Count == 0, refusals.Count + " production operations cannot be followed: " + string.Join(" | ", refusals.Distinct(StringComparer.Ordinal).Take(10)));
     }
 }
