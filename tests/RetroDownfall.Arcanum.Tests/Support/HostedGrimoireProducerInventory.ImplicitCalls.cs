@@ -692,8 +692,13 @@ internal static partial class HostedGrimoireProducerInventory
                     // The callbacks of a query expression are collected by the walk, which sees the whole subtree.
                     break;
 
-                case IInvalidOperation:
-                    RefuseSite("An erroneous operation has no exact target.");
+                case IInvalidOperation invalid:
+                    // An invocation that binds to no method is refused by the invocation lane at the invocation itself
+                    // (HOSTED_CALL_TARGET_UNRESOLVED); every other erroneous operation has no lane and is refused here.
+                    if (!(invalid.Syntax is InvocationExpressionSyntax unresolvedCall && model.GetSymbolInfo(unresolvedCall).Symbol is null))
+                    {
+                        RefuseSite("An erroneous operation has no exact target.");
+                    }
 
                     break;
 

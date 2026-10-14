@@ -511,4 +511,126 @@ public sealed partial class HostedGrimoireProducerInventoryTests
 
         Assert.DoesNotContain(clean.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_CALLBACK_OWNERSHIP_UNPROVEN");
     }
+
+    // An erroneous call is refused where the invocation lane meets it (the call has no exact target), so the census does
+    // not refuse the same site a second time; any other erroneous operation has no lane and is refused by the census.
+    [Theory]
+    [InlineData("string[] values = [\"one\"]; _ = values.NoSuchMethod(1);", "HOSTED_CALL_TARGET_UNRESOLVED", false)]
+    [InlineData("string[] values = [\"one\"]; _ = values.Skip(0).Contains(\"one\", StringComparer.Ordinal);", "HOSTED_CALL_TARGET_UNRESOLVED", false)]
+    [InlineData("_ = new Missing();", "HOSTED_SITE_UNCLASSIFIED", true)]
+    [InlineData("_ = Missing.Value;", "HOSTED_SITE_UNCLASSIFIED", true)]
+    public void ErroneousOperationIsRefusedOnceByTheLaneThatOwnsIt(string body, string code, bool byCensus)
+    {
+        CSharpCompilation compilation = Compile(R2Source(R2Admission + body + " await Task.CompletedTask;", string.Empty));
+
+        Assert.Contains(compilation.GetDiagnostics(), static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error);
+
+        HostedProducerDiscovery<HostedProducerSite> result = EnumerationDiscover(compilation);
+
+        Assert.Contains(result.Diagnostics, diagnostic => diagnostic.Code == code);
+
+        Assert.Equal(byCensus, result.Diagnostics.Any(static diagnostic => diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED" && diagnostic.Detail == "An erroneous operation has no exact target."));
+    }
+
+    // The runes of a span are enumerated by a framework enumerator the production reference pack declares in the
+    // System.Memory contract assembly; it keeps nothing, runs nothing and cannot be overridden, so the loop is closed.
+    // An authored enumerator of the same shape is not: the loop runs its members.
+    [Theory]
+    [InlineData("_ = Runes.Sum(\"ab\");", "static class Runes { public static int Sum(System.ReadOnlySpan<char> text) { int total = 0; foreach (System.Text.Rune rune in text.EnumerateRunes()) { total += rune.Value; } return total; } }", false)]
+    [InlineData("_ = Runes.Sum(\"ab\");", "static class Runes { public static int Sum(string text) { int total = 0; foreach (System.Text.Rune rune in text.EnumerateRunes()) { total += rune.Value; } return total; } }", false)]
+    [InlineData("_ = Runes.Sum();", "static class Runes { public static int Sum() { int total = 0; foreach (int rune in new Fake().EnumerateRunes()) { total += rune; } return total; } } sealed class Fake { public Enumerator EnumerateRunes() => new(); public struct Enumerator { public Enumerator GetEnumerator() => this; public bool MoveNext() { {E} return false; } public int Current => 0; } }", true)]
+    public void SpanRuneEnumerationIsClosedOnlyForTheFrameworkType(string statement, string helpers, bool reported)
+    {
+        CSharpCompilation compilation = CompileWithProductionReferencePack(R2Source(R2Admission + statement + " await Task.CompletedTask;", helpers.Replace("{E}", EnumerationEffect, StringComparison.Ordinal)), "RetroDownfall.Arcanum.Infrastructure");
+
+        Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        HostedProducerDiscovery<HostedProducerSite> result = EnumerationDiscover(compilation);
+
+        string diagnostics = string.Join(" | ", result.Diagnostics.Select(static diagnostic => diagnostic.Code + " " + diagnostic.Identity + " " + diagnostic.Detail));
+
+        Assert.True(reported == result.Items.Any(static site => site.Callee == "System.IO.File.Delete"), diagnostics);
+
+        Assert.True(reported || result.Diagnostics.Count == 0, diagnostics);
+    }
+
+    // The in-memory framework calls of the bodies the census reaches are reviewed by exact identity. The base64url
+    // encoder is a static transform of the caller's spans; the number formatter writes digits into the caller's span
+    // and runs supplied code only through a provider the caller passed. An authored type of the same name as the encoder
+    // is not the framework one: its body is traversed and its effect reported.
+    [Theory]
+    [InlineData("System.Span<byte> encoded = new byte[8]; _ = System.Buffers.Text.Base64Url.EncodeToUtf8(new byte[1], encoded, out _, out int written); _ = written;", "", false)]
+    [InlineData("System.Span<char> destination = new char[8]; uint version = 7; _ = version.TryFormat(destination, out int written); _ = written;", "", false)]
+    [InlineData("System.Span<byte> encoded = new byte[8]; _ = System.Buffers.Text.Base64Url.EncodeToUtf8(new byte[1], encoded, out _, out int written); _ = written;", "namespace System.Buffers.Text { public static class Base64Url { public static System.Buffers.OperationStatus EncodeToUtf8(System.ReadOnlySpan<byte> source, System.Span<byte> destination, out int consumed, out int written, bool isFinalBlock = true) { {E} consumed = 0; written = 0; return System.Buffers.OperationStatus.Done; } } }", true)]
+    public void InMemoryFrameworkFormattingMembersAreReviewedByExactIdentity(string statement, string helpers, bool reported)
+    {
+        CSharpCompilation compilation = CompileWithProductionReferencePack(R2Source(R2Admission + statement + " await Task.CompletedTask;", helpers.Replace("{E}", EnumerationEffect, StringComparison.Ordinal)), "RetroDownfall.Arcanum.Infrastructure");
+
+        Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        HostedProducerDiscovery<HostedProducerSite> result = EnumerationDiscover(compilation);
+
+        string diagnostics = string.Join(" | ", result.Diagnostics.Select(static diagnostic => diagnostic.Code + " " + diagnostic.Identity + " " + diagnostic.Detail));
+
+        Assert.Equal(reported, result.Items.Any(static site => site.Callee == "System.IO.File.Delete"));
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic => diagnostic.Code is "HOSTED_SITE_UNCLASSIFIED" or "HOSTED_CALL_TARGET_UNRESOLVED");
+
+        Assert.True(reported || result.Diagnostics.Count == 0, diagnostics);
+    }
+
+    // The default-provider rule is exact: a provider the caller passed, even the invariant culture, keeps the call refused.
+    [Theory]
+    [InlineData("new Provider()", "sealed class Provider : IFormatProvider { public object? GetFormat(Type? formatType) => null; }")]
+    [InlineData("System.Globalization.CultureInfo.InvariantCulture", "")]
+    public void PassedFormatProviderKeepsUInt32FormattingRefused(string provider, string helpers)
+    {
+        CSharpCompilation compilation = CompileWithProductionReferencePack(R2Source(R2Admission + "System.Span<char> destination = new char[8]; uint version = 7; _ = version.TryFormat(destination, out int written, default, " + provider + "); await Task.CompletedTask;", helpers), "RetroDownfall.Arcanum.Infrastructure");
+
+        Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        HostedProducerDiscovery<HostedProducerSite> result = EnumerationDiscover(compilation);
+
+        Assert.Contains(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED" && diagnostic.Detail == "System.UInt32.TryFormat");
+    }
+
+    // The ToString of an AI tool returns its virtual Name, so formatting a tool runs the Name of the exact tool. A hole
+    // of an exact tool type and a hole nothing proves (it can be any authored tool) both traverse the Name of the tool,
+    // and the framework ToString itself is reviewed for no explicit call: a written call, which does not model Name,
+    // stays refused.
+    [Theory]
+    [InlineData("_ = $\"tool:{Anything.Typed}\";", true)]
+    [InlineData("_ = $\"tool:{Anything.Value}\";", true)]
+    [InlineData("_ = $\"tool:{Anything.Typed}\";", false)]
+    [InlineData("_ = $\"tool:{Anything.Value}\";", false)]
+    public void FormattingAnAiToolRunsItsNameOverride(string statement, bool effect)
+    {
+        string helpers = "sealed class Tool : Microsoft.Extensions.AI.AIFunction { public override string Name { get { " + (effect ? EnumerationEffect : string.Empty) + "return \"tool\"; } } protected override System.Threading.Tasks.ValueTask<object?> InvokeCoreAsync(Microsoft.Extensions.AI.AIFunctionArguments arguments, System.Threading.CancellationToken cancellationToken) => default; } static class Anything { public static object Value { get; set; } = null!; public static Tool Typed { get; set; } = null!; }";
+
+        CSharpCompilation compilation = CompileWithProductionReferencePack(R2Source(R2Admission + statement + " await Task.CompletedTask;", helpers), "RetroDownfall.Arcanum.Api");
+
+        Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        HostedProducerDiscovery<HostedProducerSite> result = EnumerationDiscover(compilation);
+
+        string diagnostics = string.Join(" | ", result.Diagnostics.Select(static diagnostic => diagnostic.Code + " " + diagnostic.Identity + " " + diagnostic.Detail));
+
+        Assert.Equal(effect, result.Items.Any(static site => site.Callee == "System.IO.File.Delete"));
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic => diagnostic.Code is "HOSTED_SITE_UNCLASSIFIED" or "HOSTED_CALL_TARGET_UNRESOLVED");
+
+        Assert.True(effect || result.Diagnostics.Count == 0, diagnostics);
+    }
+
+    [Fact]
+    public void WrittenToStringCallOnAnAiToolStaysRefused()
+    {
+        string helpers = "sealed class Tool : Microsoft.Extensions.AI.AIFunction { public override string Name => \"tool\"; protected override System.Threading.Tasks.ValueTask<object?> InvokeCoreAsync(Microsoft.Extensions.AI.AIFunctionArguments arguments, System.Threading.CancellationToken cancellationToken) => default; } static class Anything { public static Tool Typed { get; set; } = null!; }";
+
+        CSharpCompilation compilation = CompileWithProductionReferencePack(R2Source(R2Admission + "_ = Anything.Typed.ToString(); await Task.CompletedTask;", helpers), "RetroDownfall.Arcanum.Api");
+
+        Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        Assert.Contains(EnumerationDiscover(compilation).Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED" && diagnostic.Detail == "Microsoft.Extensions.AI.AITool.ToString");
+    }
 }

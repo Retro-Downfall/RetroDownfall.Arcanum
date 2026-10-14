@@ -90,6 +90,33 @@ internal static partial class HostedGrimoireProducerInventory
         // and members nothing here can follow.
         private static readonly string[] ExceptionVirtualMembers = ["Message", "StackTrace", "Data", "Source", "HelpLink"];
 
+        // The virtual properties that the framework ToString of a base type of the type reads, whose implementations on the
+        // type are authored code that formatting the type runs: Exception.ToString reads Message, StackTrace, Data, Source
+        // and HelpLink, and AITool.ToString returns Name.
+        private static IEnumerable<IMethodSymbol> FrameworkToStringReads(INamedTypeSymbol type)
+        {
+            for (INamedTypeSymbol? current = type; current is not null; current = current.BaseType)
+            {
+                if (TypeKey(current) == "System.Exception")
+                {
+                    foreach (string name in ExceptionVirtualMembers)
+                    {
+                        if (current.GetMembers(name).OfType<IPropertySymbol>().FirstOrDefault() is { GetMethod: { } getter })
+                        {
+                            yield return getter;
+                        }
+                    }
+                }
+                else if (IsExactAiTool(current) && current.GetMembers("Name").OfType<IPropertySymbol>().FirstOrDefault() is { GetMethod: { } nameGetter })
+                {
+                    yield return nameGetter;
+                }
+            }
+        }
+
+        private static bool IsExactAiTool(ITypeSymbol type) =>
+            IsExactFrameworkType(type, "Microsoft.Extensions.AI.AITool", typeof(Microsoft.Extensions.AI.AITool).Assembly.GetName());
+
         private sealed class ImplicitTargetCollector(ProducerGraph graph, AuthoredMember member, HashSet<ISymbol>? shared = null)
         {
             // A collector made for a nested resolution shares the visited set of its parent, so that a generated member that
@@ -127,20 +154,9 @@ internal static partial class HostedGrimoireProducerInventory
                     return;
                 }
 
-                for (INamedTypeSymbol? current = type; current is not null; current = current.BaseType)
+                foreach (IMethodSymbol getter in FrameworkToStringReads(type))
                 {
-                    if (TypeKey(current) != "System.Exception")
-                    {
-                        continue;
-                    }
-
-                    foreach (string name in ExceptionVirtualMembers)
-                    {
-                        if (current.GetMembers(name).OfType<IPropertySymbol>().FirstOrDefault() is { GetMethod: { } getter })
-                        {
-                            Add(EnumerationImplementation(type, getter), getter);
-                        }
-                    }
+                    Add(EnumerationImplementation(type, getter), getter);
                 }
             }
 
@@ -364,21 +380,7 @@ internal static partial class HostedGrimoireProducerInventory
                     }
                 }
 
-                for (INamedTypeSymbol? current = type; current is not null; current = current.BaseType)
-                {
-                    if (TypeKey(current) != "System.Exception")
-                    {
-                        continue;
-                    }
-
-                    foreach (string name in ExceptionVirtualMembers)
-                    {
-                        if (current.GetMembers(name).OfType<IPropertySymbol>().FirstOrDefault() is { GetMethod: { } getter })
-                        {
-                            slots.Add(getter);
-                        }
-                    }
-                }
+                slots.AddRange(FrameworkToStringReads(type));
 
                 List<(IMethodSymbol Slot, ISymbol Implementation)> implementations = [];
 
@@ -679,7 +681,15 @@ internal static partial class HostedGrimoireProducerInventory
             || IsReviewedFrameworkRangeMember(method)
             || IsReviewedFrameworkInterpolationHandlerMember(method)
             || method.Name == "ToString" && method.ContainingType is { } type && TypeKey(type) is "System.ValueType" && IsExactFrameworkType(type, "System.ValueType", typeof(ValueType).Assembly.GetName())
+            || IsAiToolToStringWithNameModeled(method)
             || !RequiresExternalBoundaryClassification(method, member.Model.Compilation, anchor, member.Model, member);
+
+        // AITool.ToString returns the virtual Name of the tool and nothing else. It is reviewed for an implicit formatting
+        // call only, because the formatting resolution adds the Name implementation of the exact tool type; a written
+        // call does not model Name and stays unreviewed.
+        private static bool IsAiToolToStringWithNameModeled(IMethodSymbol method) =>
+            method is { Name: "ToString", IsStatic: false, Parameters.Length: 0 }
+            && IsExactAiTool(method.ContainingType);
 
         private static bool IsReviewedFrameworkAwaiterMember(IMethodSymbol method)
         {

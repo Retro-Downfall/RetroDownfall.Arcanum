@@ -882,6 +882,7 @@ internal static partial class HostedGrimoireProducerInventory
         "System.Buffers.Text.Base64.DecodeFromUtf8",
         "System.Buffers.Text.Base64.EncodeToUtf8",
         "System.Buffers.Text.Base64Url.DecodeFromChars",
+        "System.Buffers.Text.Base64Url.EncodeToUtf8",
         "System.Collections.Concurrent.ConcurrentDictionary`2.TryRemove",
         "System.Collections.Concurrent.ConcurrentQueue`1.TryDequeue",
         "System.Collections.Generic.Dictionary`2.Remove",
@@ -10540,10 +10541,32 @@ internal static partial class HostedGrimoireProducerInventory
             AssemblyName trustedAssembly) =>
             type is not null
             && TypeKey(type) == expectedType
-            && FrameworkAssemblyIdentityMatches(
-                type.ContainingAssembly.Identity,
-                trustedAssembly)
+            && (FrameworkAssemblyIdentityMatches(
+                    type.ContainingAssembly.Identity,
+                    trustedAssembly)
+                || IsReviewedSystemMemoryContractType(
+                    type,
+                    expectedType,
+                    trustedAssembly))
             && !type.Locations.Any(static location => location.IsInSource);
+
+        // Runtime-library types that the production reference pack declares in the System.Memory contract
+        // assembly while the runtime implements them in System.Private.CoreLib. Each is reviewed by name: the
+        // contract mapping above is deliberately limited to the contracts whose every type is implemented there.
+        private static readonly IReadOnlySet<string> SystemMemoryContractTypes = new HashSet<string>(StringComparer.Ordinal)
+        {
+            "System.Text.SpanRuneEnumerator",
+        };
+
+        private static bool IsReviewedSystemMemoryContractType(
+            ITypeSymbol type,
+            string expectedType,
+            AssemblyName trustedAssembly) =>
+            trustedAssembly.Name == "System.Private.CoreLib"
+            && SystemMemoryContractTypes.Contains(expectedType)
+            && AssemblyIdentityMatches(
+                type.ContainingAssembly.Identity,
+                Assembly.Load(new AssemblyName("System.Memory")).GetName());
 
         private bool IsExactScopedFactoryAlias(
             InvocationExpressionSyntax registration,
@@ -30756,6 +30779,7 @@ internal static partial class HostedGrimoireProducerInventory
                 || IsReviewedExactTypeOfEqualityOperator(method, node, model)
                 || IsReviewedPrimitiveQueueMember(method, node, model, context)
                 || IsReviewedInvariantDateTimeParser(method, node, model)
+                || IsReviewedDefaultProviderUInt32Format(method, node, model)
                 || IsExactIntegerRange(method)
                 || IsReviewedCollectionMechanicalMember(method)
                 || IsReviewedInterpolatedStringCreate(method)
@@ -30796,6 +30820,30 @@ internal static partial class HostedGrimoireProducerInventory
                 } sequence
                 && IsExactFrameworkType(sequence, "System.Collections.Generic.IEnumerable`1",
                     typeof(IEnumerable<>).Assembly.GetName());
+
+        // UInt32.TryFormat(Span<char>, out int, ReadOnlySpan<char>, IFormatProvider) writes the digits of the value into the
+        // caller's span. It runs no supplied code when the provider is the default one the caller did not pass: a provider
+        // that was passed is asked for its number format, which an authored provider answers with code of its own.
+        private static bool IsReviewedDefaultProviderUInt32Format(
+            IMethodSymbol method,
+            SyntaxNode? node,
+            SemanticModel? model) =>
+            !method.IsStatic && method.Arity == 0 && method.Name == "TryFormat"
+            && method.ReturnType.SpecialType == SpecialType.System_Boolean
+            && IsExactFrameworkType(method.ContainingType, "System.UInt32", typeof(uint).Assembly.GetName())
+            && method.Parameters is
+            [
+                { RefKind: RefKind.None, Type: INamedTypeSymbol { Name: "Span", TypeArguments: [{ SpecialType: SpecialType.System_Char }] } destination },
+                { RefKind: RefKind.Out, Type.SpecialType: SpecialType.System_Int32 },
+                { RefKind: RefKind.None, Type: INamedTypeSymbol { Name: "ReadOnlySpan", TypeArguments: [{ SpecialType: SpecialType.System_Char }] } format },
+                { RefKind: RefKind.None, Type: { } providerType },
+            ]
+            && IsExactFrameworkType(destination, "System.Span`1", typeof(Span<>).Assembly.GetName())
+            && IsExactFrameworkType(format, "System.ReadOnlySpan`1", typeof(ReadOnlySpan<>).Assembly.GetName())
+            && IsExactFrameworkType(providerType, "System.IFormatProvider", typeof(IFormatProvider).Assembly.GetName())
+            && node is not null
+            && model?.GetOperation(node) is IInvocationOperation invocation
+            && invocation.Arguments.Any(static argument => argument.Parameter?.Ordinal == 3 && argument.ArgumentKind == ArgumentKind.DefaultValue);
 
         private bool IsReviewedInvariantDateTimeParser(
             IMethodSymbol method,
@@ -32727,6 +32775,15 @@ internal static partial class HostedGrimoireProducerInventory
             }
 
             if (type == "System.Text.RegularExpressions.GroupCollection")
+            {
+                return true;
+            }
+
+            // Authored Enumerables Absent: no authored type implements the read-only list contract, so a value of that
+            // interface is a framework list and its indexer a framework member, whatever produced the value.
+            if (type == "System.Collections.Generic.IReadOnlyList`1"
+                && AuthoredEnumerablesAbsentByUse
+                && IsPremiseCoveredEnumerationInterface(property.ContainingType))
             {
                 return true;
             }
