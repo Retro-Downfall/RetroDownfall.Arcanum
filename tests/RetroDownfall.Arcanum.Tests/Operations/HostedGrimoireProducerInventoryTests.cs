@@ -39469,6 +39469,15 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
     [InlineData("max-recurrence", true)]
     [InlineData("actual-next", true)]
     [InlineData("actual-loop", true)]
+    [InlineData("actual-loop-children", true)]
+    [InlineData("children-new-list", true)]
+    [InlineData("children-plain-await", true)]
+    [InlineData("children-subclass-list", false)]
+    [InlineData("children-reassigned", false)]
+    [InlineData("children-extern-helper", false)]
+    [InlineData("children-boundary-conversion", false)]
+    [InlineData("children-id-through-unknown-call", false)]
+    [InlineData("children-other-element-type", false)]
     [InlineData("list-unknown", false)]
     [InlineData("list-ref", false)]
     [InlineData("index-alias-write", false)]
@@ -39512,7 +39521,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
 
         bool operatorProbe = shape.StartsWith("base-", StringComparison.Ordinal) || shape.StartsWith("recurrence-", StringComparison.Ordinal);
 
-        bool nextReached = operatorProbe || shape.StartsWith("scalar-", StringComparison.Ordinal) || shape is "actual-next" or "actual-loop" or "getter-effect" or "helper-effect" or "partial-write" or "unsupported-recurrence";
+        bool nextReached = operatorProbe || shape.StartsWith("scalar-", StringComparison.Ordinal) || shape.StartsWith("children-", StringComparison.Ordinal) || shape is "actual-next" or "actual-loop" or "actual-loop-children" or "getter-effect" or "helper-effect" or "partial-write" or "unsupported-recurrence";
 
         if (operatorProbe)
         {
@@ -39657,7 +39666,13 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
         if (shape is "scalar-unknown-receiver" or "scalar-mixed-receiver") run = run.Replace("new HierarchyLeafCursor(Guid.Empty)",
             shape == "scalar-unknown-receiver" ? "UnknownCursor()" : "(token.CanBeCanceled ? new HierarchyLeafCursor(Guid.Empty) : UnknownCursor())", StringComparison.Ordinal);
 
-        if (shape == "actual-loop")
+        string readChildren = "";
+
+        // The children of one summary are read from storage by the real helper, as production reads them. The children-* rows
+        // change one condition of the reviewed storage contract at a time; only the first two stay inside it.
+        bool storedChildren = shape == "actual-loop-children" || shape.StartsWith("children-", StringComparison.Ordinal);
+
+        if (shape == "actual-loop" || storedChildren)
         {
             string Declaration(string name) => actual.DescendantNodes().OfType<LocalDeclarationStatementSyntax>()
                 .Single(statement => statement.Declaration.Variables.Any(variable => variable.Identifier.ValueText == name)).ToString();
@@ -39672,8 +39687,81 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
 
             string branchBody = string.Join("\n", selected) + "\nemitted++;";
 
-            run = "List<Guid> children = [Guid.Empty]; var generation = new Generation(Guid.Empty); CancellationToken cancellationToken = token; "
-                + Declaration("branches") + Declaration("emitted")
+            string childrenDeclaration = "List<Guid> children = [Guid.Empty];";
+
+            string branchesDeclaration = Declaration("branches");
+
+            if (storedChildren)
+            {
+                string helper = actual.DescendantNodes().OfType<MethodDeclarationSyntax>().Single(static method => method.Identifier.ValueText == "ReadChildNodesAsync").ToString();
+
+                childrenDeclaration = "SummaryRank selected = new(Guid.Empty, 0d); " + actual.DescendantNodes().OfType<LocalDeclarationStatementSyntax>()
+                    .Single(static statement => statement.Declaration.Variables.Any(static variable => variable.Identifier.ValueText == "children" && variable.Initializer?.Value is AwaitExpressionSyntax));
+
+                readChildren = " private sealed record SummaryRank(Guid Node, double Score);";
+
+                switch (shape)
+                {
+                    case "children-new-list":
+                        helper = helper.Replace("List<Guid> children = [];", "List<Guid> children = new();", StringComparison.Ordinal);
+
+                        break;
+
+                    case "children-plain-await":
+                        childrenDeclaration = childrenDeclaration.Replace(".ConfigureAwait(false)", "", StringComparison.Ordinal);
+
+                        break;
+
+                    case "children-subclass-list":
+                        // The list the helper returns is a subclass, whose enumerator would be authored work that the Select reaches only through the framework.
+                        helper = helper.Replace("List<Guid> children = [];", "List<Guid> children = new GuidList();", StringComparison.Ordinal);
+
+                        readChildren += " private sealed class GuidList : List<Guid> { }";
+
+                        break;
+
+                    case "children-reassigned":
+                        helper = helper.Replace("return children;", "children = UnknownIds(); return children;", StringComparison.Ordinal);
+
+                        readChildren += " private static extern List<Guid> UnknownIds();";
+
+                        break;
+
+                    case "children-extern-helper":
+                        helper = "private static extern Task<List<Guid>> ReadChildNodesAsync(SqliteConnection connection, SqliteTransaction transaction, Guid generation, Guid parent, CancellationToken cancellationToken);";
+
+                        break;
+
+                    case "children-boundary-conversion":
+                        childrenDeclaration = childrenDeclaration.Replace("ReadChildNodesAsync(connection,", "ReadChildNodesAsync(new ConnectionHandle(),", StringComparison.Ordinal);
+
+                        readChildren += " private sealed class ConnectionHandle { public static implicit operator SqliteConnection(ConnectionHandle value) { System.IO.File.Delete(\"boundary\"); return null!; } }";
+
+                        break;
+
+                    case "children-id-through-unknown-call":
+                        branchesDeclaration = branchesDeclaration.Replace("new HierarchyLeafCursor(child)", "new HierarchyLeafCursor(UnknownId(child))", StringComparison.Ordinal);
+
+                        readChildren += " private static extern Guid UnknownId(Guid id);";
+
+                        break;
+
+                    case "children-other-element-type":
+                        helper = helper.Replace("List<Guid>", "List<string>", StringComparison.Ordinal)
+                            .Replace("children.Add(Guid.Parse(reader.GetString(0)))", "children.Add(reader.GetString(0))", StringComparison.Ordinal);
+
+                        childrenDeclaration = childrenDeclaration.Replace("List<Guid>", "List<string>", StringComparison.Ordinal);
+
+                        branchesDeclaration = branchesDeclaration.Replace("new HierarchyLeafCursor(child)", "new HierarchyLeafCursor(Guid.Parse(child))", StringComparison.Ordinal);
+
+                        break;
+                }
+
+                readChildren = helper + readChildren;
+            }
+
+            run = "var generation = new Generation(Guid.Empty); CancellationToken cancellationToken = token; "
+                + childrenDeclaration + " " + branchesDeclaration + Declaration("emitted")
                 + "while (" + loop.Condition + ") { for (" + branchLoop.Declaration + "; " + branchLoop.Condition + ";) { " + branchBody + " } }";
         }
 
@@ -39693,7 +39781,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
         string source = "using System.Diagnostics.Metrics; using System.Linq; using System.IO; using System.Collections.Generic; using Microsoft.Data.Sqlite; using RetroDownfall.Arcanum.Core.Telemetry; "
             + R2Source("await CursorSlice.RunAsync(null!, null!, token);", "internal static class LongRestHierarchyBuilder { " + fields + " } "
                 + "namespace RetroDownfall.Arcanum.Core.Telemetry { public static class ArcanumMetrics { " + meter + " } } "
-                + "internal static class CursorSlice { " + cursor + partial + limits
+                + "internal static class CursorSlice { " + cursor + partial + readChildren + limits
                 + " private sealed record Generation(Guid GenerationId); internal static async Task RunAsync(SqliteConnection connection, SqliteTransaction transaction, CancellationToken token) { System.IO.File.Exists(\"frontier-root\"); " + run + " } "
                 + "private static SqliteCommand Command(SqliteConnection connection, SqliteTransaction transaction, string sql, params (string, object)[] parameters) { SqliteCommand command = connection.CreateCommand(); command.Transaction = transaction; return command; } "
                 + "private sealed class CursorWrapper { public static implicit operator CursorWrapper(HierarchyLeafCursor value) { System.IO.File.Delete(\"cursor-forward\"); return new(); } public static implicit operator HierarchyLeafCursor(CursorWrapper value) { System.IO.File.Delete(\"cursor-reverse\"); return new(Guid.Empty); } } private static CursorWrapper RoundTrip() => new HierarchyLeafCursor(Guid.Empty); private static HierarchyLeafCursor ReturnedCursor() " + returnedCursor
