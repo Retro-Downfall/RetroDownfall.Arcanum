@@ -33300,12 +33300,14 @@ internal static partial class HostedGrimoireProducerInventory
                         .ToArray();
                 }
 
+                // A source in a tree the analysis does not hold (generated code) cannot be followed, so the value is not proved.
                 return sources.Length != 0
-                    && sources.All(source => review(
-                        source,
-                        semanticModels[source.SyntaxTree],
-                        path,
-                        context));
+                    && sources.All(source => semanticModels.TryGetValue(source.SyntaxTree, out SemanticModel? sourceModel)
+                        && review(
+                            source,
+                            sourceModel,
+                            path,
+                            context));
             }
             finally
             {

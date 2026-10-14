@@ -896,4 +896,30 @@ public sealed partial class HostedGrimoireProducerInventoryTests
 
         Assert.DoesNotContain(result.Diagnostics, static diagnostic => diagnostic.Code is "HOSTED_CALL_TARGET_UNRESOLVED" or "HOSTED_SITE_UNCLASSIFIED");
     }
+
+    // A field or property that generated code declares (a tree under obj/) is not a tree the analysis holds, so a receiver read from one
+    // is not followed to where it was assigned. The access is then resolved on the types the universe holds, and nothing throws.
+    [Theory]
+    [InlineData("private static readonly Base value = new Derived();", "value.Go();")]
+    [InlineData("private static Base value { get; } = new Derived();", "value.Go();")]
+    [InlineData("private static Base value => new Derived();", "value.Go();")]
+    [InlineData("private static Base Make() => new Derived();", "Make().Go();")]
+    [InlineData("private static Base Make() => new Derived();", "Base local = Make(); local.Go();")]
+    [InlineData("private static readonly Base[] values = [new Derived()];", "values[0].Go();")]
+    [InlineData("private static readonly System.Collections.Generic.List<Base> values = [new Derived()];", "foreach (Base item in values) { item.Go(); }")]
+    public void ReceiverReadFromAMemberOfGeneratedCodeIsResolvedOnTheUniverse(string generated, string call)
+    {
+        string source = "abstract class Base { public abstract void Go(); } sealed class Derived : Base { public override void Go() { " + EnumerationEffect + " } } "
+            + "static partial class Holder { public static void Run() { " + call + " } }";
+
+        CSharpCompilation compilation = Compile("using System.Linq;\n" + R2Source(R2Admission + "Holder.Run(); await Task.CompletedTask;", source));
+
+        compilation = compilation.AddSyntaxTrees(CSharpSyntaxTree.ParseText("static partial class Holder { " + generated + " }", path: "src/obj/Holder.g.cs"));
+
+        Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        HostedProducerDiscovery<HostedProducerSite> result = EnumerationDiscover(compilation);
+
+        Assert.NotNull(Assert.Single(EnumerationDeleteSites(result)).WorkFrontierCapsuleId);
+    }
 }
