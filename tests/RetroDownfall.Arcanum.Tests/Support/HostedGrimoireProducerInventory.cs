@@ -343,6 +343,9 @@ internal static partial class HostedGrimoireProducerInventory
 
     private const int DefaultMaximumAnalyzedStatesPerRoot = 8192;
 
+    // The per-root cap, readable by the headroom ratchet. Reading it changes nothing: the constant above is the one limit.
+    internal static int MaximumAnalyzedStatesPerRoot => DefaultMaximumAnalyzedStatesPerRoot;
+
     private const int RootStateProgressInterval = 256;
 
     private static readonly Lazy<IReadOnlyList<CSharpCompilation>> SourceCompilations = new(BuildProductionCompilations);

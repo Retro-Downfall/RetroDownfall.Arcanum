@@ -57,6 +57,7 @@ public sealed class HostedProducerAnalysisCollectionTests
             "RetroDownfall.Arcanum.Tests.Operations.HostedGrimoireProducerInventoryTests.BackupLiveSourceHasExactCliCallerAuthority",
             "RetroDownfall.Arcanum.Tests.Operations.HostedGrimoireProducerInventoryTests.EveryApplicationHostedServiceHasExactlyOneEntry",
             "RetroDownfall.Arcanum.Tests.Operations.HostedGrimoireProducerInventoryTests.EveryDiscoveredProducerSiteIsCataloguedExactlyOnce",
+            "RetroDownfall.Arcanum.Tests.Operations.HostedGrimoireProducerInventoryTests.Every_production_root_stays_within_its_ratchet_ceiling",
             "RetroDownfall.Arcanum.Tests.Operations.HostedGrimoireProducerInventoryTests.FrameworkCollectionIndexerUsesProductionReferencePackIdentity",
             "RetroDownfall.Arcanum.Tests.Operations.HostedGrimoireProducerInventoryTests.LiveSourceCannotBecomeReachableFromHostedOrUnadmittedCaller",
             "RetroDownfall.Arcanum.Tests.Operations.HostedGrimoireProducerInventoryTests.NonHostedBackupChainsDoNotEnterHostedRegistrationBijection",
