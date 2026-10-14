@@ -38867,6 +38867,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
                             sp.GetRequiredService<LongRestSweepQueue>(),
                             sp.GetRequiredService<ILongRestConfigurationProvider>(),
                             sp.GetRequiredService<IGrimoireConnectionAdmissionGate>(),
+                            sp.GetRequiredService<TimeProvider>(),
                             sp.GetRequiredService<ILoggerFactory>()));
                 }
                 """, (CSharpParseOptions)workerTree.Options, "src/AlternateWorkerRegistration.cs");
