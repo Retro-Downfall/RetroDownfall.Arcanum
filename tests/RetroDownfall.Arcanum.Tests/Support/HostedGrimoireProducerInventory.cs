@@ -1366,6 +1366,7 @@ internal static partial class HostedGrimoireProducerInventory
         "System.Reflection.CustomAttributeExtensions.GetCustomAttribute",
         "System.Runtime.CompilerServices.ConditionalWeakTable`2.Add",
         "System.Runtime.CompilerServices.ConditionalWeakTable`2.GetOrCreateValue",
+        "System.Runtime.CompilerServices.ConditionalWeakTable`2.Remove",
         "System.Runtime.CompilerServices.ConditionalWeakTable`2.TryGetValue",
         "System.Runtime.CompilerServices.TaskAwaiter.GetResult",
         "System.Runtime.CompilerServices.TaskAwaiter`1.GetResult",
@@ -3222,7 +3223,7 @@ internal static partial class HostedGrimoireProducerInventory
 
         private readonly HostedProducerPremiseLedger premises;
 
-        private readonly InventoryFacts facts;
+        private readonly InventoryFacts inventoryFacts;
 
         internal ProducerGraph(
             IReadOnlyList<CSharpCompilation> compilations,
@@ -3238,7 +3239,7 @@ internal static partial class HostedGrimoireProducerInventory
         {
             this.premises = premises ?? HostedProducerPremiseLedger.None;
 
-            this.facts = facts ?? new InventoryFacts(compilations);
+            inventoryFacts = facts ?? new InventoryFacts(compilations);
 
             foreach (HostedProducerInventoryDiagnostic violation in this.premises.Violations)
             {
@@ -3272,7 +3273,7 @@ internal static partial class HostedGrimoireProducerInventory
                         continue;
                     }
 
-                    SemanticModel model = this.facts.SemanticModelOf(compilation, tree);
+                    SemanticModel model = inventoryFacts.SemanticModelOf(compilation, tree);
 
                     semanticModels.Add(tree, model);
 
@@ -24984,21 +24985,13 @@ internal static partial class HostedGrimoireProducerInventory
                         && IsExactEfDbContext(member.Symbol.ContainingType)
                         && !IsLongRestSdkFactoryReceiverProperty(node, member)
                         && member.Model.GetSymbolInfo(receiverName).Symbol is IPropertySymbol receiverProperty
-                        && DbContextFirstUseConfiguring(member, node, receiverProperty) is { } receiverConfiguring)
+                        && DbContextFirstUseHooks(member, node, receiverProperty) is { Count: > 0 } receiverHooks)
                     {
-                        // EF runs OnConfiguring at the first service use, which is not this read, so no
-                        // admission current here is inherited (see DbContextFirstUseConfiguring).
+                        // EF runs the context's authored hooks at the first service use, which is not this read, so
+                        // no admission current here is inherited (see DbContextFirstUseHooks).
                         emittedEvidence = MergeEvidence(
                             emittedEvidence,
-                            Traverse(
-                                receiverConfiguring,
-                                rootType,
-                                operationId + "/call@" + Location(node),
-                                active,
-                                lifecycle,
-                                null,
-                                null,
-                                recoveryEffect: null));
+                            TraverseDbContextHooks(receiverHooks, rootType, operationId, node, active, lifecycle));
                     }
 
                     ISymbol? symbol = node is InvocationExpressionSyntax
@@ -25019,6 +25012,11 @@ internal static partial class HostedGrimoireProducerInventory
                                         _ => null,
                                     }
                                     : null;
+
+                    if (symbol is IFieldSymbol dbSetField && IsEfDbSetType(dbSetField.Type) && node is ExpressionSyntax dbSetFieldRead)
+                    {
+                        RefuseEscapingEfQuery(member, dbSetFieldRead, Normalize(dbSetField));
+                    }
 
                     if (symbol is IMethodSymbol method && node is not MemberAccessExpressionSyntax)
                     {
@@ -25045,22 +25043,46 @@ internal static partial class HostedGrimoireProducerInventory
 
                         string callee = Normalize(method);
 
+                        // A call that builds an EF query hands back a value whose execution must be followed from here.
+                        if (node is InvocationExpressionSyntax queryBuilding
+                            && Resolve(method.ReducedFrom ?? method, member.Model.Compilation) is null
+                            && IsEfQueryOperand(member, queryBuilding, 0))
+                        {
+                            RefuseEscapingEfQuery(member, queryBuilding, callee);
+                        }
+
                         // H7: EF runs OnConfiguring at the first use of the context's services,
                         // whichever DbContext member that is; judge it at every such use.
                         if (node is InvocationExpressionSyntax
-                            && DbContextFirstUseConfiguring(member, node, method) is { } firstUseConfiguring)
+                            && DbContextFirstUseHooks(member, node, method) is { Count: > 0 } firstUseHooks)
                         {
                             emittedEvidence = MergeEvidence(
                                 emittedEvidence,
-                                Traverse(
-                                    firstUseConfiguring,
-                                    rootType,
-                                    operationId + "/call@" + Location(node),
-                                    active,
-                                    lifecycle,
-                                    null,
-                                    null,
-                                    recoveryEffect: null));
+                                TraverseDbContextHooks(firstUseHooks, rootType, operationId, node, active, lifecycle));
+                        }
+
+                        // Activating a context runs the field and property initializers of the type and of every
+                        // authored base where the creation is written, under the frontiers live there. The constructor
+                        // the creation names is traversed with the other targets below.
+                        if (node is BaseObjectCreationExpressionSyntax contextCreation
+                            && method.ContainingType is { TypeKind: TypeKind.Class } createdContext
+                            && IsAuthoredSymbol(createdContext)
+                            && IsExactEfDbContext(createdContext))
+                        {
+                            foreach (AuthoredMember initializer in ActivationMembers(createdContext, member.Model.Compilation, includeConstructors: false))
+                            {
+                                emittedEvidence = MergeEvidence(
+                                    emittedEvidence,
+                                    Traverse(
+                                        initializer,
+                                        rootType,
+                                        operationId + "/activate@" + Location(contextCreation),
+                                        active,
+                                        lifecycle,
+                                        workAdmitted,
+                                        effectGroup,
+                                        recoveryEffect: recoveryEffect));
+                            }
                         }
 
                         if ((node is InvocationExpressionSyntax or BaseObjectCreationExpressionSyntax)
@@ -25608,6 +25630,19 @@ internal static partial class HostedGrimoireProducerInventory
                             node,
                             member);
 
+                        if (kind == HostedProducerSiteKind.DatabaseAccess
+                            && !ReviewedProviderMemberIsClosed(method, node, member.Model, member))
+                        {
+                            // The access is real whatever the receiver is, and is reported below. What the receiver may
+                            // hold behind the framework wrapper is code no traversal reaches.
+                            RefuseTraversalCompletion();
+
+                            diagnostics.Add(new(
+                                "HOSTED_CALL_TARGET_UNRESOLVED",
+                                Location(node),
+                                callee + "; The receiver can be an authored subclass of the provider type, whose overrides this call would run."));
+                        }
+
                         if (kind is not null && !aggregate)
                         {
                             if (node is InvocationExpressionSyntax lazyRead && IsLazyDirectoryEnumeration(callee))
@@ -25644,6 +25679,32 @@ internal static partial class HostedGrimoireProducerInventory
                             }
 
                             emittedEvidence = MergeEvidence(emittedEvidence, AddSite(kind.Value, callee, member, rootType, operationId, node, effectGroup, workAdmitted));
+
+                            // An EF operation raises the callbacks of the interceptors registered on its context.
+                            if (kind == HostedProducerSiteKind.DatabaseAccess && node is InvocationExpressionSyntax efCall
+                                && InterceptionOf(method.ReducedFrom ?? method) != EfInterception.None)
+                            {
+                                emittedEvidence = MergeEvidence(
+                                    emittedEvidence,
+                                    TraverseEfOperationCallbacks(member, efCall, method.ReducedFrom ?? method, callee, rootType, operationId, active, lifecycle, workAdmitted, effectGroup, recoveryEffect));
+                            }
+                            else if (kind == HostedProducerSiteKind.DatabaseAccess
+                                && node is InvocationExpressionSyntax or BaseObjectCreationExpressionSyntax
+                                && ClassifyEfQueryCall(member, node, method, out List<ExpressionSyntax> queryOperands) == EfQueryCall.Terminal)
+                            {
+                                emittedEvidence = MergeEvidence(
+                                    emittedEvidence,
+                                    TraverseEfQueryCallbacks(member, node, queryOperands, method.ReducedFrom ?? method, callee, rootType, operationId, active, lifecycle, workAdmitted, effectGroup, recoveryEffect));
+                            }
+                            else if (kind == HostedProducerSiteKind.DatabaseAccess
+                                && node is InvocationExpressionSyntax
+                                && IsConnectionStateChangingCall(method))
+                            {
+                                // The connection raises StateChange inside this call, so its handlers run under the frontiers live here.
+                                emittedEvidence = MergeEvidence(
+                                    emittedEvidence,
+                                    TraverseConnectionStateHandlers(node, callee, rootType, operationId, active, lifecycle, workAdmitted, effectGroup, recoveryEffect));
+                            }
                         }
 
                         if (node is InvocationExpressionSyntax recoveryCall
@@ -26095,23 +26156,19 @@ internal static partial class HostedGrimoireProducerInventory
                             continue;
                         }
 
-                        if (!propertyMutation
-                            && DbContextFirstUseConfiguring(member, node, property) is { } onConfiguring)
+                        if (!propertyMutation && IsEfDbSetType(property.Type) && node is ExpressionSyntax dbSetRead)
                         {
-                            // EF runs the authored OnConfiguring on the first use of the context's
-                            // services, which can be a later consumer of a value read here, so no
-                            // admission current at this read is inherited.
+                            RefuseEscapingEfQuery(member, dbSetRead, callee);
+                        }
+
+                        if (!propertyMutation
+                            && DbContextFirstUseHooks(member, node, property) is { Count: > 0 } propertyHooks)
+                        {
+                            // EF runs the context's authored hooks on the first use of its services, which can be a
+                            // later consumer of a value read here, so no admission current at this read is inherited.
                             emittedEvidence = MergeEvidence(
                                 emittedEvidence,
-                                Traverse(
-                                    onConfiguring,
-                                    rootType,
-                                    operationId + "/call@" + Location(node),
-                                    active,
-                                    lifecycle,
-                                    null,
-                                    null,
-                                    recoveryEffect: null));
+                                TraverseDbContextHooks(propertyHooks, rootType, operationId, node, active, lifecycle));
                         }
 
                         HostedProducerSiteKind? externalPropertyKind =
@@ -26341,6 +26398,17 @@ internal static partial class HostedGrimoireProducerInventory
                                     ? Normalize(authoredEvent)
                                     : Normalize(accessor)));
                         }
+                    }
+                    else if (symbol is IEventSymbol stateEvent
+                        && node.Parent is AssignmentExpressionSyntax stateMutation
+                        && stateMutation.Left == node
+                        && stateMutation.Kind() is SyntaxKind.AddAssignmentExpression
+                            or SyntaxKind.SubtractAssignmentExpression
+                        && stateEvent.Locations.All(static location => !location.IsInSource)
+                        && IsReviewedConnectionStateWiring(stateEvent))
+                    {
+                        // Subscribing a handler to DbConnection.StateChange runs none: every handler in the analysed source
+                        // is named, and each is entered where a connection changes state (see TraverseConnectionStateHandlers).
                     }
                     else if (symbol is IEventSymbol declaredEvent
                         && node.Parent is AssignmentExpressionSyntax eventMutation
@@ -30683,7 +30751,10 @@ internal static partial class HostedGrimoireProducerInventory
                     context)
                 || IsReviewedPrimitiveQueueProperty(property, mutation, node, context)
                 || IsReviewedExactMeAiDimensionsProperty(property, mutation)
-                || IsReviewedNonProducerExternalMember(property, mutation))
+                || IsReviewedNonProducerExternalMember(property, mutation)
+                || !mutation && IsReviewedFrameworkEventDataRead(property)
+                || IsReviewedDatabaseSupportMember(property, mutation)
+                    && ReviewedProviderMemberIsClosed(property, node, model, context))
             {
                 return false;
             }
@@ -30724,6 +30795,10 @@ internal static partial class HostedGrimoireProducerInventory
                 || IsReviewedExactBoundedExternalMember(method)
                 || IsExactEmbeddingSdkAdapterFactory(method)
                 || IsReviewedDatabaseSupportMember(method)
+                    && ReviewedProviderMemberIsClosed(method, node, model, context)
+                || IsReviewedEfInterceptorBaseCall(method, node, model)
+                || IsReviewedAccessorLoggerFactoryRead(method) && inventoryFacts.AuthoredLoggerType is null
+                || IsReviewedEfQueryOperator(method, node, model, context)
                 || IsReviewedProviderNeutralOptionsBuilderMember(method)
                 || IsReviewedRuntimeCleanup(method)
                 || IsReviewedFloatVectorMember(method, node, model, context)
@@ -33452,7 +33527,6 @@ internal static partial class HostedGrimoireProducerInventory
             || !mutation && IsReviewedFloatVectorProperty(property)
             || IsReviewedExactGeneratedEmbeddingRead(property, mutation)
             || IsReviewedExactStoredExternalProperty(property, mutation)
-            || IsReviewedDatabaseSupportMember(property, mutation)
             || !mutation && IsReviewedProviderNeutralOptionsBuilderMember(property)
             || ReviewedNonProducerExternalMembers.Contains(
                 Normalize(property) + (mutation ? " setter" : string.Empty));
@@ -44186,7 +44260,9 @@ internal static partial class HostedGrimoireProducerInventory
         private bool BuilderScopeCannotChangeProvider(
             SyntaxNode scope,
             SemanticModel model,
-            HashSet<GraphMemberIdentity> path)
+            HashSet<GraphMemberIdentity> path,
+            BuilderFacts? facts = null,
+            bool unconditional = true)
         {
             IOperation? root = model.GetOperation(scope);
 
@@ -44219,8 +44295,9 @@ internal static partial class HostedGrimoireProducerInventory
                         if (IsExactSqliteOptionsBuilderCall(method))
                         {
                             // H2: only the connection-string overload selects SQLite's own
-                            // connection; a DbConnection argument can be any (derived) connection.
-                            if (definition.Parameters is not [_, { Type.SpecialType: SpecialType.System_String }, ..])
+                            // connection; a DbConnection argument can be any (derived) connection. The
+                            // interceptor and model facts do not depend on which connection it is.
+                            if (facts is null && definition.Parameters is not [_, { Type.SpecialType: SpecialType.System_String }, ..])
                             {
                                 return false;
                             }
@@ -44237,10 +44314,31 @@ internal static partial class HostedGrimoireProducerInventory
                                 definition.ContainingAssembly.Identity,
                                 typeof(Microsoft.EntityFrameworkCore.DbContextOptionsBuilder).Assembly.GetName()))
                         {
-                            if (definition.Name == "AddInterceptors"
+                            // The provider certificate admits only interceptors that cannot hand EF another connection,
+                            // command or reader. The facts walk collects every interceptor instead, because their
+                            // callbacks are traversed at the operations that raise them.
+                            if (facts is null
+                                && definition.Name == "AddInterceptors"
                                 && !InterceptorsCannotReplaceConnection(invocation, model))
                             {
                                 return false;
+                            }
+
+                            if (facts is not null)
+                            {
+                                if (definition.Name == "UseModel"
+                                    && unconditional
+                                    && invocation.Syntax is InvocationExpressionSyntax useModel
+                                    && CallExecutesUnconditionallyWithin(scope, useModel)
+                                    && invocation.Arguments.LastOrDefault() is { } suppliedModel
+                                    && suppliedModel.Value.ConstantValue is not { HasValue: true, Value: null })
+                                {
+                                    facts.ModelSupplied = true;
+                                }
+                                else if (definition.Name == "AddInterceptors")
+                                {
+                                    CollectInterceptors(invocation, model, facts);
+                                }
                             }
 
                             break;
@@ -44265,7 +44363,14 @@ internal static partial class HostedGrimoireProducerInventory
 
                             try
                             {
-                                if (!BuilderScopeCannotChangeProvider(target.Syntax, target.Model, path))
+                                if (!BuilderScopeCannotChangeProvider(
+                                    target.Syntax,
+                                    target.Model,
+                                    path,
+                                    facts,
+                                    unconditional
+                                        && invocation.Syntax is InvocationExpressionSyntax helperCall
+                                        && CallExecutesUnconditionallyWithin(scope, helperCall)))
                                 {
                                     return false;
                                 }
@@ -44496,7 +44601,7 @@ internal static partial class HostedGrimoireProducerInventory
         /// verdict is a property of the analysed compilations alone, so it is computed once per
         /// discovery and shared by every isolated root worker (see <see cref="InventoryFacts"/>).
         /// </summary>
-        private bool HasDbContextConnectionReplacement() => facts.DbContextConnectionReplacement;
+        private bool HasDbContextConnectionReplacement() => inventoryFacts.DbContextConnectionReplacement;
 
         internal static bool ScanForDbContextConnectionReplacement(IReadOnlyList<CSharpCompilation> compilations, Func<CSharpCompilation, SyntaxTree, SemanticModel> modelOf)
         {
@@ -44718,31 +44823,6 @@ internal static partial class HostedGrimoireProducerInventory
                 });
         }
 
-        /// <summary>
-        /// An authored OnConfiguring runs after the container's options are built. Only the
-        /// provider-complete guard (no provider-selecting or effectful statement before
-        /// the early return) leaves the registration's provider final.
-        /// </summary>
-        private AuthoredMember? UnclosedDbContextOnConfiguring(
-            AuthoredMember member,
-            ExpressionSyntax receiver)
-        {
-            CleanupProvenance provenance = CleanupProvenanceOf(
-                member,
-                receiver,
-                new CleanupProvenanceContext());
-
-            if (!provenance.Complete
-                || provenance.Candidates is not [CleanupTypeCandidate { Type: INamedTypeSymbol type }]
-                || IsContainerResolvedDbContextInstance(member, receiver)
-                    && HasClosedDbContextOnConfiguring(type))
-            {
-                return null;
-            }
-
-            return AuthoredOnConfiguring(type, member.Model.Compilation);
-        }
-
         private AuthoredMember? AuthoredOnConfiguring(
             INamedTypeSymbol type,
             Compilation compilation)
@@ -44771,101 +44851,6 @@ internal static partial class HostedGrimoireProducerInventory
             .GetInterfaces()
             .Select(static contract => contract.Namespace + "." + contract.Name)
             .ToHashSet(StringComparer.Ordinal);
-
-        /// <summary>
-        /// EF runs the authored OnConfiguring at the first use of a context's services, whichever
-        /// member that is and however the receiver is written: spelled out, reached through
-        /// <c>?.</c>, implied (<c>this</c> inside a derived context), a member the derived
-        /// context declares itself, one of the interfaces the context implements, or EF's accessor
-        /// extensions. Judge it at every such use. The use that really triggers it can be a later
-        /// consumer of a value read here (a <c>DbSet</c>, an <c>IQueryable</c> built from one, the
-        /// <c>DatabaseFacade</c>), after the admission current at the read has ended, so the
-        /// traversal inherits no work, effect or recovery admission: its effects are unadmitted
-        /// wherever the hook fires.
-        /// </summary>
-        private AuthoredMember? DbContextFirstUseConfiguring(
-            AuthoredMember member,
-            SyntaxNode node,
-            ISymbol used)
-        {
-            ISymbol definition = used is IMethodSymbol method
-                ? method.ReducedFrom ?? method
-                : used;
-
-            string owner = TypeKey(definition.ContainingType);
-
-            bool contextMember = (owner == "Microsoft.EntityFrameworkCore.DbContext"
-                    || definition.ContainingType is { TypeKind: TypeKind.Interface }
-                        && DbContextInterfaceKeys.Contains(owner))
-                && !definition.IsStatic
-                && definition.Name is not ("Dispose" or "DisposeAsync");
-
-            bool derivedMember = !definition.IsStatic
-                && definition.ContainingType is { } derivedOwner
-                && IsExactEfDbContext(derivedOwner)
-                && definition.DeclaringSyntaxReferences.Length != 0;
-
-            bool accessor = owner == "Microsoft.EntityFrameworkCore.Infrastructure.AccessorExtensions"
-                || owner == "Microsoft.EntityFrameworkCore.Infrastructure.IInfrastructure`1"
-                    && definition.Name == "Instance";
-
-            if (!contextMember && !derivedMember && !accessor)
-            {
-                return null;
-            }
-
-            ExpressionSyntax? receiver;
-
-            bool implicitThis;
-
-            if (accessor && member.Model.GetOperation(node) is IInvocationOperation accessorCall)
-            {
-                receiver = ExactInvocationReceiverOrFirstArgument(accessorCall);
-
-                implicitThis = false;
-            }
-            else
-            {
-                (receiver, implicitThis) = DbContextUseReceiver(node);
-            }
-
-            if (receiver is BaseExpressionSyntax)
-            {
-                receiver = null;
-
-                implicitThis = true;
-            }
-
-            if (implicitThis)
-            {
-                // A member the derived context declares is judged where it is called on a known
-                // receiver; the implied instance of its own body is not known here.
-                return derivedMember
-                    ? null
-                    : ImplicitDbContextOnConfiguring(member);
-            }
-
-            return receiver is null
-                ? null
-                : UnclosedDbContextOnConfiguring(member, receiver);
-        }
-
-        /// <summary>
-        /// The instance behind an implied <c>this</c> is whichever receiver reached the member, so
-        /// a registration that configured it cannot be assumed: an OnConfiguring that is not the
-        /// provider-complete guard always runs and is judged at the use. A guard-closed fallback
-        /// only runs for an unconfigured instance and is judged at the call that has a receiver.
-        /// </summary>
-        private AuthoredMember? ImplicitDbContextOnConfiguring(AuthoredMember member)
-        {
-            INamedTypeSymbol type = member.Symbol.ContainingType;
-
-            return member.Symbol.IsStatic
-                || !IsExactEfDbContext(type)
-                || HasClosedDbContextOnConfiguring(type)
-                    ? null
-                    : AuthoredOnConfiguring(type, member.Model.Compilation);
-        }
 
         private static (ExpressionSyntax? Receiver, bool ImplicitThis) DbContextUseReceiver(SyntaxNode node)
         {
@@ -45025,7 +45010,23 @@ internal static partial class HostedGrimoireProducerInventory
             return result;
         }
 
+        private readonly Dictionary<BoundTypeIdentity, ResolvedRegistration[]> dbContextRegistrationCache = [];
+
         private ResolvedRegistration[] SqliteDbContextRegistrations(
+            INamedTypeSymbol dbContext,
+            Compilation consumingCompilation)
+        {
+            BoundTypeIdentity cacheKey = TypeIdentity(dbContext, consumingCompilation);
+
+            if (dbContextRegistrationCache.TryGetValue(cacheKey, out ResolvedRegistration[]? cachedRegistrations))
+            {
+                return cachedRegistrations;
+            }
+
+            return dbContextRegistrationCache[cacheKey] = SelectDbContextRegistrations(dbContext, consumingCompilation);
+        }
+
+        private ResolvedRegistration[] SelectDbContextRegistrations(
             INamedTypeSymbol dbContext,
             Compilation consumingCompilation)
         {
@@ -57748,6 +57749,14 @@ internal static partial class HostedGrimoireProducerInventory
                 diagnostics.Add(new("HOSTED_CALL_TARGET_UNRESOLVED", Location(node), callee));
 
                 return null;
+            }
+
+            // A framework call that executes an EF query is a database access, recognized by the exact framework
+            // identity of the call and the provenance of its operand (see ClassifyEfQueryCall).
+            if (node is InvocationExpressionSyntax or BaseObjectCreationExpressionSyntax
+                && ClassifyEfQueryCall(member, node, method, out _) == EfQueryCall.Terminal)
+            {
+                return HostedProducerSiteKind.DatabaseAccess;
             }
 
             if ((IsBootstrapConsoleRedirection(member)

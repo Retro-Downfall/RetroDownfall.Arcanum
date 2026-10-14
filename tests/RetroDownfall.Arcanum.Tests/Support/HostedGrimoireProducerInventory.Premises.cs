@@ -24,6 +24,15 @@ internal enum HostedProducerPremises : byte
     // (IEnumerable<T>, IReadOnlyList<T>, ...) then has no authored runtime type, so enumerating it reaches no
     // authored enumeration member. Compiler-generated iterators stay traversed where they are produced.
     AuthoredEnumerablesAbsentByUse = 2,
+
+    // Every type in an analysed source or in any reference an analysed compilation resolves that derives from an
+    // ADO.NET provider base class (DbConnection, DbCommand, DbTransaction, DbDataReader, DbParameter,
+    // DbParameterCollection, DbConnectionStringBuilder), from an extensible Entity Framework type the reviewed grants
+    // name (DbSet<T>, ChangeTracker, EntityEntry, DatabaseFacade), or that implements IDbContextTransaction, is
+    // declared by a trusted provider assembly (exact identity), and no authored DbContext overrides a member other
+    // than its model and configuration hooks. A value statically typed as such a type then has only framework
+    // runtime types, so the reviewed members behind it run only framework bodies.
+    DbProviderTypesClosedByUse = 4,
 }
 
 internal sealed record HostedProducerPremiseLedger(
@@ -88,6 +97,20 @@ internal static partial class HostedGrimoireProducerInventory
             }
         }
 
+        if ((requested & HostedProducerPremises.DbProviderTypesClosedByUse) != 0)
+        {
+            string[] findings = VerifyDbProviderTypesClosed(compilations);
+
+            if (findings.Length == 0)
+            {
+                granted |= HostedProducerPremises.DbProviderTypesClosedByUse;
+            }
+            else
+            {
+                violations.AddRange(findings.Select(static finding => new HostedProducerInventoryDiagnostic("HOSTED_PREMISE_VIOLATED", "DbProviderTypesClosedByUse", finding)));
+            }
+        }
+
         return new(requested, granted, violations);
     }
 
@@ -99,67 +122,7 @@ internal static partial class HostedGrimoireProducerInventory
 
         foreach (CSharpCompilation compilation in compilations)
         {
-            List<IAssemblySymbol> resolved = [];
-
-            List<MetadataReference> unbound = [];
-
-            foreach (MetadataReference reference in compilation.References)
-            {
-                ISymbol? bound = compilation.GetAssemblyOrModuleSymbol(reference);
-
-                if (bound is IAssemblySymbol assembly)
-                {
-                    resolved.Add(assembly);
-                }
-                else if (bound is not null)
-                {
-                    // A module reference contributes types to the assembly yet cannot be enumerated as one.
-                    findings.Add($"Reference '{reference.Display}' of '{compilation.AssemblyName}' is a module, not an assembly whose types can be enumerated (unresolved reference).");
-                }
-                else
-                {
-                    unbound.Add(reference);
-                }
-            }
-
-            // A reference that binds no symbol is either an image the compiler could not load or an image whose
-            // identity the compiler already holds from another reference. Only the second contributes nothing
-            // analysed code can see; an image whose identity cannot be read, or is not exactly a loaded
-            // assembly's, is unresolved.
-            foreach (MetadataReference reference in unbound)
-            {
-                if (!IsExactDuplicateOfLoadedAssembly(reference, resolved))
-                {
-                    findings.Add($"Reference '{reference.Display}' of '{compilation.AssemblyName}' was not loaded by the compilation and is not an exact duplicate of a loaded assembly, so its types cannot be enumerated (unresolved reference).");
-                }
-            }
-
-            bool sqliteResolved = resolved.Any(assembly => assembly.Identity.Name == sqliteAssembly);
-
-            List<IAssemblySymbol> scanned = [compilation.Assembly];
-
-            foreach (IAssemblySymbol assembly in resolved)
-            {
-                // A source assembly of an analysed compilation is scanned once, as that compilation's own assembly.
-                if (compilations.Any(candidate => SymbolEqualityComparer.Default.Equals(candidate.Assembly, assembly)))
-                {
-                    continue;
-                }
-
-                // Every resolved reference is scanned, not only the ones that name the provider. A subclass
-                // whose base is reached through a type-forwarding facade names only the facade in its own
-                // metadata, yet the compilation resolves that base to the provider type.
-                scanned.Add(assembly);
-
-                bool referencesSqlite = assembly.Modules.Any(module => module.ReferencedAssemblies.Any(identity => identity.Name == sqliteAssembly));
-
-                if (referencesSqlite && !sqliteResolved)
-                {
-                    findings.Add($"Reference '{assembly.Identity.Name}' of '{compilation.AssemblyName}' references {sqliteAssembly}, which the analysed compilation does not resolve (unresolved reference).");
-                }
-            }
-
-            foreach (IAssemblySymbol assembly in scanned)
+            foreach (IAssemblySymbol assembly in ScannedUniverse(compilation, compilations, [sqliteAssembly], findings))
             {
                 foreach (INamedTypeSymbol type in SourceTypes(assembly.GlobalNamespace))
                 {
@@ -189,6 +152,185 @@ internal static partial class HostedGrimoireProducerInventory
         }
 
         return [.. findings.Order(StringComparer.Ordinal)];
+    }
+
+    // The provider families whose derived types the dispatch closure audits, by metadata identity. The class roots
+    // are matched through the base chain, the interface root through the implemented interfaces.
+    private static readonly string[] DbProviderClassRoots =
+    [
+        "System.Data.Common.DbConnection",
+        "System.Data.Common.DbCommand",
+        "System.Data.Common.DbTransaction",
+        "System.Data.Common.DbDataReader",
+        "System.Data.Common.DbParameter",
+        "System.Data.Common.DbParameterCollection",
+        "System.Data.Common.DbConnectionStringBuilder",
+        "Microsoft.EntityFrameworkCore.DbSet`1",
+        "Microsoft.EntityFrameworkCore.ChangeTracking.ChangeTracker",
+        "Microsoft.EntityFrameworkCore.ChangeTracking.EntityEntry",
+        "Microsoft.EntityFrameworkCore.Infrastructure.DatabaseFacade",
+    ];
+
+    private const string DbProviderInterfaceRoot = "Microsoft.EntityFrameworkCore.Storage.IDbContextTransaction";
+
+    private const string DbContextRoot = "Microsoft.EntityFrameworkCore.DbContext";
+
+    // The members of an authored context EF calls on its own schedule, which the hooks traversal owns. Overriding any
+    // other member of DbContext replaces framework behavior a reviewed grant names.
+    private static readonly IReadOnlySet<string> DbContextHookMembers = new HashSet<string>(StringComparer.Ordinal)
+    {
+        "OnConfiguring",
+        "OnModelCreating",
+        "ConfigureConventions",
+    };
+
+    private static string[] VerifyDbProviderTypesClosed(IReadOnlyList<CSharpCompilation> compilations)
+    {
+        string[] watched = [.. TrustedProviderAssemblies().Select(static assembly => assembly.Name!).Distinct(StringComparer.Ordinal)];
+
+        HashSet<string> findings = new(StringComparer.Ordinal);
+
+        foreach (CSharpCompilation compilation in compilations)
+        {
+            foreach (IAssemblySymbol assembly in ScannedUniverse(compilation, compilations, watched, findings))
+            {
+                bool trusted = IsTrustedProviderAssembly(assembly);
+
+                foreach (INamedTypeSymbol type in SourceTypes(assembly.GlobalNamespace))
+                {
+                    if (type.TypeKind is not (TypeKind.Class or TypeKind.Struct or TypeKind.Interface))
+                    {
+                        continue;
+                    }
+
+                    string? family = null;
+
+                    bool derivesFromContext = false;
+
+                    for (INamedTypeSymbol? parent = type.BaseType; parent is not null; parent = parent.BaseType)
+                    {
+                        if (parent.TypeKind == TypeKind.Error)
+                        {
+                            findings.Add($"'{type.ToDisplayString()}' of '{assembly.Identity.Name}' has an unresolved base type, so derivation from a provider type cannot be excluded (unresolved reference).");
+
+                            family = null;
+
+                            break;
+                        }
+
+                        string key = TypeKey(parent);
+
+                        family ??= Array.Find(DbProviderClassRoots, root => root == key);
+
+                        derivesFromContext |= key == DbContextRoot;
+                    }
+
+                    foreach (INamedTypeSymbol contract in type.AllInterfaces)
+                    {
+                        if (contract.TypeKind == TypeKind.Error)
+                        {
+                            findings.Add($"'{type.ToDisplayString()}' of '{assembly.Identity.Name}' has an unresolved interface, so implementation of IDbContextTransaction cannot be excluded (unresolved reference).");
+                        }
+                        else if (TypeKey(contract) == DbProviderInterfaceRoot)
+                        {
+                            family ??= DbProviderInterfaceRoot;
+                        }
+                    }
+
+                    if (family is not null && !trusted)
+                    {
+                        findings.Add($"'{type.ToDisplayString()}' of '{assembly.Identity.Name}' derives from or implements {family} outside a trusted provider assembly, so a reviewed member called on that type may dispatch to it.");
+                    }
+
+                    if (derivesFromContext && !trusted)
+                    {
+                        // The members a context overrides are visible on its symbol, source or metadata alike.
+                        foreach (ISymbol member in type.GetMembers().Where(static member => member.IsOverride))
+                        {
+                            if (!DbContextHookMembers.Contains(member.Name))
+                            {
+                                findings.Add($"'{type.ToDisplayString()}' of '{assembly.Identity.Name}' overrides DbContext.{member.Name}, so a reviewed context member called on a context may dispatch to it.");
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        return [.. findings.Order(StringComparer.Ordinal)];
+    }
+
+    // Every assembly an analysed compilation's types can be reached through: its own source assembly and every
+    // resolved reference, enumerated without any budget and not only the references that name a watched assembly.
+    // A subclass whose base is reached through a type-forwarding facade names only the facade in its own metadata,
+    // yet the compilation resolves that base to the real type. A reference that is a module, a reference that binds no
+    // symbol and is not an exact duplicate of a loaded assembly, and an assembly that references a watched assembly
+    // the compilation does not resolve are findings, because the types behind them cannot be enumerated.
+    private static List<IAssemblySymbol> ScannedUniverse(
+        CSharpCompilation compilation,
+        IReadOnlyList<CSharpCompilation> compilations,
+        IReadOnlyList<string> watchedAssemblies,
+        HashSet<string> findings)
+    {
+        List<IAssemblySymbol> resolved = [];
+
+        List<MetadataReference> unbound = [];
+
+        foreach (MetadataReference reference in compilation.References)
+        {
+            ISymbol? bound = compilation.GetAssemblyOrModuleSymbol(reference);
+
+            if (bound is IAssemblySymbol assembly)
+            {
+                resolved.Add(assembly);
+            }
+            else if (bound is not null)
+            {
+                // A module reference contributes types to the assembly yet cannot be enumerated as one.
+                findings.Add($"Reference '{reference.Display}' of '{compilation.AssemblyName}' is a module, not an assembly whose types can be enumerated (unresolved reference).");
+            }
+            else
+            {
+                unbound.Add(reference);
+            }
+        }
+
+        // A reference that binds no symbol is either an image the compiler could not load or an image whose
+        // identity the compiler already holds from another reference. Only the second contributes nothing
+        // analysed code can see; an image whose identity cannot be read, or is not exactly a loaded
+        // assembly's, is unresolved.
+        foreach (MetadataReference reference in unbound)
+        {
+            if (!IsExactDuplicateOfLoadedAssembly(reference, resolved))
+            {
+                findings.Add($"Reference '{reference.Display}' of '{compilation.AssemblyName}' was not loaded by the compilation and is not an exact duplicate of a loaded assembly, so its types cannot be enumerated (unresolved reference).");
+            }
+        }
+
+        string[] unresolvedWatched = [.. watchedAssemblies.Where(watched => !resolved.Any(assembly => assembly.Identity.Name == watched))];
+
+        List<IAssemblySymbol> scanned = [compilation.Assembly];
+
+        foreach (IAssemblySymbol assembly in resolved)
+        {
+            // A source assembly of an analysed compilation is scanned once, as that compilation's own assembly.
+            if (compilations.Any(candidate => SymbolEqualityComparer.Default.Equals(candidate.Assembly, assembly)))
+            {
+                continue;
+            }
+
+            scanned.Add(assembly);
+
+            foreach (string watched in unresolvedWatched)
+            {
+                if (assembly.Modules.Any(module => module.ReferencedAssemblies.Any(identity => identity.Name == watched)))
+                {
+                    findings.Add($"Reference '{assembly.Identity.Name}' of '{compilation.AssemblyName}' references {watched}, which the analysed compilation does not resolve (unresolved reference).");
+                }
+            }
+        }
+
+        return scanned;
     }
 
     // True when the reference's own metadata names exactly the identity (name, version, culture, public key
@@ -245,6 +387,8 @@ internal static partial class HostedGrimoireProducerInventory
         private bool SqliteSealedByUse => premises.Holds(HostedProducerPremises.SqliteSealedByUse);
 
         private bool AuthoredEnumerablesAbsentByUse => premises.Holds(HostedProducerPremises.AuthoredEnumerablesAbsentByUse);
+
+        private bool DbProviderTypesClosedByUse => premises.Holds(HostedProducerPremises.DbProviderTypesClosedByUse);
 
         // A static type that is exactly one of the three Sqlite family classes. Under SqliteSealedByUse it is
         // also the exact runtime type of every value of that static type. Abstract DbConnection, DbCommand,
