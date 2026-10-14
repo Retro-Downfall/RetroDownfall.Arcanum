@@ -26345,6 +26345,12 @@ internal static partial class HostedGrimoireProducerInventory
                                         target,
                                         assignedValue);
 
+                                boundTarget = BindReceiverContext(
+                                    member,
+                                    propertyReference?.Instance is { IsImplicit: false, Syntax: ExpressionSyntax writtenReceiver } ? writtenReceiver : null,
+                                    target,
+                                    boundTarget);
+
                                 bool leaseBoundary = member.ScopedLeaseInstance is not null;
 
                                 bool sameLease = leaseBoundary
@@ -26431,6 +26437,12 @@ internal static partial class HostedGrimoireProducerInventory
                                         [(authoredMutation.Right, handler, RefKind.None)],
                                         target)
                                     : target;
+
+                            boundTarget = BindReceiverContext(
+                                member,
+                                receiverExpression,
+                                target,
+                                boundTarget);
 
                             bool leaseBoundary = member.ScopedLeaseInstance is not null;
 
@@ -35574,6 +35586,23 @@ internal static partial class HostedGrimoireProducerInventory
                 target,
                 recoveryProvenance);
 
+            ExpressionSyntax? written = call.Expression is MemberAccessExpressionSyntax access
+                ? access.Expression
+                : null;
+
+            return BindReceiverContext(caller, written, target, bound, recoveryProvenance);
+        }
+
+        // The context the receiver of an instance member brings to the member it runs: the callables and values the receiver
+        // was constructed with, which a written call and an accessor access bind the same way. A receiver that is not written
+        // (an implicit this) brings the caller's own context.
+        private AuthoredMember BindReceiverContext(
+            AuthoredMember caller,
+            ExpressionSyntax? written,
+            AuthoredMember target,
+            AuthoredMember bound,
+            RecoveryTupleProvenanceContext? recoveryProvenance = null)
+        {
             if (target.Symbol.IsStatic)
             {
                 return bound.ScopedLeaseInstance is null ? bound : bound with { ScopedLeaseInstance = null };
@@ -35614,10 +35643,7 @@ internal static partial class HostedGrimoireProducerInventory
                     _ => false,
                 }) == true;
 
-            ExpressionSyntax? receiver = call.Expression is
-                MemberAccessExpressionSyntax access
-                    ? access.Expression
-                    : null;
+            ExpressionSyntax? receiver = written;
 
             bool hasBoundReceiverContext = receiver is not null
                 && caller.Model.GetSymbolInfo(

@@ -367,6 +367,8 @@ public sealed partial class HostedGrimoireProducerInventoryTests
             "sealed partial class Probe { public partial int this[int index] { get; } } sealed partial class Probe { public partial int this[int index] { get { {E} return 1; } } }", CensusDisposition.Traversed),
         new("record-virtual-printed-override", "Accessor", "Base value = new Derived(); string text = $\"{value}\"; _ = text;",
             "record Base { public virtual int Value => 0; } sealed record Derived : Base { public override int Value { get { {E} return 1; } } }", CensusDisposition.Traversed),
+        new("record-abstract-printed-override", "Accessor", "Base value = new Derived(); string text = $\"{value}\"; _ = text;",
+            "abstract record Base { public abstract int Value { get; } } sealed record Derived : Base { public override int Value { get { {E} return 1; } } }", CensusDisposition.Traversed),
 
         // ---- A property read as the receiver of a further member ------------------------------------------
         new("receiver-property-implicit-this-call", "Accessor", "new Owner().Run();",

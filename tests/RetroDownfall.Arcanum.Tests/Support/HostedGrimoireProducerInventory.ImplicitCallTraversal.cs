@@ -662,7 +662,7 @@ internal static partial class HostedGrimoireProducerInventory
             {
                 foreach (ISymbol candidate in candidates)
                 {
-                    if (candidate is IPropertySymbol { GetMethod: { } getter, IsStatic: false })
+                    if (candidate is IPropertySymbol { GetMethod: { IsAbstract: false } getter, IsStatic: false })
                     {
                         targets.Add(getter, getter);
                     }
@@ -700,8 +700,9 @@ internal static partial class HostedGrimoireProducerInventory
                                 _ => null,
                             };
 
-                            // The accessor of an anonymous type is generated and reads its field.
-                            if (!current.IsAnonymousType && printed is IPropertySymbol { GetMethod: { } getter })
+                            // The accessor of an anonymous type is generated and reads its field, and an abstract accessor is
+                            // implemented by the override the runtime type declares, which the chain of printed types reaches.
+                            if (!current.IsAnonymousType && printed is IPropertySymbol { GetMethod: { IsAbstract: false } getter })
                             {
                                 targets.Add(getter, getter);
                             }
@@ -816,6 +817,12 @@ internal static partial class HostedGrimoireProducerInventory
         // type that is not exact adds those of every authored formatter assignable to it.
         private void AddFormatting(AuthoredMember member, ITypeSymbol type, ImplicitTargetCollector targets)
         {
+            // A nullable value formats the value it holds.
+            if (type is INamedTypeSymbol { OriginalDefinition.SpecialType: SpecialType.System_Nullable_T } nullable)
+            {
+                type = nullable.TypeArguments[0];
+            }
+
             if (IsIntrinsicFormatType(type))
             {
                 return;
@@ -846,8 +853,28 @@ internal static partial class HostedGrimoireProducerInventory
             || method.Name == "ToString" && method.ContainingType is { } type && TypeKey(type) is "System.ValueType" && IsExactFrameworkType(type, "System.ValueType", typeof(ValueType).Assembly.GetName())
             || IsAiToolToStringWithNameModeled(method)
             || IsReviewedFrameworkUriFormatting(method)
+            || IsReviewedStoredStateFormatting(method)
             || IsReviewedFrameworkTupleItemRead(method)
             || !RequiresExternalBoundaryClassification(method, member.Model.Compilation, anchor, member.Model, member);
+
+        // The ToString of these framework classes formats state the object stores (a pattern, a name, a type's name, a
+        // certificate's subject, the text of a response) and calls no supplied code. They are reviewed for implicit
+        // formatting only, by exact type and assembly: the printing of an authored record reaches them for every printed
+        // member of the type, and an authored subclass is followed as an authored formatter.
+        private static readonly IReadOnlyList<(string Type, System.Reflection.AssemblyName Assembly)> ReviewedStoredStateFormatters =
+        [
+            ("System.Text.RegularExpressions.Regex", typeof(System.Text.RegularExpressions.Regex).Assembly.GetName()),
+            ("System.Type", typeof(Type).Assembly.GetName()),
+            ("System.ComponentModel.Component", typeof(System.ComponentModel.Component).Assembly.GetName()),
+            ("System.Security.Cryptography.X509Certificates.X509Certificate2", typeof(System.Security.Cryptography.X509Certificates.X509Certificate2).Assembly.GetName()),
+            ("System.CommandLine.Symbol", typeof(System.CommandLine.Symbol).Assembly.GetName()),
+            ("Microsoft.Extensions.AI.ChatResponse", typeof(Microsoft.Extensions.AI.ChatResponse).Assembly.GetName()),
+            ("Microsoft.Extensions.AI.ChatResponseUpdate", typeof(Microsoft.Extensions.AI.ChatResponseUpdate).Assembly.GetName()),
+        ];
+
+        private static bool IsReviewedStoredStateFormatting(IMethodSymbol method) =>
+            method is { Name: "ToString", IsStatic: false, Parameters.Length: 0, ContainingType: { } type }
+            && ReviewedStoredStateFormatters.Any(reviewed => IsExactFrameworkType(type, reviewed.Type, reviewed.Assembly));
 
         // The ITuple members of the framework's tuple types read the fields the tuple stores and run no supplied code.
         private static bool IsReviewedFrameworkTupleItemRead(IMethodSymbol method) =>
@@ -1608,38 +1635,49 @@ internal static partial class HostedGrimoireProducerInventory
                 return new(collector.Members, collector.Unresolved.Count != 0);
             }
 
+            // A slot the framework declares has its own implementation for a value that is not an authored type, and the
+            // receiver of one (a Stream parameter, say) is judged by the classification of the access alone: what an
+            // authored override does when the value happens to be that type is not followed. A slot the source declares can
+            // only be run by an authored type.
+            if (!accessor.Locations.Any(static location => location.IsInSource))
+            {
+                return new([], false);
+            }
+
+            // The types a value of the receiver's static type can be: the authored types assignable to it, or to every
+            // constraint of a type parameter.
             ITypeSymbol assignableTo = receiverType ?? accessor.ContainingType;
 
-            (string, string) key = (accessor.ToDisplayString(), assignableTo.ToDisplayString());
+            string[] requiredKeys = assignableTo is ITypeParameterSymbol parameter
+                ? [accessor.ContainingType.OriginalDefinition.ToDisplayString(), .. parameter.ConstraintTypes.Select(static constraint => constraint.OriginalDefinition.ToDisplayString())]
+                : [assignableTo.OriginalDefinition.ToDisplayString()];
+
+            (string, string) key = (accessor.ToDisplayString(), string.Join("&", requiredKeys));
 
             if (closedWorldAccessors.TryGetValue(key, out AccessorDispatch? known))
             {
                 return known;
             }
 
-            string assignableKey = assignableTo.OriginalDefinition.ToDisplayString();
-
             foreach (AuthoredInstantiable instantiable in AuthoredInstantiables())
             {
-                if (assignableTo.TypeKind != TypeKind.TypeParameter && !instantiable.AssignableKeys.Contains(assignableKey))
+                if (!requiredKeys.All(instantiable.AssignableKeys.Contains))
                 {
                     continue;
                 }
 
-                collector.Add(EnumerationImplementation(instantiable.Type, accessor), accessor);
+                // A type that does not implement the interface the accessor belongs to cannot be the value.
+                if (EnumerationImplementation(instantiable.Type, accessor) is { } implementation)
+                {
+                    collector.Add(implementation, accessor);
+                }
             }
 
-            // A slot the framework declares has its own implementation for a value that is not an authored type, so what an
-            // authored override does is a question about the override, never the one body the access runs: it is refused
-            // when an override can reach a site and otherwise runs nothing here. A slot the source declares is its own
-            // implementation when the universe holds one body, and several bodies are refused when one can reach a site.
-            bool declaredInSource = accessor.Locations.Any(static location => location.IsInSource);
-
-            bool unresolved = collector.Unresolved.Count != 0 && declaredInSource;
-
-            AccessorDispatch resolution = declaredInSource && collector.Members.Count == 1
-                ? new(collector.Members, unresolved)
-                : new([], unresolved || collector.Members.Count > (declaredInSource ? 1 : 0) && collector.Members.Any(SitesOnlyReaches));
+            // The one body the universe holds is the body the access runs, and several bodies are refused when one can reach
+            // a producer site.
+            AccessorDispatch resolution = collector.Members.Count == 1
+                ? new(collector.Members, collector.Unresolved.Count != 0)
+                : new([], collector.Unresolved.Count != 0 || collector.Members.Count > 1 && collector.Members.Any(SitesOnlyReaches));
 
             closedWorldAccessors[key] = resolution;
 

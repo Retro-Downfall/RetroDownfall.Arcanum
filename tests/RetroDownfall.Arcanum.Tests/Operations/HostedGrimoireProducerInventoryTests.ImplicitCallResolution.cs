@@ -822,4 +822,27 @@ public sealed partial class HostedGrimoireProducerInventoryTests
 
         Assert.Equal(refused, result.Diagnostics.Any(static diagnostic => diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED" && diagnostic.Detail.Contains(".cctor", StringComparison.Ordinal)));
     }
+
+    // An accessor of a receiver that was constructed with a callable runs that callable, bound the way a written call to a method
+    // of the receiver binds it: the getter that invokes the delegate its constructor kept reports the delegate's body.
+    [Theory]
+    [InlineData("var holder = new Holder(static () => { Effect.Run(); return 1; }); _ = holder.Value;", "sealed class Holder(System.Func<int> read) { public int Value => read(); }")]
+    [InlineData("var holder = new Holder(static () => { Effect.Run(); return 1; }); _ = holder.Value;", "abstract class Source { public abstract int Value { get; } } sealed class Holder(System.Func<int> read) : Source { public override int Value => read(); }")]
+    [InlineData("Source holder = new Holder(static () => { Effect.Run(); return 1; }); _ = holder.Value;", "abstract class Source { public abstract int Value { get; } } sealed class Holder(System.Func<int> read) : Source { public override int Value => read(); }")]
+    public void AccessorOfAConstructedReceiverRunsTheCallableItWasConstructedWith(string statement, string helpers)
+    {
+        string source = helpers + " static class Effect { public static void Run() { " + EnumerationEffect + " } }";
+
+        HostedProducerDiscovery<HostedProducerSite> reported = EnumerationDiscover(CensusCompileSource(statement, source));
+
+        Assert.NotNull(Assert.Single(EnumerationDeleteSites(reported)).WorkFrontierCapsuleId);
+
+        Assert.DoesNotContain(reported.Diagnostics, static diagnostic => diagnostic.Code is "HOSTED_CALLBACK_OWNERSHIP_UNPROVEN" or "HOSTED_SITE_UNCLASSIFIED" or "HOSTED_CALL_TARGET_UNRESOLVED");
+
+        HostedProducerDiscovery<HostedProducerSite> clean = EnumerationDiscover(CensusCompileSource(statement, source.Replace(EnumerationEffect, string.Empty, StringComparison.Ordinal)));
+
+        Assert.Empty(EnumerationDeleteSites(clean));
+
+        Assert.DoesNotContain(clean.Diagnostics, static diagnostic => diagnostic.Code is "HOSTED_CALLBACK_OWNERSHIP_UNPROVEN" or "HOSTED_SITE_UNCLASSIFIED" or "HOSTED_CALL_TARGET_UNRESOLVED");
+    }
 }
