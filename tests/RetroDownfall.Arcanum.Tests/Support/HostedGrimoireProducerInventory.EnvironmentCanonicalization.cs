@@ -88,6 +88,16 @@ internal static partial class HostedGrimoireProducerInventory
         // environment. It reaches the member only because an instance call passes its caller's whole context on to the
         // receiver's members, and keeping it multiplies the member's states by every distinct binding of every caller
         // parameter above it. A lambda or a local function keeps every binding, since it may be nested in the owner.
+        // Token Identity. The exact System.Threading.CancellationToken carries no cleanup obligation, no ownership and no
+        // authority. Copying one hands on a reference to a source that only the source itself can dispose, so a token is
+        // never what a cleanup resolves against, a lambda that captures one needs no more than the lambda already has, and
+        // where a token came from decides nothing the traversal reads. A parameter of this type is therefore never bound to its
+        // source, which would split the states of every helper that forwards a token by every call chain that supplied it.
+        // A source (CancellationTokenSource) and a registration (CancellationTokenRegistration) are disposable, are different
+        // types and keep their provenance.
+        private static bool IsExactCancellationToken(ITypeSymbol? type) =>
+            IsExactFrameworkType(type, "System.Threading.CancellationToken", typeof(CancellationToken).Assembly.GetName());
+
         // Non-Owning Provider Observation. A call on a disposable parameter makes the parameter's source part of its callee's
         // environment, because the call could be the disposal itself or hand the parameter's ownership on. DbCommand.CreateParameter
         // is neither: it returns a fresh parameter that belongs to no command until the caller adds it, and the framework body

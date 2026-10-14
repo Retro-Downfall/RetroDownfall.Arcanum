@@ -39390,6 +39390,11 @@ internal static partial class HostedGrimoireProducerInventory
 
             EvaluationEnvironmentCounter(target).ExactValueProvenanceVisits++;
 
+            if (IsExactCancellationToken(parameter.Type))
+            {
+                return false;
+            }
+
             if (RequiresSourceProvenance(parameter.Type))
             {
                 return true;
@@ -40080,6 +40085,11 @@ internal static partial class HostedGrimoireProducerInventory
             ISymbol captured,
             HashSet<(GraphMemberIdentity Member, int Parameter)> path)
         {
+            if (captured is IParameterSymbol { Type: { } capturedType } && IsExactCancellationToken(capturedType))
+            {
+                return false;
+            }
+
             foreach (SyntaxNode node in callback.Syntax.DescendantNodesAndSelf(
                 candidate => candidate == callback.Syntax
                     || candidate is not AnonymousFunctionExpressionSyntax
