@@ -88,9 +88,13 @@ internal static partial class HostedGrimoireProducerInventory
 
         // Accumulates the members one implicit call runs: authored bodies to traverse, framework members to classify,
         // and members nothing here can follow.
+        private static readonly string[] ExceptionVirtualMembers = ["Message", "StackTrace", "Data", "Source", "HelpLink"];
+
         private sealed class ImplicitTargetCollector(ProducerGraph graph, AuthoredMember member)
         {
             private readonly HashSet<ISymbol> visited = new(SymbolEqualityComparer.Default);
+
+            internal AuthoredMember Member => member;
 
             internal List<AuthoredMember> Members { get; } = [];
 
@@ -99,6 +103,42 @@ internal static partial class HostedGrimoireProducerInventory
             internal List<string> Unresolved { get; } = [];
 
             internal ImplicitTargets Result => new(Members, Framework, Unresolved);
+
+            // The implementation of a formatting slot for a runtime type, and for an exception the virtual members that
+            // Exception.ToString reads.
+            internal void AddFormatting(INamedTypeSymbol type, IMethodSymbol slot)
+            {
+                ISymbol? implementation = EnumerationImplementation(type, slot);
+
+                // A type that does not implement a format contract is not formatted through it.
+                if (implementation is null && slot.ContainingType.TypeKind == TypeKind.Interface)
+                {
+                    return;
+                }
+
+                Add(implementation, slot);
+
+                if (slot.Name != "ToString" || slot.Parameters.Length != 0)
+                {
+                    return;
+                }
+
+                for (INamedTypeSymbol? current = type; current is not null; current = current.BaseType)
+                {
+                    if (TypeKey(current) != "System.Exception")
+                    {
+                        continue;
+                    }
+
+                    foreach (string name in ExceptionVirtualMembers)
+                    {
+                        if (current.GetMembers(name).OfType<IPropertySymbol>().FirstOrDefault() is { GetMethod: { } getter })
+                        {
+                            Add(EnumerationImplementation(type, getter), getter);
+                        }
+                    }
+                }
+            }
 
             // The implementation the compiler runs for a call to the slot, which is the implementation itself when the
             // caller has already resolved the slot against the runtime type.
@@ -146,6 +186,14 @@ internal static partial class HostedGrimoireProducerInventory
                 {
                     graph.AddConstructionEntry(member, method, this);
 
+                    return;
+                }
+
+                // The base constructor of an EF context keeps its options and runs no EF service code: OnConfiguring
+                // and OnModelCreating run at the first use of the context, which the first-use hooks traverse.
+                if (method.MethodKind == MethodKind.Constructor
+                    && IsExactFrameworkType(method.ContainingType, "Microsoft.EntityFrameworkCore.DbContext", typeof(Microsoft.EntityFrameworkCore.DbContext).Assembly.GetName()))
+                {
                     return;
                 }
 
@@ -217,6 +265,25 @@ internal static partial class HostedGrimoireProducerInventory
                 }
             }
 
+            // Under the Authored Enumerables Absent premise no authored type implements a framework collection
+            // interface, so a call through one of them runs a framework implementation.
+            if (candidates.Count == 0 && AuthoredEnumerablesAbsentByUse && IsPremiseCoveredEnumerationInterface(slot.ContainingType))
+            {
+                targets.Add(slot, slot);
+
+                return targets.Result;
+            }
+
+            // A value formatted by an interpolation or a concatenation whose runtime type nothing proves can be any
+            // authored type that formats with code of its own; the framework types it can be run no authored code,
+            // except through such an authored subclass.
+            if (candidates.Count == 0 && step.Label is "to-string" or "format" && receiverType is not null)
+            {
+                AddFormatterCandidates(receiverType, slot, targets);
+
+                return targets.Result;
+            }
+
             if (candidates.Count == 0)
             {
                 targets.Unresolved.Add(Normalize(slot));
@@ -226,11 +293,148 @@ internal static partial class HostedGrimoireProducerInventory
 
             foreach (INamedTypeSymbol candidate in candidates)
             {
-                targets.Add(EnumerationImplementation(candidate, slot), slot);
+                if (step.Label is "to-string" or "format")
+                {
+                    targets.AddFormatting(candidate, slot);
+                }
+                else
+                {
+                    targets.Add(EnumerationImplementation(candidate, slot), slot);
+                }
             }
 
             return targets.Result;
         }
+
+        // An authored class or struct that formats with code of its own, with the keys of every type it is assignable
+        // to (itself, its base types and its interfaces) and the implementations that do the formatting.
+        private sealed record AuthoredFormatter(
+            INamedTypeSymbol Type,
+            IReadOnlySet<string> AssignableKeys,
+            IReadOnlyList<(IMethodSymbol Slot, ISymbol Implementation)> Implementations);
+
+        private IReadOnlyList<AuthoredFormatter>? authoredFormatters;
+
+        private IReadOnlyList<AuthoredFormatter> AuthoredFormatters() => authoredFormatters ??= BuildAuthoredFormatters();
+
+        private IReadOnlyList<AuthoredFormatter> BuildAuthoredFormatters()
+        {
+            List<AuthoredFormatter> formatters = [];
+
+            if (analysedCompilations.Count == 0)
+            {
+                return formatters;
+            }
+
+            IMethodSymbol? toString = analysedCompilations[0].GetSpecialType(SpecialType.System_Object).GetMembers("ToString").OfType<IMethodSymbol>().FirstOrDefault(static method => method.Parameters.Length == 0);
+
+            foreach (INamedTypeSymbol type in analysedCompilations.SelectMany(static compilation => SourceTypes(compilation.Assembly.GlobalNamespace)))
+            {
+                if (type.TypeKind is not (TypeKind.Class or TypeKind.Struct) || type.IsAbstract || type.IsStatic || type.IsImplicitlyDeclared || !type.Locations.Any(static location => location.IsInSource))
+                {
+                    continue;
+                }
+
+                List<IMethodSymbol> slots = [];
+
+                if (toString is not null)
+                {
+                    slots.Add(toString);
+                }
+
+                foreach (INamedTypeSymbol contract in type.AllInterfaces)
+                {
+                    if (TypeKey(contract) is "System.IFormattable" or "System.ISpanFormattable" or "System.IUtf8SpanFormattable"
+                        && contract.GetMembers().OfType<IMethodSymbol>().FirstOrDefault(static method => method.Name is "ToString" or "TryFormat") is { } contractSlot)
+                    {
+                        slots.Add(contractSlot);
+                    }
+                }
+
+                for (INamedTypeSymbol? current = type; current is not null; current = current.BaseType)
+                {
+                    if (TypeKey(current) != "System.Exception")
+                    {
+                        continue;
+                    }
+
+                    foreach (string name in ExceptionVirtualMembers)
+                    {
+                        if (current.GetMembers(name).OfType<IPropertySymbol>().FirstOrDefault() is { GetMethod: { } getter })
+                        {
+                            slots.Add(getter);
+                        }
+                    }
+                }
+
+                List<(IMethodSymbol Slot, ISymbol Implementation)> implementations = [];
+
+                foreach (IMethodSymbol slot in slots)
+                {
+                    if (EnumerationImplementation(type, slot) is { } implementation
+                        && (implementation.Locations.Any(static location => location.IsInSource) || implementation.IsImplicitlyDeclared && implementation.ContainingType.Locations.Any(static location => location.IsInSource)))
+                    {
+                        implementations.Add((slot, implementation));
+                    }
+                }
+
+                if (implementations.Count == 0)
+                {
+                    continue;
+                }
+
+                formatters.Add(new(type, AssignableKeys(type), implementations));
+            }
+
+            return formatters;
+        }
+
+        // The authored formatters that can be a runtime value of the static type, with the implementation of the slot
+        // each runs. A formatter that cannot reach a producer site adds nothing, so it is not traversed.
+        private void AddFormatterCandidates(ITypeSymbol receiverType, IMethodSymbol slot, ImplicitTargetCollector targets)
+        {
+            ImplicitTargetCollector formatting = new(this, targets.Member);
+
+            foreach (AuthoredFormatter formatter in AuthoredFormatters())
+            {
+                if (!IsFormatterAssignableTo(formatter, receiverType))
+                {
+                    continue;
+                }
+
+                formatting.AddFormatting(formatter.Type, slot);
+            }
+
+            targets.Members.AddRange(formatting.Members.Where(ContainsPotentialProducerSite));
+
+            targets.Framework.AddRange(formatting.Framework);
+
+            targets.Unresolved.AddRange(formatting.Unresolved);
+        }
+
+        // The display names of every type a type is assignable to: itself, its base types and its interfaces. The names are
+        // compared instead of the symbols because the symbols of different compilations are never equal.
+        private static IReadOnlySet<string> AssignableKeys(INamedTypeSymbol type)
+        {
+            HashSet<string> keys = new(StringComparer.Ordinal) { type.OriginalDefinition.ToDisplayString() };
+
+            for (INamedTypeSymbol? baseType = type.BaseType; baseType is not null; baseType = baseType.BaseType)
+            {
+                keys.Add(baseType.OriginalDefinition.ToDisplayString());
+            }
+
+            foreach (INamedTypeSymbol contract in type.AllInterfaces)
+            {
+                keys.Add(contract.OriginalDefinition.ToDisplayString());
+            }
+
+            return keys;
+        }
+
+        private static bool IsFormatterAssignableTo(AuthoredFormatter formatter, ITypeSymbol receiver) =>
+            receiver.SpecialType is SpecialType.System_Object or SpecialType.System_ValueType
+            || receiver.TypeKind == TypeKind.TypeParameter
+            || formatter.AssignableKeys.Contains(receiver.OriginalDefinition.ToDisplayString());
 
         // The construction a constructor without a declaration of its own runs: the instance initializers of its
         // type, then its base constructor. A constructor declared with a body gets the same preamble when it is traversed.
@@ -238,7 +442,7 @@ internal static partial class HostedGrimoireProducerInventory
         {
             INamedTypeSymbol type = constructor.ContainingType;
 
-            if (type.TypeKind != TypeKind.Class && !type.IsRecord)
+            if (type.TypeKind is not (TypeKind.Class or TypeKind.Struct))
             {
                 return;
             }
@@ -271,7 +475,7 @@ internal static partial class HostedGrimoireProducerInventory
 
         private static IMethodSymbol? ImplicitBaseConstructor(INamedTypeSymbol type)
         {
-            if (type.BaseType is not { SpecialType: not SpecialType.System_Object } baseType)
+            if (type.TypeKind != TypeKind.Class || type.BaseType is not { SpecialType: not SpecialType.System_Object } baseType)
             {
                 return null;
             }
@@ -301,8 +505,15 @@ internal static partial class HostedGrimoireProducerInventory
 
         // The instance field and property initializers of a type, as members whose body is the initializer expression.
         // An initializer that cannot reach a producer site adds nothing, so it is not traversed.
+        private readonly Dictionary<INamedTypeSymbol, IReadOnlyList<AuthoredMember>> initializerMembers = new(SymbolEqualityComparer.Default);
+
         private IReadOnlyList<AuthoredMember> InitializerMembers(INamedTypeSymbol type, IMethodSymbol constructor)
         {
+            if (initializerMembers.TryGetValue(type, out IReadOnlyList<AuthoredMember>? known))
+            {
+                return known;
+            }
+
             List<AuthoredMember> initializers = [];
 
             foreach (SyntaxReference reference in type.DeclaringSyntaxReferences)
@@ -335,6 +546,8 @@ internal static partial class HostedGrimoireProducerInventory
                     }
                 }
             }
+
+            initializerMembers[type] = initializers;
 
             return initializers;
         }
@@ -429,23 +642,26 @@ internal static partial class HostedGrimoireProducerInventory
                 return;
             }
 
+            IMethodSymbol? toString = member.Model.Compilation.GetSpecialType(SpecialType.System_Object).GetMembers("ToString").OfType<IMethodSymbol>().FirstOrDefault(static method => method.Parameters.Length == 0);
+
+            if (toString is null)
+            {
+                return;
+            }
+
             if (!IsSealedOrValue(type))
             {
-                targets.Unresolved.Add(TypeKey(type) + ".ToString");
+                AddFormatterCandidates(type, toString, targets);
 
                 return;
             }
 
-            IMethodSymbol? toString = member.Model.Compilation.GetSpecialType(SpecialType.System_Object).GetMembers("ToString").OfType<IMethodSymbol>().FirstOrDefault(static method => method.Parameters.Length == 0);
-
-            if (toString is not null)
-            {
-                targets.Add(EnumerationImplementation(type, toString), toString);
-            }
+            targets.AddFormatting((INamedTypeSymbol)type, toString);
         }
 
         private bool IsReviewedImplicitFrameworkMember(AuthoredMember member, IMethodSymbol method, SyntaxNode anchor) =>
             IsReviewedFrameworkAwaiterMember(method)
+            || IsReviewedFrameworkDeconstruct(method)
             || IsReviewedFrameworkRangeMember(method)
             || IsReviewedFrameworkInterpolationHandlerMember(method)
             || method.Name == "ToString" && method.ContainingType is { } type && TypeKey(type) is "System.ValueType" && IsExactFrameworkType(type, "System.ValueType", typeof(ValueType).Assembly.GetName())
@@ -484,6 +700,23 @@ internal static partial class HostedGrimoireProducerInventory
             "System.Runtime.CompilerServices.YieldAwaitable",
             "System.Runtime.CompilerServices.YieldAwaitable.YieldAwaiter",
         };
+
+        // The parameterless constructors of the framework's in-memory synchronization and weak-table types allocate
+        // and run nothing else. A constructor that takes a callback is not among them.
+        private static bool IsReviewedExactInMemoryConstruction(IMethodSymbol method) =>
+            method is { MethodKind: MethodKind.Constructor, Parameters.Length: 0 }
+            && method.ContainingType is { } type
+            && (IsExactFrameworkType(type, "System.Threading.Lock", typeof(System.Threading.Lock).Assembly.GetName())
+                || IsExactFrameworkType(type, "System.Threading.AsyncLocal`1", typeof(AsyncLocal<>).Assembly.GetName())
+                || IsExactFrameworkType(type, "System.Runtime.CompilerServices.ConditionalWeakTable`2", typeof(System.Runtime.CompilerServices.ConditionalWeakTable<,>).Assembly.GetName()));
+
+        // The Deconstruct members of the framework's pair and tuple types copy their fields into the out arguments.
+        private static bool IsReviewedFrameworkDeconstruct(IMethodSymbol method) =>
+            method.Name == "Deconstruct"
+            && method.ContainingType is { } type
+            && (IsExactFrameworkType(type, "System.Collections.Generic.KeyValuePair`2", typeof(KeyValuePair<,>).Assembly.GetName())
+                || IsExactFrameworkType(type, "System.Collections.DictionaryEntry", typeof(System.Collections.DictionaryEntry).Assembly.GetName())
+                || IsExactFrameworkType(type, "System.TupleExtensions", typeof(TupleExtensions).Assembly.GetName()));
 
         private static bool IsReviewedFrameworkRangeMember(IMethodSymbol method) =>
             method.ContainingType is { } type
@@ -680,7 +913,7 @@ internal static partial class HostedGrimoireProducerInventory
             INamedTypeSymbol type = member.Symbol.ContainingType;
 
             if (declaration.Initializer?.ThisOrBaseKeyword.IsKind(SyntaxKind.ThisKeyword) == true
-                || type.TypeKind != TypeKind.Class && !type.IsRecord)
+                || type.TypeKind is not (TypeKind.Class or TypeKind.Struct))
             {
                 return TraversalEvidence.NoEvidence;
             }
@@ -716,6 +949,78 @@ internal static partial class HostedGrimoireProducerInventory
                 work,
                 effect,
                 recoveryEffect);
+        }
+
+        // The implicit calls the syntax lanes traverse (property accessors, user-defined conversions and the cleanup of
+        // a using statement or declaration), for the transitive scan: an opaque callback body is judged by everything
+        // the traversal would follow in it, not only by the calls written there.
+        private bool LaneImplicitCallsReachProducerSite(AuthoredMember member, SyntaxNode node, HashSet<GraphMemberIdentity> path)
+        {
+            Compilation compilation = member.Model.Compilation;
+
+            bool Reaches(IMethodSymbol method, SyntaxNode anchor) =>
+                Resolve(method, compilation) is { } target
+                    ? target.Syntax is not AccessorDeclarationSyntax { Body: null, ExpressionBody: null } && ContainsPotentialProducerSite(target, path)
+                    : RequiresExternalBoundaryClassification(method, compilation, anchor, member.Model, member);
+
+            foreach (IConversionOperation conversion in UserConversionsAt(member, node))
+            {
+                if (Reaches(conversion.OperatorMethod!, conversion.Syntax))
+                {
+                    return true;
+                }
+            }
+
+            if (node is IdentifierNameSyntax or MemberAccessExpressionSyntax or ElementAccessExpressionSyntax or ElementBindingExpressionSyntax or ImplicitElementAccessSyntax
+                && member.Model.GetSymbolInfo(node).Symbol is IPropertySymbol property)
+            {
+                foreach (IMethodSymbol accessor in new[] { property.GetMethod, property.SetMethod }.OfType<IMethodSymbol>())
+                {
+                    if (Resolve(accessor, compilation) is { } target
+                        && target.Syntax is not AccessorDeclarationSyntax { Body: null, ExpressionBody: null }
+                        && ContainsPotentialProducerSite(target, path))
+                    {
+                        return true;
+                    }
+                }
+            }
+
+            bool CleanupReaches(ITypeSymbol? type, ExpressionSyntax? resource, bool asynchronous)
+            {
+                if (type is null)
+                {
+                    return true;
+                }
+
+                if (type.ToDisplayString() is "System.IO.StreamWriter" or "RetroDownfall.Arcanum.Core.Storage.EncryptedBlobWriter")
+                {
+                    return true;
+                }
+
+                EffectiveCleanupResolution cleanup = ResolveEffectiveCleanup(member, type, resource, asynchronous ? "DisposeAsync" : "Dispose");
+
+                return cleanup.ExternalEffects.Count != 0
+                    || cleanup.Targets.Any(target => ContainsPotentialProducerSite(target, path))
+                    || cleanup.Targets.Count == 0 && cleanup.MustResolve;
+            }
+
+            switch (node)
+            {
+                case UsingStatementSyntax { Expression: { } resource } usingStatement:
+                    return CleanupReaches(member.Model.GetTypeInfo(resource).Type, resource, usingStatement.AwaitKeyword.RawKind != 0);
+
+                case VariableDeclarationSyntax { Parent: LocalDeclarationStatementSyntax { UsingKeyword.RawKind: not 0 } or UsingStatementSyntax } declaration:
+                    {
+                        bool asynchronous = declaration.Parent is LocalDeclarationStatementSyntax { AwaitKeyword.RawKind: not 0 } or UsingStatementSyntax { AwaitKeyword.RawKind: not 0 };
+
+                        ITypeSymbol? type = member.Model.GetTypeInfo(declaration.Type).Type;
+
+                        return declaration.Variables.Any(variable => CleanupReaches(type, variable.Initializer?.Value, asynchronous));
+                    }
+
+                default:
+                    return false;
+            }
         }
 
         // Whether an implicit call can reach a producer site, for the transitive scan an opaque callback body gets.

@@ -1272,6 +1272,9 @@ internal static partial class HostedGrimoireProducerInventory
         "System.Collections.Concurrent.ConcurrentDictionary`2.TryGetValue",
         "System.Collections.Generic.KeyValuePair.Create",
         "System.Collections.Generic.KeyNotFoundException..ctor",
+        "System.Collections.ObjectModel.ReadOnlyCollection.CreateCollection",
+        "Serilog.Sinks.File.FileLifecycleHooks..ctor",
+        "System.TimeoutException..ctor",
         "System.ComponentModel.Win32Exception..ctor",
         "System.ComponentModel.Win32Exception.NativeErrorCode",
         "System.Console.Error",
@@ -3208,6 +3211,8 @@ internal static partial class HostedGrimoireProducerInventory
 
         private readonly HostedProducerPremiseLedger premises;
 
+        private readonly IReadOnlyList<CSharpCompilation> analysedCompilations;
+
         internal ProducerGraph(
             IReadOnlyList<CSharpCompilation> compilations,
             int evaluationEnvironmentMaximumMembers,
@@ -3220,6 +3225,8 @@ internal static partial class HostedGrimoireProducerInventory
             HostedProducerPremiseLedger? premises = null)
         {
             this.premises = premises ?? HostedProducerPremiseLedger.None;
+
+            analysedCompilations = compilations;
 
             foreach (HostedProducerInventoryDiagnostic violation in this.premises.Violations)
             {
@@ -30744,6 +30751,7 @@ internal static partial class HostedGrimoireProducerInventory
                 || IsReviewedProviderNeutralOptionsBuilderMember(method)
                 || IsReviewedRuntimeCleanup(method)
                 || IsReviewedFloatVectorMember(method, node, model, context)
+                || IsReviewedExactInMemoryConstruction(method)
                 || IsReviewedExactFrameworkScalarOperator(method, node, model, context)
                 || IsReviewedExactTypeOfEqualityOperator(method, node, model)
                 || IsReviewedPrimitiveQueueMember(method, node, model, context)
@@ -34408,7 +34416,21 @@ internal static partial class HostedGrimoireProducerInventory
             return constructorParameter;
         }
 
-        private bool ContainsPotentialProducerSite(AuthoredMember member) => ContainsPotentialProducerSite(member, []);
+        // The scan of a member from a fresh path depends only on its syntax and semantic model, so a root scan is
+        // computed once. A scan that continues a path ends where it meets the path, so it is never cached.
+        private readonly Dictionary<GraphMemberIdentity, bool> producerSiteScans = [];
+
+        private bool ContainsPotentialProducerSite(AuthoredMember member)
+        {
+            GraphMemberIdentity identity = MemberIdentity(member);
+
+            if (!producerSiteScans.TryGetValue(identity, out bool reaches))
+            {
+                producerSiteScans[identity] = reaches = ContainsPotentialProducerSite(member, []);
+            }
+
+            return reaches;
+        }
 
         private bool ContainsPotentialProducerSite(AuthoredMember member, HashSet<GraphMemberIdentity> path)
         {
@@ -34427,7 +34449,8 @@ internal static partial class HostedGrimoireProducerInventory
                         return true;
                     }
 
-                    if (ImplicitCallsAt(member, member.Syntax, node).Any(call => ImplicitCallReachesProducerSite(member, call, path)))
+                    if (ImplicitCallsAt(member, member.Syntax, node).Any(call => ImplicitCallReachesProducerSite(member, call, path))
+                        || LaneImplicitCallsReachProducerSite(member, node, path))
                     {
                         return true;
                     }
@@ -34452,6 +34475,7 @@ internal static partial class HostedGrimoireProducerInventory
 
                         if (target is not null && ContainsPotentialProducerSite(target, path)
                             || target is null
+                                && !IsReviewedFrameworkRangeMember(method)
                                 && RequiresExternalBoundaryClassification(
                                     method,
                                     member.Model.Compilation,

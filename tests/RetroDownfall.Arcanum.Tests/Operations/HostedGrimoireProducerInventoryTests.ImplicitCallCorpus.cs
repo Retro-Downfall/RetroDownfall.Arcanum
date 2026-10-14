@@ -62,6 +62,9 @@ public sealed partial class HostedGrimoireProducerInventoryTests
         new("collection-expression-spread-add", "CollectionExpression", "Bag bag = [.. new int[] { 1 }]; _ = bag;",
             "sealed class Bag : System.Collections.Generic.IEnumerable<int> { public void Add(int value) { {E} } public System.Collections.Generic.IEnumerator<int> GetEnumerator() => null!; System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => null!; }", CensusDisposition.Traversed),
 
+        new("params-collection-add", "CollectionExpression", "static void Take(params Bag bag) { _ = bag; } Take(1, 2);",
+            "sealed class Bag : System.Collections.Generic.IEnumerable<int> { public void Add(int value) { {E} } public System.Collections.Generic.IEnumerator<int> GetEnumerator() => null!; System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => null!; }", CensusDisposition.Traversed),
+
         // ---- Awaiters -----------------------------------------------------------------------------
         new("await-get-awaiter", "Awaiter", "await new Later();",
             "sealed class Later { public LaterAwaiter GetAwaiter() { {E} return default; } } struct LaterAwaiter : System.Runtime.CompilerServices.INotifyCompletion { public bool IsCompleted => true; public void GetResult() { } public void OnCompleted(System.Action continuation) { } }", CensusDisposition.Traversed),
@@ -85,6 +88,8 @@ public sealed partial class HostedGrimoireProducerInventoryTests
             "sealed class Named { public override string ToString() { {E} return \"n\"; } }", CensusDisposition.Traversed),
         new("concatenation-to-string", "ToString", "string text = \"a\" + new Named(); _ = text;",
             "sealed class Named { public override string ToString() { {E} return \"n\"; } }", CensusDisposition.Traversed),
+        new("framework-handler-to-string", "ToString", "string text = string.Create(System.Globalization.CultureInfo.InvariantCulture, $\"{new Named()}\"); _ = text;",
+            "sealed class Named { public override string ToString() { {E} return \"n\"; } }", CensusDisposition.Traversed),
         new("interpolation-formattable", "ToString", "string text = $\"{new Formatted()}\"; _ = text;",
             "sealed class Formatted : System.IFormattable { public string ToString(string? format, System.IFormatProvider? provider) { {E} return \"f\"; } }", CensusDisposition.Traversed),
         new("interpolation-record-to-string", "ToString", "string text = $\"{new Rec(1)}\"; _ = text;",
@@ -99,6 +104,13 @@ public sealed partial class HostedGrimoireProducerInventoryTests
             "sealed class AsyncPattern { public System.Threading.Tasks.ValueTask DisposeAsync() { {E} return default; } }", CensusDisposition.Traversed),
         new("using-interface-baseline", "Dispose", "using (new Disposable()) { }",
             "sealed class Disposable : System.IDisposable { public void Dispose() { {E} } }", CensusDisposition.Traversed),
+
+        new("compound-string-concatenation", "ToString", "string text = \"a\"; text += new Named(); _ = text;",
+            "sealed class Named { public override string ToString() { {E} return \"n\"; } }", CensusDisposition.Traversed),
+        new("interpolation-format-clause", "ToString", "string text = $\"{new Formatted(),5:x}\"; _ = text;",
+            "sealed class Formatted : System.IFormattable { public string ToString(string? format, System.IFormatProvider? provider) { {E} return \"f\"; } }", CensusDisposition.Traversed),
+        new("switch-governing-conversion", "Conversion", "switch (new Conv()) { case 1: break; }",
+            "sealed class Conv { public static implicit operator int(Conv value) { {E} return 1; } }", CensusDisposition.Traversed),
 
         // ---- With expressions ---------------------------------------------------------------------
         new("with-record-copy-constructor", "Clone", "var original = new Pt(); var copy = original with { X = 2 }; _ = copy;",
@@ -142,6 +154,20 @@ public sealed partial class HostedGrimoireProducerInventoryTests
         new("coalesce-conversion", "Conversion", "string text = new Conv() ?? \"x\"; _ = text;",
             "sealed class Conv { public static implicit operator string?(Conv? value) { {E} return null; } }", CensusDisposition.Traversed),
 
+        // ---- Pattern members of a fixed statement ---------------------------------------------------
+        new("fixed-pinnable", "Pinnable", "unsafe { fixed (int* pointer = new Pinnable()) { _ = *pointer; } }",
+            "sealed class Pinnable { private int value; public ref int GetPinnableReference() { {E} return ref value; } }", CensusDisposition.Traversed),
+
+        // ---- Operations that bind at run time or have no target ---------------------------------------
+        new("dynamic-member-access", "Unsupported", "dynamic d = 1; _ = d.Prop;",
+            "sealed class Unused { }", CensusDisposition.RefusedAlways),
+        new("dynamic-object-creation", "Unsupported", "dynamic d = 1; _ = new Created(d);",
+            "sealed class Created { public Created(int value) { {E} } }", CensusDisposition.RefusedAlways),
+        new("dynamic-invocation", "Unsupported", "dynamic d = 1; d.Run();",
+            "sealed class Unused { }", CensusDisposition.RefusedAlways),
+        new("function-pointer-invocation", "Unsupported", "unsafe { delegate*<int> pointer = null; _ = pointer(); }",
+            "sealed class Unused { }", CensusDisposition.RefusedAlways),
+
         // ---- Other implicit executions ------------------------------------------------------------
         new("query-where", "Query", "var query = from value in new int[] { 1 } where Predicates.Check(value) select value; _ = query;",
             "static class Predicates { public static bool Check(int value) { {E} return true; } }", CensusDisposition.Refused),
@@ -151,6 +177,8 @@ public sealed partial class HostedGrimoireProducerInventoryTests
             "class Base { public Base() { {E} } } sealed class Derived : Base { public Derived() : base() { } }", CensusDisposition.Traversed),
         new("implicit-base-constructor", "ConstructorInitializer", "_ = new Derived();",
             "class Base { public Base() { {E} } } sealed class Derived : Base { }", CensusDisposition.Traversed),
+        new("field-initializer-spread", "FieldInitializer", "_ = new Holder();",
+            "sealed class Probe : System.Collections.Generic.IEnumerable<int> { public System.Collections.Generic.IEnumerator<int> GetEnumerator() => new ProbeEnumerator(); System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator(); } sealed class ProbeEnumerator : System.Collections.Generic.IEnumerator<int> { public bool MoveNext() { {E} return false; } public int Current => 0; object System.Collections.IEnumerator.Current => Current; public void Reset() { } public void Dispose() { } } sealed class Holder { private int[] values = [.. new Probe()]; }", CensusDisposition.Traversed),
         new("field-initializer", "FieldInitializer", "_ = new Holder();",
             "sealed class Holder { private int value = Compute(); private static int Compute() { {E} return 1; } }", CensusDisposition.Traversed),
     ];

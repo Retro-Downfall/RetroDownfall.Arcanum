@@ -457,7 +457,7 @@ internal static partial class HostedGrimoireProducerInventory
             switch (operation)
             {
                 case IInvocationOperation invocation:
-                    InspectInvocation(invocation, add);
+                    InspectInvocation(model, invocation, add, RefuseSite);
 
                     break;
 
@@ -493,7 +493,7 @@ internal static partial class HostedGrimoireProducerInventory
                     break;
 
                 case ICompoundAssignmentOperation compound:
-                    InspectCompoundAssignment(compound, add);
+                    InspectCompoundAssignment(model, compound, add, RefuseSite);
 
                     break;
 
@@ -543,7 +543,7 @@ internal static partial class HostedGrimoireProducerInventory
                     {
                         List<ImplicitCallStep> steps = [];
 
-                        DeconstructionSteps(model, model.GetDeconstructionInfo(assignment), model.GetTypeInfo(assignment.Right).Type, assignment.Right, After(assignment.Right), steps, RefuseTarget);
+                        DeconstructionSteps(model.GetDeconstructionInfo(assignment), model.GetTypeInfo(assignment.Right).Type, assignment.Right, After(assignment.Right), steps);
 
                         if (steps.Count != 0)
                         {
@@ -642,7 +642,7 @@ internal static partial class HostedGrimoireProducerInventory
                     break;
 
                 case IInterpolationOperation interpolation:
-                    FormatHole(model, interpolation.Expression, interpolation.Syntax, add, RefuseSite, interpolation.FormatString is not null);
+                    FormatHole(model, interpolation.Expression, interpolation.Syntax, add, RefuseSite);
 
                     break;
 
@@ -661,8 +661,12 @@ internal static partial class HostedGrimoireProducerInventory
 
                     break;
 
-                case IDynamicMemberReferenceOperation:
-                    RefuseTarget("Dynamic member access has no exact call target.");
+                case IDynamicMemberReferenceOperation dynamicMember:
+                    // The callee of a dynamic invocation is refused by the invocation lane at the invocation.
+                    if (!(dynamicMember.Parent is IDynamicInvocationOperation dynamicInvocation && ReferenceEquals(dynamicInvocation.Operation, dynamicMember)))
+                    {
+                        RefuseTarget("Dynamic member access has no exact call target.");
+                    }
 
                     break;
 
@@ -681,7 +685,7 @@ internal static partial class HostedGrimoireProducerInventory
                     break;
 
                 default:
-                    InspectUnmodeled(operation, add, RefuseSite);
+                    InspectUnmodeled(model, operation, add, RefuseSite);
 
                     break;
             }
@@ -715,7 +719,11 @@ internal static partial class HostedGrimoireProducerInventory
             return arguments;
         }
 
-        private static void InspectInvocation(IInvocationOperation invocation, Action<ImplicitCallKind, IOperation, SyntaxNode, IReadOnlyList<ImplicitCallStep>> add)
+        private static void InspectInvocation(
+            SemanticModel model,
+            IInvocationOperation invocation,
+            Action<ImplicitCallKind, IOperation, SyntaxNode, IReadOnlyList<ImplicitCallStep>> add,
+            Action<string> refuse)
         {
             if (invocation.Syntax is InvocationExpressionSyntax || HasAncestor<ITranslatedQueryOperation>(invocation))
             {
@@ -751,6 +759,15 @@ internal static partial class HostedGrimoireProducerInventory
                 label = "invoke";
             }
 
+            // A framework handler formats the value it appends itself, so the formatting is a call of the append.
+            if (kind == ImplicitCallKind.InterpolationHandler
+                && invocation.TargetMethod.Name == "AppendFormatted"
+                && !invocation.TargetMethod.ContainingType.Locations.Any(static location => location.IsInSource)
+                && invocation.Arguments.FirstOrDefault() is { } appended)
+            {
+                FormatHole(model, appended.Value, invocation.Syntax, add, refuse);
+            }
+
             ExpressionSyntax? receiver = invocation.Instance is { IsImplicit: false } instance ? instance.Syntax as ExpressionSyntax : null;
 
             add(kind, invocation, invocation.Syntax, [Step(label, invocation.TargetMethod, invocation.Instance?.Type, receiver, After(invocation.Syntax), WrittenArguments(invocation.Arguments))]);
@@ -783,8 +800,18 @@ internal static partial class HostedGrimoireProducerInventory
             add(kind, creation, creation.Syntax, [Step("construct", constructor, creation.Type, null, creation.Syntax.SpanStart, WrittenArguments(creation.Arguments))]);
         }
 
-        private static void InspectCompoundAssignment(ICompoundAssignmentOperation compound, Action<ImplicitCallKind, IOperation, SyntaxNode, IReadOnlyList<ImplicitCallStep>> add)
+        private static void InspectCompoundAssignment(
+            SemanticModel model,
+            ICompoundAssignmentOperation compound,
+            Action<ImplicitCallKind, IOperation, SyntaxNode, IReadOnlyList<ImplicitCallStep>> add,
+            Action<string> refuse)
         {
+            // s += value concatenates the formatting of the value.
+            if (compound.OperatorKind == BinaryOperatorKind.Add && compound.Type?.SpecialType == SpecialType.System_String)
+            {
+                FormatHole(model, compound.Value, compound.Syntax, add, refuse);
+            }
+
             List<ImplicitCallStep> steps = [];
 
             int position = After(compound.Syntax);
@@ -932,22 +959,18 @@ internal static partial class HostedGrimoireProducerInventory
         }
 
         // Deconstruct and the conversions of a deconstruction, nested deconstructions included.
-        private static void DeconstructionSteps(
-            SemanticModel model,
+        internal static void DeconstructionSteps(
             DeconstructionInfo info,
             ITypeSymbol? type,
             ExpressionSyntax? value,
             int position,
-            List<ImplicitCallStep> steps,
-            Action<string> refuse)
+            List<ImplicitCallStep> steps)
         {
-            IMethodSymbol? method = info.Method;
+            IMethodSymbol? method = info.Method is { } found ? found.ReducedFrom ?? found : null;
 
             if (method is not null)
             {
-                IMethodSymbol selected = method.ReducedFrom ?? method;
-
-                steps.Add(Step("deconstruct", selected, type, value, position));
+                steps.Add(Step("deconstruct", method, type, value, position));
             }
 
             if (info.Conversion is { MethodSymbol: { } conversion })
@@ -963,18 +986,12 @@ internal static partial class HostedGrimoireProducerInventory
 
                 if (method is not null)
                 {
-                    int offset = method.IsExtensionMethod || method.ReducedFrom is not null ? 1 : 0;
+                    int ordinal = index + (method.IsStatic ? 1 : 0);
 
-                    IMethodSymbol selected = method.ReducedFrom ?? method;
-
-                    int ordinal = index + (selected.IsStatic ? 1 : 0);
-
-                    if (ordinal < selected.Parameters.Length)
+                    if (ordinal < method.Parameters.Length)
                     {
-                        elementType = selected.Parameters[ordinal].Type;
+                        elementType = method.Parameters[ordinal].Type;
                     }
-
-                    _ = offset;
                 }
                 else if (type is INamedTypeSymbol { IsTupleType: true } tuple && index < tuple.TupleElements.Length)
                 {
@@ -986,7 +1003,7 @@ internal static partial class HostedGrimoireProducerInventory
                     }
                 }
 
-                DeconstructionSteps(model, info.Nested[index], elementType, element, position, steps, refuse);
+                DeconstructionSteps(info.Nested[index], elementType, element, position, steps);
             }
         }
 
@@ -1049,8 +1066,7 @@ internal static partial class HostedGrimoireProducerInventory
             IOperation hole,
             SyntaxNode anchor,
             Action<ImplicitCallKind, IOperation, SyntaxNode, IReadOnlyList<ImplicitCallStep>> add,
-            Action<string> refuse,
-            bool formatted = false)
+            Action<string> refuse)
         {
             IOperation value = UnwrapImplicitConversions(hole);
 
@@ -1077,18 +1093,21 @@ internal static partial class HostedGrimoireProducerInventory
 
             List<ImplicitCallStep> steps = [Step("to-string", toString, type, value.Syntax as ExpressionSyntax, After(value.Syntax))];
 
-            foreach (INamedTypeSymbol contract in type.AllInterfaces.Concat(type is INamedTypeSymbol { TypeKind: TypeKind.Interface } self ? [self] : []))
-            {
-                string key = TypeKey(contract);
+            // A value whose type fixes its runtime type formats through the contracts that type implements. Any other value
+            // can be a type that implements them, so every format contract is a step and the candidates decide.
+            bool fixedType = type is INamedTypeSymbol { TypeKind: TypeKind.Struct } or INamedTypeSymbol { TypeKind: TypeKind.Class, IsSealed: true };
 
-                if (key is "System.IFormattable" or "System.ISpanFormattable" or "System.IUtf8SpanFormattable"
-                    && contract.GetMembers().OfType<IMethodSymbol>().FirstOrDefault(static method => method.Name is "ToString" or "TryFormat") is { } slot)
+            foreach (string metadataName in new[] { "System.IFormattable", "System.ISpanFormattable", "System.IUtf8SpanFormattable" })
+            {
+                INamedTypeSymbol? contract = fixedType
+                    ? type.AllInterfaces.FirstOrDefault(candidate => TypeKey(candidate) == metadataName)
+                    : model.Compilation.GetTypeByMetadataName(metadataName);
+
+                if (contract?.GetMembers().OfType<IMethodSymbol>().FirstOrDefault(static method => method.Name is "ToString" or "TryFormat") is { } slot)
                 {
                     steps.Add(Step("format", slot, type, value.Syntax as ExpressionSyntax, After(value.Syntax)));
                 }
             }
-
-            _ = formatted;
 
             add(ImplicitCallKind.FormatHole, hole, anchor, steps);
         }
@@ -1136,9 +1155,10 @@ internal static partial class HostedGrimoireProducerInventory
             "System.Text.Rune",
         };
 
-        // An operation Roslyn does not model: a fixed statement calls GetPinnableReference, the pointer and stackalloc
-        // forms call nothing, and anything else is refused.
+        // An operation Roslyn does not model: a fixed statement calls GetPinnableReference on a value that is not an
+        // array or a string, the pointer and stackalloc forms call nothing, and anything else is refused.
         private static void InspectUnmodeled(
+            SemanticModel model,
             IOperation operation,
             Action<ImplicitCallKind, IOperation, SyntaxNode, IReadOnlyList<ImplicitCallStep>> add,
             Action<string> refuse)
@@ -1148,9 +1168,46 @@ internal static partial class HostedGrimoireProducerInventory
                 return;
             }
 
+            // The compiler's own conversion of a fixed initializer to its pointer type, and the like, are implicit.
+            if (operation.IsImplicit && operation.Syntax is ExpressionSyntax)
+            {
+                return;
+            }
+
             switch (operation.Syntax)
             {
-                case FixedStatementSyntax:
+                case FixedStatementSyntax fixedStatement:
+                    {
+                        List<ImplicitCallStep> steps = [];
+
+                        foreach (VariableDeclaratorSyntax variable in fixedStatement.Declaration.Variables)
+                        {
+                            if (variable.Initializer?.Value is not { } value || model.GetTypeInfo(value).Type is not { } type || type is IArrayTypeSymbol or IPointerTypeSymbol || type.SpecialType == SpecialType.System_String)
+                            {
+                                continue;
+                            }
+
+                            IMethodSymbol[] pinnable = [.. model.LookupSymbols(value.SpanStart, type, "GetPinnableReference", includeReducedExtensionMethods: true).OfType<IMethodSymbol>()];
+
+                            if (pinnable.Length == 0)
+                            {
+                                refuse("A fixed statement over " + type.ToDisplayString() + " has no GetPinnableReference to follow.");
+
+                                continue;
+                            }
+
+                            foreach (IMethodSymbol candidate in pinnable)
+                            {
+                                steps.Add(Step("pinnable", candidate.ReducedFrom ?? candidate, type, value, After(value)));
+                            }
+                        }
+
+                        if (steps.Count != 0)
+                        {
+                            add(ImplicitCallKind.Pinnable, operation, fixedStatement, steps);
+                        }
+                    }
+
                     break;
 
                 case StackAllocArrayCreationExpressionSyntax
