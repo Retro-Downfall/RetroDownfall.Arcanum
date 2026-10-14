@@ -260,6 +260,16 @@ public static class ArcanumMetrics
         "{candidates}",
         "Long Rest neighbours the group packer skipped, by reason");
 
+    /// <summary>
+    /// Leaves the lexical discovery lane fully verified (source row, snapshot, history head, vector and digest) because a lexical hit
+    /// named them, counted once per anchor scan. Lazy verification in score order keeps this at the eight eligible neighbours plus
+    /// the ineligible hits that outranked them, whatever the corpus size. Never carries an identity or any content.
+    /// </summary>
+    public static readonly Counter<long> LongRestLexicalVerificationsTotal = Meter.CreateCounter<long>(
+        "arcanum.long_rest.discovery.lexical_verifications",
+        "{leaves}",
+        "Leaves the Long Rest lexical lane verified in full");
+
     /// <summary>Resumable Long Rest faults that spent the last of the Sweep Failure Budget and became needs-operator parks.</summary>
     public static readonly Counter<long> LongRestSweepBudgetExhaustedTotal = Meter.CreateCounter<long>(
         "arcanum.long_rest.sweep.budget_exhausted",

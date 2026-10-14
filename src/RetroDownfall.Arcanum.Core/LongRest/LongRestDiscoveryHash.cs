@@ -316,7 +316,8 @@ public static class LongRestDiscoveryHash
             || recipe.MinimumVectorCosine != LongRestDiscoveryLimits.MinimumVectorCosine
             || recipe.ExpandedLeafLimit != LongRestDiscoveryLimits.ExpandedLeaves
             || recipe.TraversalFrontierLimit != LongRestDiscoveryLimits.TraversalFrontier
-            || recipe.MergedNeighborLimit != LongRestDiscoveryLimits.MergedNeighbors)
+            || recipe.MergedNeighborLimit != LongRestDiscoveryLimits.MergedNeighbors
+            || recipe.LexicalMinimumScore != LongRestDiscoveryLimits.LexicalMinimumScore)
         {
             return Invalid("A recipe requires exact configured identities and the fixed code-owned work bounds.");
         }
@@ -355,6 +356,8 @@ public static class LongRestDiscoveryHash
         }
 
         Int64(bytes, BitConverter.DoubleToInt64Bits(recipe.MinimumVectorCosine));
+
+        Int32(bytes, recipe.LexicalMinimumScore);
 
         return Hash(bytes);
     }

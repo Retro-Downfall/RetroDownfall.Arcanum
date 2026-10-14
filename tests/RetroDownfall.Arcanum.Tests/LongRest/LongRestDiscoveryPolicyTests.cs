@@ -171,19 +171,27 @@ public sealed class LongRestDiscoveryPolicyTests
 
         Assert.True(LongRestDiscoveryHash.Recipe(recipe with { ProviderInputUtf8Bytes = 32769 }).IsFailure);
 
+        // The lexical relevance floor is a code-owned bound that the recipe binds: any other value is not this code's recipe.
+        Assert.True(LongRestDiscoveryHash.Recipe(recipe with { LexicalMinimumScore = LongRestDiscoveryLimits.LexicalMinimumScore - 1 }).IsFailure);
+
+        Assert.True(LongRestDiscoveryHash.Recipe(recipe with { LexicalMinimumScore = LongRestDiscoveryLimits.LexicalMinimumScore + 1 }).IsFailure);
+
+        Assert.True(LongRestDiscoveryHash.Recipe(recipe with { LexicalMinimumScore = 0 }).IsFailure);
+
         Assert.True(LongRestDiscoveryHash.Recipe(recipe with { SummaryProvider = " " }).IsFailure);
 
         Assert.NotEqual(LongRestDiscoveryHash.Recipe(recipe).Value, LongRestDiscoveryHash.Recipe(recipe with { EmbeddingModel = "different-model" }).Value);
     }
 
-    // Independently assembled preimages (Python struct.pack and hashlib.sha256). 32768 is the digest every default recipe had before
-    // the input budget became window-derived, so it pins that the default recipe's identity did not move.
+    // Independently assembled preimages (Python struct.pack and hashlib.sha256): the bounds, the cosine bits, then the lexical relevance
+    // floor as a final Int32BE. The same script reproduces the digests this recipe had before the floor joined it
+    // (B668245D...F272 at 32768, 018B917E...98C8 at 4096), so only the appended floor moved them.
     [Theory]
-    [InlineData(32768, "B668245D3AF103126BD44346B14A0A5AA8636466CD610C47D4BCC76452A8F272")]
-    [InlineData(4096, "018B917E01224E44B72A4FCE25AB32081A974559CC67A43506BA6057243F98C8")]
-    [InlineData(5328, "CE2D25D0F4DEAD3BAFF3E580B2EDB8C5A52E623B253093632D9356DAE5E642D9")]
-    [InlineData(20000, "01F9D001C58E38E25BAFF318D6A8404CA0C06703E2E1E712CB74C15D709925A5")]
-    public void Recipe_digest_golden_vectors_pin_the_default_and_the_window_derived_budgets(int budget, string expected)
+    [InlineData(32768, "D485F93549969BEB4DB1736047677ED0159E5C46BA08170777D18F459EE02A84")]
+    [InlineData(4096, "5E543293108EF872C010AE624E005B5D5039789AEFB08D064E29CB083F9A3393")]
+    [InlineData(5328, "747E0AC6E33249EE9092FD8096A51044049ACB0427ED63F58BAAD165EC919065")]
+    [InlineData(20000, "743464BF77B339B2A59B53802C2C0B11062C6BD219A6F425622630688156A267")]
+    public void Recipe_digest_golden_vectors_pin_the_default_the_window_derived_budgets_and_the_lexical_floor(int budget, string expected)
     {
         CovenantDigest digest = new(new byte[32]);
 
