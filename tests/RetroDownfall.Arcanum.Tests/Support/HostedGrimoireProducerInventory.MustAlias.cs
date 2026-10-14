@@ -11,8 +11,9 @@ internal static partial class HostedGrimoireProducerInventory
     // never-reassigned, uncaptured local, and its one reaching definition must be one of: the out designation of the
     // guarded TryAcquireWorkLease call; a copy `x = admitted!` of that designation; or a formal every one of whose
     // bindings is itself a must-alias (the binding carries no inexact marker). Any join, conditional, coalesce, switch,
-    // opaque return, loop-carried definition, holder read or origin-less definition is refused. The rule only removes
-    // authority: the may-alias AdmissionOrigins sets that decide lifetimes and escapes are untouched.
+    // opaque return, loop-carried definition, holder read or origin-less definition is refused, and so is a variable that
+    // anything writes, including by handing it out by reference. The rule only removes authority: the may-alias
+    // AdmissionOrigins sets that decide lifetimes and escapes are untouched.
     private sealed partial class ProducerGraph
     {
         // A binding whose argument is not a must-alias keeps its may-alias origins and gains this one marker. The marker is
@@ -24,11 +25,18 @@ internal static partial class HostedGrimoireProducerInventory
 
         private const string LeaseGroupCallee = "RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireWorkLease.TryBeginExternalEffectGroup";
 
-        private readonly Dictionary<(GraphMemberIdentity Member, string Bindings, int Start, int Length), string?> mustAliasLeaseOrigins = [];
+        // The facts about a symbol that are a pure function of the syntax: whether anything in its scope writes it, and which acquisition
+        // defines a local. None of them depends on how a caller bound the member, so none is keyed on a binding; a result that did
+        // depend on the binding would be reused by a different binding state that merely labels its formals the same way.
+        private readonly Dictionary<ISymbol, Dictionary<SyntaxNode, bool>> leaseFormalStability = new(SymbolEqualityComparer.Default);
+
+        private readonly Dictionary<ISymbol, Dictionary<SyntaxNode, string?>> leaseLocalOrigins = new(SymbolEqualityComparer.Default);
 
         // The holder-era receiver witnesses (the per-unit recovery handoff, the ordinary scoped holder, the readiness source and
-        // the scoped lease instance) each prove their own receiver exactly and are retired with the holder. Every other member
-        // is judged here.
+        // the scoped lease instance) each prove their own receiver exactly and are retired with the holder. A member that
+        // carries one is not required to prove a must-alias receiver; the witness is. This is no licence for a counterfeit: the
+        // LeaseReceiverProof fixtures pin that a fake or ternary receiver gets no Effect in each exempt context, and a receiver
+        // that IS a must-alias is judged here whatever the member carries. Every other member is judged here in full.
         private static bool LeaseReceiverProofApplies(AuthoredMember member) =>
             member.RecoveryContext is not { Disposition: RecoveryDisposition.OrdinaryPerUnitExternalEffect }
             && member.OrdinaryScopedHolder is null
@@ -36,22 +44,20 @@ internal static partial class HostedGrimoireProducerInventory
             && member.ScopedLeaseInstance is null;
 
         // True when the group's receiver is proven. The origin is the acquisition location the receiver is a must-alias of, or
-        // null when a holder-era witness owns the proof.
+        // null when a holder-era witness owns the proof. A receiver that is a must-alias is judged here whatever the member's
+        // context; only a receiver that is not one is left to the holder-era witness, and only in a member that carries one.
         private bool LeaseReceiverProven(AuthoredMember member, InvocationExpressionSyntax group, out string? origin)
         {
-            origin = null;
-
-            if (!LeaseReceiverProofApplies(member))
-            {
-                return true;
-            }
-
             origin = AdmissionReceiver(member, group) is { } receiver ? MustAliasLeaseOrigin(member, receiver) : null;
 
-            return origin is not null;
+            return origin is not null || !LeaseReceiverProofApplies(member);
         }
 
-        // The group must also be the lease the traversal holds Work for, when it holds any.
+        // The group must also be the lease the traversal holds Work for. A traversal that holds none (the lease was disposed, handed
+        // away or bound into a holder before the group) leaves the group to be judged by its receiver alone, exactly as the Lease
+        // Spine does for a paid door whose lease departed: the group stands, and every send under it needs its own Work, which
+        // HOSTED_SITE_WORK_FRONTIER_MISSING reports at the send. What the group must not do is meet a Work the same member starts
+        // afterwards, because a send under both would pair the Effect of one lease with the Work of another.
         private bool LeaseReceiverIsLiveWork(AuthoredMember member, InvocationExpressionSyntax group, string? work)
         {
             if (!LeaseReceiverProven(member, group, out string? origin))
@@ -59,7 +65,18 @@ internal static partial class HostedGrimoireProducerInventory
                 return false;
             }
 
-            return origin is null || work is null || WorkOrigin(work) == origin;
+            if (origin is null)
+            {
+                return true;
+            }
+
+            if (work is not null)
+            {
+                return WorkOrigin(work) == origin;
+            }
+
+            return !member.Syntax.DescendantNodes().OfType<InvocationExpressionSyntax>()
+                .Any(call => call.SpanStart > group.SpanStart && member.Model.GetSymbolInfo(call).Symbol is IMethodSymbol method && Normalize(method) == LeaseAcquisitionCallee);
         }
 
         // The shell's recovery group is begun on a lease the shell itself acquired, never on one it was handed or acquired twice.
@@ -115,21 +132,27 @@ internal static partial class HostedGrimoireProducerInventory
                 return null;
             }
 
-            (GraphMemberIdentity Member, string Bindings, int Start, int Length) key = (MemberIdentity(member), AdmissionBindingIdentity(member), expression.SpanStart, expression.Span.Length);
-
-            if (!mustAliasLeaseOrigins.TryGetValue(key, out string? origin))
+            return member.Model.GetSymbolInfo(identifier).Symbol switch
             {
-                origin = member.Model.GetSymbolInfo(identifier).Symbol switch
-                {
-                    IParameterSymbol parameter => FormalLeaseOrigin(member, parameter),
-                    ILocalSymbol local => LocalLeaseOrigin(member, local),
-                    _ => null,
-                };
+                IParameterSymbol parameter => FormalLeaseOrigin(member, parameter),
+                ILocalSymbol local => Memoised(leaseLocalOrigins, local, member.Syntax, () => LocalLeaseOrigin(member, local)),
+                _ => null,
+            };
+        }
 
-                mustAliasLeaseOrigins[key] = origin;
+        private static T Memoised<T>(Dictionary<ISymbol, Dictionary<SyntaxNode, T>> cache, ISymbol symbol, SyntaxNode scope, Func<T> compute)
+        {
+            if (!cache.TryGetValue(symbol, out Dictionary<SyntaxNode, T>? scopes))
+            {
+                cache[symbol] = scopes = [];
             }
 
-            return origin;
+            if (!scopes.TryGetValue(scope, out T? value))
+            {
+                scopes[scope] = value = compute();
+            }
+
+            return value;
         }
 
         private static ExpressionSyntax StripLeaseValue(ExpressionSyntax expression) => expression switch
@@ -145,13 +168,14 @@ internal static partial class HostedGrimoireProducerInventory
         // acquisition and nothing inexact. A formal that is never written holds the bound value however a closure captures it.
         private string? FormalLeaseOrigin(AuthoredMember member, IParameterSymbol parameter)
         {
+            // The binding is read from this state's own map every time; it is the one thing a cache must not stand in for.
             if (parameter.RefKind != RefKind.None
                 || member.AdmissionBindings is null
                 || !member.AdmissionBindings.TryGetValue(parameter, out IReadOnlySet<string>? bound)
                 || bound.Count != 1
                 || bound.Contains(InexactLeaseOrigin)
                 || LeaseFormalScope(member, parameter) is not { } scope
-                || !LeaseSymbolIsStable(member, scope, parameter, definition: null, uncaptured: false))
+                || !Memoised(leaseFormalStability, parameter, scope, () => LeaseSymbolIsStable(member, scope, parameter, definition: null, uncaptured: false)))
             {
                 return null;
             }
@@ -227,7 +251,8 @@ internal static partial class HostedGrimoireProducerInventory
                 : null;
 
         // Never written anywhere under the root, nested callables included, except by the acquisition that defines it; and,
-        // when required, never mentioned in a nested lambda or local function at all.
+        // when required, never mentioned in a nested lambda or local function at all. A write includes handing the variable out
+        // by reference, spelled or implicit: an out, ref or in argument, a ref local or an address can all overwrite it.
         private static bool LeaseSymbolIsStable(AuthoredMember member, SyntaxNode root, ISymbol symbol, SyntaxNode? definition, bool uncaptured)
         {
             foreach (SyntaxNode node in root.DescendantNodesAndSelf())
@@ -237,7 +262,7 @@ internal static partial class HostedGrimoireProducerInventory
                     continue;
                 }
 
-                if (SyntaxNodeWritesSymbol(member.Model, node, symbol))
+                if (SyntaxNodeWritesSymbol(member.Model, node, symbol) || NodeWritesSymbolThroughReference(member.Model, node, symbol))
                 {
                     return false;
                 }

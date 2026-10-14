@@ -34521,7 +34521,11 @@ internal static partial class HostedGrimoireProducerInventory
             return resolved;
         }
 
-        private static string AdmissionBindingIdentity(AuthoredMember member)
+        // A parameter or local is identified by its declaration, never by its ordinal or name alone. A lambda or a local function sees the formals of
+        // the method that declares it as well as its own, and two different binding maps that label their formals by ordinal alone
+        // (`parameter:0 L0; parameter:1 L0`) are not the same map: one may bind the formal a body reads and the other bind nothing
+        // it reads. Every cache keyed on this identity must tell them apart.
+        private string AdmissionBindingIdentity(AuthoredMember member)
         {
             string scoped = member.OrdinaryScopedHolder is { } ordinary
                 ? "|ordinary:" + ordinary.Identity + "|" + MethodKey(ordinary.Constructor.Symbol) : "";
@@ -34540,9 +34544,13 @@ internal static partial class HostedGrimoireProducerInventory
 
             static void AppendPart(System.Text.StringBuilder target, string value) => target.Append(value.Length).Append(':').Append(value);
 
-            foreach ((ISymbol symbol, IReadOnlySet<string> origins) in member.AdmissionBindings.OrderBy(static pair => pair.Key is IParameterSymbol parameter ? parameter.Ordinal : int.MaxValue).ThenBy(static pair => pair.Key.Kind).ThenBy(static pair => pair.Key.ToDisplayString(), StringComparer.Ordinal))
+            string Declaration(ISymbol symbol) => symbol.DeclaringSyntaxReferences.FirstOrDefault() is { } reference
+                ? TreeIdentity(reference.SyntaxTree).ToString(System.Globalization.CultureInfo.InvariantCulture) + "@" + reference.Span.Start.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                : "external";
+
+            foreach ((ISymbol symbol, IReadOnlySet<string> origins) in member.AdmissionBindings.OrderBy(static pair => pair.Key is IParameterSymbol parameter ? parameter.Ordinal : int.MaxValue).ThenBy(static pair => pair.Key.Kind).ThenBy(static pair => pair.Key.ToDisplayString(), StringComparer.Ordinal).ThenBy(pair => Declaration(pair.Key), StringComparer.Ordinal))
             {
-                AppendPart(identity, symbol is IParameterSymbol parameter ? "parameter:" + parameter.Ordinal.ToString(System.Globalization.CultureInfo.InvariantCulture) : symbol.Kind + ":" + symbol.ToDisplayString());
+                AppendPart(identity, symbol is IParameterSymbol parameter ? "parameter:" + parameter.Ordinal.ToString(System.Globalization.CultureInfo.InvariantCulture) + "@" + Declaration(parameter) : symbol.Kind + ":" + symbol.ToDisplayString() + "@" + Declaration(symbol));
 
                 foreach (string origin in origins.Order(StringComparer.Ordinal))
                 {
