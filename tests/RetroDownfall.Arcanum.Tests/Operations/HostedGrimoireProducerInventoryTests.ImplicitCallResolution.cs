@@ -633,4 +633,35 @@ public sealed partial class HostedGrimoireProducerInventoryTests
 
         Assert.Contains(EnumerationDiscover(compilation).Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED" && diagnostic.Detail == "Microsoft.Extensions.AI.AITool.ToString");
     }
+
+    // The base constructor an authored stream chains to, written (`: base(...)`) or implicit, is the framework stream
+    // constructor, a file-system site: it is reported under the frontiers live where the creation runs it, and the
+    // creation of a stream that chains to nothing of the framework is not.
+    [Theory]
+    [InlineData("_ = new Reader(default!);", "sealed class Reader : System.IO.FileStream { public Reader(Microsoft.Win32.SafeHandles.SafeFileHandle handle) : base(handle, System.IO.FileAccess.Read) { } }", "System.IO.FileStream..ctor", true)]
+    [InlineData("_ = new Plain();", "sealed class Plain : System.IO.Stream { public override bool CanRead => false; public override bool CanSeek => false; public override bool CanWrite => false; public override long Length => 0; public override long Position { get => 0; set { } } public override void Flush() { } public override int Read(byte[] buffer, int offset, int count) => 0; public override long Seek(long offset, System.IO.SeekOrigin origin) => 0; public override void SetLength(long value) { } public override void Write(byte[] buffer, int offset, int count) { } }", "System.IO.Stream..ctor", true)]
+    [InlineData("_ = new Quiet();", "sealed class Quiet { }", "", false)]
+    public void AuthoredStreamBaseConstructorIsAFileSystemSite(string statement, string helpers, string callee, bool reported)
+    {
+        HostedProducerDiscovery<HostedProducerSite> admitted = EnumerationDiscover(CensusCompileSource(statement, helpers));
+
+        HostedProducerSite[] sites = [.. admitted.Items.Where(site => site.Callee == callee && callee.Length != 0)];
+
+        Assert.Equal(reported, sites.Length != 0);
+
+        Assert.All(sites, static site => Assert.True(site.Kind == HostedProducerSiteKind.FileSystemEffect && site.WorkFrontierCapsuleId is not null && site.EffectFrontierCapsuleId is not null));
+
+        if (!reported)
+        {
+            Assert.Empty(admitted.Diagnostics);
+
+            return;
+        }
+
+        HostedProducerDiscovery<HostedProducerSite> unadmitted = EnumerationDiscover(CensusCompileSource(statement, helpers, admitted: false));
+
+        Assert.All(unadmitted.Items.Where(site => site.Callee == callee), static site => Assert.Null(site.WorkFrontierCapsuleId));
+
+        Assert.Contains(unadmitted.Diagnostics, diagnostic => diagnostic.Code == "HOSTED_SITE_WORK_FRONTIER_MISSING" && diagnostic.Detail == callee);
+    }
 }
