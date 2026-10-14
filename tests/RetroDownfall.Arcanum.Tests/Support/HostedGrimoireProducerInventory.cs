@@ -10762,7 +10762,8 @@ internal static partial class HostedGrimoireProducerInventory
         private string? RecoveryEffectFrontierAt(
             AuthoredMember member,
             InvocationExpressionSyntax dispatch,
-            string operationId)
+            string operationId,
+            string? work)
         {
             TryStatementSyntax? protector = dispatch.Ancestors()
                 .OfType<TryStatementSyntax>()
@@ -10855,6 +10856,16 @@ internal static partial class HostedGrimoireProducerInventory
                     dispatch.SpanStart,
                     []))
             {
+                return null;
+            }
+
+            // CK-3: the recovery effect is the shell's own acquisition, never a lease the shell was handed or took twice.
+            if (!LeaseReceiverIsOwnAcquisition(member, admission, work))
+            {
+                RefuseTraversalCompletion();
+
+                diagnostics.Add(LeaseReceiverMismatch(operationId, admission));
+
                 return null;
             }
 
@@ -25790,7 +25801,8 @@ internal static partial class HostedGrimoireProducerInventory
                                         nextRecoveryEffect = RecoveryEffectFrontierAt(
                                             member,
                                             recoveryEntry,
-                                            operationId);
+                                            operationId,
+                                            workAdmitted);
                                     }
 
                                     SyntaxNode? lazyCompletion = node is InvocationExpressionSyntax lazyCall && IsLazySequence(exactTarget.Symbol.ReturnType) ? LazyCompletionPoint(member, lazyCall) : null;
@@ -37110,7 +37122,7 @@ internal static partial class HostedGrimoireProducerInventory
                 {
                     IParameterSymbol targetParameter = target.Symbol.Parameters[parameter.Ordinal];
 
-                    bindings[targetParameter] = AdmissionOrigins(caller, argument.Expression, new HashSet<ISymbol>(SymbolEqualityComparer.Default));
+                    bindings[targetParameter] = BoundAdmissionOrigins(caller, argument.Expression);
 
                     if (argument.RefKind is not RefKind.Out
                         && (RequiresExactValueProvenance(target, targetParameter)
@@ -56971,6 +56983,12 @@ internal static partial class HostedGrimoireProducerInventory
                     continue;
                 }
 
+                // CK-3: a group begun on a receiver that is not a must-alias of a work lease is retained by nothing.
+                if (admissionName == "TryBeginExternalEffectGroup" && !LeaseReceiverProven(member, admission, out _))
+                {
+                    continue;
+                }
+
                 BlockSyntax? block;
 
                 int admittedAt;
@@ -57540,6 +57558,7 @@ internal static partial class HostedGrimoireProducerInventory
                         == "RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireWorkLease.TryBeginExternalEffectGroup"))
             {
                 if (!IsGuardedAdmission(admission)
+                    || !LeaseReceiverProven(member, admission, out _)
                     || admission.ArgumentList.Arguments.LastOrDefault()?.Expression is not { } outExpression)
                 {
                     continue;
@@ -58225,6 +58244,24 @@ internal static partial class HostedGrimoireProducerInventory
 
             if (!ordinaryHolderPhysicalGroupProven) effectGroup = null;
 
+            // CK-3: a group is the Effect of its own site only when its receiver is a must-alias of the lease whose Work is live,
+            // and a refused group is the Effect of nothing downstream either.
+            if (effectGroup is not null && refusedLeaseGroups.Contains(effectGroup)) effectGroup = null;
+
+            bool leaseReceiverProven = kind != HostedProducerSiteKind.EffectFrontier
+                || !callee.EndsWith(".TryBeginExternalEffectGroup", StringComparison.Ordinal)
+                || node is not InvocationExpressionSyntax groupCall
+                || LeaseReceiverIsLiveWork(member, groupCall, workAdmitted);
+
+            if (!leaseReceiverProven)
+            {
+                RefuseTraversalCompletion();
+
+                refusedLeaseGroups.Add(rootOperation + "@effect:" + Location(node));
+
+                diagnostics.Add(LeaseReceiverMismatch(operationId, node));
+            }
+
             if (member.RecoveryContext is { Disposition: RecoveryDisposition.OrdinaryPerUnitExternalEffect }
                 && (RequiresExternalEffect(kind, callee)
                     || kind == HostedProducerSiteKind.EffectFrontier
@@ -58286,6 +58323,7 @@ internal static partial class HostedGrimoireProducerInventory
 
             if (kind == HostedProducerSiteKind.EffectFrontier && callee.EndsWith(".TryBeginExternalEffectGroup", StringComparison.Ordinal)
                 && ordinaryHolderPhysicalGroupProven
+                && leaseReceiverProven
                 && (member.RecoveryContext is not { Disposition: RecoveryDisposition.OrdinaryPerUnitExternalEffect }
                     || perUnitPhysicalGroupProven))
             {
