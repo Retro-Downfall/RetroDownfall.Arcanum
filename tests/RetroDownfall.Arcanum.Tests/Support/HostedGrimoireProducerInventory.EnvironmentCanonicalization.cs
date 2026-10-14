@@ -6,6 +6,8 @@ using Microsoft.CodeAnalysis.CSharp;
 
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 
+using Microsoft.CodeAnalysis.Operations;
+
 namespace RetroDownfall.Arcanum.Tests.Support;
 
 internal static partial class HostedGrimoireProducerInventory
@@ -79,6 +81,108 @@ internal static partial class HostedGrimoireProducerInventory
                 + (type.ConvertedType?.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat) ?? "none");
 
             return true;
+        }
+
+        private readonly Dictionary<GraphMemberIdentity, IReadOnlySet<ISymbol>> inertPayloadParameters = [];
+
+        // Inert Payload Parameter. A parameter whose type is a type parameter carries a payload the member only moves: every
+        // use of it in the member is the argument of a call to an authored member that moves it in turn, or the right side of a
+        // plain assignment to a field of this. A payload that is only moved is never the receiver of a call, never converted,
+        // tested, cast, disposed or compared, so what the traversal could learn from the concrete type a caller bound for it
+        // is nothing: the type decides no dispatch and no cleanup anywhere below. Its concrete binding would still split the
+        // member into one state per payload type, and `Result<T>.Success` into one per type a result carries. The concrete
+        // binding is dropped from the environment; the admission, callable and value bindings of the parameter are not touched.
+        private IReadOnlySet<ISymbol> InertPayloadParameters(AuthoredMember member)
+        {
+            if (member.ConcreteBindings is not { Count: > 0 })
+            {
+                return EmptySymbolSet;
+            }
+
+            GraphMemberIdentity identity = MemberIdentity(member);
+
+            if (inertPayloadParameters.TryGetValue(identity, out IReadOnlySet<ISymbol>? known))
+            {
+                return known;
+            }
+
+            HashSet<ISymbol> inert = new(SymbolEqualityComparer.Default);
+
+            foreach (IParameterSymbol parameter in member.Symbol.Parameters)
+            {
+                if (parameter is { Type: ITypeParameterSymbol, RefKind: RefKind.None }
+                    && ParameterIsOnlyMoved(member, parameter, [], 0))
+                {
+                    inert.Add(parameter);
+                }
+            }
+
+            inertPayloadParameters[identity] = inert;
+
+            return inert;
+        }
+
+        private static readonly IReadOnlySet<ISymbol> EmptySymbolSet = new HashSet<ISymbol>(SymbolEqualityComparer.Default);
+
+        private bool ParameterIsOnlyMoved(AuthoredMember member, IParameterSymbol parameter, HashSet<(GraphMemberIdentity Member, int Parameter)> path, int depth)
+        {
+            if (depth > 4 || member.Syntax is not (MethodDeclarationSyntax or ConstructorDeclarationSyntax or ConversionOperatorDeclarationSyntax or OperatorDeclarationSyntax)
+                || !path.Add((MemberIdentity(member), parameter.Ordinal)))
+            {
+                return false;
+            }
+
+            try
+            {
+                bool referenced = false;
+
+                foreach (IdentifierNameSyntax name in member.Syntax.DescendantNodes().OfType<IdentifierNameSyntax>())
+                {
+                    if (!SymbolEqualityComparer.Default.Equals(member.Model.GetSymbolInfo(name).Symbol, parameter))
+                    {
+                        continue;
+                    }
+
+                    referenced = true;
+
+                    if (member.Model.GetOperation(name) is not IParameterReferenceOperation reference || !UseMovesOnly(member, reference, path, depth))
+                    {
+                        return false;
+                    }
+                }
+
+                return referenced;
+            }
+            finally
+            {
+                path.Remove((MemberIdentity(member), parameter.Ordinal));
+            }
+        }
+
+        private bool UseMovesOnly(AuthoredMember member, IParameterReferenceOperation reference, HashSet<(GraphMemberIdentity Member, int Parameter)> path, int depth)
+        {
+            switch (reference.Parent)
+            {
+                case ISimpleAssignmentOperation { Target: IFieldReferenceOperation { Field.IsStatic: false, Instance: IInstanceReferenceOperation { ReferenceKind: InstanceReferenceKind.ContainingTypeInstance } }, Parent: IExpressionStatementOperation } assignment:
+                    return ReferenceEquals(assignment.Value, reference);
+
+                case IArgumentOperation { ArgumentKind: ArgumentKind.Explicit, Parameter: { RefKind: RefKind.None } formal } argument
+                    when ReferenceEquals(argument.Value, reference) && argument.InConversion.IsIdentity && argument.OutConversion.IsIdentity:
+                    IMethodSymbol? called = argument.Parent switch
+                    {
+                        IInvocationOperation { IsVirtual: false } invocation => invocation.TargetMethod,
+                        IObjectCreationOperation creation => creation.Constructor,
+                        _ => null,
+                    };
+
+                    return called is not null
+                        && formal.Ordinal < called.Parameters.Length
+                        && Resolve(called, member.Model.Compilation) is { } callee
+                        && ParameterIsOnlyMoved(callee, callee.Symbol.Parameters[formal.Ordinal], path, depth + 1);
+
+                default:
+                    return false;
+            }
         }
 
         // Foreign Parameter Projection. A parameter is in scope only in the method that declares it and in the lambdas and

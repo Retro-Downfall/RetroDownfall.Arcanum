@@ -5422,7 +5422,9 @@ internal static partial class HostedGrimoireProducerInventory
                     SymbolEqualityComparer.Default);
             }
 
-            if (required.Count == candidates.Count)
+            IReadOnlySet<ISymbol> inertPayloads = InertPayloadParameters(member);
+
+            if (required.Count == candidates.Count && inertPayloads.Count == 0)
             {
                 return member;
             }
@@ -5446,7 +5448,7 @@ internal static partial class HostedGrimoireProducerInventory
                         SymbolEqualityComparer.Default),
                 ConcreteBindings = ProjectEvaluationBindings(
                     member.ConcreteBindings,
-                    required),
+                    new HashSet<ISymbol>(required.Where(symbol => !inertPayloads.Contains(symbol)), SymbolEqualityComparer.Default)),
                 RecoveryBindings = ProjectEvaluationBindings(
                     member.RecoveryBindings,
                     required),
