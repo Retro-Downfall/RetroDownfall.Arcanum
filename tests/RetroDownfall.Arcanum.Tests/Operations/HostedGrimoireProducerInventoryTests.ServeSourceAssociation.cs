@@ -119,6 +119,36 @@ public sealed partial class HostedGrimoireProducerInventoryTests
         return resolved.Expression is MemberAccessExpressionSyntax resolvedAccess && Property(resolvedAccess.Expression, scope, "ServiceProvider");
     }
 
+    // One connection per send is a statement about assignments, not about text: a comment is not a setting, a later assignment or a compound
+    // assignment overrides one, and a conditional one is optional. The method must assign the property exactly once, as a statement of its
+    // own at the top of the method body or of its protected block, and the value must be TimeSpan.Zero.
+    private static void AssertSingleZeroAssignment(MethodDeclarationSyntax method, string property)
+    {
+        AssignmentExpressionSyntax[] assignments = method.DescendantNodes()
+            .OfType<AssignmentExpressionSyntax>()
+            .Where(assignment => assignment.Left is MemberAccessExpressionSyntax { Name.Identifier.ValueText: var name } && name == property)
+            .ToArray();
+
+        AssignmentExpressionSyntax assignment = Assert.Single(assignments);
+
+        Assert.True(assignment.IsKind(SyntaxKind.SimpleAssignmentExpression), property + " must be assigned, not adjusted.");
+
+        Assert.True(assignment.Left is MemberAccessExpressionSyntax { Expression: IdentifierNameSyntax { Identifier.ValueText: "handler" } }, property + " must be set on the handler.");
+
+        Assert.True(assignment.Right is MemberAccessExpressionSyntax
+        {
+            Expression: IdentifierNameSyntax { Identifier.ValueText: "TimeSpan" },
+            Name.Identifier.ValueText: "Zero",
+        }, property + " must be set to TimeSpan.Zero.");
+
+        ExpressionStatementSyntax statement = Assert.IsType<ExpressionStatementSyntax>(assignment.Parent);
+
+        BlockSyntax block = Assert.IsType<BlockSyntax>(statement.Parent);
+
+        Assert.True(block == method.Body || block.Parent is TryStatementSyntax protector && protector.Block == block && protector.Parent == method.Body,
+            property + " must be set unconditionally, in the method body or its protected block.");
+    }
+
     private static void AssertOwnedLongRestTransportSource(CSharpCompilation api, CSharpCompilation infrastructure)
     {
         SyntaxTree tree = Assert.Single(api.SyntaxTrees, static tree => tree.FilePath == "src/RetroDownfall.Arcanum.Api/Intelligence/LongRestProviderClientFactory.cs");
@@ -151,9 +181,12 @@ public sealed partial class HostedGrimoireProducerInventoryTests
 
         MethodDeclarationSyntax pool = Assert.Single(factory.Members.OfType<MethodDeclarationSyntax>(), static method => method.Identifier.ValueText == "CreateOwnedHttpClient");
 
-        foreach (string expected in new[] { "OutboundUrlGuard.CreateProviderEgressHandler()", "handler.PooledConnectionLifetime = TimeSpan.Zero",
-            "handler.PooledConnectionIdleTimeout = TimeSpan.Zero", "new HttpClient(handler, disposeHandler: true)", "Timeout = Timeout.InfiniteTimeSpan" })
+        foreach (string expected in new[] { "OutboundUrlGuard.CreateProviderEgressHandler()", "new HttpClient(handler, disposeHandler: true)", "Timeout = Timeout.InfiniteTimeSpan" })
             Assert.Contains(expected, pool.ToString(), StringComparison.Ordinal);
+
+        AssertSingleZeroAssignment(pool, "PooledConnectionLifetime");
+
+        AssertSingleZeroAssignment(pool, "PooledConnectionIdleTimeout");
 
         SyntaxTree guardTree = Assert.Single(infrastructure.SyntaxTrees, static tree => tree.FilePath == "src/RetroDownfall.Arcanum.Infrastructure/Security/OutboundUrlGuard.cs");
 
@@ -193,6 +226,16 @@ public sealed partial class HostedGrimoireProducerInventoryTests
     [InlineData("handler.PooledConnectionIdleTimeout = TimeSpan.Zero;", "handler.PooledConnectionIdleTimeout = TimeSpan.FromMinutes(1);")]
     [InlineData("handler.PooledConnectionLifetime = TimeSpan.Zero;", "")]
     [InlineData("handler.PooledConnectionIdleTimeout = TimeSpan.Zero;", "")]
+    // A setting that is still written is not a setting that holds: a later assignment overrides it, a comment removes it, a condition makes
+    // it optional, and a compound assignment moves it off zero.
+    [InlineData("handler.PooledConnectionLifetime = TimeSpan.Zero;", "handler.PooledConnectionLifetime = TimeSpan.Zero; handler.PooledConnectionLifetime = TimeSpan.FromMinutes(2);")]
+    [InlineData("handler.PooledConnectionIdleTimeout = TimeSpan.Zero;", "handler.PooledConnectionIdleTimeout = TimeSpan.Zero; handler.PooledConnectionIdleTimeout = TimeSpan.FromMinutes(1);")]
+    [InlineData("handler.PooledConnectionLifetime = TimeSpan.Zero;", "// handler.PooledConnectionLifetime = TimeSpan.Zero;")]
+    [InlineData("handler.PooledConnectionIdleTimeout = TimeSpan.Zero;", "// handler.PooledConnectionIdleTimeout = TimeSpan.Zero;")]
+    [InlineData("handler.PooledConnectionLifetime = TimeSpan.Zero;", "if (handler.EnableMultipleHttp2Connections) handler.PooledConnectionLifetime = TimeSpan.Zero;")]
+    [InlineData("handler.PooledConnectionIdleTimeout = TimeSpan.Zero;", "if (handler.EnableMultipleHttp2Connections) handler.PooledConnectionIdleTimeout = TimeSpan.Zero;")]
+    [InlineData("handler.PooledConnectionLifetime = TimeSpan.Zero;", "handler.PooledConnectionLifetime = TimeSpan.Zero; handler.PooledConnectionLifetime += TimeSpan.FromMinutes(2);")]
+    [InlineData("handler.PooledConnectionIdleTimeout = TimeSpan.Zero;", "handler.PooledConnectionIdleTimeout = TimeSpan.Zero; handler.PooledConnectionIdleTimeout += TimeSpan.FromMinutes(1);")]
     public void TheOwnedTransportSourcePinRefusesAPooledConnectionThatOutlivesItsSend(string shipped, string replacement)
     {
         const string factoryPath = "src/RetroDownfall.Arcanum.Api/Intelligence/LongRestProviderClientFactory.cs";
