@@ -15,9 +15,9 @@ public sealed partial class HostedGrimoireProducerInventoryTests
     [Fact]
     public void GeneratedRecordAuthoredEqualsRetainsTheActualAdmittedGroupAuthority()
     {
-        string source = OrdinaryScopedHolderFixture("same-scoped-lease");
+        string source = OrdinaryLeaseParameterFixture();
 
-        const string anchorText = "System.IO.File.Delete(\"ordinary-scoped-first\");";
+        const string anchorText = LeaseParameterFirstSend;
 
         Assert.Equal(1, source.Split(anchorText, StringSplitOptions.None).Length - 1);
 
@@ -69,15 +69,22 @@ public sealed partial class HostedGrimoireProducerInventoryTests
 
         Assert.True(lease.Parent!.Parent is LocalDeclarationStatementSyntax { UsingKeyword.RawKind: not 0, AwaitKeyword.RawKind: not 0 });
 
-        InvocationExpressionSyntax bindingSyntax = Assert.Single(run.DescendantNodes().OfType<InvocationExpressionSyntax>(),
-            call => model.GetOperation(call) is IInvocationOperation { TargetMethod.Name: "Bind" });
+        // The retained local is handed by value to the admitted sweep port, and nothing is bound.
+        InvocationExpressionSyntax handoffSyntax = Assert.Single(run.DescendantNodes().OfType<InvocationExpressionSyntax>(),
+            call => model.GetOperation(call) is IInvocationOperation { TargetMethod.Name: "ResumeAdmittedAsync" });
 
-        IInvocationOperation binding = Assert.IsAssignableFrom<IInvocationOperation>(model.GetOperation(bindingSyntax));
+        IInvocationOperation handoff = Assert.IsAssignableFrom<IInvocationOperation>(model.GetOperation(handoffSyntax));
 
-        Assert.Equal("RetroDownfall.Arcanum.Infrastructure.Data.LongRest.LongRestWorkAdmission", binding.TargetMethod.ContainingType.ToDisplayString());
+        Assert.Equal("RetroDownfall.Arcanum.Infrastructure.Operations.LongRest.ILongRestAdmittedSweep", handoff.TargetMethod.ContainingType.ToDisplayString());
 
         Assert.True(SymbolEqualityComparer.Default.Equals(model.GetDeclaredSymbol(lease),
-            Assert.IsAssignableFrom<ILocalReferenceOperation>(Assert.Single(binding.Arguments).Value).Local));
+            Assert.IsAssignableFrom<ILocalReferenceOperation>(handoff.Arguments[1].Value).Local));
+
+        Assert.Contains(handoffSyntax.Ancestors(), static ancestor => ancestor is AwaitExpressionSyntax);
+
+        Assert.True(acquisitionSyntax.Span.End < handoffSyntax.SpanStart);
+
+        Assert.DoesNotContain(run.DescendantNodes().OfType<IdentifierNameSyntax>(), static name => name.Identifier.ValueText is "Bind" or "LongRestWorkAdmission");
 
         InvocationExpressionSyntax groupSyntax = Assert.Single(firstSend.DescendantNodes().OfType<InvocationExpressionSyntax>(),
             call => model.GetOperation(call) is IInvocationOperation { TargetMethod.Name: "TryBeginExternalEffectGroup" });
@@ -91,6 +98,11 @@ public sealed partial class HostedGrimoireProducerInventoryTests
         Assert.Single(group.TargetMethod.DeclaringSyntaxReferences);
 
         Assert.Equal(RefKind.Out, Assert.Single(group.Arguments).Parameter!.RefKind);
+
+        // The group is begun on the sweep's lease formal, the parameter the port call passed the retained local to.
+        IParameterSymbol admission = Assert.Single(Assert.IsAssignableFrom<IMethodSymbol>(model.GetDeclaredSymbol(firstSend)).Parameters, static parameter => parameter.Name == "admission");
+
+        Assert.True(SymbolEqualityComparer.Default.Equals(admission, Assert.IsAssignableFrom<IParameterReferenceOperation>(group.Instance).Parameter));
 
         ILocalSymbol groupLocal = Assert.IsAssignableFrom<ILocalReferenceOperation>(
             Assert.IsAssignableFrom<IDeclarationExpressionOperation>(Assert.Single(group.Arguments).Value).Expression).Local;
