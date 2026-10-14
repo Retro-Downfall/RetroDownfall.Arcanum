@@ -11,7 +11,6 @@ namespace RetroDownfall.Arcanum.Core.Telemetry;
 /// </summary>
 public static class ArcanumMetrics
 {
-
     public static readonly Meter Meter = new("Arcanum", "0.1.0");
 
     /// <summary>Total HTTP requests processed. Labels: <c>endpoint</c> (route pattern, not raw URL), <c>method</c>, <c>status_code</c>.</summary>
@@ -251,6 +250,16 @@ public static class ArcanumMetrics
         "{sweeps}",
         "Parked Long Rest sweeps readmitted");
 
+    /// <summary>
+    /// Discovered neighbours the group packer left out of an anchor's adjudication packs. Label: closed <c>reason</c>
+    /// (<c>oversize</c>: the neighbour cannot fit a request with its anchor within the recipe's input budget; <c>pack_limit</c>:
+    /// the anchor already has its three packs). Never carries an identity or any content.
+    /// </summary>
+    public static readonly Counter<long> LongRestPackSkippedCandidatesTotal = Meter.CreateCounter<long>(
+        "arcanum.long_rest.sweep.skipped_candidates",
+        "{candidates}",
+        "Long Rest neighbours the group packer skipped, by reason");
+
     /// <summary>Resumable Long Rest faults that spent the last of the Sweep Failure Budget and became needs-operator parks.</summary>
     public static readonly Counter<long> LongRestSweepBudgetExhaustedTotal = Meter.CreateCounter<long>(
         "arcanum.long_rest.sweep.budget_exhausted",
@@ -265,5 +274,4 @@ public static class ArcanumMetrics
         "arcanum.long_rest.clean_schedule_refused",
         "{turns}",
         "Session turns that proceeded after clean Long Rest scheduling was refused");
-
 }

@@ -201,9 +201,12 @@ public sealed partial class LongRestSweepStoreTests
 
         internal int AdjudicationSends { get; private set; }
 
-        internal static async Task<Fixture> CreateAsync(bool protect, int sourceCount = 2, bool campaign = false, bool duplicates = false, bool omittedOwner = false, string? policyFault = null)
+        internal static async Task<Fixture> CreateAsync(bool protect, int sourceCount = 2, bool campaign = false, bool duplicates = false, bool omittedOwner = false, string? policyFault = null,
+            int inputBudget = LongRestDiscoveryLimits.ProviderInputUtf8Bytes, Func<int, string>? text = null)
         {
             LongRestSweepHarness h = await LongRestSweepHarness.CreateAsync();
+
+            h.ProviderInputBudget = inputBudget;
 
             Guid? campaignId = campaign ? Guid.NewGuid() : null;
 
@@ -217,7 +220,7 @@ public sealed partial class LongRestSweepStoreTests
             {
                 Guid memory = new("10000000-0000-0000-0000-" + index.ToString("D12", System.Globalization.CultureInfo.InvariantCulture));
 
-                await h.SeedAsync(memory.ToString("D"), duplicates ? "identical observation" : "related observation " + index, session);
+                await h.SeedAsync(memory.ToString("D"), text?.Invoke(index) ?? (duplicates ? "identical observation" : "related observation " + index), session);
             }
 
             await PreparePolicyFaultAsync(h, policyFault);

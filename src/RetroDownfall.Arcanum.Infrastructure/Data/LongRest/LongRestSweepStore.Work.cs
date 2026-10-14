@@ -8,6 +8,7 @@ using Microsoft.Data.Sqlite;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.LongRest;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.Telemetry;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Data.LongRest;
 
@@ -111,7 +112,9 @@ internal sealed partial class LongRestSweepStore
                     throw new InvalidDataException();
                 }
 
-                if (found.Value.Length == 0)
+                ImmutableArray<ImmutableArray<LongRestSourceLeaf>> packs = await PackAsync(connection, transaction, generation, anchor, found.Value, capability, ct).ConfigureAwait(false);
+
+                if (packs.Length == 0)
                 {
                     await AdvanceDiscoveryAsync(connection, transaction, expected, generation, storedDiscoveryCursor, cursor,
                         complete: false, capability, ct).ConfigureAwait(false);
@@ -121,23 +124,9 @@ internal sealed partial class LongRestSweepStore
 
                 string prefix = Convert.ToHexString(SHA256.HashData(new UTF8Encoding(false, true).GetBytes(memory)));
 
-                for (int index = 0; index < found.Value.Length; index++)
+                for (int index = 0; index < packs.Length; index++)
                 {
-                    ImmutableArray<LongRestSourceLeaf>.Builder leaves = ImmutableArray.CreateBuilder<LongRestSourceLeaf>();
-
-                    foreach (LongRestTarget target in found.Value[index].Targets)
-                    {
-                        LongRestSourceLeaf leaf = await LongRestDiscoveryStore.ReadSweepLeafAsync(connection, transaction, generation, target.MemoryId, capability, ct).ConfigureAwait(false);
-
-                        if (leaf.Target != target)
-                        {
-                            throw new InvalidDataException();
-                        }
-
-                        leaves.Add(leaf);
-                    }
-
-                    ImmutableArray<LongRestSourceLeaf> inputs = leaves.ToImmutable();
+                    ImmutableArray<LongRestSourceLeaf> inputs = packs[index];
 
                     LongRestWorkIdentity work = new(generation.GenerationId, generation.OperationId, prefix + ":" + index.ToString("D2", System.Globalization.CultureInfo.InvariantCulture),
                         LongRestWorkKind.Anchor, generation.Scope, generation.Fence, LongRestDiscoveryHash.SourcePage(generation.Scope, inputs).Value, LongRestDiscoveryHash.Recipe(generation.Recipe).Value);
@@ -163,6 +152,57 @@ internal sealed partial class LongRestSweepStore
             }
         }
     }, ct);
+
+    /// <summary>
+    /// Loads the exact leaves of every discovered neighbour and packs them behind the anchor so that each pack renders within the
+    /// recipe's input budget. A neighbour left out is counted by reason and never by identity.
+    /// </summary>
+    private static async Task<ImmutableArray<ImmutableArray<LongRestSourceLeaf>>> PackAsync(SqliteConnection connection, SqliteTransaction transaction,
+        LongRestDiscoveryGeneration generation, LongRestSourceLeaf anchor, LongRestCandidateGroup[] groups, LongRestMaintenanceCapability? capability, CancellationToken ct)
+    {
+        ImmutableArray<LongRestSourceLeaf>.Builder neighbors = ImmutableArray.CreateBuilder<LongRestSourceLeaf>();
+
+        foreach (LongRestCandidateGroup group in groups)
+        {
+            if (group.Targets.Length < 2 || group.Targets[0] != anchor.Target)
+            {
+                throw new InvalidDataException();
+            }
+
+            for (int ordinal = 1; ordinal < group.Targets.Length; ordinal++)
+            {
+                LongRestTarget target = group.Targets[ordinal];
+
+                LongRestSourceLeaf leaf = await LongRestDiscoveryStore.ReadSweepLeafAsync(connection, transaction, generation, target.MemoryId, capability, ct).ConfigureAwait(false);
+
+                if (leaf.Target != target)
+                {
+                    throw new InvalidDataException();
+                }
+
+                neighbors.Add(leaf);
+            }
+        }
+
+        Result<LongRestGroupPacking> packing = LongRestGroupPacker.Pack(anchor, neighbors.ToImmutable(), generation.Recipe.ProviderInputUtf8Bytes);
+
+        if (packing.IsFailure)
+        {
+            throw new InvalidDataException();
+        }
+
+        if (packing.Value.SkippedOversize > 0)
+        {
+            ArcanumMetrics.LongRestPackSkippedCandidatesTotal.Add(packing.Value.SkippedOversize, new KeyValuePair<string, object?>("reason", "oversize"));
+        }
+
+        if (packing.Value.SkippedPackLimit > 0)
+        {
+            ArcanumMetrics.LongRestPackSkippedCandidatesTotal.Add(packing.Value.SkippedPackLimit, new KeyValuePair<string, object?>("reason", "pack_limit"));
+        }
+
+        return packing.Value.Packs;
+    }
 
     private async Task AdvanceDiscoveryAsync(SqliteConnection connection, SqliteTransaction transaction, LongRestSweep expected,
         LongRestDiscoveryGeneration generation, string? previous, string? cursor, bool complete,

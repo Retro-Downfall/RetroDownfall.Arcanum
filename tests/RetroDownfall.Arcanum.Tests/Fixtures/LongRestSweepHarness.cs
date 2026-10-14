@@ -21,6 +21,9 @@ internal sealed partial class LongRestSweepHarness(SagaStoreHarness saga) : IAsy
 
     internal LongRestDiscoveryStore Store { get; } = new(saga.Context, TimeProvider.System);
 
+    /// <summary>The rendered-request budget the next generation's recipe carries; the default is the 32 KiB ceiling.</summary>
+    internal int ProviderInputBudget { get; set; } = LongRestDiscoveryLimits.ProviderInputUtf8Bytes;
+
     internal static async Task<LongRestSweepHarness> CreateAsync() => new(await SagaStoreHarness.CreateAsync(annalsEnabled: true));
 
     internal Task SeedAsync(string id, string text, Guid? session = null) => Saga.Store.InsertAsync(id, text,
@@ -43,7 +46,7 @@ internal sealed partial class LongRestSweepHarness(SagaStoreHarness saga) : IAsy
 
         LongRestSweepFence fence = new(canonical, highwater, authority?.Snapshot.DatasetGeneration ?? Guid.NewGuid(), 1, authority?.Snapshot.RuntimeAuthorityGeneration ?? 1, authority?.Snapshot.CapabilityGeneration ?? 1, new(Guid.NewGuid(), 0, digest));
 
-        LongRestRecipeIdentity recipe = new(1, 1, "provider", "summary", digest, "provider", "embedding", digest, 64);
+        LongRestRecipeIdentity recipe = new(1, 1, "provider", "summary", digest, "provider", "embedding", digest, 64) { ProviderInputUtf8Bytes = ProviderInputBudget };
 
         LongRestDiscoveryGeneration generation = Require(await Store.StartOrResumeAsync(operation, scope, fence, recipe, CancellationToken.None));
 
