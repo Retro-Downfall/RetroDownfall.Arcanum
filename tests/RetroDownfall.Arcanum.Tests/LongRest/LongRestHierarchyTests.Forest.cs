@@ -14,7 +14,7 @@ public sealed partial class LongRestHierarchyTests
     [InlineData(9, false)]
     [InlineData(129, false)]
     [InlineData(129, true)]
-    public async Task Actual_hierarchy_scan_preserves_old_top_k_and_leaf_expansion(int summaries, bool reverse)
+    public async Task Actual_hierarchy_scan_keeps_the_top_k_summaries_off_the_anchors_chain_and_interleaves_their_leaves(int summaries, bool reverse)
     {
         await using LongRestSweepHarness h = await LongRestSweepHarness.CreateAsync();
 
@@ -84,7 +84,8 @@ public sealed partial class LongRestHierarchyTests
                 return score != 0 ? score : -StringComparer.Ordinal.Compare(left.Node.ToString("D"), right.Node.ToString("D"));
             }));
 
-        foreach (var candidate in candidates)
+        // The anchor's own fold is its nearest, and here its only, ancestor: it is the query, it is on the chain, and it is never ranked.
+        foreach (var candidate in candidates.Skip(1))
         {
             original.Enqueue(candidate, (candidate.Node, candidate.Score));
 
@@ -94,9 +95,20 @@ public sealed partial class LongRestHierarchyTests
         var selected = original.UnorderedItems.Select(static item => item.Element)
             .OrderByDescending(static item => item.Score).ThenBy(static item => item.Node.ToString("D"), StringComparer.Ordinal).ToArray();
 
-        var expected = LongRestSweepHarness.Require(LongRestDiscoveryPolicy.MergeCandidates(anchor,
-            selected.SelectMany(item => item.Leaves.Where(leaf => leaf.MemoryId != anchor.MemoryId).Take(LongRestDiscoveryLimits.ExpandedLeaves)
-                .Select(leaf => new LongRestCandidate(leaf, LongRestDiscoveryLane.Hierarchy, item.Score)))));
+        // The lane takes one leaf from each selected summary in turn, best summary first, until it holds 32. Written out longhand: this
+        // is the specification the production interleave is held to.
+        List<LongRestCandidate> expected = [];
+
+        for (int round = 0; round < LongRestDiscoveryLimits.ExpandedLeaves && expected.Count < LongRestDiscoveryLimits.MergedNeighbors; round++)
+        {
+            foreach (var item in selected)
+            {
+                if (round < item.Leaves.Length && expected.Count < LongRestDiscoveryLimits.MergedNeighbors)
+                {
+                    expected.Add(new(item.Leaves[round], LongRestDiscoveryLane.Hierarchy, item.Score, expected.Count));
+                }
+            }
+        }
 
         await using var transaction = h.Connection.BeginTransaction();
 
@@ -267,5 +279,4 @@ public sealed partial class LongRestHierarchyTests
 
         Assert.Equal(0L, await h.ScalarAsync("SELECT Published FROM long_rest_discovery_generations;"));
     }
-
 }

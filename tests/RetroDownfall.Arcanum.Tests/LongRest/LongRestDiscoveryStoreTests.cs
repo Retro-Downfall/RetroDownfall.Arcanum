@@ -13,7 +13,7 @@ public sealed class LongRestDiscoveryStoreTests
 
         await h.SeedAsync("anchor", "opal");
 
-        await h.SeedAsync("a-vector", "opal " + string.Join(' ', Enumerable.Repeat("filler", 200)));
+        await h.SeedAsync("a-vector", "opal " + string.Join(' ', Enumerable.Repeat("filler", 20)));
 
         for (int index = 0; index < 9; index++)
         {
@@ -29,6 +29,21 @@ public sealed class LongRestDiscoveryStoreTests
                 ("$vector", EmbeddingBlobCodec.Encode(vector)), ("$memory", memory));
         }
 
+        // Unrelated memories, each with a vector of its own, so 'opal' is a distinctive token: eleven of fifty documents.
+        for (int index = 0; index < 39; index++)
+        {
+            string memory = $"c-filler-{index:D2}";
+
+            await h.SeedAsync(memory, $"unrelated{index} filler{index}");
+
+            float[] vector = new float[64];
+
+            vector[2 + index % 60] = 1;
+
+            await h.ExecuteAsync("UPDATE saga_memory_embeddings SET Embedding = $vector WHERE MemoryId = $memory;",
+                ("$vector", EmbeddingBlobCodec.Encode(vector)), ("$memory", memory));
+        }
+
         LongRestDiscoveryGeneration generation = await h.CaptureAsync();
 
         await h.ExecuteAsync("UPDATE long_rest_discovery_generations SET PhaseCode = 4, Published = 1;");
@@ -36,12 +51,15 @@ public sealed class LongRestDiscoveryStoreTests
         LongRestCandidateGroup[] groups = LongRestSweepHarness.Require(await h.Store.DiscoverAsync(generation.GenerationId, await h.TargetAsync("anchor"), null, CancellationToken.None));
 
         Assert.Contains(groups.SelectMany(group => group.Evidence), candidate => candidate.Target.MemoryId == "a-vector" && candidate.Lane == LongRestDiscoveryLane.Vector);
+
+        // The nine short matches fill the lexical lane; the longer memory, which matches too and clears the floor, scores lower and is not among them.
+        Assert.DoesNotContain(groups.SelectMany(group => group.Evidence), candidate => candidate.Target.MemoryId == "a-vector" && candidate.Lane == LongRestDiscoveryLane.Lexical);
     }
 
     [SkippableTheory]
     [InlineData(false)]
     [InlineData(true)]
-    public async Task Lexical_uses_token_matches_and_BM25_with_deterministic_ties(bool accelerated)
+    public async Task Lexical_uses_token_matches_and_scoped_scores_with_deterministic_ties(bool accelerated)
     {
         await using LongRestSweepHarness h = await LongRestSweepHarness.CreateAsync();
 
@@ -82,6 +100,23 @@ public sealed class LongRestDiscoveryStoreTests
         }
 
         await h.SeedAsync("z-eligible", "amethyst eligible");
+
+        // Unrelated memories, and a vector of its own for every memory, so only the lexical lane can name a neighbour.
+        for (int index = 0; index < 30; index++)
+        {
+            await h.SeedAsync($"m-filler-{index:D2}", $"unrelated{index} filler{index}");
+        }
+
+        string[] every = ["anchor", .. Enumerable.Range(0, 12).Select(static index => $"a-pinned-{index:D2}"), "z-eligible", .. Enumerable.Range(0, 30).Select(static index => $"m-filler-{index:D2}")];
+
+        for (int index = 0; index < every.Length; index++)
+        {
+            float[] vector = new float[every.Length];
+
+            vector[index] = 1;
+
+            await h.SetEmbeddingAsync(every[index], vector);
+        }
 
         await h.ExecuteAsync("UPDATE saga_memories SET PinnedAtUtc = '2026-10-10T00:00:00.0000000Z' WHERE Id LIKE 'a-pinned-%';");
 
@@ -131,7 +166,6 @@ public sealed class LongRestDiscoveryStoreTests
         Assert.Equal(LongRestDiscoveryLane.Vector, candidate.Lane);
     }
 
-
     [SkippableTheory]
     [InlineData(0)]
     [InlineData(1)]
@@ -156,5 +190,4 @@ public sealed class LongRestDiscoveryStoreTests
 
         Assert.Equal(0L, await h.ScalarAsync("SELECT Revision FROM long_rest_discovery_generations;"));
     }
-
 }

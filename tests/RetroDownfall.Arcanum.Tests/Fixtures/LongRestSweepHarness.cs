@@ -24,7 +24,35 @@ internal sealed partial class LongRestSweepHarness(SagaStoreHarness saga) : IAsy
     /// <summary>The rendered-request budget the next generation's recipe carries; the default is the 32 KiB ceiling.</summary>
     internal int ProviderInputBudget { get; set; } = LongRestDiscoveryLimits.ProviderInputUtf8Bytes;
 
+    /// <summary>
+    /// Chooses the 64-wide vector a fold's generated summary embeds to. By default every layer-1 summary is the second axis and every
+    /// upper one the first, so all summaries of a layer look alike; a test that needs summaries to differ, or to resemble one
+    /// another by a chosen amount, sets this.
+    /// </summary>
+    internal Func<LongRestHierarchyWork, float[]>? FoldVector { get; set; }
+
     internal static async Task<LongRestSweepHarness> CreateAsync() => new(await SagaStoreHarness.CreateAsync(annalsEnabled: true));
+
+    /// <summary>Gives a seeded memory a raw vector of any width, replacing the shared default embedding.</summary>
+    internal Task SetEmbeddingAsync(string memory, float[] vector) => ExecuteAsync("UPDATE saga_memory_embeddings SET Dim = $dim, Embedding = $vector WHERE MemoryId = $memory;",
+        ("$dim", vector.Length), ("$vector", EmbeddingBlobCodec.Encode(vector)), ("$memory", memory));
+
+    /// <summary>
+    /// The hierarchy lane alone, read through the store's actual scan before it merges with the other lanes, so what its summary
+    /// selection, chain exclusion and expansion produced can be compared exactly.
+    /// </summary>
+    internal async Task<ImmutableArray<LongRestCandidate>> HierarchyLaneAsync(LongRestDiscoveryGeneration generation, LongRestTarget anchor,
+        LongRestMaintenanceCapability? capability = null)
+    {
+        await using SqliteTransaction transaction = Connection.BeginTransaction();
+
+        var method = typeof(LongRestDiscoveryStore).GetMethod("HierarchyCandidatesAsync", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
+
+        return await (Task<ImmutableArray<LongRestCandidate>>)method.Invoke(null, [Connection, transaction, generation, anchor, capability, CancellationToken.None])!;
+    }
+
+    /// <summary>Every memory a fold's children expand to, in child order.</summary>
+    internal static string[] MemoriesOf(LongRestHierarchyWork work) => [.. work.Fold.Children.SelectMany(static child => child.ExpandedTargets).Select(static target => target.MemoryId)];
 
     internal Task SeedAsync(string id, string text, Guid? session = null) => Saga.Store.InsertAsync(id, text,
         new DateTimeOffset(2026, 10, 10, 0, 0, 0, TimeSpan.Zero), session, null, "extraction", Saga.Embedding(), CancellationToken.None);
@@ -187,9 +215,12 @@ internal sealed partial class LongRestSweepHarness(SagaStoreHarness saga) : IAsy
 
         LongRestPaidEvidence paid = await PayAsync(work.Fold.Work, LongRestProviderPayloadKind.Embedding, payload, ordinal);
 
-        float[] vector = new float[64];
+        float[] vector = FoldVector?.Invoke(work) ?? new float[64];
 
-        vector[work.Fold.Layer == 1 ? 1 : 0] = 1;
+        if (FoldVector is null)
+        {
+            vector[work.Fold.Layer == 1 ? 1 : 0] = 1;
+        }
 
         CovenantDigest value = new(SHA256.HashData(EmbeddingBlobCodec.Encode(vector)));
 
