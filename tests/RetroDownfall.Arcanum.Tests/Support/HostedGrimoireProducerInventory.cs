@@ -896,6 +896,7 @@ internal static partial class HostedGrimoireProducerInventory
         "System.Buffers.Text.Base64.DecodeFromUtf8",
         "System.Buffers.Text.Base64.EncodeToUtf8",
         "System.Buffers.Text.Base64Url.DecodeFromChars",
+        "System.Buffers.Text.Base64Url.EncodeToUtf8",
         "System.Collections.Concurrent.ConcurrentDictionary`2.TryRemove",
         "System.Collections.Concurrent.ConcurrentQueue`1.TryDequeue",
         "System.Collections.Generic.Dictionary`2.Remove",
@@ -1286,11 +1287,18 @@ internal static partial class HostedGrimoireProducerInventory
         "System.Collections.Concurrent.ConcurrentDictionary`2.TryGetValue",
         "System.Collections.Generic.KeyValuePair.Create",
         "System.Collections.Generic.KeyNotFoundException..ctor",
+        "System.Collections.ObjectModel.ReadOnlyCollection.CreateCollection",
+        "Serilog.Sinks.File.FileLifecycleHooks..ctor",
+        "System.TimeoutException..ctor",
         "System.ComponentModel.Win32Exception..ctor",
         "System.ComponentModel.Win32Exception.NativeErrorCode",
         "System.Console.Error",
+        "System.Console.IsInputRedirected",
+        "System.Console.KeyAvailable",
         "System.Console.Out",
         "System.Console.ReadKey",
+        "System.Console.TreatControlCAsInput",
+        "System.Console.TreatControlCAsInput setter",
         "System.ConsoleKeyInfo.Key",
         "System.ConsoleKeyInfo.KeyChar",
         "System.ConsoleKeyInfo.Modifiers",
@@ -1619,6 +1627,24 @@ internal static partial class HostedGrimoireProducerInventory
                 "RetroDownfall.Arcanum.Infrastructure.Covenant.CampaignPathMarkerLifecycle.MarkerChildCompletionFinalizer",
                 "RetroDownfall.Arcanum.Infrastructure.Covenant.CovenantSchemaRepairPostDispositionFinalizer",
                 "RetroDownfall.Arcanum.Infrastructure.Repositories.ProtectedArtifactTransferStore.TransferJournalFinalizer",
+            },
+        };
+
+    // The slots of a class that more than one authored class overrides, called through a receiver nothing proves, with the complete set
+    // of classes that override each. The call runs one of those overrides and the census cannot tell which, so every one of them is
+    // traversed; a set that is not exactly this one (a class added, or one removed) is refused like any unreviewed slot.
+    private static readonly IReadOnlyDictionary<string, IReadOnlySet<string>> ReviewedClosedOverrideSets =
+        new Dictionary<string, IReadOnlySet<string>>(StringComparer.Ordinal)
+        {
+            ["RetroDownfall.Arcanum.Infrastructure.Security.CredentialMirror.ReadAsync"] = new HashSet<string>(StringComparer.Ordinal)
+            {
+                "RetroDownfall.Arcanum.Infrastructure.Security.DataProtectionStoreCredentialMirror",
+                "RetroDownfall.Arcanum.Infrastructure.Security.ProtectedFileCredentialMirror",
+            },
+            ["RetroDownfall.Arcanum.Infrastructure.Security.CredentialMirror.WriteAsync"] = new HashSet<string>(StringComparer.Ordinal)
+            {
+                "RetroDownfall.Arcanum.Infrastructure.Security.DataProtectionStoreCredentialMirror",
+                "RetroDownfall.Arcanum.Infrastructure.Security.ProtectedFileCredentialMirror",
             },
         };
 
@@ -2131,6 +2157,17 @@ internal static partial class HostedGrimoireProducerInventory
         IReadOnlyList<(SemanticModel Model, IMethodSymbol Method, SyntaxNode Syntax)> queries) =>
         new ProducerGraph([compilation], DefaultEvaluationEnvironmentMaximumMembers, DefaultEvaluationEnvironmentMaximumDepth, DefaultTraversalMaximumDepth, DefaultMaximumAnalyzedStatesPerRoot, false)
             .ProbeMemberMethodIdentities(queries);
+
+    // The authored types whose static initialization can reach a producer site, over the given compilations.
+    internal static IReadOnlyList<string> ProbeStaticInitializationHazards(IReadOnlyList<CSharpCompilation> compilations) =>
+        new ProducerGraph(compilations, DefaultEvaluationEnvironmentMaximumMembers, DefaultEvaluationEnvironmentMaximumDepth, DefaultTraversalMaximumDepth, DefaultMaximumAnalyzedStatesPerRoot, false)
+            .StaticInitializationHazardNames();
+
+    // The authored implementers of the framework slots (ToString, Equals, GetHashCode, CompareTo, GetFormat, ...) that reach
+    // a producer site or cannot be followed, over the given compilations.
+    internal static IReadOnlyList<string> ProbeCallbackImplementersThatReach(IReadOnlyList<CSharpCompilation> compilations) =>
+        new ProducerGraph(compilations, DefaultEvaluationEnvironmentMaximumMembers, DefaultEvaluationEnvironmentMaximumDepth, DefaultTraversalMaximumDepth, DefaultMaximumAnalyzedStatesPerRoot, false, sitesOnly: true)
+            .CallbackImplementersThatReach();
 
     internal static IReadOnlyList<HostedProducerProjectionSymbolProbe> ProbeProjectionSymbolLookups(
         CSharpCompilation compilation,
@@ -3239,6 +3276,14 @@ internal static partial class HostedGrimoireProducerInventory
 
         private readonly InventoryFacts inventoryFacts;
 
+        private readonly IReadOnlyList<CSharpCompilation> analysedCompilations;
+
+        // A graph that answers one question only: whether a body can reach a producer site that is classified (a member of the
+        // vocabulary or an external producer). It does not ask whether the body uses a framework member nobody has reviewed,
+        // or a construct it cannot follow, which the traversal of a body refuses. The static initialization of a type is
+        // judged by such a graph, because no traversal ever enters it.
+        private readonly bool scanSitesOnly;
+
         internal ProducerGraph(
             IReadOnlyList<CSharpCompilation> compilations,
             int evaluationEnvironmentMaximumMembers,
@@ -3249,11 +3294,16 @@ internal static partial class HostedGrimoireProducerInventory
             Action<HostedProducerAdmittedStateObservation>? admittedStateObserver = null,
             Action<int, int, int, int, bool>? nestedReuseObserver = null,
             HostedProducerPremiseLedger? premises = null,
-            InventoryFacts? facts = null)
+            InventoryFacts? facts = null,
+            bool sitesOnly = false)
         {
             this.premises = premises ?? HostedProducerPremiseLedger.None;
 
             inventoryFacts = facts ?? new InventoryFacts(compilations);
+
+            scanSitesOnly = sitesOnly;
+
+            analysedCompilations = compilations;
 
             foreach (HostedProducerInventoryDiagnostic violation in this.premises.Violations)
             {
@@ -3358,7 +3408,7 @@ internal static partial class HostedGrimoireProducerInventory
 
             candidates.Add(member);
 
-            if (member.Syntax is not MethodDeclarationSyntax { Body: null, ExpressionBody: null })
+            if (member.Syntax is not MethodDeclarationSyntax { Body: null, ExpressionBody: null } && !IsBodilessAccessorSlot(member))
             {
                 MethodIdentity identity = new(member.Symbol.ContainingAssembly.Identity, key);
 
@@ -3370,6 +3420,16 @@ internal static partial class HostedGrimoireProducerInventory
                 exactCandidates.Add(member);
             }
         }
+
+        // An accessor declared without a body that is not an auto-property accessor: an abstract or extern accessor, an
+        // interface member, the definition part of a partial property. Like a bodiless method it stands for whatever the
+        // runtime type selects, or for the implementation part, never for code of its own.
+        private static bool IsBodilessAccessorSlot(AuthoredMember member) =>
+            member.Syntax is AccessorDeclarationSyntax { Body: null, ExpressionBody: null }
+            && (member.Symbol.IsAbstract
+                || member.Symbol.IsExtern
+                || member.Symbol.ContainingType.TypeKind == TypeKind.Interface
+                || member.Symbol.AssociatedSymbol is IPropertySymbol { IsPartialDefinition: true });
 
         private int CompilationIdentity(Compilation compilation)
         {
@@ -10603,10 +10663,32 @@ internal static partial class HostedGrimoireProducerInventory
             AssemblyName trustedAssembly) =>
             type is not null
             && TypeKey(type) == expectedType
-            && FrameworkAssemblyIdentityMatches(
-                type.ContainingAssembly.Identity,
-                trustedAssembly)
+            && (FrameworkAssemblyIdentityMatches(
+                    type.ContainingAssembly.Identity,
+                    trustedAssembly)
+                || IsReviewedSystemMemoryContractType(
+                    type,
+                    expectedType,
+                    trustedAssembly))
             && !type.Locations.Any(static location => location.IsInSource);
+
+        // Runtime-library types that the production reference pack declares in the System.Memory contract
+        // assembly while the runtime implements them in System.Private.CoreLib. Each is reviewed by name: the
+        // contract mapping above is deliberately limited to the contracts whose every type is implemented there.
+        private static readonly IReadOnlySet<string> SystemMemoryContractTypes = new HashSet<string>(StringComparer.Ordinal)
+        {
+            "System.Text.SpanRuneEnumerator",
+        };
+
+        private static bool IsReviewedSystemMemoryContractType(
+            ITypeSymbol type,
+            string expectedType,
+            AssemblyName trustedAssembly) =>
+            trustedAssembly.Name == "System.Private.CoreLib"
+            && SystemMemoryContractTypes.Contains(expectedType)
+            && AssemblyIdentityMatches(
+                type.ContainingAssembly.Identity,
+                Assembly.Load(new AssemblyName("System.Memory")).GetName());
 
         private bool IsExactScopedFactoryAlias(
             InvocationExpressionSyntax registration,
@@ -24813,6 +24895,35 @@ internal static partial class HostedGrimoireProducerInventory
                     }
                 }
 
+                if (selection is null && AsyncBuilderReachesProducerSite(member, out INamedTypeSymbol? asyncBuilder))
+                {
+                    RefuseTraversalCompletion();
+
+                    diagnostics.Add(new(
+                        "HOSTED_SITE_UNCLASSIFIED",
+                        Location(member.Syntax),
+                        TypeKey(asyncBuilder!) + "; An authored async method builder runs its Create, Start, AwaitOnCompleted, SetResult, SetException and Task members at points of the state machine nothing here places."));
+                }
+
+                if (selection is null
+                    && member.Symbol is { MethodKind: MethodKind.Constructor, IsStatic: false }
+                    && member.Syntax is ConstructorDeclarationSyntax constructorDeclaration)
+                {
+                    emittedEvidence = MergeEvidence(
+                        emittedEvidence,
+                        TraverseConstructionPreamble(
+                            member,
+                            constructorDeclaration,
+                            rootType,
+                            operationId,
+                            active,
+                            lifecycle,
+                            ordinary?.WorkKind,
+                            inheritedWork,
+                            inheritedEffect,
+                            recoveryEffect));
+                }
+
                 foreach (SyntaxNode node in (selection ?? member.Syntax).DescendantNodesAndSelf(node => node == (selection ?? member.Syntax) || node is not LocalFunctionStatementSyntax and not AnonymousFunctionExpressionSyntax))
                 {
                     bool recoveryNodeMayExecute = RecoveryNodeMayExecute(
@@ -24864,6 +24975,33 @@ internal static partial class HostedGrimoireProducerInventory
                         RefuseTraversalCompletion();
 
                         diagnostics.Add(new("HOSTED_ADMISSION_HANDLE_ESCAPE", operationId + "/store@" + Location(node), staticRoot + "; A retained handle stored in static storage has no proven lifetime continuation."));
+                    }
+
+                    if (StaticInitializationStartedAt(member, node) is { } initializedType)
+                    {
+                        RefuseTraversalCompletion();
+
+                        diagnostics.Add(new(
+                            "HOSTED_SITE_UNCLASSIFIED",
+                            Location(node),
+                            TypeKey(initializedType) + ".cctor; The static initialization of the type can reach a producer site, and the point at which the runtime first uses the type is not modeled."));
+                    }
+
+                    if (ImplicitCallsAt(member, selection ?? member.Syntax, node) is { Count: > 0 } implicitCalls)
+                    {
+                        emittedEvidence = MergeEvidence(
+                            emittedEvidence,
+                            TraverseImplicitCalls(
+                                member,
+                                implicitCalls,
+                                rootType,
+                                operationId,
+                                active,
+                                lifecycle,
+                                ordinary?.WorkKind,
+                                inheritedWork,
+                                inheritedEffect,
+                                recoveryEffect));
                     }
 
                     foreach (IConversionOperation conversion in UserConversionsAt(member, node))
@@ -25095,7 +25233,8 @@ internal static partial class HostedGrimoireProducerInventory
                         or ImplicitElementAccessSyntax
                             ? member.Model.GetSymbolInfo(node).Symbol
                             : node is IdentifierNameSyntax
-                                && (node.Parent is not MemberAccessExpressionSyntax
+                                && (node.Parent is not MemberAccessExpressionSyntax readReceiver
+                                    || readReceiver.Expression == node
                                     || IsLongRestSdkFactoryReceiverProperty(node, member))
                                     ? member.Model.GetSymbolInfo(node).Symbol switch
                                     {
@@ -25214,6 +25353,16 @@ internal static partial class HostedGrimoireProducerInventory
                             RefuseTraversalCompletion();
 
                             diagnostics.Add(new("HOSTED_CALLBACK_OWNERSHIP_UNPROVEN", RootOperation(operationId) + "/enumerable@" + Location(node), enumerationDetail));
+                        }
+
+                        if ((node is InvocationExpressionSyntax or BaseObjectCreationExpressionSyntax)
+                            && Resolve(method, member.Model.Compilation) is null
+                            && method.Locations.All(static location => !location.IsInSource)
+                            && FrameworkMemberRunsAuthoredCallback(member, node, method, out string callbackDetail))
+                        {
+                            RefuseTraversalCompletion();
+
+                            diagnostics.Add(new("HOSTED_CALLBACK_OWNERSHIP_UNPROVEN", RootOperation(operationId) + "/callback@" + Location(node), callbackDetail));
                         }
 
                         if (node is InvocationExpressionSyntax explicitCleanup
@@ -25937,13 +26086,28 @@ internal static partial class HostedGrimoireProducerInventory
                             || aggregate
                             || TransparentProducerBoundaries.Contains(callee))
                         {
+                            // A virtual or abstract method of a class the source declares runs the override of the runtime type of
+                            // its receiver, not the body of the slot the call names.
+                            AccessorDispatch? classDispatch = strategyTargets.Length == 0 && boundTargets.Length == 0 && reviewedClosedTargets.Length == 0
+                                ? ClassMethodDispatch(member, method, node)
+                                : null;
+
                             AuthoredMember[] targets = strategyTargets.Length != 0
                                 ? strategyTargets
-                                : target is not null
-                                    ? [target]
-                                    : boundTargets.Length != 0
-                                        ? boundTargets
-                                        : reviewedClosedTargets;
+                                : classDispatch is { } dispatched
+                                    ? [.. dispatched.Targets]
+                                    : target is not null
+                                        ? [target]
+                                        : boundTargets.Length != 0
+                                            ? boundTargets
+                                            : reviewedClosedTargets;
+
+                            if (classDispatch is { Unresolved: true })
+                            {
+                                RefuseTraversalCompletion();
+
+                                diagnostics.Add(new("HOSTED_CALL_TARGET_UNRESOLVED", Location(node), callee));
+                            }
 
                             if (target is null && boundTargets.Length != 0
                                 && HasIncompleteDefaultInterfaceBinding(method, member.Model.Compilation))
@@ -26396,14 +26560,13 @@ internal static partial class HostedGrimoireProducerInventory
                             diagnostics.Add(new("HOSTED_SITE_UNCLASSIFIED", Location(node), callee));
                         }
 
+                        (ITypeSymbol? receiverType, ExpressionSyntax? receiverExpression, bool exactReceiver) = AccessorReceiver(propertyReference?.Instance);
+
                         foreach (IMethodSymbol accessor in new[] { reads ? property.GetMethod : null, writes ? property.SetMethod : null }.OfType<IMethodSymbol>())
                         {
-                            if (Resolve(accessor, member.Model.Compilation) is { } target
-                                && target.Syntax is not AccessorDeclarationSyntax
-                                {
-                                    Body: null,
-                                    ExpressionBody: null,
-                                })
+                            AccessorDispatch dispatch = ResolveAccessorDispatch(member, accessor, receiverType, receiverExpression, exactReceiver, property.IsIndexer);
+
+                            foreach (AuthoredMember target in dispatch.Targets)
                             {
                                 AuthoredMember boundTarget = propertyReference is null
                                     ? target
@@ -26413,6 +26576,12 @@ internal static partial class HostedGrimoireProducerInventory
                                         accessor,
                                         target,
                                         assignedValue);
+
+                                boundTarget = BindReceiverContext(
+                                    member,
+                                    propertyReference?.Instance is { IsImplicit: false, Syntax: ExpressionSyntax writtenReceiver } ? writtenReceiver : null,
+                                    target,
+                                    boundTarget);
 
                                 bool leaseBoundary = member.ScopedLeaseInstance is not null;
 
@@ -26439,9 +26608,8 @@ internal static partial class HostedGrimoireProducerInventory
 
                                 emittedEvidence = MergeEvidence(emittedEvidence, Traverse(boundTarget, rootType, operationId + (accessor.MethodKind == MethodKind.PropertyGet ? "/get@" : "/set@") + Location(node), active, lifecycle, leaseBoundary && !sameLease ? null : workAdmitted, leaseBoundary && !sameLease ? null : effectGroup, recoveryEffect: leaseBoundary ? null : recoveryEffect));
                             }
-                            else if (property.IsIndexer
-                                && accessor.Locations.Any(static location =>
-                                    location.IsInSource))
+
+                            if (dispatch.Unresolved)
                             {
                                 RefuseTraversalCompletion();
 
@@ -26457,9 +26625,11 @@ internal static partial class HostedGrimoireProducerInventory
                         && authoredMutation.Left == node
                         && authoredMutation.Kind() is SyntaxKind.AddAssignmentExpression
                             or SyntaxKind.SubtractAssignmentExpression
-                        && authoredEvent.DeclaringSyntaxReferences
-                            .Select(static reference => reference.GetSyntax())
-                            .SingleOrDefault() is EventDeclarationSyntax)
+                        && authoredEvent.Locations.Any(static location => location.IsInSource)
+                        && (authoredEvent.DeclaringSyntaxReferences
+                                .Select(static reference => reference.GetSyntax())
+                                .SingleOrDefault() is EventDeclarationSyntax
+                            || (authoredEvent.AddMethod is { } declaredAdd && IsDispatchedMember(declaredAdd))))
                     {
                         bool addsHandler = authoredMutation.IsKind(
                             SyntaxKind.AddAssignmentExpression);
@@ -26481,23 +26651,30 @@ internal static partial class HostedGrimoireProducerInventory
                             operationId,
                             inheritedEffect);
 
-                        if (accessor is not null
-                            && Resolve(
-                                accessor,
-                                member.Model.Compilation) is { } target
-                            && target.Syntax is not AccessorDeclarationSyntax
-                            {
-                                Body: null,
-                                ExpressionBody: null,
-                            })
+                        (ITypeSymbol? receiverType, ExpressionSyntax? receiverExpression, bool exactReceiver) = AccessorReceiver(
+                            member.Model.GetOperation(authoredMutation) is IEventAssignmentOperation { EventReference: IEventReferenceOperation eventReference }
+                                ? eventReference.Instance
+                                : null);
+
+                        AccessorDispatch dispatch = accessor is null
+                            ? new([], true)
+                            : ResolveAccessorDispatch(member, accessor, receiverType, receiverExpression, exactReceiver, indexer: false);
+
+                        foreach (AuthoredMember target in dispatch.Targets)
                         {
-                            AuthoredMember boundTarget = accessor.Parameters is
+                            AuthoredMember boundTarget = accessor!.Parameters is
                                 [IParameterSymbol handler]
                                     ? BindArguments(
                                         member,
                                         [(authoredMutation.Right, handler, RefKind.None)],
                                         target)
                                     : target;
+
+                            boundTarget = BindReceiverContext(
+                                member,
+                                receiverExpression,
+                                target,
+                                boundTarget);
 
                             bool leaseBoundary = member.ScopedLeaseInstance is not null;
 
@@ -26525,7 +26702,8 @@ internal static partial class HostedGrimoireProducerInventory
                                     leaseBoundary ? null : effectGroup,
                                     recoveryEffect: leaseBoundary ? null : recoveryEffect));
                         }
-                        else
+
+                        if (dispatch.Unresolved || dispatch.Targets.Count == 0 && authoredEvent.DeclaringSyntaxReferences.Select(static reference => reference.GetSyntax()).SingleOrDefault() is EventDeclarationSyntax)
                         {
                             RefuseTraversalCompletion();
 
@@ -30977,10 +31155,13 @@ internal static partial class HostedGrimoireProducerInventory
                 || IsReviewedProviderNeutralOptionsBuilderMember(method)
                 || IsReviewedRuntimeCleanup(method)
                 || IsReviewedFloatVectorMember(method, node, model, context)
+                || IsReviewedExactInMemoryConstruction(method)
+                || IsReviewedAsyncStateMachineMember(method)
                 || IsReviewedExactFrameworkScalarOperator(method, node, model, context)
                 || IsReviewedExactTypeOfEqualityOperator(method, node, model)
                 || IsReviewedPrimitiveQueueMember(method, node, model, context)
                 || IsReviewedInvariantDateTimeParser(method, node, model)
+                || IsReviewedDefaultProviderUInt32Format(method, node, model)
                 || IsExactIntegerRange(method)
                 || IsReviewedCollectionMechanicalMember(method)
                 || IsReviewedInterpolatedStringCreate(method)
@@ -31021,6 +31202,36 @@ internal static partial class HostedGrimoireProducerInventory
                 } sequence
                 && IsExactFrameworkType(sequence, "System.Collections.Generic.IEnumerable`1",
                     typeof(IEnumerable<>).Assembly.GetName());
+
+        // The state machine an async method compiles to is the body of that async method: an authored builder's Start calls
+        // its MoveNext, and what MoveNext runs is the async method, which is traversed as the method itself.
+        private static bool IsReviewedAsyncStateMachineMember(IMethodSymbol method) =>
+            method is { Name: "MoveNext" or "SetStateMachine", IsStatic: false }
+            && IsExactFrameworkType(method.ContainingType, "System.Runtime.CompilerServices.IAsyncStateMachine", typeof(System.Runtime.CompilerServices.IAsyncStateMachine).Assembly.GetName());
+
+        // UInt32.TryFormat(Span<char>, out int, ReadOnlySpan<char>, IFormatProvider) writes the digits of the value into the
+        // caller's span. It runs no supplied code when the provider is the default one the caller did not pass: a provider
+        // that was passed is asked for its number format, which an authored provider answers with code of its own.
+        private static bool IsReviewedDefaultProviderUInt32Format(
+            IMethodSymbol method,
+            SyntaxNode? node,
+            SemanticModel? model) =>
+            !method.IsStatic && method.Arity == 0 && method.Name == "TryFormat"
+            && method.ReturnType.SpecialType == SpecialType.System_Boolean
+            && IsExactFrameworkType(method.ContainingType, "System.UInt32", typeof(uint).Assembly.GetName())
+            && method.Parameters is
+            [
+                { RefKind: RefKind.None, Type: INamedTypeSymbol { Name: "Span", TypeArguments: [{ SpecialType: SpecialType.System_Char }] } destination },
+                { RefKind: RefKind.Out, Type.SpecialType: SpecialType.System_Int32 },
+                { RefKind: RefKind.None, Type: INamedTypeSymbol { Name: "ReadOnlySpan", TypeArguments: [{ SpecialType: SpecialType.System_Char }] } format },
+                { RefKind: RefKind.None, Type: { } providerType },
+            ]
+            && IsExactFrameworkType(destination, "System.Span`1", typeof(Span<>).Assembly.GetName())
+            && IsExactFrameworkType(format, "System.ReadOnlySpan`1", typeof(ReadOnlySpan<>).Assembly.GetName())
+            && IsExactFrameworkType(providerType, "System.IFormatProvider", typeof(IFormatProvider).Assembly.GetName())
+            && node is not null
+            && model?.GetOperation(node) is IInvocationOperation invocation
+            && invocation.Arguments.Any(static argument => argument.Parameter?.Ordinal == 3 && argument.ArgumentKind == ArgumentKind.DefaultValue);
 
         private bool IsReviewedInvariantDateTimeParser(
             IMethodSymbol method,
@@ -33049,6 +33260,15 @@ internal static partial class HostedGrimoireProducerInventory
                 return true;
             }
 
+            // Authored Enumerables Absent: no authored type implements the read-only list contract, so a value of that
+            // interface is a framework list and its indexer a framework member, whatever produced the value.
+            if (type == "System.Collections.Generic.IReadOnlyList`1"
+                && AuthoredEnumerablesAbsentByUse
+                && IsPremiseCoveredEnumerationInterface(property.ContainingType))
+            {
+                return true;
+            }
+
             return HasReviewedFrameworkCollectionIndexerReceiver(
                 access.Expression,
                 model,
@@ -33442,12 +33662,14 @@ internal static partial class HostedGrimoireProducerInventory
                         .ToArray();
                 }
 
+                // A source in a tree the analysis does not hold (generated code) cannot be followed, so the value is not proved.
                 return sources.Length != 0
-                    && sources.All(source => review(
-                        source,
-                        semanticModels[source.SyntaxTree],
-                        path,
-                        context));
+                    && sources.All(source => semanticModels.TryGetValue(source.SyntaxTree, out SemanticModel? sourceModel)
+                        && review(
+                            source,
+                            sourceModel,
+                            path,
+                            context));
             }
             finally
             {
@@ -33460,11 +33682,11 @@ internal static partial class HostedGrimoireProducerInventory
                 .SelectMany(static reference => reference.GetSyntax()
                     .DescendantNodes()
                     .OfType<AssignmentExpressionSyntax>())
-                .Any(assignment => SymbolEqualityComparer.Default.Equals(
-                    semanticModels[assignment.SyntaxTree]
-                        .GetSymbolInfo(assignment.Left).Symbol,
-                    storage)
-                    || DeconstructsInto(assignment, semanticModels[assignment.SyntaxTree], storage)) == true;
+                .Any(assignment => semanticModels.TryGetValue(assignment.SyntaxTree, out SemanticModel? assignmentModel)
+                    && (SymbolEqualityComparer.Default.Equals(
+                            assignmentModel.GetSymbolInfo(assignment.Left).Symbol,
+                            storage)
+                        || DeconstructsInto(assignment, assignmentModel, storage))) == true;
 
         // True when the assignment is a tuple deconstruction that names the storage among its targets.
         private static bool DeconstructsInto(AssignmentExpressionSyntax assignment, SemanticModel model, ISymbol storage) =>
@@ -34733,7 +34955,84 @@ internal static partial class HostedGrimoireProducerInventory
             return constructorParameter;
         }
 
-        private bool ContainsPotentialProducerSite(AuthoredMember member) => ContainsPotentialProducerSite(member, []);
+        // The scan of a member from a fresh path depends only on its syntax and semantic model, so a root scan is
+        // computed once. A scan that continues a path ends where it meets the path, so it is never cached. A root scan
+        // that is asked for again while it is being computed (a body whose implicit call resolves to the body itself)
+        // ends there as a scan meeting its own path does, and a result that was cut that way is not cached.
+        private readonly Dictionary<ProducerSiteScanKey, bool> producerSiteScans = new(ProducerSiteScanKeyComparer.Instance);
+
+        private readonly HashSet<GraphMemberIdentity> producerSiteScansInProgress = [];
+
+        private int producerSiteScanCuts;
+
+        // What a scan consults besides the syntax and the semantic model: the bindings the member was bound with (callables,
+        // values, concrete types, admissions, the scoped holder, the readiness source), which a receiver proof and a callable
+        // resolution read. Two scans of one body are the same scan only when they were bound with the very same bindings.
+        private readonly record struct ProducerSiteScanKey(GraphMemberIdentity Member, object?[] Bindings);
+
+        private sealed class ProducerSiteScanKeyComparer : IEqualityComparer<ProducerSiteScanKey>
+        {
+            internal static readonly ProducerSiteScanKeyComparer Instance = new();
+
+            public bool Equals(ProducerSiteScanKey left, ProducerSiteScanKey right) =>
+                left.Member.Equals(right.Member)
+                && left.Bindings.Length == right.Bindings.Length
+                && left.Bindings.Zip(right.Bindings).All(static pair => ReferenceEquals(pair.First, pair.Second));
+
+            public int GetHashCode(ProducerSiteScanKey key)
+            {
+                HashCode hash = new();
+
+                hash.Add(key.Member);
+
+                foreach (object? binding in key.Bindings)
+                {
+                    hash.Add(binding is null ? 0 : System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(binding));
+                }
+
+                return hash.ToHashCode();
+            }
+        }
+
+        private static ProducerSiteScanKey ScanKey(GraphMemberIdentity identity, AuthoredMember member) =>
+            new(identity, [member.AdmissionBindings, member.CallableBindings, member.AbsentCallables, member.ConcreteBindings, member.RecoveryBindings, member.RecoveryContext, member.ValueBindings, member.ConstructorContexts, member.OrdinaryScopedHolder, member.ReadinessSource, member.ScopedLeaseInstance]);
+
+        private bool ContainsPotentialProducerSite(AuthoredMember member)
+        {
+            GraphMemberIdentity identity = MemberIdentity(member);
+
+            ProducerSiteScanKey scanKey = ScanKey(identity, member);
+
+            if (producerSiteScans.TryGetValue(scanKey, out bool reaches))
+            {
+                return reaches;
+            }
+
+            if (!producerSiteScansInProgress.Add(identity))
+            {
+                producerSiteScanCuts++;
+
+                return false;
+            }
+
+            int cutsBefore = producerSiteScanCuts;
+
+            try
+            {
+                reaches = ContainsPotentialProducerSite(member, []);
+            }
+            finally
+            {
+                producerSiteScansInProgress.Remove(identity);
+            }
+
+            if (producerSiteScanCuts == cutsBefore)
+            {
+                producerSiteScans[scanKey] = reaches;
+            }
+
+            return reaches;
+        }
 
         private bool ContainsPotentialProducerSite(AuthoredMember member, HashSet<GraphMemberIdentity> path)
         {
@@ -34744,12 +35043,32 @@ internal static partial class HostedGrimoireProducerInventory
 
             try
             {
+                if (ConstructionPreambleReachesProducerSite(member, path) || AsyncBuilderReachesProducerSite(member, out _))
+                {
+                    return true;
+                }
+
                 foreach (SyntaxNode node in member.Syntax.DescendantNodesAndSelf(candidate => candidate == member.Syntax || candidate is not AnonymousFunctionExpressionSyntax and not LocalFunctionStatementSyntax))
                 {
                     if (node is CommonForEachStatementSyntax or SpreadElementSyntax
                         && EnumerationReachesProducerSite(member, node, path))
                     {
                         return true;
+                    }
+
+                    if (ImplicitCallsAt(member, member.Syntax, node).Any(call => ImplicitCallReachesProducerSite(member, call, path))
+                        || LaneImplicitCallsReachProducerSite(member, node, path)
+                        || LaneRefusalsReachProducerSite(member, node, path))
+                    {
+                        return true;
+                    }
+
+                    // A method group names a method without calling it. Whether a body can reach a producer site through it is
+                    // the question of where the delegate is called, which a scan for sites alone does not ask of the body that
+                    // merely passes it (the factory handed to a Lazy runs at the first read of its value).
+                    if (scanSitesOnly && member.Model.GetOperation(node) is IMethodReferenceOperation)
+                    {
+                        continue;
                     }
 
                     if (member.Model.GetSymbolInfo(node).Symbol is IMethodSymbol method)
@@ -34770,8 +35089,17 @@ internal static partial class HostedGrimoireProducerInventory
 
                         AuthoredMember? target = Resolve(method, member.Model.Compilation);
 
-                        if (target is not null && ContainsPotentialProducerSite(target, path)
+                        if (ClassMethodDispatch(member, method, node) is { } scannedDispatch)
+                        {
+                            if (!scanSitesOnly && scannedDispatch.Unresolved || scannedDispatch.Targets.Any(dispatched => ContainsPotentialProducerSite(dispatched, path)))
+                            {
+                                return true;
+                            }
+                        }
+                        else if (target is not null && ContainsPotentialProducerSite(target, path)
                             || target is null
+                                && !scanSitesOnly
+                                && !IsReviewedFrameworkRangeMember(method)
                                 && RequiresExternalBoundaryClassification(
                                     method,
                                     member.Model.Compilation,
@@ -34789,14 +35117,15 @@ internal static partial class HostedGrimoireProducerInventory
                                 node.Parent is AssignmentExpressionSyntax assignment
                                     && assignment.Left == node,
                                 out _)
-                            || RequiresExternalBoundaryClassification(
-                                property,
-                                member.Model.Compilation,
-                                node.Parent is AssignmentExpressionSyntax propertyMutation
-                                    && propertyMutation.Left == node,
-                                node,
-                                member.Model,
-                                member)))
+                            || !scanSitesOnly
+                                && RequiresExternalBoundaryClassification(
+                                    property,
+                                    member.Model.Compilation,
+                                    node.Parent is AssignmentExpressionSyntax propertyMutation
+                                        && propertyMutation.Left == node,
+                                    node,
+                                    member.Model,
+                                    member)))
                     {
                         return true;
                     }
@@ -35649,6 +35978,23 @@ internal static partial class HostedGrimoireProducerInventory
                 target,
                 recoveryProvenance);
 
+            ExpressionSyntax? written = call.Expression is MemberAccessExpressionSyntax access
+                ? access.Expression
+                : null;
+
+            return BindReceiverContext(caller, written, target, bound, recoveryProvenance);
+        }
+
+        // The context the receiver of an instance member brings to the member it runs: the callables and values the receiver
+        // was constructed with, which a written call and an accessor access bind the same way. A receiver that is not written
+        // (an implicit this) brings the caller's own context.
+        private AuthoredMember BindReceiverContext(
+            AuthoredMember caller,
+            ExpressionSyntax? written,
+            AuthoredMember target,
+            AuthoredMember bound,
+            RecoveryTupleProvenanceContext? recoveryProvenance = null)
+        {
             if (target.Symbol.IsStatic)
             {
                 return bound.ScopedLeaseInstance is null ? bound : bound with { ScopedLeaseInstance = null };
@@ -35689,10 +36035,7 @@ internal static partial class HostedGrimoireProducerInventory
                     _ => false,
                 }) == true;
 
-            ExpressionSyntax? receiver = call.Expression is
-                MemberAccessExpressionSyntax access
-                    ? access.Expression
-                    : null;
+            ExpressionSyntax? receiver = written;
 
             bool hasBoundReceiverContext = receiver is not null
                 && caller.Model.GetSymbolInfo(

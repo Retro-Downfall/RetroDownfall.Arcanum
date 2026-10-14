@@ -1206,6 +1206,38 @@ public sealed partial class HostedGrimoireProducerInventoryTests
         Assert.True(control.Holds(HostedProducerPremises.AuthoredEnumerablesAbsentByUse), string.Join(global::System.Environment.NewLine, control.Violations));
     }
 
+    // The indexer of a framework read-only list is the framework's own once the universe declares no authored
+    // enumerable. Strict discovery refuses the unproven receiver, the premised run classifies it, and a universe that
+    // declares an authored list withholds the premise so that the indexer stays refused.
+    [Fact]
+    public void AuthoredEnumerablesAbsentClassifiesTheIndexerOfAnUnprovenReadOnlyList()
+    {
+        static bool IndexerUnclassified(HostedProducerDiscovery<HostedProducerSite> result) =>
+            result.Diagnostics.Any(static diagnostic => diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED" && diagnostic.Detail == "System.Collections.Generic.IReadOnlyList`1.this[]");
+
+        CSharpCompilation compilation = EnumerationPremiseFixture("_ = UnprovedEnumerableInput.List[0];");
+
+        Assert.True(IndexerUnclassified(PremiseStrict(compilation)));
+
+        HostedProducerDiscovery<HostedProducerSite> premised = EnumerationPremiseRequested(compilation);
+
+        Assert.Empty(PremiseViolations(premised));
+
+        Assert.False(IndexerUnclassified(premised));
+
+        Assert.Empty(premised.Diagnostics);
+
+        const string authoredList = "sealed class Elsewhere : System.Collections.Generic.IReadOnlyList<int> { public int this[int index] { get { System.IO.File.Delete(\"indexer-effect\"); return 0; } } public int Count => 0; public System.Collections.Generic.IEnumerator<int> GetEnumerator() => throw new NotSupportedException(); System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => throw new NotSupportedException(); }";
+
+        CSharpCompilation withheld = EnumerationPremiseFixture("_ = UnprovedEnumerableInput.List[0];", authoredList);
+
+        HostedProducerDiscovery<HostedProducerSite> refused = EnumerationPremiseRequested(withheld);
+
+        Assert.NotEmpty(PremiseViolations(refused));
+
+        Assert.True(IndexerUnclassified(refused));
+    }
+
     // The premise is about interface-typed receivers only. A concrete framework type outside the closed set keeps
     // its own members, and an interface that merely shares a framework interface's name is not that interface.
     [Fact]
