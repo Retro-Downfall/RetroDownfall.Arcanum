@@ -2,6 +2,7 @@ using System.Collections.Immutable;
 using System.Diagnostics.Metrics;
 
 using RetroDownfall.Arcanum.Core.LongRest;
+using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Tests.Fixtures;
 
 namespace RetroDownfall.Arcanum.Tests.LongRest;
@@ -78,6 +79,70 @@ public sealed partial class LongRestHierarchyTests
         Assert.All(lane, static candidate => Assert.DoesNotMatch("^g0-", candidate.Target.MemoryId));
 
         Assert.Equal(32, lane.Length);
+    }
+
+    // Excluding the anchor's own chain from ranking must not exempt it from verification: the root and every ancestor between the anchor and
+    // the root are read and checked on every discovery, so a record altered anywhere on the chain refuses the anchor, not only the record
+    // of its nearest ancestor. Seventeen groups of sixteen make a layer-1 node each; sixteen of those fold into a layer-2 node and the
+    // seventeenth is carried, so an anchor of the first group has three generated ancestors: layer 1, layer 2 and the layer-3 root.
+    [SkippableTheory]
+    [InlineData("none")]
+    [InlineData("nearest-summary")]
+    [InlineData("intermediate-summary")]
+    [InlineData("intermediate-embedding")]
+    [InlineData("root-summary")]
+    [InlineData("root-embedding")]
+    [InlineData("foreign-summary")]
+    public async Task Discovery_refuses_an_anchor_whose_ancestor_chain_was_altered_anywhere(string tamper)
+    {
+        await using LongRestSweepHarness h = await LongRestSweepHarness.CreateAsync();
+
+        string[] prefixes = [.. Enumerable.Range(0, 17).Select(static index => $"g{index:D2}")];
+
+        await SeedGroupsAsync(h, prefixes);
+
+        h.FoldVector = _ => Axis(64, 0);
+
+        LongRestDiscoveryGeneration generation = await h.CaptureAsync();
+
+        await h.BuildAsync(generation);
+
+        Assert.Equal(17L, await h.ScalarAsync("SELECT count(*) FROM long_rest_discovery_nodes WHERE Layer = 1;"));
+
+        Assert.Equal(1L, await h.ScalarAsync("SELECT count(*) FROM long_rest_discovery_nodes WHERE Layer = 2;"));
+
+        Assert.Equal(1L, await h.ScalarAsync("SELECT count(*) FROM long_rest_discovery_nodes WHERE Layer = 3;"));
+
+        string anchor = "g00-00";
+
+        string nearest = "(SELECT parent.NodeId FROM long_rest_discovery_edges edge JOIN long_rest_discovery_nodes parent ON parent.NodeId = edge.ParentNodeId "
+            + $"JOIN long_rest_discovery_nodes leaf ON leaf.NodeId = edge.ChildNodeId WHERE leaf.Layer = 0 AND leaf.MemoryId = '{anchor}')";
+
+        string foreign = "(SELECT parent.NodeId FROM long_rest_discovery_edges edge JOIN long_rest_discovery_nodes parent ON parent.NodeId = edge.ParentNodeId "
+            + "JOIN long_rest_discovery_nodes leaf ON leaf.NodeId = edge.ChildNodeId WHERE leaf.Layer = 0 AND leaf.MemoryId = 'g05-00')";
+
+        string statement = tamper switch
+        {
+            "none" => "SELECT 1;",
+
+            "nearest-summary" => $"UPDATE long_rest_discovery_nodes SET Summary = 'altered' WHERE NodeId = {nearest};",
+
+            "intermediate-summary" => "UPDATE long_rest_discovery_nodes SET Summary = 'altered' WHERE Layer = 2;",
+
+            "intermediate-embedding" => "UPDATE long_rest_discovery_embeddings SET ValueDigest = zeroblob(32) WHERE NodeId IN (SELECT NodeId FROM long_rest_discovery_nodes WHERE Layer = 2);",
+
+            "root-summary" => "UPDATE long_rest_discovery_nodes SET Summary = 'altered' WHERE Layer = 3;",
+
+            "root-embedding" => "UPDATE long_rest_discovery_embeddings SET ValueDigest = zeroblob(32) WHERE NodeId IN (SELECT NodeId FROM long_rest_discovery_nodes WHERE Layer = 3);",
+
+            _ => $"UPDATE long_rest_discovery_nodes SET Summary = 'altered' WHERE NodeId = {foreign};",
+        };
+
+        await h.ExecuteAsync(statement);
+
+        Result<LongRestCandidateGroup[]> discovered = await h.Store.DiscoverAsync(generation.GenerationId, await h.TargetAsync(anchor), null, CancellationToken.None);
+
+        Assert.Equal(tamper == "none", discovered.IsSuccess);
     }
 
     [SkippableFact]

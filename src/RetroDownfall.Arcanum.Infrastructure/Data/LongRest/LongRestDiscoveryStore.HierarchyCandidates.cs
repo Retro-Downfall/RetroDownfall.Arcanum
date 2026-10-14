@@ -25,7 +25,9 @@ internal sealed partial class LongRestDiscoveryStore
 
         // The query is the anchor's nearest generated ancestor: the most specific summary of what the anchor is about. Every ancestor is
         // on the anchor's own chain, so none of them is ever ranked, selected or expanded: a chain node always matches the anchor
-        // and would hand back the anchor's own tree. Only the nearest ancestor is read (its subtree is at most sixteen leaves).
+        // and would hand back the anchor's own tree. Excluding a node from ranking is not excluding it from verification: the nearest
+        // ancestor is read here and the topmost one just below, and reading a node verifies the whole subtree under it, which is every
+        // other node of the chain. So a record altered anywhere on the chain refuses the anchor.
         LongRestHierarchyInput? query = null;
 
         List<Guid> chain = [];
@@ -49,6 +51,11 @@ internal sealed partial class LongRestDiscoveryStore
             chain.Add(node);
 
             query ??= await ReadHierarchyNodeAsync(connection, transaction, generation, node, capability, cancellationToken).ConfigureAwait(false);
+        }
+
+        if (chain.Count > 1)
+        {
+            _ = await ReadHierarchyNodeAsync(connection, transaction, generation, chain[^1], capability, cancellationToken).ConfigureAwait(false);
         }
 
         // A raw observed Saga vector never serves as a query in the configured generated space.

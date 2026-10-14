@@ -202,11 +202,17 @@ public sealed partial class LongRestSweepStoreTests
         internal int AdjudicationSends { get; private set; }
 
         internal static async Task<Fixture> CreateAsync(bool protect, int sourceCount = 2, bool campaign = false, bool duplicates = false, bool omittedOwner = false, string? policyFault = null,
-            int inputBudget = LongRestDiscoveryLimits.ProviderInputUtf8Bytes, Func<int, string>? text = null)
+            int inputBudget = LongRestDiscoveryLimits.ProviderInputUtf8Bytes, Func<int, string>? text = null, Func<int, float[]>? vector = null,
+            Func<LongRestHierarchyWork, float[]>? foldVector = null)
         {
             LongRestSweepHarness h = await LongRestSweepHarness.CreateAsync();
 
             h.ProviderInputBudget = inputBudget;
+
+            if (foldVector is not null)
+            {
+                h.FoldVector = foldVector;
+            }
 
             Guid? campaignId = campaign ? Guid.NewGuid() : null;
 
@@ -221,6 +227,11 @@ public sealed partial class LongRestSweepStoreTests
                 Guid memory = new("10000000-0000-0000-0000-" + index.ToString("D12", System.Globalization.CultureInfo.InvariantCulture));
 
                 await h.SeedAsync(memory.ToString("D"), text?.Invoke(index) ?? (duplicates ? "identical observation" : "related observation " + index), session);
+
+                if (vector is not null)
+                {
+                    await h.SetEmbeddingAsync(memory.ToString("D"), vector(index));
+                }
             }
 
             await PreparePolicyFaultAsync(h, policyFault);

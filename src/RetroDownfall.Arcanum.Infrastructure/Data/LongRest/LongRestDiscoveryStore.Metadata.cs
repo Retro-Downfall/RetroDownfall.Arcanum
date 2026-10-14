@@ -160,7 +160,7 @@ internal sealed partial class LongRestDiscoveryStore
                 LEFT JOIN annal_versions version ON version.VersionId = head.CurrentVersionId
                 WHERE memory.ScopeKindCode = $scope AND memory.CampaignId IS $campaign AND ({SourceOwnerEligible})
                   {(partition is null ? "" : $"AND ({PartitionEligibility})")}
-                  AND (head.CurrentVersionId IS NULL OR ({SourceLifecycleEligible}))
+                  AND ({SourceLifecycleEligible})
                   AND NOT EXISTS (SELECT 1 FROM long_rest_discovery_leaves leaf WHERE leaf.GenerationId = $generation
                     AND leaf.MemoryId = source.MemoryId AND leaf.VersionId = head.CurrentVersionId
                     AND leaf.InsertionSequence = source.InsertionSequence AND leaf.MutationEpoch = source.MutationEpoch));

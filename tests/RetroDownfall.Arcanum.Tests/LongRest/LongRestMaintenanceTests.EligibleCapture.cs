@@ -18,7 +18,9 @@ public sealed partial class LongRestMaintenanceTests
     [InlineData("pinned")]
     public async Task An_ineligible_memorys_text_never_reaches_a_provider_request(string state)
     {
-        await using MaintenanceFixture f = await MaintenanceFixture.CreateAsync(ownWorker: false, protectedSources: false, sourceCount: 6,
+        // Session-less sources are Global memories: a retired one keeps its eligible owner binding, so the lifecycle predicate alone decides it.
+        // A Session-owned one is also excluded by its owner check once retired, which would let a broken predicate pass this test.
+        await using MaintenanceFixture f = await MaintenanceFixture.CreateAsync(ownWorker: false, protectedSources: false, sourceCount: 6, sessionless: true,
             sourceText: index => index == 2 ? $"observation about {IneligibleToken} with detail{index}" : $"observation about topic{index} with detail{index} and the common words");
 
         string memory = (string)(await f.H.ScalarAsync($"SELECT Id FROM saga_memories WHERE Content LIKE '%{IneligibleToken}%';"))!;
