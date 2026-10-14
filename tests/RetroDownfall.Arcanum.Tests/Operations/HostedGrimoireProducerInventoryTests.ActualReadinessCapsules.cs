@@ -72,11 +72,19 @@ public sealed partial class HostedGrimoireProducerInventoryTests
 
         // Nothing it mentions lives in Infrastructure or Api, apart from itself and the codec: no coordinator, store, gate, lease or provider.
         // That is every name it writes (a generic name included), every member and type the compiler binds for it without a written name
-        // (the enumerator of a foreach, the awaiter of an await, the disposal of a using, the operator of an expression), and the type of
+        // (the enumerator of a foreach, the awaiter of an await, the operator of an expression, the type of a using resource), and the type of
         // every expression in it.
+        AssertParkHandlerMentionsOnlyCoreAndFramework(infrastructure, parkHandler, codec);
+    }
+
+    // Every name the handler writes (a generic name included), every member and type the compiler binds for it without a written name
+    // (the enumerator of a foreach, the awaiter of an await, the operator of an expression), and the type of every expression in it
+    // must be Core vocabulary, the framework, the handler itself or its checkpoint codec.
+    private static void AssertParkHandlerMentionsOnlyCoreAndFramework(CSharpCompilation compilation, INamedTypeSymbol parkHandler, INamedTypeSymbol codec)
+    {
         foreach (SyntaxReference reference in parkHandler.DeclaringSyntaxReferences)
         {
-            SemanticModel model = infrastructure.GetSemanticModel(reference.SyntaxTree);
+            SemanticModel model = compilation.GetSemanticModel(reference.SyntaxTree);
 
             SyntaxNode declaration = reference.GetSyntax();
 
@@ -192,6 +200,70 @@ public sealed partial class HostedGrimoireProducerInventoryTests
         Assert.True(symbol.ContainingAssembly.Name == "RetroDownfall.Arcanum.Core" || symbol.ContainingAssembly.Name.StartsWith("System", StringComparison.Ordinal)
             || symbol.ContainingAssembly.Name == "mscorlib" || symbol.ContainingAssembly.Name == "netstandard",
             $"The Pure Park Handler mentions {symbol.ToDisplayString()} from {symbol.ContainingAssembly.Name}.");
+    }
+
+    // The mention scan is only as good as what it refuses: a handler that mentions anything foreign, however the mention is spelled
+    // (a qualified type, a generic name that only a using static spells, an extension call, the type of an expression), fails it, and a
+    // handler that mentions only the framework passes.
+    [Theory]
+    [InlineData("framework-only", true)]
+    [InlineData("qualified-type", false)]
+    [InlineData("generic-name-spelled-by-using-static", false)]
+    [InlineData("extension-call", false)]
+    [InlineData("type-of-an-expression", false)]
+    public void ThePureParkMentionScanRefusesAForeignMentionHoweverItIsSpelled(string shape, bool accepted)
+    {
+        string body = shape switch
+        {
+            "framework-only" => "return \"park\".Length + System.Math.Abs(1);",
+            "qualified-type" => "return Foreign.Count;",
+            "generic-name-spelled-by-using-static" => "return Make<int>();",
+            "extension-call" => "return \"park\".Shout();",
+            _ => "foreach (var item in Make<int[]>()) { return item; } return 0;",
+        };
+
+        CSharpCompilation compilation = Compile($$"""
+            using System;
+            using static Foreign;
+
+            public static class Foreign
+            {
+                public static T Make<T>() => default!;
+
+                public static int Count => 1;
+
+                public static string Shout(this string text) => text;
+            }
+
+            public static class Codec
+            {
+            }
+
+            public sealed class Handler
+            {
+                public object Run()
+                {
+                    {{body}}
+                }
+            }
+            """);
+
+        Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        INamedTypeSymbol handler = Assert.IsAssignableFrom<INamedTypeSymbol>(compilation.GetTypeByMetadataName("Handler"));
+
+        INamedTypeSymbol codec = Assert.IsAssignableFrom<INamedTypeSymbol>(compilation.GetTypeByMetadataName("Codec"));
+
+        Action scan = () => AssertParkHandlerMentionsOnlyCoreAndFramework(compilation, handler, codec);
+
+        if (accepted)
+        {
+            scan();
+        }
+        else
+        {
+            Assert.ThrowsAny<Xunit.Sdk.XunitException>(scan);
+        }
     }
 
     // Over the shared production discovery, which the production lane computes once per process: this test never runs a second

@@ -158,10 +158,107 @@ public sealed class AuthorityCarrierBanTests(ITestOutputHelper output)
         }
     }
 
+    // The pin above is only as good as what it refuses. A runner that invokes and awaits the delegate where it invokes it, directly or
+    // through the one forwarding closure it hands back to its own generic overload, is the shape the lease is lent under; a runner that
+    // runs the delegate on another task, keeps it, or calls it without awaiting it would let the lease outlive the awaited call.
+    [Theory]
+    [InlineData("Awaiting", true)]
+    [InlineData("Forwarding", true)]
+    [InlineData("TaskRun", false)]
+    [InlineData("Stored", false)]
+    [InlineData("Unawaited", false)]
+    [InlineData("ForwardedElsewhere", false)]
+    [InlineData("TwoClosures", false)]
+    public void The_busy_retry_pin_accepts_an_awaited_invocation_and_refuses_anything_that_lets_the_delegate_outlive_it(string runnerName, bool accepted)
+    {
+        CSharpCompilation compilation = Synthetic("""
+            public static class Retry
+            {
+                private static Func<Task>? s_kept;
+
+                public static async Task<T> Awaiting<T>(Func<Task<T>> action, CancellationToken ct = default)
+                {
+                    while (true)
+                    {
+                        try
+                        {
+                            return await action().ConfigureAwait(false);
+                        }
+                        catch (InvalidOperationException)
+                        {
+                        }
+                    }
+                }
+
+                public static async Task Forwarding(Func<Task> action)
+                {
+                    _ = await Forwarding<bool>(async () =>
+                    {
+                        await action().ConfigureAwait(false);
+
+                        return true;
+                    }).ConfigureAwait(false);
+                }
+
+                public static Task<T> Forwarding<T>(Func<Task<T>> action) => action();
+
+                public static Task<T> TaskRun<T>(Func<Task<T>> action) => Task.Run(() => action());
+
+                public static Task Stored(Func<Task> action)
+                {
+                    s_kept = action;
+
+                    return Task.CompletedTask;
+                }
+
+                public static Task Unawaited(Func<Task> action)
+                {
+                    _ = action();
+
+                    return Task.CompletedTask;
+                }
+
+                public static async Task ForwardedElsewhere(Func<Task> action)
+                {
+                    await Task.Run(async () =>
+                    {
+                        await action().ConfigureAwait(false);
+                    }).ConfigureAwait(false);
+                }
+
+                public static async Task TwoClosures(Func<Task> action)
+                {
+                    await Task.Run(() => Task.Run(async () =>
+                    {
+                        await action().ConfigureAwait(false);
+                    })).ConfigureAwait(false);
+                }
+            }
+            """);
+
+        INamedTypeSymbol retry = Assert.IsAssignableFrom<INamedTypeSymbol>(compilation.GetTypeByMetadataName("Fixture.Retry"));
+
+        IMethodSymbol runner = retry.GetMembers(runnerName).OfType<IMethodSymbol>().First(static method => method.Parameters.Length > 0 && method.DeclaringSyntaxReferences.Length == 1
+            && method.Parameters[0].Type is INamedTypeSymbol { Name: "Func" });
+
+        // The forwarding runner hands its closure to the retry's own generic overload, which is named ExecuteAsync in production.
+        Action check = () => AssertTheRunnerOnlyInvokesAndAwaitsTheDelegate(compilation, retry, runner, runnerName == "Forwarding" ? "Forwarding" : "ExecuteAsync");
+
+        if (accepted)
+        {
+            check();
+        }
+        else
+        {
+            // A failed assertion of the pin, not a defect of the fixture.
+            Assert.ThrowsAny<Xunit.Sdk.XunitException>(check);
+        }
+    }
+
     // The delegate is the one parameter typed Func<Task> or Func<Task<T>>, whatever its position. Every use of it is `await action().ConfigureAwait(..)`,
     // and the only closure that may hold it is the forwarding lambda handed straight back to the runner's own generic overload, awaited too:
     // a `Task.Run(() => action())` or a stored delegate would let the lease outlive the awaited call.
-    private static void AssertTheRunnerOnlyInvokesAndAwaitsTheDelegate(CSharpCompilation infrastructure, INamedTypeSymbol retryType, IMethodSymbol runner)
+    private static void AssertTheRunnerOnlyInvokesAndAwaitsTheDelegate(CSharpCompilation infrastructure, INamedTypeSymbol retryType, IMethodSymbol runner, string overload = "ExecuteAsync")
     {
         MethodDeclarationSyntax body = Assert.IsType<MethodDeclarationSyntax>(Assert.Single(runner.DeclaringSyntaxReferences).GetSyntax());
 
@@ -197,7 +294,7 @@ public sealed class AuthorityCarrierBanTests(ITestOutputHelper output)
 
                 IMethodSymbol target = Assert.IsAssignableFrom<IMethodSymbol>(runnerModel.GetSymbolInfo(forwarded).Symbol);
 
-                Assert.True(SymbolEqualityComparer.Default.Equals(retryType, target.ContainingType) && target.Name == "ExecuteAsync" && target.IsGenericMethod,
+                Assert.True(SymbolEqualityComparer.Default.Equals(retryType, target.ContainingType) && target.Name == overload && target.IsGenericMethod,
                     "The closure that holds the delegate is not handed to the runner's own generic overload.");
 
                 AssertAwaitedWithConfigureAwait(forwarded);
