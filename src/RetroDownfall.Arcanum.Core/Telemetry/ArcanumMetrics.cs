@@ -261,6 +261,15 @@ public static class ArcanumMetrics
         "Long Rest neighbours the group packer skipped, by reason");
 
     /// <summary>
+    /// Hierarchy children too large for any summary request of the recipe's input budget, carried unsummarized instead of folded. Counted
+    /// once, when the child first reaches a layer's plan, and only after the plan's cursor is durable. Never carries an identity or any content.
+    /// </summary>
+    public static readonly Counter<long> LongRestHierarchyOversizeChildrenTotal = Meter.CreateCounter<long>(
+        "arcanum.long_rest.hierarchy.oversize_children",
+        "{children}",
+        "Long Rest hierarchy children carried unsummarized because no request can hold them");
+
+    /// <summary>
     /// Adjudication groups the sweep did not queue because the identical set of memories was already decided NoChange in the same generation,
     /// so no request is made for it. Never carries an identity or any content.
     /// </summary>

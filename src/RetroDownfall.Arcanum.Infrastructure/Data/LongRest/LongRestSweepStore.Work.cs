@@ -14,9 +14,64 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.LongRest;
 
 internal sealed partial class LongRestSweepStore
 {
-    public Task<Result<LongRestSweepWork?>> ReadNextWorkAsync(LongRestSweep expected, LongRestMaintenanceCapability? capability, CancellationToken ct) =>
+    // What one read counted while it ran. A read can run more than once (a busy retry) and can fail after counting (a rollback), so the
+    // numbers are kept here and published only when the transaction that produced them has committed.
+    private sealed class PendingWorkCounts
+    {
+        internal int Oversize;
+
+        internal int PackLimit;
+
+        internal int Reused;
+
+        internal void Reset()
+        {
+            Oversize = 0;
+
+            PackLimit = 0;
+
+            Reused = 0;
+        }
+
+        internal void Publish()
+        {
+            if (Oversize > 0)
+            {
+                ArcanumMetrics.LongRestPackSkippedCandidatesTotal.Add(Oversize, new KeyValuePair<string, object?>("reason", "oversize"));
+            }
+
+            if (PackLimit > 0)
+            {
+                ArcanumMetrics.LongRestPackSkippedCandidatesTotal.Add(PackLimit, new KeyValuePair<string, object?>("reason", "pack_limit"));
+            }
+
+            if (Reused > 0)
+            {
+                ArcanumMetrics.LongRestReusedDecisionsTotal.Add(Reused);
+            }
+        }
+    }
+
+    public async Task<Result<LongRestSweepWork?>> ReadNextWorkAsync(LongRestSweep expected, LongRestMaintenanceCapability? capability, CancellationToken ct)
+    {
+        PendingWorkCounts counts = new();
+
+        Result<LongRestSweepWork?> read = await ReadNextWorkWithinAsync(expected, capability, counts, ct).ConfigureAwait(false);
+
+        if (read.IsSuccess)
+        {
+            counts.Publish();
+        }
+
+        return read;
+    }
+
+    private Task<Result<LongRestSweepWork?>> ReadNextWorkWithinAsync(LongRestSweep expected, LongRestMaintenanceCapability? capability,
+        PendingWorkCounts counts, CancellationToken ct) =>
         WithinAsync<LongRestSweepWork?>(async (connection, transaction) =>
     {
+        counts.Reset();
+
         LongRestDiscoveryGeneration generation = await RequireGenerationAsync(connection, transaction, expected, capability, ct).ConfigureAwait(false);
 
         if (expected.Phase == LongRestSweepPhase.Completed)
@@ -112,7 +167,7 @@ internal sealed partial class LongRestSweepStore
                     throw new InvalidDataException();
                 }
 
-                ImmutableArray<ImmutableArray<LongRestSourceLeaf>> packs = await PackAsync(connection, transaction, generation, anchor, found.Value, capability, ct).ConfigureAwait(false);
+                ImmutableArray<ImmutableArray<LongRestSourceLeaf>> packs = await PackAsync(connection, transaction, generation, anchor, found.Value, capability, counts, ct).ConfigureAwait(false);
 
                 if (packs.Length == 0)
                 {
@@ -149,7 +204,7 @@ internal sealed partial class LongRestSweepStore
 
                     if (decided)
                     {
-                        ArcanumMetrics.LongRestReusedDecisionsTotal.Add(1);
+                        counts.Reused++;
 
                         continue;
                     }
@@ -188,10 +243,12 @@ internal sealed partial class LongRestSweepStore
 
     /// <summary>
     /// Loads the exact leaves of every discovered neighbour and packs them behind the anchor so that each pack renders within the
-    /// recipe's input budget. A neighbour left out is counted by reason and never by identity.
+    /// recipe's input budget. A neighbour left out is counted by reason and never by identity, in <paramref name="counts"/>, which the
+    /// caller publishes once the transaction has committed.
     /// </summary>
     private static async Task<ImmutableArray<ImmutableArray<LongRestSourceLeaf>>> PackAsync(SqliteConnection connection, SqliteTransaction transaction,
-        LongRestDiscoveryGeneration generation, LongRestSourceLeaf anchor, LongRestCandidateGroup[] groups, LongRestMaintenanceCapability? capability, CancellationToken ct)
+        LongRestDiscoveryGeneration generation, LongRestSourceLeaf anchor, LongRestCandidateGroup[] groups, LongRestMaintenanceCapability? capability,
+        PendingWorkCounts counts, CancellationToken ct)
     {
         ImmutableArray<LongRestSourceLeaf>.Builder neighbors = ImmutableArray.CreateBuilder<LongRestSourceLeaf>();
 
@@ -224,15 +281,9 @@ internal sealed partial class LongRestSweepStore
             throw new InvalidDataException();
         }
 
-        if (packing.Value.SkippedOversize > 0)
-        {
-            ArcanumMetrics.LongRestPackSkippedCandidatesTotal.Add(packing.Value.SkippedOversize, new KeyValuePair<string, object?>("reason", "oversize"));
-        }
+        counts.Oversize += packing.Value.SkippedOversize;
 
-        if (packing.Value.SkippedPackLimit > 0)
-        {
-            ArcanumMetrics.LongRestPackSkippedCandidatesTotal.Add(packing.Value.SkippedPackLimit, new KeyValuePair<string, object?>("reason", "pack_limit"));
-        }
+        counts.PackLimit += packing.Value.SkippedPackLimit;
 
         return packing.Value.Packs;
     }

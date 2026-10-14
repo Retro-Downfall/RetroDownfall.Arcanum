@@ -9,6 +9,7 @@ using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Operations;
 using RetroDownfall.Arcanum.Infrastructure.Operations.LongRest;
 using RetroDownfall.Arcanum.Tests.Fixtures;
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.LongRest;
 
@@ -26,8 +27,12 @@ public sealed partial class LongRestMaintenanceTests
 
     private static async Task<long> ScalarLongAsync(MaintenanceFixture f, string sql) => (long)(await f.H.ScalarAsync(sql))!;
 
+    // At the default window the request budget is 5328 bytes, so no two 2.5 KiB memories fit one request: no summary fold and no
+    // adjudication pack can exist, and the sweep makes no request at all. That is the honest outcome of this corpus, not a stall: the sweep
+    // completes with nothing left prepared, every neighbour it could not pack is counted, and nothing was sent. (A larger window, or smaller
+    // memories, is what lets it consolidate; the sweep over 1.2 KiB memories below does.)
     [Fact]
-    public async Task A_default_window_sweep_over_sixteen_large_memories_completes_and_leaves_no_prepared_row()
+    public async Task A_default_window_sweep_over_sixteen_large_memories_completes_with_no_request_and_counts_every_neighbour_it_could_not_pack()
     {
         await using MaintenanceFixture f = await MaintenanceFixture.CreateAsync(ownWorker: false, protectedSources: false, sourceCount: 16,
             configure: Window(8192), sourceText: index => Lorem(index, 2560));
@@ -39,6 +44,8 @@ public sealed partial class LongRestMaintenanceTests
             return Task.CompletedTask;
         };
 
+        using AsyncFlowMetricCapture metrics = new("arcanum.long_rest.sweep.skipped_candidates", "arcanum.long_rest.hierarchy.oversize_children");
+
         LongRestSweepProgress progress = LongRestSweepHarness.Require(await f.ResumeAdmittedAsync(f.Operation, CancellationToken.None));
 
         Assert.True(progress.Phase == LongRestSweepPhase.Completed, progress.DeferredReason);
@@ -47,13 +54,27 @@ public sealed partial class LongRestMaintenanceTests
 
         Assert.Equal(0L, await UnsettledEffectsAsync(f));
 
-        Assert.Equal(0L, await ScalarLongAsync(f, "SELECT count(*) FROM InferenceRuns WHERE Status = 2;"));
+        Assert.Equal(0L, await ScalarLongAsync(f, "SELECT count(*) FROM InferenceRuns;"));
 
         // The recipe carried the budget the 8192-token window allows (floor((8192 - 2048 - 16) * 100 / 115)).
         Assert.Equal(5328, LongRestSweepHarness.Require(await f.H.Store.ReadGenerationMetadataAsync(f.Operation, CancellationToken.None))!.Recipe.ProviderInputUtf8Bytes);
 
-        Assert.All(f.Payloads.Where(static payload => payload.Kind != LongRestProviderPayloadKind.Embedding),
-            payload => Assert.True(LongRestProviderCallFreezer.RenderChat(payload).IsSuccess));
+        // Nothing was asked of the model: no request, no summary, no adjudication, no effect row, no accounting run.
+        Assert.Equal(0, f.Handler.SendCount);
+
+        Assert.Empty(f.Payloads);
+
+        Assert.Equal(0L, await ScalarLongAsync(f, "SELECT count(*) FROM long_rest_discovery_nodes WHERE Layer > 0;"));
+
+        Assert.Equal(0L, await ScalarLongAsync(f, "SELECT count(*) FROM long_rest_provider_effects;"));
+
+        // Sixteen anchors, each with the eight ranked neighbours the lexical and vector lanes gave it, none of which fits beside it.
+        Assert.Equal(16L * 8, metrics.Sum("arcanum.long_rest.sweep.skipped_candidates", "reason", "oversize"));
+
+        Assert.Equal(0, metrics.Sum("arcanum.long_rest.sweep.skipped_candidates", "reason", "pack_limit"));
+
+        // Each memory fits a request alone, so none is an oversize hierarchy child.
+        Assert.Equal(0, metrics.Sum("arcanum.long_rest.hierarchy.oversize_children"));
     }
 
     [Fact]
@@ -116,12 +137,14 @@ public sealed partial class LongRestMaintenanceTests
         Assert.Equal(0L, await ScalarLongAsync(f, "SELECT count(*) FROM long_rest_provider_effects;"));
     }
 
+    // A memory no request can hold is never summarized and never folded: it is carried into the forest on its own, once, and the sweep goes
+    // on without it. It used to end the generation for an operator, after the summaries around it had been paid for.
     [Fact]
-    public async Task A_memory_the_window_cannot_hold_ends_the_generation_for_an_operator_before_any_effect_row_exists()
+    public async Task A_memory_the_window_cannot_hold_is_carried_unsummarized_and_the_sweep_still_completes_without_sending_its_text()
     {
         // 5.4 KiB of content cannot sit in a summary request of the 5328-byte budget, alone or with anything else.
-        await using MaintenanceFixture f = await MaintenanceFixture.CreateAsync(ownWorker: false, protectedSources: false,
-            configure: Window(8192), sourceText: index => index == 0 ? Lorem(0, 5400) : "Beta observation.");
+        await using MaintenanceFixture f = await MaintenanceFixture.CreateAsync(ownWorker: false, protectedSources: false, sourceCount: 6,
+            configure: Window(8192), sourceText: index => index == 0 ? Lorem(0, 5400) : $"Beta observation number {index}.");
 
         f.Handler.InsideSend = () =>
         {
@@ -130,30 +153,35 @@ public sealed partial class LongRestMaintenanceTests
             return Task.CompletedTask;
         };
 
+        using AsyncFlowMetricCapture metrics = new("arcanum.long_rest.hierarchy.oversize_children");
+
         LongRestSweepProgress progress = LongRestSweepHarness.Require(await f.ResumeAdmittedAsync(f.Operation, CancellationToken.None));
 
-        Assert.Equal(ErrorCodes.LongRest.ModelContextTooSmall, progress.DeferredReason);
+        Assert.True(progress.Phase == LongRestSweepPhase.Completed, progress.DeferredReason);
 
-        LongRunningOperation parked = (await f.Operations.GetAsync(f.Operation))!;
+        Assert.Equal(LongRunningOperationState.Completed, (await f.Operations.GetAsync(f.Operation))!.State);
 
-        Assert.Equal(LongRunningOperationState.ReconciliationRequired, parked.State);
+        // The other five memories were folded and paid for; the big one was not, and its text never left the process.
+        Assert.Contains(f.Payloads, static payload => payload.Kind == LongRestProviderPayloadKind.Summary);
 
-        Assert.Equal(ErrorCodes.LongRest.ModelContextTooSmall, parked.TerminalErrorCode);
+        Assert.DoesNotContain(f.Payloads.Where(static payload => payload.Kind != LongRestProviderPayloadKind.Embedding),
+            static payload => LongRestProviderCallFreezer.RenderChat(payload).Value.UserPrompt.Contains("lorem ipsum dolor", StringComparison.Ordinal));
 
-        Assert.Equal(LongRestFaultClass.NeedsOperator, LongRestFaultPolicy.Classify(parked.TerminalErrorCode));
+        // It is a captured leaf and a node of the forest that covers each leaf once, and it has no parent: it was carried, not summarized.
+        string big = (string)(await f.H.ScalarAsync("SELECT Id FROM saga_memories WHERE Content LIKE 'Memory 0 %';"))!;
 
-        Assert.Equal(0L, await ScalarLongAsync(f, "SELECT count(*) FROM long_rest_provider_effects;"));
+        Assert.Equal(1L, await ScalarLongAsync(f, $"SELECT count(*) FROM long_rest_discovery_nodes WHERE Layer = 0 AND MemoryId = '{big}';"));
 
-        Assert.Equal(0L, await ScalarLongAsync(f, "SELECT count(*) FROM InferenceRuns;"));
+        Assert.Equal(0L, await ScalarLongAsync(f, $"SELECT count(*) FROM long_rest_discovery_edges edge JOIN long_rest_discovery_nodes node ON node.NodeId = edge.ChildNodeId WHERE node.MemoryId = '{big}';"));
 
-        Assert.Equal(0, f.Handler.SendCount);
+        Assert.True(await ScalarLongAsync(f, "SELECT count(*) FROM long_rest_discovery_nodes WHERE Layer > 0;") >= 1);
 
-        // A new request for the scope is refused, naming the parked operation, instead of queueing behind it; the clean turn policy skips it.
-        Result<LongRunningOperationDto> request = await f.Coordinator.RequestAsync(f.Scope, f.Partition, CancellationToken.None);
+        // Counted once, by what it is and never by whose it is.
+        Assert.Equal(1, metrics.Sum("arcanum.long_rest.hierarchy.oversize_children"));
 
-        Assert.True(request.IsFailure);
+        Assert.All(metrics.Measurements, static measurement => Assert.Empty(measurement.Tags));
 
-        Assert.Equal(ErrorCodes.LongRest.SweepParked, request.Error.Code);
+        Assert.Equal(0L, await UnsettledEffectsAsync(f));
     }
 
     [Fact]

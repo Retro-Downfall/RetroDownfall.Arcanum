@@ -37,7 +37,7 @@ public sealed partial class LongRestHierarchyTests
 
         Assert.All(next.Fold.Children, child => Assert.Equal(0, child.Layer));
 
-        Assert.True(LongRestProviderPayload.Summary(next.Fold).IsSuccess);
+        Assert.True(LongRestProviderPayload.Summary(next.Fold, LongRestDiscoveryLimits.ProviderInputUtf8Bytes).IsSuccess);
 
         Assert.Equal(0L, await h.ScalarAsync("SELECT FoldGroup FROM long_rest_discovery_generations;"));
 

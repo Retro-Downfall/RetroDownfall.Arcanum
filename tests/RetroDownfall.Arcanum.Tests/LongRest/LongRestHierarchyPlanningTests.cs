@@ -82,7 +82,8 @@ public sealed class LongRestHierarchyPlanningTests
 
         Assert.True(LongRestHierarchy.PlanPage([new(Child(1), [float.NaN, 0]), new(Child(2), [1, 0])], 1, recipe, LongRestDiscoveryLimits.ProviderInputUtf8Bytes, CancellationToken.None).IsFailure);
 
-        Assert.True(LongRestHierarchy.PlanPage([new(Child(1) with { Content = new string('é', 16385) }, [])], 1, recipe, LongRestDiscoveryLimits.ProviderInputUtf8Bytes, CancellationToken.None).IsFailure);
+        // A single child no request can hold is not an error: it is carried on its own, like any child without a companion.
+        Assert.Equal([1], LongRestHierarchy.PlanPage([new(Child(1) with { Content = new string('é', 16385) }, [])], 1, recipe, LongRestDiscoveryLimits.ProviderInputUtf8Bytes, CancellationToken.None).Value.Select(group => group.Length));
 
         Assert.True(LongRestHierarchy.PlanPage([new(Child(1) with { Content = "\ud800" }, [])], 1, recipe, LongRestDiscoveryLimits.ProviderInputUtf8Bytes, CancellationToken.None).IsFailure);
     }
@@ -109,27 +110,79 @@ public sealed class LongRestHierarchyPlanningTests
     }
 
     [Fact]
-    public void A_child_the_budget_cannot_hold_alone_is_refused_as_model_context_too_small_and_a_blank_one_stays_invalid()
+    public void A_child_the_budget_cannot_hold_alone_is_carried_on_its_own_and_never_holds_back_the_others_and_a_blank_one_stays_invalid()
     {
         CovenantDigest recipe = new(new byte[32]);
 
-        ImmutableArray<LongRestHierarchyInput> page = [new(LongRestPackingData.Child(1, new string('x', 5000)), []), new(LongRestPackingData.Child(2, "small"), [])];
+        LongRestHierarchyChild big = LongRestPackingData.Child(1, new string('x', 5000));
 
-        Assert.True(LongRestHierarchy.PlanPage(page, 1, recipe, 8192, CancellationToken.None).IsSuccess);
+        ImmutableArray<LongRestHierarchyInput> page = [new(big, [1, 0]), new(LongRestPackingData.Child(2, "small"), [1, 0]), new(LongRestPackingData.Child(3, "other"), [1, 0])];
 
-        var refused = LongRestHierarchy.PlanPage(page, 1, recipe, LongRestPromptLayout.MinimumInputUtf8Bytes, CancellationToken.None);
+        // At 8192 the three fold together.
+        Assert.Equal([3], LongRestHierarchy.PlanPage(page, 1, recipe, 8192, CancellationToken.None).Value.Select(group => group.Length));
 
-        Assert.True(refused.IsFailure);
+        // At the smallest budget the 5 KB child fits no request at all: the other two fold and it is carried, exactly once, in a group of its own.
+        var planned = LongRestHierarchy.PlanPage(page, 1, recipe, LongRestPromptLayout.MinimumInputUtf8Bytes, CancellationToken.None);
 
-        Assert.Equal(ErrorCodes.LongRest.ModelContextTooSmall, refused.Error.Code);
+        Assert.True(planned.IsSuccess);
 
-        Assert.Contains("contextWindowLimit", refused.Error.Message, StringComparison.Ordinal);
+        Assert.Equal([[2, 3], [1]], planned.Value.Select(group => group.Select(child => child.Group).Order().Select(value => (int)value).ToArray()).OrderByDescending(static group => group.Length));
 
-        Assert.DoesNotContain("xxxxx", refused.Error.Message, StringComparison.Ordinal);
+        Assert.Equal(3, planned.Value.Sum(static group => group.Length));
+
+        Assert.True(LongRestHierarchy.IsOversize(big, LongRestPromptLayout.MinimumInputUtf8Bytes));
+
+        Assert.False(LongRestHierarchy.IsOversize(big, 8192));
 
         var blank = LongRestHierarchy.PlanPage([new(LongRestPackingData.Child(1, " \n "), []), new(LongRestPackingData.Child(2, "small"), [])], 1, recipe, 8192, CancellationToken.None);
 
         Assert.Equal(ErrorCodes.LongRest.InvalidRequest, blank.Error.Code);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    [InlineData(1)]
+    public void A_child_is_oversize_exactly_when_a_request_holding_only_it_is_one_byte_over_the_budget(int overBy)
+    {
+        long fixedBytes = LongRestPromptLayout.FixedBytes(LongRestProviderPayloadKind.Summary);
+
+        // One 'x' costs one byte beyond the head, the ordinal and the tail, so the observation grows byte for byte with the content.
+        long overhead = LongRestPromptLayout.SummaryObservationBytes("x") - 1;
+
+        int budget = LongRestPromptLayout.MinimumInputUtf8Bytes + 1000;
+
+        int content = checked((int)(budget - fixedBytes - overhead) + overBy);
+
+        LongRestHierarchyChild child = LongRestPackingData.Child(1, new string('x', content));
+
+        Assert.Equal(overBy > 0, LongRestHierarchy.IsOversize(child, budget));
+
+        Assert.Equal(fixedBytes + LongRestPromptLayout.SummaryObservationBytes(child.Content), budget + overBy);
+    }
+
+    [Fact]
+    public void A_summary_too_large_for_a_request_is_carried_at_every_layer_and_a_leaf_carried_from_below_stays_a_singleton()
+    {
+        CovenantDigest recipe = new(new byte[32]);
+
+        LongRestHierarchyChild big = LongRestPackingData.Child(1, new string('x', 5000)) with { Layer = 1 };
+
+        ImmutableArray<LongRestHierarchyInput> page =
+        [
+            new(big, [1, 0]),
+            new(LongRestPackingData.Child(2, "small") with { Layer = 1 }, [1, 0]),
+            new(LongRestPackingData.Child(3, "other") with { Layer = 1 }, [1, 0]),
+            new(LongRestPackingData.Child(4, "a leaf carried up from layer one"), [1, 0]),
+        ];
+
+        var planned = LongRestHierarchy.PlanPage(page, 2, recipe, LongRestPromptLayout.MinimumInputUtf8Bytes, CancellationToken.None).Value;
+
+        Assert.Equal(4, planned.Sum(static group => group.Length));
+
+        Assert.Equal([1, 1, 2], planned.Select(static group => group.Length).Order());
+
+        Assert.Contains(planned, group => group.Length == 1 && group[0].NodeId == big.NodeId);
     }
 
     [Theory]

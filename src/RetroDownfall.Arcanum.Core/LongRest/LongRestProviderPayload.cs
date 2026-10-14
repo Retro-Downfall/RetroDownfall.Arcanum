@@ -72,7 +72,7 @@ public sealed class LongRestProviderPayload
 
     private static readonly UTF8Encoding StrictUtf8 = new(false, true);
 
-    public static Result<LongRestProviderPayload> Summary(LongRestHierarchyFold fold, int inputBudgetBytes = LongRestDiscoveryLimits.ProviderInputUtf8Bytes)
+    public static Result<LongRestProviderPayload> Summary(LongRestHierarchyFold fold, int inputBudgetBytes)
     {
         if (fold is null || !ValidBudget(inputBudgetBytes) || LongRestDiscoveryHash.Work(fold.Work).IsFailure)
         {
@@ -97,7 +97,7 @@ public sealed class LongRestProviderPayload
     }
 
     public static Result<LongRestProviderPayload> Adjudication(LongRestWorkIdentity work, ImmutableArray<LongRestSourceLeaf> inputs,
-        int inputBudgetBytes = LongRestDiscoveryLimits.ProviderInputUtf8Bytes)
+        int inputBudgetBytes)
     {
         if (!ValidBudget(inputBudgetBytes) || LongRestDiscoveryHash.Work(work).IsFailure || inputs.IsDefaultOrEmpty || inputs.Length > LongRestDiscoveryLimits.Targets)
         {

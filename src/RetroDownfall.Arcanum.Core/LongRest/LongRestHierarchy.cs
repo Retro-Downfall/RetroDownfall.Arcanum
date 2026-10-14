@@ -10,9 +10,24 @@ namespace RetroDownfall.Arcanum.Core.LongRest;
 
 public sealed record LongRestHierarchyInput(LongRestHierarchyChild Child, ImmutableArray<float> Vector);
 
-/// <summary>Deterministic bounded page planning. A one-child group carries the original node.</summary>
+/// <summary>
+/// Deterministic bounded page planning. A one-child group carries the original node. A child too large to sit in any summary request of the
+/// recipe's input budget, even with one companion, is never folded: it is carried as a one-child group like any child that found no
+/// companion, so the forest still covers it exactly once and no other child is held back by it.
+/// </summary>
 public static class LongRestHierarchy
 {
+    /// <summary>
+    /// True when <paramref name="child"/> cannot be summarized within <paramref name="inputBudgetBytes"/> at all: even a summary request
+    /// that holds nothing else is over the budget. Such a child is carried unsummarized.
+    /// </summary>
+    public static bool IsOversize(LongRestHierarchyChild child, int inputBudgetBytes)
+    {
+        ArgumentNullException.ThrowIfNull(child);
+
+        return LongRestPromptLayout.FixedBytes(LongRestProviderPayloadKind.Summary) + LongRestPromptLayout.SummaryObservationBytes(child.Content) > inputBudgetBytes;
+    }
+
     public static Result<ImmutableArray<ImmutableArray<LongRestHierarchyChild>>> PlanPage(
         ImmutableArray<LongRestHierarchyInput> page, int layer, CovenantDigest recipe, int inputBudgetBytes, CancellationToken cancellationToken)
     {
@@ -69,6 +84,8 @@ public static class LongRestHierarchy
 
                 List<List<LongRestHierarchyChild>> partitionGroups = [];
 
+                List<LongRestHierarchyChild> oversize = [];
+
                 // A fold is the fixed summary prompt plus one observation block per child, and must render within the budget.
                 long fixedBytes = LongRestPromptLayout.FixedBytes(LongRestProviderPayloadKind.Summary);
 
@@ -91,7 +108,10 @@ public static class LongRestHierarchy
 
                         if (fixedBytes + count > inputBudgetBytes)
                         {
-                            return TooSmall(fixedBytes + count, inputBudgetBytes);
+                            // No request can hold it, so it takes no part in the folds around it and is carried on its own.
+                            oversize.Add(child);
+
+                            continue;
                         }
 
                         if (current.Count == LongRestDiscoveryLimits.HierarchyChildren || bytes + count > inputBudgetBytes)
@@ -137,6 +157,8 @@ public static class LongRestHierarchy
                 }
 
                 groups.AddRange(partitionGroups.Select(group => group.OrderBy(child => ChildId(child), StringComparer.Ordinal).ToImmutableArray()));
+
+                groups.AddRange(oversize.Select(child => ImmutableArray.Create(child)));
             }
 
             return groups.OrderBy(group => ChildId(group[0]), StringComparer.Ordinal).ToImmutableArray();
@@ -195,11 +217,4 @@ public static class LongRestHierarchy
 
     private static Result<ImmutableArray<ImmutableArray<LongRestHierarchyChild>>> Invalid(string message) =>
         new Error(ErrorCodes.LongRest.InvalidRequest, message);
-
-    // A fold cannot skip a child, so a child the budget cannot hold ends the generation until an operator widens the window.
-    private static Result<ImmutableArray<ImmutableArray<LongRestHierarchyChild>>> TooSmall(long needed, int budget) =>
-        new Error(ErrorCodes.LongRest.ModelContextTooSmall,
-            "A hierarchy child needs " + needed.ToString(System.Globalization.CultureInfo.InvariantCulture)
-            + " bytes of summary request but the model's Long Rest input budget is " + budget.ToString(System.Globalization.CultureInfo.InvariantCulture)
-            + ". Raise the provider's contextWindowLimit (the budget is capped at 32768), choose a model with a larger window, or retire the oversized memory.");
 }

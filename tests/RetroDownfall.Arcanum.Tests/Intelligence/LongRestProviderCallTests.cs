@@ -137,28 +137,37 @@ public sealed class LongRestProviderCallTests
         Assert.Equal(0, f.Handler.SendCount);
     }
 
-    // The renderer still refuses to truncate. Planner and renderer now measure one layout, so a memory whose raw content is under the
-    // 32,768-byte ceiling but whose request is not is refused by the planner, before any payload, effect row or send exists.
+    // The renderer still refuses to truncate. Planner and renderer measure one layout, so a memory whose raw content is under the
+    // 32,768-byte ceiling but whose request is not is never put in a fold at all: the planner carries it unsummarized, before any payload,
+    // effect row or send exists, and the hierarchy publishes without it as a summary child.
     [Fact]
-    public async Task Rendered_chat_overflow_is_refused_by_the_planner_instead_of_truncating_sources()
+    public async Task Rendered_chat_overflow_is_carried_by_the_planner_instead_of_truncating_sources()
     {
         await using LongRestSweepHarness h = await LongRestSweepHarness.CreateAsync();
 
-        await h.SeedAsync(Guid.NewGuid().ToString("D"), new string('x', 32749));
+        await h.SeedAsync("00000000-0000-4000-8000-000000000001", new string('x', 32749));
 
-        await h.SeedAsync(Guid.NewGuid().ToString("D"), "Beta observation.");
+        await h.SeedAsync("00000000-0000-4000-8000-000000000002", "Beta observation.");
 
         LongRestDiscoveryGeneration generation = await h.CaptureAsync();
 
         Result<LongRestHierarchyWork?> planned = await h.Store.ReadNextFoldAsync(generation.GenerationId, null, CancellationToken.None);
 
-        Assert.True(planned.IsFailure);
+        Assert.True(planned.IsSuccess);
 
-        Assert.Equal(ErrorCodes.LongRest.ModelContextTooSmall, planned.Error.Code);
+        Assert.Null(planned.Value);
 
         Assert.Equal(0L, await h.ScalarAsync("SELECT count(*) FROM long_rest_provider_effects;"));
 
         Assert.Equal(0L, await h.ScalarAsync("SELECT count(*) FROM InferenceRuns;"));
+
+        Assert.Equal(0L, await h.ScalarAsync("SELECT count(*) FROM long_rest_discovery_nodes WHERE Layer > 0;"));
+
+        LongRestDiscoveryGeneration published = await h.BuildAsync(generation);
+
+        Assert.True(published.Published);
+
+        Assert.Equal(2L, await h.ScalarAsync("SELECT count(*) FROM long_rest_discovery_nodes WHERE Layer = 0;"));
     }
 
     [Fact]

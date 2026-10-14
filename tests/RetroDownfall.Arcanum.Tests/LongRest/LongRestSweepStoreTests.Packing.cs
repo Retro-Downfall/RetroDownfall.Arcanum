@@ -95,6 +95,35 @@ public sealed partial class LongRestSweepStoreTests
         Assert.All(metrics.Measurements, measurement => Assert.Equal(new[] { "reason" }, measurement.Tags.Keys.ToArray()));
     }
 
+    // What a read counted is published only once the transaction that made it has committed: a read that fails after packing rolls its
+    // work back, so it must not have counted the neighbours it left out, and the read that then succeeds counts them exactly once.
+    [Fact]
+    public async Task A_read_that_fails_after_packing_counts_nothing_and_the_read_that_succeeds_counts_once()
+    {
+        await using Fixture fixture = await Fixture.CreateAsync(protect: false, sourceCount: 6, inputBudget: 6144,
+            text: index => Padded(index, index == 3 ? 4600 : 1500));
+
+        using AsyncFlowMetricCapture metrics = new(SkippedMetric);
+
+        LongRestSweep sweep = await fixture.BeginAsync();
+
+        await fixture.H.ExecuteAsync("CREATE TEMP TRIGGER long_rest_fixture_work_refusal BEFORE INSERT ON long_rest_work_items BEGIN SELECT RAISE(ABORT, 'LongRest.FixtureRefusal'); END;");
+
+        Assert.True((await fixture.Store.ReadNextWorkAsync(sweep, fixture.Capability, CancellationToken.None)).IsFailure);
+
+        Assert.Equal(0L, await fixture.H.ScalarAsync("SELECT count(*) FROM long_rest_work_items WHERE KindCode = 3;"));
+
+        Assert.Empty(metrics.Measurements);
+
+        await fixture.H.ExecuteAsync("DROP TRIGGER long_rest_fixture_work_refusal;");
+
+        Assert.NotNull(LongRestSweepHarness.Require(await fixture.Store.ReadNextWorkAsync(sweep, fixture.Capability, CancellationToken.None)));
+
+        Assert.Equal(1, metrics.Sum(SkippedMetric, "reason", "oversize"));
+
+        Assert.Single(metrics.Measurements);
+    }
+
     [Fact]
     public async Task An_anchor_none_of_whose_neighbors_fit_beside_it_is_passed_over_and_the_sweep_still_completes()
     {

@@ -152,20 +152,46 @@ public sealed class LongRestGroupPackerTests
     }
 
     [Fact]
-    public void Duplicate_packs_count_toward_the_three_packs_an_anchor_keeps()
+    public void Duplicate_packs_cost_no_request_so_they_do_not_count_toward_the_three_packs_an_anchor_keeps()
     {
         string same = "1".PadLeft(64, '0');
 
         LongRestSourceLeaf anchor = LongRestPackingData.Leaf(0, new string('x', 1500), same);
 
-        // Six neighbours that fit make three packs, so two oversize duplicates have no pack left.
+        // Six neighbours that fit make the three packs that cost a request; the two oversize duplicates are committed locally, so they still
+        // have a pack of their own: the envelope is on what is paid for.
         ImmutableArray<LongRestSourceLeaf> neighbors = [.. Neighbors(6, 1500), LongRestPackingData.Leaf(7, new string('d', 6000), same), LongRestPackingData.Leaf(8, new string('d', 6000), same)];
 
-        LongRestGroupPacking packing = LongRestGroupPacker.Pack(anchor, neighbors, BudgetFor(3, 1500)).Value;
+        int budget = BudgetFor(3, 1500);
 
-        Assert.Equal(3, packing.Packs.Length);
+        LongRestGroupPacking packing = LongRestGroupPacker.Pack(anchor, neighbors, budget).Value;
 
-        Assert.Equal(2, packing.SkippedPackLimit);
+        Assert.Equal([[0, 1, 2], [0, 3, 4], [0, 5, 6], [0, 7, 8]], packing.Packs.Select(pack => pack.Select(leaf => leaf.InsertionSequence - 1).ToArray()));
+
+        Assert.All(packing.Packs.Take(LongRestGroupPacker.MaximumPacksPerAnchor), pack => Assert.True(Fixed + pack.Sum(Block) <= budget));
+
+        Assert.All(packing.Packs[^1].Skip(1), leaf => Assert.Equal(same, leaf.Snapshot.ContentHash));
+
+        Assert.Equal(0, packing.SkippedPackLimit);
+
+        Assert.Equal(0, packing.SkippedOversize);
+    }
+
+    [Fact]
+    public void More_oversize_duplicates_than_one_pack_holds_make_more_duplicate_packs_and_never_a_skipped_candidate()
+    {
+        string same = "1".PadLeft(64, '0');
+
+        LongRestSourceLeaf anchor = LongRestPackingData.Leaf(0, new string('x', 1500), same);
+
+        // Thirty-two oversize duplicates fill two packs of fifteen and a third of two, beside three paid packs of fitting neighbours.
+        ImmutableArray<LongRestSourceLeaf> duplicates = [.. Enumerable.Range(100, 32).Select(index => LongRestPackingData.Leaf(index, new string('d', 6000), same))];
+
+        LongRestGroupPacking packing = LongRestGroupPacker.Pack(anchor, duplicates, BudgetFor(3, 1500)).Value;
+
+        Assert.Equal([15, 15, 2], packing.Packs.Select(pack => pack.Length - 1));
+
+        Assert.Equal(0, packing.SkippedPackLimit);
 
         Assert.Equal(0, packing.SkippedOversize);
     }

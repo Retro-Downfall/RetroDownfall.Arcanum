@@ -538,7 +538,7 @@ internal sealed class LongRestProviderFixture : IAsyncDisposable
 
         f.Payload = kind == LongRestProviderPayloadKind.Embedding
             ? LongRestProviderPayload.Embedding(work.Fold.Work, "Accepted summary.\n").Value
-            : LongRestProviderPayload.Summary(work.Fold).Value;
+            : LongRestProviderPayload.Summary(work.Fold, LongRestDiscoveryLimits.ProviderInputUtf8Bytes).Value;
 
         if (kind == LongRestProviderPayloadKind.Adjudication)
         {
@@ -563,7 +563,7 @@ internal sealed class LongRestProviderFixture : IAsyncDisposable
 
             LongRestSweepWork next = LongRestSweepHarness.Require(await sweeps.ReadNextWorkAsync(sweep, f.Capability, CancellationToken.None))!;
 
-            f.Payload = LongRestProviderPayload.Adjudication(next.Identity, next.Inputs).Value;
+            f.Payload = LongRestProviderPayload.Adjudication(next.Identity, next.Inputs, LongRestDiscoveryLimits.ProviderInputUtf8Bytes).Value;
         }
 
         _ = page;

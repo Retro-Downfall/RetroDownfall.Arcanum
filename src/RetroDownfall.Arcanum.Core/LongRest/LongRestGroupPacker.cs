@@ -17,12 +17,14 @@ public sealed record LongRestGroupPacking(ImmutableArray<ImmutableArray<LongRest
 /// fits, and a neighbour that does not fit the open pack opens the next pack with the anchor. A neighbour that cannot fit a
 /// request with its anchor is skipped and counted, unless it is an exact duplicate of the anchor: a pack of nothing but exact
 /// duplicates is committed locally without a request, so the budget does not apply to it and such a neighbour joins the
-/// duplicate packs that follow the others. The anchor keeps at most <see cref="MaximumPacksPerAnchor"/> packs, which is
-/// today's cost envelope: when everything fits, the packs are the ranked neighbours in chunks of fifteen, exactly as before.
+/// duplicate packs that follow the others. The anchor keeps at most <see cref="MaximumPacksPerAnchor"/> packs that cost a request,
+/// which is today's cost envelope: when everything fits, the packs are the ranked neighbours in chunks of fifteen, exactly as before.
+/// A duplicate pack costs nothing, so the envelope does not count it and an anchor whose paid packs are full still consolidates its
+/// oversize exact duplicates.
 /// </summary>
 public static class LongRestGroupPacker
 {
-    /// <summary>The packs an anchor may have: its merged neighbours (32) in groups of fifteen beside the anchor.</summary>
+    /// <summary>The packs that cost a request an anchor may have: its merged neighbours (32) in groups of fifteen beside the anchor.</summary>
     public const int MaximumPacksPerAnchor = (LongRestDiscoveryLimits.MergedNeighbors + LongRestDiscoveryLimits.Targets - 2) / (LongRestDiscoveryLimits.Targets - 1);
 
     public static Result<LongRestGroupPacking> Pack(LongRestSourceLeaf anchor, ImmutableArray<LongRestSourceLeaf> neighbors, int inputBudgetBytes)
@@ -111,16 +113,7 @@ public static class LongRestGroupPacker
 
             for (int offset = 0; offset < duplicates.Count; offset += LongRestDiscoveryLimits.Targets - 1)
             {
-                int count = Math.Min(LongRestDiscoveryLimits.Targets - 1, duplicates.Count - offset);
-
-                if (packs.Count == MaximumPacksPerAnchor)
-                {
-                    limit += count;
-
-                    continue;
-                }
-
-                packs.Add([anchor, .. duplicates.GetRange(offset, count)]);
+                packs.Add([anchor, .. duplicates.GetRange(offset, Math.Min(LongRestDiscoveryLimits.Targets - 1, duplicates.Count - offset))]);
             }
 
             return new LongRestGroupPacking(packs.ToImmutable(), oversize, limit);
