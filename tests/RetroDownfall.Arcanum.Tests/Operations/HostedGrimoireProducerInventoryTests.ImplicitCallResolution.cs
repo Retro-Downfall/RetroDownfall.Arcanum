@@ -489,4 +489,26 @@ public sealed partial class HostedGrimoireProducerInventoryTests
 
         Assert.DoesNotContain(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_TRAVERSAL_STATE_LIMIT_EXCEEDED");
     }
+
+    // An opaque callback that creates a type is judged by the construction the creation runs, an explicit constructor's
+    // initializers and base constructor included.
+    [Theory]
+    [InlineData("sealed class Holder { private int value = Compute(); public Holder() { } private static int Compute() { {E} return 1; } }")]
+    [InlineData("sealed class Holder { public int Value { get; } = Compute(); public Holder(int ignored) { } private static int Compute() { {E} return 1; } }")]
+    [InlineData("class Base { public Base() { {E} } } sealed class Holder : Base { public Holder() { } }")]
+    [InlineData("sealed class Holder { private System.Collections.Generic.List<int> items = [.. Items()]; public Holder() { } private static System.Collections.Generic.IEnumerable<int> Items() { {E} yield return 1; } }")]
+    public void OpaqueCallbackThatCreatesATypeIsJudgedByItsConstructionEntry(string helpers)
+    {
+        string creation = helpers.Contains("int ignored", StringComparison.Ordinal) ? "new Holder(1)" : "new Holder()";
+
+        string statement = "GC.KeepAlive((Action)(() => { _ = " + creation + "; }));";
+
+        HostedProducerDiscovery<HostedProducerSite> refused = EnumerationDiscover(CensusCompileSource(statement, helpers.Replace("{E}", EnumerationEffect, StringComparison.Ordinal)));
+
+        Assert.Contains(refused.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_CALLBACK_OWNERSHIP_UNPROVEN");
+
+        HostedProducerDiscovery<HostedProducerSite> clean = EnumerationDiscover(CensusCompileSource(statement, helpers.Replace("{E}", string.Empty, StringComparison.Ordinal)));
+
+        Assert.DoesNotContain(clean.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_CALLBACK_OWNERSHIP_UNPROVEN");
+    }
 }

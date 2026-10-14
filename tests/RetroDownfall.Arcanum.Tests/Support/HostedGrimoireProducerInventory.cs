@@ -34470,6 +34470,11 @@ internal static partial class HostedGrimoireProducerInventory
 
             try
             {
+                if (ConstructionPreambleReachesProducerSite(member, path))
+                {
+                    return true;
+                }
+
                 foreach (SyntaxNode node in member.Syntax.DescendantNodesAndSelf(candidate => candidate == member.Syntax || candidate is not AnonymousFunctionExpressionSyntax and not LocalFunctionStatementSyntax))
                 {
                     if (node is CommonForEachStatementSyntax or SpreadElementSyntax

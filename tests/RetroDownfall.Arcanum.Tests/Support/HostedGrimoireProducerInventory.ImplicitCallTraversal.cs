@@ -965,6 +965,37 @@ internal static partial class HostedGrimoireProducerInventory
                 recoveryEffect);
         }
 
+        // The construction a declared constructor runs before its body (instance initializers, base constructor), for the
+        // transitive scan. An initializer is listed only when it can reach a producer site.
+        private bool ConstructionPreambleReachesProducerSite(AuthoredMember member, HashSet<GraphMemberIdentity> path)
+        {
+            if (member.Symbol is not { MethodKind: MethodKind.Constructor, IsStatic: false }
+                || member.Syntax is not ConstructorDeclarationSyntax declaration
+                || declaration.Initializer?.ThisOrBaseKeyword.IsKind(SyntaxKind.ThisKeyword) == true
+                || member.Symbol.ContainingType is not { TypeKind: TypeKind.Class or TypeKind.Struct } type)
+            {
+                return false;
+            }
+
+            if (InitializerMembers(type, member.Symbol).Count != 0)
+            {
+                return true;
+            }
+
+            if (declaration.Initializer is not null || ImplicitBaseConstructor(type) is not { } baseConstructor)
+            {
+                return false;
+            }
+
+            ImplicitTargetCollector targets = new(this, member);
+
+            targets.Add(baseConstructor, baseConstructor);
+
+            return targets.Unresolved.Count != 0
+                || targets.Members.Any(target => ContainsPotentialProducerSite(target, path))
+                || targets.Framework.Any(framework => Classify(framework, Normalize(framework), declaration, member) is not null || !IsReviewedImplicitFrameworkMember(member, framework, declaration));
+        }
+
         // The implicit calls the syntax lanes traverse (property accessors, user-defined conversions and the cleanup of
         // a using statement or declaration), for the transitive scan: an opaque callback body is judged by everything
         // the traversal would follow in it, not only by the calls written there.
