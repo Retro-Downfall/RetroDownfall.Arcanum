@@ -421,13 +421,14 @@ public sealed partial class HostedGrimoireProducerInventoryTests
         HostedProducerDiscovery<HostedProducerSite> result = HostedGrimoireProducerInventory.DiscoverProducerSites(
             [compilation], new(["Worker"], []), [new("Worker", [OrdinaryRoot()])], []);
 
+        // A handle payload is the pair's own carrier, so the consumer of the converted value is an escape. A string payload is
+        // closed pure data and makes no claim about the consumer: the converted LeaseBox is a real carrier, because its
+        // operator reads the group back from the static, but it reaches the consumer through storage that the origin walk
+        // does not follow. That is deliberately not asserted either way here; the state of the walk across a store is pinned
+        // by AHandleWrittenToStorageIsNotItselfRefusedWhenNoSendNeedsTheAdmissionAfterIt, where the shape is stated as a known limit.
         if (handle)
         {
             AssertExactTelemetryConsumerEscape(result, consumer, "System.GC.KeepAlive;");
-        }
-        else
-        {
-            AssertExactTelemetryConsumerIsNotAnEscape(result, consumer);
         }
 
         // Whatever the payload, the carrier's real defect stays refused: the held group is stored in a static, which ends its
