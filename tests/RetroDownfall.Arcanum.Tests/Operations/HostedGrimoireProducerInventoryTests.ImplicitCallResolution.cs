@@ -710,4 +710,28 @@ public sealed partial class HostedGrimoireProducerInventoryTests
 
         Assert.Contains(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_CALLBACK_OWNERSHIP_UNPROVEN");
     }
+
+    // Roslyn gives an expression written as checked(...), unchecked(...) or expression! no operation of its own, so a member
+    // whose whole body is one has no tree for the census to walk from the body itself: the census unwraps it, and the
+    // implicit calls inside are judged as they are anywhere else.
+    [Theory]
+    [InlineData("public int Value => checked(new Box() is (var a, var b) ? a + b : 0);")]
+    [InlineData("public int Value => unchecked(new Box() is (var a, var b) ? a + b : 0);")]
+    [InlineData("public int Value => (new Box() is (var a, var b) ? a + b : 0);")]
+    [InlineData("public string Value => $\"{new Named()}\"!;")]
+    [InlineData("public int Value { get => checked(new Box() is (var a, var b) ? a + b : 0); }")]
+    public void ImplicitCallInAMemberWhoseWholeBodyIsAWrappedExpressionIsTraversed(string member)
+    {
+        string helpers = "sealed class Box { public void Deconstruct(out int a, out int b) { {E} a = 1; b = 2; } } sealed class Named { public override string ToString() { {E} return \"n\"; } } sealed class Holder { " + member + " }";
+
+        HostedProducerDiscovery<HostedProducerSite> reported = EnumerationDiscover(CensusCompileSource("_ = new Holder().Value;", helpers.Replace("{E}", EnumerationEffect, StringComparison.Ordinal)));
+
+        Assert.NotNull(Assert.Single(EnumerationDeleteSites(reported)).WorkFrontierCapsuleId);
+
+        HostedProducerDiscovery<HostedProducerSite> clean = EnumerationDiscover(CensusCompileSource("_ = new Holder().Value;", helpers.Replace("{E}", string.Empty, StringComparison.Ordinal)));
+
+        Assert.Empty(clean.Diagnostics);
+
+        Assert.Empty(EnumerationDeleteSites(clean));
+    }
 }

@@ -43,6 +43,18 @@ public sealed partial class HostedGrimoireProducerInventoryTests
 
     // The census walks the operation tree of every member body, so a body Roslyn cannot produce a tree for would be
     // a body no implicit call is ever found in.
+    // Every region the traversal analyses: a method, constructor, operator, conversion or accessor with a body; the expression
+    // of an expression-bodied property or indexer; a lambda or an anonymous method; a local function; and the expression of
+    // an instance or static field, property or event initializer.
+    private static IEnumerable<SyntaxNode> ProductionRegions(SyntaxTree tree) =>
+        tree.GetRoot().DescendantNodes().Where(static node =>
+            node is BaseMethodDeclarationSyntax { Body: not null } or BaseMethodDeclarationSyntax { ExpressionBody: not null }
+                or AccessorDeclarationSyntax { Body: not null } or AccessorDeclarationSyntax { ExpressionBody: not null }
+                or PropertyDeclarationSyntax { ExpressionBody: not null } or IndexerDeclarationSyntax { ExpressionBody: not null }
+                or AnonymousFunctionExpressionSyntax or LocalFunctionStatementSyntax
+                or EqualsValueClauseSyntax { Parent: VariableDeclaratorSyntax { Parent: VariableDeclarationSyntax { Parent: FieldDeclarationSyntax or EventFieldDeclarationSyntax } } }
+                or EqualsValueClauseSyntax { Parent: PropertyDeclarationSyntax });
+
     [Fact]
     public void EveryProductionMemberBodyHasAnOperationTree()
     {
@@ -54,11 +66,11 @@ public sealed partial class HostedGrimoireProducerInventoryTests
             {
                 SemanticModel model = compilation.GetSemanticModel(tree);
 
-                foreach (SyntaxNode node in tree.GetRoot().DescendantNodes().Where(static node => node is BaseMethodDeclarationSyntax { Body: not null } or BaseMethodDeclarationSyntax { ExpressionBody: not null } or AccessorDeclarationSyntax { Body: not null } or AccessorDeclarationSyntax { ExpressionBody: not null }))
+                foreach (SyntaxNode node in ProductionRegions(tree))
                 {
-                    if (model.GetOperation(node) is null)
+                    if (HostedGrimoireProducerInventory.RegionOperation(model, node is PropertyDeclarationSyntax property ? property.ExpressionBody!.Expression : node is IndexerDeclarationSyntax indexer ? indexer.ExpressionBody!.Expression : node is EqualsValueClauseSyntax initializer ? initializer.Value : node) is null)
                     {
-                        missing.Add(tree.FilePath + ":" + node.SpanStart);
+                        missing.Add(tree.FilePath + ":" + node.SpanStart + " " + node.Kind());
                     }
                 }
             }
@@ -116,8 +128,10 @@ public sealed partial class HostedGrimoireProducerInventoryTests
             {
                 SemanticModel model = compilation.GetSemanticModel(tree);
 
-                foreach (SyntaxNode member in tree.GetRoot().DescendantNodes().Where(static node => node is BaseMethodDeclarationSyntax { Body: not null } or BaseMethodDeclarationSyntax { ExpressionBody: not null } or AccessorDeclarationSyntax { Body: not null } or AccessorDeclarationSyntax { ExpressionBody: not null }))
+                foreach (SyntaxNode region in ProductionRegions(tree))
                 {
+                    SyntaxNode member = region is PropertyDeclarationSyntax property ? property.ExpressionBody!.Expression : region is IndexerDeclarationSyntax indexer ? indexer.ExpressionBody!.Expression : region is EqualsValueClauseSyntax initializer ? initializer.Value : region;
+
                     foreach (HostedGrimoireProducerInventory.ImplicitCall call in HostedGrimoireProducerInventory.CollectImplicitCalls(model, member).Where(static call => call.RefusalCode is not null))
                     {
                         refusals.Add(tree.FilePath + ":" + call.Anchor.SpanStart + " " + call.RefusalCode + " " + call.RefusalDetail);

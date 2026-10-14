@@ -288,6 +288,19 @@ internal static partial class HostedGrimoireProducerInventory
     internal static readonly IReadOnlyDictionary<string, string> OperationSymbolCarriers = new Dictionary<string, string>(StringComparer.Ordinal)
     {
         ["IAnonymousFunctionOperation.Symbol"] = "NoCall: the lambda itself.",
+        ["IBlockOperation.Locals"] = "NoCall: the variables a block declares.",
+        ["ICatchClauseOperation.Locals"] = "NoCall: the variables a catch clause declares.",
+        ["IConstructorBodyOperation.Locals"] = "NoCall: the variables a constructor body declares.",
+        ["IDynamicMemberReferenceOperation.TypeArguments"] = "Refused: a dynamic member access binds at run time.",
+        ["IFieldInitializerOperation.InitializedFields"] = "NoCall: a field initializer assigns the field; the initializer expression is analysed with the construction that runs it.",
+        ["IForLoopOperation.ConditionLocals"] = "NoCall: the variables a for loop's condition declares.",
+        ["ILoopOperation.Locals"] = "NoCall: the variables a loop declares.",
+        ["IPropertyInitializerOperation.InitializedProperties"] = "NoCall: a property initializer assigns the backing field of the property, running no accessor; the initializer expression is analysed with the construction that runs it.",
+        ["ISwitchCaseOperation.Locals"] = "NoCall: the variables a switch section declares.",
+        ["ISwitchExpressionArmOperation.Locals"] = "NoCall: the variables a switch expression arm declares.",
+        ["ISwitchOperation.Locals"] = "NoCall: the variables a switch statement declares.",
+        ["ISymbolInitializerOperation.Locals"] = "NoCall: the variables a symbol initializer declares.",
+        ["IUsingOperation.Locals"] = "NoCall: the variables a using statement declares.",
         ["IArgumentOperation.Parameter"] = "NoCall: the bound parameter.",
         ["IArgumentOperation.InConversion"] = "Census: a user-defined conversion of an argument (Visual Basic).",
         ["IArgumentOperation.OutConversion"] = "Census: a user-defined conversion of an argument (Visual Basic).",
@@ -356,6 +369,29 @@ internal static partial class HostedGrimoireProducerInventory
         ["IWithOperation.CloneMethod"] = "Census: the record clone.",
     };
 
+    // Whether a type carries a symbol or a conversion: it is one, it holds a sequence or a nullable of one, or it is a value or a
+    // class of the Roslyn assemblies, other than an operation, with a public property that carries one (the info object of a
+    // foreach loop is one).
+    private static bool CarriesSymbolOrConversion(Type type, int depth)
+    {
+        if (typeof(ISymbol).IsAssignableFrom(type) || type == typeof(CommonConversion))
+        {
+            return true;
+        }
+
+        if (type.IsGenericType && (type.GetGenericTypeDefinition() == typeof(ImmutableArray<>) || type.GetGenericTypeDefinition() == typeof(IEnumerable<>) || type.GetGenericTypeDefinition() == typeof(IReadOnlyList<>) || type.GetGenericTypeDefinition() == typeof(Nullable<>)))
+        {
+            return type.GetGenericArguments().Any(argument => CarriesSymbolOrConversion(argument, depth));
+        }
+
+        if (depth > 2 || type.IsPrimitive || type.IsEnum || type == typeof(string) || typeof(IOperation).IsAssignableFrom(type) || typeof(SyntaxNode).IsAssignableFrom(type) || type.Namespace?.StartsWith("Microsoft.CodeAnalysis", StringComparison.Ordinal) != true)
+        {
+            return false;
+        }
+
+        return type.GetProperties(BindingFlags.Public | BindingFlags.Instance).Any(property => CarriesSymbolOrConversion(property.PropertyType, depth + 1));
+    }
+
     // The symbol-carrying properties of the Roslyn operation interfaces, read by reflection, for the pin test.
     internal static IReadOnlyList<string> RoslynOperationSymbolCarriers() =>
     [
@@ -363,13 +399,16 @@ internal static partial class HostedGrimoireProducerInventory
             .Where(static type => type.IsInterface && type.Namespace == "Microsoft.CodeAnalysis.Operations" && typeof(IOperation).IsAssignableFrom(type))
             .SelectMany(static type => type
                 .GetProperties(BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly)
-                .Where(static property => typeof(ISymbol).IsAssignableFrom(property.PropertyType) || property.PropertyType == typeof(CommonConversion))
+                .Where(static property => CarriesSymbolOrConversion(property.PropertyType, 0))
                 .Select(property => type.Name + "." + property.Name))
             .Order(StringComparer.Ordinal),
     ];
 
     internal static IReadOnlyList<ImplicitCall> CollectImplicitCalls(SemanticModel model, SyntaxNode region) =>
         ProducerGraph.CollectImplicitCalls(model, region);
+
+    internal static IOperation? RegionOperation(SemanticModel model, SyntaxNode region) =>
+        ProducerGraph.RegionOperation(model, region);
 
     private sealed partial class ProducerGraph
     {
@@ -566,12 +605,46 @@ internal static partial class HostedGrimoireProducerInventory
 
         // The walk of one member body, with the pruning of the syntax walk: a lambda or a local function written in
         // the body is not entered, because its body runs where it is called and is analysed there.
+        // The operation tree of a region. Roslyn gives an expression written as checked(...), unchecked(...), (...) or
+        // expression! no operation of its own, because the bound tree has no node for it: the region is then the operand,
+        // and a region it still has no operation for has no tree at all.
+        internal static IOperation? RegionOperation(SemanticModel model, SyntaxNode region)
+        {
+            SyntaxNode current = region;
+
+            while (true)
+            {
+                if (model.GetOperation(current) is { } operation)
+                {
+                    return operation;
+                }
+
+                ExpressionSyntax? inner = current switch
+                {
+                    CheckedExpressionSyntax checkedExpression => checkedExpression.Expression,
+                    ParenthesizedExpressionSyntax parenthesized => parenthesized.Expression,
+                    PostfixUnaryExpressionSyntax postfix when postfix.IsKind(SyntaxKind.SuppressNullableWarningExpression) => postfix.Operand,
+                    _ => null,
+                };
+
+                if (inner is null)
+                {
+                    return null;
+                }
+
+                current = inner;
+            }
+        }
+
         internal static IReadOnlyList<ImplicitCall> CollectImplicitCalls(SemanticModel model, SyntaxNode region)
         {
             List<ImplicitCall> calls = [];
 
-            if (model.GetOperation(region) is not { } root)
+            if (RegionOperation(model, region) is not { } root)
             {
+                // A body nothing here can walk would hide every implicit call in it, so it is refused.
+                calls.Add(new(ImplicitCallKind.Unsupported, OperationKind.None, region, [], "HOSTED_SITE_UNCLASSIFIED", "A body Roslyn produces no operation tree for has no exact target."));
+
                 return calls;
             }
 
