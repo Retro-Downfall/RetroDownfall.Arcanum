@@ -112,7 +112,7 @@ public sealed class LongRestSweepParkedRescanTests
     }
 
     [Fact]
-    public async Task A_queue_hint_wakes_the_worker_at_once_and_one_read_stays_pending_across_timer_wakes()
+    public async Task A_queue_hint_wakes_the_worker_at_once_and_none_is_lost_across_timer_wakes()
     {
         await using Harness h = new();
 
@@ -122,7 +122,8 @@ public sealed class LongRestSweepParkedRescanTests
 
         await h.Clock.WhenArmedTimersAsync(static armed => armed == 1, Wait);
 
-        // Two timer wakes first: the single-reader hint channel must not have lost or duplicated its pending read.
+        // Two timer wakes first: each cancels its own read, and a cancelled read on the single-reader hint channel consumes
+        // nothing, so the hint that follows must still be delivered exactly once.
         h.Clock.Advance(LongRestSweepHostedService.ParkedRescanInterval);
 
         await h.Store.Call(2);
@@ -145,6 +146,55 @@ public sealed class LongRestSweepParkedRescanTests
         h.Queue.Signal(Guid.NewGuid());
 
         await h.Store.Call(5);
+    }
+
+    [Fact]
+    public async Task A_hint_that_lands_while_a_pass_runs_is_kept_and_starts_the_next_pass_without_any_time_passing()
+    {
+        await using Harness h = new();
+
+        // The hint arrives behind the pass's cursor while the pass is still asking the store, as a request insertion does.
+        h.Store.OnAsked(1, () => h.Queue.Signal(Guid.NewGuid()));
+
+        await h.StartAsync();
+
+        // No clock movement at all: only the kept hint can start the second pass.
+        await h.Store.Call(2);
+
+        await h.Clock.WhenArmedTimersAsync(static armed => armed == 1, Wait);
+
+        Assert.Equal(LongRestSweepHostedService.ParkedRescanInterval, h.Clock.NextDueIn);
+
+        Assert.Equal(2, h.Store.Calls);
+    }
+
+    [Fact]
+    public async Task A_timer_wake_cancels_only_its_own_wait_so_the_next_hint_is_still_delivered()
+    {
+        await using Harness h = new();
+
+        await h.StartAsync();
+
+        await h.Store.Call(1);
+
+        await h.Clock.WhenArmedTimersAsync(static armed => armed == 1, Wait);
+
+        h.Clock.Advance(LongRestSweepHostedService.ParkedRescanInterval);
+
+        await h.Store.Call(2);
+
+        await h.Clock.WhenArmedTimersAsync(static armed => armed == 1, Wait);
+
+        // The timer that just fired is spent and disposed: exactly one fresh timer is armed, and a hint still wakes the worker.
+        Assert.Equal(1, h.Clock.ArmedTimers);
+
+        h.Queue.Signal(Guid.NewGuid());
+
+        await h.Store.Call(3);
+
+        await h.Clock.WhenArmedTimersAsync(static armed => armed == 1, Wait);
+
+        Assert.Equal(1, h.Clock.ArmedTimers);
     }
 
     [Fact]
@@ -263,6 +313,17 @@ public sealed class LongRestSweepParkedRescanTests
             }
         }
 
+        private readonly Dictionary<int, Action> _hooks = [];
+
+        /// <summary>Runs the action while the n-th discovery is being answered, before the pass that asked it returns.</summary>
+        internal void OnAsked(int ordinal, Action action)
+        {
+            lock (_gate)
+            {
+                _hooks[ordinal] = action;
+            }
+        }
+
         internal void Script(params LongRestRunnableSweep[] results)
         {
             lock (_gate)
@@ -288,6 +349,8 @@ public sealed class LongRestSweepParkedRescanTests
 
             TaskCompletionSource observed;
 
+            Action? hook;
+
             lock (_gate)
             {
                 int ordinal = _calls.Count(static call => call.Task.IsCompleted) + 1;
@@ -297,7 +360,11 @@ public sealed class LongRestSweepParkedRescanTests
                 observed = _calls[ordinal - 1];
 
                 answer = _script.Count > 0 ? _script.Dequeue() : new(null, null);
+
+                hook = _hooks.GetValueOrDefault(ordinal);
             }
+
+            hook?.Invoke();
 
             observed.TrySetResult();
 
