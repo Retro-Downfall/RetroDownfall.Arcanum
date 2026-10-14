@@ -547,25 +547,28 @@ public sealed partial class HostedGrimoireProducerInventoryTests
         string core = guarded ? "if (workLease is not null)\n{\n" + begin + "\n}" : begin;
 
         return LeaseReceiverSource("using IGrimoireWorkLease lease = admitted!;", $"await Optional.Prune.RecoverPruneCoreAsync({first});\n\nawait Optional.Prune.RecoverPruneCoreAsync(lease);", "")
-            + $$"""
+            + LeaseReceiverOptionalCore(core);
+    }
 
-            namespace Optional
+    // The two-hop optional-lease core the retention recovery path has: the entry hands its formal on, the core tests it.
+    private static string LeaseReceiverOptionalCore(string core) => $$"""
+
+        namespace Optional
+        {
+            internal static class Prune
             {
-                internal static class Prune
+                internal static async Task RecoverPruneCoreAsync(RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireWorkLease? workLease)
                 {
-                    internal static async Task RecoverPruneCoreAsync(RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireWorkLease? workLease)
-                    {
-                        await ApplyUnifiedPruneCoreAsync(workLease);
-                    }
+                    await ApplyUnifiedPruneCoreAsync(workLease);
+                }
 
-                    internal static async Task ApplyUnifiedPruneCoreAsync(RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireWorkLease? workLease)
-                    {
-                        {{core}}
-                    }
+                internal static async Task ApplyUnifiedPruneCoreAsync(RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireWorkLease? workLease)
+                {
+                    {{core}}
                 }
             }
-            """;
-    }
+        }
+        """;
 
     [Theory]
     [InlineData(true, "null")]
@@ -599,5 +602,111 @@ public sealed partial class HostedGrimoireProducerInventoryTests
         Assert.Contains(run.Groups, static group => group.EffectFrontierCapsuleId is null);
 
         Assert.Contains(run.Groups, static group => group.EffectFrontierCapsuleId is not null);
+    }
+
+    // The null test of an optional lease prunes the guarded region only when the traversal knows the lease IS the null
+    // constant. A local written anywhere the evaluator does not model is not known: an out or ref argument, a ref local, `??=`,
+    // a deconstruction, Interlocked, or a write after the use that a loop, a goto or a later-declared local function carries
+    // back to it. The region is then traversed, and the raw send inside it is reported with the group's refusal. The same holds
+    // for `is not null` and for `is { }`.
+    private const string LeaseReceiverPrunedMembers = """
+        private static void Fill(out IGrimoireWorkLease? target) => target = new FakeLease();
+        """;
+
+    private const string LeaseReceiverPrunedCall = "await Optional.Prune.RecoverPruneCoreAsync(maybe);";
+
+    private static string LeaseReceiverPrunedBody(string shape) => shape switch
+    {
+        "literal-null" => "await Optional.Prune.RecoverPruneCoreAsync(null);",
+        "local-null" => "IGrimoireWorkLease? maybe = null;\n\n" + LeaseReceiverPrunedCall,
+        "local-default" => "IGrimoireWorkLease? maybe = default;\n\n" + LeaseReceiverPrunedCall,
+        "fake" => "await Optional.Prune.RecoverPruneCoreAsync(fake);",
+        "nested-block" => "IGrimoireWorkLease? maybe = null;\n\nif (token.CanBeCanceled) { maybe = fake; }\n\n" + LeaseReceiverPrunedCall,
+        "lambda" => "IGrimoireWorkLease? maybe = null;\n\nAction set = () => maybe = fake;\n\nset();\n\n" + LeaseReceiverPrunedCall,
+        "out" => "IGrimoireWorkLease? maybe = null;\n\nFill(out maybe);\n\n" + LeaseReceiverPrunedCall,
+        "ref-local" => "IGrimoireWorkLease? maybe = null;\n\nref IGrimoireWorkLease? alias = ref maybe;\n\nalias = fake;\n\n" + LeaseReceiverPrunedCall,
+        "coalesce-assign" => "IGrimoireWorkLease? maybe = null;\n\nmaybe ??= fake;\n\n" + LeaseReceiverPrunedCall,
+        "deconstruct" => "IGrimoireWorkLease? maybe = null;\n\n(maybe, _) = (fake, 0);\n\n" + LeaseReceiverPrunedCall,
+        "interlocked" => "IGrimoireWorkLease? maybe = null;\n\nInterlocked.Exchange(ref maybe, fake);\n\n" + LeaseReceiverPrunedCall,
+        "loop-carried" => "IGrimoireWorkLease? maybe = null;\n\nfor (int round = 0; round < 2; round++)\n{\n    " + LeaseReceiverPrunedCall + "\n\n    maybe = fake;\n}",
+        "foreach-carried" => "IGrimoireWorkLease? maybe = null;\n\nforeach (int round in new[] { 0, 1 })\n{\n    " + LeaseReceiverPrunedCall + "\n\n    maybe = fake;\n}",
+        "foreach-deconstruct-carried" => "IGrimoireWorkLease? maybe = null;\n\nforeach (var (_, round) in new[] { (fake, 0), (fake, 1) })\n{\n    " + LeaseReceiverPrunedCall + "\n\n    maybe = fake;\n}",
+        "goto-carried" => "IGrimoireWorkLease? maybe = null;\n\nint rounds = 0;\n\nagain:\n\n" + LeaseReceiverPrunedCall + "\n\nmaybe = fake;\n\nif (++rounds < 2) goto again;",
+        "later-local-function" => "IGrimoireWorkLease? maybe = null;\n\nSet();\n\n" + LeaseReceiverPrunedCall + "\n\nvoid Set() => maybe = fake;",
+        _ => throw new ArgumentOutOfRangeException(nameof(shape), shape, null),
+    };
+
+    private static string LeaseReceiverPrunedSource(string shape, string test)
+    {
+        string core = $$"""
+            if ({{test}})
+            {
+                System.IO.File.Delete("lease-receiver-raw");
+
+                if (!workLease.TryBeginExternalEffectGroup(out System.IDisposable group)) return;
+
+                using var held = group;
+
+                await Task.CompletedTask;
+
+                System.IO.File.Delete("lease-receiver-send");
+            }
+            """;
+
+        return LeaseReceiverSource("using IGrimoireWorkLease lease = admitted!;", LeaseReceiverPrunedBody(shape), LeaseReceiverPrunedMembers)
+            + LeaseReceiverOptionalCore(core);
+    }
+
+    public static TheoryData<string, string> LeaseReceiverPrunedProvablyNull() => Combine(["literal-null", "local-null", "local-default"]);
+
+    public static TheoryData<string, string> LeaseReceiverPrunedNotProvablyNull() => Combine(
+        ["fake", "nested-block", "lambda", "out", "ref-local", "coalesce-assign", "deconstruct", "interlocked", "loop-carried", "foreach-carried", "foreach-deconstruct-carried", "goto-carried", "later-local-function"]);
+
+    private static TheoryData<string, string> Combine(string[] shapes)
+    {
+        TheoryData<string, string> rows = [];
+
+        foreach (string shape in shapes)
+        {
+            foreach (string test in new[] { "workLease is not null", "workLease is { }" })
+            {
+                rows.Add(shape, test);
+            }
+        }
+
+        return rows;
+    }
+
+    [Theory]
+    [MemberData(nameof(LeaseReceiverPrunedProvablyNull))]
+    public void LeaseReceiverProofPrunesTheRegionOfAProvablyNullLease(string shape, string test)
+    {
+        LeaseReceiverRun run = RunLeaseReceiver(LeaseReceiverPrunedSource(shape, test), shape + " " + test, OrdinaryRoot());
+
+        // Neither the raw send nor the group nor the send behind it exists: the null traversal never enters the region.
+        Assert.Empty(run.Result.Diagnostics);
+
+        Assert.Empty(run.Groups);
+
+        Assert.DoesNotContain(run.Result.Items, static site => site.Callee == LeaseReceiverSend);
+    }
+
+    [Theory]
+    [MemberData(nameof(LeaseReceiverPrunedNotProvablyNull))]
+    public void LeaseReceiverProofKeepsTheRegionOfALeaseThatIsNotProvablyNull(string shape, string test)
+    {
+        LeaseReceiverRun run = RunLeaseReceiver(LeaseReceiverPrunedSource(shape, test), shape + " " + test, OrdinaryRoot());
+
+        // The region is traversed: the group's receiver is a formal bound to no exact acquisition, so it is refused once at its own
+        // coordinate and the raw send and the send behind the refused group both report their missing Effect.
+        HostedProducerInventoryDiagnostic mismatch = Assert.Single(run.Result.Diagnostics, static diagnostic => diagnostic.Code == LeaseReceiverMismatch);
+
+        Assert.EndsWith("/call@" + run.Coordinate, mismatch.Identity, StringComparison.Ordinal);
+
+        Assert.Equal(2, run.Result.Diagnostics.Count(static diagnostic => diagnostic.Code == "HOSTED_SITE_EFFECT_FRONTIER_MISSING" && diagnostic.Detail == LeaseReceiverSend));
+
+        Assert.Equal([LeaseReceiverMismatch, "HOSTED_SITE_EFFECT_FRONTIER_MISSING"], [.. run.Result.Diagnostics.Select(static diagnostic => diagnostic.Code).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal)]);
+
+        Assert.All(run.Groups, static group => Assert.Null(group.EffectFrontierCapsuleId));
     }
 }

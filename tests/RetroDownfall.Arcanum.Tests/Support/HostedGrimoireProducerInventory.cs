@@ -23608,7 +23608,7 @@ internal static partial class HostedGrimoireProducerInventory
 
             if (symbol is ILocalSymbol local
                 && local.DeclaringSyntaxReferences.SingleOrDefault()?.GetSyntax() is
-                    VariableDeclaratorSyntax { Initializer.Value: { } initializer })
+                    VariableDeclaratorSyntax { Initializer.Value: { } initializer } declarator)
             {
                 var localKey = (MemberIdentity(member), initializer.SpanStart);
 
@@ -23621,21 +23621,26 @@ internal static partial class HostedGrimoireProducerInventory
                 {
                     List<ExpressionSyntax> values = [initializer];
 
-                    if (initializer.Ancestors().OfType<BlockSyntax>().FirstOrDefault() is { } block)
+                    // The initializer and the plain assignments before the use are the local's values only when no other write
+                    // can reach the use; a local written through a reference, by a compound assignment or around a loop is unknown.
+                    if (!RecoveryLocalAssignments(
+                            member,
+                            local,
+                            declarator,
+                            (SyntaxNode?)initializer.Ancestors().OfType<BlockSyntax>().FirstOrDefault() ?? initializer.SyntaxTree.GetRoot(),
+                            expression,
+                            out IReadOnlyList<AssignmentExpressionSyntax> assignments))
                     {
-                        values.AddRange(block.DescendantNodes()
-                            .OfType<AssignmentExpressionSyntax>()
-                            .Where(assignment => assignment.IsKind(SyntaxKind.SimpleAssignmentExpression)
-                                && assignment.SpanStart < expression.SpanStart
-                                && SymbolEqualityComparer.Default.Equals(
-                                    member.Model.GetSymbolInfo(assignment.Left).Symbol,
-                                    local)
-                                && RecoveryNodeMayExecute(
-                                    member,
-                                    assignment,
-                                    context))
-                            .Select(static assignment => assignment.Right));
+                        return default;
                     }
+
+                    values.AddRange(assignments
+                        .Where(assignment => assignment.SpanStart < expression.SpanStart
+                            && RecoveryNodeMayExecute(
+                                member,
+                                assignment,
+                                context))
+                        .Select(static assignment => assignment.Right));
 
                     RecoveryLocalValueIdentity? valueIdentity = context is null
                         ? null
