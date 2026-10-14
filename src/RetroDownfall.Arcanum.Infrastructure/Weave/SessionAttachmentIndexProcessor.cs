@@ -218,9 +218,10 @@ internal sealed class SessionAttachmentIndexProcessor(
             return Concluded(SessionAttachmentIndexStatus.Failed, shouldRetry: true);
         }
 
-        async Task<SessionAttachmentIndexOutcome?> FlushBatchAsync()
+        // The lease is an argument rather than a capture, so the group's receiver is the exact value each caller passes.
+        async Task<SessionAttachmentIndexOutcome?> FlushBatchAsync(IGrimoireWorkLease batchLease)
         {
-            if (!workLease.TryBeginExternalEffectGroup(
+            if (!batchLease.TryBeginExternalEffectGroup(
                     out IGrimoireExternalEffectGroup? effectGroup))
             {
                 return SessionAttachmentIndexOutcome.DeferredForMaintenance;
@@ -396,7 +397,7 @@ internal sealed class SessionAttachmentIndexProcessor(
                 chunkBatch.Add(chunks.Current);
 
                 if (chunkBatch.Count == AutomaticEmbeddingBatchSize
-                    && await FlushBatchAsync().ConfigureAwait(false) is { } batchFailure)
+                    && await FlushBatchAsync(workLease).ConfigureAwait(false) is { } batchFailure)
                 {
                     return batchFailure;
                 }
@@ -404,7 +405,7 @@ internal sealed class SessionAttachmentIndexProcessor(
         }
 
         if (chunkBatch.Count > 0
-            && await FlushBatchAsync().ConfigureAwait(false) is { } finalBatchFailure)
+            && await FlushBatchAsync(workLease).ConfigureAwait(false) is { } finalBatchFailure)
         {
             return finalBatchFailure;
         }
