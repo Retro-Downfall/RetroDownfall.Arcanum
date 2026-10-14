@@ -1037,14 +1037,19 @@ public sealed partial class HostedGrimoireProducerInventoryTests
 
     // The two regimes a fixture of the EF lane is judged under: strict, which every fixture has, and the production regime
     // (the closed-world facts the shipped tree is judged under). The fixtures of the lane name the regime with a flag; this
-    // is the one place that turns the flag into a request for the facts.
-    private static HostedProducerDiscovery<HostedProducerSite> DiscoverUnderRegime(CSharpCompilation compilation, bool production) =>
+    // is the one place that turns the flag into a request for the facts. A fixture that also counts the states the walk admits
+    // hands the observer in here, so it never names the facts itself.
+    private static HostedProducerDiscovery<HostedProducerSite> DiscoverUnderRegime(
+        CSharpCompilation compilation,
+        bool production,
+        Action<HostedProducerAdmittedStateObservation>? admittedStateObserver = null) =>
         HostedGrimoireProducerInventory.DiscoverProducerSitesUnderPremises(
             production ? HostedGrimoireProducerInventory.ProductionPremises : HostedProducerPremises.None,
             [compilation],
             new(["Worker"], []),
             [new("Worker", [OrdinaryRoot()])],
-            []);
+            [],
+            admittedStateObserver: admittedStateObserver);
 
     [Fact]
     [Trait("Category", "HostedProducerProductionAnalysis")]

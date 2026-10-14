@@ -339,13 +339,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests
 
         System.Collections.Concurrent.ConcurrentQueue<HostedProducerAdmittedStateObservation> observed = new();
 
-        HostedProducerDiscovery<HostedProducerSite> result = HostedGrimoireProducerInventory.DiscoverProducerSitesUnderPremises(
-            production ? HostedGrimoireProducerInventory.ProductionPremises : HostedProducerPremises.None,
-            [compilation],
-            new(["Worker"], []),
-            [new("Worker", [OrdinaryRoot()])],
-            [],
-            admittedStateObserver: observed.Enqueue);
+        HostedProducerDiscovery<HostedProducerSite> result = DiscoverUnderRegime(compilation, production, observed.Enqueue);
 
         foreach (HostedProducerInventoryDiagnostic diagnostic in result.Diagnostics)
         {
