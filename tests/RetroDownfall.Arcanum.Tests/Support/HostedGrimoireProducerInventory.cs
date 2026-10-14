@@ -24708,6 +24708,25 @@ internal static partial class HostedGrimoireProducerInventory
                     }
                 }
 
+                if (selection is null
+                    && member.Symbol is { MethodKind: MethodKind.Constructor, IsStatic: false }
+                    && member.Syntax is ConstructorDeclarationSyntax constructorDeclaration)
+                {
+                    emittedEvidence = MergeEvidence(
+                        emittedEvidence,
+                        TraverseConstructionPreamble(
+                            member,
+                            constructorDeclaration,
+                            rootType,
+                            operationId,
+                            active,
+                            lifecycle,
+                            ordinary?.WorkKind,
+                            inheritedWork,
+                            inheritedEffect,
+                            recoveryEffect));
+                }
+
                 foreach (SyntaxNode node in (selection ?? member.Syntax).DescendantNodesAndSelf(node => node == (selection ?? member.Syntax) || node is not LocalFunctionStatementSyntax and not AnonymousFunctionExpressionSyntax))
                 {
                     bool recoveryNodeMayExecute = RecoveryNodeMayExecute(
@@ -24752,6 +24771,23 @@ internal static partial class HostedGrimoireProducerInventory
                             "Dynamic indexer access has no exact accessor target."));
 
                         continue;
+                    }
+
+                    if (ImplicitCallsAt(member, selection ?? member.Syntax, node) is { Count: > 0 } implicitCalls)
+                    {
+                        emittedEvidence = MergeEvidence(
+                            emittedEvidence,
+                            TraverseImplicitCalls(
+                                member,
+                                implicitCalls,
+                                rootType,
+                                operationId,
+                                active,
+                                lifecycle,
+                                ordinary?.WorkKind,
+                                inheritedWork,
+                                inheritedEffect,
+                                recoveryEffect));
                     }
 
                     foreach (IConversionOperation conversion in UserConversionsAt(member, node))
@@ -34387,6 +34423,11 @@ internal static partial class HostedGrimoireProducerInventory
                 {
                     if (node is CommonForEachStatementSyntax or SpreadElementSyntax
                         && EnumerationReachesProducerSite(member, node, path))
+                    {
+                        return true;
+                    }
+
+                    if (ImplicitCallsAt(member, member.Syntax, node).Any(call => ImplicitCallReachesProducerSite(member, call, path)))
                     {
                         return true;
                     }

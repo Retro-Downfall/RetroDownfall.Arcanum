@@ -317,7 +317,9 @@ internal static partial class HostedGrimoireProducerInventory
             IPropertySymbol? Current,
             IMethodSymbol? Dispose,
             IReadOnlyList<IMethodSymbol> Conversions,
-            bool Bound);
+            bool Bound,
+            DeconstructionInfo? Deconstruction = null,
+            ITypeSymbol? ElementType = null);
 
         // LazyIterators are the calls, among the return expressions of an enumerator provider, to authored iterator
         // methods that return the enumerator: their bodies run on the MoveNext calls that follow, not at the call.
@@ -383,7 +385,9 @@ internal static partial class HostedGrimoireProducerInventory
                     info.CurrentProperty,
                     info.DisposeMethod,
                     UserConversionMethods(info.ElementConversion, info.CurrentConversion),
-                    info.GetEnumeratorMethod is not null && info.MoveNextMethod is not null && info.CurrentProperty is not null);
+                    info.GetEnumeratorMethod is not null && info.MoveNextMethod is not null && info.CurrentProperty is not null,
+                    loop is ForEachVariableStatementSyntax variableLoop ? member.Model.GetDeconstructionInfo(variableLoop) : null,
+                    info.ElementType);
             }
 
             if (node is SpreadElementSyntax spread)
@@ -1612,6 +1616,35 @@ internal static partial class HostedGrimoireProducerInventory
                     {
                         ownedLazyEnumeratorCalls.Remove(ownedIterator);
                     }
+                }
+            }
+
+            // The iteration variable of a deconstructing loop is deconstructed from each element at the loop head.
+            if (binding.Deconstruction is { } deconstruction)
+            {
+                List<ImplicitCallStep> deconstructions = [];
+
+                DeconstructionSteps(member.Model, deconstruction, binding.ElementType, null, entry, deconstructions, static _ => { });
+
+                (string? work, string? effect) = Across(entry, backEdge);
+
+                foreach (ImplicitCallStep step in deconstructions)
+                {
+                    evidence = MergeEvidence(
+                        evidence,
+                        TraverseImplicitTargets(
+                            member,
+                            node,
+                            ResolveImplicitStep(member, step),
+                            [],
+                            rootType,
+                            operationId,
+                            site + "/" + step.Label + "@" + Normalize(step.Method),
+                            active,
+                            lifecycle,
+                            work,
+                            effect,
+                            work is not null && effect is not null ? recoveryEffect : null));
                 }
             }
 
