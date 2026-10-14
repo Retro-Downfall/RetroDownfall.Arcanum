@@ -38972,9 +38972,14 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
         HostedProducerServiceEntry root = Assert.Single(HostedGrimoireProducerInventory.Catalog,
             static service => service.ServiceType == "LongRestSweepHostedService");
 
-        Assert.Equal(workerType + ".ExecuteAsync", Assert.Single(root.Operations).OperationId);
+        // The worker's service also declares the admitted maintenance as a Lease-Handoff Root; the worker's own operation is the lifecycle one.
+        HostedProducerOperationEntry workerOperation = Assert.Single(root.Operations, static operation => operation.LeaseFormal is null);
 
-        Assert.Equal(workerPath, Assert.Single(root.Operations).SourcePath);
+        Assert.Equal(workerType + ".ExecuteAsync", workerOperation.OperationId);
+
+        Assert.Equal(workerPath, workerOperation.SourcePath);
+
+        Assert.Equal("RetroDownfall.Arcanum.Api.Intelligence.LongRestMaintenance.ProcessAdmittedAsync", Assert.Single(root.Operations, static operation => operation.LeaseFormal is not null).OperationId);
 
         System.Collections.Concurrent.ConcurrentQueue<HostedProducerAdmittedStateObservation> admittedStates = new();
 

@@ -30,6 +30,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests
     /// <summary>The real members that carry the one Long Rest lease from its mint to the physical send, with their key calls.</summary>
     private sealed record ActualLongRestSpine(
         ActualLongRestMember Worker, InvocationExpressionSyntax WorkerAcquisition,
+        ActualLongRestMember Owned, InvocationExpressionSyntax HandoffCall,
         ActualLongRestMember Paid, InvocationExpressionSyntax GroupCall,
         ActualLongRestMember Chat, InvocationExpressionSyntax ChatSend,
         ActualLongRestMember Embedding, InvocationExpressionSyntax EmbeddingSend);
@@ -90,18 +91,30 @@ public sealed partial class HostedGrimoireProducerInventoryTests
         }
 
         // Recovery only parks Long Rest sweeps, so the readiness root no longer reaches a Long Rest send: the hosted
-        // worker's kind-17 acquisition is the one paid door and the only root this subset routes.
-        HostedProducerOperationEntry sweep = Assert.Single(selected.Single(static entry => entry.ServiceType == "LongRestSweepHostedService").Operations,
-            static operation => operation.Authority == HostedProducerAuthorityKind.OrdinaryHostedWork);
+        // worker's kind-17 acquisition is the one paid door. The worker holds that Work down to the admitted maintenance, which is a
+        // Lease-Handoff Root: its closure is judged under its own operation, with the lease formal as its Work, and a handoff-binding row
+        // in the worker's operation ties that formal to the acquisition.
+        HostedProducerServiceEntry service = selected.Single(static entry => entry.ServiceType == "LongRestSweepHostedService");
 
-        AssertRoute("LongRestSweepHostedService", sweep, spine.Worker, spine.WorkerAcquisition);
+        HostedProducerOperationEntry sweep = Assert.Single(service.Operations,
+            static operation => operation.Authority == HostedProducerAuthorityKind.OrdinaryHostedWork && operation.LeaseFormal is null);
+
+        HostedProducerOperationEntry process = Assert.Single(service.Operations, static operation => operation.LeaseFormal is not null);
+
+        Assert.Equal(ActualLongRestMaintenanceType + ".ProcessAdmittedAsync", process.OperationId);
+
+        Assert.Equal("admission", process.LeaseFormal);
+
+        Assert.Equal(GrimoireWorkKind.LongRestSweep, process.WorkKind);
+
+        AssertRoute("LongRestSweepHostedService", sweep, process, spine.Worker, spine.WorkerAcquisition);
 
         output.WriteLine("ACTUAL_LONG_REST_SUBSET originalCatalogRoots=2 assertedAuthorities=1 physicalBranchesPerAuthority=2 compilerOwnershipShells=2 fullAggregateQualification=false");
 
-        void AssertRoute(string root, HostedProducerOperationEntry authority,
+        void AssertRoute(string root, HostedProducerOperationEntry worker, HostedProducerOperationEntry process,
             ActualLongRestMember workMember, InvocationExpressionSyntax workCall)
         {
-            HostedProducerSite[] work = Sites(workMember, workCall, HostedProducerSiteKind.EffectFrontier);
+            HostedProducerSite[] work = Sites(worker, workMember, workCall, HostedProducerSiteKind.EffectFrontier);
 
             string workCapsule = Assert.Single(work.Select(static site => site.CapsuleId).Distinct(StringComparer.Ordinal));
 
@@ -111,37 +124,62 @@ public sealed partial class HostedGrimoireProducerInventoryTests
                 Assert.Equal(workCapsule, site.WorkFrontierCapsuleId);
             });
 
-            HostedProducerSite[] groups = Sites(spine.Paid, spine.GroupCall, HostedProducerSiteKind.EffectFrontier);
+            // The root's own Work row: the lease formal the admitted maintenance is handed, admitting the same work kind.
+            HostedProducerSite formal = Assert.Single(discovery.Items, site => site.RootType == root
+                && site.AuthorityOperationId == process.OperationId && site.Kind == HostedProducerSiteKind.EffectFrontier
+                && site.Callee == HostedGrimoireProducerInventory.RootLeaseFormalCallee);
+
+            Assert.Equal(GrimoireWorkKind.LongRestSweep, formal.AdmittedWorkKind);
+
+            Assert.Equal(formal.CapsuleId, formal.WorkFrontierCapsuleId);
+
+            Assert.NotEqual(workCapsule, formal.CapsuleId);
+
+            // The one handoff-binding row ties that formal to the worker's acquisition, at the coordinator's awaited call.
+            HostedProducerSite binding = Assert.Single(Sites(worker, spine.Owned, spine.HandoffCall, HostedProducerSiteKind.LeaseHandoff));
+
+            Assert.Equal(workCapsule, binding.WorkFrontierCapsuleId);
+
+            Assert.Equal(process.OperationId, binding.Callee);
+
+            HostedProducerSite[] groups = Sites(process, spine.Paid, spine.GroupCall, HostedProducerSiteKind.EffectFrontier);
 
             string groupCapsule = Assert.Single(groups.Select(static site => site.CapsuleId).Distinct(StringComparer.Ordinal));
 
             Assert.All(groups, site =>
             {
-                Assert.Equal(workCapsule, site.WorkFrontierCapsuleId);
+                Assert.Equal(formal.CapsuleId, site.WorkFrontierCapsuleId);
                 Assert.Equal(groupCapsule, site.EffectFrontierCapsuleId);
             });
 
-            foreach (HostedProducerSite send in Sites(spine.Chat, spine.ChatSend, HostedProducerSiteKind.ProviderCall)
-                .Concat(Sites(spine.Embedding, spine.EmbeddingSend, HostedProducerSiteKind.ProviderCall)))
+            foreach (HostedProducerSite send in Sites(process, spine.Chat, spine.ChatSend, HostedProducerSiteKind.ProviderCall)
+                .Concat(Sites(process, spine.Embedding, spine.EmbeddingSend, HostedProducerSiteKind.ProviderCall)))
             {
-                Assert.Equal(workCapsule, send.WorkFrontierCapsuleId);
+                Assert.Equal(formal.CapsuleId, send.WorkFrontierCapsuleId);
                 Assert.Equal(groupCapsule, send.EffectFrontierCapsuleId);
-                output.WriteLine($"ACTUAL_LONG_REST_SUBSET authority={authority.OperationId} source={send.SourcePath} member={send.MemberIdentity} capsule={send.CapsuleId} work={workCapsule} group={groupCapsule}");
+                output.WriteLine($"ACTUAL_LONG_REST_SUBSET authority={process.OperationId} source={send.SourcePath} member={send.MemberIdentity} capsule={send.CapsuleId} work={formal.CapsuleId} group={groupCapsule} acquisition={workCapsule}");
             }
 
-            HostedProducerInventoryDiagnostic[] failures = discovery.Diagnostics.Where(diagnostic =>
-                diagnostic.Identity.StartsWith(authority.OperationId, StringComparison.Ordinal)
-                && (diagnostic.Code.StartsWith("HOSTED_RECOVERY_", StringComparison.Ordinal)
-                    || diagnostic.Code is "HOSTED_ROOT_UNRESOLVED" or "HOSTED_SITE_UNCLASSIFIED"
-                        or "HOSTED_SITE_WORK_FRONTIER_MISSING" or "HOSTED_SITE_EFFECT_FRONTIER_MISSING"
-                        or "HOSTED_CALLBACK_OWNERSHIP_UNPROVEN" or "HOSTED_DISPOSAL_TARGET_UNRESOLVED"
-                        or "HOSTED_TRAVERSAL_STATE_LIMIT_EXCEEDED" or "HOSTED_EVALUATION_ENVIRONMENT_LIMIT_EXCEEDED"))
-                .ToArray();
+            foreach (HostedProducerOperationEntry authority in new[] { worker, process })
+            {
+                HostedProducerInventoryDiagnostic[] failures = discovery.Diagnostics.Where(diagnostic =>
+                    diagnostic.Identity.StartsWith(authority.OperationId, StringComparison.Ordinal)
+                    && (diagnostic.Code.StartsWith("HOSTED_RECOVERY_", StringComparison.Ordinal)
+                        || diagnostic.Code is "HOSTED_ROOT_UNRESOLVED" or "HOSTED_SITE_UNCLASSIFIED"
+                            or "HOSTED_SITE_WORK_FRONTIER_MISSING" or "HOSTED_SITE_EFFECT_FRONTIER_MISSING"
+                            or "HOSTED_CALLBACK_OWNERSHIP_UNPROVEN" or "HOSTED_DISPOSAL_TARGET_UNRESOLVED"
+                            or "HOSTED_TRAVERSAL_STATE_LIMIT_EXCEEDED" or "HOSTED_EVALUATION_ENVIRONMENT_LIMIT_EXCEEDED"
+                            or HostedGrimoireProducerInventory.LeaseHandoffUnprovenCode))
+                    .ToArray();
 
-            Assert.True(failures.Length == 0, string.Join(global::System.Environment.NewLine,
-                failures.Select(static diagnostic => $"{diagnostic.Code}: {diagnostic.Identity}: {diagnostic.Detail}")));
+                Assert.True(failures.Length == 0, string.Join(global::System.Environment.NewLine,
+                    failures.Select(static diagnostic => $"{diagnostic.Code}: {diagnostic.Identity}: {diagnostic.Detail}")));
+            }
 
-            HostedProducerSite[] Sites(ActualLongRestMember member,
+            // Every reference to the admitted maintenance's method in production is a call some root proved.
+            Assert.DoesNotContain(discovery.Diagnostics, static diagnostic => diagnostic.Code == HostedGrimoireProducerInventory.LeaseHandoffCallerUnanalysedCode);
+
+            HostedProducerSite[] Sites(HostedProducerOperationEntry authority, ActualLongRestMember member,
                 InvocationExpressionSyntax call, HostedProducerSiteKind kind)
             {
                 string identity = Assert.IsType<string>(member.Symbol.GetDocumentationCommentId());
@@ -156,7 +194,9 @@ public sealed partial class HostedGrimoireProducerInventoryTests
 
                 IMethodSymbol called = Assert.IsAssignableFrom<IMethodSymbol>(member.Model.GetSymbolInfo(call).Symbol);
 
-                Assert.All(matches, site => Assert.True(site.Callee.EndsWith("." + called.Name, StringComparison.Ordinal), site.Callee));
+                Assert.All(matches, site => Assert.True(kind == HostedProducerSiteKind.LeaseHandoff
+                    ? site.Callee == process.OperationId
+                    : site.Callee.EndsWith("." + called.Name, StringComparison.Ordinal), site.Callee));
 
                 return matches;
             }
@@ -286,7 +326,9 @@ public sealed partial class HostedGrimoireProducerInventoryTests
 
         InvocationExpressionSyntax embeddingSend = ActualLongRestCallOf(embedding, "Microsoft.Extensions.AI.IEmbeddingGenerator`2", "GenerateAsync");
 
-        return new(worker, workerAcquisition, paid, groupCall, chat, chatSend, embedding, embeddingSend);
+        InvocationExpressionSyntax handoffCall = ActualLongRestCallOf(owned, "RetroDownfall.Arcanum.Infrastructure.Operations.LongRest.ILongRestAdmittedMaintenance", "ProcessAdmittedAsync");
+
+        return new(worker, workerAcquisition, owned, handoffCall, paid, groupCall, chat, chatSend, embedding, embeddingSend);
     }
 
     private static ActualLongRestMember ActualLongRestMemberOf(Compilation compilation, string typeName, string methodName)
