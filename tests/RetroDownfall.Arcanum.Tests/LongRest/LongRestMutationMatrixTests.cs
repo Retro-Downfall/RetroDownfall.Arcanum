@@ -83,7 +83,8 @@ public sealed class LongRestMutationMatrixTests
         Unit,
     }
 
-    internal sealed record Row(string Name, Mechanism Mechanism, Func<Scenario, string, Task> Apply, bool CleanOnly = false, bool ProtectedOnly = false, bool EveryLeaf = false, bool AttemptOnly = false);
+    internal sealed record Row(string Name, Mechanism Mechanism, Func<Scenario, string, Task> Apply, bool CleanOnly = false, bool ProtectedOnly = false, bool EveryLeaf = false, bool AttemptOnly = false,
+        Func<Scenario, Task>? Prepare = null);
 
     private static readonly Row[] Rows =
     [
@@ -113,6 +114,12 @@ public sealed class LongRestMutationMatrixTests
         new("source-epoch", Mechanism.Trigger, static (s, m) => s.SqlAsync("UPDATE long_rest_sources SET MutationEpoch = MutationEpoch + 1 WHERE MemoryId = $m;", ("$m", m))),
         new("attachment-provenance", Mechanism.Trigger, static (s, m) => s.SqlAsync(
             "INSERT INTO saga_memory_attachment_provenance VALUES ($m, 'session', 'AAAAAAAA-1111-4111-8111-AAAAAAAAAAAA', 'key', 1, 'hash', '2026-10-10T00:00:00.0000000Z', 'text');", ("$m", m))),
+        new("attachment-update", Mechanism.Trigger, static (s, m) => s.SqlAsync("UPDATE saga_memory_attachment_provenance SET ContentHash = 'changed' WHERE MemoryId = $m;", ("$m", m)),
+            Prepare: static s => s.AttachAllAsync()),
+        new("attachment-delete", Mechanism.Trigger, static (s, m) => s.SqlAsync("DELETE FROM saga_memory_attachment_provenance WHERE MemoryId = $m;", ("$m", m)),
+            Prepare: static s => s.AttachAllAsync()),
+        new("head-delete", Mechanism.Trigger, static (s, m) => s.SqlAsync(
+            "DELETE FROM annal_heads WHERE ClaimId = (SELECT ClaimId FROM annal_claims WHERE SubjectStoreCode = 1 AND SubjectId = $m);", ("$m", m))),
         new("dependency", Mechanism.Trigger, static async (s, m) =>
         {
             (string Version, long Sequence) mine = await s.VersionOfAsync(m);
@@ -237,7 +244,7 @@ public sealed class LongRestMutationMatrixTests
     {
         Row row = Rows.Single(candidate => candidate.Name == name);
 
-        await using Scenario s = await Scenario.CreateAsync(isProtected, Leaves);
+        await using Scenario s = await Scenario.CreateAsync(isProtected, Leaves, prepare: row.Prepare);
 
         string target = input ? s.Inputs[0] : s.Bystander;
 
@@ -375,7 +382,7 @@ public sealed class LongRestMutationMatrixTests
     {
         Row row = Rows.Single(candidate => candidate.Name == name);
 
-        await using Scenario s = await Scenario.CreateAsync(isProtected, Leaves);
+        await using Scenario s = await Scenario.CreateAsync(isProtected, Leaves, prepare: row.Prepare);
 
         string target = input ? s.Inputs[0] : s.Bystander;
 
@@ -781,7 +788,7 @@ public sealed class LongRestMutationMatrixTests
 
         internal static Guid Id(int index) => new("a0000000-0000-0000-0000-" + index.ToString("D12", CultureInfo.InvariantCulture));
 
-        internal static async Task<Scenario> CreateAsync(bool isProtected, int leaves, bool queueUnit = true, bool related = true)
+        internal static async Task<Scenario> CreateAsync(bool isProtected, int leaves, bool queueUnit = true, bool related = true, Func<Scenario, Task>? prepare = null)
         {
             LongRestMaintenanceTests.MaintenanceFixture f = await LongRestMaintenanceTests.MaintenanceFixture.CreateAsync(ownWorker: true,
                 protectedSources: isProtected, sourceCount: leaves, sourceId: Id,
@@ -800,6 +807,12 @@ public sealed class LongRestMutationMatrixTests
                 vector[related && index < 2 ? 0 : index] = 1;
 
                 await f.H.SetEmbeddingAsync(memories[index], vector);
+            }
+
+            if (prepare is not null)
+            {
+                // Before anything is captured, so that what a row later changes or removes is already part of the corpus the generation freezes.
+                await prepare(s);
             }
 
             if (isProtected)
@@ -932,6 +945,15 @@ public sealed class LongRestMutationMatrixTests
             Result<LongRestMaintenanceCapability> fresh = await F.Maintenance.CreateCapabilityAsync(F.Operation, F.Invocation, F.Claim, F.Scope, F.Authority, CancellationToken.None);
 
             return fresh.IsFailure ? Result<LongRestSweepProgress>.Failure(fresh.Error) : await F.Coordinator.ResumeAsync(F.Operation, fresh.Value, CancellationToken.None);
+        }
+
+        /// <summary>Gives every leaf an attachment provenance row, so that a row can later update or remove one.</summary>
+        internal async Task AttachAllAsync()
+        {
+            foreach (string memory in _memories)
+            {
+                await SqlAsync("INSERT INTO saga_memory_attachment_provenance VALUES ($m, 'session', 'AAAAAAAA-1111-4111-8111-AAAAAAAAAAAA', 'key', 1, 'hash', '2026-10-10T00:00:00.0000000Z', 'text');", ("$m", memory));
+            }
         }
 
         internal Task SqlAsync(string sql, params (string Name, object? Value)[] parameters) => F.H.ExecuteAsync(sql, parameters);

@@ -10,44 +10,25 @@ internal sealed partial class LongRestDiscoveryStore
     /// How many of a generation's leaves one step re-proves in full. The windows tile the leaves in identity order and the sweep's
     /// revision picks which one a step takes, so whatever no trigger saw is met within ceil(leaves / this) revisions of the sweep.
     /// </summary>
-    internal const int ScrubWindowLeaves = LongRestScrubWindow.Leaves;
+    internal const int ScrubWindowLeaves = 32;
 
     /// <summary>
-    /// The leaves the rotating window selects for the sweep as it stands now. The window follows the sweep's revision and the
-    /// generation's own, because the sweep advances per committed unit and the generation per hierarchy step, and a window that
-    /// followed only one would stand still through the other's phase. It reads only the leaf keys: an index walk, no leaf is read.
+    /// The leaves the rotating window selects for the sweep as it stands now, in one statement over the leaf keys: an index walk, no leaf is
+    /// read. The window is the revision's turn among ceil(leaves / <see cref="ScrubWindowLeaves"/>) windows that tile the leaves in identity
+    /// order, and the revision is the sweep's plus the generation's own, because the sweep advances per committed unit and the generation per
+    /// hierarchy step, and a window that followed only one would stand still through the other's phase.
     /// </summary>
     internal static async Task<List<string>> ReadScrubWindowAsync(SqliteConnection connection, SqliteTransaction transaction,
         LongRestDiscoveryGeneration generation, CancellationToken ct)
     {
-        long revision;
-
-        await using (SqliteCommand sweep = Command(connection, transaction, "SELECT Revision FROM long_rest_sweeps WHERE OperationId = $operation;",
-            ("$operation", generation.OperationId.ToString("N"))))
-        {
-            revision = await sweep.ExecuteScalarAsync(ct).ConfigureAwait(false) is long stored ? stored : 0;
-        }
-
-        long leaves;
-
-        await using (SqliteCommand count = Command(connection, transaction, "SELECT count(*) FROM long_rest_discovery_leaves WHERE GenerationId = $generation;",
-            ("$generation", Format(generation.GenerationId))))
-        {
-            leaves = (long)(await count.ExecuteScalarAsync(ct).ConfigureAwait(false))!;
-        }
-
         List<string> window = [];
 
-        if (leaves == 0)
-        {
-            return window;
-        }
-
-        long offset = LongRestScrubWindow.Offset(leaves, checked(revision + generation.Revision));
-
         await using SqliteCommand command = Command(connection, transaction, """
-            SELECT MemoryId FROM long_rest_discovery_leaves WHERE GenerationId = $generation ORDER BY MemoryId LIMIT $limit OFFSET $offset;
-            """, ("$generation", Format(generation.GenerationId)), ("$limit", ScrubWindowLeaves), ("$offset", offset));
+            SELECT MemoryId FROM long_rest_discovery_leaves WHERE GenerationId = $generation ORDER BY MemoryId LIMIT $limit
+            OFFSET (COALESCE((SELECT Revision FROM long_rest_sweeps WHERE OperationId = $operation), 0) + $revision)
+                % MAX(1, ((SELECT count(*) FROM long_rest_discovery_leaves WHERE GenerationId = $generation) + $limit - 1) / $limit) * $limit;
+            """, ("$generation", Format(generation.GenerationId)), ("$operation", generation.OperationId.ToString("N")),
+            ("$revision", generation.Revision), ("$limit", ScrubWindowLeaves));
 
         await using SqliteDataReader reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
 
