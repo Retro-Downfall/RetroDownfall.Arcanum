@@ -423,16 +423,18 @@ public sealed partial class HostedGrimoireProducerInventoryTests
 
         // A handle payload is the pair's own carrier, so the consumer of the converted value is an escape. A string payload is
         // closed pure data and makes no claim about the consumer: the converted LeaseBox is a real carrier, because its
-        // operator reads the group back from the static, but it reaches the consumer through storage that the origin walk
-        // does not follow. That is deliberately not asserted either way here; the state of the walk across a store is pinned
-        // by AHandleWrittenToStorageIsNotItselfRefusedWhenNoSendNeedsTheAdmissionAfterIt, where the shape is stated as a known limit.
+        // operator reads the group back from the static, but it reaches the consumer through the static, not through the
+        // payload. That defect is refused where it happens, at the store, for either payload.
         if (handle)
         {
             AssertExactTelemetryConsumerEscape(result, consumer, "System.GC.KeepAlive;");
         }
 
-        // Whatever the payload, the carrier's real defect stays refused: the held group is stored in a static, which ends its
-        // lifetime at that store, so the send after the call loses its Effect.
+        Assert.Contains(result.Diagnostics, diagnostic => diagnostic.Code == "HOSTED_ADMISSION_HANDLE_ESCAPE"
+            && diagnostic.Identity.EndsWith("/store@" + capture.SyntaxTree.FilePath + ":" + capture.SpanStart, StringComparison.Ordinal)
+            && diagnostic.Detail.StartsWith("LeaseBox.Captured;", StringComparison.Ordinal));
+
+        // The held group stored in a static also ends its lifetime at that store, so the send after the call loses its Effect.
         InvocationExpressionSyntax send = compilation.SyntaxTrees.Single().GetRoot().DescendantNodes()
             .OfType<InvocationExpressionSyntax>().Single(static invocation => invocation.Expression.ToString() == "System.IO.File.Delete");
 

@@ -24754,6 +24754,13 @@ internal static partial class HostedGrimoireProducerInventory
                         continue;
                     }
 
+                    if (node is AssignmentExpressionSyntax staticStore && StoresAdmissionCarrierInStaticStorage(member, staticStore, out string staticRoot))
+                    {
+                        RefuseTraversalCompletion();
+
+                        diagnostics.Add(new("HOSTED_ADMISSION_HANDLE_ESCAPE", operationId + "/store@" + Location(node), staticRoot + "; A retained handle stored in static storage has no proven lifetime continuation."));
+                    }
+
                     foreach (IConversionOperation conversion in UserConversionsAt(member, node))
                     {
                         IMethodSymbol selectedOperator = conversion.OperatorMethod!;
