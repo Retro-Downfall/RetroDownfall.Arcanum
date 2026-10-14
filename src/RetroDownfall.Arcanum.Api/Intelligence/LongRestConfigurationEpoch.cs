@@ -1,5 +1,4 @@
 using System.Security.Cryptography;
-using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Core.Configuration;
@@ -55,35 +54,13 @@ public sealed class LongRestConfigurationEpoch : IDisposable, ILongRestConfigura
     {
         LongRestConfigurationSnapshot snapshot = Capture();
 
-        Result<LongRestRecipeIdentity> recipe = Result<LongRestRecipeIdentity>.Failure(new Error(ErrorCodes.LongRest.Unavailable, "The exact Long Rest provider recipe is unavailable."));
-
-        if (snapshot.Enabled)
-        {
-            Result<LongRestProviderSelection> chat = snapshot.ResolveChat();
-
-            Result<LongRestProviderSelection> embedding = snapshot.ResolveEmbedding();
-
-            if (chat.IsSuccess && embedding.IsSuccess && Supported(chat.Value) && Supported(embedding.Value))
-            {
-                recipe = Result<LongRestRecipeIdentity>.Success(new LongRestRecipeIdentity(1, 1, chat.Value.Provider.Name, chat.Value.Model, Destination(chat.Value.Provider),
-                    embedding.Value.Provider.Name, embedding.Value.Model, Destination(embedding.Value.Provider), embedding.Value.Dimensions));
-
-                if (LongRestDiscoveryHash.Recipe(recipe.Value).IsFailure)
-                {
-                    recipe = Result<LongRestRecipeIdentity>.Failure(new Error(ErrorCodes.LongRest.InvalidRequest, "The configured Long Rest recipe exceeds its supported bounds."));
-                }
-            }
-        }
+        // The recipe is resolved by the same predicates the configuration validator, doctor and health rows use.
+        Result<LongRestRecipeIdentity> recipe = snapshot.Enabled
+            ? snapshot.ResolveRecipe()
+            : Result<LongRestRecipeIdentity>.Failure(new Error(ErrorCodes.LongRest.Unavailable, "The exact Long Rest provider recipe is unavailable."));
 
         return new(snapshot.Stamp, snapshot.Enabled, snapshot.CovenantEnabled, recipe);
     }
-
-    private static bool Supported(LongRestProviderSelection selection) => selection.Provider.Type == AiProviderKind.OpenAICompatible
-        && Uri.TryCreate(selection.Provider.Endpoint, UriKind.Absolute, out Uri? endpoint)
-        && endpoint.Scheme is "https" or "http";
-
-    private static CovenantDigest Destination(ProviderSettings provider) => new(SHA256.HashData(Encoding.UTF8.GetBytes(
-        "Arcanum.Covenant.ProviderDestinationIdentity.v1\0" + provider.Name + "|" + provider.Endpoint)));
 
     public bool IsCurrent(LongRestConfigurationStamp stamp)
     {
@@ -149,13 +126,16 @@ public sealed class LongRestConfigurationSnapshot
 
     public bool CovenantEnabled => Read().Features.Covenant;
 
+    /// <summary>
+    /// The chat choice. An explicit <paramref name="model"/> resolves exactly (an admitted choice does not drift); without one the
+    /// fast model is used when it is set, else the default model. A fast model that is set but unusable fails closed.
+    /// </summary>
     public Result<LongRestProviderSelection> ResolveChat(string? model = null)
     {
         ArcanumSettings settings = Read();
 
-        return ProviderResolver.TryResolveProviderForModel(settings, model, out ProviderSettings? provider, out string resolved)
-            && provider is not null
-            ? Result<LongRestProviderSelection>.Success(new LongRestProviderSelection(provider, resolved, 0, settings.ResolvePricing().ResolveForModel(resolved)))
+        return LongRestRecipeResolver.TryResolveChat(settings, model, out ProviderSettings? provider, out string resolved)
+            ? Result<LongRestProviderSelection>.Success(new LongRestProviderSelection(provider!, resolved, 0, settings.ResolvePricing().ResolveForModel(resolved)))
             : Result<LongRestProviderSelection>.Failure(Invalid());
     }
 
@@ -163,14 +143,13 @@ public sealed class LongRestConfigurationSnapshot
     {
         ArcanumSettings settings = Read();
 
-        EmbeddingSettings embedding = settings.ResolveEmbeddings();
-
-        return embedding.Dimensions > 0 && !string.IsNullOrWhiteSpace(embedding.Provider) && !string.IsNullOrWhiteSpace(embedding.Model)
-            && ProviderResolver.TryResolveProviderByName(settings, embedding.Provider, out ProviderSettings? provider)
-            && provider is not null
-            ? Result<LongRestProviderSelection>.Success(new LongRestProviderSelection(provider, embedding.Model, embedding.Dimensions, settings.ResolvePricing().ResolveForModel(embedding.Model)))
+        return LongRestRecipeResolver.TryResolveEmbedding(settings, out ProviderSettings? provider, out EmbeddingSettings embedding)
+            ? Result<LongRestProviderSelection>.Success(new LongRestProviderSelection(provider!, embedding.Model!, embedding.Dimensions, settings.ResolvePricing().ResolveForModel(embedding.Model)))
             : Result<LongRestProviderSelection>.Failure(Invalid());
     }
+
+    /// <summary>The recipe these frozen settings run: chat (fast model first), embedding and their destinations.</summary>
+    public Result<LongRestRecipeIdentity> ResolveRecipe() => LongRestRecipeResolver.Resolve(Read());
 
     private static Error Invalid() => new(ErrorCodes.LongRest.InvalidRequest, "No exact configured Long Rest provider model is available.");
 }
