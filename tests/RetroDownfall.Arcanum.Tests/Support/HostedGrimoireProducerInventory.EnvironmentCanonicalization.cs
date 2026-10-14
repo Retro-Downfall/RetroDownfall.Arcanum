@@ -62,5 +62,15 @@ internal static partial class HostedGrimoireProducerInventory
 
             return true;
         }
+
+        // Foreign Parameter Projection. A parameter is in scope only in the method that declares it and in the lambdas and
+        // local functions declared inside that method. A member that cannot be nested in a method (an accessor, a
+        // constructor, an operator, a conversion, an explicit interface implementation) therefore can neither name a
+        // parameter of an ordinary method nor run code that does, so a binding for such a parameter is dead in its
+        // environment. It reaches the member only because an instance call passes its caller's whole context on to the
+        // receiver's members, and keeping it multiplies the member's states by every distinct binding of every caller
+        // parameter above it. A lambda or a local function keeps every binding, since it may be nested in the owner.
+        private static bool MemberCannotBeNestedInAMethod(AuthoredMember member) =>
+            member.Symbol.MethodKind is not (MethodKind.LocalFunction or MethodKind.AnonymousFunction);
     }
 }

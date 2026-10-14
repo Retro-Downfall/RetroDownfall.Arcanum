@@ -5383,7 +5383,7 @@ internal static partial class HostedGrimoireProducerInventory
                 HashSet<ISymbol> retained = new(
                     candidates.Where(candidate =>
                         candidate is not IParameterSymbol parameter
-                        || member.Symbol.MethodKind != MethodKind.Ordinary
+                        || !MemberCannotBeNestedInAMethod(member)
                         || parameter.ContainingSymbol is not IMethodSymbol
                         {
                             MethodKind: MethodKind.Ordinary,
