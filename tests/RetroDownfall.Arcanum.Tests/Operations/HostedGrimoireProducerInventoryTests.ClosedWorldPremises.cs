@@ -952,7 +952,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests
     [Trait("Category", "HostedProducerProductionAnalysis")]
     public void Production_universe_satisfies_SqliteSealedByUse()
     {
-        Assert.Equal(HostedProducerPremises.SqliteSealedByUse | HostedProducerPremises.AuthoredEnumerablesAbsentByUse, HostedGrimoireProducerInventory.ProductionPremises);
+        Assert.Equal(HostedProducerPremises.SqliteSealedByUse | HostedProducerPremises.AuthoredEnumerablesAbsentByUse | HostedProducerPremises.DbProviderTypesClosedByUse, HostedGrimoireProducerInventory.ProductionPremises);
 
         HostedProducerPremiseLedger ledger = HostedGrimoireProducerInventory.VerifyPremises(
             HostedGrimoireProducerInventory.ProductionCompilations, HostedProducerPremises.SqliteSealedByUse);
@@ -1034,6 +1034,17 @@ public sealed partial class HostedGrimoireProducerInventoryTests
 
         Assert.Empty(offenders);
     }
+
+    // The two regimes a fixture of the EF lane is judged under: strict, which every fixture has, and the production regime
+    // (the closed-world facts the shipped tree is judged under). The fixtures of the lane name the regime with a flag; this
+    // is the one place that turns the flag into a request for the facts.
+    private static HostedProducerDiscovery<HostedProducerSite> DiscoverUnderRegime(CSharpCompilation compilation, bool production) =>
+        HostedGrimoireProducerInventory.DiscoverProducerSitesUnderPremises(
+            production ? HostedGrimoireProducerInventory.ProductionPremises : HostedProducerPremises.None,
+            [compilation],
+            new(["Worker"], []),
+            [new("Worker", [OrdinaryRoot()])],
+            []);
 
     [Fact]
     [Trait("Category", "HostedProducerProductionAnalysis")]
@@ -1359,5 +1370,262 @@ public sealed partial class HostedGrimoireProducerInventoryTests
         Assert.True(ledger.Holds(HostedProducerPremises.AuthoredEnumerablesAbsentByUse), string.Join(global::System.Environment.NewLine, ledger.Violations));
 
         Assert.False(EnumerationPremiseUnclassified(EnumerationPremiseRequested(compilation), compilation));
+    }
+
+    // ---- DbProviderTypesClosedByUse: the closed-world premise behind the provider dispatch closure.
+
+    private HostedProducerDiscovery<HostedProducerSite> DispatchDiscoverUnder(HostedProducerPremises premises, string body, string extra = "", params MetadataReference[] references)
+    {
+        CSharpCompilation compilation = CompileWithProductionReferencePack(R2Source(R2Admission + body + " await Task.CompletedTask;", DispatchInputs + "\n" + extra), "RetroDownfall.Arcanum.Api");
+
+        if (references.Length != 0)
+        {
+            compilation = compilation.AddReferences(references);
+        }
+
+        Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        return HostedGrimoireProducerInventory.DiscoverProducerSitesUnderPremises(premises, [compilation], new(["Worker"], []), [new("Worker", [OrdinaryRoot()])], []);
+    }
+
+    [Theory]
+    [InlineData("_ = DispatchInput.Connection.CreateCommand();", "System.Data.Common.DbConnection.CreateCommand")]
+    [InlineData("_ = DispatchInput.Command.CreateParameter();", "System.Data.Common.DbCommand.CreateParameter")]
+    [InlineData("_ = DispatchInput.Command.CommandText;", "System.Data.Common.DbCommand.CommandText")]
+    [InlineData("_ = DispatchInput.Reader.GetString(0);", "System.Data.Common.DbDataReader.GetString")]
+    [InlineData("_ = DispatchInput.Reader.FieldCount;", "System.Data.Common.DbDataReader.FieldCount")]
+    [InlineData("_ = DispatchInput.Parameters.Add(new Microsoft.Data.Sqlite.SqliteParameter());", "System.Data.Common.DbParameterCollection.Add")]
+    [InlineData("_ = DispatchInput.Parameter.Value;", "System.Data.Common.DbParameter.Value")]
+    [InlineData("_ = DispatchInput.Transaction.Connection;", "System.Data.Common.DbTransaction.Connection")]
+    [InlineData("_ = DispatchInput.Builder.ToString();", "System.Data.Common.DbConnectionStringBuilder.ToString")]
+    [InlineData("_ = DispatchInput.SqliteParameter.Value;", "Microsoft.Data.Sqlite.SqliteParameter.Value")]
+    [InlineData("Microsoft.EntityFrameworkCore.DbContext r = DispatchInput.Context; _ = r.Set<DispatchRow>();", "Microsoft.EntityFrameworkCore.DbContext.Set")]
+    [InlineData("_ = DispatchInput.Rows.Add(new DispatchRow());", "Microsoft.EntityFrameworkCore.DbSet`1.Add")]
+    [InlineData("_ = DispatchInput.Command.ExecuteNonQuery();", "System.Data.Common.DbCommand.ExecuteNonQuery")]
+    [InlineData("DispatchInput.Connection.Open();", "System.Data.Common.DbConnection.Open")]
+    [InlineData("DispatchInput.Transaction.Commit();", "System.Data.Common.DbTransaction.Commit")]
+    public void DbProviderTypesClosedByUseClassifiesAReviewedMemberOnAnyReceiver(string statement, string callee)
+    {
+        // The strict twin: with no premise the same statement is refused (AReviewedDatabaseMemberOnAnOpaque...).
+        Assert.True(DispatchRefused(DispatchDiscover(statement), callee));
+
+        HostedProducerDiscovery<HostedProducerSite> premised = DispatchDiscoverUnder(HostedProducerPremises.DbProviderTypesClosedByUse, statement);
+
+        Assert.Empty(PremiseViolations(premised));
+
+        Assert.False(DispatchRefused(premised, callee));
+    }
+
+    [Fact]
+    public void DbProviderTypesClosedByUseStillReportsADatabaseSiteAndGrantsNoWorkOrEffectAuthority()
+    {
+        HostedProducerDiscovery<HostedProducerSite> premised = DispatchDiscoverUnder(HostedProducerPremises.DbProviderTypesClosedByUse, "_ = DispatchInput.Command.ExecuteNonQuery();");
+
+        Assert.True(DispatchSite(premised, "System.Data.Common.DbCommand.ExecuteNonQuery"));
+
+        // Outside an admitted region the same site still lacks its frontiers.
+        HostedProducerDiscovery<HostedProducerSite> unadmitted = HostedGrimoireProducerInventory.DiscoverProducerSitesUnderPremises(
+            HostedProducerPremises.DbProviderTypesClosedByUse,
+            [CompileWithProductionReferencePack(R2Source("_ = DispatchInput.Command.ExecuteNonQuery(); await Task.CompletedTask;", DispatchInputs), "RetroDownfall.Arcanum.Api")],
+            new(["Worker"], []),
+            [new("Worker", [OrdinaryRoot()])],
+            []);
+
+        Assert.Contains(unadmitted.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_SITE_WORK_FRONTIER_MISSING" && diagnostic.Detail == "System.Data.Common.DbCommand.ExecuteNonQuery");
+    }
+
+    // A type the universe holds whose dispatch the reviewed members could reach: the premise is withheld, the
+    // violation names the type and the family, and every reviewed member keeps its strict behavior.
+    [Theory]
+    [InlineData("connection", "internal abstract class HiddenProvider : System.Data.Common.DbConnection { }", "HiddenProvider", "System.Data.Common.DbConnection")]
+    [InlineData("command", "internal abstract class HiddenProvider : System.Data.Common.DbCommand { }", "HiddenProvider", "System.Data.Common.DbCommand")]
+    [InlineData("transaction", "internal abstract class HiddenProvider : System.Data.Common.DbTransaction { }", "HiddenProvider", "System.Data.Common.DbTransaction")]
+    [InlineData("reader", "internal abstract class HiddenProvider : System.Data.Common.DbDataReader { }", "HiddenProvider", "System.Data.Common.DbDataReader")]
+    [InlineData("parameter", "internal abstract class HiddenProvider : System.Data.Common.DbParameter { }", "HiddenProvider", "System.Data.Common.DbParameter")]
+    [InlineData("parameter-collection", "internal abstract class HiddenProvider : System.Data.Common.DbParameterCollection { }", "HiddenProvider", "System.Data.Common.DbParameterCollection")]
+    [InlineData("builder", "internal sealed class HiddenProvider : System.Data.Common.DbConnectionStringBuilder { }", "HiddenProvider", "System.Data.Common.DbConnectionStringBuilder")]
+    [InlineData("sqlite-parameter", "internal sealed class HiddenProvider : Microsoft.Data.Sqlite.SqliteParameter { }", "HiddenProvider", "System.Data.Common.DbParameter")]
+    [InlineData("sqlite-connection", "internal sealed class HiddenProvider : Microsoft.Data.Sqlite.SqliteConnection { }", "HiddenProvider", "System.Data.Common.DbConnection")]
+    [InlineData("dbset", "internal abstract class HiddenProvider<T> : Microsoft.EntityFrameworkCore.DbSet<T> where T : class { }", "HiddenProvider", "Microsoft.EntityFrameworkCore.DbSet`1")]
+    [InlineData("facade", "internal sealed class HiddenProvider(Microsoft.EntityFrameworkCore.DbContext context) : Microsoft.EntityFrameworkCore.Infrastructure.DatabaseFacade(context) { }", "HiddenProvider", "Microsoft.EntityFrameworkCore.Infrastructure.DatabaseFacade")]
+    [InlineData("tracker", "internal sealed class HiddenProvider : Microsoft.EntityFrameworkCore.ChangeTracking.ChangeTracker { internal HiddenProvider() : base(null!, null!, null!, null!, null!) { } }", "HiddenProvider", "Microsoft.EntityFrameworkCore.ChangeTracking.ChangeTracker")]
+    [InlineData("transaction-contract", "internal interface HiddenProvider : Microsoft.EntityFrameworkCore.Storage.IDbContextTransaction { }", "HiddenProvider", "Microsoft.EntityFrameworkCore.Storage.IDbContextTransaction")]
+    [InlineData("nested-indirect", "internal static class Outer { internal abstract class Base : System.Data.Common.DbCommand { } internal abstract class HiddenProvider : Base { } }", "HiddenProvider", "System.Data.Common.DbCommand")]
+    public void ASourceTypeThatDerivesFromAProviderFamilyViolatesDbProviderTypesClosedByUse(string shape, string declaration, string typeName, string family)
+    {
+        CSharpCompilation compilation = PremiseFixture("DispatchInputsTouch.Touch(); await Task.CompletedTask;", DispatchInputs + "\nstatic class DispatchInputsTouch { internal static void Touch() { _ = DispatchInput.Connection.CreateCommand(); } }\n" + declaration);
+
+        output.WriteLine("PREMISE " + shape);
+
+        HostedProducerPremiseLedger ledger = HostedGrimoireProducerInventory.VerifyPremises([compilation], HostedProducerPremises.DbProviderTypesClosedByUse);
+
+        Assert.False(ledger.Holds(HostedProducerPremises.DbProviderTypesClosedByUse));
+
+        Assert.Contains(ledger.Violations, violation => violation.Identity == "DbProviderTypesClosedByUse"
+            && violation.Detail.Contains(typeName, StringComparison.Ordinal)
+            && violation.Detail.Contains(family, StringComparison.Ordinal));
+
+        // The strict behavior stays: the reviewed member is refused, as it is with no premise at all.
+        HostedProducerDiscovery<HostedProducerSite> premised = HostedGrimoireProducerInventory.DiscoverProducerSitesUnderPremises(
+            HostedProducerPremises.DbProviderTypesClosedByUse, [compilation], new(["Worker"], []), [new("Worker", [OrdinaryRoot()])], []);
+
+        Assert.NotEmpty(PremiseViolations(premised));
+
+        Assert.True(DispatchRefused(premised, "System.Data.Common.DbConnection.CreateCommand"));
+    }
+
+    [Theory]
+    [InlineData("connection", "public abstract class PeProvider : System.Data.Common.DbConnection { }")]
+    [InlineData("reader", "public abstract class PeProvider : System.Data.Common.DbDataReader { }")]
+    [InlineData("hidden-nested", "public static class PeOuter { private abstract class PeProvider : System.Data.Common.DbCommand { } }")]
+    [InlineData("sqlite-command", "public sealed class PeProvider : Microsoft.Data.Sqlite.SqliteCommand { }")]
+    public void AProviderSubclassInAPortableExecutableReferenceViolatesDbProviderTypesClosedByUse(string shape, string library)
+    {
+        PortableExecutableReference reference = PremiseLibrary("ProviderDerivedLibrary", library);
+
+        CSharpCompilation compilation = PremiseFixture("await Task.CompletedTask;", DispatchInputs, reference);
+
+        output.WriteLine("PREMISE " + shape);
+
+        HostedProducerPremiseLedger ledger = HostedGrimoireProducerInventory.VerifyPremises([compilation], HostedProducerPremises.DbProviderTypesClosedByUse);
+
+        Assert.False(ledger.Holds(HostedProducerPremises.DbProviderTypesClosedByUse));
+
+        Assert.Contains(ledger.Violations, static violation => violation.Detail.Contains("PeProvider", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void ALookalikeOfATrustedProviderTypeInAnUntrustedAssemblyIsNotTrusted()
+    {
+        // A type that merely shares a trusted type's name and namespace is declared by an untrusted assembly, so a
+        // subclass of the real family in it still violates the premise.
+        PortableExecutableReference library = PremiseLibrary("Microsoft.Data.Sqlite", "namespace Microsoft.Data.Sqlite { public abstract class LookalikeCommand : System.Data.Common.DbCommand { } }");
+
+        CSharpCompilation compilation = PremiseFixture("await Task.CompletedTask;", DispatchInputs).AddReferences(library);
+
+        HostedProducerPremiseLedger ledger = HostedGrimoireProducerInventory.VerifyPremises([compilation], HostedProducerPremises.DbProviderTypesClosedByUse);
+
+        Assert.False(ledger.Holds(HostedProducerPremises.DbProviderTypesClosedByUse));
+    }
+
+    [Theory]
+    [InlineData("set", "public override Microsoft.EntityFrameworkCore.DbSet<T> Set<T>() => base.Set<T>();", true)]
+    [InlineData("save-changes", "public override int SaveChanges() => base.SaveChanges();", true)]
+    [InlineData("dispose", "public override void Dispose() { base.Dispose(); }", true)]
+    [InlineData("database-property", "public override Microsoft.EntityFrameworkCore.Infrastructure.DatabaseFacade Database => base.Database;", true)]
+    [InlineData("hooks-only", "protected override void OnConfiguring(Microsoft.EntityFrameworkCore.DbContextOptionsBuilder builder) { } protected override void OnModelCreating(Microsoft.EntityFrameworkCore.ModelBuilder builder) { }", false)]
+    [InlineData("no-members", "", false)]
+    public void AnAuthoredContextMayOverrideOnlyItsHooksUnderDbProviderTypesClosedByUse(string shape, string members, bool violated)
+    {
+        CSharpCompilation compilation = PremiseFixture("await Task.CompletedTask;", DispatchInputs + "\nsealed class HookContext(Microsoft.EntityFrameworkCore.DbContextOptions<HookContext> options) : Microsoft.EntityFrameworkCore.DbContext(options) { " + members + " }");
+
+        output.WriteLine("PREMISE " + shape);
+
+        HostedProducerPremiseLedger ledger = HostedGrimoireProducerInventory.VerifyPremises([compilation], HostedProducerPremises.DbProviderTypesClosedByUse);
+
+        Assert.Equal(!violated, ledger.Holds(HostedProducerPremises.DbProviderTypesClosedByUse));
+
+        Assert.Equal(violated, ledger.Violations.Any(static violation => violation.Detail.Contains("HookContext", StringComparison.Ordinal)));
+    }
+
+    [Fact]
+    public void ADatabaseProviderUniverseWithOnlyTrustedTypesIsGranted()
+    {
+        CSharpCompilation compilation = PremiseFixture("await Task.CompletedTask;", DispatchInputs);
+
+        HostedProducerPremiseLedger ledger = HostedGrimoireProducerInventory.VerifyPremises([compilation], HostedProducerPremises.DbProviderTypesClosedByUse);
+
+        Assert.Empty(ledger.Violations);
+
+        Assert.True(ledger.Holds(HostedProducerPremises.DbProviderTypesClosedByUse));
+
+        // Granted without being requested alongside the others: each premise stands on its own verification.
+        Assert.False(ledger.Holds(HostedProducerPremises.SqliteSealedByUse));
+    }
+
+    [Fact]
+    public void AnUnresolvedBaseTypeInAReferenceRefusesDbProviderTypesClosedByUse()
+    {
+        PortableExecutableReference missing = PremiseLibrary("ProviderMissing", "public class MissingBase { }");
+
+        PortableExecutableReference derived = PremiseLibrary(
+            "ProviderDerivedFromMissing",
+            "public sealed class DerivedFromMissing : MissingBase { }",
+            [.. CompileWithProductionReferencePack("class Pack { }", "RetroDownfall.Arcanum.Api").References, missing]);
+
+        CSharpCompilation compilation = PremiseFixture("await Task.CompletedTask;", DispatchInputs, derived);
+
+        HostedProducerPremiseLedger ledger = HostedGrimoireProducerInventory.VerifyPremises([compilation], HostedProducerPremises.DbProviderTypesClosedByUse);
+
+        Assert.False(ledger.Holds(HostedProducerPremises.DbProviderTypesClosedByUse));
+
+        Assert.Contains(ledger.Violations, static violation => violation.Detail.Contains("unresolved", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    [Trait("Category", "HostedProducerProductionAnalysis")]
+    public void Production_universe_satisfies_DbProviderTypesClosedByUse()
+    {
+        HostedProducerPremiseLedger ledger = HostedGrimoireProducerInventory.VerifyPremises(
+            HostedGrimoireProducerInventory.ProductionCompilations, HostedProducerPremises.DbProviderTypesClosedByUse);
+
+        Assert.Empty(ledger.Violations);
+
+        Assert.True(ledger.Holds(HostedProducerPremises.DbProviderTypesClosedByUse));
+
+        Assert.True(HostedGrimoireProducerInventory.ProductionPremises.HasFlag(HostedProducerPremises.DbProviderTypesClosedByUse));
+    }
+
+    // ---- AuthoredEnumerablesAbsentByUse never covers an EF query value.
+
+    private const string QueryPremiseHelpers = "internal static class QueryHelpers { internal static void Walk(System.Collections.Generic.IEnumerable<BlobRow> rows) { foreach (BlobRow r in rows) { _ = r; } } "
+        + "internal static int Count(System.Collections.Generic.IEnumerable<BlobRow> rows) => System.Linq.Enumerable.ToList(rows).Count; "
+        + "internal static System.Collections.Generic.IEnumerable<BlobRow> Provide(BlobContext c) => c.Rows; }";
+
+    private HostedProducerDiscovery<HostedProducerSite> QueryDiscoverUnder(HostedProducerPremises premises, string admitted)
+    {
+        CSharpCompilation compilation = CompileWithProductionReferencePack(QuerySource(admitted, helpers: QueryPremiseHelpers), "RetroDownfall.Arcanum.Api");
+
+        Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        return HostedGrimoireProducerInventory.DiscoverProducerSitesUnderPremises(premises, [compilation], new(["Worker"], []), [new("Worker", [OrdinaryRoot()])], []);
+    }
+
+    [Theory]
+    [InlineData("QueryHelpers.Walk(db.Rows);")]
+    [InlineData("_ = QueryHelpers.Count(db.Rows);")]
+    [InlineData("foreach (BlobRow r in QueryHelpers.Provide(db)) { _ = r; }")]
+    public void AuthoredEnumerablesAbsentNeverHidesAnEfQueryBehindASequenceInterface(string statement)
+    {
+        foreach (HostedProducerPremises premises in new[]
+        {
+            HostedProducerPremises.None,
+            HostedProducerPremises.AuthoredEnumerablesAbsentByUse,
+            HostedGrimoireProducerInventory.ProductionPremises,
+        })
+        {
+            HostedProducerDiscovery<HostedProducerSite> result = QueryDiscoverUnder(premises, statement);
+
+            // The premise lets the proof of an enumeration operand stop at a sequence interface it cannot follow, but the
+            // query that flows into one is refused where it is built, so nothing it stops at can be a database query.
+            Assert.True(result.Diagnostics.Any(static diagnostic => diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED"
+                    && diagnostic.Detail.Contains("EF query", StringComparison.Ordinal)),
+                "premises " + premises + " must refuse the escaping query.");
+        }
+    }
+
+    [Theory]
+    [InlineData("QueryHelpers.Walk(new System.Collections.Generic.List<BlobRow>());")]
+    [InlineData("_ = QueryHelpers.Count(new BlobRow[0]);")]
+    public void AuthoredEnumerablesAbsentStillCoversAnInMemorySequenceInterface(string statement)
+    {
+        // The twin: the premise keeps covering what it always covered. An in-memory sequence behind the same interface
+        // is no database query, and is not refused.
+        HostedProducerDiscovery<HostedProducerSite> result = QueryDiscoverUnder(HostedGrimoireProducerInventory.ProductionPremises, statement);
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic => diagnostic.Detail.Contains("EF query", StringComparison.Ordinal));
+
+        Assert.DoesNotContain(result.Items, static site => site.Kind == HostedProducerSiteKind.DatabaseAccess
+            && !site.Callee.StartsWith("System.Data.", StringComparison.Ordinal));
     }
 }

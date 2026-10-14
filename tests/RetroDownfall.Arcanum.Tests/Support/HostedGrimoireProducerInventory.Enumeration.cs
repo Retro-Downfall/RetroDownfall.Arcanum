@@ -1502,6 +1502,35 @@ internal static partial class HostedGrimoireProducerInventory
 
             EnumerationBinding binding = BindEnumeration(member, node);
 
+            // Enumerating an EF query executes it: a database access that holds its reader from the first MoveNext to the
+            // disposal, so the Work and effect frontiers must be live at the operand, at the back edge and at the end.
+            if (IsEfQueryOperand(member, binding.Operand))
+            {
+                int queryEntry = binding.Operand.Span.End + 1;
+
+                int queryBackEdge = node is CommonForEachStatementSyntax queryLoop ? Math.Max(queryEntry, queryLoop.Statement.Span.End) : queryEntry;
+
+                int queryExit = node is CommonForEachStatementSyntax queryWhole ? Math.Max(queryBackEdge, queryWhole.Span.End) : queryEntry;
+
+                int[] positions = [queryEntry, queryBackEdge, queryExit];
+
+                string? queryWork = CommonFrontier(positions.Select(position => WorkAt(member, node, operationId, workKind, inheritedWork, position)));
+
+                string? queryEffect = CommonFrontier(positions.Select(position => EffectAt(member, node, operationId, inheritedEffect, position)));
+
+                string queryCallee = binding.GetEnumerator is { } queryEnumerator
+                    ? Normalize(queryEnumerator)
+                    : binding.Asynchronous
+                        ? "System.Collections.Generic.IAsyncEnumerable`1.GetAsyncEnumerator"
+                        : "System.Collections.Generic.IEnumerable`1.GetEnumerator";
+
+                evidence = MergeEvidence(evidence, AddSite(HostedProducerSiteKind.DatabaseAccess, queryCallee, member, rootType, operationId, node, queryEffect, queryWork));
+
+                return MergeEvidence(
+                    evidence,
+                    TraverseEfQueryCallbacks(member, node, [binding.Operand], null, queryCallee, rootType, operationId, active, lifecycle, queryWork, queryEffect, recoveryEffect));
+            }
+
             EnumerationClosure closure = ClassifyEnumeration(member, binding);
 
             string site = operationId + "/enumerate@" + Location(node);
@@ -1665,6 +1694,12 @@ internal static partial class HostedGrimoireProducerInventory
             foreach (IArgumentOperation argument in arguments)
             {
                 if (argument.Value.Syntax is not ExpressionSyntax value || value == node)
+                {
+                    continue;
+                }
+
+                // An EF query is no authored enumerator: its enumeration is a database access, classified at the call.
+                if (IsEfQueryOperand(member, value))
                 {
                     continue;
                 }
