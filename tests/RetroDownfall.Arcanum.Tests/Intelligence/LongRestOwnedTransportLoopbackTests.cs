@@ -5,6 +5,7 @@ using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
 using RetroDownfall.Arcanum.Api.Intelligence;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 
@@ -89,6 +90,93 @@ public sealed class LongRestOwnedTransportLoopbackTests
         Assert.Equal(1, server.RequestCount);
 
         Assert.Equal(1, server.ConnectionCount);
+    }
+
+    [Theory]
+    [InlineData(500, ErrorCodes.LongRest.ProviderUnavailable)]
+    [InlineData(503, ErrorCodes.LongRest.ProviderUnavailable)]
+    [InlineData(429, ErrorCodes.LongRest.ProviderUnavailable)]
+    [InlineData(408, ErrorCodes.LongRest.ProviderUnavailable)]
+    [InlineData(400, ErrorCodes.LongRest.ProviderRejected)]
+    [InlineData(401, ErrorCodes.LongRest.ProviderRejected)]
+    [InlineData(404, ErrorCodes.LongRest.ProviderRejected)]
+    [InlineData(302, ErrorCodes.LongRest.ProviderRejected)]
+    public async Task An_error_status_is_typed_from_the_SDK_exception_and_the_typed_failure_carries_no_provider_body(int status, string expected)
+    {
+        await using KeepAliveProvider server = new(status: status);
+
+        using ServiceProvider services = Services();
+
+        using IServiceScope scope = services.CreateScope();
+
+        LongRestProviderClientFactory factory = scope.ServiceProvider.GetRequiredService<LongRestProviderClientFactory>();
+
+        using CancellationTokenSource deadline = new(TimeSpan.FromSeconds(20));
+
+        var resolved = await factory.ResolveChatAsync(Selection(server.Endpoint, false), deadline.Token);
+
+        using ChatClientLease lease = resolved.Value;
+
+        Exception failure = await Assert.ThrowsAnyAsync<Exception>(() => lease.ChatClient.GetResponseAsync([new ChatMessage(ChatRole.User, "probe")], cancellationToken: deadline.Token));
+
+        Error typed = LongRestProviderFailure.Classify(failure);
+
+        Assert.Equal(expected, typed.Code);
+
+        // The SDK's own exception may carry the provider's answer; the typed failure the executor returns never does.
+        Assert.DoesNotContain("secret-provider-body", typed.Message, StringComparison.Ordinal);
+
+        Assert.Equal(1, server.RequestCount);
+    }
+
+    [Fact]
+    public async Task A_closed_port_is_unreachable_because_no_request_byte_could_leave()
+    {
+        TcpListener probe = new(IPAddress.Loopback, 0);
+
+        probe.Start();
+
+        int port = ((IPEndPoint)probe.LocalEndpoint).Port;
+
+        probe.Stop();
+
+        using ServiceProvider services = Services();
+
+        using IServiceScope scope = services.CreateScope();
+
+        LongRestProviderClientFactory factory = scope.ServiceProvider.GetRequiredService<LongRestProviderClientFactory>();
+
+        using CancellationTokenSource deadline = new(TimeSpan.FromSeconds(20));
+
+        var resolved = await factory.ResolveChatAsync(Selection($"http://127.0.0.1:{port}/v1", false), deadline.Token);
+
+        using ChatClientLease lease = resolved.Value;
+
+        Exception failure = await Assert.ThrowsAnyAsync<Exception>(() => lease.ChatClient.GetResponseAsync([new ChatMessage(ChatRole.User, "probe")], cancellationToken: deadline.Token));
+
+        Assert.Equal(ErrorCodes.LongRest.ProviderUnreachable, LongRestProviderFailure.Classify(failure).Code);
+    }
+
+    [Fact]
+    public async Task A_connection_dropped_after_the_request_was_read_is_a_transient_failure_that_may_have_been_served()
+    {
+        await using KeepAliveProvider server = new(dropsEveryRequest: true);
+
+        using ServiceProvider services = Services();
+
+        using IServiceScope scope = services.CreateScope();
+
+        LongRestProviderClientFactory factory = scope.ServiceProvider.GetRequiredService<LongRestProviderClientFactory>();
+
+        using CancellationTokenSource deadline = new(TimeSpan.FromSeconds(20));
+
+        var resolved = await factory.ResolveChatAsync(Selection(server.Endpoint, false), deadline.Token);
+
+        using ChatClientLease lease = resolved.Value;
+
+        Exception failure = await Assert.ThrowsAnyAsync<Exception>(() => lease.ChatClient.GetResponseAsync([new ChatMessage(ChatRole.User, "probe")], cancellationToken: deadline.Token));
+
+        Assert.Equal(ErrorCodes.LongRest.ProviderUnavailable, LongRestProviderFailure.Classify(failure).Code);
     }
 
     [Fact]
@@ -217,8 +305,12 @@ public sealed class LongRestOwnedTransportLoopbackTests
 
         private int _requestCount;
 
-        internal KeepAliveProvider(bool dropsReusedConnections = false, bool dropsEveryRequest = false)
+        private readonly int _status;
+
+        internal KeepAliveProvider(bool dropsReusedConnections = false, bool dropsEveryRequest = false, int status = 200)
         {
+            _status = status;
+
             _dropsReusedConnections = dropsReusedConnections;
 
             _dropsEveryRequest = dropsEveryRequest;
@@ -279,13 +371,13 @@ public sealed class LongRestOwnedTransportLoopbackTests
                     // A full request has been read; the stale provider now closes without any response.
                     if (_dropsEveryRequest || _dropsReusedConnections && onThisConnection > 1) break;
 
-                    string body = path.EndsWith("/embeddings", StringComparison.Ordinal)
+                    string body = _status != 200 ? "{\"error\":{\"message\":\"secret-provider-body\"}}" : path.EndsWith("/embeddings", StringComparison.Ordinal)
                         ? "{\"object\":\"list\",\"model\":\"embedding\",\"data\":[{\"object\":\"embedding\",\"index\":0,\"embedding\":\"" + Convert.ToBase64String(new byte[64 * sizeof(float)]) + "\"}],\"usage\":{\"prompt_tokens\":1,\"total_tokens\":1}}"
                         : "{\"id\":\"loopback\",\"object\":\"chat.completion\",\"created\":1,\"model\":\"model\",\"choices\":[{\"index\":0,\"finish_reason\":\"stop\",\"message\":{\"role\":\"assistant\",\"content\":\"ok\"}}],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":1,\"total_tokens\":2}}";
 
                     byte[] payload = Encoding.UTF8.GetBytes(body);
 
-                    byte[] header = Encoding.ASCII.GetBytes($"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {payload.Length}\r\nConnection: keep-alive\r\n\r\n");
+                    byte[] header = Encoding.ASCII.GetBytes($"HTTP/1.1 {_status} Test\r\nContent-Type: application/json\r\nContent-Length: {payload.Length}\r\nConnection: keep-alive\r\n\r\n");
 
                     await wire.WriteAsync(header, _stopping.Token);
 

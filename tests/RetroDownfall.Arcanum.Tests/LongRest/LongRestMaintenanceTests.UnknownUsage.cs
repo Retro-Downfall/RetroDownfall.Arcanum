@@ -1,4 +1,6 @@
 using System.Net;
+using System.Net.Sockets;
+using System.Security.Authentication;
 
 using Microsoft.Data.Sqlite;
 
@@ -126,7 +128,7 @@ public sealed partial class LongRestMaintenanceTests
 
         await using MaintenanceFixture f = await MaintenanceFixture.CreateAsync(ownWorker: false, protectedSources: false, clock: clock);
 
-        f.Handler.TransportFailure = new HttpRequestException(HttpRequestError.ConnectionError, "connection refused");
+        f.Handler.TransportFailure = new HttpRequestException(HttpRequestError.ConnectionError, "connection refused", new SocketException((int)SocketError.ConnectionRefused));
 
         LongRestSweepProgress failed = LongRestSweepHarness.Require(await f.ResumeAdmittedAsync(f.Operation, CancellationToken.None));
 
@@ -196,7 +198,22 @@ public sealed partial class LongRestMaintenanceTests
 
         if (failure.StartsWith("status:", StringComparison.Ordinal)) f.Handler.Status = (HttpStatusCode)int.Parse(failure["status:".Length..], System.Globalization.CultureInfo.InvariantCulture);
         else if (failure == "timeout") f.Handler.TransportFailure = new TimeoutException("the provider did not answer");
-        else f.Handler.TransportFailure = new HttpRequestException(Enum.Parse<HttpRequestError>(failure["transport:".Length..]), "transport failed");
+        else
+        {
+            HttpRequestError kind = Enum.Parse<HttpRequestError>(failure["transport:".Length..]);
+
+            // The inner exception is what the runtime really raises: a socket failure while connecting or resolving, a TLS failure
+            // while handshaking, and an IO failure on a connection that was already established.
+            Exception inner = kind switch
+            {
+                HttpRequestError.ConnectionError => new SocketException((int)SocketError.ConnectionRefused),
+                HttpRequestError.NameResolutionError => new SocketException((int)SocketError.HostNotFound),
+                HttpRequestError.SecureConnectionError => new AuthenticationException("the TLS handshake failed"),
+                _ => new IOException("the established connection was dropped"),
+            };
+
+            f.Handler.TransportFailure = new HttpRequestException(kind, "transport failed", inner);
+        }
 
         LongRestSweepProgress parked = LongRestSweepHarness.Require(await f.ResumeAdmittedAsync(f.Operation, CancellationToken.None));
 
