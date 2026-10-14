@@ -51,11 +51,16 @@ public sealed partial class HostedGrimoireProducerInventoryTests
                 && diagnostic.Detail.StartsWith("System.Diagnostics.Metrics.Counter`1.Add;", StringComparison.Ordinal)));
     }
 
+    // The payload is the value a pair carries. A handle payload (the held group) may not be erased by any shape of pair. A
+    // string derived from the lease is closed pure data: it cannot be or hold the handle, so in the same shapes it carries
+    // no origin at all (Handle-Incapable Values) and the consumer is not an escape.
     [Theory]
-    [InlineData("unknown-object-formal")]
-    [InlineData("pair-alias")]
-    [InlineData("selected-user-conversion")]
-    public void ExactFrameworkPairPayloadRefinementRetainsUnprovedPayloadEscapes(string shape)
+    [InlineData("unknown-object-formal", true)]
+    [InlineData("pair-alias", true)]
+    [InlineData("selected-user-conversion", true)]
+    [InlineData("unknown-object-formal", false)]
+    [InlineData("pair-alias", false)]
+    public void ExactFrameworkPairPayloadRefinementRetainsUnprovedPayloadEscapes(string shape, bool handle)
     {
         string member = shape switch
         {
@@ -66,12 +71,12 @@ public sealed partial class HostedGrimoireProducerInventoryTests
                     new System.Collections.Generic.KeyValuePair<string, object?>("outcome", "cas_lost"));
                 """,
             "pair-alias" => """
-                public static void Record(string kind, string outcome)
+                public static void Record(PAYLOAD kind, string outcome)
                 {
                     var pair = new System.Collections.Generic.KeyValuePair<string, object?>("kind", kind);
                     Counter.Add(1, pair, new System.Collections.Generic.KeyValuePair<string, object?>("outcome", outcome));
                 }
-                """,
+                """.Replace("PAYLOAD", handle ? "IDisposable" : "string", StringComparison.Ordinal),
             "selected-user-conversion" => """
                 public static void Record(Scalar kind, string outcome) => Counter.Add(
                     1,
@@ -102,8 +107,8 @@ public sealed partial class HostedGrimoireProducerInventoryTests
 
         string call = shape switch
         {
-            "unknown-object-formal" => "Telemetry.Record(kind, (object)kind);",
-            "pair-alias" => "Telemetry.Record(kind, \"cas_lost\");",
+            "unknown-object-formal" => handle ? "Telemetry.Record(kind, held);" : "Telemetry.Record(kind, (object)kind);",
+            "pair-alias" => handle ? "Telemetry.Record(held, \"cas_lost\");" : "Telemetry.Record(kind, \"cas_lost\");",
             "selected-user-conversion" => "Telemetry.Record(new Scalar(held), kind);",
             _ => throw new ArgumentOutOfRangeException(nameof(shape)),
         };
@@ -149,7 +154,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests
 
             Assert.False(payload.Conversion.IsUserDefined);
 
-            Assert.Equal(SpecialType.System_String, payload.Operand.Type!.SpecialType);
+            Assert.Equal(handle ? SpecialType.System_IDisposable : SpecialType.System_String, payload.Operand.Type!.SpecialType);
         }
         else
         {
@@ -188,11 +193,20 @@ public sealed partial class HostedGrimoireProducerInventoryTests
         HostedProducerDiscovery<HostedProducerSite> result = HostedGrimoireProducerInventory.DiscoverProducerSites(
             [compilation], new(["Worker"], []), [new("Worker", [OrdinaryRoot()])], []);
 
-        AssertExactTelemetryConsumerEscape(result, consumer, "System.Diagnostics.Metrics.Counter`1.Add;");
+        if (handle)
+        {
+            AssertExactTelemetryConsumerEscape(result, consumer, "System.Diagnostics.Metrics.Counter`1.Add;");
+        }
+        else
+        {
+            AssertExactTelemetryConsumerIsNotAnEscape(result, consumer);
+        }
     }
 
-    [Fact]
-    public void ExactNamedAuthoredPairCannotUseFrameworkPayloadRefinement()
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void ExactNamedAuthoredPairCannotUseFrameworkPayloadRefinement(bool handle)
     {
         const string helper = """
             namespace System.Collections.Generic
@@ -215,7 +229,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests
 
         string source = R2Source(
             R2Admission + "string kind = lease is not null ? \"known\" : \"unknown\"; "
-                + "GC.KeepAlive(new System.Collections.Generic.KeyValuePair<string, object?>(\"kind\", kind));",
+                + "GC.KeepAlive(new System.Collections.Generic.KeyValuePair<string, object?>(\"kind\", " + (handle ? "held" : "kind") + "));",
             helper);
 
         CSharpCompilation compilation = Compile(source);
@@ -259,16 +273,27 @@ public sealed partial class HostedGrimoireProducerInventoryTests
 
         Assert.False(payload.Conversion.IsUserDefined);
 
-        Assert.Equal(SpecialType.System_String, payload.Operand.Type!.SpecialType);
+        Assert.Equal(handle ? SpecialType.System_IDisposable : SpecialType.System_String, payload.Operand.Type!.SpecialType);
 
         HostedProducerDiscovery<HostedProducerSite> result = HostedGrimoireProducerInventory.DiscoverProducerSites(
             [compilation], new(["Worker"], []), [new("Worker", [OrdinaryRoot()])], []);
 
-        AssertExactTelemetryConsumerEscape(result, consumer, "System.GC.KeepAlive;");
+        // An authored pair named like the framework one earns no payload refinement: a handle payload escapes through it. A
+        // string payload needs none, being closed pure data.
+        if (handle)
+        {
+            AssertExactTelemetryConsumerEscape(result, consumer, "System.GC.KeepAlive;");
+        }
+        else
+        {
+            AssertExactTelemetryConsumerIsNotAnEscape(result, consumer);
+        }
     }
 
-    [Fact]
-    public void ExactPairOuterUserConversionCannotEraseDisposableHandleCarrier()
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void ExactPairOuterUserConversionCannotEraseDisposableHandleCarrier(bool handle)
     {
         const string helper = """
             sealed class LeaseBox : IDisposable
@@ -298,14 +323,14 @@ public sealed partial class HostedGrimoireProducerInventoryTests
                 {
                     LeaseBox.Captured = held;
 
-                    GC.KeepAlive((LeaseBox)new System.Collections.Generic.KeyValuePair<string, object?>("kind", kind));
+                    GC.KeepAlive((LeaseBox)new System.Collections.Generic.KeyValuePair<string, object?>("kind", PAYLOAD));
                 }
             }
             """;
 
         string source = R2Source(
-            R2Admission + "string kind = lease is not null ? \"known\" : \"unknown\"; Telemetry.Record(kind, held);",
-            helper);
+            R2Admission + "string kind = lease is not null ? \"known\" : \"unknown\"; Telemetry.Record(kind, held); System.IO.File.Delete(\"after-capture\");",
+            helper.Replace("PAYLOAD", handle ? "held" : "kind", StringComparison.Ordinal));
 
         CSharpCompilation compilation = Compile(source);
 
@@ -344,11 +369,11 @@ public sealed partial class HostedGrimoireProducerInventoryTests
 
         AssertExactTelemetryFrameworkPair(pair);
 
-        IConversionOperation stringPayload = Assert.IsAssignableFrom<IConversionOperation>(pair.Arguments[1].Value);
+        IConversionOperation payload = Assert.IsAssignableFrom<IConversionOperation>(pair.Arguments[1].Value);
 
-        Assert.False(stringPayload.Conversion.IsUserDefined);
+        Assert.False(payload.Conversion.IsUserDefined);
 
-        Assert.Equal(SpecialType.System_String, stringPayload.Operand.Type!.SpecialType);
+        Assert.Equal(handle ? SpecialType.System_IDisposable : SpecialType.System_String, payload.Operand.Type!.SpecialType);
 
         CastExpressionSyntax cast = Assert.IsType<CastExpressionSyntax>(outer.Syntax);
 
@@ -396,7 +421,22 @@ public sealed partial class HostedGrimoireProducerInventoryTests
         HostedProducerDiscovery<HostedProducerSite> result = HostedGrimoireProducerInventory.DiscoverProducerSites(
             [compilation], new(["Worker"], []), [new("Worker", [OrdinaryRoot()])], []);
 
-        AssertExactTelemetryConsumerEscape(result, consumer, "System.GC.KeepAlive;");
+        if (handle)
+        {
+            AssertExactTelemetryConsumerEscape(result, consumer, "System.GC.KeepAlive;");
+        }
+        else
+        {
+            AssertExactTelemetryConsumerIsNotAnEscape(result, consumer);
+        }
+
+        // Whatever the payload, the carrier's real defect stays refused: the held group is stored in a static, which ends its
+        // lifetime at that store, so the send after the call loses its Effect.
+        InvocationExpressionSyntax send = compilation.SyntaxTrees.Single().GetRoot().DescendantNodes()
+            .OfType<InvocationExpressionSyntax>().Single(static invocation => invocation.Expression.ToString() == "System.IO.File.Delete");
+
+        Assert.Contains(result.Diagnostics, diagnostic => diagnostic.Code == "HOSTED_SITE_EFFECT_FRONTIER_MISSING"
+            && diagnostic.Identity.EndsWith("/site@" + send.SyntaxTree.FilePath + ":" + send.SpanStart, StringComparison.Ordinal));
     }
 
     private static void AssertExactTelemetryFrameworkPair(IObjectCreationOperation pair)
@@ -417,6 +457,15 @@ public sealed partial class HostedGrimoireProducerInventoryTests
 
         Assert.All(pair.Arguments, static argument => Assert.Equal(RefKind.None, argument.Parameter!.RefKind));
     }
+
+    private static void AssertExactTelemetryConsumerIsNotAnEscape(
+        HostedProducerDiscovery<HostedProducerSite> result,
+        InvocationExpressionSyntax consumer) =>
+        Assert.DoesNotContain(result.Diagnostics, diagnostic =>
+            diagnostic.Code == "HOSTED_ADMISSION_HANDLE_ESCAPE"
+            && diagnostic.Identity.EndsWith(
+                "/call@" + consumer.SyntaxTree.FilePath + ":" + consumer.SpanStart,
+                StringComparison.Ordinal));
 
     private static void AssertExactTelemetryConsumerEscape(
         HostedProducerDiscovery<HostedProducerSite> result,

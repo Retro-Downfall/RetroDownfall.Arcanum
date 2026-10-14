@@ -55,26 +55,25 @@ public sealed partial class HostedGrimoireProducerInventoryTests
         _ => throw new ArgumentOutOfRangeException(nameof(shape)),
     };
 
-    private (HostedProducerDiscovery<HostedProducerSite> Result, string CommandCoordinate, string SendCoordinate) RunPureDataOrigins(string shape)
+    private (HostedProducerDiscovery<HostedProducerSite> Result, string CallCoordinate, string SendCoordinate) RunPureDataOrigins(string shape)
     {
         PureDataShape data = PureDataShapeOf(shape);
 
-        // `Door` is the paid door: it is handed the lease and returns data. `Store` builds the command the data feeds and
-        // uses it, as the Long Rest stores do with a command built from the parameters of an accepted result.
+        // `Door` is the paid door: it is handed the lease and returns data. `Store` builds the disposable the data feeds and
+        // calls it, as the Long Rest stores do with a command built from the parameters of an accepted result.
         string body = R2Admission
             + $"{data.ReturnType} paid = await Door.RunAsync(lease, \"unit\").ConfigureAwait(false); "
-            + "await Store.CommitAsync(UnprovedSqliteInput.Value, paid).ConfigureAwait(false); "
+            + "Store.Commit(paid); "
             + "System.IO.File.Delete(\"after-commit\");";
 
-        string extra = PremiseInputs + "\n" + data.Declarations + " "
+        string extra = data.Declarations + " "
             + "static class Door { internal static Task<" + data.ReturnType + "> RunAsync(RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireWorkLease lease, string key) "
             + "{ if (lease is null) throw new ArgumentNullException(nameof(lease)); return Task.FromResult<" + data.ReturnType + ">(" + data.Construct + "); } } "
             + "static class Store { "
-            + "internal static async Task CommitAsync(Microsoft.Data.Sqlite.SqliteConnection connection, " + data.ReturnType + " paid) { "
-            + "await using Microsoft.Data.Sqlite.SqliteCommand command = Make(connection, " + data.Key + "); "
-            + "_ = await command.ExecuteNonQueryAsync().ConfigureAwait(false); } "
-            + "private static Microsoft.Data.Sqlite.SqliteCommand Make(Microsoft.Data.Sqlite.SqliteConnection connection, string text) "
-            + "{ Microsoft.Data.Sqlite.SqliteCommand command = connection.CreateCommand(); command.CommandText = text; return command; } }";
+            + "internal static void Commit(" + data.ReturnType + " paid) { "
+            + "using CancellationTokenSource source = Make(" + data.Key + ".Length); "
+            + "source.Cancel(); } "
+            + "private static CancellationTokenSource Make(int milliseconds) => new(milliseconds); }";
 
         CSharpCompilation compilation = CompileWithProductionReferencePack(R2Source(body, extra), "RetroDownfall.Arcanum.Api");
 
@@ -84,21 +83,21 @@ public sealed partial class HostedGrimoireProducerInventoryTests
 
         string tree = compilation.SyntaxTrees.Single().FilePath;
 
-        InvocationExpressionSyntax command = Assert.Single(root.DescendantNodes().OfType<InvocationExpressionSyntax>(),
-            static call => call.Expression.ToString().EndsWith("command.ExecuteNonQueryAsync", StringComparison.Ordinal));
+        InvocationExpressionSyntax call = Assert.Single(root.DescendantNodes().OfType<InvocationExpressionSyntax>(),
+            static invocation => invocation.Expression.ToString() == "source.Cancel");
 
         InvocationExpressionSyntax send = Assert.Single(root.DescendantNodes().OfType<InvocationExpressionSyntax>(),
-            static call => call.Expression.ToString() == "System.IO.File.Delete");
+            static invocation => invocation.Expression.ToString() == "System.IO.File.Delete");
 
-        HostedProducerDiscovery<HostedProducerSite> result = HostedGrimoireProducerInventory.DiscoverProducerSitesUnderPremises(
-            HostedGrimoireProducerInventory.ProductionPremises, [compilation], new(["Worker"], []), [new("Worker", [OrdinaryRoot()])], []);
+        HostedProducerDiscovery<HostedProducerSite> result = HostedGrimoireProducerInventory.DiscoverProducerSites(
+            [compilation], new(["Worker"], []), [new("Worker", [OrdinaryRoot()])], []);
 
         foreach (HostedProducerInventoryDiagnostic diagnostic in result.Diagnostics)
         {
             output.WriteLine($"PURE_DATA_ORIGINS_DIAGNOSTIC shape={shape} {diagnostic.Code} {diagnostic.Identity} {diagnostic.Detail}");
         }
 
-        return (result, tree + ":" + command.SpanStart, tree + ":" + send.SpanStart);
+        return (result, tree + ":" + call.SpanStart, tree + ":" + send.SpanStart);
     }
 
     [Theory]
@@ -112,15 +111,11 @@ public sealed partial class HostedGrimoireProducerInventoryTests
     [InlineData("authored-generic-outcome")]
     public void ADataValueOfClosedPureDataKeepsTheWorkAndEscapesNothing(string shape)
     {
-        (HostedProducerDiscovery<HostedProducerSite> result, string commandCoordinate, string sendCoordinate) = RunPureDataOrigins(shape);
+        (HostedProducerDiscovery<HostedProducerSite> result, _, string sendCoordinate) = RunPureDataOrigins(shape);
 
         Assert.Empty(result.Diagnostics);
 
-        HostedProducerSite command = Assert.Single(result.Items, site => site.RootType == "Worker"
-            && site.OperationId.EndsWith("/site@" + commandCoordinate, StringComparison.Ordinal));
-
-        Assert.NotNull(command.WorkFrontierCapsuleId);
-
+        // The send after the store keeps the Work and the group the worker holds.
         HostedProducerSite send = Assert.Single(result.Items, site => site.RootType == "Worker"
             && site.OperationId.EndsWith("/site@" + sendCoordinate, StringComparison.Ordinal));
 
@@ -144,11 +139,11 @@ public sealed partial class HostedGrimoireProducerInventoryTests
     [InlineData("generic-outcome-over-object")]
     public void ADataValueThatCouldHoldAHandleKeepsItsOriginAndTheRefusalItHad(string shape)
     {
-        (HostedProducerDiscovery<HostedProducerSite> result, string commandCoordinate, _) = RunPureDataOrigins(shape);
+        (HostedProducerDiscovery<HostedProducerSite> result, string callCoordinate, _) = RunPureDataOrigins(shape);
 
-        // The refusal is the one the command call had before this rule: a possible carrier handed to a framework callee.
+        // The refusal is the one the call had before this rule: a possible carrier handed to a framework callee.
         Assert.Contains(result.Diagnostics, diagnostic => diagnostic.Code == "HOSTED_ADMISSION_HANDLE_ESCAPE"
-            && diagnostic.Identity.EndsWith("/call@" + commandCoordinate, StringComparison.Ordinal)
-            && diagnostic.Detail.StartsWith("System.Data.Common.DbCommand.ExecuteNonQueryAsync;", StringComparison.Ordinal));
+            && diagnostic.Identity.EndsWith("/call@" + callCoordinate, StringComparison.Ordinal)
+            && diagnostic.Detail.StartsWith("System.Threading.CancellationTokenSource.Cancel;", StringComparison.Ordinal));
     }
 }

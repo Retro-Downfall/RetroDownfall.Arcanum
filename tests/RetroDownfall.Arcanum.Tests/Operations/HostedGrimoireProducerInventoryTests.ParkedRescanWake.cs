@@ -114,8 +114,8 @@ public sealed partial class HostedGrimoireProducerInventoryTests
 
         Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
 
-        HostedProducerDiscovery<HostedProducerSite> result = HostedGrimoireProducerInventory.DiscoverProducerSitesUnderPremises(
-            HostedGrimoireProducerInventory.ProductionPremises, [compilation], new(["Worker"], []), [new("Worker", [OrdinaryRoot()])], []);
+        HostedProducerDiscovery<HostedProducerSite> result = HostedGrimoireProducerInventory.DiscoverProducerSites(
+            [compilation], new(["Worker"], []), [new("Worker", [OrdinaryRoot()])], []);
 
         foreach (HostedProducerInventoryDiagnostic diagnostic in result.Diagnostics)
         {
