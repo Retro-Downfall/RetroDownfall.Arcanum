@@ -170,7 +170,7 @@ public static class LongRestDiscoveryPolicy
 
                 LongRestTarget leaf = expansion.Leaves[round];
 
-                if (leaf.MemoryId == anchor.MemoryId || taken.Exists(item => item.Target.MemoryId == leaf.MemoryId))
+                if (leaf.MemoryId == anchor.MemoryId || taken.FindIndex(item => item.Target.MemoryId == leaf.MemoryId) >= 0)
                 {
                     continue;
                 }
