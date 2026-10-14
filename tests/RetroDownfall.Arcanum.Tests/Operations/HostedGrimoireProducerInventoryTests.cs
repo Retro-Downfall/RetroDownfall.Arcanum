@@ -20251,7 +20251,9 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
     [InlineData("if (!lease.TryBeginExternalEffectGroup(out var group)) return Task.CompletedTask; using var held = group; System.IO.File.Delete(\"path\");", true)]
     public void OrdinaryEffectsMustBeInsideTheRetainedGroup(string body, bool protectedEffect)
     {
-        string source = FixtureSource("RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireWorkLease lease = null!; " + body, "namespace RetroDownfall.Arcanum.Infrastructure.Data { public interface IGrimoireWorkLease { bool TryBeginExternalEffectGroup(out System.IDisposable group); } }");
+        // The group is begun on a lease the worker really acquired: a group on a `null!` lease is no Effect at all (Lease Receiver
+        // Proof), and what this theory pins is where the retained group begins and ends.
+        string source = FixtureSource(AcquireWork + " " + body, AdmissionTypes);
 
         CSharpCompilation compilation = Compile(source);
 

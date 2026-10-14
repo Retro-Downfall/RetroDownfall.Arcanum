@@ -387,8 +387,19 @@ public sealed partial class HostedGrimoireProducerInventoryTests
             && site.EnclosingType.EndsWith("LongRestMaintenance", StringComparison.Ordinal) && site.Member == "ExecutePaidAsync"
             && site.Callee == LeaseSpineGroup);
 
-        // The group is begun on the lease parameter in every row, so the send's Effect is always that group.
-        Assert.Equal(group.CapsuleId, sendSite.EffectFrontierCapsuleId);
+        // The group is begun on the lease parameter, so the send's Effect is that group. The one exception is the lambda row: the
+        // lease reaches the paid door only as a variable a detached task captured, and a detached body is traversed with its
+        // admission detached, so the formal has no binding, the Lease Receiver Proof refuses the group, and it is nobody's Effect.
+        if (shape == "captured-in-lambda")
+        {
+            Assert.Null(group.EffectFrontierCapsuleId);
+
+            Assert.Null(sendSite.EffectFrontierCapsuleId);
+        }
+        else
+        {
+            Assert.Equal(group.CapsuleId, sendSite.EffectFrontierCapsuleId);
+        }
 
         string sendCoordinate = LeaseSpineRun.Coordinate(send);
 
@@ -431,8 +442,10 @@ public sealed partial class HostedGrimoireProducerInventoryTests
             "stored-in-field" => ["HOSTED_SITE_WORK_FRONTIER_MISSING|" + LeaseSpineSend],
             "captured-in-lambda" =>
             [
+                "HOSTED_ADMISSION_RECEIVER_MISMATCH|" + LeaseSpineGroup,
                 "HOSTED_CALLBACK_OWNERSHIP_UNPROVEN|RetroDownfall.Arcanum.Infrastructure.Operations.LongRest.ILongRestAdmittedMaintenance.ProcessAdmittedAsync",
                 "HOSTED_CALLBACK_OWNERSHIP_UNPROVEN|System.Threading.Tasks.Task.Run",
+                "HOSTED_SITE_EFFECT_FRONTIER_MISSING|" + LeaseSpineSend,
                 "HOSTED_SITE_WORK_FRONTIER_MISSING|" + LeaseSpineSend,
             ],
             "through-delegate" =>

@@ -10762,7 +10762,8 @@ internal static partial class HostedGrimoireProducerInventory
         private string? RecoveryEffectFrontierAt(
             AuthoredMember member,
             InvocationExpressionSyntax dispatch,
-            string operationId)
+            string operationId,
+            string? work)
         {
             TryStatementSyntax? protector = dispatch.Ancestors()
                 .OfType<TryStatementSyntax>()
@@ -10855,6 +10856,16 @@ internal static partial class HostedGrimoireProducerInventory
                     dispatch.SpanStart,
                     []))
             {
+                return null;
+            }
+
+            // CK-3: the recovery effect is the shell's own acquisition, never a lease the shell was handed or took twice.
+            if (!LeaseReceiverIsOwnAcquisition(member, admission, work))
+            {
+                RefuseTraversalCompletion();
+
+                diagnostics.Add(LeaseReceiverMismatch(operationId, admission));
+
                 return null;
             }
 
@@ -23597,7 +23608,7 @@ internal static partial class HostedGrimoireProducerInventory
 
             if (symbol is ILocalSymbol local
                 && local.DeclaringSyntaxReferences.SingleOrDefault()?.GetSyntax() is
-                    VariableDeclaratorSyntax { Initializer.Value: { } initializer })
+                    VariableDeclaratorSyntax { Initializer.Value: { } initializer } declarator)
             {
                 var localKey = (MemberIdentity(member), initializer.SpanStart);
 
@@ -23610,21 +23621,26 @@ internal static partial class HostedGrimoireProducerInventory
                 {
                     List<ExpressionSyntax> values = [initializer];
 
-                    if (initializer.Ancestors().OfType<BlockSyntax>().FirstOrDefault() is { } block)
+                    // The initializer and the plain assignments before the use are the local's values only when no other write
+                    // can reach the use; a local written through a reference, by a compound assignment or around a loop is unknown.
+                    if (!RecoveryLocalAssignments(
+                            member,
+                            local,
+                            declarator,
+                            (SyntaxNode?)initializer.Ancestors().OfType<BlockSyntax>().FirstOrDefault() ?? initializer.SyntaxTree.GetRoot(),
+                            expression,
+                            out IReadOnlyList<AssignmentExpressionSyntax> assignments))
                     {
-                        values.AddRange(block.DescendantNodes()
-                            .OfType<AssignmentExpressionSyntax>()
-                            .Where(assignment => assignment.IsKind(SyntaxKind.SimpleAssignmentExpression)
-                                && assignment.SpanStart < expression.SpanStart
-                                && SymbolEqualityComparer.Default.Equals(
-                                    member.Model.GetSymbolInfo(assignment.Left).Symbol,
-                                    local)
-                                && RecoveryNodeMayExecute(
-                                    member,
-                                    assignment,
-                                    context))
-                            .Select(static assignment => assignment.Right));
+                        return default;
                     }
+
+                    values.AddRange(assignments
+                        .Where(assignment => assignment.SpanStart < expression.SpanStart
+                            && RecoveryNodeMayExecute(
+                                member,
+                                assignment,
+                                context))
+                        .Select(static assignment => assignment.Right));
 
                     RecoveryLocalValueIdentity? valueIdentity = context is null
                         ? null
@@ -24036,6 +24052,16 @@ internal static partial class HostedGrimoireProducerInventory
             object? value)
         {
             if (pattern is DiscardPatternSyntax or VarPatternSyntax)
+            {
+                return true;
+            }
+
+            // A null test of a work lease the traversal knows to be the null constant. Only the lease protocol interface has this
+            // rule: it declares no operators, so `is null` is the reference test and the null constant matches it.
+            if (value is null
+                && pattern is ConstantPatternSyntax { Expression: LiteralExpressionSyntax { RawKind: (int)SyntaxKind.NullLiteralExpression } } nullTest
+                && member.Model.GetOperation(nullTest) is IConstantPatternOperation { InputType: { } leaseType }
+                && TypeKey(leaseType) == "RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireWorkLease")
             {
                 return true;
             }
@@ -25797,7 +25823,8 @@ internal static partial class HostedGrimoireProducerInventory
                                         nextRecoveryEffect = RecoveryEffectFrontierAt(
                                             member,
                                             recoveryEntry,
-                                            operationId);
+                                            operationId,
+                                            workAdmitted);
                                     }
 
                                     SyntaxNode? lazyCompletion = node is InvocationExpressionSyntax lazyCall && IsLazySequence(exactTarget.Symbol.ReturnType) ? LazyCompletionPoint(member, lazyCall) : null;
@@ -34501,7 +34528,11 @@ internal static partial class HostedGrimoireProducerInventory
             return resolved;
         }
 
-        private static string AdmissionBindingIdentity(AuthoredMember member)
+        // A parameter or local is identified by its declaration, never by its ordinal or name alone. A lambda or a local function sees the formals of
+        // the method that declares it as well as its own, and two different binding maps that label their formals by ordinal alone
+        // (`parameter:0 L0; parameter:1 L0`) are not the same map: one may bind the formal a body reads and the other bind nothing
+        // it reads. Every cache keyed on this identity must tell them apart.
+        private string AdmissionBindingIdentity(AuthoredMember member)
         {
             string scoped = member.OrdinaryScopedHolder is { } ordinary
                 ? "|ordinary:" + ordinary.Identity + "|" + MethodKey(ordinary.Constructor.Symbol) : "";
@@ -34520,9 +34551,13 @@ internal static partial class HostedGrimoireProducerInventory
 
             static void AppendPart(System.Text.StringBuilder target, string value) => target.Append(value.Length).Append(':').Append(value);
 
-            foreach ((ISymbol symbol, IReadOnlySet<string> origins) in member.AdmissionBindings.OrderBy(static pair => pair.Key is IParameterSymbol parameter ? parameter.Ordinal : int.MaxValue).ThenBy(static pair => pair.Key.Kind).ThenBy(static pair => pair.Key.ToDisplayString(), StringComparer.Ordinal))
+            string Declaration(ISymbol symbol) => symbol.DeclaringSyntaxReferences.FirstOrDefault() is { } reference
+                ? TreeIdentity(reference.SyntaxTree).ToString(System.Globalization.CultureInfo.InvariantCulture) + "@" + reference.Span.Start.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                : "external";
+
+            foreach ((ISymbol symbol, IReadOnlySet<string> origins) in member.AdmissionBindings.OrderBy(static pair => pair.Key is IParameterSymbol parameter ? parameter.Ordinal : int.MaxValue).ThenBy(static pair => pair.Key.Kind).ThenBy(static pair => pair.Key.ToDisplayString(), StringComparer.Ordinal).ThenBy(pair => Declaration(pair.Key), StringComparer.Ordinal))
             {
-                AppendPart(identity, symbol is IParameterSymbol parameter ? "parameter:" + parameter.Ordinal.ToString(System.Globalization.CultureInfo.InvariantCulture) : symbol.Kind + ":" + symbol.ToDisplayString());
+                AppendPart(identity, symbol is IParameterSymbol parameter ? "parameter:" + parameter.Ordinal.ToString(System.Globalization.CultureInfo.InvariantCulture) + "@" + Declaration(parameter) : symbol.Kind + ":" + symbol.ToDisplayString() + "@" + Declaration(symbol));
 
                 foreach (string origin in origins.Order(StringComparer.Ordinal))
                 {
@@ -37120,7 +37155,7 @@ internal static partial class HostedGrimoireProducerInventory
                 {
                     IParameterSymbol targetParameter = target.Symbol.Parameters[parameter.Ordinal];
 
-                    bindings[targetParameter] = AdmissionOrigins(caller, argument.Expression, new HashSet<ISymbol>(SymbolEqualityComparer.Default));
+                    bindings[targetParameter] = BoundAdmissionOrigins(caller, argument.Expression);
 
                     if (argument.RefKind is not RefKind.Out
                         && (RequiresExactValueProvenance(target, targetParameter)
@@ -56981,6 +57016,12 @@ internal static partial class HostedGrimoireProducerInventory
                     continue;
                 }
 
+                // CK-3: a group begun on a receiver that is not a must-alias of a work lease is retained by nothing.
+                if (admissionName == "TryBeginExternalEffectGroup" && !LeaseReceiverProven(member, admission, out _))
+                {
+                    continue;
+                }
+
                 BlockSyntax? block;
 
                 int admittedAt;
@@ -57550,6 +57591,7 @@ internal static partial class HostedGrimoireProducerInventory
                         == "RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireWorkLease.TryBeginExternalEffectGroup"))
             {
                 if (!IsGuardedAdmission(admission)
+                    || !LeaseReceiverProven(member, admission, out _)
                     || admission.ArgumentList.Arguments.LastOrDefault()?.Expression is not { } outExpression)
                 {
                     continue;
@@ -58235,6 +58277,19 @@ internal static partial class HostedGrimoireProducerInventory
 
             if (!ordinaryHolderPhysicalGroupProven) effectGroup = null;
 
+            // CK-3: a group is the Effect of its own site only when its receiver is a must-alias of the lease whose Work is live.
+            bool leaseReceiverProven = kind != HostedProducerSiteKind.EffectFrontier
+                || !callee.EndsWith(".TryBeginExternalEffectGroup", StringComparison.Ordinal)
+                || node is not InvocationExpressionSyntax groupCall
+                || LeaseReceiverIsLiveWork(member, groupCall, workAdmitted);
+
+            if (!leaseReceiverProven)
+            {
+                RefuseTraversalCompletion();
+
+                diagnostics.Add(LeaseReceiverMismatch(operationId, node));
+            }
+
             if (member.RecoveryContext is { Disposition: RecoveryDisposition.OrdinaryPerUnitExternalEffect }
                 && (RequiresExternalEffect(kind, callee)
                     || kind == HostedProducerSiteKind.EffectFrontier
@@ -58296,6 +58351,7 @@ internal static partial class HostedGrimoireProducerInventory
 
             if (kind == HostedProducerSiteKind.EffectFrontier && callee.EndsWith(".TryBeginExternalEffectGroup", StringComparison.Ordinal)
                 && ordinaryHolderPhysicalGroupProven
+                && leaseReceiverProven
                 && (member.RecoveryContext is not { Disposition: RecoveryDisposition.OrdinaryPerUnitExternalEffect }
                     || perUnitPhysicalGroupProven))
             {

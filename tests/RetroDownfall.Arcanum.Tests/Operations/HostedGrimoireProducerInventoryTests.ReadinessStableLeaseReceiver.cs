@@ -17,6 +17,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests
     [InlineData("out-replaced")]
     [InlineData("authored-cast")]
     [InlineData("foreign-holder")]
+    [InlineData("ternary-fake")]
     public void Readiness_physical_group_requires_stable_exact_lease_value(string shape)
     {
         string source = ExplicitReadinessSelfAdmissionFixture("owned-lease");
@@ -36,6 +37,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests
             "out-replaced" => "IGrimoireWorkLease lease = workAdmission.Lease; ReplaceOutLease(out lease);",
             "authored-cast" => "IGrimoireWorkLease first = (AlternateReadinessLease)(ReadinessWorkLease)workAdmission.Lease; IGrimoireWorkLease lease = first;",
             "foreign-holder" => "IGrimoireWorkLease lease = foreign.Lease;",
+            "ternary-fake" => "IGrimoireWorkLease lease = System.DateTime.UtcNow.Ticks > 0 ? workAdmission.Lease : new ReadinessWorkLease();",
             _ => "IGrimoireWorkLease lease = workAdmission.Lease;",
         };
 
