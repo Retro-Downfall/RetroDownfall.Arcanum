@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
+using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.LongRest;
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -119,7 +120,7 @@ public sealed partial class ModelCallExecutor
         int actual = _tokenEstimator.EstimateLongRestEmbedding(embedding.Provider, embedding.Model, payload).TokenCount;
 
         if (digest.IsFailure || digest.Value != embedding.InputFingerprint || actual != embedding.ReservedInputTokens || actual <= 0
-            || embedding.Provider.ContextWindowLimit is > 0 && actual > embedding.Provider.ContextWindowLimit)
+            || !EmbeddingFitsWindow(embedding.Provider, actual))
         {
             return ClosedLongRestAdmissionError();
         }
@@ -176,6 +177,35 @@ public sealed partial class ModelCallExecutor
             return dispatched ? LongRestProviderFailure.Classify(exception) : new Error(ErrorCodes.Hub.Error, PublicInferenceErrorMessages.NativeGenericFailure);
         }
     }
+
+    /// <summary>
+    /// The local context-window gate for one admitted Long Rest call. The maintenance runs it before it prepares an attempt, so a
+    /// refusal leaves no provider-effect row and no accounting run; the executor runs the same rule again as its last gate before
+    /// any SDK object exists. It reads only the admission's own estimate and window and never touches the network.
+    /// </summary>
+    internal static Result CheckLongRestWindow(LongRestProviderAdmission admission)
+    {
+        switch (admission)
+        {
+            case LongRestProviderAdmission.Chat { Context.PrecomputedBreakdown: { } breakdown } chat:
+                Result window = CheckAdmission(breakdown, chat.Context);
+
+                return window.IsSuccess ? window : Result.Failure(new Error(ErrorCodes.LongRest.ModelContextTooSmall,
+                    window.Error.Message + " Raise the provider's contextWindowLimit or choose a model with a larger window."));
+
+            case LongRestProviderAdmission.Embedding embedding when embedding.ReservedInputTokens > 0:
+                return EmbeddingFitsWindow(embedding.Provider, embedding.ReservedInputTokens) ? Result.Success()
+                    : Result.Failure(new Error(ErrorCodes.LongRest.ModelContextTooSmall,
+                        "A Long Rest summary needs " + embedding.ReservedInputTokens.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                        + " embedding tokens but the embedding provider's window is " + embedding.Provider.ContextWindowLimit.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                        + ". Raise the provider's contextWindowLimit or choose an embedding provider with a larger window."));
+
+            default:
+                return Result.Failure(new Error(ErrorCodes.LongRest.InvalidAdmission, "The exact Long Rest provider admission is invalid."));
+        }
+    }
+
+    private static bool EmbeddingFitsWindow(ProviderSettings provider, int tokens) => provider.ContextWindowLimit is not > 0 || tokens <= provider.ContextWindowLimit;
 
     private static bool SameLongRestAdmission(ContextTokenBreakdown admitted, ContextTokenBreakdown actual) =>
         admitted.Provider == actual.Provider && admitted.Model == actual.Model && admitted.Profile == actual.Profile

@@ -56,6 +56,10 @@ internal sealed partial class LongRestMaintenance
             : new LongRestProviderAdmission.Chat(new(selected.Provider, selected.Model, 2048, 0,
                 estimator.EstimateLongRestChat(selected.Provider, selected.Model, payload)));
 
+        // Admit-then-Prepare: every deterministic local refusal (the rendered size above, the context window here) happens before any
+        // provider-effect row or accounting run exists, so a refused unit never leaves a Prepared row for readmission to trip over.
+        Require(ModelCallExecutor.CheckLongRestWindow(providerAdmission));
+
         LongRestDispatchAttempt attempt = Require(await attempts.PrepareAttemptAsync(payload.Work, payload.Kind, payloadDigest, destination, ct).ConfigureAwait(false));
 
         using CancellationTokenSource dispatch = CancellationTokenSource.CreateLinkedTokenSource(ct, admission.MaintenanceRevocation,
