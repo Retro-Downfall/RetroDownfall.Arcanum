@@ -1,5 +1,7 @@
 using Microsoft.CodeAnalysis;
 
+using System.Collections.Immutable;
+
 using System.Reflection;
 
 namespace RetroDownfall.Arcanum.Tests.Support;
@@ -21,12 +23,14 @@ internal static partial class HostedGrimoireProducerInventory
         //   - an exact CoreLib scalar, string, enumeration, Guid or other reviewed value leaf;
         //   - a one-dimensional array, a Nullable, a ValueTuple or an ImmutableArray of closed pure data;
         //   - a struct or a sealed class declared in analysed source, whose base is exactly object or ValueType, that
-        //     implements neither IDisposable nor IAsyncDisposable, and whose every instance field (backing fields of
-        //     properties included) is closed pure data. A constructed generic is judged on its substituted fields.
+        //     implements neither IDisposable nor IAsyncDisposable, declares no instance event, and whose every instance field
+        //     (backing fields of properties included) is closed pure data. A constructed generic is judged on its
+        //     substituted fields.
         // Everything else is not closed: interfaces, object, dynamic, delegates, type parameters, pointers, ref structs, an
-        // unsealed class (a subclass may add a handle field), any type with an authored base, and any type declared outside
-        // analysed source, whose non-public fields are not visible and are therefore not reviewed. A lookalike of a
-        // framework type is judged by its own fields, never by its name. A type that reaches itself is not closed.
+        // unsealed class (a subclass may add a handle field), any type with an authored base, any type that declares an
+        // instance event (its delegate is state that a field scan does not list), and any type declared outside analysed
+        // source, whose non-public fields are not visible and are therefore not reviewed. A lookalike of a framework type
+        // is judged by its own fields, never by its name. A type that reaches itself is not closed.
         private bool IsHandleIncapableValueType(ITypeSymbol? type, Compilation consuming)
         {
             if (type is null) return false;
@@ -114,7 +118,14 @@ internal static partial class HostedGrimoireProducerInventory
                 if (!IsExactFrameworkType(named.BaseType, structure ? "System.ValueType" : "System.Object", core)
                     || named.AllInterfaces.Any(static contract => TypeKey(contract) is "System.IDisposable" or "System.IAsyncDisposable")) return false;
 
-                foreach (IFieldSymbol field in named.GetMembers().OfType<IFieldSymbol>())
+                ImmutableArray<ISymbol> members = named.GetMembers();
+
+                // The delegate behind an instance event is state that a field scan cannot see: Roslyn lists a field-like event's
+                // backing field nowhere among the members, and an event with explicit accessors keeps its storage wherever
+                // its accessors put it. Any instance can hold a subscriber, and a subscriber can be a closure over the group.
+                if (members.OfType<IEventSymbol>().Any(static declared => !declared.IsStatic)) return false;
+
+                foreach (IFieldSymbol field in members.OfType<IFieldSymbol>())
                 {
                     if (field.IsStatic || field.IsConst) continue;
 

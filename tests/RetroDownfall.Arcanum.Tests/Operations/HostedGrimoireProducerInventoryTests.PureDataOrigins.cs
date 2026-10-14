@@ -14,9 +14,9 @@ public sealed partial class HostedGrimoireProducerInventoryTests
     // purpose of its own lifetime: the checker follows it, and a disposable built from it counts as a possible carrier. That
     // is right for an object that could hold the lease, and wrong for a value that cannot: a closed pure-data type (exact
     // framework scalars, enums, sealed authored records, structs and classes whose every instance field is itself closed,
-    // and constructed authored generics and immutable arrays of such) has no place to keep a lease or a group, so passing
-    // one onward, however it was produced, neither escapes nor ends the admission. Every shape that is not closed keeps the
-    // refusal it had.
+    // and constructed authored generics and immutable arrays of such, declaring no instance event) has no place to keep a
+    // lease or a group, so passing one onward, however it was produced, neither escapes nor ends the admission. Every shape
+    // that is not closed keeps the refusal it had.
     private sealed record PureDataShape(string Declarations, string Construct, string ReturnType, string Key);
 
     private static PureDataShape PureDataShapeOf(string shape) => shape switch
@@ -52,6 +52,16 @@ public sealed partial class HostedGrimoireProducerInventoryTests
         "authored-lookalike-immutable-array" => new("namespace System.Collections.Immutable { public readonly struct ImmutableArray<T> { public readonly object? Tag; } } sealed record Paid(string Key, System.Collections.Immutable.ImmutableArray<int> Rows);",
             "new Paid(key, default)", "Paid", "paid.Key"),
         "generic-outcome-over-object" => new("sealed record Outcome<T>(T Value, string Error);", "new Outcome<object>(key, key)", "Outcome<object>", "paid.Error"),
+        "sealed-class-with-a-static-event" => new("sealed class Paid { public string Key { get; init; } = \"\"; public static event System.Action? Changed; public static void Raise() => Changed?.Invoke(); }",
+            "new Paid { Key = key }", "Paid", "paid.Key"),
+        "sealed-class-with-a-field-like-event" => new("sealed class Paid { public string Key { get; init; } = \"\"; public event System.Action? Later; public void Fire() => Later?.Invoke(); }",
+            "new Paid { Key = key }", "Paid", "paid.Key"),
+        "record-with-a-field-like-event" => new("sealed record Paid(string Key) { public event System.Action? Later; public void Fire() => Later?.Invoke(); }",
+            "new Paid(key)", "Paid", "paid.Key"),
+        "struct-with-a-field-like-event" => new("struct Paid { public string Key { get; init; } public event System.Action? Later; public void Fire() => Later?.Invoke(); }",
+            "new Paid { Key = key }", "Paid", "paid.Key"),
+        "sealed-class-with-an-event-that-has-explicit-accessors" => new("sealed class Paid { public string Key { get; init; } = \"\"; public event System.Action? Later { add { } remove { } } }",
+            "new Paid { Key = key }", "Paid", "paid.Key"),
         _ => throw new ArgumentOutOfRangeException(nameof(shape)),
     };
 
@@ -109,6 +119,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests
     [InlineData("value-tuple-of-closed")]
     [InlineData("sealed-class-of-scalars")]
     [InlineData("authored-generic-outcome")]
+    [InlineData("sealed-class-with-a-static-event")]
     public void ADataValueOfClosedPureDataKeepsTheWorkAndEscapesNothing(string shape)
     {
         (HostedProducerDiscovery<HostedProducerSite> result, _, string sendCoordinate) = RunPureDataOrigins(shape);
@@ -137,6 +148,10 @@ public sealed partial class HostedGrimoireProducerInventoryTests
     [InlineData("authored-lookalike-guid")]
     [InlineData("authored-lookalike-immutable-array")]
     [InlineData("generic-outcome-over-object")]
+    [InlineData("sealed-class-with-a-field-like-event")]
+    [InlineData("record-with-a-field-like-event")]
+    [InlineData("struct-with-a-field-like-event")]
+    [InlineData("sealed-class-with-an-event-that-has-explicit-accessors")]
     public void ADataValueThatCouldHoldAHandleKeepsItsOriginAndTheRefusalItHad(string shape)
     {
         (HostedProducerDiscovery<HostedProducerSite> result, string callCoordinate, _) = RunPureDataOrigins(shape);
