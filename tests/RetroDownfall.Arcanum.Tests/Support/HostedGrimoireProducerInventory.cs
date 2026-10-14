@@ -35656,8 +35656,7 @@ internal static partial class HostedGrimoireProducerInventory
 
             analysis.OriginPossibilityBuilds++;
 
-            possible = member.AdmissionBindings?.Values.Any(
-                static origins => origins.Count > 0) == true;
+            possible = HasLiveAdmissionOrigin(member);
 
             if (!possible)
             {
@@ -35744,7 +35743,7 @@ internal static partial class HostedGrimoireProducerInventory
 
         private bool HasAdmissionSeed(AuthoredMember member)
         {
-            if (member.AdmissionBindings?.Values.Any(static origins => origins.Count > 0) == true)
+            if (HasLiveAdmissionOrigin(member))
             {
                 return true;
             }

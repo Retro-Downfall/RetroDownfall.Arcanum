@@ -621,4 +621,165 @@ public sealed partial class HostedGrimoireProducerInventoryTests
 
         Assert.Equal(forwardFirst.Order(StringComparer.Ordinal), ownerFirst.Order(StringComparer.Ordinal));
     }
+
+    // ---- Foreign Parameter Projection and the two questions that read every admission binding of a member.
+    //
+    // Whether a member holds an admission seed, and whether it may contain an admission origin, ask whether any parameter of
+    // the member is bound to an admitted origin. A parameter of an ordinary method is no name in a member that cannot be
+    // nested in a method, so a binding for it names an origin the member can neither reach nor run code that reaches: it is
+    // no seed, whether or not the traversal projected it away before asking.
+    private static (bool Seed, bool MayContain) AdmissionBindingProbe(string source, string memberSelector, string parameterSelector)
+    {
+        CSharpCompilation compilation = Compile(source);
+
+        Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        SyntaxNode root = compilation.SyntaxTrees.Single().GetRoot();
+
+        SyntaxNode member = memberSelector switch
+        {
+            "accessor" => root.DescendantNodes().OfType<PropertyDeclarationSyntax>().Single(static property => property.Identifier.ValueText == "Value").ExpressionBody!,
+            "constructor" => root.DescendantNodes().OfType<ConstructorDeclarationSyntax>().Single(),
+            "operator" => root.DescendantNodes().OfType<OperatorDeclarationSyntax>().Single(),
+            "conversion" => root.DescendantNodes().OfType<ConversionOperatorDeclarationSyntax>().Single(),
+            "explicit-interface" => root.DescendantNodes().OfType<MethodDeclarationSyntax>().Single(static method => method.ExplicitInterfaceSpecifier is not null),
+            "lambda" => root.DescendantNodes().OfType<AnonymousFunctionExpressionSyntax>().Single(),
+            "local-function" => root.DescendantNodes().OfType<LocalFunctionStatementSyntax>().Single(),
+            "method" => root.DescendantNodes().OfType<MethodDeclarationSyntax>().Single(static method => method.Identifier.ValueText == "Own"),
+            _ => throw new ArgumentOutOfRangeException(nameof(memberSelector)),
+        };
+
+        ParameterSyntax parameter = parameterSelector switch
+        {
+            "caller" => root.DescendantNodes().OfType<MethodDeclarationSyntax>().Single(static method => method.Identifier.ValueText == "Via").ParameterList.Parameters.Single(),
+            "own" => member.DescendantNodesAndSelf().OfType<ParameterSyntax>().First(),
+            _ => throw new ArgumentOutOfRangeException(nameof(parameterSelector)),
+        };
+
+        return HostedGrimoireProducerInventory.ProbeAdmissionBinding(compilation, member, parameter);
+    }
+
+    private const string ForeignAdmissionMembers = """
+        interface IRun { int Run(); }
+
+        sealed class Box : IRun
+        {
+            public int Value => 1;
+
+            public static Box operator +(Box left, Box right) => left;
+
+            public static implicit operator int(Box box) => 1;
+
+            int IRun.Run() => 1;
+        }
+
+        static class Runner
+        {
+            public static int Via(object lease) => new Box().Value;
+        }
+        """;
+
+    [Theory]
+    [InlineData("accessor")]
+    [InlineData("operator")]
+    [InlineData("conversion")]
+    [InlineData("explicit-interface")]
+    public void AnAdmittedOriginBoundToAParameterOfAnotherMethodIsNoSeedInAMemberThatCannotBeNested(string member)
+    {
+        (bool seed, bool mayContain) = AdmissionBindingProbe(ForeignAdmissionMembers, member, "caller");
+
+        Assert.False(seed);
+
+        Assert.False(mayContain);
+    }
+
+    [Fact]
+    public void AnAdmittedOriginBoundToAParameterOfAnotherMethodIsNoSeedInAConstructor()
+    {
+        const string source = "sealed class Box { public Box() { } } static class Runner { public static int Via(object lease) => new Box() is null ? 0 : 1; }";
+
+        (bool seed, bool mayContain) = AdmissionBindingProbe(source, "constructor", "caller");
+
+        Assert.False(seed);
+
+        Assert.False(mayContain);
+    }
+
+    [Theory]
+    [InlineData("lambda", "System.Func<int> work = () => 1; return work();")]
+    [InlineData("local-function", "int Work() => 1; return Work();")]
+    public void AnAdmittedOriginBoundToAParameterOfTheMethodThatDeclaresAMemberIsASeedInIt(string member, string body)
+    {
+        string source = "static class Runner { public static int Via(object lease) { " + body + " } }";
+
+        (bool seed, bool mayContain) = AdmissionBindingProbe(source, member, "caller");
+
+        // A lambda and a local function may be declared inside the owner, so they may name its parameters.
+        Assert.True(seed);
+
+        Assert.True(mayContain);
+    }
+
+    [Fact]
+    public void AnAdmittedOriginBoundToAMembersOwnParameterIsASeedInIt()
+    {
+        (bool seed, bool mayContain) = AdmissionBindingProbe("static class Runner { public static int Own(object lease) => 1; }", "method", "own");
+
+        Assert.True(seed);
+
+        Assert.True(mayContain);
+
+        (bool constructorSeed, bool constructorMayContain) = AdmissionBindingProbe("sealed class Box { public Box(object lease) { } }", "constructor", "own");
+
+        Assert.True(constructorSeed);
+
+        Assert.True(constructorMayContain);
+    }
+
+    // The lease an accessor or a constructor is entered with is a name only in the method that passed it, so what the
+    // traversal concludes about a callback declared in the accessor does not depend on whether such a lease was passed.
+    private static string[] ForeignLeaseVerdict(string members, string call)
+    {
+        const string lease = "RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireWorkLease";
+
+        string helper = members + " public static class Runner { public static int ViaLease(" + lease + " lease) { " + call + " } public static int Bare() { " + call + " } }";
+
+        string[] verdicts = [];
+
+        foreach (string entry in new[] { "Runner.ViaLease(lease);", "Runner.Bare();" })
+        {
+            var (_, result, _) = ClosedValueDiscover(R2Admission + entry, helper);
+
+            string[] verdict =
+            [
+                .. result.Diagnostics.Select(static diagnostic => diagnostic.Code + " " + diagnostic.Detail),
+                .. result.Items.Where(static site => site.Callee is "System.IO.File.Delete").Select(static site => "send " + site.Member + " work=" + (site.WorkFrontierCapsuleId is not null) + " effect=" + (site.EffectFrontierCapsuleId is not null)),
+            ];
+
+            if (verdicts.Length == 0)
+            {
+                verdicts = [.. verdict.Order(StringComparer.Ordinal)];
+            }
+            else
+            {
+                Assert.Equal(verdicts, verdict.Order(StringComparer.Ordinal));
+            }
+        }
+
+        return verdicts;
+    }
+
+    [Theory]
+    [InlineData("public sealed class Probe { public int Value { get { System.Array.ForEach(new int[1], x => { }); return 1; } } }", "return new Probe().Value;", false)]
+    [InlineData("public sealed class Probe { public int Value { get { System.Array.ForEach(new int[1], x => System.IO.File.Delete(\"p\")); return 1; } } }", "return new Probe().Value;", true)]
+    [InlineData("public sealed class Probe { public Probe() { System.Array.ForEach(new int[1], x => { }); } }", "_ = new Probe(); return 1;", false)]
+    [InlineData("public sealed class Probe { public Probe() { System.Array.ForEach(new int[1], x => System.IO.File.Delete(\"p\")); } }", "_ = new Probe(); return 1;", true)]
+    [InlineData("public sealed class Probe { public int Value { get { var lazy = new System.Lazy<int>(() => 1); return lazy.Value; } } }", "return new Probe().Value;", false)]
+    public void AForeignLeaseChangesNothingAMemberThatCannotNameItConcludesAboutACallback(string members, string call, bool callbackRefused)
+    {
+        string[] verdict = ForeignLeaseVerdict(members, call);
+
+        // A callback with a producer site in it is refused as an opaque callback, in both entries and whether or not a lease was passed.
+        Assert.Equal(callbackRefused, verdict.Any(static line => line.StartsWith("HOSTED_CALLBACK_OWNERSHIP_UNPROVEN", StringComparison.Ordinal)));
+    }
 }

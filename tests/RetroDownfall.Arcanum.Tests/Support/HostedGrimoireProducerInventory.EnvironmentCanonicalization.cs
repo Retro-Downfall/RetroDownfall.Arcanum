@@ -44,8 +44,41 @@ internal static partial class HostedGrimoireProducerInventory
         return !ProducerGraph.MemberCannotBeNestedInAMethod(new(symbol, declaration, model));
     }
 
+    // Whether a member the traversal enters with an admitted origin bound to the given parameter holds an admission seed, and whether
+    // it may contain an admission origin. The two existential questions that read every admission binding of a member.
+    internal static (bool Seed, bool MayContain) ProbeAdmissionBinding(CSharpCompilation compilation, SyntaxNode memberDeclaration, ParameterSyntax boundParameter)
+    {
+        SemanticModel model = compilation.GetSemanticModel(memberDeclaration.SyntaxTree);
+
+        ISymbol? declared = memberDeclaration switch
+        {
+            AnonymousFunctionExpressionSyntax => model.GetSymbolInfo(memberDeclaration).Symbol,
+            ArrowExpressionClauseSyntax { Parent: PropertyDeclarationSyntax property } => (model.GetDeclaredSymbol(property) as IPropertySymbol)?.GetMethod,
+            _ => model.GetDeclaredSymbol(memberDeclaration),
+        };
+
+        IMethodSymbol symbol = declared as IMethodSymbol ?? throw new InvalidOperationException("The node must declare a method.");
+
+        IParameterSymbol parameter = model.GetDeclaredSymbol(boundParameter) ?? throw new InvalidOperationException("The node must declare a parameter.");
+
+        AuthoredMember member = new(symbol, memberDeclaration, model)
+        {
+            AdmissionBindings = new Dictionary<ISymbol, IReadOnlySet<string>>(SymbolEqualityComparer.Default)
+            {
+                [parameter] = new HashSet<string> { "work@probe" },
+            },
+        };
+
+        ProducerGraph graph = new([compilation], DefaultEvaluationEnvironmentMaximumMembers, DefaultEvaluationEnvironmentMaximumDepth, DefaultTraversalMaximumDepth, DefaultMaximumAnalyzedStatesPerRoot, false);
+
+        return graph.ProbeAdmissionBinding(member);
+    }
+
     private sealed partial class ProducerGraph
     {
+        internal (bool Seed, bool MayContain) ProbeAdmissionBinding(AuthoredMember member) =>
+            (HasAdmissionSeed(member), MayContainAdmissionOrigin(member));
+
         // Constant Value Identity. A bound value whose normalized source is a compile-time constant stands for its value
         // wherever the constant was written, because every consumer of such a source evaluates it (a branch condition, a
         // selected overload, a finite enumeration) and none reads where it came from: a constant has no side effects, depends
@@ -238,8 +271,24 @@ internal static partial class HostedGrimoireProducerInventory
         // parameter of an ordinary method nor run code that does, so a binding for such a parameter is dead in its
         // environment. It reaches the member only because an instance call passes its caller's whole context on to the
         // receiver's members, and keeping it multiplies the member's states by every distinct binding of every caller
-        // parameter above it. A lambda or a local function keeps every binding, since it may be nested in the owner.
+        // parameter above it. A lambda or a local function keeps every binding, since it may be nested in the owner. Two
+        // questions read every admission binding of a member and not the one a name selects (HasAdmissionSeed and
+        // MayContainAdmissionOrigin); they ignore this binding by the same rule (HasLiveAdmissionOrigin), so the answer does
+        // not depend on whether the projection ran.
         internal static bool MemberCannotBeNestedInAMethod(AuthoredMember member) =>
             member.Symbol.MethodKind is not (MethodKind.LocalFunction or MethodKind.AnonymousFunction);
+
+        // The two questions that read every admission binding of a member (whether it holds an admission seed and whether it may
+        // contain an admission origin) are existential, so a binding the member cannot reach must not answer them. A parameter of
+        // an ordinary method other than the member itself is such a binding in a member that cannot be nested in a method: the
+        // projection drops it before the traversal asks, and asking by this rule gives the same answer for a member that was
+        // not projected, which also covers a callback body that inherited the context of the member it was declared in.
+        private static bool IsForeignOrdinaryParameter(AuthoredMember member, ISymbol symbol) =>
+            MemberCannotBeNestedInAMethod(member)
+            && symbol is IParameterSymbol { ContainingSymbol: IMethodSymbol { MethodKind: MethodKind.Ordinary } owner }
+            && !SymbolEqualityComparer.Default.Equals(owner.OriginalDefinition, member.Symbol.OriginalDefinition);
+
+        private static bool HasLiveAdmissionOrigin(AuthoredMember member) =>
+            member.AdmissionBindings?.Any(pair => pair.Value.Count > 0 && !IsForeignOrdinaryParameter(member, pair.Key)) == true;
     }
 }
