@@ -335,6 +335,8 @@ public sealed partial class LongRestMaintenanceTests
         public Task<Result<LongRestDispatchAttempt>> SettleUnresolvedSendAsync(LongRestDispatchAttempt attempt, LongRestUnresolvedSend outcome, CancellationToken ct) =>
             settle?.Invoke(attempt, outcome, ct) ?? inner.SettleUnresolvedSendAsync(attempt, outcome, ct);
 
+        public Task<Result> ReleaseUnsentAttemptAsync(LongRestDispatchAttempt attempt, CancellationToken ct) => inner.ReleaseUnsentAttemptAsync(attempt, ct);
+
         public async Task<Result> ValidateAttemptAsync(LongRestDispatchAttempt attempt, CancellationToken ct)
         {
             Result result = await inner.ValidateAttemptAsync(attempt, ct);

@@ -10,6 +10,7 @@ using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.LongRest;
 using RetroDownfall.Arcanum.Core.Operations;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.Tower;
 using RetroDownfall.Arcanum.Infrastructure.Covenant;
@@ -160,6 +161,15 @@ public sealed partial class LongRestMaintenanceTests
         internal LongRestProviderFixture.CountingProvider Handler = new();
 
         private LongRestProviderClientFactory? _clientFactory;
+
+        /// <summary>Resolves the provider credential for every send; a test may replace it before the first send to refuse one locally.</summary>
+        internal IProviderApiKeyResolver Keys = new LongRestProviderFixture.NoKeys();
+
+        /// <summary>The client factory is built with the fixture; it asks <see cref="Keys"/> afresh at every resolution.</summary>
+        private sealed class LateKeys(MaintenanceFixture f) : IProviderApiKeyResolver
+        {
+            public Task<string?> ResolveAsync(ProviderSettings provider, CancellationToken cancellationToken = default) => f.Keys.ResolveAsync(provider, cancellationToken);
+        }
 
         internal ServiceProvider Services = null!;
 
@@ -390,7 +400,7 @@ public sealed partial class LongRestMaintenanceTests
 
             ModelTokenEstimator estimator = new(new InferenceTokenizerResolver(NullLogger<InferenceTokenizerResolver>.Instance));
 
-            _clientFactory ??= new(new LongRestProviderFixture.NoKeys(), Handler);
+            _clientFactory ??= new(new LateKeys(this), Handler);
 
             LongRestProvider provider = new(_clientFactory,
                 new ModelCallExecutor(estimator, Options), Epoch, new PaidWriter(new TurnRunWriter(H.Saga.Context), () => PaidRecorded?.Invoke(), () => Completing?.Invoke()),

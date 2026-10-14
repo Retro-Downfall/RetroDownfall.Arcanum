@@ -269,6 +269,67 @@ internal sealed partial class LongRestAttemptStore(ArcanumDbContext db, TimeProv
         return settled;
     }, ct);
 
+    public async Task<Result> ReleaseUnsentAttemptAsync(LongRestDispatchAttempt attempt, CancellationToken ct)
+    {
+        Result<bool> released = await WithinAsync(async (connection, transaction) =>
+        {
+            if (attempt is null || attempt.State != LongRestDispatchAttemptState.Prepared || attempt.DisclosureReceiptDigest is not null)
+            {
+                throw new InvalidDataException();
+            }
+
+            string unit = await CurrentUnitAsync(connection, transaction, attempt.Work, ct).ConfigureAwait(false);
+
+            Effect current = await ExactAsync(connection, transaction, unit, attempt, ct).ConfigureAwait(false);
+
+            if (current.Completion is not null)
+            {
+                throw new InvalidDataException();
+            }
+
+            // A unit that never sent has nothing to remember: it is exactly the unit it was before the attempt was prepared. A unit that did
+            // send keeps its counters, and the withdrawn attempt becomes the one failed shape that is not a billing question.
+            int rows = current.Sent == 0
+                ? await ReleaseNeverSentAsync(connection, transaction, unit, Format(attempt.AttemptId), attempt.Revision, ct).ConfigureAwait(false)
+                : await ReleaseSentBeforeAsync(connection, transaction, unit, current.WorkDigest.Bytes, Format(attempt.AttemptId),
+                    checked((long)attempt.PhysicalOrdinal), attempt.Revision, UtcInstantText.Format(timeProvider.GetUtcNow()), ct).ConfigureAwait(false);
+
+            if (rows != 1)
+            {
+                throw new InvalidDataException();
+            }
+
+            return true;
+        }, ct).ConfigureAwait(false);
+
+        return released.IsSuccess ? Result.Success() : Result.Failure(released.Error);
+    }
+
+    private static async Task<int> ReleaseNeverSentAsync(SqliteConnection connection, SqliteTransaction transaction, string unit,
+        string attemptId, long revision, CancellationToken ct)
+    {
+        await using SqliteCommand release = Command(connection, transaction, """
+            DELETE FROM long_rest_provider_effects
+            WHERE WorkItemId = $unit AND AttemptId = $attempt AND Revision = $revision AND StateCode = 1
+              AND DisclosureReceiptDigest IS NULL AND CompletionJson IS NULL AND SentCount = 0 AND PaidCount = 0;
+            """, ("$unit", unit), ("$attempt", attemptId), ("$revision", revision));
+
+        return await release.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+    }
+
+    private static async Task<int> ReleaseSentBeforeAsync(SqliteConnection connection, SqliteTransaction transaction, string unit, byte[] workDigest,
+        string attemptId, long ordinal, long revision, string updatedAtUtc, CancellationToken ct)
+    {
+        await using SqliteCommand release = Command(connection, transaction, """
+            UPDATE long_rest_provider_effects SET StateCode = 6, FailureCode = $code, Revision = $next, UpdatedAtUtc = $at
+            WHERE WorkItemId = $unit AND WorkDigest = $work AND AttemptId = $attempt AND PhysicalOrdinal = $ordinal AND Revision = $revision
+              AND StateCode = 1 AND DisclosureReceiptDigest IS NULL AND CompletionJson IS NULL AND SentCount > 0;
+            """, ("$code", ErrorCodes.LongRest.ProviderUnreachable), ("$next", checked(revision + 1)), ("$at", updatedAtUtc), ("$unit", unit),
+            ("$work", workDigest), ("$attempt", attemptId), ("$ordinal", ordinal), ("$revision", revision));
+
+        return await release.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+    }
+
     /// <summary>
     /// The one settlement predicate for a physical send that is still <c>Sent</c> with no completion evidence: it becomes failed with
     /// the supplied code and failure count, and nothing else about its usage is touched. The in-frame settlement and the reboot
