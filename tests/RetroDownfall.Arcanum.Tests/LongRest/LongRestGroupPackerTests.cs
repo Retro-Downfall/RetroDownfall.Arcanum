@@ -117,6 +117,76 @@ public sealed class LongRestGroupPackerTests
     }
 
     [Fact]
+    public void An_exact_duplicate_of_the_anchor_that_does_not_fit_is_packed_with_the_other_duplicates_outside_the_budget()
+    {
+        string same = "1".PadLeft(64, '0');
+
+        LongRestSourceLeaf anchor = LongRestPackingData.Leaf(0, new string('x', 1500), same);
+
+        // Two oversize duplicates, one oversize stranger and two neighbours that fit.
+        ImmutableArray<LongRestSourceLeaf> neighbors =
+        [
+            LongRestPackingData.Leaf(1, new string('d', 6000), same),
+            LongRestPackingData.Leaf(2, new string('y', 1500)),
+            LongRestPackingData.Leaf(3, new string('s', 6000)),
+            LongRestPackingData.Leaf(4, new string('d', 6000), same),
+            LongRestPackingData.Leaf(5, new string('y', 1500)),
+        ];
+
+        int budget = BudgetFor(3, 1500);
+
+        LongRestGroupPacking packing = LongRestGroupPacker.Pack(anchor, neighbors, budget).Value;
+
+        Assert.Equal([[0, 2, 5], [0, 1, 4]], packing.Packs.Select(pack => pack.Select(leaf => leaf.InsertionSequence - 1).ToArray()));
+
+        // The first pack renders within the budget; the duplicate-only pack is committed without a request and is exempt from it.
+        Assert.True(Fixed + packing.Packs[0].Sum(Block) <= budget);
+
+        Assert.True(Fixed + packing.Packs[1].Sum(Block) > budget);
+
+        Assert.All(packing.Packs[1], leaf => Assert.Equal(same, leaf.Snapshot.ContentHash));
+
+        Assert.Equal(1, packing.SkippedOversize);
+
+        Assert.Equal(0, packing.SkippedPackLimit);
+    }
+
+    [Fact]
+    public void Duplicate_packs_count_toward_the_three_packs_an_anchor_keeps()
+    {
+        string same = "1".PadLeft(64, '0');
+
+        LongRestSourceLeaf anchor = LongRestPackingData.Leaf(0, new string('x', 1500), same);
+
+        // Six neighbours that fit make three packs, so two oversize duplicates have no pack left.
+        ImmutableArray<LongRestSourceLeaf> neighbors = [.. Neighbors(6, 1500), LongRestPackingData.Leaf(7, new string('d', 6000), same), LongRestPackingData.Leaf(8, new string('d', 6000), same)];
+
+        LongRestGroupPacking packing = LongRestGroupPacker.Pack(anchor, neighbors, BudgetFor(3, 1500)).Value;
+
+        Assert.Equal(3, packing.Packs.Length);
+
+        Assert.Equal(2, packing.SkippedPackLimit);
+
+        Assert.Equal(0, packing.SkippedOversize);
+    }
+
+    [Fact]
+    public void An_anchor_that_cannot_fit_alone_still_packs_its_exact_duplicates_and_counts_the_rest()
+    {
+        string same = "1".PadLeft(64, '0');
+
+        LongRestSourceLeaf anchor = LongRestPackingData.Leaf(0, new string('x', 6000), same);
+
+        ImmutableArray<LongRestSourceLeaf> neighbors = [LongRestPackingData.Leaf(1, new string('d', 6000), same), LongRestPackingData.Leaf(2, "stranger")];
+
+        LongRestGroupPacking packing = LongRestGroupPacker.Pack(anchor, neighbors, LongRestPromptLayout.MinimumInputUtf8Bytes).Value;
+
+        Assert.Equal([[0, 1]], packing.Packs.Select(pack => pack.Select(leaf => leaf.InsertionSequence - 1).ToArray()));
+
+        Assert.Equal(1, packing.SkippedOversize);
+    }
+
+    [Fact]
     public void An_anchor_that_cannot_fit_alone_leaves_no_pack_and_every_neighbor_counts_as_skipped()
     {
         LongRestSourceLeaf anchor = LongRestPackingData.Leaf(0, new string('x', 6000));

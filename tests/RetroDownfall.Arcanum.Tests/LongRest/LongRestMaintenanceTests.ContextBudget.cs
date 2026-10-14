@@ -98,6 +98,25 @@ public sealed partial class LongRestMaintenanceTests
     }
 
     [Fact]
+    public async Task Exact_duplicates_too_large_for_a_request_are_still_consolidated_locally_at_a_small_window()
+    {
+        // Two identical 3 KiB memories: a request holding both would be about 7 KiB, over the 5328-byte budget, but exact duplicates are
+        // committed without any request, so the window does not decide them.
+        await using MaintenanceFixture f = await MaintenanceFixture.CreateAsync(ownWorker: false, protectedSources: false, exact: true,
+            configure: Window(8192), sourceText: _ => Lorem(7, 3000));
+
+        LongRestSweepProgress progress = LongRestSweepHarness.Require(await f.ResumeAdmittedAsync(f.Operation, CancellationToken.None));
+
+        Assert.True(progress.Phase == LongRestSweepPhase.Completed, progress.DeferredReason);
+
+        Assert.Equal(0, f.Handler.SendCount);
+
+        Assert.Equal(1L, await ScalarLongAsync(f, "SELECT count(*) FROM long_rest_receipts WHERE OutcomeCode = 1;"));
+
+        Assert.Equal(0L, await ScalarLongAsync(f, "SELECT count(*) FROM long_rest_provider_effects;"));
+    }
+
+    [Fact]
     public async Task A_memory_the_window_cannot_hold_ends_the_generation_for_an_operator_before_any_effect_row_exists()
     {
         // 5.4 KiB of content cannot sit in a summary request of the 5328-byte budget, alone or with anything else.

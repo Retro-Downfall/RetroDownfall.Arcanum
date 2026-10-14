@@ -15,7 +15,9 @@ public sealed record LongRestGroupPacking(ImmutableArray<ImmutableArray<LongRest
 /// Splits an anchor's discovered neighbours into adjudication packs that each render within the recipe's input budget. Packing is
 /// deterministic and anchor-first: every pack starts with the anchor, takes neighbours in their ranked order while the next one
 /// fits, and a neighbour that does not fit the open pack opens the next pack with the anchor. A neighbour that cannot fit a
-/// request with its anchor is skipped and counted. The anchor keeps at most <see cref="MaximumPacksPerAnchor"/> packs, which is
+/// request with its anchor is skipped and counted, unless it is an exact duplicate of the anchor: a pack of nothing but exact
+/// duplicates is committed locally without a request, so the budget does not apply to it and such a neighbour joins the
+/// duplicate packs that follow the others. The anchor keeps at most <see cref="MaximumPacksPerAnchor"/> packs, which is
 /// today's cost envelope: when everything fits, the packs are the ranked neighbours in chunks of fifteen, exactly as before.
 /// </summary>
 public static class LongRestGroupPacker
@@ -42,6 +44,8 @@ public static class LongRestGroupPacker
 
             long used = baseBytes;
 
+            List<LongRestSourceLeaf> duplicates = [];
+
             int oversize = 0;
 
             int limit = 0;
@@ -54,7 +58,16 @@ public static class LongRestGroupPacker
 
                 if (baseBytes > inputBudgetBytes || baseBytes + bytes > inputBudgetBytes)
                 {
-                    oversize++;
+                    // The maintenance commits a pack whose targets all share the anchor's content hash as exact duplicates, with no
+                    // request, so an oversize duplicate is not left out; it is packed below, exempt from the budget.
+                    if (neighbor.Snapshot.ContentHash == anchor.Snapshot.ContentHash)
+                    {
+                        duplicates.Add(neighbor);
+                    }
+                    else
+                    {
+                        oversize++;
+                    }
 
                     continue;
                 }
@@ -94,6 +107,20 @@ public static class LongRestGroupPacker
             if (!closed && open.Count > 1)
             {
                 packs.Add([.. open]);
+            }
+
+            for (int offset = 0; offset < duplicates.Count; offset += LongRestDiscoveryLimits.Targets - 1)
+            {
+                int count = Math.Min(LongRestDiscoveryLimits.Targets - 1, duplicates.Count - offset);
+
+                if (packs.Count == MaximumPacksPerAnchor)
+                {
+                    limit += count;
+
+                    continue;
+                }
+
+                packs.Add([anchor, .. duplicates.GetRange(offset, count)]);
             }
 
             return new LongRestGroupPacking(packs.ToImmutable(), oversize, limit);

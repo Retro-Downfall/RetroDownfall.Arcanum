@@ -19,15 +19,18 @@ internal static class LongRestPackingData
 
     internal static readonly LongRestSweepScope Scope = LongRestSweepScope.Create(new(LongRestSweepScopeKind.Global, null)).Value;
 
-    /// <summary>An exact eligible source leaf whose content is <paramref name="content"/>; the memory and version identities are derived from the index.</summary>
-    internal static LongRestSourceLeaf Leaf(int index, string content)
+    /// <summary>
+    /// An exact eligible source leaf whose content is <paramref name="content"/>. The memory and version identities, and by default the
+    /// content hash, are derived from the index, so two leaves are exact duplicates only when a test gives them one <paramref name="contentHash"/>.
+    /// </summary>
+    internal static LongRestSourceLeaf Leaf(int index, string content, string? contentHash = null)
     {
         DateTimeOffset instant = new(2025, 1, 1, 0, 0, 0, TimeSpan.Zero);
 
         string memory = "m-" + index.ToString("D6", System.Globalization.CultureInfo.InvariantCulture);
 
         LongRestSnapshot snapshot = new(memory, "claim-" + memory, "v-" + index.ToString("D6", System.Globalization.CultureInfo.InvariantCulture), 1,
-            AnnalContentHashFormat.LegacyStoreDigest, Hash, AnnalOrigin.OperatorStated, null, SagaMemoryScopeKind.Global, null,
+            AnnalContentHashFormat.LegacyStoreDigest, contentHash ?? (index + 1).ToString("X64", System.Globalization.CultureInfo.InvariantCulture), AnnalOrigin.OperatorStated, null, SagaMemoryScopeKind.Global, null,
             ContentSensitivity.None, instant, null, instant, null, null, true, false, false, false, false, [], []);
 
         return new(snapshot, index + 1, 1, null, ContentSensitivity.None, GenerationProvenance.CreateExact([]), []) { Content = content };
