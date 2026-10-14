@@ -377,7 +377,41 @@ public sealed partial class HostedGrimoireProducerInventoryTests
             "sealed class Inner { public int Count => 1; } sealed class Svc { public Inner Inner => new Inner(); } sealed class Owner { Svc Service { get { {E} return new Svc(); } } public int Run() => Service.Inner.Count; }", CensusDisposition.Traversed),
         new("receiver-property-static", "Accessor", "Owner.Run();",
             "sealed class Svc { public void Go() { } } static class Owner { static Svc Service { get { {E} return new Svc(); } } public static void Run() { Service.Go(); } }", CensusDisposition.Traversed),
+
+        // ---- Static initialization and async method builders -------------------------------------------------
+        new("static-constructor", "StaticInitialization", "_ = Holder.Value;",
+            "static class Holder { public static int Value; static Holder() { {E} } }", CensusDisposition.Refused),
+        new("static-field-initializer", "StaticInitialization", "_ = Holder.Value;",
+            "static class Holder { public static int Value = Compute(); private static int Compute() { {E} return 1; } }", CensusDisposition.Refused),
+        new("static-property-initializer", "StaticInitialization", "_ = Holder.Value;",
+            "static class Holder { public static int Value { get; } = Compute(); private static int Compute() { {E} return 1; } }", CensusDisposition.Refused),
+        new("static-initializer-instance-creation", "StaticInitialization", "_ = new Holder();",
+            "sealed class Holder { private static readonly int shared = Compute(); private static int Compute() { {E} return 1; } }", CensusDisposition.Refused),
+        new("static-initializer-base-class", "StaticInitialization", "_ = new Derived();",
+            "class Base { private static readonly int shared = Compute(); private static int Compute() { {E} return 1; } } sealed class Derived : Base { }", CensusDisposition.Refused),
+        new("static-initializer-method-call", "StaticInitialization", "Holder.Run();",
+            "static class Holder { private static readonly int shared = Compute(); public static void Run() { } private static int Compute() { {E} return 1; } }", CensusDisposition.Refused),
+        new("async-method-builder-create", "AsyncBuilder", "await Runner.Run();",
+            AsyncBuilderHelpers("create"), CensusDisposition.Refused),
+        new("async-method-builder-start", "AsyncBuilder", "await Runner.Run();",
+            AsyncBuilderHelpers("start"), CensusDisposition.Refused),
+        new("async-method-builder-set-result", "AsyncBuilder", "await Runner.Run();",
+            AsyncBuilderHelpers("result"), CensusDisposition.Refused),
+        new("async-method-builder-task", "AsyncBuilder", "await Runner.Run();",
+            AsyncBuilderHelpers("task"), CensusDisposition.Refused),
     ];
+
+    // An async method whose builder is authored; the effect sits in the builder member named by effectIn.
+    private static string AsyncBuilderHelpers(string effectIn) =>
+        "static class Runner { [System.Runtime.CompilerServices.AsyncMethodBuilder(typeof(MyBuilder))] public static async System.Threading.Tasks.ValueTask Run() { await System.Threading.Tasks.Task.CompletedTask; } } "
+        + "sealed class MyBuilder { public static MyBuilder Create() { " + (effectIn == "create" ? "{E}" : string.Empty) + " return new MyBuilder(); } "
+        + "public void Start<TStateMachine>(ref TStateMachine stateMachine) where TStateMachine : System.Runtime.CompilerServices.IAsyncStateMachine { " + (effectIn == "start" ? "{E}" : string.Empty) + " stateMachine.MoveNext(); } "
+        + "public void SetStateMachine(System.Runtime.CompilerServices.IAsyncStateMachine stateMachine) { } "
+        + "public void SetResult() { " + (effectIn == "result" ? "{E}" : string.Empty) + " } "
+        + "public void SetException(System.Exception exception) { } "
+        + "public System.Threading.Tasks.ValueTask Task { get { " + (effectIn == "task" ? "{E}" : string.Empty) + " return default; } } "
+        + "public void AwaitOnCompleted<TAwaiter, TStateMachine>(ref TAwaiter awaiter, ref TStateMachine stateMachine) where TAwaiter : System.Runtime.CompilerServices.INotifyCompletion where TStateMachine : System.Runtime.CompilerServices.IAsyncStateMachine { } "
+        + "public void AwaitUnsafeOnCompleted<TAwaiter, TStateMachine>(ref TAwaiter awaiter, ref TStateMachine stateMachine) where TAwaiter : System.Runtime.CompilerServices.ICriticalNotifyCompletion where TStateMachine : System.Runtime.CompilerServices.IAsyncStateMachine { } }";
 
     // An asynchronous sequence whose MoveNextAsync and DisposeAsync return authored awaitables; the effect sits in the
     // awaitable member named by effectIn.

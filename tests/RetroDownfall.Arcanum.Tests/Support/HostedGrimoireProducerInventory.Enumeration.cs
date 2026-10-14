@@ -2035,12 +2035,12 @@ internal static partial class HostedGrimoireProducerInventory
             // An operand nothing proves can run any enumerator, so a body that enumerates it can reach a producer site.
             if (closure.Kind == EnumerationClosureKind.Unproven)
             {
-                return true;
+                return !scanSitesOnly;
             }
 
             EnumerationResolution resolution = ResolveEnumerationTargets(member, binding, closure, collectionMembers: node is SpreadElementSyntax);
 
-            if (resolution.Unresolved.Count != 0 || resolution.Targets.Any(target => ContainsPotentialProducerSite(target.Member, path)))
+            if (!scanSitesOnly && resolution.Unresolved.Count != 0 || resolution.Targets.Any(target => ContainsPotentialProducerSite(target.Member, path)))
             {
                 return true;
             }
@@ -2057,16 +2057,14 @@ internal static partial class HostedGrimoireProducerInventory
 
                     if (AwaiterSteps(member.Model, node, awaitable, binding.Operand.Span.End + 1) is not { } awaitSteps)
                     {
-                        return true;
+                        return !scanSitesOnly;
                     }
 
                     foreach (ImplicitCallStep step in awaitSteps)
                     {
                         ImplicitTargets awaiting = ResolveImplicitStep(member, step);
 
-                        if (awaiting.Unresolved.Count != 0
-                            || awaiting.Members.Any(target => ContainsPotentialProducerSite(target, path))
-                            || awaiting.Framework.Any(framework => Classify(framework, Normalize(framework), node, member) is not null || !IsReviewedImplicitFrameworkMember(member, framework, node)))
+                        if (ImplicitTargetsReachProducerSite(member, awaiting, node, path))
                         {
                             return true;
                         }
@@ -2083,14 +2081,7 @@ internal static partial class HostedGrimoireProducerInventory
 
             DeconstructionSteps(deconstruction, binding.ElementType, null, binding.Operand.Span.End + 1, deconstructions);
 
-            return deconstructions.Any(step =>
-            {
-                ImplicitTargets targets = ResolveImplicitStep(member, step);
-
-                return targets.Unresolved.Count != 0
-                    || targets.Members.Any(target => ContainsPotentialProducerSite(target, path))
-                    || targets.Framework.Any(framework => !IsReviewedImplicitFrameworkMember(member, framework, node));
-            });
+            return deconstructions.Any(step => ImplicitTargetsReachProducerSite(member, ResolveImplicitStep(member, step), node, path));
         }
     }
 }

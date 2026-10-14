@@ -691,4 +691,23 @@ public sealed partial class HostedGrimoireProducerInventoryTests
             Assert.Equal(refused && effect, owned);
         }
     }
+
+    // The scan of a body is computed once, and what it concludes can depend on the bindings the body was reached with (a
+    // callback that calls the delegate it was handed is judged by that delegate). A body reached with a clean delegate
+    // and then with an effectful one, or the other way round, is refused each time it is reached with the effectful one:
+    // the order of the two scans does not decide it.
+    [Theory]
+    [InlineData("Calls.Clean(); Calls.Dirty();")]
+    [InlineData("Calls.Dirty(); Calls.Clean();")]
+    [InlineData("Calls.Dirty();")]
+    public void ScanOfOneBodyIsNotReusedAcrossDifferentBindings(string statement)
+    {
+        string helpers = "static class Host { public static void Run(System.Action action) { GC.KeepAlive((System.Action)(() => action())); } } "
+            + "static class Calls { public static void Clean() { Host.Run(static () => { }); } public static void Dirty() { Host.Run(static () => { Effect.Run(); }); } } "
+            + "static class Effect { public static void Run() { " + EnumerationEffect + " } }";
+
+        HostedProducerDiscovery<HostedProducerSite> result = EnumerationDiscover(CensusCompileSource(statement, helpers));
+
+        Assert.Contains(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_CALLBACK_OWNERSHIP_UNPROVEN");
+    }
 }

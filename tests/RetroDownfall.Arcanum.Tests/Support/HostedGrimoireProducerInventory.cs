@@ -2107,6 +2107,11 @@ internal static partial class HostedGrimoireProducerInventory
         new ProducerGraph([compilation], DefaultEvaluationEnvironmentMaximumMembers, DefaultEvaluationEnvironmentMaximumDepth, DefaultTraversalMaximumDepth, DefaultMaximumAnalyzedStatesPerRoot, false)
             .ProbeMemberMethodIdentities(queries);
 
+    // The authored types whose static initialization can reach a producer site, over the given compilations.
+    internal static IReadOnlyList<string> ProbeStaticInitializationHazards(IReadOnlyList<CSharpCompilation> compilations) =>
+        new ProducerGraph(compilations, DefaultEvaluationEnvironmentMaximumMembers, DefaultEvaluationEnvironmentMaximumDepth, DefaultTraversalMaximumDepth, DefaultMaximumAnalyzedStatesPerRoot, false)
+            .StaticInitializationHazardNames();
+
     internal static IReadOnlyList<HostedProducerProjectionSymbolProbe> ProbeProjectionSymbolLookups(
         CSharpCompilation compilation,
         IMethodSymbol method,
@@ -3214,6 +3219,12 @@ internal static partial class HostedGrimoireProducerInventory
 
         private readonly IReadOnlyList<CSharpCompilation> analysedCompilations;
 
+        // A graph that answers one question only: whether a body can reach a producer site that is classified (a member of the
+        // vocabulary or an external producer). It does not ask whether the body uses a framework member nobody has reviewed,
+        // or a construct it cannot follow, which the traversal of a body refuses. The static initialization of a type is
+        // judged by such a graph, because no traversal ever enters it.
+        private readonly bool scanSitesOnly;
+
         internal ProducerGraph(
             IReadOnlyList<CSharpCompilation> compilations,
             int evaluationEnvironmentMaximumMembers,
@@ -3223,9 +3234,12 @@ internal static partial class HostedGrimoireProducerInventory
             bool auditRecoveryReachabilityParity,
             Action<HostedProducerAdmittedStateObservation>? admittedStateObserver = null,
             Action<int, int, int, int, bool>? nestedReuseObserver = null,
-            HostedProducerPremiseLedger? premises = null)
+            HostedProducerPremiseLedger? premises = null,
+            bool sitesOnly = false)
         {
             this.premises = premises ?? HostedProducerPremiseLedger.None;
+
+            scanSitesOnly = sitesOnly;
 
             analysedCompilations = compilations;
 
@@ -24748,6 +24762,16 @@ internal static partial class HostedGrimoireProducerInventory
                     }
                 }
 
+                if (selection is null && AsyncBuilderReachesProducerSite(member, out INamedTypeSymbol? asyncBuilder))
+                {
+                    RefuseTraversalCompletion();
+
+                    diagnostics.Add(new(
+                        "HOSTED_SITE_UNCLASSIFIED",
+                        Location(member.Syntax),
+                        TypeKey(asyncBuilder!) + "; An authored async method builder runs its Create, Start, AwaitOnCompleted, SetResult, SetException and Task members at points of the state machine nothing here places."));
+                }
+
                 if (selection is null
                     && member.Symbol is { MethodKind: MethodKind.Constructor, IsStatic: false }
                     && member.Syntax is ConstructorDeclarationSyntax constructorDeclaration)
@@ -24811,6 +24835,16 @@ internal static partial class HostedGrimoireProducerInventory
                             "Dynamic indexer access has no exact accessor target."));
 
                         continue;
+                    }
+
+                    if (StaticInitializationStartedAt(member, node) is { } initializedType)
+                    {
+                        RefuseTraversalCompletion();
+
+                        diagnostics.Add(new(
+                            "HOSTED_SITE_UNCLASSIFIED",
+                            Location(node),
+                            TypeKey(initializedType) + ".cctor; The static initialization of the type can reach a producer site, and the point at which the runtime first uses the type is not modeled."));
                     }
 
                     if (ImplicitCallsAt(member, selection ?? member.Syntax, node) is { Count: > 0 } implicitCalls)
@@ -30798,6 +30832,7 @@ internal static partial class HostedGrimoireProducerInventory
                 || IsReviewedRuntimeCleanup(method)
                 || IsReviewedFloatVectorMember(method, node, model, context)
                 || IsReviewedExactInMemoryConstruction(method)
+                || IsReviewedAsyncStateMachineMember(method)
                 || IsReviewedExactFrameworkScalarOperator(method, node, model, context)
                 || IsReviewedExactTypeOfEqualityOperator(method, node, model)
                 || IsReviewedPrimitiveQueueMember(method, node, model, context)
@@ -30843,6 +30878,12 @@ internal static partial class HostedGrimoireProducerInventory
                 } sequence
                 && IsExactFrameworkType(sequence, "System.Collections.Generic.IEnumerable`1",
                     typeof(IEnumerable<>).Assembly.GetName());
+
+        // The state machine an async method compiles to is the body of that async method: an authored builder's Start calls
+        // its MoveNext, and what MoveNext runs is the async method, which is traversed as the method itself.
+        private static bool IsReviewedAsyncStateMachineMember(IMethodSymbol method) =>
+            method is { Name: "MoveNext" or "SetStateMachine", IsStatic: false }
+            && IsExactFrameworkType(method.ContainingType, "System.Runtime.CompilerServices.IAsyncStateMachine", typeof(System.Runtime.CompilerServices.IAsyncStateMachine).Assembly.GetName());
 
         // UInt32.TryFormat(Span<char>, out int, ReadOnlySpan<char>, IFormatProvider) writes the digits of the value into the
         // caller's span. It runs no supplied code when the provider is the default one the caller did not pass: a provider
@@ -34500,17 +34541,51 @@ internal static partial class HostedGrimoireProducerInventory
         // computed once. A scan that continues a path ends where it meets the path, so it is never cached. A root scan
         // that is asked for again while it is being computed (a body whose implicit call resolves to the body itself)
         // ends there as a scan meeting its own path does, and a result that was cut that way is not cached.
-        private readonly Dictionary<GraphMemberIdentity, bool> producerSiteScans = [];
+        private readonly Dictionary<ProducerSiteScanKey, bool> producerSiteScans = new(ProducerSiteScanKeyComparer.Instance);
 
         private readonly HashSet<GraphMemberIdentity> producerSiteScansInProgress = [];
 
         private int producerSiteScanCuts;
 
+        // What a scan consults besides the syntax and the semantic model: the bindings the member was bound with (callables,
+        // values, concrete types, admissions, the scoped holder, the readiness source), which a receiver proof and a callable
+        // resolution read. Two scans of one body are the same scan only when they were bound with the very same bindings.
+        private readonly record struct ProducerSiteScanKey(GraphMemberIdentity Member, object?[] Bindings);
+
+        private sealed class ProducerSiteScanKeyComparer : IEqualityComparer<ProducerSiteScanKey>
+        {
+            internal static readonly ProducerSiteScanKeyComparer Instance = new();
+
+            public bool Equals(ProducerSiteScanKey left, ProducerSiteScanKey right) =>
+                left.Member.Equals(right.Member)
+                && left.Bindings.Length == right.Bindings.Length
+                && left.Bindings.Zip(right.Bindings).All(static pair => ReferenceEquals(pair.First, pair.Second));
+
+            public int GetHashCode(ProducerSiteScanKey key)
+            {
+                HashCode hash = new();
+
+                hash.Add(key.Member);
+
+                foreach (object? binding in key.Bindings)
+                {
+                    hash.Add(binding is null ? 0 : System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(binding));
+                }
+
+                return hash.ToHashCode();
+            }
+        }
+
+        private static ProducerSiteScanKey ScanKey(GraphMemberIdentity identity, AuthoredMember member) =>
+            new(identity, [member.AdmissionBindings, member.CallableBindings, member.AbsentCallables, member.ConcreteBindings, member.RecoveryBindings, member.RecoveryContext, member.ValueBindings, member.ConstructorContexts, member.OrdinaryScopedHolder, member.ReadinessSource, member.ScopedLeaseInstance]);
+
         private bool ContainsPotentialProducerSite(AuthoredMember member)
         {
             GraphMemberIdentity identity = MemberIdentity(member);
 
-            if (producerSiteScans.TryGetValue(identity, out bool reaches))
+            ProducerSiteScanKey scanKey = ScanKey(identity, member);
+
+            if (producerSiteScans.TryGetValue(scanKey, out bool reaches))
             {
                 return reaches;
             }
@@ -34535,7 +34610,7 @@ internal static partial class HostedGrimoireProducerInventory
 
             if (producerSiteScanCuts == cutsBefore)
             {
-                producerSiteScans[identity] = reaches;
+                producerSiteScans[scanKey] = reaches;
             }
 
             return reaches;
@@ -34550,7 +34625,7 @@ internal static partial class HostedGrimoireProducerInventory
 
             try
             {
-                if (ConstructionPreambleReachesProducerSite(member, path))
+                if (ConstructionPreambleReachesProducerSite(member, path) || AsyncBuilderReachesProducerSite(member, out _))
                 {
                     return true;
                 }
@@ -34568,6 +34643,14 @@ internal static partial class HostedGrimoireProducerInventory
                         || LaneRefusalsReachProducerSite(member, node, path))
                     {
                         return true;
+                    }
+
+                    // A method group names a method without calling it. Whether a body can reach a producer site through it is
+                    // the question of where the delegate is called, which a scan for sites alone does not ask of the body that
+                    // merely passes it (the factory handed to a Lazy runs at the first read of its value).
+                    if (scanSitesOnly && member.Model.GetOperation(node) is IMethodReferenceOperation)
+                    {
+                        continue;
                     }
 
                     if (member.Model.GetSymbolInfo(node).Symbol is IMethodSymbol method)
@@ -34590,6 +34673,7 @@ internal static partial class HostedGrimoireProducerInventory
 
                         if (target is not null && ContainsPotentialProducerSite(target, path)
                             || target is null
+                                && !scanSitesOnly
                                 && !IsReviewedFrameworkRangeMember(method)
                                 && RequiresExternalBoundaryClassification(
                                     method,
@@ -34608,14 +34692,15 @@ internal static partial class HostedGrimoireProducerInventory
                                 node.Parent is AssignmentExpressionSyntax assignment
                                     && assignment.Left == node,
                                 out _)
-                            || RequiresExternalBoundaryClassification(
-                                property,
-                                member.Model.Compilation,
-                                node.Parent is AssignmentExpressionSyntax propertyMutation
-                                    && propertyMutation.Left == node,
-                                node,
-                                member.Model,
-                                member)))
+                            || !scanSitesOnly
+                                && RequiresExternalBoundaryClassification(
+                                    property,
+                                    member.Model.Compilation,
+                                    node.Parent is AssignmentExpressionSyntax propertyMutation
+                                        && propertyMutation.Left == node,
+                                    node,
+                                    member.Model,
+                                    member)))
                     {
                         return true;
                     }

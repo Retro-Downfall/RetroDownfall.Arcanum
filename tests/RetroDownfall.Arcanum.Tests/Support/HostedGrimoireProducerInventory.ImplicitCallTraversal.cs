@@ -1183,9 +1183,7 @@ internal static partial class HostedGrimoireProducerInventory
 
             targets.Add(baseConstructor, baseConstructor);
 
-            return targets.Unresolved.Count != 0
-                || targets.Members.Any(target => ContainsPotentialProducerSite(target, path))
-                || targets.Framework.Any(framework => Classify(framework, Normalize(framework), declaration, member) is not null || !IsReviewedImplicitFrameworkMember(member, framework, declaration));
+            return ImplicitTargetsReachProducerSite(member, targets.Result, declaration, path);
         }
 
         // The implicit calls the syntax lanes traverse (property accessors, user-defined conversions and the cleanup of
@@ -1198,7 +1196,7 @@ internal static partial class HostedGrimoireProducerInventory
             bool Reaches(IMethodSymbol method, SyntaxNode anchor) =>
                 Resolve(method, compilation) is { } target
                     ? target.Syntax is not AccessorDeclarationSyntax { Body: null, ExpressionBody: null } && ContainsPotentialProducerSite(target, path)
-                    : RequiresExternalBoundaryClassification(method, compilation, anchor, member.Model, member);
+                    : !scanSitesOnly && RequiresExternalBoundaryClassification(method, compilation, anchor, member.Model, member);
 
             foreach (IConversionOperation conversion in UserConversionsAt(member, node))
             {
@@ -1217,7 +1215,7 @@ internal static partial class HostedGrimoireProducerInventory
                 {
                     AccessorDispatch dispatch = ResolveAccessorDispatch(member, accessor, receiverType, receiverExpression, exactReceiver, property.IsIndexer);
 
-                    if (dispatch.Unresolved || dispatch.Targets.Any(target => ContainsPotentialProducerSite(target, path)))
+                    if (!scanSitesOnly && dispatch.Unresolved || dispatch.Targets.Any(target => ContainsPotentialProducerSite(target, path)))
                     {
                         return true;
                     }
@@ -1236,7 +1234,7 @@ internal static partial class HostedGrimoireProducerInventory
 
                 AccessorDispatch dispatch = ResolveAccessorDispatch(member, eventAccessor, receiverType, receiverExpression, exactReceiver, indexer: false);
 
-                if (dispatch.Unresolved || dispatch.Targets.Any(target => ContainsPotentialProducerSite(target, path)))
+                if (!scanSitesOnly && dispatch.Unresolved || dispatch.Targets.Any(target => ContainsPotentialProducerSite(target, path)))
                 {
                     return true;
                 }
@@ -1258,7 +1256,7 @@ internal static partial class HostedGrimoireProducerInventory
 
                 return cleanup.ExternalEffects.Count != 0
                     || cleanup.Targets.Any(target => ContainsPotentialProducerSite(target, path))
-                    || cleanup.Targets.Count == 0 && cleanup.MustResolve;
+                    || !scanSitesOnly && cleanup.Targets.Count == 0 && cleanup.MustResolve;
             }
 
             switch (node)
@@ -1380,9 +1378,7 @@ internal static partial class HostedGrimoireProducerInventory
 
                         collector.Add(implementation, slot);
 
-                        if (collector.Unresolved.Count != 0
-                            || collector.Members.Any(target => ContainsPotentialProducerSite(target))
-                            || collector.Framework.Any(framework => Classify(framework, Normalize(framework), member.Syntax, member) is not null || !IsReviewedImplicitFrameworkMember(member, framework, member.Syntax)))
+                        if (ImplicitTargetsReachProducerSite(member, collector.Result, member.Syntax, []))
                         {
                             reaches = true;
 
@@ -1592,6 +1588,187 @@ internal static partial class HostedGrimoireProducerInventory
             return null;
         }
 
+        // The authored builder an async method's state machine runs: the compiler calls its Create at the call, its Start to
+        // run the machine, AwaitOnCompleted at each suspension and SetResult or SetException at the end, and reads its Task.
+        private static INamedTypeSymbol? AuthoredAsyncMethodBuilder(IMethodSymbol method)
+        {
+            if (!method.IsAsync)
+            {
+                return null;
+            }
+
+            foreach (AttributeData attribute in method.GetAttributes().Concat(method.ReturnType.GetAttributes()))
+            {
+                if (attribute.AttributeClass is { Name: "AsyncMethodBuilderAttribute" }
+                    && attribute.ConstructorArguments is [{ Value: INamedTypeSymbol builder }]
+                    && builder.Locations.Any(static location => location.IsInSource))
+                {
+                    return builder;
+                }
+            }
+
+            return null;
+        }
+
+        // Whether the members of the authored builder of an async method can reach a producer site or cannot be followed.
+        private bool AsyncBuilderReachesProducerSite(AuthoredMember member, out INamedTypeSymbol? builder)
+        {
+            builder = AuthoredAsyncMethodBuilder(member.Symbol);
+
+            if (builder is null)
+            {
+                return false;
+            }
+
+            foreach (IMethodSymbol builderMember in builder.GetMembers().OfType<IMethodSymbol>().Where(static candidate => !candidate.IsImplicitlyDeclared || candidate.MethodKind != MethodKind.Constructor))
+            {
+                if (Resolve(builderMember, member.Model.Compilation) is { } target)
+                {
+                    if (HasEnumerationBody(target) && ContainsPotentialProducerSite(target))
+                    {
+                        return true;
+                    }
+                }
+                else if (!scanSitesOnly && (builderMember.IsAbstract || builderMember.IsExtern))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        // The authored types whose static initialization (the static constructor and the initializers of static fields,
+        // properties and events) can reach a classified producer site. The runtime runs it at the first use of the type, which
+        // is no call and no position: a use of such a type, from another type, is refused. A graph that asks about sites
+        // alone answers, once per compilation, so that no traversal ever has to enter an initializer.
+        private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<CSharpCompilation, Lazy<IReadOnlySet<string>>> staticInitializationHazardsByCompilation = new();
+
+        private static string HazardKey(INamedTypeSymbol type) => type.OriginalDefinition.ToDisplayString() + "|" + type.ContainingAssembly?.Identity.Name;
+
+        internal IReadOnlySet<string> StaticInitializationHazardKeys()
+        {
+            if (scanSitesOnly || analysedCompilations.Count == 0)
+            {
+                return new HashSet<string>();
+            }
+
+            IReadOnlyList<CSharpCompilation> compilations = analysedCompilations;
+
+            return staticInitializationHazardsByCompilation.GetValue(
+                compilations[0],
+                _ => new Lazy<IReadOnlySet<string>>(
+                    () => new ProducerGraph(compilations, DefaultEvaluationEnvironmentMaximumMembers, DefaultEvaluationEnvironmentMaximumDepth, DefaultTraversalMaximumDepth, DefaultMaximumAnalyzedStatesPerRoot, false, sitesOnly: true).ComputeStaticInitializationHazardKeys(),
+                    LazyThreadSafetyMode.ExecutionAndPublication)).Value;
+        }
+
+        private IReadOnlySet<string> ComputeStaticInitializationHazardKeys()
+        {
+            HashSet<string> hazards = new(StringComparer.Ordinal);
+
+            foreach (INamedTypeSymbol type in analysedCompilations.SelectMany(static compilation => SourceTypes(compilation.Assembly.GlobalNamespace)))
+            {
+                if (type.TypeKind is not (TypeKind.Class or TypeKind.Struct or TypeKind.Interface) || type.IsImplicitlyDeclared || !type.Locations.Any(static location => location.IsInSource))
+                {
+                    continue;
+                }
+
+                if (StaticInitializationMembers(type).Any(initializer => ContainsPotentialProducerSite(initializer)))
+                {
+                    hazards.Add(HazardKey(type));
+                }
+            }
+
+            return hazards;
+        }
+
+        internal IReadOnlyList<string> StaticInitializationHazardNames() => [.. StaticInitializationHazardKeys().Select(static key => key[..key.IndexOf('|', StringComparison.Ordinal)]).Order(StringComparer.Ordinal)];
+
+        // The static constructor of a type and its static initializers, as members whose body is the initializer expression.
+        private IEnumerable<AuthoredMember> StaticInitializationMembers(INamedTypeSymbol type)
+        {
+            IMethodSymbol? identity = type.StaticConstructors.FirstOrDefault() ?? type.InstanceConstructors.FirstOrDefault() ?? type.GetMembers().OfType<IMethodSymbol>().FirstOrDefault();
+
+            if (identity is null)
+            {
+                yield break;
+            }
+
+            foreach (IMethodSymbol staticConstructor in type.StaticConstructors)
+            {
+                if (Resolve(staticConstructor, analysedCompilations[0]) is { } authored && HasEnumerationBody(authored))
+                {
+                    yield return authored;
+                }
+            }
+
+            foreach (SyntaxReference reference in type.DeclaringSyntaxReferences)
+            {
+                if (reference.GetSyntax() is not TypeDeclarationSyntax declaration || !semanticModels.TryGetValue(declaration.SyntaxTree, out SemanticModel? model))
+                {
+                    continue;
+                }
+
+                foreach (MemberDeclarationSyntax declared in declaration.Members)
+                {
+                    IEnumerable<ExpressionSyntax> values = declared switch
+                    {
+                        FieldDeclarationSyntax field when field.Modifiers.Any(SyntaxKind.StaticKeyword) && !field.Modifiers.Any(SyntaxKind.ConstKeyword) =>
+                            field.Declaration.Variables.Select(static variable => variable.Initializer?.Value).OfType<ExpressionSyntax>(),
+                        PropertyDeclarationSyntax { Initializer.Value: { } value } property when property.Modifiers.Any(SyntaxKind.StaticKeyword) => [value],
+                        EventFieldDeclarationSyntax @event when @event.Modifiers.Any(SyntaxKind.StaticKeyword) =>
+                            @event.Declaration.Variables.Select(static variable => variable.Initializer?.Value).OfType<ExpressionSyntax>(),
+                        _ => [],
+                    };
+
+                    foreach (ExpressionSyntax value in values)
+                    {
+                        yield return new AuthoredMember(identity, value, model);
+                    }
+                }
+            }
+        }
+
+        // The authored type whose static initialization the use at the node starts, when that initialization can reach a
+        // producer site: a static member of the type, the creation of a type, or of a type derived from it, from code of
+        // another type. Code of the type itself runs only once its initialization has started.
+        private INamedTypeSymbol? StaticInitializationStartedAt(AuthoredMember member, SyntaxNode node)
+        {
+            if (node is not (MemberAccessExpressionSyntax or IdentifierNameSyntax or BaseObjectCreationExpressionSyntax))
+            {
+                return null;
+            }
+
+            IReadOnlySet<string> hazards = StaticInitializationHazardKeys();
+
+            if (hazards.Count == 0)
+            {
+                return null;
+            }
+
+            ISymbol? symbol = member.Model.GetSymbolInfo(node).Symbol;
+
+            if (symbol is null || !(symbol.IsStatic || symbol is IMethodSymbol { MethodKind: MethodKind.Constructor }) || symbol.ContainingType is not { } owner)
+            {
+                return null;
+            }
+
+            for (INamedTypeSymbol? current = owner; current is not null; current = symbol is IMethodSymbol ? current.BaseType : null)
+            {
+                if (member.Symbol.ContainingType is { } enclosing && HazardKey(enclosing) == HazardKey(current))
+                {
+                    return null;
+                }
+
+                if (hazards.Contains(HazardKey(current)))
+                {
+                    return current;
+                }
+            }
+
+            return null;
+        }
+
         // The refusals the syntax lanes make at a node, for the transitive scan: the scan answers whether the traversal of a
         // member can report a site or refuse, so it has to say yes wherever the traversal would refuse. A dynamic call or
         // indexer has no target; a framework member that enumerates an authored sequence is refused unless that sequence
@@ -1599,6 +1776,17 @@ internal static partial class HostedGrimoireProducerInventory
         // operator, a lifted operator, a generated record operator it cannot certify) is refused whatever its body does.
         private bool LaneRefusalsReachProducerSite(AuthoredMember member, SyntaxNode node, HashSet<GraphMemberIdentity> path)
         {
+            // What follows are the refusals the traversal makes, which a question about sites alone does not ask.
+            if (scanSitesOnly)
+            {
+                return false;
+            }
+
+            if (StaticInitializationStartedAt(member, node) is not null)
+            {
+                return true;
+            }
+
             if (node is InvocationExpressionSyntax or ElementAccessExpressionSyntax or ElementBindingExpressionSyntax or ImplicitElementAccessSyntax
                 && member.Model.GetOperation(node) is IDynamicInvocationOperation or IDynamicIndexerAccessOperation)
             {
@@ -1645,12 +1833,20 @@ internal static partial class HostedGrimoireProducerInventory
                 || selection.Operands.Any(static operand => operand.Syntax is not ExpressionSyntax);
         }
 
+        // Whether the members one implicit step resolves to can reach a producer site, for the transitive scan: an authored
+        // body that does, a framework member that is a site, and (unless only sites are asked) a member that cannot be
+        // followed or is not reviewed.
+        private bool ImplicitTargetsReachProducerSite(AuthoredMember member, ImplicitTargets targets, SyntaxNode anchor, HashSet<GraphMemberIdentity> path) =>
+            !scanSitesOnly && targets.Unresolved.Count != 0
+            || targets.Members.Any(target => ContainsPotentialProducerSite(target, path))
+            || targets.Framework.Any(framework => Classify(framework, Normalize(framework), anchor, member) is not null || !scanSitesOnly && !IsReviewedImplicitFrameworkMember(member, framework, anchor));
+
         // Whether an implicit call can reach a producer site, for the transitive scan an opaque callback body gets.
         private bool ImplicitCallReachesProducerSite(AuthoredMember member, ImplicitCall call, HashSet<GraphMemberIdentity> path)
         {
             if (call.RefusalCode is not null)
             {
-                return true;
+                return !scanSitesOnly;
             }
 
             if (call.Kind == ImplicitCallKind.QueryClause)
@@ -1662,10 +1858,8 @@ internal static partial class HostedGrimoireProducerInventory
             {
                 ImplicitTargets targets = ResolveImplicitStep(member, step);
 
-                if (targets.Unresolved.Count != 0
-                    || targets.Framework.Count != 0 && step.Values is { Count: > 0 } && FrameworkValuesRunAuthoredCallbacks(member, step.Values)
-                    || targets.Members.Any(target => ContainsPotentialProducerSite(target, path))
-                    || targets.Framework.Any(framework => Classify(framework, Normalize(framework), call.Anchor, member) is not null || !IsReviewedImplicitFrameworkMember(member, framework, call.Anchor)))
+                if (targets.Framework.Count != 0 && step.Values is { Count: > 0 } && FrameworkValuesRunAuthoredCallbacks(member, step.Values)
+                    || ImplicitTargetsReachProducerSite(member, targets, call.Anchor, path))
                 {
                     return true;
                 }

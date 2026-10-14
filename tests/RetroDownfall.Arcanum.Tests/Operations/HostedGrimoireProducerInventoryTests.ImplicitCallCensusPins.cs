@@ -133,4 +133,15 @@ public sealed partial class HostedGrimoireProducerInventoryTests
 
         Assert.True(refusals.Count == 0, refusals.Count + " production operations cannot be followed: " + string.Join(" | ", refusals.Distinct(StringComparer.Ordinal).Take(10)));
     }
+
+    // The runtime runs the static initialization of a type at the first use of the type, which is no call and no position
+    // the checker can place, so a use of a type whose static initialization can reach a producer site is refused (the
+    // corpus pins that). The production source declares no such type, which this pins: a type that gains one is named here.
+    [Fact]
+    public void ProductionStaticInitializationReachesNoProducerSite()
+    {
+        IReadOnlyList<string> hazards = HostedGrimoireProducerInventory.ProbeStaticInitializationHazards(HostedGrimoireProducerInventory.ProductionCompilations);
+
+        Assert.True(hazards.Count == 0, "Production types whose static initialization can reach a producer site: " + string.Join(", ", hazards.Take(20)));
+    }
 }
