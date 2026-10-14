@@ -37,131 +37,241 @@ public sealed partial class HostedGrimoireProducerInventoryTests
     [Fact]
     public void ActualLongRestSpineCarriesOneLeaseByValueFromMintToExternalEffectGroup() => ReadActualLongRestSpine();
 
+    // The Pure Park Handler. Durable recovery never runs a sweep: the registered handler decodes the checkpoint and parks the row,
+    // and it cannot even name the coordinator, a store, a provider or a lease. Its constructor takes nothing, it keeps nothing,
+    // and every symbol its body mentions is Core vocabulary or the framework.
+    [Fact]
+    public void ThePureParkHandlerTakesNothingKeepsNothingAndMentionsNoInfrastructureOrApi()
+    {
+        CSharpCompilation infrastructure = Assert.Single(HostedGrimoireProducerInventory.ProductionCompilations,
+            static compilation => compilation.AssemblyName == "RetroDownfall.Arcanum.Infrastructure");
+
+        INamedTypeSymbol parkHandler = Assert.IsAssignableFrom<INamedTypeSymbol>(infrastructure.GetTypeByMetadataName(ActualLongRestParkHandlerType));
+
+        IMethodSymbol constructor = Assert.Single(parkHandler.InstanceConstructors);
+
+        Assert.Empty(constructor.Parameters);
+
+        Assert.True(constructor.IsImplicitlyDeclared);
+
+        Assert.True(parkHandler.IsSealed);
+
+        Assert.Equal("object", parkHandler.BaseType!.ToDisplayString());
+
+        Assert.Empty(parkHandler.GetMembers().OfType<IFieldSymbol>());
+
+        Assert.Equal(["RetroDownfall.Arcanum.Core.Operations.ILongRunningOperationRecoveryHandler"], parkHandler.AllInterfaces.Select(static contract => contract.ToDisplayString()));
+
+        // The one Infrastructure type it may mention besides itself is the checkpoint codec, a static decoder of bytes.
+        INamedTypeSymbol codec = Assert.IsAssignableFrom<INamedTypeSymbol>(infrastructure.GetTypeByMetadataName("RetroDownfall.Arcanum.Infrastructure.Operations.LongRest.LongRestSweepCheckpointCodec"));
+
+        Assert.True(codec.IsStatic);
+
+        Assert.All(codec.GetMembers().OfType<IFieldSymbol>(), static field => Assert.True(field.IsConst || field.IsReadOnly));
+
+        // Nothing it mentions lives in Infrastructure or Api, apart from itself and the codec: no coordinator, store, gate, lease or provider.
+        foreach (SyntaxReference reference in parkHandler.DeclaringSyntaxReferences)
+        {
+            SemanticModel model = infrastructure.GetSemanticModel(reference.SyntaxTree);
+
+            foreach (IdentifierNameSyntax name in reference.GetSyntax().DescendantNodes().OfType<IdentifierNameSyntax>())
+            {
+                ISymbol? symbol = model.GetSymbolInfo(name).Symbol;
+
+                if (symbol is null or ILocalSymbol or IParameterSymbol or INamespaceSymbol or ITypeParameterSymbol)
+                {
+                    continue;
+                }
+
+                INamedTypeSymbol? owner = symbol.ContainingType ?? symbol as INamedTypeSymbol;
+
+                if (SymbolEqualityComparer.Default.Equals(owner, parkHandler) || SymbolEqualityComparer.Default.Equals(owner, codec) || symbol.ContainingAssembly is null)
+                {
+                    continue;
+                }
+
+                Assert.True(symbol.ContainingAssembly.Name == "RetroDownfall.Arcanum.Core" || symbol.ContainingAssembly.Name.StartsWith("System", StringComparison.Ordinal)
+                    || symbol.ContainingAssembly.Name == "mscorlib" || symbol.ContainingAssembly.Name == "netstandard",
+                    $"The Pure Park Handler mentions {symbol.ToDisplayString()} from {symbol.ContainingAssembly.Name}.");
+            }
+        }
+    }
+
+    // Over the shared production discovery, which the production lane computes once per process: this test never runs a second
+    // one. The hosted worker's kind-17 acquisition is the one paid door, and every physical dispatch below it carries that
+    // acquisition's Work and the group begun on the lease parameter. Recovery only parks, so the readiness root no longer reaches
+    // a send and is not part of this subset.
     [Fact]
     [Trait("Category", "HostedProducerProductionAnalysis")]
-    public void ActualLongRestReadinessAndOrdinaryRootsRetainPhysicalDispatchCapsules()
+    public void ActualLongRestHostedRootRetainsPhysicalDispatchCapsules() =>
+        AssertLongRestHostedRootRetainsPhysicalDispatchCapsules(HostedGrimoireProducerInventory.ProductionSiteDiscovery);
+
+    // The anti-vacuity the required-callee test used to give Long Rest: the chat and the embedding sends of the paid door are
+    // discovered under the hosted root at all, so the capsule assertions above are about sends that exist.
+    [Fact]
+    [Trait("Category", "HostedProducerProductionAnalysis")]
+    public void TheLongRestChatAndEmbeddingCalleesAreDiscoveredUnderTheHostedRoot() =>
+        AssertLongRestChatAndEmbeddingCalleesAreDiscovered(HostedGrimoireProducerInventory.ProductionSiteDiscovery);
+
+    private void AssertLongRestHostedRootRetainsPhysicalDispatchCapsules(HostedProducerDiscovery<HostedProducerSite> discovery)
     {
-        IReadOnlyList<Microsoft.CodeAnalysis.CSharp.CSharpCompilation> compilations =
-            HostedGrimoireProducerInventory.ProductionCompilations;
+        // The readiness root and the recovery handlers reach no Long Rest send any more: the worker's root is the whole subset.
+        HostedProducerServiceEntry service = Assert.Single(HostedGrimoireProducerInventory.Catalog, static entry => entry.ServiceType == LongRestHostedRootType);
 
-        string[] roots = ["LongRunningOperationStartupHostedService", "LongRestSweepHostedService"];
+        HostedProducerOperationEntry sweep = Assert.Single(service.Operations, static operation => operation.Authority == HostedProducerAuthorityKind.OrdinaryHostedWork);
 
-        HostedProducerServiceEntry[] selected = HostedGrimoireProducerInventory.Catalog
-            .Where(entry => roots.Contains(entry.ServiceType, StringComparer.Ordinal)).ToArray();
+        Assert.Equal(GrimoireWorkKind.LongRestSweep, sweep.WorkKind);
 
-        Assert.Equal(roots.Order(StringComparer.Ordinal), selected.Select(static entry => entry.ServiceType).Order(StringComparer.Ordinal));
-
-        Assert.All(selected, entry => Assert.Same(
-            HostedGrimoireProducerInventory.Catalog.Single(original => original.ServiceType == entry.ServiceType), entry));
-
-        HostedProducerDiscovery<string> registrations = HostedGrimoireProducerInventory.DiscoverApplicationHostedServices(compilations);
-
-        Assert.Empty(registrations.Diagnostics);
-
-        foreach (string root in roots)
-        {
-            Assert.Contains(registrations.Items, registration => registration == root
-                || registration.EndsWith("." + root, StringComparison.Ordinal));
-        }
+        Assert.Equal(LongRestHostedRootOperation, sweep.OperationId);
 
         ActualLongRestSpine spine = ReadActualLongRestSpine();
-
-        HostedProducerDiscovery<HostedProducerSite> discovery = HostedGrimoireProducerInventory.ProductionSiteDiscovery;
 
         HostedProducerAnalysisMetrics metrics = Assert.IsType<HostedProducerAnalysisMetrics>(discovery.AnalysisMetrics);
 
         foreach (string line in RenderRootTraversalMetrics(metrics.RootTraversals)) output.WriteLine(line);
 
-        foreach (var diagnosticGroup in discovery.Diagnostics.GroupBy(static diagnostic => diagnostic.Code).OrderBy(static group => group.Key, StringComparer.Ordinal))
+        Assert.Contains(metrics.RootTraversals, static metric => metric.RootType == LongRestHostedRootType && metric.AnalyzedStates > 0);
+
+        // The diagnostics this test owns: a refused frontier, escape, receiver or unowned callback under the worker's root. The
+        // root's state budget and its unclassified histogram belong to other workstreams and are not named here.
+        HostedProducerInventoryDiagnostic[] failures = [.. discovery.Diagnostics.Where(diagnostic =>
+            diagnostic.Identity.StartsWith(sweep.OperationId, StringComparison.Ordinal)
+            && (diagnostic.Code.StartsWith("HOSTED_RECOVERY_", StringComparison.Ordinal)
+                || diagnostic.Code is "HOSTED_ROOT_UNRESOLVED" or "HOSTED_ADMISSION_HANDLE_ESCAPE" or "HOSTED_ADMISSION_RECEIVER_MISMATCH"
+                    or "HOSTED_SITE_WORK_FRONTIER_MISSING" or "HOSTED_SITE_EFFECT_FRONTIER_MISSING"
+                    or "HOSTED_CALLBACK_OWNERSHIP_UNPROVEN" or "HOSTED_DISPOSAL_TARGET_UNRESOLVED"))];
+
+        Assert.True(failures.Length == 0, string.Join(global::System.Environment.NewLine,
+            failures.Take(20).Select(static diagnostic => $"{diagnostic.Code}: {diagnostic.Identity}: {diagnostic.Detail}")));
+
+        // The acquisition in RunOneAsync is a kind-17 Work, and it is one capsule.
+        HostedProducerSite[] work = LongRestDispatchSites(discovery, sweep, spine.Worker, spine.WorkerAcquisition, HostedProducerSiteKind.EffectFrontier);
+
+        string acquisition = Assert.Single(work.Select(static site => site.CapsuleId).Distinct(StringComparer.Ordinal));
+
+        Assert.Equal(17, (int)GrimoireWorkKind.LongRestSweep);
+
+        Assert.All(work, site => Assert.Equal(GrimoireWorkKind.LongRestSweep, site.AdmittedWorkKind));
+
+        IReadOnlyDictionary<string, string> bindings = LongRestLeaseHandoffBindings(service);
+
+        // The lease reaches the group's receiver by parameter: the group's Work is the acquisition (or its bound formal), no group
+        // is refused as a receiver mismatch, and the syntax pins the receiver to the paid door's lease formal.
+        HostedProducerSite[] groups = LongRestDispatchSites(discovery, sweep, spine.Paid, spine.GroupCall, HostedProducerSiteKind.EffectFrontier);
+
+        string group = Assert.Single(groups.Select(static site => site.CapsuleId).Distinct(StringComparer.Ordinal));
+
+        Assert.All(groups, site =>
         {
-            output.WriteLine($"ACTUAL_LONG_REST_SUBSET diagnostic={diagnosticGroup.Key} count={diagnosticGroup.Count()}");
-        }
+            Assert.True(LongRestWorkIsTheWorkersAdmission(site.WorkFrontierCapsuleId, acquisition, bindings), "The group's Work is neither the acquisition nor a bound formal of it.");
 
-        // A populated capsule list can coexist with an incomplete traversal.
-        // Match the existing production manifest contract for every diagnostic,
-        // including refusals whose identity is only a raw source location.
-        Assert.True(discovery.Diagnostics.Count == 0, string.Join(global::System.Environment.NewLine,
-            discovery.Diagnostics.Select(static diagnostic =>
-                $"{diagnostic.Code}: {diagnostic.Identity}: {diagnostic.Detail}")));
+            Assert.Equal(group, site.EffectFrontierCapsuleId);
+        });
 
-        foreach (string root in roots)
+        string groupCall = "/call@" + spine.GroupCall.SyntaxTree.FilePath + ":" + spine.GroupCall.SpanStart;
+
+        Assert.DoesNotContain(discovery.Diagnostics, diagnostic => diagnostic.Code == "HOSTED_ADMISSION_RECEIVER_MISMATCH"
+            && diagnostic.Identity.EndsWith(groupCall, StringComparison.Ordinal));
+
+        // Both sends carry the acquisition's Work and the group.
+        foreach (HostedProducerSite send in LongRestDispatchSites(discovery, sweep, spine.Chat, spine.ChatSend, HostedProducerSiteKind.ProviderCall)
+            .Concat(LongRestDispatchSites(discovery, sweep, spine.Embedding, spine.EmbeddingSend, HostedProducerSiteKind.ProviderCall)))
         {
-            Assert.Contains(metrics.RootTraversals, metric => metric.RootType == root && metric.AnalyzedStates > 0);
+            Assert.True(LongRestWorkIsTheWorkersAdmission(send.WorkFrontierCapsuleId, acquisition, bindings), $"{send.MemberIdentity} carries Work that is neither the acquisition nor a bound formal of it.");
+
+            Assert.Equal(group, send.EffectFrontierCapsuleId);
+
+            output.WriteLine($"ACTUAL_LONG_REST_HOSTED_ROOT authority={sweep.OperationId} source={send.SourcePath} member={send.MemberIdentity} capsule={send.CapsuleId} work={send.WorkFrontierCapsuleId} group={group}");
         }
+    }
 
-        // Recovery only parks Long Rest sweeps, so the readiness root no longer reaches a Long Rest send: the hosted
-        // worker's kind-17 acquisition is the one paid door and the only root this subset routes.
-        HostedProducerOperationEntry sweep = Assert.Single(selected.Single(static entry => entry.ServiceType == "LongRestSweepHostedService").Operations,
-            static operation => operation.Authority == HostedProducerAuthorityKind.OrdinaryHostedWork);
+    private static void AssertLongRestChatAndEmbeddingCalleesAreDiscovered(HostedProducerDiscovery<HostedProducerSite> discovery)
+    {
+        ActualLongRestSpine spine = ReadActualLongRestSpine();
 
-        AssertRoute("LongRestSweepHostedService", sweep, spine.Worker, spine.WorkerAcquisition);
-
-        output.WriteLine("ACTUAL_LONG_REST_SUBSET originalCatalogRoots=2 assertedAuthorities=1 physicalBranchesPerAuthority=2 compilerOwnershipShells=2 fullAggregateQualification=false");
-
-        void AssertRoute(string root, HostedProducerOperationEntry authority,
-            ActualLongRestMember workMember, InvocationExpressionSyntax workCall)
+        foreach ((ActualLongRestMember member, InvocationExpressionSyntax send) in new[] { (spine.Chat, spine.ChatSend), (spine.Embedding, spine.EmbeddingSend) })
         {
-            HostedProducerSite[] work = Sites(workMember, workCall, HostedProducerSiteKind.EffectFrontier);
+            string identity = Assert.IsType<string>(member.Symbol.GetDocumentationCommentId());
 
-            string workCapsule = Assert.Single(work.Select(static site => site.CapsuleId).Distinct(StringComparer.Ordinal));
+            IMethodSymbol called = Assert.IsAssignableFrom<IMethodSymbol>(member.Model.GetSymbolInfo(send).Symbol);
 
-            Assert.All(work, site =>
-            {
-                Assert.Equal(GrimoireWorkKind.LongRestSweep, site.AdmittedWorkKind);
-                Assert.Equal(workCapsule, site.WorkFrontierCapsuleId);
-            });
+            HostedProducerSite[] found = [.. discovery.Items.Where(site => site.RootType == LongRestHostedRootType
+                && site.Kind == HostedProducerSiteKind.ProviderCall && site.MemberIdentity == identity
+                && site.SourcePath == send.SyntaxTree.FilePath && site.Callee.EndsWith("." + called.Name, StringComparison.Ordinal))];
 
-            HostedProducerSite[] groups = Sites(spine.Paid, spine.GroupCall, HostedProducerSiteKind.EffectFrontier);
+            Assert.True(found.Length > 0, $"The Long Rest send {identity} is not discovered under {LongRestHostedRootType}.");
 
-            string groupCapsule = Assert.Single(groups.Select(static site => site.CapsuleId).Distinct(StringComparer.Ordinal));
-
-            Assert.All(groups, site =>
-            {
-                Assert.Equal(workCapsule, site.WorkFrontierCapsuleId);
-                Assert.Equal(groupCapsule, site.EffectFrontierCapsuleId);
-            });
-
-            foreach (HostedProducerSite send in Sites(spine.Chat, spine.ChatSend, HostedProducerSiteKind.ProviderCall)
-                .Concat(Sites(spine.Embedding, spine.EmbeddingSend, HostedProducerSiteKind.ProviderCall)))
-            {
-                Assert.Equal(workCapsule, send.WorkFrontierCapsuleId);
-                Assert.Equal(groupCapsule, send.EffectFrontierCapsuleId);
-                output.WriteLine($"ACTUAL_LONG_REST_SUBSET authority={authority.OperationId} source={send.SourcePath} member={send.MemberIdentity} capsule={send.CapsuleId} work={workCapsule} group={groupCapsule}");
-            }
-
-            HostedProducerInventoryDiagnostic[] failures = discovery.Diagnostics.Where(diagnostic =>
-                diagnostic.Identity.StartsWith(authority.OperationId, StringComparison.Ordinal)
-                && (diagnostic.Code.StartsWith("HOSTED_RECOVERY_", StringComparison.Ordinal)
-                    || diagnostic.Code is "HOSTED_ROOT_UNRESOLVED" or "HOSTED_SITE_UNCLASSIFIED"
-                        or "HOSTED_SITE_WORK_FRONTIER_MISSING" or "HOSTED_SITE_EFFECT_FRONTIER_MISSING"
-                        or "HOSTED_CALLBACK_OWNERSHIP_UNPROVEN" or "HOSTED_DISPOSAL_TARGET_UNRESOLVED"
-                        or "HOSTED_TRAVERSAL_STATE_LIMIT_EXCEEDED" or "HOSTED_EVALUATION_ENVIRONMENT_LIMIT_EXCEEDED"))
-                .ToArray();
-
-            Assert.True(failures.Length == 0, string.Join(global::System.Environment.NewLine,
-                failures.Select(static diagnostic => $"{diagnostic.Code}: {diagnostic.Identity}: {diagnostic.Detail}")));
-
-            HostedProducerSite[] Sites(ActualLongRestMember member,
-                InvocationExpressionSyntax call, HostedProducerSiteKind kind)
-            {
-                string identity = Assert.IsType<string>(member.Symbol.GetDocumentationCommentId());
-
-                string fingerprint = HostedGrimoireProducerInventory.Fingerprint(call);
-
-                HostedProducerSite[] matches = discovery.Items.Where(site => site.RootType == root
-                    && site.AuthorityOperationId == authority.OperationId && site.SourcePath == call.SyntaxTree.FilePath
-                    && site.MemberIdentity == identity && site.Kind == kind && site.SyntaxFingerprint == fingerprint).ToArray();
-
-                Assert.True(matches.Length > 0, $"Missing actual source site: {root}; {authority.OperationId}; {identity}; {call}");
-
-                IMethodSymbol called = Assert.IsAssignableFrom<IMethodSymbol>(member.Model.GetSymbolInfo(call).Symbol);
-
-                Assert.All(matches, site => Assert.True(site.Callee.EndsWith("." + called.Name, StringComparison.Ordinal), site.Callee));
-
-                return matches;
-            }
+            Assert.All(found, site => Assert.StartsWith("Microsoft.Extensions.AI.", site.Callee, StringComparison.Ordinal));
         }
+    }
 
+    // The actual source sites of one call in a member of the worker's closure, from the shared discovery.
+    private static HostedProducerSite[] LongRestDispatchSites(HostedProducerDiscovery<HostedProducerSite> discovery, HostedProducerOperationEntry authority,
+        ActualLongRestMember member, InvocationExpressionSyntax call, HostedProducerSiteKind kind)
+    {
+        string identity = Assert.IsType<string>(member.Symbol.GetDocumentationCommentId());
+
+        string fingerprint = HostedGrimoireProducerInventory.Fingerprint(call);
+
+        HostedProducerSite[] matches = [.. discovery.Items.Where(site => site.RootType == LongRestHostedRootType
+            && site.AuthorityOperationId == authority.OperationId && site.SourcePath == call.SyntaxTree.FilePath
+            && site.MemberIdentity == identity && site.Kind == kind && site.SyntaxFingerprint == fingerprint)];
+
+        Assert.True(matches.Length > 0, $"Missing actual source site: {LongRestHostedRootType}; {authority.OperationId}; {identity}; {call}");
+
+        IMethodSymbol called = Assert.IsAssignableFrom<IMethodSymbol>(member.Model.GetSymbolInfo(call).Symbol);
+
+        Assert.All(matches, site => Assert.True(site.Callee.EndsWith("." + called.Name, StringComparison.Ordinal), site.Callee));
+
+        return matches;
+    }
+
+    // The Work a Long Rest dispatch may carry is exactly one of two things: the capsule of the worker's kind-17 acquisition, or,
+    // only under a declared Lease-Handoff Root, a formal capsule that a handoff binding ties to that acquisition. A formal that
+    // nothing binds, a formal bound to some other acquisition, a capsule that is neither, and no Work at all are all refused.
+    internal static bool LongRestWorkIsTheWorkersAdmission(string? work, string acquisition, IReadOnlyDictionary<string, string> formalToAcquisition) =>
+        work is not null && (work == acquisition || formalToAcquisition.TryGetValue(work, out string? bound) && bound == acquisition);
+
+    // The binding rows a Lease-Handoff Root adds (a formal capsule tied to the acquisition capsule of each caller). The catalog
+    // declares exactly one ordinary hosted operation for the worker today, so there is no handoff root and no binding; a second
+    // declared operation means a handoff root has landed, and this reader must then read its binding rows instead of returning none.
+    private static IReadOnlyDictionary<string, string> LongRestLeaseHandoffBindings(HostedProducerServiceEntry service)
+    {
+        Assert.Single(service.Operations, static operation => operation.Authority == HostedProducerAuthorityKind.OrdinaryHostedWork);
+
+        return new Dictionary<string, string>(StringComparer.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("acquisition", true)]
+    [InlineData("bound-formal", true)]
+    [InlineData("unbound-formal", false)]
+    [InlineData("formal-bound-to-another-acquisition", false)]
+    [InlineData("other-capsule", false)]
+    [InlineData("no-work", false)]
+    [InlineData("acquisition-as-a-binding-key", false)]
+    public void TheDispatchWorkShapeAcceptsExactlyTheAcquisitionOrAFormalBoundToIt(string shape, bool accepted)
+    {
+        Dictionary<string, string> bindings = new(StringComparer.Ordinal)
+        {
+            ["formal-a"] = "acquisition-a",
+            ["formal-b"] = "acquisition-b",
+            ["acquisition-b"] = "acquisition-other",
+        };
+
+        string? work = shape switch
+        {
+            "acquisition" => "acquisition-a",
+            "bound-formal" => "formal-a",
+            "unbound-formal" => "formal-z",
+            "formal-bound-to-another-acquisition" => "formal-b",
+            "other-capsule" => "capsule-q",
+            "no-work" => null,
+            // A capsule that is a binding key for some other acquisition is not the acquisition the caller named.
+            _ => "acquisition-b",
+        };
+
+        Assert.Equal(accepted, LongRestWorkIsTheWorkersAdmission(work, "acquisition-a", bindings));
     }
 
     // The lease is minted twice in production and never stored: by the hosted worker, and inline by the Session shell.

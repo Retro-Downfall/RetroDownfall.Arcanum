@@ -321,6 +321,39 @@ public sealed class CovenantArchitectureBoundaryTests
         Assert.True(
             missingEffectSites.Count == 0,
             "Required recovery effect sites were not discovered:\n" + string.Join("\n", missingEffectSites));
+
+        // The Pure Park Handler is a recovery root like the others, and its root has no site of any kind: recovery parks a Long Rest
+        // sweep and reaches no provider, store, file or database. Its absence from the contracts is therefore a fact about the
+        // discovery, not an omission.
+        const string parkHandler = "RetroDownfall.Arcanum.Infrastructure.Operations.LongRest.LongRestSweepRecoveryHandler";
+
+        Assert.Contains(parkHandler, recoveryRootNames);
+
+        Assert.DoesNotContain(discovery.Items, static site => site.RootType == parkHandler);
+    }
+
+    // Recovery never runs a Long Rest sweep. The Pure Park Handler only parks, so it has no required source effect and no row here;
+    // a Long Rest row would promise a provider call from a handler that cannot reach one.
+    [Fact]
+    public void The_long_rest_recovery_handler_has_no_recovery_effect_contract()
+    {
+        const string handler = "RetroDownfall.Arcanum.Infrastructure.Operations.LongRest.LongRestSweepRecoveryHandler";
+
+        RecoveryEffectContract[] contracts = RecoveryEffectContracts();
+
+        Assert.DoesNotContain(contracts, static contract => contract.Kind == LongRunningOperationKinds.LongRestSweep);
+
+        Assert.DoesNotContain(contracts, static contract => contract.HandlerType.Contains("LongRest", StringComparison.Ordinal));
+
+        Assert.DoesNotContain(contracts, static contract => contract.RequiredCallees.Any(static callee => callee.Contains("LongRest", StringComparison.Ordinal)));
+
+        // The handler is a real recovery handler that nothing excuses by omission: it is registered, so the exact-classification
+        // test below is what states that both of its checkpoint versions are DB-only.
+        INamedTypeSymbol type = Assert.IsAssignableFrom<INamedTypeSymbol>(
+            Assert.Single(HostedGrimoireProducerInventory.ProductionCompilations, static compilation => compilation.AssemblyName == "RetroDownfall.Arcanum.Infrastructure")
+                .GetTypeByMetadataName(handler));
+
+        Assert.Contains(type.AllInterfaces, static contract => MetadataName(contract) == "RetroDownfall.Arcanum.Core.Operations.ILongRunningOperationRecoveryHandler");
     }
 
     [Fact]

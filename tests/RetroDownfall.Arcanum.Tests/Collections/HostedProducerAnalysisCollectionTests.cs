@@ -53,6 +53,7 @@ public sealed class HostedProducerAnalysisCollectionTests
             "RetroDownfall.Arcanum.Tests.Cli.ArcanumAuthenticatedHttpSenderTests.Semantic_transport_inventory_recognizes_real_static_conditional_and_method_group_sends",
             "RetroDownfall.Arcanum.Tests.Covenant.CovenantArchitectureBoundaryTests.Every_effectful_recovery_handler_has_the_required_source_effects",
             "RetroDownfall.Arcanum.Tests.Covenant.CovenantArchitectureBoundaryTests.Owner_evidence_has_exactly_two_path_specific_issuers",
+            "RetroDownfall.Arcanum.Tests.Operations.HostedGrimoireProducerInventoryTests.ActualLongRestHostedRootRetainsPhysicalDispatchCapsules",
             "RetroDownfall.Arcanum.Tests.Operations.HostedGrimoireProducerInventoryTests.BackupLiveSourceHasExactCliCallerAuthority",
             "RetroDownfall.Arcanum.Tests.Operations.HostedGrimoireProducerInventoryTests.EveryApplicationHostedServiceHasExactlyOneEntry",
             "RetroDownfall.Arcanum.Tests.Operations.HostedGrimoireProducerInventoryTests.EveryDiscoveredProducerSiteIsCataloguedExactlyOnce",
@@ -75,9 +76,14 @@ public sealed class HostedProducerAnalysisCollectionTests
             "RetroDownfall.Arcanum.Tests.Operations.HostedGrimoireProducerInventoryTests.ProductionRegistrationsMatchRuntimeDescriptorsAndClosedVocabulary",
             "RetroDownfall.Arcanum.Tests.Operations.HostedGrimoireProducerInventoryTests.ProductionSchemaLazyFactoriesAreProvenAsBoundedData",
             "RetroDownfall.Arcanum.Tests.Operations.HostedGrimoireProducerInventoryTests.ProductionSequenceOperationUsesTheSameReviewedComparerProof",
+            "RetroDownfall.Arcanum.Tests.Operations.HostedGrimoireProducerInventoryTests.Production_universe_satisfies_AuthoredEnumerablesAbsentByUse",
+            "RetroDownfall.Arcanum.Tests.Operations.HostedGrimoireProducerInventoryTests.Production_universe_satisfies_SqliteSealedByUse",
             "RetroDownfall.Arcanum.Tests.Operations.HostedGrimoireProducerInventoryTests.RestoreSafetyBackupHasExactStoppedHostOrOwner",
             "RetroDownfall.Arcanum.Tests.Operations.HostedGrimoireProducerInventoryTests.ReviewedCapsuleManifestExactlyMatchesProductionDiscovery",
             "RetroDownfall.Arcanum.Tests.Operations.HostedGrimoireProducerInventoryTests.SchemaBackfillStrategyTableMatchesEveryConfiguredConcreteImplementation",
+            "RetroDownfall.Arcanum.Tests.Operations.HostedGrimoireProducerInventoryTests.TheLongRestChatAndEmbeddingCalleesAreDiscoveredUnderTheHostedRoot",
+            "RetroDownfall.Arcanum.Tests.Operations.HostedGrimoireProducerInventoryTests.TheLongRestHostedRootOwnsItsWaitItsLeaseAndItsPaidSendsWithNoEscapeOrMissingFrontier",
+            "RetroDownfall.Arcanum.Tests.Operations.HostedGrimoireProducerInventoryTests.The_production_entry_runs_only_the_named_roots_under_the_production_premise",
         ];
 
         Assert.Equal(expected, actual);
