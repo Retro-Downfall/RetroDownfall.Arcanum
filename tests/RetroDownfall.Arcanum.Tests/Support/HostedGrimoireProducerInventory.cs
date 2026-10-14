@@ -1279,8 +1279,12 @@ internal static partial class HostedGrimoireProducerInventory
         "System.ComponentModel.Win32Exception..ctor",
         "System.ComponentModel.Win32Exception.NativeErrorCode",
         "System.Console.Error",
+        "System.Console.IsInputRedirected",
+        "System.Console.KeyAvailable",
         "System.Console.Out",
         "System.Console.ReadKey",
+        "System.Console.TreatControlCAsInput",
+        "System.Console.TreatControlCAsInput setter",
         "System.ConsoleKeyInfo.Key",
         "System.ConsoleKeyInfo.KeyChar",
         "System.ConsoleKeyInfo.Modifiers",
@@ -2111,6 +2115,12 @@ internal static partial class HostedGrimoireProducerInventory
     internal static IReadOnlyList<string> ProbeStaticInitializationHazards(IReadOnlyList<CSharpCompilation> compilations) =>
         new ProducerGraph(compilations, DefaultEvaluationEnvironmentMaximumMembers, DefaultEvaluationEnvironmentMaximumDepth, DefaultTraversalMaximumDepth, DefaultMaximumAnalyzedStatesPerRoot, false)
             .StaticInitializationHazardNames();
+
+    // The authored implementers of the framework slots (ToString, Equals, GetHashCode, CompareTo, GetFormat, ...) that reach
+    // a producer site or cannot be followed, over the given compilations.
+    internal static IReadOnlyList<string> ProbeCallbackImplementersThatReach(IReadOnlyList<CSharpCompilation> compilations) =>
+        new ProducerGraph(compilations, DefaultEvaluationEnvironmentMaximumMembers, DefaultEvaluationEnvironmentMaximumDepth, DefaultTraversalMaximumDepth, DefaultMaximumAnalyzedStatesPerRoot, false, sitesOnly: true)
+            .CallbackImplementersThatReach();
 
     internal static IReadOnlyList<HostedProducerProjectionSymbolProbe> ProbeProjectionSymbolLookups(
         CSharpCompilation compilation,

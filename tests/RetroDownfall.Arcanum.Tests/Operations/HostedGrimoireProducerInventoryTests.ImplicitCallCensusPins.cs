@@ -144,4 +144,15 @@ public sealed partial class HostedGrimoireProducerInventoryTests
 
         Assert.True(hazards.Count == 0, "Production types whose static initialization can reach a producer site: " + string.Join(", ", hazards.Take(20)));
     }
+
+    // A framework member handed a value calls the ToString, Equals, GetHashCode, CompareTo or GetFormat of its runtime type, and
+    // the call is refused when an authored type the value can be has one that reaches a classified producer site (the corpus
+    // pins that). The production source has none, which this pins: a type that gains one is named here.
+    [Fact]
+    public void ProductionAuthoredCallbackImplementersReachNoProducerSite()
+    {
+        IReadOnlyList<string> reaching = HostedGrimoireProducerInventory.ProbeCallbackImplementersThatReach(HostedGrimoireProducerInventory.ProductionCompilations);
+
+        Assert.True(reaching.Count == 0, "Production implementers of framework callback slots that reach a producer site: " + string.Join(" | ", reaching.Take(40)));
+    }
 }

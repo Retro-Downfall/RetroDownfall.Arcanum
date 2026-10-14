@@ -366,7 +366,8 @@ internal static partial class HostedGrimoireProducerInventory
         private sealed record AuthoredFormatter(
             INamedTypeSymbol Type,
             IReadOnlySet<string> AssignableKeys,
-            IReadOnlyList<(IMethodSymbol Slot, ISymbol Implementation)> Implementations);
+            IReadOnlyList<(IMethodSymbol Slot, ISymbol Implementation)> Implementations,
+            bool ReadsForToString);
 
         // The framework contracts whose members a framework member calls on a value it is handed: it compares, hashes,
         // orders and formats the value, and asks a format provider for its formatter.
@@ -458,7 +459,11 @@ internal static partial class HostedGrimoireProducerInventory
                     continue;
                 }
 
-                formatters.Add(new(type, AssignableKeys(type), implementations));
+                // ToString of a framework base type (an exception, a tool) also reads the virtual members the type overrides.
+                bool readsForToString = FrameworkToStringReads(type).Any(getter => EnumerationImplementation(type, getter) is { } read
+                    && (read.Locations.Any(static location => location.IsInSource) || read.IsImplicitlyDeclared && read.ContainingType.Locations.Any(static location => location.IsInSource)));
+
+                formatters.Add(new(type, AssignableKeys(type), implementations, readsForToString));
             }
 
             return formatters;
@@ -484,8 +489,7 @@ internal static partial class HostedGrimoireProducerInventory
             {
                 // ToString of a framework base type also reads the virtual properties its subclass overrides (the members of an
                 // exception, the name of a tool), so a formatter with such an override is a candidate for ToString.
-                bool readsForToString = slot.Name == "ToString" && slot.Parameters.Length == 0
-                    && formatter.Implementations.Any(static implementation => implementation.Slot.MethodKind == MethodKind.PropertyGet);
+                bool readsForToString = slot.Name == "ToString" && slot.Parameters.Length == 0 && formatter.ReadsForToString;
 
                 if (!IsFormatterAssignableTo(formatter, receiverType)
                     || !readsForToString && !formatter.Implementations.Any(implementation => SameEnumerationSlot(implementation.Slot, slot)))
@@ -1305,7 +1309,7 @@ internal static partial class HostedGrimoireProducerInventory
         {
             if (slot.MethodKind == MethodKind.PropertyGet)
             {
-                return CallbackFamilies.Format;
+                return slot.ContainingType.Name is "Exception" or "AITool" ? CallbackFamilies.Format : CallbackFamilies.None;
             }
 
             if (slot.ContainingType.SpecialType == SpecialType.System_Object)
@@ -1405,8 +1409,95 @@ internal static partial class HostedGrimoireProducerInventory
             return reaches;
         }
 
-        private bool FrameworkValuesRunAuthoredCallbacks(AuthoredMember member, IEnumerable<CallbackValue> values) =>
-            values.Any(value => CallbackImplementersReach(member, CallbackCarrier(value.Type), value.Families));
+        // The authored implementers of the framework slots that reach a producer site or cannot be followed, with the slot and
+        // what was found, for the pin that names them.
+        internal IReadOnlyList<string> CallbackImplementersThatReach()
+        {
+            List<string> found = [];
+
+            if (analysedCompilations.Count == 0)
+            {
+                return found;
+            }
+
+            AuthoredMember anchor = AuthoredMembers.First();
+
+            foreach (AuthoredFormatter implementer in AuthoredFormatters())
+            {
+                foreach ((IMethodSymbol slot, ISymbol implementation) in implementer.Implementations)
+                {
+                    ImplicitTargetCollector collector = new(this, anchor);
+
+                    collector.Add(implementation, slot);
+
+                    string reason = !ImplicitTargetsReachProducerSite(anchor, collector.Result, anchor.Syntax, [])
+                        ? string.Empty
+                        : collector.Unresolved.Count != 0 && !scanSitesOnly
+                            ? "unresolved " + string.Join(",", collector.Unresolved.Distinct())
+                            : collector.Members.FirstOrDefault(target => ContainsPotentialProducerSite(target)) is { } reaching
+                                ? "body " + Normalize(reaching.Symbol)
+                                : "framework " + string.Join(",", collector.Framework.Select(Normalize));
+
+                    if (reason.Length != 0)
+                    {
+                        found.Add(TypeKey(implementer.Type) + " :: " + Normalize(slot) + " :: " + reason);
+                    }
+                }
+            }
+
+            return found;
+        }
+
+        // The graph that asks about classified producer sites alone, one per compilation, shared by every graph over it. What
+        // runs at a point nothing here places (a callback a framework member calls, a static initializer, one of several
+        // bodies a receiver might select) is judged by whether it can reach a site, not by whether it uses a framework
+        // member nobody has reviewed: no traversal enters it, so there is no diagnostic for the second to be the cause of.
+        private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<CSharpCompilation, Lazy<ProducerGraph>> sitesOnlyGraphs = new();
+
+        private ProducerGraph SitesOnlyGraph()
+        {
+            if (scanSitesOnly)
+            {
+                return this;
+            }
+
+            IReadOnlyList<CSharpCompilation> compilations = analysedCompilations;
+
+            return sitesOnlyGraphs.GetValue(
+                compilations[0],
+                _ => new Lazy<ProducerGraph>(
+                    () => new ProducerGraph(compilations, DefaultEvaluationEnvironmentMaximumMembers, DefaultEvaluationEnvironmentMaximumDepth, DefaultTraversalMaximumDepth, DefaultMaximumAnalyzedStatesPerRoot, false, sitesOnly: true),
+                    LazyThreadSafetyMode.ExecutionAndPublication)).Value;
+        }
+
+        // Whether the member can reach a classified producer site. A member the sites-only graph has no model for cannot be
+        // judged, so it reaches one.
+        private bool SitesOnlyReaches(AuthoredMember member)
+        {
+            ProducerGraph sites = SitesOnlyGraph();
+
+            lock (sites)
+            {
+                if (!sites.semanticModels.TryGetValue(member.Syntax.SyntaxTree, out SemanticModel? model))
+                {
+                    return true;
+                }
+
+                return sites.ContainsPotentialProducerSite(new AuthoredMember(member.Symbol, member.Syntax, model));
+            }
+        }
+
+        private bool FrameworkValuesRunAuthoredCallbacks(AuthoredMember member, IEnumerable<CallbackValue> values)
+        {
+            ProducerGraph sites = SitesOnlyGraph();
+
+            lock (sites)
+            {
+                AuthoredMember anchor = sites.AuthoredMembers.First();
+
+                return values.Any(value => sites.CallbackImplementersReach(anchor, CallbackCarrier(value.Type), value.Families));
+            }
+        }
 
         // A framework member handed a value calls the ToString, Equals, GetHashCode, CompareTo or GetFormat of its runtime
         // type: when it formats it, compares it, hashes it or asks it (a format provider) for a formatter. The families the
@@ -1530,18 +1621,19 @@ internal static partial class HostedGrimoireProducerInventory
                 collector.Add(EnumerationImplementation(instantiable.Type, accessor), accessor);
             }
 
-            AccessorDispatch resolution = collector.Members.Count switch
-            {
-                0 => new([], collector.Unresolved.Count != 0),
-                1 => new(collector.Members, collector.Unresolved.Count != 0),
-                _ => new([], collector.Unresolved.Count != 0 || collector.Members.Any(target => ContainsPotentialProducerSite(target))),
-            };
+            // A slot the framework declares has its own implementation for a value that is not an authored type, so what an
+            // authored override does is a question about the override, never the one body the access runs: it is refused
+            // when an override can reach a site and otherwise runs nothing here. A slot the source declares is its own
+            // implementation when the universe holds one body, and several bodies are refused when one can reach a site.
+            bool declaredInSource = accessor.Locations.Any(static location => location.IsInSource);
 
-            // A scan that ended at a cycle is not the answer for the accessor, so it is not remembered.
-            if (collector.Members.Count <= 1)
-            {
-                closedWorldAccessors[key] = resolution;
-            }
+            bool unresolved = collector.Unresolved.Count != 0 && declaredInSource;
+
+            AccessorDispatch resolution = declaredInSource && collector.Members.Count == 1
+                ? new(collector.Members, unresolved)
+                : new([], unresolved || collector.Members.Count > (declaredInSource ? 1 : 0) && collector.Members.Any(SitesOnlyReaches));
+
+            closedWorldAccessors[key] = resolution;
 
             return resolution;
         }
@@ -1642,9 +1734,9 @@ internal static partial class HostedGrimoireProducerInventory
         // properties and events) can reach a classified producer site. The runtime runs it at the first use of the type, which
         // is no call and no position: a use of such a type, from another type, is refused. A graph that asks about sites
         // alone answers, once per compilation, so that no traversal ever has to enter an initializer.
-        private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<CSharpCompilation, Lazy<IReadOnlySet<string>>> staticInitializationHazardsByCompilation = new();
-
         private static string HazardKey(INamedTypeSymbol type) => type.OriginalDefinition.ToDisplayString() + "|" + type.ContainingAssembly?.Identity.Name;
+
+        private IReadOnlySet<string>? staticInitializationHazardKeys;
 
         internal IReadOnlySet<string> StaticInitializationHazardKeys()
         {
@@ -1653,13 +1745,17 @@ internal static partial class HostedGrimoireProducerInventory
                 return new HashSet<string>();
             }
 
-            IReadOnlyList<CSharpCompilation> compilations = analysedCompilations;
+            if (staticInitializationHazardKeys is not null)
+            {
+                return staticInitializationHazardKeys;
+            }
 
-            return staticInitializationHazardsByCompilation.GetValue(
-                compilations[0],
-                _ => new Lazy<IReadOnlySet<string>>(
-                    () => new ProducerGraph(compilations, DefaultEvaluationEnvironmentMaximumMembers, DefaultEvaluationEnvironmentMaximumDepth, DefaultTraversalMaximumDepth, DefaultMaximumAnalyzedStatesPerRoot, false, sitesOnly: true).ComputeStaticInitializationHazardKeys(),
-                    LazyThreadSafetyMode.ExecutionAndPublication)).Value;
+            ProducerGraph sites = SitesOnlyGraph();
+
+            lock (sites)
+            {
+                return staticInitializationHazardKeys = sites.ComputeStaticInitializationHazardKeys();
+            }
         }
 
         private IReadOnlySet<string> ComputeStaticInitializationHazardKeys()
