@@ -580,6 +580,42 @@ internal static partial class AuthorityCarrierShapes
             """,
             ["closure|Fixture.Hooks.Subscribe{closure#0:lease}|IGrimoireWorkLease"]),
 
+        // A busy retry that takes the attempt as a delegate and awaits it where it invokes it lends the lease for the call and no longer. That is
+        // still a closure over a work lease, and a work lease may be captured by a closure nowhere, whatever awaits the closure.
+        ["busy-retry-delegate-capture-of-a-lease"] = new("""
+            public static class DelegatedRetry
+            {
+                public static async Task<T> ExecuteAsync<T>(Func<Task<T>> action, CancellationToken ct = default)
+                {
+                    while (true)
+                    {
+                        try
+                        {
+                            return await action().ConfigureAwait(false);
+                        }
+                        catch (InvalidOperationException)
+                        {
+                            await Task.Delay(1, ct).ConfigureAwait(false);
+                        }
+                    }
+                }
+            }
+
+            public sealed class Store
+            {
+                public async Task<long> ReadmitAsync(IGrimoireWorkLease admission, CancellationToken ct)
+                {
+                    return await DelegatedRetry.ExecuteAsync(async () =>
+                    {
+                        await Task.Delay(1, ct).ConfigureAwait(false);
+
+                        return admission.Generation;
+                    }, ct).ConfigureAwait(false);
+                }
+            }
+            """,
+            ["closure|Fixture.Store.ReadmitAsync{closure#0:admission}|IGrimoireWorkLease"]),
+
         // Delegate carriers: a method group bound to the handle keeps it alive as the delegate's target.
         ["method-group-bound-to-a-lease"] = new("""
             public sealed class Hooks
@@ -794,6 +830,45 @@ internal static partial class AuthorityCarrierShapes
                 public async Task ThroughATypedDelegate(Func<IGrimoireWorkLease, Task> observe, IGrimoireWorkLease lease)
                 {
                     await observe(lease);
+                }
+            }
+            """,
+            []),
+
+        // The retry cursor is the same retry without the closure: the method writes the attempt loop around its own lease parameter and the cursor
+        // only waits, so nothing keeps, captures or lends the lease.
+        ["retry-cursor-loop-around-the-lease-parameter"] = new("""
+            public struct RetryCursor
+            {
+                private int _attempt;
+
+                public Task WaitAsync(Exception busy, CancellationToken ct)
+                {
+                    _attempt++;
+
+                    return Task.Delay(_attempt, ct);
+                }
+            }
+
+            public sealed class Store
+            {
+                public async Task<long> ReadmitAsync(IGrimoireWorkLease admission, CancellationToken ct)
+                {
+                    RetryCursor retry = new();
+
+                    while (true)
+                    {
+                        try
+                        {
+                            await Task.Delay(1, ct).ConfigureAwait(false);
+
+                            return admission.Generation;
+                        }
+                        catch (InvalidOperationException busy)
+                        {
+                            await retry.WaitAsync(busy, ct).ConfigureAwait(false);
+                        }
+                    }
                 }
             }
             """,

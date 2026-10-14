@@ -22,77 +22,86 @@ internal sealed partial class LongRestDiscoveryStore : ILongRestCleanReadmission
         LongRestRecipeIdentity recipe, string workerOwner, LongRestLiveFenceReader facts,
         IGrimoireWorkLease admission, CancellationToken ct)
     {
+        SqliteBusyRetryCursor retry = SqliteBusyRetry.Begin(BusyRetryDeadlineForTesting);
+
         try
         {
-            return await SqliteBusyRetry.ExecuteAsync(async () =>
+            while (true)
             {
-                SqliteConnection connection = await OpenAsync(ct).ConfigureAwait(false);
-
-                await using SqliteTransaction transaction = connection.BeginTransaction(deferred: false);
-
-                LongRestDiscoveryGeneration generation = await ReadSweepGenerationAsync(connection, transaction, expected.OperationId, ct).ConfigureAwait(false)
-                    ?? throw new InvalidDataException();
-
-                if (generation != expected || generation.Scope.ProtectedPartitionDigest is not null || generation.Recipe != recipe
-                    || generation.Phase is LongRestSweepPhase.Completed or LongRestSweepPhase.Invalidated or LongRestSweepPhase.Deferred or LongRestSweepPhase.Retired
-                    || generation.Fence with { AdmissionGeneration = current.AdmissionGeneration } != current)
+                try
                 {
-                    throw new InvalidDataException();
+                    SqliteConnection connection = await OpenAsync(ct).ConfigureAwait(false);
+
+                    await using SqliteTransaction transaction = connection.BeginTransaction(deferred: false);
+
+                    LongRestDiscoveryGeneration generation = await ReadSweepGenerationAsync(connection, transaction, expected.OperationId, ct).ConfigureAwait(false)
+                        ?? throw new InvalidDataException();
+
+                    if (generation != expected || generation.Scope.ProtectedPartitionDigest is not null || generation.Recipe != recipe
+                        || generation.Phase is LongRestSweepPhase.Completed or LongRestSweepPhase.Invalidated or LongRestSweepPhase.Deferred or LongRestSweepPhase.Retired
+                        || generation.Fence with { AdmissionGeneration = current.AdmissionGeneration } != current)
+                    {
+                        throw new InvalidDataException();
+                    }
+
+                    // The interval the lease must attest starts at the admission this generation was captured under.
+                    // It is read once from the reloaded row: the adopted fence below no longer carries it.
+                    long previousAdmission = generation.Fence.AdmissionGeneration;
+
+                    await ValidateCleanOwnerAsync(connection, transaction, generation, current, workerOwner, facts, admission, previousAdmission, ct).ConfigureAwait(false);
+
+                    await using (SqliteCommand ownership = Command(connection, transaction, """
+                        SELECT EXISTS(SELECT 1 FROM long_rest_sweeps WHERE OperationId = $operation AND GenerationId = $generation
+                            AND ScopeKindCode = $scope AND CampaignId IS $campaign AND PartitionDigest IS NULL)
+                          AND NOT EXISTS(SELECT 1 FROM long_rest_work_items WHERE
+                            (GenerationId = $generation AND OperationId <> $operation) OR (OperationId = $operation AND GenerationId <> $generation));
+                        """, ("$operation", generation.OperationId.ToString("N")), ("$generation", Format(generation.GenerationId)),
+                        ("$scope", (int)generation.Scope.Kind), ("$campaign", generation.Scope.CampaignId is { } campaign ? Format(campaign) : null)))
+                    {
+                        if ((long)(await ownership.ExecuteScalarAsync(ct).ConfigureAwait(false))! != 1) throw new InvalidDataException();
+                    }
+
+                    // A same-boot abort cannot certify an unknown send. Never use reboot settlement here.
+                    await using (SqliteCommand unsettled = Command(connection, transaction, """
+                        SELECT count(*) FROM long_rest_provider_effects effect JOIN long_rest_work_items unit ON unit.WorkItemId = effect.WorkItemId
+                        WHERE unit.OperationId = $operation AND unit.GenerationId = $generation AND effect.StateCode IN (1, 2, 3);
+                        """, ("$operation", generation.OperationId.ToString("N")), ("$generation", Format(generation.GenerationId))))
+                    {
+                        if ((long)(await unsettled.ExecuteScalarAsync(ct).ConfigureAwait(false))! != 0) throw new InvalidDataException();
+                    }
+
+                    await VerifyFrozenSourcesAsync(connection, transaction, generation, null, ct).ConfigureAwait(false);
+
+                    await ProveCleanWorkAsync(connection, transaction, generation, ct).ConfigureAwait(false);
+
+                    await ValidateCleanOwnerAsync(connection, transaction, generation, current, workerOwner, facts, admission, previousAdmission, ct).ConfigureAwait(false);
+
+                    await AdoptCleanWorkAsync(connection, transaction, generation, current, ct).ConfigureAwait(false);
+
+                    await using SqliteCommand update = Command(connection, transaction, """
+                        UPDATE long_rest_discovery_generations SET FenceJson = $fence, Revision = Revision + 1
+                        WHERE GenerationId = $generation AND OperationId = $operation AND Revision = $revision AND PhaseCode = $phase;
+                        """, ("$fence", JsonSerializer.Serialize(LongRestStoredFence.From(current), LongRestJsonContext.Default.LongRestStoredFence)),
+                        ("$generation", Format(generation.GenerationId)), ("$operation", generation.OperationId.ToString("N")),
+                        ("$revision", generation.Revision), ("$phase", (int)generation.Phase));
+
+                    if (await update.ExecuteNonQueryAsync(ct).ConfigureAwait(false) != 1) throw new InvalidDataException();
+
+                    LongRestDiscoveryGeneration adopted = generation with { Fence = current, Revision = checked(generation.Revision + 1) };
+
+                    await VerifyFrozenSourcesAsync(connection, transaction, adopted, null, ct).ConfigureAwait(false);
+
+                    await ValidateCleanOwnerAsync(connection, transaction, adopted, current, workerOwner, facts, admission, previousAdmission, ct).ConfigureAwait(false);
+
+                    await transaction.CommitAsync(ct).ConfigureAwait(false);
+
+                    return Result<LongRestDiscoveryGeneration>.Success(adopted);
                 }
-
-                // The interval the lease must attest starts at the admission this generation was captured under.
-                // It is read once from the reloaded row: the adopted fence below no longer carries it.
-                long previousAdmission = generation.Fence.AdmissionGeneration;
-
-                await ValidateCleanOwnerAsync(connection, transaction, generation, current, workerOwner, facts, admission, previousAdmission, ct).ConfigureAwait(false);
-
-                await using (SqliteCommand ownership = Command(connection, transaction, """
-                    SELECT EXISTS(SELECT 1 FROM long_rest_sweeps WHERE OperationId = $operation AND GenerationId = $generation
-                        AND ScopeKindCode = $scope AND CampaignId IS $campaign AND PartitionDigest IS NULL)
-                      AND NOT EXISTS(SELECT 1 FROM long_rest_work_items WHERE
-                        (GenerationId = $generation AND OperationId <> $operation) OR (OperationId = $operation AND GenerationId <> $generation));
-                    """, ("$operation", generation.OperationId.ToString("N")), ("$generation", Format(generation.GenerationId)),
-                    ("$scope", (int)generation.Scope.Kind), ("$campaign", generation.Scope.CampaignId is { } campaign ? Format(campaign) : null)))
+                catch (Exception busy) when (SqliteBusyRetry.IsBusyOrLocked(busy))
                 {
-                    if ((long)(await ownership.ExecuteScalarAsync(ct).ConfigureAwait(false))! != 1) throw new InvalidDataException();
+                    await retry.WaitAsync(busy, ct).ConfigureAwait(false);
                 }
-
-                // A same-boot abort cannot certify an unknown send. Never use reboot settlement here.
-                await using (SqliteCommand unsettled = Command(connection, transaction, """
-                    SELECT count(*) FROM long_rest_provider_effects effect JOIN long_rest_work_items unit ON unit.WorkItemId = effect.WorkItemId
-                    WHERE unit.OperationId = $operation AND unit.GenerationId = $generation AND effect.StateCode IN (1, 2, 3);
-                    """, ("$operation", generation.OperationId.ToString("N")), ("$generation", Format(generation.GenerationId))))
-                {
-                    if ((long)(await unsettled.ExecuteScalarAsync(ct).ConfigureAwait(false))! != 0) throw new InvalidDataException();
-                }
-
-                await VerifyFrozenSourcesAsync(connection, transaction, generation, null, ct).ConfigureAwait(false);
-
-                await ProveCleanWorkAsync(connection, transaction, generation, ct).ConfigureAwait(false);
-
-                await ValidateCleanOwnerAsync(connection, transaction, generation, current, workerOwner, facts, admission, previousAdmission, ct).ConfigureAwait(false);
-
-                await AdoptCleanWorkAsync(connection, transaction, generation, current, ct).ConfigureAwait(false);
-
-                await using SqliteCommand update = Command(connection, transaction, """
-                    UPDATE long_rest_discovery_generations SET FenceJson = $fence, Revision = Revision + 1
-                    WHERE GenerationId = $generation AND OperationId = $operation AND Revision = $revision AND PhaseCode = $phase;
-                    """, ("$fence", JsonSerializer.Serialize(LongRestStoredFence.From(current), LongRestJsonContext.Default.LongRestStoredFence)),
-                    ("$generation", Format(generation.GenerationId)), ("$operation", generation.OperationId.ToString("N")),
-                    ("$revision", generation.Revision), ("$phase", (int)generation.Phase));
-
-                if (await update.ExecuteNonQueryAsync(ct).ConfigureAwait(false) != 1) throw new InvalidDataException();
-
-                LongRestDiscoveryGeneration adopted = generation with { Fence = current, Revision = checked(generation.Revision + 1) };
-
-                await VerifyFrozenSourcesAsync(connection, transaction, adopted, null, ct).ConfigureAwait(false);
-
-                await ValidateCleanOwnerAsync(connection, transaction, adopted, current, workerOwner, facts, admission, previousAdmission, ct).ConfigureAwait(false);
-
-                await transaction.CommitAsync(ct).ConfigureAwait(false);
-
-                return Result<LongRestDiscoveryGeneration>.Success(adopted);
-            }, ct).ConfigureAwait(false);
+            }
         }
         catch (Exception exception) when (StorageFailure(exception))
         {

@@ -28,8 +28,6 @@ public sealed class AuthorityCarrierBanTests(ITestOutputHelper output)
 {
     private const string Data = AuthorityCarrierScanner.Namespace;
 
-    private const string Store = Data + ".LongRest.LongRestDiscoveryStore";
-
     private const string Coordinator = Data + ".CovenantErasureCoordinator";
 
     /// <summary>
@@ -41,15 +39,13 @@ public sealed class AuthorityCarrierBanTests(ITestOutputHelper output)
     /// disposes the scope, and the erasure closure and the closed-period authority hold the closing owner and the closed
     /// lease the whole closed period. None of them is a work lease or an external-effect group.
     ///
-    /// <para>The two Long Rest store closures are the one place a work lease is captured. Each is the async body of
-    /// <c>SqliteBusyRetry.ExecuteAsync</c>, awaited in the statement that creates it, so the lease is lent for the call and
-    /// never outlives it: <see cref="The_pinned_closure_captures_of_the_work_lease_are_awaited_inline_by_the_busy_retry"/> pins that shape,
-    /// and any other capture of a work lease, or a second closure in either method, is a new finding.</para>
+    /// <para>A work lease and an external-effect group appear nowhere in this census, and no entry may ever name one: they are passed
+    /// by value from where they are acquired to every use. The busy retry of the two Long Rest store methods that attest a lease on every
+    /// attempt is the retry cursor (<c>SqliteBusyRetry.Begin</c>), a loop the method writes itself around its own parameter, so there is
+    /// no closure to excuse.</para>
     /// </remarks>
     internal static readonly string[] ReviewedCensus =
     [
-        "closure|" + Store + ".ReadmitCleanAsync{closure#0:admission}|IGrimoireWorkLease",
-        "closure|" + Store + ".ReconcileCompletedCheckpointAsync{closure#0:admission}|IGrimoireWorkLease",
         "field|" + Data + ".Covenant.CovenantClosedPeriodAuthority._closed|IGrimoireExclusiveClosedLease",
         "field|" + Data + ".GrimoireRequestAdmissionScope._lease|IGrimoireRequestLease",
         "primary-constructor|" + Coordinator + ".CovenantGrimoireClosure(closed)|IGrimoireExclusiveClosedLease",
@@ -82,233 +78,24 @@ public sealed class AuthorityCarrierBanTests(ITestOutputHelper output)
     }
 
     [Fact]
-    public void The_reviewed_census_never_excuses_a_work_lease_or_a_group_except_the_two_pinned_inline_closures()
+    public void The_reviewed_census_never_excuses_a_work_lease_or_a_group()
     {
         foreach (string entry in ReviewedCensus)
         {
             string authority = entry[(entry.LastIndexOf('|') + 1)..];
 
-            if (AuthorityCarrierScanner.BannedAuthorities.Contains(authority, StringComparer.Ordinal))
-            {
-                Assert.StartsWith("closure|" + Store + ".", entry, StringComparison.Ordinal);
+            Assert.DoesNotContain(authority, AuthorityCarrierScanner.BannedAuthorities);
 
-                Assert.Contains(entry.Split('|')[1], new[]
-                {
-                    Store + ".ReadmitCleanAsync{closure#0:admission}",
-                    Store + ".ReconcileCompletedCheckpointAsync{closure#0:admission}",
-                });
-            }
-            else
-            {
-                Assert.Contains(authority, AuthorityCarrierScanner.ReviewedAuthorities);
-            }
+            Assert.Contains(authority, AuthorityCarrierScanner.ReviewedAuthorities);
         }
 
-        Assert.Equal(2, ReviewedCensus.Count(static entry => entry.EndsWith("|IGrimoireWorkLease", StringComparison.Ordinal)));
+        Assert.Equal(8, ReviewedCensus.Length);
+
+        Assert.DoesNotContain(ReviewedCensus, static entry => entry.StartsWith("closure|", StringComparison.Ordinal));
+
+        Assert.DoesNotContain(ReviewedCensus, static entry => entry.EndsWith("|IGrimoireWorkLease", StringComparison.Ordinal));
 
         Assert.DoesNotContain(ReviewedCensus, static entry => entry.EndsWith("|IGrimoireExternalEffectGroup", StringComparison.Ordinal));
-    }
-
-    [Fact]
-    public void The_pinned_closure_captures_of_the_work_lease_are_awaited_inline_by_the_busy_retry()
-    {
-        CSharpCompilation infrastructure = Assert.Single(HostedGrimoireProducerInventory.ProductionCompilations,
-            static compilation => compilation.AssemblyName == "RetroDownfall.Arcanum.Infrastructure");
-
-        INamedTypeSymbol store = Assert.IsAssignableFrom<INamedTypeSymbol>(infrastructure.GetTypeByMetadataName(Store));
-
-        foreach (string name in new[] { "ReadmitCleanAsync", "ReconcileCompletedCheckpointAsync" })
-        {
-            IMethodSymbol method = Assert.Single(store.GetMembers(name).OfType<IMethodSymbol>());
-
-            MethodDeclarationSyntax syntax = Assert.IsType<MethodDeclarationSyntax>(Assert.Single(method.DeclaringSyntaxReferences).GetSyntax());
-
-            SemanticModel model = infrastructure.GetSemanticModel(syntax.SyntaxTree);
-
-            ParenthesizedLambdaExpressionSyntax closure = Assert.Single(syntax.DescendantNodes().OfType<ParenthesizedLambdaExpressionSyntax>());
-
-            Assert.Contains(closure.Modifiers, static modifier => modifier.IsKind(SyntaxKind.AsyncKeyword));
-
-            // The closure is the first argument of the busy retry, and the call is awaited and returned by the same statement.
-            ArgumentSyntax argument = Assert.IsType<ArgumentSyntax>(closure.Parent);
-
-            InvocationExpressionSyntax retry = Assert.IsType<InvocationExpressionSyntax>(argument.Parent!.Parent);
-
-            Assert.Same(closure, retry.ArgumentList.Arguments[0].Expression);
-
-            IMethodSymbol called = Assert.IsAssignableFrom<IMethodSymbol>(model.GetSymbolInfo(retry).Symbol);
-
-            Assert.Equal("RetroDownfall.Arcanum.Infrastructure.Data.SqliteBusyRetry.ExecuteAsync", called.ContainingType.ToDisplayString() + "." + called.Name);
-
-            MemberAccessExpressionSyntax configure = Assert.IsType<MemberAccessExpressionSyntax>(retry.Parent);
-
-            Assert.Equal("ConfigureAwait", configure.Name.Identifier.ValueText);
-
-            AwaitExpressionSyntax awaited = Assert.IsType<AwaitExpressionSyntax>(Assert.IsType<InvocationExpressionSyntax>(configure.Parent).Parent);
-
-            Assert.IsType<ReturnStatementSyntax>(awaited.Parent);
-
-            // The retry runs the closure and nothing else: the delegate it is given is only ever invoked, awaited where it is invoked.
-            INamedTypeSymbol retryType = Assert.IsAssignableFrom<INamedTypeSymbol>(called.ContainingType);
-
-            foreach (IMethodSymbol runner in retryType.GetMembers("ExecuteAsync").OfType<IMethodSymbol>())
-            {
-                AssertTheRunnerOnlyInvokesAndAwaitsTheDelegate(infrastructure, retryType, runner);
-            }
-        }
-    }
-
-    // The pin above is only as good as what it refuses. A runner that invokes and awaits the delegate where it invokes it, directly or
-    // through the one forwarding closure it hands back to its own generic overload, is the shape the lease is lent under; a runner that
-    // runs the delegate on another task, keeps it, or calls it without awaiting it would let the lease outlive the awaited call.
-    [Theory]
-    [InlineData("Awaiting", true)]
-    [InlineData("Forwarding", true)]
-    [InlineData("TaskRun", false)]
-    [InlineData("Stored", false)]
-    [InlineData("Unawaited", false)]
-    [InlineData("ForwardedElsewhere", false)]
-    [InlineData("TwoClosures", false)]
-    public void The_busy_retry_pin_accepts_an_awaited_invocation_and_refuses_anything_that_lets_the_delegate_outlive_it(string runnerName, bool accepted)
-    {
-        CSharpCompilation compilation = Synthetic("""
-            public static class Retry
-            {
-                private static Func<Task>? s_kept;
-
-                public static async Task<T> Awaiting<T>(Func<Task<T>> action, CancellationToken ct = default)
-                {
-                    while (true)
-                    {
-                        try
-                        {
-                            return await action().ConfigureAwait(false);
-                        }
-                        catch (InvalidOperationException)
-                        {
-                        }
-                    }
-                }
-
-                public static async Task Forwarding(Func<Task> action)
-                {
-                    _ = await Forwarding<bool>(async () =>
-                    {
-                        await action().ConfigureAwait(false);
-
-                        return true;
-                    }).ConfigureAwait(false);
-                }
-
-                public static Task<T> Forwarding<T>(Func<Task<T>> action) => action();
-
-                public static Task<T> TaskRun<T>(Func<Task<T>> action) => Task.Run(() => action());
-
-                public static Task Stored(Func<Task> action)
-                {
-                    s_kept = action;
-
-                    return Task.CompletedTask;
-                }
-
-                public static Task Unawaited(Func<Task> action)
-                {
-                    _ = action();
-
-                    return Task.CompletedTask;
-                }
-
-                public static async Task ForwardedElsewhere(Func<Task> action)
-                {
-                    await Task.Run(async () =>
-                    {
-                        await action().ConfigureAwait(false);
-                    }).ConfigureAwait(false);
-                }
-
-                public static async Task TwoClosures(Func<Task> action)
-                {
-                    await Task.Run(() => Task.Run(async () =>
-                    {
-                        await action().ConfigureAwait(false);
-                    })).ConfigureAwait(false);
-                }
-            }
-            """);
-
-        INamedTypeSymbol retry = Assert.IsAssignableFrom<INamedTypeSymbol>(compilation.GetTypeByMetadataName("Fixture.Retry"));
-
-        IMethodSymbol runner = retry.GetMembers(runnerName).OfType<IMethodSymbol>().First(static method => method.Parameters.Length > 0 && method.DeclaringSyntaxReferences.Length == 1
-            && method.Parameters[0].Type is INamedTypeSymbol { Name: "Func" });
-
-        // The forwarding runner hands its closure to the retry's own generic overload, which is named ExecuteAsync in production.
-        Action check = () => AssertTheRunnerOnlyInvokesAndAwaitsTheDelegate(compilation, retry, runner, runnerName == "Forwarding" ? "Forwarding" : "ExecuteAsync");
-
-        if (accepted)
-        {
-            check();
-        }
-        else
-        {
-            // A failed assertion of the pin, not a defect of the fixture.
-            Assert.ThrowsAny<Xunit.Sdk.XunitException>(check);
-        }
-    }
-
-    // The delegate is the one parameter typed Func<Task> or Func<Task<T>>, whatever its position. Every use of it is `await action().ConfigureAwait(..)`,
-    // and the only closure that may hold it is the forwarding lambda handed straight back to the runner's own generic overload, awaited too:
-    // a `Task.Run(() => action())` or a stored delegate would let the lease outlive the awaited call.
-    private static void AssertTheRunnerOnlyInvokesAndAwaitsTheDelegate(CSharpCompilation infrastructure, INamedTypeSymbol retryType, IMethodSymbol runner, string overload = "ExecuteAsync")
-    {
-        MethodDeclarationSyntax body = Assert.IsType<MethodDeclarationSyntax>(Assert.Single(runner.DeclaringSyntaxReferences).GetSyntax());
-
-        SemanticModel runnerModel = infrastructure.GetSemanticModel(body.SyntaxTree);
-
-        IParameterSymbol operation = Assert.Single(runner.Parameters, static parameter =>
-            parameter.Type is INamedTypeSymbol { Name: "Func", TypeArguments: [INamedTypeSymbol { Name: "Task" }] });
-
-        IdentifierNameSyntax[] uses = [.. body.DescendantNodes().OfType<IdentifierNameSyntax>()
-            .Where(name => SymbolEqualityComparer.Default.Equals(runnerModel.GetSymbolInfo(name).Symbol, operation))];
-
-        Assert.NotEmpty(uses);
-
-        foreach (IdentifierNameSyntax use in uses)
-        {
-            InvocationExpressionSyntax invocation = Assert.IsType<InvocationExpressionSyntax>(use.Parent);
-
-            Assert.Same(use, invocation.Expression);
-
-            AssertAwaitedWithConfigureAwait(invocation);
-
-            AnonymousFunctionExpressionSyntax[] closures = [.. use.Ancestors().TakeWhile(ancestor => ancestor != body).OfType<AnonymousFunctionExpressionSyntax>()];
-
-            Assert.True(closures.Length <= 1, "The delegate is held by more than one closure.");
-
-            foreach (AnonymousFunctionExpressionSyntax closure in closures)
-            {
-                ArgumentSyntax argument = Assert.IsType<ArgumentSyntax>(closure.Parent);
-
-                InvocationExpressionSyntax forwarded = Assert.IsType<InvocationExpressionSyntax>(argument.Parent!.Parent);
-
-                Assert.Same(closure, forwarded.ArgumentList.Arguments[0].Expression);
-
-                IMethodSymbol target = Assert.IsAssignableFrom<IMethodSymbol>(runnerModel.GetSymbolInfo(forwarded).Symbol);
-
-                Assert.True(SymbolEqualityComparer.Default.Equals(retryType, target.ContainingType) && target.Name == overload && target.IsGenericMethod,
-                    "The closure that holds the delegate is not handed to the runner's own generic overload.");
-
-                AssertAwaitedWithConfigureAwait(forwarded);
-            }
-        }
-
-        static void AssertAwaitedWithConfigureAwait(InvocationExpressionSyntax call)
-        {
-            MemberAccessExpressionSyntax configure = Assert.IsType<MemberAccessExpressionSyntax>(call.Parent);
-
-            Assert.Equal("ConfigureAwait", configure.Name.Identifier.ValueText);
-
-            Assert.IsType<AwaitExpressionSyntax>(Assert.IsType<InvocationExpressionSyntax>(configure.Parent).Parent);
-        }
     }
 
     /// <summary>
@@ -577,6 +364,7 @@ public sealed class AuthorityCarrierBanTests(ITestOutputHelper output)
                 "numeric-reads-of-a-carrier-are-not-carriers",
                 "pattern-and-loop-variables-used-only-locally",
                 "primary-constructor-base-argument-that-is-only-looked-at",
+                "retry-cursor-loop-around-the-lease-parameter",
                 "reviewed-pass-throughs",
                 "self-referential-generic-types-terminate",
                 "type-parameter-constrained-to-an-unrelated-interface",
