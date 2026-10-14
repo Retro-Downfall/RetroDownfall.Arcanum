@@ -34705,6 +34705,9 @@ internal static partial class HostedGrimoireProducerInventory
 
             foreach (ISymbol symbol in references)
             {
+                // Closed pure data cannot carry a lease or a group, whatever call produced it.
+                if (HoldsHandleIncapableValue(symbol, model.Compilation)) continue;
+
                 origins.UnionWith(AdmissionOrigins(member, symbol, model, path, query));
             }
 
