@@ -15,6 +15,12 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.LongRest;
 /// <summary>Owns immutable source capture and generation coordinates on one admitted connection.</summary>
 internal sealed partial class LongRestDiscoveryStore(ArcanumDbContext db, TimeProvider timeProvider) : ILongRestDiscoveryStore
 {
+    /// <summary>
+    /// When set, replaces the two-minute default as the bound on how long clean readmission and completed-checkpoint reconciliation keep
+    /// retrying SQLITE_BUSY/LOCKED - the only way a test can reach the busy timeout without waiting for it. Production never sets it.
+    /// </summary>
+    internal TimeSpan? BusyRetryDeadlineForTesting { get; set; }
+
     public async Task<Result<LongRestDiscoveryGeneration>> StartOrResumeAsync(Guid operationId, LongRestSweepScope scope,
         LongRestSweepFence fence, LongRestRecipeIdentity recipe, CancellationToken cancellationToken)
     {

@@ -24,6 +24,8 @@ internal sealed class RecordingGrimoireWorkAdmissionGate(
 
     private readonly List<DrainedAttestation> _drainedAttestations = [];
 
+    private readonly List<IGrimoireWorkLease> _presentedLeases = [];
+
     private int _drainedAttestationOrdinal;
 
     private int _effectGroupAttempts;
@@ -90,6 +92,21 @@ internal sealed class RecordingGrimoireWorkAdmissionGate(
         }
     }
 
+    /// <summary>
+    /// The lease instance each drained-maintenance attestation was asked about, in order, including an ask the
+    /// refuse-only hook interrupted before it was given a verdict (such an ask has no entry in <see cref="DrainedAttestations"/>).
+    /// </summary>
+    internal IReadOnlyList<IGrimoireWorkLease> PresentedLeases
+    {
+        get
+        {
+            lock (_observationsGate)
+            {
+                return _presentedLeases.ToArray();
+            }
+        }
+    }
+
     internal int EffectGroupAttempts => Volatile.Read(ref _effectGroupAttempts);
 
     internal int GenerationWaits => Volatile.Read(ref _generationWaits);
@@ -134,6 +151,11 @@ internal sealed class RecordingGrimoireWorkAdmissionGate(
     public bool AttestDrainedMaintenance(IGrimoireWorkLease lease, long previousGeneration, long currentGeneration)
     {
         int ordinal = Interlocked.Increment(ref _drainedAttestationOrdinal);
+
+        lock (_observationsGate)
+        {
+            _presentedLeases.Add(lease);
+        }
 
         // The hook runs first and only ever narrows: a refusal never reaches the inner gate, and a pass leaves the
         // verdict to the inner gate, so no hook can manufacture an attestation the real gate would not give.

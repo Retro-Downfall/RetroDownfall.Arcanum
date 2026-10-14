@@ -22,108 +22,117 @@ internal sealed partial class LongRestDiscoveryStore : ILongRestCompletedCheckpo
         LongRestRecipeIdentity recipe, string workerOwner, LongRestLiveFenceReader facts,
         IGrimoireWorkLease admission, CancellationToken ct)
     {
+        SqliteBusyRetryCursor retry = SqliteBusyRetry.Begin(BusyRetryDeadlineForTesting);
+
         try
         {
-            return await SqliteBusyRetry.ExecuteAsync(async () =>
+            while (true)
             {
-                SqliteConnection connection = await OpenAsync(ct).ConfigureAwait(false);
-
-                await using SqliteTransaction transaction = connection.BeginTransaction(deferred: false);
-
-                LongRestDiscoveryGeneration generation = await ReadSweepGenerationAsync(connection, transaction, expected.OperationId, ct).ConfigureAwait(false)
-                    ?? throw new InvalidDataException();
-
-                LongRestSweep sweep = await LongRestSweepStore.ReadAsync(connection, transaction, expected.OperationId, ct).ConfigureAwait(false)
-                    ?? throw new InvalidDataException();
-
-                if (generation != expected || !generation.Published || generation.Phase != LongRestSweepPhase.Completed
-                    || generation.Scope.ProtectedPartitionDigest is not null || generation.Recipe != recipe
-                    || generation.Fence with { AdmissionGeneration = current.AdmissionGeneration } != current
-                    || sweep.OperationId != generation.OperationId || sweep.GenerationId != generation.GenerationId
-                    || sweep.Scope != generation.Scope || sweep.Phase != LongRestSweepPhase.Completed)
+                try
                 {
-                    throw new InvalidDataException();
+                    SqliteConnection connection = await OpenAsync(ct).ConfigureAwait(false);
+
+                    await using SqliteTransaction transaction = connection.BeginTransaction(deferred: false);
+
+                    LongRestDiscoveryGeneration generation = await ReadSweepGenerationAsync(connection, transaction, expected.OperationId, ct).ConfigureAwait(false)
+                        ?? throw new InvalidDataException();
+
+                    LongRestSweep sweep = await LongRestSweepStore.ReadAsync(connection, transaction, expected.OperationId, ct).ConfigureAwait(false)
+                        ?? throw new InvalidDataException();
+
+                    if (generation != expected || !generation.Published || generation.Phase != LongRestSweepPhase.Completed
+                        || generation.Scope.ProtectedPartitionDigest is not null || generation.Recipe != recipe
+                        || generation.Fence with { AdmissionGeneration = current.AdmissionGeneration } != current
+                        || sweep.OperationId != generation.OperationId || sweep.GenerationId != generation.GenerationId
+                        || sweep.Scope != generation.Scope || sweep.Phase != LongRestSweepPhase.Completed)
+                    {
+                        throw new InvalidDataException();
+                    }
+
+                    // The interval the lease must attest starts at the admission this generation was captured under,
+                    // read once from the reloaded row. A completed checkpoint is never adopted, so it cannot move.
+                    long previousAdmission = generation.Fence.AdmissionGeneration;
+
+                    await using (SqliteCommand ownership = Command(connection, transaction, """
+                        SELECT EXISTS(SELECT 1 FROM long_rest_sweeps WHERE OperationId = $operation AND GenerationId = $generation
+                            AND ScopeKindCode = $scope AND CampaignId IS $campaign AND PartitionDigest IS NULL AND PhaseCode = 6
+                            AND ConfigurationJson = $configuration)
+                          AND NOT EXISTS(SELECT 1 FROM long_rest_work_items WHERE
+                            (GenerationId = $generation AND OperationId <> $operation) OR (OperationId = $operation AND GenerationId <> $generation))
+                          AND NOT EXISTS(SELECT 1 FROM long_rest_work_items WHERE GenerationId = $generation AND DispositionCode <> 2)
+                          AND NOT EXISTS(SELECT 1 FROM long_rest_provider_effects effect JOIN long_rest_work_items unit ON unit.WorkItemId = effect.WorkItemId
+                            WHERE unit.GenerationId = $generation AND effect.StateCode IN (1, 2, 3));
+                        """, ("$operation", generation.OperationId.ToString("N")), ("$generation", Format(generation.GenerationId)),
+                        ("$scope", (int)generation.Scope.Kind), ("$campaign", generation.Scope.CampaignId is { } campaign ? Format(campaign) : null),
+                        ("$configuration", JsonSerializer.Serialize(generation.Fence.Configuration, LongRestJsonContext.Default.LongRestConfigurationStamp))))
+                    {
+                        if ((long)(await ownership.ExecuteScalarAsync(ct).ConfigureAwait(false))! != 1) throw new InvalidDataException();
+                    }
+
+                    await using (SqliteCommand coordinates = Command(connection, transaction, """
+                        SELECT (($cursor IS NULL AND $digest IS NULL AND NOT EXISTS(SELECT 1 FROM long_rest_work_items
+                            WHERE OperationId = $operation AND GenerationId = $generation AND KindCode = 3))
+                          OR EXISTS(SELECT 1 FROM long_rest_work_items unit JOIN long_rest_work_inputs input ON input.WorkItemId = unit.WorkItemId AND input.Ordinal = 1
+                            WHERE unit.OperationId = $operation AND unit.GenerationId = $generation AND unit.KindCode = 3 AND unit.DispositionCode = 2
+                              AND unit.WorkDigest = $digest AND input.MemoryId = $cursor));
+                        """, ("$operation", generation.OperationId.ToString("N")), ("$generation", Format(generation.GenerationId)),
+                        ("$cursor", sweep.CommittedItemCursor), ("$digest", sweep.CommittedWorkDigest?.Bytes)))
+                    {
+                        if ((long)(await coordinates.ExecuteScalarAsync(ct).ConfigureAwait(false))! != 1) throw new InvalidDataException();
+                    }
+
+                    await ValidateCompletedCheckpointProofAsync(connection, transaction, generation, current, workerOwner, facts, admission, previousAdmission, ct).ConfigureAwait(false);
+
+                    long revision;
+
+                    byte[] previousCheckpoint;
+
+                    await using (SqliteCommand ledger = Command(connection, transaction, """
+                        SELECT Revision, CheckpointPayload FROM LongRunningOperations
+                        WHERE Id = $operation AND Kind = 'long-rest-sweep' AND State = 1 AND LeaseOwner = $owner AND CheckpointVersion = 1;
+                        """, ("$operation", generation.OperationId.ToString("N")), ("$owner", workerOwner)))
+                    {
+                        await using SqliteDataReader reader = await ledger.ExecuteReaderAsync(ct).ConfigureAwait(false);
+
+                        if (!await reader.ReadAsync(ct).ConfigureAwait(false) || reader.GetInt64(0) < 0 || reader.IsDBNull(1)) throw new InvalidDataException();
+
+                        revision = reader.GetInt64(0);
+
+                        previousCheckpoint = (byte[])reader[1];
+                    }
+
+                    LongRestSweepCheckpoint checkpoint = new(1, sweep.OperationId, sweep.Scope.Kind, sweep.Scope.CampaignId,
+                        sweep.GenerationId, sweep.Phase, sweep.Revision, sweep.CommittedItemCursor, sweep.CommittedWorkDigest, null);
+
+                    byte[] payload = LongRestSweepCheckpointCodec.Encode(checkpoint).Value;
+
+                    await ValidateCompletedCheckpointProofAsync(connection, transaction, generation, current, workerOwner, facts, admission, previousAdmission, ct).ConfigureAwait(false);
+
+                    DateTimeOffset now = timeProvider.GetUtcNow();
+
+                    await using SqliteCommand save = Command(connection, transaction, """
+                        UPDATE LongRunningOperations SET CheckpointVersion = 1, CheckpointPayload = $payload, CheckpointReference = NULL,
+                            PublicSummary = 'Long Rest sweep progress committed.', HeartbeatAt = $now, Revision = Revision + 1
+                        WHERE Id = $operation AND Kind = 'long-rest-sweep' AND State = 1 AND LeaseOwner = $owner
+                          AND LeaseExpiresAt > $now AND CheckpointVersion = 1 AND CheckpointPayload = $previous AND Revision = $revision;
+                        """, ("$payload", payload), ("$now", UtcInstantText.Format(now)), ("$operation", generation.OperationId.ToString("N")),
+                        ("$owner", workerOwner), ("$previous", previousCheckpoint), ("$revision", revision));
+
+                    if (await save.ExecuteNonQueryAsync(ct).ConfigureAwait(false) != 1) throw new InvalidDataException();
+
+                    await ValidateCompletedCheckpointProofAsync(connection, transaction, generation, current, workerOwner, facts, admission, previousAdmission, ct).ConfigureAwait(false);
+
+                    await transaction.CommitAsync(ct).ConfigureAwait(false);
+
+                    // The original sweep is historical completion evidence, never an adopted
+                    // executable generation. Only the registered reconciler may settle the ledger.
+                    return Result<LongRestSweep>.Success(sweep);
                 }
-
-                // The interval the lease must attest starts at the admission this generation was captured under,
-                // read once from the reloaded row. A completed checkpoint is never adopted, so it cannot move.
-                long previousAdmission = generation.Fence.AdmissionGeneration;
-
-                await using (SqliteCommand ownership = Command(connection, transaction, """
-                    SELECT EXISTS(SELECT 1 FROM long_rest_sweeps WHERE OperationId = $operation AND GenerationId = $generation
-                        AND ScopeKindCode = $scope AND CampaignId IS $campaign AND PartitionDigest IS NULL AND PhaseCode = 6
-                        AND ConfigurationJson = $configuration)
-                      AND NOT EXISTS(SELECT 1 FROM long_rest_work_items WHERE
-                        (GenerationId = $generation AND OperationId <> $operation) OR (OperationId = $operation AND GenerationId <> $generation))
-                      AND NOT EXISTS(SELECT 1 FROM long_rest_work_items WHERE GenerationId = $generation AND DispositionCode <> 2)
-                      AND NOT EXISTS(SELECT 1 FROM long_rest_provider_effects effect JOIN long_rest_work_items unit ON unit.WorkItemId = effect.WorkItemId
-                        WHERE unit.GenerationId = $generation AND effect.StateCode IN (1, 2, 3));
-                    """, ("$operation", generation.OperationId.ToString("N")), ("$generation", Format(generation.GenerationId)),
-                    ("$scope", (int)generation.Scope.Kind), ("$campaign", generation.Scope.CampaignId is { } campaign ? Format(campaign) : null),
-                    ("$configuration", JsonSerializer.Serialize(generation.Fence.Configuration, LongRestJsonContext.Default.LongRestConfigurationStamp))))
+                catch (Exception busy) when (SqliteBusyRetry.IsBusyOrLocked(busy))
                 {
-                    if ((long)(await ownership.ExecuteScalarAsync(ct).ConfigureAwait(false))! != 1) throw new InvalidDataException();
+                    await retry.WaitAsync(busy, ct).ConfigureAwait(false);
                 }
-
-                await using (SqliteCommand coordinates = Command(connection, transaction, """
-                    SELECT (($cursor IS NULL AND $digest IS NULL AND NOT EXISTS(SELECT 1 FROM long_rest_work_items
-                        WHERE OperationId = $operation AND GenerationId = $generation AND KindCode = 3))
-                      OR EXISTS(SELECT 1 FROM long_rest_work_items unit JOIN long_rest_work_inputs input ON input.WorkItemId = unit.WorkItemId AND input.Ordinal = 1
-                        WHERE unit.OperationId = $operation AND unit.GenerationId = $generation AND unit.KindCode = 3 AND unit.DispositionCode = 2
-                          AND unit.WorkDigest = $digest AND input.MemoryId = $cursor));
-                    """, ("$operation", generation.OperationId.ToString("N")), ("$generation", Format(generation.GenerationId)),
-                    ("$cursor", sweep.CommittedItemCursor), ("$digest", sweep.CommittedWorkDigest?.Bytes)))
-                {
-                    if ((long)(await coordinates.ExecuteScalarAsync(ct).ConfigureAwait(false))! != 1) throw new InvalidDataException();
-                }
-
-                await ValidateCompletedCheckpointProofAsync(connection, transaction, generation, current, workerOwner, facts, admission, previousAdmission, ct).ConfigureAwait(false);
-
-                long revision;
-
-                byte[] previousCheckpoint;
-
-                await using (SqliteCommand ledger = Command(connection, transaction, """
-                    SELECT Revision, CheckpointPayload FROM LongRunningOperations
-                    WHERE Id = $operation AND Kind = 'long-rest-sweep' AND State = 1 AND LeaseOwner = $owner AND CheckpointVersion = 1;
-                    """, ("$operation", generation.OperationId.ToString("N")), ("$owner", workerOwner)))
-                {
-                    await using SqliteDataReader reader = await ledger.ExecuteReaderAsync(ct).ConfigureAwait(false);
-
-                    if (!await reader.ReadAsync(ct).ConfigureAwait(false) || reader.GetInt64(0) < 0 || reader.IsDBNull(1)) throw new InvalidDataException();
-
-                    revision = reader.GetInt64(0);
-
-                    previousCheckpoint = (byte[])reader[1];
-                }
-
-                LongRestSweepCheckpoint checkpoint = new(1, sweep.OperationId, sweep.Scope.Kind, sweep.Scope.CampaignId,
-                    sweep.GenerationId, sweep.Phase, sweep.Revision, sweep.CommittedItemCursor, sweep.CommittedWorkDigest, null);
-
-                byte[] payload = LongRestSweepCheckpointCodec.Encode(checkpoint).Value;
-
-                await ValidateCompletedCheckpointProofAsync(connection, transaction, generation, current, workerOwner, facts, admission, previousAdmission, ct).ConfigureAwait(false);
-
-                DateTimeOffset now = timeProvider.GetUtcNow();
-
-                await using SqliteCommand save = Command(connection, transaction, """
-                    UPDATE LongRunningOperations SET CheckpointVersion = 1, CheckpointPayload = $payload, CheckpointReference = NULL,
-                        PublicSummary = 'Long Rest sweep progress committed.', HeartbeatAt = $now, Revision = Revision + 1
-                    WHERE Id = $operation AND Kind = 'long-rest-sweep' AND State = 1 AND LeaseOwner = $owner
-                      AND LeaseExpiresAt > $now AND CheckpointVersion = 1 AND CheckpointPayload = $previous AND Revision = $revision;
-                    """, ("$payload", payload), ("$now", UtcInstantText.Format(now)), ("$operation", generation.OperationId.ToString("N")),
-                    ("$owner", workerOwner), ("$previous", previousCheckpoint), ("$revision", revision));
-
-                if (await save.ExecuteNonQueryAsync(ct).ConfigureAwait(false) != 1) throw new InvalidDataException();
-
-                await ValidateCompletedCheckpointProofAsync(connection, transaction, generation, current, workerOwner, facts, admission, previousAdmission, ct).ConfigureAwait(false);
-
-                await transaction.CommitAsync(ct).ConfigureAwait(false);
-
-                // The original sweep is historical completion evidence, never an adopted
-                // executable generation. Only the registered reconciler may settle the ledger.
-                return Result<LongRestSweep>.Success(sweep);
-            }, ct).ConfigureAwait(false);
+            }
         }
         catch (Exception exception) when (StorageFailure(exception) || exception is InvalidOperationException)
         {

@@ -330,18 +330,11 @@ public sealed partial class HostedGrimoireProducerInventoryTests
         // Every reference to the admitted maintenance's method in production is a call some root proved.
         Assert.DoesNotContain(discovery.Diagnostics, static diagnostic => diagnostic.Code == HostedGrimoireProducerInventory.LeaseHandoffCallerUnanalysedCode);
 
-        // The narrowing of this test, stated. The Histogram.Record classification belongs to the metrics work, and it is the only
-        // diagnostic this test lets pass, anywhere in the discovery. It is not forgiven overall:
-        // ReviewedCapsuleManifestExactlyMatchesProductionDiscovery still requires the whole discovery to report nothing.
-        HostedProducerInventoryDiagnostic[] unowned = [.. discovery.Diagnostics.Where(static diagnostic => !LongRestDiagnosticOwnedElsewhere(diagnostic))];
-
-        Assert.True(unowned.Length == 0, string.Join(global::System.Environment.NewLine,
-            unowned.Take(20).Select(static diagnostic => $"{diagnostic.Code}: {diagnostic.Identity}: {diagnostic.Detail}")));
-
-        foreach (HostedProducerInventoryDiagnostic known in discovery.Diagnostics.Except(unowned))
-        {
-            output.WriteLine($"ACTUAL_LONG_REST_HOSTED_ROOT_OPEN_ELSEWHERE {known.Code} {known.Identity} {known.Detail}");
-        }
+        // Nothing is excused: the actual discovery reports no diagnostic of any code, under either root or anywhere else. The Histogram.Record
+        // sites of the hierarchy traversal are classified by the reviewed storage contract (HierarchyFrontierObservationRequiresReachedCompleteScalarOrigins),
+        // so no diagnostic is left for this test to name and let pass.
+        Assert.True(discovery.Diagnostics.Count == 0, string.Join(global::System.Environment.NewLine,
+            discovery.Diagnostics.Take(20).Select(static diagnostic => $"{diagnostic.Code}: {diagnostic.Identity}: {diagnostic.Detail}")));
 
         // The acquisition in RunOneAsync is a kind-17 Work, and it is one capsule.
         HostedProducerSite[] work = LongRestDispatchSites(discovery, sweep, spine.Worker, spine.WorkerAcquisition, HostedProducerSiteKind.EffectFrontier);
@@ -413,10 +406,6 @@ public sealed partial class HostedGrimoireProducerInventoryTests
             output.WriteLine($"ACTUAL_LONG_REST_HOSTED_ROOT authority={process.OperationId} source={send.SourcePath} member={send.MemberIdentity} capsule={send.CapsuleId} work={send.WorkFrontierCapsuleId} group={group} acquisition={acquisition}");
         }
     }
-
-    // The one diagnostic the production discovery carries today that is another workstream's to remove (see the narrowing above).
-    private static bool LongRestDiagnosticOwnedElsewhere(HostedProducerInventoryDiagnostic diagnostic) =>
-        diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED" && diagnostic.Detail == "System.Diagnostics.Metrics.Histogram`1.Record";
 
     private static void AssertLongRestChatAndEmbeddingCalleesAreDiscovered(HostedProducerDiscovery<HostedProducerSite> discovery)
     {

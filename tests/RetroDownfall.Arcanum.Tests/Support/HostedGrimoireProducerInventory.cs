@@ -31533,6 +31533,95 @@ internal static partial class HostedGrimoireProducerInventory
                 return returns.ToArray();
             }
 
+            bool ExactGuidList(ITypeSymbol? type) => type is INamedTypeSymbol { TypeArguments: [ITypeSymbol element] } list
+                && ExactList(list) && IsExactFrameworkType(element, "System.Guid", typeof(Guid).Assembly.GetName());
+
+            // A list the helper created empty and may only fill: nothing else can be the list it returns, so it is the framework List<Guid>
+            // and not a subclass whose enumerator is authored work that no traversal of the Select would reach.
+            bool ExactEmptyGuidList(ExpressionSyntax source, SemanticModel model, HashSet<ISymbol> active, AuthoredMember? caller) => source switch
+            {
+                CollectionExpressionSyntax { Elements.Count: 0 } => ExactGuidList(model.GetTypeInfo(source).ConvertedType),
+                BaseObjectCreationExpressionSyntax { Initializer: null, ArgumentList: null or { Arguments.Count: 0 } } => model.GetOperation(source)
+                    is IObjectCreationOperation { Constructor.Parameters.Length: 0 } created && ExactGuidList(created.Type),
+                _ => false,
+            };
+
+            // The children of one summary are read from storage by an authored helper, so how many there are and which ids they carry is data.
+            // The Record argument depends on neither: a cursor is built from an id, no certified getter reads it, and every cursor is the one
+            // sealed class. The sequence is therefore taken as an opaque run of System.Guid values, and as nothing else, when the helper is
+            // an exact authored static method that returns the framework List<Guid> it created empty itself, its call boundary uses only
+            // built-in conversions, and the id reaches the cursor as the System.Guid lambda parameter (StorageGuidElement). The helper, its
+            // arguments and the ids are ordinary executable work, traversed where they are written. A helper that cannot be resolved exactly,
+            // a list that is not the empty framework list, a list the helper replaces (by assignment, an out or ref argument, a deconstruction
+            // or a ref alias; HasCollectionValueReplacement), a boundary conversion and any other element type are all refused.
+            bool StorageGuidSequence(ExpressionSyntax expression, AuthoredMember owner)
+            {
+                // Only parentheses are looked through: a cast is a conversion, and a conversion the helper's list goes through may be authored.
+                static ExpressionSyntax Unparenthesized(ExpressionSyntax value)
+                {
+                    while (value is ParenthesizedExpressionSyntax parenthesized) value = parenthesized.Expression;
+
+                    return value;
+                }
+
+                expression = Unparenthesized(expression);
+
+                // The list must reach its use as itself: a user-defined conversion between the helper's result and the place that
+                // receives it (a local's declared type, an argument) would be authored work in the sequence that nothing here proves.
+                for (IOperation? context = owner.Model.GetOperation(expression)?.Parent; context is IConversionOperation or IParenthesizedOperation; context = context.Parent)
+                {
+                    if (context is IConversionOperation { OperatorMethod: not null } or IConversionOperation { Conversion.IsUserDefined: true }) return false;
+                }
+
+                bool awaited = expression is AwaitExpressionSyntax;
+
+                if (expression is AwaitExpressionSyntax awaiting)
+                {
+                    expression = Unparenthesized(awaiting.Expression);
+
+                    if (expression is InvocationExpressionSyntax { Expression: MemberAccessExpressionSyntax { Expression: { } pending } } configure
+                        && owner.Model.GetOperation(configure) is IInvocationOperation
+                        {
+                            TargetMethod: { Name: "ConfigureAwait", IsStatic: false, Arity: 0 } configured,
+                            Arguments: [{ ArgumentKind: ArgumentKind.Explicit, Value.ConstantValue: { HasValue: true, Value: false } }],
+                        }
+                        && IsExactFrameworkType(configured.ContainingType, "System.Threading.Tasks.Task`1", typeof(Task<>).Assembly.GetName()))
+                    {
+                        expression = Unparenthesized(pending);
+                    }
+                }
+
+                if (expression is not InvocationExpressionSyntax call
+                    || owner.Model.GetOperation(call) is not IInvocationOperation { TargetMethod: { IsStatic: true, Arity: 0 } helper } invoked
+                    || !invoked.Arguments.All(ArgumentBoundaryUsesOnlyBuiltInConversions)) return false;
+
+                ITypeSymbol returnType = helper.ReturnType;
+
+                if (awaited)
+                {
+                    if (returnType is not INamedTypeSymbol { TypeArguments: [ITypeSymbol result] } task
+                        || !IsExactFrameworkType(task, "System.Threading.Tasks.Task`1", typeof(Task<>).Assembly.GetName())) return false;
+
+                    returnType = result;
+                }
+
+                if (!ExactGuidList(returnType)
+                    || ResolveCleanupInvocationTarget(helper, owner, call, proof) is not { } target
+                    || !SymbolEqualityComparer.Default.Equals(target.Symbol.OriginalDefinition, helper.OriginalDefinition)) return false;
+
+                AuthoredMember bound = BindCleanupInvocationContext(owner, call, target, proof);
+
+                ExpressionSyntax[] returns = ReturnedExpressions(bound.Syntax);
+
+                return returns.Length != 0 && returns.All(returned => StripTransparentExpression(returned) is IdentifierNameSyntax identifier
+                    && bound.Model.GetSymbolInfo(identifier).Symbol is ILocalSymbol local && ExactGuidList(local.Type)
+                    && HasOnlyReviewedValueSources(identifier, bound.Model, new(SymbolEqualityComparer.Default), bound, ExactEmptyGuidList)
+                    && !HasCollectionValueReplacement(bound, local));
+            }
+
+            bool StorageGuidElement(IParameterSymbol parameter, BoundValueSource bound) =>
+                IsExactFrameworkType(parameter.Type, "System.Guid", typeof(Guid).Assembly.GetName()) && StorageGuidSequence(bound.Expression, bound.Caller);
+
             HashSet<(SyntaxTree Tree, int Start, int Length)> hierarchyElementPath = [];
 
             BoundValueSource[]? HierarchyElements(ExpressionSyntax expression, AuthoredMember owner, Func<ISymbol, AuthoredMember, bool>? storageProof = null)
@@ -31543,6 +31632,10 @@ internal static partial class HostedGrimoireProducerInventory
 
                 try
                 {
+                    // The ids are opaque, and the cursors a selector builds from them are still enumerated (see StorageGuidSequence). Its own
+                    // boundary check stands in for the operator walk below, which would charge the proof for every node of the helper call.
+                    if (StorageGuidSequence(expression, owner)) return [new BoundValueSource(owner, expression)];
+
                     if (!ContextualOperatorsAreBuiltin(expression, owner)) return null;
 
                     expression = StripTransparentExpression(expression);
@@ -32119,7 +32212,7 @@ internal static partial class HostedGrimoireProducerInventory
                     try
                     {
                         return owner.ValueBindings?.TryGetValue(parameter.Parameter, out BoundValueSource? bound) == true
-                            && bound is not null && Expression(bound.Expression, bound.Caller);
+                            && bound is not null && (StorageGuidElement(parameter.Parameter, bound) || Expression(bound.Expression, bound.Caller));
                     }
                     finally
                     {
