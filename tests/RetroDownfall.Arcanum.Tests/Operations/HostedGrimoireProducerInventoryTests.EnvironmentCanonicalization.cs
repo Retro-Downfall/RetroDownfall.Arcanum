@@ -1069,4 +1069,45 @@ public sealed partial class HostedGrimoireProducerInventoryTests
 
         Assert.Equal(1, movedStates.Count(static state => state.Method.Contains("Box`1.Make", StringComparison.Ordinal) && state.Lifecycle));
     }
+
+    // Constant Value Identity merges the states of a callee that is reached with the same constant from different callers, and
+    // the environment keeps only the first caller. A walk that enumerates the sources a member's value bindings hold, to follow
+    // them to their callers, would read a caller that the state does not name, so it has to skip a constant. The one such walk
+    // today is the search for the owner of an inherited group; a new one must say what it does with a constant before this scan
+    // accepts it.
+    [Fact]
+    public void EveryWalkOverTheSourcesOfAMembersValueBindingsSkipsAConstant()
+    {
+        string support = Path.Combine(TestRepositoryPaths.RepositoryRoot(), "tests", "RetroDownfall.Arcanum.Tests", "Support");
+
+        List<string> walks = [];
+
+        List<string> unguarded = [];
+
+        foreach (string file in Directory.EnumerateFiles(support, "HostedGrimoireProducerInventory*.cs"))
+        {
+            string[] lines = File.ReadAllLines(file);
+
+            for (int index = 0; index < lines.Length; index++)
+            {
+                if (!System.Text.RegularExpressions.Regex.IsMatch(lines[index], @"\bValueBindings\??\.Values\b"))
+                {
+                    continue;
+                }
+
+                string site = Path.GetFileName(file) + ":" + (index + 1);
+
+                walks.Add(site);
+
+                if (!string.Join('\n', lines.Skip(index).Take(12)).Contains("TryConstantValueIdentity", StringComparison.Ordinal))
+                {
+                    unguarded.Add(site);
+                }
+            }
+        }
+
+        Assert.NotEmpty(walks);
+
+        Assert.Empty(unguarded);
+    }
 }
