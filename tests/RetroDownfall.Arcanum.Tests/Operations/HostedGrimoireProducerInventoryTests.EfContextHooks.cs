@@ -7,7 +7,7 @@ using Xunit;
 
 namespace RetroDownfall.Arcanum.Tests.Operations;
 
-// EF runs authored code of a DbContext on its own schedule: OnConfiguring and the model hooks (OnModelCreating,
+// The EfContextHooks fixtures. EF runs authored code of a DbContext on its own schedule: OnConfiguring and the model hooks (OnModelCreating,
 // ConfigureConventions) at the first use of the context's services, and the constructor and the field and property
 // initializers when the context is activated. The first use that really triggers them is not the read of a DbSet or of
 // Database, so they run with no work, effect or recovery admission inherited. These fixtures pin that every authored
@@ -32,7 +32,8 @@ public sealed partial class HostedGrimoireProducerInventoryTests
         string helpers = "",
         string contextBases = "",
         string? contextDeclaration = null,
-        string admitted = "")
+        string admitted = "",
+        bool production = false)
     {
         string source = SqliteIndexerSource(
             options,
@@ -60,7 +61,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests
                 StringComparison.Ordinal);
         }
 
-        return DiscoverSqliteIndexerProbe(source);
+        return DiscoverSqliteIndexerProbe(source, [], production);
     }
 
     private static HostedProducerSite[] HookDeletes(HostedProducerDiscovery<HostedProducerSite> result) =>

@@ -7,7 +7,7 @@ using Xunit;
 
 namespace RetroDownfall.Arcanum.Tests.Operations;
 
-// The whole-tree connection-replacement scan (H3) reads the bound symbol of every simple name of every tree, so it
+// The ConnectionReplacementScan fixtures. The whole-tree connection-replacement scan (H3) reads the bound symbol of every simple name of every tree, so it
 // is the most expensive single fact the closed-provider certificate depends on. It is a property of the analysed
 // compilations alone, so it is computed once per discovery, by a scan that does not depend on which root worker
 // asked first, and every isolated root worker shares that one verdict.

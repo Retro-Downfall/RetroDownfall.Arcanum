@@ -7,7 +7,7 @@ using Xunit;
 
 namespace RetroDownfall.Arcanum.Tests.Operations;
 
-// The reviewed database support members and the database sites name framework members by identity, but most of
+// The DbProviderDispatch fixtures. The reviewed database support members and the database sites name framework members by identity, but most of
 // them are virtual, abstract or non-virtual wrappers around a virtual slot of a type authored code can extend
 // (DbConnection.CreateCommand calls CreateDbCommand, DbCommand.ExecuteReader calls ExecuteDbDataReader). A grant
 // by name is therefore valid only where the receiver is closed: a sealed or non-extensible static type, a provenance
@@ -112,13 +112,13 @@ public sealed partial class HostedGrimoireProducerInventoryTests
         }
         """;
 
-    private HostedProducerDiscovery<HostedProducerSite> DispatchDiscover(string body, string extra = "")
+    private HostedProducerDiscovery<HostedProducerSite> DispatchDiscover(string body, string extra = "", bool production = false)
     {
         CSharpCompilation compilation = CompileWithProductionReferencePack(R2Source(R2Admission + body + " await Task.CompletedTask;", DispatchInputs + "\n" + extra), "RetroDownfall.Arcanum.Api");
 
         Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
 
-        HostedProducerDiscovery<HostedProducerSite> result = HostedGrimoireProducerInventory.DiscoverProducerSites([compilation], new(["Worker"], []), [new("Worker", [OrdinaryRoot()])], []);
+        HostedProducerDiscovery<HostedProducerSite> result = DiscoverUnderRegime(compilation, production);
 
         foreach (HostedProducerInventoryDiagnostic diagnostic in result.Diagnostics)
         {
@@ -248,6 +248,96 @@ public sealed partial class HostedGrimoireProducerInventoryTests
         bool refused = result.Diagnostics.Any(static diagnostic => diagnostic.Code is "HOSTED_DISPOSAL_TARGET_UNRESOLVED" or "HOSTED_SITE_UNCLASSIFIED" or "HOSTED_CALL_TARGET_UNRESOLVED");
 
         Assert.Equal(!resolved, refused);
+    }
+
+    // ---- A local is a closed receiver only when every write to it is a plain assignment the analysis can read.
+
+    private const string DispatchWriters = """
+        internal static class DispatchWriters
+        {
+            internal static void Replace(out System.Data.Common.DbConnection connection) { connection = new EvilConnection(); }
+        }
+        """;
+
+    private const string DispatchSqlite = "new Microsoft.Data.Sqlite.SqliteConnection(\"Data Source=:memory:\")";
+
+    [Theory]
+    [InlineData("plain-assignment", "System.Data.Common.DbConnection c = " + DispatchSqlite + "; c = new EvilConnection(); _ = c.CreateCommand();")]
+    [InlineData("tuple-deconstruction", "System.Data.Common.DbConnection c = " + DispatchSqlite + "; (c, _) = (new EvilConnection(), 0); _ = c.CreateCommand();")]
+    [InlineData("nested-tuple-deconstruction", "System.Data.Common.DbConnection c = " + DispatchSqlite + "; int n; ((c, n), _) = ((new EvilConnection(), 0), 0); _ = c.CreateCommand();")]
+    [InlineData("ref-local-alias", "System.Data.Common.DbConnection c = " + DispatchSqlite + "; ref System.Data.Common.DbConnection r = ref c; r = new EvilConnection(); _ = c.CreateCommand();")]
+    [InlineData("out-argument", "System.Data.Common.DbConnection c = " + DispatchSqlite + "; DispatchWriters.Replace(out c); _ = c.CreateCommand();")]
+    [InlineData("null-coalescing-assignment", "System.Data.Common.DbConnection? c = null; c ??= new EvilConnection(); _ = c.CreateCommand();")]
+    public void ALocalWrittenByAnythingButAReadablePlainAssignmentIsNotAClosedReceiver(string shape, string statement)
+    {
+        EachQueryMode(production =>
+        {
+            output.WriteLine("DISPATCH " + shape + " " + (production ? "production" : "strict"));
+
+            HostedProducerDiscovery<HostedProducerSite> result = DispatchDiscover(statement, DispatchAuthoredProviders + DispatchWriters, production);
+
+            Assert.True(DispatchRefused(result, "System.Data.Common.DbConnection.CreateCommand"), shape + " must be refused (" + (production ? "production" : "strict") + ").");
+        });
+    }
+
+    [Theory]
+    [InlineData("reassigned-closed", "System.Data.Common.DbConnection c = " + DispatchSqlite + "; c = " + DispatchSqlite + "; _ = c.CreateCommand();")]
+    [InlineData("branch-assigned-closed", "System.Data.Common.DbConnection c = " + DispatchSqlite + "; if (System.DateTime.UtcNow.Ticks > 0) { c = " + DispatchSqlite + "; } _ = c.CreateCommand();")]
+    public void ALocalOnlyEverAssignedClosedValuesStaysAClosedReceiver(string shape, string statement)
+    {
+        output.WriteLine("DISPATCH " + shape);
+
+        HostedProducerDiscovery<HostedProducerSite> result = DispatchDiscover(statement, DispatchAuthoredProviders + DispatchWriters);
+
+        Assert.False(DispatchRefused(result, "System.Data.Common.DbConnection.CreateCommand"));
+    }
+
+    // ---- A provider-typed value handed to a reviewed member is judged by what it is, not by what it is declared as.
+
+    private const string DispatchSqliteTypes = """
+        internal sealed class EvilSqliteParameter : Microsoft.Data.Sqlite.SqliteParameter
+        {
+            public override string ParameterName { get => "@a"; set { System.IO.File.Delete("evil-sqlite-parameter"); } }
+        }
+
+        internal sealed class EvilSqliteConnection : Microsoft.Data.Sqlite.SqliteConnection
+        {
+            public override System.Data.ConnectionState State { get { System.IO.File.Delete("evil-sqlite-state"); return System.Data.ConnectionState.Open; } }
+        }
+        """;
+
+    private const string DispatchSqliteCommand = "using var conn = " + DispatchSqlite + "; using var cmd = conn.CreateCommand(); ";
+
+    [Theory]
+    [InlineData("direct-argument", DispatchSqliteCommand + "cmd.Parameters.Add(new EvilSqliteParameter()); _ = cmd.ExecuteNonQuery();", "Microsoft.Data.Sqlite.SqliteParameterCollection.Add")]
+    [InlineData("parameter-typed-local", DispatchSqliteCommand + "Microsoft.Data.Sqlite.SqliteParameter p = new EvilSqliteParameter(); cmd.Parameters.Add(p); _ = cmd.ExecuteNonQuery();", "Microsoft.Data.Sqlite.SqliteParameterCollection.Add")]
+    [InlineData("object-typed-local", DispatchSqliteCommand + "object p = new EvilSqliteParameter(); cmd.Parameters.Add(p); _ = cmd.ExecuteNonQuery();", "Microsoft.Data.Sqlite.SqliteParameterCollection.Add")]
+    [InlineData("connection-typed-local", DispatchSqliteCommand + "Microsoft.Data.Sqlite.SqliteConnection c = new EvilSqliteConnection(); cmd.Connection = c; _ = cmd.ExecuteNonQuery();", "Microsoft.Data.Sqlite.SqliteCommand.Connection")]
+    public void AnAuthoredProviderSubclassHandedToAReviewedMemberThroughATypedLocalIsRefused(string shape, string statement, string callee)
+    {
+        EachQueryMode(production =>
+        {
+            output.WriteLine("DISPATCH " + shape + " " + (production ? "production" : "strict"));
+
+            HostedProducerDiscovery<HostedProducerSite> result = DispatchDiscover(statement, DispatchSqliteTypes, production);
+
+            Assert.True(DispatchRefused(result, callee), shape + " must be refused (" + (production ? "production" : "strict") + ").");
+        });
+    }
+
+    [Theory]
+    [InlineData("framework-parameter-local", DispatchSqliteCommand + "Microsoft.Data.Sqlite.SqliteParameter p = new Microsoft.Data.Sqlite.SqliteParameter(); cmd.Parameters.Add(p); _ = cmd.ExecuteNonQuery();", "Microsoft.Data.Sqlite.SqliteParameterCollection.Add")]
+    [InlineData("framework-created-parameter", DispatchSqliteCommand + "Microsoft.Data.Sqlite.SqliteParameter p = cmd.CreateParameter(); cmd.Parameters.Add(p); _ = cmd.ExecuteNonQuery();", "Microsoft.Data.Sqlite.SqliteParameterCollection.Add")]
+    [InlineData("framework-connection-local", DispatchSqliteCommand + "Microsoft.Data.Sqlite.SqliteConnection c = " + DispatchSqlite + "; cmd.Connection = c; _ = cmd.ExecuteNonQuery();", "Microsoft.Data.Sqlite.SqliteCommand.Connection")]
+    [InlineData("string-argument", DispatchSqliteCommand + "string name = \"@a\"; cmd.Parameters.AddWithValue(name, 1); _ = cmd.ExecuteNonQuery();", "Microsoft.Data.Sqlite.SqliteParameterCollection.AddWithValue")]
+    public void AFrameworkProviderValueHandedToAReviewedMemberStaysClassifiedWhileAnAuthoredSubclassExists(string shape, string statement, string callee)
+    {
+        output.WriteLine("DISPATCH " + shape);
+
+        // The authored subclasses are in the tree, so an argument declared as their base could hold one; these cannot.
+        HostedProducerDiscovery<HostedProducerSite> result = DispatchDiscover(statement, DispatchSqliteTypes);
+
+        Assert.False(DispatchRefused(result, callee), shape + " must stay classified.");
     }
 
     [Fact]

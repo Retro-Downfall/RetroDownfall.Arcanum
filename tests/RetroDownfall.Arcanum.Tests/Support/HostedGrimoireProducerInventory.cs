@@ -25046,9 +25046,38 @@ internal static partial class HostedGrimoireProducerInventory
                         // A call that builds an EF query hands back a value whose execution must be followed from here.
                         if (node is InvocationExpressionSyntax queryBuilding
                             && Resolve(method.ReducedFrom ?? method, member.Model.Compilation) is null
-                            && IsEfQueryOperand(member, queryBuilding, 0))
+                            && IsEfQueryOperand(member, queryBuilding))
                         {
                             RefuseEscapingEfQuery(member, queryBuilding, callee);
+                        }
+
+                        // Disposing a context, or a container scope that disposes the contexts it built, raises the disposal
+                        // callbacks of the connection under the frontiers live at the disposal.
+                        if (node is InvocationExpressionSyntax
+                            {
+                                Expression: MemberAccessExpressionSyntax { Expression: { } disposedResource },
+                                ArgumentList.Arguments.Count: 0,
+                            } disposalCall
+                            && method.Name is "Dispose" or "DisposeAsync")
+                        {
+                            bool disposalJoined = !IsAwaitable(method.ReturnType)
+                                || CompletionPoint(member, disposalCall, completionOwned) is not null;
+
+                            emittedEvidence = MergeEvidence(
+                                emittedEvidence,
+                                TraverseDisposalCallbacks(
+                                    member,
+                                    disposedResource,
+                                    member.Model.GetTypeInfo(disposedResource).Type,
+                                    method.Name == "DisposeAsync",
+                                    node,
+                                    rootType,
+                                    operationId,
+                                    active,
+                                    lifecycle,
+                                    disposalJoined ? workAdmitted : null,
+                                    disposalJoined ? effectGroup : null,
+                                    recoveryEffect));
                         }
 
                         // H7: EF runs OnConfiguring at the first use of the context's services,
@@ -26590,6 +26619,22 @@ internal static partial class HostedGrimoireProducerInventory
                                         + disposeName
                                         + "; Expression disposal must resolve to exactly one compiler-effective authored cleanup."));
                             }
+
+                            emittedEvidence = MergeEvidence(
+                                emittedEvidence,
+                                TraverseDisposalCallbacks(
+                                    member,
+                                    resource,
+                                    resourceType,
+                                    expressionUsing.AwaitKeyword.RawKind != 0,
+                                    resource,
+                                    rootType,
+                                    operationId,
+                                    active,
+                                    lifecycle,
+                                    retainedWork,
+                                    retainedEffect,
+                                    recoveryEffect));
                         }
                     }
 
@@ -26671,6 +26716,25 @@ internal static partial class HostedGrimoireProducerInventory
                                                 ? "DisposeAsync"
                                                 : "Dispose")
                                             + "; Declaration disposal must resolve to exactly one compiler-effective authored cleanup."));
+                                }
+
+                                if (cleanupResource is not null)
+                                {
+                                    emittedEvidence = MergeEvidence(
+                                        emittedEvidence,
+                                        TraverseDisposalCallbacks(
+                                            member,
+                                            cleanupResource,
+                                            disposable,
+                                            asynchronous,
+                                            variable,
+                                            rootType,
+                                            operationId,
+                                            active,
+                                            lifecycle,
+                                            retainedWork,
+                                            retainedEffect,
+                                            recoveryEffect));
                                 }
                             }
                         }
@@ -30754,6 +30818,7 @@ internal static partial class HostedGrimoireProducerInventory
                 || IsReviewedNonProducerExternalMember(property, mutation)
                 || !mutation && IsReviewedFrameworkEventDataRead(property)
                 || IsReviewedDatabaseSupportMember(property, mutation)
+                    && !(mutation && TrackingBlockedByIdentityResolution(property))
                     && ReviewedProviderMemberIsClosed(property, node, model, context))
             {
                 return false;
@@ -30795,6 +30860,7 @@ internal static partial class HostedGrimoireProducerInventory
                 || IsReviewedExactBoundedExternalMember(method)
                 || IsExactEmbeddingSdkAdapterFactory(method)
                 || IsReviewedDatabaseSupportMember(method)
+                    && !TrackingBlockedByIdentityResolution(method)
                     && ReviewedProviderMemberIsClosed(method, node, model, context)
                 || IsReviewedEfInterceptorBaseCall(method, node, model)
                 || IsReviewedAccessorLoggerFactoryRead(method) && inventoryFacts.AuthoredLoggerType is null
@@ -40956,11 +41022,16 @@ internal static partial class HostedGrimoireProducerInventory
 
             if (type is INamedTypeSymbol named)
             {
-                foreach (INamedTypeSymbol contract in named.AllInterfaces)
+                // A task is disposable, but it carries a handle only through the result it will produce: it exposes no way to
+                // dispose what it was handed, so forwarding a handle to a call that returns one is no escape of the handle.
+                if (!IsExactFrameworkTask(named))
                 {
-                    if (query?.Visit() == false) return false;
+                    foreach (INamedTypeSymbol contract in named.AllInterfaces)
+                    {
+                        if (query?.Visit() == false) return false;
 
-                    if (TypeKey(contract) is "System.IDisposable" or "System.IAsyncDisposable") return true;
+                        if (TypeKey(contract) is "System.IDisposable" or "System.IAsyncDisposable") return true;
+                    }
                 }
 
                 return named.TypeArguments.Any(argument => CanCarryAdmissionHandle(argument, path, query))
@@ -40969,6 +41040,10 @@ internal static partial class HostedGrimoireProducerInventory
 
             return false;
         }
+
+        private static bool IsExactFrameworkTask(INamedTypeSymbol type) =>
+            TypeKey(type) is "System.Threading.Tasks.Task" or "System.Threading.Tasks.Task`1"
+            && IsExactFrameworkType(type.OriginalDefinition, TypeKey(type), typeof(Task).Assembly.GetName());
 
         private static bool PreservesAdmissionReceiver(IMethodSymbol method) => Normalize(method) == "RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireWorkLease.TryBeginExternalEffectGroup";
 

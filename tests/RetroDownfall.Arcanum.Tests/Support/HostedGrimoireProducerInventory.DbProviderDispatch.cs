@@ -172,7 +172,7 @@ internal static partial class HostedGrimoireProducerInventory
             switch (operation)
             {
                 case IInvocationOperation invocation:
-                    if (invocation.Arguments.Any(static argument => UnconvertedType(argument.Value) is { } type && IsAuthoredProviderSubclass(type)))
+                    if (invocation.Arguments.Any(argument => ProviderValueMayBeAuthored(context, argument.Value, definition)))
                     {
                         return false;
                     }
@@ -182,7 +182,9 @@ internal static partial class HostedGrimoireProducerInventory
                     break;
 
                 case IPropertyReferenceOperation property:
-                    if (property.Parent is ISimpleAssignmentOperation { Value: { } assignedValue } && UnconvertedType(assignedValue) is { } assigned && IsAuthoredProviderSubclass(assigned))
+                    if (property.Parent is ISimpleAssignmentOperation { Value: { } assignedValue } assignment
+                        && ReferenceEquals(assignment.Target, property)
+                        && ProviderValueMayBeAuthored(context, assignedValue, definition))
                     {
                         return false;
                     }
@@ -236,6 +238,103 @@ internal static partial class HostedGrimoireProducerInventory
             }
 
             return instance.Syntax as ExpressionSyntax;
+        }
+
+        private INamedTypeSymbol[]? authoredProviderSubclasses;
+
+        // Every class in the analysed source that derives from a provider type whose virtual members a reviewed member would
+        // call on a value it is handed. A property of the analysed compilations alone.
+        private INamedTypeSymbol[] AuthoredProviderSubclasses()
+        {
+            if (authoredProviderSubclasses is { } cached)
+            {
+                return cached;
+            }
+
+            List<INamedTypeSymbol> subclasses = [];
+
+            foreach (CSharpCompilation compilation in compilationIdentities.Keys.OfType<CSharpCompilation>())
+            {
+                foreach (INamedTypeSymbol type in SourceTypes(compilation.Assembly.GlobalNamespace))
+                {
+                    if (IsAuthoredProviderSubclass(type))
+                    {
+                        subclasses.Add(type);
+                    }
+                }
+            }
+
+            authoredProviderSubclasses = [.. subclasses];
+
+            return authoredProviderSubclasses;
+        }
+
+        private static bool DerivesFromProviderWrapper(INamedTypeSymbol type)
+        {
+            for (INamedTypeSymbol? parent = type.BaseType; parent is not null; parent = parent.BaseType)
+            {
+                if (ProviderWrapperTypes.Contains(TypeKey(parent)))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        // True when a value declared as the type could be an instance of the authored subclass: the type is object, a type
+        // parameter, the subclass, one of its bases or an interface it implements. Compared by metadata identity, because
+        // the subclass and the type can belong to different compilations.
+        private static bool CanHold(ITypeSymbol declared, INamedTypeSymbol subclass)
+        {
+            if (declared.SpecialType == SpecialType.System_Object || declared is ITypeParameterSymbol)
+            {
+                return true;
+            }
+
+            string key = TypeKey(declared);
+
+            for (INamedTypeSymbol? current = subclass; current is not null; current = current.BaseType)
+            {
+                if (TypeKey(current) == key)
+                {
+                    return true;
+                }
+            }
+
+            return subclass.AllInterfaces.Any(contract => TypeKey(contract) == key);
+        }
+
+        /// <summary>
+        /// A value handed to a reviewed member (an argument, or the value assigned to a property) is judged by what it is, not
+        /// by what it is declared as. An authored provider subclass, or a value declared as anything an authored subclass
+        /// converts to, may be one, so the reviewed member could call its overrides; it is accepted only when its
+        /// provenance proves it an exact framework runtime type.
+        /// </summary>
+        private bool ProviderValueMayBeAuthored(AuthoredMember context, IOperation value, ISymbol definition)
+        {
+            if (UnconvertedType(value) is not { } type)
+            {
+                return false;
+            }
+
+            if (IsAuthoredProviderSubclass(type))
+            {
+                return true;
+            }
+
+            // A value declared as `object` or a type parameter is data to a member that does not take a provider object, so
+            // it is held against the ADO.NET and Sqlite families alone; a more specific declared type is held against every
+            // provider type authored code extends, the context among them.
+            bool anyType = type.SpecialType == SpecialType.System_Object || type is ITypeParameterSymbol;
+
+            if (!AuthoredProviderSubclasses().Any(subclass => CanHold(type, subclass) && (!anyType || DerivesFromProviderWrapper(subclass))))
+            {
+                return false;
+            }
+
+            return value.Syntax is not ExpressionSyntax expression
+                || !IsClosedProviderReceiver(context, expression, definition, wrapper: true, 0);
         }
 
         private static bool IsAuthoredProviderSubclass(ITypeSymbol type)
@@ -309,7 +408,12 @@ internal static partial class HostedGrimoireProducerInventory
                 return true;
             }
 
+            // A provenance that named every source and found one that is not closed is the answer, and so is one that named an
+            // open source even though it could not follow the rest: a local's own writes can only help where the provenance
+            // could not follow them and named nothing that is open.
             if (depth < 4
+                && !(provenance.Complete && provenance.Candidates.Count != 0)
+                && !provenance.Candidates.Any(candidate => !IsClosedProviderCandidate(candidate.Type, definition, wrapper))
                 && receiver is IdentifierNameSyntax
                 && context.Model.GetSymbolInfo(receiver).Symbol is ILocalSymbol local)
             {
@@ -321,9 +425,17 @@ internal static partial class HostedGrimoireProducerInventory
 
             return depth < 4
                 && (wrapper
-                    ? IsFrameworkParametersOfClosedCommand(context, receiver, depth)
+                    ? IsFrameworkParametersOfClosedCommand(context, receiver, depth) || IsFrameworkParameterCreatedByClosedCommand(context, receiver, depth)
                     : IsFrameworkProviderObjectOfClosedContext(context, receiver, depth));
         }
+
+        // A parameter a closed command creates is the command's own: a framework object whatever the declared type says.
+        private bool IsFrameworkParameterCreatedByClosedCommand(AuthoredMember context, ExpressionSyntax receiver, int depth) =>
+            receiver is InvocationExpressionSyntax { Expression: MemberAccessExpressionSyntax access }
+            && context.Model.GetSymbolInfo(receiver).Symbol is IMethodSymbol { Name: "CreateParameter", IsStatic: false } creator
+            && TypeKey(creator.ContainingType) is "System.Data.Common.DbCommand" or "Microsoft.Data.Sqlite.SqliteCommand"
+            && IsTrustedProviderAssembly(creator.ContainingAssembly)
+            && IsClosedProviderReceiver(context, access.Expression, creator, wrapper: true, depth + 1);
 
         // The parameter collection of a closed command is the command's own: a non-extensible framework object.
         private bool IsFrameworkParametersOfClosedCommand(AuthoredMember context, ExpressionSyntax receiver, int depth) =>

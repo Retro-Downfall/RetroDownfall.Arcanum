@@ -7,7 +7,7 @@ using Xunit;
 
 namespace RetroDownfall.Arcanum.Tests.Operations;
 
-// A context nobody can follow to its source is still an instance of a type the program can make, and authored code makes
+// The EfContextUniverse fixtures. A context nobody can follow to its source is still an instance of a type the program can make, and authored code makes
 // one in exactly two ways: the container builds it from the registrations of its type, and an allocation in analysed
 // source builds it from options that source supplies. What EF is given (a compiled model, the interceptors) is bounded by
 // the union of the two, so a receiver of unknown provenance is judged by that union rather than assumed to be anything.

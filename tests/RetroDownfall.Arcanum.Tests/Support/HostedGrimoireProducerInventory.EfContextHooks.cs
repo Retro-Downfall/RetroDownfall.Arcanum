@@ -39,8 +39,11 @@ internal static partial class HostedGrimoireProducerInventory
 
     private sealed partial class ProducerGraph
     {
-        /// <summary>One authored member EF runs because of a context use, and the step it is traversed under.</summary>
-        private readonly record struct DbContextHook(AuthoredMember Member, string Step);
+        /// <summary>
+        /// One authored member EF runs because of a context use, and the step it is traversed under; or, with no member, the
+        /// refusal of something EF runs at that use that the analysis cannot enter.
+        /// </summary>
+        private readonly record struct DbContextHook(AuthoredMember? Member, string Step, string? Refusal = null);
 
         private enum ContextOrigin : byte
         {
@@ -232,6 +235,15 @@ internal static partial class HostedGrimoireProducerInventory
                             hooks.Add(new(model, "model"));
                         }
                     }
+
+                    // EF builds the model at this use, and building it raises the instantiation-binding interceptors of the
+                    // context, a contract the analysis does not enter.
+                    if (InterceptorSetFor(member, use, receiver, type) is { Closed: true } modelSet
+                        && modelSet.Types.Select(static interceptor => interceptor.Type).Distinct(SymbolEqualityComparer.Default).OfType<INamedTypeSymbol>()
+                            .FirstOrDefault(static interceptor => interceptor.AllInterfaces.Any(static contract => TypeKey(contract) == "Microsoft.EntityFrameworkCore.Diagnostics.IInstantiationBindingInterceptor")) is { } binder)
+                    {
+                        hooks.Add(new(null, "model", "the interceptor " + binder.ToDisplayString() + " implements IInstantiationBindingInterceptor, which EF raises while it builds the model of " + type.ToDisplayString() + ", an interceptor contract this analysis does not enter."));
+                    }
                 }
 
                 if (use.Origin != ContextOrigin.Created)
@@ -243,7 +255,9 @@ internal static partial class HostedGrimoireProducerInventory
                 }
             }
 
-            return [.. hooks.DistinctBy(static hook => (hook.Member.Syntax.SyntaxTree, hook.Member.Syntax.SpanStart, hook.Step))];
+            return [.. hooks.DistinctBy(static hook => hook.Member is { } hooked
+                ? ((SyntaxTree?)hooked.Syntax.SyntaxTree, hooked.Syntax.SpanStart, hook.Step, string.Empty)
+                : ((SyntaxTree?)null, 0, hook.Step, hook.Refusal ?? string.Empty))];
         }
 
         /// <summary>
@@ -447,10 +461,19 @@ internal static partial class HostedGrimoireProducerInventory
 
             foreach (DbContextHook hook in hooks)
             {
+                if (hook.Member is not { } hooked)
+                {
+                    RefuseTraversalCompletion();
+
+                    diagnostics.Add(new("HOSTED_SITE_UNCLASSIFIED", Location(node), hook.Refusal ?? "An EF hook the analysis cannot enter."));
+
+                    continue;
+                }
+
                 evidence = MergeEvidence(
                     evidence,
                     Traverse(
-                        hook.Member,
+                        hooked,
                         rootType,
                         operationId + "/" + hook.Step + "@" + Location(node),
                         active,
@@ -621,6 +644,29 @@ internal static partial class HostedGrimoireProducerInventory
                 {
                     case BaseObjectCreationExpressionSyntax creation
                         when member.Model.GetTypeInfo(creation).Type is { } built && IsOptionsBuilderType(built):
+                        // A builder made from existing options carries everything those options carry, so the options are
+                        // followed too; an argument nobody can follow leaves the whole chain not understood.
+                        if (creation.ArgumentList is { Arguments.Count: > 0 } copied)
+                        {
+                            BuilderFacts inner = new();
+
+                            bool innerConfigured = false;
+
+                            if (copied.Arguments.Count != 1
+                                || !AnalyzeOptionsExpression(member, copied.Arguments[0].Expression, inner, ref innerConfigured, 0))
+                            {
+                                return false;
+                            }
+
+                            facts.ModelSupplied |= inner.ModelSupplied;
+
+                            facts.InterceptorsClosed &= inner.InterceptorsClosed;
+
+                            facts.Interceptors.AddRange(inner.Interceptors);
+
+                            configured |= innerConfigured;
+                        }
+
                         facts.ModelSupplied |= model;
 
                         return true;
@@ -747,10 +793,23 @@ internal static partial class HostedGrimoireProducerInventory
             return result;
         }
 
-        // The interceptors one AddInterceptors call hands EF: inline allocations, and static readonly singletons whose
-        // initializer is an allocation. A parameter, a service lookup or any other value is an interceptor of a type this
-        // analysis cannot name, so the set is not closed.
-        private static void CollectInterceptors(IInvocationOperation invocation, SemanticModel model, BuilderFacts facts)
+        private static bool IsInterceptorType(INamedTypeSymbol type) =>
+            type.TypeKind == TypeKind.Class
+            && type.AllInterfaces.Any(static contract => TypeKey(contract) == EfInterceptorMarker
+                && !IsAuthoredSymbol(contract)
+                && IsEfAssembly(contract.ContainingAssembly));
+
+        // True when a static constructor of the type, in any part of its declaration, can assign the type's static storage.
+        private static bool DeclaresStaticConstructor(INamedTypeSymbol? type) =>
+            type is null
+            || type.DeclaringSyntaxReferences.Any(static reference => reference.GetSyntax() is TypeDeclarationSyntax declaration
+                && declaration.Members.OfType<ConstructorDeclarationSyntax>().Any(static constructor => constructor.Modifiers.Any(SyntaxKind.StaticKeyword)));
+
+        // The interceptors one AddInterceptors call hands EF: inline allocations of a type that implements EF's interceptor
+        // contract, and static readonly singletons of such a type whose initializer is an allocation and that no static
+        // constructor can reassign. A collection, a parameter, a service lookup or any other value is an interceptor of a
+        // type this analysis cannot name, so the set is not closed.
+        private void CollectInterceptors(IInvocationOperation invocation, SemanticModel model, BuilderFacts facts)
         {
             foreach (IOperation argument in invocation.Arguments
                 .SelectMany(static argument => argument.Value is IArrayCreationOperation array
@@ -764,7 +823,7 @@ internal static partial class HostedGrimoireProducerInventory
                     value = conversion.Operand;
                 }
 
-                if (value is IObjectCreationOperation { Type: INamedTypeSymbol created })
+                if (value is IObjectCreationOperation { Type: INamedTypeSymbol created } && IsInterceptorType(created))
                 {
                     facts.Interceptors.Add((created, model.Compilation));
 
@@ -787,10 +846,13 @@ internal static partial class HostedGrimoireProducerInventory
                     _ => null,
                 };
 
+                // The declaring tree can belong to another analysed compilation than the registration's.
                 if (singleton is not null
                     && storageReference is not null
-                    && model.Compilation.GetSemanticModel(storageReference.SyntaxTree) is { } storageModel
-                    && storageModel.GetTypeInfo(singleton).Type is INamedTypeSymbol singletonType)
+                    && !DeclaresStaticConstructor(storage?.ContainingType)
+                    && semanticModels.TryGetValue(storageReference.SyntaxTree, out SemanticModel? storageModel)
+                    && storageModel.GetTypeInfo(singleton).Type is INamedTypeSymbol singletonType
+                    && IsInterceptorType(singletonType))
                 {
                     facts.Interceptors.Add((singletonType, storageModel.Compilation));
 

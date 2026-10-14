@@ -24,7 +24,8 @@ internal static partial class HostedGrimoireProducerInventory
         // ConnectionCreating and ConnectionCreated: raised when EF creates the DbConnection object.
         ConnectionCreation = 1,
 
-        // The rest of IDbConnectionInterceptor: opening, opened, closing, closed, failed, canceled, disposing, disposed.
+        // The rest of IDbConnectionInterceptor that an operation raises while it works: opening, opened, closing, closed,
+        // failed, canceled. Disposing and disposed are raised when the context is disposed, never by an operation.
         Connection = 2,
 
         Command = 4,
@@ -34,12 +35,16 @@ internal static partial class HostedGrimoireProducerInventory
         SaveChanges = 16,
 
         Query = 32,
+
+        // Raised when a context is disposed: the connection is closed if it is still open, then disposed.
+        ConnectionDisposal = 64,
     }
 
     private static readonly IReadOnlyDictionary<EfInterception, string[]> EfInterceptionContracts = new Dictionary<EfInterception, string[]>
     {
         [EfInterception.ConnectionCreation] = ["Microsoft.EntityFrameworkCore.Diagnostics.IDbConnectionInterceptor"],
         [EfInterception.Connection] = ["Microsoft.EntityFrameworkCore.Diagnostics.IDbConnectionInterceptor"],
+        [EfInterception.ConnectionDisposal] = ["Microsoft.EntityFrameworkCore.Diagnostics.IDbConnectionInterceptor"],
         [EfInterception.Command] = ["Microsoft.EntityFrameworkCore.Diagnostics.IDbCommandInterceptor"],
         [EfInterception.Transaction] = ["Microsoft.EntityFrameworkCore.Diagnostics.IDbTransactionInterceptor"],
         [EfInterception.SaveChanges] = ["Microsoft.EntityFrameworkCore.Diagnostics.ISaveChangesInterceptor"],
@@ -47,9 +52,50 @@ internal static partial class HostedGrimoireProducerInventory
         [
             "Microsoft.EntityFrameworkCore.Diagnostics.IMaterializationInterceptor",
             "Microsoft.EntityFrameworkCore.Diagnostics.IQueryExpressionInterceptor",
-            "Microsoft.EntityFrameworkCore.Diagnostics.IIdentityResolutionInterceptor",
         ],
     };
+
+    private const string EfInterceptorMarker = "Microsoft.EntityFrameworkCore.Diagnostics.IInterceptor";
+
+    // Every interceptor contract Entity Framework ships, by what this analysis does with an interceptor that implements it:
+    // "Entered" contracts have their authored callbacks traversed at the operations that raise them; "Marker" contracts
+    // declare no callback; "Refused" contracts are raised by triggers the analysis does not enumerate (the model is built,
+    // an instance already tracked is tracked again), so an interceptor implementing one is refused at the operations that
+    // use its context. Anything else is "Unknown", which is refused the same way: the census fixture reads the contracts
+    // from the assemblies, so a contract a later version adds cannot be ignored.
+    internal static string EfInterceptorContractVerdict(string contract) => contract switch
+    {
+        "Microsoft.EntityFrameworkCore.Diagnostics.IDbConnectionInterceptor"
+            or "Microsoft.EntityFrameworkCore.Diagnostics.IDbCommandInterceptor"
+            or "Microsoft.EntityFrameworkCore.Diagnostics.IDbTransactionInterceptor"
+            or "Microsoft.EntityFrameworkCore.Diagnostics.ISaveChangesInterceptor"
+            or "Microsoft.EntityFrameworkCore.Diagnostics.IMaterializationInterceptor"
+            or "Microsoft.EntityFrameworkCore.Diagnostics.IQueryExpressionInterceptor" => "Entered",
+        EfInterceptorMarker or "Microsoft.EntityFrameworkCore.Diagnostics.ISingletonInterceptor" => "Marker",
+        "Microsoft.EntityFrameworkCore.Diagnostics.IInstantiationBindingInterceptor"
+            or "Microsoft.EntityFrameworkCore.Diagnostics.IIdentityResolutionInterceptor" => "Refused",
+        _ => "Unknown",
+    };
+
+    private const string EfIdentityResolutionContract = "Microsoft.EntityFrameworkCore.Diagnostics.IIdentityResolutionInterceptor";
+
+    // The first authored type in the analysed source that implements EF's identity-resolution contract, or null. A property
+    // of the analysed compilations alone, computed once per discovery (see InventoryFacts).
+    internal static string? FindAuthoredIdentityResolutionInterceptor(IReadOnlyList<CSharpCompilation> compilations)
+    {
+        foreach (CSharpCompilation compilation in compilations)
+        {
+            foreach (INamedTypeSymbol type in SourceTypes(compilation.Assembly.GlobalNamespace).OrderBy(static type => type.ToDisplayString(), StringComparer.Ordinal))
+            {
+                if (type.TypeKind is TypeKind.Class or TypeKind.Struct && type.AllInterfaces.Any(static contract => TypeKey(contract) == EfIdentityResolutionContract))
+                {
+                    return type.ToDisplayString();
+                }
+            }
+        }
+
+        return null;
+    }
 
     // The logger contracts EF's events reach through the application's logger factory.
     private static readonly IReadOnlySet<string> EfLoggerContracts = new HashSet<string>(StringComparer.Ordinal)
@@ -78,9 +124,10 @@ internal static partial class HostedGrimoireProducerInventory
         return null;
     }
 
-    // The simple names of every type Entity Framework ships that derives from DbContextEventData. A value of such a type
-    // is created by `new` on a spelled type name, so a tree that never spells one of these names, and never derives from
-    // one, cannot make an event-data value of its own.
+    // The simple names of every type Entity Framework ships that is, or derives from, EventData: the base itself, the
+    // context event data and every other event data. A value of such a type is created by `new` on a spelled type name,
+    // so a tree that never spells one of these names, and never derives from one, cannot make an event-data value of its
+    // own.
     private static readonly Lazy<IReadOnlySet<string>> EfEventDataTypeNames = new(static () =>
     {
         HashSet<string> names = new(StringComparer.Ordinal);
@@ -94,7 +141,7 @@ internal static partial class HostedGrimoireProducerInventory
         {
             foreach (Type type in assembly.GetTypes())
             {
-                if (typeof(Microsoft.EntityFrameworkCore.Diagnostics.DbContextEventData).IsAssignableFrom(type))
+                if (typeof(Microsoft.EntityFrameworkCore.Diagnostics.EventData).IsAssignableFrom(type) && !type.IsInterface)
                 {
                     int arity = type.Name.IndexOf('`', StringComparison.Ordinal);
 
@@ -200,6 +247,29 @@ internal static partial class HostedGrimoireProducerInventory
                 "Microsoft.EntityFrameworkCore.Storage.IDbContextTransaction" when name is "Commit" or "CommitAsync" or "Rollback" or "RollbackAsync" =>
                     EfInterception.Transaction,
                 _ => EfInterception.None,
+            };
+        }
+
+        /// <summary>
+        /// The operations that start Entity Framework tracking an instance can raise the identity-resolution interceptor of the
+        /// context, whose triggers this analysis does not enter. While the analysed source authors one, none of them is a
+        /// reviewed member, so a use is refused instead of being taken for effect-free.
+        /// </summary>
+        private bool TrackingBlockedByIdentityResolution(ISymbol member)
+        {
+            if (inventoryFacts.AuthoredIdentityResolutionInterceptor is null)
+            {
+                return false;
+            }
+
+            ISymbol definition = member is IMethodSymbol method ? method.ReducedFrom ?? method : member;
+
+            return TypeKey(definition.ContainingType) switch
+            {
+                "Microsoft.EntityFrameworkCore.DbSet`1" => DbSetNeutralMembers.Contains(definition.Name),
+                "Microsoft.EntityFrameworkCore.ChangeTracking.ChangeTracker" => definition.Name is "Entries" or "DetectChanges" or "TrackGraph",
+                "Microsoft.EntityFrameworkCore.ChangeTracking.EntityEntry" or "Microsoft.EntityFrameworkCore.ChangeTracking.EntityEntry`1" => definition.Name == "State",
+                _ => false,
             };
         }
 
@@ -436,9 +506,142 @@ internal static partial class HostedGrimoireProducerInventory
             return flow.Complete && flow.Values.Count != 0 ? [.. flow.Values.Select(static value => (value.Caller, value.Expression))] : null;
         }
 
+        private static bool IsExactServiceScopeType(ITypeSymbol? type) =>
+            type is INamedTypeSymbol named
+            && (IsExactFrameworkType(named, "Microsoft.Extensions.DependencyInjection.IServiceScope", typeof(Microsoft.Extensions.DependencyInjection.IServiceScope).Assembly.GetName())
+                || IsExactFrameworkType(named, "Microsoft.Extensions.DependencyInjection.AsyncServiceScope", typeof(Microsoft.Extensions.DependencyInjection.AsyncServiceScope).Assembly.GetName()));
+
+        /// <summary>
+        /// Disposing a context closes the connection if it is still open and disposes it, which raises the closing and
+        /// disposing callbacks of the connection contract and the StateChange handlers of the connection. They run where the
+        /// disposal is, under the frontiers live there, which can be after the work that used the context has ended. The
+        /// disposal is located three ways: an explicit call or a using over a value that is a context; a using, or an explicit
+        /// disposal, of a container scope, which disposes the contexts the container built (every registered authored
+        /// context is a candidate, because the scope's services are not followed); and nowhere else, so the disposal of a
+        /// context by the container at the end of the host's own life is outside the traversal of any hosted root.
+        /// </summary>
+        private TraversalEvidence TraverseDisposalCallbacks(
+            AuthoredMember member,
+            ExpressionSyntax resource,
+            ITypeSymbol? resourceType,
+            bool asynchronous,
+            SyntaxNode node,
+            string rootType,
+            string operationId,
+            HashSet<TraversalStateIdentity> active,
+            bool lifecycle,
+            string? workAdmitted,
+            string? effectGroup,
+            string? recoveryEffect)
+        {
+            if (resourceType is null)
+            {
+                return TraversalEvidence.NoEvidence;
+            }
+
+            string disposal = asynchronous ? "DisposeAsync" : "Dispose";
+
+            if (IsExactServiceScopeType(resourceType))
+            {
+                ContextUse[] built =
+                [
+                    .. AuthoredContextTypes()
+                        .Where(context => RegistrationFacts(context, member.Model.Compilation).Count != 0)
+                        .Select(static context => new ContextUse([context], ContextOrigin.Container)),
+                ];
+
+                // A scope with no registered context to dispose raises no EF event.
+                if (built.Length == 0)
+                {
+                    return TraversalEvidence.NoEvidence;
+                }
+
+                return TraverseInterceptorsForOperation(
+                    member,
+                    node,
+                    null,
+                    EfInterception.ConnectionDisposal,
+                    "Microsoft.Extensions.DependencyInjection." + (resourceType.TypeKind == TypeKind.Interface ? "IServiceScope" : "AsyncServiceScope") + "." + disposal,
+                    rootType,
+                    operationId,
+                    active,
+                    lifecycle,
+                    workAdmitted,
+                    effectGroup,
+                    recoveryEffect,
+                    asynchronous,
+                    built);
+            }
+
+            if (!IsContextResource(member, resource, resourceType))
+            {
+                return TraversalEvidence.NoEvidence;
+            }
+
+            return TraverseInterceptorsForOperation(
+                member,
+                node,
+                [(member, resource)],
+                EfInterception.ConnectionDisposal,
+                "Microsoft.EntityFrameworkCore.DbContext." + disposal,
+                rootType,
+                operationId,
+                active,
+                lifecycle,
+                workAdmitted,
+                effectGroup,
+                recoveryEffect,
+                asynchronous);
+        }
+
+        // A value disposed is a context when its static type is one, or when it is held as a disposable interface (or object)
+        // and every source it can have is an allocation or a closed value of a context type.
+        private bool IsContextResource(AuthoredMember member, ExpressionSyntax resource, ITypeSymbol resourceType)
+        {
+            if (ContextBound(resourceType) is { TypeKind: TypeKind.Class } bound
+                && (IsExactEfDbContext(bound) || TypeKey(bound) == "Microsoft.EntityFrameworkCore.DbContext" && IsEfAssembly(bound.ContainingAssembly)))
+            {
+                return true;
+            }
+
+            if (TypeKey(resourceType) is not ("System.IDisposable" or "System.IAsyncDisposable" or "System.Object"))
+            {
+                return false;
+            }
+
+            CleanupProvenance provenance = CleanupProvenanceOf(member, resource, new CleanupProvenanceContext());
+
+            return provenance.Complete
+                && provenance.Candidates.Count != 0
+                && provenance.Candidates.All(static candidate => candidate.Type is INamedTypeSymbol { TypeKind: TypeKind.Class } named && IsExactEfDbContext(named));
+        }
+
+        /// <summary>
+        /// The instance behind <c>this</c> inside a member of a context is the containing context or, when that is not
+        /// sealed, any authored context derived from it, so the set is every one of those and no other context of the program.
+        /// </summary>
+        private ContextUse ThisContextUse(AuthoredMember caller)
+        {
+            INamedTypeSymbol containing = caller.Symbol.ContainingType;
+
+            INamedTypeSymbol[] types = [.. AuthoredContextTypes().Where(context => containing.IsSealed
+                ? SymbolEqualityComparer.Default.Equals(context, containing)
+                : ContextDerivesFrom(context, containing))];
+
+            return new(types.Length != 0 ? types : [containing], ContextOrigin.Universe);
+        }
+
         // ---- The authored callbacks.
 
-        private static IMethodSymbol[] InterceptionSlots(INamedTypeSymbol interceptor, EfInterception kinds)
+        private static bool IsConnectionDisposalSlot(string name) =>
+            name.StartsWith("ConnectionDispos", StringComparison.Ordinal);
+
+        private static bool IsConnectionClosingSlot(string name) =>
+            name.StartsWith("ConnectionClos", StringComparison.Ordinal);
+
+        // The slots of the contracts the interceptor implements that the kinds raise. A synchronous operation raises the
+        // synchronous slots and an asynchronous one the asynchronous slots, when the caller says which it is.
+        private static IMethodSymbol[] InterceptionSlots(INamedTypeSymbol interceptor, EfInterception kinds, bool? asynchronous = null)
         {
             List<IMethodSymbol> slots = [];
 
@@ -455,13 +658,27 @@ internal static partial class HostedGrimoireProducerInventory
 
                     foreach (IMethodSymbol slot in contract.GetMembers().OfType<IMethodSymbol>().Where(static slot => slot.MethodKind == MethodKind.Ordinary))
                     {
+                        bool creation = slot.Name.StartsWith("ConnectionCreat", StringComparison.Ordinal);
+
                         // The creation events alone are raised when the connection object is merely created.
-                        if (kind == EfInterception.ConnectionCreation && !slot.Name.StartsWith("ConnectionCreat", StringComparison.Ordinal))
+                        if (kind == EfInterception.ConnectionCreation && !creation)
                         {
                             continue;
                         }
 
-                        if (kind == EfInterception.Connection && slot.Name.StartsWith("ConnectionCreat", StringComparison.Ordinal))
+                        // An operation raises the rest of the connection contract but never the disposal of the connection:
+                        // that is raised by disposing the context, which also closes a connection still open.
+                        if (kind == EfInterception.Connection && (creation || IsConnectionDisposalSlot(slot.Name)))
+                        {
+                            continue;
+                        }
+
+                        if (kind == EfInterception.ConnectionDisposal && !(IsConnectionDisposalSlot(slot.Name) || IsConnectionClosingSlot(slot.Name)))
+                        {
+                            continue;
+                        }
+
+                        if (asynchronous is { } wanted && slot.Name.EndsWith("Async", StringComparison.Ordinal) != wanted)
                         {
                             continue;
                         }
@@ -472,6 +689,32 @@ internal static partial class HostedGrimoireProducerInventory
             }
 
             return [.. slots.Distinct(SymbolEqualityComparer.Default).OfType<IMethodSymbol>()];
+        }
+
+        // The EF interceptor contracts an interceptor implements that the analysis does not enter. An interceptor of such a
+        // contract is raised by triggers nobody enumerates here, so its callbacks are unknown.
+        private static List<string> UnenteredInterceptorContracts(INamedTypeSymbol interceptor)
+        {
+            List<string> contracts = [];
+
+            foreach (INamedTypeSymbol contract in interceptor.AllInterfaces)
+            {
+                if (!contract.AllInterfaces.Any(static inherited => TypeKey(inherited) == EfInterceptorMarker))
+                {
+                    continue;
+                }
+
+                string key = TypeKey(contract);
+
+                bool exact = !IsAuthoredSymbol(contract) && IsEfAssembly(contract.ContainingAssembly);
+
+                if (!exact || EfInterceptorContractVerdict(key) is not ("Entered" or "Marker"))
+                {
+                    contracts.Add(exact ? key : contract.ToDisplayString());
+                }
+            }
+
+            return contracts;
         }
 
         // The authored body that runs for an interface slot: the implementation itself when it is declared in source, or
@@ -568,7 +811,9 @@ internal static partial class HostedGrimoireProducerInventory
             bool lifecycle,
             string? workAdmitted,
             string? effectGroup,
-            string? recoveryEffect)
+            string? recoveryEffect,
+            bool? asynchronous = null,
+            IReadOnlyList<ContextUse>? explicitUses = null)
         {
             TraversalEvidence evidence = TraversalEvidence.NoEvidence;
 
@@ -582,7 +827,14 @@ internal static partial class HostedGrimoireProducerInventory
                     callee + "; EF reports this operation to the application's loggers, and the authored logger " + logger + " would receive its events."));
             }
 
-            if (contexts is null || contexts.Count == 0)
+            // The contexts the operation runs on: the ones the caller already classified, or the ones a context expression names.
+            List<(AuthoredMember Caller, ContextUse Use, ExpressionSyntax? Receiver)> resolved = [];
+
+            if (explicitUses is not null)
+            {
+                resolved.AddRange(explicitUses.Select(use => (member, use, (ExpressionSyntax?)null)));
+            }
+            else if (contexts is null || contexts.Count == 0)
             {
                 RefuseTraversalCompletion();
 
@@ -593,15 +845,20 @@ internal static partial class HostedGrimoireProducerInventory
 
                 return evidence;
             }
+            else
+            {
+                foreach ((AuthoredMember caller, ExpressionSyntax context) in contexts)
+                {
+                    resolved.Add(context is ThisExpressionSyntax
+                        ? (caller, ThisContextUse(caller), null)
+                        : (caller, ClassifyContextUse(caller, context), context));
+                }
+            }
 
             HashSet<GraphMemberIdentity> entered = [];
 
-            foreach ((AuthoredMember caller, ExpressionSyntax context) in contexts)
+            foreach ((AuthoredMember caller, ContextUse use, ExpressionSyntax? receiver) in resolved)
             {
-                ContextUse use = context is ThisExpressionSyntax
-                    ? new([caller.Symbol.ContainingType], ContextOrigin.Universe)
-                    : ClassifyContextUse(caller, context);
-
                 if (use.Types.Count == 0)
                 {
                     // No authored context can hold the instance: it has no authored interceptor to raise.
@@ -610,7 +867,7 @@ internal static partial class HostedGrimoireProducerInventory
 
                 foreach (INamedTypeSymbol type in use.Types)
                 {
-                    InterceptorSet set = InterceptorSetFor(caller, use, context is ThisExpressionSyntax ? null : context, type);
+                    InterceptorSet set = InterceptorSetFor(caller, use, receiver, type);
 
                     if (!set.Closed)
                     {
@@ -626,7 +883,17 @@ internal static partial class HostedGrimoireProducerInventory
 
                     foreach ((INamedTypeSymbol interceptor, Compilation interceptorCompilation) in set.Types.Distinct())
                     {
-                        foreach (IMethodSymbol slot in InterceptionSlots(interceptor, kinds))
+                        foreach (string unentered in UnenteredInterceptorContracts(interceptor))
+                        {
+                            RefuseTraversalCompletion();
+
+                            diagnostics.Add(new(
+                                "HOSTED_SITE_UNCLASSIFIED",
+                                Location(node),
+                                callee + "; the interceptor " + interceptor.ToDisplayString() + " implements " + unentered + ", an EF interceptor contract this analysis does not enter, so the callbacks EF would raise are unknown."));
+                        }
+
+                        foreach (IMethodSymbol slot in InterceptionSlots(interceptor, kinds, asynchronous))
                         {
                             if (AuthoredInterceptorCallback(interceptor, slot, interceptorCompilation) is not { } callback
                                 || !entered.Add(MemberIdentity(callback)))
@@ -652,7 +919,7 @@ internal static partial class HostedGrimoireProducerInventory
             }
 
             // An operation that raises the connection contract opens or closes the connection, which raises its StateChange.
-            if ((kinds & EfInterception.Connection) != 0)
+            if ((kinds & (EfInterception.Connection | EfInterception.ConnectionDisposal)) != 0)
             {
                 evidence = MergeEvidence(
                     evidence,

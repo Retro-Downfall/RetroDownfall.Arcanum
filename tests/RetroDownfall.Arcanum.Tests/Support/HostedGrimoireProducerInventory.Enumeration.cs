@@ -1504,7 +1504,7 @@ internal static partial class HostedGrimoireProducerInventory
 
             // Enumerating an EF query executes it: a database access that holds its reader from the first MoveNext to the
             // disposal, so the Work and effect frontiers must be live at the operand, at the back edge and at the end.
-            if (IsEfQueryOperand(member, binding.Operand, 0))
+            if (IsEfQueryOperand(member, binding.Operand))
             {
                 int queryEntry = binding.Operand.Span.End + 1;
 
@@ -1699,7 +1699,7 @@ internal static partial class HostedGrimoireProducerInventory
                 }
 
                 // An EF query is no authored enumerator: its enumeration is a database access, classified at the call.
-                if (IsEfQueryOperand(member, value, 0))
+                if (IsEfQueryOperand(member, value))
                 {
                     continue;
                 }

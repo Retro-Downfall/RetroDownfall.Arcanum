@@ -20,6 +20,8 @@ internal static partial class HostedGrimoireProducerInventory
 
         private readonly Lazy<string?> authoredLoggerType;
 
+        private readonly Lazy<string?> authoredIdentityResolutionInterceptor;
+
         private readonly Lazy<IReadOnlyList<ContextConstruction>> contextConstructions;
 
         private readonly Lazy<IReadOnlyList<ConnectionStateSubscription>> connectionStateSubscriptions;
@@ -34,6 +36,10 @@ internal static partial class HostedGrimoireProducerInventory
 
             authoredLoggerType = new(
                 () => FindAuthoredLoggerType(compilations),
+                LazyThreadSafetyMode.ExecutionAndPublication);
+
+            authoredIdentityResolutionInterceptor = new(
+                () => FindAuthoredIdentityResolutionInterceptor(compilations),
                 LazyThreadSafetyMode.ExecutionAndPublication);
 
             contextConstructions = new(
@@ -62,6 +68,10 @@ internal static partial class HostedGrimoireProducerInventory
         // The first authored type that implements a logger contract (ILogger, ILoggerProvider, ILoggerFactory), or null.
         // EF reports its operations to the application's loggers, so such a type could receive EF's events.
         internal string? AuthoredLoggerType => authoredLoggerType.Value;
+
+        // The first authored type that implements EF's identity-resolution interceptor contract, or null. EF raises it when it
+        // starts tracking an instance whose key is already tracked, which happens at operations this analysis does not enter.
+        internal string? AuthoredIdentityResolutionInterceptor => authoredIdentityResolutionInterceptor.Value;
 
         // Every allocation of an authored DbContext in the analysed source. Whole-tree and deterministic, so every isolated
         // root worker shares the one list rather than reading the trees again.
