@@ -4,6 +4,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using RetroDownfall.Arcanum.Core.Environment;
 using RetroDownfall.Arcanum.Core.Intelligence.WebResearch;
+using RetroDownfall.Arcanum.Core.LongRest;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Serialization;
 
@@ -1161,6 +1162,12 @@ public sealed class ConfigurationValidator(
 
         ValidateEventBus(settings);
 
+        // A warning, never an error: Long Rest simply cannot run until its recipe resolves, and no turn is refused for it.
+        foreach (ConfigurationValidationError warning in ValidateLongRest(settings))
+        {
+            logger?.LogWarning("{Pointer}: {Detail}", warning.Pointer, warning.Detail);
+        }
+
         ValidateEmbeddings(settings, errors);
 
         ValidateScrying(settings, errors);
@@ -1677,6 +1684,31 @@ public sealed class ConfigurationValidator(
                 pointer,
                 $"Pricing rate ({value}) must be between 0 and 1,000,000 USD per 1M tokens."));
         }
+    }
+
+    /// <summary>
+    /// Long Rest consolidation warning. When <c>Features:LongRest</c> is on but the recipe (the fast-or-default chat model and the
+    /// embedding model, each on a supported provider) cannot be resolved, the sweep cannot run. It returns the warning, naming
+    /// configuration keys and models only, and never refuses startup or a turn. The predicates are
+    /// <see cref="LongRestRecipeResolver"/>'s, the same ones the runtime epoch resolves its recipe with.
+    /// </summary>
+    public IReadOnlyList<ConfigurationValidationError> ValidateLongRest(ArcanumSettings settings)
+    {
+        ArgumentNullException.ThrowIfNull(settings);
+
+        if (settings.Features?.LongRest is not true)
+        {
+            return [];
+        }
+
+        IReadOnlyList<string> problems = LongRestRecipeResolver.Problems(settings);
+
+        return problems.Count == 0
+            ? []
+            : [new ConfigurationValidationError(
+                "features.longRest",
+                "LongRest: enabled but recipe unresolved: " + string.Join("; ", problems)
+                + ". Long Rest will not run until the recipe resolves; Session turns are not refused for it.")];
     }
 
     private void ValidateEventBus(ArcanumSettings settings)

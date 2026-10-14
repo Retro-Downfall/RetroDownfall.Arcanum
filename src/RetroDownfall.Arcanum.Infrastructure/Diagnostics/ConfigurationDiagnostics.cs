@@ -126,3 +126,62 @@ public sealed class ConfigurationEnvironmentOverrideCheck(IOptions<ArcanumSettin
     }
 
 }
+
+/// <summary>
+/// Long Rest is enabled but its recipe cannot be resolved, so it will never sweep. This is a configuration fact, read locally
+/// with the predicates the runtime epoch resolves its recipe with; it needs no running host, and it never refuses a turn.
+/// </summary>
+public sealed class LongRestRecipeCheck(
+    IOptions<ArcanumSettings> options,
+    ConfigurationValidator validator) : IDoctorCheck
+{
+
+    public const string CheckId = "configuration.long_rest_recipe";
+
+    public string Id => CheckId;
+
+    public string Name => "Long Rest recipe";
+
+    public DoctorSubsystem Subsystem => DoctorSubsystem.Configuration;
+
+    public bool RequiresNetwork => false;
+
+    public Task<DoctorFinding> InspectAsync(CancellationToken cancellationToken)
+    {
+
+        ArcanumSettings settings = options.Value;
+
+        if (settings.Features?.LongRest is not true)
+        {
+
+            return Task.FromResult(new DoctorFinding(
+                DoctorOutcome.Skipped,
+                "Long Rest is not enabled."));
+
+        }
+
+        IReadOnlyList<ConfigurationValidationError> warnings = validator.ValidateLongRest(settings);
+
+        if (warnings.Count == 0)
+        {
+
+            return Task.FromResult(new DoctorFinding(
+                DoctorOutcome.Healthy,
+                "Long Rest is enabled and its chat and embedding recipe resolves."));
+
+        }
+
+        return Task.FromResult(new DoctorFinding(
+            DoctorOutcome.Degraded,
+            warnings[0].Detail,
+            [
+                new DoctorRemedy(
+                    "configuration.resolve_long_rest_recipe",
+                    null,
+                    DoctorRemedyCommands.ConfigEdit,
+                    "Set FastModel or DefaultModel to a model an OpenAI-compatible provider advertises, and configure Integrations:Embeddings, or turn Features:LongRest off."),
+            ]));
+
+    }
+
+}
