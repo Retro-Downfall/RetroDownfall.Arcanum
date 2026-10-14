@@ -10,6 +10,36 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.LongRest;
 
 internal sealed partial class SagaLongRestService
 {
+    // Metadata and labels are read before plaintext. A protected row never materializes Content through this ordinary policy path, even when
+    // its historical Annals sensitivity was None. The label comparison is the loose, spelling-insensitive one on purpose: a mis-spelled
+    // protected label must still count.
+    internal const string SnapshotSql =
+        """
+        SELECT v.ClaimId, v.VersionId, v.Revision, v.ContentHashFormatCode,
+               COALESCE(v.ContentHash, (
+                   SELECT prior.ContentHash FROM annal_versions prior
+                   WHERE prior.VersionId = v.PredecessorVersionId AND prior.ClaimId = v.ClaimId
+                     AND prior.OperationCode <> 3 AND prior.ContentHashFormatCode = v.ContentHashFormatCode)),
+               v.OriginCode, v.SourceSessionId, v.ScopeKindCode, v.CampaignId, v.SensitivityCode,
+               v.ValidFromUtc, v.ValidToUtc, v.RecordedAtUtc, m.RetiredAtUtc, m.PinnedAtUtc,
+               h.CurrentVersionId = v.VersionId,
+               EXISTS (SELECT 1 FROM saga_memory_embeddings e WHERE e.MemoryId = m.Id),
+               EXISTS (SELECT 1 FROM artifact_sensitivity a WHERE a.ArtifactKindCode = 6
+                   AND lower(replace(a.ArtifactId, '-', '')) = lower(replace(m.Id, '-', ''))),
+               EXISTS (SELECT 1 FROM long_rest_suppressions s WHERE s.SourceVersionId = v.VersionId),
+               EXISTS (SELECT 1 FROM long_rest_receipts r WHERE r.OutcomeCode = 1 AND r.SurvivorVersionId = v.VersionId),
+               m.ScopeKindCode, m.CampaignId,
+               CASE WHEN @materialize = 1 AND v.SensitivityCode = 0 AND NOT EXISTS (
+                   SELECT 1 FROM artifact_sensitivity a WHERE a.ArtifactKindCode = 6
+                   AND lower(replace(a.ArtifactId, '-', '')) = lower(replace(m.Id, '-', '')))
+                   THEN m.Content ELSE NULL END
+        FROM annal_versions v
+        JOIN annal_claims c ON c.ClaimId = v.ClaimId AND c.SubjectStoreCode = 1
+        JOIN annal_heads h ON h.ClaimId = c.ClaimId
+        JOIN saga_memories m ON m.Id = c.SubjectId
+        WHERE v.VersionId = @version AND c.SubjectId = @memory
+        """;
+
     internal static async Task<Result<LoadedSnapshot>> ReadSnapshotAsync(
         DbConnection connection, DbTransaction transaction, LongRestTarget target, CancellationToken cancellationToken, bool materializeContent = true)
     {
@@ -17,34 +47,7 @@ internal sealed partial class SagaLongRestService
 
         command.Transaction = transaction;
 
-        // Metadata and labels are read before plaintext. A protected row never materializes Content
-        // through this ordinary policy path, even when its historical Annals sensitivity was None.
-        command.CommandText =
-            """
-            SELECT v.ClaimId, v.VersionId, v.Revision, v.ContentHashFormatCode,
-                   COALESCE(v.ContentHash, (
-                       SELECT prior.ContentHash FROM annal_versions prior
-                       WHERE prior.VersionId = v.PredecessorVersionId AND prior.ClaimId = v.ClaimId
-                         AND prior.OperationCode <> 3 AND prior.ContentHashFormatCode = v.ContentHashFormatCode)),
-                   v.OriginCode, v.SourceSessionId, v.ScopeKindCode, v.CampaignId, v.SensitivityCode,
-                   v.ValidFromUtc, v.ValidToUtc, v.RecordedAtUtc, m.RetiredAtUtc, m.PinnedAtUtc,
-                   h.CurrentVersionId = v.VersionId,
-                   EXISTS (SELECT 1 FROM saga_memory_embeddings e WHERE e.MemoryId = m.Id),
-                   EXISTS (SELECT 1 FROM artifact_sensitivity a WHERE a.ArtifactKindCode = 6
-                       AND lower(replace(a.ArtifactId, '-', '')) = lower(replace(m.Id, '-', ''))),
-                   EXISTS (SELECT 1 FROM long_rest_suppressions s WHERE s.SourceVersionId = v.VersionId),
-                   EXISTS (SELECT 1 FROM long_rest_receipts r WHERE r.OutcomeCode = 1 AND r.SurvivorVersionId = v.VersionId),
-                   m.ScopeKindCode, m.CampaignId,
-                   CASE WHEN @materialize = 1 AND v.SensitivityCode = 0 AND NOT EXISTS (
-                       SELECT 1 FROM artifact_sensitivity a WHERE a.ArtifactKindCode = 6
-                       AND lower(replace(a.ArtifactId, '-', '')) = lower(replace(m.Id, '-', '')))
-                       THEN m.Content ELSE NULL END
-            FROM annal_versions v
-            JOIN annal_claims c ON c.ClaimId = v.ClaimId AND c.SubjectStoreCode = 1
-            JOIN annal_heads h ON h.ClaimId = c.ClaimId
-            JOIN saga_memories m ON m.Id = c.SubjectId
-            WHERE v.VersionId = @version AND c.SubjectId = @memory
-            """;
+        command.CommandText = SnapshotSql;
 
         Add(command, "@materialize", materializeContent ? 1 : 0);
 

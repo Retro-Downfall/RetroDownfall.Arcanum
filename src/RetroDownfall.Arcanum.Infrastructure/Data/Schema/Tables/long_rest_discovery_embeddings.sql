@@ -7,3 +7,8 @@ CREATE TABLE IF NOT EXISTS long_rest_discovery_embeddings (
     Vector BLOB NOT NULL CHECK (length(Vector) = Dimensions * 4),
     PaidEvidenceJson TEXT NOT NULL CHECK (length(CAST(PaidEvidenceJson AS BLOB)) BETWEEN 2 AND 32768)
 );
+
+-- The label guard proves that no embedding still belongs to the label's node by the normalized identity: lower(replace(NodeId, '-', '')),
+-- in the exact shape the predicate has.
+CREATE INDEX IF NOT EXISTS idx_long_rest_embeddings_node_norm
+    ON long_rest_discovery_embeddings(lower(replace(NodeId, '-', '')));

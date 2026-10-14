@@ -48,7 +48,7 @@ internal sealed partial class LongRestDiscoveryStore
         """;
 
     // Scope, lifecycle and partition eligibility precede pagination. No source text or vector is selected here.
-    private static readonly string EligibleSources = $"""
+    internal static readonly string EligibleSources = $"""
         FROM long_rest_sources source
         JOIN saga_memories memory ON memory.Id = source.MemoryId
         LEFT JOIN annal_claims claim ON claim.SubjectStoreCode = 1 AND claim.SubjectId = memory.Id
@@ -60,6 +60,9 @@ internal sealed partial class LongRestDiscoveryStore
             AND ({SourceOwnerEligible})
             AND ({PartitionEligibility})
         """;
+
+    internal static readonly string CapturePageSql = "SELECT source.MemoryId, source.InsertionSequence, source.MutationEpoch, head.CurrentVersionId "
+        + EligibleSources + " ORDER BY source.MemoryId LIMIT $limit;";
 
     public async Task<Result<LongRestSourcePage>> CaptureNextSourcePageAsync(Guid generationId, long expectedRevision,
         LongRestMaintenanceCapability? capability, CancellationToken cancellationToken)
@@ -94,9 +97,7 @@ internal sealed partial class LongRestDiscoveryStore
 
                 List<SourceCoordinate> coordinates = [];
 
-                await using (SqliteCommand command = SourceCommand(connection, transaction, generation, generation.CaptureCursor,
-                    "SELECT source.MemoryId, source.InsertionSequence, source.MutationEpoch, head.CurrentVersionId "
-                    + EligibleSources + " ORDER BY source.MemoryId LIMIT $limit;"))
+                await using (SqliteCommand command = SourceCommand(connection, transaction, generation, generation.CaptureCursor, CapturePageSql))
                 {
                     _ = command.Parameters.AddWithValue("$limit", LongRestDiscoveryLimits.SourcePage);
 

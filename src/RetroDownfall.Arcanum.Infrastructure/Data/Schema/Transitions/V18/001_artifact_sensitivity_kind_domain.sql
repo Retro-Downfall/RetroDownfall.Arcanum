@@ -84,6 +84,14 @@ ALTER TABLE artifact_sensitivity_v18 RENAME TO "artifact_sensitivity";
 CREATE UNIQUE INDEX IF NOT EXISTS ux_artifact_sensitivity_artifact
     ON artifact_sensitivity(ArtifactKindCode, ArtifactId);
 
+-- The Long Rest asks one question of this ledger over and over: does a label of this kind name this memory? A memory's label is keyed by
+-- the identity in whatever spelling it was stored, so the question compares lower(replace(ArtifactId, '-', '')) on both sides, and a
+-- mis-spelled protected label must still count as protected. The exact index above cannot answer a function-wrapped column, so without this
+-- one every leaf read, source capture page, partition probe and label write read every label of its kind. The expression has to stay
+-- character for character the shape the predicate has, because that is how SQLite decides the index applies.
+CREATE INDEX IF NOT EXISTS idx_artifact_sensitivity_artifact_norm
+    ON artifact_sensitivity(ArtifactKindCode, lower(replace(ArtifactId, '-', '')));
+
 CREATE INDEX IF NOT EXISTS idx_artifact_sensitivity_session
     ON artifact_sensitivity(SessionId);
 
