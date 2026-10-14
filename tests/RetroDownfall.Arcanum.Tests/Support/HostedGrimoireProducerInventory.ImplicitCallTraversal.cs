@@ -846,7 +846,15 @@ internal static partial class HostedGrimoireProducerInventory
             || method.Name == "ToString" && method.ContainingType is { } type && TypeKey(type) is "System.ValueType" && IsExactFrameworkType(type, "System.ValueType", typeof(ValueType).Assembly.GetName())
             || IsAiToolToStringWithNameModeled(method)
             || IsReviewedFrameworkUriFormatting(method)
+            || IsReviewedFrameworkTupleItemRead(method)
             || !RequiresExternalBoundaryClassification(method, member.Model.Compilation, anchor, member.Model, member);
+
+        // The ITuple members of the framework's tuple types read the fields the tuple stores and run no supplied code.
+        private static bool IsReviewedFrameworkTupleItemRead(IMethodSymbol method) =>
+            method.ContainingType?.OriginalDefinition is { } type
+            && (method.Name.EndsWith("ITuple.get_Length", StringComparison.Ordinal) || method.Name.EndsWith("ITuple.get_Item", StringComparison.Ordinal))
+            && (TypeKey(type).StartsWith("System.ValueTuple`", StringComparison.Ordinal) && IsExactFrameworkType(type, TypeKey(type), typeof(ValueTuple).Assembly.GetName())
+                || TypeKey(type).StartsWith("System.Tuple`", StringComparison.Ordinal) && IsExactFrameworkType(type, TypeKey(type), typeof(Tuple).Assembly.GetName()));
 
         // System.Uri is not sealed, so a hole typed Uri can hold an authored subclass whose ToString is followed as an
         // authored formatter. The framework class itself formats its stored text and runs no supplied code, which is
@@ -1864,7 +1872,8 @@ internal static partial class HostedGrimoireProducerInventory
 
             ISymbol? symbol = member.Model.GetSymbolInfo(node).Symbol;
 
-            if (symbol is null || !(symbol.IsStatic || symbol is IMethodSymbol { MethodKind: MethodKind.Constructor }) || symbol.ContainingType is not { } owner)
+            // A constant is inlined where it is read, so it starts nothing.
+            if (symbol is null || symbol is IFieldSymbol { IsConst: true } || !(symbol.IsStatic || symbol is IMethodSymbol { MethodKind: MethodKind.Constructor }) || symbol.ContainingType is not { } owner)
             {
                 return null;
             }

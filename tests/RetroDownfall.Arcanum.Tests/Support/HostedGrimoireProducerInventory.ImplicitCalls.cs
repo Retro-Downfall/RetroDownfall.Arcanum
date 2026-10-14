@@ -175,7 +175,7 @@ internal static partial class HostedGrimoireProducerInventory
             [OperationKind.RaiseEvent] = Census(OperationCensusRole.Structure, "Visual Basic only."),
             [OperationKind.Literal] = Census(OperationCensusRole.Structure, "A constant."),
             [OperationKind.Conversion] = Census(OperationCensusRole.Lane, "A user-defined conversion is dispatched by the conversion lane; one that lane does not see is taken over by the census."),
-            [OperationKind.Invocation] = Census(OperationCensusRole.Lane, "A written invocation is dispatched by the invocation lane; an invocation with any other syntax (collection initializer Add, interpolated string append, constructor initializer, query clause) is taken over by the census."),
+            [OperationKind.Invocation] = Census(OperationCensusRole.Lane, "A written invocation is dispatched by the invocation lane (a virtual or abstract method of a class declared in source on the runtime type of its receiver); a written call to a member nothing in source declares (a generated record or anonymous type member, a framework slot that dispatches on the runtime type) and an invocation with any other syntax (collection initializer Add, interpolated string append, constructor initializer, query clause) are taken over by the census."),
             [OperationKind.ArrayElementReference] = Census(OperationCensusRole.Structure, "A built-in array access."),
             [OperationKind.LocalReference] = Census(OperationCensusRole.Structure, "A variable read."),
             [OperationKind.ParameterReference] = Census(OperationCensusRole.Structure, "A variable read."),

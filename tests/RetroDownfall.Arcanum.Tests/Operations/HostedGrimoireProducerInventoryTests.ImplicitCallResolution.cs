@@ -61,6 +61,16 @@ public sealed partial class HostedGrimoireProducerInventoryTests
     [InlineData("unsafe { int* pointer = stackalloc int[2]; pointer[0] = 1; fixed (int* pinned = new int[2]) { _ = *pinned; } fixed (char* characters = \"text\") { _ = *characters; } }")]
     [InlineData("var created = new System.Collections.Generic.List<int>(); var pair = new System.Collections.Generic.KeyValuePair<int, int>(1, 2); _ = created; _ = pair;")]
     [InlineData("Probe probe = new Probe(); _ = probe;")]
+    [InlineData("var error = new System.InvalidOperationException(\"x\", new System.TimeoutException()); string text = $\"{error}\"; _ = text;")]
+    [InlineData("var error = new System.AggregateException(new System.TimeoutException()); string text = \"e: \" + error; _ = text;")]
+    [InlineData("string text = string.Create(System.Globalization.CultureInfo.InvariantCulture, $\"{1} {2.5}\"); _ = text;")]
+    [InlineData("string text = 5.ToString(System.Globalization.CultureInfo.InvariantCulture); _ = text;")]
+    [InlineData("System.IFormatProvider? provider = null; string text = 5.ToString(provider); _ = text;")]
+    [InlineData("var set = new System.Collections.Generic.HashSet<string> { \"a\", \"b\" }; System.Collections.Generic.HashSet<int> numbers = [1, 2]; _ = set; _ = numbers;")]
+    [InlineData("string text = string.Concat(\"a\", 1, new Probe().ToString()); _ = text;")]
+    [InlineData("object value = (1, 2); if (value is (var a, var b)) { _ = a; _ = b; }")]
+    [InlineData("System.FormattableString text = $\"{1} {System.Guid.Empty}\"; _ = text;")]
+    [InlineData("var anonymous = new { A = 1, B = \"b\" }; string text = $\"{anonymous}\" + anonymous.ToString() + anonymous.GetHashCode(); _ = text;")]
     public void FrameworkImplicitCallsStayClassified(string statement)
     {
         HostedProducerDiscovery<HostedProducerSite> result = EnumerationDiscover(CensusCompileSource(statement, "sealed class Probe { }"));
@@ -752,5 +762,64 @@ public sealed partial class HostedGrimoireProducerInventoryTests
         Assert.Equal(sites, EnumerationDeleteSites(result).Length);
 
         Assert.DoesNotContain(result.Diagnostics, static diagnostic => diagnostic.Code is "HOSTED_CALL_TARGET_UNRESOLVED" or "HOSTED_SITE_UNCLASSIFIED");
+    }
+
+    // Only the Add overloads one element can call are followed: an overload that needs a second argument is never selected, so
+    // its body is not reported.
+    [Fact]
+    public void CollectionExpressionAddThatNeedsASecondArgumentIsNotSelected()
+    {
+        string helpers = "sealed class Bag : System.Collections.Generic.IEnumerable<int> { public void Add(int value) { } public void Add(int key, int value) { " + EnumerationEffect + "} public System.Collections.Generic.IEnumerator<int> GetEnumerator() => null!; System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => null!; }";
+
+        HostedProducerDiscovery<HostedProducerSite> result = EnumerationDiscover(CensusCompileSource("Bag bag = [1, 2]; _ = bag;", helpers));
+
+        Assert.Empty(EnumerationDeleteSites(result));
+
+        Assert.Empty(result.Diagnostics);
+    }
+
+    // A positional pattern over a value is judged by the runtime type the value is proved to have: an ITuple type that is
+    // not that type is not run, whatever it does.
+    [Theory]
+    [InlineData("object value = new Plain(); if (value is (var a, var b)) { _ = a; _ = b; }")]
+    [InlineData("System.Runtime.CompilerServices.ITuple value = new Plain(); if (value is (var a, var b)) { _ = a; _ = b; }")]
+    public void PositionalPatternRunsOnlyTheTupleTypeTheValueHas(string statement)
+    {
+        string helpers = "sealed class Tup : System.Runtime.CompilerServices.ITuple { public int Length { get { " + EnumerationEffect + "return 2; } } public object? this[int index] => null; } "
+            + "sealed class Plain : System.Runtime.CompilerServices.ITuple { public int Length => 2; public object? this[int index] => null; }";
+
+        HostedProducerDiscovery<HostedProducerSite> result = EnumerationDiscover(CensusCompileSource(statement, helpers));
+
+        Assert.Empty(EnumerationDeleteSites(result));
+
+        Assert.Empty(result.Diagnostics);
+    }
+
+    // A value handed to a parameter whose declared type admits none of the callback slots is not judged by them: an exception
+    // constructor keeps its inner exception, and the formatting of it is the formatting of the exception.
+    [Fact]
+    public void ValueHandedToAParameterThatAdmitsNoCallbackIsNotJudged()
+    {
+        string helpers = "sealed class Evil : System.Exception { public override string Message { get { " + EnumerationEffect + "return \"m\"; } } }";
+
+        HostedProducerDiscovery<HostedProducerSite> result = EnumerationDiscover(CensusCompileSource("var error = new System.InvalidOperationException(\"x\", new Evil()); _ = error;", helpers));
+
+        Assert.Empty(EnumerationDeleteSites(result));
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic => diagnostic.Code is "HOSTED_CALLBACK_OWNERSHIP_UNPROVEN" or "HOSTED_SITE_UNCLASSIFIED");
+    }
+
+    // The static initialization of a type is started by a use of the type from another type; the type's own members run after
+    // it has started, and a type whose static initialization reaches no site is used freely.
+    [Theory]
+    [InlineData("Holder.Run();", "static class Holder { private static readonly int shared = Compute(); public static void Run() { _ = shared; } private static int Compute() { {E} return 1; } }", true)]
+    [InlineData("Holder.Run();", "static class Holder { private static readonly int shared = 1; public static void Run() { _ = shared; } }", false)]
+    [InlineData("_ = Holder.Constant;", "static class Holder { public const int Constant = 1; private static readonly int shared = Compute(); private static int Compute() { {E} return 1; } }", false)]
+    [InlineData("Other.Run();", "static class Holder { private static readonly int shared = Compute(); private static int Compute() { {E} return 1; } } static class Other { public static void Run() { } }", false)]
+    public void StaticInitializationIsRefusedAtTheFirstUseFromAnotherType(string statement, string helpers, bool refused)
+    {
+        HostedProducerDiscovery<HostedProducerSite> result = EnumerationDiscover(CensusCompileSource(statement, helpers.Replace("{E}", EnumerationEffect, StringComparison.Ordinal)));
+
+        Assert.Equal(refused, result.Diagnostics.Any(static diagnostic => diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED" && diagnostic.Detail.Contains(".cctor", StringComparison.Ordinal)));
     }
 }
