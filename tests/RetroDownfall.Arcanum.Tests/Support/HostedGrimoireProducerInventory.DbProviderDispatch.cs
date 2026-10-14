@@ -165,7 +165,7 @@ internal static partial class HostedGrimoireProducerInventory
                 return false;
             }
 
-            IOperation? operation = model.GetOperation(node);
+            IOperation? operation = model.GetOperation(OperationSyntax(node));
 
             ExpressionSyntax? receiver;
 
@@ -212,6 +212,13 @@ internal static partial class HostedGrimoireProducerInventory
 
             return IsClosedProviderReceiver(context, receiver, definition, wrapper, 0);
         }
+
+        // The syntax that carries the operation of a member access. The name a conditional access binds (`value?.Name`) has no
+        // operation of its own: the binding that holds it does, with the guarded expression as its instance.
+        private static SyntaxNode OperationSyntax(SyntaxNode node) =>
+            node is SimpleNameSyntax name && name.Parent is MemberBindingExpressionSyntax binding && ReferenceEquals(binding.Name, name)
+                ? binding
+                : node;
 
         // The type a value has before the implicit conversions an argument or assignment applies to it.
         private static ITypeSymbol? UnconvertedType(IOperation value)

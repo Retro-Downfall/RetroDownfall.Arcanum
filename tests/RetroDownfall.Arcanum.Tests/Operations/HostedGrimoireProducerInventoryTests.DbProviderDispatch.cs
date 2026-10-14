@@ -219,6 +219,31 @@ public sealed partial class HostedGrimoireProducerInventoryTests
         Assert.True(DispatchRefused(result, callee), name + " must be refused.");
     }
 
+    // A member read through a conditional access (`value?.Member`) is judged exactly as the same member read through a plain access. The name a
+    // conditional access binds carries no operation of its own, so the lookup belongs to the binding that holds it, and the receiver is the
+    // expression the access guards: a closed receiver stays classified, a receiver that can hold an authored subclass is refused, and a member
+    // of a type no authored code can derive from is closed whatever the receiver is proved to be.
+    [Theory]
+    [InlineData("non-extensible-opaque-receiver", "_ = DispatchInput.SqliteReader?.FieldCount;", "Microsoft.Data.Sqlite.SqliteDataReader.FieldCount", false)]
+    [InlineData("non-extensible-transaction-receiver", "_ = (DispatchInput.Transaction as Microsoft.Data.Sqlite.SqliteTransaction)?.Connection;", "Microsoft.Data.Sqlite.SqliteTransaction.Connection", false)]
+    [InlineData("closed-exact-receiver", "System.Data.Common.DbCommand? r = new Microsoft.Data.Sqlite.SqliteCommand(); _ = r?.CommandText;", "System.Data.Common.DbCommand.CommandText", false)]
+    [InlineData("closed-exact-reader-receiver", "System.Data.Common.DbDataReader? r = new Microsoft.Data.Sqlite.SqliteCommand().ExecuteReader(); _ = r?.FieldCount;", "System.Data.Common.DbDataReader.FieldCount", false)]
+    [InlineData("opaque-extensible-receiver", "_ = DispatchInput.Command?.CommandText;", "System.Data.Common.DbCommand.CommandText", true)]
+    [InlineData("opaque-extensible-reader-receiver", "_ = DispatchInput.Reader?.FieldCount;", "System.Data.Common.DbDataReader.FieldCount", true)]
+    [InlineData("opaque-extensible-transaction-receiver", "_ = DispatchInput.Transaction?.Connection;", "System.Data.Common.DbTransaction.Connection", true)]
+    [InlineData("authored-subclass-receiver", "System.Data.Common.DbCommand? r = new EvilCommand(); _ = r?.CommandText;", "System.Data.Common.DbCommand.CommandText", true)]
+    [InlineData("conditional-assignment-closed-receiver", "System.Data.Common.DbCommand? r = new Microsoft.Data.Sqlite.SqliteCommand(); r?.CommandText = \"x\";", "System.Data.Common.DbCommand.CommandText", false)]
+    [InlineData("conditional-assignment-opaque-receiver", "DispatchInput.Command?.CommandText = \"x\";", "System.Data.Common.DbCommand.CommandText", true)]
+    [InlineData("conditional-assignment-authored-subclass-receiver", "System.Data.Common.DbCommand? r = new EvilCommand(); r?.CommandText = \"x\";", "System.Data.Common.DbCommand.CommandText", true)]
+    public void AReviewedDatabaseMemberReadThroughAConditionalAccessIsJudgedLikeAPlainRead(string name, string statement, string callee, bool refused)
+    {
+        HostedProducerDiscovery<HostedProducerSite> result = DispatchDiscover(statement, DispatchAuthoredProviders);
+
+        output.WriteLine("DISPATCH " + name);
+
+        Assert.Equal(refused, DispatchRefused(result, callee));
+    }
+
     // The reviewer's probe: the override is behind a non-virtual wrapper, and the static type says nothing.
     [Fact]
     public void AnOverrideOfTheCreateDbCommandSlotBehindAnAbstractConnectionIsNeitherSilentNorAccepted()
