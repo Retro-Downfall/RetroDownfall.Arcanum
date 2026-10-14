@@ -199,7 +199,9 @@ internal sealed partial class LongRestDiscoveryStore
                 throw new InvalidDataException();
             }
 
-            await ScrubWindowMetadataAsync(connection, transaction, generation, ct).ConfigureAwait(false);
+            LongRestVerificationCounters.ScrubWindow();
+
+            await ReadMetadataLeavesAsync(connection, transaction, generation, await ReadScrubWindowAsync(connection, transaction, generation, ct).ConfigureAwait(false), ct).ConfigureAwait(false);
 
             return;
         }
@@ -227,10 +229,7 @@ internal sealed partial class LongRestDiscoveryStore
                 return;
             }
 
-            foreach (string memory in page)
-            {
-                _ = await ReadFrozenMetadataLeafAsync(connection, transaction, generation, memory, ct).ConfigureAwait(false);
-            }
+            await ReadMetadataLeavesAsync(connection, transaction, generation, page, ct).ConfigureAwait(false);
 
             cursor = page[^1];
         }

@@ -114,25 +114,24 @@ internal sealed partial class LongRestDiscoveryStore
         return (long)(await command.ExecuteScalarAsync(ct).ConfigureAwait(false))! == 1;
     }
 
-    /// <summary>Re-proves the rotating window in full: text, vector, labels and owner, as a step would before it acts.</summary>
-    private static async Task ScrubWindowAsync(SqliteConnection connection, SqliteTransaction transaction,
-        LongRestDiscoveryGeneration generation, LongRestMaintenanceCapability? capability, CancellationToken ct)
+    /// <summary>
+    /// Re-proves these leaves in full: text, vector, labels and owner. The one place the corpus pass, the step's window and the inputs a step is
+    /// about to act on all read leaves from, so there is one body to keep right.
+    /// </summary>
+    internal static async Task ReadLeavesAsync(SqliteConnection connection, SqliteTransaction transaction, LongRestDiscoveryGeneration generation,
+        IEnumerable<string> memories, LongRestMaintenanceCapability? capability, CancellationToken ct)
     {
-        LongRestVerificationCounters.ScrubWindow();
-
-        foreach (string memory in await ReadScrubWindowAsync(connection, transaction, generation, ct).ConfigureAwait(false))
+        foreach (string memory in memories)
         {
             _ = await ReadFrozenLeafAsync(connection, transaction, generation, memory, capability, ct).ConfigureAwait(false);
         }
     }
 
-    /// <summary>The metadata-only window, for a caller that holds no capability and so cannot read protected content.</summary>
-    private static async Task ScrubWindowMetadataAsync(SqliteConnection connection, SqliteTransaction transaction,
-        LongRestDiscoveryGeneration generation, CancellationToken ct)
+    /// <summary>The metadata-only form of <see cref="ReadLeavesAsync"/>, for a caller that holds no capability and so cannot read protected content.</summary>
+    internal static async Task ReadMetadataLeavesAsync(SqliteConnection connection, SqliteTransaction transaction, LongRestDiscoveryGeneration generation,
+        IEnumerable<string> memories, CancellationToken ct)
     {
-        LongRestVerificationCounters.ScrubWindow();
-
-        foreach (string memory in await ReadScrubWindowAsync(connection, transaction, generation, ct).ConfigureAwait(false))
+        foreach (string memory in memories)
         {
             _ = await ReadFrozenMetadataLeafAsync(connection, transaction, generation, memory, ct).ConfigureAwait(false);
         }

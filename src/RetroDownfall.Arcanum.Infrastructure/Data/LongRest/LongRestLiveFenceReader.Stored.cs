@@ -120,10 +120,7 @@ internal sealed partial class LongRestLiveFenceReader
 
                 await LongRestDiscoveryStore.ValidateSweepGenerationAsync(connection, transaction, current, capability, depth, ct).ConfigureAwait(false);
 
-                foreach (string memory in inputs ?? [])
-                {
-                    _ = await LongRestDiscoveryStore.ReadSweepLeafAsync(connection, transaction, current, memory, capability, ct).ConfigureAwait(false);
-                }
+                await LongRestDiscoveryStore.ReadLeavesAsync(connection, transaction, current, inputs ?? [], capability, ct).ConfigureAwait(false);
             }
 
             Result<LongRestSweepFence> after = await CaptureAsync(expected.Fence.CanonicalScope, expected.Fence.Configuration,
