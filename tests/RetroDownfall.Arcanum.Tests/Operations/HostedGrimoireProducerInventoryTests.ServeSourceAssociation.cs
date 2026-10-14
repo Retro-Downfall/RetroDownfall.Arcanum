@@ -151,8 +151,8 @@ public sealed partial class HostedGrimoireProducerInventoryTests
 
         MethodDeclarationSyntax pool = Assert.Single(factory.Members.OfType<MethodDeclarationSyntax>(), static method => method.Identifier.ValueText == "CreateOwnedHttpClient");
 
-        foreach (string expected in new[] { "OutboundUrlGuard.CreateProviderEgressHandler()", "handler.PooledConnectionLifetime = TimeSpan.FromMinutes(2)",
-            "handler.PooledConnectionIdleTimeout = TimeSpan.FromMinutes(1)", "new HttpClient(handler, disposeHandler: true)", "Timeout = Timeout.InfiniteTimeSpan" })
+        foreach (string expected in new[] { "OutboundUrlGuard.CreateProviderEgressHandler()", "handler.PooledConnectionLifetime = TimeSpan.Zero",
+            "handler.PooledConnectionIdleTimeout = TimeSpan.Zero", "new HttpClient(handler, disposeHandler: true)", "Timeout = Timeout.InfiniteTimeSpan" })
             Assert.Contains(expected, pool.ToString(), StringComparison.Ordinal);
 
         SyntaxTree guardTree = Assert.Single(infrastructure.SyntaxTrees, static tree => tree.FilePath == "src/RetroDownfall.Arcanum.Infrastructure/Security/OutboundUrlGuard.cs");
@@ -184,6 +184,37 @@ public sealed partial class HostedGrimoireProducerInventoryTests
         SyntaxTree registrations = Assert.Single(api.SyntaxTrees, static tree => tree.FilePath == "src/RetroDownfall.Arcanum.Api/ApiBootstrapper.cs");
 
         Assert.Contains(registrations.GetRoot().DescendantNodes().OfType<InvocationExpressionSyntax>(), static call => call.ToString() == "services.AddScoped<LongRestProviderClientFactory>()");
+    }
+
+    // The owned-transport pin is a statement about the shipped text: one connection per send. A pooled lifetime or idle timeout that
+    // keeps a connection alive past its response, or no setting at all, is refused by the same pin that accepts the shipped text.
+    [Theory]
+    [InlineData("handler.PooledConnectionLifetime = TimeSpan.Zero;", "handler.PooledConnectionLifetime = TimeSpan.FromMinutes(2);")]
+    [InlineData("handler.PooledConnectionIdleTimeout = TimeSpan.Zero;", "handler.PooledConnectionIdleTimeout = TimeSpan.FromMinutes(1);")]
+    [InlineData("handler.PooledConnectionLifetime = TimeSpan.Zero;", "")]
+    [InlineData("handler.PooledConnectionIdleTimeout = TimeSpan.Zero;", "")]
+    public void TheOwnedTransportSourcePinRefusesAPooledConnectionThatOutlivesItsSend(string shipped, string replacement)
+    {
+        const string factoryPath = "src/RetroDownfall.Arcanum.Api/Intelligence/LongRestProviderClientFactory.cs";
+
+        IReadOnlyList<CSharpCompilation> production = HostedGrimoireProducerInventory.ProductionCompilations;
+
+        CSharpCompilation api = Assert.Single(production, static compilation => compilation.AssemblyName == "RetroDownfall.Arcanum.Api");
+
+        CSharpCompilation infrastructure = Assert.Single(production, static compilation => compilation.AssemblyName == "RetroDownfall.Arcanum.Infrastructure");
+
+        SyntaxTree tree = Assert.Single(api.SyntaxTrees, static tree => tree.FilePath == factoryPath);
+
+        string text = tree.GetText().ToString();
+
+        Assert.Single(System.Text.RegularExpressions.Regex.Matches(text, System.Text.RegularExpressions.Regex.Escape(shipped)));
+
+        // The shipped text is accepted by the very pin that refuses its mutations.
+        AssertOwnedLongRestTransportSource(api, infrastructure);
+
+        SyntaxTree mutated = tree.WithChangedText(Microsoft.CodeAnalysis.Text.SourceText.From(text.Replace(shipped, replacement, StringComparison.Ordinal)));
+
+        Assert.ThrowsAny<Xunit.Sdk.XunitException>(() => AssertOwnedLongRestTransportSource(api.ReplaceSyntaxTree(tree, mutated), infrastructure));
     }
 
     private static void AssertCanonicalWorkerScopedSource(CSharpCompilation infrastructure)
