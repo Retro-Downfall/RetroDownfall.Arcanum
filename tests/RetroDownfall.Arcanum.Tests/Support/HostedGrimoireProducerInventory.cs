@@ -6230,9 +6230,19 @@ internal static partial class HostedGrimoireProducerInventory
             Dictionary<string, int> familyOwners = plans[0].GroupBy(static root => root.Family, StringComparer.Ordinal)
                 .ToDictionary(static family => family.Key, family => owners[family.First().Occurrence], StringComparer.Ordinal);
 
+            HashSet<string> handoffServices = [.. coordinator.leaseHandoffRootTypes.Values];
+
+            foreach (string service in handoffServices)
+            {
+                if (plans[0].Where(root => root.RootType == service).Select(root => owners[root.Occurrence]).Distinct().Count() > 1)
+                {
+                    throw new InvalidOperationException("The roots of a service that declares a lease-handoff root were split across workers.");
+                }
+            }
+
             ProducerGraph Owner(string rootType, string operation)
             {
-                string family = rootType + "|" + coordinator.RootOperation(operation);
+                string family = HostedProducerRootWorkers.FamilyOf(rootType, coordinator.RootOperation(operation), handoffServices.Contains(rootType));
 
                 if (!familyOwners.TryGetValue(family, out int worker))
                 {
@@ -6399,7 +6409,7 @@ internal static partial class HostedGrimoireProducerInventory
 
                 string rootType = root.Symbol.ContainingType.Name;
 
-                planned.Add(new(planned.Count, rootType + "|" + RootOperation(operation), rootType, operation, root, true, null));
+                planned.Add(new(planned.Count, HostedProducerRootWorkers.FamilyOf(rootType, RootOperation(operation), serviceDeclaresLeaseHandoff: false), rootType, operation, root, true, null));
             }
 
             foreach ((HostedProducerOperationEntry operation, AuthoredMember root, SyntaxNode selection) in resolvedRoots)
@@ -6411,7 +6421,22 @@ internal static partial class HostedGrimoireProducerInventory
                     leaseHandoffRootTypes[operation.OperationId] = rootType;
                 }
 
-                planned.Add(new(planned.Count, rootType + "|" + RootOperation(operation.OperationId), rootType, operation.OperationId, root, false, selection));
+                planned.Add(new(planned.Count, HostedProducerRootWorkers.FamilyOf(rootType, RootOperation(operation.OperationId), serviceDeclaresLeaseHandoff: false), rootType, operation.OperationId, root, false, selection));
+            }
+
+            // A service that declares a lease-handoff root is one family: its roots cut to the handoff root, whose closure is shared only
+            // through the state cache of the worker that runs it, so a pool that split them would admit the closure once for every worker.
+            HashSet<string> handoffServices = [.. leaseHandoffRootTypes.Values];
+
+            for (int index = 0; index < planned.Count; index++)
+            {
+                if (handoffServices.Contains(planned[index].RootType))
+                {
+                    planned[index] = planned[index] with
+                    {
+                        Family = HostedProducerRootWorkers.FamilyOf(planned[index].RootType, RootOperation(planned[index].Operation), serviceDeclaresLeaseHandoff: true),
+                    };
+                }
             }
 
             ValidateLeaseHandoffDeclarations();
@@ -58674,7 +58699,18 @@ internal static partial class HostedGrimoireProducerInventory
                     diagnostics.Add(new("HOSTED_SITE_AUTHORITY_INVALID", SiteIdentity(site), "Effect-free authority cannot contain a sensitive producer site."));
                 }
 
-                if (ordinary && site.Kind != HostedProducerSiteKind.EffectFrontier && !operation.Sites.Any(frontier => frontier.Kind == HostedProducerSiteKind.EffectFrontier && FrontierIdentity(site, "work") is { } lease && lease == FrontierIdentity(frontier, "work") && IsWorkFrontierCallee(frontier.Callee) && (frontier.AdmittedWorkKind == operation.WorkKind || frontier.OperationId.Contains("/workKind=" + operation.WorkKind, StringComparison.Ordinal))))
+                if (site.Kind == HostedProducerSiteKind.EffectFrontier && site.Callee == RootLeaseFormalCallee && operation.LeaseFormal is null)
+                {
+                    diagnostics.Add(new(LeaseFormalUndeclaredCode, SiteIdentity(site), "A root lease formal belongs only to an operation whose catalog entry declares a lease formal."));
+                }
+
+                if (site.Kind == HostedProducerSiteKind.LeaseHandoff
+                    && !(catalog.FirstOrDefault(service => service.Operations.Contains(operation))?.Operations.Any(declared => declared.LeaseFormal is not null && declared.OperationId == site.Callee) ?? false))
+                {
+                    diagnostics.Add(new(LeaseHandoffUndeclaredCode, SiteIdentity(site), "A handoff binding row must name a declared lease-handoff operation of its own service."));
+                }
+
+                if (ordinary && site.Kind != HostedProducerSiteKind.EffectFrontier && !operation.Sites.Any(frontier => frontier.Kind == HostedProducerSiteKind.EffectFrontier && FrontierIdentity(site, "work") is { } lease && lease == FrontierIdentity(frontier, "work") && IsWorkFrontierCallee(frontier.Callee) && (frontier.Callee != RootLeaseFormalCallee || operation.LeaseFormal is not null) && (frontier.AdmittedWorkKind == operation.WorkKind || frontier.OperationId.Contains("/workKind=" + operation.WorkKind, StringComparison.Ordinal))))
                 {
                     diagnostics.Add(new("HOSTED_SITE_WORK_FRONTIER_MISSING", SiteIdentity(site), "Ordinary work requires admission for its declared work kind before scopes and effects."));
                 }

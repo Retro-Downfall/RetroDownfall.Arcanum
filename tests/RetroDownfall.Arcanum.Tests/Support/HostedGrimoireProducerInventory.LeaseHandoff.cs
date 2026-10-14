@@ -1,3 +1,5 @@
+using System.Globalization;
+
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
@@ -16,15 +18,21 @@ internal static partial class HostedGrimoireProducerInventory
     //
     //   - the callee is exactly the declared root, and the caller is a root of the same service with the same work kind;
     //   - the lease argument is a must-alias of the one acquisition whose Work the caller holds at the call;
-    //   - the call is directly awaited in the caller's own body, no external-effect group is open, and nothing in the
-    //     argument evaluation has ended the lease.
+    //   - the call is directly awaited in the caller's own body (`await call`, or `await call.ConfigureAwait(constant)`: an argument
+    //     evaluated between the call and its await would run while the root does), no external-effect group is open, and nothing in the
+    //     argument evaluation has ended the lease;
+    //   - no other argument and not the receiver may hold the lease (the canonical root binds its formal alone, so a second alias would
+    //     reach it unbound, outside every rule the cut grants Work under), and no closure of the caller mentions the lease;
+    //   - a call that can run again (in a loop, or behind a backward jump) is cut only if the root preserves its formal, because a root
+    //     that disposes it would be handed the same lease, already ended, on the next pass.
     //
     // A call that is the declared root but fails one of them is HOSTED_LEASE_HANDOFF_UNPROVEN and is traversed in line, under the
     // caller's budget. The caller's lease lifetime continues after a cut call only if the root proves its formal is never
     // disposed, stored, returned, captured or escaped anywhere in its closure (Formal Preservation); otherwise the lifetime
     // ends at the call. Every syntactic reference to the root's method in analysed production source must be a cut call that some
     // root proved (the Handoff Caller Census), and the manifest ties the root's formal capsule to each caller's acquisition capsule
-    // with one handoff-binding row per call site.
+    // with one handoff-binding row per call site. Captures of the lease in an ancestor of the caller are not judged here: they rest on
+    // the Authority Carrier Ban of the admitted entry census until that lands.
     internal const string RootLeaseFormalCallee = "RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireWorkLease.RootLeaseFormal";
 
     internal const string LeaseHandoffUnprovenCode = "HOSTED_LEASE_HANDOFF_UNPROVEN";
@@ -33,11 +41,201 @@ internal static partial class HostedGrimoireProducerInventory
 
     internal const string ManifestHandoffUnboundCode = "HOSTED_MANIFEST_HANDOFF_UNBOUND";
 
+    internal const string LeaseHandoffRootUnboundCode = "HOSTED_LEASE_HANDOFF_ROOT_UNBOUND";
+
+    internal const string LeaseFormalUndeclaredCode = "HOSTED_SITE_LEASE_FORMAL_UNDECLARED";
+
+    internal const string LeaseHandoffUndeclaredCode = "HOSTED_SITE_LEASE_HANDOFF_UNDECLARED";
+
     private const string LeaseHandoffFormalType = "RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireWorkLease";
 
     // A work frontier is the row that every Work capsule of an operation resolves to: an acquisition, or the formal of a handoff root.
     private static bool IsWorkFrontierCallee(string callee) =>
         callee.EndsWith(".TryAcquireWorkLease", StringComparison.Ordinal) || callee == RootLeaseFormalCallee;
+
+    // The chain pin. The Session shell reaches the handoff method through request-path code that no root of the inventory traverses, so the
+    // Handoff Caller Census cannot judge it; the chain above the one proven call site is therefore pinned by an exact reviewed list of
+    // callers for each of its links. A link is matched on the method's identity, never on the type a caller happens to name: the method
+    // itself, the interface slots it implements, the methods that implement a slot, the methods those override or are overridden by, and
+    // the method groups that name any of them. A pin keyed on the interface alone is bypassed by a caller of the registered class.
+    private static readonly string[] HandoffChainIdentifiers =
+    [
+        "ProcessAdmittedAsync",
+        "ResumeAdmittedAsync",
+        "ResumeCoreAsync",
+        "RunOwnedAsync",
+        "LongRestSweepCoordinator",
+        "ILongRestAdmittedSweep",
+        "ILongRestAdmittedMaintenance",
+        "ILongRestSweepCoordinator",
+    ];
+
+    private static IEnumerable<INamedTypeSymbol> HandoffChainTypes(INamespaceSymbol scope)
+    {
+        foreach (INamedTypeSymbol type in scope.GetTypeMembers())
+        {
+            foreach (INamedTypeSymbol nested in HandoffChainNestedTypes(type))
+            {
+                yield return nested;
+            }
+        }
+
+        foreach (INamespaceSymbol child in scope.GetNamespaceMembers())
+        {
+            foreach (INamedTypeSymbol type in HandoffChainTypes(child))
+            {
+                yield return type;
+            }
+        }
+    }
+
+    private static IEnumerable<INamedTypeSymbol> HandoffChainNestedTypes(INamedTypeSymbol type)
+    {
+        yield return type;
+
+        foreach (INamedTypeSymbol nested in type.GetTypeMembers())
+        {
+            foreach (INamedTypeSymbol inner in HandoffChainNestedTypes(nested))
+            {
+                yield return inner;
+            }
+        }
+    }
+
+    // True when a call to either method may run the other: one is a slot the other implements, or one overrides the other.
+    private static bool HandoffChainRelated(IMethodSymbol first, IMethodSymbol second)
+    {
+        static bool Implements(IMethodSymbol slot, IMethodSymbol implementation) =>
+            slot.ContainingType.TypeKind == TypeKind.Interface
+            && implementation.ContainingType.TypeKind != TypeKind.Interface
+            && implementation.ContainingType.FindImplementationForInterfaceMember(slot) is IMethodSymbol found
+            && MethodKey(found) == MethodKey(implementation);
+
+        static bool Overrides(IMethodSymbol derived, IMethodSymbol inherited)
+        {
+            for (IMethodSymbol? overridden = derived.OverriddenMethod; overridden is not null; overridden = overridden.OverriddenMethod)
+            {
+                if (MethodKey(overridden) == MethodKey(inherited))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        return Implements(first, second) || Implements(second, first) || Overrides(first, second) || Overrides(second, first);
+    }
+
+    // Every reference to a link of the chain in the given compilations, as the member that holds it. `containingType` names the link's
+    // type (an interface slot or a class) and `method` its name. A reference that is not an invocation is marked, so a method group or a
+    // delegate cannot be a caller the pin does not see.
+    internal static string[] HandoffChainReferences(IReadOnlyList<CSharpCompilation> compilations, string containingType, string method)
+    {
+        IMethodSymbol[] pool = [.. compilations
+            .SelectMany(static compilation => HandoffChainTypes(compilation.Assembly.GlobalNamespace))
+            .SelectMany(type => type.GetMembers().OfType<IMethodSymbol>().Where(candidate => candidate.Name == method
+                || candidate.ExplicitInterfaceImplementations.Any(implemented => implemented.Name == method)))];
+
+        HashSet<string> identities = [.. pool.Where(candidate => TypeKey(candidate.ContainingType) == containingType).Select(MethodKey)];
+
+        for (bool grew = true; grew;)
+        {
+            grew = false;
+
+            IMethodSymbol[] known = [.. pool.Where(candidate => identities.Contains(MethodKey(candidate)))];
+
+            foreach (IMethodSymbol candidate in pool.Where(candidate => !identities.Contains(MethodKey(candidate))))
+            {
+                if (known.Any(link => HandoffChainRelated(candidate, link)))
+                {
+                    grew |= identities.Add(MethodKey(candidate));
+                }
+            }
+        }
+
+        IMethodSymbol[] links = [.. pool.Where(candidate => identities.Contains(MethodKey(candidate)))];
+
+        List<string> found = [];
+
+        foreach (CSharpCompilation compilation in compilations)
+        {
+            foreach (SyntaxTree tree in compilation.SyntaxTrees)
+            {
+                SemanticModel model = compilation.GetSemanticModel(tree);
+
+                foreach (SimpleNameSyntax name in tree.GetRoot().DescendantNodes().OfType<SimpleNameSyntax>().Where(candidate => candidate.Identifier.ValueText == method))
+                {
+                    SymbolInfo info = model.GetSymbolInfo(name);
+
+                    IEnumerable<IMethodSymbol> referenced = info.Symbol is IMethodSymbol exact ? [exact] : info.CandidateSymbols.OfType<IMethodSymbol>();
+
+                    if (!referenced.Any(reference => identities.Contains(MethodKey(reference)) || links.Any(link => HandoffChainRelated(reference, link))))
+                    {
+                        continue;
+                    }
+
+                    BaseMethodDeclarationSyntax? enclosing = name.Ancestors().OfType<BaseMethodDeclarationSyntax>().FirstOrDefault();
+
+                    string owner = enclosing?.Ancestors().OfType<TypeDeclarationSyntax>().FirstOrDefault()?.Identifier.ValueText ?? "<none>";
+
+                    string member = enclosing is MethodDeclarationSyntax declared ? declared.Identifier.ValueText : "<other>";
+
+                    bool invoked = name.Parent is InvocationExpressionSyntax
+                        || name.Parent is MemberAccessExpressionSyntax { Parent: InvocationExpressionSyntax }
+                        || name.Parent is MemberBindingExpressionSyntax { Parent: InvocationExpressionSyntax };
+
+                    found.Add(owner + "." + member + (invoked ? "" : " (reference)"));
+                }
+            }
+        }
+
+        return [.. found.Order(StringComparer.Ordinal)];
+    }
+
+    // The chain's identifiers in one tree, as line and name. Tokens, so a comment or a string never counts.
+    internal static string[] HandoffChainNamesIn(SyntaxTree tree) => [.. tree.GetRoot().DescendantTokens()
+        .Where(static token => token.IsKind(SyntaxKind.IdentifierToken) && HandoffChainIdentifiers.Contains(token.ValueText, StringComparer.Ordinal))
+        .Select(token => (tree.GetLineSpan(token.Span).StartLinePosition.Line + 1).ToString(CultureInfo.InvariantCulture) + ":" + token.ValueText)];
+
+    // The projects the inventory does not analyse are scoped out of the pin, and the scope-out is sound only while none of them names a
+    // link of the chain. The development host and the benchmark and smoke harnesses can see the internals; the client projects cannot
+    // and are held to the same rule. The unit-test projects exercise the chain and are the only ones excluded.
+    internal static string[] HandoffChainNamesOutsideTheAnalysedProjects()
+    {
+        string repository = FindRepositoryRoot();
+
+        HashSet<string> analysed = [.. ProductionCompilations.Select(static compilation => compilation.AssemblyName!)];
+
+        List<string> found = [];
+
+        foreach (string root in new[] { "src", "tests" })
+        {
+            foreach (string project in Directory.EnumerateDirectories(Path.Combine(repository, root)).Order(StringComparer.Ordinal))
+            {
+                string name = Path.GetFileName(project);
+
+                if (analysed.Contains(name) || name.EndsWith(".Tests", StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                foreach (string file in Directory.EnumerateFiles(project, "*.cs", SearchOption.AllDirectories).Order(StringComparer.Ordinal))
+                {
+                    string relative = Path.GetRelativePath(repository, file).Replace('\\', '/');
+
+                    if (relative.Contains("/obj/", StringComparison.Ordinal) || relative.Contains("/bin/", StringComparison.Ordinal))
+                    {
+                        continue;
+                    }
+
+                    found.AddRange(HandoffChainNamesIn(CSharpSyntaxTree.ParseText(File.ReadAllText(file), path: relative)).Select(hit => relative + ":" + hit));
+                }
+            }
+        }
+
+        return [.. found];
+    }
 
     // The handoff-binding association. Each formal row is bound by at least one binding row (a LeaseHandoff site in a caller's operation
     // whose callee is the root's operation id), each binding row names a root that has a formal row, and the Work the binding carries is
@@ -277,6 +475,8 @@ internal static partial class HostedGrimoireProducerInventory
                 return "the caller is a root of another service";
             }
 
+            // No handoff fixture builds a holder-era caller: each context is produced only by its own binder, whose exact shape the fixtures of
+            // that holder own, and no root of a handoff service reaches one. The refusal only removes authority.
             if (caller.RecoveryContext is not null || caller.OrdinaryScopedHolder is not null || caller.ReadinessSource is not null || caller.ScopedLeaseInstance is not null)
             {
                 return "the caller carries a holder-era context";
@@ -287,6 +487,8 @@ internal static partial class HostedGrimoireProducerInventory
                 return "the call is not in the caller's own method body";
             }
 
+            // The open group of the caller is pinned by the effect-open fixture. A recovery effect opens only at the exact settle call of the
+            // reconciler, whose try/finally and disposition shape the recovery fixtures own; it is the same refusal and only removes authority.
             if (effect is not null || recoveryEffect is not null)
             {
                 return "an external-effect group is open at the call";
@@ -297,13 +499,14 @@ internal static partial class HostedGrimoireProducerInventory
                 return "the caller holds no live Work at the call";
             }
 
-            if (!DirectlyAwaited(caller, call))
+            if (AwaitRefusal(caller, call) is { } notAwaited)
             {
-                return "the call is not directly awaited";
+                return notAwaited;
             }
 
             int formalOrdinal = root.Formal.Ordinal;
 
+            // A by-reference formal never reaches this check: LeaseHandoffFormal refuses it as a declaration, so the root is not usable.
             (ExpressionSyntax Expression, IParameterSymbol? Parameter, RefKind RefKind)[] leases = [.. AdmissionArguments(caller, call).Where(argument => argument.Parameter?.Ordinal == formalOrdinal)];
 
             if (leases is not [{ Parameter: not null, RefKind: RefKind.None } lease] || lease.Expression is DeclarationExpressionSyntax)
@@ -328,13 +531,39 @@ internal static partial class HostedGrimoireProducerInventory
                 return "the lease has ended before the call begins";
             }
 
+            // The canonical root binds its one formal. Any other argument, and the receiver, that may hold the lease would reach the root
+            // unbound, outside the escape and lifetime rules the cut grants Work under; the in-line traversal judged them.
+            if (AdmissionArguments(caller, call).Any(argument => argument.Parameter?.Ordinal != formalOrdinal && MayHoldAdmissionAlias(caller, argument.Expression)))
+            {
+                return "another argument may hold the caller's lease";
+            }
+
+            if (AdmissionReceiver(caller, call) is { } receiver && MayHoldAdmissionAlias(caller, receiver))
+            {
+                return "the receiver may hold the caller's lease";
+            }
+
+            // The caller side of Formal Preservation: a closure that mentions the lease can end it at a time no position names.
+            if (LeaseMentionedInClosure(caller, acquisition))
+            {
+                return "a closure of the caller mentions the caller's lease";
+            }
+
+            // The root's lifetime proof is positional, so a pass of the call that comes after the root ended its formal is not covered by it.
+            if (CallMayRepeat(caller, call) && !FormalPreserved(entry))
+            {
+                return "the call sits in a loop and the root does not preserve its formal";
+            }
+
             origin = acquisition;
 
             return null;
         }
 
-        // `await call` or `await call.ConfigureAwait(...)` and nothing else: no conditional, coalesce, switch, cast, stored task or discard.
-        private static bool DirectlyAwaited(AuthoredMember caller, InvocationExpressionSyntax call)
+        // `await call` or `await call.ConfigureAwait(constant)` and nothing else: no conditional, coalesce, switch, cast, stored task or discard.
+        // A ConfigureAwait argument is evaluated after the root has started and before the await, so it runs while the root does and could
+        // end the lease then; only a compile-time constant evaluates nothing. Null means the call is awaited that way.
+        private static string? AwaitRefusal(AuthoredMember caller, InvocationExpressionSyntax call)
         {
             SyntaxNode expression = call;
 
@@ -347,13 +576,63 @@ internal static partial class HostedGrimoireProducerInventory
                 else if (expression.Parent is MemberAccessExpressionSyntax { Name.Identifier.ValueText: "ConfigureAwait", Parent: InvocationExpressionSyntax configured }
                     && caller.Model.GetSymbolInfo(configured).Symbol is IMethodSymbol method && IsExactFrameworkConfigureAwait(method))
                 {
+                    if (configured.ArgumentList.Arguments is not [{ Expression: { } option }] || !caller.Model.GetConstantValue(option).HasValue)
+                    {
+                        return "the await configures the call with an argument that is not a constant";
+                    }
+
                     expression = configured;
                 }
                 else
                 {
-                    return expression.Parent is AwaitExpressionSyntax;
+                    return expression.Parent is AwaitExpressionSyntax ? null : "the call is not directly awaited";
                 }
             }
+        }
+
+        // Another argument or the receiver may hold the lease: a value of any type that is not closed pure data or a token, computed from an
+        // expression that mentions the lease (the origin walk is a may-alias walk). A holder built from the lease, a second parameter given
+        // the lease, and a receiver constructed from it are all such values.
+        private bool MayHoldAdmissionAlias(AuthoredMember member, ExpressionSyntax expression)
+        {
+            if (AdmissionOrigins(member, expression, new HashSet<ISymbol>(SymbolEqualityComparer.Default)).Count == 0)
+            {
+                return false;
+            }
+
+            ITypeSymbol? type = member.Model.GetTypeInfo(expression).Type;
+
+            return type is null
+                || !IsHandleIncapableValueType(type, member.Model.Compilation)
+                    && !IsExactFrameworkType(type, "System.Threading.CancellationToken", typeof(CancellationToken).Assembly.GetName());
+        }
+
+        // The call can run again: it sits in a loop, or a jump after it lands before it.
+        private static bool CallMayRepeat(AuthoredMember caller, InvocationExpressionSyntax call)
+        {
+            if (call.Ancestors().TakeWhile(ancestor => ancestor != caller.Syntax).Any(static ancestor => ancestor is ForStatementSyntax or CommonForEachStatementSyntax or WhileStatementSyntax or DoStatementSyntax))
+            {
+                return true;
+            }
+
+            foreach (GotoStatementSyntax jump in caller.Syntax.DescendantNodes().OfType<GotoStatementSyntax>().Where(jump => jump.SpanStart >= call.Span.End))
+            {
+                if (jump.IsKind(SyntaxKind.GotoStatement))
+                {
+                    if (jump.Expression is null
+                        || caller.Model.GetSymbolInfo(jump.Expression).Symbol is not ILabelSymbol label
+                        || label.DeclaringSyntaxReferences.Any(reference => reference.SyntaxTree != call.SyntaxTree || reference.Span.Start <= call.SpanStart))
+                    {
+                        return true;
+                    }
+                }
+                else if (call.Ancestors().OfType<SwitchStatementSyntax>().Any(switchStatement => switchStatement.Span.Contains(jump.Span)))
+                {
+                    return true;
+                }
+            }
+
+            return false;
         }
 
         // Formal Preservation, computed by the root and consulted by every caller's lifetime. The formal survives its root's closure only if
@@ -396,36 +675,47 @@ internal static partial class HostedGrimoireProducerInventory
                 return false;
             }
 
-            bool Carries(ExpressionSyntax expression) =>
-                AdmissionOrigins(member, expression, new HashSet<ISymbol>(SymbolEqualityComparer.Default)).Contains(origin) && MayCarryAdmissionHandle(member, expression);
-
-            foreach (SyntaxNode node in member.Syntax.DescendantNodes())
+            if (LeaseMentionedInClosure(member, origin))
             {
-                if (node is AnonymousFunctionExpressionSyntax or LocalFunctionStatementSyntax)
-                {
-                    foreach (IdentifierNameSyntax reference in node.DescendantNodes().OfType<IdentifierNameSyntax>())
-                    {
-                        ISymbol? symbol = member.Model.GetSymbolInfo(reference).Symbol;
+                return true;
+            }
 
-                        if (symbol is not (ILocalSymbol or IParameterSymbol)
-                            || symbol.DeclaringSyntaxReferences.Any(declaration => declaration.SyntaxTree == node.SyntaxTree && node.Span.Contains(declaration.Span)))
-                        {
-                            continue;
-                        }
-
-                        if (Carries(reference))
-                        {
-                            return true;
-                        }
-                    }
-                }
-                else if (node is InvocationExpressionSyntax call
-                    && AdmissionArguments(member, call).Any(argument => argument.Expression is not DeclarationExpressionSyntax && Carries(argument.Expression))
+            foreach (InvocationExpressionSyntax call in member.Syntax.DescendantNodes().OfType<InvocationExpressionSyntax>())
+            {
+                if (AdmissionArguments(member, call).Any(argument => argument.Expression is not DeclarationExpressionSyntax && LeaseCarrier(member, origin, argument.Expression))
                     && member.Model.GetSymbolInfo(call).Symbol is IMethodSymbol method
                     && Resolve(method, member.Model.Compilation) is { } target
                     && LeaseFormalCaptured(BindAdmissionArguments(member, call, target), origin, visited))
                 {
                     return true;
+                }
+            }
+
+            return false;
+        }
+
+        private bool LeaseCarrier(AuthoredMember member, string origin, ExpressionSyntax expression) =>
+            AdmissionOrigins(member, expression, new HashSet<ISymbol>(SymbolEqualityComparer.Default)).Contains(origin) && MayCarryAdmissionHandle(member, expression);
+
+        // A nested callable that reads a lease-carrying variable of its owner holds the lease past any position the walk can name.
+        private bool LeaseMentionedInClosure(AuthoredMember member, string origin)
+        {
+            foreach (SyntaxNode node in member.Syntax.DescendantNodes().Where(static node => node is AnonymousFunctionExpressionSyntax or LocalFunctionStatementSyntax))
+            {
+                foreach (IdentifierNameSyntax reference in node.DescendantNodes().OfType<IdentifierNameSyntax>())
+                {
+                    ISymbol? symbol = member.Model.GetSymbolInfo(reference).Symbol;
+
+                    if (symbol is not (ILocalSymbol or IParameterSymbol)
+                        || symbol.DeclaringSyntaxReferences.Any(declaration => declaration.SyntaxTree == node.SyntaxTree && node.Span.Contains(declaration.Span)))
+                    {
+                        continue;
+                    }
+
+                    if (LeaseCarrier(member, origin, reference))
+                    {
+                        return true;
+                    }
                 }
             }
 
@@ -445,6 +735,11 @@ internal static partial class HostedGrimoireProducerInventory
                 if (LeaseHandoffRootFor(entry) is not { } root)
                 {
                     continue;
+                }
+
+                if (!provenLeaseHandoffCalls.Any(key => key.StartsWith(entry.OperationId + "|", StringComparison.Ordinal)))
+                {
+                    diagnostics.Add(new(LeaseHandoffRootUnboundCode, entry.OperationId, "No root proved a call to this handoff root, so its formal has no binding."));
                 }
 
                 IMethodSymbol handoff = root.Member.Symbol.OriginalDefinition;

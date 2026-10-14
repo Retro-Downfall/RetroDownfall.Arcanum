@@ -29,6 +29,8 @@ public sealed partial class HostedGrimoireProducerInventoryTests
 
     private const string LeaseHandoffCallerOperation = "Worker.StartAsync";
 
+    private const string LeaseHandoffSecondCallerOperation = "Worker.StopAsync";
+
     private const string LeaseHandoffSend = "System.IO.File.Delete";
 
     private const string LeaseHandoffAfterRead = "System.IO.File.Exists";
@@ -38,6 +40,15 @@ public sealed partial class HostedGrimoireProducerInventoryTests
     private const string LeaseHandoffGroup = "RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireWorkLease.TryBeginExternalEffectGroup";
 
     private const string LeaseHandoffStandardCall = "await maintenance.ProcessAdmittedAsync(operation, \"owner\", null, admission, ct).ConfigureAwait(false);";
+
+    // The signature of the admitted maintenance, in the port and in its implementation. The root's lease formal is named `admission`.
+    private static string LeaseHandoffMaintenanceParameters(string shape) => shape switch
+    {
+        "second-lease-param" => "Guid operationId, string workerOwner, object? capability, IGrimoireWorkLease admission, CancellationToken ct, IGrimoireWorkLease? other = null",
+        "lease-omitted" => "Guid operationId, string workerOwner, object? capability, CancellationToken ct, IGrimoireWorkLease? admission = null",
+        "in-formal" => "Guid operationId, string workerOwner, object? capability, in IGrimoireWorkLease admission, CancellationToken ct",
+        _ => "Guid operationId, string workerOwner, object? capability, IGrimoireWorkLease admission, CancellationToken ct",
+    };
 
     // The caller's compilation: the hosted worker, the admitted sweep port and its coordinator. `shape` varies one thing at a time.
     private static string LeaseHandoffInfrastructureSource(string shape)
@@ -60,6 +71,21 @@ public sealed partial class HostedGrimoireProducerInventoryTests
 
                 await using IGrimoireExternalEffectGroup heldGroup = held;
                 """,
+            "second-acquisition" => """
+                if (!gate.TryAcquireWorkLease(GrimoireWorkKind.LongRestSweep, out IGrimoireWorkLease? second)) return;
+
+                await using IGrimoireWorkLease secondLease = second!;
+                """,
+            "spawned-disposer" => """
+                _ = Task.Run(async () =>
+                {
+                    await Task.Delay(10).ConfigureAwait(false);
+
+                    await using IGrimoireWorkLease gone = admission;
+                });
+                """,
+            "lease-in-holder-local" => "LeaseHolder holder = new(admission);",
+            "unrelated-closure" => "Func<int> unrelated = () => 1;\n\n                    _ = unrelated();",
             _ => "",
         };
 
@@ -72,6 +98,16 @@ public sealed partial class HostedGrimoireProducerInventoryTests
             "via-delegate" => "Func<Guid, string, object?, IGrimoireWorkLease, CancellationToken, Task> run = maintenance.ProcessAdmittedAsync;\n\n                    await run(operation, \"owner\", null, admission, ct).ConfigureAwait(false);",
             "two-calls" => LeaseHandoffStandardCall + "\n\n                    " + LeaseHandoffStandardCall,
             "inside-lambda" => "Func<Task> inner = async () => await maintenance.ProcessAdmittedAsync(operation, \"owner\", null, admission, ct).ConfigureAwait(false);\n\n                    await inner().ConfigureAwait(false);",
+            "second-lease-param" => "await maintenance.ProcessAdmittedAsync(operation, \"owner\", null, admission, ct, admission).ConfigureAwait(false);",
+            "lease-in-holder-argument" => "await maintenance.ProcessAdmittedAsync(operation, \"owner\", new LeaseHolder(admission), admission, ct).ConfigureAwait(false);",
+            "lease-in-holder-local" => "await maintenance.ProcessAdmittedAsync(operation, \"owner\", holder, admission, ct).ConfigureAwait(false);",
+            "receiver-from-lease" => "await new LeaseCarrier(admission, maintenance).Maintenance.ProcessAdmittedAsync(operation, \"owner\", null, admission, ct).ConfigureAwait(false);",
+            "configure-await-arg-ends" => "await maintenance.ProcessAdmittedAsync(operation, \"owner\", null, admission, ct).ConfigureAwait(await EndAsync(admission).ConfigureAwait(false));",
+            "configure-await-variable" => "bool configured = false;\n\n                    await maintenance.ProcessAdmittedAsync(operation, \"owner\", null, admission, ct).ConfigureAwait(configured);",
+            "lease-omitted" => "await maintenance.ProcessAdmittedAsync(operation, \"owner\", null, ct).ConfigureAwait(false);",
+            "in-formal" => "await maintenance.ProcessAdmittedAsync(operation, \"owner\", null, in admission, ct).ConfigureAwait(false);",
+            "loop-formal-disposed" or "loop-preserved" => "for (int attempt = 0; attempt < 2; attempt++)\n                    {\n                        " + LeaseHandoffStandardCall + "\n                    }",
+            "goto-formal-disposed" => "again:\n\n                    " + LeaseHandoffStandardCall + "\n\n                    if (ct.IsCancellationRequested) goto again;",
             _ => LeaseHandoffStandardCall,
         };
 
@@ -119,8 +155,74 @@ public sealed partial class HostedGrimoireProducerInventoryTests
                     return "owner";
                 }
                 """,
+            "configure-await-arg-ends" => """
+                private static async Task<bool> EndAsync(IGrimoireWorkLease lease)
+                {
+                    await using IGrimoireWorkLease ending = lease;
+
+                    return false;
+                }
+                """,
+            "concrete-shell" => "public Task ResumeAsync(Guid operationId, CancellationToken ct) => Task.CompletedTask;",
             _ => "",
         };
+
+        // Types beside the coordinator: a holder a lease can be put in, a carrier the receiver is built from, and callers that name the
+        // concrete coordinator instead of the port.
+        string types = shape switch
+        {
+            "lease-in-holder-argument" or "lease-in-holder-local" => """
+                internal sealed class LeaseHolder(IGrimoireWorkLease held)
+                {
+                    public IGrimoireWorkLease Held { get; } = held;
+                }
+                """,
+            "receiver-from-lease" => """
+                internal sealed class LeaseCarrier(IGrimoireWorkLease held, ILongRestAdmittedMaintenance maintenance)
+                {
+                    public IGrimoireWorkLease Held { get; } = held;
+
+                    public ILongRestAdmittedMaintenance Maintenance { get; } = maintenance;
+                }
+                """,
+            "concrete-shell" => """
+                internal sealed class SneakyShell(LongRestSweepCoordinator coordinator)
+                {
+                    public async Task RunAsync(IGrimoireWorkLease lease, CancellationToken ct)
+                    {
+                        await coordinator.ResumeAdmittedAsync(Guid.Empty, lease, ct).ConfigureAwait(false);
+
+                        await coordinator.ResumeAsync(Guid.Empty, ct).ConfigureAwait(false);
+                    }
+                }
+                """,
+            _ => "",
+        };
+
+        // A second root of the same service that runs the same worker: both cut to the one handoff root.
+        string stopSignature = shape == "two-callers"
+            ? "async Task StopAsync(CancellationToken token) { await RunOneAsync(Guid.Empty, token).ConfigureAwait(false); }"
+            : "Task StopAsync(CancellationToken token) => Task.CompletedTask;";
+
+        string coordinatorConstructor = shape == "second-acquisition"
+            ? "ILongRestAdmittedMaintenance maintenance, IGrimoireConnectionAdmissionGate gate"
+            : "ILongRestAdmittedMaintenance maintenance";
+
+        string coordinatorBases = shape == "concrete-shell"
+            ? "ILongRestAdmittedSweep, RetroDownfall.Arcanum.Core.LongRest.ILongRestSweepCoordinator"
+            : "ILongRestAdmittedSweep";
+
+        string coordinatorInterface = shape == "concrete-shell"
+            ? """
+            namespace RetroDownfall.Arcanum.Core.LongRest
+            {
+                public interface ILongRestSweepCoordinator
+                {
+                    Task ResumeAsync(Guid operationId, CancellationToken ct);
+                }
+            }
+            """
+            : "";
 
         return $$"""
             using System;
@@ -140,7 +242,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests
                     await RunOneAsync(Guid.Empty, token).ConfigureAwait(false);
                 }
 
-                public Task StopAsync(CancellationToken token) => Task.CompletedTask;
+                public {{stopSignature}}
 
                 private async Task RunOneAsync(Guid operation, CancellationToken ct)
                 {
@@ -236,6 +338,8 @@ public sealed partial class HostedGrimoireProducerInventoryTests
                 }
             }
 
+            {{coordinatorInterface}}
+
             namespace RetroDownfall.Arcanum.Infrastructure.Operations.LongRest
             {
                 public interface ILongRestAdmittedSweep
@@ -245,10 +349,12 @@ public sealed partial class HostedGrimoireProducerInventoryTests
 
                 internal interface ILongRestAdmittedMaintenance
                 {
-                    Task ProcessAdmittedAsync(Guid operationId, string workerOwner, object? capability, IGrimoireWorkLease admission, CancellationToken ct);
+                    Task ProcessAdmittedAsync({{LeaseHandoffMaintenanceParameters(shape)}});
                 }
 
-                internal sealed class LongRestSweepCoordinator(ILongRestAdmittedMaintenance maintenance) : ILongRestAdmittedSweep
+                {{types}}
+
+                internal sealed class LongRestSweepCoordinator({{coordinatorConstructor}}) : {{coordinatorBases}}
                 {
                     public async Task ResumeAdmittedAsync(Guid operationId, IGrimoireWorkLease admission, CancellationToken ct)
                     {
@@ -285,14 +391,17 @@ public sealed partial class HostedGrimoireProducerInventoryTests
     {
         string afterFold = shape switch
         {
-            "formal-disposed" => "await admission.DisposeAsync().ConfigureAwait(false);",
+            "formal-disposed" or "loop-formal-disposed" or "goto-formal-disposed" => "await admission.DisposeAsync().ConfigureAwait(false);",
             "formal-stored" => "_held = admission;",
             "formal-captured" => "Func<GrimoireWorkKind> kind = () => admission.Kind;\n\n                    _ = kind();",
             "formal-spawned" => "_ = Task.Run(() => admission.Kind);",
             _ => "",
         };
 
-        string members = shape == "formal-stored" ? "private IGrimoireWorkLease? _held;" : "";
+        string members = shape is "formal-stored" or "second-lease-param" ? "private IGrimoireWorkLease? _held;" : "";
+
+        // A second lease the caller passes, which the root keeps: the heap store is what the cut would otherwise grant Work across.
+        string beforeFold = shape == "second-lease-param" ? "_held = other;" : "";
 
         // A second handoff root inside the first one's closure: the fold is handed the lease again, and owns the paid door.
         string nestedFolder = shape == "nested"
@@ -337,44 +446,29 @@ public sealed partial class HostedGrimoireProducerInventoryTests
                 """
             : "";
 
-        return $$"""
-            using System;
-            using System.Threading;
-            using System.Threading.Tasks;
-            using Microsoft.Extensions.DependencyInjection;
-            using RetroDownfall.Arcanum.Infrastructure.Data;
-            using RetroDownfall.Arcanum.Infrastructure.Operations.LongRest;
-
-            namespace RetroDownfall.Arcanum.Api
-            {
-                public static class ApiBootstrapper
+        string concreteCaller = shape == "concrete-shell"
+            ? """
+                internal sealed class SneakyApi(LongRestMaintenance maintenance)
                 {
-                    public static IServiceCollection AddArcanumApiServices(this IServiceCollection services)
-                    {
-                        global::Composition.Configure(services);
-
-                        services.AddScoped<RetroDownfall.Arcanum.Api.Intelligence.LongRestMaintenance>();
-
-                        services.AddScoped<ILongRestAdmittedMaintenance>(static sp => sp.GetRequiredService<RetroDownfall.Arcanum.Api.Intelligence.LongRestMaintenance>());
-
-                        {{otherRegistration}}
-
-                        return services;
-                    }
+                    public Task RunAsync(IGrimoireWorkLease lease, CancellationToken ct) => maintenance.ProcessAdmittedAsync(Guid.Empty, "sneaky", null, lease, ct);
                 }
-            }
+                """
+            : "";
 
-            namespace RetroDownfall.Arcanum.Api.Intelligence
-            {
-                {{otherMaintenance}}
-
-                {{nestedFolder}}
-
+        // A formal passed by reference cannot be the root's admission origin, and an asynchronous method cannot declare one.
+        string maintenanceClass = shape == "in-formal"
+            ? $$"""
+                internal sealed class LongRestMaintenance : ILongRestAdmittedMaintenance
+                {
+                    public Task ProcessAdmittedAsync({{LeaseHandoffMaintenanceParameters(shape)}}) => Task.CompletedTask;
+                }
+                """
+            : $$"""
                 internal sealed class LongRestMaintenance : ILongRestAdmittedMaintenance
                 {
                     {{members}}
 
-                    public async Task ProcessAdmittedAsync(Guid operationId, string workerOwner, object? capability, IGrimoireWorkLease admission, CancellationToken ct)
+                    public async Task ProcessAdmittedAsync({{LeaseHandoffMaintenanceParameters(shape)}})
                     {
                         if (admission is null) throw new ArgumentNullException(nameof(admission));
 
@@ -383,6 +477,8 @@ public sealed partial class HostedGrimoireProducerInventoryTests
                         ct.ThrowIfCancellationRequested();
 
                         using CancellationTokenSource lifetime = CancellationTokenSource.CreateLinkedTokenSource(ct, admission.MaintenanceRevocation);
+
+                        {{beforeFold}}
 
                         {{fold}}
 
@@ -419,17 +515,57 @@ public sealed partial class HostedGrimoireProducerInventoryTests
                         return await accept(dispatch.Token).ConfigureAwait(false);
                     }
                 }
+                """;
+
+        return $$"""
+            using System;
+            using System.Threading;
+            using System.Threading.Tasks;
+            using Microsoft.Extensions.DependencyInjection;
+            using RetroDownfall.Arcanum.Infrastructure.Data;
+            using RetroDownfall.Arcanum.Infrastructure.Operations.LongRest;
+
+            namespace RetroDownfall.Arcanum.Api
+            {
+                public static class ApiBootstrapper
+                {
+                    public static IServiceCollection AddArcanumApiServices(this IServiceCollection services)
+                    {
+                        global::Composition.Configure(services);
+
+                        services.AddScoped<RetroDownfall.Arcanum.Api.Intelligence.LongRestMaintenance>();
+
+                        services.AddScoped<ILongRestAdmittedMaintenance>(static sp => sp.GetRequiredService<RetroDownfall.Arcanum.Api.Intelligence.LongRestMaintenance>());
+
+                        {{otherRegistration}}
+
+                        return services;
+                    }
+                }
+            }
+
+            namespace RetroDownfall.Arcanum.Api.Intelligence
+            {
+                {{otherMaintenance}}
+
+                {{nestedFolder}}
+
+                {{maintenanceClass}}
+
+                {{concreteCaller}}
             }
             """;
     }
 
     // The protocol is recognised by assembly identity, so the fixture's two compilations carry the production assembly names; the
     // framework surface is the production reference pack minus the production projects themselves.
+    private static MetadataReference[] LeaseHandoffFrameworkReferences() => [.. HostedGrimoireProducerInventory.ProductionCompilations
+        .Single(static compilation => compilation.AssemblyName == "RetroDownfall.Arcanum.Api")
+        .References.Where(static reference => reference is not CompilationReference)];
+
     private static (CSharpCompilation Infrastructure, CSharpCompilation Api) LeaseHandoffCompilations(string shape)
     {
-        MetadataReference[] references = [.. HostedGrimoireProducerInventory.ProductionCompilations
-            .Single(static compilation => compilation.AssemblyName == "RetroDownfall.Arcanum.Api")
-            .References.Where(static reference => reference is not CompilationReference)];
+        MetadataReference[] references = LeaseHandoffFrameworkReferences();
 
         CSharpCompilationOptions options = new(OutputKind.DynamicallyLinkedLibrary);
 
@@ -472,7 +608,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests
         HostedProducerAuthorityKind.OrdinaryHostedWork, GrimoireWorkKind.LongRestSweep, null, [], declared ? "admission" : null);
 
     // `entries` is the Worker service's declared operations; the caller is always the hosted worker's start.
-    private LeaseHandoffRun RunLeaseHandoff(string shape, bool declareRoot = true, bool declareCaller = true, int rootWorkers = 1)
+    private LeaseHandoffRun RunLeaseHandoff(string shape, bool declareRoot = true, bool declareCaller = true, int rootWorkers = 1, bool reverse = false)
     {
         (CSharpCompilation infrastructure, CSharpCompilation api) = LeaseHandoffCompilations(shape);
 
@@ -485,6 +621,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests
         HostedProducerOperationEntry[] operations =
         [
             .. declareCaller ? [caller] : Array.Empty<HostedProducerOperationEntry>(),
+            .. declareCaller && shape == "two-callers" ? [caller with { OperationId = LeaseHandoffSecondCallerOperation, Member = "StopAsync" }] : Array.Empty<HostedProducerOperationEntry>(),
             .. declareRoot ? [LeaseHandoffRootEntry()] : Array.Empty<HostedProducerOperationEntry>(),
             .. shape == "nested" ? [LeaseHandoffRootEntry() with
             {
@@ -512,6 +649,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests
             services,
             [],
             rootWorkers: rootWorkers,
+            reverseRootFamilies: reverse,
             admittedStateObserver: states.Enqueue);
 
         LeaseHandoffRun run = new(shape, infrastructure, api, result, [.. states]);
@@ -622,6 +760,17 @@ public sealed partial class HostedGrimoireProducerInventoryTests
     [InlineData("ended-in-arguments", "the lease has ended before the call begins")]
     [InlineData("inside-lambda", "the call is not in the caller's own method body")]
     [InlineData("two-implementations", "the call does not resolve to exactly the root")]
+    [InlineData("second-acquisition", "the Work the caller holds is not the Work of the lease argument")]
+    [InlineData("lease-omitted", "the lease argument is not exactly one by-value argument")]
+    [InlineData("configure-await-arg-ends", "the await configures the call with an argument that is not a constant")]
+    [InlineData("configure-await-variable", "the await configures the call with an argument that is not a constant")]
+    [InlineData("second-lease-param", "another argument may hold the caller's lease")]
+    [InlineData("lease-in-holder-argument", "another argument may hold the caller's lease")]
+    [InlineData("lease-in-holder-local", "another argument may hold the caller's lease")]
+    [InlineData("receiver-from-lease", "the receiver may hold the caller's lease")]
+    [InlineData("loop-formal-disposed", "the call sits in a loop and the root does not preserve its formal")]
+    [InlineData("goto-formal-disposed", "the call sits in a loop and the root does not preserve its formal")]
+    [InlineData("spawned-disposer", "a closure of the caller mentions the caller's lease")]
     public void ACallThatFailsAnyPreconditionIsRefusedAndTheClosureIsJudgedInLineUnderTheCallersRoot(string shape, string reason)
     {
         LeaseHandoffRun run = RunLeaseHandoff(shape);
@@ -878,45 +1027,164 @@ public sealed partial class HostedGrimoireProducerInventoryTests
                 []);
 
             Assert.Contains(result.Diagnostics, diagnostic => diagnostic.Code == "HOSTED_ROOT_UNRESOLVED" && diagnostic.Identity == LeaseHandoffRootOperation);
+
+            // The caller's call to the unusable root is refused for that reason and judged in line, never cut to a root with no formal.
+            Assert.Contains(result.Diagnostics, diagnostic => diagnostic.Code == HostedGrimoireProducerInventory.LeaseHandoffUnprovenCode
+                && diagnostic.Detail == LeaseHandoffRootOperation + "; the declared root is not usable");
+
+            Assert.DoesNotContain(result.Items, static site => site.Kind == HostedProducerSiteKind.LeaseHandoff);
         }
+    }
+
+    // A formal passed by reference is not a by-value admission origin, and it is refused as a declaration, so no call reaches the
+    // by-value check on the argument: the call is refused because its root is not usable.
+    [Fact]
+    public void AHandoffFormalPassedByReferenceIsAnUnresolvedRootAndItsCallIsUnproven()
+    {
+        LeaseHandoffRun run = RunLeaseHandoff("in-formal");
+
+        Assert.Contains(run.Result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_ROOT_UNRESOLVED" && diagnostic.Identity == LeaseHandoffRootOperation);
+
+        Assert.Contains(run.Result.Diagnostics, static diagnostic => diagnostic.Code == HostedGrimoireProducerInventory.LeaseHandoffUnprovenCode
+            && diagnostic.Detail == LeaseHandoffRootOperation + "; the declared root is not usable");
+
+        Assert.DoesNotContain(run.Result.Items, static site => site.Kind == HostedProducerSiteKind.LeaseHandoff);
+    }
+
+    // The refusal only removes authority: what the in-line traversal reported before the cut existed it still reports. The root keeps
+    // the second alias in a field, so Work ends at that store and the paid send after it is the row that says so, exactly as it was.
+    [Fact]
+    public void ASecondAliasOfTheLeaseThatTheRootKeepsStillCostsTheRootsSendItsWorkExactlyAsTheInLineTraversalDid()
+    {
+        string missing = "HOSTED_SITE_WORK_FRONTIER_MISSING|" + LeaseHandoffSend;
+
+        Assert.Contains(missing, RunLeaseHandoff("second-lease-param").Codes);
+
+        // The same fixture with the root undeclared is the traversal that existed before the cut.
+        Assert.Contains(missing, RunLeaseHandoff("second-lease-param", declareRoot: false).Codes);
+    }
+
+    // The positive controls of the refusals above: a call in a loop is cut when the root proves it preserves its formal (production's
+    // owned run calls the root from a loop), and a closure of the caller that never mentions the lease changes nothing.
+    [Theory]
+    [InlineData("loop-preserved")]
+    [InlineData("unrelated-closure")]
+    public void ACallInALoopOrBesideAnUnrelatedClosureIsStillCut(string shape)
+    {
+        LeaseHandoffRun run = RunLeaseHandoff(shape);
+
+        Assert.Empty(run.Result.Diagnostics);
+
+        HostedProducerSite acquired = run.Single(LeaseHandoffCallerOperation, HostedProducerSiteKind.EffectFrontier, LeaseHandoffAcquisition);
+
+        Assert.Equal(acquired.CapsuleId, run.Single(LeaseHandoffCallerOperation, HostedProducerSiteKind.LeaseHandoff, LeaseHandoffRootOperation).WorkFrontierCapsuleId);
+    }
+
+    // The validator holds the same ties as the manifest parser, and the catalog is what makes them mean something: a root lease formal
+    // belongs to an operation that declares one, and a binding row names such an operation of its own service.
+    private static string[] ValidateLeaseHandoff(IReadOnlyList<HostedProducerSite> items, HostedProducerOperationEntry root, bool rootInAnotherService = false)
+    {
+        HostedProducerOperationEntry caller = OrdinaryRoot() with { SourcePath = LeaseHandoffWorkerPath, WorkKind = GrimoireWorkKind.LongRestSweep };
+
+        HostedProducerOperationEntry Owned(HostedProducerOperationEntry entry) => entry with { Sites = [.. items.Where(site => site.AuthorityOperationId == entry.OperationId)] };
+
+        HostedProducerServiceEntry[] services = rootInAnotherService
+            ? [new("Worker", [Owned(caller)]), new("Other", [Owned(root)])]
+            : [new("Worker", [Owned(caller), Owned(root)])];
+
+        return [.. HostedGrimoireProducerInventory.Validate(services, [], new([.. services.Select(static service => service.ServiceType)], []), new(items, []))
+            .Diagnostics.Select(static diagnostic => diagnostic.Code).Distinct().Order(StringComparer.Ordinal)];
+    }
+
+    [Fact]
+    public void TheValidatorRefusesALeaseFormalRowOrABindingRowThatNoHandoffDeclarationOwns()
+    {
+        LeaseHandoffRun run = RunLeaseHandoff("positive");
+
+        HostedProducerSite[] items = [.. run.Result.Items];
+
+        Assert.DoesNotContain(ValidateLeaseHandoff(items, LeaseHandoffRootEntry()), static code => code.StartsWith("HOSTED_SITE_LEASE_", StringComparison.Ordinal));
+
+        // A root that declares no formal cannot own a formal row, and its sends then have no Work frontier to resolve to.
+        string[] undeclaredFormal = ValidateLeaseHandoff(items, LeaseHandoffRootEntry(declared: false));
+
+        Assert.Contains("HOSTED_SITE_LEASE_FORMAL_UNDECLARED", undeclaredFormal);
+
+        Assert.Contains("HOSTED_SITE_WORK_FRONTIER_MISSING", undeclaredFormal);
+
+        // A binding row whose callee is no declared handoff operation of the caller's service.
+        Assert.Contains("HOSTED_SITE_LEASE_HANDOFF_UNDECLARED", ValidateLeaseHandoff(
+            [.. items.Select(static site => site.Kind == HostedProducerSiteKind.LeaseHandoff ? site with { Callee = "Worker.NotARoot" } : site)], LeaseHandoffRootEntry()));
+
+        // Nor a root declared in another service: the binding names it, but not within its own service.
+        Assert.Contains("HOSTED_SITE_LEASE_HANDOFF_UNDECLARED", ValidateLeaseHandoff(items, LeaseHandoffRootEntry(), rootInAnotherService: true));
+    }
+
+    // A declared root whose formal no analysed call ever binds would stand in the inventory with Work and no lease behind it.
+    [Fact]
+    public void ADeclaredRootThatNoRootProvedACallToIsReportedAtDiscoveryNotOnlyWhenTheManifestIsParsed()
+    {
+        Assert.DoesNotContain(RunLeaseHandoff("positive").Result.Diagnostics, static diagnostic => diagnostic.Code == HostedGrimoireProducerInventory.LeaseHandoffRootUnboundCode);
+
+        LeaseHandoffRun unbound = RunLeaseHandoff("positive", declareCaller: false);
+
+        HostedProducerInventoryDiagnostic diagnostic = Assert.Single(unbound.Result.Diagnostics, static diagnostic => diagnostic.Code == HostedGrimoireProducerInventory.LeaseHandoffRootUnboundCode);
+
+        Assert.Equal(LeaseHandoffRootOperation, diagnostic.Identity);
+    }
+
+    private static string LeaseHandoffDigest(LeaseHandoffRun run) => string.Join("\n",
+        run.Result.Items.Select(HostedGrimoireProducerInventory.StableSiteIdentity).Order(StringComparer.Ordinal)
+            .Concat(run.Result.Diagnostics.Select(static diagnostic => diagnostic.Code + "|" + diagnostic.Identity + "|" + diagnostic.Detail)));
+
+    // Two roots of the one service cut to the one handoff root. The pool takes whole families, so a service that declares a handoff root
+    // is one family: its roots run on the worker that runs the handoff root, whose state cache is the only place the closure is shared.
+    [Fact]
+    public void TheRootsOfAServiceThatDeclaresAHandoffRootRunOnOneWorkerSoThePoolAdmitsTheClosureOnce()
+    {
+        LeaseHandoffRun single = RunLeaseHandoff("two-callers");
+
+        int closure = single.StatesOf(LeaseHandoffRootOperation);
+
+        Assert.True(closure > 0);
+
+        Assert.Empty(single.Result.Diagnostics);
+
+        Assert.Equal(2, single.Result.Items.Count(static site => site.Kind == HostedProducerSiteKind.LeaseHandoff));
+
+        foreach ((int workers, bool reverse) in new[] { (2, false), (3, false), (3, true) })
+        {
+            LeaseHandoffRun pooled = RunLeaseHandoff("two-callers", rootWorkers: workers, reverse: reverse);
+
+            Assert.Equal(LeaseHandoffDigest(single), LeaseHandoffDigest(pooled));
+
+            Assert.Equal(closure, pooled.StatesOf(LeaseHandoffRootOperation));
+
+            Assert.Equal(closure, pooled.Root(LeaseHandoffRootOperation)!.AnalyzedStates);
+
+            Assert.Single(pooled.States.Select(static state => state.Worker).Distinct());
+        }
+    }
+
+    [Fact]
+    public void ARootsFamilyIsItsOwnUnlessItsServiceDeclaresALeaseHandoffRoot()
+    {
+        Assert.NotEqual(HostedProducerRootWorkers.FamilyOf("Worker", "Worker.StartAsync", serviceDeclaresLeaseHandoff: false),
+            HostedProducerRootWorkers.FamilyOf("Worker", "Worker.StopAsync", serviceDeclaresLeaseHandoff: false));
+
+        Assert.Equal(HostedProducerRootWorkers.FamilyOf("Worker", "Worker.StartAsync", serviceDeclaresLeaseHandoff: true),
+            HostedProducerRootWorkers.FamilyOf("Worker", "Worker.StopAsync", serviceDeclaresLeaseHandoff: true));
+
+        Assert.NotEqual(HostedProducerRootWorkers.FamilyOf("Worker", "Worker.StartAsync", serviceDeclaresLeaseHandoff: true),
+            HostedProducerRootWorkers.FamilyOf("Other", "Worker.StartAsync", serviceDeclaresLeaseHandoff: true));
     }
 
     // The shared chain above the one proved call site. The Session shell reaches the admitted maintenance through the same coordinator core
     // as the hosted worker, and no root of the inventory traverses the shell, so the census cannot see it. It is accepted only because it
     // funnels into the one call site some root proves, and only for as long as these sets are exactly what was reviewed: a new entry into the
     // chain, or a second caller of any link, changes a set and must be reviewed with the handoff root it feeds.
-    private static string[] LeaseHandoffChainReferences(IReadOnlyList<CSharpCompilation> compilations, string containingType, string method)
-    {
-        List<string> found = [];
-
-        foreach (CSharpCompilation compilation in compilations)
-        {
-            foreach (SyntaxTree tree in compilation.SyntaxTrees)
-            {
-                SemanticModel model = compilation.GetSemanticModel(tree);
-
-                foreach (SimpleNameSyntax name in tree.GetRoot().DescendantNodes().OfType<SimpleNameSyntax>().Where(candidate => candidate.Identifier.ValueText == method))
-                {
-                    if (model.GetSymbolInfo(name).Symbol is not IMethodSymbol referenced || referenced.ContainingType.ToDisplayString() != containingType)
-                    {
-                        continue;
-                    }
-
-                    BaseMethodDeclarationSyntax? enclosing = name.Ancestors().OfType<BaseMethodDeclarationSyntax>().FirstOrDefault();
-
-                    string owner = enclosing?.Ancestors().OfType<TypeDeclarationSyntax>().FirstOrDefault()?.Identifier.ValueText ?? "<none>";
-
-                    string member = enclosing is MethodDeclarationSyntax declared ? declared.Identifier.ValueText : "<other>";
-
-                    bool invoked = name.Parent is InvocationExpressionSyntax || name.Parent is MemberAccessExpressionSyntax { Parent: InvocationExpressionSyntax };
-
-                    found.Add(owner + "." + member + (invoked ? "" : " (reference)"));
-                }
-            }
-        }
-
-        return [.. found.Order(StringComparer.Ordinal)];
-    }
+    private static string[] LeaseHandoffChainReferences(IReadOnlyList<CSharpCompilation> compilations, string containingType, string method) =>
+        HostedGrimoireProducerInventory.HandoffChainReferences(compilations, containingType, method);
 
     private const string LeaseHandoffMaintenancePort = "RetroDownfall.Arcanum.Infrastructure.Operations.LongRest.ILongRestAdmittedMaintenance";
 
@@ -956,5 +1224,85 @@ public sealed partial class HostedGrimoireProducerInventoryTests
         (CSharpCompilation infrastructure, CSharpCompilation api) = LeaseHandoffCompilations(shape);
 
         Assert.Equal(expected.Order(StringComparer.Ordinal), LeaseHandoffChainReferences([infrastructure, api], LeaseHandoffMaintenancePort, "ProcessAdmittedAsync"));
+    }
+
+    private const string LeaseHandoffAdmittedSweep = "RetroDownfall.Arcanum.Infrastructure.Operations.LongRest.ILongRestAdmittedSweep";
+
+    private const string LeaseHandoffSweepCoordinatorPort = "RetroDownfall.Arcanum.Core.LongRest.ILongRestSweepCoordinator";
+
+    // A pin on the interface slot alone would miss a caller that names the class registered for it. Each link is matched on the method's
+    // identity: the slot, the methods that implement it, the methods those override, and the methods group references are made of.
+    [Fact]
+    public void TheChainPinSeesACallerThatNamesTheConcreteTypeInsteadOfTheInterfaceSlot()
+    {
+        (CSharpCompilation infrastructure, CSharpCompilation api) = LeaseHandoffCompilations("concrete-shell");
+
+        CSharpCompilation[] all = [infrastructure, api];
+
+        Assert.Equal(["LongRestSweepCoordinator.RunOwnedAsync", "SneakyApi.RunAsync"], LeaseHandoffChainReferences(all, LeaseHandoffMaintenancePort, "ProcessAdmittedAsync"));
+
+        Assert.Equal(["SneakyShell.RunAsync", "Worker.RunOneAsync"], LeaseHandoffChainReferences(all, LeaseHandoffAdmittedSweep, "ResumeAdmittedAsync"));
+
+        Assert.Equal(["SneakyShell.RunAsync"], LeaseHandoffChainReferences(all, LeaseHandoffSweepCoordinatorPort, "ResumeAsync"));
+
+        // The same links on the control fixture have no such caller: the pin is not merely louder.
+        (CSharpCompilation controlInfrastructure, CSharpCompilation controlApi) = LeaseHandoffCompilations("positive");
+
+        Assert.Equal(["Worker.RunOneAsync"], LeaseHandoffChainReferences([controlInfrastructure, controlApi], LeaseHandoffAdmittedSweep, "ResumeAdmittedAsync"));
+    }
+
+    [Theory]
+    [InlineData("RetroDownfall.MatcherFixture.IPort", new[] { "ViaBase.B", "ViaDerived.C", "ViaGroup.D (reference)", "ViaPort.A" })]
+    [InlineData("RetroDownfall.MatcherFixture.Base", new[] { "ViaBase.B", "ViaDerived.C", "ViaGroup.D (reference)", "ViaPort.A" })]
+    [InlineData("RetroDownfall.MatcherFixture.Derived", new[] { "ViaBase.B", "ViaDerived.C", "ViaGroup.D (reference)", "ViaPort.A" })]
+    [InlineData("RetroDownfall.MatcherFixture.Unrelated", new[] { "Unrelated.E" })]
+    public void TheChainMatcherFollowsTheSlotItsImplementationItsOverridesAndTheMethodGroupsAndNothingElse(string link, string[] expected)
+    {
+        const string source = """
+            using System;
+            using System.Threading.Tasks;
+
+            namespace RetroDownfall.MatcherFixture;
+
+            public interface IPort { Task GoAsync(); }
+
+            public class Base : IPort { public virtual Task GoAsync() => Task.CompletedTask; }
+
+            public class Derived : Base { public override Task GoAsync() => Task.CompletedTask; }
+
+            public class ViaPort(IPort port) { public Task A() => port.GoAsync(); }
+
+            public class ViaBase(Base value) { public Task B() => value.GoAsync(); }
+
+            public class ViaDerived(Derived value) { public Task C() => value.GoAsync(); }
+
+            public class ViaGroup(IPort port) { public Func<Task> D() => port.GoAsync; }
+
+            public class Unrelated { public Task GoAsync() => Task.CompletedTask; public Task E() => GoAsync(); }
+            """;
+
+        CSharpCompilation compilation = CSharpCompilation.Create("RetroDownfall.MatcherFixture", [CSharpSyntaxTree.ParseText(source)],
+            LeaseHandoffFrameworkReferences(), new(OutputKind.DynamicallyLinkedLibrary));
+
+        Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        Assert.Equal(expected, LeaseHandoffChainReferences([compilation], link, "GoAsync"));
+    }
+
+    // The projects the inventory does not analyse (the development host, the clients) are scoped out of the chain pin, and what makes
+    // that sound is that none of them names a link of the chain at all. A name in one of them is a caller nobody has reviewed.
+    [Fact]
+    public void NoProjectOutsideTheAnalysedCompilationsNamesAnyLinkOfTheHandoffChain()
+    {
+        Assert.Empty(HostedGrimoireProducerInventory.HandoffChainNamesOutsideTheAnalysedProjects());
+    }
+
+    [Theory]
+    [InlineData("class C { void M(object o, object p) { o.ProcessAdmittedAsync(); p.ResumeAsync(); } }", 1)]
+    [InlineData("class C { void M(LongRestSweepCoordinator c, ILongRestAdmittedSweep s) { } }", 2)]
+    [InlineData("class C { /* RunOwnedAsync */ string s = \"ResumeCoreAsync\"; }", 0)]
+    public void TheScopePinSeesAnIdentifierOfTheChainAndIgnoresCommentsAndStrings(string source, int hits)
+    {
+        Assert.Equal(hits, HostedGrimoireProducerInventory.HandoffChainNamesIn(CSharpSyntaxTree.ParseText(source)).Length);
     }
 }
