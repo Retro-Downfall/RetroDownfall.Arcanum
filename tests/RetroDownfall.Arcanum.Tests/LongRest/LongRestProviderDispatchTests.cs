@@ -782,11 +782,16 @@ internal sealed class LongRestProviderFixture : IAsyncDisposable
 
         internal Func<CancellationToken, Task>? InsideSendWithCancellation;
 
+        /// <summary>When set, the transport fails with this exception instead of answering, as a refused connection would.</summary>
+        internal Exception? TransportFailure;
+
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
             SendCount++;
 
             LastBody = await request.Content!.ReadAsStringAsync(CancellationToken.None);
+
+            if (TransportFailure is not null) throw TransportFailure;
 
             if (InsideSend is not null) await InsideSend();
 

@@ -67,14 +67,9 @@ internal sealed partial class LongRestDiscoveryStore
 
             foreach (InterruptedSend interrupted in page)
             {
-                await using SqliteCommand settle = Command(connection, transaction, """
-                    UPDATE long_rest_provider_effects SET StateCode = 6, FailureCode = 'LongRest.InterruptedTransport', FailureCount = $failed, Revision = $next
-                    WHERE WorkItemId = $unit AND WorkDigest = $work AND AttemptId = $attempt AND PhysicalOrdinal = $ordinal
-                      AND Revision = $revision AND StateCode = 3 AND CompletionJson IS NULL;
-                    """, ("$failed", interrupted.FailureCount), ("$next", checked(interrupted.Revision + 1)), ("$unit", interrupted.Unit),
-                    ("$work", interrupted.Work.Bytes), ("$attempt", interrupted.Attempt), ("$ordinal", interrupted.Ordinal), ("$revision", interrupted.Revision));
-
-                if (await settle.ExecuteNonQueryAsync(ct).ConfigureAwait(false) != 1)
+                // The same settlement predicate the in-frame Unknown-Usage Settlement writes, under the reboot's own failure code.
+                if (await LongRestAttemptStore.SettleSentAsync(connection, transaction, interrupted.Unit, interrupted.Work.Bytes, interrupted.Attempt,
+                    interrupted.Ordinal, interrupted.Revision, interrupted.FailureCount, "LongRest.InterruptedTransport", null, ct).ConfigureAwait(false) != 1)
                 {
                     throw new InvalidDataException();
                 }

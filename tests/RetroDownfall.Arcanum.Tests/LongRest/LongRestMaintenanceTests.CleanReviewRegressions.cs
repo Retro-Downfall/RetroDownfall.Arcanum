@@ -69,16 +69,17 @@ public sealed partial class LongRestMaintenanceTests
 
         if (state == LongRestDispatchAttemptState.Failed)
         {
-            // The real SDK observed HTTP 400. Finish that exact known response through the
-            // existing typed store, as ProviderDispatchTests does; never settle unknown transport.
+            // The real SDK observed HTTP 400. The frame that sent it already settled that exact attempt in-frame, as unknown usage
+            // with no completion evidence; nothing is left Sent for a reboot or for a test to finish by hand.
             Assert.NotNull(f.ProviderResult);
 
             Assert.True(f.ProviderResult!.IsFailure);
 
-            Assert.Equal(1L, await f.H.ScalarAsync("SELECT count(*) FROM long_rest_provider_effects WHERE StateCode = 3;"));
+            Assert.Equal(0L, await f.H.ScalarAsync("SELECT count(*) FROM long_rest_provider_effects WHERE StateCode = 3;"));
 
-            LongRestSweepHarness.Require(await new LongRestAttemptStore(f.H.Saga.Context, f.Clock).CompleteAttemptAsync(sentEmbedding!,
-                new(state, new(0, 0, 0, 0, 0), null, "LongRest.TransportFailure"), CancellationToken.None));
+            Assert.Equal(ErrorCodes.LongRest.TransportUnknown, await f.H.ScalarAsync("SELECT FailureCode FROM long_rest_provider_effects;"));
+
+            Assert.Equal(1L, await f.H.ScalarAsync("SELECT count(*) FROM long_rest_provider_effects WHERE CompletionJson IS NULL;"));
         }
 
         f.AfterAttemptValidated = null;

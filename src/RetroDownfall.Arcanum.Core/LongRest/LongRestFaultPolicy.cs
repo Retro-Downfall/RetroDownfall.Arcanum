@@ -66,6 +66,12 @@ public static class LongRestFaultPolicy
     /// <summary>The cooldown after a park before the first readmission; it doubles per readmission.</summary>
     public static readonly TimeSpan ReadmitBaseCooldown = TimeSpan.FromSeconds(30);
 
+    /// <summary>
+    /// The Unknown-Usage Cap: a work unit may end this many physical attempts with unknown billing before it stops sending and
+    /// parks as needs-operator. It bounds repeated unknown spend until a debt gate exists; an estimate is never written as usage.
+    /// </summary>
+    public const int UnknownUsageCap = 2;
+
     /// <summary>Every code the Long Rest surface can produce, and its class. Anything absent needs an operator.</summary>
     public static IReadOnlyDictionary<string, LongRestFaultClass> KnownCodes { get; } = new Dictionary<string, LongRestFaultClass>(StringComparer.Ordinal)
     {
@@ -78,6 +84,12 @@ public static class LongRestFaultPolicy
         [LongRestParkCodes.ReadmitRequested] = LongRestFaultClass.ResumeLater,
 
         [ErrorCodes.LongRest.Unavailable] = LongRestFaultClass.ResumeLater,
+
+        [ErrorCodes.LongRest.OperationBusy] = LongRestFaultClass.ResumeLater,
+
+        [ErrorCodes.LongRest.ProviderUnavailable] = LongRestFaultClass.ResumeLater,
+
+        [ErrorCodes.LongRest.ProviderUnreachable] = LongRestFaultClass.ResumeLater,
 
         [ErrorCodes.LongRest.StaleInput] = LongRestFaultClass.RestartGeneration,
 
@@ -111,6 +123,10 @@ public static class LongRestFaultPolicy
 
         [ErrorCodes.LongRest.SweepParked] = LongRestFaultClass.NeedsOperator,
 
+        [ErrorCodes.LongRest.ProviderRejected] = LongRestFaultClass.NeedsOperator,
+
+        [ErrorCodes.LongRest.TransportUnknown] = LongRestFaultClass.NeedsOperator,
+
         [LongRestParkCodes.AuthorizedRequestRequired] = LongRestFaultClass.NeedsOperator,
 
         [LongRestParkCodes.CheckpointInvalid] = LongRestFaultClass.NeedsOperator,
@@ -139,6 +155,20 @@ public static class LongRestFaultPolicy
     /// <summary>Classifies a fault code. A missing, malformed or unrecognized code always needs an operator.</summary>
     public static LongRestFaultClass Classify(string? code) =>
         code is not null && KnownCodes.TryGetValue(code, out LongRestFaultClass fault) ? fault : LongRestFaultClass.NeedsOperator;
+
+    /// <summary>True when a work unit that has ended <paramref name="unknownUsageAttempts"/> attempts with unknown billing may send again.</summary>
+    public static bool MaySendAfterUnknownUsage(long unknownUsageAttempts) => unknownUsageAttempts is >= 0 and < UnknownUsageCap;
+
+    /// <summary>The closed metric label for a fault class.</summary>
+    public static string ClassTag(LongRestFaultClass fault) => fault switch
+    {
+        LongRestFaultClass.ResumeLater => "resume_later",
+        LongRestFaultClass.RestartGeneration => "restart_generation",
+        _ => "needs_operator",
+    };
+
+    /// <summary>True when <paramref name="code"/> belongs to the Long Rest error family (<c>LongRest.*</c>).</summary>
+    public static bool IsLongRestError(string? code) => code is not null && code.StartsWith("LongRest.", StringComparison.Ordinal);
 
     /// <summary>True when a clean sweep that has already been readmitted <paramref name="readmitCount"/> times may be readmitted again.</summary>
     public static bool CanReadmit(int readmitCount) => readmitCount is >= 0 and < MaxReadmissions;

@@ -61,6 +61,13 @@ internal sealed partial class LongRestAttemptStore(ArcanumDbContext db, TimeProv
             throw new InvalidDataException();
         }
 
+        // Unknown-Usage Cap: a unit that has ended its allowed attempts with unknown billing sends no more, and no new attempt
+        // row is written. Admission is refused here, before any effect row or accounting run exists for the refused send.
+        if (prior is not null && !LongRestFaultPolicy.MaySendAfterUnknownUsage(prior.Failed))
+        {
+            throw new UnknownUsageCapReachedException();
+        }
+
         if (prior is not null)
         {
             await LongRestDiscoveryStore.ValidateStoredWorkAssociationAsync(connection, transaction, prior.OriginalWork, work, ct).ConfigureAwait(false);
@@ -227,6 +234,60 @@ internal sealed partial class LongRestAttemptStore(ArcanumDbContext db, TimeProv
         return completed;
     }
 
+    public Task<Result<LongRestDispatchAttempt>> SettleUnresolvedSendAsync(LongRestDispatchAttempt attempt, LongRestUnresolvedSend outcome, CancellationToken ct) =>
+        WithinAsync(async (connection, transaction) =>
+    {
+        if (attempt is null || attempt.State != LongRestDispatchAttemptState.Sent || outcome is not (LongRestUnresolvedSend.UsageUnknown or LongRestUnresolvedSend.NotSent))
+        {
+            throw new InvalidDataException();
+        }
+
+        string unit = await CurrentUnitAsync(connection, transaction, attempt.Work, ct).ConfigureAwait(false);
+
+        Effect current = await ExactAsync(connection, transaction, unit, attempt, ct).ConfigureAwait(false);
+
+        if (current.Completion is not null)
+        {
+            throw new InvalidDataException();
+        }
+
+        bool unknown = outcome == LongRestUnresolvedSend.UsageUnknown;
+
+        LongRestDispatchAttempt settled = attempt with { State = LongRestDispatchAttemptState.Failed, Revision = checked(attempt.Revision + 1) };
+
+        // Only a send that may have reached the provider is unknown usage. A send that never left the process is not a billing
+        // question, so it is recorded under its own failure code and the cap is not charged. Usage is never written either way.
+        int settledRows = await SettleSentAsync(connection, transaction, unit, current.WorkDigest.Bytes, Format(attempt.AttemptId),
+            checked((long)attempt.PhysicalOrdinal), attempt.Revision, checked(current.Failed + (unknown ? 1 : 0)),
+            unknown ? ErrorCodes.LongRest.TransportUnknown : ErrorCodes.LongRest.ProviderUnreachable, UtcInstantText.Format(timeProvider.GetUtcNow()), ct).ConfigureAwait(false);
+
+        if (settledRows != 1)
+        {
+            throw new InvalidDataException();
+        }
+
+        return settled;
+    }, ct);
+
+    /// <summary>
+    /// The one settlement predicate for a physical send that is still <c>Sent</c> with no completion evidence: it becomes failed with
+    /// the supplied code and failure count, and nothing else about its usage is touched. The in-frame settlement and the reboot
+    /// settlement of an interrupted send both write exactly this row change.
+    /// </summary>
+    internal static async Task<int> SettleSentAsync(SqliteConnection connection, SqliteTransaction transaction, string unit, byte[] workDigest,
+        string attemptId, long ordinal, long revision, long failureCount, string failureCode, string? updatedAtUtc, CancellationToken ct)
+    {
+        await using SqliteCommand settle = Command(connection, transaction, """
+            UPDATE long_rest_provider_effects SET StateCode = 6, FailureCode = $code, FailureCount = $failed, Revision = $next,
+                UpdatedAtUtc = COALESCE($at, UpdatedAtUtc)
+            WHERE WorkItemId = $unit AND WorkDigest = $work AND AttemptId = $attempt AND PhysicalOrdinal = $ordinal
+              AND Revision = $revision AND StateCode = 3 AND CompletionJson IS NULL;
+            """, ("$code", failureCode), ("$failed", failureCount), ("$next", checked(revision + 1)), ("$at", updatedAtUtc), ("$unit", unit),
+            ("$work", workDigest), ("$attempt", attemptId), ("$ordinal", ordinal), ("$revision", revision));
+
+        return await settle.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+    }
+
     public async Task<Result> ValidateAttemptAsync(LongRestDispatchAttempt attempt, CancellationToken ct)
     {
         Result<LongRestDispatchAttempt> result = await WithinAsync(async (connection, transaction) =>
@@ -366,6 +427,10 @@ internal sealed partial class LongRestAttemptStore(ArcanumDbContext db, TimeProv
                 return Result<T>.Success(result);
             }, ct).ConfigureAwait(false);
         }
+        catch (UnknownUsageCapReachedException)
+        {
+            return new Error(ErrorCodes.LongRest.TransportUnknown, "This work unit has ended its allowed physical attempts with unknown billing; an operator decides what happens next.");
+        }
         catch (Exception exception) when (exception is SqliteException or InvalidDataException or ArgumentException or FormatException or OverflowException or JsonException or InvalidOperationException)
         {
             return new Error(ErrorCodes.LongRest.StaleInput, "The physical attempt no longer matches exact current work or completion evidence.");
@@ -389,6 +454,8 @@ internal sealed partial class LongRestAttemptStore(ArcanumDbContext db, TimeProv
     }
 
     private static string Format(Guid value) => value.ToString("D").ToUpperInvariant();
+
+    private sealed class UnknownUsageCapReachedException : Exception;
 
     private sealed record Effect(LongRestDispatchAttempt Attempt, CovenantDigest WorkDigest, LongRestWorkIdentity OriginalWork, long Sent, long Paid, long Invalid, long Failed,
         LongRestProviderUsage Usage, decimal? Cost, string? Completion);
