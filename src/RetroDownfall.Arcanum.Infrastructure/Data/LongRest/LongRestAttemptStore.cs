@@ -372,7 +372,7 @@ internal sealed partial class LongRestAttemptStore(ArcanumDbContext db, TimeProv
         await using SqliteCommand command = Command(connection, transaction, """
             SELECT WorkDigest, AttemptId, PayloadKindCode, PhysicalOrdinal, Revision, StateCode, PayloadDigest, DestinationDigest,
                 DisclosureReceiptDigest, SentCount, PaidCount, InvalidCount, FailureCount, InputTokens, OutputTokens, TotalTokens,
-                CachedInputTokens, ReasoningTokens, CostUsd, CompletionJson, OriginalWorkJson FROM long_rest_provider_effects WHERE WorkItemId = $unit;
+                CachedInputTokens, ReasoningTokens, CostUsd, CompletionJson, OriginalWorkJson, FailureCode FROM long_rest_provider_effects WHERE WorkItemId = $unit;
             """, ("$unit", unit));
 
         await using SqliteDataReader reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
@@ -402,7 +402,8 @@ internal sealed partial class LongRestAttemptStore(ArcanumDbContext db, TimeProv
 
         return new(attempt, digest, original, reader.GetInt64(9), reader.GetInt64(10), reader.GetInt64(11), reader.GetInt64(12),
             new(reader.GetInt64(13), reader.GetInt64(14), reader.GetInt64(15), reader.GetInt64(16), reader.GetInt64(17)),
-            reader.IsDBNull(18) ? null : decimal.Parse(reader.GetString(18), CultureInfo.InvariantCulture), reader.IsDBNull(19) ? null : reader.GetString(19));
+            reader.IsDBNull(18) ? null : decimal.Parse(reader.GetString(18), CultureInfo.InvariantCulture), reader.IsDBNull(19) ? null : reader.GetString(19),
+            reader.IsDBNull(21) ? null : reader.GetString(21));
     }
 
     private async Task<Result<T>> WithinAsync<T>(Func<SqliteConnection, SqliteTransaction, Task<T>> action, CancellationToken ct)
@@ -458,5 +459,5 @@ internal sealed partial class LongRestAttemptStore(ArcanumDbContext db, TimeProv
     private sealed class UnknownUsageCapReachedException : Exception;
 
     private sealed record Effect(LongRestDispatchAttempt Attempt, CovenantDigest WorkDigest, LongRestWorkIdentity OriginalWork, long Sent, long Paid, long Invalid, long Failed,
-        LongRestProviderUsage Usage, decimal? Cost, string? Completion);
+        LongRestProviderUsage Usage, decimal? Cost, string? Completion, string? FailureCode);
 }

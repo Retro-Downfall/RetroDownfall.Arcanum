@@ -27,10 +27,14 @@ namespace RetroDownfall.Arcanum.Tests.LongRest;
 
 public sealed partial class LongRestMaintenanceTests
 {
+    // The third row is the not-sent settlement: Failed with no failure charged, under LongRest.ProviderUnreachable and without completion
+    // evidence. The retained-effect invariant must accept that shape, or a clean generation that adopts across an admission change
+    // is retired as stale input and its accepted paid work is paid for again.
     [Theory]
-    [InlineData(LongRestDispatchAttemptState.Invalid)]
-    [InlineData(LongRestDispatchAttemptState.Failed)]
-    public async Task Clean_review_terminal_effect_survives_two_adoptions_before_another_Prepare(LongRestDispatchAttemptState state)
+    [InlineData(LongRestDispatchAttemptState.Invalid, false)]
+    [InlineData(LongRestDispatchAttemptState.Failed, false)]
+    [InlineData(LongRestDispatchAttemptState.Failed, true)]
+    public async Task Clean_review_terminal_effect_survives_two_adoptions_before_another_Prepare(LongRestDispatchAttemptState state, bool notSent)
     {
         await using MaintenanceFixture f = await MaintenanceFixture.CreateAsync(protectedSources: false);
 
@@ -51,6 +55,7 @@ public sealed partial class LongRestMaintenanceTests
             if (f.Handler.SendCount == 2)
             {
                 if (state == LongRestDispatchAttemptState.Invalid) f.Handler.InvalidVector = "dimensions";
+                else if (notSent) throw new HttpRequestException(HttpRequestError.ConnectionError, "connection refused", new System.Net.Sockets.SocketException((int)System.Net.Sockets.SocketError.ConnectionRefused));
                 else f.Handler.Status = HttpStatusCode.BadRequest;
             }
 
@@ -77,7 +82,8 @@ public sealed partial class LongRestMaintenanceTests
 
             Assert.Equal(0L, await f.H.ScalarAsync("SELECT count(*) FROM long_rest_provider_effects WHERE StateCode = 3;"));
 
-            Assert.Equal(ErrorCodes.LongRest.TransportUnknown, await f.H.ScalarAsync("SELECT FailureCode FROM long_rest_provider_effects;"));
+            Assert.Equal(notSent ? ErrorCodes.LongRest.ProviderUnreachable : ErrorCodes.LongRest.TransportUnknown,
+                await f.H.ScalarAsync("SELECT FailureCode FROM long_rest_provider_effects;"));
 
             Assert.Equal(1L, await f.H.ScalarAsync("SELECT count(*) FROM long_rest_provider_effects WHERE CompletionJson IS NULL;"));
         }
@@ -96,7 +102,8 @@ public sealed partial class LongRestMaintenanceTests
         Assert.Equal(state == LongRestDispatchAttemptState.Invalid ? 1L : 0L,
             await f.H.ScalarAsync("SELECT InvalidCount FROM long_rest_provider_effects;"));
 
-        Assert.Equal(state == LongRestDispatchAttemptState.Failed ? 1L : 0L,
+        // A not-sent attempt is not an unknown-usage attempt: no failure is charged to the Unknown-Usage Cap.
+        Assert.Equal(state == LongRestDispatchAttemptState.Failed && !notSent ? 1L : 0L,
             await f.H.ScalarAsync("SELECT FailureCount FROM long_rest_provider_effects;"));
 
         Assert.Equal(state == LongRestDispatchAttemptState.Invalid ? 2L : 1L,

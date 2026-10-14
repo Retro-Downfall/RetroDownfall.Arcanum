@@ -3,6 +3,7 @@ using System.Globalization;
 using System.Net.Sockets;
 using System.Security.Authentication;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Infrastructure.Security;
 
 namespace RetroDownfall.Arcanum.Api.Intelligence;
 
@@ -24,9 +25,12 @@ internal static class LongRestProviderFailure
     /// 5xx, 429 and 408 are transient (<see cref="ErrorCodes.LongRest.ProviderUnavailable"/>); any other status that is not a
     /// success is a rejection retrying cannot fix (<see cref="ErrorCodes.LongRest.ProviderRejected"/>). With no status, a failure
     /// of the connection attempt itself, before any request byte could leave, is
-    /// <see cref="ErrorCodes.LongRest.ProviderUnreachable"/>: beneath an <see cref="HttpRequestException"/>, a socket failure
-    /// (connecting, resolving) or a TLS handshake failure (<see cref="AuthenticationException"/>) reached without passing through an
-    /// <see cref="IOException"/>, which is how the runtime reports a failure on a connection that was already established.
+    /// <see cref="ErrorCodes.LongRest.ProviderUnreachable"/>. Two shapes prove it, both reached without passing through an
+    /// <see cref="IOException"/>, which is how the runtime reports a failure on a connection that was already established: the
+    /// egress guard's own <see cref="OutboundConnectException"/> (the host did not resolve, an address was refused by policy, the
+    /// guard's connect bound elapsed, or every address refused the connection; the guard consumes the resolver's socket error, so
+    /// only its type survives), and, beneath an <see cref="HttpRequestException"/>, a socket failure
+    /// (<see cref="SocketException"/>) or a TLS handshake failure (<see cref="AuthenticationException"/>).
     /// Anything else is a transient provider failure: the call ended without a result, so the sweep may be readmitted later. A
     /// dropped established connection is deliberately never unreachable, because it may have been served.
     /// </summary>
@@ -49,6 +53,16 @@ internal static class LongRestProviderFailure
                 if (status == 0)
                 {
                     status = ParseStatus(current.Message);
+                }
+            }
+            else if (current is OutboundConnectException)
+            {
+                // Raised by the egress connect callback before any connection exists.
+                http = true;
+
+                if (!established)
+                {
+                    unreachable = true;
                 }
             }
             else if (current is HttpRequestException)

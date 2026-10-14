@@ -8,6 +8,7 @@ using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Infrastructure.Security;
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Intelligence;
 
@@ -149,6 +150,69 @@ public sealed class LongRestOwnedTransportLoopbackTests
         using CancellationTokenSource deadline = new(TimeSpan.FromSeconds(20));
 
         var resolved = await factory.ResolveChatAsync(Selection($"http://127.0.0.1:{port}/v1", false), deadline.Token);
+
+        using ChatClientLease lease = resolved.Value;
+
+        Exception failure = await Assert.ThrowsAnyAsync<Exception>(() => lease.ChatClient.GetResponseAsync([new ChatMessage(ChatRole.User, "probe")], cancellationToken: deadline.Token));
+
+        Assert.Equal(ErrorCodes.LongRest.ProviderUnreachable, LongRestProviderFailure.Classify(failure).Code);
+    }
+
+    // The production egress guard is what turns a name-resolution, address-policy or connect failure into the exception the runtime
+    // hands the SDK. The guard drops the resolver's SocketException, so these cases are pinned through the real guard and the real
+    // SDK rather than through a hand-built exception: each ends before any connection exists, so no request byte could leave.
+    [Theory]
+    [InlineData("unresolvable")]
+    [InlineData("blocked-address")]
+    [InlineData("no-addresses")]
+    public async Task A_resolution_or_address_policy_failure_in_the_real_egress_guard_is_unreachable_because_no_request_byte_could_leave(string variant)
+    {
+        FakeDnsResolver dns = new();
+
+        dns.Add("blocked.example", IPAddress.Parse("169.254.169.254"));
+
+        dns.Add("empty.example");
+
+        string host = variant switch
+        {
+            "blocked-address" => "blocked.example",
+            "no-addresses" => "empty.example",
+            _ => "no-such-host.example",
+        };
+
+        using LongRestProviderClientFactory factory = new(new Keys(), OutboundUrlGuard.CreateProviderEgressHandler(dns));
+
+        using CancellationTokenSource deadline = new(TimeSpan.FromSeconds(20));
+
+        var resolved = await factory.ResolveChatAsync(Selection($"http://{host}/v1", false), deadline.Token);
+
+        using ChatClientLease lease = resolved.Value;
+
+        Exception failure = await Assert.ThrowsAnyAsync<Exception>(() => lease.ChatClient.GetResponseAsync([new ChatMessage(ChatRole.User, "probe")], cancellationToken: deadline.Token));
+
+        Assert.Equal(ErrorCodes.LongRest.ProviderUnreachable, LongRestProviderFailure.Classify(failure).Code);
+    }
+
+    [Fact]
+    public async Task A_connect_failure_to_a_resolved_address_in_the_real_egress_guard_is_unreachable()
+    {
+        TcpListener probe = new(IPAddress.Loopback, 0);
+
+        probe.Start();
+
+        int port = ((IPEndPoint)probe.LocalEndpoint).Port;
+
+        probe.Stop();
+
+        FakeDnsResolver dns = new();
+
+        dns.Add("refusing.example", IPAddress.Loopback);
+
+        using LongRestProviderClientFactory factory = new(new Keys(), OutboundUrlGuard.CreateProviderEgressHandler(dns));
+
+        using CancellationTokenSource deadline = new(TimeSpan.FromSeconds(20));
+
+        var resolved = await factory.ResolveChatAsync(Selection($"http://refusing.example:{port}/v1", false), deadline.Token);
 
         using ChatClientLease lease = resolved.Value;
 

@@ -52,6 +52,9 @@ public sealed class OutboundUrlGuardEgressConnectTests : IDisposable
         HttpRequestException failure = await Assert.ThrowsAsync<HttpRequestException>(
             () => client.GetAsync(EgressUrl));
 
+        // Every failure the callback raises itself is the typed exception, so a caller can tell by type alone that nothing connected.
+        Assert.NotNull(FindInner<OutboundConnectException>(failure));
+
         Assert.Contains($"Could not connect to '{EgressHost}' on port 0.", Flatten(failure), StringComparison.Ordinal);
 
         AggregateException causes = Assert.IsType<AggregateException>(FindInner<AggregateException>(failure));
@@ -77,6 +80,9 @@ public sealed class OutboundUrlGuardEgressConnectTests : IDisposable
         HttpRequestException failure = await Assert.ThrowsAsync<HttpRequestException>(
             () => client.GetAsync(EgressUrl));
 
+        // Every failure the callback raises itself is the typed exception, so a caller can tell by type alone that nothing connected.
+        Assert.NotNull(FindInner<OutboundConnectException>(failure));
+
         Assert.Contains(
             "Outbound URL targets a loopback, private, or link-local address and is not permitted.",
             Flatten(failure),
@@ -94,6 +100,9 @@ public sealed class OutboundUrlGuardEgressConnectTests : IDisposable
 
         HttpRequestException failure = await Assert.ThrowsAsync<HttpRequestException>(
             () => client.GetAsync(EgressUrl));
+
+        // Every failure the callback raises itself is the typed exception, so a caller can tell by type alone that nothing connected.
+        Assert.NotNull(FindInner<OutboundConnectException>(failure));
 
         Assert.Contains(
             $"Could not resolve host '{EgressHost}'.",
@@ -113,6 +122,9 @@ public sealed class OutboundUrlGuardEgressConnectTests : IDisposable
 
         HttpRequestException failure = await Assert.ThrowsAsync<HttpRequestException>(
             () => client.GetAsync(EgressUrl));
+
+        // Every failure the callback raises itself is the typed exception, so a caller can tell by type alone that nothing connected.
+        Assert.NotNull(FindInner<OutboundConnectException>(failure));
 
         Assert.Contains(
             $"Timed out resolving '{EgressHost}' within the outbound connect timeout.",
@@ -136,6 +148,9 @@ public sealed class OutboundUrlGuardEgressConnectTests : IDisposable
 
         HttpRequestException failure = await Assert.ThrowsAsync<HttpRequestException>(
             () => client.GetAsync(EgressUrl));
+
+        // Every failure the callback raises itself is the typed exception, so a caller can tell by type alone that nothing connected.
+        Assert.NotNull(FindInner<OutboundConnectException>(failure));
 
         Assert.Contains($"Could not connect to '{EgressHost}' on port 0.", Flatten(failure), StringComparison.Ordinal);
 
@@ -164,6 +179,9 @@ public sealed class OutboundUrlGuardEgressConnectTests : IDisposable
 
         HttpRequestException failure = await Assert.ThrowsAsync<HttpRequestException>(
             () => client.GetAsync(EgressUrl));
+
+        // Every failure the callback raises itself is the typed exception, so a caller can tell by type alone that nothing connected.
+        Assert.NotNull(FindInner<OutboundConnectException>(failure));
 
         AggregateException causes = Assert.IsType<AggregateException>(FindInner<AggregateException>(failure));
 
@@ -210,6 +228,9 @@ public sealed class OutboundUrlGuardEgressConnectTests : IDisposable
         HttpRequestException failure = await Assert.ThrowsAsync<HttpRequestException>(
             () => client.GetAsync(EgressUrl));
 
+        // Every failure the callback raises itself is the typed exception, so a caller can tell by type alone that nothing connected.
+        Assert.NotNull(FindInner<OutboundConnectException>(failure));
+
         Assert.Contains(
             "Outbound URL targets a loopback, private, or link-local address and is not permitted.",
             Flatten(failure),
@@ -235,6 +256,9 @@ public sealed class OutboundUrlGuardEgressConnectTests : IDisposable
 
         HttpRequestException failure = await Assert.ThrowsAsync<HttpRequestException>(
             () => client.GetAsync(EgressUrl));
+
+        // Every failure the callback raises itself is the typed exception, so a caller can tell by type alone that nothing connected.
+        Assert.NotNull(FindInner<OutboundConnectException>(failure));
 
         Assert.Contains($"Could not connect to '{EgressHost}' on port 0.", Flatten(failure), StringComparison.Ordinal);
 
