@@ -38,9 +38,13 @@ internal sealed partial class LongRestSweepStore : ILongRestSweepRequestAdmissio
         }
         catch (SweepParkedException parked)
         {
-            // The identifier is content-free and is what `operation retry` and `operation cancel` take.
+            // The identifier is content-free and is what `operation retry` and `operation cancel` take. A park under the Unknown-Usage
+            // Cap is the one a retry cannot clear: the cap is per work unit, so a retried sweep re-trips it before any send, and only a
+            // cancel (which starts a new generation with fresh units) resolves it. The message names only a remedy that works.
+            string remedy = parked.TerminalErrorCode == ErrorCodes.LongRest.TransportUnknown ? "cancel it" : "retry or cancel it";
+
             return new Error(ErrorCodes.LongRest.SweepParked,
-                $"The active sweep for this scope (operation {parked.OperationId:D}) is parked and needs an operator to retry or cancel it.");
+                $"The active sweep for this scope (operation {parked.OperationId:D}) is parked and needs an operator to {remedy}.");
         }
         catch (Exception exception) when (exception is SqliteException or InvalidDataException or ArgumentException
             or FormatException or OverflowException or JsonException or InvalidOperationException)
@@ -95,7 +99,7 @@ internal sealed partial class LongRestSweepStore : ILongRestSweepRequestAdmissio
                         && (stored == fence.Configuration || stored.BootId != fence.Configuration.BootId))
                     {
                         // The sweep is returned unchanged for its own authority class to readmit.
-                        if (!IsResumablePark(scope, operation, active)) throw new SweepParkedException(operation.Id);
+                        if (!IsResumablePark(scope, operation, active)) throw new SweepParkedException(operation.Id, operation.TerminalErrorCode);
 
                         admitted = operation;
                     }
@@ -359,8 +363,10 @@ internal sealed partial class LongRestSweepStore : ILongRestSweepRequestAdmissio
 
     private sealed class OperationBusyException : Exception;
 
-    private sealed class SweepParkedException(Guid operationId) : Exception
+    private sealed class SweepParkedException(Guid operationId, string? terminalErrorCode) : Exception
     {
         internal Guid OperationId { get; } = operationId;
+
+        internal string? TerminalErrorCode { get; } = terminalErrorCode;
     }
 }

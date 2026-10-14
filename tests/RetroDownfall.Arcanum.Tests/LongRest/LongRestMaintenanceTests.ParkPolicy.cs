@@ -87,12 +87,24 @@ public sealed partial class LongRestMaintenanceTests
 
         Assert.Equal(ErrorCodes.LongRest.StaleFence, progress.DeferredReason);
 
-        // A protected sweep keeps its park for an operator or a fresh request; the retire path is the clean sweep's alone.
+        // A protected sweep keeps its park; the retire path is the clean sweep's alone.
         LongRunningOperation parked = (await f.Operations.GetAsync(f.Operation))!;
 
         Assert.Equal(LongRunningOperationState.ReconciliationRequired, parked.State);
 
         Assert.Equal(ErrorCodes.LongRest.StaleFence, parked.TerminalErrorCode);
+
+        // A fresh request does not clear it either: a protected park is resumable only as authorized_request_required, so a fresh
+        // request never frees the partition and every turn that needs it fails until an operator resolves the park (a recorded follow-up).
+        Result<LongRunningOperationDto> request = await coordinator.RequestAsync(f.Scope, f.Partition, CancellationToken.None);
+
+        Assert.True(request.IsFailure);
+
+        Assert.Equal(ErrorCodes.LongRest.SweepParked, request.Error.Code);
+
+        Assert.Equal(f.Operation, (await f.Operations.GetAsync(f.Operation))!.Id);
+
+        Assert.Equal(LongRunningOperationState.ReconciliationRequired, (await f.Operations.GetAsync(f.Operation))!.State);
     }
 
     [Fact]

@@ -183,8 +183,6 @@ public sealed partial class LongRestMaintenanceTests
 
         { "transport:ConnectionError", ErrorCodes.LongRest.ProviderUnreachable, false },
 
-        { "transport:NameResolutionError", ErrorCodes.LongRest.ProviderUnreachable, false },
-
         { "transport:SecureConnectionError", ErrorCodes.LongRest.ProviderUnreachable, false },
 
         { "timeout", ErrorCodes.LongRest.ProviderUnavailable, true },
@@ -202,12 +200,13 @@ public sealed partial class LongRestMaintenanceTests
         {
             HttpRequestError kind = Enum.Parse<HttpRequestError>(failure["transport:".Length..]);
 
-            // The inner exception is what the runtime really raises: a socket failure while connecting or resolving, a TLS failure
-            // while handshaking, and an IO failure on a connection that was already established.
+            // The inner exception is what the runtime really raises: a socket failure while connecting, a TLS failure while
+            // handshaking, and an IO failure on a connection that was already established. A name-resolution or address-policy failure
+            // is not built by hand here: the production egress guard raises its own exception for it, so those cases are pinned through
+            // the real guard and the real SDK in LongRestOwnedTransportLoopbackTests.
             Exception inner = kind switch
             {
                 HttpRequestError.ConnectionError => new SocketException((int)SocketError.ConnectionRefused),
-                HttpRequestError.NameResolutionError => new SocketException((int)SocketError.HostNotFound),
                 HttpRequestError.SecureConnectionError => new AuthenticationException("the TLS handshake failed"),
                 _ => new IOException("the established connection was dropped"),
             };
@@ -288,6 +287,11 @@ public sealed partial class LongRestMaintenanceTests
         Assert.True(request.IsFailure);
 
         Assert.Equal(ErrorCodes.LongRest.SweepParked, request.Error.Code);
+
+        // A rejected call can be tried again once the operator has fixed the cause, so retry and cancel are both offered.
+        Assert.Contains("retry", request.Error.Message, StringComparison.Ordinal);
+
+        Assert.Contains("cancel", request.Error.Message, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -434,6 +438,11 @@ public sealed partial class LongRestMaintenanceTests
         Result<LongRunningOperationDto> request = await f.Coordinator.RequestAsync(f.Scope, f.Partition, CancellationToken.None);
 
         Assert.Equal(ErrorCodes.LongRest.SweepParked, request.Error.Code);
+
+        // A retry re-trips the same per-unit cap at once, so the only remedy the message may name is cancel.
+        Assert.Contains("cancel", request.Error.Message, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("retry", request.Error.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
