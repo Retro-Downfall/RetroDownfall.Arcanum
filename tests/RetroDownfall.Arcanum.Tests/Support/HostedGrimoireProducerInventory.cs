@@ -343,6 +343,9 @@ internal static partial class HostedGrimoireProducerInventory
 
     private const int DefaultMaximumAnalyzedStatesPerRoot = 8192;
 
+    // The per-root cap, readable by the headroom ratchet. Reading it changes nothing: the constant above is the one limit.
+    internal static int MaximumAnalyzedStatesPerRoot => DefaultMaximumAnalyzedStatesPerRoot;
+
     private const int RootStateProgressInterval = 256;
 
     private static readonly Lazy<IReadOnlyList<CSharpCompilation>> SourceCompilations = new(BuildProductionCompilations);
@@ -3823,6 +3826,19 @@ internal static partial class HostedGrimoireProducerInventory
                     BoundValueSource normalizedSource =
                         NormalizeEvaluationValueSource(source);
 
+                    if (TryConstantValueIdentity(normalizedSource, out string constantIdentity))
+                    {
+                        AppendIdentitySegment(references, "value-constant");
+
+                        AppendIdentitySegment(
+                            references,
+                            BindingSymbolIdentity(symbol, member));
+
+                        AppendIdentitySegment(references, constantIdentity);
+
+                        continue;
+                    }
+
                     AuthoredMember projectedCaller =
                         ProjectEvaluationEnvironment(
                             normalizedSource.Caller,
@@ -4052,6 +4068,19 @@ internal static partial class HostedGrimoireProducerInventory
                 {
                     BoundValueSource normalizedSource =
                         NormalizeEvaluationValueSource(source);
+
+                    if (TryConstantValueIdentity(normalizedSource, out string constantIdentity))
+                    {
+                        AppendIdentitySegment(references, "value-constant");
+
+                        AppendIdentitySegment(
+                            references,
+                            BindingSymbolIdentity(symbol, member));
+
+                        AppendIdentitySegment(references, constantIdentity);
+
+                        continue;
+                    }
 
                     AuthoredMember projectedCaller =
                         ProjectEvaluationEnvironment(
@@ -4399,6 +4428,17 @@ internal static partial class HostedGrimoireProducerInventory
                 {
                     BoundValueSource normalizedSource =
                         NormalizeEvaluationValueSource(source);
+
+                    if (TryConstantValueIdentity(normalizedSource, out string constantIdentity))
+                    {
+                        AppendIdentitySegment(value, "value-constant");
+
+                        AppendIdentitySegment(value, BindingSymbolIdentity(symbol, member));
+
+                        AppendIdentitySegment(value, constantIdentity);
+
+                        continue;
+                    }
 
                     AuthoredMember projectedCaller =
                         ProjectEvaluationEnvironment(
@@ -5355,7 +5395,7 @@ internal static partial class HostedGrimoireProducerInventory
                 HashSet<ISymbol> retained = new(
                     candidates.Where(candidate =>
                         candidate is not IParameterSymbol parameter
-                        || member.Symbol.MethodKind != MethodKind.Ordinary
+                        || !MemberCannotBeNestedInAMethod(member)
                         || parameter.ContainingSymbol is not IMethodSymbol
                         {
                             MethodKind: MethodKind.Ordinary,
@@ -5394,7 +5434,9 @@ internal static partial class HostedGrimoireProducerInventory
                     SymbolEqualityComparer.Default);
             }
 
-            if (required.Count == candidates.Count)
+            IReadOnlySet<ISymbol> inertPayloads = InertPayloadParameters(member);
+
+            if (required.Count == candidates.Count && inertPayloads.Count == 0)
             {
                 return member;
             }
@@ -5418,7 +5460,7 @@ internal static partial class HostedGrimoireProducerInventory
                         SymbolEqualityComparer.Default),
                 ConcreteBindings = ProjectEvaluationBindings(
                     member.ConcreteBindings,
-                    required),
+                    new HashSet<ISymbol>(required.Where(symbol => !inertPayloads.Contains(symbol)), SymbolEqualityComparer.Default)),
                 RecoveryBindings = ProjectEvaluationBindings(
                     member.RecoveryBindings,
                     required),
@@ -16026,6 +16068,12 @@ internal static partial class HostedGrimoireProducerInventory
                 foreach (BoundValueSource value in source.ValueBindings?.Values ?? Enumerable.Empty<BoundValueSource>())
                 {
                     if (proof.RemainingWork-- <= 0) return false;
+
+                    // A constant carries no instance, so it is no source edge to an owner. Its caller is also no part of the
+                    // state's identity (Constant Value Identity), so the states of one helper reached with the same constant
+                    // from different callers are one state, and reading a constant's caller here would make the proof depend
+                    // on which of those callers reached the state first.
+                    if (TryConstantValueIdentity(NormalizeEvaluationValueSource(value), out _)) continue;
 
                     pending.Push(value.Caller);
                 }
@@ -35617,8 +35665,7 @@ internal static partial class HostedGrimoireProducerInventory
 
             analysis.OriginPossibilityBuilds++;
 
-            possible = member.AdmissionBindings?.Values.Any(
-                static origins => origins.Count > 0) == true;
+            possible = HasLiveAdmissionOrigin(member);
 
             if (!possible)
             {
@@ -35705,7 +35752,7 @@ internal static partial class HostedGrimoireProducerInventory
 
         private bool HasAdmissionSeed(AuthoredMember member)
         {
-            if (member.AdmissionBindings?.Values.Any(static origins => origins.Count > 0) == true)
+            if (HasLiveAdmissionOrigin(member))
             {
                 return true;
             }
@@ -39362,6 +39409,11 @@ internal static partial class HostedGrimoireProducerInventory
 
             EvaluationEnvironmentCounter(target).ExactValueProvenanceVisits++;
 
+            if (IsExactCancellationToken(parameter.Type))
+            {
+                return false;
+            }
+
             if (RequiresSourceProvenance(parameter.Type))
             {
                 return true;
@@ -39635,7 +39687,8 @@ internal static partial class HostedGrimoireProducerInventory
                     bool cleanupCapableReceiverUse = cleanupCapable
                         && (receiverType is null
                             || TypeMayCarryCleanupProvenance(receiverType))
-                        && !IsTrustedNonOwningSafeHandleObservation(method);
+                        && !IsTrustedNonOwningSafeHandleObservation(method)
+                        && !IsTrustedNonOwningProviderObservation(method);
 
                     if (receiverTargetCarriesCleanupState
                         || cleanupCapableReceiverUse)
@@ -40051,6 +40104,11 @@ internal static partial class HostedGrimoireProducerInventory
             ISymbol captured,
             HashSet<(GraphMemberIdentity Member, int Parameter)> path)
         {
+            if (captured is IParameterSymbol { Type: { } capturedType } && IsExactCancellationToken(capturedType))
+            {
+                return false;
+            }
+
             foreach (SyntaxNode node in callback.Syntax.DescendantNodesAndSelf(
                 candidate => candidate == callback.Syntax
                     || candidate is not AnonymousFunctionExpressionSyntax
@@ -40937,14 +40995,15 @@ internal static partial class HostedGrimoireProducerInventory
                 use.SpanStart);
         }
 
+        // The work budget of one callable-mutation query. It is a field and not a local so that LimitsAreFrozen can pin it.
+        private const int MaxCallableWork = 256;
+
         private static bool InvokedCallableMayMutateSymbol(
             AuthoredMember member,
             ISymbol symbol,
             int before,
             int after = int.MinValue)
         {
-            const int MaxCallableWork = 256;
-
             int work = 0;
 
             Dictionary<IMethodSymbol, LocalFunctionStatementSyntax> localFunctions =

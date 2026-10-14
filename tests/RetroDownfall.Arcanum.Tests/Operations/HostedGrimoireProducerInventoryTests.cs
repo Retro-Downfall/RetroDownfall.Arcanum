@@ -8864,7 +8864,8 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
         bool includeOwnerRoot = true,
         HostedProducerAuthorityKind hostedAuthority = HostedProducerAuthorityKind.OrdinaryHostedWork,
         HostedProducerRecoverySelectionProbe? recoverySelectionProbe = null,
-        int? evaluationEnvironmentMaximumMembers = null)
+        int? evaluationEnvironmentMaximumMembers = null,
+        Action<HostedProducerAdmittedStateObservation>? admittedStateObserver = null)
     {
         HostedProducerOperationEntry hosted = OrdinaryRoot() with
         {
@@ -8898,13 +8899,15 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
                 [new("Worker", [hosted])],
                 ownerRoots,
                 evaluationEnvironmentMaximumMembers: maximumMembers,
-                recoverySelectionProbe: recoverySelectionProbe)
+                recoverySelectionProbe: recoverySelectionProbe,
+                admittedStateObserver: admittedStateObserver)
             : HostedGrimoireProducerInventory.DiscoverProducerSites(
                 compilations,
                 new(["Worker"], []),
                 [new("Worker", [hosted])],
                 ownerRoots,
-                recoverySelectionProbe: recoverySelectionProbe);
+                recoverySelectionProbe: recoverySelectionProbe,
+                admittedStateObserver: admittedStateObserver);
     }
 
     [Fact]
@@ -25114,7 +25117,9 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
 
         Assert.Equal(1, metric.EquivalentKeyBuilds);
 
-        Assert.Equal(2, metric.EquivalentKeyNodes);
+        // The argument is a constant named by its value, so the key no longer descends into the
+        // calling member: one node, the member itself.
+        Assert.Equal(1, metric.EquivalentKeyNodes);
 
         Assert.Equal(64, metric.InternerRequests);
 
@@ -25188,7 +25193,9 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
 
         Assert.Equal(2, metric.EquivalentKeyBuilds);
 
-        Assert.Equal(4, metric.EquivalentKeyNodes);
+        // Each argument is a constant named by its value, so the key no longer descends into the
+        // calling member: one node per environment, and the two values still key apart.
+        Assert.Equal(2, metric.EquivalentKeyNodes);
 
         Assert.Equal(64, metric.InternerRequests);
 
@@ -26003,7 +26010,9 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
 
         Assert.Equal(1, metric.EquivalentKeyBuilds);
 
-        Assert.Equal(4, metric.EquivalentKeyNodes);
+        // The forwarded value is a constant named by its value, so the key no longer descends into
+        // the member that supplied it.
+        Assert.Equal(3, metric.EquivalentKeyNodes);
     }
 
     [Fact]
