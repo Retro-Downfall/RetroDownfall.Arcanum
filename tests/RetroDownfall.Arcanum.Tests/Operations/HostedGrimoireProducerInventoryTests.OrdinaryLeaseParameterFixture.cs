@@ -18,44 +18,21 @@ public sealed partial class HostedGrimoireProducerInventoryTests
     //   lease-parameter  the shipped shape: every send uses the lease formal.
     //   holder-read      the first send reads a holder's lease property instead of using its formal (the Ambient Holder).
     //   holder-group     the first send begins its group on that holder lease.
+    //   holder-read-renamed-binder   holder-read, with the holder's binder named Attach instead of Bind (and never called).
+    //   holder-read-without-binder   holder-read, with a holder that declares no binder at all.
     // The holder is the deleted LongRestWorkAdmission, kept here only as the hazard the Ambient Holder Refusal exists to refuse.
     private static string OrdinaryLeaseParameterFixture(string shape = "lease-parameter")
     {
-        Assert.Contains(shape, new[] { "lease-parameter", "holder-read", "holder-group" });
+        Assert.Contains(shape, new[] { "lease-parameter", "holder-read", "holder-group", "holder-read-renamed-binder", "holder-read-without-binder" });
 
         bool holder = shape != "lease-parameter";
 
-        string constructor = holder ? "(LongRestWorkAdmission holder)" : "";
+        string binder = shape == "holder-read-renamed-binder" ? "Attach" : "Bind";
 
-        string registration = holder ? "services.AddScoped<RetroDownfall.Arcanum.Infrastructure.Data.LongRest.LongRestWorkAdmission>(); " : "";
-
-        string firstLease = shape switch
-        {
-            "holder-read" => "IGrimoireWorkLease ambient = holder.Lease;",
-            "holder-group" => "IGrimoireWorkLease ambient = holder.Lease;",
-            _ => "",
-        };
-
-        string firstGroup = shape switch
-        {
-            "holder-read" => "",
-            "holder-group" => "if (!ambient.TryBeginExternalEffectGroup(out IDisposable group)) return; using var owned = group;",
-            _ => "if (!admission.TryBeginExternalEffectGroup(out IDisposable group)) return; using var owned = group;",
-        };
-
-        string holderType = holder ? """
-
-            namespace RetroDownfall.Arcanum.Infrastructure.Data.LongRest
-            {
-                using RetroDownfall.Arcanum.Infrastructure.Data;
-
-                internal sealed class LongRestWorkAdmission
-                {
-                    private IGrimoireWorkLease? current;
-
-                    internal IGrimoireWorkLease Lease => current ?? throw new InvalidOperationException();
-
-                    internal IDisposable Bind(IGrimoireWorkLease lease)
+        string binderMember = shape == "holder-read-without-binder"
+            ? ""
+            : $$"""
+                internal IDisposable {{binder}}(IGrimoireWorkLease lease)
                     {
                         current = lease;
 
@@ -68,6 +45,34 @@ public sealed partial class HostedGrimoireProducerInventoryTests
                         {
                         }
                     }
+                """;
+
+        string constructor = holder ? "(LongRestWorkAdmission holder)" : "";
+
+        string registration = holder ? "services.AddScoped<RetroDownfall.Arcanum.Infrastructure.Data.LongRest.LongRestWorkAdmission>(); " : "";
+
+        string firstLease = holder ? "IGrimoireWorkLease ambient = holder.Lease;" : "";
+
+        string firstGroup = shape switch
+        {
+            "holder-group" => "if (!ambient.TryBeginExternalEffectGroup(out IDisposable group)) return; using var owned = group;",
+            "lease-parameter" => "if (!admission.TryBeginExternalEffectGroup(out IDisposable group)) return; using var owned = group;",
+            _ => "",
+        };
+
+        string holderType = holder ? $$"""
+
+            namespace RetroDownfall.Arcanum.Infrastructure.Data.LongRest
+            {
+                using RetroDownfall.Arcanum.Infrastructure.Data;
+
+                internal sealed class LongRestWorkAdmission
+                {
+                    private IGrimoireWorkLease? current;
+
+                    internal IGrimoireWorkLease Lease => current ?? throw new InvalidOperationException();
+
+                    {{binderMember}}
                 }
             }
             """ : "";
