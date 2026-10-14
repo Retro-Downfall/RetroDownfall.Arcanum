@@ -177,7 +177,15 @@ public sealed class AdmittedEntryCensusTests(ITestOutputHelper output)
                 Task ResumeAdmittedAsync(Guid operationId, IGrimoireWorkLease admission, CancellationToken ct);
             }
 
-            public sealed class Coordinator : ILongRestAdmittedSweep
+            // A second interface that the same implementation method satisfies: a call through it is a call of the door.
+            public interface IAlias
+            {
+                Task ResumeAdmittedAsync(Guid operationId, IGrimoireWorkLease admission, CancellationToken ct);
+            }
+
+            public delegate bool Minter(GrimoireWorkKind kind, out IGrimoireWorkLease? lease);
+
+            public sealed class Coordinator : ILongRestAdmittedSweep, IAlias
             {
                 public Task ResumeAdmittedAsync(Guid operationId, IGrimoireWorkLease admission, CancellationToken ct) => Task.CompletedTask;
 
@@ -196,6 +204,15 @@ public sealed class AdmittedEntryCensusTests(ITestOutputHelper output)
                 Task ILongRestAdmittedSweep.ResumeAdmittedAsync(Guid operationId, IGrimoireWorkLease admission, CancellationToken ct) => Task.CompletedTask;
             }
 
+            public sealed class Outer
+            {
+                // A second implementation of the door that is nested in some other class.
+                private sealed class Hidden : ILongRestAdmittedSweep
+                {
+                    public Task ResumeAdmittedAsync(Guid operationId, IGrimoireWorkLease admission, CancellationToken ct) => Task.CompletedTask;
+                }
+            }
+
             public sealed class Worker(ILongRestAdmittedSweep sweep, IGrimoireConnectionAdmissionGate gate)
             {
                 public async Task RunOneAsync(IGrimoireWorkLease lease)
@@ -206,9 +223,11 @@ public sealed class AdmittedEntryCensusTests(ITestOutputHelper output)
                 }
             }
 
-            public sealed class Rogue(ILongRestAdmittedSweep sweep, Coordinator concrete, IGrimoireConnectionAdmissionGate gate, GrimoireWorkKind chosen)
+            public sealed class Rogue(ILongRestAdmittedSweep sweep, Coordinator concrete, IAlias alias, IGrimoireConnectionAdmissionGate gate, GrimoireWorkKind chosen)
             {
                 public Task ViaInterface(IGrimoireWorkLease lease) => sweep.ResumeAdmittedAsync(Guid.Empty, lease, default);
+
+                public Task ViaAlias(IGrimoireWorkLease lease) => alias.ResumeAdmittedAsync(Guid.Empty, lease, default);
 
                 public Task ViaClass(IGrimoireWorkLease lease) => concrete.ResumeAdmittedAsync(Guid.Empty, lease, default);
 
@@ -223,6 +242,13 @@ public sealed class AdmittedEntryCensusTests(ITestOutputHelper output)
                 public void MintOther() => gate.TryAcquireWorkLease(GrimoireWorkKind.Other, out _);
 
                 public void MintChosen() => gate.TryAcquireWorkLease(chosen, out _);
+
+                private static void Use(GrimoireWorkKind kind, Minter minter) => minter(GrimoireWorkKind.LongRestSweep, out _);
+
+                // Invoked elsewhere, with a kind this scan cannot read: the first argument of the call that carries it is another kind.
+                public void MintBareMethodGroup() => Use(GrimoireWorkKind.Other, gate.TryAcquireWorkLease);
+
+                public string MintNamed() => nameof(gate.TryAcquireWorkLease);
             }
 
             public sealed class Innocent(IUnrelatedPort port, Unrelated unrelated)
@@ -257,11 +283,12 @@ public sealed class AdmittedEntryCensusTests(ITestOutputHelper output)
     {
         IReadOnlyList<Compilation> synthetic = SyntheticCompilation();
 
-        // Through the interface, through the concrete type, as a method group, inside a lambda and through an explicit
-        // implementation: each is reported, once per reference, against the member that contains it.
+        // Through the interface, through another interface the same method satisfies, through the concrete type, as a method group, inside
+        // a lambda and through an explicit implementation: each is reported, once per reference, against the member that contains it.
         Assert.Equal(
             new[]
             {
+                "Fixture.LongRest.Rogue.ViaAlias",
                 "Fixture.LongRest.Rogue.ViaClass",
                 "Fixture.LongRest.Rogue.ViaExplicitImplementation",
                 "Fixture.LongRest.Rogue.ViaInterface",
@@ -282,9 +309,14 @@ public sealed class AdmittedEntryCensusTests(ITestOutputHelper output)
         // A private member of the class is matched by the class symbol.
         Assert.Equal(["Fixture.LongRest.Coordinator.Shell"], Census.Callers(synthetic, "Fixture.LongRest.Coordinator", "Core"));
 
+        // A second implementation is found wherever it is declared, a class nested in another class included.
         Assert.Equal(
-            ["Fixture.LongRest.Coordinator", "Fixture.LongRest.Second"],
+            ["Fixture.LongRest.Coordinator", "Fixture.LongRest.Outer.Hidden", "Fixture.LongRest.Second"],
             Census.Implementations(synthetic, "Fixture.LongRest.ILongRestAdmittedSweep"));
+
+        Assert.Equal(
+            ["Fixture.LongRest.Coordinator"],
+            Census.Implementations(synthetic, "Fixture.LongRest.IAlias"));
     }
 
     [Fact]
@@ -292,13 +324,24 @@ public sealed class AdmittedEntryCensusTests(ITestOutputHelper output)
     {
         IReadOnlyList<Compilation> synthetic = SyntheticCompilation();
 
-        // The kind-17 mints, and the call whose kind is not a constant: it may be a Long Rest mint, so it is reported too.
+        // The kind-17 mints, the call whose kind is not a constant and the mint passed on as a method group: either may be a Long Rest
+        // mint, so each is reported too. The kind of the call that merely receives a method group is not the kind of the mint.
         Assert.Equal(
-            new[] { "Fixture.LongRest.Rogue.Mint", "Fixture.LongRest.Rogue.MintChosen?", "Fixture.LongRest.Worker.RunOneAsync" }.Order(StringComparer.Ordinal),
+            new[]
+            {
+                "Fixture.LongRest.Rogue.Mint",
+                "Fixture.LongRest.Rogue.MintBareMethodGroup?",
+                "Fixture.LongRest.Rogue.MintChosen?",
+                "Fixture.LongRest.Worker.RunOneAsync",
+            }.Order(StringComparer.Ordinal),
             Census.Acquisitions(synthetic, "Fixture.Data.IGrimoireConnectionAdmissionGate", "Fixture.Data.GrimoireWorkKind", "LongRestSweep"));
 
-        // Another kind is not a Long Rest mint.
-        Assert.DoesNotContain("Fixture.LongRest.Rogue.MintOther", Census.Acquisitions(synthetic, "Fixture.Data.IGrimoireConnectionAdmissionGate", "Fixture.Data.GrimoireWorkKind", "LongRestSweep"));
+        // Another kind is not a Long Rest mint, and a reference by nameof is no mint at all.
+        string[] minted = Census.Acquisitions(synthetic, "Fixture.Data.IGrimoireConnectionAdmissionGate", "Fixture.Data.GrimoireWorkKind", "LongRestSweep");
+
+        Assert.DoesNotContain("Fixture.LongRest.Rogue.MintOther", minted);
+
+        Assert.DoesNotContain(minted, static caller => caller.StartsWith("Fixture.LongRest.Rogue.MintNamed", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -313,7 +356,7 @@ public sealed class AdmittedEntryCensusTests(ITestOutputHelper output)
         Assert.NotEqual(pinned, actual);
 
         Assert.Equal(
-            ["Fixture.LongRest.Rogue.ViaClass", "Fixture.LongRest.Rogue.ViaExplicitImplementation", "Fixture.LongRest.Rogue.ViaInterface", "Fixture.LongRest.Rogue.ViaLambda", "Fixture.LongRest.Rogue.ViaMethodGroup"],
+            ["Fixture.LongRest.Rogue.ViaAlias", "Fixture.LongRest.Rogue.ViaClass", "Fixture.LongRest.Rogue.ViaExplicitImplementation", "Fixture.LongRest.Rogue.ViaInterface", "Fixture.LongRest.Rogue.ViaLambda", "Fixture.LongRest.Rogue.ViaMethodGroup"],
             actual.Except(pinned, StringComparer.Ordinal));
     }
 
@@ -324,6 +367,8 @@ public sealed class AdmittedEntryCensusTests(ITestOutputHelper output)
         internal static string[] Callers(IReadOnlyList<Compilation> compilations, string containingType, string methodName)
         {
             IMethodSymbol door = Door(compilations, containingType, methodName);
+
+            IReadOnlyList<(INamedTypeSymbol Type, IMethodSymbol Method)> implementations = DoorImplementations(compilations, door);
 
             List<string> callers = [];
 
@@ -336,7 +381,7 @@ public sealed class AdmittedEntryCensusTests(ITestOutputHelper output)
                     foreach (SimpleNameSyntax name in tree.GetRoot().DescendantNodes().OfType<SimpleNameSyntax>()
                         .Where(candidate => candidate.Identifier.ValueText == methodName))
                     {
-                        if (InNameof(model, name) || model.GetSymbolInfo(name).Symbol is not IMethodSymbol target || !Reaches(target, door))
+                        if (InNameof(model, name) || model.GetSymbolInfo(name).Symbol is not IMethodSymbol target || !Reaches(target, door, implementations))
                         {
                             continue;
                         }
@@ -349,44 +394,29 @@ public sealed class AdmittedEntryCensusTests(ITestOutputHelper output)
             return [.. callers.Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal)];
         }
 
-        /// <summary>The types that implement an interface, so a second implementation of a door is a finding too.</summary>
+        /// <summary>
+        /// The types that implement an interface, nested ones included, so a second implementation of a door is a finding too
+        /// wherever it is declared.
+        /// </summary>
         internal static string[] Implementations(IReadOnlyList<Compilation> compilations, string containingType)
         {
             INamedTypeSymbol contract = Contract(compilations, containingType);
 
-            List<string> types = [];
-
-            foreach (Compilation compilation in compilations)
-            {
-                Collect(compilation.Assembly.GlobalNamespace);
-
-                void Collect(INamespaceSymbol space)
-                {
-                    foreach (ISymbol member in space.GetMembers())
-                    {
-                        if (member is INamespaceSymbol nested)
-                        {
-                            Collect(nested);
-                        }
-                        else if (member is INamedTypeSymbol type && !type.DeclaringSyntaxReferences.IsEmpty
-                            && type.AllInterfaces.Any(candidate => Same(candidate.OriginalDefinition, contract)))
-                        {
-                            types.Add(AuthorityCarrierScanner.Qualified(type));
-                        }
-                    }
-                }
-            }
-
-            return [.. types.Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal)];
+            return [.. DeclaredTypes(compilations)
+                .Where(type => type.AllInterfaces.Any(candidate => Same(candidate.OriginalDefinition, contract)))
+                .Select(AuthorityCarrierScanner.Qualified).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal)];
         }
 
         /// <summary>
-        /// The members that mint a work lease of one kind, matched on the gate contract and on the constant kind. A call whose
-        /// kind is not a constant may be any kind, so it is reported with a trailing question mark.
+        /// The members that mint a work lease of one kind, matched on the gate contract and on the constant kind of the call whose
+        /// invoked name is the mint. Anything else that names the mint, a method group or a call whose kind is not a constant, may mint
+        /// any kind, so it is reported with a trailing question mark.
         /// </summary>
         internal static string[] Acquisitions(IReadOnlyList<Compilation> compilations, string gateType, string kindType, string kind)
         {
             IMethodSymbol door = Door(compilations, gateType, "TryAcquireWorkLease");
+
+            IReadOnlyList<(INamedTypeSymbol Type, IMethodSymbol Method)> implementations = DoorImplementations(compilations, door);
 
             INamedTypeSymbol kinds = Contract(compilations, kindType);
 
@@ -403,18 +433,18 @@ public sealed class AdmittedEntryCensusTests(ITestOutputHelper output)
                     foreach (SimpleNameSyntax name in tree.GetRoot().DescendantNodes().OfType<SimpleNameSyntax>()
                         .Where(static candidate => candidate.Identifier.ValueText == "TryAcquireWorkLease"))
                     {
-                        if (model.GetSymbolInfo(name).Symbol is not IMethodSymbol target || !Reaches(target, door))
+                        if (InNameof(model, name) || model.GetSymbolInfo(name).Symbol is not IMethodSymbol target || !Reaches(target, door, implementations))
                         {
                             continue;
                         }
 
-                        InvocationExpressionSyntax? call = name.Ancestors().OfType<InvocationExpressionSyntax>().FirstOrDefault();
-
-                        Optional<object?> constant = call is null || call.ArgumentList.Arguments.Count == 0
-                            ? default
-                            : model.GetConstantValue(call.ArgumentList.Arguments[0].Expression);
-
                         string caller = AuthorityCarrierScanner.Qualified(Member(model.GetEnclosingSymbol(name.SpanStart)));
+
+                        // Only the call that invokes the name has the kind as its first argument; a name passed as a method group
+                        // is invoked somewhere this scan cannot see, with a kind it cannot read.
+                        Optional<object?> constant = InvokedBy(name) is { ArgumentList.Arguments.Count: > 0 } call
+                            ? model.GetConstantValue(call.ArgumentList.Arguments[0].Expression)
+                            : default;
 
                         if (!constant.HasValue)
                         {
@@ -430,6 +460,15 @@ public sealed class AdmittedEntryCensusTests(ITestOutputHelper output)
 
             return [.. minted.Order(StringComparer.Ordinal)];
         }
+
+        // The call whose invoked expression is this name, however it is reached (x.Name(...), Name(...), x?.Name(...)).
+        private static InvocationExpressionSyntax? InvokedBy(SimpleNameSyntax name) => name.Parent switch
+        {
+            InvocationExpressionSyntax call when call.Expression == name => call,
+            MemberAccessExpressionSyntax access when access.Name == name && access.Parent is InvocationExpressionSyntax call && call.Expression == access => call,
+            MemberBindingExpressionSyntax binding when binding.Name == name && binding.Parent is InvocationExpressionSyntax call && call.Expression == binding => call,
+            _ => null,
+        };
 
         private static bool InNameof(SemanticModel model, SimpleNameSyntax name) => name.Ancestors().OfType<InvocationExpressionSyntax>().Any(call =>
             call.Expression is IdentifierNameSyntax { Identifier.ValueText: "nameof" } && model.GetConstantValue(call).HasValue);
@@ -454,6 +493,32 @@ public sealed class AdmittedEntryCensusTests(ITestOutputHelper output)
         private static IMethodSymbol Door(IReadOnlyList<Compilation> compilations, string containingType, string methodName) =>
             Assert.Single(Contract(compilations, containingType).GetMembers(methodName).OfType<IMethodSymbol>());
 
+        // Every type the source declares, nested types included: a door's second implementation may be private to some other class.
+        private static IEnumerable<INamedTypeSymbol> DeclaredTypes(IReadOnlyList<Compilation> compilations)
+        {
+            Stack<INamespaceOrTypeSymbol> pending = new(compilations.Select(static compilation => (INamespaceOrTypeSymbol)compilation.Assembly.GlobalNamespace));
+
+            while (pending.Count > 0)
+            {
+                INamespaceOrTypeSymbol container = pending.Pop();
+
+                foreach (INamespaceOrTypeSymbol member in container.GetMembers().OfType<INamespaceOrTypeSymbol>())
+                {
+                    if (member is INamedTypeSymbol { DeclaringSyntaxReferences.IsEmpty: true })
+                    {
+                        continue;
+                    }
+
+                    if (member is INamedTypeSymbol type)
+                    {
+                        yield return type;
+                    }
+
+                    pending.Push(member);
+                }
+            }
+        }
+
         // A compilation sees another compilation's types through a retargeting layer, so the interface an Api type implements is
         // not the symbol object the Infrastructure compilation declares. A declared symbol is identified by the syntax that
         // declares it, which is one place however many compilations see it; anything else compares by symbol.
@@ -475,14 +540,54 @@ public sealed class AdmittedEntryCensusTests(ITestOutputHelper output)
                 && declared.Span == other.Span;
         }
 
-        // A target reaches the door when it is the door, overrides it, or implements it (implicitly or explicitly).
-        private static bool Reaches(IMethodSymbol target, IMethodSymbol door)
+        // The method each implementing type runs for the door. Another interface member that the same method satisfies is a way
+        // to the door too, so the doors are found by implementation and not only by the interface they were declared on.
+        private static IReadOnlyList<(INamedTypeSymbol Type, IMethodSymbol Method)> DoorImplementations(IReadOnlyList<Compilation> compilations, IMethodSymbol door)
+        {
+            if (door.ContainingType.TypeKind != TypeKind.Interface)
+            {
+                return [];
+            }
+
+            List<(INamedTypeSymbol, IMethodSymbol)> implementations = [];
+
+            foreach (INamedTypeSymbol type in DeclaredTypes(compilations).Where(static type => type.TypeKind is TypeKind.Class or TypeKind.Struct))
+            {
+                if (ImplementationIn(type, door) is { } method)
+                {
+                    implementations.Add((type, method));
+                }
+            }
+
+            return implementations;
+        }
+
+        // The method a type runs for an interface member, found through the type's own view of the interface.
+        private static IMethodSymbol? ImplementationIn(INamedTypeSymbol type, IMethodSymbol interfaceMember)
+        {
+            foreach (INamedTypeSymbol contract in type.AllInterfaces.Where(candidate => Same(candidate.OriginalDefinition, interfaceMember.ContainingType.OriginalDefinition)))
+            {
+                foreach (IMethodSymbol member in contract.GetMembers(interfaceMember.Name).OfType<IMethodSymbol>().Where(member => Same(member.OriginalDefinition, interfaceMember.OriginalDefinition)))
+                {
+                    if (type.FindImplementationForInterfaceMember(member) is IMethodSymbol implementation)
+                    {
+                        return implementation;
+                    }
+                }
+            }
+
+            return null;
+        }
+
+        // A target reaches the door when it is the door, overrides it, implements it (implicitly or explicitly), is the method a
+        // type runs for the door or an override of it, or is another interface member that such a method also satisfies.
+        private static bool Reaches(IMethodSymbol target, IMethodSymbol door, IReadOnlyList<(INamedTypeSymbol Type, IMethodSymbol Method)> implementations)
         {
             IMethodSymbol original = target.OriginalDefinition;
 
             for (IMethodSymbol? current = original; current is not null; current = current.OverriddenMethod?.OriginalDefinition)
             {
-                if (Same(current, door))
+                if (Same(current, door) || implementations.Any(implementation => Same(current, implementation.Method.OriginalDefinition)))
                 {
                     return true;
                 }
@@ -496,6 +601,13 @@ public sealed class AdmittedEntryCensusTests(ITestOutputHelper output)
             if (door.ContainingType.TypeKind != TypeKind.Interface)
             {
                 return false;
+            }
+
+            if (original.ContainingType.TypeKind == TypeKind.Interface)
+            {
+                // Another interface member: it is the door when some type runs it by the very method it runs the door by.
+                return implementations.Any(implementation => ImplementationIn(implementation.Type, original) is { } method
+                    && Same(method.OriginalDefinition, implementation.Method.OriginalDefinition));
             }
 
             return original.ContainingType.AllInterfaces.Any(contract =>
