@@ -180,19 +180,20 @@ internal sealed partial class LongRestDiscoveryStore
     private sealed record LexicalHit(string MemoryId, long Score);
 
     /// <summary>
-    /// The generation's lexical hits for <paramref name="terms"/>, best first, from one MATCH that names the generation as a column
-    /// filter. The index is shared by every generation, scope and protected partition, but a column-filtered MATCH reads only this
-    /// generation's postings, so which rows match and the document frequency of every term are facts of this generation alone.
-    /// Scoring runs in managed integer arithmetic (<see cref="LongRestLexicalScorer"/>), never FTS5's corpus-wide bm25(). A hit
-    /// below the recipe's relevance floor is not evidence and is not returned; the anchor never matches itself.
+    /// The generation's lexical hits for <paramref name="terms"/>, best first, from one MATCH built by
+    /// <see cref="LongRestLexicalScorer.MatchExpression"/>. The index is shared by every generation, scope and protected partition. What
+    /// keeps another generation's rows out is the join to this generation's own leaf nodes, which matches on the generation and the node,
+    /// and the document counts and term frequencies below, which are taken over those joined rows alone; the column filter in the
+    /// expression bounds the matched set to the generation. Scoring runs in managed integer arithmetic (<see cref="LongRestLexicalScorer"/>),
+    /// never FTS5's corpus-wide bm25(). A hit below the recipe's relevance floor is not evidence and is not returned; the anchor never
+    /// matches itself.
     /// </summary>
     private static async Task<List<LexicalHit>> LexicalHitsAsync(SqliteConnection connection, SqliteTransaction transaction,
         LongRestDiscoveryGeneration generation, string anchorMemory, ImmutableArray<string> terms, long documents, CancellationToken cancellationToken)
     {
         string index = generation.Scope.ProtectedPartitionDigest is null ? "long_rest_clean_fts" : "long_rest_protected_fts";
 
-        // The terms are bounded letters and digits, so quoting is complete; the generation is a GUID.
-        string match = "GenerationId : \"" + Format(generation.GenerationId) + "\" AND Content : (" + string.Join(" OR ", terms.Select(static term => "\"" + term + "\"")) + ")";
+        string match = LongRestLexicalScorer.MatchExpression(generation.GenerationId, terms);
 
         List<(string MemoryId, LongRestLexicalDocument Document)> matched = [];
 

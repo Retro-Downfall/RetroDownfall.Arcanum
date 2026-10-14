@@ -298,6 +298,7 @@ public static class LongRestDiscoveryHash
     public static Result<CovenantDigest> Recipe(LongRestRecipeIdentity recipe)
     {
         if (recipe is null || recipe.SummaryRecipeVersion < 1 || recipe.ClusteringRecipeVersion < 1 || recipe.AdjudicationRecipeVersion < 1
+            || recipe.LexicalScorerVersion < 1
             || !ValidIdentity(recipe.SummaryProvider) || !ValidIdentity(recipe.SummaryModel)
             || !ValidIdentity(recipe.EmbeddingProvider) || !ValidIdentity(recipe.EmbeddingModel)
             || !recipe.SummaryDestinationDigest.IsValid || !recipe.EmbeddingDestinationDigest.IsValid
@@ -360,6 +361,8 @@ public static class LongRestDiscoveryHash
         Int32(bytes, recipe.LexicalMinimumScore);
 
         Int32(bytes, recipe.AdjudicationRecipeVersion);
+
+        Int32(bytes, recipe.LexicalScorerVersion);
 
         return Hash(bytes);
     }

@@ -16,9 +16,15 @@ public sealed record LongRestLexicalDocument(int Length, ImmutableArray<int> Fre
 /// floating point and no library logarithm, so every platform ranks identically.
 /// </summary>
 /// <remarks>
-/// The weight of a term is its inverse document frequency, <c>floor(16 * log2((2N + 2) / (2df + 1)))</c> (one unit is a sixteenth
-/// of a bit), which is BM25's <c>1 + (N - df + 0.5) / (df + 0.5)</c> inside the logarithm and so never negative. It is computed
-/// with integer comparisons against <c>ceil(65536 * 2^(i/16))</c>. A term's saturating frequency component is
+/// The weight of a term is an approximation of its inverse document frequency, <c>16 * log2((2N + 2) / (2df + 1))</c>, in sixteenths
+/// of a bit; the ratio is BM25's <c>1 + (N - df + 0.5) / (df + 0.5)</c> and so never below one, and the weight never negative. It is
+/// defined by its integer computation: the ratio is taken to 16 fractional bits by integer division, split into a power of two and a
+/// 16-bit mantissa, and the weight is sixteen times the exponent plus the largest step <c>i</c> whose threshold
+/// <c>ceil(65536 * 2^(i/16))</c> the mantissa reaches. That is <c>floor(16 * log2(ratio))</c> except where the ratio lies within one unit of
+/// the sixteenth bit above a step boundary, where the floored mantissa falls short of the rounded-up threshold and the weight is one step
+/// lower (for example 150 documents with 111 of them containing the term weigh 6, where the exact floor is 7). The weight is therefore
+/// never above the exact floor and never more than one step below it, and it is the same on every platform. Changing any part of this
+/// arithmetic changes what a recipe means, so <see cref="Version"/> moves with it. A term's saturating frequency component is
 /// <c>tf * (k1 + 1) / (tf + k1 * (1 - b + b * length / pivot))</c> with <c>k1 = 6/5</c>, <c>b = 3/4</c> and a fixed pivot of
 /// <see cref="PivotTokens"/> tokens, so no corpus average enters. A document's score is the sum over the query's terms of weight
 /// times that component, in the same units. The candidate score a lane records is its negation: lower is better, as it always was.
@@ -27,6 +33,46 @@ public static class LongRestLexicalScorer
 {
     /// <summary>The fixed document length at which length normalisation is neutral.</summary>
     public const int PivotTokens = 32;
+
+    /// <summary>
+    /// The version of the scoring function: the tokenisation, the weight arithmetic and the frequency component, with their constants. The
+    /// recipe binds it, so a generation built under one version is never continued under another, and a test pins a digest of the
+    /// function's outputs to it: changing the function without moving this number fails that test.
+    /// </summary>
+    public const int Version = 1;
+
+    /// <summary>
+    /// The FTS5 <c>MATCH</c> expression for one generation's lexical hits: a column filter naming the generation, so that which rows match
+    /// is a fact of that generation alone, and a column filter over the content that matches any of the terms, each one quoted as a
+    /// phrase. The terms are the letter/digit runs <see cref="QueryTerms"/> yields, so nothing in one can be an FTS5 operator or a quote;
+    /// a term that is not exactly letters and digits is refused rather than escaped.
+    /// </summary>
+    public static string MatchExpression(Guid generation, ImmutableArray<string> terms)
+    {
+        if (generation == Guid.Empty || terms.IsDefaultOrEmpty)
+        {
+            throw new ArgumentException("A lexical match requires a generation and at least one term.", nameof(terms));
+        }
+
+        foreach (string term in terms)
+        {
+            if (string.IsNullOrEmpty(term))
+            {
+                throw new ArgumentException("A lexical match term is a non-empty run of letters and digits.", nameof(terms));
+            }
+
+            foreach (Rune rune in term.EnumerateRunes())
+            {
+                if (!Rune.IsLetterOrDigit(rune))
+                {
+                    throw new ArgumentException("A lexical match term is a non-empty run of letters and digits.", nameof(terms));
+                }
+            }
+        }
+
+        return "GenerationId : \"" + generation.ToString("D").ToUpperInvariant() + "\" AND Content : ("
+            + string.Join(" OR ", terms.Select(static term => "\"" + term + "\"")) + ")";
+    }
 
     /// <summary>
     /// The distinct, lower-cased letter/digit tokens of <paramref name="content"/> that can be queried: first occurrence order, at

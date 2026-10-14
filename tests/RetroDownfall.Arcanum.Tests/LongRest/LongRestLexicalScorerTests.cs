@@ -1,5 +1,8 @@
 using System.Collections.Immutable;
+using System.Globalization;
 using System.Numerics;
+using System.Security.Cryptography;
+using System.Text;
 
 using RetroDownfall.Arcanum.Core.LongRest;
 
@@ -32,6 +35,14 @@ public sealed class LongRestLexicalScorerTests
     [InlineData(5, 6, 0)]
     [InlineData(0, 0, 0)]
     [InlineData(7, 0, 64)]
+    // Where the ratio lies within one unit of the sixteenth bit above a step boundary the integer arithmetic is one step below the exact
+    // floor(16 * log2(ratio)); these rows are such boundaries (the exact floors are 7, 3, 21, 17, 1), found by an exhaustive comparison with
+    // an independent big-integer implementation. They pin the definition, so a change that "corrects" it is a change of the scorer version.
+    [InlineData(150, 111, 6)]
+    [InlineData(159, 140, 2)]
+    [InlineData(266, 107, 20)]
+    [InlineData(282, 135, 16)]
+    [InlineData(341, 327, 0)]
     public void A_term_weighs_the_sixteenths_of_a_bit_its_rarity_is_worth(long documents, int frequency, int expected) =>
         Assert.Equal(expected, Assert.Single(LongRestLexicalScorer.Weights(documents, [frequency])));
 
@@ -219,5 +230,135 @@ public sealed class LongRestLexicalScorerTests
         Assert.Throws<ArgumentException>(() => LongRestLexicalScorer.Weights(10, default));
 
         Assert.Throws<ArgumentNullException>(() => LongRestLexicalScorer.QueryTerms(null!));
+    }
+
+    // The generation filter is what bounds the matched set to one generation, and the terms are the only free text in the expression, so the
+    // exact text is pinned here: a change to it is a change to which rows can match.
+    [Fact]
+    public void The_match_expression_names_the_generation_and_quotes_every_term_as_a_phrase()
+    {
+        Guid generation = Guid.Parse("0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d");
+
+        Assert.Equal("GenerationId : \"0A1B2C3D-4E5F-4A6B-8C7D-9E0F1A2B3C4D\" AND Content : (\"opal\" OR \"quartz\")",
+            LongRestLexicalScorer.MatchExpression(generation, ["opal", "quartz"]));
+
+        // Words that are operators to FTS5 are only phrases here.
+        Assert.Equal("GenerationId : \"0A1B2C3D-4E5F-4A6B-8C7D-9E0F1A2B3C4D\" AND Content : (\"and\" OR \"or\" OR \"not\" OR \"near\" OR \"x1y2\" OR \"é\" OR \"日本語\")",
+            LongRestLexicalScorer.MatchExpression(generation, ["and", "or", "not", "near", "x1y2", "é", "日本語"]));
+
+        // The generation is the uppercase hyphenated spelling the index stores, whatever the Guid's own casing.
+        Assert.StartsWith("GenerationId : \"FFFFFFFF-0000-4000-8000-00000000000A\"", LongRestLexicalScorer.MatchExpression(Guid.Parse("ffffffff-0000-4000-8000-00000000000a"), ["x"]), StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData(" ")]
+    [InlineData("two words")]
+    [InlineData("a\"b")]
+    [InlineData("\"")]
+    [InlineData("opal*")]
+    [InlineData("^opal")]
+    [InlineData("opal-quartz")]
+    [InlineData("NEAR(opal")]
+    [InlineData("a:b")]
+    [InlineData("a\nb")]
+    [InlineData("a\u0000b")]
+    public void A_term_that_is_not_exactly_letters_and_digits_is_refused_rather_than_escaped(string term)
+    {
+        Assert.Throws<ArgumentException>(() => LongRestLexicalScorer.MatchExpression(Guid.NewGuid(), ["fine", term]));
+    }
+
+    [Fact]
+    public void A_match_needs_a_generation_and_a_term()
+    {
+        Assert.Throws<ArgumentException>(() => LongRestLexicalScorer.MatchExpression(Guid.Empty, ["opal"]));
+
+        Assert.Throws<ArgumentException>(() => LongRestLexicalScorer.MatchExpression(Guid.NewGuid(), []));
+
+        Assert.Throws<ArgumentException>(() => LongRestLexicalScorer.MatchExpression(Guid.NewGuid(), default));
+    }
+
+    [Fact]
+    public void Whatever_text_the_query_terms_come_from_the_expression_is_the_generation_filter_and_a_list_of_quoted_phrases_only()
+    {
+        Guid generation = Guid.NewGuid();
+
+        string hostile = "alpha\" OR GenerationId : \"00000000-0000-0000-0000-000000000000\" NEAR(a b) -c ^d e* AND (f) {Content}: g NOT h \u0000 日本語 é x1";
+
+        ImmutableArray<string> terms = LongRestLexicalScorer.QueryTerms(hostile);
+
+        string expression = LongRestLexicalScorer.MatchExpression(generation, terms);
+
+        string prefix = "GenerationId : \"" + generation.ToString("D").ToUpperInvariant() + "\" AND Content : (";
+
+        Assert.StartsWith(prefix, expression, StringComparison.Ordinal);
+
+        Assert.EndsWith(")", expression, StringComparison.Ordinal);
+
+        string[] phrases = expression[prefix.Length..^1].Split(" OR ", StringSplitOptions.None);
+
+        Assert.Equal(terms.Length, phrases.Length);
+
+        Assert.All(phrases, phrase => Assert.Matches("^\"[\\p{L}\\p{N}]+\"$", phrase));
+
+        // Exactly one generation filter, and it is the target's: nothing the text said could add or replace it.
+        Assert.Equal(1, expression.Split("GenerationId", StringSplitOptions.None).Length - 1);
+
+        Assert.DoesNotContain("00000000-0000-0000-0000-000000000000", expression, StringComparison.Ordinal);
+    }
+
+    // The scoring function is what a recipe means by "lexical score", so its outputs are pinned to Version: this digest and the version move
+    // together. If this test fails, the tokenisation, a weight, or the frequency component changed: move Version, re-pin the digest, and
+    // expect every recipe digest to move with it.
+    [Fact]
+    public void The_scorer_version_is_bound_into_the_recipe_and_pins_the_scoring_function()
+    {
+        CovenantDigestHolder digest = new();
+
+        LongRestRecipeIdentity recipe = new(1, 1, "provider", "model", digest.Value, "provider", "embedding", digest.Value, 64);
+
+        Assert.Equal(LongRestLexicalScorer.Version, recipe.LexicalScorerVersion);
+
+        Assert.NotEqual(LongRestDiscoveryHash.Recipe(recipe).Value, LongRestDiscoveryHash.Recipe(recipe with { LexicalScorerVersion = recipe.LexicalScorerVersion + 1 }).Value);
+
+        Assert.True(LongRestDiscoveryHash.Recipe(recipe with { LexicalScorerVersion = 0 }).IsFailure);
+
+        Assert.True(LongRestDiscoveryHash.Recipe(recipe with { LexicalScorerVersion = -1 }).IsFailure);
+
+        StringBuilder table = new();
+
+        foreach (long documents in new long[] { 1, 2, 3, 4, 5, 7, 10, 16, 17, 31, 32, 33, 64, 100, 128, 150, 159, 255, 256, 266, 282, 341, 1000, 4096, 100000, 2147483647 })
+        {
+            foreach (long frequency in new long[] { 0, 1, 2, 3, 5, documents / 3, documents / 2, documents - 1, documents }.Where(value => value >= 0 && value <= documents).Distinct())
+            {
+                table.Append(CultureInfo.InvariantCulture, $"w {documents} {frequency} {Assert.Single(LongRestLexicalScorer.Weights(documents, [(int)frequency]))}\n");
+            }
+        }
+
+        foreach (int weight in new[] { 1, 16, 64, 256 })
+        {
+            foreach (int length in new[] { 0, 1, 5, 32, 500 })
+            {
+                foreach (int occurrences in new[] { 1, 2, 5, 40 })
+                {
+                    table.Append(CultureInfo.InvariantCulture, $"s {weight} {length} {occurrences} {LongRestLexicalScorer.Score([weight], new(length, [occurrences]))}\n");
+                }
+            }
+        }
+
+        ImmutableArray<string> terms = LongRestLexicalScorer.QueryTerms("Opal, OPAL; quartz  é-ß 日本語 x1y2 İ ǅ " + new string('z', 200) + " tail");
+
+        LongRestLexicalDocument document = LongRestLexicalScorer.Profile("opal OPAL quartz ß 日本語 x1y2 tail tail", terms);
+
+        table.Append(CultureInfo.InvariantCulture, $"t {string.Join('|', terms)} {document.Length} {string.Join(',', document.Frequencies)}\n");
+
+        Assert.Equal(1, LongRestLexicalScorer.Version);
+
+        Assert.Equal("BE661C42894F8FE5E3D21E38FB11EED12BCDC78000BC96FEE140A5C2431039BD", Convert.ToHexString(SHA256.HashData(new UTF8Encoding(false, true).GetBytes(table.ToString()))));
+    }
+
+    private sealed class CovenantDigestHolder
+    {
+        internal RetroDownfall.Arcanum.Core.Covenant.CovenantDigest Value { get; } = new(new byte[32]);
     }
 }

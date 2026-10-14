@@ -176,6 +176,22 @@ public sealed class LongRestDiscoveryOracleTests
             }
         }
 
+        // Exact duplicates of every designated anchor's text, two among its neighbours (one with the anchor's own vector, one just above the
+        // floor), so the exact lane has evidence in every corpus and is compared with the reference whatever the random duplicates did.
+        foreach (int anchor in anchors)
+        {
+            texts[30 + anchor / 3 * 16 + 8] = texts[anchor];
+
+            texts[30 + anchor / 3 * 16 + 12] = texts[anchor];
+        }
+
+        // And, in a corpus large enough, more exact duplicates of the first anchor than the exact lane keeps, all tied at the cut, so the
+        // lane buffer's eviction and tie-break are compared with the reference too.
+        if (count >= 300)
+        {
+            for (int copy = 170; copy < 215; copy++) texts[copy] = texts[anchors[0]];
+        }
+
         return new([.. Enumerable.Range(0, count).Select(index => Id(index, false))], [.. texts], [.. vectors], pinned, retired, [.. anchors]);
     }
 
@@ -345,6 +361,8 @@ public sealed class LongRestDiscoveryOracleTests
             Assert.Equal(0L, await h.ScalarAsync($"SELECT count(*) FROM long_rest_discovery_leaves WHERE MemoryId = '{memory}';"));
         }
 
+        string report = string.Empty;
+
         int fullLexical = 0;
 
         int vectorEvidence = 0;
@@ -372,7 +390,12 @@ public sealed class LongRestDiscoveryOracleTests
 
             Assert.Empty(evidence.Select(static candidate => candidate.Target.MemoryId).Intersect(excluded));
 
-            if (evidence.Count(static candidate => candidate.Lane == LongRestDiscoveryLane.Lexical) == LongRestDiscoveryLimits.LexicalTopK) fullLexical++;
+            report += $"[{anchor}: x{evidence.Count(static c => c.Lane == LongRestDiscoveryLane.ExactHash)} l{evidence.Count(static c => c.Lane == LongRestDiscoveryLane.Lexical)} v{evidence.Count(static c => c.Lane == LongRestDiscoveryLane.Vector)} h{evidence.Count(static c => c.Lane == LongRestDiscoveryLane.Hierarchy)} g{actual.Length}]";
+
+            // An exact duplicate is also the best lexical hit there is, but the merge keeps a target once, under the exact lane: the lexical lane
+            // was full when its evidence and the duplicates it handed to the exact lane add up to its bound.
+            if (evidence.Count(static candidate => candidate.Lane is LongRestDiscoveryLane.Lexical or LongRestDiscoveryLane.ExactHash) >= LongRestDiscoveryLimits.LexicalTopK
+                && evidence.Any(static candidate => candidate.Lane == LongRestDiscoveryLane.Lexical)) fullLexical++;
 
             vectorEvidence += evidence.Count(static candidate => candidate.Lane == LongRestDiscoveryLane.Vector);
 
@@ -380,10 +403,15 @@ public sealed class LongRestDiscoveryOracleTests
         }
 
         // The corpus really exercises the cut lines: full lexical lanes, vector evidence from both sides of the floor, and exact duplicates.
-        Assert.True(fullLexical >= 3, $"full lexical lanes: {fullLexical}");
+        Assert.True(fullLexical >= 3, $"full lexical lanes: {fullLexical} {report}");
 
         Assert.True(vectorEvidence >= 8, $"vector evidence: {vectorEvidence}");
 
-        Assert.True(exactEvidence >= 0);
+        Assert.True(exactEvidence >= corpus.Anchors.Length * 2, $"exact evidence: {exactEvidence}");
+
+        if (!protectedPartition)
+        {
+            Assert.True(corpus.Texts.Count(text => text == corpus.Texts[corpus.Anchors[0]]) > LongRestDiscoveryLimits.MergedNeighbors, "exact duplicates beyond the lane bound");
+        }
     }
 }
