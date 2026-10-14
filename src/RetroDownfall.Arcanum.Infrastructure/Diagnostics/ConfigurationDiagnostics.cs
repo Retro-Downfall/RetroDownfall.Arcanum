@@ -129,7 +129,8 @@ public sealed class ConfigurationEnvironmentOverrideCheck(IOptions<ArcanumSettin
 
 /// <summary>
 /// Long Rest is enabled but its recipe cannot be resolved, so it will never sweep. This is a configuration fact, read locally
-/// with the predicates the runtime epoch resolves its recipe with; it needs no running host, and it never refuses a turn.
+/// with the predicates the runtime epoch resolves its recipe with; it needs no running host. It is Degraded, not a refusal: an
+/// ordinary turn is unaffected, and the detail says that a turn which must finish protected Long Rest maintenance still ends.
 /// </summary>
 public sealed class LongRestRecipeCheck(
     IOptions<ArcanumSettings> options,

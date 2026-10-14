@@ -82,6 +82,24 @@ public static class LongRestRecipeResolver
             : Result<LongRestRecipeIdentity>.Success(recipe);
     }
 
+    /// <summary>The head every report of an enabled-but-unresolved recipe starts with.</summary>
+    public const string UnresolvedHeadline = "LongRest: enabled but recipe unresolved";
+
+    /// <summary>
+    /// The one sentence every reader of an unresolved recipe (the configuration validator, the doctor row, the health row) gives.
+    /// It states what the condition costs, exactly: Long Rest does not run, an ordinary turn and startup are unaffected, and a
+    /// Session turn that must finish protected Long Rest maintenance first still ends with <see cref="ErrorCodes.LongRest.Unavailable"/>,
+    /// because protected failures are fatal to the turn and a protected request needs the recipe.
+    /// </summary>
+    public static string Describe(IReadOnlyList<string> problems)
+    {
+        ArgumentNullException.ThrowIfNull(problems);
+
+        return $"{UnresolvedHeadline}: {string.Join("; ", problems)}. Long Rest will not run until the recipe resolves. "
+            + $"Until then a Session turn that reads Covenant-protected memory in a scope with protected Long Rest sources fails with {ErrorCodes.LongRest.Unavailable}, "
+            + "because protected maintenance must finish before such a turn begins; every other turn proceeds.";
+    }
+
     /// <summary>
     /// Content-free reasons the recipe is unresolved, naming configuration keys and model names but never a credential, an
     /// endpoint or any user content. Empty when the recipe resolves.

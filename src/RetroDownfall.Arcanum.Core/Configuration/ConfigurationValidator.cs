@@ -1162,7 +1162,8 @@ public sealed class ConfigurationValidator(
 
         ValidateEventBus(settings);
 
-        // A warning, never an error: Long Rest simply cannot run until its recipe resolves, and no turn is refused for it.
+        // A warning, never an error: Long Rest simply cannot run until its recipe resolves, and neither startup nor an ordinary turn is
+        // refused for it. A turn that must finish protected Long Rest maintenance first still ends (the detail says so).
         foreach (ConfigurationValidationError warning in ValidateLongRest(settings))
         {
             logger?.LogWarning("{Pointer}: {Detail}", warning.Pointer, warning.Detail);
@@ -1689,7 +1690,7 @@ public sealed class ConfigurationValidator(
     /// <summary>
     /// Long Rest consolidation warning. When <c>Features:LongRest</c> is on but the recipe (the fast-or-default chat model and the
     /// embedding model, each on a supported provider) cannot be resolved, the sweep cannot run. It returns the warning, naming
-    /// configuration keys and models only, and never refuses startup or a turn. The predicates are
+    /// configuration keys and models only, and never refuses startup or validation. The predicates are
     /// <see cref="LongRestRecipeResolver"/>'s, the same ones the runtime epoch resolves its recipe with.
     /// </summary>
     public IReadOnlyList<ConfigurationValidationError> ValidateLongRest(ArcanumSettings settings)
@@ -1705,10 +1706,7 @@ public sealed class ConfigurationValidator(
 
         return problems.Count == 0
             ? []
-            : [new ConfigurationValidationError(
-                "features.longRest",
-                "LongRest: enabled but recipe unresolved: " + string.Join("; ", problems)
-                + ". Long Rest will not run until the recipe resolves; Session turns are not refused for it.")];
+            : [new ConfigurationValidationError("features.longRest", LongRestRecipeResolver.Describe(problems))];
     }
 
     private void ValidateEventBus(ArcanumSettings settings)

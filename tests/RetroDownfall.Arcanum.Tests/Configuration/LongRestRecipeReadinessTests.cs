@@ -94,6 +94,35 @@ public sealed class LongRestRecipeReadinessTests
         Assert.DoesNotContain("provider.test", row.Detail, StringComparison.Ordinal);
     }
 
+    // An unresolved recipe does not refuse startup or an ordinary turn, but it does end a turn that must finish protected Long Rest
+    // maintenance first (protected failures are fatal, and the protected request needs the recipe). Every reader says so, and none
+    // of them claims that no turn is refused.
+    [Theory]
+    [MemberData(nameof(Unresolved))]
+    public async Task Every_unresolved_recipe_report_names_the_protected_turn_refusal_and_never_claims_no_turn_is_refused(string variant)
+    {
+        ArcanumSettings settings = Settings(variant);
+
+        string warning = Assert.Single(new ConfigurationValidator().ValidateLongRest(settings)).Detail;
+
+        string health = ArcanumHealthChecker.BuildLongRestComponent(settings)!.Detail!;
+
+        string doctor = (await new LongRestRecipeCheck(Options.Create(settings), new ConfigurationValidator()).InspectAsync(CancellationToken.None)).Detail!;
+
+        foreach (string text in new[] { warning, health, doctor })
+        {
+            Assert.StartsWith("LongRest: enabled but recipe unresolved", text, StringComparison.Ordinal);
+
+            Assert.Contains("protected", text, StringComparison.Ordinal);
+
+            Assert.Contains(ErrorCodes.LongRest.Unavailable, text, StringComparison.Ordinal);
+
+            Assert.DoesNotContain("not refused", text, StringComparison.Ordinal);
+
+            Assert.DoesNotContain("no turn is refused", text, StringComparison.Ordinal);
+        }
+    }
+
     [Theory]
     [MemberData(nameof(Unresolved))]
     public void The_warning_row_and_epoch_recipe_agree_because_they_share_one_set_of_predicates(string variant)

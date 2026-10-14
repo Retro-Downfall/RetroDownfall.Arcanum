@@ -230,8 +230,9 @@ public sealed class ArcanumHealthChecker(
 
     /// <summary>
     /// The Long Rest row, present only while the feature is on. An enabled feature whose recipe cannot be resolved is Degraded
-    /// (it will never sweep), never Unhealthy: nothing about the host is broken and no turn is refused for it. Model and key
-    /// names only.
+    /// (it will never sweep), never Unhealthy: nothing about the host is broken, and an ordinary turn is unaffected. A turn that
+    /// must finish protected Long Rest maintenance first still ends until the recipe resolves, and the detail says so. Model and
+    /// key names only.
     /// </summary>
     internal static HealthComponentDto? BuildLongRestComponent(ArcanumSettings configuration)
     {
@@ -244,8 +245,7 @@ public sealed class ArcanumHealthChecker(
 
         return problems.Count == 0
             ? new HealthComponentDto("LongRest", HealthStatus.Healthy, "Enabled; the chat and embedding recipe resolves.")
-            : new HealthComponentDto("LongRest", HealthStatus.Degraded,
-                "LongRest: enabled but recipe unresolved: " + string.Join("; ", problems) + ".");
+            : new HealthComponentDto("LongRest", HealthStatus.Degraded, LongRestRecipeResolver.Describe(problems));
     }
 
     internal static HealthComponentDto BuildFileEncryptionComponent(
