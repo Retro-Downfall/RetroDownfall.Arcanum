@@ -85,6 +85,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests
                 });
                 """,
             "lease-in-holder-local" => "LeaseHolder holder = new(admission);",
+            "reading-closure" => "Func<GrimoireWorkKind> kindOf = () => admission.Kind;\n\n                    _ = kindOf();",
             "unrelated-closure" => "Func<int> unrelated = () => 1;\n\n                    _ = unrelated();",
             _ => "",
         };
@@ -111,9 +112,19 @@ public sealed partial class HostedGrimoireProducerInventoryTests
             _ => LeaseHandoffStandardCall,
         };
 
-        string after = shape is "after-call" or "formal-disposed" or "formal-stored" or "formal-captured" or "formal-spawned"
-            ? "System.IO.File.Exists(\"caller-after-call\");"
-            : "";
+        string after = shape switch
+        {
+            "after-call" or "formal-disposed" or "formal-stored" or "formal-captured" or "formal-spawned" => "System.IO.File.Exists(\"caller-after-call\");",
+            "spawned-disposer-after-call" => """
+                _ = Task.Run(async () =>
+                {
+                    await Task.Delay(10).ConfigureAwait(false);
+
+                    await using IGrimoireWorkLease gone = admission;
+                });
+                """,
+            _ => "",
+        };
 
         string otherWorker = shape == "other-service"
             ? """
@@ -770,7 +781,12 @@ public sealed partial class HostedGrimoireProducerInventoryTests
     [InlineData("receiver-from-lease", "the receiver may hold the caller's lease")]
     [InlineData("loop-formal-disposed", "the call sits in a loop and the root does not preserve its formal")]
     [InlineData("goto-formal-disposed", "the call sits in a loop and the root does not preserve its formal")]
-    [InlineData("spawned-disposer", "a closure of the caller mentions the caller's lease")]
+    // A closure made before the call that disposes the lease ends it before the call, so the lifetime scan refuses the cut on Work before
+    // the closure precondition is reached; the two rows after it keep that precondition reached, by a closure made after the call (its
+    // disposal is then a time no position names) and by one made before that only reads the lease.
+    [InlineData("spawned-disposer", "the caller holds no live Work at the call")]
+    [InlineData("spawned-disposer-after-call", "a closure of the caller mentions the caller's lease")]
+    [InlineData("reading-closure", "a closure of the caller mentions the caller's lease")]
     public void ACallThatFailsAnyPreconditionIsRefusedAndTheClosureIsJudgedInLineUnderTheCallersRoot(string shape, string reason)
     {
         LeaseHandoffRun run = RunLeaseHandoff(shape);

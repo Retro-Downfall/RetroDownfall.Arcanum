@@ -186,4 +186,208 @@ public sealed partial class HostedGrimoireProducerInventoryTests
             Assert.Contains(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_SITE_WORK_FRONTIER_MISSING" && diagnostic.Detail == "System.IO.File.Delete");
         });
     }
+
+    // A lease can be ended by code that never names it as a call receiver in the member that holds it: a local function or a lambda that
+    // captures it, a method group made from one of its members, a helper the lease is handed to. The closures and delegates below do
+    // that before the scope is disposed, in the finalizer and in the protected block, over the inline and the returned acquisition. Each
+    // refusal is the lifetime rule's own, a missing Work frontier at the callback, and not a by-product of some other diagnostic.
+    private const string FinallyOwnedClosureHelpers = """
+        public static class FinallyOwnedRelease
+        {
+            public static async System.Threading.Tasks.Task InvokeAsync(System.Func<System.Threading.Tasks.ValueTask> release)
+            {
+                await release().ConfigureAwait(false);
+            }
+
+            public static async System.Threading.Tasks.Task ReleaseAsync(RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireWorkLease lease)
+            {
+                await lease.DisposeAsync().ConfigureAwait(false);
+            }
+
+            public static bool Probe(RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireWorkLease lease) => lease.TryBeginExternalEffectGroup(out _);
+        }
+
+        public static class FinallyOwnedStore
+        {
+            public static RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireWorkLease? Kept;
+        }
+        """;
+
+    private const string FinallyOwnedReleaseLocal = "async System.Threading.Tasks.ValueTask ReleaseLocalAsync() { await shellLease.DisposeAsync().ConfigureAwait(false); }";
+
+    private const string FinallyOwnedRelease = "await ReleaseLocalAsync().ConfigureAwait(false);";
+
+    // The code that runs before the scope's disposal, the code that runs after it, and the declarations that follow the try statement.
+    private static (string Before, string After, string Tail) FinallyOwnedClosureShape(string shape) => shape switch
+    {
+        "local-function-disposes" => (FinallyOwnedRelease, string.Empty, FinallyOwnedReleaseLocal),
+
+        "local-function-disposes-through-a-helper" => ("await ReleaseViaAsync().ConfigureAwait(false);", string.Empty,
+            "async System.Threading.Tasks.ValueTask ReleaseViaAsync() { await FinallyOwnedRelease.ReleaseAsync(shellLease).ConfigureAwait(false); }"),
+
+        "local-function-two-hops" => ("await OuterAsync().ConfigureAwait(false);", string.Empty,
+            "async System.Threading.Tasks.ValueTask OuterAsync() { await InnerAsync().ConfigureAwait(false); } async System.Threading.Tasks.ValueTask InnerAsync() { await shellLease.DisposeAsync().ConfigureAwait(false); }"),
+
+        "local-function-stores-the-lease" => ("Keep();", string.Empty, "void Keep() { FinallyOwnedStore.Kept = shellLease; }"),
+
+        "local-function-returns-the-lease" => ("_ = Hand();", string.Empty, "RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireWorkLease Hand() => shellLease;"),
+
+        "local-function-method-group" => ("System.Func<System.Threading.Tasks.ValueTask> release = ReleaseLocalAsync; await release().ConfigureAwait(false);", string.Empty, FinallyOwnedReleaseLocal),
+
+        "local-function-recursion-disposes" => ("await CountDownAsync(2).ConfigureAwait(false);", string.Empty,
+            "async System.Threading.Tasks.ValueTask CountDownAsync(int remaining) { if (remaining > 0) { await CountDownAsync(remaining - 1).ConfigureAwait(false); } else { await shellLease.DisposeAsync().ConfigureAwait(false); } }"),
+
+        "local-function-returns-a-disposing-lambda" => ("await Make()().ConfigureAwait(false);", string.Empty,
+            "System.Func<System.Threading.Tasks.ValueTask> Make() => () => shellLease.DisposeAsync();"),
+
+        "lambda-in-a-lambda-disposes" => ("System.Func<System.Func<System.Threading.Tasks.ValueTask>> make = () => () => shellLease.DisposeAsync(); await make()().ConfigureAwait(false);", string.Empty, string.Empty),
+
+        "alias-captured-by-a-lambda" => ("var alias = shellLease; System.Func<System.Threading.Tasks.ValueTask> release = () => alias.DisposeAsync(); await release().ConfigureAwait(false);", string.Empty, string.Empty),
+
+        "lambda-disposes" => ("System.Func<System.Threading.Tasks.ValueTask> release = async () => await shellLease.DisposeAsync().ConfigureAwait(false); await release().ConfigureAwait(false);", string.Empty, string.Empty),
+
+        "lambda-passed-to-a-caller" => ("await FinallyOwnedRelease.InvokeAsync(() => shellLease.DisposeAsync()).ConfigureAwait(false);", string.Empty, string.Empty),
+
+        "method-group-dispose-async" => ("System.Func<System.Threading.Tasks.ValueTask> release = shellLease.DisposeAsync; await release().ConfigureAwait(false);", string.Empty, string.Empty),
+
+        "method-group-sync-dispose" => ("System.Action release = shellLease.Dispose; release();", string.Empty, string.Empty),
+
+        "method-group-through-a-cast" => ("System.Func<System.Threading.Tasks.ValueTask> release = ((System.IAsyncDisposable)shellLease).DisposeAsync; await release().ConfigureAwait(false);", string.Empty, string.Empty),
+
+        "conditional-access-dispose" => ("await (shellLease?.DisposeAsync() ?? default).ConfigureAwait(false);", string.Empty, string.Empty),
+
+        "method-group-argument" => ("await FinallyOwnedRelease.InvokeAsync(shellLease.DisposeAsync).ConfigureAwait(false);", string.Empty, string.Empty),
+
+        // The held rows: a closure that only probes the lease (the one call that keeps its receiver), one that calls itself and still
+        // only probes it, one that captures nothing, a method group made from a value that is not the lease, and a closure that ends the
+        // lease only after the scope is disposed.
+        "recursive-local-function-probes-the-lease" => ("_ = ProbeDeep(2);", string.Empty,
+            "bool ProbeDeep(int depth) => depth > 0 ? ProbeDeep(depth - 1) : shellLease.TryBeginExternalEffectGroup(out _);"),
+
+        "static-local-function" => ("_ = Twice(1);", string.Empty, "static int Twice(int value) => value * 2;"),
+
+        "local-function-probes-the-lease" => ("_ = Probe();", string.Empty, "bool Probe() => shellLease.TryBeginExternalEffectGroup(out _);"),
+
+        "local-function-hands-the-lease-to-a-prober" => ("_ = Probe();", string.Empty, "bool Probe() => FinallyOwnedRelease.Probe(shellLease);"),
+
+        "lambda-probes-the-lease" => ("System.Func<bool> probe = () => shellLease.TryBeginExternalEffectGroup(out _); _ = probe();", string.Empty, string.Empty),
+
+        "method-group-over-an-unrelated-value" => ("string unrelated = \"unrelated\"; System.Func<int> hash = unrelated.GetHashCode; _ = hash();", string.Empty, string.Empty),
+
+        "local-function-disposes-after-the-scope" => (string.Empty, FinallyOwnedRelease, FinallyOwnedReleaseLocal),
+
+        _ => throw new ArgumentOutOfRangeException(nameof(shape), shape, null),
+    };
+
+    private static readonly string[] FinallyOwnedClosureRefusalShapes =
+    [
+        "local-function-disposes",
+        "local-function-disposes-through-a-helper",
+        "local-function-two-hops",
+        "local-function-stores-the-lease",
+        "local-function-returns-the-lease",
+        "local-function-method-group",
+        "local-function-recursion-disposes",
+        "local-function-returns-a-disposing-lambda",
+        "lambda-in-a-lambda-disposes",
+        "alias-captured-by-a-lambda",
+        "lambda-disposes",
+        "lambda-passed-to-a-caller",
+        "method-group-dispose-async",
+        "method-group-sync-dispose",
+        "method-group-through-a-cast",
+        "method-group-argument",
+        "conditional-access-dispose",
+    ];
+
+    private static readonly string[] FinallyOwnedClosureHeldShapes =
+    [
+        "local-function-probes-the-lease",
+        "local-function-hands-the-lease-to-a-prober",
+        "lambda-probes-the-lease",
+        "recursive-local-function-probes-the-lease",
+        "static-local-function",
+        "method-group-over-an-unrelated-value",
+        "local-function-disposes-after-the-scope",
+    ];
+
+    private static TheoryData<string, string, string> FinallyOwnedClosureRows(string[] shapes)
+    {
+        TheoryData<string, string, string> rows = [];
+
+        foreach (string acquisition in new[] { "inline", "returned" })
+        {
+            foreach (string place in new[] { "finalizer", "protected" })
+            {
+                foreach (string shape in shapes)
+                {
+                    rows.Add(acquisition, place, shape);
+                }
+            }
+        }
+
+        return rows;
+    }
+
+    public static TheoryData<string, string, string> FinallyOwnedClosureRefusalRows => FinallyOwnedClosureRows(FinallyOwnedClosureRefusalShapes);
+
+    public static TheoryData<string, string, string> FinallyOwnedClosureHeldRows => FinallyOwnedClosureRows(FinallyOwnedClosureHeldShapes);
+
+    private void RunFinallyOwnedClosure(string acquisition, string place, string shape, bool underLease)
+    {
+        (string before, string after, string tail) = FinallyOwnedClosureShape(shape);
+
+        string protectedBlock;
+
+        string finallyBlock;
+
+        if (place == "finalizer")
+        {
+            protectedBlock = FinallyOwnedProtected;
+
+            finallyBlock = FinallyOwnedNested(before + " " + FinallyOwnedScopeDisposal + " " + after);
+        }
+        else
+        {
+            protectedBlock = before + " shellScope = factory.CreateAsyncScope(); shellScopeCreated = true; " + FinallyOwnedScopeDisposal + " " + after + " return;";
+
+            finallyBlock = FinallyOwnedLeaseDisposal;
+        }
+
+        string shell = "while (true) { " + (acquisition == "inline" ? FinallyOwnedInlineAcquisition : FinallyOwnedReturnedAcquisition) + " "
+            + FinallyOwnedLocals + " try { " + protectedBlock + " } finally { " + finallyBlock + " } " + tail + " }";
+
+        EachQueryMode(production =>
+        {
+            output.WriteLine("FINALLY-OWNED-CLOSURE " + acquisition + " " + place + " " + shape + " " + (production ? "production" : "strict"));
+
+            HostedProducerDiscovery<HostedProducerSite> result = InterceptorDiscover(
+                ".AddInterceptors(new DisposeProbe())",
+                string.Empty,
+                early: FinallyOwnedGate + shell,
+                contextMembers: HookRows,
+                helpers: DisposeProbeTypes + FinallyOwnedHelpers + FinallyOwnedClosureHelpers,
+                production: production);
+
+            Assert.True(CallbackTraversed(result, "ConnectionDisposedAsync"));
+
+            Assert.Equal(underLease, CallbackAdmitted(result, "ConnectionDisposedAsync"));
+
+            Assert.Equal(!underLease, result.Diagnostics.Any(static diagnostic => diagnostic.Code == "HOSTED_SITE_WORK_FRONTIER_MISSING" && diagnostic.Detail == "System.IO.File.Delete"));
+        });
+    }
+
+    [Theory]
+    [MemberData(nameof(FinallyOwnedClosureRefusalRows))]
+    public void ALeaseEndedThroughAClosureOrADelegateBeforeTheScopeIsDisposedRunsItsCallbacksWithoutWork(string acquisition, string place, string shape)
+    {
+        RunFinallyOwnedClosure(acquisition, place, shape, underLease: false);
+    }
+
+    [Theory]
+    [MemberData(nameof(FinallyOwnedClosureHeldRows))]
+    public void AClosureThatDoesNotEndTheLeaseBeforeTheScopeIsDisposedLeavesItsCallbacksUnderTheLease(string acquisition, string place, string shape)
+    {
+        RunFinallyOwnedClosure(acquisition, place, shape, underLease: true);
+    }
 }

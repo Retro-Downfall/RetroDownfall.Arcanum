@@ -2750,7 +2750,16 @@ internal static partial class HostedGrimoireProducerInventory
             InvocationExpressionSyntax[] Invocations,
             AssignmentExpressionSyntax[] Assignments,
             LocalDeclarationStatementSyntax[] LocalDeclarations,
-            SyntaxNode[] LifetimeNodes);
+            SyntaxNode[] LifetimeNodes,
+            Lazy<ClosureUse[]> ClosureUses);
+
+        // Code a member makes runnable without calling it by name: a lambda it creates, a local function it names (called or not), a
+        // member of a value it names turned into a delegate. The lifetime scan does not descend into a lambda or a local function, so
+        // whatever such a callable does to a handle it captures or is handed is found through the use, at the use's position.
+        private readonly record struct ClosureUse(
+            SyntaxNode Node,
+            IMethodSymbol? LocalFunction,
+            ExpressionSyntax? MethodGroupReceiver);
 
         private sealed record PublicationRegionSyntaxPlan(
             InvocationExpressionSyntax[] Invocations,
@@ -57244,6 +57253,51 @@ internal static partial class HostedGrimoireProducerInventory
                     }
                 }
 
+                // The scan above does not enter a lambda or a local function, and a handle one of them captures is never an argument or a
+                // receiver where it is used. A callable made or named before the position ends the admission when its own body does,
+                // judged by this same rule, wherever the callable is declared; a member group made from a value that carries the
+                // admission is a call of that member at a later, unseen position and ends it.
+                foreach (ClosureUse use in AdmissionSyntax(member).ClosureUses.Value)
+                {
+                    if (use.Node.Span.End >= position)
+                    {
+                        continue;
+                    }
+
+                    if (use.MethodGroupReceiver is { } receiver)
+                    {
+                        if (Carries(receiver))
+                        {
+                            return true;
+                        }
+
+                        continue;
+                    }
+
+                    AuthoredMember? closure = use.LocalFunction is { } function
+                        ? Resolve(function, member.Model.Compilation) is { } declared ? BindExternalCallbackContext(member, declared) : null
+                        : ResolveCallableTargets((ExpressionSyntax)use.Node, member.Model, member.CallableBindings, member.AbsentCallables) is [AuthoredMember created]
+                            ? BindExternalCallbackContext(member, created)
+                            : null;
+
+                    // A callable that cannot be bound cannot be shown to leave the handle alone.
+                    if (closure is null)
+                    {
+                        return true;
+                    }
+
+                    // A callable already being judged further up is judged there, once.
+                    if (path.Contains(MemberIdentity(closure)))
+                    {
+                        continue;
+                    }
+
+                    if (AdmissionEndedBefore(closure, origin, int.MaxValue, path))
+                    {
+                        return true;
+                    }
+                }
+
                 return false;
             }
             finally
@@ -57573,7 +57627,8 @@ internal static partial class HostedGrimoireProducerInventory
                         or VariableDeclarationSyntax
                         || node is ReturnStatementSyntax { Expression: not null }
                         || UserDefinedOperatorAt(member, node) is not null)
-                    .ToArray());
+                    .ToArray(),
+                new(() => DiscoverClosureUses(member)));
 
             admissionSyntaxPlans.Add(memberKey, result);
 
@@ -57591,6 +57646,84 @@ internal static partial class HostedGrimoireProducerInventory
             analysis.SourceIndexBuilds++;
 
             return result;
+        }
+
+        private ClosureUse[] DiscoverClosureUses(AuthoredMember member)
+        {
+            SyntaxNode? container = member.Syntax.AncestorsAndSelf().FirstOrDefault(static node => node is BaseMethodDeclarationSyntax
+                or AccessorDeclarationSyntax
+                or PropertyDeclarationSyntax
+                or IndexerDeclarationSyntax
+                or EventDeclarationSyntax
+                or BaseFieldDeclarationSyntax);
+
+            HashSet<string> localFunctionNames = container is null
+                ? []
+                : container.DescendantNodes()
+                    .OfType<LocalFunctionStatementSyntax>()
+                    .Select(static function => function.Identifier.ValueText)
+                    .ToHashSet(StringComparer.Ordinal);
+
+            bool InNameOf(SyntaxNode node) => node.Ancestors()
+                .OfType<InvocationExpressionSyntax>()
+                .Any(call => call.Expression is IdentifierNameSyntax { Identifier.ValueText: "nameof" }
+                    && member.Model.GetOperation(call) is INameOfOperation);
+
+            List<ClosureUse> uses = [];
+
+            foreach (SyntaxNode node in member.Syntax.DescendantNodesAndSelf(candidate => candidate == member.Syntax
+                || candidate is not AnonymousFunctionExpressionSyntax and not LocalFunctionStatementSyntax))
+            {
+                if (node == member.Syntax)
+                {
+                    continue;
+                }
+
+                if (node is AnonymousFunctionExpressionSyntax)
+                {
+                    uses.Add(new(node, null, null));
+
+                    continue;
+                }
+
+                if (node is IdentifierNameSyntax name
+                    && localFunctionNames.Contains(name.Identifier.ValueText)
+                    && member.Model.GetSymbolInfo(name).Symbol is IMethodSymbol { MethodKind: MethodKind.LocalFunction } localFunction)
+                {
+                    uses.Add(new(name, localFunction, null));
+
+                    continue;
+                }
+
+                // A member group is a delegate bound to its receiver. Invoking it later is the same act as invoking the member there, at a
+                // position the text does not show, so forming it counts as the call. A group made from a static method binds no value.
+                if (node is MemberAccessExpressionSyntax access
+                    && access.IsKind(SyntaxKind.SimpleMemberAccessExpression)
+                    && !(access.Parent is InvocationExpressionSyntax call && call.Expression == access))
+                {
+                    SymbolInfo info = member.Model.GetSymbolInfo(access);
+
+                    IMethodSymbol? group = info.Symbol as IMethodSymbol
+                        ?? info.CandidateSymbols.OfType<IMethodSymbol>().FirstOrDefault();
+
+                    if (group is not null
+                        && (!group.IsStatic || group.ReducedFrom is not null)
+                        && !InNameOf(access))
+                    {
+                        // Parentheses are not part of the value, and carry no operation of their own.
+                        ExpressionSyntax receiver = access.Expression;
+
+                        while (receiver is ParenthesizedExpressionSyntax parenthesized)
+                        {
+                            receiver = parenthesized.Expression;
+                        }
+
+                        uses.Add(new(access, null, receiver));
+                    }
+                }
+            }
+
+            return [.. uses];
         }
 
         private RetainedAdmissionAnalysisCounter RetainedAdmissionCounter(AuthoredMember member)
