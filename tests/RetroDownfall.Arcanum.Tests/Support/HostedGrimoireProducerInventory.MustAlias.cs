@@ -24,7 +24,7 @@ internal static partial class HostedGrimoireProducerInventory
 
         private const string LeaseGroupCallee = "RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireWorkLease.TryBeginExternalEffectGroup";
 
-        private readonly Dictionary<(GraphMemberIdentity Member, string Bindings, int Group), string?> leaseReceiverOrigins = [];
+        private readonly Dictionary<(GraphMemberIdentity Member, string Bindings, int Start, int Length), string?> mustAliasLeaseOrigins = [];
 
         // The effect identities of groups the receiver proof refused at their own site. A group refused where it is begun is
         // never the Effect of a later site that would have inherited it.
@@ -50,18 +50,9 @@ internal static partial class HostedGrimoireProducerInventory
                 return true;
             }
 
-            (GraphMemberIdentity Member, string Bindings, int Group) key = (MemberIdentity(member), AdmissionBindingIdentity(member), group.SpanStart);
+            origin = AdmissionReceiver(member, group) is { } receiver ? MustAliasLeaseOrigin(member, receiver) : null;
 
-            if (!leaseReceiverOrigins.TryGetValue(key, out string? proven))
-            {
-                proven = AdmissionReceiver(member, group) is { } receiver ? MustAliasLeaseOrigin(member, receiver) : null;
-
-                leaseReceiverOrigins[key] = proven;
-            }
-
-            origin = proven;
-
-            return proven is not null;
+            return origin is not null;
         }
 
         // The group must also be the lease the traversal holds Work for, when it holds any.
@@ -128,12 +119,21 @@ internal static partial class HostedGrimoireProducerInventory
                 return null;
             }
 
-            return member.Model.GetSymbolInfo(identifier).Symbol switch
+            (GraphMemberIdentity Member, string Bindings, int Start, int Length) key = (MemberIdentity(member), AdmissionBindingIdentity(member), expression.SpanStart, expression.Span.Length);
+
+            if (!mustAliasLeaseOrigins.TryGetValue(key, out string? origin))
             {
-                IParameterSymbol parameter => FormalLeaseOrigin(member, parameter),
-                ILocalSymbol local => LocalLeaseOrigin(member, local),
-                _ => null,
-            };
+                origin = member.Model.GetSymbolInfo(identifier).Symbol switch
+                {
+                    IParameterSymbol parameter => FormalLeaseOrigin(member, parameter),
+                    ILocalSymbol local => LocalLeaseOrigin(member, local),
+                    _ => null,
+                };
+
+                mustAliasLeaseOrigins[key] = origin;
+            }
+
+            return origin;
         }
 
         private static ExpressionSyntax StripLeaseValue(ExpressionSyntax expression) => expression switch
