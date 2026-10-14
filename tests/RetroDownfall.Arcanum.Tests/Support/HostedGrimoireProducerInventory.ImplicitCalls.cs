@@ -88,6 +88,10 @@ internal static partial class HostedGrimoireProducerInventory
         // A written call to a member the compiler generated for a record or an anonymous type, or to a framework slot
         // (ToString, Equals, GetHashCode, CompareTo, GetFormat, ...) that dispatches on the runtime type of the value.
         SynthesizedMember = 19,
+
+        // The formatting of a hole of an interpolated string that is converted to FormattableString or IFormattable:
+        // the holes are formatted when the value is consumed, not where the string is written.
+        DeferredFormatHole = 20,
     }
 
     // One member the compiler calls: the selected method (a property access is its accessor), the value it is
@@ -99,7 +103,35 @@ internal static partial class HostedGrimoireProducerInventory
         ITypeSymbol? ReceiverType,
         ExpressionSyntax? Receiver,
         IReadOnlyList<(ExpressionSyntax Expression, IParameterSymbol Parameter)> Arguments,
-        int Position);
+        int Position,
+        IReadOnlyList<CallbackValue>? Values = null);
+
+    // The families of framework slots a framework member can call on a value of an authored type.
+    [Flags]
+    internal enum CallbackFamilies : byte
+    {
+        None = 0,
+
+        // ToString, IFormattable.ToString, TryFormat, and the virtual members a framework ToString reads.
+        Format = 1,
+
+        // Equals(object), IEquatable<T>.Equals and GetHashCode.
+        Equality = 2,
+
+        // IComparable.CompareTo and IComparable<T>.CompareTo.
+        Compare = 4,
+
+        // IFormatProvider.GetFormat and ICustomFormatter.Format.
+        Provider = 8,
+
+        // IComparer.Compare and IEqualityComparer.Equals and GetHashCode.
+        Comparer = 16,
+    }
+
+    // A value a call hands to a framework member: its static type and the families of slots the member can call on it,
+    // which the declared type of the parameter fixes (a parameter of type object or T can be formatted, compared and
+    // hashed; a format provider is asked for its formatter; a comparer compares).
+    internal sealed record CallbackValue(ITypeSymbol Type, CallbackFamilies Families);
 
     // One operation that binds members implicitly. A refusal means the operation has no exact target to follow.
     internal sealed record ImplicitCall(
@@ -398,8 +430,139 @@ internal static partial class HostedGrimoireProducerInventory
             return false;
         }
 
-        private static ImplicitCallStep Step(string label, IMethodSymbol method, ITypeSymbol? receiverType, ExpressionSyntax? receiver, int position, IReadOnlyList<(ExpressionSyntax Expression, IParameterSymbol Parameter)>? arguments = null) =>
-            new(label, method, receiverType, receiver, arguments ?? [], position);
+        private static ImplicitCallStep Step(string label, IMethodSymbol method, ITypeSymbol? receiverType, ExpressionSyntax? receiver, int position, IReadOnlyList<(ExpressionSyntax Expression, IParameterSymbol Parameter)>? arguments = null, IReadOnlyList<CallbackValue>? values = null) =>
+            new(label, method, receiverType, receiver, arguments ?? [], position, values);
+
+        // The families of slots a framework member can call on a value passed for the parameter: the declared type of the
+        // parameter says what the member does with the value (an array or a span of such values included).
+        private static CallbackFamilies ParameterFamilies(IParameterSymbol? parameter)
+        {
+            if (parameter is null)
+            {
+                return CallbackFamilies.None;
+            }
+
+            ITypeSymbol declared = parameter.OriginalDefinition.Type;
+
+            while (true)
+            {
+                if (declared is IArrayTypeSymbol array)
+                {
+                    declared = array.ElementType;
+                }
+                else if (declared is INamedTypeSymbol { TypeArguments: [{ } element] } named && (named.OriginalDefinition.SpecialType == SpecialType.System_Nullable_T || TypeKey(named) is "System.Span`1" or "System.ReadOnlySpan`1"))
+                {
+                    declared = element;
+                }
+                else
+                {
+                    break;
+                }
+            }
+
+            if (declared.SpecialType is SpecialType.System_Object or SpecialType.System_ValueType || declared.TypeKind is TypeKind.TypeParameter or TypeKind.Dynamic)
+            {
+                return CallbackFamilies.Format | CallbackFamilies.Equality | CallbackFamilies.Compare;
+            }
+
+            CallbackFamilies families = CallbackFamilies.None;
+
+            foreach (INamedTypeSymbol contract in (declared as INamedTypeSymbol)?.TypeKind == TypeKind.Interface ? [(INamedTypeSymbol)declared, .. declared.AllInterfaces] : declared.AllInterfaces)
+            {
+                families |= TypeKey(contract) switch
+                {
+                    "System.IFormatProvider" or "System.ICustomFormatter" => CallbackFamilies.Provider,
+                    "System.Collections.IComparer" or "System.Collections.Generic.IComparer`1" or "System.Collections.IEqualityComparer" or "System.Collections.Generic.IEqualityComparer`1" => CallbackFamilies.Comparer,
+                    "System.IComparable" or "System.IComparable`1" => CallbackFamilies.Compare,
+                    "System.IEquatable`1" => CallbackFamilies.Equality,
+                    "System.IFormattable" or "System.ISpanFormattable" => CallbackFamilies.Format,
+                    _ => CallbackFamilies.None,
+                };
+            }
+
+            return families;
+        }
+
+        // The static types of the values a call hands to its member: a params array is unpacked into its elements and the
+        // conversions the call applies (boxing to object, an upcast) are looked through, because a framework member calls
+        // the ToString, Equals, GetHashCode, CompareTo and GetFormat of the runtime type of what it is handed. The
+        // arguments an interpolated string handler takes from the call that creates it are the call's own.
+        private static IReadOnlyList<CallbackValue> ArgumentValues(IEnumerable<IArgumentOperation> arguments, IOperation? creation = null)
+        {
+            List<CallbackValue> types = [];
+
+            CallbackFamilies families = CallbackFamilies.None;
+
+            void Value(IOperation value)
+            {
+                IOperation unwrapped = UnwrapImplicitConversions(value);
+
+                if (unwrapped is IArrayCreationOperation { IsImplicit: true, Initializer: { } initializer })
+                {
+                    foreach (IOperation element in initializer.ElementValues)
+                    {
+                        Value(element);
+                    }
+
+                    return;
+                }
+
+                if (unwrapped is IInterpolatedStringHandlerArgumentPlaceholderOperation placeholder)
+                {
+                    for (IOperation? call = creation?.Parent; call is not null; call = call.Parent)
+                    {
+                        if (call is IInvocationOperation callInvocation)
+                        {
+                            IOperation? supplied = placeholder.PlaceholderKind == InterpolatedStringArgumentPlaceholderKind.CallsiteReceiver
+                                ? callInvocation.Instance
+                                : placeholder.PlaceholderKind == InterpolatedStringArgumentPlaceholderKind.CallsiteArgument && placeholder.ArgumentIndex >= 0 && placeholder.ArgumentIndex < callInvocation.Arguments.Length
+                                    ? callInvocation.Arguments[placeholder.ArgumentIndex].Value
+                                    : null;
+
+                            if (supplied is not null)
+                            {
+                                Value(supplied);
+                            }
+
+                            return;
+                        }
+
+                        if (call is IObjectCreationOperation callCreation && !ReferenceEquals(call, creation))
+                        {
+                            IOperation? supplied = placeholder.PlaceholderKind == InterpolatedStringArgumentPlaceholderKind.CallsiteArgument && placeholder.ArgumentIndex >= 0 && placeholder.ArgumentIndex < callCreation.Arguments.Length
+                                ? callCreation.Arguments[placeholder.ArgumentIndex].Value
+                                : null;
+
+                            if (supplied is not null)
+                            {
+                                Value(supplied);
+                            }
+
+                            return;
+                        }
+                    }
+
+                    return;
+                }
+
+                if (unwrapped.Type is { } type && families != CallbackFamilies.None)
+                {
+                    types.Add(new(type, families));
+                }
+            }
+
+            foreach (IArgumentOperation argument in arguments)
+            {
+                if (argument.ArgumentKind != ArgumentKind.DefaultValue)
+                {
+                    families = ParameterFamilies(argument.Parameter);
+
+                    Value(argument.Value);
+                }
+            }
+
+            return types;
+        }
 
         // The walk of one member body, with the pruning of the syntax walk: a lambda or a local function written in
         // the body is not entered, because its body runs where it is called and is analysed there.
@@ -603,6 +766,30 @@ internal static partial class HostedGrimoireProducerInventory
                     {
                         add(ImplicitCallKind.PatternMember, operation, recursive.Syntax, [Step("deconstruct", deconstruct.ReducedFrom ?? deconstruct, recursive.MatchedType, null, After(recursive.Syntax))]);
                     }
+                    else if (recursive.DeconstructSymbol is INamedTypeSymbol { TypeKind: TypeKind.Interface } tupleContract && TypeKey(tupleContract) == "System.Runtime.CompilerServices.ITuple")
+                    {
+                        // A positional pattern over a value that is not a tuple type and has no Deconstruct tests the value
+                        // as an ITuple, then reads its Length and its indexer: the members of the value's runtime type.
+                        List<ImplicitCallStep> tupleSteps = [];
+
+                        ExpressionSyntax? input = PatternInputExpression(recursive);
+
+                        int position = After(recursive.Syntax);
+
+                        foreach (IPropertySymbol member in tupleContract.GetMembers().OfType<IPropertySymbol>().Where(static property => !property.IsStatic))
+                        {
+                            if (member.GetMethod is { } getter)
+                            {
+                                tupleSteps.Add(Step("callback", getter, recursive.InputType, input, position));
+                            }
+                        }
+
+                        add(ImplicitCallKind.PatternMember, operation, recursive.Syntax, tupleSteps);
+                    }
+                    else if (recursive.DeconstructSymbol is not null)
+                    {
+                        RefuseSite("A positional pattern over " + recursive.DeconstructSymbol.Kind + " " + recursive.DeconstructSymbol.ToDisplayString() + " has no exact target.");
+                    }
 
                     break;
 
@@ -659,7 +846,7 @@ internal static partial class HostedGrimoireProducerInventory
                     break;
 
                 case IInterpolationOperation interpolation:
-                    FormatHole(model, interpolation.Expression, interpolation.Syntax, add, RefuseSite);
+                    FormatHole(model, interpolation.Expression, interpolation.Syntax, add, RefuseSite, IsFormattedOnConsumption(interpolation));
 
                     break;
 
@@ -827,8 +1014,15 @@ internal static partial class HostedGrimoireProducerInventory
 
             ExpressionSyntax? receiver = invocation.Instance is { IsImplicit: false } instance ? instance.Syntax as ExpressionSyntax : null;
 
-            add(kind, invocation, invocation.Syntax, [Step(label, invocation.TargetMethod, invocation.Instance?.Type, receiver, After(invocation.Syntax), WrittenArguments(invocation.Arguments))]);
+            add(kind, invocation, invocation.Syntax, [Step(label, invocation.TargetMethod, invocation.Instance?.Type, receiver, After(invocation.Syntax), WrittenArguments(invocation.Arguments), IsFrameworkHandlerFormatting(invocation) ? null : ArgumentValues(invocation.Arguments))]);
         }
+
+        // The AppendFormatted of a framework interpolated string handler formats the value it appends itself, which the
+        // formatting of the hole models, so the value is not handed to a framework member a second time.
+        private static bool IsFrameworkHandlerFormatting(IInvocationOperation invocation) =>
+            invocation.Parent is IInterpolatedStringAppendOperation
+            && invocation.TargetMethod.Name == "AppendFormatted"
+            && !invocation.TargetMethod.ContainingType.Locations.Any(static location => location.IsInSource);
 
         // A call to a method the compiler generated for a record or an anonymous type: nothing in source declares its
         // body, so no lane follows what it runs.
@@ -893,7 +1087,7 @@ internal static partial class HostedGrimoireProducerInventory
 
             ImplicitCallKind kind = creation.Parent is IInterpolatedStringHandlerCreationOperation ? ImplicitCallKind.InterpolationHandler : ImplicitCallKind.UnnamedObjectCreation;
 
-            add(kind, creation, creation.Syntax, [Step("construct", constructor, creation.Type, null, creation.Syntax.SpanStart, WrittenArguments(creation.Arguments))]);
+            add(kind, creation, creation.Syntax, [Step("construct", constructor, creation.Type, null, creation.Syntax.SpanStart, WrittenArguments(creation.Arguments), ArgumentValues(creation.Arguments, creation))]);
         }
 
         private static void InspectCompoundAssignment(
@@ -1054,6 +1248,58 @@ internal static partial class HostedGrimoireProducerInventory
             add(ImplicitCallKind.Awaiter, await, syntax, steps);
         }
 
+        // The members awaiting a value of the awaitable type calls where no await is written (the awaits of an await foreach):
+        // GetAwaiter on the awaitable (an instance method or an extension), IsCompleted and GetResult of the awaiter it
+        // returns, and the continuation registration of that awaiter. Roslyn reports no awaiter for these awaits, so every
+        // GetAwaiter the lookup finds is listed, which is a superset of the one the compiler selects. Null means the
+        // awaitable has no awaiter pattern the lookup can follow.
+        internal static IReadOnlyList<ImplicitCallStep>? AwaiterSteps(SemanticModel model, SyntaxNode at, ITypeSymbol awaitable, int position)
+        {
+            IMethodSymbol[] getAwaiters = [.. model.LookupSymbols(at.SpanStart, awaitable, "GetAwaiter", includeReducedExtensionMethods: true)
+                .OfType<IMethodSymbol>()
+                .Where(static method => method.Parameters.Length == 0 && !method.ReturnsVoid)];
+
+            if (getAwaiters.Length == 0)
+            {
+                return null;
+            }
+
+            List<ImplicitCallStep> steps = [];
+
+            foreach (IMethodSymbol getAwaiter in getAwaiters)
+            {
+                ITypeSymbol awaiter = getAwaiter.ReturnType;
+
+                IEnumerable<ISymbol> Members(string name) => BaseChain(awaiter).Concat(awaiter.AllInterfaces).SelectMany(type => type.GetMembers(name));
+
+                IMethodSymbol? isCompleted = Members("IsCompleted").OfType<IPropertySymbol>().Select(static property => property.GetMethod).FirstOrDefault(static getter => getter is not null);
+
+                IMethodSymbol? getResult = Members("GetResult").OfType<IMethodSymbol>().FirstOrDefault(static method => method.Parameters.Length == 0);
+
+                if (isCompleted is null || getResult is null)
+                {
+                    return null;
+                }
+
+                steps.Add(Step("get-awaiter", getAwaiter.ReducedFrom ?? getAwaiter, awaitable, null, position));
+
+                steps.Add(Step("is-completed", isCompleted, awaiter, null, position));
+
+                steps.Add(Step("get-result", getResult, awaiter, null, position));
+
+                INamedTypeSymbol? critical = awaiter.AllInterfaces.FirstOrDefault(static contract => TypeKey(contract) == "System.Runtime.CompilerServices.ICriticalNotifyCompletion");
+
+                INamedTypeSymbol? notify = awaiter.AllInterfaces.FirstOrDefault(static contract => TypeKey(contract) == "System.Runtime.CompilerServices.INotifyCompletion");
+
+                if ((critical ?? notify) is { } completion && completion.GetMembers().OfType<IMethodSymbol>().FirstOrDefault(static method => method.Name is "OnCompleted" or "UnsafeOnCompleted") is { } onCompleted)
+                {
+                    steps.Add(Step("on-completed", onCompleted, awaiter, null, position));
+                }
+            }
+
+            return steps;
+        }
+
         // Deconstruct and the conversions of a deconstruction, nested deconstructions included.
         internal static void DeconstructionSteps(
             DeconstructionInfo info,
@@ -1137,13 +1383,22 @@ internal static partial class HostedGrimoireProducerInventory
             // selected Add, so every Add the target type and the extension methods in scope offer is listed.
             if (collection.ConstructMethod is { MethodKind: MethodKind.Constructor } && collection.Type is INamedTypeSymbol target && collection.Elements.Length != 0)
             {
+                ITypeSymbol[] elementTypes =
+                [
+                    .. collection.Elements
+                        .Select(static element => element is ISpreadOperation spread ? spread.ElementType : UnwrapImplicitConversions(element).Type)
+                        .OfType<ITypeSymbol>(),
+                ];
+
                 foreach (IMethodSymbol candidate in model.LookupSymbols(collection.Syntax.SpanStart, target, "Add", includeReducedExtensionMethods: true).OfType<IMethodSymbol>())
                 {
                     IMethodSymbol selected = candidate.ReducedFrom ?? candidate;
 
                     if (AcceptsOneElement(selected))
                     {
-                        steps.Add(Step("add", selected, target, null, position));
+                        CallbackFamilies elementFamilies = ParameterFamilies(selected.Parameters[selected.IsStatic ? 1 : 0]);
+
+                        steps.Add(Step("add", selected, target, null, position, null, [.. elementTypes.Select(elementType => new CallbackValue(elementType, elementFamilies))]));
                     }
                 }
             }
@@ -1152,6 +1407,27 @@ internal static partial class HostedGrimoireProducerInventory
             {
                 add(ImplicitCallKind.CollectionExpressionConstruction, collection, collection.Syntax, steps);
             }
+        }
+
+        // The expression a top-level pattern tests: the left of an is-pattern, the governing expression of a switch statement
+        // or a switch expression. A pattern nested in another pattern tests a value the enclosing pattern read, which has no
+        // expression of its own.
+        private static ExpressionSyntax? PatternInputExpression(IPatternOperation pattern)
+        {
+            IOperation current = pattern;
+
+            while (current.Parent is IBinaryPatternOperation or INegatedPatternOperation)
+            {
+                current = current.Parent;
+            }
+
+            return current.Parent switch
+            {
+                IIsPatternOperation isPattern when ReferenceEquals(isPattern.Pattern, current) => isPattern.Value.Syntax as ExpressionSyntax,
+                ISwitchExpressionArmOperation { Parent: ISwitchExpressionOperation switchExpression } => switchExpression.Value.Syntax as ExpressionSyntax,
+                IPatternCaseClauseOperation { Parent: ISwitchCaseOperation { Parent: ISwitchOperation switchStatement } } => switchStatement.Value.Syntax as ExpressionSyntax,
+                _ => null,
+            };
         }
 
         // Whether an Add can be called with one element: its first parameter takes the element (an extension's `this`
@@ -1174,7 +1450,8 @@ internal static partial class HostedGrimoireProducerInventory
             IOperation hole,
             SyntaxNode anchor,
             Action<ImplicitCallKind, IOperation, SyntaxNode, IReadOnlyList<ImplicitCallStep>> add,
-            Action<string> refuse)
+            Action<string> refuse,
+            bool deferred = false)
         {
             IOperation value = UnwrapImplicitConversions(hole);
 
@@ -1196,8 +1473,22 @@ internal static partial class HostedGrimoireProducerInventory
 
             if (steps.Count != 0)
             {
-                add(ImplicitCallKind.FormatHole, hole, anchor, steps);
+                add(deferred ? ImplicitCallKind.DeferredFormatHole : ImplicitCallKind.FormatHole, hole, anchor, steps);
             }
+        }
+
+        // An interpolated string converted to FormattableString or IFormattable keeps its holes and formats them when the
+        // value is consumed (ToString, Invariant, Format and GetArguments), which can be after the Work live at the string.
+        private static bool IsFormattedOnConsumption(IInterpolationOperation interpolation)
+        {
+            IOperation? current = interpolation.Parent;
+
+            while (current is IInterpolatedStringOperation or IInterpolatedStringAdditionOperation or IParenthesizedOperation)
+            {
+                current = current.Parent;
+            }
+
+            return current is IConversionOperation { Type: { } target } && TypeKey(target) is "System.FormattableString" or "System.IFormattable";
         }
 
         // The steps that format a value of the type. A nullable value formats the value it holds, and a tuple, a
@@ -1286,7 +1577,6 @@ internal static partial class HostedGrimoireProducerInventory
             "System.DateOnly",
             "System.TimeOnly",
             "System.Version",
-            "System.Uri",
             "System.Int128",
             "System.UInt128",
             "System.Half",

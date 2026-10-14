@@ -51,6 +51,13 @@ public sealed partial class HostedGrimoireProducerInventoryTests
 
         HostedProducerSite[] sites = EnumerationDeleteSites(admitted);
 
+        if (construct.Expected == CensusDisposition.Detached)
+        {
+            AssertDetached(construct, admittedRegion => EnumerationDiscover(CensusCompile(construct, admitted: admittedRegion, effect: true)), EnumerationDiscover(CensusCompile(construct, admitted: true, effect: false)));
+
+            return;
+        }
+
         if (construct.Expected != CensusDisposition.Traversed)
         {
             Assert.True(CensusRefused(admitted), construct.Name + ": the construct is neither reported nor refused. Sites: " + sites.Length + "; diagnostics: " + string.Join(" | ", admitted.Diagnostics.Select(static diagnostic => diagnostic.Code + " " + diagnostic.Detail)));
@@ -89,6 +96,26 @@ public sealed partial class HostedGrimoireProducerInventoryTests
         Assert.Empty(EnumerationDeleteSites(clean));
 
         Assert.False(CensusRefused(clean), construct.Name + ": the effect-free twin is refused. " + string.Join(" | ", clean.Diagnostics.Select(static diagnostic => diagnostic.Code + " " + diagnostic.Identity + " " + diagnostic.Detail)));
+    }
+
+    // A construct whose member runs where the value is consumed is reported, once, under no frontier, whether or not the
+    // region that writes it is admitted, and is not refused; the twin without the effect reports and refuses nothing.
+    private static void AssertDetached(CensusConstruct construct, Func<bool, HostedProducerDiscovery<HostedProducerSite>> run, HostedProducerDiscovery<HostedProducerSite> clean)
+    {
+        foreach (bool admittedRegion in new[] { true, false })
+        {
+            HostedProducerDiscovery<HostedProducerSite> result = run(admittedRegion);
+
+            HostedProducerSite site = Assert.Single(EnumerationDeleteSites(result));
+
+            Assert.True(site.WorkFrontierCapsuleId is null && site.EffectFrontierCapsuleId is null, construct.Name + ": a member that runs where the value is consumed is reported under a frontier.");
+
+            Assert.False(CensusRefused(result), construct.Name + ": a detached construct is also refused. " + string.Join(" | ", result.Diagnostics.Select(static diagnostic => diagnostic.Code + " " + diagnostic.Detail)));
+        }
+
+        Assert.Empty(EnumerationDeleteSites(clean));
+
+        Assert.False(CensusRefused(clean), construct.Name + ": the effect-free twin is refused. " + string.Join(" | ", clean.Diagnostics.Select(static diagnostic => diagnostic.Code + " " + diagnostic.Detail)));
     }
 
     public static IEnumerable<object[]> CensusTraversedConstructNames() =>
@@ -136,8 +163,11 @@ public sealed partial class HostedGrimoireProducerInventoryTests
 
     // An opaque callback is judged by everything the traversal would follow in its body, so an implicit call in the body
     // that reaches a producer site refuses the callback, and the same body without the effect does not.
+    public static IEnumerable<object[]> CensusAllConstructNames() =>
+        CensusCorpus.Select(static construct => new object[] { construct.Name });
+
     [Theory]
-    [MemberData(nameof(CensusTraversedConstructNames))]
+    [MemberData(nameof(CensusAllConstructNames))]
     public void ImplicitCallInsideAnOpaqueCallbackIsJudgedByTheCallbackScan(string name)
     {
         CensusConstruct construct = CensusCorpus.Single(candidate => candidate.Name == name);
@@ -148,7 +178,12 @@ public sealed partial class HostedGrimoireProducerInventoryTests
 
         HostedProducerDiscovery<HostedProducerSite> clean = EnumerationDiscover(CensusCompileInCallback(construct, effect: false));
 
-        Assert.DoesNotContain(clean.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_CALLBACK_OWNERSHIP_UNPROVEN");
+        // The scan may refuse more than the traversal does, never less: only a construct the traversal follows precisely
+        // has a callback that is not refused when the member it calls has no effect.
+        if (construct.Expected == CensusDisposition.Traversed)
+        {
+            Assert.DoesNotContain(clean.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_CALLBACK_OWNERSHIP_UNPROVEN");
+        }
     }
 
     private static readonly string[] CensusMemberKinds = ["static-method", "constructor", "property-getter", "local-function", "lambda"];
@@ -209,5 +244,80 @@ public sealed partial class HostedGrimoireProducerInventoryTests
         Assert.Empty(EnumerationDeleteSites(clean));
 
         Assert.False(CensusRefused(clean), construct.Name + " in " + kind + ": the effect-free twin is refused. " + string.Join(" | ", clean.Diagnostics.Select(static diagnostic => diagnostic.Code + " " + diagnostic.Detail)));
+    }
+
+    // The checker prunes what it traverses by a scan: the members an authored formatter runs for a value nothing proves,
+    // and the initializers a construction runs, are traversed only when the scan says they can reach a producer site. The
+    // scan has to say so wherever the traversal would report a site or refuse, so every construct of the corpus is run
+    // from the body of such a member and is judged as it is where it is written.
+    public static IEnumerable<object[]> CensusPrunedContextCases() =>
+        CensusCorpus
+            .Where(static construct => !construct.Body.Contains("await", StringComparison.Ordinal))
+            .SelectMany(static construct => new[] { "formatter", "initializer" }.Select(context => new object[] { construct.Name, context }));
+
+    private static CSharpCompilation CensusCompileInPrunedContext(CensusConstruct construct, string context, bool effect)
+    {
+        string helpers = construct.Helpers.Replace("{E}", effect ? EnumerationEffect : string.Empty, StringComparison.Ordinal);
+
+        (string host, string call) = context switch
+        {
+            "formatter" => ("interface IPruned { } sealed class Pruned : IPruned { public override string ToString() { " + construct.Body + " return string.Empty; } } static class Unproven { public static IPruned Value { get; set; } = null!; } ", "IPruned value = Unproven.Value; string text = $\"{value}\"; _ = text;"),
+            _ => ("sealed class Pruned { private int sink = Run(); private static int Run() { " + construct.Body + " return 0; } } ", "_ = new Pruned();"),
+        };
+
+        CSharpCompilation compilation = Compile("using System.Linq;\n" + R2Source(R2Admission + call + " await Task.CompletedTask;", helpers + host));
+
+        compilation = compilation.WithOptions(compilation.Options.WithAllowUnsafe(true));
+
+        Diagnostic[] errors = [.. compilation.GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error)];
+
+        Assert.True(errors.Length == 0, construct.Name + " in " + context + ": " + string.Join(" | ", errors.Select(static error => error.ToString())));
+
+        return compilation;
+    }
+
+    [Theory]
+    [MemberData(nameof(CensusPrunedContextCases))]
+    public void ImplicitCallInsideAPrunedMemberIsStillTraversedOrRefused(string name, string context)
+    {
+        CensusConstruct construct = CensusCorpus.Single(candidate => candidate.Name == name);
+
+        HostedProducerDiscovery<HostedProducerSite> reported = EnumerationDiscover(CensusCompileInPrunedContext(construct, context, effect: true));
+
+        HostedProducerSite[] sites = EnumerationDeleteSites(reported);
+
+        HostedProducerDiscovery<HostedProducerSite> clean = EnumerationDiscover(CensusCompileInPrunedContext(construct, context, effect: false));
+
+        string diagnostics = string.Join(" | ", reported.Diagnostics.Select(static diagnostic => diagnostic.Code + " " + diagnostic.Identity + " " + diagnostic.Detail));
+
+        switch (construct.Expected)
+        {
+            case CensusDisposition.Traversed:
+                HostedProducerSite site = Assert.Single(sites);
+
+                Assert.True(site.WorkFrontierCapsuleId is not null && site.EffectFrontierCapsuleId is not null, construct.Name + " in " + context + ": the member the compiler calls is reported without the frontier live where the pruned member runs.");
+
+                Assert.False(CensusRefused(reported), construct.Name + " in " + context + ": a traversed construct is also refused. " + diagnostics);
+
+                Assert.Empty(EnumerationDeleteSites(clean));
+
+                Assert.False(CensusRefused(clean), construct.Name + " in " + context + ": the effect-free twin is refused.");
+
+                break;
+
+            case CensusDisposition.Detached:
+                Assert.True(Assert.Single(sites).WorkFrontierCapsuleId is null, construct.Name + " in " + context + ": a member that runs where the value is consumed is reported under a frontier.");
+
+                Assert.Empty(EnumerationDeleteSites(clean));
+
+                break;
+
+            default:
+                Assert.True(CensusRefused(reported), construct.Name + " in " + context + ": the construct is neither reported nor refused once the scan prunes the member that holds it. Sites: " + sites.Length + "; diagnostics: " + diagnostics);
+
+                Assert.Equal(construct.Expected == CensusDisposition.RefusedAlways, CensusRefused(clean));
+
+                break;
+        }
     }
 }

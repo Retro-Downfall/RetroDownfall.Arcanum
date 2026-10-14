@@ -381,6 +381,7 @@ internal static partial class HostedGrimoireProducerInventory
             "System.Collections.Generic.IComparer`1",
             "System.IFormatProvider",
             "System.ICustomFormatter",
+            "System.Runtime.CompilerServices.ITuple",
         };
 
         private IReadOnlyList<AuthoredFormatter>? authoredFormatters;
@@ -435,7 +436,7 @@ internal static partial class HostedGrimoireProducerInventory
                     }
                     else if (CallbackContracts.Contains(TypeKey(contract)))
                     {
-                        slots.AddRange(contract.GetMembers().OfType<IMethodSymbol>().Where(static method => method.MethodKind == MethodKind.Ordinary && !method.IsStatic));
+                        slots.AddRange(contract.GetMembers().OfType<IMethodSymbol>().Where(static method => method.MethodKind is MethodKind.Ordinary or MethodKind.PropertyGet && !method.IsStatic));
                     }
                 }
 
@@ -840,7 +841,16 @@ internal static partial class HostedGrimoireProducerInventory
             || IsReviewedFrameworkInterpolationHandlerMember(method)
             || method.Name == "ToString" && method.ContainingType is { } type && TypeKey(type) is "System.ValueType" && IsExactFrameworkType(type, "System.ValueType", typeof(ValueType).Assembly.GetName())
             || IsAiToolToStringWithNameModeled(method)
+            || IsReviewedFrameworkUriFormatting(method)
             || !RequiresExternalBoundaryClassification(method, member.Model.Compilation, anchor, member.Model, member);
+
+        // System.Uri is not sealed, so a hole typed Uri can hold an authored subclass whose ToString is followed as an
+        // authored formatter. The framework class itself formats its stored text and runs no supplied code, which is
+        // reviewed for the exact framework type only.
+        private static bool IsReviewedFrameworkUriFormatting(IMethodSymbol method) =>
+            method.ContainingType is { } type
+            && IsExactFrameworkType(type, "System.Uri", typeof(Uri).Assembly.GetName())
+            && (method.Name is "ToString" or "TryFormat" || method.Name.EndsWith(".ToString", StringComparison.Ordinal) || method.Name.EndsWith(".TryFormat", StringComparison.Ordinal));
 
         // AITool.ToString returns the virtual Name of the tool and nothing else. It is reviewed for an implicit formatting
         // call only, because the formatting resolution adds the Name implementation of the exact tool type; a written
@@ -985,9 +995,13 @@ internal static partial class HostedGrimoireProducerInventory
             string? inheritedEffect,
             string? recoveryEffect)
         {
-            string? work = WorkAt(member, call.Anchor, operationId, workKind, inheritedWork, step.Position);
+            // The holes of a string that is formatted when it is consumed run at a point nothing here places, so they are
+            // traversed under no frontier at all.
+            bool deferred = call.Kind == ImplicitCallKind.DeferredFormatHole;
 
-            string? effect = EffectAt(member, call.Anchor, operationId, inheritedEffect, step.Position);
+            string? work = deferred ? null : WorkAt(member, call.Anchor, operationId, workKind, inheritedWork, step.Position);
+
+            string? effect = deferred ? null : EffectAt(member, call.Anchor, operationId, inheritedEffect, step.Position);
 
             return TraverseImplicitTargets(
                 member,
@@ -1001,7 +1015,8 @@ internal static partial class HostedGrimoireProducerInventory
                 lifecycle,
                 work,
                 effect,
-                recoveryEffect);
+                recoveryEffect,
+                step.Values);
         }
 
         // Traverses the members one implicit call runs under the frontiers live where the compiler runs them.
@@ -1017,7 +1032,8 @@ internal static partial class HostedGrimoireProducerInventory
             bool lifecycle,
             string? work,
             string? effect,
-            string? recoveryEffect)
+            string? recoveryEffect,
+            IReadOnlyList<CallbackValue>? values = null)
         {
             TraversalEvidence evidence = TraversalEvidence.NoEvidence;
 
@@ -1026,6 +1042,14 @@ internal static partial class HostedGrimoireProducerInventory
                 RefuseTraversalCompletion();
 
                 diagnostics.Add(new("HOSTED_SITE_UNCLASSIFIED", Location(anchor), callee));
+            }
+
+            // A framework member calls back into the values it is handed.
+            if (targets.Framework.Count != 0 && values is { Count: > 0 } && FrameworkValuesRunAuthoredCallbacks(member, values))
+            {
+                RefuseTraversalCompletion();
+
+                diagnostics.Add(new("HOSTED_CALLBACK_OWNERSHIP_UNPROVEN", site, Normalize(targets.Framework[0]) + CallbackDetail));
             }
 
             foreach (IMethodSymbol framework in targets.Framework)
@@ -1236,6 +1260,210 @@ internal static partial class HostedGrimoireProducerInventory
             }
         }
 
+        private const string CallbackDetail = "; Opaque callback semantics of a value handed to a framework member (ToString, Equals, GetHashCode, CompareTo, GetFormat) cannot prove execution or completion ownership.";
+
+        // The types a framework member can reach authored callbacks through when it is handed a value of the type: the
+        // type itself, or the element of an array or a nullable value.
+        private static ITypeSymbol CallbackCarrier(ITypeSymbol type)
+        {
+            while (true)
+            {
+                if (type is IArrayTypeSymbol array)
+                {
+                    type = array.ElementType;
+                }
+                else if (type is INamedTypeSymbol { OriginalDefinition.SpecialType: SpecialType.System_Nullable_T } nullable)
+                {
+                    type = nullable.TypeArguments[0];
+                }
+                else
+                {
+                    return type;
+                }
+            }
+        }
+
+        private static CallbackFamilies FamilyOf(IMethodSymbol slot)
+        {
+            if (slot.MethodKind == MethodKind.PropertyGet)
+            {
+                return CallbackFamilies.Format;
+            }
+
+            if (slot.ContainingType.SpecialType == SpecialType.System_Object)
+            {
+                return slot.Name == "ToString" ? CallbackFamilies.Format : CallbackFamilies.Equality;
+            }
+
+            return TypeKey(slot.ContainingType) switch
+            {
+                "System.IFormattable" or "System.ISpanFormattable" or "System.IUtf8SpanFormattable" => CallbackFamilies.Format,
+                "System.IEquatable`1" => CallbackFamilies.Equality,
+                "System.IComparable" or "System.IComparable`1" => CallbackFamilies.Compare,
+                "System.IFormatProvider" or "System.ICustomFormatter" => CallbackFamilies.Provider,
+                "System.Collections.IComparer" or "System.Collections.Generic.IComparer`1" or "System.Collections.IEqualityComparer" or "System.Collections.Generic.IEqualityComparer`1" => CallbackFamilies.Comparer,
+                _ => CallbackFamilies.None,
+            };
+        }
+
+        // The authored implementers of the framework slots (the ToString, Equals, GetHashCode, CompareTo, GetFormat and
+        // Format members) of the families a value of the type can have, judged by the scan: whether any of them reaches a
+        // producer site or cannot be followed. A result that was cut by a cycle is not remembered.
+        private readonly Dictionary<(string Type, CallbackFamilies Families), bool> callbackImplementerReach = [];
+
+        private readonly HashSet<(string Type, CallbackFamilies Families)> callbackImplementerReachInProgress = [];
+
+        private bool CallbackImplementersReach(AuthoredMember member, ITypeSymbol type, CallbackFamilies families)
+        {
+            if (type.TypeKind is TypeKind.Error or TypeKind.Pointer or TypeKind.FunctionPointer or TypeKind.Delegate or TypeKind.Enum
+                || type.SpecialType == SpecialType.System_String
+                || IsIntrinsicFormatType(type))
+            {
+                return false;
+            }
+
+            (string, CallbackFamilies) key = (type.ToDisplayString(), families);
+
+            if (callbackImplementerReach.TryGetValue(key, out bool known))
+            {
+                return known;
+            }
+
+            if (!callbackImplementerReachInProgress.Add(key))
+            {
+                producerSiteScanCuts++;
+
+                return false;
+            }
+
+            int cutsBefore = producerSiteScanCuts;
+
+            bool reaches = false;
+
+            try
+            {
+                foreach (AuthoredFormatter implementer in AuthoredFormatters())
+                {
+                    if (!IsFormatterAssignableTo(implementer, type))
+                    {
+                        continue;
+                    }
+
+                    foreach ((IMethodSymbol slot, ISymbol implementation) in implementer.Implementations)
+                    {
+                        if ((FamilyOf(slot) & families) == CallbackFamilies.None)
+                        {
+                            continue;
+                        }
+
+                        ImplicitTargetCollector collector = new(this, member);
+
+                        collector.Add(implementation, slot);
+
+                        if (collector.Unresolved.Count != 0
+                            || collector.Members.Any(target => ContainsPotentialProducerSite(target))
+                            || collector.Framework.Any(framework => Classify(framework, Normalize(framework), member.Syntax, member) is not null || !IsReviewedImplicitFrameworkMember(member, framework, member.Syntax)))
+                        {
+                            reaches = true;
+
+                            break;
+                        }
+                    }
+
+                    if (reaches)
+                    {
+                        break;
+                    }
+                }
+            }
+            finally
+            {
+                callbackImplementerReachInProgress.Remove(key);
+            }
+
+            if (producerSiteScanCuts == cutsBefore)
+            {
+                callbackImplementerReach[key] = reaches;
+            }
+
+            return reaches;
+        }
+
+        private bool FrameworkValuesRunAuthoredCallbacks(AuthoredMember member, IEnumerable<CallbackValue> values) =>
+            values.Any(value => CallbackImplementersReach(member, CallbackCarrier(value.Type), value.Families));
+
+        // A framework member handed a value calls the ToString, Equals, GetHashCode, CompareTo or GetFormat of its runtime
+        // type: when it formats it, compares it, hashes it or asks it (a format provider) for a formatter. The families the
+        // parameter's declared type allows are judged for every authored type the value can be, by the transitive scan, and
+        // the call is refused when one of them reaches a producer site: the member runs them at a point of its own, which
+        // nothing here places.
+        private bool FrameworkMemberRunsAuthoredCallback(AuthoredMember member, SyntaxNode node, IMethodSymbol method, out string detail)
+        {
+            detail = Normalize(method) + CallbackDetail;
+
+            IEnumerable<IArgumentOperation> arguments = member.Model.GetOperation(node) switch
+            {
+                IInvocationOperation invocation => invocation.Arguments,
+                IObjectCreationOperation creation => creation.Arguments,
+                _ => [],
+            };
+
+            return FrameworkValuesRunAuthoredCallbacks(member, ArgumentValues(arguments, member.Model.GetOperation(node)));
+        }
+
+        // The refusals the syntax lanes make at a node, for the transitive scan: the scan answers whether the traversal of a
+        // member can report a site or refuse, so it has to say yes wherever the traversal would refuse. A dynamic call or
+        // indexer has no target; a framework member that enumerates an authored sequence is refused unless that sequence
+        // is free of producer sites; a user-defined operator the operator lane cannot follow (a conditional logical
+        // operator, a lifted operator, a generated record operator it cannot certify) is refused whatever its body does.
+        private bool LaneRefusalsReachProducerSite(AuthoredMember member, SyntaxNode node, HashSet<GraphMemberIdentity> path)
+        {
+            if (node is InvocationExpressionSyntax or ElementAccessExpressionSyntax or ElementBindingExpressionSyntax or ImplicitElementAccessSyntax
+                && member.Model.GetOperation(node) is IDynamicInvocationOperation or IDynamicIndexerAccessOperation)
+            {
+                return true;
+            }
+
+            if (node is InvocationExpressionSyntax or BaseObjectCreationExpressionSyntax
+                && member.Model.GetSymbolInfo(node).Symbol is IMethodSymbol called
+                && Resolve(called, member.Model.Compilation) is null
+                && called.Locations.All(static location => !location.IsInSource)
+                && (FrameworkMemberRunsAuthoredEnumerator(member, node, called, out _) || FrameworkMemberRunsAuthoredCallback(member, node, called, out _)))
+            {
+                return true;
+            }
+
+            if (UserDefinedOperatorAt(member, node) is not { } selection)
+            {
+                return false;
+            }
+
+            if (Resolve(selection.Method, member.Model.Compilation) is not { } operatorTarget)
+            {
+                bool lifted = selection.Unsupported
+                    && member.Model.GetOperation(node) is IBinaryOperation { IsLifted: true, OperatorKind: BinaryOperatorKind.Equals or BinaryOperatorKind.NotEquals };
+
+                List<AuthoredMember> equalityTargets = [];
+
+                bool certified = (!selection.Unsupported || lifted)
+                    && TryGeneratedRecordEqualityTargets(member, selection.Method, selection.Operands, out equalityTargets, out _, lifted);
+
+                if (equalityTargets.Any(target => ContainsPotentialProducerSite(target, path)))
+                {
+                    return true;
+                }
+
+                return !certified && !IsReviewedEffectFreeExternalMember(selection.Method, node, member.Model, member);
+            }
+
+            return selection.Unsupported
+                || operatorTarget.Syntax is not OperatorDeclarationSyntax { Body: not null } and not OperatorDeclarationSyntax { ExpressionBody: not null }
+                || !selection.Method.IsStatic
+                || selection.Method.Parameters.Length != selection.Operands.Length
+                || selection.Method.Parameters.Any(static parameter => parameter.RefKind != RefKind.None)
+                || selection.Operands.Any(static operand => operand.Syntax is not ExpressionSyntax);
+        }
+
         // Whether an implicit call can reach a producer site, for the transitive scan an opaque callback body gets.
         private bool ImplicitCallReachesProducerSite(AuthoredMember member, ImplicitCall call, HashSet<GraphMemberIdentity> path)
         {
@@ -1254,6 +1482,7 @@ internal static partial class HostedGrimoireProducerInventory
                 ImplicitTargets targets = ResolveImplicitStep(member, step);
 
                 if (targets.Unresolved.Count != 0
+                    || targets.Framework.Count != 0 && step.Values is { Count: > 0 } && FrameworkValuesRunAuthoredCallbacks(member, step.Values)
                     || targets.Members.Any(target => ContainsPotentialProducerSite(target, path))
                     || targets.Framework.Any(framework => Classify(framework, Normalize(framework), call.Anchor, member) is not null || !IsReviewedImplicitFrameworkMember(member, framework, call.Anchor)))
                 {

@@ -19,6 +19,10 @@ public sealed partial class HostedGrimoireProducerInventoryTests
 
         // The checker has no exact target for the construct and refuses it whatever the member does.
         RefusedAlways = 3,
+
+        // The authored member runs where the value is consumed, not where it is written, and nothing says where that
+        // is: it is traversed, and reported under no frontier at all.
+        Detached = 4,
     }
 
     internal sealed record CensusConstruct(string Name, string Category, string Body, string Helpers, CensusDisposition Expected);
@@ -239,7 +243,106 @@ public sealed partial class HostedGrimoireProducerInventoryTests
             "sealed record Rec(Key Inner); sealed class Key { public override bool Equals(object? other) => true; public override int GetHashCode() { {E} return 1; } }", CensusDisposition.Traversed),
         new("record-written-deconstruct", "Deconstruct", "new Rec(1).Deconstruct(out int a); _ = a;",
             "sealed record Rec(int A) { public int A { get { {E} return 1; } init { } } }", CensusDisposition.Traversed),
+
+        // ---- Positional patterns over ITuple ---------------------------------------------------------------
+        new("ituple-positional-object", "PatternMember", "object value = new Tup(); if (value is (var a, var b)) { _ = a; _ = b; }",
+            TupleHelpers("length"), CensusDisposition.Traversed),
+        new("ituple-positional-interface-input", "PatternMember", "System.Runtime.CompilerServices.ITuple value = new Tup(); if (value is (var a, var b)) { _ = a; _ = b; }",
+            TupleHelpers("length"), CensusDisposition.Traversed),
+        new("ituple-positional-sealed-input", "PatternMember", "if (new Tup() is (var a, var b)) { _ = a; _ = b; }",
+            TupleHelpers("length"), CensusDisposition.Traversed),
+        new("ituple-positional-indexer", "PatternMember", "object value = new Tup(); if (value is (var a, var b)) { _ = a; _ = b; }",
+            TupleHelpers("indexer"), CensusDisposition.Traversed),
+        new("ituple-switch-expression", "PatternMember", "object value = new Tup(); int result = value switch { (1, _) => 1, _ => 2 }; _ = result;",
+            TupleHelpers("length"), CensusDisposition.Traversed),
+        new("ituple-positional-unproven-object", "PatternMember", "object value = Anything.Value; if (value is (var a, var b)) { _ = a; _ = b; }",
+            TupleHelpers("length") + " static class Anything { public static object Value { get; set; } = null!; }", CensusDisposition.Traversed),
+
+        // ---- The awaits of an await foreach ----------------------------------------------------------------
+        new("await-foreach-movenext-get-awaiter", "Awaiter", "await foreach (var item in new Seq()) { _ = item; }",
+            AsyncSequenceHelpers("moveNext-get-awaiter"), CensusDisposition.Traversed),
+        new("await-foreach-movenext-is-completed", "Awaiter", "await foreach (var item in new Seq()) { _ = item; }",
+            AsyncSequenceHelpers("moveNext-is-completed"), CensusDisposition.Traversed),
+        new("await-foreach-movenext-get-result", "Awaiter", "await foreach (var item in new Seq()) { _ = item; }",
+            AsyncSequenceHelpers("moveNext-get-result"), CensusDisposition.Traversed),
+        new("await-foreach-dispose-get-awaiter", "Awaiter", "await foreach (var item in new Seq()) { _ = item; }",
+            AsyncSequenceHelpers("dispose-get-awaiter"), CensusDisposition.Traversed),
+        new("await-foreach-dispose-get-result", "Awaiter", "await foreach (var item in new Seq()) { _ = item; }",
+            AsyncSequenceHelpers("dispose-get-result"), CensusDisposition.Traversed),
+
+        // ---- Framework formatters that format what they hold or can be subclassed ----------------------
+        new("uri-subclass-interpolation", "ToString", "System.Uri uri = new EvilUri(); string text = $\"{uri}\"; _ = text;",
+            "sealed class EvilUri : System.Uri { public EvilUri() : base(\"http://a\") { } public override string ToString() { {E} return \"u\"; } }", CensusDisposition.Traversed),
+        new("uri-subclass-concatenation", "ToString", "System.Uri uri = Make(); string text = \"x\" + uri; _ = text; static System.Uri Make() => new EvilUri();",
+            "sealed class EvilUri : System.Uri { public EvilUri() : base(\"http://a\") { } public override string ToString() { {E} return \"u\"; } }", CensusDisposition.Traversed),
+        new("uri-subclass-unproven", "ToString", "string text = $\"{Anything.Link}\"; _ = text;",
+            "sealed class EvilUri : System.Uri { public EvilUri() : base(\"http://a\") { } public override string ToString() { {E} return \"u\"; } } static class Anything { public static System.Uri Link { get; set; } = null!; }", CensusDisposition.Traversed),
+        new("exception-inner-interpolation", "ToString", "var error = new System.InvalidOperationException(\"x\", new Evil()); string text = $\"{error}\"; _ = text;",
+            "sealed class Evil : System.Exception { public override string Message { get { {E} return \"m\"; } } }", CensusDisposition.Traversed),
+        new("exception-inner-concatenation", "ToString", "System.Exception error = new System.InvalidOperationException(\"x\", new Evil()); string text = \"e: \" + error; _ = text;",
+            "sealed class Evil : System.Exception { public override string Message { get { {E} return \"m\"; } } }", CensusDisposition.Traversed),
+        new("aggregate-exception-interpolation", "ToString", "var error = new System.AggregateException(new Evil()); string text = $\"{error}\"; _ = text;",
+            "sealed class Evil : System.Exception { public override string Message { get { {E} return \"m\"; } } }", CensusDisposition.Traversed),
+        new("exception-unproven-interpolation", "ToString", "string text = $\"{Anything.Failure}\"; _ = text;",
+            "sealed class Evil : System.Exception { public override string Message { get { {E} return \"m\"; } } } static class Anything { public static System.InvalidOperationException Failure { get; set; } = null!; }", CensusDisposition.Traversed),
+        new("lazy-unproven-interpolation", "ToString", "string text = $\"{Holder.Shared}\"; _ = text;",
+            "sealed class Named { public override string ToString() { {E} return \"n\"; } } sealed class Holder { public static System.Lazy<Named> Shared = new System.Lazy<Named>(() => new Named()); }", CensusDisposition.RefusedAlways),
+        new("lazy-proven-interpolation", "ToString", "var lazy = new System.Lazy<Named>(() => new Named()); string text = $\"{lazy}\"; _ = text;",
+            "sealed class Named { public override string ToString() { {E} return \"n\"; } }", CensusDisposition.RefusedAlways),
+
+        // ---- Interpolated strings whose holes are formatted where the value is consumed -------------
+        new("formattable-string-deferred", "ToString", "System.FormattableString text = $\"{new Named()}\"; _ = text;",
+            "sealed class Named { public override string ToString() { {E} return \"n\"; } }", CensusDisposition.Detached),
+        new("formattable-interface-deferred", "ToString", "System.IFormattable text = $\"{new Named()}\"; _ = text;",
+            "sealed class Named { public override string ToString() { {E} return \"n\"; } }", CensusDisposition.Detached),
+
+        // ---- Operators the operator lane refuses -------------------------------------------------------------
+        new("conditional-and-user-operator", "Operator", "if (new Flag() && new Flag()) { }",
+            "sealed class Flag { public static bool operator true(Flag flag) => true; public static bool operator false(Flag flag) { {E} return false; } public static Flag operator &(Flag left, Flag right) => left; }", CensusDisposition.RefusedAlways),
+        new("conditional-or-user-operator", "Operator", "if (new Flag() || new Flag()) { }",
+            "sealed class Flag { public static bool operator true(Flag flag) { {E} return true; } public static bool operator false(Flag flag) => false; public static Flag operator |(Flag left, Flag right) => left; }", CensusDisposition.RefusedAlways),
+        new("record-equality-operator", "Operator", "bool same = new Rec(new Key()) == new Rec(new Key()); _ = same;",
+            "sealed record Rec(Key Inner); sealed class Key { public override bool Equals(object? other) { {E} return true; } public override int GetHashCode() => 1; }", CensusDisposition.RefusedAlways),
+
+        // ---- Values a framework member is handed and calls back into --------------------------------------
+        new("framework-concat-object-argument", "FrameworkCallback", "string text = string.Concat(new Named(), \"x\"); _ = text;",
+            "sealed class Named { public override string ToString() { {E} return \"n\"; } }", CensusDisposition.Refused),
+        new("framework-format-object-argument", "FrameworkCallback", "string text = string.Format(\"{0}\", new Named()); _ = text;",
+            "sealed class Named { public override string ToString() { {E} return \"n\"; } }", CensusDisposition.Refused),
+        new("framework-string-builder-append-object", "FrameworkCallback", "var builder = new System.Text.StringBuilder(); builder.Append((object)new Named()); _ = builder;",
+            "sealed class Named { public override string ToString() { {E} return \"n\"; } }", CensusDisposition.Refused),
+        new("framework-hash-set-initializer-hash", "FrameworkCallback", "var set = new System.Collections.Generic.HashSet<Key> { new Key() }; _ = set;",
+            "sealed class Key { public override int GetHashCode() { {E} return 1; } public override bool Equals(object? other) => true; }", CensusDisposition.Refused),
+        new("framework-hash-set-collection-expression-hash", "FrameworkCallback", "System.Collections.Generic.HashSet<Key> set = [new Key()]; _ = set;",
+            "sealed class Key { public override int GetHashCode() { {E} return 1; } public override bool Equals(object? other) => true; }", CensusDisposition.Refused),
+        new("framework-list-contains-equals", "FrameworkCallback", "bool found = new System.Collections.Generic.List<Key>().Contains(new Key()); _ = found;",
+            "sealed class Key { public override int GetHashCode() => 1; public override bool Equals(object? other) { {E} return true; } }", CensusDisposition.Refused),
+        new("framework-sorted-set-comparer", "FrameworkCallback", "var set = new System.Collections.Generic.SortedSet<int>(new Order()); _ = set;",
+            "sealed class Order : System.Collections.Generic.IComparer<int> { public int Compare(int x, int y) { {E} return 0; } }", CensusDisposition.Refused),
+        new("framework-int-to-string-provider", "FrameworkCallback", "string text = 5.ToString(new Provider()); _ = text;",
+            "sealed class Provider : System.IFormatProvider { public object? GetFormat(System.Type? formatType) { {E} return null; } }", CensusDisposition.Refused),
+        new("framework-handler-create-provider", "FrameworkCallback", "string text = string.Create(new Provider(), $\"{1}\"); _ = text;",
+            "sealed class Provider : System.IFormatProvider { public object? GetFormat(System.Type? formatType) { {E} return null; } }", CensusDisposition.Refused),
+        new("framework-string-builder-append-provider-handler", "FrameworkCallback", "var builder = new System.Text.StringBuilder(); builder.Append(new Provider(), $\"{1}\"); _ = builder;",
+            "sealed class Provider : System.IFormatProvider { public object? GetFormat(System.Type? formatType) { {E} return null; } }", CensusDisposition.RefusedAlways),
     ];
+
+    // An asynchronous sequence whose MoveNextAsync and DisposeAsync return authored awaitables; the effect sits in the
+    // awaitable member named by effectIn.
+    private static string AsyncSequenceHelpers(string effectIn) =>
+        "sealed class Seq { public Enumr GetAsyncEnumerator() => new Enumr(); } "
+        + "sealed class Enumr { public int Current => 0; public MoveLater MoveNextAsync() => new MoveLater(); public DisposeLater DisposeAsync() => new DisposeLater(); } "
+        + "sealed class MoveLater { public MoveAwaiter GetAwaiter() { " + (effectIn == "moveNext-get-awaiter" ? "{E}" : string.Empty) + " return default; } } "
+        + "struct MoveAwaiter : System.Runtime.CompilerServices.INotifyCompletion { public bool IsCompleted { get { " + (effectIn == "moveNext-is-completed" ? "{E}" : string.Empty) + " return true; } } "
+        + "public bool GetResult() { " + (effectIn == "moveNext-get-result" ? "{E}" : string.Empty) + " return false; } public void OnCompleted(System.Action continuation) { } } "
+        + "sealed class DisposeLater { public DisposeAwaiter GetAwaiter() { " + (effectIn == "dispose-get-awaiter" ? "{E}" : string.Empty) + " return default; } } "
+        + "struct DisposeAwaiter : System.Runtime.CompilerServices.INotifyCompletion { public bool IsCompleted => true; "
+        + "public void GetResult() { " + (effectIn == "dispose-get-result" ? "{E}" : string.Empty) + " } public void OnCompleted(System.Action continuation) { } }";
+
+    private static string TupleHelpers(string effectIn) =>
+        "sealed class Tup : System.Runtime.CompilerServices.ITuple { "
+        + "public int Length { get { " + (effectIn == "length" ? "{E}" : string.Empty) + " return 2; } } "
+        + "public object? this[int index] { get { " + (effectIn == "indexer" ? "{E}" : string.Empty) + " return null; } } }";
 
     private static string HandlerHelpers(string effectIn) =>
         "[System.Runtime.CompilerServices.InterpolatedStringHandler] public ref struct LogHandler { "

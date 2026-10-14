@@ -25120,6 +25120,16 @@ internal static partial class HostedGrimoireProducerInventory
                             diagnostics.Add(new("HOSTED_CALLBACK_OWNERSHIP_UNPROVEN", RootOperation(operationId) + "/enumerable@" + Location(node), enumerationDetail));
                         }
 
+                        if ((node is InvocationExpressionSyntax or BaseObjectCreationExpressionSyntax)
+                            && Resolve(method, member.Model.Compilation) is null
+                            && method.Locations.All(static location => !location.IsInSource)
+                            && FrameworkMemberRunsAuthoredCallback(member, node, method, out string callbackDetail))
+                        {
+                            RefuseTraversalCompletion();
+
+                            diagnostics.Add(new("HOSTED_CALLBACK_OWNERSHIP_UNPROVEN", RootOperation(operationId) + "/callback@" + Location(node), callbackDetail));
+                        }
+
                         if (node is InvocationExpressionSyntax explicitCleanup
                             && (IsTrustedFrameworkCleanupSlot(method)
                                 || IsExactSdkSessionCleanup(method))
@@ -34541,7 +34551,8 @@ internal static partial class HostedGrimoireProducerInventory
                     }
 
                     if (ImplicitCallsAt(member, member.Syntax, node).Any(call => ImplicitCallReachesProducerSite(member, call, path))
-                        || LaneImplicitCallsReachProducerSite(member, node, path))
+                        || LaneImplicitCallsReachProducerSite(member, node, path)
+                        || LaneRefusalsReachProducerSite(member, node, path))
                     {
                         return true;
                     }

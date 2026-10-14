@@ -1683,6 +1683,51 @@ internal static partial class HostedGrimoireProducerInventory
                 }
             }
 
+            // The asynchronous members of an await foreach return awaitables that the loop awaits: MoveNextAsync at the loop
+            // head and DisposeAsync at the exit. The awaiter members of each are calls the compiler makes where the loop awaits.
+            if (binding.Asynchronous && binding.Bound)
+            {
+                foreach ((ITypeSymbol? awaitable, string awaited, (string? Work, string? Effect) frontier) in new (ITypeSymbol?, string, (string?, string?))[]
+                {
+                    (binding.MoveNext?.ReturnType, "moveNext-await", Across(entry, backEdge)),
+                    (binding.Dispose?.ReturnType, "dispose-await", Across(entry, exit)),
+                })
+                {
+                    if (awaitable is null)
+                    {
+                        continue;
+                    }
+
+                    if (AwaiterSteps(member.Model, node, awaitable, entry) is not { } awaitSteps)
+                    {
+                        RefuseTraversalCompletion();
+
+                        diagnostics.Add(new("HOSTED_SITE_UNCLASSIFIED", Location(node), awaitable.ToDisplayString() + ".GetAwaiter"));
+
+                        continue;
+                    }
+
+                    foreach (ImplicitCallStep step in awaitSteps)
+                    {
+                        evidence = MergeEvidence(
+                            evidence,
+                            TraverseImplicitTargets(
+                                member,
+                                node,
+                                ResolveImplicitStep(member, step),
+                                [],
+                                rootType,
+                                operationId,
+                                site + "/" + awaited + "/" + step.Label + "@" + Normalize(step.Method),
+                                active,
+                                lifecycle,
+                                frontier.Work,
+                                frontier.Effect,
+                                frontier.Work is not null && frontier.Effect is not null ? recoveryEffect : null));
+                    }
+                }
+            }
+
             foreach (IMethodSymbol conversion in binding.Conversions)
             {
                 (string? work, string? effect) = Across(entry, backEdge);
@@ -1998,6 +2043,35 @@ internal static partial class HostedGrimoireProducerInventory
             if (resolution.Unresolved.Count != 0 || resolution.Targets.Any(target => ContainsPotentialProducerSite(target.Member, path)))
             {
                 return true;
+            }
+
+            // The awaiter members of the awaitables an await foreach awaits.
+            if (binding.Asynchronous && binding.Bound)
+            {
+                foreach (ITypeSymbol? awaitable in new[] { binding.MoveNext?.ReturnType, binding.Dispose?.ReturnType })
+                {
+                    if (awaitable is null)
+                    {
+                        continue;
+                    }
+
+                    if (AwaiterSteps(member.Model, node, awaitable, binding.Operand.Span.End + 1) is not { } awaitSteps)
+                    {
+                        return true;
+                    }
+
+                    foreach (ImplicitCallStep step in awaitSteps)
+                    {
+                        ImplicitTargets awaiting = ResolveImplicitStep(member, step);
+
+                        if (awaiting.Unresolved.Count != 0
+                            || awaiting.Members.Any(target => ContainsPotentialProducerSite(target, path))
+                            || awaiting.Framework.Any(framework => Classify(framework, Normalize(framework), node, member) is not null || !IsReviewedImplicitFrameworkMember(member, framework, node)))
+                        {
+                            return true;
+                        }
+                    }
+                }
             }
 
             if (binding.Deconstruction is not { } deconstruction)

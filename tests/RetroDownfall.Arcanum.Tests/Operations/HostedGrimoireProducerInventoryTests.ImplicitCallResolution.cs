@@ -664,4 +664,31 @@ public sealed partial class HostedGrimoireProducerInventoryTests
 
         Assert.Contains(unadmitted.Diagnostics, diagnostic => diagnostic.Code == "HOSTED_SITE_WORK_FRONTIER_MISSING" && diagnostic.Detail == callee);
     }
+
+    private const string AuthoredSequence = "sealed class Seq : System.Collections.Generic.IEnumerable<int> { public System.Collections.Generic.IEnumerator<int> GetEnumerator() { {E} return new System.Collections.Generic.List<int>().GetEnumerator(); } System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator(); } ";
+
+    // A framework member handed an authored sequence enumerates it, so the member that does so is refused wherever it is
+    // written: in a body, in an instance initializer, and in the formatter of a value nothing proves, which the
+    // construction and the formatting run only when a scan says they can reach a producer site. The scan has to see the
+    // refusal the traversal would make, so the pruned member is not dropped; the same member over a closed collection is
+    // refused nowhere.
+    [Theory]
+    [InlineData("var values = new System.Collections.Generic.List<int>(new Seq()); _ = values;", "", true)]
+    [InlineData("_ = new Holder();", "sealed class Holder { private System.Collections.Generic.List<int> values = new System.Collections.Generic.List<int>(new Seq()); } ", true)]
+    [InlineData("_ = new Holder();", "sealed class Holder { public System.Collections.Generic.List<int> Values { get; } = new System.Collections.Generic.List<int>(new Seq()); } ", true)]
+    [InlineData("string text = $\"{new Named()}\"; _ = text;", "sealed class Named { public override string ToString() { var values = new System.Collections.Generic.List<int>(new Seq()); return values.Count.ToString(); } } ", true)]
+    [InlineData("IPruned value = Unproved.Value; string text = $\"{value}\"; _ = text;", "interface IPruned { } sealed class Named : IPruned { public override string ToString() { var values = new System.Collections.Generic.List<int>(new Seq()); return values.Count.ToString(); } } static class Unproved { public static IPruned Value { get; set; } = null!; } ", true)]
+    [InlineData("_ = new Holder();", "sealed class Holder { private System.Collections.Generic.List<int> values = new System.Collections.Generic.List<int>(new int[] { 1 }); } ", false)]
+    [InlineData("IPruned value = Unproved.Value; string text = $\"{value}\"; _ = text;", "interface IPruned { } sealed class Named : IPruned { public override string ToString() { var values = new System.Collections.Generic.List<int>(new int[] { 1 }); return values.Count.ToString(); } } static class Unproved { public static IPruned Value { get; set; } = null!; } ", false)]
+    public void FrameworkMemberEnumeratingAnAuthoredSequenceIsRefusedWhereverItIsWritten(string statement, string helpers, bool refused)
+    {
+        foreach (bool effect in new[] { true, false })
+        {
+            HostedProducerDiscovery<HostedProducerSite> result = EnumerationDiscover(CensusCompileSource(statement, (AuthoredSequence + helpers).Replace("{E}", effect ? EnumerationEffect : string.Empty, StringComparison.Ordinal)));
+
+            bool owned = result.Diagnostics.Any(static diagnostic => diagnostic.Code == "HOSTED_CALLBACK_OWNERSHIP_UNPROVEN" && diagnostic.Detail.Contains("Opaque enumerable", StringComparison.Ordinal));
+
+            Assert.Equal(refused && effect, owned);
+        }
+    }
 }
