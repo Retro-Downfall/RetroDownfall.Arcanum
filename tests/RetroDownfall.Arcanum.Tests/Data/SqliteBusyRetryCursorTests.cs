@@ -106,10 +106,11 @@ public sealed class SqliteBusyRetryCursorTests
     [Fact]
     public async Task WaitAsync_names_the_attempts_that_waited_before_the_bound_ran_out()
     {
-        // The first wait outlasts the bound, so the second busy failure finds it spent and the timeout counts both attempts.
-        SqliteBusyRetryCursor retry = SqliteBusyRetry.Begin(TimeSpan.FromMilliseconds(400));
+        // The first wait outlasts the bound, so the second busy failure finds it spent and the timeout counts both attempts. The bound
+        // is generous against a loaded machine: the first failure is judged right after the cursor starts.
+        SqliteBusyRetryCursor retry = SqliteBusyRetry.Begin(TimeSpan.FromMilliseconds(1500));
 
-        Func<TimeSpan, CancellationToken, Task> slow = static (_, token) => Task.Delay(450, token);
+        Func<TimeSpan, CancellationToken, Task> slow = static (_, token) => Task.Delay(1600, token);
 
         await retry.WaitAsync(Busy(), CancellationToken.None, delayAsync: slow);
 
@@ -118,7 +119,7 @@ public sealed class SqliteBusyRetryCursorTests
 
         Assert.Equal(2, timeout.Attempts);
 
-        Assert.True(timeout.Elapsed >= TimeSpan.FromMilliseconds(400));
+        Assert.True(timeout.Elapsed >= TimeSpan.FromMilliseconds(1500));
     }
 
     [Fact]
