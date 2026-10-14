@@ -37107,7 +37107,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
 
     [Theory]
     [InlineData("_ = SQLitePCL.raw.sqlite3_get_autocommit(null!);", "SQLitePCL.raw.sqlite3_get_autocommit")]
-    [InlineData("System.Data.Common.DbTransaction transaction = null!; _ = transaction.Connection;", "System.Data.Common.DbTransaction.Connection")]
+    [InlineData("System.Data.Common.DbTransaction transaction = new Microsoft.Data.Sqlite.SqliteConnection(\"Data Source=:memory:\").BeginTransaction(); _ = transaction.Connection;", "System.Data.Common.DbTransaction.Connection")]
     public void TransactionStateInspectionIsReviewedDatabaseSupport(string body, string member)
     {
         string source = FixtureSource(body);

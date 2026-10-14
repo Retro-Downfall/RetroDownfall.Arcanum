@@ -85,6 +85,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests
                 });
                 """,
             "lease-in-holder-local" => "LeaseHolder holder = new(admission);",
+            "reading-closure" => "Func<GrimoireWorkKind> kindOf = () => admission.Kind;\n\n                    _ = kindOf();",
             "unrelated-closure" => "Func<int> unrelated = () => 1;\n\n                    _ = unrelated();",
             _ => "",
         };
@@ -111,9 +112,19 @@ public sealed partial class HostedGrimoireProducerInventoryTests
             _ => LeaseHandoffStandardCall,
         };
 
-        string after = shape is "after-call" or "formal-disposed" or "formal-stored" or "formal-captured" or "formal-spawned"
-            ? "System.IO.File.Exists(\"caller-after-call\");"
-            : "";
+        string after = shape switch
+        {
+            "after-call" or "formal-disposed" or "formal-stored" or "formal-captured" or "formal-spawned" => "System.IO.File.Exists(\"caller-after-call\");",
+            "spawned-disposer-after-call" => """
+                _ = Task.Run(async () =>
+                {
+                    await Task.Delay(10).ConfigureAwait(false);
+
+                    await using IGrimoireWorkLease gone = admission;
+                });
+                """,
+            _ => "",
+        };
 
         string otherWorker = shape == "other-service"
             ? """
@@ -770,7 +781,12 @@ public sealed partial class HostedGrimoireProducerInventoryTests
     [InlineData("receiver-from-lease", "the receiver may hold the caller's lease")]
     [InlineData("loop-formal-disposed", "the call sits in a loop and the root does not preserve its formal")]
     [InlineData("goto-formal-disposed", "the call sits in a loop and the root does not preserve its formal")]
-    [InlineData("spawned-disposer", "a closure of the caller mentions the caller's lease")]
+    // A closure made before the call that disposes the lease ends it before the call, so the lifetime scan refuses the cut on Work before
+    // the closure precondition is reached; the two rows after it keep that precondition reached, by a closure made after the call (its
+    // disposal is then a time no position names) and by one made before that only reads the lease.
+    [InlineData("spawned-disposer", "the caller holds no live Work at the call")]
+    [InlineData("spawned-disposer-after-call", "a closure of the caller mentions the caller's lease")]
+    [InlineData("reading-closure", "a closure of the caller mentions the caller's lease")]
     public void ACallThatFailsAnyPreconditionIsRefusedAndTheClosureIsJudgedInLineUnderTheCallersRoot(string shape, string reason)
     {
         LeaseHandoffRun run = RunLeaseHandoff(shape);
@@ -977,6 +993,19 @@ public sealed partial class HostedGrimoireProducerInventoryTests
         Assert.Single(run.Under(LeaseHandoffRootOperation), static site => site.Callee == LeaseHandoffSend);
     }
 
+    private static HashSet<(string Method, bool Group)> LeaseHandoffStateClasses(LeaseHandoffRun run, string operation, int states)
+    {
+        HashSet<(string Method, bool Group)> classes = [.. run.States.Where(state => state.RootOperation == operation)
+            .Select(static state => (state.Method, state.EffectFrontier is not null))];
+
+        Assert.Equal(states, classes.Count);
+
+        return classes;
+    }
+
+    private static string? LeaseHandoffStateWork(LeaseHandoffRun run, string operation, (string Method, bool Group) state) => run.States
+        .Single(candidate => candidate.RootOperation == operation && candidate.Method == state.Method && (candidate.EffectFrontier is not null) == state.Group).WorkFrontier;
+
     [Fact]
     public void TheRootsClosureIsTraversedOnceWhetherTheCallerOrTheDeclaredRootReachesItFirst()
     {
@@ -997,12 +1026,38 @@ public sealed partial class HostedGrimoireProducerInventoryTests
 
         Assert.Equal(rootStates, cut.Root(LeaseHandoffRootOperation)!.AnalyzedStates);
 
-        // The caller's root falls by at least the closure the root now owns.
+        // The caller's root falls by the closure the root now owns, less the states both roots visit under different Work.
         int callerCut = cut.StatesOf(LeaseHandoffCallerOperation);
 
         int callerInline = inline.StatesOf(LeaseHandoffCallerOperation);
 
-        Assert.True(callerInline - callerCut >= rootStates, $"inline={callerInline} cut={callerCut} root={rootStates}");
+        // A state is one member under one pair of frontiers; in this fixture every member is visited under one pair per root, so a
+        // member and whether a group is open name it, and the equality below is checked on states and not on a guess.
+        HashSet<(string Method, bool Group)> inlineClasses = LeaseHandoffStateClasses(inline, LeaseHandoffCallerOperation, callerInline);
+
+        HashSet<(string Method, bool Group)> callerClasses = LeaseHandoffStateClasses(cut, LeaseHandoffCallerOperation, callerCut);
+
+        HashSet<(string Method, bool Group)> rootClasses = LeaseHandoffStateClasses(cut, LeaseHandoffRootOperation, rootStates);
+
+        // Nothing is lost and nothing is invented: the caller's states and the root's states together are exactly the states the
+        // in-line traversal visits.
+        Assert.True(inlineClasses.SetEquals(callerClasses.Union(rootClasses)), $"inline={callerInline} cut={callerCut} root={rootStates}");
+
+        // The one state both roots visit is the revocation getter of the lease, which the coordinator reads under the worker's Work
+        // and the maintenance reads under the root's formal. Two Work frontiers are two states, so the cut keeps both, where the in-line
+        // traversal visits the one the maintenance's read and the coordinator's read share.
+        (string Method, bool Group) accessor = Assert.Single(callerClasses.Intersect(rootClasses));
+
+        Assert.EndsWith(".get_MaintenanceRevocation", accessor.Method.Split('(')[0], StringComparison.Ordinal);
+
+        Assert.False(accessor.Group);
+
+        Assert.NotEqual(LeaseHandoffStateWork(cut, LeaseHandoffCallerOperation, accessor), LeaseHandoffStateWork(cut, LeaseHandoffRootOperation, accessor));
+
+        Assert.Single(inline.States, state => state.RootOperation == LeaseHandoffCallerOperation && state.Method == accessor.Method && state.EffectFrontier is null);
+
+        // The caller falls by exactly the states only the closure visited.
+        Assert.Equal(rootStates - 1, callerInline - callerCut);
 
         // The pool takes the service as one family, so it agrees and admits the closure no more often than one worker does.
         LeaseHandoffRun pooled = RunLeaseHandoff("positive", rootWorkers: 3);

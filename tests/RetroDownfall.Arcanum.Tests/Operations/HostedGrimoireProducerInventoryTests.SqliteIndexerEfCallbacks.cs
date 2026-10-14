@@ -393,14 +393,13 @@ public sealed partial class HostedGrimoireProducerInventoryTests
             + AdmissionTypes + types;
     }
 
-    private HostedProducerDiscovery<HostedProducerSite> DiscoverSqliteIndexerProbe(string source, IReadOnlyList<MetadataReference> references)
+    private HostedProducerDiscovery<HostedProducerSite> DiscoverSqliteIndexerProbe(string source, IReadOnlyList<MetadataReference> references, bool production = false)
     {
         CSharpCompilation compilation = CompileWithProductionReferencePack(source, "RetroDownfall.Arcanum.Api").AddReferences(references);
 
         Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
 
-        HostedProducerDiscovery<HostedProducerSite> result = HostedGrimoireProducerInventory.DiscoverProducerSites(
-            [compilation], new(["Worker"], []), [new("Worker", [OrdinaryRoot()])], []);
+        HostedProducerDiscovery<HostedProducerSite> result = DiscoverUnderRegime(compilation, production);
 
         foreach (HostedProducerInventoryDiagnostic diagnostic in result.Diagnostics)
         {
