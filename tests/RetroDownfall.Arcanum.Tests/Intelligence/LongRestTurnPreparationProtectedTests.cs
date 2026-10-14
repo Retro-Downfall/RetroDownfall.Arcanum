@@ -212,6 +212,41 @@ public sealed class LongRestTurnPreparationProtectedTests
     }
 
     [Fact]
+    public async Task A_held_progress_signal_makes_the_first_protected_request_wait_for_the_acknowledgement()
+    {
+        await using LongRestMaintenanceTests.MaintenanceFixture f = await LongRestMaintenanceTests.MaintenanceFixture.CreateAsync(ownWorker: false);
+
+        LongRestSweepHarness.Require(await f.Coordinator.ResumeAsync(f.Operation, null, CancellationToken.None));
+
+        CampaignPreparationProgress progress = new(holdUntilAcknowledged: true);
+
+        Decorated coordinator = new(f.Coordinator) { Partition = () => new Error(ErrorCodes.LongRest.Unavailable, "Stop here.") };
+
+        (CampaignRollupTurnPreparer preparer, GrimoireRepository _, CampaignRollupTurnSnapshotTests.ProbeStore _, Guid session) = await BuildAsync(f, coordinator);
+
+        Task<Result<CampaignRollupTurnSnapshot?>> preparing = preparer.PrepareLiveAsync(
+            new("Continue.", Model: "model", SessionId: session, CampaignId: f.CampaignId, SkipSpellRouting: true, DisableAllTools: true),
+            f.Invocation, false, CancellationToken.None, progress: progress);
+
+        await progress.ProtectedMaintenanceStarted.WaitAsync(TimeSpan.FromSeconds(10));
+
+        // Told, but held: the protected partition has not been requested while the caller has yet to acknowledge.
+        await Task.Delay(200);
+
+        Assert.False(preparing.IsCompleted);
+
+        Assert.Equal(0, coordinator.PartitionRequests);
+
+        progress.AcknowledgeProtectedMaintenance();
+
+        Result<CampaignRollupTurnSnapshot?> result = await preparing.WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(1, coordinator.PartitionRequests);
+    }
+
+    [Fact]
     public async Task The_progress_signal_never_completes_for_a_turn_with_no_protected_partition()
     {
         await using LongRestMaintenanceTests.MaintenanceFixture f = await LongRestMaintenanceTests.MaintenanceFixture.CreateAsync(ownWorker: false, protectedSources: false);

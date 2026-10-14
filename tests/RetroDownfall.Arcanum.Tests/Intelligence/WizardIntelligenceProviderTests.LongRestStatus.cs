@@ -1,7 +1,9 @@
 using Microsoft.Extensions.AI;
 
+using RetroDownfall.Arcanum.Api.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
+using RetroDownfall.Arcanum.Core.Storage.Entities;
 using RetroDownfall.Arcanum.Core.Tower;
 using RetroDownfall.Arcanum.Tests.Fixtures;
 using RetroDownfall.Arcanum.Tests.LongRest;
@@ -44,12 +46,12 @@ public sealed partial class WizardIntelligenceProviderTests
 
         await foreach (IntelligenceEvent evt in wizard.StreamPromptAsync(h.Request, invocation, CancellationToken.None))
         {
-            if (evt.Type == IntelligenceEventType.Status && evt.Data == ProtectedMaintenanceStatus) sendsWhenStatusArrived = f.Handler.SendCount;
+            if (evt.Type == IntelligenceEventType.Status && evt.Message == ProtectedMaintenanceStatus) sendsWhenStatusArrived = f.Handler.SendCount;
 
             events.Add(evt);
         }
 
-        IntelligenceEvent status = Assert.Single(events, static evt => evt.Type == IntelligenceEventType.Status && evt.Data == ProtectedMaintenanceStatus);
+        IntelligenceEvent status = Assert.Single(events, static evt => evt.Type == IntelligenceEventType.Status && evt.Message == ProtectedMaintenanceStatus);
 
         // Said before the maintenance it announces did its paid work, and before any assistant token.
         Assert.Equal(0, sendsWhenStatusArrived);
@@ -95,6 +97,6 @@ public sealed partial class WizardIntelligenceProviderTests
 
         await foreach (IntelligenceEvent evt in wizard.StreamPromptAsync(h.Request, invocation, CancellationToken.None)) events.Add(evt);
 
-        Assert.DoesNotContain(events, static evt => evt.Type == IntelligenceEventType.Status && evt.Data == ProtectedMaintenanceStatus);
+        Assert.DoesNotContain(events, static evt => evt.Type == IntelligenceEventType.Status && evt.Message == ProtectedMaintenanceStatus);
     }
 }

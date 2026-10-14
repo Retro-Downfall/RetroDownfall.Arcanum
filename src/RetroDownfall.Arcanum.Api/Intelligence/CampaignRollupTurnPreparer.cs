@@ -143,16 +143,40 @@ public sealed class CampaignRollupTurnSnapshot(
 
 /// <summary>
 /// Lets the caller of <see cref="CampaignRollupTurnPreparer.PrepareLiveAsync"/> learn, while preparation is still running, that
-/// protected Long Rest maintenance is about to run under this turn, so a streaming client can be told before a long wait.
+/// protected Long Rest maintenance is about to run under this turn, so a streaming client can be told before a long wait. With
+/// <paramref name="holdUntilAcknowledged"/> the preparer also waits, for a bounded time, until the caller acknowledges that it
+/// has told the client, so the telling genuinely precedes the first protected request instead of racing it.
 /// </summary>
-public sealed class CampaignPreparationProgress
+public sealed class CampaignPreparationProgress(bool holdUntilAcknowledged = false)
 {
+    private static readonly TimeSpan AcknowledgementBound = TimeSpan.FromSeconds(5);
+
     private readonly TaskCompletionSource _protectedMaintenance = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    private readonly TaskCompletionSource _acknowledged = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     /// <summary>Completes once, when the first protected partition of the turn is about to be requested.</summary>
     public Task ProtectedMaintenanceStarted => _protectedMaintenance.Task;
 
-    internal void SignalProtectedMaintenance() => _protectedMaintenance.TrySetResult();
+    /// <summary>The caller has told its client; a preparer that was holding for it continues.</summary>
+    public void AcknowledgeProtectedMaintenance() => _acknowledged.TrySetResult();
+
+    internal async Task SignalProtectedMaintenanceAsync(CancellationToken cancellationToken)
+    {
+        if (!_protectedMaintenance.TrySetResult() || !holdUntilAcknowledged)
+        {
+            return;
+        }
+
+        try
+        {
+            await _acknowledged.Task.WaitAsync(AcknowledgementBound, cancellationToken).ConfigureAwait(false);
+        }
+        catch (TimeoutException)
+        {
+            // A caller that never acknowledges (its client went away) must not stall the turn's maintenance.
+        }
+    }
 }
 
 /// <summary>
@@ -482,7 +506,10 @@ public sealed class CampaignRollupTurnPreparer(
                         }
 
                         // Protected maintenance finishes under this turn's pending claim, so the caller is told before it begins.
-                        progress?.SignalProtectedMaintenance();
+                        if (progress is not null)
+                        {
+                            await progress.SignalProtectedMaintenanceAsync(cancellationToken).ConfigureAwait(false);
+                        }
 
                         // Clean-Only Busy Skip: a busy protected partition is not skipped. Only exact protected work finishing
                         // under the request keeps pending maintenance from ending with a protected partition unfinished.

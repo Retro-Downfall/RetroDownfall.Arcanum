@@ -1706,7 +1706,7 @@ public sealed partial class WizardIntelligenceProvider(
                 yield break;
             }
 
-            CampaignPreparationProgress preparationProgress = new();
+            CampaignPreparationProgress preparationProgress = new(holdUntilAcknowledged: true);
 
             covenantScope.CampaignPreparation ??= campaignRollups.PrepareLiveAsync(
                 request, invocationContext, streaming, inferenceToken,
@@ -1719,7 +1719,15 @@ public sealed partial class WizardIntelligenceProvider(
             if (!preparation.IsCompleted
                 && await Task.WhenAny(preparation, preparationProgress.ProtectedMaintenanceStarted).ConfigureAwait(false) != preparation)
             {
-                yield return new IntelligenceEvent(IntelligenceEventType.Status, "Finishing protected memory maintenance...");
+                try
+                {
+                    yield return new IntelligenceEvent(IntelligenceEventType.Status, "Finishing protected memory maintenance...");
+                }
+                finally
+                {
+                    // The client has been told (or has gone away): the held protected request may now begin.
+                    preparationProgress.AcknowledgeProtectedMaintenance();
+                }
             }
 
             Result<CampaignRollupTurnSnapshot?> prepared = await preparation.ConfigureAwait(false);
