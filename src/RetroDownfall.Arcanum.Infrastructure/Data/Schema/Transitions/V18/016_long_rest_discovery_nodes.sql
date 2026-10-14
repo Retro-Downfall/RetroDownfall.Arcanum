@@ -21,6 +21,3 @@ CREATE TABLE IF NOT EXISTS long_rest_discovery_nodes (
     CHECK ((SensitivityCode = 0 AND PartitionDigest IS NULL AND ProvenanceJson IS NULL)
         OR (SensitivityCode = 1 AND PartitionDigest IS NOT NULL AND ProvenanceJson IS NOT NULL))
 );
-
-CREATE INDEX IF NOT EXISTS idx_long_rest_nodes_reuse
-ON long_rest_discovery_nodes(MembershipDigest, SourceDigest, RecipeDigest, SensitivityCode, PartitionDigest);

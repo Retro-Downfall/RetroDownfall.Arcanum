@@ -15,7 +15,15 @@ public enum LongRestDiscoveryLane : byte
     Hierarchy = 4,
 }
 
-public sealed record LongRestCandidate(LongRestTarget Target, LongRestDiscoveryLane Lane, double Score);
+/// <summary>
+/// One piece of discovery evidence. <see cref="Rank"/> is the position a lane's own traversal gave the candidate when that order is
+/// part of the evidence (the hierarchy lane interleaves its selected summaries, so a candidate's rank, not the summary's score
+/// and not its memory id, orders it); it is zero for lanes the score alone orders.
+/// </summary>
+public sealed record LongRestCandidate(LongRestTarget Target, LongRestDiscoveryLane Lane, double Score, int Rank = 0);
+
+/// <summary>The leaves one selected summary expanded to, in the order its own traversal produced them.</summary>
+public sealed record LongRestHierarchyExpansion(double Score, ImmutableArray<LongRestTarget> Leaves);
 
 public sealed record LongRestCandidateGroup(ImmutableArray<LongRestTarget> Targets, ImmutableArray<LongRestCandidate> Evidence);
 
@@ -87,7 +95,10 @@ public sealed record LongRestRecipeIdentity(
     double MinimumVectorCosine = LongRestDiscoveryLimits.MinimumVectorCosine,
     int ExpandedLeafLimit = LongRestDiscoveryLimits.ExpandedLeaves,
     int TraversalFrontierLimit = LongRestDiscoveryLimits.TraversalFrontier,
-    int MergedNeighborLimit = LongRestDiscoveryLimits.MergedNeighbors);
+    int MergedNeighborLimit = LongRestDiscoveryLimits.MergedNeighbors,
+    int LexicalMinimumScore = LongRestDiscoveryLimits.LexicalMinimumScore,
+    int AdjudicationRecipeVersion = LongRestPromptLayout.AdjudicationRecipeVersion,
+    int LexicalScorerVersion = LongRestLexicalScorer.Version);
 
 public sealed record LongRestDiscoveryGeneration(
     Guid GenerationId,

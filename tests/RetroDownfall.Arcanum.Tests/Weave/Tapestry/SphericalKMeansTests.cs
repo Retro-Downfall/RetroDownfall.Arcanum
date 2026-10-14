@@ -717,6 +717,64 @@ public sealed class SphericalKMeansTests
         Assert.Equal(1d, SphericalKMeans.DirectionCosine(SphericalKMeans.NormalizedDirection([2f, 0f]), [1f, 0f]));
     }
 
+    [Theory]
+    [InlineData(1, 3)]
+    [InlineData(2, 64)]
+    [InlineData(3, 257)]
+    [InlineData(4, 1536)]
+    public void CosineToDirection_is_bit_identical_to_normalizing_then_taking_the_double_accumulated_dot(int seed, int width)
+    {
+        Random random = new(seed);
+
+        float[] direction = SphericalKMeans.NormalizedDirection(RandomVector(random, width));
+
+        for (int sample = 0; sample < 300; sample++)
+        {
+            // Magnitudes from 1e-30 to 1e30 and mixed signs; some vectors are near-parallel to the direction.
+            float[] vector = RandomVector(random, width);
+
+            float scale = (float)Math.Pow(10, random.Next(-30, 31));
+
+            for (int index = 0; index < width; index++)
+            {
+                vector[index] = sample % 3 == 0 ? (direction[index] * 1.05f + vector[index] * 0.01f) * scale : vector[index] * scale;
+            }
+
+            float[] unit = SphericalKMeans.NormalizedDirection(vector);
+
+            double expected = unit.Length == 0 ? double.NaN : SphericalKMeans.DirectionCosine(direction, unit);
+
+            double actual = SphericalKMeans.CosineToDirection(direction, vector);
+
+            Assert.Equal(BitConverter.DoubleToInt64Bits(expected), BitConverter.DoubleToInt64Bits(actual));
+        }
+    }
+
+    [Fact]
+    public void CosineToDirection_has_no_cosine_where_the_two_step_form_had_no_direction_or_width()
+    {
+        float[] direction = SphericalKMeans.NormalizedDirection([1f, 2f, 3f]);
+
+        Assert.True(double.IsNaN(SphericalKMeans.CosineToDirection(direction, new float[] { 0, 0, 0 })));
+
+        Assert.True(double.IsNaN(SphericalKMeans.CosineToDirection(direction, new float[] { 1, float.NaN, 3 })));
+
+        Assert.True(double.IsNaN(SphericalKMeans.CosineToDirection(direction, new float[] { 1, float.PositiveInfinity, 3 })));
+
+        Assert.True(double.IsNaN(SphericalKMeans.CosineToDirection(direction, new float[] { 1, 2 })));
+
+        Assert.True(double.IsNaN(SphericalKMeans.CosineToDirection(direction, new float[] { 1, 2, 3, 4 })));
+
+        Assert.True(double.IsNaN(SphericalKMeans.CosineToDirection([], new float[] { 1, 2, 3 })));
+
+        // Components whose squares overflow a float but not a double are still usable, as they are in the two-step form.
+        Assert.False(double.IsNaN(SphericalKMeans.CosineToDirection(direction, new float[] { 3e30f, 6e30f, 9e30f })));
+
+        Assert.Equal(1d, SphericalKMeans.CosineToDirection(SphericalKMeans.NormalizedDirection([2f, 0f]), new float[] { 5f, 0f }));
+
+        Assert.Throws<ArgumentNullException>(() => SphericalKMeans.CosineToDirection(null!, new float[] { 1 }));
+    }
+
     private static float[] RandomVector(Random random, int length)
     {
         float[] vector = new float[length];

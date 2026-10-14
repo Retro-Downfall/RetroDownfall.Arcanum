@@ -25,6 +25,14 @@ public static class LongRestDiscoveryLimits
 
     public const int LexicalTopK = 8;
 
+    /// <summary>
+    /// The least <see cref="LongRestLexicalScorer"/> score (sixteenths of a bit) a lexical hit needs to be evidence at all, so a
+    /// token nearly every memory shares cannot make an anchor's neighbours. Bound into the recipe. This initial value is the largest
+    /// round number the retained small-corpus expectations allow (a term in 3 of 4 documents, twice, still counts); it is calibrated
+    /// against a real corpus during the live qualification.
+    /// </summary>
+    public const int LexicalMinimumScore = 12;
+
     public const int VectorTopK = 8;
 
     public const int SummaryTopK = 8;
@@ -100,17 +108,7 @@ public static class LongRestDiscoveryPolicy
 
             lane.Sort(Compare);
 
-            int bound = candidate.Lane switch
-            {
-                LongRestDiscoveryLane.ExactHash => LongRestDiscoveryLimits.MergedNeighbors,
-
-                LongRestDiscoveryLane.Lexical => LongRestDiscoveryLimits.LexicalTopK,
-
-                LongRestDiscoveryLane.Vector => LongRestDiscoveryLimits.VectorTopK,
-
-                // SummaryTopK limits selected nodes; this lane already contains expanded leaves.
-                _ => LongRestDiscoveryLimits.MergedNeighbors,
-            };
+            int bound = LaneBound(candidate.Lane);
 
             if (lane.Count > bound)
             {
@@ -146,6 +144,44 @@ public static class LongRestDiscoveryPolicy
         return merged.ToImmutableArray();
     }
 
+    /// <summary>
+    /// Interleaves the leaves of the selected summaries, which arrive in summary rank order, taking one leaf from each summary in turn
+    /// so no summary, and no memory id, fills the lane alone. A leaf already taken from an earlier summary, or the anchor, is passed
+    /// over. The result is at most <see cref="LongRestDiscoveryLimits.MergedNeighbors"/> candidates ranked by the order they were
+    /// taken; each keeps the score of the summary that supplied it.
+    /// </summary>
+    public static ImmutableArray<LongRestCandidate> InterleaveExpansions(LongRestTarget anchor, ImmutableArray<LongRestHierarchyExpansion> expansions)
+    {
+        if (anchor is null || expansions.IsDefault || expansions.Any(static expansion => expansion is null || expansion.Leaves.IsDefault))
+        {
+            throw new ArgumentException("Interleaving requires an anchor and the selected summaries' expansions.", nameof(expansions));
+        }
+
+        List<LongRestCandidate> taken = new(LongRestDiscoveryLimits.MergedNeighbors);
+
+        for (int round = 0; round < LongRestDiscoveryLimits.ExpandedLeaves && taken.Count < LongRestDiscoveryLimits.MergedNeighbors; round++)
+        {
+            foreach (LongRestHierarchyExpansion expansion in expansions)
+            {
+                if (round >= expansion.Leaves.Length || taken.Count == LongRestDiscoveryLimits.MergedNeighbors)
+                {
+                    continue;
+                }
+
+                LongRestTarget leaf = expansion.Leaves[round];
+
+                if (leaf.MemoryId == anchor.MemoryId || taken.FindIndex(item => item.Target.MemoryId == leaf.MemoryId) >= 0)
+                {
+                    continue;
+                }
+
+                taken.Add(new(leaf, LongRestDiscoveryLane.Hierarchy, expansion.Score, taken.Count));
+            }
+        }
+
+        return [.. taken];
+    }
+
     public static Result<ImmutableArray<LongRestCandidateGroup>> GroupCandidates(LongRestTarget anchor, ImmutableArray<LongRestCandidate> candidates)
     {
         if (candidates.IsDefault || candidates.Length > LongRestDiscoveryLimits.MergedNeighbors)
@@ -172,6 +208,20 @@ public static class LongRestDiscoveryPolicy
         return groups.ToImmutable();
     }
 
+    // SummaryTopK limits selected nodes; the hierarchy lane already contains expanded leaves.
+    internal static int LaneBound(LongRestDiscoveryLane lane) => lane switch
+    {
+        LongRestDiscoveryLane.ExactHash => LongRestDiscoveryLimits.MergedNeighbors,
+
+        LongRestDiscoveryLane.Lexical => LongRestDiscoveryLimits.LexicalTopK,
+
+        LongRestDiscoveryLane.Vector => LongRestDiscoveryLimits.VectorTopK,
+
+        _ => LongRestDiscoveryLimits.MergedNeighbors,
+    };
+
+    internal static int Order(LongRestCandidate left, LongRestCandidate right) => Compare(left, right);
+
     private static int Compare(LongRestCandidate left, LongRestCandidate right)
     {
         int score = left.Lane switch
@@ -179,6 +229,9 @@ public static class LongRestDiscoveryPolicy
             LongRestDiscoveryLane.ExactHash => 0,
 
             LongRestDiscoveryLane.Lexical => left.Score.CompareTo(right.Score),
+
+            // The hierarchy lane is ordered by the interleave that produced it; the summary score only separates unranked evidence.
+            LongRestDiscoveryLane.Hierarchy when left.Rank != right.Rank => left.Rank.CompareTo(right.Rank),
 
             _ => right.Score.CompareTo(left.Score),
         };
@@ -202,4 +255,62 @@ public static class LongRestDiscoveryPolicy
         target is not null && LongRestPolicy.ValidateRequest(new(LongRestTransformationKind.ExactDuplicates, [target])).IsSuccess;
 
     private static Result<T> Invalid<T>(string message) => new Error(ErrorCodes.LongRest.InvalidRequest, message);
+}
+
+/// <summary>
+/// One discovery lane kept as a streaming bounded ranking: the best candidates seen so far under the lane's own order, deduplicated
+/// by memory. Feeding a whole corpus through it and merging the result with <see cref="LongRestDiscoveryPolicy.MergeCandidates"/>
+/// selects exactly what merging every candidate one at a time did, without rebuilding the policy's lists for every leaf.
+/// </summary>
+public sealed class LongRestLaneBuffer(LongRestDiscoveryLane lane)
+{
+    private readonly List<LongRestCandidate> _items = [];
+
+    public LongRestDiscoveryLane Lane { get; } = lane is >= LongRestDiscoveryLane.ExactHash and <= LongRestDiscoveryLane.Hierarchy
+        ? lane
+        : throw new ArgumentOutOfRangeException(nameof(lane));
+
+    /// <summary>The candidates kept so far, best first.</summary>
+    public ImmutableArray<LongRestCandidate> Items => [.. _items];
+
+    public int Count => _items.Count;
+
+    public void Add(LongRestCandidate candidate)
+    {
+        ArgumentNullException.ThrowIfNull(candidate);
+
+        if (candidate.Lane != Lane)
+        {
+            throw new ArgumentException("A lane buffer only keeps its own lane.", nameof(candidate));
+        }
+
+        int bound = LongRestDiscoveryPolicy.LaneBound(Lane);
+
+        // A candidate that ranks below everything a full lane holds can neither enter nor replace one of its own memory.
+        if (_items.Count == bound && LongRestDiscoveryPolicy.Order(candidate, _items[^1]) >= 0)
+        {
+            return;
+        }
+
+        int duplicate = _items.FindIndex(item => item.Target.MemoryId == candidate.Target.MemoryId);
+
+        if (duplicate >= 0)
+        {
+            if (LongRestDiscoveryPolicy.Order(candidate, _items[duplicate]) >= 0)
+            {
+                return;
+            }
+
+            _items.RemoveAt(duplicate);
+        }
+
+        int position = _items.FindIndex(item => LongRestDiscoveryPolicy.Order(candidate, item) < 0);
+
+        _items.Insert(position < 0 ? _items.Count : position, candidate);
+
+        if (_items.Count > bound)
+        {
+            _items.RemoveAt(bound);
+        }
+    }
 }

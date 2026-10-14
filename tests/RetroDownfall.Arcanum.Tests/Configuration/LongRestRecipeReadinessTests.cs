@@ -29,6 +29,8 @@ public sealed class LongRestRecipeReadinessTests
         "chat-provider-not-openai-compatible",
         "embedding-provider-relative-endpoint",
         "default-model-matches-nothing",
+        "chat-window-too-small",
+        "embedding-window-too-small",
     };
 
     private static ArcanumSettings Settings(string? variant = null)
@@ -50,6 +52,17 @@ public sealed class LongRestRecipeReadinessTests
             case "embedding-provider-relative-endpoint": settings.Providers[0].Endpoint = "not-a-uri"; break;
 
             case "default-model-matches-nothing": settings.DefaultModel = "not-configured"; break;
+
+            // One token short of the smallest window whose input budget is the minimum recipe.
+            case "chat-window-too-small": settings.Providers[0].ContextWindowLimit = LongRestPromptLayout.MinimumChatWindowTokens - 1; break;
+
+            case "embedding-window-too-small":
+                settings.Providers = [settings.Providers[0], new() { Name = "embedder", Type = AiProviderKind.OpenAICompatible, Endpoint = "https://embedder.test/v1",
+                    Models = ["embedding"], ContextWindowLimit = LongRestPromptLayout.MinimumEmbeddingWindowTokens - 1 }];
+
+                settings.Integrations.Embeddings.Provider = "embedder";
+
+                break;
         }
 
         return settings;
@@ -146,6 +159,108 @@ public sealed class LongRestRecipeReadinessTests
         Assert.True(((ILongRestConfigurationProvider)good).Capture().Recipe.IsSuccess);
 
         Assert.True(LongRestRecipeResolver.Resolve(fine).IsSuccess);
+    }
+
+    [Theory]
+    [InlineData(8192, 5328)]
+    [InlineData(LongRestPromptLayout.MinimumChatWindowTokens, LongRestPromptLayout.MinimumInputUtf8Bytes)]
+    [InlineData(16384, 12452)]
+    [InlineData(32768, 26699)]
+    [InlineData(40000, LongRestDiscoveryLimits.ProviderInputUtf8Bytes)]
+    [InlineData(128000, LongRestDiscoveryLimits.ProviderInputUtf8Bytes)]
+    public void The_recipe_carries_the_input_budget_the_chat_provider_window_allows(int window, int expected)
+    {
+        ArcanumSettings settings = Settings();
+
+        settings.Providers[0].ContextWindowLimit = window;
+
+        LongRestRecipeIdentity recipe = LongRestRecipeResolver.Resolve(settings).Value;
+
+        Assert.Equal(expected, recipe.ProviderInputUtf8Bytes);
+
+        Assert.True(LongRestDiscoveryHash.Recipe(recipe).IsSuccess);
+
+        using LongRestConfigurationEpoch epoch = new(new LongRestConfigurationEpochTests.NotifyingOptions(settings), Guid.NewGuid());
+
+        Assert.Equal(recipe, ((ILongRestConfigurationProvider)epoch).Capture().Recipe.Value);
+
+        Assert.Empty(LongRestRecipeResolver.Problems(settings));
+
+        Assert.Empty(new ConfigurationValidator().ValidateLongRest(settings));
+    }
+
+    [Fact]
+    public void The_budget_follows_the_chat_provider_and_not_the_embedding_provider_and_an_unset_embedding_window_is_not_refused()
+    {
+        ArcanumSettings settings = Settings();
+
+        settings.Providers = [settings.Providers[0], new() { Name = "embedder", Type = AiProviderKind.OpenAICompatible, Endpoint = "https://embedder.test/v1",
+            Models = ["embedding"], ContextWindowLimit = 0 }];
+
+        settings.Integrations.Embeddings.Provider = "embedder";
+
+        settings.Providers[0].ContextWindowLimit = 8192;
+
+        Assert.Equal(5328, LongRestRecipeResolver.Resolve(settings).Value.ProviderInputUtf8Bytes);
+
+        settings.Providers[1].ContextWindowLimit = LongRestPromptLayout.MinimumEmbeddingWindowTokens;
+
+        Assert.True(LongRestRecipeResolver.Resolve(settings).IsSuccess);
+    }
+
+    [Fact]
+    public void A_context_window_change_is_a_configuration_change_with_a_new_recipe_digest()
+    {
+        ArcanumSettings settings = Settings();
+
+        LongRestConfigurationEpochTests.NotifyingOptions options = new(settings);
+
+        using LongRestConfigurationEpoch epoch = new(options, Guid.NewGuid());
+
+        LongRestSweepConfiguration before = ((ILongRestConfigurationProvider)epoch).Capture();
+
+        ArcanumSettings narrower = Settings();
+
+        narrower.Providers[0].ContextWindowLimit = 8192;
+
+        options.Set(narrower);
+
+        LongRestSweepConfiguration after = ((ILongRestConfigurationProvider)epoch).Capture();
+
+        Assert.NotEqual(before.Stamp, after.Stamp);
+
+        Assert.NotEqual(LongRestDiscoveryHash.Recipe(before.Recipe.Value).Value, LongRestDiscoveryHash.Recipe(after.Recipe.Value).Value);
+
+        Assert.Equal(5328, after.Recipe.Value.ProviderInputUtf8Bytes);
+    }
+
+    [Theory]
+    [InlineData("chat-window-too-small", "the chat model named by DefaultModel is served by provider 'provider', whose contextWindowLimit of 6774 tokens is below the 6775")]
+    [InlineData("embedding-window-too-small", "the embedding provider 'embedder' has a contextWindowLimit of 2371 tokens, below the 2372")]
+    public void A_window_too_small_for_the_smallest_recipe_says_which_provider_and_what_to_raise(string variant, string expected)
+    {
+        ArcanumSettings settings = Settings(variant);
+
+        string problem = Assert.Single(LongRestRecipeResolver.Problems(settings));
+
+        Assert.StartsWith(expected, problem, StringComparison.Ordinal);
+
+        Assert.Contains("contextWindowLimit", problem, StringComparison.Ordinal);
+
+        Assert.Equal(ErrorCodes.LongRest.ModelContextTooSmall, LongRestRecipeResolver.Resolve(settings).Error.Code);
+    }
+
+    [Fact]
+    public void A_window_that_is_clamped_up_to_the_floor_is_still_too_small_for_chat_and_an_unset_chat_window_is_not_unlimited()
+    {
+        ArcanumSettings settings = Settings();
+
+        foreach (int window in new[] { int.MinValue, -1, 0, 1, 255, 256, 4096, 6774 })
+        {
+            settings.Providers[0].ContextWindowLimit = window;
+
+            Assert.Equal(ErrorCodes.LongRest.ModelContextTooSmall, LongRestRecipeResolver.Resolve(settings).Error.Code);
+        }
     }
 
     [Theory]

@@ -297,13 +297,14 @@ public static class LongRestDiscoveryHash
 
     public static Result<CovenantDigest> Recipe(LongRestRecipeIdentity recipe)
     {
-        if (recipe is null || recipe.SummaryRecipeVersion < 1 || recipe.ClusteringRecipeVersion < 1
+        if (recipe is null || recipe.SummaryRecipeVersion < 1 || recipe.ClusteringRecipeVersion < 1 || recipe.AdjudicationRecipeVersion < 1
+            || recipe.LexicalScorerVersion < 1
             || !ValidIdentity(recipe.SummaryProvider) || !ValidIdentity(recipe.SummaryModel)
             || !ValidIdentity(recipe.EmbeddingProvider) || !ValidIdentity(recipe.EmbeddingModel)
             || !recipe.SummaryDestinationDigest.IsValid || !recipe.EmbeddingDestinationDigest.IsValid
             || recipe.EmbeddingDimensions < 1
             || recipe.SourcePageSize != LongRestDiscoveryLimits.SourcePage
-            || recipe.ProviderInputUtf8Bytes != LongRestDiscoveryLimits.ProviderInputUtf8Bytes
+            || recipe.ProviderInputUtf8Bytes is < LongRestPromptLayout.MinimumInputUtf8Bytes or > LongRestDiscoveryLimits.ProviderInputUtf8Bytes
             || recipe.SummaryUtf8Bytes != LongRestDiscoveryLimits.SummaryUtf8Bytes
             || recipe.TargetLimit != LongRestDiscoveryLimits.Targets
             || recipe.HierarchyChildLimit != LongRestDiscoveryLimits.HierarchyChildren
@@ -316,7 +317,8 @@ public static class LongRestDiscoveryHash
             || recipe.MinimumVectorCosine != LongRestDiscoveryLimits.MinimumVectorCosine
             || recipe.ExpandedLeafLimit != LongRestDiscoveryLimits.ExpandedLeaves
             || recipe.TraversalFrontierLimit != LongRestDiscoveryLimits.TraversalFrontier
-            || recipe.MergedNeighborLimit != LongRestDiscoveryLimits.MergedNeighbors)
+            || recipe.MergedNeighborLimit != LongRestDiscoveryLimits.MergedNeighbors
+            || recipe.LexicalMinimumScore != LongRestDiscoveryLimits.LexicalMinimumScore)
         {
             return Invalid("A recipe requires exact configured identities and the fixed code-owned work bounds.");
         }
@@ -355,6 +357,12 @@ public static class LongRestDiscoveryHash
         }
 
         Int64(bytes, BitConverter.DoubleToInt64Bits(recipe.MinimumVectorCosine));
+
+        Int32(bytes, recipe.LexicalMinimumScore);
+
+        Int32(bytes, recipe.AdjudicationRecipeVersion);
+
+        Int32(bytes, recipe.LexicalScorerVersion);
 
         return Hash(bytes);
     }

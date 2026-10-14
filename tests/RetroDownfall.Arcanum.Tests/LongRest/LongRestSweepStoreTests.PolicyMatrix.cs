@@ -23,7 +23,11 @@ public sealed partial class LongRestSweepStoreTests
     [InlineData("output", LongRestReason.DependencyConflict)]
     public async Task Protected_canonical_store_preserves_conservative_policy_and_unchanged_NoChange_replay(string fault, LongRestReason reason)
     {
-        await using Fixture fixture = await Fixture.CreateAsync(true, duplicates: true, policyFault: fault);
+        // A pinned or retired memory is never captured, so a sweep cannot meet one; the kernel still refuses it, and that refusal is what this
+        // case holds. Its lifecycle is therefore changed after the leaves are read, and the input is rebuilt from the live canonical snapshot.
+        bool lifecycle = fault is "pin" or "retire";
+
+        await using Fixture fixture = await Fixture.CreateAsync(true, duplicates: true, policyFault: lifecycle ? null : fault);
 
         _ = await fixture.BeginAsync();
 
@@ -39,6 +43,34 @@ public sealed partial class LongRestSweepStoreTests
             inputs = [await LongRestDiscoveryStore.ReadSweepLeafAsync(fixture.H.Connection, transaction, fixture.Generation, "10000000-0000-0000-0000-000000000001", fixture.Capability, CancellationToken.None),
                 await LongRestDiscoveryStore.ReadSweepLeafAsync(fixture.H.Connection, transaction, fixture.Generation, "10000000-0000-0000-0000-000000000002", fixture.Capability, CancellationToken.None)];
 
+            await transaction.CommitAsync();
+        }
+
+        if (lifecycle)
+        {
+            if (fault == "pin")
+            {
+                await fixture.H.Saga.Store.SetPinAsync("10000000-0000-0000-0000-000000000001", true, DateTimeOffset.UtcNow, CancellationToken.None);
+            }
+            else
+            {
+                await fixture.H.Saga.Store.RetireAsync("10000000-0000-0000-0000-000000000001", AnnalContentDigest.ForSagaMemory("identical observation"), DateTimeOffset.UtcNow, CancellationToken.None);
+            }
+
+            // A retirement advances the head, so the live target is read again rather than carried over.
+            string head = (string)(await fixture.H.ScalarAsync("SELECT h.CurrentVersionId FROM annal_claims c JOIN annal_heads h ON h.ClaimId = c.ClaimId WHERE c.SubjectId = '10000000-0000-0000-0000-000000000001';"))!;
+
+            LongRestTarget current = new(inputs[0].Target.MemoryId, head, inputs[0].Target.ExpectedContentHash);
+
+            await using SqliteTransaction read = fixture.H.Connection.BeginTransaction(deferred: false);
+
+            var live = LongRestSweepHarness.Require(await SagaLongRestService.ReadSnapshotAsync(fixture.H.Connection, read, current, CancellationToken.None, materializeContent: false));
+
+            inputs = [inputs[0] with { Snapshot = live.Snapshot }, inputs[1]];
+        }
+
+        await using (SqliteTransaction transaction = fixture.H.Connection.BeginTransaction(deferred: false))
+        {
             work = new(fixture.Generation.GenerationId, fixture.Generation.OperationId, "canonical-matrix", LongRestWorkKind.Anchor, fixture.Generation.Scope,
                 fixture.Generation.Fence, LongRestDiscoveryHash.SourcePage(fixture.Generation.Scope, inputs).Value, LongRestDiscoveryHash.Recipe(fixture.Generation.Recipe).Value);
 
@@ -208,6 +240,15 @@ public sealed partial class LongRestSweepStoreTests
                     JOIN annal_versions older JOIN annal_claims oc ON oc.ClaimId = older.ClaimId
                     WHERE nc.SubjectId = $new AND oc.SubjectId = $old;
                     """, ("$new", fault == "incoming" ? third : second), ("$old", fault == "incoming" ? second : first), ("$relation", fault == "incoming" ? 2 : 3));
+            }
+            else if (fault == "separate-fourth")
+            {
+                // The fourth memory gets an axis of its own, so no vector connects it to the others.
+                float[] vector = new float[64];
+
+                vector[1] = 1;
+
+                await h.SetEmbeddingAsync("10000000-0000-0000-0000-000000000004", vector);
             }
             else if (fault == "output")
             {

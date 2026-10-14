@@ -37,7 +37,7 @@ public sealed partial class LongRestHierarchyTests
 
         Assert.All(next.Fold.Children, child => Assert.Equal(0, child.Layer));
 
-        Assert.True(LongRestProviderPayload.Summary(next.Fold).IsSuccess);
+        Assert.True(LongRestProviderPayload.Summary(next.Fold, LongRestDiscoveryLimits.ProviderInputUtf8Bytes).IsSuccess);
 
         Assert.Equal(0L, await h.ScalarAsync("SELECT FoldGroup FROM long_rest_discovery_generations;"));
 
@@ -157,9 +157,9 @@ public sealed partial class LongRestHierarchyTests
                 JsonSerializer.Serialize(pair.Second.Snapshot, LongRestJsonContext.Default.LongRestSnapshot));
         }
 
-        var forwardPlan = LongRestSweepHarness.Require(LongRestHierarchy.PlanPage([.. forward.Select(row => row.Input)], 1, recipe, CancellationToken.None));
+        var forwardPlan = LongRestSweepHarness.Require(LongRestHierarchy.PlanPage([.. forward.Select(row => row.Input)], 1, recipe, LongRestDiscoveryLimits.ProviderInputUtf8Bytes, CancellationToken.None));
 
-        var reversePlan = LongRestSweepHarness.Require(LongRestHierarchy.PlanPage([.. reverse.Select(row => row.Input)], 1, recipe, CancellationToken.None));
+        var reversePlan = LongRestSweepHarness.Require(LongRestHierarchy.PlanPage([.. reverse.Select(row => row.Input)], 1, recipe, LongRestDiscoveryLimits.ProviderInputUtf8Bytes, CancellationToken.None));
 
         Assert.NotEmpty(forwardPlan);
 
@@ -312,30 +312,43 @@ public sealed partial class LongRestHierarchyTests
 
             List<LongRestCandidate> result = [];
 
+            // The production lane's query shape, built by the same Core function the lane calls: one MATCH that names the generation, whose
+            // hits are scored in managed integer arithmetic from this generation's own document count and document frequency.
+            ImmutableArray<string> terms = LongRestLexicalScorer.QueryTerms("opal");
+
+            List<(string Memory, LongRestLexicalDocument Document)> hits = [];
+
             await using SqliteCommand command = h.Connection.CreateCommand();
 
             command.Transaction = transaction;
 
             command.CommandText = $"""
-                SELECT node.MemoryId, bm25(long_rest_clean_fts) FROM long_rest_clean_fts
+                SELECT node.MemoryId, long_rest_clean_fts.Content FROM long_rest_clean_fts
                 JOIN long_rest_discovery_nodes node ON node.NodeId = long_rest_clean_fts.NodeId AND node.GenerationId = long_rest_clean_fts.GenerationId
-                WHERE long_rest_clean_fts MATCH $query AND node.GenerationId = $generation AND node.Layer = 0
+                WHERE long_rest_clean_fts MATCH $match AND node.GenerationId = $generation AND node.Layer = 0
                 ORDER BY node.MemoryId {order};
                 """;
 
-            command.Parameters.AddWithValue("$query", "\"opal\"");
+            command.Parameters.AddWithValue("$match", LongRestLexicalScorer.MatchExpression(generation.GenerationId, terms));
 
             command.Parameters.AddWithValue("$generation", generation.GenerationId.ToString("D").ToUpperInvariant());
 
-            await using SqliteDataReader reader = await command.ExecuteReaderAsync();
-
-            while (await reader.ReadAsync())
+            await using (SqliteDataReader reader = await command.ExecuteReaderAsync())
             {
-                result.Add(new(targets[reader.GetString(0)], LongRestDiscoveryLane.Lexical, reader.GetDouble(1)));
+                while (await reader.ReadAsync())
+                {
+                    hits.Add((reader.GetString(0), LongRestLexicalScorer.Profile(reader.GetString(1), terms)));
+                }
+            }
+
+            ImmutableArray<int> weights = LongRestLexicalScorer.Weights(rows.Count, [hits.Count(hit => hit.Document.Frequencies[0] > 0)]);
+
+            foreach ((string memory, LongRestLexicalDocument document) in hits)
+            {
+                result.Add(new(targets[memory], LongRestDiscoveryLane.Lexical, -(double)LongRestLexicalScorer.Score(weights, document)));
             }
 
             return result;
         }
     }
-
 }

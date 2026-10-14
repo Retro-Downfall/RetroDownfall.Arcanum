@@ -10,6 +10,7 @@ using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.LongRest;
 using RetroDownfall.Arcanum.Core.Operations;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.Tower;
 using RetroDownfall.Arcanum.Infrastructure.Covenant;
@@ -161,6 +162,15 @@ public sealed partial class LongRestMaintenanceTests
 
         private LongRestProviderClientFactory? _clientFactory;
 
+        /// <summary>Resolves the provider credential for every send; a test may replace it before the first send to refuse one locally.</summary>
+        internal IProviderApiKeyResolver Keys = new LongRestProviderFixture.NoKeys();
+
+        /// <summary>The client factory is built with the fixture; it asks <see cref="Keys"/> afresh at every resolution.</summary>
+        private sealed class LateKeys(MaintenanceFixture f) : IProviderApiKeyResolver
+        {
+            public Task<string?> ResolveAsync(ProviderSettings provider, CancellationToken cancellationToken = default) => f.Keys.ResolveAsync(provider, cancellationToken);
+        }
+
         internal ServiceProvider Services = null!;
 
         internal DurableJournal Journal = null!;
@@ -180,9 +190,12 @@ public sealed partial class LongRestMaintenanceTests
         internal LongRunningOperationOwnership Ownership = new();
 
         internal static async Task<MaintenanceFixture> CreateAsync(bool ownWorker = true, TimeProvider? clock = null, bool campaign = false,
-            bool protectedSources = true, bool exact = false, int sourceCount = 2, Action<ArcanumSettings>? configure = null)
+            bool protectedSources = true, bool exact = false, int sourceCount = 2, Action<ArcanumSettings>? configure = null, Func<int, string>? sourceText = null,
+            Func<int, Guid>? sourceId = null, bool sessionless = false)
         {
             MaintenanceFixture f = new();
+
+            if (sourceId is not null) f.Source = sourceId(0).ToString("D");
 
             f.Clock = clock ?? TimeProvider.System;
 
@@ -210,23 +223,24 @@ public sealed partial class LongRestMaintenanceTests
 
             await f.InitializeRuntimeAsync();
 
-            await f.H.SeedAsync(f.Source, "Alpha observation.", f.SourceSession);
+            // A Session-less Global source is valid, and is the only kind that can repeat another's exact text: a Session keeps one row per text.
+            await f.H.SeedAsync(f.Source, sourceText?.Invoke(0) ?? "Alpha observation.", sessionless ? null : f.SourceSession);
 
-            Guid second = Guid.NewGuid();
+            Guid second = sourceId?.Invoke(1) ?? Guid.NewGuid();
 
-            Guid secondSession = exact ? await f.H.SessionAsync(f.CampaignId) : f.SourceSession;
+            Guid? secondSession = sessionless ? null : exact ? await f.H.SessionAsync(f.CampaignId) : f.SourceSession;
 
-            await f.H.SeedAsync(second.ToString("D"), exact ? "Alpha observation." : "Beta observation.", secondSession);
+            await f.H.SeedAsync(second.ToString("D"), sourceText?.Invoke(1) ?? (exact ? "Alpha observation." : "Beta observation."), secondSession);
 
             List<Guid> additional = [];
 
             for (int index = 2; index < sourceCount; index++)
             {
-                Guid id = Guid.NewGuid();
+                Guid id = sourceId?.Invoke(index) ?? Guid.NewGuid();
 
                 additional.Add(id);
 
-                await f.H.SeedAsync(id.ToString("D"), $"Observation number {index}.", f.SourceSession);
+                await f.H.SeedAsync(id.ToString("D"), sourceText?.Invoke(index) ?? $"Observation number {index}.", sessionless ? null : f.SourceSession);
             }
 
             Assert.Equal((long)sourceCount, await f.H.ScalarAsync("SELECT count(*) FROM long_rest_sources;"));
@@ -386,7 +400,7 @@ public sealed partial class LongRestMaintenanceTests
 
             ModelTokenEstimator estimator = new(new InferenceTokenizerResolver(NullLogger<InferenceTokenizerResolver>.Instance));
 
-            _clientFactory ??= new(new LongRestProviderFixture.NoKeys(), Handler);
+            _clientFactory ??= new(new LateKeys(this), Handler);
 
             LongRestProvider provider = new(_clientFactory,
                 new ModelCallExecutor(estimator, Options), Epoch, new PaidWriter(new TurnRunWriter(H.Saga.Context), () => PaidRecorded?.Invoke(), () => Completing?.Invoke()),

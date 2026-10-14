@@ -1260,6 +1260,15 @@ public static class ErrorCodes
         /// written to the settled attempt, and the code a work unit parks under once it has spent its allowance of unknown attempts.
         /// </summary>
         public const string TransportUnknown = "LongRest.TransportUnknown";
+
+        /// <summary>
+        /// The configured model cannot take a Long Rest unit: the chat provider's context window leaves no room for the smallest
+        /// recipe, the embedding provider's window cannot hold one summary, or a hierarchy child or an admitted request does not
+        /// fit the window the recipe was derived from. It is raised before any provider-effect row or accounting run exists. A
+        /// fold cannot skip a child, so only an operator can clear it: raise the provider's <c>contextWindowLimit</c>, choose a
+        /// model with a larger window, or retire an oversized memory.
+        /// </summary>
+        public const string ModelContextTooSmall = "LongRest.ModelContextTooSmall";
     }
 
 }

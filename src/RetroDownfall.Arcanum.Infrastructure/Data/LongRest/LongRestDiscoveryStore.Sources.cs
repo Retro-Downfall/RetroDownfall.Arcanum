@@ -38,7 +38,16 @@ internal sealed partial class LongRestDiscoveryStore
                 AND label.SensitivityDigest = $partition)))
         """;
 
-    // Scope and partition eligibility precede pagination. No source text or vector is selected here.
+    // A source takes part in a sweep only while it is neither pinned, nor retired, nor suppressed by a consolidation of its current version.
+    // None of those can be an anchor or a neighbour, so none is captured: it is not a leaf, is never folded or summarized, and its text is never
+    // sent to a provider. The protected partition scan and the completed-corpus proof read this same definition, so the corpus a sweep captures,
+    // the partitions that exist and the debt a completed sweep must have covered are the same sources.
+    private const string SourceLifecycleEligible = """
+        memory.PinnedAtUtc IS NULL AND memory.RetiredAtUtc IS NULL
+        AND NOT EXISTS (SELECT 1 FROM long_rest_suppressions WHERE SourceVersionId = head.CurrentVersionId)
+        """;
+
+    // Scope, lifecycle and partition eligibility precede pagination. No source text or vector is selected here.
     private static readonly string EligibleSources = $"""
         FROM long_rest_sources source
         JOIN saga_memories memory ON memory.Id = source.MemoryId
@@ -47,6 +56,7 @@ internal sealed partial class LongRestDiscoveryStore
         LEFT JOIN annal_versions version ON version.VersionId = head.CurrentVersionId
         WHERE source.InsertionSequence <= $highwater AND ($cursor IS NULL OR source.MemoryId > $cursor)
             AND memory.ScopeKindCode = $scope AND memory.CampaignId IS $campaign
+            AND {SourceLifecycleEligible}
             AND ({SourceOwnerEligible})
             AND ({PartitionEligibility})
         """;

@@ -27,5 +27,15 @@ public interface ILongRestAttemptStore
     /// </summary>
     Task<Result<LongRestDispatchAttempt>> SettleUnresolvedSendAsync(LongRestDispatchAttempt attempt, LongRestUnresolvedSend outcome, CancellationToken ct);
 
+    /// <summary>
+    /// Withdraws a <c>Prepared</c> attempt that no request ever followed: the provider call ended, with a refusal or a failure, before
+    /// the physical send was recorded. Nothing reached the provider, so nothing is owed to a reboot settlement and a same-boot clean
+    /// readmission must not be stopped by the row. A unit that had never sent returns to having no attempt at all. A unit whose earlier
+    /// attempts did send keeps their counters and becomes the failed shape of a send that never left the process
+    /// (<see cref="LongRestUnresolvedSend.NotSent"/>): no failure is charged toward the Unknown-Usage Cap. Only the exact current
+    /// <c>Prepared</c> attempt without a disclosure receipt can be withdrawn; a disclosed or sent attempt is never touched.
+    /// </summary>
+    Task<Result> ReleaseUnsentAttemptAsync(LongRestDispatchAttempt attempt, CancellationToken ct);
+
     Task<Result> ValidateAttemptAsync(LongRestDispatchAttempt attempt, CancellationToken ct);
 }

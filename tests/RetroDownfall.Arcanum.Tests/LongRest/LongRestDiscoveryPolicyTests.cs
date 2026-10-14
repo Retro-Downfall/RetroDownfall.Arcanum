@@ -171,9 +171,54 @@ public sealed class LongRestDiscoveryPolicyTests
 
         Assert.True(LongRestDiscoveryHash.Recipe(recipe with { ProviderInputUtf8Bytes = 32769 }).IsFailure);
 
+        // The lexical relevance floor is a code-owned bound that the recipe binds: any other value is not this code's recipe.
+        Assert.True(LongRestDiscoveryHash.Recipe(recipe with { LexicalMinimumScore = LongRestDiscoveryLimits.LexicalMinimumScore - 1 }).IsFailure);
+
+        Assert.True(LongRestDiscoveryHash.Recipe(recipe with { LexicalMinimumScore = LongRestDiscoveryLimits.LexicalMinimumScore + 1 }).IsFailure);
+
+        Assert.True(LongRestDiscoveryHash.Recipe(recipe with { LexicalMinimumScore = 0 }).IsFailure);
+
         Assert.True(LongRestDiscoveryHash.Recipe(recipe with { SummaryProvider = " " }).IsFailure);
 
         Assert.NotEqual(LongRestDiscoveryHash.Recipe(recipe).Value, LongRestDiscoveryHash.Recipe(recipe with { EmbeddingModel = "different-model" }).Value);
+    }
+
+    // Independently assembled preimages (Python struct.pack and hashlib.sha256): the bounds, the cosine bits, the lexical relevance floor, the
+    // adjudication recipe version and then the lexical scorer version, each a final Int32BE. The same script reproduces the digests this recipe
+    // had before the scorer version joined it (4D6E446D...2DE6 at 32768, D63F0590...E300 at 4096, 12B5D17E...5CD3 at 5328, D1FC022C...3D53 at
+    // 20000), so only the appended version moved them.
+    [Theory]
+    [InlineData(32768, "CF9B0D84FBD2D8B8CB823EE814682AC04DAF9F4CE8E93EE72564CDDEAA7AB054")]
+    [InlineData(4096, "7BDFE21E16400AF08D5B049F1F2D7207C842264649D5E4993302D8C6BABAF5B0")]
+    [InlineData(5328, "226A14F8FE41E3E1DE3A8C777D52B75C2BB9C64552C02E2DCEAA7FE75B4D4A37")]
+    [InlineData(20000, "9264684CE4CCD0DEC51CD1C17994BF9544C60321BFC4AF7429A09EEDA80925D2")]
+    public void Recipe_digest_golden_vectors_pin_the_default_the_window_derived_budgets_the_floor_and_the_versions(int budget, string expected)
+    {
+        CovenantDigest digest = new(new byte[32]);
+
+        LongRestRecipeIdentity recipe = new LongRestRecipeIdentity(1, 1, "summary-provider", "summary-model", digest, "embedding-provider", "embedding-model", digest, 17) with { ProviderInputUtf8Bytes = budget };
+
+        Assert.Equal(expected, LongRestDiscoveryHash.Recipe(recipe).Value.ToString());
+    }
+
+    [Theory]
+    [InlineData(4096, true)]
+    [InlineData(4097, true)]
+    [InlineData(32767, true)]
+    [InlineData(32768, true)]
+    [InlineData(4095, false)]
+    [InlineData(32769, false)]
+    [InlineData(0, false)]
+    [InlineData(-1, false)]
+    [InlineData(int.MinValue, false)]
+    [InlineData(int.MaxValue, false)]
+    public void Recipe_accepts_exactly_the_input_budgets_from_the_minimum_recipe_to_the_32_KiB_ceiling(int budget, bool valid)
+    {
+        CovenantDigest digest = new(new byte[32]);
+
+        LongRestRecipeIdentity recipe = new LongRestRecipeIdentity(1, 1, "summary-provider", "summary-model", digest, "embedding-provider", "embedding-model", digest, 17) with { ProviderInputUtf8Bytes = budget };
+
+        Assert.Equal(valid, LongRestDiscoveryHash.Recipe(recipe).IsSuccess);
     }
 
     [Fact]
@@ -191,9 +236,9 @@ public sealed class LongRestDiscoveryPolicyTests
 
         work = work with { SourceDigest = LongRestDiscoveryHash.SourcePage(work.Scope, [leaf]).Value };
 
-        LongRestProviderPayload payload = LongRestProviderPayload.Adjudication(work, [leaf]).Value;
+        LongRestProviderPayload payload = LongRestProviderPayload.Adjudication(work, [leaf], LongRestDiscoveryLimits.ProviderInputUtf8Bytes).Value;
 
-        Assert.True(LongRestProviderPayload.Adjudication(work, [.. Enumerable.Range(0, 17).Select(index => Leaf($"memory-{index}", $"version-{index}", index + 1) with { Content = "source" })]).IsFailure);
+        Assert.True(LongRestProviderPayload.Adjudication(work, [.. Enumerable.Range(0, 17).Select(index => Leaf($"memory-{index}", $"version-{index}", index + 1) with { Content = "source" })], LongRestDiscoveryLimits.ProviderInputUtf8Bytes).IsFailure);
 
         LongRestDependency edge = new("dependency", AnnalDependencyRelation.DerivedFrom, 1);
 
@@ -203,7 +248,7 @@ public sealed class LongRestDiscoveryPolicyTests
 
         work = work with { SourceDigest = LongRestDiscoveryHash.SourcePage(work.Scope, [leaf]).Value };
 
-        payload = LongRestProviderPayload.Adjudication(work, [leaf]).Value;
+        payload = LongRestProviderPayload.Adjudication(work, [leaf], LongRestDiscoveryLimits.ProviderInputUtf8Bytes).Value;
 
         edges[0] = edge with { VersionId = "changed" };
 
@@ -219,11 +264,11 @@ public sealed class LongRestDiscoveryPolicyTests
 
         work = work with { SourceDigest = LongRestDiscoveryHash.SourcePage(work.Scope, [leaf]).Value };
 
-        Assert.True(LongRestProviderPayload.Adjudication(work, [leaf]).IsSuccess);
+        Assert.True(LongRestProviderPayload.Adjudication(work, [leaf], LongRestDiscoveryLimits.ProviderInputUtf8Bytes).IsSuccess);
 
-        Assert.True(LongRestProviderPayload.Adjudication(work with { SourceDigest = new CovenantDigest(new byte[32]) }, [leaf]).IsFailure);
+        Assert.True(LongRestProviderPayload.Adjudication(work with { SourceDigest = new CovenantDigest(new byte[32]) }, [leaf], LongRestDiscoveryLimits.ProviderInputUtf8Bytes).IsFailure);
 
-        Assert.True(LongRestProviderPayload.Adjudication(work, [leaf with { MutationEpoch = 2 }]).IsFailure);
+        Assert.True(LongRestProviderPayload.Adjudication(work, [leaf with { MutationEpoch = 2 }], LongRestDiscoveryLimits.ProviderInputUtf8Bytes).IsFailure);
     }
 
     [Fact]
@@ -239,13 +284,13 @@ public sealed class LongRestDiscoveryPolicyTests
 
         fold = fold with { Work = work with { SourceDigest = LongRestDiscoveryHash.HierarchyFold(fold).Value } };
 
-        Assert.True(LongRestProviderPayload.Summary(fold).IsSuccess);
+        Assert.True(LongRestProviderPayload.Summary(fold, LongRestDiscoveryLimits.ProviderInputUtf8Bytes).IsSuccess);
 
         GenerationProvenance provenance = GenerationProvenance.CreateExact([Guid.Parse("22222222-2222-4222-8222-222222222222")]);
 
         child = child with { Sensitivity = ContentSensitivity.CovenantDerived, Provenance = provenance, LabelDigests = [digest] };
 
-        Assert.True(LongRestProviderPayload.Summary(fold with { Children = [child] }).IsFailure);
+        Assert.True(LongRestProviderPayload.Summary(fold with { Children = [child] }, LongRestDiscoveryLimits.ProviderInputUtf8Bytes).IsFailure);
 
         LongRestSweepScope protectedScope = LongRestSweepScope.Create(new(LongRestSweepScopeKind.Global, null), CovenantDigests.Sensitivity(provenance.ToDigestInput(ContentSensitivity.CovenantDerived))).Value;
 
@@ -253,13 +298,13 @@ public sealed class LongRestDiscoveryPolicyTests
 
         fold = fold with { Work = fold.Work with { SourceDigest = LongRestDiscoveryHash.HierarchyFold(fold).Value } };
 
-        Assert.True(LongRestProviderPayload.Summary(fold).IsSuccess);
+        Assert.True(LongRestProviderPayload.Summary(fold, LongRestDiscoveryLimits.ProviderInputUtf8Bytes).IsSuccess);
 
-        Assert.True(LongRestProviderPayload.Summary(fold with { Children = [child with { LabelDigests = [] }] }).IsFailure);
+        Assert.True(LongRestProviderPayload.Summary(fold with { Children = [child with { LabelDigests = [] }] }, LongRestDiscoveryLimits.ProviderInputUtf8Bytes).IsFailure);
 
-        Assert.True(LongRestProviderPayload.Summary(fold with { Children = [child with { Provenance = GenerationProvenance.CreateExact([Guid.NewGuid()]) }] }).IsFailure);
+        Assert.True(LongRestProviderPayload.Summary(fold with { Children = [child with { Provenance = GenerationProvenance.CreateExact([Guid.NewGuid()]) }] }, LongRestDiscoveryLimits.ProviderInputUtf8Bytes).IsFailure);
 
-        Assert.True(LongRestProviderPayload.Summary(fold with { Children = [child, child with { NodeId = Guid.NewGuid(), Sensitivity = ContentSensitivity.None, Provenance = GenerationProvenance.CreateExact([]), LabelDigests = [] }] }).IsFailure);
+        Assert.True(LongRestProviderPayload.Summary(fold with { Children = [child, child with { NodeId = Guid.NewGuid(), Sensitivity = ContentSensitivity.None, Provenance = GenerationProvenance.CreateExact([]), LabelDigests = [] }] }, LongRestDiscoveryLimits.ProviderInputUtf8Bytes).IsFailure);
     }
 
     [Fact]
@@ -332,9 +377,9 @@ public sealed class LongRestDiscoveryPolicyTests
 
         fold = fold with { Work = fold.Work with { SourceDigest = LongRestDiscoveryHash.HierarchyFold(fold).Value } };
 
-        Assert.True(LongRestProviderPayload.Summary(fold).IsSuccess);
+        Assert.True(LongRestProviderPayload.Summary(fold, LongRestDiscoveryLimits.ProviderInputUtf8Bytes).IsSuccess);
 
-        Assert.True(LongRestProviderPayload.Summary(fold with { Work = fold.Work with { SourceDigest = new CovenantDigest(Enumerable.Range(1, 32).Select(value => (byte)value).ToArray()) } }).IsFailure);
+        Assert.True(LongRestProviderPayload.Summary(fold with { Work = fold.Work with { SourceDigest = new CovenantDigest(Enumerable.Range(1, 32).Select(value => (byte)value).ToArray()) } }, LongRestDiscoveryLimits.ProviderInputUtf8Bytes).IsFailure);
     }
 
     private static LongRestHierarchyFold Fold()
@@ -389,7 +434,7 @@ public sealed class LongRestDiscoveryPolicyTests
 
         work = work with { SourceDigest = LongRestDiscoveryHash.SourcePage(work.Scope, [leaf]).Value };
 
-        LongRestProviderPayload payload = LongRestProviderPayload.Adjudication(work, [leaf]).Value;
+        LongRestProviderPayload payload = LongRestProviderPayload.Adjudication(work, [leaf], LongRestDiscoveryLimits.ProviderInputUtf8Bytes).Value;
 
         LongRestSnapshot exposed = payload.Inputs[0].Snapshot;
 

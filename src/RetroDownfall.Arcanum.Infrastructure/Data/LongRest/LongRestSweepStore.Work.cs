@@ -8,14 +8,70 @@ using Microsoft.Data.Sqlite;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.LongRest;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.Telemetry;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Data.LongRest;
 
 internal sealed partial class LongRestSweepStore
 {
-    public Task<Result<LongRestSweepWork?>> ReadNextWorkAsync(LongRestSweep expected, LongRestMaintenanceCapability? capability, CancellationToken ct) =>
+    // What one read counted while it ran. A read can run more than once (a busy retry) and can fail after counting (a rollback), so the
+    // numbers are kept here and published only when the transaction that produced them has committed.
+    private sealed class PendingWorkCounts
+    {
+        internal int Oversize;
+
+        internal int PackLimit;
+
+        internal int Reused;
+
+        internal void Reset()
+        {
+            Oversize = 0;
+
+            PackLimit = 0;
+
+            Reused = 0;
+        }
+
+        internal void Publish()
+        {
+            if (Oversize > 0)
+            {
+                ArcanumMetrics.LongRestPackSkippedCandidatesTotal.Add(Oversize, new KeyValuePair<string, object?>("reason", "oversize"));
+            }
+
+            if (PackLimit > 0)
+            {
+                ArcanumMetrics.LongRestPackSkippedCandidatesTotal.Add(PackLimit, new KeyValuePair<string, object?>("reason", "pack_limit"));
+            }
+
+            if (Reused > 0)
+            {
+                ArcanumMetrics.LongRestReusedDecisionsTotal.Add(Reused);
+            }
+        }
+    }
+
+    public async Task<Result<LongRestSweepWork?>> ReadNextWorkAsync(LongRestSweep expected, LongRestMaintenanceCapability? capability, CancellationToken ct)
+    {
+        PendingWorkCounts counts = new();
+
+        Result<LongRestSweepWork?> read = await ReadNextWorkWithinAsync(expected, capability, counts, ct).ConfigureAwait(false);
+
+        if (read.IsSuccess)
+        {
+            counts.Publish();
+        }
+
+        return read;
+    }
+
+    private Task<Result<LongRestSweepWork?>> ReadNextWorkWithinAsync(LongRestSweep expected, LongRestMaintenanceCapability? capability,
+        PendingWorkCounts counts, CancellationToken ct) =>
         WithinAsync<LongRestSweepWork?>(async (connection, transaction) =>
     {
+        counts.Reset();
+
         LongRestDiscoveryGeneration generation = await RequireGenerationAsync(connection, transaction, expected, capability, ct).ConfigureAwait(false);
 
         if (expected.Phase == LongRestSweepPhase.Completed)
@@ -111,7 +167,9 @@ internal sealed partial class LongRestSweepStore
                     throw new InvalidDataException();
                 }
 
-                if (found.Value.Length == 0)
+                ImmutableArray<ImmutableArray<LongRestSourceLeaf>> packs = await PackAsync(connection, transaction, generation, anchor, found.Value, capability, counts, ct).ConfigureAwait(false);
+
+                if (packs.Length == 0)
                 {
                     await AdvanceDiscoveryAsync(connection, transaction, expected, generation, storedDiscoveryCursor, cursor,
                         complete: false, capability, ct).ConfigureAwait(false);
@@ -121,26 +179,37 @@ internal sealed partial class LongRestSweepStore
 
                 string prefix = Convert.ToHexString(SHA256.HashData(new UTF8Encoding(false, true).GetBytes(memory)));
 
-                for (int index = 0; index < found.Value.Length; index++)
+                int queued = 0;
+
+                for (int index = 0; index < packs.Length; index++)
                 {
-                    ImmutableArray<LongRestSourceLeaf>.Builder leaves = ImmutableArray.CreateBuilder<LongRestSourceLeaf>();
-
-                    foreach (LongRestTarget target in found.Value[index].Targets)
-                    {
-                        LongRestSourceLeaf leaf = await LongRestDiscoveryStore.ReadSweepLeafAsync(connection, transaction, generation, target.MemoryId, capability, ct).ConfigureAwait(false);
-
-                        if (leaf.Target != target)
-                        {
-                            throw new InvalidDataException();
-                        }
-
-                        leaves.Add(leaf);
-                    }
-
-                    ImmutableArray<LongRestSourceLeaf> inputs = leaves.ToImmutable();
+                    ImmutableArray<LongRestSourceLeaf> inputs = packs[index];
 
                     LongRestWorkIdentity work = new(generation.GenerationId, generation.OperationId, prefix + ":" + index.ToString("D2", System.Globalization.CultureInfo.InvariantCulture),
                         LongRestWorkKind.Anchor, generation.Scope, generation.Fence, LongRestDiscoveryHash.SourcePage(generation.Scope, inputs).Value, LongRestDiscoveryHash.Recipe(generation.Recipe).Value);
+
+                    // The digest is of the set, whichever member it was found from, and the recipe binds the request text, so a set this generation has
+                    // already decided NoChange under this recipe is the same question with the same answer: no work item and no request. Only that
+                    // decision is reused: an applied one has consolidated its members, which changes the set's digest.
+                    bool decided;
+
+                    await using (SqliteCommand lookup = Command(connection, transaction, """
+                        SELECT EXISTS (SELECT 1 FROM long_rest_work_items item JOIN long_rest_adjudications accepted ON accepted.WorkItemId = item.WorkItemId
+                            WHERE item.GenerationId = $generation AND item.KindCode = 3 AND item.DispositionCode = 2
+                                AND item.SourceDigest = $source AND item.RecipeDigest = $recipe AND accepted.DecisionKindCode = 3);
+                        """, ("$generation", Format(generation.GenerationId)), ("$source", work.SourceDigest.Bytes), ("$recipe", work.RecipeDigest.Bytes)))
+                    {
+                        decided = (long)(await lookup.ExecuteScalarAsync(ct).ConfigureAwait(false))! == 1;
+                    }
+
+                    if (decided)
+                    {
+                        counts.Reused++;
+
+                        continue;
+                    }
+
+                    queued++;
 
                     string unit = Format(Guid.NewGuid());
 
@@ -159,10 +228,65 @@ internal sealed partial class LongRestSweepStore
                     pending ??= work.ItemId;
                 }
 
+                if (queued == 0)
+                {
+                    await AdvanceDiscoveryAsync(connection, transaction, expected, generation, storedDiscoveryCursor, cursor,
+                        complete: false, capability, ct).ConfigureAwait(false);
+
+                    return null;
+                }
+
                 break;
             }
         }
     }, ct);
+
+    /// <summary>
+    /// Loads the exact leaves of every discovered neighbour and packs them behind the anchor so that each pack renders within the
+    /// recipe's input budget. A neighbour left out is counted by reason and never by identity, in <paramref name="counts"/>, which the
+    /// caller publishes once the transaction has committed.
+    /// </summary>
+    private static async Task<ImmutableArray<ImmutableArray<LongRestSourceLeaf>>> PackAsync(SqliteConnection connection, SqliteTransaction transaction,
+        LongRestDiscoveryGeneration generation, LongRestSourceLeaf anchor, LongRestCandidateGroup[] groups, LongRestMaintenanceCapability? capability,
+        PendingWorkCounts counts, CancellationToken ct)
+    {
+        ImmutableArray<LongRestSourceLeaf>.Builder neighbors = ImmutableArray.CreateBuilder<LongRestSourceLeaf>();
+
+        foreach (LongRestCandidateGroup group in groups)
+        {
+            if (group.Targets.Length < 2 || group.Targets[0] != anchor.Target)
+            {
+                throw new InvalidDataException();
+            }
+
+            for (int ordinal = 1; ordinal < group.Targets.Length; ordinal++)
+            {
+                LongRestTarget target = group.Targets[ordinal];
+
+                LongRestSourceLeaf leaf = await LongRestDiscoveryStore.ReadSweepLeafAsync(connection, transaction, generation, target.MemoryId, capability, ct).ConfigureAwait(false);
+
+                if (leaf.Target != target)
+                {
+                    throw new InvalidDataException();
+                }
+
+                neighbors.Add(leaf);
+            }
+        }
+
+        Result<LongRestGroupPacking> packing = LongRestGroupPacker.Pack(anchor, neighbors.ToImmutable(), generation.Recipe.ProviderInputUtf8Bytes);
+
+        if (packing.IsFailure)
+        {
+            throw new InvalidDataException();
+        }
+
+        counts.Oversize += packing.Value.SkippedOversize;
+
+        counts.PackLimit += packing.Value.SkippedPackLimit;
+
+        return packing.Value.Packs;
+    }
 
     private async Task AdvanceDiscoveryAsync(SqliteConnection connection, SqliteTransaction transaction, LongRestSweep expected,
         LongRestDiscoveryGeneration generation, string? previous, string? cursor, bool complete,

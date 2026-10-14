@@ -1,7 +1,6 @@
 using System.Buffers.Binary;
 using System.Collections.Immutable;
 using System.Security.Cryptography;
-using System.Text;
 
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -11,15 +10,29 @@ namespace RetroDownfall.Arcanum.Core.LongRest;
 
 public sealed record LongRestHierarchyInput(LongRestHierarchyChild Child, ImmutableArray<float> Vector);
 
-/// <summary>Deterministic bounded page planning. A one-child group carries the original node.</summary>
+/// <summary>
+/// Deterministic bounded page planning. A one-child group carries the original node. A child too large to sit in any summary request of the
+/// recipe's input budget, even with one companion, is never folded: it is carried as a one-child group like any child that found no
+/// companion, so the forest still covers it exactly once and no other child is held back by it.
+/// </summary>
 public static class LongRestHierarchy
 {
-    private static readonly UTF8Encoding StrictUtf8 = new(false, true);
+    /// <summary>
+    /// True when <paramref name="child"/> cannot be summarized within <paramref name="inputBudgetBytes"/> at all: even a summary request
+    /// that holds nothing else is over the budget. Such a child is carried unsummarized.
+    /// </summary>
+    public static bool IsOversize(LongRestHierarchyChild child, int inputBudgetBytes)
+    {
+        ArgumentNullException.ThrowIfNull(child);
+
+        return LongRestPromptLayout.FixedBytes(LongRestProviderPayloadKind.Summary) + LongRestPromptLayout.SummaryObservationBytes(child.Content) > inputBudgetBytes;
+    }
 
     public static Result<ImmutableArray<ImmutableArray<LongRestHierarchyChild>>> PlanPage(
-        ImmutableArray<LongRestHierarchyInput> page, int layer, CovenantDigest recipe, CancellationToken cancellationToken)
+        ImmutableArray<LongRestHierarchyInput> page, int layer, CovenantDigest recipe, int inputBudgetBytes, CancellationToken cancellationToken)
     {
         if (page.IsDefault || page.Length > LongRestDiscoveryLimits.SourcePage || layer is < 1 or > 6 || !recipe.IsValid
+            || inputBudgetBytes is < LongRestPromptLayout.MinimumInputUtf8Bytes or > LongRestDiscoveryLimits.ProviderInputUtf8Bytes
             || page.Any(input => input is null || input.Child is null || input.Child.Layer < 0 || input.Child.Layer >= layer)
             || page.Select(input => input.Child.NodeId).Distinct().Count() != page.Length)
         {
@@ -71,30 +84,43 @@ public static class LongRestHierarchy
 
                 List<List<LongRestHierarchyChild>> partitionGroups = [];
 
+                List<LongRestHierarchyChild> oversize = [];
+
+                // A fold is the fixed summary prompt plus one observation block per child, and must render within the budget.
+                long fixedBytes = LongRestPromptLayout.FixedBytes(LongRestProviderPayloadKind.Summary);
+
                 foreach (IReadOnlyList<string> membership in memberships)
                 {
                     List<LongRestHierarchyChild> current = [];
 
-                    int bytes = 0;
+                    long bytes = fixedBytes;
 
                     foreach (string member in membership)
                     {
                         LongRestHierarchyChild child = children[member];
 
-                        int count = StrictUtf8.GetByteCount(child.Content);
-
-                        if (string.IsNullOrWhiteSpace(child.Content) || count > LongRestDiscoveryLimits.ProviderInputUtf8Bytes)
+                        if (string.IsNullOrWhiteSpace(child.Content))
                         {
-                            return Invalid("An empty or oversized child cannot disappear behind the fold cursor.");
+                            return Invalid("An empty child cannot disappear behind the fold cursor.");
                         }
 
-                        if (current.Count == LongRestDiscoveryLimits.HierarchyChildren || bytes + count > LongRestDiscoveryLimits.ProviderInputUtf8Bytes)
+                        long count = LongRestPromptLayout.SummaryObservationBytes(child.Content);
+
+                        if (fixedBytes + count > inputBudgetBytes)
+                        {
+                            // No request can hold it, so it takes no part in the folds around it and is carried on its own.
+                            oversize.Add(child);
+
+                            continue;
+                        }
+
+                        if (current.Count == LongRestDiscoveryLimits.HierarchyChildren || bytes + count > inputBudgetBytes)
                         {
                             partitionGroups.Add(current);
 
                             current = [];
 
-                            bytes = 0;
+                            bytes = fixedBytes;
                         }
 
                         current.Add(child);
@@ -119,7 +145,8 @@ public static class LongRestHierarchy
 
                     int destination = partitionGroups.FindIndex(group => !ReferenceEquals(group, partitionGroups[index])
                         && group.Count < LongRestDiscoveryLimits.HierarchyChildren
-                        && group.Sum(child => StrictUtf8.GetByteCount(child.Content)) + StrictUtf8.GetByteCount(single.Content) <= LongRestDiscoveryLimits.ProviderInputUtf8Bytes);
+                        && fixedBytes + group.Sum(child => LongRestPromptLayout.SummaryObservationBytes(child.Content))
+                            + LongRestPromptLayout.SummaryObservationBytes(single.Content) <= inputBudgetBytes);
 
                     if (destination >= 0)
                     {
@@ -130,6 +157,8 @@ public static class LongRestHierarchy
                 }
 
                 groups.AddRange(partitionGroups.Select(group => group.OrderBy(child => ChildId(child), StringComparer.Ordinal).ToImmutableArray()));
+
+                groups.AddRange(oversize.Select(child => ImmutableArray.Create(child)));
             }
 
             return groups.OrderBy(group => ChildId(group[0]), StringComparer.Ordinal).ToImmutableArray();

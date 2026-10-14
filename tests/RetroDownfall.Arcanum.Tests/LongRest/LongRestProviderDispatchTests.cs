@@ -245,7 +245,6 @@ public sealed class LongRestProviderDispatchTests
             if (invalidation == "owner") await f.InvalidateOwnerAsync();
 
             if (invalidation is "config" or "gate" or "model" or "covenant") f.Aba(invalidation == "gate", invalidation);
-
         };
 
         if (invalidation == "cancellation") f.PaidRecorded = cancel.Cancel;
@@ -539,7 +538,7 @@ internal sealed class LongRestProviderFixture : IAsyncDisposable
 
         f.Payload = kind == LongRestProviderPayloadKind.Embedding
             ? LongRestProviderPayload.Embedding(work.Fold.Work, "Accepted summary.\n").Value
-            : LongRestProviderPayload.Summary(work.Fold).Value;
+            : LongRestProviderPayload.Summary(work.Fold, LongRestDiscoveryLimits.ProviderInputUtf8Bytes).Value;
 
         if (kind == LongRestProviderPayloadKind.Adjudication)
         {
@@ -564,7 +563,7 @@ internal sealed class LongRestProviderFixture : IAsyncDisposable
 
             LongRestSweepWork next = LongRestSweepHarness.Require(await sweeps.ReadNextWorkAsync(sweep, f.Capability, CancellationToken.None))!;
 
-            f.Payload = LongRestProviderPayload.Adjudication(next.Identity, next.Inputs).Value;
+            f.Payload = LongRestProviderPayload.Adjudication(next.Identity, next.Inputs, LongRestDiscoveryLimits.ProviderInputUtf8Bytes).Value;
         }
 
         _ = page;
@@ -738,6 +737,7 @@ internal sealed class LongRestProviderFixture : IAsyncDisposable
 
             return Task.CompletedTask;
         }
+
         public Task<IReadOnlyList<InferenceAuditRecord>> QueryAsync(DateTimeOffset? from, DateTimeOffset? to, string? model, string? sessionId, int limit, CancellationToken cancellationToken) => throw new NotSupportedException();
 
         public Task<Result<AuditQueryPage<InferenceAuditRecord>>> QueryPageAsync(DateTimeOffset? from, DateTimeOffset? to, string? model, string? sessionId, int limit, string? cursor, CancellationToken cancellationToken) => throw new NotSupportedException();
@@ -778,6 +778,9 @@ internal sealed class LongRestProviderFixture : IAsyncDisposable
 
         internal string? InvalidVector;
 
+        /// <summary>When set, the 64-wide vector the provider embeds a request body to; by default every input embeds to one ascending vector.</summary>
+        internal Func<string, float[]>? VectorFor;
+
         internal Func<Task>? InsideSend;
 
         internal Func<CancellationToken, Task>? InsideSendWithCancellation;
@@ -802,7 +805,7 @@ internal sealed class LongRestProviderFixture : IAsyncDisposable
             if (Status != HttpStatusCode.OK) response = """{"error":{"message":"strict unsupported protected-test-body","type":"provider_error","code":"test"}}""";
             else if (request.RequestUri!.AbsolutePath.EndsWith("embeddings", StringComparison.Ordinal))
             {
-                float[] vector = Enumerable.Range(1, InvalidVector == "dimensions" ? 63 : 64).Select(i => (float)i).ToArray();
+                float[] vector = VectorFor is null ? Enumerable.Range(1, InvalidVector == "dimensions" ? 63 : 64).Select(i => (float)i).ToArray() : VectorFor(LastBody!);
 
                 if (InvalidVector == "nonfinite") vector[1] = float.NaN;
 

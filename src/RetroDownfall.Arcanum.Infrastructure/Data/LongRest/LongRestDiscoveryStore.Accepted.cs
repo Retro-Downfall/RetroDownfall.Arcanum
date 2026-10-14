@@ -275,11 +275,8 @@ internal sealed partial class LongRestDiscoveryStore
                 }
             }
 
-            string indexName = generation.Scope.ProtectedPartitionDigest is null ? "long_rest_clean_fts" : "long_rest_protected_fts";
-
-            await ExecuteAsync(connection, transaction, $"INSERT INTO {indexName} (NodeId, GenerationId, Content) VALUES ($node, $generation, $summary);",
-                cancellationToken, ("$node", Format(accepted.NodeId)), ("$generation", Format(generation.GenerationId)), ("$summary", accepted.Summary)).ConfigureAwait(false);
-
+            // A summary is not indexed for text search: lexical discovery ranks captured leaves only, so an indexed summary
+            // would be plaintext that only costs space and a retention surface.
             await using SqliteCommand finish = Command(connection, transaction,
                 "UPDATE long_rest_work_items SET DispositionCode = 2, Revision = Revision + 1 WHERE WorkDigest = $work AND DispositionCode = 1;",
                 ("$work", LongRestDiscoveryHash.Work(current.Work).Value.Bytes));
@@ -322,7 +319,8 @@ internal sealed partial class LongRestDiscoveryStore
         ImmutableArray<LongRestHierarchyInput> page = await ReadFrontierPageAsync(connection, transaction, generation, layer,
             group / LongRestDiscoveryLimits.SourcePage, capability, cancellationToken).ConfigureAwait(false);
 
-        var planned = LongRestHierarchy.PlanPage(page, layer, LongRestDiscoveryHash.Recipe(generation.Recipe).Value, cancellationToken);
+        var planned = LongRestHierarchy.PlanPage(page, layer, LongRestDiscoveryHash.Recipe(generation.Recipe).Value,
+            generation.Recipe.ProviderInputUtf8Bytes, cancellationToken);
 
         int slot = (int)(group % LongRestDiscoveryLimits.SourcePage);
 

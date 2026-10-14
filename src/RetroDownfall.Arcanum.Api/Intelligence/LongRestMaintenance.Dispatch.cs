@@ -56,6 +56,11 @@ internal sealed partial class LongRestMaintenance
             : new LongRestProviderAdmission.Chat(new(selected.Provider, selected.Model, 2048, 0,
                 estimator.EstimateLongRestChat(selected.Provider, selected.Model, payload)));
 
+        // Admit-then-Prepare: the deterministic local refusals this layer can see (the rendered size above, the context window here) happen
+        // before any provider-effect row or accounting run exists. A refusal only the provider layer can see (the daily budget, a credential)
+        // comes after the attempt is prepared; the attempt is then withdrawn below, so none leaves a Prepared row for readmission to meet.
+        Require(ModelCallExecutor.CheckLongRestWindow(providerAdmission));
+
         LongRestDispatchAttempt attempt = Require(await attempts.PrepareAttemptAsync(payload.Work, payload.Kind, payloadDigest, destination, ct).ConfigureAwait(false));
 
         using CancellationTokenSource dispatch = CancellationTokenSource.CreateLinkedTokenSource(ct, admission.MaintenanceRevocation,
@@ -134,12 +139,25 @@ internal sealed partial class LongRestMaintenance
 
                     throw;
                 }
+                catch (Exception) when (attempt.State == LongRestDispatchAttemptState.Prepared)
+                {
+                    // The call ended, even by cancellation, before the physical send was recorded, so nothing reached the provider.
+                    await ReleaseUnsentAsync(attempt).ConfigureAwait(false);
+
+                    throw;
+                }
 
                 if (result.IsFailure && attempt.State == LongRestDispatchAttemptState.Sent)
                 {
                     // Only a failure raised before any request byte is known not to have reached the provider.
                     await SettleUnresolvedAsync(attempt, result.Error.Code == ErrorCodes.LongRest.ProviderUnreachable
                         ? LongRestUnresolvedSend.NotSent : LongRestUnresolvedSend.UsageUnknown).ConfigureAwait(false);
+                }
+                else if (result.IsFailure && attempt.State == LongRestDispatchAttemptState.Prepared)
+                {
+                    // A local refusal after the attempt was prepared (the daily budget, a credential, a stale configuration) ended the call
+                    // before any send: the attempt is withdrawn, or a later same-boot clean readmission would meet it and refuse.
+                    await ReleaseUnsentAsync(attempt).ConfigureAwait(false);
                 }
 
                 // A transport without a reported result is settled above, inside this still-held group, as unknown usage. When that
@@ -213,6 +231,19 @@ internal sealed partial class LongRestMaintenance
         try
         {
             _ = await attempts.SettleUnresolvedSendAsync(attempt, outcome, CancellationToken.None).ConfigureAwait(false);
+        }
+        catch (Exception)
+        {
+        }
+    }
+
+    // Best effort, like the settlement above: the original refusal is what the caller rethrows, and an attempt that could not be
+    // withdrawn is left Prepared for the reboot rule. The write runs under the still-held external-effect group.
+    private async Task ReleaseUnsentAsync(LongRestDispatchAttempt attempt)
+    {
+        try
+        {
+            _ = await attempts.ReleaseUnsentAttemptAsync(attempt, CancellationToken.None).ConfigureAwait(false);
         }
         catch (Exception)
         {

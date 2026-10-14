@@ -40,6 +40,7 @@ public sealed class LongRestTurnPolicyTests
     [InlineData(ErrorCodes.LongRest.OperationBusy)]
     [InlineData(ErrorCodes.LongRest.InvalidRequest)]
     [InlineData(ErrorCodes.LongRest.IntegrityFailure)]
+    [InlineData(ErrorCodes.LongRest.ModelContextTooSmall)]
     public async Task A_failed_clean_schedule_with_a_Long_Rest_code_is_logged_and_counted_and_the_turn_proceeds(string code)
     {
         using AsyncFlowMetricCapture metrics = new(RefusedMetric);

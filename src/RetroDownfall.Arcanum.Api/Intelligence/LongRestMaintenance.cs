@@ -185,7 +185,7 @@ internal sealed partial class LongRestMaintenance(LongRestConfigurationEpoch epo
         {
             Guid node = Guid.NewGuid();
 
-            summary = await ExecutePaidAsync(generation, Require(LongRestProviderPayload.Summary(work.Fold)), provenance, capability, workerOwner, admission,
+            summary = await ExecutePaidAsync(generation, Require(LongRestProviderPayload.Summary(work.Fold, generation.Recipe.ProviderInputUtf8Bytes)), provenance, capability, workerOwner, admission,
                 async (paid, completion, token, committedOnly) =>
                 {
                     LongRestAcceptedHierarchySummary accepted = new(generation.GenerationId, node, work.Fold,
@@ -233,7 +233,7 @@ internal sealed partial class LongRestMaintenance(LongRestConfigurationEpoch epo
         GenerationProvenance provenance = work.Inputs.Aggregate(GenerationProvenance.CreateExact([]), (value, input) => value.Merge(input.Provenance));
 
         LongRestAdjudication accepted = await ExecutePaidAsync(generation,
-            Require(LongRestProviderPayload.Adjudication(work.Identity, work.Inputs)), provenance, capability, workerOwner, admission,
+            Require(LongRestProviderPayload.Adjudication(work.Identity, work.Inputs, generation.Recipe.ProviderInputUtf8Bytes)), provenance, capability, workerOwner, admission,
             async (paid, completion, token, committedOnly) =>
             {
                 LongRestProtectedEvidence? protection = generation.Scope.ProtectedPartitionDigest is { } partition

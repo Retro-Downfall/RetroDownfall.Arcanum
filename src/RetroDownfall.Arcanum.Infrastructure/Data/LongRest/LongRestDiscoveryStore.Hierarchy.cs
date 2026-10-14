@@ -8,6 +8,7 @@ using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.LongRest;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage;
+using RetroDownfall.Arcanum.Core.Telemetry;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Weave;
 
@@ -40,6 +41,9 @@ internal sealed partial class LongRestDiscoveryStore
 
             await VerifyFrozenSourcesAsync(connection, transaction, generation, capability, cancellationToken).ConfigureAwait(false);
 
+            // Counted as the plan is walked, published only once the cursor it moved is durable.
+            long oversize = 0;
+
             while (generation.Phase == LongRestSweepPhase.Hierarchy)
             {
                 int layer = Math.Max(1, generation.FoldLayer);
@@ -68,7 +72,7 @@ internal sealed partial class LongRestDiscoveryStore
                 }
 
                 Result<ImmutableArray<ImmutableArray<LongRestHierarchyChild>>> planned = LongRestHierarchy.PlanPage(inputs, layer,
-                    LongRestDiscoveryHash.Recipe(generation.Recipe).Value, cancellationToken);
+                    LongRestDiscoveryHash.Recipe(generation.Recipe).Value, generation.Recipe.ProviderInputUtf8Bytes, cancellationToken);
 
                 if (planned.IsFailure)
                 {
@@ -88,7 +92,13 @@ internal sealed partial class LongRestDiscoveryStore
                 if (children.Length == 1)
                 {
                     // A carry advances only durable planning coordinates. Its actual node, layer,
-                    // vector and original paid evidence remain untouched.
+                    // vector and original paid evidence remain untouched. A child no request can hold is carried the same way,
+                    // and is counted the one time it first reaches a plan, not at every layer it is carried through.
+                    if (children[0].Layer == layer - 1 && LongRestHierarchy.IsOversize(children[0], generation.Recipe.ProviderInputUtf8Bytes))
+                    {
+                        oversize++;
+                    }
+
                     generation = await MoveHierarchyCursorAsync(connection, transaction, generation, layer,
                         checked(generation.FoldGroup + 1), LongRestSweepPhase.Hierarchy, cancellationToken).ConfigureAwait(false);
 
@@ -110,16 +120,28 @@ internal sealed partial class LongRestDiscoveryStore
 
                 await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
 
+                PublishOversize(oversize);
+
                 return Result<LongRestHierarchyWork?>.Success(new(fold, accepted));
             }
 
             await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+
+            PublishOversize(oversize);
 
             return Result<LongRestHierarchyWork?>.Success(null);
         }
         catch (Exception exception) when (StorageFailure(exception))
         {
             return Refuse<LongRestHierarchyWork?>(ErrorCodes.LongRest.Unavailable, "The hierarchy plan could not retain its exact source and child bindings.");
+        }
+    }
+
+    private static void PublishOversize(long oversize)
+    {
+        if (oversize > 0)
+        {
+            ArcanumMetrics.LongRestHierarchyOversizeChildrenTotal.Add(oversize);
         }
     }
 

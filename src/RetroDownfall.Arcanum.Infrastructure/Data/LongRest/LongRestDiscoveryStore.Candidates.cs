@@ -1,5 +1,4 @@
 using System.Collections.Immutable;
-using System.Text;
 using System.Text.Json;
 
 using Microsoft.Data.Sqlite;
@@ -7,6 +6,7 @@ using Microsoft.Data.Sqlite;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.LongRest;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.Telemetry;
 using RetroDownfall.Arcanum.Core.Weave.Tapestry;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Data.LongRest;
@@ -60,9 +60,16 @@ internal sealed partial class LongRestDiscoveryStore
             return Refuse<LongRestCandidateGroup[]>(ErrorCodes.LongRest.StaleInput, "The anchor is no longer the exact eligible captured version.");
         }
 
-        ImmutableArray<LongRestCandidate>[] lanes = [[], [], [], []];
+        LongRestLaneBuffer exact = new(LongRestDiscoveryLane.ExactHash);
+
+        LongRestLaneBuffer lexical = new(LongRestDiscoveryLane.Lexical);
+
+        LongRestLaneBuffer vector = new(LongRestDiscoveryLane.Vector);
 
         float[] direction = SphericalKMeans.NormalizedDirection(source.Vector.ToArray());
+
+        // Every captured leaf is read and verified once per anchor, so the pass also counts the generation's documents.
+        long documents = 0;
 
         string? cursor = null;
 
@@ -84,6 +91,8 @@ internal sealed partial class LongRestDiscoveryStore
                 }
             }
 
+            documents += page.Count;
+
             foreach (string memory in page)
             {
                 LongRestSourceLeaf candidate = await ReadFrozenLeafAsync(connection, transaction, generation, memory, capability, cancellationToken).ConfigureAwait(false);
@@ -95,18 +104,17 @@ internal sealed partial class LongRestDiscoveryStore
 
                 if (StringComparer.OrdinalIgnoreCase.Equals(candidate.Snapshot.ContentHash, source.Snapshot.ContentHash))
                 {
-                    Rank(new(candidate.Target, LongRestDiscoveryLane.ExactHash, 0));
+                    exact.Add(new(candidate.Target, LongRestDiscoveryLane.ExactHash, 0));
                 }
 
                 if (direction.Length > 0 && candidate.Vector.Length == direction.Length)
                 {
-                    float[] other = SphericalKMeans.NormalizedDirection(candidate.Vector.ToArray());
+                    // A candidate below the minimum cosine is never evidence, so it never reaches the lane.
+                    double cosine = SphericalKMeans.CosineToDirection(direction, candidate.Vector.AsSpan());
 
-                    if (other.Length == direction.Length)
+                    if (cosine >= LongRestDiscoveryLimits.MinimumVectorCosine)
                     {
-                        double score = Math.Clamp(SphericalKMeans.DirectionCosine(direction, other), -1, 1);
-
-                        Rank(new(candidate.Target, LongRestDiscoveryLane.Vector, score));
+                        vector.Add(new(candidate.Target, LongRestDiscoveryLane.Vector, Math.Clamp(cosine, -1, 1)));
                     }
                 }
             }
@@ -114,37 +122,50 @@ internal sealed partial class LongRestDiscoveryStore
             cursor = page.Count == 0 ? null : page[^1];
         } while (cursor is not null);
 
-        string query = LexicalQuery(source.Content!);
+        ImmutableArray<string> terms = LongRestLexicalScorer.QueryTerms(source.Content!);
 
-        if (query.Length > 0)
+        if (terms.Length > 0)
         {
-            string index = generation.Scope.ProtectedPartitionDigest is null ? "long_rest_clean_fts" : "long_rest_protected_fts";
+            List<LexicalHit> hits = await LexicalHitsAsync(connection, transaction, generation, anchor.MemoryId, terms, documents, cancellationToken).ConfigureAwait(false);
 
-            // MATCH consumes quoted bounded tokens, not raw source syntax. Iterate every exact
-            // eligible match before ranking: a tempting excluded hit never spends a top-K slot.
-            await using SqliteCommand command = Command(connection, transaction, $"""
-                SELECT node.MemoryId, bm25({index})
-                FROM {index} JOIN long_rest_discovery_nodes node ON node.NodeId = {index}.NodeId AND node.GenerationId = {index}.GenerationId
-                WHERE {index} MATCH $query AND node.GenerationId = $generation AND node.Layer = 0
-                ORDER BY node.MemoryId;
-                """, ("$query", query), ("$generation", Format(generationId)));
+            // Hits arrive best first. A hit is verified only when the lane could still take it: eligible neighbours stop at the
+            // top-K, and an ineligible one that outranks them costs one verification and no slot.
+            int verified = 0;
 
-            await using SqliteDataReader reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
-
-            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            foreach (LexicalHit hit in hits)
             {
-                LongRestSourceLeaf candidate = await ReadFrozenLeafAsync(connection, transaction, generation, reader.GetString(0), capability, cancellationToken).ConfigureAwait(false);
+                LongRestSourceLeaf candidate = await ReadFrozenLeafAsync(connection, transaction, generation, hit.MemoryId, capability, cancellationToken).ConfigureAwait(false);
 
-                if (candidate.Target.MemoryId != anchor.MemoryId && CandidateEligible(candidate))
+                verified++;
+
+                if (!CandidateEligible(candidate))
                 {
-                    Rank(new(candidate.Target, LongRestDiscoveryLane.Lexical, reader.GetDouble(1)));
+                    continue;
                 }
+
+                lexical.Add(new(candidate.Target, LongRestDiscoveryLane.Lexical, -(double)hit.Score));
+
+                if (lexical.Count == LongRestDiscoveryLimits.LexicalTopK)
+                {
+                    break;
+                }
+            }
+
+            if (verified > 0)
+            {
+                ArcanumMetrics.LongRestLexicalVerificationsTotal.Add(verified);
             }
         }
 
         ImmutableArray<LongRestCandidate> hierarchy = await HierarchyCandidatesAsync(connection, transaction, generation, anchor, capability, cancellationToken).ConfigureAwait(false);
 
-        ImmutableArray<LongRestCandidate> ranked = LongRestDiscoveryPolicy.MergeCandidates(anchor, lanes.SelectMany(lane => lane).Concat(hierarchy)).Value;
+        Result<ImmutableArray<LongRestCandidate>> merged = LongRestDiscoveryPolicy.MergeCandidates(anchor,
+            exact.Items.Concat(lexical.Items).Concat(vector.Items).Concat(hierarchy));
+
+        if (merged.IsFailure)
+        {
+            return Result<LongRestCandidateGroup[]>.Failure(merged.Error);
+        }
 
         authority = await ValidateReadAuthorityAsync(generation, capability, cancellationToken).ConfigureAwait(false);
 
@@ -153,59 +174,75 @@ internal sealed partial class LongRestDiscoveryStore
             return Result<LongRestCandidateGroup[]>.Failure(authority.Error);
         }
 
-        return LongRestDiscoveryPolicy.GroupCandidates(anchor, ranked).Value.ToArray();
+        return LongRestDiscoveryPolicy.GroupCandidates(anchor, merged.Value).Value.ToArray();
+    }
 
-        void Rank(LongRestCandidate candidate)
+    private sealed record LexicalHit(string MemoryId, long Score);
+
+    /// <summary>
+    /// The generation's lexical hits for <paramref name="terms"/>, best first, from one MATCH built by
+    /// <see cref="LongRestLexicalScorer.MatchExpression"/>. The index is shared by every generation, scope and protected partition. What
+    /// keeps another generation's rows out is the join to this generation's own leaf nodes, which matches on the generation and the node,
+    /// and the document counts and term frequencies below, which are taken over those joined rows alone; the column filter in the
+    /// expression bounds the matched set to the generation. Scoring runs in managed integer arithmetic (<see cref="LongRestLexicalScorer"/>),
+    /// never FTS5's corpus-wide bm25(). A hit below the recipe's relevance floor is not evidence and is not returned; the anchor never
+    /// matches itself.
+    /// </summary>
+    private static async Task<List<LexicalHit>> LexicalHitsAsync(SqliteConnection connection, SqliteTransaction transaction,
+        LongRestDiscoveryGeneration generation, string anchorMemory, ImmutableArray<string> terms, long documents, CancellationToken cancellationToken)
+    {
+        string index = generation.Scope.ProtectedPartitionDigest is null ? "long_rest_clean_fts" : "long_rest_protected_fts";
+
+        string match = LongRestLexicalScorer.MatchExpression(generation.GenerationId, terms);
+
+        List<(string MemoryId, LongRestLexicalDocument Document)> matched = [];
+
+        int[] frequencies = new int[terms.Length];
+
+        await using SqliteCommand command = Command(connection, transaction, $"""
+            SELECT node.MemoryId, {index}.Content
+            FROM {index} JOIN long_rest_discovery_nodes node ON node.NodeId = {index}.NodeId AND node.GenerationId = {index}.GenerationId
+            WHERE {index} MATCH $match AND node.GenerationId = $generation AND node.Layer = 0;
+            """, ("$match", match), ("$generation", Format(generation.GenerationId)));
+
+        await using SqliteDataReader reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-            int lane = (int)candidate.Lane - 1;
+            LongRestLexicalDocument document = LongRestLexicalScorer.Profile(reader.GetString(1), terms);
 
-            lanes[lane] = LongRestDiscoveryPolicy.MergeCandidates(anchor, lanes[lane].Append(candidate)).Value;
+            for (int term = 0; term < terms.Length; term++)
+            {
+                if (document.Frequencies[term] > 0)
+                {
+                    frequencies[term]++;
+                }
+            }
+
+            matched.Add((reader.GetString(0), document));
         }
+
+        ImmutableArray<int> weights = LongRestLexicalScorer.Weights(documents, [.. frequencies]);
+
+        List<LexicalHit> hits = [];
+
+        foreach ((string memory, LongRestLexicalDocument document) in matched)
+        {
+            long score = LongRestLexicalScorer.Score(weights, document);
+
+            if (memory != anchorMemory && score >= generation.Recipe.LexicalMinimumScore)
+            {
+                hits.Add(new(memory, score));
+            }
+        }
+
+        hits.Sort(static (left, right) => left.Score != right.Score ? right.Score.CompareTo(left.Score) : StringComparer.Ordinal.Compare(left.MemoryId, right.MemoryId));
+
+        return hits;
     }
 
     private static bool CandidateEligible(LongRestSourceLeaf leaf) => leaf.Snapshot.IsCurrent
         && !leaf.Snapshot.IsConsolidated && leaf.Snapshot.PinnedAtUtc is null && leaf.Snapshot.RetiredAtUtc is null;
-
-    private static string LexicalQuery(string content)
-    {
-        List<string> tokens = [];
-
-        StringBuilder token = new();
-
-        foreach (Rune rune in content.EnumerateRunes())
-        {
-            if (Rune.IsLetterOrDigit(rune))
-            {
-                token.Append(rune);
-            }
-            else
-            {
-                AddToken();
-
-                if (tokens.Count == LongRestDiscoveryLimits.LexicalTokens)
-                {
-                    break;
-                }
-            }
-        }
-
-        if (tokens.Count < LongRestDiscoveryLimits.LexicalTokens)
-        {
-            AddToken();
-        }
-
-        return string.Join(" OR ", tokens);
-
-        void AddToken()
-        {
-            if (token.Length > 0 && Encoding.UTF8.GetByteCount(token.ToString()) <= LongRestDiscoveryLimits.LexicalTokenUtf8Bytes)
-            {
-                tokens.Add("\"" + token + "\"");
-            }
-
-            token.Clear();
-        }
-    }
 
     private static async Task<LongRestSourceLeaf> ReadFrozenLeafAsync(SqliteConnection connection, SqliteTransaction transaction,
         LongRestDiscoveryGeneration generation, string memory, LongRestMaintenanceCapability? capability, CancellationToken cancellationToken) =>

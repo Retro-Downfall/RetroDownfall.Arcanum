@@ -60,7 +60,8 @@ internal static class ArcanumErrorMapper
             ErrorCodes.LongRest.StaleInput
                 or ErrorCodes.LongRest.MissingClaim
                 or ErrorCodes.LongRest.SweepParked
-                or ErrorCodes.LongRest.OperationBusy =>
+                or ErrorCodes.LongRest.OperationBusy
+                or ErrorCodes.LongRest.ModelContextTooSmall =>
                 StatusCodes.Status409Conflict,
 
             ErrorCodes.LongRest.Unavailable

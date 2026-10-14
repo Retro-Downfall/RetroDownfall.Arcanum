@@ -11,7 +11,6 @@ namespace RetroDownfall.Arcanum.Core.Telemetry;
 /// </summary>
 public static class ArcanumMetrics
 {
-
     public static readonly Meter Meter = new("Arcanum", "0.1.0");
 
     /// <summary>Total HTTP requests processed. Labels: <c>endpoint</c> (route pattern, not raw URL), <c>method</c>, <c>status_code</c>.</summary>
@@ -251,6 +250,44 @@ public static class ArcanumMetrics
         "{sweeps}",
         "Parked Long Rest sweeps readmitted");
 
+    /// <summary>
+    /// Discovered neighbours the group packer left out of an anchor's adjudication packs. Label: closed <c>reason</c>
+    /// (<c>oversize</c>: the neighbour cannot fit a request with its anchor within the recipe's input budget; <c>pack_limit</c>:
+    /// the anchor already has its three packs). Never carries an identity or any content.
+    /// </summary>
+    public static readonly Counter<long> LongRestPackSkippedCandidatesTotal = Meter.CreateCounter<long>(
+        "arcanum.long_rest.sweep.skipped_candidates",
+        "{candidates}",
+        "Long Rest neighbours the group packer skipped, by reason");
+
+    /// <summary>
+    /// Hierarchy children too large for any summary request of the recipe's input budget, carried unsummarized instead of folded. Counted
+    /// once, when the child first reaches a layer's plan, and only after the plan's cursor is durable. Never carries an identity or any content.
+    /// </summary>
+    public static readonly Counter<long> LongRestHierarchyOversizeChildrenTotal = Meter.CreateCounter<long>(
+        "arcanum.long_rest.hierarchy.oversize_children",
+        "{children}",
+        "Long Rest hierarchy children carried unsummarized because no request can hold them");
+
+    /// <summary>
+    /// Adjudication groups the sweep did not queue because the identical set of memories was already decided NoChange in the same generation,
+    /// so no request is made for it. Never carries an identity or any content.
+    /// </summary>
+    public static readonly Counter<long> LongRestReusedDecisionsTotal = Meter.CreateCounter<long>(
+        "arcanum.long_rest.sweep.reused_decisions",
+        "{decisions}",
+        "Long Rest adjudications reused from an identical decided set in the same generation");
+
+    /// <summary>
+    /// Leaves the lexical discovery lane fully verified (source row, snapshot, history head, vector and digest) because a lexical hit
+    /// named them, counted once per anchor scan. Lazy verification in score order keeps this at the eight eligible neighbours plus
+    /// the ineligible hits that outranked them, whatever the corpus size. Never carries an identity or any content.
+    /// </summary>
+    public static readonly Counter<long> LongRestLexicalVerificationsTotal = Meter.CreateCounter<long>(
+        "arcanum.long_rest.discovery.lexical_verifications",
+        "{leaves}",
+        "Leaves the Long Rest lexical lane verified in full");
+
     /// <summary>Resumable Long Rest faults that spent the last of the Sweep Failure Budget and became needs-operator parks.</summary>
     public static readonly Counter<long> LongRestSweepBudgetExhaustedTotal = Meter.CreateCounter<long>(
         "arcanum.long_rest.sweep.budget_exhausted",
@@ -265,5 +302,4 @@ public static class ArcanumMetrics
         "arcanum.long_rest.clean_schedule_refused",
         "{turns}",
         "Session turns that proceeded after clean Long Rest scheduling was refused");
-
 }

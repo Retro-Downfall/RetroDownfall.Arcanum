@@ -395,6 +395,7 @@ public sealed class GrimoireSchemaTransitionResourceTests
                 "long_rest_generation_delete",
                 "long_rest_node_label_delete",
                 "artifact_sensitivity_guard_delete",
+                "long_rest_generation_complete",
                 "long_rest_suppressions_validate_insert",
                 "long_rest_secure_delete",
                 "grimoire_utc_instant_columns_drop",

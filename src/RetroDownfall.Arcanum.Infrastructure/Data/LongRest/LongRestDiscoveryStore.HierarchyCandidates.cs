@@ -23,7 +23,14 @@ internal sealed partial class LongRestDiscoveryStore
             node = Guid.Parse((string)(await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false))!);
         }
 
+        // The query is the anchor's nearest generated ancestor: the most specific summary of what the anchor is about. Every ancestor is
+        // on the anchor's own chain, so none of them is ever ranked, selected or expanded: a chain node always matches the anchor
+        // and would hand back the anchor's own tree. Excluding a node from ranking is not excluding it from verification: the nearest
+        // ancestor is read here and the topmost one just below, and reading a node verifies the whole subtree under it, which is every
+        // other node of the chain. So a record altered anywhere on the chain refuses the anchor.
         LongRestHierarchyInput? query = null;
+
+        List<Guid> chain = [];
 
         for (int depth = 0; depth < LongRestDiscoveryLimits.HierarchyLevels; depth++)
         {
@@ -41,7 +48,14 @@ internal sealed partial class LongRestDiscoveryStore
 
             node = Guid.Parse(identity);
 
-            query = await ReadHierarchyNodeAsync(connection, transaction, generation, node, capability, cancellationToken).ConfigureAwait(false);
+            chain.Add(node);
+
+            query ??= await ReadHierarchyNodeAsync(connection, transaction, generation, node, capability, cancellationToken).ConfigureAwait(false);
+        }
+
+        if (chain.Count > 1)
+        {
+            _ = await ReadHierarchyNodeAsync(connection, transaction, generation, chain[^1], capability, cancellationToken).ConfigureAwait(false);
         }
 
         // A raw observed Saga vector never serves as a query in the configured generated space.
@@ -80,16 +94,23 @@ internal sealed partial class LongRestDiscoveryStore
 
             foreach (string identity in page)
             {
-                LongRestHierarchyInput candidate = await ReadHierarchyNodeAsync(connection, transaction, generation, Guid.Parse(identity), capability, cancellationToken).ConfigureAwait(false);
+                Guid summary = Guid.Parse(identity);
 
-                float[] other = SphericalKMeans.NormalizedDirection(candidate.Vector.ToArray());
+                if (chain.Contains(summary))
+                {
+                    continue;
+                }
 
-                if (other.Length != direction.Length || direction.Length == 0)
+                LongRestHierarchyInput candidate = await ReadHierarchyNodeAsync(connection, transaction, generation, summary, capability, cancellationToken).ConfigureAwait(false);
+
+                double cosine = SphericalKMeans.CosineToDirection(direction, candidate.Vector.AsSpan());
+
+                if (double.IsNaN(cosine))
                 {
                     throw new InvalidDataException();
                 }
 
-                double score = Math.Clamp(SphericalKMeans.DirectionCosine(direction, other), -1, 1);
+                double score = Math.Clamp(cosine, -1, 1);
 
                 if (score < LongRestDiscoveryLimits.MinimumVectorCosine)
                 {
@@ -114,13 +135,15 @@ internal sealed partial class LongRestDiscoveryStore
 
         LongRestHierarchyBuilder.SelectedSummaries.Record(best.Count);
 
-        ImmutableArray<LongRestCandidate> expanded = [];
+        ImmutableArray<LongRestHierarchyExpansion>.Builder expansions = ImmutableArray.CreateBuilder<LongRestHierarchyExpansion>();
 
         foreach (SummaryRank selected in best.UnorderedItems.Select(item => item.Element).OrderByDescending(item => item.Score).ThenBy(item => item.Node.ToString("D"), StringComparer.Ordinal))
         {
             List<Guid> children = await ReadChildNodesAsync(connection, transaction, generation.GenerationId, selected.Node, cancellationToken).ConfigureAwait(false);
 
             List<HierarchyLeafCursor> branches = children.Select(child => new HierarchyLeafCursor(child)).ToList();
+
+            ImmutableArray<LongRestTarget>.Builder leaves = ImmutableArray.CreateBuilder<LongRestTarget>();
 
             int emitted = 0;
 
@@ -159,14 +182,17 @@ internal sealed partial class LongRestDiscoveryStore
 
                     emitted++;
 
-                    expanded = LongRestDiscoveryPolicy.MergeCandidates(anchor, expanded.Append(new(leaf.Target, LongRestDiscoveryLane.Hierarchy, selected.Score))).Value;
+                    leaves.Add(leaf.Target);
                 }
             }
 
             LongRestHierarchyBuilder.ExpandedLeaves.Record(emitted);
+
+            expansions.Add(new(selected.Score, leaves.ToImmutable()));
         }
 
-        return expanded;
+        // Selected summaries expand in rank order, but the lane takes their leaves in turn, so the best summary cannot fill it alone.
+        return LongRestDiscoveryPolicy.InterleaveExpansions(anchor, expansions.ToImmutable());
     }
 
     private static async Task<List<Guid>> ReadChildNodesAsync(SqliteConnection connection, SqliteTransaction transaction, Guid generation,

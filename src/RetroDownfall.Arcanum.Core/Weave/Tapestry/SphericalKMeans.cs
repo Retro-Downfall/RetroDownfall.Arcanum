@@ -815,6 +815,55 @@ public static class SphericalKMeans
         return Dot(left, right);
     }
 
+    /// <summary>
+    /// The cosine between a unit direction from <see cref="NormalizedDirection"/> and the direction of <paramref name="vector"/>,
+    /// without materialising the normalized vector. It performs exactly the arithmetic of
+    /// <c>DirectionCosine(direction, NormalizedDirection(vector))</c> in the same order, so the result is bit-identical; it is
+    /// <see cref="double.NaN"/> where that pair would have no cosine: an empty direction, a vector of another width, a non-finite
+    /// component or a vector without length.
+    /// </summary>
+    public static double CosineToDirection(float[] direction, ReadOnlySpan<float> vector)
+    {
+        ArgumentNullException.ThrowIfNull(direction);
+
+        if (direction.Length == 0 || vector.Length != direction.Length)
+        {
+            return double.NaN;
+        }
+
+        double sumOfSquares = 0;
+
+        for (int index = 0; index < vector.Length; index++)
+        {
+            float component = vector[index];
+
+            if (!float.IsFinite(component))
+            {
+                return double.NaN;
+            }
+
+            sumOfSquares += (double)component * component;
+        }
+
+        double norm = Math.Sqrt(sumOfSquares);
+
+        if (norm <= 0 || !double.IsFinite(norm))
+        {
+            return double.NaN;
+        }
+
+        double sum = 0;
+
+        for (int index = 0; index < vector.Length; index++)
+        {
+            float normalized = (float)(vector[index] / norm);
+
+            sum += (double)direction[index] * normalized;
+        }
+
+        return sum;
+    }
+
     private static double Dot(float[] left, float[] right)
     {
         double sum = 0;
