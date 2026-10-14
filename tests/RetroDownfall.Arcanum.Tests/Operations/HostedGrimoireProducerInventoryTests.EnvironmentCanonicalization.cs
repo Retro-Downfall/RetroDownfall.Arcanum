@@ -866,4 +866,207 @@ public sealed partial class HostedGrimoireProducerInventoryTests
         // Each payload type alone is refused, so the verdict never depends on the type and no type can be the one that is accepted.
         Assert.Contains(result.Diagnostics, diagnostic => diagnostic.Code == code);
     }
+
+    // ---- Verdict twins. Each rule keeps a binding when a verdict depends on it, so each pairs the state count with a send
+    // that is reached, or not, because of the value the binding holds.
+    private static string[] CanonicalizationSendVerdict(HostedProducerDiscovery<HostedProducerSite> result, string callee) =>
+    [
+        .. result.Items.Where(site => site.Callee == callee).Select(static site => site.EnclosingType + "." + site.Member + " work=" + (site.WorkFrontierCapsuleId is not null) + " effect=" + (site.EffectFrontierCapsuleId is not null)).Distinct().Order(StringComparer.Ordinal),
+        .. result.Diagnostics.Select(static diagnostic => diagnostic.Code).Distinct().Order(StringComparer.Ordinal),
+    ];
+
+    private const string ReachHelper = """
+        public static class Reach
+        {
+            public static void Send(bool enabled)
+            {
+                if (!enabled)
+                {
+                    return;
+                }
+
+                System.IO.File.Delete("reach");
+            }
+        }
+        """;
+
+    private static string ReachSites(string argument, int count) =>
+        string.Concat(Enumerable.Repeat("Reach.Send(" + argument + "); ", count));
+
+    [Fact]
+    public void ConstantsOfDifferentValuesReachDifferentSends()
+    {
+        const string send = "System.IO.File.Delete";
+
+        var (_, disabled, disabledStates) = ClosedValueDiscover(R2Admission + ReachSites("false", 10), ReachHelper);
+
+        var (_, mixed, mixedStates) = ClosedValueDiscover(R2Admission + ReachSites("false", 10) + ReachSites("true", 1), ReachHelper);
+
+        var (_, enabled, enabledStates) = ClosedValueDiscover(R2Admission + ReachSites("true", 10), ReachHelper);
+
+        // Ten sites that pass false reach no send, and ten that pass true reach it once: the value the constant holds decides it.
+        Assert.Equal([], CanonicalizationSendVerdict(disabled, send));
+
+        Assert.Equal(["Reach.Send work=True effect=True"], CanonicalizationSendVerdict(enabled, send));
+
+        // One site that passes true among ten that pass false still reaches the send, so the two values are two states.
+        Assert.Equal(CanonicalizationSendVerdict(enabled, send), CanonicalizationSendVerdict(mixed, send));
+
+        Assert.Equal(1, disabledStates.Count(static state => state.Method.Contains("Reach.Send", StringComparison.Ordinal) && state.Lifecycle));
+
+        Assert.Equal(1, enabledStates.Count(static state => state.Method.Contains("Reach.Send", StringComparison.Ordinal) && state.Lifecycle));
+
+        Assert.Equal(2, mixedStates.Count(static state => state.Method.Contains("Reach.Send", StringComparison.Ordinal) && state.Lifecycle));
+    }
+
+    // A lambda reads the flag of the method it is declared in, so a flag that is false reaches no send and a flag that is true reaches one.
+    private const string NestedGateHelper = """
+        public static class Nest
+        {
+            public static int Run(bool flag) => Invoke(() => { if (flag) { System.IO.File.Delete("nest"); } return 1; });
+
+            public static int Invoke(System.Func<int> work) => work();
+
+            public static int Off() => Run(false);
+
+            public static int On() => Run(true);
+        }
+        """;
+
+    [Fact]
+    public void ALambdaThatReadsAFlagOfItsOwnerReachesTheSendOnlyForTheFlagThatSetsIt()
+    {
+        const string send = "System.IO.File.Delete";
+
+        var (_, off, _) = ClosedValueDiscover(R2Admission + "_ = Nest.Off();", NestedGateHelper);
+
+        var (_, both, _) = ClosedValueDiscover(R2Admission + "_ = Nest.Off(); _ = Nest.On();", NestedGateHelper);
+
+        Assert.Empty(off.Diagnostics);
+
+        Assert.DoesNotContain(off.Items, static site => site.Callee == send);
+
+        // The lambda that is reached with true is not the state of the one reached with false, so the send is found.
+        Assert.Empty(both.Diagnostics);
+
+        HostedProducerSite reached = Assert.Single(both.Items, static site => site.Callee == send);
+
+        Assert.NotNull(reached.WorkFrontierCapsuleId);
+
+        Assert.NotNull(reached.EffectFrontierCapsuleId);
+    }
+
+    // An accessor that holds a send reaches it whatever flags the methods above it were called with, because it cannot read them.
+    private const string AccessorSendHelper = """
+        public sealed class Handles
+        {
+            private readonly System.IO.FileStream _stream;
+
+            private Handles(System.IO.FileStream stream) { _stream = stream; }
+
+            public static Handles Open(string path) => new(new System.IO.FileStream(path, System.IO.FileMode.Open));
+
+            private System.IO.FileStream Stream { get { System.IO.File.Delete("accessor"); return _stream; } }
+
+            public int Child(bool create, bool writable) { _ = Stream; return create ? 1 : writable ? 2 : 3; }
+
+            public int A() => Child(false, false);
+
+            public int B() => Child(true, false);
+
+            public int C() => Child(false, true);
+        }
+        """;
+
+    [Fact]
+    public void AnAccessorReachesTheSameSendWhicheverCallersAboveItAreVisited()
+    {
+        const string send = "System.IO.File.Delete";
+
+        var (_, one, _) = ClosedValueDiscover(R2Admission + "var h = Handles.Open(\"p\"); _ = h.A();", AccessorSendHelper);
+
+        var (_, three, _) = ClosedValueDiscover(R2Admission + "var h = Handles.Open(\"p\"); _ = h.A(); _ = h.B(); _ = h.C();", AccessorSendHelper);
+
+        string[] verdict = CanonicalizationSendVerdict(three, send);
+
+        Assert.Equal(["Handles.get_Stream work=True effect=True"], verdict);
+
+        Assert.Equal(CanonicalizationSendVerdict(one, send), verdict);
+    }
+
+    // A helper that links a source to a token, with the token supplied by a different call chain at each site.
+    private const string TokenSendHelper = """
+        public static class Linker
+        {
+            public static void Link(System.Threading.CancellationToken token)
+            {
+                System.IO.File.Delete("link");
+
+                using System.Threading.CancellationTokenSource linked = System.Threading.CancellationTokenSource.CreateLinkedTokenSource(token);
+            }
+        }
+
+        internal static class Handed
+        {
+            internal static System.Threading.CancellationToken Token { get; set; }
+
+            internal static System.Threading.CancellationToken Other => System.Threading.CancellationToken.None;
+        }
+        """;
+
+    [Fact]
+    public void AHelperThatIsHandedATokenFromManyChainsReachesTheSendOnceAndAsItDoesFromOne()
+    {
+        const string send = "System.IO.File.Delete";
+
+        var (_, one, _) = ClosedValueDiscover(R2Admission + "Linker.Link(Handed.Token);", TokenSendHelper);
+
+        var (_, many, manyStates) = ClosedValueDiscover(R2Admission + "Linker.Link(Handed.Token); Linker.Link(Handed.Other); Linker.Link(default); Linker.Link(System.Threading.CancellationToken.None); Linker.Link(new System.Threading.CancellationTokenSource().Token);", TokenSendHelper);
+
+        Assert.Equal(["Linker.Link work=True effect=True"], CanonicalizationSendVerdict(many, send));
+
+        Assert.Equal(CanonicalizationSendVerdict(one, send), CanonicalizationSendVerdict(many, send));
+
+        Assert.Equal(1, manyStates.Count(static state => state.Method.Contains("Linker.Link", StringComparison.Ordinal) && state.Lifecycle));
+    }
+
+    private const string PayloadSendHelper = """
+        public sealed class QuietPayload { }
+
+        public sealed class LoudPayload { public override string ToString() { System.IO.File.Delete("loud"); return "loud"; } }
+
+        public sealed class Box<T>
+        {
+            private readonly T _value;
+
+            private Box(T value) { _value = value; }
+
+            public static Box<T> Make(T value) => new(value);
+        }
+
+        public static class Describe
+        {
+            public static string Text<T>(T value) => value!.ToString()!;
+        }
+        """;
+
+    [Fact]
+    public void APayloadThatIsReadReachesTheSendOfItsTypeAndAPayloadThatIsMovedReachesNone()
+    {
+        const string send = "System.IO.File.Delete";
+
+        var (_, read, readStates) = ClosedValueDiscover(R2Admission + "_ = Describe.Text(new QuietPayload()); _ = Describe.Text(new LoudPayload());", PayloadSendHelper);
+
+        var (_, moved, movedStates) = ClosedValueDiscover(R2Admission + "_ = Box<QuietPayload>.Make(new QuietPayload()); _ = Box<LoudPayload>.Make(new LoudPayload());", PayloadSendHelper);
+
+        // The receiver reads the type, so the loud payload's override is found, and the two types are two states.
+        Assert.Equal(["LoudPayload.ToString work=True effect=True"], CanonicalizationSendVerdict(read, send));
+
+        Assert.Equal(2, readStates.Count(static state => state.Method.Contains("Describe.Text", StringComparison.Ordinal) && state.Lifecycle));
+
+        // Moved into a field and never read, no override runs, and the two types are one state.
+        Assert.Equal([], CanonicalizationSendVerdict(moved, send));
+
+        Assert.Equal(1, movedStates.Count(static state => state.Method.Contains("Box`1.Make", StringComparison.Ordinal) && state.Lifecycle));
+    }
 }

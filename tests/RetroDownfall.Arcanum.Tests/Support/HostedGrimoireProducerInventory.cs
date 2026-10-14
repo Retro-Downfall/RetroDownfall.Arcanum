@@ -40986,14 +40986,15 @@ internal static partial class HostedGrimoireProducerInventory
                 use.SpanStart);
         }
 
+        // The work budget of one callable-mutation query. It is a field and not a local so that LimitsAreFrozen can pin it.
+        private const int MaxCallableWork = 256;
+
         private static bool InvokedCallableMayMutateSymbol(
             AuthoredMember member,
             ISymbol symbol,
             int before,
             int after = int.MinValue)
         {
-            const int MaxCallableWork = 256;
-
             int work = 0;
 
             Dictionary<IMethodSymbol, LocalFunctionStatementSyntax> localFunctions =
