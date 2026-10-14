@@ -43,6 +43,10 @@ public sealed partial class HostedGrimoireProducerInventoryTests
         "interface-typed" => new("interface IPaid { string Key { get; } } sealed record PaidImpl(string Key) : IPaid;", "new PaidImpl(key)", "IPaid", "paid.Key"),
         "sealed-subclass-of-authored-base" => new("class PaidBase { public string Key { get; set; } = \"\"; } sealed class Paid : PaidBase { public int Count { get; set; } }",
             "new Paid { Key = key }", "Paid", "paid.Key"),
+        "primary-constructor-capture-of-a-disposable" => new("sealed class Paid(string key, System.IDisposable? resource) { public string Key => key; public System.IDisposable? Resource => resource; }",
+            "new Paid(key, null)", "Paid", "paid.Key"),
+        "explicit-field-of-object" => new("sealed class Paid { private readonly object? _tag = null; public string Key { get; init; } = \"\"; public object? Tag => _tag; }",
+            "new Paid { Key = key }", "Paid", "paid.Key"),
         "authored-lookalike-guid" => new("namespace System { public readonly struct Guid { public readonly object? Tag; } } sealed record Paid(string Key, System.Guid Id);",
             "new Paid(key, default)", "Paid", "paid.Key"),
         "authored-lookalike-immutable-array" => new("namespace System.Collections.Immutable { public readonly struct ImmutableArray<T> { public readonly object? Tag; } } sealed record Paid(string Key, System.Collections.Immutable.ImmutableArray<int> Rows);",
@@ -133,6 +137,8 @@ public sealed partial class HostedGrimoireProducerInventoryTests
     [InlineData("unsealed-class")]
     [InlineData("interface-typed")]
     [InlineData("sealed-subclass-of-authored-base")]
+    [InlineData("primary-constructor-capture-of-a-disposable")]
+    [InlineData("explicit-field-of-object")]
     [InlineData("authored-lookalike-guid")]
     [InlineData("authored-lookalike-immutable-array")]
     [InlineData("generic-outcome-over-object")]
