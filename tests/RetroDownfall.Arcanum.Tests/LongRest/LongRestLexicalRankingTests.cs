@@ -104,10 +104,11 @@ public sealed class LongRestLexicalRankingTests
 
         if (flood == "retained-generation")
         {
-            // An older generation of the very same scope and corpus, kept after it completed: its rows sit in the same index.
+            // An older generation of the very same scope and corpus, kept after its request failed (a retired generation keeps its evidence, and
+            // so its search rows; a completed one no longer does): its rows sit in the same index.
             LongRestDiscoveryGeneration retained = await h.CaptureAsync(partition: partition, authority: protectedTarget ? authority : null);
 
-            await h.ExecuteAsync("UPDATE long_rest_discovery_generations SET PhaseCode = 6 WHERE GenerationId = $generation;", ("$generation", retained.GenerationId.ToString("D").ToUpperInvariant()));
+            await h.ExecuteAsync("UPDATE long_rest_discovery_generations SET PhaseCode = 9 WHERE GenerationId = $generation;", ("$generation", retained.GenerationId.ToString("D").ToUpperInvariant()));
 
             Assert.Equal((long)Corpus.Length, await h.ScalarAsync($"SELECT count(*) FROM {(protectedTarget ? "long_rest_protected_fts" : "long_rest_clean_fts")};"));
         }
