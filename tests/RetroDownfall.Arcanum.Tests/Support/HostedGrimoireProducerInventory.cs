@@ -57816,7 +57816,8 @@ internal static partial class HostedGrimoireProducerInventory
                         {
                             Finally: { } finalizer,
                         } protector
-                        || !protector.Block.Span.Contains(site.Span))
+                        || !protector.Block.Span.Contains(site.Span)
+                            && !finalizer.Block.Span.Contains(site.Span))
                     {
                         return false;
                     }
@@ -57836,7 +57837,9 @@ internal static partial class HostedGrimoireProducerInventory
                     if (cleanups is not [InvocationExpressionSyntax cleanup]
                         || member.Model.GetSymbolInfo(cleanup).Symbol is not
                             IMethodSymbol cleanupMethod
-                        || !SymbolIsStableWithin(member, lease, variable.Span.End, cleanup.Span.End))
+                        || !SymbolIsStableWithin(member, lease, variable.Span.End, cleanup.Span.End)
+                        || !protector.Block.Span.Contains(site.Span)
+                            && !FinalizerSiteRunsBeforeCleanup(finalizer, cleanup, site))
                     {
                         return false;
                     }
@@ -57908,6 +57911,18 @@ internal static partial class HostedGrimoireProducerInventory
                                 IsImplicit: true, OperatorMethod: null,
                                 Operand.ConstantValue: { HasValue: true, Value: null },
                             } conversion && !conversion.Conversion.IsUserDefined));
+
+            // A site in the finalizer of a manually owned lease runs under the lease when the lease's disposal is on every path of the
+            // finalizer and the site runs before it. The disposal ends the chain of nested finally clauses, so everything that precedes it
+            // is the protected part of the finalizer (the container scope's disposal runs there), and what follows it, or the disposal
+            // itself, is not.
+            bool FinalizerSiteRunsBeforeCleanup(
+                FinallyClauseSyntax finalizer,
+                InvocationExpressionSyntax cleanup,
+                SyntaxNode site) =>
+                finalizer.Block.Span.Contains(site.Span)
+                && site.Span.End <= cleanup.SpanStart
+                && RunsOnEveryFinallyPath(finalizer, cleanup);
 
             bool RunsOnEveryFinallyPath(
                 FinallyClauseSyntax finalizer,
@@ -58000,7 +58015,8 @@ internal static partial class HostedGrimoireProducerInventory
                         {
                             Finally: { } finalizer,
                         } protector
-                        && protector.Block.Span.Contains(site.Span))
+                        && (protector.Block.Span.Contains(site.Span)
+                            || finalizer.Block.Span.Contains(site.Span)))
                     {
                         InvocationExpressionSyntax[] cleanups = finalizer.Block
                             .DescendantNodes()
@@ -58019,7 +58035,9 @@ internal static partial class HostedGrimoireProducerInventory
                                 && TypeKey(cleanupMethod.ReturnType) == "System.Void"
                                 || cleanupMethod.Name == "DisposeAsync"
                                 && CompletionPoint(member, cleanup, false) is not null)
-                            && RunsOnEveryFinallyPath(finalizer, cleanup);
+                            && RunsOnEveryFinallyPath(finalizer, cleanup)
+                            && (protector.Block.Span.Contains(site.Span)
+                                || FinalizerSiteRunsBeforeCleanup(finalizer, cleanup, site));
                     }
                 }
 
