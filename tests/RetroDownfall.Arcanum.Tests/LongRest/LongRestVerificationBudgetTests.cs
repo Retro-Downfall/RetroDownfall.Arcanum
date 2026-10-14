@@ -83,14 +83,17 @@ public sealed class LongRestVerificationBudgetTests
             }
         }
 
-        Assert.NotEmpty(growth);
+        // With no corpus pass on the idle path there is nothing left that grows, and with one there is exactly the pass's statements.
+        int growing = Math.Min(1, CorpusPassesPerIdleCleanLookup);
+
+        Assert.Equal(growing == 0, growth.Count == 0);
 
         Assert.All(growth, extra => Assert.True(extra == perLeaf || extra == perPage, $"A statement ran {extra} more times over {Corpus} memories than over {Small}."));
 
         // The per-leaf statements are the few that read one leaf, and one statement pages; nothing outside them grows.
-        Assert.InRange(growth.Count(extra => extra == perLeaf), 1, 12);
+        Assert.InRange(growth.Count(extra => extra == perLeaf), growing, 12);
 
-        Assert.Equal(1, growth.Count(extra => extra == perPage));
+        Assert.Equal(growing, growth.Count(extra => extra == perPage));
 
         Assert.Equal(smaller.StatementCount + growth.Sum(), larger.StatementCount);
     }
