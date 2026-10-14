@@ -167,6 +167,48 @@ public sealed partial class HostedGrimoireProducerInventoryTests
         Assert.Null(HostedGrimoireProducerInventory.ProbeConstantValueIdentity(compilation, SoleArgumentOf(compilation, "First")));
     }
 
+    [Theory]
+    [InlineData("static int Ordinary(int value) => value;", false)]
+    [InlineData("int Property => 1;", false)]
+    [InlineData("int Indexed { get { return 1; } }", false)]
+    [InlineData("Holder() { }", false)]
+    [InlineData("public static int operator +(Holder left, Holder right) => 1;", false)]
+    [InlineData("public static implicit operator int(Holder value) => 1;", false)]
+    [InlineData("int Outer(int value) { int Local() => value; return Local(); }", true)]
+    [InlineData("int Outer(int value) { System.Func<int> work = () => value; return work(); }", true)]
+    public void OnlyALambdaOrALocalFunctionCanBeNestedInAMethod(string member, bool canBeNested)
+    {
+        CSharpCompilation compilation = Compile("sealed class Holder { " + member + " }");
+
+        Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        SyntaxNode root = compilation.SyntaxTrees.Single().GetRoot();
+
+        SyntaxNode[] declared =
+        [
+            .. root.DescendantNodes().Where(static node => node is AccessorDeclarationSyntax { Body: not null } or ArrowExpressionClauseSyntax { Parent: PropertyDeclarationSyntax }
+                or MethodDeclarationSyntax or ConstructorDeclarationSyntax or OperatorDeclarationSyntax or ConversionOperatorDeclarationSyntax),
+        ];
+
+        // Every declaration in the member is judged: a method that contains a lambda or a local function is itself not nestable.
+        SyntaxNode? nested = root.DescendantNodes().FirstOrDefault(static node => node is LocalFunctionStatementSyntax or AnonymousFunctionExpressionSyntax);
+
+        if (canBeNested)
+        {
+            Assert.NotNull(nested);
+
+            Assert.True(HostedGrimoireProducerInventory.ProbeMemberCanBeNestedInAMethod(compilation, nested!));
+
+            Assert.All(declared.OfType<MethodDeclarationSyntax>(), method => Assert.False(HostedGrimoireProducerInventory.ProbeMemberCanBeNestedInAMethod(compilation, method)));
+        }
+        else
+        {
+            Assert.NotEmpty(declared);
+
+            Assert.All(declared, node => Assert.False(HostedGrimoireProducerInventory.ProbeMemberCanBeNestedInAMethod(compilation, node)));
+        }
+    }
+
     // An instance call passes its caller's whole context on to the members of the receiver. A parameter of the calling
     // method is no name in an accessor, so its binding multiplies the accessor's states by every distinct binding of the
     // callers above it and cannot change what the accessor does.

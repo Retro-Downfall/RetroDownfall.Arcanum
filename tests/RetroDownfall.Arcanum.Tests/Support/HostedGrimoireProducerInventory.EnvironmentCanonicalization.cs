@@ -26,6 +26,24 @@ internal static partial class HostedGrimoireProducerInventory
         return ProducerGraph.TryConstantValueIdentity(new(new(owner, body, model), expression), out string identity) ? identity : null;
     }
 
+    // Whether the member declared at the node, a method, an accessor, a lambda or a local function, can be declared inside
+    // a method and so can name that method's parameters.
+    internal static bool ProbeMemberCanBeNestedInAMethod(CSharpCompilation compilation, SyntaxNode declaration)
+    {
+        SemanticModel model = compilation.GetSemanticModel(declaration.SyntaxTree);
+
+        ISymbol? declared = declaration switch
+        {
+            AnonymousFunctionExpressionSyntax => model.GetSymbolInfo(declaration).Symbol,
+            ArrowExpressionClauseSyntax { Parent: PropertyDeclarationSyntax property } => (model.GetDeclaredSymbol(property) as IPropertySymbol)?.GetMethod,
+            _ => model.GetDeclaredSymbol(declaration),
+        };
+
+        IMethodSymbol symbol = declared as IMethodSymbol ?? throw new InvalidOperationException("The node must declare a method.");
+
+        return !ProducerGraph.MemberCannotBeNestedInAMethod(new(symbol, declaration, model));
+    }
+
     private sealed partial class ProducerGraph
     {
         // Constant Value Identity. A bound value whose normalized source is a compile-time constant stands for its value
@@ -219,7 +237,7 @@ internal static partial class HostedGrimoireProducerInventory
                 && IsTrustedProviderAssembly(definition.ContainingAssembly);
         }
 
-        private static bool MemberCannotBeNestedInAMethod(AuthoredMember member) =>
+        internal static bool MemberCannotBeNestedInAMethod(AuthoredMember member) =>
             member.Symbol.MethodKind is not (MethodKind.LocalFunction or MethodKind.AnonymousFunction);
     }
 }
