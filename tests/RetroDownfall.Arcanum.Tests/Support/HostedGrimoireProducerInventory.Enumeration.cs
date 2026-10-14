@@ -1355,7 +1355,7 @@ internal static partial class HostedGrimoireProducerInventory
                             alternatives.Add(pattern);
                         }
 
-                        if (alternatives.Count == 0)
+                        if (!alternatives.Any(static alternative => alternative.Bound && alternative.GetEnumerator is not null))
                         {
                             unresolved.Add((binding.OperandType?.ToDisplayString() ?? "<unbound>") + ".GetEnumerator");
 
@@ -1364,6 +1364,12 @@ internal static partial class HostedGrimoireProducerInventory
 
                         foreach (EnumerationBinding alternative in alternatives)
                         {
+                            // An alternative the lookup could not complete would only reach this branch again.
+                            if (!alternative.Bound || alternative.GetEnumerator is null)
+                            {
+                                continue;
+                            }
+
                             EnumerationResolution resolved = ResolveEnumerationTargets(member, alternative, new(EnumerationClosureKind.Candidates, [candidate]), collectionMembers: false);
 
                             targets.AddRange(resolved.Targets.Where(resolvedTarget => targets.All(existing => existing.Step != resolvedTarget.Step)));
@@ -1894,8 +1900,8 @@ internal static partial class HostedGrimoireProducerInventory
         }
 
         private static IMethodSymbol? PublicInstanceMethod(ITypeSymbol type, string name) =>
-            Enumerable.Range(0, 1)
-                .SelectMany(_ => BaseChain(type))
+            BaseChain(type)
+                .Concat(type.TypeKind == TypeKind.Interface ? type.AllInterfaces : [])
                 .SelectMany(current => current.GetMembers(name).OfType<IMethodSymbol>())
                 .FirstOrDefault(static method => !method.IsStatic && method.DeclaredAccessibility == Accessibility.Public && method.Parameters.All(static parameter => parameter.IsOptional));
 
@@ -1981,9 +1987,10 @@ internal static partial class HostedGrimoireProducerInventory
 
             EnumerationClosure closure = ClassifyEnumeration(member, binding);
 
+            // An operand nothing proves can run any enumerator, so a body that enumerates it can reach a producer site.
             if (closure.Kind == EnumerationClosureKind.Unproven)
             {
-                return false;
+                return true;
             }
 
             EnumerationResolution resolution = ResolveEnumerationTargets(member, binding, closure, collectionMembers: node is SpreadElementSyntax);

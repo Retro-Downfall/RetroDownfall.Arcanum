@@ -165,6 +165,8 @@ public sealed partial class HostedGrimoireProducerInventoryTests
             "sealed class Created { public Created(int value) { {E} } }", CensusDisposition.RefusedAlways),
         new("dynamic-invocation", "Unsupported", "dynamic d = 1; d.Run();",
             "sealed class Unused { }", CensusDisposition.RefusedAlways),
+        new("dynamic-indexer-access", "Unsupported", "dynamic d = 1; _ = d[0];",
+            "sealed class Unused { }", CensusDisposition.RefusedAlways),
         new("function-pointer-invocation", "Unsupported", "unsafe { delegate*<int> pointer = null; _ = pointer(); }",
             "sealed class Unused { }", CensusDisposition.RefusedAlways),
 

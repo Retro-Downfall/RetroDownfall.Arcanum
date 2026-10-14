@@ -1070,28 +1070,61 @@ internal static partial class HostedGrimoireProducerInventory
         {
             IOperation value = UnwrapImplicitConversions(hole);
 
-            ITypeSymbol? type = value.Type;
-
-            if (type is null || type.TypeKind is TypeKind.Error || IsIntrinsicFormatType(type))
+            if (value.Type is null || value.Type.TypeKind == TypeKind.Error)
             {
                 return;
             }
 
-            if (type.TypeKind == TypeKind.Dynamic)
+            if (value.Type.TypeKind == TypeKind.Dynamic)
             {
                 refuse("A dynamic interpolation hole binds its formatting at run time.");
 
                 return;
             }
 
-            IMethodSymbol? toString = model.Compilation.GetSpecialType(SpecialType.System_Object).GetMembers("ToString").OfType<IMethodSymbol>().FirstOrDefault(static method => method.Parameters.Length == 0);
+            List<ImplicitCallStep> steps = [];
 
-            if (toString is null)
+            FormatSteps(model, value.Type, value.Syntax as ExpressionSyntax, After(value.Syntax), steps, 0);
+
+            if (steps.Count != 0)
+            {
+                add(ImplicitCallKind.FormatHole, hole, anchor, steps);
+            }
+        }
+
+        // The steps that format a value of the type. A nullable value formats the value it holds, and a tuple, a
+        // KeyValuePair or a System.Tuple formats each of its elements.
+        private static void FormatSteps(SemanticModel model, ITypeSymbol type, ExpressionSyntax? value, int position, List<ImplicitCallStep> steps, int depth)
+        {
+            if (type is INamedTypeSymbol { OriginalDefinition.SpecialType: SpecialType.System_Nullable_T } nullable)
+            {
+                type = nullable.TypeArguments[0];
+            }
+
+            if (IsIntrinsicFormatType(type) || type.TypeKind == TypeKind.Error)
             {
                 return;
             }
 
-            List<ImplicitCallStep> steps = [Step("to-string", toString, type, value.Syntax as ExpressionSyntax, After(value.Syntax))];
+            if (depth < 4 && type is INamedTypeSymbol container
+                && (container.IsTupleType
+                    || !container.Locations.Any(static location => location.IsInSource)
+                        && TypeKey(container) is "System.Collections.Generic.KeyValuePair`2" or "System.Tuple`1" or "System.Tuple`2" or "System.Tuple`3" or "System.Tuple`4" or "System.Tuple`5" or "System.Tuple`6" or "System.Tuple`7"))
+            {
+                foreach (ITypeSymbol element in container.IsTupleType ? container.TupleElements.Select(static field => field.Type) : container.TypeArguments)
+                {
+                    FormatSteps(model, element, null, position, steps, depth + 1);
+                }
+
+                return;
+            }
+
+            if (model.Compilation.GetSpecialType(SpecialType.System_Object).GetMembers("ToString").OfType<IMethodSymbol>().FirstOrDefault(static method => method.Parameters.Length == 0) is not { } toString)
+            {
+                return;
+            }
+
+            steps.Add(Step("to-string", toString, type, value, position));
 
             // A value whose type fixes its runtime type formats through the contracts that type implements. Any other value
             // can be a type that implements them, so every format contract is a step and the candidates decide.
@@ -1105,11 +1138,9 @@ internal static partial class HostedGrimoireProducerInventory
 
                 if (contract?.GetMembers().OfType<IMethodSymbol>().FirstOrDefault(static method => method.Name is "ToString" or "TryFormat") is { } slot)
                 {
-                    steps.Add(Step("format", slot, type, value.Syntax as ExpressionSyntax, After(value.Syntax)));
+                    steps.Add(Step("format", slot, type, value, position));
                 }
             }
-
-            add(ImplicitCallKind.FormatHole, hole, anchor, steps);
         }
 
         // Framework types whose ToString and format members run no authored code whatever the value is: the

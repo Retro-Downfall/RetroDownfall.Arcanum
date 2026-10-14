@@ -90,11 +90,15 @@ internal static partial class HostedGrimoireProducerInventory
         // and members nothing here can follow.
         private static readonly string[] ExceptionVirtualMembers = ["Message", "StackTrace", "Data", "Source", "HelpLink"];
 
-        private sealed class ImplicitTargetCollector(ProducerGraph graph, AuthoredMember member)
+        private sealed class ImplicitTargetCollector(ProducerGraph graph, AuthoredMember member, HashSet<ISymbol>? shared = null)
         {
-            private readonly HashSet<ISymbol> visited = new(SymbolEqualityComparer.Default);
+            // A collector made for a nested resolution shares the visited set of its parent, so that a generated member that
+            // prints a value of its own type, directly or through a member typed object, is followed once.
+            private readonly HashSet<ISymbol> visited = shared ?? new(SymbolEqualityComparer.Default);
 
             internal AuthoredMember Member => member;
+
+            internal HashSet<ISymbol> Visited => visited;
 
             internal List<AuthoredMember> Members { get; } = [];
 
@@ -393,7 +397,7 @@ internal static partial class HostedGrimoireProducerInventory
         // each runs. A formatter that cannot reach a producer site adds nothing, so it is not traversed.
         private void AddFormatterCandidates(ITypeSymbol receiverType, IMethodSymbol slot, ImplicitTargetCollector targets)
         {
-            ImplicitTargetCollector formatting = new(this, targets.Member);
+            ImplicitTargetCollector formatting = new(this, targets.Member, targets.Visited);
 
             foreach (AuthoredFormatter formatter in AuthoredFormatters())
             {

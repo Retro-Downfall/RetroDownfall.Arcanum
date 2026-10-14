@@ -413,4 +413,51 @@ public sealed partial class HostedGrimoireProducerInventoryTests
 
         Assert.Equal(refused, EnumerationOwnershipRefused(result, "System.GC.KeepAlive"));
     }
+
+    // A nullable value, a tuple, a pair and a record that prints an object member format what they hold; a record
+    // whose object member can be the record itself is followed once.
+    [Theory]
+    [InlineData("Sized? value = new Sized(); string text = $\"{value}\"; _ = text;")]
+    [InlineData("(Sized, int) value = (new Sized(), 1); string text = $\"{value}\"; _ = text;")]
+    [InlineData("var value = new System.Collections.Generic.KeyValuePair<int, Sized>(1, new Sized()); string text = $\"{value}\"; _ = text;")]
+    [InlineData("string text = $\"{new Wrapper(new Sized())}\"; _ = text;")]
+    [InlineData("string text = $\"{new Wrapper(new Wrapper(new Sized()))}\"; _ = text;")]
+    public void FormattedContainerFormatsWhatItHolds(string statement)
+    {
+        string helpers = "struct Sized { public override string ToString() { " + EnumerationEffect + "return \"s\"; } } sealed record Wrapper(object Inner);";
+
+        HostedProducerDiscovery<HostedProducerSite> result = EnumerationDiscover(CensusCompileSource(statement, helpers));
+
+        Assert.NotNull(Assert.Single(EnumerationDeleteSites(result)).WorkFrontierCapsuleId);
+
+        HostedProducerDiscovery<HostedProducerSite> clean = EnumerationDiscover(CensusCompileSource(statement, helpers.Replace(EnumerationEffect, string.Empty, StringComparison.Ordinal)));
+
+        Assert.Empty(clean.Diagnostics);
+    }
+
+    // A spread over an operand nothing proves, in an initializer that the construction runs, is refused at the spread;
+    // the same spread over a closed collection is not.
+    [Theory]
+    [InlineData("static class Unproved { public static System.Collections.Generic.IEnumerable<int> Items { get; set; } = null!; } sealed class Holder { private int[] values = [.. Unproved.Items]; }", true)]
+    [InlineData("sealed class Holder { private int[] values = [.. new System.Collections.Generic.List<int>()]; }", false)]
+    public void UnprovenSpreadInAnInitializerIsRefused(string helpers, bool refused)
+    {
+        HostedProducerDiscovery<HostedProducerSite> result = EnumerationDiscover(CensusCompileSource("_ = new Holder();", helpers));
+
+        Assert.Equal(refused, result.Diagnostics.Any(static diagnostic => diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED"));
+    }
+
+    // An opaque callback that enumerates an operand nothing proves can run any enumerator, so the callback is refused;
+    // the same callback over a closed collection is not.
+    [Theory]
+    [InlineData("foreach (int item in Unproved.Items) { _ = item; }", true)]
+    [InlineData("foreach (int item in new System.Collections.Generic.List<int>()) { _ = item; }", false)]
+    public void OpaqueCallbackThatEnumeratesAnUnprovenOperandIsRefused(string loop, bool refused)
+    {
+        string helpers = "static class Unproved { public static System.Collections.Generic.IEnumerable<int> Items { get; set; } = null!; }";
+
+        HostedProducerDiscovery<HostedProducerSite> result = EnumerationDiscover(CensusCompileSource("GC.KeepAlive((Action)(() => { " + loop + " }));", helpers));
+
+        Assert.Equal(refused, result.Diagnostics.Any(static diagnostic => diagnostic.Code == "HOSTED_CALLBACK_OWNERSHIP_UNPROVEN"));
+    }
 }
