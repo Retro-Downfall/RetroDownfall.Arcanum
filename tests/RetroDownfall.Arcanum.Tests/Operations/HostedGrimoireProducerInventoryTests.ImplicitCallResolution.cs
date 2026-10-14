@@ -734,4 +734,23 @@ public sealed partial class HostedGrimoireProducerInventoryTests
 
         Assert.Empty(EnumerationDeleteSites(clean));
     }
+
+    // The override of the runtime type is what runs, so the body of a slot that a runtime type overrides is not run, and the
+    // override of a type that is not the runtime type is not run either; the plain member and the property that is not
+    // overridden run the body of the slot.
+    [Theory]
+    [InlineData("Base probe = new Plain(); probe.Run();", "class Base { public virtual void Run() { {E} } } sealed class Derived : Base { public override void Run() { {E} } } sealed class Plain : Base { }", 1)]
+    [InlineData("Base probe = new Derived(); probe.Run();", "class Base { public virtual void Run() { {E} } } sealed class Derived : Base { public override void Run() { } }", 0)]
+    [InlineData("Base probe = new Plain(); probe.Run();", "class Base { public virtual void Run() { } } sealed class Derived : Base { public override void Run() { {E} } } sealed class Plain : Base { }", 0)]
+    [InlineData("Base probe = new Plain(); _ = probe.Value;", "class Base { public virtual int Value => 0; } sealed class Derived : Base { public override int Value { get { {E} return 1; } } } sealed class Plain : Base { }", 0)]
+    [InlineData("Base probe = new Plain(); _ = probe.Value;", "class Base { public virtual int Value { get { {E} return 0; } } } sealed class Derived : Base { public override int Value => 1; } sealed class Plain : Base { }", 1)]
+    [InlineData("IProbe probe = new Plain(); _ = probe.Value;", "interface IProbe { int Value { get; } } sealed class Probe : IProbe { public int Value { get { {E} return 1; } } } sealed class Plain : IProbe { public int Value => 2; }", 0)]
+    public void OverrideOfATypeThatIsNotTheRuntimeTypeIsNotRun(string statement, string helpers, int sites)
+    {
+        HostedProducerDiscovery<HostedProducerSite> result = EnumerationDiscover(CensusCompileSource(statement, helpers.Replace("{E}", EnumerationEffect, StringComparison.Ordinal)));
+
+        Assert.Equal(sites, EnumerationDeleteSites(result).Length);
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic => diagnostic.Code is "HOSTED_CALL_TARGET_UNRESOLVED" or "HOSTED_SITE_UNCLASSIFIED");
+    }
 }

@@ -25867,13 +25867,28 @@ internal static partial class HostedGrimoireProducerInventory
                             || aggregate
                             || TransparentProducerBoundaries.Contains(callee))
                         {
+                            // A virtual or abstract method of a class the source declares runs the override of the runtime type of
+                            // its receiver, not the body of the slot the call names.
+                            AccessorDispatch? classDispatch = strategyTargets.Length == 0 && boundTargets.Length == 0 && reviewedClosedTargets.Length == 0
+                                ? ClassMethodDispatch(member, method, node)
+                                : null;
+
                             AuthoredMember[] targets = strategyTargets.Length != 0
                                 ? strategyTargets
-                                : target is not null
-                                    ? [target]
-                                    : boundTargets.Length != 0
-                                        ? boundTargets
-                                        : reviewedClosedTargets;
+                                : classDispatch is { } dispatched
+                                    ? [.. dispatched.Targets]
+                                    : target is not null
+                                        ? [target]
+                                        : boundTargets.Length != 0
+                                            ? boundTargets
+                                            : reviewedClosedTargets;
+
+                            if (classDispatch is { Unresolved: true })
+                            {
+                                RefuseTraversalCompletion();
+
+                                diagnostics.Add(new("HOSTED_CALL_TARGET_UNRESOLVED", Location(node), callee));
+                            }
 
                             if (target is null && boundTargets.Length != 0
                                 && HasIncompleteDefaultInterfaceBinding(method, member.Model.Compilation))
@@ -26376,7 +26391,7 @@ internal static partial class HostedGrimoireProducerInventory
                         && (authoredEvent.DeclaringSyntaxReferences
                                 .Select(static reference => reference.GetSyntax())
                                 .SingleOrDefault() is EventDeclarationSyntax
-                            || (authoredEvent.AddMethod is { } declaredAdd && IsDispatchedAccessor(declaredAdd))))
+                            || (authoredEvent.AddMethod is { } declaredAdd && IsDispatchedMember(declaredAdd))))
                     {
                         bool addsHandler = authoredMutation.IsKind(
                             SyntaxKind.AddAssignmentExpression);
@@ -34681,7 +34696,14 @@ internal static partial class HostedGrimoireProducerInventory
 
                         AuthoredMember? target = Resolve(method, member.Model.Compilation);
 
-                        if (target is not null && ContainsPotentialProducerSite(target, path)
+                        if (ClassMethodDispatch(member, method, node) is { } scannedDispatch)
+                        {
+                            if (!scanSitesOnly && scannedDispatch.Unresolved || scannedDispatch.Targets.Any(dispatched => ContainsPotentialProducerSite(dispatched, path)))
+                            {
+                                return true;
+                            }
+                        }
+                        else if (target is not null && ContainsPotentialProducerSite(target, path)
                             || target is null
                                 && !scanSitesOnly
                                 && !IsReviewedFrameworkRangeMember(method)

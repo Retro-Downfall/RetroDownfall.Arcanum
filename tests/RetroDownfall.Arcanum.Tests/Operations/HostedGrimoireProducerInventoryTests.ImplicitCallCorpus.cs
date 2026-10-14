@@ -399,6 +399,20 @@ public sealed partial class HostedGrimoireProducerInventoryTests
             AsyncBuilderHelpers("result"), CensusDisposition.Refused),
         new("async-method-builder-task", "AsyncBuilder", "await Runner.Run();",
             AsyncBuilderHelpers("task"), CensusDisposition.Refused),
+
+        // ---- Methods the runtime type of the receiver selects -----------------------------------------------
+        new("virtual-method-call", "Method", "Base probe = new Derived(); probe.Run();",
+            "class Base { public virtual void Run() { } } sealed class Derived : Base { public override void Run() { {E} } }", CensusDisposition.Traversed),
+        new("abstract-method-call", "Method", "Base probe = new Derived(); probe.Run();",
+            "abstract class Base { public abstract void Run(); } sealed class Derived : Base { public override void Run() { {E} } }", CensusDisposition.Traversed),
+        new("abstract-method-unproven-single", "Method", "Base probe = Anything.Value; probe.Run();",
+            "abstract class Base { public abstract void Run(); } sealed class Derived : Base { public override void Run() { {E} } } static class Anything { public static Base Value { get; set; } = null!; }", CensusDisposition.Traversed),
+        new("virtual-method-unproven-many", "Method", "Base probe = Anything.Value; probe.Run();",
+            "class Base { public virtual void Run() { } } sealed class Derived : Base { public override void Run() { {E} } } sealed class Other : Base { public override void Run() { } } static class Anything { public static Base Value { get; set; } = null!; }", CensusDisposition.Refused),
+        new("override-method-base-call", "Method", "new Derived().Run();",
+            "class Base { public virtual void Run() { {E} } } sealed class Derived : Base { public override void Run() { base.Run(); } }", CensusDisposition.Traversed),
+        new("virtual-method-through-override-chain", "Method", "Middle probe = new Derived(); probe.Run();",
+            "class Base { public virtual void Run() { } } class Middle : Base { public override void Run() { } } sealed class Derived : Middle { public override void Run() { {E} } }", CensusDisposition.Traversed),
     ];
 
     // An async method whose builder is authored; the effect sits in the builder member named by effectIn.

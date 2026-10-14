@@ -1536,7 +1536,7 @@ internal static partial class HostedGrimoireProducerInventory
 
         // The accessor an access calls is a slot the runtime type of the receiver selects when it is virtual, abstract, an
         // override that can be overridden again, or an interface member; any other accessor is its own implementation.
-        private static bool IsDispatchedAccessor(IMethodSymbol accessor) =>
+        private static bool IsDispatchedMember(IMethodSymbol accessor) =>
             !accessor.IsStatic
             && (accessor.ContainingType.TypeKind == TypeKind.Interface
                 || (accessor.IsVirtual || accessor.IsAbstract || accessor.IsOverride) && !accessor.IsSealed);
@@ -1552,7 +1552,7 @@ internal static partial class HostedGrimoireProducerInventory
         {
             Compilation compilation = member.Model.Compilation;
 
-            if (!IsDispatchedAccessor(accessor))
+            if (!IsDispatchedMember(accessor))
             {
                 AuthoredMember? fixedTarget = Resolve(accessor, compilation);
 
@@ -1636,6 +1636,26 @@ internal static partial class HostedGrimoireProducerInventory
             closedWorldAccessors[key] = resolution;
 
             return resolution;
+        }
+
+        // The members a written call to a virtual or abstract method of a class declared in source runs, when the call dispatches on
+        // the runtime type of its receiver. A call through an interface is resolved by the invocation lane's own contracts, a
+        // call that does not dispatch (a base call, a static or sealed member) is its own body, and a method the framework
+        // declares is judged by the classification of the call.
+        private AccessorDispatch? ClassMethodDispatch(AuthoredMember member, IMethodSymbol method, SyntaxNode node)
+        {
+            if (node is not InvocationExpressionSyntax
+                || method.ContainingType.TypeKind == TypeKind.Interface
+                || !IsDispatchedMember(method)
+                || !method.Locations.Any(static location => location.IsInSource)
+                || member.Model.GetOperation(node) is not IInvocationOperation { IsVirtual: true } invocation)
+            {
+                return null;
+            }
+
+            (ITypeSymbol? receiverType, ExpressionSyntax? receiverExpression, bool exactReceiver) = AccessorReceiver(invocation.Instance);
+
+            return ResolveAccessorDispatch(member, method, receiverType, receiverExpression, exactReceiver, indexer: false);
         }
 
         // The receiver an access reads an accessor of: the type the compiler binds, the expression it was written as when
