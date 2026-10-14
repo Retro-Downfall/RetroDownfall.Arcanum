@@ -105,16 +105,15 @@ public sealed partial class HostedGrimoireProducerInventoryTests
         });
     }
 
-    // The twins. Each keeps the scope disposal and the callback it raises, and changes only what the lease is doing when the scope is
-    // disposed: it is disposed first, its disposal is not on every path of the finally, or the protected block ended it already.
+    // The soundness twins. Each keeps the scope disposal and the callback it raises, and changes only what the lease is doing when the
+    // scope is disposed: it is already disposed (the finally disposes it first, or the protected block ended it), so no Work is held at
+    // runtime and the callback must not be admitted.
     [Theory]
     [InlineData("inline", "scope-after-lease")]
     [InlineData("returned", "scope-after-lease")]
-    [InlineData("inline", "lease-disposal-not-on-every-path")]
-    [InlineData("returned", "lease-disposal-not-on-every-path")]
     [InlineData("inline", "lease-ended-in-protected-block")]
     [InlineData("returned", "lease-ended-in-protected-block")]
-    public void AScopeDisposedAfterTheLeaseIsGoneOrWithoutOwnershipRunsItsCallbacksWithoutWork(string acquisition, string shape)
+    public void AScopeDisposedAfterTheLeaseIsGoneRunsItsCallbacksWithoutWork(string acquisition, string shape)
     {
         string protectedBlock = shape == "lease-ended-in-protected-block"
             ? FinallyOwnedLeaseDisposal + " " + FinallyOwnedProtected
@@ -124,9 +123,6 @@ public sealed partial class HostedGrimoireProducerInventoryTests
         {
             // The lease is disposed last on every path, and then the scope: the scope is disposed after the lease.
             "scope-after-lease" => "try { try { " + FinallyOwnedGroupDisposal + " } finally { } } finally { " + FinallyOwnedLeaseDisposal + " } " + FinallyOwnedScopeDisposal,
-
-            // A statement that can throw comes first, so the lease is not disposed on every path.
-            "lease-disposal-not-on-every-path" => FinallyOwnedScopeDisposal + " " + FinallyOwnedLeaseDisposal,
 
             // The shipped finally, over a lease the protected block disposed before the scope is.
             _ => FinallyOwnedNested(FinallyOwnedScopeDisposal),
@@ -140,6 +136,40 @@ public sealed partial class HostedGrimoireProducerInventoryTests
         EachQueryMode(production =>
         {
             output.WriteLine("FINALLY-OWNED " + acquisition + " " + shape + " " + (production ? "production" : "strict"));
+
+            HostedProducerDiscovery<HostedProducerSite> result = InterceptorDiscover(
+                ".AddInterceptors(new DisposeProbe())",
+                string.Empty,
+                early: FinallyOwnedGate + shell,
+                contextMembers: HookRows,
+                helpers: DisposeProbeTypes + FinallyOwnedHelpers,
+                production: production);
+
+            Assert.True(CallbackTraversed(result, "ConnectionDisposedAsync"));
+
+            Assert.False(CallbackAdmitted(result, "ConnectionDisposedAsync"));
+
+            Assert.Contains(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_SITE_WORK_FRONTIER_MISSING" && diagnostic.Detail == "System.IO.File.Delete");
+        });
+    }
+
+    // The conservative refusal. At runtime the scope here is disposed before the lease, so Work is held; the site is refused because
+    // the ownership proof needs the lease's release to be guaranteed, and a statement able to throw before the disposal leaves the
+    // lease unreleased on that path. This pins the proof's requirement, not a runtime fact: a proof that guaranteed the release some
+    // other way would admit the site, and this row would then move to the held rows.
+    [Theory]
+    [InlineData("inline")]
+    [InlineData("returned")]
+    public void AScopeDisposedBeforeALeaseReleaseThatIsNotGuaranteedIsRefusedConservatively(string acquisition)
+    {
+        string shell = FinallyOwnedShell(
+            acquisition == "inline" ? FinallyOwnedInlineAcquisition : FinallyOwnedReturnedAcquisition,
+            FinallyOwnedProtected,
+            FinallyOwnedScopeDisposal + " " + FinallyOwnedLeaseDisposal);
+
+        EachQueryMode(production =>
+        {
+            output.WriteLine("FINALLY-OWNED " + acquisition + " release-not-guaranteed " + (production ? "production" : "strict"));
 
             HostedProducerDiscovery<HostedProducerSite> result = InterceptorDiscover(
                 ".AddInterceptors(new DisposeProbe())",
