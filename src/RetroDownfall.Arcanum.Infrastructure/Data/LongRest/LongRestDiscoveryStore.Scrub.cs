@@ -13,22 +13,29 @@ internal sealed partial class LongRestDiscoveryStore
     internal const int ScrubWindowLeaves = 32;
 
     /// <summary>
-    /// The leaves the rotating window selects for the sweep as it stands now, in one statement over the leaf keys: an index walk, no leaf is
-    /// read. The window is the revision's turn among ceil(leaves / <see cref="ScrubWindowLeaves"/>) windows that tile the leaves in identity
-    /// order, and the revision is the sweep's plus the generation's own, because the sweep advances per committed unit and the generation per
-    /// hierarchy step, and a window that followed only one would stand still through the other's phase.
+    /// The one statement that lists the leaf keys a verification reads, for a corpus pass (a page after a cursor) and for a step's window
+    /// (one window, picked by the revision), so the two cannot disagree about which leaves there are. It reads only keys: an index walk, no
+    /// leaf is read. The window is the revision's turn among ceil(leaves / limit) windows that tile the leaves in identity order, and the
+    /// revision is the sweep's plus the generation's own, because the sweep advances per committed unit and the generation per hierarchy
+    /// step, and a window that followed only one would stand still through the other's phase.
     /// </summary>
+    internal const string LeafKeysSql = """
+        SELECT MemoryId FROM long_rest_discovery_leaves WHERE GenerationId = $generation AND ($cursor IS NULL OR MemoryId > $cursor)
+        ORDER BY MemoryId LIMIT $limit
+        OFFSET CASE WHEN $window = 1 THEN (COALESCE((SELECT Revision FROM long_rest_sweeps WHERE OperationId = $operation), 0) + $revision)
+            % MAX(1, ((SELECT count(*) FROM long_rest_discovery_leaves WHERE GenerationId = $generation) + $limit - 1) / $limit) * $limit ELSE 0 END;
+        """;
+
+    /// <summary>The page size of a corpus pass.</summary>
+    private const int CorpusPageLeaves = 128;
+
+    /// <summary>The leaves the rotating window selects for the sweep as it stands now; what a test compares a step's reads with.</summary>
     internal static async Task<List<string>> ReadScrubWindowAsync(SqliteConnection connection, SqliteTransaction transaction,
         LongRestDiscoveryGeneration generation, CancellationToken ct)
     {
         List<string> window = [];
 
-        await using SqliteCommand command = Command(connection, transaction, """
-            SELECT MemoryId FROM long_rest_discovery_leaves WHERE GenerationId = $generation ORDER BY MemoryId LIMIT $limit
-            OFFSET (COALESCE((SELECT Revision FROM long_rest_sweeps WHERE OperationId = $operation), 0) + $revision)
-                % MAX(1, ((SELECT count(*) FROM long_rest_discovery_leaves WHERE GenerationId = $generation) + $limit - 1) / $limit) * $limit;
-            """, ("$generation", Format(generation.GenerationId)), ("$operation", generation.OperationId.ToString("N")),
-            ("$revision", generation.Revision), ("$limit", ScrubWindowLeaves));
+        await using SqliteCommand command = LeafKeys(connection, transaction, generation, null, true);
 
         await using SqliteDataReader reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
 
@@ -39,6 +46,11 @@ internal sealed partial class LongRestDiscoveryStore
 
         return window;
     }
+
+    private static SqliteCommand LeafKeys(SqliteConnection connection, SqliteTransaction transaction, LongRestDiscoveryGeneration generation,
+        string? cursor, bool window) => Command(connection, transaction, LeafKeysSql, ("$generation", Format(generation.GenerationId)),
+        ("$operation", generation.OperationId.ToString("N")), ("$revision", generation.Revision), ("$cursor", cursor),
+        ("$limit", window ? ScrubWindowLeaves : CorpusPageLeaves), ("$window", window ? 1 : 0));
 
     /// <summary>
     /// The full recompute a sweep owes when it resumes. A clean generation is re-proved leaf by leaf in full. A protected one is re-proved by
@@ -67,36 +79,8 @@ internal sealed partial class LongRestDiscoveryStore
         }
     }
 
-    // The leaf's consolidated and transformation-output flags are projections of rows the sweep itself writes when it applies a decision,
-    // so no trigger on them can tell a foreign writer from the sweep. What distinguishes them is attribution: every receipt that sets a flag
-    // on one of this generation's leaves must be the receipt of one of its own committed work items, unless the leaf was frozen with the flag
-    // already set. The question is set-based and conservative (it asks for attribution, not for the full proof of the receipt that the
-    // per-leaf read makes), so a step that skips the corpus pass still refuses a foreign consolidation of any leaf.
-    internal const string ForeignProjectionSql = """
-        SELECT NOT EXISTS (
-            SELECT 1 FROM long_rest_discovery_leaves leaf
-            JOIN long_rest_suppressions suppression ON suppression.SourceVersionId = leaf.VersionId
-            WHERE leaf.GenerationId = $generation AND COALESCE(json_extract(leaf.SnapshotJson, '$.isConsolidated'), 0) = 0
-                AND suppression.ReceiptId NOT IN (SELECT ReceiptId FROM long_rest_work_items WHERE GenerationId = $generation AND ReceiptId IS NOT NULL))
-          AND NOT EXISTS (
-            SELECT 1 FROM long_rest_discovery_leaves leaf
-            JOIN long_rest_receipts receipt ON receipt.SurvivorVersionId = leaf.VersionId AND receipt.OutcomeCode = 1
-            WHERE leaf.GenerationId = $generation AND COALESCE(json_extract(leaf.SnapshotJson, '$.isTransformationOutput'), 0) = 0
-                AND receipt.ReceiptId NOT IN (SELECT ReceiptId FROM long_rest_work_items WHERE GenerationId = $generation AND ReceiptId IS NOT NULL));
-        """;
-
-    private static async Task<bool> OwnProjectionsOnlyAsync(SqliteConnection connection, SqliteTransaction transaction,
-        LongRestDiscoveryGeneration generation, CancellationToken ct)
-    {
-        LongRestVerificationCounters.AntiJoinPass();
-
-        await using SqliteCommand command = Command(connection, transaction, ForeignProjectionSql, ("$generation", Format(generation.GenerationId)));
-
-        return (long)(await command.ExecuteScalarAsync(ct).ConfigureAwait(false))! == 1;
-    }
-
     /// <summary>
-    /// Re-proves these leaves in full: text, vector, labels and owner. The one place the corpus pass, the step's window and the inputs a step is
+    /// Re-proves these leaves in full: text, vector, labels and owner. The one place a corpus pass, a step's window and the inputs a step is
     /// about to act on all read leaves from, so there is one body to keep right.
     /// </summary>
     internal static async Task ReadLeavesAsync(SqliteConnection connection, SqliteTransaction transaction, LongRestDiscoveryGeneration generation,
@@ -105,16 +89,6 @@ internal sealed partial class LongRestDiscoveryStore
         foreach (string memory in memories)
         {
             _ = await ReadFrozenLeafAsync(connection, transaction, generation, memory, capability, ct).ConfigureAwait(false);
-        }
-    }
-
-    /// <summary>The metadata-only form of <see cref="ReadLeavesAsync"/>, for a caller that holds no capability and so cannot read protected content.</summary>
-    internal static async Task ReadMetadataLeavesAsync(SqliteConnection connection, SqliteTransaction transaction, LongRestDiscoveryGeneration generation,
-        IEnumerable<string> memories, CancellationToken ct)
-    {
-        foreach (string memory in memories)
-        {
-            _ = await ReadFrozenMetadataLeafAsync(connection, transaction, generation, memory, ct).ConfigureAwait(false);
         }
     }
 }

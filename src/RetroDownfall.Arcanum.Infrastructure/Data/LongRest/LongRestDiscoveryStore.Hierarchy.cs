@@ -571,22 +571,17 @@ internal sealed partial class LongRestDiscoveryStore
             throw new InvalidDataException();
         }
 
-        if (depth == LongRestVerificationDepth.Step)
+        // A step reads one window, picked by the revision, and a seam pages through every leaf; both list their keys with the same statement.
+        bool window = depth == LongRestVerificationDepth.Step;
+
+        if (window)
         {
-            if (!await OwnProjectionsOnlyAsync(connection, transaction, generation, cancellationToken).ConfigureAwait(false))
-            {
-                throw new InvalidDataException();
-            }
-
             LongRestVerificationCounters.ScrubWindow();
-
-            await ReadLeavesAsync(connection, transaction, generation, await ReadScrubWindowAsync(connection, transaction, generation, cancellationToken).ConfigureAwait(false),
-                capability, cancellationToken).ConfigureAwait(false);
-
-            return;
         }
-
-        LongRestVerificationCounters.CorpusPass();
+        else
+        {
+            LongRestVerificationCounters.CorpusPass();
+        }
 
         string? cursor = null;
 
@@ -594,9 +589,7 @@ internal sealed partial class LongRestDiscoveryStore
         {
             List<string> memories = [];
 
-            await using (SqliteCommand command = Command(connection, transaction,
-                "SELECT MemoryId FROM long_rest_discovery_leaves WHERE GenerationId = $generation AND ($cursor IS NULL OR MemoryId > $cursor) ORDER BY MemoryId LIMIT 128;",
-                ("$generation", Format(generation.GenerationId)), ("$cursor", cursor)))
+            await using (SqliteCommand command = LeafKeys(connection, transaction, generation, cursor, window))
             {
                 await using SqliteDataReader reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
 
@@ -612,6 +605,11 @@ internal sealed partial class LongRestDiscoveryStore
             }
 
             await ReadLeavesAsync(connection, transaction, generation, memories, capability, cancellationToken).ConfigureAwait(false);
+
+            if (window)
+            {
+                return;
+            }
 
             cursor = memories[^1];
         }

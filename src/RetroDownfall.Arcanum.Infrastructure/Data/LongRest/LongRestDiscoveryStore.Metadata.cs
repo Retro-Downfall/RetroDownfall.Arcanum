@@ -192,21 +192,16 @@ internal sealed partial class LongRestDiscoveryStore
             throw new InvalidDataException();
         }
 
-        if (depth == LongRestVerificationDepth.Step)
+        bool window = depth == LongRestVerificationDepth.Step;
+
+        if (window)
         {
-            if (!await OwnProjectionsOnlyAsync(connection, transaction, generation, ct).ConfigureAwait(false))
-            {
-                throw new InvalidDataException();
-            }
-
             LongRestVerificationCounters.ScrubWindow();
-
-            await ReadMetadataLeavesAsync(connection, transaction, generation, await ReadScrubWindowAsync(connection, transaction, generation, ct).ConfigureAwait(false), ct).ConfigureAwait(false);
-
-            return;
         }
-
-        LongRestVerificationCounters.CorpusPass();
+        else
+        {
+            LongRestVerificationCounters.CorpusPass();
+        }
 
         string? cursor = null;
 
@@ -214,7 +209,7 @@ internal sealed partial class LongRestDiscoveryStore
         {
             List<string> page = [];
 
-            await using (SqliteCommand command = Command(connection, transaction, "SELECT MemoryId FROM long_rest_discovery_leaves WHERE GenerationId = $generation AND ($cursor IS NULL OR MemoryId > $cursor) ORDER BY MemoryId LIMIT 128;", ("$generation", Format(generation.GenerationId)), ("$cursor", cursor)))
+            await using (SqliteCommand command = LeafKeys(connection, transaction, generation, cursor, window))
             {
                 await using SqliteDataReader reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
 
@@ -229,7 +224,15 @@ internal sealed partial class LongRestDiscoveryStore
                 return;
             }
 
-            await ReadMetadataLeavesAsync(connection, transaction, generation, page, ct).ConfigureAwait(false);
+            foreach (string memory in page)
+            {
+                _ = await ReadFrozenMetadataLeafAsync(connection, transaction, generation, memory, ct).ConfigureAwait(false);
+            }
+
+            if (window)
+            {
+                return;
+            }
 
             cursor = page[^1];
         }

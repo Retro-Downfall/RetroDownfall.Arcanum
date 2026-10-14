@@ -193,6 +193,12 @@ internal sealed partial class LongRestDiscoveryStore(ArcanumDbContext db, TimePr
     // No content or vector materialization and no accepted-stage association occurs here. Tracked epochs prove the retained observation
     // survived; current work revalidates its exact bytes and canonical labels under its fresh capability before executing or reusing paid
     // evidence. The label comparison is the loose, spelling-insensitive one on purpose: a mis-spelled protected label must still count.
+    //
+    // The last two questions are attribution. A leaf's consolidated and transformation-output flags are projections of rows the sweep itself
+    // writes when it applies a decision, so no trigger on them can tell a foreign writer from the sweep. What distinguishes them is whose
+    // receipt set the flag: every receipt that sets one on a leaf of this generation must belong to one of its own committed work items,
+    // unless the leaf was frozen with the flag already set. The question is set-based and conservative (it asks for attribution, not for the
+    // full proof of the receipt that the per-leaf read makes), so a step that skips the corpus pass still refuses a foreign consolidation.
     internal static readonly string FrozenSourceMetadataSql = $"""
         SELECT NOT EXISTS (
             SELECT 1 FROM long_rest_discovery_leaves leaf
@@ -212,7 +218,17 @@ internal sealed partial class LongRestDiscoveryStore(ArcanumDbContext db, TimePr
                     AND lower(replace(label.ArtifactId, '-', '')) = lower(replace(leaf.MemoryId, '-', ''))))
                 OR ($partition IS NOT NULL AND (SELECT count(*) FROM artifact_sensitivity label WHERE label.ArtifactKindCode = 6
                     AND lower(replace(label.ArtifactId, '-', '')) = lower(replace(leaf.MemoryId, '-', ''))
-                    AND label.SensitivityDigest = $partition) <> 1)));
+                    AND label.SensitivityDigest = $partition) <> 1)))
+          AND NOT EXISTS (
+            SELECT 1 FROM long_rest_discovery_leaves leaf
+            JOIN long_rest_suppressions suppression ON suppression.SourceVersionId = leaf.VersionId
+            WHERE leaf.GenerationId = $generation AND COALESCE(json_extract(leaf.SnapshotJson, '$.isConsolidated'), 0) = 0
+                AND suppression.ReceiptId NOT IN (SELECT ReceiptId FROM long_rest_work_items WHERE GenerationId = $generation AND ReceiptId IS NOT NULL))
+          AND NOT EXISTS (
+            SELECT 1 FROM long_rest_discovery_leaves leaf
+            JOIN long_rest_receipts receipt ON receipt.SurvivorVersionId = leaf.VersionId AND receipt.OutcomeCode = 1
+            WHERE leaf.GenerationId = $generation AND COALESCE(json_extract(leaf.SnapshotJson, '$.isTransformationOutput'), 0) = 0
+                AND receipt.ReceiptId NOT IN (SELECT ReceiptId FROM long_rest_work_items WHERE GenerationId = $generation AND ReceiptId IS NOT NULL));
         """;
 
     private static async Task<bool> FrozenSourceMetadataMatchesAsync(SqliteConnection connection, SqliteTransaction transaction,
