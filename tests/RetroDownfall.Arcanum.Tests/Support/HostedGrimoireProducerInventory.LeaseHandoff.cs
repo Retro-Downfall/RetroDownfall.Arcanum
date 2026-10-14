@@ -41,8 +41,9 @@ internal static partial class HostedGrimoireProducerInventory
 
     // The handoff-binding association. Each formal row is bound by at least one binding row (a LeaseHandoff site in a caller's operation
     // whose callee is the root's operation id), each binding row names a root that has a formal row, and the Work the binding carries is
-    // an acquisition of the work kind the formal admits. A formal nobody binds, or a binding to a root without a formal, is a manifest
-    // that would let a root's Work stand with no lease behind it.
+    // a work frontier of the work kind the formal admits: an acquisition, or the formal of an outer handoff root that hands its own lease
+    // on. A formal nobody binds, or a binding to a root without a formal, is a manifest that would let a root's Work stand with no lease
+    // behind it.
     private static void ValidateManifestHandoffBindings(IReadOnlyList<HostedProducerSite> sites, List<HostedProducerInventoryDiagnostic> diagnostics)
     {
         HostedProducerSite[] formals = [.. sites.Where(static site => site.Kind == HostedProducerSiteKind.EffectFrontier && site.Callee == RootLeaseFormalCallee)];
@@ -67,11 +68,11 @@ internal static partial class HostedGrimoireProducerInventory
                 ? []
                 : [.. sites.Where(candidate => candidate.RootType == binding.RootType && candidate.AuthorityOperationId == binding.AuthorityOperationId
                     && candidate.CapsuleId == binding.WorkFrontierCapsuleId && candidate.Kind == HostedProducerSiteKind.EffectFrontier
-                    && candidate.Callee.EndsWith(".TryAcquireWorkLease", StringComparison.Ordinal))];
+                    && IsWorkFrontierCallee(candidate.Callee))];
 
             if (formal.Length != 1 || acquisition.Length != 1 || acquisition[0].AdmittedWorkKind != formal[0].AdmittedWorkKind)
             {
-                diagnostics.Add(new(ManifestHandoffUnboundCode, StableSiteIdentity(binding), "A handoff-binding row must name one root lease formal and carry one acquisition of the work kind that formal admits."));
+                diagnostics.Add(new(ManifestHandoffUnboundCode, StableSiteIdentity(binding), "A handoff-binding row must name one root lease formal and carry one work frontier of the work kind that formal admits."));
             }
         }
     }

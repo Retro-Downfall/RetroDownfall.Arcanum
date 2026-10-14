@@ -25,6 +25,8 @@ public sealed partial class HostedGrimoireProducerInventoryTests
 
     private const string LeaseHandoffRootOperation = "RetroDownfall.Arcanum.Api.Intelligence.LongRestMaintenance.ProcessAdmittedAsync";
 
+    private const string LeaseHandoffNestedOperation = "RetroDownfall.Arcanum.Api.Intelligence.LongRestFolder.FoldHandoffAsync";
+
     private const string LeaseHandoffCallerOperation = "Worker.StartAsync";
 
     private const string LeaseHandoffSend = "System.IO.File.Delete";
@@ -292,6 +294,32 @@ public sealed partial class HostedGrimoireProducerInventoryTests
 
         string members = shape == "formal-stored" ? "private IGrimoireWorkLease? _held;" : "";
 
+        // A second handoff root inside the first one's closure: the fold is handed the lease again, and owns the paid door.
+        string nestedFolder = shape == "nested"
+            ? """
+                internal sealed class LongRestFolder
+                {
+                    public async Task FoldHandoffAsync(Guid operationId, IGrimoireWorkLease admission, CancellationToken ct)
+                    {
+                        if (!admission.TryBeginExternalEffectGroup(out IGrimoireExternalEffectGroup? group) || group is null)
+                        {
+                            throw new InvalidOperationException("The external-effect group was refused.");
+                        }
+
+                        await using IGrimoireExternalEffectGroup ownedEffect = group;
+
+                        System.IO.File.Delete("lease-handoff-send");
+
+                        await Task.CompletedTask;
+                    }
+                }
+                """
+            : "";
+
+        string fold = shape == "nested"
+            ? "await new LongRestFolder().FoldHandoffAsync(operationId, admission, lifetime.Token).ConfigureAwait(false);"
+            : "await FoldAsync(operationId, capability, workerOwner, admission, lifetime.Token).ConfigureAwait(false);";
+
         string otherMaintenance = shape == "two-implementations"
             ? """
                 internal sealed class OtherMaintenance : ILongRestAdmittedMaintenance
@@ -340,6 +368,8 @@ public sealed partial class HostedGrimoireProducerInventoryTests
             {
                 {{otherMaintenance}}
 
+                {{nestedFolder}}
+
                 internal sealed class LongRestMaintenance : ILongRestAdmittedMaintenance
                 {
                     {{members}}
@@ -354,7 +384,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests
 
                         using CancellationTokenSource lifetime = CancellationTokenSource.CreateLinkedTokenSource(ct, admission.MaintenanceRevocation);
 
-                        await FoldAsync(operationId, capability, workerOwner, admission, lifetime.Token).ConfigureAwait(false);
+                        {{fold}}
 
                         {{afterFold}}
                     }
@@ -452,7 +482,17 @@ public sealed partial class HostedGrimoireProducerInventoryTests
             WorkKind = shape == "different-work-kind" ? GrimoireWorkKind.WorkspaceIndexing : GrimoireWorkKind.LongRestSweep,
         };
 
-        HostedProducerOperationEntry[] operations = [.. declareCaller ? [caller] : Array.Empty<HostedProducerOperationEntry>(), .. declareRoot ? [LeaseHandoffRootEntry()] : Array.Empty<HostedProducerOperationEntry>()];
+        HostedProducerOperationEntry[] operations =
+        [
+            .. declareCaller ? [caller] : Array.Empty<HostedProducerOperationEntry>(),
+            .. declareRoot ? [LeaseHandoffRootEntry()] : Array.Empty<HostedProducerOperationEntry>(),
+            .. shape == "nested" ? [LeaseHandoffRootEntry() with
+            {
+                OperationId = LeaseHandoffNestedOperation,
+                EnclosingType = "RetroDownfall.Arcanum.Api.Intelligence.LongRestFolder",
+                Member = "FoldHandoffAsync",
+            }] : Array.Empty<HostedProducerOperationEntry>(),
+        ];
 
         // A second hosted service with its own kind-17 acquisition that reaches the same sweep: a root of another service.
         HostedProducerServiceEntry[] services = shape == "other-service"
@@ -612,6 +652,57 @@ public sealed partial class HostedGrimoireProducerInventoryTests
         HostedProducerSite later = run.Single(LeaseHandoffCallerOperation, HostedProducerSiteKind.FileSystemRead, LeaseHandoffAfterRead);
 
         Assert.Equal(acquired.CapsuleId, later.WorkFrontierCapsuleId);
+    }
+
+    [Fact]
+    public void AHandoffRootThatHandsItsOwnLeaseOnIsCutFromItsClosureAndBoundToItsOwnFormal()
+    {
+        LeaseHandoffRun run = RunLeaseHandoff("nested");
+
+        Assert.Empty(run.Result.Diagnostics);
+
+        HostedProducerSite acquired = run.Single(LeaseHandoffCallerOperation, HostedProducerSiteKind.EffectFrontier, LeaseHandoffAcquisition);
+
+        HostedProducerSite outer = run.Single(LeaseHandoffRootOperation, HostedProducerSiteKind.EffectFrontier, HostedGrimoireProducerInventory.RootLeaseFormalCallee);
+
+        HostedProducerSite inner = run.Single(LeaseHandoffNestedOperation, HostedProducerSiteKind.EffectFrontier, HostedGrimoireProducerInventory.RootLeaseFormalCallee);
+
+        Assert.Equal(3, new[] { acquired.CapsuleId, outer.CapsuleId, inner.CapsuleId }.Distinct().Count());
+
+        // The worker binds the outer root to its acquisition; the outer root binds the inner root to its own formal.
+        HostedProducerSite outerBinding = run.Single(LeaseHandoffCallerOperation, HostedProducerSiteKind.LeaseHandoff, LeaseHandoffRootOperation);
+
+        HostedProducerSite innerBinding = run.Single(LeaseHandoffRootOperation, HostedProducerSiteKind.LeaseHandoff, LeaseHandoffNestedOperation);
+
+        Assert.Equal(acquired.CapsuleId, outerBinding.WorkFrontierCapsuleId);
+
+        Assert.Equal(outer.CapsuleId, innerBinding.WorkFrontierCapsuleId);
+
+        // The send belongs to the inner root alone, with the inner formal's Work and the group begun on it.
+        HostedProducerSite group = run.Single(LeaseHandoffNestedOperation, HostedProducerSiteKind.EffectFrontier, LeaseHandoffGroup);
+
+        HostedProducerSite send = run.Single(LeaseHandoffNestedOperation, HostedProducerSiteKind.FileSystemEffect, LeaseHandoffSend);
+
+        Assert.Equal(inner.CapsuleId, send.WorkFrontierCapsuleId);
+
+        Assert.Equal(group.CapsuleId, send.EffectFrontierCapsuleId);
+
+        Assert.DoesNotContain(run.Under(LeaseHandoffRootOperation), static site => site.Callee is LeaseHandoffSend or LeaseHandoffGroup);
+
+        Assert.DoesNotContain(run.Under(LeaseHandoffCallerOperation), static site => site.Callee is LeaseHandoffSend or LeaseHandoffGroup);
+
+        // The manifest ties each formal to its binder, and refuses the chain once the inner root admits another work kind than its binder.
+        HostedProducerSite[] items = [.. run.Result.Items];
+
+        string[] Codes(IEnumerable<HostedProducerSite> sites) => [.. HostedGrimoireProducerInventory.ParseCapsuleManifest(HostedGrimoireProducerInventory.RenderCapsuleManifest(sites).Split('\n'))
+            .Diagnostics.Select(static diagnostic => diagnostic.Code).Distinct().Order(StringComparer.Ordinal)];
+
+        Assert.Empty(Codes(items));
+
+        Assert.Equal([HostedGrimoireProducerInventory.ManifestHandoffUnboundCode],
+            Codes(items.Select(site => site == inner ? site with { AdmittedWorkKind = GrimoireWorkKind.WorkspaceIndexing } : site)));
+
+        Assert.Equal([HostedGrimoireProducerInventory.ManifestHandoffUnboundCode], Codes(items.Where(site => site != innerBinding)));
     }
 
     [Fact]
