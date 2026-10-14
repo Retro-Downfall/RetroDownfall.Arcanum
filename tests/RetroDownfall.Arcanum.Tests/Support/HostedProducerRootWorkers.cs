@@ -38,6 +38,11 @@ internal static class HostedProducerRootWorkers
         return completion.Task;
     }
 
+    // The unit a worker takes whole: one root, or every root of a service that declares a lease-handoff root (its roots cut to that root,
+    // and only the state cache of the worker that runs them shares the closure between them).
+    internal static string FamilyOf(string rootType, string rootOperation, bool serviceDeclaresLeaseHandoff) =>
+        serviceDeclaresLeaseHandoff ? rootType + "|<lease-handoff>" : rootType + "|" + rootOperation;
+
     internal static int[][] OrderFamilies(IEnumerable<(string Family, int Occurrence)> roots) => roots
         .GroupBy(static root => root.Family, StringComparer.Ordinal)
         .OrderBy(static family => FamilyPriority(family.Key))

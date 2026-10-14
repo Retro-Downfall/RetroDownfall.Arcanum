@@ -62,6 +62,8 @@ internal enum HostedProducerSiteKind : byte
     EffectFrontier = 6,
 
     DatabaseAccess = 7,
+
+    LeaseHandoff = 8,
 }
 
 internal sealed record HostedProducerSite(
@@ -83,7 +85,9 @@ internal sealed record HostedProducerSite(
     internal string CapsuleId => HostedGrimoireProducerInventory.CapsuleId(this);
 }
 
-internal sealed record HostedProducerOperationEntry(string OperationId, string SourcePath, string EnclosingType, string Member, HostedProducerAuthorityKind Authority, GrimoireWorkKind? WorkKind, string? Proof, IReadOnlyList<HostedProducerSite> Sites);
+// LeaseFormal names the one IGrimoireWorkLease parameter of a Lease-Handoff Root: the root's admission origin, minted by
+// its callers and carried in by value. It is null for every other root.
+internal sealed record HostedProducerOperationEntry(string OperationId, string SourcePath, string EnclosingType, string Member, HostedProducerAuthorityKind Authority, GrimoireWorkKind? WorkKind, string? Proof, IReadOnlyList<HostedProducerSite> Sites, string? LeaseFormal = null);
 
 internal sealed record HostedProducerServiceEntry(string ServiceType, IReadOnlyList<HostedProducerOperationEntry> Operations);
 
@@ -1639,7 +1643,11 @@ internal static partial class HostedGrimoireProducerInventory
         Ordinary("Data", "DataRetentionSweepHostedService", GrimoireWorkKind.DataRetentionSweep),
         Ordinary("A2A", "A2ASendingLeaseRenewer", GrimoireWorkKind.A2ASendingLeaseRenewal),
         Ordinary("Hosting", "Loremaster", GrimoireWorkKind.LoremasterSummarization),
-        Ordinary("Hosting", "LongRestSweepHostedService", GrimoireWorkKind.LongRestSweep),
+        new("LongRestSweepHostedService",
+        [
+            Operation("Hosting", "LongRestSweepHostedService", "ExecuteAsync", HostedProducerAuthorityKind.OrdinaryHostedWork, GrimoireWorkKind.LongRestSweep),
+            Handoff(Operation("Intelligence", "LongRestMaintenance", "ProcessAdmittedAsync", HostedProducerAuthorityKind.OrdinaryHostedWork, GrimoireWorkKind.LongRestSweep, project: "Api"), "admission"),
+        ]),
         new("ApprenticeService",
         [
             Operation("Hosting", "ApprenticeService", "ExecuteAsync", HostedProducerAuthorityKind.OrdinaryHostedWork, GrimoireWorkKind.ApprenticeExecution),
@@ -1783,17 +1791,19 @@ internal static partial class HostedGrimoireProducerInventory
 
         foreach (HostedProducerSite site in sites)
         {
-            ValidateManifestFrontier(site, site.WorkFrontierCapsuleId, ".TryAcquireWorkLease", "work", sites, diagnostics);
+            ValidateManifestFrontier(site, site.WorkFrontierCapsuleId, IsWorkFrontierCallee, "work", sites, diagnostics);
 
-            ValidateManifestFrontier(site, site.EffectFrontierCapsuleId, ".TryBeginExternalEffectGroup", "effect", sites, diagnostics);
+            ValidateManifestFrontier(site, site.EffectFrontierCapsuleId, static callee => callee.EndsWith(".TryBeginExternalEffectGroup", StringComparison.Ordinal), "effect", sites, diagnostics);
 
-            bool workFrontier = site.Callee.EndsWith(".TryAcquireWorkLease", StringComparison.Ordinal);
+            bool workFrontier = IsWorkFrontierCallee(site.Callee);
 
             if (workFrontier != site.AdmittedWorkKind.HasValue)
             {
                 diagnostics.Add(new("HOSTED_MANIFEST_WORK_KIND_INVALID", StableSiteIdentity(site), "Exactly a work-admission frontier must name its admitted work kind."));
             }
         }
+
+        ValidateManifestHandoffBindings(sites, diagnostics);
 
         return new(sites, diagnostics.Distinct().ToArray());
     }
@@ -1817,14 +1827,14 @@ internal static partial class HostedGrimoireProducerInventory
 
     private static bool IsSha256(string value) => value.Length == 64 && value.All(static character => character is >= '0' and <= '9' or >= 'A' and <= 'F');
 
-    private static void ValidateManifestFrontier(HostedProducerSite site, string? frontierId, string expectedCalleeSuffix, string frontierKind, IReadOnlyList<HostedProducerSite> sites, List<HostedProducerInventoryDiagnostic> diagnostics)
+    private static void ValidateManifestFrontier(HostedProducerSite site, string? frontierId, Func<string, bool> isFrontierCallee, string frontierKind, IReadOnlyList<HostedProducerSite> sites, List<HostedProducerInventoryDiagnostic> diagnostics)
     {
         if (frontierId is null)
         {
             return;
         }
 
-        HostedProducerSite[] matches = sites.Where(candidate => candidate.RootType == site.RootType && candidate.AuthorityOperationId == site.AuthorityOperationId && candidate.CapsuleId == frontierId && candidate.Kind == HostedProducerSiteKind.EffectFrontier && candidate.Callee.EndsWith(expectedCalleeSuffix, StringComparison.Ordinal)).ToArray();
+        HostedProducerSite[] matches = sites.Where(candidate => candidate.RootType == site.RootType && candidate.AuthorityOperationId == site.AuthorityOperationId && candidate.CapsuleId == frontierId && candidate.Kind == HostedProducerSiteKind.EffectFrontier && isFrontierCallee(candidate.Callee)).ToArray();
 
         if (matches.Length != 1)
         {
@@ -2038,6 +2048,10 @@ internal static partial class HostedGrimoireProducerInventory
 
         return new(enclosingType + "." + member, $"src/RetroDownfall.Arcanum.{project}/{folder}/{sourceFile ?? type + ".cs"}", enclosingType, member, authority, kind, proof is null ? null : enclosingType + "." + member + ": " + proof, []);
     }
+
+    // A Lease-Handoff Root is an ordinary hosted root whose admission is not minted inside it: its callers carry a work lease in by
+    // value, and the named formal is the root's admission origin (the Root Lease Formal).
+    private static HostedProducerOperationEntry Handoff(HostedProducerOperationEntry operation, string leaseFormal) => operation with { LeaseFormal = leaseFormal };
 
     private static HostedProducerOperationEntry AtCall(HostedProducerOperationEntry operation, string callee, int occurrence, string exactExpression) => operation with { OperationId = operation.OperationId + "::call:" + callee + "#" + occurrence + "~" + Fingerprint(SyntaxFactory.ParseExpression(exactExpression)) };
 
@@ -6216,9 +6230,19 @@ internal static partial class HostedGrimoireProducerInventory
             Dictionary<string, int> familyOwners = plans[0].GroupBy(static root => root.Family, StringComparer.Ordinal)
                 .ToDictionary(static family => family.Key, family => owners[family.First().Occurrence], StringComparer.Ordinal);
 
+            HashSet<string> handoffServices = [.. coordinator.leaseHandoffRootTypes.Values];
+
+            foreach (string service in handoffServices)
+            {
+                if (plans[0].Where(root => root.RootType == service).Select(root => owners[root.Occurrence]).Distinct().Count() > 1)
+                {
+                    throw new InvalidOperationException("The roots of a service that declares a lease-handoff root were split across workers.");
+                }
+            }
+
             ProducerGraph Owner(string rootType, string operation)
             {
-                string family = rootType + "|" + coordinator.RootOperation(operation);
+                string family = HostedProducerRootWorkers.FamilyOf(rootType, coordinator.RootOperation(operation), handoffServices.Contains(rootType));
 
                 if (!familyOwners.TryGetValue(family, out int worker))
                 {
@@ -6249,6 +6273,8 @@ internal static partial class HostedGrimoireProducerInventory
                 coordinator.lifecycleMembers.UnionWith(worker.lifecycleMembers);
 
                 coordinator.ownerRecoveryAssociations.UnionWith(worker.ownerRecoveryAssociations);
+
+                coordinator.provenLeaseHandoffCalls.UnionWith(worker.provenLeaseHandoffCalls);
             }
 
             ProducerGraph? matrixOwner = workers.FirstOrDefault(static worker => worker.recoveryMatrixResolved);
@@ -6383,15 +6409,37 @@ internal static partial class HostedGrimoireProducerInventory
 
                 string rootType = root.Symbol.ContainingType.Name;
 
-                planned.Add(new(planned.Count, rootType + "|" + RootOperation(operation), rootType, operation, root, true, null));
+                planned.Add(new(planned.Count, HostedProducerRootWorkers.FamilyOf(rootType, RootOperation(operation), serviceDeclaresLeaseHandoff: false), rootType, operation, root, true, null));
             }
 
             foreach ((HostedProducerOperationEntry operation, AuthoredMember root, SyntaxNode selection) in resolvedRoots)
             {
                 string rootType = catalog.FirstOrDefault(service => service.Operations.Contains(operation))?.ServiceType ?? nonHostedCatalog.FirstOrDefault(chain => chain.ChainId == operation.OperationId)?.EnclosingType ?? operation.EnclosingType;
 
-                planned.Add(new(planned.Count, rootType + "|" + RootOperation(operation.OperationId), rootType, operation.OperationId, root, false, selection));
+                if (operation.LeaseFormal is not null)
+                {
+                    leaseHandoffRootTypes[operation.OperationId] = rootType;
+                }
+
+                planned.Add(new(planned.Count, HostedProducerRootWorkers.FamilyOf(rootType, RootOperation(operation.OperationId), serviceDeclaresLeaseHandoff: false), rootType, operation.OperationId, root, false, selection));
             }
+
+            // A service that declares a lease-handoff root is one family: its roots cut to the handoff root, whose closure is shared only
+            // through the state cache of the worker that runs it, so a pool that split them would admit the closure once for every worker.
+            HashSet<string> handoffServices = [.. leaseHandoffRootTypes.Values];
+
+            for (int index = 0; index < planned.Count; index++)
+            {
+                if (handoffServices.Contains(planned[index].RootType))
+                {
+                    planned[index] = planned[index] with
+                    {
+                        Family = HostedProducerRootWorkers.FamilyOf(planned[index].RootType, RootOperation(planned[index].Operation), serviceDeclaresLeaseHandoff: true),
+                    };
+                }
+            }
+
+            ValidateLeaseHandoffDeclarations();
 
             preparedOwnerRecoveryAnchor = resolvedRoots.FirstOrDefault(static root => root.Operation.Authority == HostedProducerAuthorityKind.OwnerBoundRecovery).Selection;
 
@@ -6436,6 +6484,8 @@ internal static partial class HostedGrimoireProducerInventory
             }
 
             ValidateOwnerRecoveryAssociations();
+
+            CheckLeaseHandoffCallerCensus();
         }
 
         private void DiscoverExternalRoots(
@@ -6746,12 +6796,11 @@ internal static partial class HostedGrimoireProducerInventory
 
             try
             {
-                member = BindLifecycleRootFactoryContext(member);
-
-                member = BindDeclaredRootFactoryContext(
+                (member, string? rootWork) = CanonicalDeclaredRoot(
                     member,
                     operationId,
-                    selection);
+                    selection,
+                    lifecycle);
 
                 TraversalEvidence result = Traverse(
                     member,
@@ -6759,6 +6808,7 @@ internal static partial class HostedGrimoireProducerInventory
                     operationId,
                     [],
                     lifecycle,
+                    inheritedWork: rootWork,
                     selection: selection,
                     plannedRoot: plannedRoot);
 
@@ -24719,6 +24769,15 @@ internal static partial class HostedGrimoireProducerInventory
 
                 HostedProducerOperationEntry? ordinary = declaredOperations.FirstOrDefault(entry => entry.Authority == HostedProducerAuthorityKind.OrdinaryHostedWork && (operationId == entry.OperationId || operationId.StartsWith(entry.OperationId + "/", StringComparison.Ordinal)));
 
+                // The Root Lease Formal is a handoff root's admission origin, so its frontier row is the root's own.
+                if (ordinary is { LeaseFormal: not null } handoffRoot
+                    && operationId == handoffRoot.OperationId
+                    && LeaseHandoffRootFor(handoffRoot) is { } formalRoot
+                    && SymbolEqualityComparer.Default.Equals(formalRoot.Member.Symbol, member.Symbol))
+                {
+                    emittedEvidence = MergeEvidence(emittedEvidence, AddLeaseFormalSite(member, rootType, operationId, formalRoot));
+                }
+
                 if (ordinary is not null && selection is not null && selection != member.Syntax)
                 {
                     foreach (string admissionName in new[] { "TryAcquireWorkLease", "TryBeginExternalEffectGroup" })
@@ -25796,6 +25855,22 @@ internal static partial class HostedGrimoireProducerInventory
 
                                 foreach (AuthoredMember exactTarget in targets)
                                 {
+                                    // A lease-carried awaited call to a declared handoff root re-roots under that root's operation id and
+                                    // canonical Work, so the root's closure is judged once, under its own budget.
+                                    if (node is InvocationExpressionSyntax handoffCall
+                                        && TryLeaseHandoff(member, handoffCall, exactTarget, targets.Length, rootType, operationId, ordinary, workAdmitted, effectGroup, recoveryEffect) is { } handoffEdge)
+                                    {
+                                        TraversalEvidence handoffEvidence = MergeEvidence(
+                                            Traverse(handoffEdge.Root.Member, handoffEdge.Root.RootType, handoffEdge.Root.Entry.OperationId, active, false, handoffEdge.Root.Work, null, handoffEdge.Root.Selection),
+                                            AddSite(HostedProducerSiteKind.LeaseHandoff, handoffEdge.Root.Entry.OperationId, member, rootType, operationId, node, null, workAdmitted));
+
+                                        targetEvidence = MergeEvidence(targetEvidence, handoffEvidence);
+
+                                        emittedEvidence = MergeEvidence(emittedEvidence, handoffEvidence);
+
+                                        continue;
+                                    }
+
                                     bool hostedTaskTransfer =
                                         node is InvocationExpressionSyntax hostedTaskCall
                                         && IsReviewedHostedTaskTransfer(
@@ -56617,7 +56692,8 @@ internal static partial class HostedGrimoireProducerInventory
 
                     if (node is InvocationExpressionSyntax argumentCall && argumentCall.Span.End < position && Location(argumentCall) != origin && (member.Model.GetSymbolInfo(argumentCall).Symbol is not IMethodSymbol argumentMethod || !IsCompletionCombinator(argumentMethod)) && AdmissionArguments(member, argumentCall).Any(argument => argument.Expression is not DeclarationExpressionSyntax && Carries(argument.Expression)))
                     {
-                        if (AdmissionArguments(member, argumentCall).Any(argument => Carries(argument.Expression) && argument.RefKind is RefKind.Ref or RefKind.Out) || member.Model.GetSymbolInfo(argumentCall).Symbol is not IMethodSymbol method || Resolve(method, member.Model.Compilation) is not { } target || AdmissionEndedBefore(BindAdmissionArguments(member, argumentCall, target), origin, int.MaxValue, path, readinessProof))
+                        if (AdmissionArguments(member, argumentCall).Any(argument => Carries(argument.Expression) && argument.RefKind is RefKind.Ref or RefKind.Out) || member.Model.GetSymbolInfo(argumentCall).Symbol is not IMethodSymbol method || Resolve(method, member.Model.Compilation) is not { } target || AdmissionEndedBefore(BindAdmissionArguments(member, argumentCall, target), origin, int.MaxValue, path, readinessProof)
+                            || LeaseHandoffEntryOf(target) is { } handoff && !FormalPreserved(handoff))
                         {
                             return true;
                         }
@@ -58335,7 +58411,7 @@ internal static partial class HostedGrimoireProducerInventory
                 }
             }
 
-            if (kind == HostedProducerSiteKind.EffectFrontier && callee.EndsWith(".TryAcquireWorkLease", StringComparison.Ordinal))
+            if (kind == HostedProducerSiteKind.EffectFrontier && IsWorkFrontierCallee(callee))
             {
                 workAdmitted = rootOperation + "@work:" + Location(node);
 
@@ -58375,6 +58451,11 @@ internal static partial class HostedGrimoireProducerInventory
             if (callee.EndsWith(".TryAcquireWorkLease", StringComparison.Ordinal) && node is InvocationExpressionSyntax workAdmission && workAdmission.ArgumentList.Arguments.FirstOrDefault()?.Expression is { } workKindExpression && member.Model.GetSymbolInfo(workKindExpression).Symbol is IFieldSymbol admittedKind && Enum.TryParse(admittedKind.Name, out GrimoireWorkKind parsedKind))
             {
                 admittedWorkKind = parsedKind;
+            }
+
+            if (callee == RootLeaseFormalCallee)
+            {
+                admittedWorkKind = ordinary?.WorkKind;
             }
 
             string? workFrontierCapsuleId = workAdmitted is not null && admissionCapsules.TryGetValue(workAdmitted, out string? workCapsule)
@@ -58618,7 +58699,18 @@ internal static partial class HostedGrimoireProducerInventory
                     diagnostics.Add(new("HOSTED_SITE_AUTHORITY_INVALID", SiteIdentity(site), "Effect-free authority cannot contain a sensitive producer site."));
                 }
 
-                if (ordinary && site.Kind != HostedProducerSiteKind.EffectFrontier && !operation.Sites.Any(frontier => frontier.Kind == HostedProducerSiteKind.EffectFrontier && FrontierIdentity(site, "work") is { } lease && lease == FrontierIdentity(frontier, "work") && frontier.Callee.EndsWith(".TryAcquireWorkLease", StringComparison.Ordinal) && (frontier.AdmittedWorkKind == operation.WorkKind || frontier.OperationId.Contains("/workKind=" + operation.WorkKind, StringComparison.Ordinal))))
+                if (site.Kind == HostedProducerSiteKind.EffectFrontier && site.Callee == RootLeaseFormalCallee && operation.LeaseFormal is null)
+                {
+                    diagnostics.Add(new(LeaseFormalUndeclaredCode, SiteIdentity(site), "A root lease formal belongs only to an operation whose catalog entry declares a lease formal."));
+                }
+
+                if (site.Kind == HostedProducerSiteKind.LeaseHandoff
+                    && !(catalog.FirstOrDefault(service => service.Operations.Contains(operation))?.Operations.Any(declared => declared.LeaseFormal is not null && declared.OperationId == site.Callee) ?? false))
+                {
+                    diagnostics.Add(new(LeaseHandoffUndeclaredCode, SiteIdentity(site), "A handoff binding row must name a declared lease-handoff operation of its own service."));
+                }
+
+                if (ordinary && site.Kind != HostedProducerSiteKind.EffectFrontier && !operation.Sites.Any(frontier => frontier.Kind == HostedProducerSiteKind.EffectFrontier && FrontierIdentity(site, "work") is { } lease && lease == FrontierIdentity(frontier, "work") && IsWorkFrontierCallee(frontier.Callee) && (frontier.Callee != RootLeaseFormalCallee || operation.LeaseFormal is not null) && (frontier.AdmittedWorkKind == operation.WorkKind || frontier.OperationId.Contains("/workKind=" + operation.WorkKind, StringComparison.Ordinal))))
                 {
                     diagnostics.Add(new("HOSTED_SITE_WORK_FRONTIER_MISSING", SiteIdentity(site), "Ordinary work requires admission for its declared work kind before scopes and effects."));
                 }

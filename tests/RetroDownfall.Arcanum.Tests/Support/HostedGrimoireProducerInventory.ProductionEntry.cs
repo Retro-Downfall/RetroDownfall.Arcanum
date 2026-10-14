@@ -21,7 +21,10 @@ internal static partial class HostedGrimoireProducerInventory
     // A root subset narrows a production run to named roots without touching any limit, scan or refusal. A
     // selector is a hosted service type name (every declared operation of that service), a declared
     // operation id, or a non-hosted chain id. A selector that names nothing is an error, because a scoped
-    // run that silently analyses zero roots would look green.
+    // run that silently analyses zero roots would look green. A Lease-Handoff Root is declared in its callers' service, so
+    // selecting the service keeps the root and the callers that cut to it together; selecting only the caller's operation
+    // leaves the root undeclared and traverses its closure in line, and selecting only the root's operation leaves its
+    // callers unanalysed, which the Handoff Caller Census reports.
     internal static ProductionRootSelection SelectProductionRoots(
         IReadOnlyCollection<string>? rootSubset,
         HostedProducerDiscovery<string> registrations,
