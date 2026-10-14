@@ -142,9 +142,14 @@ internal static partial class HostedGrimoireProducerInventory
         // use of it in the member is the argument of a call to an authored member that moves it in turn, or the right side of a
         // plain assignment to a field of this. A payload that is only moved is never the receiver of a call, never converted,
         // tested, cast, disposed or compared, so what the traversal could learn from the concrete type a caller bound for it
-        // is nothing: the type decides no dispatch and no cleanup anywhere below. Its concrete binding would still split the
-        // member into one state per payload type, and `Result<T>.Success` into one per type a result carries. The concrete
-        // binding is dropped from the environment; the admission, callable and value bindings of the parameter are not touched.
+        // is nothing in this member. Its concrete binding would still split the member into one state per payload type, and
+        // `Result<T>.Success` into one per type a result carries. The concrete binding is dropped from the environment; the
+        // admission, callable and value bindings of the parameter are not touched. A payload stored in a field is read later
+        // through the field, by members this check does not look at. That is sound only because the traversal resolves such a
+        // field from the value source its caller bound to it (the value bindings, which are kept) and never from the concrete
+        // binding of the parameter, and a field of a type-parameter type resolves to nothing for any payload. The fixtures
+        // that dispose or dispatch on a stored payload pin that every payload type stays refused, so a change that types the
+        // field from the concrete binding fails there before it can use a binding this rule dropped.
         private IReadOnlySet<ISymbol> InertPayloadParameters(AuthoredMember member)
         {
             if (member.ConcreteBindings is not { Count: > 0 })

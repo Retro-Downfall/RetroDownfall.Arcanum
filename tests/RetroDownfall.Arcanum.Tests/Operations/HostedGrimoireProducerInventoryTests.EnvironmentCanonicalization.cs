@@ -782,4 +782,88 @@ public sealed partial class HostedGrimoireProducerInventoryTests
         // A callback with a producer site in it is refused as an opaque callback, in both entries and whether or not a lease was passed.
         Assert.Equal(callbackRefused, verdict.Any(static line => line.StartsWith("HOSTED_CALLBACK_OWNERSHIP_UNPROVEN", StringComparison.Ordinal)));
     }
+
+    // ---- Inert Payload Parameter and a payload that is stored and then read through the field.
+    //
+    // A parameter that is only stored in a field of this is moved, but the field is read by the members of the type, and a
+    // member that disposes or dispatches on it decides something from the payload's type. The traversal resolves such a
+    // field from the value source the caller bound to it, never from the concrete type bound to the parameter, and a field
+    // of a type-parameter type resolves to nothing for any payload. These fixtures pin that this holds, so that a later
+    // improvement to the typing of the field cannot start to use a binding the rule dropped without these failing first.
+    private const string StoredPayloadHelper = """
+        public interface IRes : System.IDisposable { }
+
+        public sealed class QuietRes : IRes { public void Dispose() { } }
+
+        public sealed class LoudRes : IRes { public void Dispose() { System.IO.File.Delete("loud"); } }
+
+        public interface IRun { void Go(); }
+
+        public sealed class QuietRun : IRun { public void Go() { } }
+
+        public sealed class LoudRun : IRun { public void Go() { System.IO.File.Delete("loud"); } }
+
+        public sealed class DisposeNow<T> where T : System.IDisposable
+        {
+            private readonly T _value;
+
+            public DisposeNow(T value) { _value = value; _value.Dispose(); }
+        }
+
+        public sealed class DisposeLater<T> where T : System.IDisposable
+        {
+            private readonly T _value;
+
+            public DisposeLater(T value) { _value = value; }
+
+            public void Release() { _value.Dispose(); }
+        }
+
+        public sealed class Holder<T> : System.IDisposable where T : System.IDisposable
+        {
+            private readonly T _value;
+
+            public Holder(T value) { _value = value; }
+
+            public void Dispose() { _value.Dispose(); }
+        }
+
+        public sealed class RunNow<T> where T : IRun
+        {
+            private readonly T _value;
+
+            public RunNow(T value) { _value = value; _value.Go(); }
+        }
+
+        public sealed class RunLater<T> where T : IRun
+        {
+            private readonly T _value;
+
+            public RunLater(T value) { _value = value; }
+
+            public void Go() { _value.Go(); }
+        }
+        """;
+
+    [Theory]
+    [InlineData("_ = new DisposeNow<QuietRes>(new QuietRes());", "HOSTED_DISPOSAL_TARGET_UNRESOLVED")]
+    [InlineData("_ = new DisposeNow<LoudRes>(new LoudRes());", "HOSTED_DISPOSAL_TARGET_UNRESOLVED")]
+    [InlineData("_ = new DisposeNow<QuietRes>(new QuietRes()); _ = new DisposeNow<LoudRes>(new LoudRes());", "HOSTED_DISPOSAL_TARGET_UNRESOLVED")]
+    [InlineData("new DisposeLater<QuietRes>(new QuietRes()).Release();", "HOSTED_DISPOSAL_TARGET_UNRESOLVED")]
+    [InlineData("new DisposeLater<LoudRes>(new LoudRes()).Release();", "HOSTED_DISPOSAL_TARGET_UNRESOLVED")]
+    [InlineData("new DisposeLater<QuietRes>(new QuietRes()).Release(); new DisposeLater<LoudRes>(new LoudRes()).Release();", "HOSTED_DISPOSAL_TARGET_UNRESOLVED")]
+    [InlineData("using (var holder = new Holder<QuietRes>(new QuietRes())) { }", "HOSTED_DISPOSAL_TARGET_UNRESOLVED")]
+    [InlineData("using (var holder = new Holder<LoudRes>(new LoudRes())) { }", "HOSTED_DISPOSAL_TARGET_UNRESOLVED")]
+    [InlineData("using (var quiet = new Holder<QuietRes>(new QuietRes())) { } using (var loud = new Holder<LoudRes>(new LoudRes())) { }", "HOSTED_DISPOSAL_TARGET_UNRESOLVED")]
+    [InlineData("_ = new RunNow<QuietRun>(new QuietRun());", "HOSTED_CALL_TARGET_UNRESOLVED")]
+    [InlineData("_ = new RunNow<LoudRun>(new LoudRun());", "HOSTED_CALL_TARGET_UNRESOLVED")]
+    [InlineData("new RunLater<QuietRun>(new QuietRun()).Go();", "HOSTED_CALL_TARGET_UNRESOLVED")]
+    [InlineData("new RunLater<LoudRun>(new LoudRun()).Go();", "HOSTED_CALL_TARGET_UNRESOLVED")]
+    public void APayloadStoredInAFieldAndThenDisposedOrDispatchedOnStaysRefusedForEveryType(string body, string code)
+    {
+        var (_, result, _) = ClosedValueDiscover(body, StoredPayloadHelper);
+
+        // Each payload type alone is refused, so the verdict never depends on the type and no type can be the one that is accepted.
+        Assert.Contains(result.Diagnostics, diagnostic => diagnostic.Code == code);
+    }
 }
