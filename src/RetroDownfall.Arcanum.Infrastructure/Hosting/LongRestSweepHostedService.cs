@@ -25,8 +25,6 @@ internal sealed class LongRestSweepHostedService(IServiceScopeFactory scopes, Lo
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        Task<Guid>? hint = null;
-
         try
         {
             while (!stoppingToken.IsCancellationRequested)
@@ -46,28 +44,29 @@ internal sealed class LongRestSweepHostedService(IServiceScopeFactory scopes, Lo
                     LogFailure(exception);
                 }
 
-                // Requests signal after persistence. Retain a pending hint through the whole pass:
-                // an insertion behind its cursor must start another pass from the beginning. The hint channel
-                // is single-reader, so one read stays pending across timer wakes instead of being abandoned.
-                hint ??= queue.ReadAsync(stoppingToken).AsTask();
-
-                using CancellationTokenSource rescan = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
-
-                Task timer = Task.Delay(RescanDelay(due), timeProvider, rescan.Token);
-
-                Task woke = await Task.WhenAny(hint, timer).ConfigureAwait(false);
-
-                await rescan.CancelAsync().ConfigureAwait(false);
-
-                if (woke == hint)
-                {
-                    _ = await hint.ConfigureAwait(false);
-
-                    hint = null;
-                }
+                await WaitForWakeAsync(due, stoppingToken).ConfigureAwait(false);
             }
         }
         catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+        {
+        }
+    }
+
+    // One awaited read is the whole wait: the clock timer is only a cancellation source for it, so no timer-backed or
+    // channel task outlives this call. Requests signal after persistence, and the bounded hint channel keeps a signal that
+    // lands during a pass, so an insertion behind the cursor starts another pass from the beginning. A cancelled read
+    // consumes no hint, which is why the timer may interrupt it at any moment.
+    private async Task WaitForWakeAsync(DateTimeOffset? due, CancellationToken stoppingToken)
+    {
+        using CancellationTokenSource rescan = new(RescanDelay(due), timeProvider);
+
+        using CancellationTokenSource wake = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken, rescan.Token);
+
+        try
+        {
+            _ = await queue.ReadAsync(wake.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (rescan.IsCancellationRequested && !stoppingToken.IsCancellationRequested)
         {
         }
     }
