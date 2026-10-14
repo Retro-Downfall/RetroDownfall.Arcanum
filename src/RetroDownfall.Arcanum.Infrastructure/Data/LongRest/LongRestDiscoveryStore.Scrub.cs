@@ -10,7 +10,7 @@ internal sealed partial class LongRestDiscoveryStore
     /// How many of a generation's leaves one step re-proves in full. The windows tile the leaves in identity order and the sweep's
     /// revision picks which one a step takes, so whatever no trigger saw is met within ceil(leaves / this) revisions of the sweep.
     /// </summary>
-    internal const int ScrubWindowLeaves = 32;
+    internal const int ScrubWindowLeaves = LongRestScrubWindow.Leaves;
 
     /// <summary>
     /// The leaves the rotating window selects for the sweep as it stands now. The window follows the sweep's revision and the
@@ -43,9 +43,7 @@ internal sealed partial class LongRestDiscoveryStore
             return window;
         }
 
-        long windows = (leaves + ScrubWindowLeaves - 1) / ScrubWindowLeaves;
-
-        long offset = checked((revision + generation.Revision) % windows * ScrubWindowLeaves);
+        long offset = LongRestScrubWindow.Offset(leaves, checked(revision + generation.Revision));
 
         await using SqliteCommand command = Command(connection, transaction, """
             SELECT MemoryId FROM long_rest_discovery_leaves WHERE GenerationId = $generation ORDER BY MemoryId LIMIT $limit OFFSET $offset;

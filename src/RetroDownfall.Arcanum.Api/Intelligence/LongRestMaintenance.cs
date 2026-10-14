@@ -222,7 +222,7 @@ internal sealed partial class LongRestMaintenance(LongRestConfigurationEpoch epo
         LongRestMaintenanceCapability? capability, string workerOwner, IGrimoireWorkLease admission, CancellationToken ct)
     {
         // The leaves this unit acts on: each is re-proved in full at every gate that stands between them and an effect.
-        string[] used = [.. work.Inputs.Select(input => input.Snapshot.MemoryId)];
+        string[] used = work.MemoryIds();
 
         if (work.AcceptedAdjudication is { } retained)
         {

@@ -18,7 +18,7 @@ internal sealed partial class LongRestMaintenance
         Func<PaidResult, LongRestDispatchCompletion, CancellationToken, bool, Task<T>> accept, CancellationToken ct)
     {
         // The leaves this request is built from: each is re-proved in full at every gate that stands between them and the send.
-        string[] used = InputsOf(payload);
+        string[] used = payload.UsedMemoryIds();
 
         await EnsureCurrentAsync(generation, capability, workerOwner, ct, inputs: used).ConfigureAwait(false);
 
@@ -226,14 +226,6 @@ internal sealed partial class LongRestMaintenance
             await heartbeat.ConfigureAwait(false);
         }
     }
-
-    /// <summary>The memories a request is built from: an adjudication's inputs, or what a summary's children expand to. An embedding is built from accepted text.</summary>
-    private static string[] InputsOf(LongRestProviderPayload payload) => payload.Kind switch
-    {
-        LongRestProviderPayloadKind.Adjudication => [.. payload.Inputs.Select(input => input.Snapshot.MemoryId)],
-        LongRestProviderPayloadKind.Summary when payload.Fold is { } fold => [.. fold.Children.SelectMany(child => child.ExpandedTargets).Select(target => target.MemoryId).Distinct()],
-        _ => [],
-    };
 
     // Best effort by design: the original failure is what the caller rethrows, and an unsettled Sent attempt is still settled by the
     // reboot rule. The write runs under the still-held external-effect group, with no usage and no cancellation token of its own.

@@ -236,4 +236,18 @@ public sealed record LongRestSweepWork(
     long ExpectedSweepRevision,
     ImmutableArray<LongRestSourceLeaf> Inputs,
     LongRestHierarchyFold? Fold,
-    LongRestAdjudication? AcceptedAdjudication);
+    LongRestAdjudication? AcceptedAdjudication)
+{
+    /// <summary>The memories this work acts on, in input order: the leaves every gate in front of its effects re-proves in full.</summary>
+    internal string[] MemoryIds()
+    {
+        string[] ids = new string[Inputs.Length];
+
+        for (int index = 0; index < ids.Length; index++)
+        {
+            ids[index] = Inputs[index].Snapshot.MemoryId;
+        }
+
+        return ids;
+    }
+}

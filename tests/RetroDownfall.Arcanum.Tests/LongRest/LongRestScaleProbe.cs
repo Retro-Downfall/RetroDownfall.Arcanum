@@ -23,9 +23,10 @@ public sealed class LongRestScaleProbe(ITestOutputHelper output)
 
     /// <summary>
     /// How many corpus-sized passes of full leaf reads one unit of an open sweep may make. A unit that finds nothing to pay for reads about
-    /// nine corpora today: one to admit the generation, one scan of every leaf for the anchor, and the reads the hierarchy lane makes of
-    /// every summary's subtree. The bound is a dozen, so it holds from a thousand memories to three thousand and fails the day a unit
-    /// re-verifies per candidate, fold or call, which would make it a multiple of the corpus itself rather than of its depth.
+    /// eight corpora today: one scan of every leaf for the anchor, and the reads the hierarchy lane makes of every summary's subtree. Admitting
+    /// the generation is a step, so it reads a window of 32 leaves and no corpus pass. The bound is a dozen, so it holds from a thousand
+    /// memories to three thousand and fails the day a unit re-verifies per candidate, fold or call, which would make it a multiple of the
+    /// corpus itself rather than of its depth.
     /// </summary>
     private const int UnitCorpusPasses = 12;
 
@@ -57,6 +58,8 @@ public sealed class LongRestScaleProbe(ITestOutputHelper output)
         // A unit is linear in the corpus. The day it is quadratic - a unit that re-verifies per candidate, per fold or per call - this is the
         // number that moves.
         Assert.InRange(unit.FullLeafReads, 0, (long)UnitCorpusPasses * corpus);
+
+        Assert.Equal(0, unit.CorpusPasses);
 
         Assert.Equal(0, unit.MetadataLeafReads);
 
