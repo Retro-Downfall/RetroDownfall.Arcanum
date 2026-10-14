@@ -57,6 +57,27 @@ public sealed partial class HostedGrimoireProducerInventoryTests
         }
         """;
 
+    // The group is begun inside a lambda on a formal of the method that declares the lambda. `mutation` runs in that method.
+    private static string LeaseReceiverCapturingFormal(string mutation) => $$"""
+        private static async Task First(IGrimoireWorkLease outer, CancellationToken token)
+        {
+            {{mutation}}
+
+            Func<Task> inside = async () =>
+            {
+                if (!outer.TryBeginExternalEffectGroup(out IDisposable group)) return;
+
+                using var held = group;
+
+                await Task.CompletedTask;
+
+                System.IO.File.Delete("lease-receiver-send");
+            };
+
+            await inside();
+        }
+        """;
+
     private static (string Lease, string Body, string Members) LeaseReceiverShapeOf(string shape) => shape switch
     {
         // Positives: the group is begun on a lease the checker can prove is the acquired one.
@@ -120,6 +141,21 @@ public sealed partial class HostedGrimoireProducerInventoryTests
 
             await use(lease);
             """, ""),
+        "second-acquisition-unused" => ("using IGrimoireWorkLease lease = admitted!;", """
+            if (!gate.TryAcquireWorkLease(GrimoireWorkKind.WorkspaceIndexing, out IGrimoireWorkLease? second)) return;
+
+            using IGrimoireWorkLease other = second!;
+
+            """ + LeaseReceiverBody("lease"), ""),
+        "designation-reassigned" => ("using IGrimoireWorkLease lease = admitted!;", "admitted = fake;\n\n" + LeaseReceiverBody("admitted!"), ""),
+        "unguarded-acquisition" => ("using IGrimoireWorkLease lease = admitted!;", """
+            gate.TryAcquireWorkLease(GrimoireWorkKind.WorkspaceIndexing, out IGrimoireWorkLease? loose);
+
+            """ + LeaseReceiverBody("loose!"), ""),
+        "captured-designation" => ("using IGrimoireWorkLease lease = admitted!;", "Func<bool> peek = () => admitted is not null;\n\n" + LeaseReceiverBody("admitted!"), ""),
+        "captured-copy" => ("using IGrimoireWorkLease lease = admitted!;", "Func<IGrimoireWorkLease> read = () => lease;\n\n" + LeaseReceiverBody("lease"), ""),
+        "captured-formal" => ("using IGrimoireWorkLease lease = admitted!;", "await First(lease, token);", LeaseReceiverCapturingFormal("")),
+        "captured-formal-written" => ("using IGrimoireWorkLease lease = admitted!;", "await First(lease, token);", LeaseReceiverCapturingFormal("outer = new FakeLease();")),
         "delegate-supplied" => ("using IGrimoireWorkLease lease = admitted!;", "Func<IGrimoireWorkLease> supply = () => lease;\n\n" + LeaseReceiverBody("supply()"), ""),
         "second-acquisition" => ("using IGrimoireWorkLease lease = admitted!;", """
             if (!gate.TryAcquireWorkLease(GrimoireWorkKind.WorkspaceIndexing, out IGrimoireWorkLease? second)) return;
@@ -138,6 +174,11 @@ public sealed partial class HostedGrimoireProducerInventoryTests
     {
         (string lease, string body, string members) = LeaseReceiverShapeOf(shape);
 
+        return LeaseReceiverSource(lease, body, members);
+    }
+
+    private static string LeaseReceiverSource(string lease, string body, string members)
+    {
         return $$"""
             #nullable enable
             using System;
@@ -237,6 +278,8 @@ public sealed partial class HostedGrimoireProducerInventoryTests
     [InlineData("alias-plain")]
     [InlineData("two-formals")]
     [InlineData("delegate-passed")]
+    [InlineData("second-acquisition-unused")]
+    [InlineData("captured-formal")]
     public void LeaseReceiverProofGrantsTheGroupsEffectToAMustAliasOfTheAcquiredLease(string shape)
     {
         LeaseReceiverRun run = RunLeaseReceiver(LeaseReceiverSource(shape), shape, OrdinaryRoot());
@@ -268,6 +311,11 @@ public sealed partial class HostedGrimoireProducerInventoryTests
     [InlineData("inexact-formal")]
     [InlineData("reassigned-formal")]
     [InlineData("lambda-written-local")]
+    [InlineData("designation-reassigned")]
+    [InlineData("unguarded-acquisition")]
+    [InlineData("captured-designation")]
+    [InlineData("captured-copy")]
+    [InlineData("captured-formal-written")]
     public void LeaseReceiverProofRefusesAGroupWhoseReceiverIsNotAMustAliasOfTheAcquiredLease(string shape)
     {
         LeaseReceiverRun run = RunLeaseReceiver(LeaseReceiverSource(shape), shape, OrdinaryRoot());
@@ -289,13 +337,22 @@ public sealed partial class HostedGrimoireProducerInventoryTests
 
         Assert.Null(run.Send.EffectFrontierCapsuleId);
 
-        Assert.Contains(run.Result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_SITE_EFFECT_FRONTIER_MISSING" && diagnostic.Detail == LeaseReceiverSend);
+        // A group whose receiver is a sound lease that is merely not the one holding the Work is still found retained by the
+        // send's own scan; the send then holds the group's identity but no capsule, and the mismatch is the refusal.
+        bool secondLease = shape == "second-acquisition";
+
+        Assert.Equal(!secondLease, run.Result.Diagnostics.Any(static diagnostic => diagnostic.Code == "HOSTED_SITE_EFFECT_FRONTIER_MISSING" && diagnostic.Detail == LeaseReceiverSend));
 
         string[] codes = [.. run.Result.Diagnostics.Select(static diagnostic => diagnostic.Code).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal)];
 
-        Assert.Equal(workEnded
-            ? [LeaseReceiverMismatch, "HOSTED_SITE_EFFECT_FRONTIER_MISSING", "HOSTED_SITE_WORK_FRONTIER_MISSING"]
-            : [LeaseReceiverMismatch, "HOSTED_SITE_EFFECT_FRONTIER_MISSING"], codes);
+        // An acquisition outside any guard is itself an unresolved call, a refusal that predates the receiver proof.
+        Assert.Equal(shape switch
+        {
+            "opaque-return-of-lease" => [LeaseReceiverMismatch, "HOSTED_SITE_EFFECT_FRONTIER_MISSING", "HOSTED_SITE_WORK_FRONTIER_MISSING"],
+            "unguarded-acquisition" => [LeaseReceiverMismatch, "HOSTED_CALL_TARGET_UNRESOLVED", "HOSTED_SITE_EFFECT_FRONTIER_MISSING"],
+            "second-acquisition" => [LeaseReceiverMismatch],
+            _ => [LeaseReceiverMismatch, "HOSTED_SITE_EFFECT_FRONTIER_MISSING"],
+        }, codes);
     }
 
     // The ordinary external-effect recovery shell is the production text of SettleAdmittedAsync inside the recovery
@@ -414,5 +471,133 @@ public sealed partial class HostedGrimoireProducerInventoryTests
         Assert.Equal(LeaseReceiverRecoveryTuples.Length + 1, result.Diagnostics.Count(static diagnostic => diagnostic.Code == "HOSTED_RECOVERY_EFFECT_FRONTIER_UNPROVEN"));
 
         Assert.StartsWith("Worker.StartAsync", mismatch.Identity, StringComparison.Ordinal);
+    }
+
+    // The simplest shell, split in two: the worker acquires the lease and hands it to a helper that holds the recovery guard.
+    // Every other proof holds (the formal is bound exactly and the worker's Work is that very lease), so only the rule that the
+    // shell's group is begun on the shell's own acquisition remains.
+    [Theory]
+    [InlineData("acquired-in-the-shell")]
+    [InlineData("handed-to-the-shell")]
+    public void LeaseReceiverProofGrantsTheRecoveryEffectOnlyToALeaseTheShellAcquiredItself(string shape)
+    {
+        string source = RecoveryMatrixFixture();
+
+        const string operation = " var operation = new RetroDownfall.Arcanum.Core.Operations.LongRunningOperation(RetroDownfall.Arcanum.Core.Operations.LongRunningOperationKinds.External, 0);";
+
+        Assert.Equal(1, source.Split(operation, StringSplitOptions.None).Length - 1);
+
+        if (shape == "handed-to-the-shell")
+        {
+            source = source.Replace(operation, " await Shell(lease); } private async Task Shell(RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireWorkLease lease) {" + operation, StringComparison.Ordinal);
+        }
+
+        CSharpCompilation compilation = Compile(source);
+
+        Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        InvocationExpressionSyntax group = Assert.Single(compilation.SyntaxTrees.Single().GetRoot().DescendantNodes().OfType<InvocationExpressionSyntax>(),
+            static call => call.Expression is MemberAccessExpressionSyntax { Name.Identifier.ValueText: "TryBeginExternalEffectGroup" });
+
+        HostedProducerDiscovery<HostedProducerSite> result = DiscoverRecoveryMatrixFixture([compilation]);
+
+        foreach (HostedProducerInventoryDiagnostic diagnostic in result.Diagnostics)
+        {
+            output.WriteLine($"LEASE_RECEIVER_HANDED_DIAGNOSTIC {shape} {diagnostic.Code} {diagnostic.Identity} {diagnostic.Detail}");
+        }
+
+        HostedProducerSite external = Assert.Single(result.Items, static site => site.RootType == "Worker"
+            && site.EnclosingType == "RetroDownfall.Arcanum.Infrastructure.Operations.ExternalRecoveryHandler" && site.Callee == LeaseReceiverSend);
+
+        if (shape == "acquired-in-the-shell")
+        {
+            Assert.DoesNotContain(result.Diagnostics, static diagnostic => diagnostic.Code is LeaseReceiverMismatch or "HOSTED_RECOVERY_EFFECT_FRONTIER_UNPROVEN");
+
+            Assert.NotNull(external.EffectFrontierCapsuleId);
+
+            return;
+        }
+
+        HostedProducerInventoryDiagnostic mismatch = Assert.Single(result.Diagnostics, static diagnostic => diagnostic.Code == LeaseReceiverMismatch);
+
+        Assert.EndsWith("/call@" + group.SyntaxTree.FilePath + ":" + group.SpanStart, mismatch.Identity, StringComparison.Ordinal);
+
+        Assert.Single(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_RECOVERY_EFFECT_FRONTIER_UNPROVEN");
+
+        Assert.Null(external.EffectFrontierCapsuleId);
+    }
+
+    // An optional lease: one core is reached once with the first argument and once with the worker's lease, and begins its group
+    // under `workLease is not null` (or, in the unguarded row, unconditionally). A formal bound only to the null constant makes
+    // that guard false, so the traversal that passes the null literal (the retention recovery path, whose shell already holds the
+    // group) never reaches the dead call: it is neither an Effect nor a refusal. A lease that is not the null constant, and a
+    // call the null cannot skip, keep the full receiver proof.
+    private static string LeaseReceiverOptionalSource(bool guarded, string first)
+    {
+        string begin = """
+            if (!workLease.TryBeginExternalEffectGroup(out System.IDisposable group)) return;
+
+            using var held = group;
+
+            await Task.CompletedTask;
+
+            System.IO.File.Delete("lease-receiver-send");
+            """;
+
+        string core = guarded ? "if (workLease is not null)\n{\n" + begin + "\n}" : begin;
+
+        return LeaseReceiverSource("using IGrimoireWorkLease lease = admitted!;", $"await Optional.Prune.RecoverPruneCoreAsync({first});\n\nawait Optional.Prune.RecoverPruneCoreAsync(lease);", "")
+            + $$"""
+
+            namespace Optional
+            {
+                internal static class Prune
+                {
+                    internal static async Task RecoverPruneCoreAsync(RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireWorkLease? workLease)
+                    {
+                        await ApplyUnifiedPruneCoreAsync(workLease);
+                    }
+
+                    internal static async Task ApplyUnifiedPruneCoreAsync(RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireWorkLease? workLease)
+                    {
+                        {{core}}
+                    }
+                }
+            }
+            """;
+    }
+
+    [Theory]
+    [InlineData(true, "null")]
+    [InlineData(false, "null")]
+    [InlineData(true, "fake")]
+    public void LeaseReceiverProofPrunesADeadGroupOnlyForAGuardedNullLease(bool guarded, string first)
+    {
+        string source = LeaseReceiverOptionalSource(guarded, first);
+
+        LeaseReceiverRun run = RunLeaseReceiver(source, (guarded ? "guarded-" : "unguarded-") + first, OrdinaryRoot());
+
+        if (guarded && first == "null")
+        {
+            Assert.Empty(run.Result.Diagnostics);
+
+            // The null traversal never reaches the call: the group site and the send exist once, for the worker's lease.
+            HostedProducerSite group = Assert.Single(run.Groups);
+
+            Assert.Equal(group.CapsuleId, group.EffectFrontierCapsuleId);
+
+            Assert.Equal(group.CapsuleId, run.Send.EffectFrontierCapsuleId);
+
+            return;
+        }
+
+        HostedProducerInventoryDiagnostic mismatch = Assert.Single(run.Result.Diagnostics, static diagnostic => diagnostic.Code == LeaseReceiverMismatch);
+
+        Assert.EndsWith("/call@" + run.Coordinate, mismatch.Identity, StringComparison.Ordinal);
+
+        // The refused traversal grants nothing: its group is the Effect of no send. The worker's own traversal still holds both.
+        Assert.Contains(run.Groups, static group => group.EffectFrontierCapsuleId is null);
+
+        Assert.Contains(run.Groups, static group => group.EffectFrontierCapsuleId is not null);
     }
 }

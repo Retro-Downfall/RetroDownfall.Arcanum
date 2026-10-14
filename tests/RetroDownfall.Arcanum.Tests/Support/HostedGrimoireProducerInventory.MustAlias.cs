@@ -26,10 +26,6 @@ internal static partial class HostedGrimoireProducerInventory
 
         private readonly Dictionary<(GraphMemberIdentity Member, string Bindings, int Start, int Length), string?> mustAliasLeaseOrigins = [];
 
-        // The effect identities of groups the receiver proof refused at their own site. A group refused where it is begun is
-        // never the Effect of a later site that would have inherited it.
-        private readonly HashSet<string> refusedLeaseGroups = new(StringComparer.Ordinal);
-
         // The holder-era receiver witnesses (the per-unit recovery handoff, the ordinary scoped holder, the readiness source and
         // the scoped lease instance) each prove their own receiver exactly and are retired with the holder. Every other member
         // is judged here.
@@ -144,21 +140,39 @@ internal static partial class HostedGrimoireProducerInventory
             _ => expression,
         };
 
-        // A formal of this very member, never written anywhere in it, whose bindings are one acquisition and nothing inexact.
+        // A formal of this member, or of the method a lambda or local function of it is nested in (a nested body sees the enclosing
+        // bindings), that is never written anywhere in its declaring method, nested callables included, and whose bindings are one
+        // acquisition and nothing inexact. A formal that is never written holds the bound value however a closure captures it.
         private string? FormalLeaseOrigin(AuthoredMember member, IParameterSymbol parameter)
         {
             if (parameter.RefKind != RefKind.None
-                || !SymbolEqualityComparer.Default.Equals(parameter.ContainingSymbol.OriginalDefinition, member.Symbol.OriginalDefinition)
                 || member.AdmissionBindings is null
                 || !member.AdmissionBindings.TryGetValue(parameter, out IReadOnlySet<string>? bound)
                 || bound.Count != 1
                 || bound.Contains(InexactLeaseOrigin)
-                || !LeaseSymbolIsStable(member, parameter, definition: null, uncaptured: false))
+                || LeaseFormalScope(member, parameter) is not { } scope
+                || !LeaseSymbolIsStable(member, scope, parameter, definition: null, uncaptured: false))
             {
                 return null;
             }
 
             return bound.Single();
+        }
+
+        // The syntax that declares the formal's method, when this member is that method or nested inside it.
+        private static SyntaxNode? LeaseFormalScope(AuthoredMember member, IParameterSymbol parameter)
+        {
+            if (SymbolEqualityComparer.Default.Equals(parameter.ContainingSymbol.OriginalDefinition, member.Symbol.OriginalDefinition))
+            {
+                return member.Syntax;
+            }
+
+            return parameter.ContainingSymbol is IMethodSymbol { MethodKind: MethodKind.Ordinary or MethodKind.LocalFunction or MethodKind.AnonymousFunction } owner
+                && owner.DeclaringSyntaxReferences.SingleOrDefault()?.GetSyntax() is { } declaration
+                && declaration.SyntaxTree == member.Syntax.SyntaxTree
+                && declaration.Span.Contains(member.Syntax.Span)
+                    ? declaration
+                    : null;
         }
 
         private string? LocalLeaseOrigin(AuthoredMember member, ILocalSymbol local)
@@ -173,7 +187,7 @@ internal static partial class HostedGrimoireProducerInventory
             if (declaration is SingleVariableDesignationSyntax designation)
             {
                 return LeaseAcquisitionOf(member, designation) is { } acquisition
-                    && LeaseSymbolIsStable(member, local, acquisition, uncaptured: true)
+                    && LeaseSymbolIsStable(member, member.Syntax, local, acquisition, uncaptured: true)
                         ? Location(acquisition)
                         : null;
             }
@@ -186,8 +200,8 @@ internal static partial class HostedGrimoireProducerInventory
                 && acquired.SyntaxTree == member.Syntax.SyntaxTree
                 && member.Syntax.Span.Contains(acquired.Span)
                 && LeaseAcquisitionOf(member, acquired) is { } call
-                && LeaseSymbolIsStable(member, local, definition: null, uncaptured: true)
-                && LeaseSymbolIsStable(member, origin, call, uncaptured: true))
+                && LeaseSymbolIsStable(member, member.Syntax, local, definition: null, uncaptured: true)
+                && LeaseSymbolIsStable(member, member.Syntax, origin, call, uncaptured: true))
             {
                 return Location(call);
             }
@@ -212,11 +226,11 @@ internal static partial class HostedGrimoireProducerInventory
                 ? call
                 : null;
 
-        // Never written anywhere in the member, nested callables included, except by the acquisition that defines it; and,
+        // Never written anywhere under the root, nested callables included, except by the acquisition that defines it; and,
         // when required, never mentioned in a nested lambda or local function at all.
-        private static bool LeaseSymbolIsStable(AuthoredMember member, ISymbol symbol, SyntaxNode? definition, bool uncaptured)
+        private static bool LeaseSymbolIsStable(AuthoredMember member, SyntaxNode root, ISymbol symbol, SyntaxNode? definition, bool uncaptured)
         {
-            foreach (SyntaxNode node in member.Syntax.DescendantNodesAndSelf())
+            foreach (SyntaxNode node in root.DescendantNodesAndSelf())
             {
                 if (definition is not null && definition.Span.Contains(node.Span))
                 {

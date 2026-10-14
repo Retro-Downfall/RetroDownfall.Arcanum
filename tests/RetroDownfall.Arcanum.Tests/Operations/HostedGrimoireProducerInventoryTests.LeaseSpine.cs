@@ -388,8 +388,8 @@ public sealed partial class HostedGrimoireProducerInventoryTests
             && site.Callee == LeaseSpineGroup);
 
         // The group is begun on the lease parameter, so the send's Effect is that group. The one exception is the lambda row: the
-        // lease reaches the paid door only as a variable a detached lambda captured, so the formal is bound inexactly, the Lease
-        // Receiver Proof refuses the group, and it is nobody's Effect.
+        // lease reaches the paid door only as a variable a detached task captured, and a detached body is traversed with its
+        // admission detached, so the formal has no binding, the Lease Receiver Proof refuses the group, and it is nobody's Effect.
         if (shape == "captured-in-lambda")
         {
             Assert.Null(group.EffectFrontierCapsuleId);

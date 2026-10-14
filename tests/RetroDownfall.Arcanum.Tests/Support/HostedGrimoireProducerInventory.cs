@@ -24051,6 +24051,16 @@ internal static partial class HostedGrimoireProducerInventory
                 return true;
             }
 
+            // A null test of a work lease the traversal knows to be the null constant. Only the lease protocol interface has this
+            // rule: it declares no operators, so `is null` is the reference test and the null constant matches it.
+            if (value is null
+                && pattern is ConstantPatternSyntax { Expression: LiteralExpressionSyntax { RawKind: (int)SyntaxKind.NullLiteralExpression } } nullTest
+                && member.Model.GetOperation(nullTest) is IConstantPatternOperation { InputType: { } leaseType }
+                && TypeKey(leaseType) == "RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireWorkLease")
+            {
+                return true;
+            }
+
             if (pattern is ConstantPatternSyntax constant
                 && RecoveryValue(member, constant.Expression, []) is
                 {
@@ -58244,10 +58254,7 @@ internal static partial class HostedGrimoireProducerInventory
 
             if (!ordinaryHolderPhysicalGroupProven) effectGroup = null;
 
-            // CK-3: a group is the Effect of its own site only when its receiver is a must-alias of the lease whose Work is live,
-            // and a refused group is the Effect of nothing downstream either.
-            if (effectGroup is not null && refusedLeaseGroups.Contains(effectGroup)) effectGroup = null;
-
+            // CK-3: a group is the Effect of its own site only when its receiver is a must-alias of the lease whose Work is live.
             bool leaseReceiverProven = kind != HostedProducerSiteKind.EffectFrontier
                 || !callee.EndsWith(".TryBeginExternalEffectGroup", StringComparison.Ordinal)
                 || node is not InvocationExpressionSyntax groupCall
@@ -58256,8 +58263,6 @@ internal static partial class HostedGrimoireProducerInventory
             if (!leaseReceiverProven)
             {
                 RefuseTraversalCompletion();
-
-                refusedLeaseGroups.Add(rootOperation + "@effect:" + Location(node));
 
                 diagnostics.Add(LeaseReceiverMismatch(operationId, node));
             }
