@@ -39478,6 +39478,8 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
     [InlineData("children-boundary-conversion", false)]
     [InlineData("children-id-through-unknown-call", false)]
     [InlineData("children-other-element-type", false)]
+    [InlineData("children-implicit-initializer-conversion", false)]
+    [InlineData("children-explicit-cast-conversion", false)]
     [InlineData("list-unknown", false)]
     [InlineData("list-ref", false)]
     [InlineData("index-alias-write", false)]
@@ -39743,6 +39745,16 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
                         branchesDeclaration = branchesDeclaration.Replace("new HierarchyLeafCursor(child)", "new HierarchyLeafCursor(UnknownId(child))", StringComparison.Ordinal);
 
                         readChildren += " private static extern Guid UnknownId(Guid id);";
+
+                        break;
+
+                    case "children-implicit-initializer-conversion" or "children-explicit-cast-conversion":
+                        // The list is converted by an authored operator on its way into the local the sequence is read from.
+                        childrenDeclaration = childrenDeclaration.Replace("List<Guid> children = await", shape == "children-implicit-initializer-conversion"
+                            ? "IdList children = await" : "IdList children = (IdList)await", StringComparison.Ordinal);
+
+                        readChildren += " private sealed class IdList(List<Guid> ids) : IEnumerable<Guid> { public static implicit operator IdList(List<Guid> value) { System.IO.File.Delete(\"ids\"); return new(value); }"
+                            + " public IEnumerator<Guid> GetEnumerator() => ids.GetEnumerator(); System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator(); }";
 
                         break;
 

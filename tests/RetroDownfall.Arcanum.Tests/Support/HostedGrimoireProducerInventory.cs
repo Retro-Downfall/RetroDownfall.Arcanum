@@ -31555,13 +31555,28 @@ internal static partial class HostedGrimoireProducerInventory
             // a list that is not the empty framework list, a boundary conversion and any other element type are all refused.
             bool StorageGuidSequence(ExpressionSyntax expression, AuthoredMember owner)
             {
-                expression = StripTransparentExpression(expression);
+                // Only parentheses are looked through: a cast is a conversion, and a conversion the helper's list goes through may be authored.
+                static ExpressionSyntax Unparenthesized(ExpressionSyntax value)
+                {
+                    while (value is ParenthesizedExpressionSyntax parenthesized) value = parenthesized.Expression;
+
+                    return value;
+                }
+
+                expression = Unparenthesized(expression);
+
+                // The list must reach its use as itself: a user-defined conversion between the helper's result and the place that
+                // receives it (a local's declared type, an argument) would be authored work in the sequence that nothing here proves.
+                for (IOperation? context = owner.Model.GetOperation(expression)?.Parent; context is IConversionOperation or IParenthesizedOperation; context = context.Parent)
+                {
+                    if (context is IConversionOperation { OperatorMethod: not null } or IConversionOperation { Conversion.IsUserDefined: true }) return false;
+                }
 
                 bool awaited = expression is AwaitExpressionSyntax;
 
                 if (expression is AwaitExpressionSyntax awaiting)
                 {
-                    expression = StripTransparentExpression(awaiting.Expression);
+                    expression = Unparenthesized(awaiting.Expression);
 
                     if (expression is InvocationExpressionSyntax { Expression: MemberAccessExpressionSyntax { Expression: { } pending } } configure
                         && owner.Model.GetOperation(configure) is IInvocationOperation
@@ -31571,7 +31586,7 @@ internal static partial class HostedGrimoireProducerInventory
                         }
                         && IsExactFrameworkType(configured.ContainingType, "System.Threading.Tasks.Task`1", typeof(Task<>).Assembly.GetName()))
                     {
-                        expression = StripTransparentExpression(pending);
+                        expression = Unparenthesized(pending);
                     }
                 }
 
