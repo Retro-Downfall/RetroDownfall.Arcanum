@@ -3332,7 +3332,7 @@ internal static partial class HostedGrimoireProducerInventory
 
             candidates.Add(member);
 
-            if (member.Syntax is not MethodDeclarationSyntax { Body: null, ExpressionBody: null })
+            if (member.Syntax is not MethodDeclarationSyntax { Body: null, ExpressionBody: null } && !IsBodilessAccessorSlot(member))
             {
                 MethodIdentity identity = new(member.Symbol.ContainingAssembly.Identity, key);
 
@@ -3344,6 +3344,16 @@ internal static partial class HostedGrimoireProducerInventory
                 exactCandidates.Add(member);
             }
         }
+
+        // An accessor declared without a body that is not an auto-property accessor: an abstract or extern accessor, an
+        // interface member, the definition part of a partial property. Like a bodiless method it stands for whatever the
+        // runtime type selects, or for the implementation part, never for code of its own.
+        private static bool IsBodilessAccessorSlot(AuthoredMember member) =>
+            member.Syntax is AccessorDeclarationSyntax { Body: null, ExpressionBody: null }
+            && (member.Symbol.IsAbstract
+                || member.Symbol.IsExtern
+                || member.Symbol.ContainingType.TypeKind == TypeKind.Interface
+                || member.Symbol.AssociatedSymbol is IPropertySymbol { IsPartialDefinition: true });
 
         private int CompilationIdentity(Compilation compilation)
         {
@@ -25057,7 +25067,8 @@ internal static partial class HostedGrimoireProducerInventory
                         or ImplicitElementAccessSyntax
                             ? member.Model.GetSymbolInfo(node).Symbol
                             : node is IdentifierNameSyntax
-                                && (node.Parent is not MemberAccessExpressionSyntax
+                                && (node.Parent is not MemberAccessExpressionSyntax readReceiver
+                                    || readReceiver.Expression == node
                                     || IsLongRestSdkFactoryReceiverProperty(node, member))
                                     ? member.Model.GetSymbolInfo(node).Symbol switch
                                     {
@@ -26258,14 +26269,13 @@ internal static partial class HostedGrimoireProducerInventory
                             diagnostics.Add(new("HOSTED_SITE_UNCLASSIFIED", Location(node), callee));
                         }
 
+                        (ITypeSymbol? receiverType, ExpressionSyntax? receiverExpression, bool exactReceiver) = AccessorReceiver(propertyReference?.Instance);
+
                         foreach (IMethodSymbol accessor in new[] { reads ? property.GetMethod : null, writes ? property.SetMethod : null }.OfType<IMethodSymbol>())
                         {
-                            if (Resolve(accessor, member.Model.Compilation) is { } target
-                                && target.Syntax is not AccessorDeclarationSyntax
-                                {
-                                    Body: null,
-                                    ExpressionBody: null,
-                                })
+                            AccessorDispatch dispatch = ResolveAccessorDispatch(member, accessor, receiverType, receiverExpression, exactReceiver, property.IsIndexer);
+
+                            foreach (AuthoredMember target in dispatch.Targets)
                             {
                                 AuthoredMember boundTarget = propertyReference is null
                                     ? target
@@ -26301,9 +26311,8 @@ internal static partial class HostedGrimoireProducerInventory
 
                                 emittedEvidence = MergeEvidence(emittedEvidence, Traverse(boundTarget, rootType, operationId + (accessor.MethodKind == MethodKind.PropertyGet ? "/get@" : "/set@") + Location(node), active, lifecycle, leaseBoundary && !sameLease ? null : workAdmitted, leaseBoundary && !sameLease ? null : effectGroup, recoveryEffect: leaseBoundary ? null : recoveryEffect));
                             }
-                            else if (property.IsIndexer
-                                && accessor.Locations.Any(static location =>
-                                    location.IsInSource))
+
+                            if (dispatch.Unresolved)
                             {
                                 RefuseTraversalCompletion();
 
@@ -26319,9 +26328,11 @@ internal static partial class HostedGrimoireProducerInventory
                         && authoredMutation.Left == node
                         && authoredMutation.Kind() is SyntaxKind.AddAssignmentExpression
                             or SyntaxKind.SubtractAssignmentExpression
-                        && authoredEvent.DeclaringSyntaxReferences
-                            .Select(static reference => reference.GetSyntax())
-                            .SingleOrDefault() is EventDeclarationSyntax)
+                        && authoredEvent.Locations.Any(static location => location.IsInSource)
+                        && (authoredEvent.DeclaringSyntaxReferences
+                                .Select(static reference => reference.GetSyntax())
+                                .SingleOrDefault() is EventDeclarationSyntax
+                            || (authoredEvent.AddMethod is { } declaredAdd && IsDispatchedAccessor(declaredAdd))))
                     {
                         bool addsHandler = authoredMutation.IsKind(
                             SyntaxKind.AddAssignmentExpression);
@@ -26343,17 +26354,18 @@ internal static partial class HostedGrimoireProducerInventory
                             operationId,
                             inheritedEffect);
 
-                        if (accessor is not null
-                            && Resolve(
-                                accessor,
-                                member.Model.Compilation) is { } target
-                            && target.Syntax is not AccessorDeclarationSyntax
-                            {
-                                Body: null,
-                                ExpressionBody: null,
-                            })
+                        (ITypeSymbol? receiverType, ExpressionSyntax? receiverExpression, bool exactReceiver) = AccessorReceiver(
+                            member.Model.GetOperation(authoredMutation) is IEventAssignmentOperation { EventReference: IEventReferenceOperation eventReference }
+                                ? eventReference.Instance
+                                : null);
+
+                        AccessorDispatch dispatch = accessor is null
+                            ? new([], true)
+                            : ResolveAccessorDispatch(member, accessor, receiverType, receiverExpression, exactReceiver, indexer: false);
+
+                        foreach (AuthoredMember target in dispatch.Targets)
                         {
-                            AuthoredMember boundTarget = accessor.Parameters is
+                            AuthoredMember boundTarget = accessor!.Parameters is
                                 [IParameterSymbol handler]
                                     ? BindArguments(
                                         member,
@@ -26387,7 +26399,8 @@ internal static partial class HostedGrimoireProducerInventory
                                     leaseBoundary ? null : effectGroup,
                                     recoveryEffect: leaseBoundary ? null : recoveryEffect));
                         }
-                        else
+
+                        if (dispatch.Unresolved || dispatch.Targets.Count == 0 && authoredEvent.DeclaringSyntaxReferences.Select(static reference => reference.GetSyntax()).SingleOrDefault() is EventDeclarationSyntax)
                         {
                             RefuseTraversalCompletion();
 

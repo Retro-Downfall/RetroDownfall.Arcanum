@@ -181,8 +181,8 @@ internal static partial class HostedGrimoireProducerInventory
             [OperationKind.ParameterReference] = Census(OperationCensusRole.Structure, "A variable read."),
             [OperationKind.FieldReference] = Census(OperationCensusRole.Structure, "A field read runs no code."),
             [OperationKind.MethodReference] = Census(OperationCensusRole.Structure, "A method group runs no code until the delegate it converts to is invoked."),
-            [OperationKind.PropertyReference] = Census(OperationCensusRole.Lane, "An accessor call is dispatched by the property lane at the identifier, member access or element access."),
-            [OperationKind.EventReference] = Census(OperationCensusRole.Lane, "An event accessor is dispatched by the event lane."),
+            [OperationKind.PropertyReference] = Census(OperationCensusRole.Lane, "An accessor call is dispatched by the property lane, on the runtime type of the receiver, at the identifier, member access or element access; the census confirms that the node is one the lane reads and refuses the reference otherwise."),
+            [OperationKind.EventReference] = Census(OperationCensusRole.Lane, "An event accessor is dispatched by the event lane, on the runtime type of the receiver."),
             [OperationKind.Unary] = Census(OperationCensusRole.Lane, "A written unary operator is dispatched by the operator lane; the true and false operators of a condition have no operator syntax and are taken over by the census."),
             [OperationKind.Binary] = Census(OperationCensusRole.Lane, "A written binary operator is dispatched by the operator lane; the formatting of a string concatenation operand is taken over by the census."),
             [OperationKind.Conditional] = Census(OperationCensusRole.Structure, "Control structure; a user-defined condition is its own operation."),
@@ -197,7 +197,7 @@ internal static partial class HostedGrimoireProducerInventory
             [OperationKind.SimpleAssignment] = Census(OperationCensusRole.Structure, "An assignment; a property target is the property lane's and a contextual conversion is its own operation."),
             [OperationKind.CompoundAssignment] = Census(OperationCensusRole.Census, "The operator the compound assignment selected, and its conversions of the operands and of the result."),
             [OperationKind.Parenthesized] = Census(OperationCensusRole.Structure, "Syntax structure."),
-            [OperationKind.EventAssignment] = Census(OperationCensusRole.Lane, "An event add or remove is dispatched by the event lane."),
+            [OperationKind.EventAssignment] = Census(OperationCensusRole.Lane, "An event add or remove is dispatched by the event lane, on the runtime type of the receiver."),
             [OperationKind.ConditionalAccess] = Census(OperationCensusRole.Structure, "Control structure."),
             [OperationKind.ConditionalAccessInstance] = Census(OperationCensusRole.Structure, "Control structure."),
             [OperationKind.InterpolatedString] = Census(OperationCensusRole.Census, "The implicit formatting of every hole."),
@@ -257,7 +257,7 @@ internal static partial class HostedGrimoireProducerInventory
             [OperationKind.DiscardPattern] = Census(OperationCensusRole.Structure, "A pattern that matches anything."),
             [OperationKind.SwitchExpression] = Census(OperationCensusRole.Structure, "Control structure; its arm patterns are inspected separately."),
             [OperationKind.SwitchExpressionArm] = Census(OperationCensusRole.Structure, "Control structure."),
-            [OperationKind.PropertySubpattern] = Census(OperationCensusRole.Lane, "The property read is dispatched by the property lane at the member name."),
+            [OperationKind.PropertySubpattern] = Census(OperationCensusRole.Lane, "The property read is dispatched by the property lane at the member name, on the runtime type of the value the pattern tests."),
             [OperationKind.UsingDeclaration] = Census(OperationCensusRole.Lane, "The resource's Dispose or DisposeAsync is resolved by the cleanup lane of the using declaration."),
             [OperationKind.NegatedPattern] = Census(OperationCensusRole.Structure, "Pattern structure."),
             [OperationKind.BinaryPattern] = Census(OperationCensusRole.Structure, "Pattern structure."),
@@ -797,9 +797,9 @@ internal static partial class HostedGrimoireProducerInventory
                     {
                         List<ImplicitCallStep> steps = [];
 
-                        AccessorStep(steps, "length", list.LengthSymbol, list.InputType, After(list.Syntax), write: false);
+                        AccessorStep(steps, "length", list.LengthSymbol, list.InputType, After(list.Syntax), write: false, PatternInputExpression(list));
 
-                        AccessorStep(steps, "indexer", list.IndexerSymbol, list.InputType, After(list.Syntax), write: false);
+                        AccessorStep(steps, "indexer", list.IndexerSymbol, list.InputType, After(list.Syntax), write: false, PatternInputExpression(list));
 
                         if (steps.Count != 0)
                         {
@@ -813,7 +813,7 @@ internal static partial class HostedGrimoireProducerInventory
                     {
                         List<ImplicitCallStep> steps = [];
 
-                        AccessorStep(steps, "slice", slice.SliceSymbol, (slice.Parent as IListPatternOperation)?.InputType, After(slice.Syntax), write: false);
+                        AccessorStep(steps, "slice", slice.SliceSymbol, (slice.Parent as IListPatternOperation)?.InputType, After(slice.Syntax), write: false, slice.Parent is IListPatternOperation enclosing ? PatternInputExpression(enclosing) : null);
 
                         if (steps.Count != 0)
                         {
@@ -827,7 +827,7 @@ internal static partial class HostedGrimoireProducerInventory
                     {
                         List<ImplicitCallStep> steps = [];
 
-                        AccessorStep(steps, "length", indexer.LengthSymbol, indexer.Instance.Type, After(indexer.Instance.Syntax), write: false);
+                        AccessorStep(steps, "length", indexer.LengthSymbol, indexer.Instance.Type, After(indexer.Instance.Syntax), write: false, indexer.Instance.Syntax as ExpressionSyntax);
 
                         if (steps.Count != 0)
                         {
@@ -841,6 +841,16 @@ internal static partial class HostedGrimoireProducerInventory
                     if (range.Method is { } rangeMethod)
                     {
                         add(ImplicitCallKind.ImplicitIndexer, operation, range.Syntax, [Step("range", rangeMethod, null, null, After(range.Syntax))]);
+                    }
+
+                    break;
+
+                case IPropertyReferenceOperation propertyReference:
+                    // The property lane dispatches every accessor call at the node it reads the property from; a property read
+                    // at any other node would run its accessors with nothing to follow them.
+                    if (!LaneVisitsPropertyReference(model, propertyReference))
+                    {
+                        RefuseSite("A property access at a syntax node the traversal's property lane does not read has no exact target.");
                     }
 
                     break;
@@ -1350,7 +1360,7 @@ internal static partial class HostedGrimoireProducerInventory
         }
 
         // A property read or write or a method the compiler calls: a property is its accessor.
-        private static void AccessorStep(List<ImplicitCallStep> steps, string label, ISymbol? symbol, ITypeSymbol? receiverType, int position, bool write)
+        private static void AccessorStep(List<ImplicitCallStep> steps, string label, ISymbol? symbol, ITypeSymbol? receiverType, int position, bool write, ExpressionSyntax? receiver = null)
         {
             IMethodSymbol? method = symbol switch
             {
@@ -1361,7 +1371,7 @@ internal static partial class HostedGrimoireProducerInventory
 
             if (method is not null)
             {
-                steps.Add(Step(label, method, receiverType, null, position));
+                steps.Add(Step(label, method, receiverType, receiver, position));
             }
         }
 
@@ -1428,6 +1438,23 @@ internal static partial class HostedGrimoireProducerInventory
                 IPatternCaseClauseOperation { Parent: ISwitchCaseOperation { Parent: ISwitchOperation switchStatement } } => switchStatement.Value.Syntax as ExpressionSyntax,
                 _ => null,
             };
+        }
+
+        // The nodes the property lane reads a property from: a member access, an element access (or binding), an identifier
+        // that is not the name of a member access (the receiver of a member access is read), and the name of a member
+        // binding. Every property reference of a member body is at one of them, or the lane never sees its accessors.
+        private static bool LaneVisitsPropertyReference(SemanticModel model, IPropertyReferenceOperation reference)
+        {
+            SyntaxNode? node = reference.Syntax switch
+            {
+                MemberAccessExpressionSyntax or ElementAccessExpressionSyntax or ElementBindingExpressionSyntax or ImplicitElementAccessSyntax => reference.Syntax,
+                IdentifierNameSyntax { Parent: MemberAccessExpressionSyntax parent } name when parent.Name == name => parent,
+                IdentifierNameSyntax => reference.Syntax,
+                MemberBindingExpressionSyntax { Name: IdentifierNameSyntax name } => name,
+                _ => null,
+            };
+
+            return node is not null && model.GetSymbolInfo(node).Symbol is IPropertySymbol;
         }
 
         // Whether an Add can be called with one element: its first parameter takes the element (an extension's `this`

@@ -1211,14 +1211,34 @@ internal static partial class HostedGrimoireProducerInventory
             if (node is IdentifierNameSyntax or MemberAccessExpressionSyntax or ElementAccessExpressionSyntax or ElementBindingExpressionSyntax or ImplicitElementAccessSyntax
                 && member.Model.GetSymbolInfo(node).Symbol is IPropertySymbol property)
             {
+                (ITypeSymbol? receiverType, ExpressionSyntax? receiverExpression, bool exactReceiver) = AccessorReceiver((member.Model.GetOperation(node) as IPropertyReferenceOperation)?.Instance);
+
                 foreach (IMethodSymbol accessor in new[] { property.GetMethod, property.SetMethod }.OfType<IMethodSymbol>())
                 {
-                    if (Resolve(accessor, compilation) is { } target
-                        && target.Syntax is not AccessorDeclarationSyntax { Body: null, ExpressionBody: null }
-                        && ContainsPotentialProducerSite(target, path))
+                    AccessorDispatch dispatch = ResolveAccessorDispatch(member, accessor, receiverType, receiverExpression, exactReceiver, property.IsIndexer);
+
+                    if (dispatch.Unresolved || dispatch.Targets.Any(target => ContainsPotentialProducerSite(target, path)))
                     {
                         return true;
                     }
+                }
+            }
+
+            if (node is IdentifierNameSyntax or MemberAccessExpressionSyntax
+                && node.Parent is AssignmentExpressionSyntax { Left: { } eventTarget } eventMutation
+                && eventTarget == node
+                && eventMutation.Kind() is SyntaxKind.AddAssignmentExpression or SyntaxKind.SubtractAssignmentExpression
+                && member.Model.GetSymbolInfo(node).Symbol is IEventSymbol { } mutatedEvent
+                && mutatedEvent.Locations.Any(static location => location.IsInSource)
+                && (eventMutation.IsKind(SyntaxKind.AddAssignmentExpression) ? mutatedEvent.AddMethod : mutatedEvent.RemoveMethod) is { } eventAccessor)
+            {
+                (ITypeSymbol? receiverType, ExpressionSyntax? receiverExpression, bool exactReceiver) = AccessorReceiver((member.Model.GetOperation(eventMutation) as IEventAssignmentOperation)?.EventReference is IEventReferenceOperation eventReference ? eventReference.Instance : null);
+
+                AccessorDispatch dispatch = ResolveAccessorDispatch(member, eventAccessor, receiverType, receiverExpression, exactReceiver, indexer: false);
+
+                if (dispatch.Unresolved || dispatch.Targets.Any(target => ContainsPotentialProducerSite(target, path)))
+                {
+                    return true;
                 }
             }
 
@@ -1409,6 +1429,167 @@ internal static partial class HostedGrimoireProducerInventory
             };
 
             return FrameworkValuesRunAuthoredCallbacks(member, ArgumentValues(arguments, member.Model.GetOperation(node)));
+        }
+
+        // An authored class or struct a value can be at run time, with the keys of every type it is assignable to.
+        private sealed record AuthoredInstantiable(INamedTypeSymbol Type, IReadOnlySet<string> AssignableKeys);
+
+        private IReadOnlyList<AuthoredInstantiable>? authoredInstantiables;
+
+        private IReadOnlyList<AuthoredInstantiable> AuthoredInstantiables() => authoredInstantiables ??=
+        [
+            .. analysedCompilations
+                .SelectMany(static compilation => SourceTypes(compilation.Assembly.GlobalNamespace))
+                .Where(static type => type.TypeKind is TypeKind.Class or TypeKind.Struct && !type.IsAbstract && !type.IsStatic && !type.IsImplicitlyDeclared && type.Locations.Any(static location => location.IsInSource))
+                .Select(static type => new AuthoredInstantiable(type, AssignableKeys(type))),
+        ];
+
+        // The authored bodies a property or an event accessor runs, and whether a body that cannot be followed may run.
+        private sealed record AccessorDispatch(IReadOnlyList<AuthoredMember> Targets, bool Unresolved);
+
+        // The accessor an access calls is a slot the runtime type of the receiver selects when it is virtual, abstract, an
+        // override that can be overridden again, or an interface member; any other accessor is its own implementation.
+        private static bool IsDispatchedAccessor(IMethodSymbol accessor) =>
+            !accessor.IsStatic
+            && (accessor.ContainingType.TypeKind == TypeKind.Interface
+                || (accessor.IsVirtual || accessor.IsAbstract || accessor.IsOverride) && !accessor.IsSealed);
+
+        private readonly Dictionary<(string Accessor, string Receiver), AccessorDispatch> closedWorldAccessors = [];
+
+        // The members an access to an accessor runs. A fixed accessor is its own body. A dispatched accessor is resolved on
+        // the exact runtime types of the receiver: the static type when it is a struct, sealed or created where it is used,
+        // the types the value is proved to have otherwise. A receiver nothing proves can be any authored type assignable to
+        // its static type, so the implementations of all of those are followed: when the universe holds exactly one body it
+        // is that body, and when it holds several the access is refused if any of them can reach a producer site.
+        private AccessorDispatch ResolveAccessorDispatch(AuthoredMember member, IMethodSymbol accessor, ITypeSymbol? receiverType, ExpressionSyntax? receiver, bool exact, bool indexer)
+        {
+            Compilation compilation = member.Model.Compilation;
+
+            if (!IsDispatchedAccessor(accessor))
+            {
+                AuthoredMember? fixedTarget = Resolve(accessor, compilation);
+
+                if (fixedTarget is not null && HasEnumerationBody(fixedTarget))
+                {
+                    return new([fixedTarget], false);
+                }
+
+                // A property whose accessor cannot be found or has no body of its own is an auto-property, except an
+                // indexer, which is never one.
+                return new([], indexer && accessor.Locations.Any(static location => location.IsInSource));
+            }
+
+            ImplicitTargetCollector collector = new(this, member);
+
+            List<INamedTypeSymbol> candidates = [];
+
+            bool proved = false;
+
+            if (receiverType is INamedTypeSymbol named && (exact || IsSealedOrValue(named)))
+            {
+                candidates.Add(named);
+
+                proved = true;
+            }
+            else if (receiver is not null && receiverType is not null && receiver.SyntaxTree == member.Model.SyntaxTree)
+            {
+                EnumerationProof proof = new();
+
+                if (ProveEnumerationLeaf(receiver, member.Model, new HashSet<ISymbol>(SymbolEqualityComparer.Default), member, proof))
+                {
+                    candidates.AddRange(proof.Candidates.Distinct(SymbolEqualityComparer.Default).OfType<INamedTypeSymbol>());
+
+                    proved = true;
+                }
+            }
+
+            if (proved)
+            {
+                foreach (INamedTypeSymbol candidate in candidates)
+                {
+                    collector.Add(EnumerationImplementation(candidate, accessor), accessor);
+                }
+
+                return new(collector.Members, collector.Unresolved.Count != 0);
+            }
+
+            ITypeSymbol assignableTo = receiverType ?? accessor.ContainingType;
+
+            (string, string) key = (accessor.ToDisplayString(), assignableTo.ToDisplayString());
+
+            if (closedWorldAccessors.TryGetValue(key, out AccessorDispatch? known))
+            {
+                return known;
+            }
+
+            string assignableKey = assignableTo.OriginalDefinition.ToDisplayString();
+
+            foreach (AuthoredInstantiable instantiable in AuthoredInstantiables())
+            {
+                if (assignableTo.TypeKind != TypeKind.TypeParameter && !instantiable.AssignableKeys.Contains(assignableKey))
+                {
+                    continue;
+                }
+
+                collector.Add(EnumerationImplementation(instantiable.Type, accessor), accessor);
+            }
+
+            AccessorDispatch resolution = collector.Members.Count switch
+            {
+                0 => new([], collector.Unresolved.Count != 0),
+                1 => new(collector.Members, collector.Unresolved.Count != 0),
+                _ => new([], collector.Unresolved.Count != 0 || collector.Members.Any(target => ContainsPotentialProducerSite(target))),
+            };
+
+            // A scan that ended at a cycle is not the answer for the accessor, so it is not remembered.
+            if (collector.Members.Count <= 1)
+            {
+                closedWorldAccessors[key] = resolution;
+            }
+
+            return resolution;
+        }
+
+        // The receiver an access reads an accessor of: the type the compiler binds, the expression it was written as when
+        // there is one, and whether the runtime type is the type itself (the object an initializer initializes was created
+        // where the initializer is written).
+        private static (ITypeSymbol? Type, ExpressionSyntax? Expression, bool Exact) AccessorReceiver(IOperation? instance)
+        {
+            if (instance is null)
+            {
+                return (null, null, false);
+            }
+
+            if (instance is IInstanceReferenceOperation reference)
+            {
+                return reference.ReferenceKind switch
+                {
+                    InstanceReferenceKind.ImplicitReceiver => (reference.Type, null, true),
+                    InstanceReferenceKind.PatternInput => (reference.Type, PatternInputOf(reference), false),
+                    _ => (reference.Type, null, false),
+                };
+            }
+
+            return (instance.Type, instance.Syntax as ExpressionSyntax, false);
+        }
+
+        // The expression a property subpattern tests, when the pattern it belongs to is a top-level pattern.
+        private static ExpressionSyntax? PatternInputOf(IInstanceReferenceOperation input)
+        {
+            for (IOperation? current = input.Parent; current is not null; current = current.Parent)
+            {
+                if (current is IRecursivePatternOperation recursive)
+                {
+                    return PatternInputExpression(recursive);
+                }
+
+                if (current is not (IPropertyReferenceOperation or IPropertySubpatternOperation))
+                {
+                    return null;
+                }
+            }
+
+            return null;
         }
 
         // The refusals the syntax lanes make at a node, for the transitive scan: the scan answers whether the traversal of a
