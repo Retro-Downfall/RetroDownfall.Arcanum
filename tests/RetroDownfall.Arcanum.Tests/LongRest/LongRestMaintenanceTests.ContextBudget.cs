@@ -210,6 +210,47 @@ public sealed partial class LongRestMaintenanceTests
         Assert.Equal(0, f.Handler.SendCount);
     }
 
+    // The residual the design states rather than closes: the window cannot be checked before the model answers. A summary refused at its embedding
+    // stays accepted within its generation, but the only remedy is a wider window, which is a configuration change and so a new generation, and
+    // the new generation pays for the summary again.
+    [Fact]
+    public async Task Widening_the_window_after_a_refused_embedding_starts_a_new_generation_that_pays_for_the_summary_again()
+    {
+        await using MaintenanceFixture f = await MaintenanceFixture.CreateAsync(ownWorker: false, protectedSources: false, configure: Window(8192));
+
+        f.Handler.InsideSend = () =>
+        {
+            f.Handler.ChatText = f.Handler.LastBody!.Contains("long_rest_adjudication", StringComparison.Ordinal)
+                ? "{\"kind\":\"NoChange\",\"survivorVersionId\":null}" : "{\"summary\":\"" + new string('s', 7900) + "\"}";
+
+            return Task.CompletedTask;
+        };
+
+        LongRestSweepProgress first = LongRestSweepHarness.Require(await f.ResumeAdmittedAsync(f.Operation, CancellationToken.None));
+
+        Assert.Equal(ErrorCodes.LongRest.ModelContextTooSmall, first.DeferredReason);
+
+        Assert.Equal(1, f.Payloads.Count(static payload => payload.Kind == LongRestProviderPayloadKind.Summary));
+
+        ArcanumSettings wider = LongRestConfigurationEpochTests.Settings();
+
+        wider.Providers[0].ContextWindowLimit = 16384;
+
+        f.Options.Set(wider);
+
+        Result<LongRunningOperationDto> request = await f.Coordinator.RequestAsync(f.Scope, f.Partition, CancellationToken.None);
+
+        Assert.True(request.IsSuccess);
+
+        Assert.NotEqual(f.Operation, request.Value.Id);
+
+        LongRestSweepProgress second = LongRestSweepHarness.Require(await f.ResumeAdmittedAsync(request.Value.Id, CancellationToken.None));
+
+        Assert.True(second.Phase == LongRestSweepPhase.Completed, second.DeferredReason);
+
+        Assert.Equal(2, f.Payloads.Count(static payload => payload.Kind == LongRestProviderPayloadKind.Summary));
+    }
+
     [Fact]
     public async Task A_unit_the_local_window_gate_refuses_leaves_no_effect_row_so_a_drained_reopen_still_readmits_the_clean_sweep()
     {

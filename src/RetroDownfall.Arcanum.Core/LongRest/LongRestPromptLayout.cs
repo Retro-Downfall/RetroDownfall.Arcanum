@@ -37,7 +37,10 @@ public static class LongRestPromptLayout
 
     /// <summary>
     /// The smallest context window an embedding provider may have: it must hold one maximum chat answer
-    /// (<see cref="ReservedAnswerTokens"/> tokens) plus the safety margin and framing.
+    /// (<see cref="ReservedAnswerTokens"/> tokens) plus the safety margin and framing. It is a floor on the configuration and not a
+    /// bound on a summary: an accepted summary may be up to <see cref="LongRestDiscoveryLimits.SummaryUtf8Bytes"/> bytes, which the shared
+    /// estimator counts at several times this many tokens for an embedding model it does not know, so a long enough answer can still be
+    /// refused at its embedding after it was paid for (see the design notes on paid-unit admission).
     /// </summary>
     public const int MinimumEmbeddingWindowTokens = ReservedAnswerTokens + (ReservedAnswerTokens * TokenSafetyMarginPercent + 99) / 100 + FramingTokens;
 

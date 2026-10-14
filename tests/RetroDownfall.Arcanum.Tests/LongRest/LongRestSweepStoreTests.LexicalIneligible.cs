@@ -1,5 +1,6 @@
 using RetroDownfall.Arcanum.Core.LongRest;
 using RetroDownfall.Arcanum.Tests.Fixtures;
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.LongRest;
 
@@ -44,8 +45,15 @@ public sealed partial class LongRestSweepStoreTests
 
         Assert.Equal(11L, await fixture.H.ScalarAsync("SELECT count(*) FROM long_rest_suppressions;"));
 
+        using AsyncFlowMetricCapture metrics = new("arcanum.long_rest.discovery.lexical_verifications");
+
         LongRestCandidateGroup[] groups = LongRestSweepHarness.Require(await fixture.H.Store.DiscoverAsync(fixture.Generation.GenerationId,
             await fixture.H.TargetAsync(SourceId(13)), null, CancellationToken.None));
+
+        // Thirteen hits clear the floor, so thirteen are verified: the survivor and the one eligible memory take the two places, and the eleven
+        // memories the sweep consolidated outrank that memory, cost a verification each and take no place, so the lane is not full and
+        // verification went on past them.
+        Assert.Equal(13, metrics.Sum("arcanum.long_rest.discovery.lexical_verifications"));
 
         string[] lexical = [.. groups.SelectMany(static group => group.Evidence).Where(static candidate => candidate.Lane == LongRestDiscoveryLane.Lexical)
             .Select(static candidate => candidate.Target.MemoryId).Order(StringComparer.Ordinal)];
