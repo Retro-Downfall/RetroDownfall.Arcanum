@@ -330,6 +330,15 @@ public sealed class CovenantArchitectureBoundaryTests
         Assert.Contains(parkHandler, recoveryRootNames);
 
         Assert.DoesNotContain(discovery.Items, static site => site.RootType == parkHandler);
+
+        // Zero sites is what a refused or cut-short traversal yields too, so the root must also have traversed cleanly: it is analysed
+        // (it has states), and nothing the traversal reported names it, whatever the code (a state limit, an unresolved root, a refusal).
+        HostedProducerAnalysisMetrics metrics = Assert.IsType<HostedProducerAnalysisMetrics>(discovery.AnalysisMetrics);
+
+        Assert.Contains(metrics.RootTraversals, metric => metric.RootType == parkHandler && metric.AnalyzedStates > 0);
+
+        Assert.DoesNotContain(discovery.Diagnostics, diagnostic =>
+            diagnostic.Identity.Contains(parkHandler, StringComparison.Ordinal) || diagnostic.Detail.Contains(parkHandler, StringComparison.Ordinal));
     }
 
     // Recovery never runs a Long Rest sweep. The Pure Park Handler only parks, so it has no required source effect and no row here;

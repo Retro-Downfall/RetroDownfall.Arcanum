@@ -1,6 +1,7 @@
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
+using Microsoft.CodeAnalysis.Operations;
 
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Tests.Support;
@@ -70,31 +71,127 @@ public sealed partial class HostedGrimoireProducerInventoryTests
         Assert.All(codec.GetMembers().OfType<IFieldSymbol>(), static field => Assert.True(field.IsConst || field.IsReadOnly));
 
         // Nothing it mentions lives in Infrastructure or Api, apart from itself and the codec: no coordinator, store, gate, lease or provider.
+        // That is every name it writes (a generic name included), every member and type the compiler binds for it without a written name
+        // (the enumerator of a foreach, the awaiter of an await, the disposal of a using, the operator of an expression), and the type of
+        // every expression in it.
         foreach (SyntaxReference reference in parkHandler.DeclaringSyntaxReferences)
         {
             SemanticModel model = infrastructure.GetSemanticModel(reference.SyntaxTree);
 
-            foreach (IdentifierNameSyntax name in reference.GetSyntax().DescendantNodes().OfType<IdentifierNameSyntax>())
+            SyntaxNode declaration = reference.GetSyntax();
+
+            foreach (SimpleNameSyntax name in declaration.DescendantNodes().OfType<SimpleNameSyntax>())
             {
-                ISymbol? symbol = model.GetSymbolInfo(name).Symbol;
+                AssertParkHandlerMention(model.GetSymbolInfo(name).Symbol, parkHandler, codec);
+            }
 
-                if (symbol is null or ILocalSymbol or IParameterSymbol or INamespaceSymbol or ITypeParameterSymbol)
+            foreach (SyntaxNode node in declaration.DescendantNodes())
+            {
+                switch (node)
+                {
+                    case ForEachStatementSyntax loop:
+                        ForEachStatementInfo enumeration = model.GetForEachStatementInfo(loop);
+
+                        foreach (ISymbol? bound in new ISymbol?[] { enumeration.GetEnumeratorMethod, enumeration.MoveNextMethod, enumeration.CurrentProperty, enumeration.DisposeMethod })
+                        {
+                            AssertParkHandlerMention(bound, parkHandler, codec);
+                        }
+
+                        break;
+
+                    case AwaitExpressionSyntax awaited:
+                        AwaitExpressionInfo awaiting = model.GetAwaitExpressionInfo(awaited);
+
+                        foreach (ISymbol? bound in new ISymbol?[] { awaiting.GetAwaiterMethod, awaiting.IsCompletedProperty, awaiting.GetResultMethod })
+                        {
+                            AssertParkHandlerMention(bound, parkHandler, codec);
+                        }
+
+                        break;
+                }
+
+                if (model.GetOperation(node) is not { } operation)
                 {
                     continue;
                 }
 
-                INamedTypeSymbol? owner = symbol.ContainingType ?? symbol as INamedTypeSymbol;
+                AssertParkHandlerMention(operation.Type, parkHandler, codec);
 
-                if (SymbolEqualityComparer.Default.Equals(owner, parkHandler) || SymbolEqualityComparer.Default.Equals(owner, codec) || symbol.ContainingAssembly is null)
+                switch (operation)
                 {
-                    continue;
-                }
+                    case IInvocationOperation invocation:
+                        AssertParkHandlerMention(invocation.TargetMethod, parkHandler, codec);
 
-                Assert.True(symbol.ContainingAssembly.Name == "RetroDownfall.Arcanum.Core" || symbol.ContainingAssembly.Name.StartsWith("System", StringComparison.Ordinal)
-                    || symbol.ContainingAssembly.Name == "mscorlib" || symbol.ContainingAssembly.Name == "netstandard",
-                    $"The Pure Park Handler mentions {symbol.ToDisplayString()} from {symbol.ContainingAssembly.Name}.");
+                        break;
+
+                    case IObjectCreationOperation creation:
+                        AssertParkHandlerMention(creation.Constructor, parkHandler, codec);
+
+                        break;
+
+                    case IMemberReferenceOperation memberReference:
+                        AssertParkHandlerMention(memberReference.Member, parkHandler, codec);
+
+                        break;
+
+                    case IBinaryOperation binary:
+                        AssertParkHandlerMention(binary.OperatorMethod, parkHandler, codec);
+
+                        break;
+
+                    case IUnaryOperation unary:
+                        AssertParkHandlerMention(unary.OperatorMethod, parkHandler, codec);
+
+                        break;
+
+                    case IConversionOperation conversion:
+                        AssertParkHandlerMention(conversion.OperatorMethod, parkHandler, codec);
+
+                        break;
+
+                    // The disposal of a using is a member of the resource's type, which is checked here as the type of the declared local.
+                    case IVariableDeclaratorOperation declarator:
+                        AssertParkHandlerMention(declarator.Symbol.Type, parkHandler, codec);
+
+                        break;
+                }
             }
         }
+    }
+
+    // A symbol the Pure Park Handler may mention: Core vocabulary, the framework, itself and its checkpoint codec. A type counts through
+    // its type arguments and its element type too, so a Core generic closed over an Infrastructure type is a mention of that type.
+    private static void AssertParkHandlerMention(ISymbol? symbol, INamedTypeSymbol parkHandler, INamedTypeSymbol codec)
+    {
+        switch (symbol)
+        {
+            case null or ILocalSymbol or IParameterSymbol or INamespaceSymbol or ITypeParameterSymbol or IRangeVariableSymbol or ILabelSymbol:
+                return;
+
+            case IArrayTypeSymbol array:
+                AssertParkHandlerMention(array.ElementType, parkHandler, codec);
+
+                return;
+        }
+
+        INamedTypeSymbol? owner = symbol.ContainingType ?? symbol as INamedTypeSymbol;
+
+        if (symbol is INamedTypeSymbol named)
+        {
+            foreach (ITypeSymbol argument in named.TypeArguments)
+            {
+                AssertParkHandlerMention(argument, parkHandler, codec);
+            }
+        }
+
+        if (SymbolEqualityComparer.Default.Equals(owner, parkHandler) || SymbolEqualityComparer.Default.Equals(owner, codec) || symbol.ContainingAssembly is null)
+        {
+            return;
+        }
+
+        Assert.True(symbol.ContainingAssembly.Name == "RetroDownfall.Arcanum.Core" || symbol.ContainingAssembly.Name.StartsWith("System", StringComparison.Ordinal)
+            || symbol.ContainingAssembly.Name == "mscorlib" || symbol.ContainingAssembly.Name == "netstandard",
+            $"The Pure Park Handler mentions {symbol.ToDisplayString()} from {symbol.ContainingAssembly.Name}.");
     }
 
     // Over the shared production discovery, which the production lane computes once per process: this test never runs a second
@@ -132,8 +229,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests
 
         Assert.Contains(metrics.RootTraversals, static metric => metric.RootType == LongRestHostedRootType && metric.AnalyzedStates > 0);
 
-        // The diagnostics this test owns: a refused frontier, escape, receiver or unowned callback under the worker's root. The
-        // root's state budget and its unclassified histogram belong to other workstreams and are not named here.
+        // The diagnostics this test owns: a refused frontier, escape, receiver or unowned callback under the worker's root.
         HostedProducerInventoryDiagnostic[] failures = [.. discovery.Diagnostics.Where(diagnostic =>
             diagnostic.Identity.StartsWith(sweep.OperationId, StringComparison.Ordinal)
             && (diagnostic.Code.StartsWith("HOSTED_RECOVERY_", StringComparison.Ordinal)
@@ -144,6 +240,22 @@ public sealed partial class HostedGrimoireProducerInventoryTests
         Assert.True(failures.Length == 0, string.Join(global::System.Environment.NewLine,
             failures.Take(20).Select(static diagnostic => $"{diagnostic.Code}: {diagnostic.Identity}: {diagnostic.Detail}")));
 
+        // The narrowing of this test, stated. The discovery below is truncated while the worker's root exceeds its state budget
+        // (HOSTED_TRAVERSAL_STATE_LIMIT_EXCEEDED, until the Long Rest closure fits), so what is proved here is about the dispatch
+        // sites that were reached; and the Histogram.Record classification belongs to the metrics work. Those two are the only
+        // diagnostics this test lets pass, and nothing else anywhere in the discovery. They are not forgiven overall:
+        // ReviewedCapsuleManifestExactlyMatchesProductionDiscovery still requires the whole discovery to report nothing, which
+        // gates the state budget of this root, so the truncation can not outlive the workstream that removes it.
+        HostedProducerInventoryDiagnostic[] unowned = [.. discovery.Diagnostics.Where(diagnostic => !LongRestDiagnosticOwnedElsewhere(diagnostic, sweep.OperationId))];
+
+        Assert.True(unowned.Length == 0, string.Join(global::System.Environment.NewLine,
+            unowned.Take(20).Select(static diagnostic => $"{diagnostic.Code}: {diagnostic.Identity}: {diagnostic.Detail}")));
+
+        foreach (HostedProducerInventoryDiagnostic known in discovery.Diagnostics.Except(unowned))
+        {
+            output.WriteLine($"ACTUAL_LONG_REST_HOSTED_ROOT_OPEN_ELSEWHERE {known.Code} {known.Identity} {known.Detail}");
+        }
+
         // The acquisition in RunOneAsync is a kind-17 Work, and it is one capsule.
         HostedProducerSite[] work = LongRestDispatchSites(discovery, sweep, spine.Worker, spine.WorkerAcquisition, HostedProducerSiteKind.EffectFrontier);
 
@@ -151,7 +263,13 @@ public sealed partial class HostedGrimoireProducerInventoryTests
 
         Assert.Equal(17, (int)GrimoireWorkKind.LongRestSweep);
 
-        Assert.All(work, site => Assert.Equal(GrimoireWorkKind.LongRestSweep, site.AdmittedWorkKind));
+        // The acquisition is its own Work: it is the admission the lease spine starts from, not a use of one.
+        Assert.All(work, site =>
+        {
+            Assert.Equal(GrimoireWorkKind.LongRestSweep, site.AdmittedWorkKind);
+
+            Assert.Equal(acquisition, site.WorkFrontierCapsuleId);
+        });
 
         IReadOnlyDictionary<string, string> bindings = LongRestLeaseHandoffBindings(service);
 
@@ -184,6 +302,11 @@ public sealed partial class HostedGrimoireProducerInventoryTests
             output.WriteLine($"ACTUAL_LONG_REST_HOSTED_ROOT authority={sweep.OperationId} source={send.SourcePath} member={send.MemberIdentity} capsule={send.CapsuleId} work={send.WorkFrontierCapsuleId} group={group}");
         }
     }
+
+    // The two diagnostics the production discovery carries today that are another workstream's to remove (see the narrowing above).
+    private static bool LongRestDiagnosticOwnedElsewhere(HostedProducerInventoryDiagnostic diagnostic, string rootOperation) =>
+        diagnostic.Code == "HOSTED_TRAVERSAL_STATE_LIMIT_EXCEEDED" && diagnostic.Identity.StartsWith(rootOperation, StringComparison.Ordinal)
+        || diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED" && diagnostic.Detail == "System.Diagnostics.Metrics.Histogram`1.Record";
 
     private static void AssertLongRestChatAndEmbeddingCalleesAreDiscovered(HostedProducerDiscovery<HostedProducerSite> discovery)
     {
