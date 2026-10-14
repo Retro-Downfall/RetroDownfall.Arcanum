@@ -534,7 +534,14 @@ internal static partial class HostedGrimoireProducerInventory
 
             void Value(IOperation value)
             {
-                IOperation unwrapped = UnwrapImplicitConversions(value);
+                // A conversion that is not user-defined (a cast to object, an upcast, boxing) leaves the runtime type of the value as
+                // it was, so the value is judged by the type it had before the conversion.
+                IOperation unwrapped = value;
+
+                while (unwrapped is IConversionOperation { OperatorMethod: null } conversion && !conversion.Conversion.IsUserDefined)
+                {
+                    unwrapped = conversion.Operand;
+                }
 
                 if (unwrapped is IArrayCreationOperation { IsImplicit: true, Initializer: { } initializer })
                 {

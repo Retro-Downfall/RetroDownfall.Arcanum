@@ -1483,11 +1483,11 @@ internal static partial class HostedGrimoireProducerInventory
             return found;
         }
 
-        // The graph that asks about classified producer sites alone, one per compilation, shared by every graph over it. What
+        // The graph that asks about classified producer sites alone, one per set of compilations, shared by every graph over it. What
         // runs at a point nothing here places (a callback a framework member calls, a static initializer, one of several
         // bodies a receiver might select) is judged by whether it can reach a site, not by whether it uses a framework
         // member nobody has reviewed: no traversal enters it, so there is no diagnostic for the second to be the cause of.
-        private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<CSharpCompilation, Lazy<ProducerGraph>> sitesOnlyGraphs = new();
+        private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<IReadOnlyList<CSharpCompilation>, Lazy<ProducerGraph>> sitesOnlyGraphs = new();
 
         private ProducerGraph SitesOnlyGraph()
         {
@@ -1499,7 +1499,7 @@ internal static partial class HostedGrimoireProducerInventory
             IReadOnlyList<CSharpCompilation> compilations = analysedCompilations;
 
             return sitesOnlyGraphs.GetValue(
-                compilations[0],
+                compilations,
                 _ => new Lazy<ProducerGraph>(
                     () => new ProducerGraph(compilations, DefaultEvaluationEnvironmentMaximumMembers, DefaultEvaluationEnvironmentMaximumDepth, DefaultTraversalMaximumDepth, DefaultMaximumAnalyzedStatesPerRoot, false, sitesOnly: true),
                     LazyThreadSafetyMode.ExecutionAndPublication)).Value;
@@ -1536,7 +1536,7 @@ internal static partial class HostedGrimoireProducerInventory
 
         // A framework member handed a value calls the ToString, Equals, GetHashCode, CompareTo or GetFormat of its runtime
         // type: when it formats it, compares it, hashes it or asks it (a format provider) for a formatter. The families the
-        // parameter's declared type allows are judged for every authored type the value can be, by the transitive scan, and
+        // parameter's declared type allows are judged for every authored type the value can be, by the sites-only scan, and
         // the call is refused when one of them reaches a producer site: the member runs them at a point of its own, which
         // nothing here places.
         private bool FrameworkMemberRunsAuthoredCallback(AuthoredMember member, SyntaxNode node, IMethodSymbol method, out string detail)
@@ -1587,7 +1587,12 @@ internal static partial class HostedGrimoireProducerInventory
         {
             Compilation compilation = member.Model.Compilation;
 
-            if (!IsDispatchedMember(accessor))
+            // A slot is dispatched when the runtime type selects it and the analysed source declares it. A slot the framework
+            // declares, or generated code declares, is judged by the classification of the access: its authored overrides are
+            // not followed.
+            bool analysed = accessor.Locations.Any(location => location.SourceTree is { } tree && semanticModels.ContainsKey(tree));
+
+            if (!IsDispatchedMember(accessor) || !analysed)
             {
                 AuthoredMember? fixedTarget = Resolve(accessor, compilation);
 
@@ -1632,16 +1637,8 @@ internal static partial class HostedGrimoireProducerInventory
                     collector.Add(EnumerationImplementation(candidate, accessor), accessor);
                 }
 
-                return new(collector.Members, collector.Unresolved.Count != 0);
-            }
-
-            // A slot the framework declares has its own implementation for a value that is not an authored type, and the
-            // receiver of one (a Stream parameter, say) is judged by the classification of the access alone: what an
-            // authored override does when the value happens to be that type is not followed. A slot the source declares can
-            // only be run by an authored type.
-            if (!accessor.Locations.Any(static location => location.IsInSource))
-            {
-                return new([], false);
+                // An indexer is never an auto-property: one that resolves to no body is an unknown target.
+                return new(collector.Members, collector.Unresolved.Count != 0 || indexer && collector.Members.Count == 0 && accessor.Locations.Any(static location => location.IsInSource));
             }
 
             // The types a value of the receiver's static type can be: the authored types assignable to it, or to every
@@ -1675,9 +1672,17 @@ internal static partial class HostedGrimoireProducerInventory
 
             // The one body the universe holds is the body the access runs, and several bodies are refused when one can reach
             // a producer site.
-            AccessorDispatch resolution = collector.Members.Count == 1
-                ? new(collector.Members, collector.Unresolved.Count != 0)
-                : new([], collector.Unresolved.Count != 0 || collector.Members.Count > 1 && collector.Members.Any(SitesOnlyReaches));
+            // An indexer is never an auto-property, so an indexer the universe does not resolve to exactly one body is an unknown
+            // target and is refused whatever the bodies do.
+            // A slot whose complete set of overriding classes is reviewed runs one of them, so all of them are followed; the
+            // set that is not exactly the reviewed one is an unknown target.
+            AccessorDispatch resolution = ReviewedClosedOverrideSets.TryGetValue(TypeKey(accessor.ContainingType) + "." + accessor.Name, out IReadOnlySet<string>? reviewed)
+                ? collector.Unresolved.Count == 0 && reviewed.SetEquals(collector.Members.Select(static dispatched => TypeKey(dispatched.Symbol.ContainingType)))
+                    ? new(collector.Members, false)
+                    : new([], true)
+                : collector.Members.Count == 1
+                    ? new(collector.Members, collector.Unresolved.Count != 0)
+                    : new([], collector.Unresolved.Count != 0 || indexer || collector.Members.Count > 1 && collector.Members.Any(SitesOnlyReaches));
 
             closedWorldAccessors[key] = resolution;
 
@@ -1799,7 +1804,7 @@ internal static partial class HostedGrimoireProducerInventory
         // The authored types whose static initialization (the static constructor and the initializers of static fields,
         // properties and events) can reach a classified producer site. The runtime runs it at the first use of the type, which
         // is no call and no position: a use of such a type, from another type, is refused. A graph that asks about sites
-        // alone answers, once per compilation, so that no traversal ever has to enter an initializer.
+        // alone answers, so that no traversal ever has to enter an initializer.
         private static string HazardKey(INamedTypeSymbol type) => type.OriginalDefinition.ToDisplayString() + "|" + type.ContainingAssembly?.Identity.Name;
 
         private IReadOnlySet<string>? staticInitializationHazardKeys;

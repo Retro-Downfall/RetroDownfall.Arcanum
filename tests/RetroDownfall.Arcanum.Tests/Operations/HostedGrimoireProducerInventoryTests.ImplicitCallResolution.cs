@@ -845,4 +845,55 @@ public sealed partial class HostedGrimoireProducerInventoryTests
 
         Assert.DoesNotContain(clean.Diagnostics, static diagnostic => diagnostic.Code is "HOSTED_CALLBACK_OWNERSHIP_UNPROVEN" or "HOSTED_SITE_UNCLASSIFIED" or "HOSTED_CALL_TARGET_UNRESOLVED");
     }
+
+    // A slot that several authored classes override, called through a receiver nothing proves, runs the override of the runtime type,
+    // which is not known. The census refuses it when one of the overrides can reach a producer site, unless the slot is one whose
+    // complete set of overriding classes is reviewed: every override of it is then traversed, and a class added to the set (or the
+    // same shape under a name that is not reviewed) is refused again.
+    [Theory]
+    [InlineData("RetroDownfall.Arcanum.Infrastructure.Security", "", false)]
+    [InlineData("RetroDownfall.Arcanum.Infrastructure.Security", "sealed class ExtraMirror : CredentialMirror { public override Task ReadAsync(CancellationToken token) { System.IO.File.Delete(\"extra-effect\"); return Task.CompletedTask; } }", true)]
+    [InlineData("RetroDownfall.Unreviewed", "", true)]
+    public void ReviewedClosedClassDispatchTraversesEveryOverrideOrIsRefused(string space, string extra, bool refused)
+    {
+        string helpers = "namespace " + space + " { abstract class CredentialMirror { public abstract Task ReadAsync(CancellationToken token); } "
+            + "sealed class ProtectedFileCredentialMirror : CredentialMirror { public override Task ReadAsync(CancellationToken token) { System.IO.File.Delete(\"mirror-effect\"); return Task.CompletedTask; } } "
+            + "sealed class DataProtectionStoreCredentialMirror : CredentialMirror { public override Task ReadAsync(CancellationToken token) { System.IO.File.Exists(\"mirror-effect\"); return Task.CompletedTask; } } "
+            + extra + " } static class Anything { public static " + space + ".CredentialMirror Value { get; set; } = null!; }";
+
+        HostedProducerDiscovery<HostedProducerSite> result = EnumerationDiscover(CensusCompileSource("await Anything.Value.ReadAsync(default);", helpers));
+
+        bool unresolved = result.Diagnostics.Any(static diagnostic => diagnostic.Code == "HOSTED_CALL_TARGET_UNRESOLVED" && diagnostic.Detail.EndsWith(".CredentialMirror.ReadAsync", StringComparison.Ordinal));
+
+        Assert.Equal(refused, unresolved);
+
+        if (!refused)
+        {
+            string[] callees = [.. result.Items.Where(static site => site.RootType == "Worker").Select(static site => site.Callee)];
+
+            Assert.Contains("System.IO.File.Delete", callees);
+
+            Assert.Contains("System.IO.File.Exists", callees);
+        }
+    }
+
+    // A virtual member the framework declares is judged by the classification of the access, whatever the receiver is proved to be:
+    // the census has no body of the framework's to follow, so it neither refuses the access as an unknown target nor looks for an
+    // override in the source.
+    [Theory]
+    [InlineData("var stream = new System.IO.MemoryStream(); _ = stream.CanRead;")]
+    [InlineData("System.IO.Stream stream = new System.IO.MemoryStream(); _ = stream.CanRead;")]
+    [InlineData("var stream = new System.IO.MemoryStream(); _ = stream.Length;")]
+    [InlineData("Microsoft.Data.Sqlite.SqliteTransaction? transaction = Anything.Value; _ = transaction?.Connection;")]
+    [InlineData("using var connection = new Microsoft.Data.Sqlite.SqliteConnection(); using var transaction = connection.BeginTransaction(); _ = transaction.Connection;")]
+    [InlineData("Use(Anything.Value); static void Use(Microsoft.Data.Sqlite.SqliteTransaction? transaction) { _ = transaction?.Connection; }")]
+    [InlineData("using var connection = new Microsoft.Data.Sqlite.SqliteConnection(); var transaction = (Microsoft.Data.Sqlite.SqliteTransaction)connection.BeginTransaction(); _ = transaction.Connection;")]
+    [InlineData("using var connection = new Microsoft.Data.Sqlite.SqliteConnection(); Use((Microsoft.Data.Sqlite.SqliteTransaction)connection.BeginTransaction()); static void Use(Microsoft.Data.Sqlite.SqliteTransaction transaction) { _ = transaction.Connection; }")]
+    [InlineData("await using var connection = new Microsoft.Data.Sqlite.SqliteConnection(); Use((Microsoft.Data.Sqlite.SqliteTransaction)await connection.BeginTransactionAsync()); static void Use(Microsoft.Data.Sqlite.SqliteTransaction transaction) { _ = transaction.Connection; }")]
+    public void FrameworkAccessorIsJudgedByItsClassificationWhateverTheReceiverIsProvedToBe(string statement)
+    {
+        HostedProducerDiscovery<HostedProducerSite> result = EnumerationDiscover(CensusCompileSource(statement, "static class Anything { public static Microsoft.Data.Sqlite.SqliteTransaction? Value { get; set; } }"));
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic => diagnostic.Code is "HOSTED_CALL_TARGET_UNRESOLVED" or "HOSTED_SITE_UNCLASSIFIED");
+    }
 }

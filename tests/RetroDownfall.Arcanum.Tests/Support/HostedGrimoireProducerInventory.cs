@@ -1615,6 +1615,24 @@ internal static partial class HostedGrimoireProducerInventory
             },
         };
 
+    // The slots of a class that more than one authored class overrides, called through a receiver nothing proves, with the complete set
+    // of classes that override each. The call runs one of those overrides and the census cannot tell which, so every one of them is
+    // traversed; a set that is not exactly this one (a class added, or one removed) is refused like any unreviewed slot.
+    private static readonly IReadOnlyDictionary<string, IReadOnlySet<string>> ReviewedClosedOverrideSets =
+        new Dictionary<string, IReadOnlySet<string>>(StringComparer.Ordinal)
+        {
+            ["RetroDownfall.Arcanum.Infrastructure.Security.CredentialMirror.ReadAsync"] = new HashSet<string>(StringComparer.Ordinal)
+            {
+                "RetroDownfall.Arcanum.Infrastructure.Security.DataProtectionStoreCredentialMirror",
+                "RetroDownfall.Arcanum.Infrastructure.Security.ProtectedFileCredentialMirror",
+            },
+            ["RetroDownfall.Arcanum.Infrastructure.Security.CredentialMirror.WriteAsync"] = new HashSet<string>(StringComparer.Ordinal)
+            {
+                "RetroDownfall.Arcanum.Infrastructure.Security.DataProtectionStoreCredentialMirror",
+                "RetroDownfall.Arcanum.Infrastructure.Security.ProtectedFileCredentialMirror",
+            },
+        };
+
     // Task 14 fills independently reviewed site/frontier evidence. Producer tasks must not edit this catalog.
     private static IReadOnlyList<HostedProducerServiceEntry> CatalogRoots { get; } =
     [
@@ -33300,11 +33318,11 @@ internal static partial class HostedGrimoireProducerInventory
                 .SelectMany(static reference => reference.GetSyntax()
                     .DescendantNodes()
                     .OfType<AssignmentExpressionSyntax>())
-                .Any(assignment => SymbolEqualityComparer.Default.Equals(
-                    semanticModels[assignment.SyntaxTree]
-                        .GetSymbolInfo(assignment.Left).Symbol,
-                    storage)
-                    || DeconstructsInto(assignment, semanticModels[assignment.SyntaxTree], storage)) == true;
+                .Any(assignment => semanticModels.TryGetValue(assignment.SyntaxTree, out SemanticModel? assignmentModel)
+                    && (SymbolEqualityComparer.Default.Equals(
+                            assignmentModel.GetSymbolInfo(assignment.Left).Symbol,
+                            storage)
+                        || DeconstructsInto(assignment, assignmentModel, storage))) == true;
 
         // True when the assignment is a tuple deconstruction that names the storage among its targets.
         private static bool DeconstructsInto(AssignmentExpressionSyntax assignment, SemanticModel model, ISymbol storage) =>
