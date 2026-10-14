@@ -312,8 +312,8 @@ public sealed partial class LongRestHierarchyTests
 
             List<LongRestCandidate> result = [];
 
-            // The production lane's query shape: one column-filtered MATCH that names the generation, whose hits are scored in managed
-            // integer arithmetic from this generation's own document count and document frequency.
+            // The production lane's query shape, built by the same Core function the lane calls: one MATCH that names the generation, whose
+            // hits are scored in managed integer arithmetic from this generation's own document count and document frequency.
             ImmutableArray<string> terms = LongRestLexicalScorer.QueryTerms("opal");
 
             List<(string Memory, LongRestLexicalDocument Document)> hits = [];
@@ -329,7 +329,7 @@ public sealed partial class LongRestHierarchyTests
                 ORDER BY node.MemoryId {order};
                 """;
 
-            command.Parameters.AddWithValue("$match", "GenerationId : \"" + generation.GenerationId.ToString("D").ToUpperInvariant() + "\" AND Content : (\"opal\")");
+            command.Parameters.AddWithValue("$match", LongRestLexicalScorer.MatchExpression(generation.GenerationId, terms));
 
             command.Parameters.AddWithValue("$generation", generation.GenerationId.ToString("D").ToUpperInvariant());
 

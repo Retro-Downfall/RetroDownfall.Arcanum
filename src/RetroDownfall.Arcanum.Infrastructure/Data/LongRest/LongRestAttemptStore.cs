@@ -292,7 +292,7 @@ internal sealed partial class LongRestAttemptStore(ArcanumDbContext db, TimeProv
             int rows = current.Sent == 0
                 ? await ReleaseNeverSentAsync(connection, transaction, unit, Format(attempt.AttemptId), attempt.Revision, ct).ConfigureAwait(false)
                 : await ReleaseSentBeforeAsync(connection, transaction, unit, current.WorkDigest.Bytes, Format(attempt.AttemptId),
-                    checked((long)attempt.PhysicalOrdinal), attempt.Revision, UtcInstantText.Format(timeProvider.GetUtcNow()), ct).ConfigureAwait(false);
+                    checked((long)attempt.PhysicalOrdinal), attempt.Revision, timeProvider.GetUtcNow(), ct).ConfigureAwait(false);
 
             if (rows != 1)
             {
@@ -318,13 +318,13 @@ internal sealed partial class LongRestAttemptStore(ArcanumDbContext db, TimeProv
     }
 
     private static async Task<int> ReleaseSentBeforeAsync(SqliteConnection connection, SqliteTransaction transaction, string unit, byte[] workDigest,
-        string attemptId, long ordinal, long revision, string updatedAtUtc, CancellationToken ct)
+        string attemptId, long ordinal, long revision, DateTimeOffset now, CancellationToken ct)
     {
         await using SqliteCommand release = Command(connection, transaction, """
             UPDATE long_rest_provider_effects SET StateCode = 6, FailureCode = $code, Revision = $next, UpdatedAtUtc = $at
             WHERE WorkItemId = $unit AND WorkDigest = $work AND AttemptId = $attempt AND PhysicalOrdinal = $ordinal AND Revision = $revision
               AND StateCode = 1 AND DisclosureReceiptDigest IS NULL AND CompletionJson IS NULL AND SentCount > 0;
-            """, ("$code", ErrorCodes.LongRest.ProviderUnreachable), ("$next", checked(revision + 1)), ("$at", updatedAtUtc), ("$unit", unit),
+            """, ("$code", ErrorCodes.LongRest.ProviderUnreachable), ("$next", checked(revision + 1)), ("$at", UtcInstantText.Format(now)), ("$unit", unit),
             ("$work", workDigest), ("$attempt", attemptId), ("$ordinal", ordinal), ("$revision", revision));
 
         return await release.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
