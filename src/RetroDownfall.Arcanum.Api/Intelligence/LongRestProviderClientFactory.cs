@@ -12,7 +12,7 @@ using RetroDownfall.Arcanum.Infrastructure.Security;
 
 namespace RetroDownfall.Arcanum.Api.Intelligence;
 
-/// <summary>Owns one guarded transport pool for the joined Long Rest sweep scope.</summary>
+/// <summary>Owns one guarded transport for the joined Long Rest sweep scope; every send gets its own connection.</summary>
 public sealed class LongRestProviderClientFactory : IDisposable
 {
     private readonly IProviderApiKeyResolver _keys;
@@ -120,9 +120,11 @@ public sealed class LongRestProviderClientFactory : IDisposable
 
         try
         {
-            handler.PooledConnectionLifetime = TimeSpan.FromMinutes(2);
+            // One connection per send: a zero lifetime and idle timeout close every connection as soon as its response is joined,
+            // so a pooled connection that went stale can never be silently resent on. One SDK call is one physical request.
+            handler.PooledConnectionLifetime = TimeSpan.Zero;
 
-            handler.PooledConnectionIdleTimeout = TimeSpan.FromMinutes(1);
+            handler.PooledConnectionIdleTimeout = TimeSpan.Zero;
 
             return new HttpClient(handler, disposeHandler: true) { Timeout = Timeout.InfiniteTimeSpan };
         }

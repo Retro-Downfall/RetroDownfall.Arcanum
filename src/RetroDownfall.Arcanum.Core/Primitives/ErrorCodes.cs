@@ -1230,6 +1230,36 @@ public static class ErrorCodes
         /// restart-generation fault). The message names the parked operation, which the operator retries or cancels.
         /// </summary>
         public const string SweepParked = "LongRest.SweepParked";
+
+        /// <summary>
+        /// Another executor in this process owns the operation right now. It is a typed, transient refusal: nothing was written,
+        /// and the owner is already advancing the work. A clean scope skips it; a protected partition still fails the turn.
+        /// </summary>
+        public const string OperationBusy = "LongRest.OperationBusy";
+
+        /// <summary>
+        /// The provider answered a Long Rest call with a transient failure (5xx, 429, 408, a dropped connection or a timeout), or
+        /// could not be reached at all. The sweep may be readmitted later; the response body is never carried.
+        /// </summary>
+        public const string ProviderUnavailable = "LongRest.ProviderUnavailable";
+
+        /// <summary>
+        /// The provider could not be reached before any request byte left the process (name resolution, connection or TLS
+        /// failure). The attempt is settled as not sent; the sweep may be readmitted later.
+        /// </summary>
+        public const string ProviderUnreachable = "LongRest.ProviderUnreachable";
+
+        /// <summary>
+        /// The provider rejected a Long Rest call with a non-transient client error (a 4xx other than 408 and 429). Retrying the same
+        /// call cannot help, so an operator decides; the response body is never carried.
+        /// </summary>
+        public const string ProviderRejected = "LongRest.ProviderRejected";
+
+        /// <summary>
+        /// A physical send ended without a result and without cancellation, so its billing is unknown. It is also the failure code
+        /// written to the settled attempt, and the code a work unit parks under once it has spent its allowance of unknown attempts.
+        /// </summary>
+        public const string TransportUnknown = "LongRest.TransportUnknown";
     }
 
 }

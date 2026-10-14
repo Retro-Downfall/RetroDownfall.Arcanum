@@ -2,6 +2,7 @@ using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Api.Models;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Environment;
+using RetroDownfall.Arcanum.Core.LongRest;
 using RetroDownfall.Arcanum.Core.Mcp;
 using RetroDownfall.Arcanum.Core.Operations;
 using RetroDownfall.Arcanum.Core.Resilience;
@@ -190,6 +191,11 @@ public sealed class ArcanumHealthChecker(
 
         components.Add(ConclaveA2AStatus.BuildHealthComponent(settings.CurrentValue));
 
+        if (BuildLongRestComponent(settings.CurrentValue) is { } longRest)
+        {
+            components.Add(longRest);
+        }
+
         LongRunningOperationReconciliationSnapshot operationSnapshot =
             operationReconciliationStatus?.Snapshot
             ?? new LongRunningOperationReconciliationSnapshot(
@@ -220,6 +226,26 @@ public sealed class ArcanumHealthChecker(
         HealthStatus overall = AggregateOverall(components);
 
         return new HealthReportDto(overall, components.ToArray());
+    }
+
+    /// <summary>
+    /// The Long Rest row, present only while the feature is on. An enabled feature whose recipe cannot be resolved is Degraded
+    /// (it will never sweep), never Unhealthy: nothing about the host is broken, and an ordinary turn is unaffected. A turn that
+    /// must finish protected Long Rest maintenance first still ends until the recipe resolves, and the detail says so. Model and
+    /// key names only.
+    /// </summary>
+    internal static HealthComponentDto? BuildLongRestComponent(ArcanumSettings configuration)
+    {
+        if (configuration.Features?.LongRest is not true)
+        {
+            return null;
+        }
+
+        IReadOnlyList<string> problems = LongRestRecipeResolver.Problems(configuration);
+
+        return problems.Count == 0
+            ? new HealthComponentDto("LongRest", HealthStatus.Healthy, "Enabled; the chat and embedding recipe resolves.")
+            : new HealthComponentDto("LongRest", HealthStatus.Degraded, LongRestRecipeResolver.Describe(problems));
     }
 
     internal static HealthComponentDto BuildFileEncryptionComponent(

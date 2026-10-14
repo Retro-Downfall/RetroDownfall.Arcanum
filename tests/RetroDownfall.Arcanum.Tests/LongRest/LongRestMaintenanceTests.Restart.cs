@@ -558,6 +558,8 @@ public sealed partial class LongRestMaintenanceTests
 
         public Task<Result<LongRestDispatchAttempt>> CompleteAttemptAsync(LongRestDispatchAttempt attempt, LongRestDispatchCompletion completion, CancellationToken ct) => inner.CompleteAttemptAsync(attempt, completion, ct);
 
+        public Task<Result<LongRestDispatchAttempt>> SettleUnresolvedSendAsync(LongRestDispatchAttempt attempt, LongRestUnresolvedSend outcome, CancellationToken ct) => inner.SettleUnresolvedSendAsync(attempt, outcome, ct);
+
         public Task<Result> ValidateAttemptAsync(LongRestDispatchAttempt attempt, CancellationToken ct) => inner.ValidateAttemptAsync(attempt, ct);
     }
 

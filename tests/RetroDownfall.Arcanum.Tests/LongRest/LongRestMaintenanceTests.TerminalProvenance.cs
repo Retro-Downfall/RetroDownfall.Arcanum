@@ -4,6 +4,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 
 using RetroDownfall.Arcanum.Core.LongRest;
 using RetroDownfall.Arcanum.Core.Operations;
+using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Data.LongRest;
@@ -45,16 +46,15 @@ public sealed partial class LongRestMaintenanceTests
 
         if (state == LongRestDispatchAttemptState.Failed)
         {
-            // The actual SDK returned HTTP 400, so this is a known failed response rather
-            // than unknown transport. Settle that exact Sent attempt through the real store.
+            // The actual SDK returned HTTP 400. The sending frame settled that exact attempt in-frame as unknown usage, with no
+            // completion evidence, so nothing is left Sent.
             Assert.NotNull(f.ProviderResult);
 
             Assert.True(f.ProviderResult!.IsFailure);
 
-            Assert.Equal(3L, await f.H.ScalarAsync("SELECT StateCode FROM long_rest_provider_effects;"));
+            Assert.Equal(0L, await f.H.ScalarAsync("SELECT count(*) FROM long_rest_provider_effects WHERE StateCode = 3;"));
 
-            LongRestSweepHarness.Require(await new LongRestAttemptStore(f.H.Saga.Context, f.Clock).CompleteAttemptAsync(originalSent!,
-                new(state, new(0, 0, 0, 0, 0), null, "LongRest.TransportFailure"), CancellationToken.None));
+            Assert.Equal(ErrorCodes.LongRest.TransportUnknown, await f.H.ScalarAsync("SELECT FailureCode FROM long_rest_provider_effects;"));
         }
 
         f.AfterAttemptValidated = null;

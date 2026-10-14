@@ -4,6 +4,7 @@ using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.LongRest;
 using RetroDownfall.Arcanum.Core.Operations;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.Telemetry;
 using RetroDownfall.Arcanum.Core.Tower;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Data.LongRest;
@@ -137,7 +138,10 @@ internal sealed partial class LongRestSweepCoordinator(ILongRunningOperationStor
 
         CancellationToken ct = lifetime.Token;
 
-        if (!configuration.Capture().Enabled || !ownership.TryClaim(operationId, out Guid ownershipToken)) return Unavailable();
+        if (!configuration.Capture().Enabled) return Unavailable();
+
+        // Another executor in this process already owns this operation: nothing is written, and the owner is advancing it.
+        if (!ownership.TryClaim(operationId, out Guid ownershipToken)) return Busy();
 
         string? owner = null;
 
@@ -188,12 +192,18 @@ internal sealed partial class LongRestSweepCoordinator(ILongRunningOperationStor
                 running = readmitted.Operation;
 
                 readmitCount = readmitted.ReadmitCount;
+
+                ArcanumMetrics.LongRestSweepReadmittedTotal.Add(1);
             }
             else
             {
                 LongRunningOperationLeaseResult lease = await operations.TryAcquireLeaseAsync(operationId, owner, now, now.Add(LeaseDuration), ct).ConfigureAwait(false);
 
-                if (!lease.Acquired) return Unavailable();
+                if (!lease.Acquired)
+                {
+                    // A live lease held by another owner is busy; a row that cannot be leased for any other reason is unavailable.
+                    return lease.Operation is { State: LongRunningOperationState.Running, LeaseOwner: not null } ? Busy() : Unavailable();
+                }
 
                 running = lease.Operation;
             }
@@ -207,11 +217,29 @@ internal sealed partial class LongRestSweepCoordinator(ILongRunningOperationStor
 
             if (outcome.State == LongRunningOperationState.ReconciliationRequired)
             {
-                // The budget is read where the park is stamped, not taken from the readmission: committed progress during the run
-                // has since reset it, and a stale count would turn a resumable fault into a needs-operator park.
-                int budget = await MarkParkedAsync(operationId, readmitCount).ConfigureAwait(false);
+                if (!isProtected && LongRestFaultPolicy.Classify(outcome.ErrorCode) == LongRestFaultClass.RestartGeneration)
+                {
+                    // The captured generation can never complete. Parking it would only block its scope, so a clean sweep is retired
+                    // through the Abandoned path and the next request replaces it with a new generation.
+                    outcome = LongRunningOperationRecoveryResult.Abandoned(outcome.ErrorCode);
+                }
+                else
+                {
+                    // The budget is read where the park is stamped, not taken from the readmission: committed progress during the run
+                    // has since reset it, and a stale count would turn a resumable fault into a needs-operator park.
+                    int budget = await MarkParkedAsync(operationId, readmitCount).ConfigureAwait(false);
 
-                outcome = ApplyFaultPolicy(outcome, isProtected, budget);
+                    LongRunningOperationRecoveryResult stamped = outcome;
+
+                    outcome = ApplyFaultPolicy(outcome, isProtected, budget);
+
+                    if (outcome.ErrorCode == LongRestParkCodes.ReadmitExhausted && stamped.ErrorCode != LongRestParkCodes.ReadmitExhausted)
+                    {
+                        ArcanumMetrics.LongRestSweepBudgetExhaustedTotal.Add(1);
+                    }
+                }
+
+                RecordParked(outcome.ErrorCode);
             }
 
             if (!await operations.TryTransitionAsync(operationId, latest.Revision, owner, outcome.State, timeProvider.GetUtcNow(), outcome.ErrorCode, CancellationToken.None).ConfigureAwait(false))
@@ -247,12 +275,24 @@ internal sealed partial class LongRestSweepCoordinator(ILongRunningOperationStor
     /// needs-operator park under its own code. A protected sweep has no budget, and free parks spend none. The count is the
     /// durable budget as the park left it, after any progress the run committed.
     /// </summary>
-    private static LongRunningOperationRecoveryResult ApplyFaultPolicy(LongRunningOperationRecoveryResult outcome, bool isProtected, int readmitCount) =>
-        outcome.State == LongRunningOperationState.ReconciliationRequired && !isProtected
-            && LongRestFaultPolicy.Classify(outcome.ErrorCode) == LongRestFaultClass.ResumeLater
-            && !LongRestFaultPolicy.IsFreePark(outcome.ErrorCode)
-            && !LongRestFaultPolicy.CanReadmit(readmitCount)
+    private static LongRunningOperationRecoveryResult ApplyFaultPolicy(LongRunningOperationRecoveryResult outcome, bool isProtected, int readmitCount)
+    {
+        if (outcome.State != LongRunningOperationState.ReconciliationRequired
+            || LongRestFaultPolicy.Classify(outcome.ErrorCode) != LongRestFaultClass.ResumeLater)
+        {
+            return outcome;
+        }
+
+        // A protected sweep has no failure budget and no worker door: whatever resumable fault parked it, only a fresh authorized
+        // Session request may readmit it, so its park always says so.
+        if (isProtected) return LongRunningOperationRecoveryResult.RequiresAttention(AuthorizedRequestRequired);
+
+        return !LongRestFaultPolicy.IsFreePark(outcome.ErrorCode) && !LongRestFaultPolicy.CanReadmit(readmitCount)
             ? LongRunningOperationRecoveryResult.RequiresAttention(LongRestParkCodes.ReadmitExhausted) : outcome;
+    }
+
+    private static void RecordParked(string? code) => ArcanumMetrics.LongRestSweepParkedTotal.Add(1,
+        new KeyValuePair<string, object?>("class", LongRestFaultPolicy.ClassTag(LongRestFaultPolicy.Classify(code))));
 
     /// <summary>
     /// Stamps the park and returns the durable Sweep Failure Budget. A missed stamp leaves the readmission's own stamp as the
@@ -284,7 +324,12 @@ internal sealed partial class LongRestSweepCoordinator(ILongRunningOperationStor
                 ? LongRunningOperationRecoveryResult.Abandoned(LongRestParkCodes.Cancelled)
                 : LongRunningOperationRecoveryResult.RequiresAttention(isProtected ? AuthorizedRequestRequired : LongRestParkCodes.MaintenanceDeferred);
 
-            if (parked.State == LongRunningOperationState.ReconciliationRequired) _ = await MarkParkedAsync(operationId, 0).ConfigureAwait(false);
+            if (parked.State == LongRunningOperationState.ReconciliationRequired)
+            {
+                _ = await MarkParkedAsync(operationId, 0).ConfigureAwait(false);
+
+                RecordParked(parked.ErrorCode);
+            }
 
             _ = await operations.TryTransitionAsync(operationId, latest.Revision, owner, parked.State, timeProvider.GetUtcNow(), parked.ErrorCode, CancellationToken.None).ConfigureAwait(false);
         }
@@ -351,6 +396,8 @@ internal sealed partial class LongRestSweepCoordinator(ILongRunningOperationStor
     }
 
     private static Error Unavailable() => new(ErrorCodes.LongRest.Unavailable, "The current Long Rest operation, worker or configuration could not be proved.");
+
+    private static Error Busy() => new(ErrorCodes.LongRest.OperationBusy, "Another executor in this process owns this Long Rest operation right now.");
 
     private sealed class Refused(Error error) : Exception(error.Code)
     {

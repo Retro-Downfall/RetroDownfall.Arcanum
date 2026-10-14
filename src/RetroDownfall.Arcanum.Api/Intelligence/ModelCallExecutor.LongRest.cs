@@ -44,6 +44,9 @@ public sealed partial class ModelCallExecutor
             return ClosedLongRestAdmissionError();
         }
 
+        // True only while the SDK call itself is in flight: a failure there is typed; any other failure stays generic.
+        bool dispatched = false;
+
         try
         {
             await beforeSend(cancellationToken).ConfigureAwait(false);
@@ -65,7 +68,11 @@ public sealed partial class ModelCallExecutor
                 ResponseFormat = ChatResponseFormat.ForJsonSchema(schema.RootElement.Clone(), request.SchemaName, request.SchemaDescription),
             };
 
+            dispatched = true;
+
             ChatResponse response = await chatClient.GetResponseAsync(messages, options, cancellationToken).ConfigureAwait(false);
+
+            dispatched = false;
 
             LongRestProviderUsage usage = LongRestUsage(response.Usage);
 
@@ -85,7 +92,7 @@ public sealed partial class ModelCallExecutor
         {
             _logger?.LogWarning("Long Rest provider call failed ({ExceptionType}).", exception.GetType().FullName);
 
-            return new Error(ErrorCodes.Hub.Error, PublicInferenceErrorMessages.NativeGenericFailure);
+            return dispatched ? LongRestProviderFailure.Classify(exception) : new Error(ErrorCodes.Hub.Error, PublicInferenceErrorMessages.NativeGenericFailure);
         }
     }
 
@@ -117,6 +124,8 @@ public sealed partial class ModelCallExecutor
             return ClosedLongRestAdmissionError();
         }
 
+        bool dispatched = false;
+
         try
         {
             await beforeSend(cancellationToken).ConfigureAwait(false);
@@ -133,7 +142,11 @@ public sealed partial class ModelCallExecutor
                 return ClosedLongRestAdmissionError();
             }
 
+            dispatched = true;
+
             GeneratedEmbeddings<Embedding<float>> response = await embeddingClient.GenerateAsync(input, options, cancellationToken).ConfigureAwait(false);
+
+            dispatched = false;
 
             LongRestProviderUsage usage = LongRestUsage(response.Usage);
 
@@ -160,7 +173,7 @@ public sealed partial class ModelCallExecutor
         {
             _logger?.LogWarning("Long Rest embedding call failed ({ExceptionType}).", exception.GetType().FullName);
 
-            return new Error(ErrorCodes.Hub.Error, PublicInferenceErrorMessages.NativeGenericFailure);
+            return dispatched ? LongRestProviderFailure.Classify(exception) : new Error(ErrorCodes.Hub.Error, PublicInferenceErrorMessages.NativeGenericFailure);
         }
     }
 

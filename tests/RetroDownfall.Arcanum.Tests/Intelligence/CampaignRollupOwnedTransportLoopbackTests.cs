@@ -33,7 +33,7 @@ public sealed class CampaignRollupOwnedTransportLoopbackTests
     }
 
     [Fact]
-    public async Task Requests_equal_SDK_calls_across_leases_on_the_scope_connection()
+    public async Task Requests_equal_SDK_calls_across_leases_and_each_call_has_its_own_connection()
     {
         await using LoopbackProvider server = new();
 
@@ -46,16 +46,60 @@ public sealed class CampaignRollupOwnedTransportLoopbackTests
             await Call(factory, deadline.Token);
 
             Assert.Equal(call, server.RequestCount);
+
+            Assert.Equal(call, server.ConnectionCount);
         }
 
-        // Disposing a lease leaves the scope client, and the connection it holds, open for the next lease.
-        Assert.Equal(1, server.ConnectionCount);
+        // One connection per send: the scope client never keeps a pooled connection for the next lease. One finite
+        // absence-of-close guard; this is not a DNS timing claim.
+        Assert.Same(server.Closed(1), await Task.WhenAny(server.Closed(1), Task.Delay(TimeSpan.FromSeconds(10))));
 
-        Assert.False(server.Closed(1).IsCompleted);
+        Assert.Same(server.Closed(2), await Task.WhenAny(server.Closed(2), Task.Delay(TimeSpan.FromSeconds(10))));
     }
 
     [Fact]
-    public async Task Two_calls_on_one_lease_are_two_requests_on_the_lease_connection()
+    public async Task A_provider_that_drops_reused_connections_sees_exactly_one_request_per_SDK_call()
+    {
+        // The stale keep-alive provider answers the first request on a connection, then reads and drops any request that arrives
+        // on a connection it already served. A pooled-connection resend would show up here as an extra request.
+        await using LoopbackProvider server = new(dropsReusedConnections: true);
+
+        using CampaignRollupProviderClientFactory factory = Factory(server.Endpoint);
+
+        using CancellationTokenSource deadline = new(TimeSpan.FromSeconds(30));
+
+        for (int call = 1; call <= 3; call++)
+        {
+            await Call(factory, deadline.Token);
+        }
+
+        Assert.Equal(3, server.RequestCount);
+
+        Assert.Equal(3, server.ConnectionCount);
+    }
+
+    [Fact]
+    public async Task A_provider_that_drops_a_fresh_connection_surfaces_as_one_request_and_an_SDK_failure_never_a_resend()
+    {
+        await using LoopbackProvider server = new(dropsEveryRequest: true);
+
+        using CampaignRollupProviderClientFactory factory = Factory(server.Endpoint);
+
+        using CancellationTokenSource deadline = new(TimeSpan.FromSeconds(30));
+
+        Result<ChatClientLease?> resolved = await factory.ResolveClientAsync(null, deadline.Token);
+
+        using ChatClientLease lease = Assert.IsType<ChatClientLease>(resolved.Value);
+
+        await Assert.ThrowsAnyAsync<Exception>(() => lease.ChatClient.GetResponseAsync([new ChatMessage(ChatRole.User, "probe")], cancellationToken: deadline.Token));
+
+        Assert.Equal(1, server.RequestCount);
+
+        Assert.Equal(1, server.ConnectionCount);
+    }
+
+    [Fact]
+    public async Task Two_calls_on_one_lease_are_two_requests_on_two_connections()
     {
         await using LoopbackProvider server = new();
 
@@ -76,11 +120,11 @@ public sealed class CampaignRollupOwnedTransportLoopbackTests
             Assert.Equal(call, server.RequestCount);
         }
 
-        Assert.Equal(1, server.ConnectionCount);
+        Assert.Equal(2, server.ConnectionCount);
     }
 
     [Fact]
-    public async Task Scope_disposal_closes_the_keep_alive_connection_after_the_SDK_call_has_joined()
+    public async Task The_connection_closes_once_the_SDK_call_has_joined_without_waiting_for_scope_disposal()
     {
         await using LoopbackProvider server = new();
 
@@ -88,24 +132,21 @@ public sealed class CampaignRollupOwnedTransportLoopbackTests
 
         using CancellationTokenSource deadline = new(TimeSpan.FromSeconds(20));
 
-        using (IServiceScope scope = services.CreateScope())
-        {
-            ICampaignRollupProviderClientFactory factory = scope.ServiceProvider.GetRequiredService<ICampaignRollupProviderClientFactory>();
+        using IServiceScope scope = services.CreateScope();
 
-            Result<ChatClientLease?> resolved = await factory.ResolveClientAsync(null, deadline.Token);
+        ICampaignRollupProviderClientFactory factory = scope.ServiceProvider.GetRequiredService<ICampaignRollupProviderClientFactory>();
 
-            using ChatClientLease lease = Assert.IsType<ChatClientLease>(resolved.Value);
+        Result<ChatClientLease?> resolved = await factory.ResolveClientAsync(null, deadline.Token);
 
-            ChatResponse response = await lease.ChatClient.GetResponseAsync([new ChatMessage(ChatRole.User, "probe")], cancellationToken: deadline.Token);
+        using ChatClientLease lease = Assert.IsType<ChatClientLease>(resolved.Value);
 
-            Assert.Equal("ok", response.Text);
+        ChatResponse response = await lease.ChatClient.GetResponseAsync([new ChatMessage(ChatRole.User, "probe")], cancellationToken: deadline.Token);
 
-            Assert.Equal(1, server.RequestCount);
+        Assert.Equal("ok", response.Text);
 
-            Assert.False(server.Closed(1).IsCompleted);
-        }
+        Assert.Equal(1, server.RequestCount);
 
-        // One finite absence-of-disposal guard; this is not a DNS timing claim.
+        // One finite absence-of-close guard; this is not a DNS timing claim. The scope and the lease are still alive here.
         Task closed = await Task.WhenAny(server.Closed(1), Task.Delay(TimeSpan.FromSeconds(10)));
 
         Assert.Same(server.Closed(1), closed);
@@ -204,10 +245,18 @@ public sealed class CampaignRollupOwnedTransportLoopbackTests
 
         private readonly Task _accepting;
 
+        private readonly bool _dropsReusedConnections;
+
+        private readonly bool _dropsEveryRequest;
+
         private int _requestCount;
 
-        internal LoopbackProvider()
+        internal LoopbackProvider(bool dropsReusedConnections = false, bool dropsEveryRequest = false)
         {
+            _dropsReusedConnections = dropsReusedConnections;
+
+            _dropsEveryRequest = dropsEveryRequest;
+
             _listener.Start();
 
             Endpoint = $"http://127.0.0.1:{((IPEndPoint)_listener.LocalEndpoint).Port}/v1";
@@ -272,9 +321,16 @@ public sealed class CampaignRollupOwnedTransportLoopbackTests
             {
                 using NetworkStream wire = client.GetStream();
 
+                int onThisConnection = 0;
+
                 while (await Request(wire, _stopping.Token))
                 {
                     Interlocked.Increment(ref _requestCount);
+
+                    onThisConnection++;
+
+                    // A full request has been read; the stale provider now closes without any response.
+                    if (_dropsEveryRequest || _dropsReusedConnections && onThisConnection > 1) break;
 
                     byte[] payload = Encoding.UTF8.GetBytes("{\"id\":\"loopback\",\"object\":\"chat.completion\",\"created\":1,\"model\":\"model\",\"choices\":[{\"index\":0,\"finish_reason\":\"stop\",\"message\":{\"role\":\"assistant\",\"content\":\"ok\"}}],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":1,\"total_tokens\":2}}");
 

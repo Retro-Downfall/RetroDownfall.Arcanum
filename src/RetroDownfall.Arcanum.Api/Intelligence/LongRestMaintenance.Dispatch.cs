@@ -119,11 +119,32 @@ internal sealed partial class LongRestMaintenance
                     Require(await attempts.ValidateAttemptAsync(attempt, token).ConfigureAwait(false));
                 }
 
-                Result<LongRestProviderResult> result = await provider.ExecuteAsync(payload, UnrestrictedTurnBudget.Instance,
-                    BeforeSend, providerAdmission, dispatch.Token).ConfigureAwait(false);
+                Result<LongRestProviderResult> result;
 
-                // A transport without a reported result remains unresolved Sent. Normal billing alone
-                // cannot reconstruct either usage or publication authority for this physical attempt.
+                try
+                {
+                    result = await provider.ExecuteAsync(payload, UnrestrictedTurnBudget.Instance,
+                        BeforeSend, providerAdmission, dispatch.Token).ConfigureAwait(false);
+                }
+                catch (Exception exception) when (exception is not OperationCanceledException && attempt.State == LongRestDispatchAttemptState.Sent)
+                {
+                    // Unknown-Usage Settlement: the frame that owns a physical send closes it when the call ends without a result.
+                    // Cancellation never settles; a cancelled Sent attempt stays Sent for the reboot settlement.
+                    await SettleUnresolvedAsync(attempt, LongRestUnresolvedSend.UsageUnknown).ConfigureAwait(false);
+
+                    throw;
+                }
+
+                if (result.IsFailure && attempt.State == LongRestDispatchAttemptState.Sent)
+                {
+                    // Only a failure raised before any request byte is known not to have reached the provider.
+                    await SettleUnresolvedAsync(attempt, result.Error.Code == ErrorCodes.LongRest.ProviderUnreachable
+                        ? LongRestUnresolvedSend.NotSent : LongRestUnresolvedSend.UsageUnknown).ConfigureAwait(false);
+                }
+
+                // A transport without a reported result is settled above, inside this still-held group, as unknown usage. When that
+                // best-effort write is refused it remains Sent and the reboot settlement closes it. Normal billing alone cannot
+                // reconstruct either usage or publication authority for this physical attempt.
                 LongRestProviderResult output = Require(result);
 
                 decimal cost = CostCalculator.CalculateCost(output.Usage.InputTokens, output.Usage.OutputTokens,
@@ -182,6 +203,19 @@ internal sealed partial class LongRestMaintenance
         finally
         {
             await heartbeat.ConfigureAwait(false);
+        }
+    }
+
+    // Best effort by design: the original failure is what the caller rethrows, and an unsettled Sent attempt is still settled by the
+    // reboot rule. The write runs under the still-held external-effect group, with no usage and no cancellation token of its own.
+    private async Task SettleUnresolvedAsync(LongRestDispatchAttempt attempt, LongRestUnresolvedSend outcome)
+    {
+        try
+        {
+            _ = await attempts.SettleUnresolvedSendAsync(attempt, outcome, CancellationToken.None).ConfigureAwait(false);
+        }
+        catch (Exception)
+        {
         }
     }
 

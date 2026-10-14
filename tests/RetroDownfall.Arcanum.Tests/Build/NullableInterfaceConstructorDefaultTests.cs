@@ -104,13 +104,7 @@ public sealed class NullableInterfaceConstructorDefaultTests
 
         ["src/RetroDownfall.Arcanum.Api/Intelligence/CampaignRollupTurnPreparer.cs:CampaignRollupTurnSnapshot:claims"] = "preview snapshots own no claim and need no coordinator; every live snapshot is constructed by the preparer with its required registered coordinator, which terminalizes an unbegun claim on disposal",
 
-        ["src/RetroDownfall.Arcanum.Api/Intelligence/CampaignRollupTurnPreparer.cs:CampaignRollupTurnPreparer:longRest"] = "inspection and gate-off preparation need no sweep coordinator; eligible Long Rest preparation refuses before requesting maintenance or sending if absent, and the composed host registers ILongRestSweepCoordinator",
-
-        ["src/RetroDownfall.Arcanum.Api/Intelligence/CampaignRollupTurnPreparer.cs:CampaignRollupTurnPreparer:longRestConfiguration"] = "inspection and gate-off preparation need no Long Rest epoch; enabled live maintenance refuses before its request when absent, and ApiBootstrapper registers the shared configuration epoch",
-
-        ["src/RetroDownfall.Arcanum.Api/Intelligence/CampaignRollupTurnPreparer.cs:CampaignRollupTurnPreparer:longRestDiscovery"] = "inspection and clean work need no protected-partition discovery; a protected live turn refuses before discovery or maintenance when absent, and the composed host registers the scoped discovery store",
-
-        ["src/RetroDownfall.Arcanum.Api/Intelligence/CampaignRollupTurnPreparer.cs:CampaignRollupTurnPreparer:longRestMaintenance"] = "inspection and clean queue handoff need no protected maintenance capability; a protected live turn refuses before maintenance when absent, and ApiBootstrapper registers the scoped service",
+        ["src/RetroDownfall.Arcanum.Api/Intelligence/CampaignRollupTurnPreparer.cs:CampaignRollupTurnPreparer:logger"] = "diagnostic sink; null-safe content-free logging of a skipped clean schedule observes the refusal without changing whether the turn proceeds or any admission decision",
 
         ["src/RetroDownfall.Arcanum.Api/Intelligence/CampaignRollupTurnPreparer.cs:CampaignRollupTurnSnapshot:longRestConfiguration"] = "preview and replay snapshots with no Long Rest stamp need no epoch; a stamped snapshot refuses validation before authority or source reads if absent, and live preparation supplies the registered epoch",
 

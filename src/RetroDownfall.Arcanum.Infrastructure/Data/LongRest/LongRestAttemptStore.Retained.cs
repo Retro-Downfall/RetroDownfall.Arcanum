@@ -3,6 +3,7 @@ using System.Text.Json;
 using Microsoft.Data.Sqlite;
 
 using RetroDownfall.Arcanum.Core.LongRest;
+using RetroDownfall.Arcanum.Core.Primitives;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Data.LongRest;
 
@@ -55,7 +56,7 @@ internal sealed partial class LongRestAttemptStore
 
             if (effect.Attempt.State is not (LongRestDispatchAttemptState.Invalid or LongRestDispatchAttemptState.Failed)
                 || (effect.Attempt.State == LongRestDispatchAttemptState.Invalid && (effect.Invalid < 1 || effect.Paid < 1))
-                || (effect.Attempt.State == LongRestDispatchAttemptState.Failed && effect.Failed < 1)) throw new InvalidDataException();
+                || (effect.Attempt.State == LongRestDispatchAttemptState.Failed && effect.Failed < 1 && !IsNotSentSettlement(effect))) throw new InvalidDataException();
 
             if (effect.Completion is { } json)
             {
@@ -74,4 +75,14 @@ internal sealed partial class LongRestAttemptStore
 
         return effect.Attempt.State is LongRestDispatchAttemptState.Invalid or LongRestDispatchAttemptState.Failed ? effect.OriginalWork : null;
     }
+
+    /// <summary>
+    /// The shape a send that never left the process is settled into (<see cref="SettleUnresolvedSendAsync"/> with
+    /// <see cref="LongRestUnresolvedSend.NotSent"/>): failed under <c>LongRest.ProviderUnreachable</c> with no completion evidence and
+    /// no failure charged, because it is not unknown usage and so is not charged to the Unknown-Usage Cap. Every other failed
+    /// attempt has been charged at least one failure, so this is the one failed shape whose failure count may be zero. The
+    /// attempt still counts as one send: <c>SentCount</c> counts attempts handed to the transport, not bytes on the wire.
+    /// </summary>
+    private static bool IsNotSentSettlement(Effect effect) =>
+        effect.FailureCode == ErrorCodes.LongRest.ProviderUnreachable && effect.Completion is null;
 }

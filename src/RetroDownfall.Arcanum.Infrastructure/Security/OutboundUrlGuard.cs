@@ -313,7 +313,8 @@ public static class OutboundUrlGuard
             // whose inner exception is a TimeoutException. The connectTimeout parameter adds this guard's
             // own bound inside the callback, which also covers resolution and surfaces as an
             // HttpRequestException ("Timed out resolving ..." or "Could not connect ...") rather than as a
-            // cancellation.
+            // cancellation. Every failure this callback raises itself is an OutboundConnectException: it ends
+            // before any connection exists, so a caller can tell by type that no request byte left.
             ConnectCallback = (context, cancellationToken) =>
                 EgressConnectCallbackAsync(
                     context,
@@ -355,12 +356,12 @@ public static class OutboundUrlGuard
         }
         catch (OperationCanceledException) when (ConnectDeadlineElapsed(connectScope, cancellationToken))
         {
-            throw new HttpRequestException($"Timed out resolving '{host}' within the outbound connect timeout.");
+            throw new OutboundConnectException($"Timed out resolving '{host}' within the outbound connect timeout.");
         }
 
         if (resolved.IsFailure)
         {
-            throw new HttpRequestException(resolved.Error.Message);
+            throw new OutboundConnectException(resolved.Error.Message);
         }
 
         IReadOnlyList<IPAddress> pinned = _pinnedAddressRewriterForTests is null
@@ -373,7 +374,7 @@ public static class OutboundUrlGuard
         {
             if (IsBlockedAddress(address, allowPrivateAndLoopback))
             {
-                throw new HttpRequestException(BlockedMessage);
+                throw new OutboundConnectException(BlockedMessage);
             }
 
             Socket socket = new(address.AddressFamily, SocketType.Stream, ProtocolType.Tcp)
@@ -419,7 +420,7 @@ public static class OutboundUrlGuard
             }
         }
 
-        throw new HttpRequestException(
+        throw new OutboundConnectException(
             $"Could not connect to '{host}' on port {port}.",
             connectErrors is null ? null : new AggregateException(connectErrors));
     }

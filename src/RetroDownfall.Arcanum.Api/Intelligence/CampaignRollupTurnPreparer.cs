@@ -1,6 +1,7 @@
 using System.Buffers.Binary;
 using System.Security.Cryptography;
 using System.Text.Json;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Core.Configuration;
@@ -12,6 +13,7 @@ using RetroDownfall.Arcanum.Core.LongRest;
 using RetroDownfall.Arcanum.Core.Operations;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.Security;
+using RetroDownfall.Arcanum.Core.Telemetry;
 using RetroDownfall.Arcanum.Core.Tower;
 
 namespace RetroDownfall.Arcanum.Api.Intelligence;
@@ -139,12 +141,61 @@ public sealed class CampaignRollupTurnSnapshot(
 
 }
 
-/// <summary>The shared snapshot preparation seam for live inference and read-only inspection.</summary>
+/// <summary>
+/// Lets the caller of <see cref="CampaignRollupTurnPreparer.PrepareLiveAsync"/> learn, while preparation is still running, that
+/// protected Long Rest maintenance is about to run under this turn, so a streaming client can be told before a long wait. With
+/// <paramref name="holdUntilAcknowledged"/> the preparer also waits, for a bounded time, until the caller acknowledges that it
+/// has told the client, so the telling genuinely precedes the first paid protected work instead of racing it. Only a streaming
+/// caller has a client to tell, so only a streaming caller asks to be held.
+/// </summary>
+public sealed class CampaignPreparationProgress(bool holdUntilAcknowledged = false)
+{
+    private static readonly TimeSpan AcknowledgementBound = TimeSpan.FromSeconds(5);
+
+    private readonly TaskCompletionSource _protectedMaintenance = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    private readonly TaskCompletionSource _acknowledged = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    /// <summary>
+    /// Completes once, when the first protected partition of the turn that still has maintenance to finish is about to be resumed. A
+    /// partition whose sweep is already completed has none, and never completes it.
+    /// </summary>
+    public Task ProtectedMaintenanceStarted => _protectedMaintenance.Task;
+
+    /// <summary>The caller has told its client; a preparer that was holding for it continues.</summary>
+    public void AcknowledgeProtectedMaintenance() => _acknowledged.TrySetResult();
+
+    internal async Task SignalProtectedMaintenanceAsync(CancellationToken cancellationToken)
+    {
+        if (!_protectedMaintenance.TrySetResult() || !holdUntilAcknowledged)
+        {
+            return;
+        }
+
+        try
+        {
+            await _acknowledged.Task.WaitAsync(AcknowledgementBound, cancellationToken).ConfigureAwait(false);
+        }
+        catch (TimeoutException)
+        {
+            // A caller that never acknowledges (its client went away) must not stall the turn's maintenance.
+        }
+    }
+}
+
+/// <summary>
+/// The shared snapshot preparation seam for live inference and read-only inspection. The four Long Rest ports are required: the
+/// composed host always registers them, and a turn never discovers at preparation time that Long Rest has no coordinator.
+/// </summary>
 public sealed class CampaignRollupTurnPreparer(
     ICampaignRollupStore store,
     IOptionsMonitor<ArcanumSettings> settings,
     ICanonicalCampaignContextResolver resolver,
     ICovenantOperationGate gate,
+    ILongRestSweepCoordinator longRest,
+    ILongRestMaintenance longRestMaintenance,
+    ILongRestDiscoveryStore longRestDiscovery,
+    ILongRestConfigurationProvider longRestConfiguration,
     ICampaignRollupMaintenance? maintenance = null,
     ISessionTurnClaimBeginStore? claimBegin = null,
     ISessionTurnBeginStore? sessionBegin = null,
@@ -153,10 +204,7 @@ public sealed class CampaignRollupTurnPreparer(
     ISessionTurnClaimLookup? lookup = null,
     IProtectedAssistantArtifactReader? protectedReplies = null,
     ISessionTurnClaimReplayStore? replayStore = null,
-    ILongRestSweepCoordinator? longRest = null,
-    ILongRestMaintenance? longRestMaintenance = null,
-    ILongRestDiscoveryStore? longRestDiscovery = null,
-    ILongRestConfigurationProvider? longRestConfiguration = null)
+    ILogger<CampaignRollupTurnPreparer>? logger = null)
 {
 
     internal static bool IsLiveEligible(ArcanumSettings configuration, PingRequest request, ArcanumInvocationContext invocation) =>
@@ -171,7 +219,8 @@ public sealed class CampaignRollupTurnPreparer(
         ArcanumInvocationContext invocation,
         bool streaming,
         CancellationToken cancellationToken,
-        CovenantDigest? requestConfigurationDigest = null)
+        CovenantDigest? requestConfigurationDigest = null,
+        CampaignPreparationProgress? progress = null)
     {
         TurnIdempotencyRequestIdentity? accepted = TurnIdempotencyAmbient.RequestIdentity;
 
@@ -209,7 +258,7 @@ public sealed class CampaignRollupTurnPreparer(
 
         bool maintainLongRest = preparationSettings.Features.LongRest;
 
-        LongRestConfigurationStamp? acceptedLongRestStamp = maintainLongRest ? longRestConfiguration?.Capture().Stamp : null;
+        LongRestConfigurationStamp? acceptedLongRestStamp = maintainLongRest ? longRestConfiguration.Capture().Stamp : null;
 
         if (claimBegin is null || claims is null
             || authoritySnapshot?.Current is not { } origin
@@ -366,12 +415,6 @@ public sealed class CampaignRollupTurnPreparer(
 
             if (maintainLongRest)
             {
-                if (longRest is null || longRestConfiguration is null
-                    || (authority is not null && (longRestMaintenance is null || longRestDiscovery is null)))
-                {
-                    return new Error(ErrorCodes.LongRest.Unavailable, "Long Rest turn maintenance is unavailable.");
-                }
-
                 LongRestSweepConfiguration configuration = longRestConfiguration.Capture();
 
                 if (!configuration.Enabled || !configuration.Stamp.IsValid
@@ -386,7 +429,7 @@ public sealed class CampaignRollupTurnPreparer(
             Result CurrentConfiguration()
             {
                 if (ConfigurationDigest(settings.CurrentValue) != configurationDigest
-                    || (longRestStamp is not null && !longRestConfiguration!.IsCurrent(longRestStamp)))
+                    || (longRestStamp is not null && !longRestConfiguration.IsCurrent(longRestStamp)))
                 {
                     return new Error(ErrorCodes.Covenant.StaleSnapshot, "The configuration accepted by this turn changed during maintenance.");
                 }
@@ -401,11 +444,27 @@ public sealed class CampaignRollupTurnPreparer(
 
             if (maintainLongRest)
             {
-                Result<LongRunningOperationDto> clean = await longRest!.RequestAsync(campaign, cancellationToken).ConfigureAwait(false);
+                Result<LongRunningOperationDto> clean = await longRest.RequestAsync(campaign, cancellationToken).ConfigureAwait(false);
 
                 if (clean.IsFailure)
                 {
-                    return clean.Error;
+                    // Clean maintenance is best-effort scheduling: its failure is the worker's and the operator's to resolve, not a reason
+                    // to end the user's turn. Only a Long Rest error is skipped; a Covenant or configuration failure, and a cancellation
+                    // (which is an exception, not a result), still end it. A busy clean scope is skipped like any other Long Rest refusal.
+                    if (!LongRestFaultPolicy.IsLongRestError(clean.Error.Code))
+                    {
+                        return clean.Error;
+                    }
+
+                    ArcanumMetrics.LongRestCleanScheduleRefusedTotal.Add(1, new KeyValuePair<string, object?>("code", clean.Error.Code));
+
+                    logger?.LogWarning("Clean Long Rest maintenance was not scheduled for this turn ({Code}); the turn proceeds.", clean.Error.Code);
+
+                    // The configuration the turn accepted must still hold: a flip A to B to A never lets a refused schedule through.
+                    if (CurrentConfiguration() is { IsFailure: true } afterRefusal)
+                    {
+                        return afterRefusal.Error;
+                    }
                 }
 
                 // Clean work belongs to the existing independently owned background worker.
@@ -428,7 +487,7 @@ public sealed class CampaignRollupTurnPreparer(
                             return live.Error;
                         }
 
-                        Result<CovenantDigest?> candidate = await longRestDiscovery!.ReadNextProtectedPartitionAsync(
+                        Result<CovenantDigest?> candidate = await longRestDiscovery.ReadNextProtectedPartitionAsync(
                             campaign, after, cancellationToken).ConfigureAwait(false);
 
                         if (candidate.IsFailure)
@@ -450,7 +509,9 @@ public sealed class CampaignRollupTurnPreparer(
                             return partition.Error;
                         }
 
-                        Result<LongRunningOperationDto> operation = await longRest!.RequestAsync(
+                        // Clean-Only Busy Skip: a busy protected partition is not skipped. Only exact protected work finishing
+                        // under the request keeps pending maintenance from ending with a protected partition unfinished.
+                        Result<LongRunningOperationDto> operation = await longRest.RequestAsync(
                             campaign, partition.Value, cancellationToken).ConfigureAwait(false);
 
                         if (operation.IsFailure)
@@ -460,7 +521,14 @@ public sealed class CampaignRollupTurnPreparer(
 
                         if (operation.Value.State is not LongRunningOperationState.Completed)
                         {
-                            Result<LongRestMaintenanceCapability> prepared = await longRestMaintenance!.CreateCapabilityAsync(
+                            // Protected maintenance finishes under this turn's pending claim, so the caller is told once it is known to
+                            // be coming (a partition whose sweep is already completed has none) and before the first paid work of it.
+                            if (progress is not null)
+                            {
+                                await progress.SignalProtectedMaintenanceAsync(cancellationToken).ConfigureAwait(false);
+                            }
+
+                            Result<LongRestMaintenanceCapability> prepared = await longRestMaintenance.CreateCapabilityAsync(
                                 operation.Value.Id, invocation, lease, campaign, authority, cancellationToken).ConfigureAwait(false);
 
                             if (prepared.IsFailure)
@@ -474,7 +542,7 @@ public sealed class CampaignRollupTurnPreparer(
 
                             try
                             {
-                                resumed = await longRest!.ResumeAsync(operation.Value.Id, capability, cancellationToken).ConfigureAwait(false);
+                                resumed = await longRest.ResumeAsync(operation.Value.Id, capability, cancellationToken).ConfigureAwait(false);
                             }
                             finally
                             {

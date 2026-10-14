@@ -19,6 +19,12 @@ public sealed class LongRestFaultPolicyTests
 
         { "LongRest.Unavailable", LongRestFaultClass.ResumeLater },
 
+        { "LongRest.OperationBusy", LongRestFaultClass.ResumeLater },
+
+        { "LongRest.ProviderUnavailable", LongRestFaultClass.ResumeLater },
+
+        { "LongRest.ProviderUnreachable", LongRestFaultClass.ResumeLater },
+
         { "LongRest.StaleInput", LongRestFaultClass.RestartGeneration },
 
         { "LongRest.StaleFence", LongRestFaultClass.RestartGeneration },
@@ -50,6 +56,10 @@ public sealed class LongRestFaultPolicyTests
         { "LongRest.CancelledAfterPayment", LongRestFaultClass.NeedsOperator },
 
         { "LongRest.SweepParked", LongRestFaultClass.NeedsOperator },
+
+        { "LongRest.ProviderRejected", LongRestFaultClass.NeedsOperator },
+
+        { "LongRest.TransportUnknown", LongRestFaultClass.NeedsOperator },
 
         { "long_rest.authorized_request_required", LongRestFaultClass.NeedsOperator },
 
@@ -159,6 +169,33 @@ public sealed class LongRestFaultPolicyTests
 
         Assert.Throws<ArgumentOutOfRangeException>(() => LongRestFaultPolicy.Cooldown(readmitCount));
     }
+
+    [Theory]
+    [InlineData("LongRest.StaleInput", true)]
+    [InlineData("LongRest.Unavailable", true)]
+    [InlineData("LongRest.SweepParked", true)]
+    [InlineData("LongRest.OperationBusy", true)]
+    [InlineData("LongRest.SomethingNew", true)]
+    [InlineData("Covenant.StaleSnapshot", false)]
+    [InlineData("Hub.Error", false)]
+    [InlineData("long_rest.interrupted", false)]
+    [InlineData("longrest.StaleInput", false)]
+    [InlineData("", false)]
+    [InlineData(null, false)]
+    public void The_Long_Rest_error_family_is_exactly_the_LongRest_prefix(string? code, bool expected) =>
+        Assert.Equal(expected, LongRestFaultPolicy.IsLongRestError(code));
+
+    [Theory]
+    [InlineData(0, true)]
+    [InlineData(1, true)]
+    [InlineData(2, false)]
+    [InlineData(3, false)]
+    [InlineData(-1, false)]
+    public void A_work_unit_may_send_until_it_has_ended_two_attempts_with_unknown_usage(long unknownAttempts, bool mayStillSend) =>
+        Assert.Equal(mayStillSend, LongRestFaultPolicy.MaySendAfterUnknownUsage(unknownAttempts));
+
+    [Fact]
+    public void The_unknown_usage_cap_is_two_attempts_per_work_unit() => Assert.Equal(2, LongRestFaultPolicy.UnknownUsageCap);
 
     [Fact]
     public void The_budget_is_four_readmissions()

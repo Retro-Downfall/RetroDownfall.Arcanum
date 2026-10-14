@@ -109,6 +109,22 @@ public enum LongRestDispatchAttemptState : byte
     Failed = 6,
 }
 
+/// <summary>How an in-frame settlement closes a physical attempt whose SDK call ended without a result and without cancellation.</summary>
+public enum LongRestUnresolvedSend : byte
+{
+    /// <summary>
+    /// The call may have reached the provider, so usage and billing are unknown. The attempt settles as failed with no
+    /// completion evidence and counts toward the Unknown-Usage Cap. Usage is never estimated or written as zero.
+    /// </summary>
+    UsageUnknown = 1,
+
+    /// <summary>
+    /// The provider could not be reached before any request byte left the process (name resolution, connection or TLS
+    /// failure). The attempt settles as failed with no completion evidence and does not count toward the cap.
+    /// </summary>
+    NotSent = 2,
+}
+
 /// <summary>Content-free owner and source facts; canonical roots are digests, never host paths.</summary>
 public sealed record LongRestSweepFence(
     CanonicalCampaignContext CanonicalScope,

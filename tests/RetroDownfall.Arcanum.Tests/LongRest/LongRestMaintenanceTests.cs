@@ -4,6 +4,7 @@ using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging.Abstractions;
 
 using RetroDownfall.Arcanum.Api.Intelligence;
+using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.LongRest;
@@ -172,8 +173,14 @@ public sealed partial class LongRestMaintenanceTests
 
         internal Guid? CampaignId;
 
+        /// <summary>Consulted before the real settlement write; a non-null task replaces it, so a test can refuse the write.</summary>
+        internal Func<LongRestDispatchAttempt, LongRestUnresolvedSend, CancellationToken, Task<Result<LongRestDispatchAttempt>>?>? SettleUnresolved;
+
+        /// <summary>The in-process ownership claims this fixture's coordinator contends on; a test may hold one to simulate another executor.</summary>
+        internal LongRunningOperationOwnership Ownership = new();
+
         internal static async Task<MaintenanceFixture> CreateAsync(bool ownWorker = true, TimeProvider? clock = null, bool campaign = false,
-            bool protectedSources = true, bool exact = false, int sourceCount = 2)
+            bool protectedSources = true, bool exact = false, int sourceCount = 2, Action<ArcanumSettings>? configure = null)
         {
             MaintenanceFixture f = new();
 
@@ -183,7 +190,11 @@ public sealed partial class LongRestMaintenanceTests
 
             f.H = await LongRestSweepHarness.CreateAsync();
 
-            f.Options = new(LongRestConfigurationEpochTests.Settings());
+            ArcanumSettings configured = LongRestConfigurationEpochTests.Settings();
+
+            configure?.Invoke(configured);
+
+            f.Options = new(configured);
 
             f.Epoch = new(f.Options, Guid.NewGuid());
 
@@ -370,7 +381,8 @@ public sealed partial class LongRestMaintenanceTests
             LongRestSweepStore sweeps = new(H.Saga.Context, Clock);
 
             ILongRestAttemptStore attempts = new PaidFenceAttemptStore(new LongRestAttemptStore(H.Saga.Context, Clock),
-                (attempt, token) => AfterAttemptValidated?.Invoke(attempt, token) ?? Task.CompletedTask);
+                (attempt, token) => AfterAttemptValidated?.Invoke(attempt, token) ?? Task.CompletedTask,
+                (attempt, outcome, token) => SettleUnresolved?.Invoke(attempt, outcome, token));
 
             ModelTokenEstimator estimator = new(new InferenceTokenizerResolver(NullLogger<InferenceTokenizerResolver>.Instance));
 
@@ -386,7 +398,7 @@ public sealed partial class LongRestMaintenanceTests
             Operations = new(H.Saga.Context, TestOrdinaryConnectionFactory.For(H.Saga.Context));
 
             Coordinator = new(Operations, sweeps, H.Store, Epoch, facts, Maintenance, Gate,
-                new LongRunningOperationOwnership(), new LongRestSweepQueue(), Services.GetRequiredService<IServiceScopeFactory>(), Clock, RecordedAdmission);
+                Ownership, new LongRestSweepQueue(), Services.GetRequiredService<IServiceScopeFactory>(), Clock, RecordedAdmission);
         }
 
         /// <summary>The newest real Long Rest sweep lease this fixture's gate has issued: the one the active work holds.</summary>
