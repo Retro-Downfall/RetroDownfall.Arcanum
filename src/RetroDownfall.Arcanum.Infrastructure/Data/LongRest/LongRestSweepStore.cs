@@ -78,7 +78,16 @@ internal sealed partial class LongRestSweepStore(ArcanumDbContext db, TimeProvid
         return (await ReadAsync(connection, transaction, operationId, ct).ConfigureAwait(false))!;
     }, ct);
 
-    private async Task<Result<T>> WithinAsync<T>(Func<SqliteConnection, SqliteTransaction, Task<T>> action, CancellationToken ct)
+    // Every write takes the writer lock up front, so it either owns the database for the whole of its proof or learns at once that it does not.
+    private Task<Result<T>> WithinAsync<T>(Func<SqliteConnection, SqliteTransaction, Task<T>> action, CancellationToken ct) =>
+        RunAsync(action, false, ct);
+
+    // A transaction that only reads takes no writer lock: WAL gives it one consistent snapshot, and it neither waits for a writer nor holds
+    // one up. Only a statement that proves without changing anything may use it; anything that writes stays on WithinAsync.
+    private Task<Result<T>> WithinReadAsync<T>(Func<SqliteConnection, SqliteTransaction, Task<T>> action, CancellationToken ct) =>
+        RunAsync(action, true, ct);
+
+    private async Task<Result<T>> RunAsync<T>(Func<SqliteConnection, SqliteTransaction, Task<T>> action, bool deferred, CancellationToken ct)
     {
         try
         {
@@ -91,7 +100,16 @@ internal sealed partial class LongRestSweepStore(ArcanumDbContext db, TimeProvid
                     await db.Database.OpenConnectionAsync(ct).ConfigureAwait(false);
                 }
 
-                await using SqliteTransaction transaction = connection.BeginTransaction(deferred: false);
+                await using SqliteTransaction transaction = connection.BeginTransaction(deferred: deferred);
+
+                if (deferred)
+                {
+                    LongRestVerificationCounters.ReadTransaction();
+                }
+                else
+                {
+                    LongRestVerificationCounters.WriterTransaction();
+                }
 
                 T value = await action(connection, transaction).ConfigureAwait(false);
 

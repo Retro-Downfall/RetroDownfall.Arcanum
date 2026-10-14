@@ -29,9 +29,36 @@ internal sealed partial class LongRestSweepStore : ILongRestCompletedRequestRepl
     public Task<Result<Guid?>> FindCompletedReplayAsync(CanonicalCampaignContext scope, LongRestRecipeIdentity recipe, CancellationToken ct) =>
         FindCompletedReplayCoreAsync(scope, null, recipe, null, ct);
 
+    // The completed generations that could answer one request, newest first, so the first one that proves out is the freshest and a
+    // newer generation is always examined before an older one. The partition is part of the query when the caller names one, and the
+    // whole-scope form leaves it out. The page is a keyset (watermark, operation), not an offset, so nothing is skipped or repeated and
+    // nothing is capped: a candidate the lookup never reached would be a false miss, and a miss starts a paid re-sweep.
+    private const string CompletedCandidatesHead = """
+        SELECT sweep.OperationId, generation.InsertionHighWatermark FROM long_rest_sweeps sweep
+        JOIN long_rest_discovery_generations generation ON generation.GenerationId = sweep.GenerationId AND generation.OperationId = sweep.OperationId
+        JOIN LongRunningOperations operation ON operation.Id = sweep.OperationId AND operation.Kind = 'long-rest-sweep'
+        WHERE sweep.PhaseCode = 6 AND generation.PhaseCode = 6 AND generation.Published = 1
+          AND ($operationState IS NULL OR operation.State = $operationState)
+          AND sweep.ScopeKindCode = $scope AND sweep.CampaignId IS $campaign
+        """;
+
+    private const string CompletedCandidatesTail = """
+          AND generation.RecipeDigest = $recipe
+          AND sweep.ConfigurationJson = json_extract(generation.FenceJson, '$.configuration')
+          AND ($cursorMark IS NULL OR generation.InsertionHighWatermark < $cursorMark
+            OR (generation.InsertionHighWatermark = $cursorMark AND sweep.OperationId > $cursorOperation))
+        ORDER BY generation.InsertionHighWatermark DESC, sweep.OperationId LIMIT 128;
+        """;
+
+    internal static readonly string CompletedExactPartitionSql = CompletedCandidatesHead + "\n  AND sweep.PartitionDigest IS $partition\n" + CompletedCandidatesTail;
+
+    internal static readonly string CompletedWholeScopeSql = CompletedCandidatesHead + "\n" + CompletedCandidatesTail;
+
+    private const int CompletedPageSize = 128;
+
     private Task<Result<Guid?>> FindCompletedReplayCoreAsync(CanonicalCampaignContext scope, LongRestSweepScope? partition,
         LongRestRecipeIdentity recipe, LongRunningOperationState? requiredState, CancellationToken ct) =>
-        WithinAsync<Guid?>(async (connection, transaction) =>
+        WithinReadAsync<Guid?>(async (connection, transaction) =>
     {
         if (partition is { } exact && (!exact.IsInitialized || exact.CampaignId != scope.CampaignId
             || exact.Kind != (scope.IsCampaignBound ? LongRestSweepScopeKind.Campaign : LongRestSweepScopeKind.Global)))
@@ -46,39 +73,33 @@ internal sealed partial class LongRestSweepStore : ILongRestCompletedRequestRepl
             throw new InvalidDataException();
         }
 
-        string? cursor = null;
+        long? cursorMark = null;
+
+        string? cursorOperation = null;
 
         while (true)
         {
-            List<Guid> page = [];
+            List<(Guid Operation, long Mark)> page = [];
 
-            await using (SqliteCommand command = Command(connection, transaction, """
-                SELECT sweep.OperationId FROM long_rest_sweeps sweep
-                JOIN long_rest_discovery_generations generation ON generation.GenerationId = sweep.GenerationId AND generation.OperationId = sweep.OperationId
-                JOIN LongRunningOperations operation ON operation.Id = sweep.OperationId AND operation.Kind = 'long-rest-sweep'
-                WHERE sweep.PhaseCode = 6 AND generation.PhaseCode = 6 AND generation.Published = 1
-                  AND ($operationState IS NULL OR operation.State = $operationState)
-                  AND sweep.ScopeKindCode = $scope AND sweep.CampaignId IS $campaign AND generation.RecipeDigest = $recipe
-                  AND sweep.ConfigurationJson = json_extract(generation.FenceJson, '$.configuration')
-                  AND ($cursor IS NULL OR sweep.OperationId > $cursor)
-                ORDER BY sweep.OperationId LIMIT 128;
-                """, ("$scope", scope.IsCampaignBound ? 2 : 1), ("$campaign", scope.CampaignId is { } campaign ? Format(campaign) : null),
-                ("$recipe", recipeDigest.Value.Bytes), ("$cursor", cursor), ("$operationState", requiredState is { } state ? (int)state : null)))
+            await using (SqliteCommand command = Command(connection, transaction, partition is null ? CompletedWholeScopeSql : CompletedExactPartitionSql,
+                ("$scope", scope.IsCampaignBound ? 2 : 1), ("$campaign", scope.CampaignId is { } campaign ? Format(campaign) : null),
+                ("$recipe", recipeDigest.Value.Bytes), ("$cursorMark", cursorMark), ("$cursorOperation", cursorOperation),
+                ("$operationState", requiredState is { } state ? (int)state : null)))
             {
+                if (partition is { } named)
+                {
+                    _ = command.Parameters.AddWithValue("$partition", (object?)named.ProtectedPartitionDigest?.Bytes ?? DBNull.Value);
+                }
+
                 await using SqliteDataReader reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
 
                 while (await reader.ReadAsync(ct).ConfigureAwait(false))
                 {
-                    page.Add(Guid.Parse(reader.GetString(0)));
+                    page.Add((Guid.Parse(reader.GetString(0)), reader.GetInt64(1)));
                 }
             }
 
-            if (page.Count == 0)
-            {
-                return null;
-            }
-
-            foreach (Guid operation in page)
+            foreach ((Guid operation, long _) in page)
             {
                 try
                 {
@@ -99,7 +120,16 @@ internal sealed partial class LongRestSweepStore : ILongRestCompletedRequestRepl
                 }
             }
 
-            cursor = page[^1].ToString("N");
+            if (page.Count < CompletedPageSize)
+            {
+                return null;
+            }
+
+            (Guid last, long mark) = page[^1];
+
+            cursorMark = mark;
+
+            cursorOperation = last.ToString("N");
         }
     }, ct);
 }

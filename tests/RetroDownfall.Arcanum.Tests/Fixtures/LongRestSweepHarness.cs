@@ -57,9 +57,55 @@ internal sealed partial class LongRestSweepHarness(SagaStoreHarness saga) : IAsy
     internal Task SeedAsync(string id, string text, Guid? session = null) => Saga.Store.InsertAsync(id, text,
         new DateTimeOffset(2026, 10, 10, 0, 0, 0, TimeSpan.Zero), session, null, "extraction", Saga.Embedding(), CancellationToken.None);
 
-    internal async Task<LongRestDiscoveryGeneration> StartAsync(Guid? campaign = null, CovenantDigest? partition = null, CovenantTurnLease? authority = null)
+    /// <summary>
+    /// A memory no other memory resembles: its text shares no word with another's and its vector is its own, so a corpus of them has
+    /// no exact, lexical or vector neighbour and a sweep over it finds no work to pay for.
+    /// </summary>
+    internal async Task SeedDistinctAsync(string id, int number, Guid? session = null)
     {
-        Guid operation = Guid.NewGuid();
+        await Saga.Store.InsertAsync(id,
+            $"alpha{number.ToString(System.Globalization.CultureInfo.InvariantCulture)} beta{number.ToString(System.Globalization.CultureInfo.InvariantCulture)}",
+            new DateTimeOffset(2026, 10, 10, 0, 0, 0, TimeSpan.Zero), session, null, "extraction", DistinctVector(number), CancellationToken.None);
+    }
+
+    /// <summary>
+    /// Gives every generated summary a vector of its own, so no summary resembles an anchor or another summary and the hierarchy lane,
+    /// which the default fold vectors would otherwise make every sibling summary a neighbour of, finds nothing either.
+    /// </summary>
+    internal void UseDistinctSummaries() => FoldVector = work => DistinctVector(1_000_000 + (work.Fold.Layer * 10_000) + checked((int)work.Fold.Group));
+
+    /// <summary>
+    /// A vector of its own: SplitMix64 from the number, so two numbers that differ by one are as unrelated as any two, which the framework's
+    /// seeded generator does not promise. In sixty-four dimensions the cosine of two such vectors sits near zero, far below the recall floor.
+    /// </summary>
+    internal float[] DistinctVector(int number)
+    {
+        ulong state = checked((ulong)number) * 0x9E3779B97F4A7C15UL + 0xD1B54A32D192ED03UL;
+
+        float[] vector = new float[64];
+
+        for (int index = 0; index < vector.Length; index++)
+        {
+            state += 0x9E3779B97F4A7C15UL;
+
+            ulong mixed = state;
+
+            mixed = (mixed ^ (mixed >> 30)) * 0xBF58476D1CE4E5B9UL;
+
+            mixed = (mixed ^ (mixed >> 27)) * 0x94D049BB133111EBUL;
+
+            mixed ^= mixed >> 31;
+
+            vector[index] = (float)((mixed >> 11) * (1.0 / (1UL << 53)) * 2.0 - 1.0);
+        }
+
+        return vector;
+    }
+
+    internal async Task<LongRestDiscoveryGeneration> StartAsync(Guid? campaign = null, CovenantDigest? partition = null, CovenantTurnLease? authority = null,
+        Guid? operationId = null)
+    {
+        Guid operation = operationId ?? Guid.NewGuid();
 
         await ExecuteAsync("INSERT INTO LongRunningOperations (Id, Kind, State, RecoveryPolicy, CreatedAt, PublicSummary) VALUES ($id, 'long-rest-sweep', 1, 1, '2026-10-10T00:00:00.0000000Z', 'sweep');", ("$id", operation.ToString("N")));
 
@@ -86,9 +132,10 @@ internal sealed partial class LongRestSweepHarness(SagaStoreHarness saga) : IAsy
         return generation;
     }
 
-    internal async Task<LongRestDiscoveryGeneration> CaptureAsync(Guid? campaign = null, CovenantDigest? partition = null, CovenantTurnLease? authority = null)
+    internal async Task<LongRestDiscoveryGeneration> CaptureAsync(Guid? campaign = null, CovenantDigest? partition = null, CovenantTurnLease? authority = null,
+        Guid? operationId = null)
     {
-        LongRestDiscoveryGeneration generation = await StartAsync(campaign, partition, authority);
+        LongRestDiscoveryGeneration generation = await StartAsync(campaign, partition, authority, operationId);
 
         LongRestSourcePage page;
 

@@ -48,6 +48,23 @@ internal sealed partial class LongRestDiscoveryStore
         )
         """;
 
+    // One pass over the protected partition projection answers both questions the turn asks of it: how many sources are ambiguous or
+    // mis-labelled (any makes the whole probe refuse) and which partition digest follows the cursor. The two used to be separate
+    // statements, each rebuilding the projection, and the probe runs once per protected partition on every eligible Session turn.
+    internal static readonly string ProtectedPartitionProbeSql = ProtectedPartitionSources + "\n" + """
+        SELECT count(*) FILTER (WHERE LabelCount <> 1 OR Valid <> 1),
+            min(SensitivityDigest) FILTER (WHERE $after IS NULL OR SensitivityDigest > $after)
+        FROM labeled;
+        """;
+
+    // The early-out for an installation with nothing protected in it: no kind-6 label exists and no stored version carries a sensitivity,
+    // so the projection above is empty whatever the scope, and the answer is "no partition" without building it. It is deliberately a
+    // superset test (any label, any version), so it can only decline to short-circuit, never admit a source the projection would refuse.
+    internal const string ProtectedPartitionAbsentSql = """
+        SELECT NOT EXISTS (SELECT 1 FROM artifact_sensitivity WHERE ArtifactKindCode = 6)
+            AND NOT EXISTS (SELECT 1 FROM annal_versions WHERE SensitivityCode <> 0);
+        """;
+
     public async Task<Result<CovenantDigest?>> ReadNextProtectedPartitionAsync(CanonicalCampaignContext scope,
         CovenantDigest? after, CancellationToken ct)
     {
@@ -62,22 +79,30 @@ internal sealed partial class LongRestDiscoveryStore
 
             await using SqliteTransaction transaction = connection.BeginTransaction(deferred: true);
 
-            await using SqliteCommand command = Command(connection, transaction,
-                ProtectedPartitionSources + " SELECT count(*) FROM labeled WHERE LabelCount <> 1 OR Valid <> 1;",
-                ("$scope", scope.IsCampaignBound ? 2 : 1), ("$campaign", scope.CampaignId is { } campaign ? Format(campaign) : null));
+            if (after is null)
+            {
+                await using SqliteCommand absent = Command(connection, transaction, ProtectedPartitionAbsentSql);
 
-            if ((long)(await command.ExecuteScalarAsync(ct).ConfigureAwait(false))! != 0)
+                if ((long)(await absent.ExecuteScalarAsync(ct).ConfigureAwait(false))! == 1)
+                {
+                    return Result<CovenantDigest?>.Success(null);
+                }
+            }
+
+            LongRestVerificationCounters.PartitionPass();
+
+            await using SqliteCommand command = Command(connection, transaction, ProtectedPartitionProbeSql,
+                ("$scope", scope.IsCampaignBound ? 2 : 1), ("$campaign", scope.CampaignId is { } campaign ? Format(campaign) : null),
+                ("$after", after?.Bytes));
+
+            await using SqliteDataReader reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
+
+            if (!await reader.ReadAsync(ct).ConfigureAwait(false) || reader.GetInt64(0) != 0)
             {
                 throw new InvalidDataException();
             }
 
-            command.CommandText = ProtectedPartitionSources + " SELECT SensitivityDigest FROM labeled WHERE $after IS NULL OR SensitivityDigest > $after ORDER BY SensitivityDigest LIMIT 1;";
-
-            command.Parameters.AddWithValue("$after", (object?)after?.Bytes ?? DBNull.Value);
-
-            object? value = await command.ExecuteScalarAsync(ct).ConfigureAwait(false);
-
-            return Result<CovenantDigest?>.Success(value is byte[] digest ? new CovenantDigest(digest) : null);
+            return Result<CovenantDigest?>.Success(reader.IsDBNull(1) ? null : new CovenantDigest((byte[])reader[1]));
         }
         catch (Exception exception) when (StorageFailure(exception) || exception is InvalidOperationException)
         {

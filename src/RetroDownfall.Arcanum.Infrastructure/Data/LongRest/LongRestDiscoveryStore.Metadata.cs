@@ -149,7 +149,10 @@ internal sealed partial class LongRestDiscoveryStore
             throw new InvalidDataException();
         }
 
-        await VerifyFrozenMetadataAsync(connection, transaction, generation, ct).ConfigureAwait(false);
+        // The set-based question comes first. A corpus that has outgrown the generation (a source eligible since it was captured, a
+        // disposition still open) fails here in one statement, before the per-leaf pass that costs a read of every leaf, so a stale
+        // candidate never pays for that pass. The verdict is unchanged: both proofs must hold.
+        LongRestVerificationCounters.AntiJoinPass();
 
         await using SqliteCommand command = Command(connection, transaction, $"""
             SELECT NOT EXISTS (SELECT 1 FROM long_rest_work_items WHERE GenerationId = $generation AND DispositionCode <> 2)
@@ -172,6 +175,8 @@ internal sealed partial class LongRestDiscoveryStore
         {
             throw new InvalidDataException();
         }
+
+        await VerifyFrozenMetadataAsync(connection, transaction, generation, ct).ConfigureAwait(false);
     }
 
     internal static async Task VerifyFrozenMetadataAsync(SqliteConnection connection, SqliteTransaction transaction,
@@ -181,6 +186,8 @@ internal sealed partial class LongRestDiscoveryStore
         {
             throw new InvalidDataException();
         }
+
+        LongRestVerificationCounters.CorpusPass();
 
         string? cursor = null;
 
@@ -215,6 +222,8 @@ internal sealed partial class LongRestDiscoveryStore
     private static async Task<LongRestSourceLeaf> ReadFrozenMetadataLeafAsync(SqliteConnection connection, SqliteTransaction transaction,
         LongRestDiscoveryGeneration generation, string memory, CancellationToken ct)
     {
+        LongRestVerificationCounters.MetadataLeafRead();
+
         CovenantDigest digest;
 
         LongRestSourceEmbeddingBinding? embedding;

@@ -564,6 +564,8 @@ internal sealed partial class LongRestDiscoveryStore
             throw new InvalidDataException();
         }
 
+        LongRestVerificationCounters.CorpusPass();
+
         string? cursor = null;
 
         while (true)
