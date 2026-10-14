@@ -1,5 +1,7 @@
 using System.Reflection;
 
+using RetroDownfall.Arcanum.Tests.Build;
+
 using RetroDownfall.Arcanum.Tests.Operations;
 
 using RetroDownfall.Arcanum.Tests.Cli;
@@ -129,6 +131,8 @@ public sealed class HostedProducerAnalysisCollectionTests
     [InlineData(typeof(HostedGrimoireProducerInventoryTests))]
     [InlineData(typeof(CovenantArchitectureBoundaryTests))]
     [InlineData(typeof(ArcanumAuthenticatedHttpSenderTests))]
+    [InlineData(typeof(AuthorityCarrierBanTests))]
+    [InlineData(typeof(AdmittedEntryCensusTests))]
     public void Production_compilation_consumers_are_isolated_from_parallel_suite(Type consumer)
     {
 
