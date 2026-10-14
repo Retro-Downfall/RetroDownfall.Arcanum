@@ -157,9 +157,9 @@ public sealed partial class LongRestHierarchyTests
                 JsonSerializer.Serialize(pair.Second.Snapshot, LongRestJsonContext.Default.LongRestSnapshot));
         }
 
-        var forwardPlan = LongRestSweepHarness.Require(LongRestHierarchy.PlanPage([.. forward.Select(row => row.Input)], 1, recipe, CancellationToken.None));
+        var forwardPlan = LongRestSweepHarness.Require(LongRestHierarchy.PlanPage([.. forward.Select(row => row.Input)], 1, recipe, LongRestDiscoveryLimits.ProviderInputUtf8Bytes, CancellationToken.None));
 
-        var reversePlan = LongRestSweepHarness.Require(LongRestHierarchy.PlanPage([.. reverse.Select(row => row.Input)], 1, recipe, CancellationToken.None));
+        var reversePlan = LongRestSweepHarness.Require(LongRestHierarchy.PlanPage([.. reverse.Select(row => row.Input)], 1, recipe, LongRestDiscoveryLimits.ProviderInputUtf8Bytes, CancellationToken.None));
 
         Assert.NotEmpty(forwardPlan);
 
@@ -337,5 +337,4 @@ public sealed partial class LongRestHierarchyTests
             return result;
         }
     }
-
 }

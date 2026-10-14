@@ -42,6 +42,7 @@ public sealed class ArcanumErrorMapperTests
     [InlineData(ErrorCodes.Session.PinNotFound, StatusCodes.Status404NotFound)]
     [InlineData(ErrorCodes.LongRest.SweepParked, StatusCodes.Status409Conflict)]
     [InlineData(ErrorCodes.LongRest.OperationBusy, StatusCodes.Status409Conflict)]
+    [InlineData(ErrorCodes.LongRest.ModelContextTooSmall, StatusCodes.Status409Conflict)]
     [InlineData(ErrorCodes.LongRest.ProviderUnavailable, StatusCodes.Status503ServiceUnavailable)]
     [InlineData(ErrorCodes.LongRest.ProviderUnreachable, StatusCodes.Status503ServiceUnavailable)]
     [InlineData(ErrorCodes.LongRest.ProviderRejected, StatusCodes.Status502BadGateway)]

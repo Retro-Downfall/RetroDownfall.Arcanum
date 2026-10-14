@@ -4,6 +4,7 @@ using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Annals;
 using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Core.LongRest;
+using RetroDownfall.Arcanum.Core.Primitives;
 
 namespace RetroDownfall.Arcanum.Tests.LongRest;
 
@@ -37,9 +38,9 @@ public sealed class LongRestHierarchyPlanningTests
 
         ImmutableArray<LongRestHierarchyInput> inputs = [.. Enumerable.Range(1, 128).Select(index => new LongRestHierarchyInput(Child(index), [1, 0]))];
 
-        var forward = LongRestHierarchy.PlanPage(inputs, 1, recipe, CancellationToken.None).Value;
+        var forward = LongRestHierarchy.PlanPage(inputs, 1, recipe, LongRestDiscoveryLimits.ProviderInputUtf8Bytes, CancellationToken.None).Value;
 
-        var backward = LongRestHierarchy.PlanPage([.. inputs.Reverse()], 1, recipe, CancellationToken.None).Value;
+        var backward = LongRestHierarchy.PlanPage([.. inputs.Reverse()], 1, recipe, LongRestDiscoveryLimits.ProviderInputUtf8Bytes, CancellationToken.None).Value;
 
         Assert.Equal(forward.Select(group => LongRestHierarchy.Membership(group, recipe)), backward.Select(group => LongRestHierarchy.Membership(group, recipe)));
 
@@ -79,12 +80,65 @@ public sealed class LongRestHierarchyPlanningTests
     {
         CovenantDigest recipe = new(new byte[32]);
 
-        Assert.True(LongRestHierarchy.PlanPage([new(Child(1), [float.NaN, 0]), new(Child(2), [1, 0])], 1, recipe, CancellationToken.None).IsFailure);
+        Assert.True(LongRestHierarchy.PlanPage([new(Child(1), [float.NaN, 0]), new(Child(2), [1, 0])], 1, recipe, LongRestDiscoveryLimits.ProviderInputUtf8Bytes, CancellationToken.None).IsFailure);
 
-        Assert.True(LongRestHierarchy.PlanPage([new(Child(1) with { Content = new string('é', 16385) }, [])], 1, recipe, CancellationToken.None).IsFailure);
+        Assert.True(LongRestHierarchy.PlanPage([new(Child(1) with { Content = new string('é', 16385) }, [])], 1, recipe, LongRestDiscoveryLimits.ProviderInputUtf8Bytes, CancellationToken.None).IsFailure);
 
-        Assert.True(LongRestHierarchy.PlanPage([new(Child(1) with { Content = "\ud800" }, [])], 1, recipe, CancellationToken.None).IsFailure);
+        Assert.True(LongRestHierarchy.PlanPage([new(Child(1) with { Content = "\ud800" }, [])], 1, recipe, LongRestDiscoveryLimits.ProviderInputUtf8Bytes, CancellationToken.None).IsFailure);
     }
+
+    [Fact]
+    public void Children_whose_summary_request_exceeds_the_budget_are_not_planned_into_one_fold()
+    {
+        CovenantDigest recipe = new(new byte[32]);
+
+        // 2 x 16,200 raw bytes is under the 32,768 raw ceiling, but the request (fixed prompt plus two observation blocks) is not.
+        ImmutableArray<LongRestHierarchyInput> page = [new(LongRestPackingData.Child(1, new string('x', 16200)), [1, 0]), new(LongRestPackingData.Child(2, new string('y', 16200)), [1, 0])];
+
+        var planned = LongRestHierarchy.PlanPage(page, 1, recipe, LongRestDiscoveryLimits.ProviderInputUtf8Bytes, CancellationToken.None).Value;
+
+        Assert.Equal([1, 1], planned.Select(group => group.Length));
+
+        // Two children that do fit the same budget are one fold.
+        ImmutableArray<LongRestHierarchyInput> smaller = [new(LongRestPackingData.Child(1, new string('x', 15000)), [1, 0]), new(LongRestPackingData.Child(2, new string('y', 15000)), [1, 0])];
+
+        Assert.Equal([2], LongRestHierarchy.PlanPage(smaller, 1, recipe, LongRestDiscoveryLimits.ProviderInputUtf8Bytes, CancellationToken.None).Value.Select(group => group.Length));
+
+        // And the same pair is split by a smaller budget: the budget comes from the recipe, not from a constant.
+        Assert.Equal([1, 1], LongRestHierarchy.PlanPage(smaller, 1, recipe, 16000, CancellationToken.None).Value.Select(group => group.Length).Order());
+    }
+
+    [Fact]
+    public void A_child_the_budget_cannot_hold_alone_is_refused_as_model_context_too_small_and_a_blank_one_stays_invalid()
+    {
+        CovenantDigest recipe = new(new byte[32]);
+
+        ImmutableArray<LongRestHierarchyInput> page = [new(LongRestPackingData.Child(1, new string('x', 5000)), []), new(LongRestPackingData.Child(2, "small"), [])];
+
+        Assert.True(LongRestHierarchy.PlanPage(page, 1, recipe, 8192, CancellationToken.None).IsSuccess);
+
+        var refused = LongRestHierarchy.PlanPage(page, 1, recipe, LongRestPromptLayout.MinimumInputUtf8Bytes, CancellationToken.None);
+
+        Assert.True(refused.IsFailure);
+
+        Assert.Equal(ErrorCodes.LongRest.ModelContextTooSmall, refused.Error.Code);
+
+        Assert.Contains("contextWindowLimit", refused.Error.Message, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("xxxxx", refused.Error.Message, StringComparison.Ordinal);
+
+        var blank = LongRestHierarchy.PlanPage([new(LongRestPackingData.Child(1, " \n "), []), new(LongRestPackingData.Child(2, "small"), [])], 1, recipe, 8192, CancellationToken.None);
+
+        Assert.Equal(ErrorCodes.LongRest.InvalidRequest, blank.Error.Code);
+    }
+
+    [Theory]
+    [InlineData(4095)]
+    [InlineData(32769)]
+    [InlineData(0)]
+    [InlineData(-1)]
+    public void Planning_requires_a_budget_within_the_recipe_bounds(int budget) =>
+        Assert.Equal(ErrorCodes.LongRest.InvalidRequest, LongRestHierarchy.PlanPage([new(Child(1), []), new(Child(2), [])], 1, new(new byte[32]), budget, CancellationToken.None).Error.Code);
 
     private static LongRestHierarchyChild Child(int index)
     {

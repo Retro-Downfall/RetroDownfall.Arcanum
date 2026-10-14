@@ -127,6 +127,8 @@ public static class LongRestFaultPolicy
 
         [ErrorCodes.LongRest.TransportUnknown] = LongRestFaultClass.NeedsOperator,
 
+        [ErrorCodes.LongRest.ModelContextTooSmall] = LongRestFaultClass.NeedsOperator,
+
         [LongRestParkCodes.AuthorizedRequestRequired] = LongRestFaultClass.NeedsOperator,
 
         [LongRestParkCodes.CheckpointInvalid] = LongRestFaultClass.NeedsOperator,

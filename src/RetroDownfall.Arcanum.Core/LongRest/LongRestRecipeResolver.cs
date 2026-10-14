@@ -74,13 +74,36 @@ public static class LongRestRecipeResolver
             return Result<LongRestRecipeIdentity>.Failure(new Error(ErrorCodes.LongRest.Unavailable, "The exact Long Rest provider recipe is unavailable."));
         }
 
-        LongRestRecipeIdentity recipe = new(1, 1, chat!.Name, chatModel, Destination(chat),
-            embeddingProvider!.Name, embedding.Model!, Destination(embeddingProvider), embedding.Dimensions);
+        ProviderSettings chatProvider = chat!;
+
+        ProviderSettings embeddingHost = embeddingProvider!;
+
+        // The recipe carries the rendered-request budget the chat provider's window allows, so what the planner admits is what the
+        // model can take. A window too small for the smallest unit, or an embedding window too small for one summary, is refused here.
+        if (ChatWindowTooSmall(chatProvider) || EmbeddingWindowTooSmall(embeddingHost))
+        {
+            return Result<LongRestRecipeIdentity>.Failure(new Error(ErrorCodes.LongRest.ModelContextTooSmall,
+                "The configured Long Rest provider windows are too small for the smallest recipe."));
+        }
+
+        LongRestRecipeIdentity recipe = new(1, 1, chatProvider.Name, chatModel, Destination(chatProvider),
+            embeddingHost.Name, embedding.Model!, Destination(embeddingHost), embedding.Dimensions)
+        {
+            ProviderInputUtf8Bytes = LongRestPromptLayout.InputBudgetUtf8Bytes(chatProvider.ContextWindowLimit),
+        };
 
         return LongRestDiscoveryHash.Recipe(recipe).IsFailure
             ? Result<LongRestRecipeIdentity>.Failure(new Error(ErrorCodes.LongRest.InvalidRequest, "The configured Long Rest recipe exceeds its supported bounds."))
             : Result<LongRestRecipeIdentity>.Success(recipe);
     }
+
+    // The chat window is clamped the way the context-budget check clamps it, so an unset or tiny window is too small.
+    private static bool ChatWindowTooSmall(ProviderSettings provider) =>
+        ArcanumSettingClamps.ContextWindowLimit(provider.ContextWindowLimit) < LongRestPromptLayout.MinimumChatWindowTokens;
+
+    // The embedding admission skips a window of zero or less, so an unset window is not refused here either.
+    private static bool EmbeddingWindowTooSmall(ProviderSettings provider) =>
+        provider.ContextWindowLimit > 0 && ArcanumSettingClamps.ContextWindowLimit(provider.ContextWindowLimit) < LongRestPromptLayout.MinimumEmbeddingWindowTokens;
 
     /// <summary>The head every report of an enabled-but-unresolved recipe starts with.</summary>
     public const string UnresolvedHeadline = "LongRest: enabled but recipe unresolved";
@@ -128,6 +151,29 @@ public static class LongRestRecipeResolver
         else if (!IsSupported(embeddingProvider!))
         {
             problems.Add($"the embedding provider '{embeddingProvider!.Name}' is not an OpenAI-compatible provider with an absolute http or https endpoint");
+        }
+
+        if (problems.Count == 0)
+        {
+            ProviderSettings chatProvider = chat!;
+
+            ProviderSettings embeddingHost = embeddingProvider!;
+
+            if (ChatWindowTooSmall(chatProvider))
+            {
+                problems.Add("the chat model named by " + chatSource + " is served by provider '" + chatProvider.Name + "', whose contextWindowLimit of "
+                    + ArcanumSettingClamps.ContextWindowLimit(chatProvider.ContextWindowLimit).ToString(System.Globalization.CultureInfo.InvariantCulture)
+                    + " tokens is below the " + LongRestPromptLayout.MinimumChatWindowTokens.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                    + " the smallest Long Rest request needs; raise that provider's contextWindowLimit or choose a model with a larger window");
+            }
+
+            if (EmbeddingWindowTooSmall(embeddingHost))
+            {
+                problems.Add("the embedding provider '" + embeddingHost.Name + "' has a contextWindowLimit of "
+                    + ArcanumSettingClamps.ContextWindowLimit(embeddingHost.ContextWindowLimit).ToString(System.Globalization.CultureInfo.InvariantCulture)
+                    + " tokens, below the " + LongRestPromptLayout.MinimumEmbeddingWindowTokens.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                    + " one Long Rest summary needs; raise its contextWindowLimit or choose an embedding provider with a larger window");
+            }
         }
 
         if (problems.Count == 0 && Resolve(settings).IsFailure)

@@ -322,7 +322,8 @@ internal sealed partial class LongRestDiscoveryStore
         ImmutableArray<LongRestHierarchyInput> page = await ReadFrontierPageAsync(connection, transaction, generation, layer,
             group / LongRestDiscoveryLimits.SourcePage, capability, cancellationToken).ConfigureAwait(false);
 
-        var planned = LongRestHierarchy.PlanPage(page, layer, LongRestDiscoveryHash.Recipe(generation.Recipe).Value, cancellationToken);
+        var planned = LongRestHierarchy.PlanPage(page, layer, LongRestDiscoveryHash.Recipe(generation.Recipe).Value,
+            generation.Recipe.ProviderInputUtf8Bytes, cancellationToken);
 
         int slot = (int)(group % LongRestDiscoveryLimits.SourcePage);
 

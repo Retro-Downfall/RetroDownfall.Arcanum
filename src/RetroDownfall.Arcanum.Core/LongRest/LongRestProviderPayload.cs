@@ -31,7 +31,7 @@ public enum LongRestProviderResultDisposition : byte
 /// <summary>Closed immutable transient input; exact provider message bytes are checked before send.</summary>
 public sealed class LongRestProviderPayload
 {
-    private LongRestProviderPayload(LongRestProviderPayloadKind kind, LongRestWorkIdentity work, ImmutableArray<LongRestSourceLeaf> inputs, LongRestHierarchyFold? fold, string? text)
+    private LongRestProviderPayload(LongRestProviderPayloadKind kind, LongRestWorkIdentity work, ImmutableArray<LongRestSourceLeaf> inputs, LongRestHierarchyFold? fold, string? text, int inputBudgetBytes)
     {
         Kind = kind;
 
@@ -42,6 +42,8 @@ public sealed class LongRestProviderPayload
         Fold = fold;
 
         EmbeddingText = text;
+
+        InputBudgetBytes = inputBudgetBytes;
     }
 
     public LongRestProviderPayloadKind Kind { get; }
@@ -65,18 +67,21 @@ public sealed class LongRestProviderPayload
 
     public string? EmbeddingText { get; }
 
+    /// <summary>The rendered bytes the recipe lets this request take; the renderer refuses anything larger.</summary>
+    public int InputBudgetBytes { get; }
+
     private static readonly UTF8Encoding StrictUtf8 = new(false, true);
 
-    public static Result<LongRestProviderPayload> Summary(LongRestHierarchyFold fold)
+    public static Result<LongRestProviderPayload> Summary(LongRestHierarchyFold fold, int inputBudgetBytes = LongRestDiscoveryLimits.ProviderInputUtf8Bytes)
     {
-        if (fold is null || LongRestDiscoveryHash.Work(fold.Work).IsFailure)
+        if (fold is null || !ValidBudget(inputBudgetBytes) || LongRestDiscoveryHash.Work(fold.Work).IsFailure)
         {
             return Invalid("A summary payload requires one bounded exact hierarchy fold.");
         }
 
         Result<CovenantDigest> source = LongRestDiscoveryHash.HierarchyFold(fold);
 
-        if (source.IsFailure || source.Value != fold.Work.SourceDigest || !WithinInputBound(fold.Children.Select(child => child.Content)))
+        if (source.IsFailure || source.Value != fold.Work.SourceDigest || !SummaryFits(fold.Children, inputBudgetBytes))
         {
             return Invalid("The summary child manifest does not match its frozen work source or input bound.");
         }
@@ -88,19 +93,20 @@ public sealed class LongRestProviderPayload
             ExpandedTargets = [.. child.ExpandedTargets],
         })];
 
-        return new LongRestProviderPayload(LongRestProviderPayloadKind.Summary, fold.Work, [], fold with { Children = children }, null);
+        return new LongRestProviderPayload(LongRestProviderPayloadKind.Summary, fold.Work, [], fold with { Children = children }, null, inputBudgetBytes);
     }
 
-    public static Result<LongRestProviderPayload> Adjudication(LongRestWorkIdentity work, ImmutableArray<LongRestSourceLeaf> inputs)
+    public static Result<LongRestProviderPayload> Adjudication(LongRestWorkIdentity work, ImmutableArray<LongRestSourceLeaf> inputs,
+        int inputBudgetBytes = LongRestDiscoveryLimits.ProviderInputUtf8Bytes)
     {
-        if (LongRestDiscoveryHash.Work(work).IsFailure || inputs.IsDefaultOrEmpty || inputs.Length > LongRestDiscoveryLimits.Targets)
+        if (!ValidBudget(inputBudgetBytes) || LongRestDiscoveryHash.Work(work).IsFailure || inputs.IsDefaultOrEmpty || inputs.Length > LongRestDiscoveryLimits.Targets)
         {
             return Invalid("An adjudication payload requires one bounded exact source vector.");
         }
 
         Result<CovenantDigest> source = LongRestDiscoveryHash.SourcePage(work.Scope, inputs);
 
-        if (source.IsFailure || source.Value != work.SourceDigest || !WithinInputBound(inputs.Select(input => input.Content)))
+        if (source.IsFailure || source.Value != work.SourceDigest || !AdjudicationFits(inputs, inputBudgetBytes))
         {
             return Invalid("The adjudication source vector does not match its frozen work identity or input bound.");
         }
@@ -119,7 +125,7 @@ public sealed class LongRestProviderPayload
             Vector = input.Vector.IsDefault ? default : [.. input.Vector],
         })];
 
-        return new LongRestProviderPayload(LongRestProviderPayloadKind.Adjudication, work, frozen, null, null);
+        return new LongRestProviderPayload(LongRestProviderPayloadKind.Adjudication, work, frozen, null, null, inputBudgetBytes);
     }
 
     public static Result<LongRestProviderPayload> Embedding(LongRestWorkIdentity work, string text)
@@ -129,7 +135,69 @@ public sealed class LongRestProviderPayload
             return Invalid("An embedding payload requires bounded strict UTF-8 input and exact work identity.");
         }
 
-        return new LongRestProviderPayload(LongRestProviderPayloadKind.Embedding, work, [], null, text);
+        return new LongRestProviderPayload(LongRestProviderPayloadKind.Embedding, work, [], null, text, LongRestDiscoveryLimits.ProviderInputUtf8Bytes);
+    }
+
+    private static bool ValidBudget(int inputBudgetBytes) =>
+        inputBudgetBytes is >= LongRestPromptLayout.MinimumInputUtf8Bytes and <= LongRestDiscoveryLimits.ProviderInputUtf8Bytes;
+
+    // The planner and the renderer measure the same layout, so a payload that fits here renders within the same budget.
+    private static bool SummaryFits(IEnumerable<LongRestHierarchyChild> children, int inputBudgetBytes)
+    {
+        try
+        {
+            long total = LongRestPromptLayout.FixedBytes(LongRestProviderPayloadKind.Summary);
+
+            foreach (LongRestHierarchyChild child in children)
+            {
+                if (string.IsNullOrWhiteSpace(child.Content))
+                {
+                    return false;
+                }
+
+                total += LongRestPromptLayout.SummaryObservationBytes(child.Content);
+
+                if (total > inputBudgetBytes)
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+        catch (EncoderFallbackException)
+        {
+            return false;
+        }
+    }
+
+    private static bool AdjudicationFits(ImmutableArray<LongRestSourceLeaf> inputs, int inputBudgetBytes)
+    {
+        try
+        {
+            long total = LongRestPromptLayout.FixedBytes(LongRestProviderPayloadKind.Adjudication);
+
+            foreach (LongRestSourceLeaf input in inputs)
+            {
+                if (string.IsNullOrWhiteSpace(input.Content))
+                {
+                    return false;
+                }
+
+                total += LongRestPromptLayout.AdjudicationMemoryBytes(input);
+
+                if (total > inputBudgetBytes)
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+        catch (EncoderFallbackException)
+        {
+            return false;
+        }
     }
 
     private static bool WithinInputBound(IEnumerable<string?> content)

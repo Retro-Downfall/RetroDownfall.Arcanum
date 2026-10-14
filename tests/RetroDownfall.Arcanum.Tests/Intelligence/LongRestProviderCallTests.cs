@@ -5,6 +5,7 @@ using RetroDownfall.Arcanum.Core.LongRest;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.Security;
+using RetroDownfall.Arcanum.Tests.Fixtures;
 using RetroDownfall.Arcanum.Tests.LongRest;
 
 namespace RetroDownfall.Arcanum.Tests.Intelligence;
@@ -136,16 +137,28 @@ public sealed class LongRestProviderCallTests
         Assert.Equal(0, f.Handler.SendCount);
     }
 
+    // The renderer still refuses to truncate. Planner and renderer now measure one layout, so a memory whose raw content is under the
+    // 32,768-byte ceiling but whose request is not is refused by the planner, before any payload, effect row or send exists.
     [Fact]
-    public async Task Rendered_chat_overflow_refuses_instead_of_truncating_sources()
+    public async Task Rendered_chat_overflow_is_refused_by_the_planner_instead_of_truncating_sources()
     {
-        await using LongRestProviderFixture f = await LongRestProviderFixture.CreateAsync(content: new string('x', 32749));
+        await using LongRestSweepHarness h = await LongRestSweepHarness.CreateAsync();
 
-        Result<LongRestChatRequest> rendered = LongRestProviderCallFreezer.RenderChat(f.Payload);
+        await h.SeedAsync(Guid.NewGuid().ToString("D"), new string('x', 32749));
 
-        Assert.True(rendered.IsFailure);
+        await h.SeedAsync(Guid.NewGuid().ToString("D"), "Beta observation.");
 
-        Assert.Equal(0, f.Handler.SendCount);
+        LongRestDiscoveryGeneration generation = await h.CaptureAsync();
+
+        Result<LongRestHierarchyWork?> planned = await h.Store.ReadNextFoldAsync(generation.GenerationId, null, CancellationToken.None);
+
+        Assert.True(planned.IsFailure);
+
+        Assert.Equal(ErrorCodes.LongRest.ModelContextTooSmall, planned.Error.Code);
+
+        Assert.Equal(0L, await h.ScalarAsync("SELECT count(*) FROM long_rest_provider_effects;"));
+
+        Assert.Equal(0L, await h.ScalarAsync("SELECT count(*) FROM InferenceRuns;"));
     }
 
     [Fact]

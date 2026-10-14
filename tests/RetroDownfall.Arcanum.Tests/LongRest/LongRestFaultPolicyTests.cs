@@ -61,6 +61,8 @@ public sealed class LongRestFaultPolicyTests
 
         { "LongRest.TransportUnknown", LongRestFaultClass.NeedsOperator },
 
+        { "LongRest.ModelContextTooSmall", LongRestFaultClass.NeedsOperator },
+
         { "long_rest.authorized_request_required", LongRestFaultClass.NeedsOperator },
 
         { "long_rest.checkpoint_invalid", LongRestFaultClass.NeedsOperator },

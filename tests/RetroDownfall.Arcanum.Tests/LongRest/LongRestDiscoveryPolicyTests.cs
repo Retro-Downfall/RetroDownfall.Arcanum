@@ -176,6 +176,42 @@ public sealed class LongRestDiscoveryPolicyTests
         Assert.NotEqual(LongRestDiscoveryHash.Recipe(recipe).Value, LongRestDiscoveryHash.Recipe(recipe with { EmbeddingModel = "different-model" }).Value);
     }
 
+    // Independently assembled preimages (Python struct.pack and hashlib.sha256). 32768 is the digest every default recipe had before
+    // the input budget became window-derived, so it pins that the default recipe's identity did not move.
+    [Theory]
+    [InlineData(32768, "B668245D3AF103126BD44346B14A0A5AA8636466CD610C47D4BCC76452A8F272")]
+    [InlineData(4096, "018B917E01224E44B72A4FCE25AB32081A974559CC67A43506BA6057243F98C8")]
+    [InlineData(5328, "CE2D25D0F4DEAD3BAFF3E580B2EDB8C5A52E623B253093632D9356DAE5E642D9")]
+    [InlineData(20000, "01F9D001C58E38E25BAFF318D6A8404CA0C06703E2E1E712CB74C15D709925A5")]
+    public void Recipe_digest_golden_vectors_pin_the_default_and_the_window_derived_budgets(int budget, string expected)
+    {
+        CovenantDigest digest = new(new byte[32]);
+
+        LongRestRecipeIdentity recipe = new LongRestRecipeIdentity(1, 1, "summary-provider", "summary-model", digest, "embedding-provider", "embedding-model", digest, 17) with { ProviderInputUtf8Bytes = budget };
+
+        Assert.Equal(expected, LongRestDiscoveryHash.Recipe(recipe).Value.ToString());
+    }
+
+    [Theory]
+    [InlineData(4096, true)]
+    [InlineData(4097, true)]
+    [InlineData(32767, true)]
+    [InlineData(32768, true)]
+    [InlineData(4095, false)]
+    [InlineData(32769, false)]
+    [InlineData(0, false)]
+    [InlineData(-1, false)]
+    [InlineData(int.MinValue, false)]
+    [InlineData(int.MaxValue, false)]
+    public void Recipe_accepts_exactly_the_input_budgets_from_the_minimum_recipe_to_the_32_KiB_ceiling(int budget, bool valid)
+    {
+        CovenantDigest digest = new(new byte[32]);
+
+        LongRestRecipeIdentity recipe = new LongRestRecipeIdentity(1, 1, "summary-provider", "summary-model", digest, "embedding-provider", "embedding-model", digest, 17) with { ProviderInputUtf8Bytes = budget };
+
+        Assert.Equal(valid, LongRestDiscoveryHash.Recipe(recipe).IsSuccess);
+    }
+
     [Fact]
     public void Provider_payloads_refuse_oversized_utf8_and_freeze_exact_input_snapshots()
     {

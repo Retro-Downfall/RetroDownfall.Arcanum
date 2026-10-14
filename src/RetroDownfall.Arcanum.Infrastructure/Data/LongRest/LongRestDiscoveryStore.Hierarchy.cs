@@ -68,7 +68,7 @@ internal sealed partial class LongRestDiscoveryStore
                 }
 
                 Result<ImmutableArray<ImmutableArray<LongRestHierarchyChild>>> planned = LongRestHierarchy.PlanPage(inputs, layer,
-                    LongRestDiscoveryHash.Recipe(generation.Recipe).Value, cancellationToken);
+                    LongRestDiscoveryHash.Recipe(generation.Recipe).Value, generation.Recipe.ProviderInputUtf8Bytes, cancellationToken);
 
                 if (planned.IsFailure)
                 {
