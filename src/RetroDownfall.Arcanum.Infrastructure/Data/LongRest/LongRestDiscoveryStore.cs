@@ -64,6 +64,14 @@ internal sealed partial class LongRestDiscoveryStore(ArcanumDbContext db, TimePr
                         return Refuse<LongRestDiscoveryGeneration>(ErrorCodes.LongRest.StaleInput, "The sweep owns different scope or generation facts.");
                     }
 
+                    // Resuming a retained generation is a seam. While it was parked, restored, evolved or erased around, it may have been changed by a
+                    // route no trigger watches, so no unit runs until every leaf it froze has been re-proved. A divergence is a stale generation,
+                    // which a clean sweep answers by being replaced, not a storage fault to retry.
+                    if (!await VerifyResumeSeamAsync(connection, transaction, existing, cancellationToken).ConfigureAwait(false))
+                    {
+                        return Refuse<LongRestDiscoveryGeneration>(ErrorCodes.LongRest.StaleInput, "The retained generation no longer matches the sources it froze.");
+                    }
+
                     if (existing.Fence == fence)
                     {
                         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);

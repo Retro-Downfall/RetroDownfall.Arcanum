@@ -17,7 +17,10 @@ internal sealed partial class LongRestMaintenance
         GenerationProvenance provenance, LongRestMaintenanceCapability? capability, string workerOwner, IGrimoireWorkLease admission,
         Func<PaidResult, LongRestDispatchCompletion, CancellationToken, bool, Task<T>> accept, CancellationToken ct)
     {
-        await EnsureCurrentAsync(generation, capability, workerOwner, ct).ConfigureAwait(false);
+        // The leaves this request is built from: each is re-proved in full at every gate that stands between them and the send.
+        string[] used = InputsOf(payload);
+
+        await EnsureCurrentAsync(generation, capability, workerOwner, ct, inputs: used).ConfigureAwait(false);
 
         if (!admission.TryBeginExternalEffectGroup(out IGrimoireExternalEffectGroup? group) || group is null)
         {
@@ -83,7 +86,7 @@ internal sealed partial class LongRestMaintenance
                         throw new Refused(Stale());
                     }
 
-                    await EnsureCurrentAsync(generation, capability, workerOwner, token).ConfigureAwait(false);
+                    await EnsureCurrentAsync(generation, capability, workerOwner, token, inputs: used).ConfigureAwait(false);
 
                     Require(await attempts.ValidateAttemptAsync(attempt, token).ConfigureAwait(false));
 
@@ -109,7 +112,7 @@ internal sealed partial class LongRestMaintenance
                         attempt = Require(await attempts.RecordDisclosureAsync(attempt, receipt.Digest, token).ConfigureAwait(false));
 
                         // Durable evidence never replaces the independently current source, claim and lease.
-                        await EnsureCurrentAsync(generation, capability, workerOwner, token).ConfigureAwait(false);
+                        await EnsureCurrentAsync(generation, capability, workerOwner, token, inputs: used).ConfigureAwait(false);
 
                         Require(await attempts.ValidateAttemptAsync(attempt, token).ConfigureAwait(false));
 
@@ -119,7 +122,7 @@ internal sealed partial class LongRestMaintenance
 
                     attempt = Require(await attempts.MarkSentAsync(attempt, token).ConfigureAwait(false));
 
-                    await EnsureCurrentAsync(generation, capability, workerOwner, token).ConfigureAwait(false);
+                    await EnsureCurrentAsync(generation, capability, workerOwner, token, inputs: used).ConfigureAwait(false);
 
                     Require(await attempts.ValidateAttemptAsync(attempt, token).ConfigureAwait(false));
                 }
@@ -176,7 +179,7 @@ internal sealed partial class LongRestMaintenance
 
                 try
                 {
-                    await EnsureCurrentAsync(generation, capability, workerOwner, dispatch.Token).ConfigureAwait(false);
+                    await EnsureCurrentAsync(generation, capability, workerOwner, dispatch.Token, inputs: used).ConfigureAwait(false);
 
                     Require(await attempts.ValidateAttemptAsync(attempt, dispatch.Token).ConfigureAwait(false));
 
@@ -223,6 +226,14 @@ internal sealed partial class LongRestMaintenance
             await heartbeat.ConfigureAwait(false);
         }
     }
+
+    /// <summary>The memories a request is built from: an adjudication's inputs, or what a summary's children expand to. An embedding is built from accepted text.</summary>
+    private static string[] InputsOf(LongRestProviderPayload payload) => payload.Kind switch
+    {
+        LongRestProviderPayloadKind.Adjudication => [.. payload.Inputs.Select(input => input.Snapshot.MemoryId)],
+        LongRestProviderPayloadKind.Summary when payload.Fold is { } fold => [.. fold.Children.SelectMany(child => child.ExpandedTargets).Select(target => target.MemoryId).Distinct()],
+        _ => [],
+    };
 
     // Best effort by design: the original failure is what the caller rethrows, and an unsettled Sent attempt is still settled by the
     // reboot rule. The write runs under the still-held external-effect group, with no usage and no cancellation token of its own.

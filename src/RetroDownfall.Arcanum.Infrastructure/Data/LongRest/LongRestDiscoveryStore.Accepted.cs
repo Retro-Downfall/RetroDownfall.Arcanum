@@ -48,7 +48,7 @@ internal sealed partial class LongRestDiscoveryStore
             }
 
             LongRestHierarchyFold current = await ResolveCurrentFoldAsync(connection, transaction, generation, summary.Fold.Layer,
-                summary.Fold.Group, capability, cancellationToken).ConfigureAwait(false);
+                summary.Fold.Group, capability, LongRestVerificationDepth.Step, cancellationToken).ConfigureAwait(false);
 
             if (Math.Max(1, generation.FoldLayer) != current.Layer || generation.FoldGroup != current.Group)
             {
@@ -162,7 +162,7 @@ internal sealed partial class LongRestDiscoveryStore
             }
 
             LongRestHierarchyFold current = await ResolveCurrentFoldAsync(connection, transaction, generation, supplied.Fold.Layer,
-                supplied.Fold.Group, capability, cancellationToken).ConfigureAwait(false);
+                supplied.Fold.Group, capability, LongRestVerificationDepth.Step, cancellationToken).ConfigureAwait(false);
 
             LongRestAcceptedHierarchySummary accepted = await ReadAcceptedSummaryAsync(connection, transaction, current, generation.Recipe, cancellationToken).ConfigureAwait(false)
                 ?? throw new InvalidDataException();
@@ -307,14 +307,15 @@ internal sealed partial class LongRestDiscoveryStore
     }
 
     private static async Task<LongRestHierarchyFold> ResolveCurrentFoldAsync(SqliteConnection connection, SqliteTransaction transaction,
-        LongRestDiscoveryGeneration generation, int layer, long group, LongRestMaintenanceCapability? capability, CancellationToken cancellationToken)
+        LongRestDiscoveryGeneration generation, int layer, long group, LongRestMaintenanceCapability? capability, LongRestVerificationDepth depth,
+        CancellationToken cancellationToken)
     {
         if (layer is < 1 or > 6 || group < 0 || (await ValidateReadAuthorityAsync(generation, capability, cancellationToken).ConfigureAwait(false)).IsFailure)
         {
             throw new InvalidDataException();
         }
 
-        await VerifyFrozenSourcesAsync(connection, transaction, generation, capability, cancellationToken).ConfigureAwait(false);
+        await VerifyFrozenSourcesAsync(connection, transaction, generation, capability, depth, cancellationToken).ConfigureAwait(false);
 
         ImmutableArray<LongRestHierarchyInput> page = await ReadFrontierPageAsync(connection, transaction, generation, layer,
             group / LongRestDiscoveryLimits.SourcePage, capability, cancellationToken).ConfigureAwait(false);

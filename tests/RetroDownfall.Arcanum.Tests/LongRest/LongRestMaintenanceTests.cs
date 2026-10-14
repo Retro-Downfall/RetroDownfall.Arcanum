@@ -144,6 +144,9 @@ public sealed partial class LongRestMaintenanceTests
 
         internal LongRestMaintenance Maintenance = null!;
 
+        /// <summary>The live fence reader the maintenance and coordinator were composed over, for a test that probes a gate directly.</summary>
+        internal LongRestLiveFenceReader Facts = null!;
+
         internal SessionTurnClaimLease Claim = null!;
 
         internal ArcanumInvocationContext Invocation = null!;
@@ -391,6 +394,8 @@ public sealed partial class LongRestMaintenanceTests
 
             LongRestLiveFenceReader facts = new(H.Saga.Context, Runtime, RecordedAdmission, Epoch,
                 new CampaignAvailabilityReader(connections), new CampaignPathIdentityReader(connections, null!));
+
+            Facts = facts;
 
             LongRestSweepStore sweeps = new(H.Saga.Context, Clock);
 

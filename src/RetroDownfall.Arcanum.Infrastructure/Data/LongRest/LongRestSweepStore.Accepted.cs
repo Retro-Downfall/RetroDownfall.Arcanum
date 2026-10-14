@@ -21,7 +21,7 @@ internal sealed partial class LongRestSweepStore
     private Task<Result<LongRestAdjudication>> CommitAcceptedAdjudicationCoreAsync(LongRestSweep expected, LongRestAdjudication accepted,
         LongRestDispatchCompletion? completion, string? workerOwner, LongRestMaintenanceCapability? capability, CancellationToken ct, bool committedOnly) => WithinAsync(async (connection, transaction) =>
     {
-        LongRestDiscoveryGeneration generation = await RequireGenerationAsync(connection, transaction, expected, capability, ct).ConfigureAwait(false);
+        LongRestDiscoveryGeneration generation = await RequireGenerationAsync(connection, transaction, expected, capability, LongRestVerificationDepth.Step, ct).ConfigureAwait(false);
 
         LongRestSweepWork current = await ResolveAsync(connection, transaction, generation, expected.Revision, accepted.Work.ItemId, capability, ct).ConfigureAwait(false);
 
@@ -135,7 +135,7 @@ internal sealed partial class LongRestSweepStore
             throw new InvalidDataException();
         }
 
-        await LongRestDiscoveryStore.ValidateSweepEvidenceMetadataAsync(connection, transaction, generation, ct).ConfigureAwait(false);
+        await LongRestDiscoveryStore.ValidateSweepEvidenceMetadataAsync(connection, transaction, generation, LongRestVerificationDepth.Step, ct).ConfigureAwait(false);
 
         LongRestAdjudication original = await ReadAcceptedAsync(connection, transaction, unit, currentIdentity, generation.Recipe, ct).ConfigureAwait(false) ?? throw new InvalidDataException();
 
@@ -154,7 +154,7 @@ internal sealed partial class LongRestSweepStore
             return persisted;
         }
 
-        _ = await RequireGenerationAsync(connection, transaction, expected, capability, ct).ConfigureAwait(false);
+        _ = await RequireGenerationAsync(connection, transaction, expected, capability, LongRestVerificationDepth.Step, ct).ConfigureAwait(false);
 
         LongRestSweepWork current = await ResolveAsync(connection, transaction, generation, expected.Revision, decision.Work.ItemId, capability, ct).ConfigureAwait(false);
 

@@ -76,7 +76,7 @@ internal sealed partial class LongRestDiscoveryStore
 
     /// <summary>Metadata consistency only. This grants no capability, plaintext, payload or send authority.</summary>
     internal static async Task ValidateAttemptSourceMetadataAsync(SqliteConnection connection, SqliteTransaction transaction,
-        LongRestWorkIdentity work, string unit, CancellationToken ct)
+        LongRestWorkIdentity work, string unit, LongRestVerificationDepth depth, CancellationToken ct)
     {
         LongRestDiscoveryGeneration generation = await ReadSweepGenerationAsync(connection, transaction, work.OperationId, ct).ConfigureAwait(false) ?? throw new InvalidDataException();
 
@@ -86,7 +86,7 @@ internal sealed partial class LongRestDiscoveryStore
             throw new InvalidDataException();
         }
 
-        await VerifyFrozenMetadataAsync(connection, transaction, generation, ct).ConfigureAwait(false);
+        await VerifyFrozenMetadataAsync(connection, transaction, generation, depth, ct).ConfigureAwait(false);
 
         if (work.Kind != LongRestWorkKind.Anchor)
         {
@@ -130,14 +130,14 @@ internal sealed partial class LongRestDiscoveryStore
 
     /// <summary>Current metadata prerequisite to reading retained adjudication content; never a capability.</summary>
     internal static async Task ValidateSweepEvidenceMetadataAsync(SqliteConnection connection, SqliteTransaction transaction,
-        LongRestDiscoveryGeneration generation, CancellationToken ct)
+        LongRestDiscoveryGeneration generation, LongRestVerificationDepth depth, CancellationToken ct)
     {
         if (!generation.Published || generation.Phase is not (LongRestSweepPhase.Discover or LongRestSweepPhase.Adjudicate or LongRestSweepPhase.Completed))
         {
             throw new InvalidDataException();
         }
 
-        await VerifyFrozenMetadataAsync(connection, transaction, generation, ct).ConfigureAwait(false);
+        await VerifyFrozenMetadataAsync(connection, transaction, generation, depth, ct).ConfigureAwait(false);
     }
 
     internal static async Task ValidateCompletedCorpusMetadataAsync(SqliteConnection connection, SqliteTransaction transaction,
@@ -176,15 +176,32 @@ internal sealed partial class LongRestDiscoveryStore
             throw new InvalidDataException();
         }
 
-        await VerifyFrozenMetadataAsync(connection, transaction, generation, ct).ConfigureAwait(false);
+        // Adopting a completed generation's answer is a seam: every leaf, once.
+        await VerifyFrozenMetadataAsync(connection, transaction, generation, LongRestVerificationDepth.Seam, ct).ConfigureAwait(false);
     }
 
+    /// <summary>
+    /// The metadata-only form of <see cref="VerifyFrozenSourcesAsync"/>, for callers that hold no capability and so cannot read protected
+    /// content: the same set-based question, then every leaf's metadata at a seam or one rotating window of them at a step.
+    /// </summary>
     internal static async Task VerifyFrozenMetadataAsync(SqliteConnection connection, SqliteTransaction transaction,
-        LongRestDiscoveryGeneration generation, CancellationToken ct)
+        LongRestDiscoveryGeneration generation, LongRestVerificationDepth depth, CancellationToken ct)
     {
         if (!await FrozenSourceMetadataMatchesAsync(connection, transaction, generation, ct).ConfigureAwait(false))
         {
             throw new InvalidDataException();
+        }
+
+        if (depth == LongRestVerificationDepth.Step)
+        {
+            if (!await OwnProjectionsOnlyAsync(connection, transaction, generation, ct).ConfigureAwait(false))
+            {
+                throw new InvalidDataException();
+            }
+
+            await ScrubWindowMetadataAsync(connection, transaction, generation, ct).ConfigureAwait(false);
+
+            return;
         }
 
         LongRestVerificationCounters.CorpusPass();

@@ -70,7 +70,8 @@ internal sealed partial class LongRestDiscoveryStore : ILongRestCleanReadmission
                         if ((long)(await unsettled.ExecuteScalarAsync(ct).ConfigureAwait(false))! != 0) throw new InvalidDataException();
                     }
 
-                    await VerifyFrozenSourcesAsync(connection, transaction, generation, null, ct).ConfigureAwait(false);
+                    // Readmission is a seam: whatever the sweep rested on across the abort is re-proved in full before it may continue.
+                    await VerifyFrozenSourcesAsync(connection, transaction, generation, null, LongRestVerificationDepth.Seam, ct).ConfigureAwait(false);
 
                     await ProveCleanWorkAsync(connection, transaction, generation, ct).ConfigureAwait(false);
 
@@ -89,7 +90,7 @@ internal sealed partial class LongRestDiscoveryStore : ILongRestCleanReadmission
 
                     LongRestDiscoveryGeneration adopted = generation with { Fence = current, Revision = checked(generation.Revision + 1) };
 
-                    await VerifyFrozenSourcesAsync(connection, transaction, adopted, null, ct).ConfigureAwait(false);
+                    await VerifyFrozenSourcesAsync(connection, transaction, adopted, null, LongRestVerificationDepth.Seam, ct).ConfigureAwait(false);
 
                     await ValidateCleanOwnerAsync(connection, transaction, adopted, current, workerOwner, facts, admission, previousAdmission, ct).ConfigureAwait(false);
 
@@ -165,7 +166,8 @@ internal sealed partial class LongRestDiscoveryStore : ILongRestCleanReadmission
                         || !long.TryParse(coordinates[2], NumberStyles.None, CultureInfo.InvariantCulture, out long group)
                         || unit.Disposition is not (1 or 2)) throw new InvalidDataException();
 
-                    LongRestHierarchyFold fold = await ResolveCurrentFoldAsync(connection, transaction, generation, layer, group, null, ct).ConfigureAwait(false);
+                    // The corpus was proved in full by the caller a moment ago, in this same transaction.
+                    LongRestHierarchyFold fold = await ResolveCurrentFoldAsync(connection, transaction, generation, layer, group, null, LongRestVerificationDepth.Step, ct).ConfigureAwait(false);
 
                     work = fold.Work;
 

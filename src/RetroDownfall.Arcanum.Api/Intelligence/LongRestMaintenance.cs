@@ -120,7 +120,16 @@ internal sealed partial class LongRestMaintenance(LongRestConfigurationEpoch epo
                 return Stale();
             }
 
-            await EnsureCurrentAsync(generation, capability, workerOwner, ct).ConfigureAwait(false);
+            // A protected run is resumed without a capability to read content with, so its first unit is the seam that re-proves every leaf
+            // in full under the capability, before anything is sent. A clean run proved its whole corpus when it resumed.
+            bool entry = capability is { EntrySeamPending: true };
+
+            await EnsureCurrentAsync(generation, capability, workerOwner, ct, depth: entry ? LongRestVerificationDepth.Seam : LongRestVerificationDepth.Step).ConfigureAwait(false);
+
+            if (entry)
+            {
+                capability!.MarkEntrySeamProven();
+            }
 
             if (generation.Phase == LongRestSweepPhase.Capture)
             {
@@ -212,9 +221,12 @@ internal sealed partial class LongRestMaintenance(LongRestConfigurationEpoch epo
     private async Task AdjudicateAsync(LongRestDiscoveryGeneration generation, LongRestSweep sweep, LongRestSweepWork work,
         LongRestMaintenanceCapability? capability, string workerOwner, IGrimoireWorkLease admission, CancellationToken ct)
     {
+        // The leaves this unit acts on: each is re-proved in full at every gate that stands between them and an effect.
+        string[] used = [.. work.Inputs.Select(input => input.Snapshot.MemoryId)];
+
         if (work.AcceptedAdjudication is { } retained)
         {
-            await EnsureCurrentAsync(generation, capability, workerOwner, ct).ConfigureAwait(false);
+            await EnsureCurrentAsync(generation, capability, workerOwner, ct, inputs: used).ConfigureAwait(false);
 
             Require(await sweeps.CommitDecisionAsync(sweep, retained, capability, ct).ConfigureAwait(false));
 
@@ -223,7 +235,7 @@ internal sealed partial class LongRestMaintenance(LongRestConfigurationEpoch epo
 
         if (work.Inputs.Length >= 2 && work.Inputs.All(input => input.Snapshot.ContentHash == work.Inputs[0].Snapshot.ContentHash))
         {
-            await EnsureCurrentAsync(generation, capability, workerOwner, ct).ConfigureAwait(false);
+            await EnsureCurrentAsync(generation, capability, workerOwner, ct, inputs: used).ConfigureAwait(false);
 
             Require(await sweeps.CommitExactDuplicatesAsync(sweep, work.Identity, capability, ct).ConfigureAwait(false));
 
@@ -245,12 +257,13 @@ internal sealed partial class LongRestMaintenance(LongRestConfigurationEpoch epo
                 return Require(await sweeps.CommitAcceptedAdjudicationAsync(sweep, decision, completion, workerOwner, capability, token, committedOnly).ConfigureAwait(false));
             }, ct).ConfigureAwait(false);
 
-        await EnsureCurrentAsync(generation, capability, workerOwner, ct).ConfigureAwait(false);
+        await EnsureCurrentAsync(generation, capability, workerOwner, ct, inputs: used).ConfigureAwait(false);
 
         Require(await sweeps.CommitDecisionAsync(sweep, accepted, capability, ct).ConfigureAwait(false));
     }
 
-    private async Task EnsureCurrentAsync(LongRestDiscoveryGeneration generation, LongRestMaintenanceCapability? capability, string workerOwner, CancellationToken ct, bool renewClaim = true, LongRestLiveFenceReader? independentFacts = null)
+    private async Task EnsureCurrentAsync(LongRestDiscoveryGeneration generation, LongRestMaintenanceCapability? capability, string workerOwner, CancellationToken ct, bool renewClaim = true, LongRestLiveFenceReader? independentFacts = null,
+        IReadOnlyCollection<string>? inputs = null, LongRestVerificationDepth depth = LongRestVerificationDepth.Step)
     {
         ct.ThrowIfCancellationRequested();
 
@@ -273,13 +286,13 @@ internal sealed partial class LongRestMaintenance(LongRestConfigurationEpoch epo
 
             if (renewClaim && capability.Claim.LeaseDeadlineUtc <= timeProvider.GetUtcNow().AddMinutes(2))
             {
-                Require(await current.ValidateGenerationAsync(generation, capability, timeProvider.GetUtcNow(), ct).ConfigureAwait(false));
+                Require(await current.ValidateGenerationAsync(generation, capability, timeProvider.GetUtcNow(), depth, inputs, ct).ConfigureAwait(false));
 
                 await RenewClaimAsync(capability, ct).ConfigureAwait(false);
             }
         }
 
-        Require(await current.ValidateGenerationAsync(generation, capability, timeProvider.GetUtcNow(), ct).ConfigureAwait(false));
+        Require(await current.ValidateGenerationAsync(generation, capability, timeProvider.GetUtcNow(), depth, inputs, ct).ConfigureAwait(false));
 
         if (capability is not null)
         {

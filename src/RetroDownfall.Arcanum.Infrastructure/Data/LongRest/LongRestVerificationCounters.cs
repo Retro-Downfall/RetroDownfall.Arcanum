@@ -43,6 +43,9 @@ internal static class LongRestVerificationCounters
     /// <summary>One set-based statement that joins a generation or the eligible sources against the live corpus.</summary>
     internal static void AntiJoinPass() => Current.Value?.Add(LongRestVerificationMetric.AntiJoinPass);
 
+    /// <summary>One rotating window of leaves re-proved in full by a step, which is all of a step's corpus work.</summary>
+    internal static void ScrubWindow() => Current.Value?.Add(LongRestVerificationMetric.ScrubWindow);
+
     /// <summary>One lexical-lane hit read back in full to prove it eligible.</summary>
     internal static void FtsHitVerification() => Current.Value?.Add(LongRestVerificationMetric.FtsHitVerification);
 
@@ -63,6 +66,7 @@ internal enum LongRestVerificationMetric
     MetadataLeafRead,
     CorpusPass,
     AntiJoinPass,
+    ScrubWindow,
     FtsHitVerification,
     PartitionPass,
     WriterTransaction,
@@ -85,6 +89,8 @@ internal sealed class LongRestVerificationTally : IDisposable
     internal long CorpusPasses => Read(LongRestVerificationMetric.CorpusPass);
 
     internal long AntiJoinPasses => Read(LongRestVerificationMetric.AntiJoinPass);
+
+    internal long ScrubWindows => Read(LongRestVerificationMetric.ScrubWindow);
 
     internal long FtsHitVerifications => Read(LongRestVerificationMetric.FtsHitVerification);
 

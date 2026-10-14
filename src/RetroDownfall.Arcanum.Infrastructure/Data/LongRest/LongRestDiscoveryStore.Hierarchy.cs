@@ -39,7 +39,8 @@ internal sealed partial class LongRestDiscoveryStore
                 return Result<LongRestHierarchyWork?>.Failure(authority.Error);
             }
 
-            await VerifyFrozenSourcesAsync(connection, transaction, generation, capability, cancellationToken).ConfigureAwait(false);
+            // A fold read is a step: the frontier page it plans from is read in full just below, so every input of the fold is re-proved here.
+            await VerifyFrozenSourcesAsync(connection, transaction, generation, capability, LongRestVerificationDepth.Step, cancellationToken).ConfigureAwait(false);
 
             // Counted as the plan is walked, published only once the cursor it moved is durable.
             long oversize = 0;
@@ -168,7 +169,8 @@ internal sealed partial class LongRestDiscoveryStore
                 return Result<LongRestDiscoveryGeneration>.Failure(authority.Error);
             }
 
-            await VerifyFrozenSourcesAsync(connection, transaction, generation, capability, cancellationToken).ConfigureAwait(false);
+            // Publishing closes the build and opens discovery on the corpus as it stands: a seam, so every leaf is re-proved in full.
+            await VerifyFrozenSourcesAsync(connection, transaction, generation, capability, LongRestVerificationDepth.Seam, cancellationToken).ConfigureAwait(false);
 
             await using SqliteCommand proof = Command(connection, transaction, """
                 SELECT NOT EXISTS (
@@ -556,12 +558,29 @@ internal sealed partial class LongRestDiscoveryStore
         }
     }
 
-    private static async Task VerifyFrozenSourcesAsync(SqliteConnection connection, SqliteTransaction transaction,
-        LongRestDiscoveryGeneration generation, LongRestMaintenanceCapability? capability, CancellationToken cancellationToken)
+    /// <summary>
+    /// Re-proves a generation's captured leaves against the live corpus. At a <see cref="LongRestVerificationDepth.Seam"/> that is every leaf,
+    /// read in full; at a <see cref="LongRestVerificationDepth.Step"/> it is the set-based metadata question over every leaf and one rotating
+    /// window of them read in full, which is what bounds how long a divergence no trigger saw can go unnoticed.
+    /// </summary>
+    internal static async Task VerifyFrozenSourcesAsync(SqliteConnection connection, SqliteTransaction transaction,
+        LongRestDiscoveryGeneration generation, LongRestMaintenanceCapability? capability, LongRestVerificationDepth depth, CancellationToken cancellationToken)
     {
         if (!await FrozenSourceMetadataMatchesAsync(connection, transaction, generation, cancellationToken).ConfigureAwait(false))
         {
             throw new InvalidDataException();
+        }
+
+        if (depth == LongRestVerificationDepth.Step)
+        {
+            if (!await OwnProjectionsOnlyAsync(connection, transaction, generation, cancellationToken).ConfigureAwait(false))
+            {
+                throw new InvalidDataException();
+            }
+
+            await ScrubWindowAsync(connection, transaction, generation, capability, cancellationToken).ConfigureAwait(false);
+
+            return;
         }
 
         LongRestVerificationCounters.CorpusPass();

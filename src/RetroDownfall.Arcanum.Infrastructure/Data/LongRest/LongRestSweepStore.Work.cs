@@ -72,7 +72,7 @@ internal sealed partial class LongRestSweepStore
     {
         counts.Reset();
 
-        LongRestDiscoveryGeneration generation = await RequireGenerationAsync(connection, transaction, expected, capability, ct).ConfigureAwait(false);
+        LongRestDiscoveryGeneration generation = await RequireGenerationAsync(connection, transaction, expected, capability, LongRestVerificationDepth.Step, ct).ConfigureAwait(false);
 
         if (expected.Phase == LongRestSweepPhase.Completed)
         {
@@ -295,6 +295,13 @@ internal sealed partial class LongRestSweepStore
         await ValidateClaimAsync(connection, transaction, generation, capability, ct).ConfigureAwait(false);
 
         ct.ThrowIfCancellationRequested();
+
+        if (complete)
+        {
+            // Completion is a seam. Every step before it took the corpus on the evidence of triggers, its inputs and one rotating window of
+            // leaves; the sweep does not close on that. Every leaf is re-proved in full, in the transaction that closes it.
+            await LongRestDiscoveryStore.ValidateSweepGenerationAsync(connection, transaction, generation, capability, LongRestVerificationDepth.Seam, ct).ConfigureAwait(false);
+        }
 
         await using SqliteCommand advance = Command(connection, transaction, """
             UPDATE long_rest_sweeps SET DiscoveryCursor = $cursor, PhaseCode = $phase, ReadmitCount = 0, Revision = Revision + 1, UpdatedAtUtc = $at

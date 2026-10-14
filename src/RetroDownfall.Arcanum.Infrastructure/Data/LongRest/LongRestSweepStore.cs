@@ -142,7 +142,7 @@ internal sealed partial class LongRestSweepStore(ArcanumDbContext db, TimeProvid
     }
 
     private async Task<LongRestDiscoveryGeneration> RequireGenerationAsync(SqliteConnection connection, SqliteTransaction transaction,
-        LongRestSweep expected, LongRestMaintenanceCapability? capability, CancellationToken ct)
+        LongRestSweep expected, LongRestMaintenanceCapability? capability, LongRestVerificationDepth depth, CancellationToken ct)
     {
         if (expected != await ReadAsync(connection, transaction, expected.OperationId, ct).ConfigureAwait(false))
         {
@@ -159,7 +159,7 @@ internal sealed partial class LongRestSweepStore(ArcanumDbContext db, TimeProvid
 
         await ValidateClaimAsync(connection, transaction, generation, capability, ct).ConfigureAwait(false);
 
-        await LongRestDiscoveryStore.ValidateSweepGenerationAsync(connection, transaction, generation, capability, ct).ConfigureAwait(false);
+        await LongRestDiscoveryStore.ValidateSweepGenerationAsync(connection, transaction, generation, capability, depth, ct).ConfigureAwait(false);
 
         return generation;
     }

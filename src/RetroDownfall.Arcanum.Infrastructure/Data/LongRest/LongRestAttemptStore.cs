@@ -411,7 +411,8 @@ internal sealed partial class LongRestAttemptStore(ArcanumDbContext db, TimeProv
 
         await reader.DisposeAsync().ConfigureAwait(false);
 
-        await LongRestDiscoveryStore.ValidateAttemptSourceMetadataAsync(connection, transaction, work, unit, ct).ConfigureAwait(false);
+        // Every attempt operation is a step: the unit's own inputs are re-proved exactly, and the corpus is proved at the seams around it.
+        await LongRestDiscoveryStore.ValidateAttemptSourceMetadataAsync(connection, transaction, work, unit, LongRestVerificationDepth.Step, ct).ConfigureAwait(false);
 
         return unit;
     }
