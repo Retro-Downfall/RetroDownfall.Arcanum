@@ -199,6 +199,46 @@ public sealed partial class HostedGrimoireProducerInventoryTests
             "sealed class Probe : System.Collections.Generic.IEnumerable<int> { public System.Collections.Generic.IEnumerator<int> GetEnumerator() => new ProbeEnumerator(); System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator(); } sealed class ProbeEnumerator : System.Collections.Generic.IEnumerator<int> { public bool MoveNext() { {E} return false; } public int Current => 0; object System.Collections.IEnumerator.Current => Current; public void Reset() { } public void Dispose() { } } sealed class Holder { private int[] values = [.. new Probe()]; }", CensusDisposition.Traversed),
         new("field-initializer", "FieldInitializer", "_ = new Holder();",
             "sealed class Holder { private int value = Compute(); private static int Compute() { {E} return 1; } }", CensusDisposition.Traversed),
+
+        // ---- The construction entry of a struct ---------------------------------------------------------
+        new("struct-primary-constructor-initializer", "FieldInitializer", "_ = new Holder(1);",
+            "struct Holder(int seed) { private int value = Compute(seed); public int Value => value; private static int Compute(int seed) { {E} return seed; } }", CensusDisposition.Traversed),
+        new("record-struct-primary-constructor-initializer", "FieldInitializer", "_ = new Holder(1);",
+            "record struct Holder(int Seed) { private int value = Compute(); public int Value => value; private static int Compute() { {E} return 1; } }", CensusDisposition.Traversed),
+        new("struct-declared-constructor-initializer", "FieldInitializer", "_ = new Holder(1);",
+            "struct Holder { private int value = Compute(); public Holder(int seed) { } private static int Compute() { {E} return 1; } }", CensusDisposition.Traversed),
+        new("implicit-object-creation-initializer", "FieldInitializer", "Holder holder = new(); _ = holder;",
+            "sealed class Holder { private int value = Compute(); private static int Compute() { {E} return 1; } }", CensusDisposition.Traversed),
+
+        // ---- Collection expression Add overloads the compiler may select -------------------------------
+        new("collection-expression-add-optional-parameter", "CollectionExpression", "Bag bag = [1, 2]; _ = bag;",
+            "sealed class Bag : System.Collections.Generic.IEnumerable<int> { public void Add(int value, int extra = 0) { {E} } public System.Collections.Generic.IEnumerator<int> GetEnumerator() => null!; System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => null!; }", CensusDisposition.Traversed),
+        new("collection-expression-add-params-parameter", "CollectionExpression", "Bag bag = [1, 2]; _ = bag;",
+            "sealed class Bag : System.Collections.Generic.IEnumerable<int> { public void Add(int value, params int[] rest) { {E} } public System.Collections.Generic.IEnumerator<int> GetEnumerator() => null!; System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => null!; }", CensusDisposition.Traversed),
+        new("collection-expression-add-generic-extension-optional", "CollectionExpression", "Bag bag = [1, 2]; _ = bag;",
+            "sealed class Bag : System.Collections.Generic.IEnumerable<int> { public System.Collections.Generic.IEnumerator<int> GetEnumerator() => null!; System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => null!; } static class BagExt { public static void Add<T>(this Bag bag, T value, int extra = 0) { {E} } }", CensusDisposition.Traversed),
+
+        // ---- Compiler-generated members of anonymous types and records ----------------------------------
+        new("anonymous-type-interpolation", "ToString", "string text = $\"{new { A = new Named() }}\"; _ = text;",
+            "sealed class Named { public override string ToString() { {E} return \"n\"; } }", CensusDisposition.Traversed),
+        new("anonymous-type-local-interpolation", "ToString", "var anon = new { A = new Named() }; string text = $\"{anon}\"; _ = text;",
+            "sealed class Named { public override string ToString() { {E} return \"n\"; } }", CensusDisposition.Traversed),
+        new("anonymous-type-written-to-string", "ToString", "var anon = new { A = new Named() }; string text = anon.ToString(); _ = text;",
+            "sealed class Named { public override string ToString() { {E} return \"n\"; } }", CensusDisposition.Traversed),
+        new("anonymous-type-written-equals", "Equality", "bool same = new { A = new Key() }.Equals(new { A = new Key() }); _ = same;",
+            "sealed class Key { public override bool Equals(object? other) { {E} return true; } public override int GetHashCode() => 1; }", CensusDisposition.Traversed),
+        new("anonymous-type-written-get-hash-code", "Equality", "int hash = new { A = new Key() }.GetHashCode(); _ = hash;",
+            "sealed class Key { public override bool Equals(object? other) => true; public override int GetHashCode() { {E} return 1; } }", CensusDisposition.Traversed),
+        new("record-written-to-string", "ToString", "string text = new Rec(new Named()).ToString(); _ = text;",
+            "sealed record Rec(Named Inner); sealed class Named { public override string ToString() { {E} return \"n\"; } }", CensusDisposition.Traversed),
+        new("record-written-property-print", "ToString", "string text = new Rec(1).ToString(); _ = text;",
+            "sealed record Rec(int A) { public int A { get { {E} return 1; } init { } } }", CensusDisposition.Traversed),
+        new("record-written-equals", "Equality", "bool same = new Rec(new Key()).Equals(new Rec(new Key())); _ = same;",
+            "sealed record Rec(Key Inner); sealed class Key { public override bool Equals(object? other) { {E} return true; } public override int GetHashCode() => 1; }", CensusDisposition.Traversed),
+        new("record-written-get-hash-code", "Equality", "int hash = new Rec(new Key()).GetHashCode(); _ = hash;",
+            "sealed record Rec(Key Inner); sealed class Key { public override bool Equals(object? other) => true; public override int GetHashCode() { {E} return 1; } }", CensusDisposition.Traversed),
+        new("record-written-deconstruct", "Deconstruct", "new Rec(1).Deconstruct(out int a); _ = a;",
+            "sealed record Rec(int A) { public int A { get { {E} return 1; } init { } } }", CensusDisposition.Traversed),
     ];
 
     private static string HandlerHelpers(string effectIn) =>

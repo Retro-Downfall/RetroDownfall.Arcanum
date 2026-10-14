@@ -84,6 +84,10 @@ internal static partial class HostedGrimoireProducerInventory
         Unsupported = 17,
 
         ConstructionEntry = 18,
+
+        // A written call to a member the compiler generated for a record or an anonymous type, or to a framework slot
+        // (ToString, Equals, GetHashCode, CompareTo, GetFormat, ...) that dispatches on the runtime type of the value.
+        SynthesizedMember = 19,
     }
 
     // One member the compiler calls: the selected method (a property access is its accessor), the value it is
@@ -760,9 +764,25 @@ internal static partial class HostedGrimoireProducerInventory
             Action<ImplicitCallKind, IOperation, SyntaxNode, IReadOnlyList<ImplicitCallStep>> add,
             Action<string> refuse)
         {
-            // A written invocation is the invocation lane's, and the framework query operator a query clause calls is
-            // judged with the query's callbacks; an Add or an append written inside a clause is an invocation of its own.
-            if (invocation.Syntax is InvocationExpressionSyntax or QueryClauseSyntax or SelectOrGroupClauseSyntax or QueryBodySyntax or QueryExpressionSyntax)
+            // A written invocation is the invocation lane's, except a call to a member the lane cannot follow because nothing
+            // in source declares it: a generated member of a record or an anonymous type, and a framework slot that runs
+            // the override of the value's runtime type. The framework query operator a query clause calls is judged with
+            // the query's callbacks; an Add or an append written inside a clause is an invocation of its own.
+            if (invocation.Syntax is InvocationExpressionSyntax)
+            {
+                string? writtenLabel = IsGeneratedMemberCall(invocation) ? "synthesized" : IsDispatchedFrameworkSlotCall(invocation) ? "callback" : null;
+
+                if (writtenLabel is not null)
+                {
+                    ExpressionSyntax? writtenReceiver = invocation.Instance is { IsImplicit: false } writtenInstance ? writtenInstance.Syntax as ExpressionSyntax : null;
+
+                    add(ImplicitCallKind.SynthesizedMember, invocation, invocation.Syntax, [Step(writtenLabel, invocation.TargetMethod, invocation.Instance?.Type, writtenReceiver, After(invocation.Syntax), WrittenArguments(invocation.Arguments))]);
+                }
+
+                return;
+            }
+
+            if (invocation.Syntax is QueryClauseSyntax or SelectOrGroupClauseSyntax or QueryBodySyntax or QueryExpressionSyntax)
             {
                 return;
             }
@@ -810,6 +830,45 @@ internal static partial class HostedGrimoireProducerInventory
             add(kind, invocation, invocation.Syntax, [Step(label, invocation.TargetMethod, invocation.Instance?.Type, receiver, After(invocation.Syntax), WrittenArguments(invocation.Arguments))]);
         }
 
+        // A call to a method the compiler generated for a record or an anonymous type: nothing in source declares its
+        // body, so no lane follows what it runs.
+        private static bool IsGeneratedMemberCall(IInvocationOperation invocation) =>
+            invocation.TargetMethod is { IsImplicitlyDeclared: true, ContainingType: { } owner }
+            && (owner.IsRecord || owner.IsAnonymousType)
+            && owner.Locations.Any(static location => location.IsInSource);
+
+        // A call, through a framework member, to a slot that runs the override of the value's runtime type: the
+        // ToString, Equals and GetHashCode of object, the members of the framework contracts a framework member calls on a
+        // value it is handed, and the members that override them in a framework class. The invocation lane resolves the
+        // member written, which is the framework one.
+        private static bool IsDispatchedFrameworkSlotCall(IInvocationOperation invocation)
+        {
+            IMethodSymbol method = invocation.TargetMethod;
+
+            if (method.IsStatic || invocation.Instance is null || method.Locations.Any(static location => location.IsInSource))
+            {
+                return false;
+            }
+
+            if (!(method.IsVirtual || method.IsAbstract || method.IsOverride || method.ContainingType.TypeKind == TypeKind.Interface))
+            {
+                return false;
+            }
+
+            IMethodSymbol root = method;
+
+            while (root.OverriddenMethod is { } overridden)
+            {
+                root = overridden;
+            }
+
+            string contract = TypeKey(root.ContainingType);
+
+            return root.ContainingType.SpecialType == SpecialType.System_Object
+                    ? root.Name is "ToString" or "GetHashCode" || root.Name == "Equals" && root.Parameters.Length == 1
+                    : CallbackContracts.Contains(contract) || contract is "System.IFormattable" or "System.ISpanFormattable" or "System.IUtf8SpanFormattable";
+        }
+
         private static void InspectCreation(IObjectCreationOperation creation, Action<ImplicitCallKind, IOperation, SyntaxNode, IReadOnlyList<ImplicitCallStep>> add)
         {
             if (creation.Constructor is not { } constructor)
@@ -823,7 +882,7 @@ internal static partial class HostedGrimoireProducerInventory
             if (creation.Syntax is BaseObjectCreationExpressionSyntax)
             {
                 if ((constructor.IsImplicitlyDeclared || constructor.DeclaringSyntaxReferences.Any(static reference => reference.GetSyntax() is TypeDeclarationSyntax))
-                    && constructor.ContainingType is { TypeKind: TypeKind.Class } type
+                    && constructor.ContainingType is { TypeKind: TypeKind.Class or TypeKind.Struct } type
                     && type.Locations.Any(static location => location.IsInSource))
                 {
                     add(ImplicitCallKind.ConstructionEntry, creation, creation.Syntax, [Step("construct", constructor, creation.Type, null, After(creation.Syntax), WrittenArguments(creation.Arguments))]);
@@ -1082,7 +1141,7 @@ internal static partial class HostedGrimoireProducerInventory
                 {
                     IMethodSymbol selected = candidate.ReducedFrom ?? candidate;
 
-                    if (selected.Parameters.Length - (selected.IsStatic ? 1 : 0) == 1)
+                    if (AcceptsOneElement(selected))
                     {
                         steps.Add(Step("add", selected, target, null, position));
                     }
@@ -1093,6 +1152,18 @@ internal static partial class HostedGrimoireProducerInventory
             {
                 add(ImplicitCallKind.CollectionExpressionConstruction, collection, collection.Syntax, steps);
             }
+        }
+
+        // Whether an Add can be called with one element: its first parameter takes the element (an extension's `this`
+        // parameter is the receiver, not an element) and every parameter after it is optional or a params array. The
+        // compiler may select any such overload, so every one of them is listed.
+        private static bool AcceptsOneElement(IMethodSymbol selected)
+        {
+            int first = selected.IsStatic ? 1 : 0;
+
+            return selected.Parameters.Length > first
+                && selected.Parameters[first].RefKind is RefKind.None or RefKind.In
+                && selected.Parameters.Skip(first + 1).All(static parameter => parameter.IsOptional || parameter.IsParams);
         }
 
         // The formatting of a value that an interpolation hole or a string concatenation operand makes: ToString,

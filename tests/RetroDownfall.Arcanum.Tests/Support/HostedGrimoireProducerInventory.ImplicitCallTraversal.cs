@@ -139,6 +139,15 @@ internal static partial class HostedGrimoireProducerInventory
             // Exception.ToString reads.
             internal void AddFormatting(INamedTypeSymbol type, IMethodSymbol slot)
             {
+                // The members of an anonymous type are generated, and Roslyn does not expose them: the type formats,
+                // compares and hashes every member it holds.
+                if (type.IsAnonymousType && slot.ContainingType.SpecialType == SpecialType.System_Object)
+                {
+                    graph.AddSynthesizedByName(member, type, slot.Name, slot, this);
+
+                    return;
+                }
+
                 ISymbol? implementation = EnumerationImplementation(type, slot);
 
                 // A type that does not implement a format contract is not formatted through it.
@@ -154,9 +163,22 @@ internal static partial class HostedGrimoireProducerInventory
                     return;
                 }
 
+                bool readsInnerExceptions = false;
+
                 foreach (IMethodSymbol getter in FrameworkToStringReads(type))
                 {
                     Add(EnumerationImplementation(type, getter), getter);
+
+                    readsInnerExceptions |= getter.ContainingType.Name == "Exception";
+                }
+
+                // Exception.ToString formats the inner exceptions too (every one of an AggregateException), and an inner
+                // exception can be any exception the universe declares, so the formatting of each of them is followed.
+                if (readsInnerExceptions
+                    && member.Model.Compilation.GetTypeByMetadataName("System.Exception") is { } exception
+                    && visited.Add(exception))
+                {
+                    graph.AddFormatterCandidates(exception, slot, this);
                 }
             }
 
@@ -306,7 +328,7 @@ internal static partial class HostedGrimoireProducerInventory
             // A value formatted by an interpolation or a concatenation whose runtime type nothing proves can be any
             // authored type that formats with code of its own; the framework types it can be run no authored code,
             // except through such an authored subclass.
-            if (candidates.Count == 0 && step.Label is "to-string" or "format" && receiverType is not null)
+            if (candidates.Count == 0 && step.Label is "to-string" or "format" or "callback" && receiverType is not null)
             {
                 AddFormatterCandidates(receiverType, slot, targets);
 
@@ -326,6 +348,10 @@ internal static partial class HostedGrimoireProducerInventory
                 {
                     targets.AddFormatting(candidate, slot);
                 }
+                else if (candidate.IsAnonymousType && slot.ContainingType.SpecialType == SpecialType.System_Object)
+                {
+                    AddSynthesizedByName(member, candidate, slot.Name, slot, targets);
+                }
                 else
                 {
                     targets.Add(EnumerationImplementation(candidate, slot), slot);
@@ -342,6 +368,21 @@ internal static partial class HostedGrimoireProducerInventory
             IReadOnlySet<string> AssignableKeys,
             IReadOnlyList<(IMethodSymbol Slot, ISymbol Implementation)> Implementations);
 
+        // The framework contracts whose members a framework member calls on a value it is handed: it compares, hashes,
+        // orders and formats the value, and asks a format provider for its formatter.
+        private static readonly IReadOnlySet<string> CallbackContracts = new HashSet<string>(StringComparer.Ordinal)
+        {
+            "System.IEquatable`1",
+            "System.IComparable",
+            "System.IComparable`1",
+            "System.Collections.IEqualityComparer",
+            "System.Collections.Generic.IEqualityComparer`1",
+            "System.Collections.IComparer",
+            "System.Collections.Generic.IComparer`1",
+            "System.IFormatProvider",
+            "System.ICustomFormatter",
+        };
+
         private IReadOnlyList<AuthoredFormatter>? authoredFormatters;
 
         private IReadOnlyList<AuthoredFormatter> AuthoredFormatters() => authoredFormatters ??= BuildAuthoredFormatters();
@@ -355,7 +396,15 @@ internal static partial class HostedGrimoireProducerInventory
                 return formatters;
             }
 
-            IMethodSymbol? toString = analysedCompilations[0].GetSpecialType(SpecialType.System_Object).GetMembers("ToString").OfType<IMethodSymbol>().FirstOrDefault(static method => method.Parameters.Length == 0);
+            INamedTypeSymbol objectType = analysedCompilations[0].GetSpecialType(SpecialType.System_Object);
+
+            IMethodSymbol? toString = objectType.GetMembers("ToString").OfType<IMethodSymbol>().FirstOrDefault(static method => method.Parameters.Length == 0);
+
+            IMethodSymbol[] objectCallbackSlots =
+            [
+                .. objectType.GetMembers("Equals").OfType<IMethodSymbol>().Where(static method => !method.IsStatic && method.Parameters.Length == 1),
+                .. objectType.GetMembers("GetHashCode").OfType<IMethodSymbol>().Where(static method => method.Parameters.Length == 0),
+            ];
 
             foreach (INamedTypeSymbol type in analysedCompilations.SelectMany(static compilation => SourceTypes(compilation.Assembly.GlobalNamespace)))
             {
@@ -371,12 +420,22 @@ internal static partial class HostedGrimoireProducerInventory
                     slots.Add(toString);
                 }
 
+                // The equality and hash members of object are called on a value a framework member compares or hashes.
+                foreach (IMethodSymbol objectSlot in objectCallbackSlots)
+                {
+                    slots.Add(objectSlot);
+                }
+
                 foreach (INamedTypeSymbol contract in type.AllInterfaces)
                 {
                     if (TypeKey(contract) is "System.IFormattable" or "System.ISpanFormattable" or "System.IUtf8SpanFormattable"
                         && contract.GetMembers().OfType<IMethodSymbol>().FirstOrDefault(static method => method.Name is "ToString" or "TryFormat") is { } contractSlot)
                     {
                         slots.Add(contractSlot);
+                    }
+                    else if (CallbackContracts.Contains(TypeKey(contract)))
+                    {
+                        slots.AddRange(contract.GetMembers().OfType<IMethodSymbol>().Where(static method => method.MethodKind == MethodKind.Ordinary && !method.IsStatic));
                     }
                 }
 
@@ -410,9 +469,25 @@ internal static partial class HostedGrimoireProducerInventory
         {
             ImplicitTargetCollector formatting = new(this, targets.Member, targets.Visited);
 
+            // The framework implementation the static type itself runs when the value is exactly that type: a framework
+            // class or struct formats, compares and hashes with code of its own, which is classified or refused as it is for
+            // a value whose type is proved.
+            if (receiverType is INamedTypeSymbol { TypeKind: TypeKind.Class or TypeKind.Struct } staticType
+                && !staticType.Locations.Any(static location => location.IsInSource)
+                && staticType.SpecialType != SpecialType.System_Object)
+            {
+                formatting.AddFormatting(staticType, slot);
+            }
+
             foreach (AuthoredFormatter formatter in AuthoredFormatters())
             {
-                if (!IsFormatterAssignableTo(formatter, receiverType))
+                // ToString of a framework base type also reads the virtual properties its subclass overrides (the members of an
+                // exception, the name of a tool), so a formatter with such an override is a candidate for ToString.
+                bool readsForToString = slot.Name == "ToString" && slot.Parameters.Length == 0
+                    && formatter.Implementations.Any(static implementation => implementation.Slot.MethodKind == MethodKind.PropertyGet);
+
+                if (!IsFormatterAssignableTo(formatter, receiverType)
+                    || !readsForToString && !formatter.Implementations.Any(implementation => SameEnumerationSlot(implementation.Slot, slot)))
                 {
                     continue;
                 }
@@ -571,10 +646,13 @@ internal static partial class HostedGrimoireProducerInventory
         // The members a compiler-generated record or anonymous type member runs. Generated members run only the
         // accessors the record declares itself: positional properties and printed members are auto-properties unless
         // the record declares them, and a declared accessor is authored code.
-        private void AddSynthesizedMember(AuthoredMember member, IMethodSymbol synthesized, ImplicitTargetCollector targets)
-        {
-            INamedTypeSymbol record = synthesized.ContainingType;
+        private void AddSynthesizedMember(AuthoredMember member, IMethodSymbol synthesized, ImplicitTargetCollector targets) =>
+            AddSynthesizedByName(member, synthesized.ContainingType, synthesized.Name, synthesized, targets);
 
+        // The members one generated member of a record or an anonymous type runs, named by the generated member (Roslyn does
+        // not expose the generated members of an anonymous type, so the name comes from the object member it overrides).
+        private void AddSynthesizedByName(AuthoredMember member, INamedTypeSymbol record, string name, IMethodSymbol slot, ImplicitTargetCollector targets)
+        {
             void Getters(IEnumerable<ISymbol> candidates)
             {
                 foreach (ISymbol candidate in candidates)
@@ -586,7 +664,7 @@ internal static partial class HostedGrimoireProducerInventory
                 }
             }
 
-            switch (synthesized.Name)
+            switch (name)
             {
                 case "Deconstruct":
                     Getters(PositionalProperties(record));
@@ -600,7 +678,7 @@ internal static partial class HostedGrimoireProducerInventory
                     }
                     else
                     {
-                        targets.Unresolved.Add(Normalize(synthesized));
+                        targets.Unresolved.Add(Normalize(slot));
                     }
 
                     break;
@@ -617,7 +695,8 @@ internal static partial class HostedGrimoireProducerInventory
                                 _ => null,
                             };
 
-                            if (printed is IPropertySymbol { GetMethod: { } getter })
+                            // The accessor of an anonymous type is generated and reads its field.
+                            if (!current.IsAnonymousType && printed is IPropertySymbol { GetMethod: { } getter })
                             {
                                 targets.Add(getter, getter);
                             }
@@ -631,10 +710,89 @@ internal static partial class HostedGrimoireProducerInventory
 
                     break;
 
-                default:
-                    targets.Unresolved.Add(Normalize(synthesized));
+                // Equality and the hash compare and hash every field the type holds (every property of an anonymous type)
+                // with the default comparer of the field's type, which calls the Equals and GetHashCode that type declares.
+                case "Equals" or "GetHashCode":
+                    for (INamedTypeSymbol? current = record; current is not null && (current.IsRecord || current.IsAnonymousType); current = current.BaseType)
+                    {
+                        IEnumerable<ITypeSymbol> compared = current.IsAnonymousType
+                            ? current.GetMembers().OfType<IPropertySymbol>().Where(static property => !property.IsStatic && !property.IsIndexer).Select(static property => property.Type)
+                            : current.GetMembers().OfType<IFieldSymbol>().Where(static field => !field.IsStatic).Select(static field => field.Type);
+
+                        foreach (ITypeSymbol comparedType in compared)
+                        {
+                            AddEquality(member, comparedType, targets, 0);
+                        }
+                    }
 
                     break;
+
+                default:
+                    targets.Unresolved.Add(Normalize(slot));
+
+                    break;
+            }
+        }
+
+        // The members the default comparer of a field type calls when a generated Equals or GetHashCode compares or hashes
+        // the field: the Equals(object), IEquatable<T>.Equals and GetHashCode the type declares. The framework value types
+        // and primitives compare with no authored code; a nullable value compares the value it holds, a tuple each of its
+        // elements; a type that is not exact adds the members of every authored type that can be the field.
+        private void AddEquality(AuthoredMember member, ITypeSymbol type, ImplicitTargetCollector targets, int depth)
+        {
+            if (type is INamedTypeSymbol { OriginalDefinition.SpecialType: SpecialType.System_Nullable_T } nullable)
+            {
+                type = nullable.TypeArguments[0];
+            }
+
+            if (IsIntrinsicFormatType(type) || type.TypeKind is TypeKind.Error or TypeKind.Pointer or TypeKind.FunctionPointer or TypeKind.Delegate or TypeKind.Array || type is IArrayTypeSymbol)
+            {
+                return;
+            }
+
+            if (depth < 4 && type is INamedTypeSymbol { IsTupleType: true } tuple)
+            {
+                foreach (IFieldSymbol element in tuple.TupleElements)
+                {
+                    AddEquality(member, element.Type, targets, depth + 1);
+                }
+
+                return;
+            }
+
+            INamedTypeSymbol objectType = member.Model.Compilation.GetSpecialType(SpecialType.System_Object);
+
+            foreach (IMethodSymbol slot in objectType.GetMembers().OfType<IMethodSymbol>().Where(static method => !method.IsStatic && (method.Name == "GetHashCode" && method.Parameters.Length == 0 || method.Name == "Equals" && method.Parameters.Length == 1)))
+            {
+                if (IsSealedOrValue(type))
+                {
+                    targets.Add(EnumerationImplementation(type, slot), slot);
+                }
+                else
+                {
+                    AddFormatterCandidates(type, slot, targets);
+                }
+            }
+
+            if (type is INamedTypeSymbol exact && IsSealedOrValue(type))
+            {
+                foreach (INamedTypeSymbol contract in exact.AllInterfaces.Where(static contract => TypeKey(contract) == "System.IEquatable`1"))
+                {
+                    foreach (IMethodSymbol slot in contract.GetMembers("Equals").OfType<IMethodSymbol>())
+                    {
+                        targets.Add(EnumerationImplementation(exact, slot), slot);
+                    }
+                }
+            }
+            else if (type is INamedTypeSymbol open)
+            {
+                foreach (INamedTypeSymbol contract in open.AllInterfaces.Where(static contract => TypeKey(contract) == "System.IEquatable`1"))
+                {
+                    foreach (IMethodSymbol slot in contract.GetMembers("Equals").OfType<IMethodSymbol>())
+                    {
+                        AddFormatterCandidates(open, slot, targets);
+                    }
+                }
             }
         }
 
