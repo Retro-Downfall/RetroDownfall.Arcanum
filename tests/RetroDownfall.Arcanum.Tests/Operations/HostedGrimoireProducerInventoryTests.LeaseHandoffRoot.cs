@@ -1004,8 +1004,10 @@ public sealed partial class HostedGrimoireProducerInventoryTests
 
         Assert.True(callerInline - callerCut >= rootStates, $"inline={callerInline} cut={callerCut} root={rootStates}");
 
-        // The worker families overlap on the analysis pool and still agree.
+        // The pool takes the service as one family, so it agrees and admits the closure no more often than one worker does.
         LeaseHandoffRun pooled = RunLeaseHandoff("positive", rootWorkers: 3);
+
+        Assert.Equal(rootStates, pooled.StatesOf(LeaseHandoffRootOperation));
 
         Assert.Equal(cut.Result.Items.Select(HostedGrimoireProducerInventory.StableSiteIdentity).Order(StringComparer.Ordinal),
             pooled.Result.Items.Select(HostedGrimoireProducerInventory.StableSiteIdentity).Order(StringComparer.Ordinal));
