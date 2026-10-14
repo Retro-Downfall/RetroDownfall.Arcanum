@@ -2,10 +2,28 @@ using System.Globalization;
 
 using Microsoft.CodeAnalysis;
 
+using Microsoft.CodeAnalysis.CSharp;
+
+using Microsoft.CodeAnalysis.CSharp.Syntax;
+
 namespace RetroDownfall.Arcanum.Tests.Support;
 
 internal static partial class HostedGrimoireProducerInventory
 {
+    // The identity a constant expression has in an evaluation environment, or null when the expression is not a constant
+    // this analysis can spell exactly.
+    internal static string? ProbeConstantValueIdentity(CSharpCompilation compilation, ExpressionSyntax expression)
+    {
+        SemanticModel model = compilation.GetSemanticModel(expression.SyntaxTree);
+
+        IMethodSymbol owner = model.GetEnclosingSymbol(expression.SpanStart) as IMethodSymbol
+            ?? throw new InvalidOperationException("The expression must sit in a method body.");
+
+        SyntaxNode body = expression.Ancestors().First(static ancestor => ancestor is BaseMethodDeclarationSyntax or AccessorDeclarationSyntax or LocalFunctionStatementSyntax);
+
+        return ProducerGraph.TryConstantValueIdentity(new(new(owner, body, model), expression), out string identity) ? identity : null;
+    }
+
     private sealed partial class ProducerGraph
     {
         // Constant Value Identity. A bound value whose normalized source is a compile-time constant stands for its value
@@ -16,7 +34,7 @@ internal static partial class HostedGrimoireProducerInventory
         // constant's value and type instead of the position and the caller. A source that is not a constant keeps the
         // position, the syntax fingerprint and the caller's projected environment, exactly as before, and so does a
         // constant whose value this method cannot spell exactly.
-        private static bool TryConstantValueIdentity(BoundValueSource source, out string identity)
+        internal static bool TryConstantValueIdentity(BoundValueSource source, out string identity)
         {
             identity = "";
 
@@ -70,6 +88,23 @@ internal static partial class HostedGrimoireProducerInventory
         // environment. It reaches the member only because an instance call passes its caller's whole context on to the
         // receiver's members, and keeping it multiplies the member's states by every distinct binding of every caller
         // parameter above it. A lambda or a local function keeps every binding, since it may be nested in the owner.
+        // Non-Owning Provider Observation. A call on a disposable parameter makes the parameter's source part of its callee's
+        // environment, because the call could be the disposal itself or hand the parameter's ownership on. DbCommand.CreateParameter
+        // is neither: it returns a fresh parameter that belongs to no command until the caller adds it, and the framework body
+        // of the slot (DbCommand's own, or SqliteCommand's) neither disposes nor keeps its receiver. An authored override could
+        // do either, so the observation is trusted only while the DbProviderTypesClosedByUse premise holds, which proves that
+        // no authored or referenced type derives from a provider type. Without the premise the call keeps its demand.
+        private bool IsTrustedNonOwningProviderObservation(IMethodSymbol method)
+        {
+            IMethodSymbol definition = method.ReducedFrom ?? method;
+
+            return DbProviderTypesClosedByUse
+                && definition is { MethodKind: MethodKind.Ordinary, IsStatic: false, Name: "CreateParameter", Parameters.Length: 0 }
+                && TypeKey(definition.ContainingType) is "System.Data.Common.DbCommand" or "Microsoft.Data.Sqlite.SqliteCommand"
+                && !definition.Locations.Any(static location => location.IsInSource)
+                && IsTrustedProviderAssembly(definition.ContainingAssembly);
+        }
+
         private static bool MemberCannotBeNestedInAMethod(AuthoredMember member) =>
             member.Symbol.MethodKind is not (MethodKind.LocalFunction or MethodKind.AnonymousFunction);
     }

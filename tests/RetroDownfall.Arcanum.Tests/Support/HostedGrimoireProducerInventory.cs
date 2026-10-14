@@ -39663,7 +39663,8 @@ internal static partial class HostedGrimoireProducerInventory
                     bool cleanupCapableReceiverUse = cleanupCapable
                         && (receiverType is null
                             || TypeMayCarryCleanupProvenance(receiverType))
-                        && !IsTrustedNonOwningSafeHandleObservation(method);
+                        && !IsTrustedNonOwningSafeHandleObservation(method)
+                        && !IsTrustedNonOwningProviderObservation(method);
 
                     if (receiverTargetCarriesCleanupState
                         || cleanupCapableReceiverUse)
