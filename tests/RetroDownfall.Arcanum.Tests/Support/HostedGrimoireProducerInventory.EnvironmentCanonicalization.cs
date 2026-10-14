@@ -53,7 +53,9 @@ internal static partial class HostedGrimoireProducerInventory
         // position of a constant therefore describe the same evaluation, and the identity of the environment names the
         // constant's value and type instead of the position and the caller. A source that is not a constant keeps the
         // position, the syntax fingerprint and the caller's projected environment, exactly as before, and so does a
-        // constant whose value this method cannot spell exactly.
+        // constant whose value this method cannot spell exactly. The environment itself still holds the first caller's
+        // source, so a walk that follows a bound value to its caller must not follow a constant: the search for the owner of
+        // an inherited per-unit group (PerUnitPhysicalGroupSharesWork) skips it, because a constant carries no instance.
         internal static bool TryConstantValueIdentity(BoundValueSource source, out string identity)
         {
             identity = "";

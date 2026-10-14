@@ -16060,6 +16060,12 @@ internal static partial class HostedGrimoireProducerInventory
                 {
                     if (proof.RemainingWork-- <= 0) return false;
 
+                    // A constant carries no instance, so it is no source edge to an owner. Its caller is also no part of the
+                    // state's identity (Constant Value Identity), so the states of one helper reached with the same constant
+                    // from different callers are one state, and reading a constant's caller here would make the proof depend
+                    // on which of those callers reached the state first.
+                    if (TryConstantValueIdentity(NormalizeEvaluationValueSource(value), out _)) continue;
+
                     pending.Push(value.Caller);
                 }
             }

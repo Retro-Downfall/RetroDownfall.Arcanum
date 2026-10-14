@@ -8864,7 +8864,8 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
         bool includeOwnerRoot = true,
         HostedProducerAuthorityKind hostedAuthority = HostedProducerAuthorityKind.OrdinaryHostedWork,
         HostedProducerRecoverySelectionProbe? recoverySelectionProbe = null,
-        int? evaluationEnvironmentMaximumMembers = null)
+        int? evaluationEnvironmentMaximumMembers = null,
+        Action<HostedProducerAdmittedStateObservation>? admittedStateObserver = null)
     {
         HostedProducerOperationEntry hosted = OrdinaryRoot() with
         {
@@ -8898,13 +8899,15 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
                 [new("Worker", [hosted])],
                 ownerRoots,
                 evaluationEnvironmentMaximumMembers: maximumMembers,
-                recoverySelectionProbe: recoverySelectionProbe)
+                recoverySelectionProbe: recoverySelectionProbe,
+                admittedStateObserver: admittedStateObserver)
             : HostedGrimoireProducerInventory.DiscoverProducerSites(
                 compilations,
                 new(["Worker"], []),
                 [new("Worker", [hosted])],
                 ownerRoots,
-                recoverySelectionProbe: recoverySelectionProbe);
+                recoverySelectionProbe: recoverySelectionProbe,
+                admittedStateObserver: admittedStateObserver);
     }
 
     [Fact]
