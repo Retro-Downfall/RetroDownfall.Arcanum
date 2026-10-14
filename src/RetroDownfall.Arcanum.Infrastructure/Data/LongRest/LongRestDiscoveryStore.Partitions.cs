@@ -18,8 +18,7 @@ internal sealed partial class LongRestDiscoveryStore
             LEFT JOIN annal_heads head ON head.ClaimId = claim.ClaimId
             LEFT JOIN annal_versions version ON version.VersionId = head.CurrentVersionId
             WHERE memory.ScopeKindCode = $scope AND memory.CampaignId IS $campaign AND ({SourceOwnerEligible})
-              AND memory.PinnedAtUtc IS NULL AND memory.RetiredAtUtc IS NULL
-              AND NOT EXISTS (SELECT 1 FROM long_rest_suppressions WHERE SourceVersionId = head.CurrentVersionId)
+              AND {SourceLifecycleEligible}
         ), labeled AS (
             SELECT memory.Id, label.SensitivityDigest,
                 count(label.LabelId) OVER (PARTITION BY memory.Id) AS LabelCount,

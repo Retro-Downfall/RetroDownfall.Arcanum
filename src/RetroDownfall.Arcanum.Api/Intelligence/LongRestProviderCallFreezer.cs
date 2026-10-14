@@ -43,9 +43,13 @@ public static class LongRestProviderCallFreezer
 
             description = LongRestPromptLayout.SummarySchemaDescription;
 
+            int ordinal = 0;
+
             foreach (LongRestHierarchyChild child in payload.Fold!.Children)
             {
-                user.Append(LongRestPromptLayout.SummaryObservation(child.NodeId, child.Content));
+                ordinal++;
+
+                user.Append(LongRestPromptLayout.SummaryObservation(ordinal, child.Content));
             }
         }
         else
@@ -58,7 +62,7 @@ public static class LongRestProviderCallFreezer
 
             description = LongRestPromptLayout.AdjudicationSchemaDescription;
 
-            foreach (LongRestSourceLeaf input in payload.Inputs)
+            foreach (LongRestSourceLeaf input in LongRestPromptLayout.CanonicalAdjudicationOrder(payload.Inputs))
             {
                 user.Append(LongRestPromptLayout.AdjudicationMemory(input.Target.MemoryId, input.Snapshot.VersionId, input.Snapshot.ContentHash, input.Content ?? string.Empty));
             }

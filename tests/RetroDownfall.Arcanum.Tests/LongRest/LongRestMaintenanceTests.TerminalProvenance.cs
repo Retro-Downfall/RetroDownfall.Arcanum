@@ -135,11 +135,11 @@ public sealed partial class LongRestMaintenanceTests
 
         Assert.Equal(LongRunningOperationState.Completed, (await f.Operations.GetAsync(f.Operation))!.State);
 
-        // NoChange leaves both different-content sources eligible, so each anchor requires
-        // its own adjudication after the summary retry and embedding.
-        Assert.Equal(5, f.Handler.SendCount);
+        // NoChange leaves both different-content sources eligible, and each is the other's only neighbour, so the two anchors name one set:
+        // the summary retry, the embedding and a single adjudication decide it, and the second anchor reuses that decision.
+        Assert.Equal(4, f.Handler.SendCount);
 
-        Assert.Equal([LongRestProviderPayloadKind.Summary, LongRestProviderPayloadKind.Embedding, LongRestProviderPayloadKind.Adjudication, LongRestProviderPayloadKind.Adjudication],
+        Assert.Equal([LongRestProviderPayloadKind.Summary, LongRestProviderPayloadKind.Embedding, LongRestProviderPayloadKind.Adjudication],
             f.Payloads.Select(payload => payload.Kind).ToArray());
 
         Assert.Equal(f.Payloads[0].Work, f.Payloads[1].Work);
@@ -154,9 +154,9 @@ public sealed partial class LongRestMaintenanceTests
 
         Assert.Contains(f.Source, sources);
 
-        Assert.Equal(sources, adjudications.Select(payload => payload.Inputs[0].Snapshot.MemoryId).ToArray());
+        Assert.Equal([sources[0]], adjudications.Select(payload => payload.Inputs[0].Snapshot.MemoryId).ToArray());
 
-        Assert.Equal(2, adjudications.Select(payload => payload.Work.ItemId).Distinct(StringComparer.Ordinal).Count());
+        _ = Assert.Single(adjudications.Select(payload => payload.Work.ItemId).Distinct(StringComparer.Ordinal));
 
         Assert.All(adjudications, payload => Assert.Equal(sources,
             payload.Inputs.Select(input => input.Snapshot.MemoryId).Order(StringComparer.Ordinal).ToArray()));
@@ -173,10 +173,10 @@ public sealed partial class LongRestMaintenanceTests
 
         Assert.Equal(3L, await f.H.ScalarAsync("SELECT PhysicalOrdinal FROM long_rest_provider_effects effect JOIN long_rest_work_items unit ON unit.WorkItemId = effect.WorkItemId WHERE unit.KindCode = 2;"));
 
-        Assert.Equal(state == LongRestDispatchAttemptState.Invalid ? 5L : 4L,
+        Assert.Equal(state == LongRestDispatchAttemptState.Invalid ? 4L : 3L,
             await f.H.ScalarAsync("SELECT count(*) FROM BillableOperations;"));
 
-        Assert.Equal(state == LongRestDispatchAttemptState.Invalid ? 5L : 4L,
+        Assert.Equal(state == LongRestDispatchAttemptState.Invalid ? 4L : 3L,
             await f.H.ScalarAsync("SELECT sum(PaidCount) FROM long_rest_provider_effects;"));
 
         Assert.Equal(state == LongRestDispatchAttemptState.Invalid ? 1L : 0L,
@@ -187,15 +187,15 @@ public sealed partial class LongRestMaintenanceTests
 
         Assert.Equal(1L, await f.H.ScalarAsync("SELECT count(*) FROM long_rest_accepted_summaries;"));
 
-        Assert.Equal(5L, await f.H.ScalarAsync("SELECT sum(SentCount) FROM long_rest_provider_effects;"));
+        Assert.Equal(4L, await f.H.ScalarAsync("SELECT sum(SentCount) FROM long_rest_provider_effects;"));
 
-        Assert.Equal(2L, await f.H.ScalarAsync("""
+        Assert.Equal(1L, await f.H.ScalarAsync("""
             SELECT count(*) FROM long_rest_provider_effects effect JOIN long_rest_work_items unit ON unit.WorkItemId = effect.WorkItemId
             WHERE unit.KindCode = 3 AND unit.DispositionCode = 2 AND effect.StateCode = 4
               AND effect.PhysicalOrdinal = 1 AND effect.SentCount = 1 AND effect.PaidCount = 1;
             """));
 
-        Assert.Equal(2L, await f.H.ScalarAsync("SELECT count(*) FROM long_rest_adjudications WHERE DecisionKindCode = 3;"));
+        Assert.Equal(1L, await f.H.ScalarAsync("SELECT count(*) FROM long_rest_adjudications WHERE DecisionKindCode = 3;"));
 
         // Provider NoChange completes the unit without applying a canonical transformation.
         Assert.Equal(0L, await f.H.ScalarAsync("SELECT count(*) FROM long_rest_receipts;"));

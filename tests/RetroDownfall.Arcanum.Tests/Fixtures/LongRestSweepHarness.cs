@@ -235,7 +235,7 @@ internal sealed partial class LongRestSweepHarness(SagaStoreHarness saga) : IAsy
 
             if (work is null)
             {
-                long revision = (long)(await ScalarAsync("SELECT Revision FROM long_rest_discovery_generations;"))!;
+                long revision = (long)(await ScalarAsync($"SELECT Revision FROM long_rest_discovery_generations WHERE GenerationId = '{generation.GenerationId.ToString("D").ToUpperInvariant()}';"))!;
 
                 return Require(await Store.PublishAsync(generation.GenerationId, revision, generation.Fence, Capability, CancellationToken.None));
             }

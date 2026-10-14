@@ -124,12 +124,37 @@ internal sealed partial class LongRestSweepStore
 
                 string prefix = Convert.ToHexString(SHA256.HashData(new UTF8Encoding(false, true).GetBytes(memory)));
 
+                int queued = 0;
+
                 for (int index = 0; index < packs.Length; index++)
                 {
                     ImmutableArray<LongRestSourceLeaf> inputs = packs[index];
 
                     LongRestWorkIdentity work = new(generation.GenerationId, generation.OperationId, prefix + ":" + index.ToString("D2", System.Globalization.CultureInfo.InvariantCulture),
                         LongRestWorkKind.Anchor, generation.Scope, generation.Fence, LongRestDiscoveryHash.SourcePage(generation.Scope, inputs).Value, LongRestDiscoveryHash.Recipe(generation.Recipe).Value);
+
+                    // The digest is of the set, whichever member it was found from, and the recipe binds the request text, so a set this generation has
+                    // already decided NoChange under this recipe is the same question with the same answer: no work item and no request. Only that
+                    // decision is reused: an applied one has consolidated its members, which changes the set's digest.
+                    bool decided;
+
+                    await using (SqliteCommand lookup = Command(connection, transaction, """
+                        SELECT EXISTS (SELECT 1 FROM long_rest_work_items item JOIN long_rest_adjudications accepted ON accepted.WorkItemId = item.WorkItemId
+                            WHERE item.GenerationId = $generation AND item.KindCode = 3 AND item.DispositionCode = 2
+                                AND item.SourceDigest = $source AND item.RecipeDigest = $recipe AND accepted.DecisionKindCode = 3);
+                        """, ("$generation", Format(generation.GenerationId)), ("$source", work.SourceDigest.Bytes), ("$recipe", work.RecipeDigest.Bytes)))
+                    {
+                        decided = (long)(await lookup.ExecuteScalarAsync(ct).ConfigureAwait(false))! == 1;
+                    }
+
+                    if (decided)
+                    {
+                        ArcanumMetrics.LongRestReusedDecisionsTotal.Add(1);
+
+                        continue;
+                    }
+
+                    queued++;
 
                     string unit = Format(Guid.NewGuid());
 
@@ -146,6 +171,14 @@ internal sealed partial class LongRestSweepStore
                     }
 
                     pending ??= work.ItemId;
+                }
+
+                if (queued == 0)
+                {
+                    await AdvanceDiscoveryAsync(connection, transaction, expected, generation, storedDiscoveryCursor, cursor,
+                        complete: false, capability, ct).ConfigureAwait(false);
+
+                    return null;
                 }
 
                 break;

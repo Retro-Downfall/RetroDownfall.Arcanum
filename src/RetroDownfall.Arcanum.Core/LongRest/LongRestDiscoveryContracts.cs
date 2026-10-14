@@ -96,7 +96,8 @@ public sealed record LongRestRecipeIdentity(
     int ExpandedLeafLimit = LongRestDiscoveryLimits.ExpandedLeaves,
     int TraversalFrontierLimit = LongRestDiscoveryLimits.TraversalFrontier,
     int MergedNeighborLimit = LongRestDiscoveryLimits.MergedNeighbors,
-    int LexicalMinimumScore = LongRestDiscoveryLimits.LexicalMinimumScore);
+    int LexicalMinimumScore = LongRestDiscoveryLimits.LexicalMinimumScore,
+    int AdjudicationRecipeVersion = LongRestPromptLayout.AdjudicationRecipeVersion);
 
 public sealed record LongRestDiscoveryGeneration(
     Guid GenerationId,

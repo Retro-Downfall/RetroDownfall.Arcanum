@@ -180,9 +180,12 @@ public sealed partial class LongRestMaintenanceTests
         internal LongRunningOperationOwnership Ownership = new();
 
         internal static async Task<MaintenanceFixture> CreateAsync(bool ownWorker = true, TimeProvider? clock = null, bool campaign = false,
-            bool protectedSources = true, bool exact = false, int sourceCount = 2, Action<ArcanumSettings>? configure = null, Func<int, string>? sourceText = null)
+            bool protectedSources = true, bool exact = false, int sourceCount = 2, Action<ArcanumSettings>? configure = null, Func<int, string>? sourceText = null,
+            Func<int, Guid>? sourceId = null, bool sessionless = false)
         {
             MaintenanceFixture f = new();
+
+            if (sourceId is not null) f.Source = sourceId(0).ToString("D");
 
             f.Clock = clock ?? TimeProvider.System;
 
@@ -210,11 +213,12 @@ public sealed partial class LongRestMaintenanceTests
 
             await f.InitializeRuntimeAsync();
 
-            await f.H.SeedAsync(f.Source, sourceText?.Invoke(0) ?? "Alpha observation.", f.SourceSession);
+            // A Session-less Global source is valid, and is the only kind that can repeat another's exact text: a Session keeps one row per text.
+            await f.H.SeedAsync(f.Source, sourceText?.Invoke(0) ?? "Alpha observation.", sessionless ? null : f.SourceSession);
 
-            Guid second = Guid.NewGuid();
+            Guid second = sourceId?.Invoke(1) ?? Guid.NewGuid();
 
-            Guid secondSession = exact ? await f.H.SessionAsync(f.CampaignId) : f.SourceSession;
+            Guid? secondSession = sessionless ? null : exact ? await f.H.SessionAsync(f.CampaignId) : f.SourceSession;
 
             await f.H.SeedAsync(second.ToString("D"), sourceText?.Invoke(1) ?? (exact ? "Alpha observation." : "Beta observation."), secondSession);
 
@@ -222,11 +226,11 @@ public sealed partial class LongRestMaintenanceTests
 
             for (int index = 2; index < sourceCount; index++)
             {
-                Guid id = Guid.NewGuid();
+                Guid id = sourceId?.Invoke(index) ?? Guid.NewGuid();
 
                 additional.Add(id);
 
-                await f.H.SeedAsync(id.ToString("D"), sourceText?.Invoke(index) ?? $"Observation number {index}.", f.SourceSession);
+                await f.H.SeedAsync(id.ToString("D"), sourceText?.Invoke(index) ?? $"Observation number {index}.", sessionless ? null : f.SourceSession);
             }
 
             Assert.Equal((long)sourceCount, await f.H.ScalarAsync("SELECT count(*) FROM long_rest_sources;"));

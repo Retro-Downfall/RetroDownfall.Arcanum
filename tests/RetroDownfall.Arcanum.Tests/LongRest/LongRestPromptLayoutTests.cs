@@ -80,9 +80,11 @@ public sealed class LongRestPromptLayoutTests
     [InlineData("emoji \U0001F600\U0001F680 end")]
     public void Block_sizes_are_the_utf8_bytes_of_the_blocks_they_describe(string content)
     {
-        Guid node = Guid.Parse("12345678-1234-4234-8234-123456789abc");
-
-        Assert.Equal(Strict.GetByteCount(LongRestPromptLayout.SummaryObservation(node, content)), LongRestPromptLayout.SummaryObservationBytes(content));
+        // A block is the same size at every place a fold gives it, up to the sixteen children a fold may have.
+        for (int ordinal = 1; ordinal <= LongRestDiscoveryLimits.HierarchyChildren; ordinal++)
+        {
+            Assert.Equal(Strict.GetByteCount(LongRestPromptLayout.SummaryObservation(ordinal, content)), LongRestPromptLayout.SummaryObservationBytes(content));
+        }
 
         Assert.Equal(Strict.GetByteCount(LongRestPromptLayout.AdjudicationMemory("memory-é", "version-1", "ABCDEF", content)),
             LongRestPromptLayout.AdjudicationMemoryBytes("memory-é", "version-1", "ABCDEF", content));
@@ -97,9 +99,7 @@ public sealed class LongRestPromptLayoutTests
     [Fact]
     public void Fixed_bytes_plus_the_blocks_are_the_rendered_bytes_of_a_request()
     {
-        Guid node = Guid.Parse("12345678-1234-4234-8234-123456789abc");
-
-        string block = LongRestPromptLayout.SummaryObservation(node, "child summary é");
+        string block = LongRestPromptLayout.SummaryObservation(1, "child summary é");
 
         Assert.Equal(LongRestPromptLayout.FixedBytes(LongRestProviderPayloadKind.Summary) + LongRestPromptLayout.SummaryObservationBytes("child summary é"),
             LongRestPromptLayout.RenderedBytes(LongRestPromptLayout.SummarySystemPrompt, block, LongRestPromptLayout.SummarySchema,
@@ -110,6 +110,18 @@ public sealed class LongRestPromptLayoutTests
         Assert.Equal(LongRestPromptLayout.FixedBytes(LongRestProviderPayloadKind.Adjudication) + Strict.GetByteCount(memory),
             LongRestPromptLayout.RenderedBytes(LongRestPromptLayout.AdjudicationSystemPrompt, memory, LongRestPromptLayout.DecisionSchema,
                 LongRestPromptLayout.AdjudicationSchemaName, LongRestPromptLayout.AdjudicationSchemaDescription));
+    }
+
+    [Fact]
+    public void A_summary_block_is_labelled_by_its_two_digit_place_and_never_by_a_node_identity()
+    {
+        Assert.Equal("Observation 01\nfirst\n\n", LongRestPromptLayout.SummaryObservation(1, "first"));
+
+        Assert.Equal("Observation 16\nlast\n\n", LongRestPromptLayout.SummaryObservation(16, "last"));
+
+        Assert.Throws<ArgumentOutOfRangeException>(() => LongRestPromptLayout.SummaryObservation(0, "x"));
+
+        Assert.Throws<ArgumentOutOfRangeException>(() => LongRestPromptLayout.SummaryObservation(100, "x"));
     }
 
     [Fact]

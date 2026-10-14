@@ -261,6 +261,15 @@ public static class ArcanumMetrics
         "Long Rest neighbours the group packer skipped, by reason");
 
     /// <summary>
+    /// Adjudication groups the sweep did not queue because the identical set of memories was already decided NoChange in the same generation,
+    /// so no request is made for it. Never carries an identity or any content.
+    /// </summary>
+    public static readonly Counter<long> LongRestReusedDecisionsTotal = Meter.CreateCounter<long>(
+        "arcanum.long_rest.sweep.reused_decisions",
+        "{decisions}",
+        "Long Rest adjudications reused from an identical decided set in the same generation");
+
+    /// <summary>
     /// Leaves the lexical discovery lane fully verified (source row, snapshot, history head, vector and digest) because a lexical hit
     /// named them, counted once per anchor scan. Lazy verification in score order keeps this at the eight eligible neighbours plus
     /// the ineligible hits that outranked them, whatever the corpus size. Never carries an identity or any content.

@@ -183,15 +183,16 @@ public sealed class LongRestDiscoveryPolicyTests
         Assert.NotEqual(LongRestDiscoveryHash.Recipe(recipe).Value, LongRestDiscoveryHash.Recipe(recipe with { EmbeddingModel = "different-model" }).Value);
     }
 
-    // Independently assembled preimages (Python struct.pack and hashlib.sha256): the bounds, the cosine bits, then the lexical relevance
-    // floor as a final Int32BE. The same script reproduces the digests this recipe had before the floor joined it
-    // (B668245D...F272 at 32768, 018B917E...98C8 at 4096), so only the appended floor moved them.
+    // Independently assembled preimages (Python struct.pack and hashlib.sha256): the bounds, the cosine bits, the lexical relevance floor and
+    // then the adjudication recipe version, each a final Int32BE. The same script reproduces the digests this recipe had before the version
+    // joined it (D485F935...2A84 at 32768, 5E543293...3393 at 4096, 747E0AC6...9065 at 5328, 743464BF...A267 at 20000), so only the
+    // appended version moved them.
     [Theory]
-    [InlineData(32768, "D485F93549969BEB4DB1736047677ED0159E5C46BA08170777D18F459EE02A84")]
-    [InlineData(4096, "5E543293108EF872C010AE624E005B5D5039789AEFB08D064E29CB083F9A3393")]
-    [InlineData(5328, "747E0AC6E33249EE9092FD8096A51044049ACB0427ED63F58BAAD165EC919065")]
-    [InlineData(20000, "743464BF77B339B2A59B53802C2C0B11062C6BD219A6F425622630688156A267")]
-    public void Recipe_digest_golden_vectors_pin_the_default_the_window_derived_budgets_and_the_lexical_floor(int budget, string expected)
+    [InlineData(32768, "4D6E446DB5263FD6611E362DBF86AD84D04A0E0E752DE3344B6330A33DAF2DE6")]
+    [InlineData(4096, "D63F0590CC7ECDF9466246F6392512A7A08EC8CCD00386E062FAB8EB6FAAE300")]
+    [InlineData(5328, "12B5D17E404C736D3A12580A9F24F61E716D282D351579248D587AAD924E5CD3")]
+    [InlineData(20000, "D1FC022CE10B4FA195036D909CE0C44D0950D9F075E2380D918EED9EF8373D53")]
+    public void Recipe_digest_golden_vectors_pin_the_default_the_window_derived_budgets_the_floor_and_the_adjudication_version(int budget, string expected)
     {
         CovenantDigest digest = new(new byte[32]);
 

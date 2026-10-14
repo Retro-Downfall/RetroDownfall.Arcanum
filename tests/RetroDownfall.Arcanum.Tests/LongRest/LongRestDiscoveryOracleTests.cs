@@ -14,7 +14,9 @@ namespace RetroDownfall.Arcanum.Tests.LongRest;
 // order, and streams the vector and exact lanes through bounded buffers with a span-based cosine. The reference below is the plain
 // version of the same specification: it reads every captured leaf, ranks each lane by merging candidates through the public policy one
 // at a time (the previous implementation's vector and exact lanes, kept here verbatim) and scores the lexical lane over every leaf
-// with no index at all. Over seeded random corpora the two must produce identical groups and evidence, scores included.
+// with no index at all. Over seeded random corpora the two must produce identical groups and evidence, scores included. Pinned and
+// retired memories are part of the corpus the sweep runs over but are never captured, so they are in no generation: the generation's
+// document count, every document frequency and every lane are those of the eligible memories alone, and no group ever names one.
 public sealed class LongRestDiscoveryOracleTests
 {
     private const int Width = 16;
@@ -182,7 +184,7 @@ public sealed class LongRestDiscoveryOracleTests
 
     // The reference discovery: every leaf is read, and nothing is streamed, bounded or lazy.
     private static async Task<LongRestCandidateGroup[]> ReferenceAsync(LongRestSweepHarness h, LongRestDiscoveryGeneration generation, string anchorMemory,
-        LongRestMaintenanceCapability? capability, Action<int>? ineligibleAhead = null)
+        LongRestMaintenanceCapability? capability)
     {
         await using Microsoft.Data.Sqlite.SqliteTransaction transaction = h.Connection.BeginTransaction();
 
@@ -264,23 +266,14 @@ public sealed class LongRestDiscoveryOracleTests
 
             int eligible = 0;
 
-            int ineligible = 0;
-
             foreach (var item in ranked)
             {
-                if (!Eligible(leaves[item.Memory]))
-                {
-                    ineligible++;
-
-                    continue;
-                }
+                if (!Eligible(leaves[item.Memory])) continue;
 
                 Rank(new(leaves[item.Memory].Target, LongRestDiscoveryLane.Lexical, -(double)item.Score));
 
                 if (++eligible == LongRestDiscoveryLimits.LexicalTopK) break;
             }
-
-            ineligibleAhead?.Invoke(ineligible);
         }
 
         ImmutableArray<LongRestCandidate> merged = LongRestSweepHarness.Require(LongRestDiscoveryPolicy.MergeCandidates(anchor, lanes.SelectMany(static lane => lane)));
@@ -341,13 +334,22 @@ public sealed class LongRestDiscoveryOracleTests
         await h.ExecuteAsync("UPDATE long_rest_discovery_generations SET PhaseCode = 4, Published = 1 WHERE GenerationId = $generation;",
             ("$generation", generation.GenerationId.ToString("D").ToUpperInvariant()));
 
+        string[] excluded = [.. corpus.Pinned.Concat(corpus.Retired).Select(index => Id(index, protectedPartition))];
+
+        Assert.True(excluded.Length >= 10, $"pinned and retired memories: {excluded.Length}");
+
+        Assert.Equal((long)(count - excluded.Length), await h.ScalarAsync("SELECT count(*) FROM long_rest_discovery_leaves;"));
+
+        foreach (string memory in excluded)
+        {
+            Assert.Equal(0L, await h.ScalarAsync($"SELECT count(*) FROM long_rest_discovery_leaves WHERE MemoryId = '{memory}';"));
+        }
+
         int fullLexical = 0;
 
         int vectorEvidence = 0;
 
         int exactEvidence = 0;
-
-        int outranked = 0;
 
         foreach (int anchorIndex in corpus.Anchors)
         {
@@ -355,7 +357,7 @@ public sealed class LongRestDiscoveryOracleTests
 
             LongRestCandidateGroup[] actual = LongRestSweepHarness.Require(await h.Store.DiscoverAsync(generation.GenerationId, await h.TargetAsync(anchor), capability, CancellationToken.None));
 
-            LongRestCandidateGroup[] expected = await ReferenceAsync(h, generation, anchor, capability, ineligible => outranked += ineligible);
+            LongRestCandidateGroup[] expected = await ReferenceAsync(h, generation, anchor, capability);
 
             Assert.Equal(expected.Length, actual.Length);
 
@@ -368,6 +370,8 @@ public sealed class LongRestDiscoveryOracleTests
 
             LongRestCandidate[] evidence = [.. actual.SelectMany(static group => group.Evidence)];
 
+            Assert.Empty(evidence.Select(static candidate => candidate.Target.MemoryId).Intersect(excluded));
+
             if (evidence.Count(static candidate => candidate.Lane == LongRestDiscoveryLane.Lexical) == LongRestDiscoveryLimits.LexicalTopK) fullLexical++;
 
             vectorEvidence += evidence.Count(static candidate => candidate.Lane == LongRestDiscoveryLane.Vector);
@@ -375,13 +379,10 @@ public sealed class LongRestDiscoveryOracleTests
             exactEvidence += evidence.Count(static candidate => candidate.Lane == LongRestDiscoveryLane.ExactHash);
         }
 
-        // The corpus really exercises the cut lines: full lexical lanes, vector evidence from both sides of the floor, exact duplicates,
-        // and ineligible leaves that outrank the eligible ones.
+        // The corpus really exercises the cut lines: full lexical lanes, vector evidence from both sides of the floor, and exact duplicates.
         Assert.True(fullLexical >= 3, $"full lexical lanes: {fullLexical}");
 
         Assert.True(vectorEvidence >= 8, $"vector evidence: {vectorEvidence}");
-
-        Assert.True(outranked >= 3, $"ineligible hits ahead of the cut: {outranked}");
 
         Assert.True(exactEvidence >= 0);
     }

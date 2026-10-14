@@ -92,8 +92,8 @@ public sealed class LongRestHierarchyPlanningTests
     {
         CovenantDigest recipe = new(new byte[32]);
 
-        // 2 x 16,200 raw bytes is under the 32,768 raw ceiling, but the request (fixed prompt plus two observation blocks) is not.
-        ImmutableArray<LongRestHierarchyInput> page = [new(LongRestPackingData.Child(1, new string('x', 16200)), [1, 0]), new(LongRestPackingData.Child(2, new string('y', 16200)), [1, 0])];
+        // 2 x 16,300 raw bytes is under the 32,768 raw ceiling, but the request (334 fixed bytes plus two 17-byte observation heads and tails) is not.
+        ImmutableArray<LongRestHierarchyInput> page = [new(LongRestPackingData.Child(1, new string('x', 16300)), [1, 0]), new(LongRestPackingData.Child(2, new string('y', 16300)), [1, 0])];
 
         var planned = LongRestHierarchy.PlanPage(page, 1, recipe, LongRestDiscoveryLimits.ProviderInputUtf8Bytes, CancellationToken.None).Value;
 
