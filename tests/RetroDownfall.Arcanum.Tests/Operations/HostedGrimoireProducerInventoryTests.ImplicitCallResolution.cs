@@ -922,4 +922,35 @@ public sealed partial class HostedGrimoireProducerInventoryTests
 
         Assert.NotNull(Assert.Single(EnumerationDeleteSites(result)).WorkFrontierCapsuleId);
     }
+
+    // A delegate that a class keeps from its constructor is the callable of every construction of the class, and the callback is
+    // followed to each of them. A member that builds the class twice with callables that differ does not say which instance holds
+    // which, so the callback is unproven there; so is a construction that hands it a callable nothing proves.
+    [Theory]
+    [InlineData("static class Wiring { public static void BuildOne(Store store) { _ = new DataProtectionStoreCredentialMirror(store.ReadOne, store.WriteOne); } public static void BuildTwo(Store store) { _ = new DataProtectionStoreCredentialMirror(store.ReadTwo, store.WriteOne); } }", false)]
+    [InlineData("static class Wiring { public static void Build(Store store) { _ = new DataProtectionStoreCredentialMirror(store.ReadOne, store.WriteOne); _ = new DataProtectionStoreCredentialMirror(store.ReadTwo, store.WriteOne); } }", true)]
+    [InlineData("static class Wiring { public static void BuildOne(Store store) { _ = new DataProtectionStoreCredentialMirror(store.ReadOne, store.WriteOne); } public static void BuildTwo(Store store) { _ = new DataProtectionStoreCredentialMirror(store.ReadTwo, store.WriteOne); } public static void BuildThree() { _ = new DataProtectionStoreCredentialMirror(Unproven.Read, static value => Task.CompletedTask); } } static class Unproven { public static System.Func<Task<int>> Read { get; set; } = null!; }", true)]
+    public void CallbackKeptFromTheConstructorIsFollowedToEveryConstruction(string wiring, bool unproven)
+    {
+        string helpers = "namespace RetroDownfall.Arcanum.Infrastructure.Security { abstract class CredentialMirror { public abstract Task<int> ReadAsync(CancellationToken token); } "
+            + "sealed class ProtectedFileCredentialMirror : CredentialMirror { public override Task<int> ReadAsync(CancellationToken token) { System.IO.File.Exists(\"mirror-effect\"); return Task.FromResult(1); } } "
+            + "sealed class DataProtectionStoreCredentialMirror(System.Func<Task<int>> read, System.Func<string, Task> write) : CredentialMirror { public override async Task<int> ReadAsync(CancellationToken token) { token.ThrowIfCancellationRequested(); int value = await read().ConfigureAwait(false); return value; } } "
+            + "sealed class Store { public async Task<int> ReadOne() { System.IO.File.Delete(\"one\"); await Task.CompletedTask; return 1; } public async Task<int> ReadTwo() { System.IO.File.Move(\"a\", \"b\"); await Task.CompletedTask; return 2; } public Task WriteOne(string value) => Task.CompletedTask; } "
+            + wiring + " } static class Anything { public static RetroDownfall.Arcanum.Infrastructure.Security.CredentialMirror Value { get; set; } = null!; }";
+
+        HostedProducerDiscovery<HostedProducerSite> result = EnumerationDiscover(CensusCompileSource("await Anything.Value.ReadAsync(default);", helpers));
+
+        Assert.Equal(unproven, result.Diagnostics.Any(static diagnostic => diagnostic.Code == "HOSTED_CALLBACK_OWNERSHIP_UNPROVEN"));
+
+        string[] callees = [.. result.Items.Where(static site => site.RootType == "Worker").Select(static site => site.Callee)];
+
+        Assert.Contains("System.IO.File.Exists", callees);
+
+        if (!unproven)
+        {
+            Assert.Contains("System.IO.File.Delete", callees);
+
+            Assert.Contains("System.IO.File.Move", callees);
+        }
+    }
 }
