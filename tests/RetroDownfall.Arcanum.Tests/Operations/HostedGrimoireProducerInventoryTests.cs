@@ -39474,6 +39474,8 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
     [InlineData("children-plain-await", true)]
     [InlineData("children-subclass-list", false)]
     [InlineData("children-reassigned", false)]
+    [InlineData("children-ref-alias-write", false)]
+    [InlineData("children-ref-alias-subclass", false)]
     [InlineData("children-extern-helper", false)]
     [InlineData("children-boundary-conversion", false)]
     [InlineData("children-id-through-unknown-call", false)]
@@ -39726,6 +39728,16 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
                         helper = helper.Replace("return children;", "children = UnknownIds(); return children;", StringComparison.Ordinal);
 
                         readChildren += " private static extern List<Guid> UnknownIds();";
+
+                        break;
+
+                    case "children-ref-alias-write" or "children-ref-alias-subclass":
+                        // The list is replaced through a ref alias, which a plain scan for assignments to the returned local does not see.
+                        helper = helper.Replace("return children;", shape == "children-ref-alias-write"
+                            ? "ref List<Guid> alias = ref children; alias = UnknownIds(); return children;"
+                            : "ref List<Guid> alias = ref children; alias = new GuidList(); return children;", StringComparison.Ordinal);
+
+                        readChildren += shape == "children-ref-alias-write" ? " private static extern List<Guid> UnknownIds();" : " private sealed class GuidList : List<Guid> { }";
 
                         break;
 

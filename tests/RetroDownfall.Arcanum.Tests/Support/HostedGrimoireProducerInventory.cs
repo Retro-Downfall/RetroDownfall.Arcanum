@@ -31552,7 +31552,8 @@ internal static partial class HostedGrimoireProducerInventory
             // an exact authored static method that returns the framework List<Guid> it created empty itself, its call boundary uses only
             // built-in conversions, and the id reaches the cursor as the System.Guid lambda parameter (StorageGuidElement). The helper, its
             // arguments and the ids are ordinary executable work, traversed where they are written. A helper that cannot be resolved exactly,
-            // a list that is not the empty framework list, a boundary conversion and any other element type are all refused.
+            // a list that is not the empty framework list, a list the helper replaces (by assignment, an out or ref argument, a deconstruction
+            // or a ref alias; HasCollectionValueReplacement), a boundary conversion and any other element type are all refused.
             bool StorageGuidSequence(ExpressionSyntax expression, AuthoredMember owner)
             {
                 // Only parentheses are looked through: a cast is a conversion, and a conversion the helper's list goes through may be authored.
@@ -31614,7 +31615,8 @@ internal static partial class HostedGrimoireProducerInventory
 
                 return returns.Length != 0 && returns.All(returned => StripTransparentExpression(returned) is IdentifierNameSyntax identifier
                     && bound.Model.GetSymbolInfo(identifier).Symbol is ILocalSymbol local && ExactGuidList(local.Type)
-                    && HasOnlyReviewedValueSources(identifier, bound.Model, new(SymbolEqualityComparer.Default), bound, ExactEmptyGuidList));
+                    && HasOnlyReviewedValueSources(identifier, bound.Model, new(SymbolEqualityComparer.Default), bound, ExactEmptyGuidList)
+                    && !HasCollectionValueReplacement(bound, local));
             }
 
             bool StorageGuidElement(IParameterSymbol parameter, BoundValueSource bound) =>
