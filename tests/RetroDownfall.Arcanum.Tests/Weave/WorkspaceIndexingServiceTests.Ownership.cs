@@ -387,9 +387,13 @@ public sealed partial class WorkspaceIndexingServiceTests
 
         try
         {
-            await WaitForWorkspaceConditionAsync(() => service.ActiveWatcherCount == 1);
+            // Watching is the success signal: the count is a reservation taken before the factory runs, so it
+            // already reads 1 while a failing attempt is in flight.
+            await WaitForWorkspaceConditionAsync(() => service.GetRuntimeStatus(_workspace.Root).Watching);
 
             Assert.Equal(3, watchers.Created.Count);
+
+            Assert.Equal(1, service.ActiveWatcherCount);
 
             Assert.True(service.GetRuntimeStatus(_workspace.Root).Watching);
         }
