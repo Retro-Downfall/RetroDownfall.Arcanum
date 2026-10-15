@@ -1771,13 +1771,15 @@ public sealed class ToolExecutionPipeline(
 
         string toolName = fcc.Name ?? string.Empty;
 
+        SanctumVerdicts verdicts = new(turnContext.SanctumMode);
+
         SanctumResult toolResult = await sanctumGuard
             .ValidateToolAsync(campaignId, toolName, cancellationToken)
             .ConfigureAwait(false);
 
-        if (!toolResult.Allowed)
+        if (verdicts.Observe(toolResult))
         {
-            return new SanctumEnforcementOutcome(toolResult, turnContext.SanctumMode, true);
+            return new SanctumEnforcementOutcome(verdicts.Refusal!, turnContext.SanctumMode, true);
         }
 
         using JsonDocument? argsDocument = TryParseToolArgumentsDocument(argsSnapshot);
@@ -1786,21 +1788,50 @@ public sealed class ToolExecutionPipeline(
 
         string workspaceRoot = turnContext.WorkspaceRoot!;
 
-        SanctumResult? pathOrNetworkResult = await ValidateToolPathsAndNetworkAsync(
+        await ValidateToolPathsAndNetworkAsync(
             campaignId,
             toolName,
             workspaceRoot,
             activeSpell,
             turnContext.SpellScriptRoots,
             argsRoot,
+            verdicts,
             cancellationToken).ConfigureAwait(false);
 
-        if (pathOrNetworkResult is not null)
-        {
-            return new SanctumEnforcementOutcome(pathOrNetworkResult, turnContext.SanctumMode, true);
-        }
+        return new SanctumEnforcementOutcome(verdicts.Refusal ?? allowed, turnContext.SanctumMode, true);
+    }
 
-        return new SanctumEnforcementOutcome(allowed, turnContext.SanctumMode, true);
+    /// <summary>
+    /// The verdicts one tool call collects as it is judged against the Sanctum. A strict Sanctum stops at the first refusal. An audit-only
+    /// Sanctum keeps evaluating after a policy refusal, because its audit row is its only control and one call can break several rules
+    /// (a disabled tool aimed at an off-list host, a patch that touches several paths, a script run from several roots): every breach of
+    /// the call is recorded, not the first and silence about the rest. It stops early only at a verdict the mode cannot override (the guard
+    /// could not evaluate the policy, or could not keep the row), which is then the verdict of the call.
+    /// </summary>
+    private sealed class SanctumVerdicts(SanctumMode mode)
+    {
+        /// <summary>The refusal the call is held to: the first one, or a later one the mode cannot override. Null when nothing was refused.</summary>
+        public SanctumResult? Refusal { get; private set; }
+
+        /// <summary>Takes one verdict into account. Returns true when evaluation must stop because the call cannot continue past it.</summary>
+        public bool Observe(SanctumResult verdict)
+        {
+            if (verdict.Allowed)
+            {
+                return false;
+            }
+
+            if (!SanctumEnforcement.AllowsContinuation(verdict, mode))
+            {
+                Refusal = verdict;
+
+                return true;
+            }
+
+            Refusal ??= verdict;
+
+            return false;
+        }
     }
 
     /// <summary>
@@ -1857,13 +1888,14 @@ public sealed class ToolExecutionPipeline(
         });
     }
 
-    private async Task<SanctumResult?> ValidateToolPathsAndNetworkAsync(
+    private async Task ValidateToolPathsAndNetworkAsync(
         string campaignId,
         string toolName,
         string workspaceRoot,
         ParsedSpell? activeSpell,
         IReadOnlyList<string> spellScriptRoots,
         JsonElement argsRoot,
+        SanctumVerdicts verdicts,
         CancellationToken cancellationToken)
     {
         switch (toolName.ToLowerInvariant())
@@ -1877,25 +1909,24 @@ public sealed class ToolExecutionPipeline(
                 {
                     if (!TryResolvePathUnderWorkspace(workspaceRoot, relativeCwd, out string? resolvedCwd))
                     {
-                        return await sanctumGuard.ValidatePathAsync(
-                            campaignId,
-                            AnchorToWorkspaceRoot(workspaceRoot, relativeCwd),
-                            "working directory",
-                            toolName,
-                            cancellationToken).ConfigureAwait(false);
+                        _ = verdicts.Observe(
+                            await sanctumGuard.ValidatePathAsync(
+                                campaignId,
+                                AnchorToWorkspaceRoot(workspaceRoot, relativeCwd),
+                                "working directory",
+                                toolName,
+                                cancellationToken).ConfigureAwait(false));
+
+                        return;
                     }
 
                     cwd = resolvedCwd;
                 }
 
-                SanctumResult cwdResult = await sanctumGuard
-                    .ValidatePathAsync(campaignId, cwd, "working directory", toolName, cancellationToken)
-                    .ConfigureAwait(false);
-
-                if (!cwdResult.Allowed)
-                {
-                    return cwdResult;
-                }
+                _ = verdicts.Observe(
+                    await sanctumGuard
+                        .ValidatePathAsync(campaignId, cwd, "working directory", toolName, cancellationToken)
+                        .ConfigureAwait(false));
 
                 break;
             }
@@ -1913,27 +1944,26 @@ public sealed class ToolExecutionPipeline(
                         relativeRoot,
                         out string? absoluteRoot))
                 {
-                    return await sanctumGuard.ValidatePathAsync(
-                        campaignId,
-                        AnchorToWorkspaceRoot(workspaceRoot, relativeRoot),
-                        "search root",
-                        toolName,
-                        cancellationToken).ConfigureAwait(false);
+                    _ = verdicts.Observe(
+                        await sanctumGuard.ValidatePathAsync(
+                            campaignId,
+                            AnchorToWorkspaceRoot(workspaceRoot, relativeRoot),
+                            "search root",
+                            toolName,
+                            cancellationToken).ConfigureAwait(false));
+
+                    return;
                 }
 
-                SanctumResult rootResult = await sanctumGuard
-                    .ValidatePathAsync(
-                        campaignId,
-                        absoluteRoot,
-                        "search root",
-                        toolName,
-                        cancellationToken)
-                    .ConfigureAwait(false);
-
-                if (!rootResult.Allowed)
-                {
-                    return rootResult;
-                }
+                _ = verdicts.Observe(
+                    await sanctumGuard
+                        .ValidatePathAsync(
+                            campaignId,
+                            absoluteRoot,
+                            "search root",
+                            toolName,
+                            cancellationToken)
+                        .ConfigureAwait(false));
 
                 break;
             }
@@ -1949,22 +1979,9 @@ public sealed class ToolExecutionPipeline(
                         cancellationToken,
                         out UnifiedDiffManifest? manifest))
                 {
-                    return new SanctumResult
-                    {
-                        Allowed = false,
-                        DenyReason =
-                            "apply_patch target paths could not be validated within the active policy limits.",
-                        Breach = new SanctumBreach
-                        {
-                            BreachId = Guid.NewGuid().ToString("N"),
-                            CampaignId = campaignId,
-                            ToolName = toolName,
-                            BreachType = "PatchPathPreflight",
-                            Detail =
-                                "The patch manifest could not be parsed for complete path validation.",
-                            Timestamp = DateTimeOffset.UtcNow,
-                        },
-                    };
+                    _ = verdicts.Observe(UnparsablePatchDenial(campaignId, toolName));
+
+                    return;
                 }
 
                 foreach (string relativePath in manifest.NormalizedPaths)
@@ -1975,12 +1992,18 @@ public sealed class ToolExecutionPipeline(
                             out string? absolutePath,
                             out _))
                     {
-                        return await sanctumGuard.ValidatePathAsync(
-                            campaignId,
-                            AnchorToWorkspaceRoot(workspaceRoot, relativePath),
-                            "patch path",
-                            toolName,
-                            cancellationToken).ConfigureAwait(false);
+                        if (verdicts.Observe(
+                                await sanctumGuard.ValidatePathAsync(
+                                    campaignId,
+                                    AnchorToWorkspaceRoot(workspaceRoot, relativePath),
+                                    "patch path",
+                                    toolName,
+                                    cancellationToken).ConfigureAwait(false)))
+                        {
+                            return;
+                        }
+
+                        continue;
                     }
 
                     SanctumResult pathResult = await sanctumGuard
@@ -1992,9 +2015,9 @@ public sealed class ToolExecutionPipeline(
                             cancellationToken)
                         .ConfigureAwait(false);
 
-                    if (!pathResult.Allowed)
+                    if (verdicts.Observe(pathResult))
                     {
-                        return pathResult;
+                        return;
                     }
                 }
 
@@ -2018,22 +2041,21 @@ public sealed class ToolExecutionPipeline(
 
                 if (!TryResolvePathUnderWorkspace(workspaceRoot, relativePath, out string? absolutePath))
                 {
-                    return await sanctumGuard.ValidatePathAsync(
-                        campaignId,
-                        AnchorToWorkspaceRoot(workspaceRoot, relativePath),
-                        pathOperation,
-                        toolName,
-                        cancellationToken).ConfigureAwait(false);
+                    _ = verdicts.Observe(
+                        await sanctumGuard.ValidatePathAsync(
+                            campaignId,
+                            AnchorToWorkspaceRoot(workspaceRoot, relativePath),
+                            pathOperation,
+                            toolName,
+                            cancellationToken).ConfigureAwait(false));
+
+                    return;
                 }
 
-                SanctumResult pathResult = await sanctumGuard
-                    .ValidatePathAsync(campaignId, absolutePath, pathOperation, toolName, cancellationToken)
-                    .ConfigureAwait(false);
-
-                if (!pathResult.Allowed)
-                {
-                    return pathResult;
-                }
+                _ = verdicts.Observe(
+                    await sanctumGuard
+                        .ValidatePathAsync(campaignId, absolutePath, pathOperation, toolName, cancellationToken)
+                        .ConfigureAwait(false));
 
                 break;
             }
@@ -2067,9 +2089,9 @@ public sealed class ToolExecutionPipeline(
                         .ValidatePathAsync(campaignId, candidate, "script path", toolName, cancellationToken)
                         .ConfigureAwait(false);
 
-                    if (!scriptResult.Allowed)
+                    if (verdicts.Observe(scriptResult))
                     {
-                        return scriptResult;
+                        return;
                     }
 
                     if (!isPlainFileName)
@@ -2081,9 +2103,9 @@ public sealed class ToolExecutionPipeline(
                         .ValidatePathAsync(campaignId, scriptsRoot, "working directory", toolName, cancellationToken)
                         .ConfigureAwait(false);
 
-                    if (!scriptsRootResult.Allowed)
+                    if (verdicts.Observe(scriptsRootResult))
                     {
-                        return scriptsRootResult;
+                        return;
                     }
                 }
 
@@ -2099,21 +2121,36 @@ public sealed class ToolExecutionPipeline(
                     break;
                 }
 
-                SanctumResult networkResult = await sanctumGuard
-                    .ValidateNetworkAsync(campaignId, targetUrl, toolName, cancellationToken)
-                    .ConfigureAwait(false);
-
-                if (!networkResult.Allowed)
-                {
-                    return networkResult;
-                }
+                _ = verdicts.Observe(
+                    await sanctumGuard
+                        .ValidateNetworkAsync(campaignId, targetUrl, toolName, cancellationToken)
+                        .ConfigureAwait(false));
 
                 break;
             }
         }
-
-        return null;
     }
+
+    /// <summary>
+    /// The refusal for a patch whose touched paths cannot be listed. There is no policy to evaluate them against, which is the
+    /// guard-could-not-evaluate refusal that no mode overrides, not a policy breach an audit-only Sanctum records and waves through.
+    /// </summary>
+    internal static SanctumResult UnparsablePatchDenial(string campaignId, string toolName) =>
+        new()
+        {
+            Allowed = false,
+            DenyReason = "apply_patch target paths could not be validated within the active policy limits.",
+            DenialKind = SanctumDenialKind.PolicyUnavailable,
+            Breach = new SanctumBreach
+            {
+                BreachId = Guid.NewGuid().ToString("N"),
+                CampaignId = campaignId,
+                ToolName = toolName,
+                BreachType = "PatchPathPreflight",
+                Detail = "The patch manifest could not be parsed for complete path validation.",
+                Timestamp = DateTimeOffset.UtcNow,
+            },
+        };
 
     /// <summary>
     /// Pure apply-patch preflight seam. It consumes only model arguments and operator limits;
