@@ -171,8 +171,13 @@ jobs:
             **/Directory.Packages.props
             .config/dotnet-tools.json
 
+      # The lane is sized for the test host alone on a runner of about 7 GB (docs/Arcanum.DESIGN.md, Verification Memory), so no build server may
+      # stay resident behind the build: the Roslyn compiler server and the MSBuild nodes of a build this size keep several GB.
       - name: Build uninstrumented source analysis
-        run: dotnet build tests/RetroDownfall.Arcanum.Tests/RetroDownfall.Arcanum.Tests.csproj --configuration Release
+        run: dotnet build tests/RetroDownfall.Arcanum.Tests/RetroDownfall.Arcanum.Tests.csproj --configuration Release --disable-build-servers
+
+      - name: Release build servers
+        run: dotnet build-server shutdown
 
       - name: Test source analysis runner
         run: python3 -m unittest scripts/hosted_producer_analysis_runner_test.py
@@ -216,8 +221,13 @@ jobs:
             **/Directory.Packages.props
             .config/dotnet-tools.json
 
+      # The lane is sized for the test host alone on a runner of about 7 GB (docs/Arcanum.DESIGN.md, Verification Memory), so no build server may
+      # stay resident behind the build: the Roslyn compiler server and the MSBuild nodes of a build this size keep several GB.
       - name: Build uninstrumented source analysis
-        run: dotnet build tests/RetroDownfall.Arcanum.Tests/RetroDownfall.Arcanum.Tests.csproj --configuration Release
+        run: dotnet build tests/RetroDownfall.Arcanum.Tests/RetroDownfall.Arcanum.Tests.csproj --configuration Release --disable-build-servers
+
+      - name: Release build servers
+        run: dotnet build-server shutdown
 
       - name: Test hosted-producer additional analysis
         timeout-minutes: 30
@@ -260,8 +270,13 @@ jobs:
             **/Directory.Packages.props
             .config/dotnet-tools.json
 
+      # The lane is sized for the test host alone on a runner of about 7 GB (docs/Arcanum.DESIGN.md, Verification Memory), so no build server may
+      # stay resident behind the build: the Roslyn compiler server and the MSBuild nodes of a build this size keep several GB.
       - name: Build uninstrumented source analysis
-        run: dotnet build tests/RetroDownfall.Arcanum.Tests/RetroDownfall.Arcanum.Tests.csproj --configuration Release
+        run: dotnet build tests/RetroDownfall.Arcanum.Tests/RetroDownfall.Arcanum.Tests.csproj --configuration Release --disable-build-servers
+
+      - name: Release build servers
+        run: dotnet build-server shutdown
 
       - name: Test hosted-producer fixture analysis
         timeout-minutes: 30
@@ -304,8 +319,13 @@ jobs:
             **/Directory.Packages.props
             .config/dotnet-tools.json
 
+      # The lane is sized for the test host alone on a runner of about 7 GB (docs/Arcanum.DESIGN.md, Verification Memory), so no build server may
+      # stay resident behind the build: the Roslyn compiler server and the MSBuild nodes of a build this size keep several GB.
       - name: Build uninstrumented source analysis
-        run: dotnet build tests/RetroDownfall.Arcanum.Tests/RetroDownfall.Arcanum.Tests.csproj --configuration Release
+        run: dotnet build tests/RetroDownfall.Arcanum.Tests/RetroDownfall.Arcanum.Tests.csproj --configuration Release --disable-build-servers
+
+      - name: Release build servers
+        run: dotnet build-server shutdown
 
       - name: Test hosted-producer serve host analysis
         timeout-minutes: 30

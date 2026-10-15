@@ -181,6 +181,52 @@ public sealed class ContinuousIntegrationWorkflowTests
         }
     }
 
+    // The memory the lanes were measured to need (DESIGN, Verification Memory) is the memory of the test host alone, on a runner of about 7 GB. The build
+    // that runs right before the analysis leaves the Roslyn compiler server and the MSBuild nodes resident by default, several GB between them on a
+    // build of this size, and they are not part of that measurement. Each worker therefore builds without build servers and then shuts down any that
+    // exist, before the analysis starts.
+    [Fact]
+    public void Source_analysis_workers_leave_no_build_server_resident_while_the_analysis_runs()
+    {
+        WorkflowJob[] lanes = SourceAnalysisWorkers(FindRepositoryRoot());
+
+        Assert.Equal(SourceAnalysisPartitions.Length, lanes.Length);
+
+        foreach (WorkflowJob lane in lanes)
+        {
+            string[] steps = lane.Body
+                .Replace("\r\n", "\n", StringComparison.Ordinal)
+                .Split("      - name:", StringSplitOptions.None);
+
+            string build = Assert.Single(
+                steps,
+                static step => step.Contains("dotnet build tests/RetroDownfall.Arcanum.Tests/RetroDownfall.Arcanum.Tests.csproj", StringComparison.Ordinal));
+
+            Assert.Contains("--configuration Release", build, StringComparison.Ordinal);
+
+            Assert.Contains("--disable-build-servers", build, StringComparison.Ordinal);
+
+            string shutdown = Assert.Single(
+                steps,
+                static step => step.Contains("dotnet build-server shutdown", StringComparison.Ordinal));
+
+            string analysis = Assert.Single(
+                steps,
+                static step => step.Contains("python3 scripts/hosted_producer_analysis_runner.py", StringComparison.Ordinal)
+                    && step.Contains("--partition ", StringComparison.Ordinal));
+
+            int buildAt = Array.IndexOf(steps, build);
+
+            int shutdownAt = Array.IndexOf(steps, shutdown);
+
+            int analysisAt = Array.IndexOf(steps, analysis);
+
+            Assert.True(buildAt < shutdownAt, lane.Id + " must shut the build servers down after it builds.");
+
+            Assert.True(shutdownAt < analysisAt, lane.Id + " must shut the build servers down before the analysis starts.");
+        }
+    }
+
     [Fact]
     public void Runtime_lanes_delegate_source_analysis_without_weakening_coverage()
     {
