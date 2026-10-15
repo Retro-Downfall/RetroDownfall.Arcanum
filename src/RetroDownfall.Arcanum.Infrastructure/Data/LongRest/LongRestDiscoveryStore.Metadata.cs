@@ -350,6 +350,10 @@ internal sealed partial class LongRestDiscoveryStore
 
     private const int CorpusIncoming = 13;
 
+    private const int CorpusStoredSnapshot = 9;
+
+    private const int CorpusStoredLabel = 10;
+
     private const int CorpusSnapshot = 14;
 
     private const int CorpusLabel = CorpusSnapshot + SagaLongRestService.SnapshotColumnCount;
@@ -465,8 +469,9 @@ internal sealed partial class LongRestDiscoveryStore
 
                 LongRestSnapshot frozen = snapshot with { IsConsolidated = consolidated, IsTransformationOutput = output };
 
-                if (!string.Equals(reader.GetString(9), JsonSerializer.Serialize(frozen, LongRestJsonContext.Default.LongRestSnapshot), StringComparison.Ordinal)
-                    || !string.Equals(reader.IsDBNull(10) ? null : reader.GetString(10),
+                if (!string.Equals(StoredManifest(reader, CorpusStoredSnapshot) ?? throw new InvalidDataException(),
+                        JsonSerializer.Serialize(frozen, LongRestJsonContext.Default.LongRestSnapshot), StringComparison.Ordinal)
+                    || !string.Equals(StoredManifest(reader, CorpusStoredLabel),
                         label is null ? null : JsonSerializer.Serialize(label, LongRestJsonContext.Default.ArtifactSensitivityLabel), StringComparison.Ordinal))
                 {
                     throw new InvalidDataException();
@@ -495,6 +500,15 @@ internal sealed partial class LongRestDiscoveryStore
             _ = await ReadFrozenMetadataLeafAsync(connection, transaction, generation, memory, ct).ConfigureAwait(false);
         }
     }
+
+    /// <summary>
+    /// A manifest the leaf stored, as text, or null where the leaf stored none. The per-leaf read compares a manifest with the one it expects
+    /// inside SQLite, where a value that is not TEXT is unequal to every TEXT value whatever its bytes; and the column is TEXT only by
+    /// affinity, which a BLOB escapes. So a manifest that is not TEXT is refused here, and the comparison of the bytes decoded from a TEXT
+    /// value is then the comparison SQLite makes, because the serializer writes ASCII.
+    /// </summary>
+    private static string? StoredManifest(SqliteDataReader reader, int ordinal) =>
+        reader.IsDBNull(ordinal) ? null : reader.GetValue(ordinal) as string ?? throw new InvalidDataException();
 
     private static LongRestDependency[] ReadDependencies(string json)
     {

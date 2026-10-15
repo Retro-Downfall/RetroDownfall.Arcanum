@@ -68,6 +68,21 @@ public sealed class LongRestMetadataCorpusEquivalenceTests
         new("leaf-snapshot-extra-key", Mechanism.Seam, static (s, m) => LeafAsync(s, "SnapshotJson = json_set(SnapshotJson, '$.unknown', 1)", m)),
         new("leaf-snapshot-flag-text", Mechanism.Seam, static (s, m) => LeafAsync(s, "SnapshotJson = replace(SnapshotJson, '\"isCurrent\":true', '\"isCurrent\": true')", m)),
         new("leaf-label-json-present", Mechanism.Seam, static (s, m) => LeafAsync(s, "LabelJson = '{}'", m), CleanOnly: true),
+
+        // The storage class of a stored manifest. SQLite compares a BLOB with a TEXT value as unequal whatever the bytes, so the per-leaf read,
+        // which compares inside SQLite, refuses a manifest stored as a BLOB; the set read decodes both sides to strings and must refuse it too.
+        new("leaf-snapshot-blob", Mechanism.Seam, static (s, m) => LeafAsync(s, "SnapshotJson = CAST(SnapshotJson AS BLOB)", m)),
+        new("leaf-snapshot-trailing-nul", Mechanism.Seam, static (s, m) => LeafAsync(s, "SnapshotJson = SnapshotJson || char(0)", m)),
+        new("leaf-label-json-blob", Mechanism.Seam, static (s, m) => LeafAsync(s, "LabelJson = CAST(LabelJson AS BLOB)", m), ProtectedOnly: true),
+        new("leaf-label-json-trailing-nul", Mechanism.Seam, static (s, m) => LeafAsync(s, "LabelJson = LabelJson || char(0)", m), ProtectedOnly: true),
+        new("leaf-label-json-present-blob", Mechanism.Seam, static (s, m) => LeafAsync(s, "LabelJson = CAST('{}' AS BLOB)", m), CleanOnly: true),
+
+        // The same for the other columns a leaf stores that the set read joins on or decodes and that a BLOB can reach. A leaf's MemoryId and
+        // SourceDigest cannot be made to differ in storage class: its foreign keys and its length check refuse the change.
+        new("leaf-version-blob", Mechanism.Seam, static (s, m) => LeafAsync(s, "VersionId = CAST(VersionId AS BLOB)", m)),
+        new("leaf-sequence-blob", Mechanism.Seam, static (s, m) => LeafAsync(s, "InsertionSequence = CAST(InsertionSequence AS BLOB)", m)),
+        new("leaf-epoch-blob", Mechanism.Seam, static (s, m) => LeafAsync(s, "MutationEpoch = CAST(MutationEpoch AS BLOB)", m)),
+        new("leaf-embedding-dimensions-blob", Mechanism.Seam, static (s, m) => LeafAsync(s, "EmbeddingDimensions = CAST(EmbeddingDimensions AS BLOB)", m)),
         new("leaf-label-json-whitespace", Mechanism.Seam, static (s, m) => LeafAsync(s, "LabelJson = replace(LabelJson, '{', '{ ')", m), ProtectedOnly: true),
         new("leaf-label-json-absent", Mechanism.Seam, static (s, m) => LeafAsync(s, "LabelJson = NULL", m), ProtectedOnly: true),
         new("label-session", Mechanism.Seam, static async (s, m) =>
@@ -151,6 +166,12 @@ public sealed class LongRestMetadataCorpusEquivalenceTests
     [InlineData("label-content-digest", true)]
     [InlineData("leaf-label-json-whitespace", true)]
     [InlineData("leaf-label-json-absent", true)]
+    [InlineData("leaf-snapshot-blob", false)]
+    [InlineData("leaf-snapshot-blob", true)]
+    [InlineData("leaf-snapshot-trailing-nul", false)]
+    [InlineData("leaf-label-json-blob", true)]
+    [InlineData("leaf-label-json-trailing-nul", true)]
+    [InlineData("leaf-label-json-present-blob", false)]
     [InlineData("label-spelling", true)]
     [InlineData("label-session", true)]
     [InlineData("frozen-flag-consolidated", false)]
@@ -320,6 +341,8 @@ public sealed class LongRestMetadataCorpusEquivalenceTests
         { "leaf-snapshot-dependencies", "UPDATE long_rest_discovery_leaves SET SnapshotJson = json_set(SnapshotJson, '$.dependencies', json('[]')) WHERE MemoryId = 'a0000000-0000-0000-0000-000000000003';" },
         { "leaf-snapshot-incoming", "UPDATE long_rest_discovery_leaves SET SnapshotJson = json_set(SnapshotJson, '$.incomingDependencies', json('[]')) WHERE MemoryId = 'a0000000-0000-0000-0000-000000000002';" },
         { "leaf-label-json", "UPDATE long_rest_discovery_leaves SET LabelJson = '{}' WHERE MemoryId = 'a0000000-0000-0000-0000-000000000004';" },
+        { "leaf-snapshot-blob", "UPDATE long_rest_discovery_leaves SET SnapshotJson = CAST(SnapshotJson AS BLOB) WHERE MemoryId = 'a0000000-0000-0000-0000-000000000004';" },
+        { "leaf-label-json-blob", "UPDATE long_rest_discovery_leaves SET LabelJson = CAST('{}' AS BLOB) WHERE MemoryId = 'a0000000-0000-0000-0000-000000000004';" },
         { "leaf-embedding-digest", "UPDATE long_rest_discovery_leaves SET EmbeddingDigest = zeroblob(32) WHERE MemoryId = 'a0000000-0000-0000-0000-000000000004';" },
     };
 
