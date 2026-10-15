@@ -501,127 +501,6 @@ public sealed partial class HostedGrimoireProducerInventoryTests
         Assert.True(helper.Length >= CommandParameterSiteCount, "Each command must keep a state of its own.");
     }
 
-    // ---- Constant Value Identity and the proof that an inherited group belongs to the owner that opened it.
-    //
-    // A per-unit recovery handler opens a physical group in the member that owns it, and a helper that member calls
-    // inherits that group through the frontier alone. The proof that the helper's group is the retained recovery lease's reads
-    // the helper's source edges to find the member that holds the group. A constant is no such edge: it carries no instance,
-    // and a state that names it by value is reached from every caller that passes it.
-    private static string PerUnitInheritedGroupFixture(bool sourced, bool ownerFirst)
-    {
-        string source = PerUnitRecoveryMatrixFixture("same-lease");
-
-        void ReplaceOne(string original, string replacement)
-        {
-            Assert.Equal(1, source.Split(original, StringSplitOptions.None).Length - 1);
-
-            source = source.Replace(original, replacement, StringComparison.Ordinal);
-        }
-
-        // A list is a source whose provenance a callee demands, so it is bound by where it was created and is a real edge.
-        string argument = sourced ? "new System.Collections.Generic.List<int>()" : "true";
-
-        string parameter = sourced ? "System.Collections.Generic.List<int> units" : "bool enabled";
-
-        string guard = sourced ? "if (units.Count < 0) return; " : "if (!enabled) return; ";
-
-        string calls = ownerFirst
-            ? "await DeleteAsync(" + argument + "); await ForwardAsync();"
-            : "await ForwardAsync(); await DeleteAsync(" + argument + ");";
-
-        // The owner opens the group and calls the helper itself and through a method that holds no group and no lease.
-        ReplaceOne("System.IO.File.Delete(\"per-unit-first\");", calls);
-
-        ReplaceOne("private sealed class WrongGroup : IDisposable",
-            "private async Task ForwardAsync() { await DeleteAsync(" + argument + "); } "
-            + "private async Task DeleteAsync(" + parameter + ") { await Task.CompletedTask; " + guard + "System.IO.File.Delete(\"per-unit-first\"); } "
-            + "private sealed class WrongGroup : IDisposable");
-
-        return source;
-    }
-
-    private static (HostedProducerDiscovery<HostedProducerSite> Result, HostedProducerAdmittedStateObservation[] Helper) PerUnitInheritedGroupDiscover(bool sourced, bool ownerFirst)
-    {
-        CSharpCompilation compilation = Compile(PerUnitInheritedGroupFixture(sourced, ownerFirst));
-
-        Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
-
-        System.Collections.Concurrent.ConcurrentQueue<HostedProducerAdmittedStateObservation> observed = new();
-
-        HostedProducerDiscovery<HostedProducerSite> result = DiscoverRecoveryMatrixFixture([compilation], admittedStateObserver: observed.Enqueue);
-
-        return (result, [.. observed.Where(static state => state.Method.Contains(".PerUnitRecoveryHandler.DeleteAsync(", StringComparison.Ordinal))]);
-    }
-
-    // What the traversal concluded about the helper's send, apart from which call path it was reported under.
-    private static string[] PerUnitInheritedGroupVerdict(HostedProducerDiscovery<HostedProducerSite> result) =>
-    [
-        .. result.Items
-            .Where(static site => site.Member == "DeleteAsync" && site.Callee == "System.IO.File.Delete")
-            .Select(static site => "send work=" + (site.WorkFrontierCapsuleId is not null) + " effect=" + (site.EffectFrontierCapsuleId is not null)),
-        .. result.Diagnostics.Select(static diagnostic => diagnostic.Code),
-    ];
-
-    [Theory]
-    [InlineData(true)]
-    [InlineData(false)]
-    public void AHelperReachedOnlyWithAConstantHasNoSourceEdgeToTheOwnerOfItsGroup(bool ownerFirst)
-    {
-        var (result, helper) = PerUnitInheritedGroupDiscover(sourced: false, ownerFirst);
-
-        // The owner's group reaches the helper through the frontier, and nothing but a constant joins the helper to the owner.
-        HostedProducerSite send = Assert.Single(result.Items, static site => site.Member == "DeleteAsync" && site.Callee == "System.IO.File.Delete");
-
-        Assert.NotNull(send.WorkFrontierCapsuleId);
-
-        Assert.Null(send.EffectFrontierCapsuleId);
-
-        Assert.Single(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_RECOVERY_PER_UNIT_HANDOFF_UNPROVEN");
-
-        // The constant is still one state for the two callers: the proof stopped reading it, the identity did not stop naming it by value.
-        Assert.Single(helper.Select(static state => state.EvaluationEnvironmentToken).Distinct());
-    }
-
-    [Fact]
-    public void TheVerdictOnAConstantDoesNotDependOnWhichCallerReachesTheHelperFirst()
-    {
-        string[] ownerFirst = PerUnitInheritedGroupVerdict(PerUnitInheritedGroupDiscover(sourced: false, ownerFirst: true).Result);
-
-        string[] forwardFirst = PerUnitInheritedGroupVerdict(PerUnitInheritedGroupDiscover(sourced: false, ownerFirst: false).Result);
-
-        Assert.Equal(forwardFirst.Order(StringComparer.Ordinal), ownerFirst.Order(StringComparer.Ordinal));
-    }
-
-    [Theory]
-    [InlineData(true)]
-    [InlineData(false)]
-    public void ASourceThatCarriesAnInstanceStillReachesTheOwnerOfItsGroup(bool ownerFirst)
-    {
-        var (result, helper) = PerUnitInheritedGroupDiscover(sourced: true, ownerFirst);
-
-        HostedProducerSite[] sends = [.. result.Items.Where(static site => site.Member == "DeleteAsync" && site.Callee == "System.IO.File.Delete")];
-
-        // The list the owner created is a real edge to it, so the owner's own call is proved. The call made through the method
-        // that holds no group has no edge to the owner and is refused: the two are two states, each with the verdict it earned.
-        Assert.Contains(sends, static site => site.WorkFrontierCapsuleId is not null && site.EffectFrontierCapsuleId is not null);
-
-        Assert.Contains(sends, static site => site.WorkFrontierCapsuleId is not null && site.EffectFrontierCapsuleId is null);
-
-        Assert.Single(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_RECOVERY_PER_UNIT_HANDOFF_UNPROVEN");
-
-        Assert.True(helper.Select(static state => state.EvaluationEnvironmentToken).Distinct().Count() >= 2, "Each source keeps a state of its own.");
-    }
-
-    [Fact]
-    public void TheVerdictOnASourceDoesNotDependOnWhichCallerReachesTheHelperFirstEither()
-    {
-        string[] ownerFirst = PerUnitInheritedGroupVerdict(PerUnitInheritedGroupDiscover(sourced: true, ownerFirst: true).Result);
-
-        string[] forwardFirst = PerUnitInheritedGroupVerdict(PerUnitInheritedGroupDiscover(sourced: true, ownerFirst: false).Result);
-
-        Assert.Equal(forwardFirst.Order(StringComparer.Ordinal), ownerFirst.Order(StringComparer.Ordinal));
-    }
-
     // ---- Foreign Parameter Projection and the two questions that read every admission binding of a member.
     //
     // Whether a member holds an admission seed, and whether it may contain an admission origin, ask whether any parameter of
@@ -1087,14 +966,9 @@ public sealed partial class HostedGrimoireProducerInventoryTests
         ("BindDeclaredRootFactoryContext", "copies the entries into the factory's context whole, each with its own source and caller"),
         ("BindDemandedReceiverReadonlyFieldContext", "rebinds the demanded entries whole, each with its own source and caller"),
         ("BindExactConstructedReceiverPropertyContext", "copies the entries whole into a new dictionary and adds the property values the exact construction proves; the one source it hands to a reading helper is the exact receiver it was given, not an entry of the dictionary"),
-        ("BindPerUnitReconcilerEntryContext", "copies the entries whole into a new dictionary and adds one entry; it compares the one source it looks up by key with the source the authenticated factory edge supplies, through the reviewed comparison, and refuses on any difference"),
-        ("BindPerUnitRecoveryReceiverContext", "drops the protected entries from a copy and keeps the others whole; for the caller's constructor-parameter entries it compares each source with the generic bound's source for the same key through PerUnitSameBoundSource, which refuses unless the expression and the caller's identity are equal, and keeps the source whole"),
         ("CleanupBindingIdentity", "names each source by its caller's identity in a cache key; a constant stays distinct by caller, which is never fewer states"),
         ("EvaluationEnvironmentLocalBindingIdentity", "names each source by its caller's identity in a state identity; a constant stays distinct by caller, which is never fewer states"),
         ("HasReviewedValueConversions", "copies the captured entries and reviews the conversion of the one source bound to the parameter it is asked about"),
-        ("PerUnitMaterializationValueCompatible", "compares two sources by caller identity and expression span and refuses on any difference"),
-        ("PreservePerUnitReconcilerFieldContext", "keeps the field sources of a constructor context whole and refuses on any disagreement"),
-        ("TryBindPerUnitRecoveryHandoff", "copies the entries whole into a new dictionary; each source it compares it looks up by key, through PerUnitSameBoundSource, which refuses unless the expression and the caller's identity are equal"),
     ];
 
     private static bool IsTheChecker(Type type) =>
@@ -1108,7 +982,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests
         // Not vacuous: the checker enumerates its bindings in many places, and the walk that follows a source to its caller is guarded.
         Assert.NotEmpty(enumerations);
 
-        Assert.Contains(enumerations, static item => item.Guarded && item.ReadsCaller && item.Method.EndsWith(".PerUnitPhysicalGroupSharesWork", StringComparison.Ordinal));
+        Assert.Contains(enumerations, static item => item.Guarded && item.ReadsCaller && item.Method.EndsWith(".EvaluationEnvironmentIdentity", StringComparison.Ordinal));
 
         string[] unreviewed = [.. enumerations.Where(static item => item.ReadsCaller && !item.Guarded)
             .Select(static item => item.Method[(item.Method.LastIndexOf('.') + 1)..])

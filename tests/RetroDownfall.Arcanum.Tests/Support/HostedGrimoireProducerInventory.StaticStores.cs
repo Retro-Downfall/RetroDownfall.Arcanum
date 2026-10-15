@@ -12,8 +12,8 @@ internal static partial class HostedGrimoireProducerInventory
     {
         // Static Handle Stores. The origin walk follows a handle through locals, formals and the values built from them, and a
         // handle written to storage it cannot follow leaves that environment at the store, which ends the admission there. For
-        // the supported holder shapes that is the whole story: they keep a lease in an instance field, and the store is not
-        // refused. Static storage is different. It is process-wide ambient state, never a home for a lease or an
+        // an instance field that is the whole story here: the store is not refused, and the Authority Carrier Ban refuses the
+        // field itself. Static storage is different. It is process-wide ambient state, never a home for a lease or an
         // external-effect group, and it is what lets a closed value (Handle-Incapable Values) reach a handle after all: a
         // stash written here can be read back through a key, an index or a conversion, by code that mentions neither the
         // handle nor anything derived from it.

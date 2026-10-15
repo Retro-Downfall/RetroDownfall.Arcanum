@@ -13,18 +13,25 @@ namespace RetroDownfall.Arcanum.Tests.Operations;
 public sealed partial class HostedGrimoireProducerInventoryTests
 {
     // Ambient Holder Refusal. The lease travels by value, so a member that reads a lease out of a holder object has no business
-    // holding the worker's Work: the holder's lease is ambient state, not the lease the worker minted and handed down. Two things
-    // must hold when a send's member reads a holder that declares a Bind(IGrimoireWorkLease) the worker has not called in that
-    // member's scope (the only holder the checker refuses today; see AmbientHolderRefusalIsTodayKeyedOnTheUnboundBindNamedHolder):
+    // holding the worker's Work: the holder's lease is ambient state, not the lease the worker minted and handed down. The refusal is
+    // of the read. It does not depend on what the holder is called or on how it came by its lease: a binder named Bind, a binder named
+    // anything else, no binder at all, a property setter, a constructor, a public field and a conditional access are all the same
+    // read, and no witness lifts the refusal. Two things must hold when a send's member reads such a holder:
     //   - the send gets no Work, and says so with HOSTED_SITE_WORK_FRONTIER_MISSING at the send;
     //   - a group begun on the holder's lease is refused as HOSTED_ADMISSION_RECEIVER_MISMATCH, so it is nobody's Effect.
     // The lease-parameter row is the twin: the same chain, with every send on its lease formal, is granted in full and reports
-    // nothing, so the two refusals are about the holder read and not about the fixture. The second send never reads the holder in
-    // any row, and is granted in all three: the refusal is the reading member's, not the whole run's.
+    // nothing, so the refusals are about the holder read and not about the fixture. The second send never reads the holder in
+    // any row, and is granted in all of them: the refusal is the reading member's, not the whole run's.
     [Theory]
     [InlineData("lease-parameter")]
     [InlineData("holder-read")]
     [InlineData("holder-group")]
+    [InlineData("holder-read-renamed-binder")]
+    [InlineData("holder-read-without-binder")]
+    [InlineData("holder-read-property-setter")]
+    [InlineData("holder-read-constructor-captured")]
+    [InlineData("holder-read-field")]
+    [InlineData("holder-read-conditional-access")]
     public void AmbientHolderIsRefused(string shape)
     {
         AmbientHolderRun run = RunAmbientHolder(shape);
@@ -84,7 +91,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests
 
         Assert.EndsWith(firstCoordinate, missingEffect.Identity, StringComparison.Ordinal);
 
-        if (shape == "holder-read")
+        if (shape != "holder-group")
         {
             // Reading the holder is enough: there is no group to refuse, and nothing else is reported.
             Assert.Empty(run.Groups(run.FirstSend));
@@ -113,46 +120,6 @@ public sealed partial class HostedGrimoireProducerInventoryTests
         Assert.Null(holderGroup.EffectFrontierCapsuleId);
 
         Assert.Equal(3, result.Diagnostics.Count);
-    }
-
-    // What the checker does today for a holder that is NOT an unbound holder with a binder literally named Bind. The refusal above is
-    // keyed on that shape: the Work of a member that reads a holder's lease is dropped only when the holder type declares an instance
-    // method named exactly Bind that takes one IGrimoireWorkLease, and the worker has not bound it in the member's scope the way the
-    // holder-era worker did (RequiresOrdinaryScopedHolderWitness and OrdinaryScopedHolderWorkIsCurrent). These rows pin the outcome
-    // the checker gives today, as a tripwire and not as an endorsement: a holder with any other binder name, or none, keeps the
-    // worker's Work at its send. The witnessed grant for a holder the holder-era worker bound in the same scope is pinned by
-    // OrdinaryScopedHolderRetainsExactLeaseUntilJoinedPhysicalSends(same-scoped-lease). All of this is holder-era acceptance that
-    // the checker work retiring the holder must replace by a refusal of any holder read whatever the holder is called and however it
-    // is bound, at which point these rows flip to the expectations of AmbientHolderIsRefused. Until then the Carrier Ban is what
-    // keeps a holder out of production: it refuses the field or property that keeps the lease whatever its binder is named.
-    [Theory]
-    [InlineData("holder-read-renamed-binder")]
-    [InlineData("holder-read-without-binder")]
-    public void AmbientHolderRefusalIsTodayKeyedOnTheUnboundBindNamedHolder(string shape)
-    {
-        AmbientHolderRun run = RunAmbientHolder(shape);
-
-        HostedProducerDiscovery<HostedProducerSite> result = run.Result;
-
-        InvocationExpressionSyntax physicalFirst = run.PhysicalSend(run.FirstSend);
-
-        HostedProducerSite first = run.Site(physicalFirst, "System.IO.File.Delete");
-
-        string firstCoordinate = "/site@" + run.Tree.FilePath + ":" + physicalFirst.SpanStart;
-
-        // Neither is refused as a holder read: the send keeps the worker's Work, where AmbientHolderIsRefused's holder-read has none.
-        Assert.Equal(run.Acquired.CapsuleId, first.WorkFrontierCapsuleId);
-
-        Assert.DoesNotContain(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_SITE_WORK_FRONTIER_MISSING");
-
-        // With no group on the send nobody owns its Effect, which is the only thing reported.
-        Assert.Null(first.EffectFrontierCapsuleId);
-
-        HostedProducerInventoryDiagnostic missingEffect = Assert.Single(result.Diagnostics);
-
-        Assert.Equal("HOSTED_SITE_EFFECT_FRONTIER_MISSING", missingEffect.Code);
-
-        Assert.EndsWith(firstCoordinate, missingEffect.Identity, StringComparison.Ordinal);
     }
 
     private sealed record AmbientHolderRun(

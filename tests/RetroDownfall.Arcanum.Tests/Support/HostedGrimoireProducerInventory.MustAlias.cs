@@ -1,3 +1,5 @@
+using System.Diagnostics.CodeAnalysis;
+
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
@@ -16,7 +18,8 @@ internal static partial class HostedGrimoireProducerInventory
     // guarded TryAcquireWorkLease call; a copy `x = admitted!` of that designation; or a formal every one of whose
     // bindings is itself a must-alias (the binding carries no inexact marker). Any join, conditional, coalesce, switch,
     // opaque return, loop-carried definition, holder read or origin-less definition is refused, and so is a variable that
-    // anything writes, including by handing it out by reference. The rule only removes authority: the may-alias
+    // anything writes, including by handing it out by reference. No member is exempt: whatever context a member carries, a
+    // group whose receiver is not such a must-alias grants no Effect. The rule only removes authority: the may-alias
     // AdmissionOrigins sets that decide lifetimes and escapes are untouched.
     private sealed partial class ProducerGraph
     {
@@ -36,25 +39,13 @@ internal static partial class HostedGrimoireProducerInventory
 
         private readonly Dictionary<ISymbol, Dictionary<SyntaxNode, string?>> leaseLocalOrigins = new(SymbolEqualityComparer.Default);
 
-        // The holder-era receiver witnesses (the per-unit recovery handoff, the ordinary scoped holder, the readiness source and
-        // the scoped lease instance) each prove their own receiver exactly and are retired with the holder. A member that
-        // carries one is not required to prove a must-alias receiver; the witness is. This is no licence for a counterfeit: the
-        // LeaseReceiverProof fixtures pin that a fake or ternary receiver gets no Effect in each exempt context, and a receiver
-        // that IS a must-alias is judged here whatever the member carries. Every other member is judged here in full.
-        private static bool LeaseReceiverProofApplies(AuthoredMember member) =>
-            member.RecoveryContext is not { Disposition: RecoveryDisposition.OrdinaryPerUnitExternalEffect }
-            && member.OrdinaryScopedHolder is null
-            && member.ReadinessSource is null
-            && member.ScopedLeaseInstance is null;
-
-        // True when the group's receiver is proven. The origin is the acquisition location the receiver is a must-alias of, or
-        // null when a holder-era witness owns the proof. A receiver that is a must-alias is judged here whatever the member's
-        // context; only a receiver that is not one is left to the holder-era witness, and only in a member that carries one.
-        private bool LeaseReceiverProven(AuthoredMember member, InvocationExpressionSyntax group, out string? origin)
+        // True when the group's receiver is a must-alias of an acquisition, and then the origin is that acquisition's location. There is
+        // no other proof of a receiver and no member is exempt from this one.
+        private bool LeaseReceiverProven(AuthoredMember member, InvocationExpressionSyntax group, [NotNullWhen(true)] out string? origin)
         {
             origin = AdmissionReceiver(member, group) is { } receiver ? MustAliasLeaseOrigin(member, receiver) : null;
 
-            return origin is not null || !LeaseReceiverProofApplies(member);
+            return origin is not null;
         }
 
         // The group must also be the lease the traversal holds Work for. A traversal that holds none (the lease was disposed, handed
@@ -69,11 +60,6 @@ internal static partial class HostedGrimoireProducerInventory
                 return false;
             }
 
-            if (origin is null)
-            {
-                return true;
-            }
-
             if (work is not null)
             {
                 return WorkOrigin(work) == origin;
@@ -86,14 +72,9 @@ internal static partial class HostedGrimoireProducerInventory
         // The shell's recovery group is begun on a lease the shell itself acquired, never on one it was handed or acquired twice.
         private bool LeaseReceiverIsOwnAcquisition(AuthoredMember member, InvocationExpressionSyntax group, string? work)
         {
-            if (!LeaseReceiverIsLiveWork(member, group, work))
+            if (!LeaseReceiverIsLiveWork(member, group, work) || !LeaseReceiverProven(member, group, out string? origin))
             {
                 return false;
-            }
-
-            if (!LeaseReceiverProven(member, group, out string? origin) || origin is null)
-            {
-                return true;
             }
 
             return member.Syntax.DescendantNodes().OfType<InvocationExpressionSyntax>()
@@ -101,8 +82,8 @@ internal static partial class HostedGrimoireProducerInventory
         }
 
         // An Effect names its group and, after this marker, the origin of the lease the group was begun on, so a send can judge that the
-        // Effect it holds is the one of the lease whose Work it holds. An Effect with no marker carries no lease origin (a holder-era
-        // witness proves its own receiver).
+        // Effect it holds is the one of the lease whose Work it holds. An Effect with no marker carries no lease origin, so the pairing at
+        // a send has nothing to compare.
         private const string EffectLeaseMarker = "@lease:";
 
         private static string EffectOf(string rootOperation, string group, string? leaseOrigin) =>

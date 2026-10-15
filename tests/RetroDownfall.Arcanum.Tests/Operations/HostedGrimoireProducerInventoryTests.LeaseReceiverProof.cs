@@ -87,6 +87,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests
         "two-formals" => ("using IGrimoireWorkLease lease = admitted!;", "await First(lease, token);", LeaseReceiverFormals),
         // Negatives: every row keeps the real Work lease alive and begins the group on something else or on a value
         // the checker cannot prove is that lease.
+        "new-fake" => ("using IGrimoireWorkLease lease = admitted!;", LeaseReceiverBody("new FakeLease()"), ""),
         "ternary-fake" => ("using IGrimoireWorkLease lease = admitted!;", LeaseReceiverBody("(token.CanBeCanceled ? lease : fake)"), ""),
         "coalesce-fake" => ("using IGrimoireWorkLease lease = admitted!;", LeaseReceiverBody("(lease ?? fake)"), ""),
         "loop-carried" => ("using IGrimoireWorkLease lease = admitted!;", """
@@ -297,6 +298,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests
     }
 
     [Theory]
+    [InlineData("new-fake")]
     [InlineData("ternary-fake")]
     [InlineData("coalesce-fake")]
     [InlineData("loop-carried")]
@@ -881,128 +883,5 @@ public sealed partial class HostedGrimoireProducerInventoryTests
 
         // The later Work is the second acquisition's, and the send holds it without the dead lease's group.
         Assert.Equal(shape == "departed-then-second-work" ? run.Acquisitions[1].CapsuleId : null, run.Send.WorkFrontierCapsuleId);
-    }
-
-    // The holder-era receiver witnesses (the per-unit recovery handoff, the ordinary scoped holder, the readiness source and the
-    // scoped lease instance) each prove their own receiver exactly and are retired with the holder, so a member that carries one is
-    // not required to prove a must-alias receiver. That is no licence for a counterfeit one: in each exempt context a group on a
-    // fake lease or on a ternary of the holder's lease and a fake gets no Effect from the witness, and a group on a must-alias of a
-    // second acquisition is still refused here, because a receiver that IS a must-alias is judged whatever the member carries. The
-    // readiness context's counterfeit receivers are pinned by `Readiness_physical_group_requires_stable_exact_lease_value`
-    // (reassigned, ref-replaced, out-replaced, authored-cast, foreign-holder and ternary-fake) and the scoped lease instance's by
-    // the `foreign-instance-group` row of `DrainedMaintenanceInterfaceDispatchRequiresTheActualBoundLease`.
-    private const string LeaseReceiverHolderGroup = "if (!lease.TryBeginExternalEffectGroup(out IDisposable group)) return; using var owned = group;";
-
-    private const string LeaseReceiverHolderFakeTypes = """
-
-        public sealed class HolderEraFakeLease : RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireWorkLease
-        {
-            public bool TryBeginExternalEffectGroup(out System.IDisposable group) { group = new HolderEraFakeGroup(); return true; }
-
-            public void Dispose() { }
-
-            public System.Threading.Tasks.ValueTask DisposeAsync() => default;
-        }
-
-        public sealed class HolderEraFakeGroup : System.IDisposable
-        {
-            public void Dispose() { }
-        }
-        """;
-
-    private HostedProducerDiscovery<HostedProducerSite> RunLeaseReceiverHolderEra(string context, string label, string counterfeit)
-    {
-        string source = context == "ordinary-holder" ? OrdinaryScopedHolderFixture("same-scoped-lease") : PerUnitRecoveryMatrixFixture("same-lease");
-
-        // The holder under test is the last member of the fixture that spells the group this way (earlier ones belong to the
-        // shared matrix the fixture is built from).
-        int index = source.LastIndexOf(LeaseReceiverHolderGroup, StringComparison.Ordinal);
-
-        Assert.True(index >= 0);
-
-        source = source[..index] + counterfeit + source[(index + LeaseReceiverHolderGroup.Length)..] + LeaseReceiverHolderFakeTypes;
-
-        CSharpCompilation compilation = Compile(source);
-
-        Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
-
-        HostedProducerDiscovery<HostedProducerSite> result;
-
-        if (context == "ordinary-holder")
-        {
-            HostedProducerDiscovery<string> hosted = HostedGrimoireProducerInventory.DiscoverApplicationHostedServices([compilation]);
-
-            result = HostedGrimoireProducerInventory.DiscoverProducerSites([compilation], hosted, [new("Worker", [OrdinaryRoot() with { WorkKind = GrimoireWorkKind.LongRestSweep }])], []);
-        }
-        else
-        {
-            result = DiscoverRecoveryMatrixFixture([compilation]);
-        }
-
-        foreach (HostedProducerInventoryDiagnostic diagnostic in result.Diagnostics)
-        {
-            output.WriteLine($"LEASE_RECEIVER_HOLDER_DIAGNOSTIC {context} {label} {diagnostic.Code} {diagnostic.Identity} {diagnostic.Detail}");
-        }
-
-        return result;
-    }
-
-    private static HostedProducerSite[] LeaseReceiverHolderSites(HostedProducerDiscovery<HostedProducerSite> result, string member) =>
-        [.. result.Items.Where(site => site.RootType == "Worker" && site.Member == member && site.Callee is LeaseReceiverGroup or LeaseReceiverSend)];
-
-    [Theory]
-    [InlineData("ordinary-holder", "fake")]
-    [InlineData("ordinary-holder", "ternary")]
-    [InlineData("per-unit", "fake")]
-    [InlineData("per-unit", "ternary")]
-    public void LeaseReceiverProofLeavesNoHolderEraContextACounterfeitReceiver(string context, string receiver)
-    {
-        string counterfeit = receiver == "fake"
-            ? "if (!new HolderEraFakeLease().TryBeginExternalEffectGroup(out IDisposable group)) return; using var owned = group;"
-            : "if (!(System.DateTime.UtcNow.Ticks > 0 ? lease : new HolderEraFakeLease()).TryBeginExternalEffectGroup(out IDisposable group)) return; using var owned = group;";
-
-        HostedProducerDiscovery<HostedProducerSite> result = RunLeaseReceiverHolderEra(context, receiver, counterfeit);
-
-        // The counterfeit group is nobody's Effect and the send behind it reports its missing Effect.
-        HostedProducerSite[] first = LeaseReceiverHolderSites(result, "SendFirstAsync");
-
-        Assert.Equal(2, first.Length);
-
-        Assert.All(first, static site => Assert.Null(site.EffectFrontierCapsuleId));
-
-        Assert.Contains(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_SITE_EFFECT_FRONTIER_MISSING" && diagnostic.Detail == LeaseReceiverSend);
-
-        // The sibling method, whose group is the holder's own lease, keeps its Effect: the witness is exact, not blanket.
-        HostedProducerSite[] second = LeaseReceiverHolderSites(result, "SendSecondAsync");
-
-        Assert.Equal(2, second.Length);
-
-        Assert.All(second, static site => Assert.NotNull(site.EffectFrontierCapsuleId));
-
-        // The holder-era witness refuses it with its own code; the receiver rule adds nothing for a receiver it cannot prove alias.
-        Assert.DoesNotContain(result.Diagnostics, static diagnostic => diagnostic.Code == LeaseReceiverMismatch && diagnostic.Identity.Contains("SendFirstAsync", StringComparison.Ordinal));
-    }
-
-    // A receiver that IS a must-alias is judged whatever the member carries: a group begun on a second acquisition inside the
-    // ordinary scoped holder's member is not the lease whose Work the traversal holds, so the rule refuses it at its coordinate.
-    [Fact]
-    public void LeaseReceiverProofJudgesAMustAliasReceiverInAHolderEraMember()
-    {
-        const string counterfeit = "RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireConnectionAdmissionGate gate = null!; "
-            + "if (!gate.TryAcquireWorkLease(RetroDownfall.Arcanum.Infrastructure.Data.GrimoireWorkKind.WorkspaceIndexing, out var second)) return; using var other = second; "
-            + "if (!other.TryBeginExternalEffectGroup(out IDisposable group)) return; using var owned = group;";
-
-        HostedProducerDiscovery<HostedProducerSite> result = RunLeaseReceiverHolderEra("ordinary-holder", "second-acquisition", counterfeit);
-
-        HostedProducerSite group = Assert.Single(LeaseReceiverHolderSites(result, "SendFirstAsync"), static site => site.Callee == LeaseReceiverGroup);
-
-        Assert.Null(group.EffectFrontierCapsuleId);
-
-        Assert.Null(Assert.Single(LeaseReceiverHolderSites(result, "SendFirstAsync"), static site => site.Callee == LeaseReceiverSend).EffectFrontierCapsuleId);
-
-        string coordinate = group.OperationId[(group.OperationId.LastIndexOf("/site@", StringComparison.Ordinal) + "/site@".Length)..];
-
-        Assert.Contains(result.Diagnostics, diagnostic => diagnostic.Code == LeaseReceiverMismatch
-            && diagnostic.Identity.EndsWith("/call@" + coordinate, StringComparison.Ordinal));
     }
 }
