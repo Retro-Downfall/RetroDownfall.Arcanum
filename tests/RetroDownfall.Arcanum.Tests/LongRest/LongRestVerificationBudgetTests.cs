@@ -16,8 +16,9 @@ public sealed class LongRestVerificationBudgetTests
     private const int Partitions = 3;
 
     /// <summary>
-    /// How many whole-corpus passes the idle path of one clean scope makes: the completed lookup proves its generation's leaves once. This is the
-    /// one figure the Seams-and-Steps split lowers, and it is named here so that the split changes one constant and not a scatter of numbers.
+    /// How many whole-corpus passes the idle path of one clean scope makes: the completed lookup proves its generation's leaves once, because
+    /// adopting a completed generation's answer is a seam. A pass is one statement over the generation, however many leaves there are, so the
+    /// leaves it proves grow with the corpus and the statements it takes do not.
     /// </summary>
     internal const int CorpusPassesPerIdleCleanLookup = 1;
 
@@ -41,14 +42,24 @@ public sealed class LongRestVerificationBudgetTests
         // The probe builds its projection once per call: once for each partition and once more to learn there are no more.
         Assert.Equal(Partitions + 1, turn.PartitionPasses);
 
-        // Every lookup is a read, and nothing on the idle path takes the writer lock.
-        Assert.Equal(1 + Partitions, turn.ReadTransactions);
+        // Every store's transaction is counted: the lookups (one for the clean scope and one for each partition's) and the probe (one for
+        // each partition and one more to learn there are no more). Every one of them is a read, so nothing on the idle path takes the
+        // writer lock; SQLite's own statement trace agrees, because it sees a BEGIN IMMEDIATE whichever store issued it.
+        Assert.Equal(2 * (1 + Partitions), turn.ReadTransactions);
 
         Assert.Equal(0, turn.WriterTransactions);
+
+        Assert.Equal(0, turn.ImmediateTransactions);
     }
 
+    /// <summary>
+    /// The idle turn is the same statements however large the corpus is. Verifying every leaf of the completed generation is a seam, and a
+    /// seam is one statement over the generation's leaves and the live rows they describe, so the figure that grew with the corpus, the
+    /// statements the turn takes, no longer does: the statement trace of a turn over 30 memories and one over 150 is the same list of
+    /// statements run the same number of times.
+    /// </summary>
     [Fact]
-    public async Task The_statements_of_an_idle_turn_do_not_multiply_with_the_corpus_beyond_its_one_corpus_pass()
+    public async Task An_idle_turn_runs_the_same_statements_whatever_the_size_of_the_corpus()
     {
         const int Small = 30;
 
@@ -60,42 +71,20 @@ public sealed class LongRestVerificationBudgetTests
 
         IdleTurn larger = await large.RunIdleTurnAsync();
 
-        // A statement is the same shape however many times it runs, so growth shows as a shape that ran more often. The corpus pass reads
-        // the leaves in pages of 128 and reads each leaf by itself, so over 150 memories rather than 30 its per-leaf statements ran once
-        // more for each extra memory, and its paging statement ran once more for each extra page. Nothing else may have grown.
-        const int PageSize = 128;
+        Assert.Equal(smaller.StatementCount, larger.StatementCount);
 
-        int perLeaf = (Corpus - Small) * CorpusPassesPerIdleCleanLookup;
+        Assert.Equal(smaller.Statements.OrderBy(static pair => pair.Key, StringComparer.Ordinal), larger.Statements.OrderBy(static pair => pair.Key, StringComparer.Ordinal));
 
-        int perPage = ((Corpus / PageSize) - (Small / PageSize)) * CorpusPassesPerIdleCleanLookup;
+        // The leaves are still all proved: the pass reads each of them, and the work that grew with them is the work inside one statement.
+        Assert.Equal(CorpusPassesPerIdleCleanLookup * Small, smaller.MetadataLeafReads);
 
-        List<int> growth = [];
+        Assert.Equal(CorpusPassesPerIdleCleanLookup * Corpus, larger.MetadataLeafReads);
 
-        foreach (string text in smaller.Statements.Keys.Union(larger.Statements.Keys, StringComparer.Ordinal))
-        {
-            int before = smaller.Statements.GetValueOrDefault(text);
+        Assert.Equal(0, larger.FullLeafReads);
 
-            int after = larger.Statements.GetValueOrDefault(text);
-
-            if (after != before)
-            {
-                growth.Add(after - before);
-            }
-        }
-
-        // With no corpus pass on the idle path there is nothing left that grows, and with one there is exactly the pass's statements.
-        int growing = Math.Min(1, CorpusPassesPerIdleCleanLookup);
-
-        Assert.Equal(growing == 0, growth.Count == 0);
-
-        Assert.All(growth, extra => Assert.True(extra == perLeaf || extra == perPage, $"A statement ran {extra} more times over {Corpus} memories than over {Small}."));
-
-        // The per-leaf statements are the few that read one leaf, and one statement pages; nothing outside them grows.
-        Assert.InRange(growth.Count(extra => extra == perLeaf), growing, 12);
-
-        Assert.Equal(growing, growth.Count(extra => extra == perPage));
-
-        Assert.Equal(smaller.StatementCount + growth.Sum(), larger.StatementCount);
+        // Nor does the one statement that proves the leaves page: it runs once.
+        Assert.Equal(1, larger.Statements.Single(static pair => pair.Key.Contains("long_rest_discovery_leaves leaf", StringComparison.Ordinal)
+            && pair.Key.Contains("json_group_array", StringComparison.Ordinal)).Value);
     }
 
     /// <summary>

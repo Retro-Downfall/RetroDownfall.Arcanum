@@ -122,8 +122,15 @@ public sealed partial class HostedGrimoireProducerInventoryTests
         new("GrimoireDatabaseHostedService", "RetroDownfall.Arcanum.Infrastructure.Hosting.GrimoireDatabaseHostedService.StopAsync", 200), // measured 186
         new("GrimoireDatabaseHostedService", "RetroDownfall.Arcanum.Infrastructure.Hosting.GrimoireDatabaseHostedService.TakeGeneratedMasterApiKey", 16), // measured 1
         new("GrimoireSchemaTransitionHostedService", "RetroDownfall.Arcanum.Infrastructure.Covenant.GrimoireSchemaTransitionHostedService.ExecuteAsync", 816), // measured 770
-        new("LongRestSweepHostedService", "RetroDownfall.Arcanum.Api.Intelligence.LongRestMaintenance.ProcessAdmittedAsync", 4680), // measured 4452
-        new("LongRestSweepHostedService", "RetroDownfall.Arcanum.Infrastructure.Hosting.LongRestSweepHostedService.ExecuteAsync", 3528), // measured 3360
+        // The Long Rest roots are raised for the verification cost work, which is where the states went. At the head that began this work only
+        // ProcessAdmittedAsync was above its row (it measured 4808 against 4680; ExecuteAsync measured 3462, under its row of 3528), because the
+        // Seams-and-Steps split added a window read and a set-based metadata statement to every context that reaches a seam. A seam now proves
+        // every leaf in one statement, which decodes a snapshot and a label from a joined row (SnapshotFrom, Materialize and the digests a label
+        // constructor reaches, analysed in each of the fifty or so contexts that reach VerifyFrozenMetadataAsync) beside the per-leaf read a step
+        // still makes: 5438 and 3612. The rows were set from the measurement of the delivery that added the statement (5436 and 3610) plus five
+        // percent, rounded up to a multiple of eight, and the cost fixes after it moved each measurement by two states, inside them.
+        new("LongRestSweepHostedService", "RetroDownfall.Arcanum.Api.Intelligence.LongRestMaintenance.ProcessAdmittedAsync", 5712), // measured 5438
+        new("LongRestSweepHostedService", "RetroDownfall.Arcanum.Infrastructure.Hosting.LongRestSweepHostedService.ExecuteAsync", 3792), // measured 3612
         new("LongRunningOperationStartupHostedService", "RetroDownfall.Arcanum.Infrastructure.Operations.LongRunningOperationStartupHostedService.ContinueInBackgroundAsync", 3744), // measured 3564
         new("LongRunningOperationStartupHostedService", "RetroDownfall.Arcanum.Infrastructure.Operations.LongRunningOperationStartupHostedService.StartAsync", 16), // measured 3
         new("LongRunningOperationStartupHostedService", "RetroDownfall.Arcanum.Infrastructure.Operations.LongRunningOperationStartupHostedService.StartAsync::call:RetroDownfall.Arcanum.Infrastructure.Operations.LongRunningOperationStartupHostedService.RunStartupPassAsync#0", 1408), // measured 1340

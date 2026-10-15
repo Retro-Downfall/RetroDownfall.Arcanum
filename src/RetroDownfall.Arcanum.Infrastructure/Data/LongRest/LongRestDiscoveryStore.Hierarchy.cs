@@ -25,6 +25,8 @@ internal sealed partial class LongRestDiscoveryStore
 
             await using SqliteTransaction transaction = connection.BeginTransaction(deferred: false);
 
+            LongRestVerificationCounters.Transaction(deferred: false);
+
             LongRestDiscoveryGeneration? generation = await ReadGenerationAsync(connection, transaction, "GenerationId = $id", Format(generationId), cancellationToken).ConfigureAwait(false);
 
             if (generation is null || generation.Phase is not (LongRestSweepPhase.Hierarchy or LongRestSweepPhase.Publish))
@@ -198,6 +200,8 @@ internal sealed partial class LongRestDiscoveryStore
             SqliteConnection connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
 
             await using SqliteTransaction transaction = connection.BeginTransaction(deferred: false);
+
+            LongRestVerificationCounters.Transaction(deferred: false);
 
             LongRestDiscoveryGeneration? generation = await ReadGenerationAsync(connection, transaction, "GenerationId = $id", Format(generationId), cancellationToken).ConfigureAwait(false);
 

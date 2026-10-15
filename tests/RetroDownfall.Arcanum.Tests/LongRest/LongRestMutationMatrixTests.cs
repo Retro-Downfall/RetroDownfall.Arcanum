@@ -50,7 +50,7 @@ namespace RetroDownfall.Arcanum.Tests.LongRest;
 [Collection("Grimoire")]
 public sealed partial class LongRestMutationMatrixTests
 {
-    private const int Leaves = 40;
+    internal const int Leaves = 40;
 
     private const int Windows = (Leaves + LongRestDiscoveryStore.ScrubWindowLeaves - 1) / LongRestDiscoveryStore.ScrubWindowLeaves;
 
@@ -91,7 +91,7 @@ public sealed partial class LongRestMutationMatrixTests
     internal sealed record Row(string Name, Mechanism Mechanism, Func<Scenario, string, Task> Apply, bool CleanOnly = false, bool ProtectedOnly = false, bool EveryLeaf = false, bool AttemptOnly = false,
         Func<Scenario, Task>? Prepare = null);
 
-    private static readonly Row[] Rows =
+    internal static readonly Row[] Rows =
     [
         new("content", Mechanism.Trigger, static (s, m) => s.SqlAsync("UPDATE saga_memories SET Content = 'altered content' WHERE Id = $m;", ("$m", m))),
         new("correction", Mechanism.Trigger, static async (s, m) =>

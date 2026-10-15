@@ -102,14 +102,7 @@ internal sealed partial class LongRestSweepStore(ArcanumDbContext db, TimeProvid
 
                 await using SqliteTransaction transaction = connection.BeginTransaction(deferred: deferred);
 
-                if (deferred)
-                {
-                    LongRestVerificationCounters.ReadTransaction();
-                }
-                else
-                {
-                    LongRestVerificationCounters.WriterTransaction();
-                }
+                LongRestVerificationCounters.Transaction(deferred: deferred);
 
                 T value = await action(connection, transaction).ConfigureAwait(false);
 

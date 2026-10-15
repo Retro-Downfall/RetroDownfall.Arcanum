@@ -138,6 +138,97 @@ public sealed class LongRestIdentityIndexPlanTests(GrimoireFixture fixture) : IA
             await ExplainAsync(statement));
     }
 
+    /// <summary>
+    /// A seam proves every leaf of a generation in one statement that joins the leaves to the live rows they describe. It is only one
+    /// statement's worth of work if each join is a lookup: the leaves are walked once in key order, which is the order the statement asks for,
+    /// and the version, claim, head, memory and label of each are found by key, so it takes neither a scan of another table nor a sort.
+    /// </summary>
+    [SkippableFact]
+
+    public async Task The_set_read_of_a_generations_leaves_reaches_every_live_row_by_key_in_one_ordered_walk()
+    {
+        RequireSqlCipher();
+
+        string plan = await ExplainAsync(LongRestDiscoveryStore.FrozenMetadataCorpusSql);
+
+        Assert.Matches(@"SEARCH leaf USING (COVERING )?INDEX sqlite_autoindex_long_rest_discovery_leaves_1 \(GenerationId=\?\)", plan);
+
+        foreach (string alias in new[] { "v", "c", "h", "m", "label" })
+        {
+            Assert.True(Regex.IsMatch(plan, $@"(^|\n)SEARCH {alias} USING "), $"{alias} is not found by a key lookup:\n{plan}");
+        }
+
+        // The receipts that explain a leaf's flags are found by key as well: the suppression of a version by its primary key and the receipt that
+        // made it by the receipt's, and the receipts that name a version their survivor by the survivor index. Reading them costs a lookup for each
+        // leaf, never a read of the receipts or of the suppressions.
+        Assert.Matches(@"SEARCH suppression USING INDEX sqlite_autoindex_long_rest_suppressions_1 \(SourceVersionId=\?\)", plan);
+
+        Assert.Matches(@"SEARCH applied USING INDEX sqlite_autoindex_long_rest_receipts_1 \(ReceiptId=\?\)", plan);
+
+        Assert.Matches(@"SEARCH receipt USING INDEX idx_long_rest_receipts_survivor_version \(SurvivorVersionId=\?\)", plan);
+
+        // The only scans are of the three derived tables, each at most seventeen rows by construction: a version's dependencies, the dependencies
+        // that name it, and the receipts that name it their survivor.
+        Assert.False(Regex.IsMatch(plan, @"(^|\n)SCAN (?!x(\n|$)|y(\n|$)|z(\n|$))"), plan);
+
+        // The statement's own order is the order the leaves are walked in. A sort of a version's incoming dependencies is inside a
+        // subquery, over the rows of one version, and is the same sort the point read makes.
+        string outer = await ExplainAsync(LongRestDiscoveryStore.FrozenMetadataCorpusSql, topLevelOnly: true);
+
+        Assert.DoesNotContain("USE TEMP B-TREE", outer, StringComparison.Ordinal);
+
+        Assert.StartsWith("SEARCH leaf USING", outer, StringComparison.Ordinal);
+
+        AssertLabelSearches(plan, expected: 2, alias: "a");
+    }
+
+    /// <summary>
+    /// A node delete retires the node's orphan label. SQLite plans a bare <c>DELETE ... WHERE kind AND expression</c> against the kind-only
+    /// unique index rather than the expression index, so every node delete read every kind-16 label and retiring a generation cost the
+    /// product of its nodes and the labels alive. Finding the label ids by a <c>SELECT</c>, which the planner does answer from the
+    /// expression index, and deleting by label id keeps the loose comparison and makes the cleanup one search for each node. A trigger body
+    /// cannot carry <c>INDEXED BY</c>, so the shape of the statement is the only way to steer it.
+    /// </summary>
+    [SkippableFact]
+
+    public async Task The_orphan_label_cleanup_after_a_node_delete_finds_its_label_through_the_normalized_index()
+    {
+        RequireSqlCipher();
+
+        string statement = (await TriggerBodyAsync("long_rest_node_label_delete")).Replace("OLD.NodeId", "$id", StringComparison.Ordinal);
+
+        Assert.Contains("lower(replace(ArtifactId, '-', '')) = lower(replace($id, '-', ''))", Squash(statement), StringComparison.Ordinal);
+
+        string plan = await ExplainAsync(statement);
+
+        Assert.Matches(@"SEARCH artifact_sensitivity USING INDEX idx_artifact_sensitivity_artifact_norm \(ArtifactKindCode=\? AND <expr>=\?\)", plan);
+
+        Assert.DoesNotContain("ux_artifact_sensitivity_artifact (ArtifactKindCode=?)", plan, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("SCAN", plan, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The early-out of the partition probe is the question "is anything protected here at all", asked on every eligible Session turn. It is
+    /// answered from two places: whether a kind-6 label exists, and whether any stored version carries a sensitivity. The second was a
+    /// sequential read of the version table; a partial index holds exactly the sensitive versions, so an installation with none asks an
+    /// empty index and one with some stops at the first.
+    /// </summary>
+    [SkippableFact]
+
+    public async Task The_partition_early_out_asks_an_index_of_the_sensitive_versions_and_never_reads_the_version_table()
+    {
+        RequireSqlCipher();
+
+        string plan = await ExplainAsync(LongRestDiscoveryStore.ProtectedPartitionAbsentSql);
+
+        Assert.Contains("USING COVERING INDEX idx_annal_versions_sensitive", plan, StringComparison.Ordinal);
+
+        Assert.DoesNotMatch(@"(^|\n)SCAN annal_versions(\n|$)", plan);
+
+        Assert.DoesNotMatch(@"SCAN artifact_sensitivity(\n|$)", plan);
+    }
+
     [SkippableTheory]
     [InlineData("long_rest_discovery_nodes", "idx_long_rest_nodes_node_norm", "NodeId")]
     [InlineData("long_rest_discovery_embeddings", "idx_long_rest_embeddings_node_norm", "NodeId")]
@@ -263,7 +354,7 @@ public sealed class LongRestIdentityIndexPlanTests(GrimoireFixture fixture) : IA
         return connection;
     }
 
-    private async Task<string> ExplainAsync(string sql)
+    private async Task<string> ExplainAsync(string sql, bool topLevelOnly = false)
     {
         SqliteConnection connection = await OpenAsync();
 
@@ -282,7 +373,10 @@ public sealed class LongRestIdentityIndexPlanTests(GrimoireFixture fixture) : IA
         {
             while (await reader.ReadAsync(CancellationToken.None))
             {
-                rows.Add(reader.GetString(reader.GetOrdinal("detail")));
+                if (!topLevelOnly || reader.GetInt32(reader.GetOrdinal("parent")) == 0)
+                {
+                    rows.Add(reader.GetString(reader.GetOrdinal("detail")));
+                }
             }
         }
 

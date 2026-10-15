@@ -10,8 +10,23 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.LongRest;
 
 internal sealed partial class LongRestDiscoveryStore
 {
+    /// <summary>
+    /// The projection flags a leaf has now that it did not freeze, each explained by an applied receipt of the sweep that proves in full. The
+    /// receipts that touch the leaf's version are paged from the store, or, where the caller has already read them with the leaf, are the
+    /// <paramref name="carried"/> list, which is then all of them: either way the one body decides them.
+    /// </summary>
+    /// <param name="proved">
+    /// The receipts already proved in full by the pass this leaf is part of. A decision that consolidated sixteen leaves left one receipt, and
+    /// the proof of a receipt is a function of the receipt and the generation alone, so a pass that meets it again for the next leaf of the
+    /// same decision need not prove it again. Only a receipt that proved is remembered, and a receipt that does not prove ends the pass.
+    /// </param>
+    /// <param name="carried">
+    /// Every applied receipt that names the leaf's version as a source or as a survivor, when the caller holds them already (the set read of a
+    /// generation's leaves carries them in the row it read); null where they are to be paged.
+    /// </param>
     private static async Task VerifyOwnProjectionAsync(SqliteConnection connection, SqliteTransaction transaction,
-        LongRestDiscoveryGeneration generation, LongRestSourceLeaf live, LongRestSnapshot frozen, CancellationToken ct)
+        LongRestDiscoveryGeneration generation, LongRestSourceLeaf live, LongRestSnapshot frozen, CancellationToken ct, HashSet<string>? proved = null,
+        (string Receipt, bool Source, bool Survivor)[]? carried = null)
     {
         if ((frozen.IsConsolidated && !live.Snapshot.IsConsolidated) || (frozen.IsTransformationOutput && !live.Snapshot.IsTransformationOutput))
         {
@@ -28,16 +43,22 @@ internal sealed partial class LongRestDiscoveryStore
         {
             List<(string Receipt, bool Source, bool Survivor)> page = [];
 
-            await using (SqliteCommand command = Command(connection, transaction, """
-                SELECT receipt.ReceiptId,
-                    EXISTS(SELECT 1 FROM long_rest_suppressions suppression WHERE suppression.ReceiptId = receipt.ReceiptId AND suppression.SourceVersionId = $version),
-                    receipt.SurvivorVersionId = $version
-                FROM long_rest_receipts receipt WHERE receipt.OutcomeCode = 1 AND ($cursor IS NULL OR receipt.ReceiptId > $cursor)
-                  AND (receipt.SurvivorVersionId = $version OR EXISTS(SELECT 1 FROM long_rest_suppressions suppression
-                    WHERE suppression.ReceiptId = receipt.ReceiptId AND suppression.SourceVersionId = $version))
-                ORDER BY receipt.ReceiptId LIMIT 128;
-                """, ("$version", live.Snapshot.VersionId), ("$cursor", cursor)))
+            if (carried is not null)
             {
+                page.AddRange(carried);
+            }
+            else
+            {
+                await using SqliteCommand command = Command(connection, transaction, """
+                    SELECT receipt.ReceiptId,
+                        EXISTS(SELECT 1 FROM long_rest_suppressions suppression WHERE suppression.ReceiptId = receipt.ReceiptId AND suppression.SourceVersionId = $version),
+                        receipt.SurvivorVersionId = $version
+                    FROM long_rest_receipts receipt WHERE receipt.OutcomeCode = 1 AND ($cursor IS NULL OR receipt.ReceiptId > $cursor)
+                      AND (receipt.SurvivorVersionId = $version OR EXISTS(SELECT 1 FROM long_rest_suppressions suppression
+                        WHERE suppression.ReceiptId = receipt.ReceiptId AND suppression.SourceVersionId = $version))
+                    ORDER BY receipt.ReceiptId LIMIT 128;
+                    """, ("$version", live.Snapshot.VersionId), ("$cursor", cursor));
+
                 await using SqliteDataReader reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
 
                 while (await reader.ReadAsync(ct).ConfigureAwait(false))
@@ -55,14 +76,22 @@ internal sealed partial class LongRestDiscoveryStore
             {
                 // Every present causer of a newly set flag must be attributable. One own receipt
                 // cannot conceal an external receipt that also sets the same projection bit.
-                if ((cause.Source && !frozen.IsConsolidated) || (cause.Survivor && !frozen.IsTransformationOutput))
+                if (((cause.Source && !frozen.IsConsolidated) || (cause.Survivor && !frozen.IsTransformationOutput))
+                    && (proved is null || !proved.Contains(cause.Receipt)))
                 {
                     await VerifyOwnReceiptAsync(connection, transaction, generation, cause.Receipt, ct).ConfigureAwait(false);
+
+                    _ = proved?.Add(cause.Receipt);
                 }
 
                 explainedConsolidation |= cause.Source;
 
                 explainedOutput |= cause.Survivor;
+            }
+
+            if (carried is not null)
+            {
+                break;
             }
 
             cursor = page[^1].Receipt;

@@ -73,6 +73,11 @@ public sealed class LongRestScaleProbe(ITestOutputHelper output)
 
         output.WriteLine($"[{corpus}] idle turn: {turn.StatementCount} statements, {turn.CorpusPasses} corpus pass, {turn.MetadataLeafReads} metadata leaf reads in {clock.Elapsed.TotalSeconds:F1}s");
 
+        foreach ((string text, int times) in turn.Statements.OrderByDescending(static pair => pair.Value))
+        {
+            output.WriteLine($"[{corpus}]   {times,6} x {text.ReplaceLineEndings(" ")[..Math.Min(110, text.Length)]}");
+        }
+
         Assert.Equal(LongRestVerificationBudgetTests.CorpusPassesPerIdleCleanLookup, turn.CorpusPasses);
 
         Assert.Equal(LongRestVerificationBudgetTests.CorpusPassesPerIdleCleanLookup * corpus, turn.MetadataLeafReads);
@@ -81,22 +86,22 @@ public sealed class LongRestScaleProbe(ITestOutputHelper output)
 
         Assert.Equal(Partitions + 1, turn.PartitionPasses);
 
-        Assert.Equal(1 + Partitions, turn.ReadTransactions);
+        Assert.Equal(2 * (1 + Partitions), turn.ReadTransactions);
 
         Assert.Equal(0, turn.WriterTransactions);
 
-        // The statements beyond the corpus pass do not depend on the corpus: the same shapes run the same number of times as over the small corpus.
+        Assert.Equal(0, turn.ImmediateTransactions);
+
+        // The turn is the same statements however large the corpus is: the corpus pass is one statement over the generation's leaves, so the
+        // statement trace over this corpus and over 30 memories is one list run the same number of times.
         await using LongRestScaleScenario baseline = await LongRestScaleScenario.CreateAsync(30, Partitions, LongRestScaleCompletion.Marked);
 
         IdleTurn small = await baseline.RunIdleTurnAsync();
 
-        int pages = (corpus / 128) - (30 / 128);
+        output.WriteLine($"[{corpus}] idle turn over 30 memories: {small.StatementCount} statements");
 
-        foreach (string text in small.Statements.Keys.Union(turn.Statements.Keys, StringComparer.Ordinal))
-        {
-            int extra = turn.Statements.GetValueOrDefault(text) - small.Statements.GetValueOrDefault(text);
+        Assert.Equal(small.StatementCount, turn.StatementCount);
 
-            Assert.True(extra == 0 || extra == corpus - 30 || extra == pages, $"A statement ran {extra} more times over {corpus} memories than over 30.");
-        }
+        Assert.Equal(small.Statements.OrderBy(static pair => pair.Key, StringComparer.Ordinal), turn.Statements.OrderBy(static pair => pair.Key, StringComparer.Ordinal));
     }
 }

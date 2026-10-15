@@ -79,6 +79,8 @@ internal sealed partial class LongRestDiscoveryStore
 
             await using SqliteTransaction transaction = connection.BeginTransaction(deferred: true);
 
+            LongRestVerificationCounters.Transaction(deferred: true);
+
             if (after is null)
             {
                 await using SqliteCommand absent = Command(connection, transaction, ProtectedPartitionAbsentSql);

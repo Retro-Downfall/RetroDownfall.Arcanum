@@ -2,6 +2,7 @@ using System.Data.Common;
 using System.Globalization;
 
 using Microsoft.Data.Sqlite;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -12,6 +13,7 @@ using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Infrastructure.Data.LongRest;
 using RetroDownfall.Arcanum.Infrastructure.Weave;
 using RetroDownfall.Arcanum.Tests.Fixtures;
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.LongRest;
 
@@ -86,6 +88,53 @@ public sealed class SagaLongRestServiceTests
         Assert.Equal(first.Value.OutputHash, read.Value.OutputHash);
 
         Assert.Equal(before, await ScalarAsync(h, "SELECT total_changes()"));
+    }
+
+    /// <summary>
+    /// The counters say which lock a transaction took, and SQLite's own trace is the witness: a transaction counted as a read must be a plain
+    /// <c>BEGIN</c> and one counted as a writer must be <c>BEGIN IMMEDIATE</c>. Applying a transformation writes and inspecting its receipt only
+    /// reads, so the first is counted as a writer and the second as a read, and the trace sees the same.
+    /// </summary>
+    [SkippableFact]
+    public async Task Applying_is_counted_as_the_writer_it_is_and_inspecting_a_receipt_as_the_reader_it_is()
+    {
+        await using SagaStoreHarness h = await SagaStoreHarness.CreateAsync(annalsEnabled: true);
+
+        LongRestRequest request = await SeedAsync(h, ("a", "same"), ("b", "same"));
+
+        SagaLongRestService service = new(h.Context, TimeProvider.System);
+
+        SqliteConnection connection = (SqliteConnection)h.Context.Database.GetDbConnection();
+
+        await h.Context.Database.OpenConnectionAsync();
+
+        Result<LongRestReceipt> applied;
+
+        using (SqliteStatementTrace trace = new(connection))
+        {
+            using LongRestVerificationTally tally = LongRestVerificationCounters.Measure();
+
+            applied = await service.ApplyAsync(request, CancellationToken.None);
+
+            Assert.True(applied.IsSuccess);
+
+            Assert.Equal([1L, 0L], [tally.WriterTransactions, tally.ReadTransactions]);
+
+            Assert.Equal([1, 0], [trace.ImmediateTransactions, trace.DeferredTransactions]);
+        }
+
+        using (SqliteStatementTrace trace = new(connection))
+        {
+            using LongRestVerificationTally tally = LongRestVerificationCounters.Measure();
+
+            Result<LongRestReceipt> read = await service.GetReceiptAsync(applied.Value.ReceiptId, CancellationToken.None);
+
+            Assert.True(read.IsSuccess);
+
+            Assert.Equal([0L, 1L], [tally.WriterTransactions, tally.ReadTransactions]);
+
+            Assert.Equal([0, 1], [trace.ImmediateTransactions, trace.DeferredTransactions]);
+        }
     }
 
     [SkippableFact]

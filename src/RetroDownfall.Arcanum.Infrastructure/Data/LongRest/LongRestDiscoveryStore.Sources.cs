@@ -80,6 +80,8 @@ internal sealed partial class LongRestDiscoveryStore
 
                 await using SqliteTransaction transaction = connection.BeginTransaction(deferred: false);
 
+                LongRestVerificationCounters.Transaction(deferred: false);
+
                 LongRestDiscoveryGeneration? generation = await ReadGenerationAsync(connection, transaction,
                     "GenerationId = $id", Format(generationId), cancellationToken).ConfigureAwait(false);
 

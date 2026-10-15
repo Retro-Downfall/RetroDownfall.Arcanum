@@ -68,6 +68,8 @@ internal sealed partial class LongRestSweepStore : ILongRestSweepRequestAdmissio
 
             await using SqliteTransaction transaction = connection.BeginTransaction(deferred: false);
 
+            LongRestVerificationCounters.Transaction(deferred: false);
+
             if (!await facts.ValidateRequestFenceWithinAsync(connection, transaction, fence, ct).ConfigureAwait(false)) throw new InvalidDataException();
 
             string stamp = JsonSerializer.Serialize(fence.Configuration, LongRestJsonContext.Default.LongRestConfigurationStamp);

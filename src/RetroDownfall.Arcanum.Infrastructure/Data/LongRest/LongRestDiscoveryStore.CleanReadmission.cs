@@ -34,6 +34,8 @@ internal sealed partial class LongRestDiscoveryStore : ILongRestCleanReadmission
 
                     await using SqliteTransaction transaction = connection.BeginTransaction(deferred: false);
 
+                    LongRestVerificationCounters.Transaction(deferred: false);
+
                     LongRestDiscoveryGeneration generation = await ReadSweepGenerationAsync(connection, transaction, expected.OperationId, ct).ConfigureAwait(false)
                         ?? throw new InvalidDataException();
 
