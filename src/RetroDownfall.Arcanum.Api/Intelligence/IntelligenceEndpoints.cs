@@ -60,7 +60,7 @@ internal static class IntelligenceEndpoints
             }
 
             Result<CanonicalPingTurn> resolvedRequest = await CanonicalPingResolution
-                .ResolveAsync(body, httpContext.RequestServices, cancellationToken)
+                .ResolveTurnAsync(body, httpContext, cancellationToken)
                 .ConfigureAwait(false);
 
             if (resolvedRequest.IsFailure)
@@ -260,7 +260,7 @@ internal static class IntelligenceEndpoints
             }
 
             Result<CanonicalPingTurn> resolvedRequest = await CanonicalPingResolution
-                .ResolveAsync(body, httpContext.RequestServices, ct)
+                .ResolveTurnAsync(body, httpContext, ct)
                 .ConfigureAwait(false);
 
             if (resolvedRequest.IsFailure)

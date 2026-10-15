@@ -845,7 +845,7 @@ internal static class PromptEndpoints
                     AdditionalSystemPrompt: renderResult.Value.RenderedText);
 
                 Result<CanonicalPingTurn> resolvedPing = await CanonicalPingResolution
-                    .ResolveAsync(ping, ctx.RequestServices, ctx.RequestAborted)
+                    .ResolveTurnAsync(ping, ctx, ctx.RequestAborted)
                     .ConfigureAwait(false);
 
                 if (resolvedPing.IsFailure)
@@ -986,7 +986,7 @@ internal static class PromptEndpoints
                     AdditionalSystemPrompt: renderResult.Value.RenderedText);
 
                 Result<CanonicalPingTurn> resolvedPing = await CanonicalPingResolution
-                    .ResolveAsync(ping, ctx.RequestServices, ctx.RequestAborted)
+                    .ResolveTurnAsync(ping, ctx, ctx.RequestAborted)
                     .ConfigureAwait(false);
 
                 if (resolvedPing.IsFailure)
