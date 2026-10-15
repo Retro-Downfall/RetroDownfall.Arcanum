@@ -31,27 +31,21 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 internal sealed partial class ArtifactSensitivityLedger(ICovenantConnectionSource connections)
     : IArtifactSensitivityLedger
 {
+    /// <summary>The columns of one label, in the order <see cref="Materialize"/> decodes.</summary>
+    /// <remarks>
+    /// One definition, so the point read of a label and a read that joins labels to something else cannot disagree about which column is
+    /// which. A join qualifies each name with its own alias.
+    /// </remarks>
+    internal const string LabelColumnList = "LabelId, ArtifactKindCode, ArtifactId, SessionId, CampaignId, TurnId, ArtifactRevision, "
+        + "ArtifactContentDigest, SensitivityCode, ProvenanceModeCode, ExactGenerationIds, GenerationBloom, ProducingPlanDigest, "
+        + "ProducingAdmissionDigest, ProducingMaintenanceReceiptDigest, CreatedAtUtc";
+
+    /// <summary>How many columns <see cref="LabelColumnList"/> names.</summary>
+    internal const int LabelColumnCount = 16;
+
     /// <summary>The point read of one label, in the column order <see cref="Materialize"/> decodes.</summary>
-    private const string LabelByArtifactSql = """
-        SELECT LabelId,
-               ArtifactKindCode,
-               ArtifactId,
-               SessionId,
-               CampaignId,
-               TurnId,
-               ArtifactRevision,
-               ArtifactContentDigest,
-               SensitivityCode,
-               ProvenanceModeCode,
-               ExactGenerationIds,
-               GenerationBloom,
-               ProducingPlanDigest,
-               ProducingAdmissionDigest,
-               ProducingMaintenanceReceiptDigest,
-               CreatedAtUtc
-        FROM artifact_sensitivity
-        WHERE ArtifactKindCode = $kind AND ArtifactId = $artifactId;
-        """;
+    private const string LabelByArtifactSql = "SELECT " + LabelColumnList
+        + " FROM artifact_sensitivity WHERE ArtifactKindCode = $kind AND ArtifactId = $artifactId;";
 
     public async Task<Result<LabeledArtifactWriteReceipt>> LabelAsync(
         DerivedArtifactWrite write,
@@ -369,31 +363,34 @@ internal sealed partial class ArtifactSensitivityLedger(ICovenantConnectionSourc
         return Result<IReadOnlyList<ArtifactSensitivityLabel>>.Success(labels);
     }
 
-    /// <summary>The one decoder shared by point reads and bounded inventory pages.</summary>
-    private static Result<ArtifactSensitivityLabel> Materialize(DbDataReader reader)
+    /// <summary>
+    /// The one decoder shared by point reads, bounded inventory pages and reads that carry a label's columns after other columns.
+    /// <paramref name="first"/> is the ordinal of the label's first column.
+    /// </summary>
+    internal static Result<ArtifactSensitivityLabel> Materialize(DbDataReader reader, int first = 0)
     {
         try
         {
-            GenerationProvenance provenance = (GenerationProvenanceMode)reader.GetInt64(9)
+            GenerationProvenance provenance = (GenerationProvenanceMode)reader.GetInt64(first + 9)
                 is GenerationProvenanceMode.Exact
-                ? GenerationProvenance.CreateExact(ReadGenerations((byte[])reader.GetValue(10)))
-                : GenerationProvenance.CreateBloom((byte[])reader.GetValue(11));
+                ? GenerationProvenance.CreateExact(ReadGenerations((byte[])reader.GetValue(first + 10)))
+                : GenerationProvenance.CreateBloom((byte[])reader.GetValue(first + 11));
 
             return new ArtifactSensitivityLabel(
-                Guid.Parse(reader.GetString(0)),
-                (SensitiveArtifactKind)reader.GetInt64(1),
-                Guid.Parse(reader.GetString(2)),
-                reader.IsDBNull(3) ? null : Guid.Parse(reader.GetString(3)),
-                reader.IsDBNull(4) ? null : Guid.Parse(reader.GetString(4)),
-                reader.IsDBNull(5) ? null : Guid.Parse(reader.GetString(5)),
-                checked((ulong)reader.GetInt64(6)),
-                new CovenantDigest((byte[])reader.GetValue(7)),
-                (ContentSensitivity)reader.GetInt64(8),
+                Guid.Parse(reader.GetString(first)),
+                (SensitiveArtifactKind)reader.GetInt64(first + 1),
+                Guid.Parse(reader.GetString(first + 2)),
+                reader.IsDBNull(first + 3) ? null : Guid.Parse(reader.GetString(first + 3)),
+                reader.IsDBNull(first + 4) ? null : Guid.Parse(reader.GetString(first + 4)),
+                reader.IsDBNull(first + 5) ? null : Guid.Parse(reader.GetString(first + 5)),
+                checked((ulong)reader.GetInt64(first + 6)),
+                new CovenantDigest((byte[])reader.GetValue(first + 7)),
+                (ContentSensitivity)reader.GetInt64(first + 8),
                 provenance,
-                reader.IsDBNull(12) ? null : new CovenantDigest((byte[])reader.GetValue(12)),
-                reader.IsDBNull(13) ? null : new CovenantDigest((byte[])reader.GetValue(13)),
-                reader.IsDBNull(14) ? null : new CovenantDigest((byte[])reader.GetValue(14)),
-                UtcInstantText.Parse(reader.GetString(15)));
+                reader.IsDBNull(first + 12) ? null : new CovenantDigest((byte[])reader.GetValue(first + 12)),
+                reader.IsDBNull(first + 13) ? null : new CovenantDigest((byte[])reader.GetValue(first + 13)),
+                reader.IsDBNull(first + 14) ? null : new CovenantDigest((byte[])reader.GetValue(first + 14)),
+                UtcInstantText.Parse(reader.GetString(first + 15)));
         }
         catch (Exception exception) when (
             exception is FormatException or OverflowException or ArgumentException)

@@ -10,12 +10,14 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.LongRest;
 
 internal sealed partial class SagaLongRestService
 {
-    // Metadata and labels are read before plaintext. A protected row never materializes Content through this ordinary policy path, even when
-    // its historical Annals sensitivity was None. The label comparison is the loose, spelling-insensitive one on purpose: a mis-spelled
-    // protected label must still count.
-    internal const string SnapshotSql =
+    /// <summary>
+    /// The columns of one snapshot row, in the order <see cref="SnapshotFrom"/> reads them. They are one definition, shared by the point read
+    /// of a version and by the set read of a generation's leaves, so the two cannot describe a snapshot differently. They name the aliases
+    /// <c>v</c> (the version), <c>m</c> (the memory) and <c>h</c> (the head) and the parameter <c>@materialize</c>.
+    /// </summary>
+    internal const string SnapshotColumns =
         """
-        SELECT v.ClaimId, v.VersionId, v.Revision, v.ContentHashFormatCode,
+        v.ClaimId, v.VersionId, v.Revision, v.ContentHashFormatCode,
                COALESCE(v.ContentHash, (
                    SELECT prior.ContentHash FROM annal_versions prior
                    WHERE prior.VersionId = v.PredecessorVersionId AND prior.ClaimId = v.ClaimId
@@ -33,6 +35,18 @@ internal sealed partial class SagaLongRestService
                    SELECT 1 FROM artifact_sensitivity a WHERE a.ArtifactKindCode = 6
                    AND lower(replace(a.ArtifactId, '-', '')) = lower(replace(m.Id, '-', '')))
                    THEN m.Content ELSE NULL END
+        """;
+
+    /// <summary>How many columns <see cref="SnapshotColumns"/> selects.</summary>
+    internal const int SnapshotColumnCount = 23;
+
+    // Metadata and labels are read before plaintext. A protected row never materializes Content through this ordinary policy path, even when
+    // its historical Annals sensitivity was None. The label comparison is the loose, spelling-insensitive one on purpose: a mis-spelled
+    // protected label must still count.
+    internal const string SnapshotSql =
+        "SELECT " + SnapshotColumns +
+        """
+
         FROM annal_versions v
         JOIN annal_claims c ON c.ClaimId = v.ClaimId AND c.SubjectStoreCode = 1
         JOIN annal_heads h ON h.ClaimId = c.ClaimId
@@ -67,35 +81,16 @@ internal sealed partial class SagaLongRestService
                     "The target does not identify a retained Saga claim version."));
             }
 
-            content = reader.IsDBNull(22) ? null : reader.GetString(22);
+            content = reader.IsDBNull(SnapshotColumnCount - 1) ? null : reader.GetString(SnapshotColumnCount - 1);
 
-            DateTimeOffset? retired = Time(reader, 13);
+            Result<LongRestSnapshot> built = SnapshotFrom(reader, 0, target.MemoryId);
 
-            // A retirement asserts no content. Bind its retained predecessor's asserted digest
-            // without materializing protected plaintext or accepting an unproved caller digest.
-            if (reader.IsDBNull(4))
+            if (built.IsFailure)
             {
-                return Result<LoadedSnapshot>.Failure(new Error(ErrorCodes.LongRest.Unavailable,
-                    "The retained version has no verifiable content binding."));
+                return Result<LoadedSnapshot>.Failure(built.Error);
             }
 
-            string hash = Convert.ToHexString((byte[])reader[4]);
-
-            Guid? campaign = GuidValue(reader, 8);
-
-            if (reader.GetInt32(15) == 1
-                && (reader.GetInt32(7) != reader.GetInt32(20) || campaign != GuidValue(reader, 21)))
-            {
-                return Result<LoadedSnapshot>.Failure(new Error(ErrorCodes.LongRest.StaleInput,
-                    "The subject no longer carries its exact version's scope."));
-            }
-
-            snapshot = new LongRestSnapshot(target.MemoryId, reader.GetString(0), reader.GetString(1), reader.GetInt32(2),
-                (AnnalContentHashFormat)reader.GetInt32(3), hash, (AnnalOrigin)reader.GetInt32(5), GuidValue(reader, 6),
-                (SagaMemoryScopeKind)reader.GetInt32(7), campaign, (ContentSensitivity)reader.GetInt32(9),
-                UtcInstantText.Parse(reader.GetString(10)), Time(reader, 11), UtcInstantText.Parse(reader.GetString(12)),
-                retired, Time(reader, 14), reader.GetInt32(15) == 1, reader.GetInt32(18) == 1,
-                reader.GetInt32(16) == 1, reader.GetInt32(17) == 1, reader.GetInt32(19) == 1, [], []);
+            snapshot = built.Value;
         }
 
         List<LongRestDependency> dependencies = [];
@@ -140,6 +135,42 @@ internal sealed partial class SagaLongRestService
         }
 
         return new LoadedSnapshot(snapshot with { Dependencies = dependencies.ToArray(), IncomingDependencies = incoming.ToArray() }, content);
+    }
+
+    /// <summary>
+    /// The snapshot that the <see cref="SnapshotColumns"/> of the reader's current row describe, without its dependencies, or why that row
+    /// binds none. <paramref name="first"/> is the ordinal of the row's first snapshot column, so the one definition serves a row of its own
+    /// and a row that carries other columns before it.
+    /// </summary>
+    internal static Result<LongRestSnapshot> SnapshotFrom(DbDataReader reader, int first, string memoryId)
+    {
+        DateTimeOffset? retired = Time(reader, first + 13);
+
+        // A retirement asserts no content. Bind its retained predecessor's asserted digest
+        // without materializing protected plaintext or accepting an unproved caller digest.
+        if (reader.IsDBNull(first + 4))
+        {
+            return Result<LongRestSnapshot>.Failure(new Error(ErrorCodes.LongRest.Unavailable,
+                "The retained version has no verifiable content binding."));
+        }
+
+        string hash = Convert.ToHexString((byte[])reader[first + 4]);
+
+        Guid? campaign = GuidValue(reader, first + 8);
+
+        if (reader.GetInt32(first + 15) == 1
+            && (reader.GetInt32(first + 7) != reader.GetInt32(first + 20) || campaign != GuidValue(reader, first + 21)))
+        {
+            return Result<LongRestSnapshot>.Failure(new Error(ErrorCodes.LongRest.StaleInput,
+                "The subject no longer carries its exact version's scope."));
+        }
+
+        return new LongRestSnapshot(memoryId, reader.GetString(first), reader.GetString(first + 1), reader.GetInt32(first + 2),
+            (AnnalContentHashFormat)reader.GetInt32(first + 3), hash, (AnnalOrigin)reader.GetInt32(first + 5), GuidValue(reader, first + 6),
+            (SagaMemoryScopeKind)reader.GetInt32(first + 7), campaign, (ContentSensitivity)reader.GetInt32(first + 9),
+            UtcInstantText.Parse(reader.GetString(first + 10)), Time(reader, first + 11), UtcInstantText.Parse(reader.GetString(first + 12)),
+            retired, Time(reader, first + 14), reader.GetInt32(first + 15) == 1, reader.GetInt32(first + 18) == 1,
+            reader.GetInt32(first + 16) == 1, reader.GetInt32(first + 17) == 1, reader.GetInt32(first + 19) == 1, [], []);
     }
 
     private static DateTimeOffset? Time(DbDataReader reader, int ordinal) =>

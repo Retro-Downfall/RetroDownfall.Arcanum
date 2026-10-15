@@ -139,6 +139,40 @@ public sealed class LongRestIdentityIndexPlanTests(GrimoireFixture fixture) : IA
     }
 
     /// <summary>
+    /// A seam proves every leaf of a generation in one statement that joins the leaves to the live rows they describe. It is only one
+    /// statement's worth of work if each join is a lookup: the leaves are walked once in key order, which is the order the statement asks for,
+    /// and the version, claim, head, memory and label of each are found by key, so it takes neither a scan of another table nor a sort.
+    /// </summary>
+    [SkippableFact]
+
+    public async Task The_set_read_of_a_generations_leaves_reaches_every_live_row_by_key_in_one_ordered_walk()
+    {
+        RequireSqlCipher();
+
+        string plan = await ExplainAsync(LongRestDiscoveryStore.FrozenMetadataCorpusSql);
+
+        Assert.Matches(@"SEARCH leaf USING (COVERING )?INDEX sqlite_autoindex_long_rest_discovery_leaves_1 \(GenerationId=\?\)", plan);
+
+        foreach (string alias in new[] { "v", "c", "h", "m", "label" })
+        {
+            Assert.True(Regex.IsMatch(plan, $@"(^|\n)SEARCH {alias} USING "), $"{alias} is not found by a key lookup:\n{plan}");
+        }
+
+        // The only scans are of the two derived tables of a version's dependencies, each at most seventeen rows by construction.
+        Assert.False(Regex.IsMatch(plan, @"(^|\n)SCAN (?!x(\n|$)|y(\n|$))"), plan);
+
+        // The statement's own order is the order the leaves are walked in. A sort of a version's incoming dependencies is inside a
+        // subquery, over the rows of one version, and is the same sort the point read makes.
+        string outer = await ExplainAsync(LongRestDiscoveryStore.FrozenMetadataCorpusSql, topLevelOnly: true);
+
+        Assert.DoesNotContain("USE TEMP B-TREE", outer, StringComparison.Ordinal);
+
+        Assert.StartsWith("SEARCH leaf USING", outer, StringComparison.Ordinal);
+
+        AssertLabelSearches(plan, expected: 2, alias: "a");
+    }
+
+    /// <summary>
     /// A node delete retires the node's orphan label. SQLite plans a bare <c>DELETE ... WHERE kind AND expression</c> against the kind-only
     /// unique index rather than the expression index, so every node delete read every kind-16 label and retiring a generation cost the
     /// product of its nodes and the labels alive. Finding the label ids by a <c>SELECT</c>, which the planner does answer from the
@@ -310,7 +344,7 @@ public sealed class LongRestIdentityIndexPlanTests(GrimoireFixture fixture) : IA
         return connection;
     }
 
-    private async Task<string> ExplainAsync(string sql)
+    private async Task<string> ExplainAsync(string sql, bool topLevelOnly = false)
     {
         SqliteConnection connection = await OpenAsync();
 
@@ -329,7 +363,10 @@ public sealed class LongRestIdentityIndexPlanTests(GrimoireFixture fixture) : IA
         {
             while (await reader.ReadAsync(CancellationToken.None))
             {
-                rows.Add(reader.GetString(reader.GetOrdinal("detail")));
+                if (!topLevelOnly || reader.GetInt32(reader.GetOrdinal("parent")) == 0)
+                {
+                    rows.Add(reader.GetString(reader.GetOrdinal("detail")));
+                }
             }
         }
 
