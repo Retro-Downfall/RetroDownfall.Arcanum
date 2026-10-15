@@ -844,7 +844,7 @@ public sealed class ToolExecutionPipeline(
                     "refresh_session_file",
                     ct)
                 .ConfigureAwait(false);
-            return result.Allowed || turnContext.SanctumMode == SanctumMode.AuditOnly;
+            return SanctumEnforcement.AllowsContinuation(result, turnContext.SanctumMode);
         }
 
         AttachmentSourceResolution current = await sourceResolver.ResolveCurrentAsync(
@@ -1571,7 +1571,7 @@ public sealed class ToolExecutionPipeline(
             argsSnapshot,
             cancellationToken).ConfigureAwait(false);
 
-        if (!outcome.Result.Allowed && outcome.Enabled && outcome.Mode == SanctumMode.Strict)
+        if (outcome.Enabled && !SanctumEnforcement.AllowsContinuation(outcome.Result, outcome.Mode))
         {
             return (SanctumDenialMessage(outcome.Result), true);
         }
@@ -1794,7 +1794,8 @@ public sealed class ToolExecutionPipeline(
     /// <summary>
     /// Publishes a per-hop network ward for the native web tools when the turn runs inside an enabled
     /// Sanctum. The ward re-runs <see cref="ISanctumGuard.ValidateNetworkAsync"/>, so a redirect that
-    /// leaves the campaign's allowed domains is recorded as a breach and blocked in Strict mode.
+    /// leaves the campaign's allowed domains is recorded as a breach in both modes and blocked only in Strict mode,
+    /// exactly as the initial target is (<see cref="SanctumEnforcement.AllowsContinuation"/>).
     /// Returns <c>null</c> for every other tool and for unrestricted turns.
     /// </summary>
     private IDisposable? BeginSanctumEgressWard(FunctionCallContent fcc, TurnContext turnContext)
@@ -1820,7 +1821,7 @@ public sealed class ToolExecutionPipeline(
                 .ValidateNetworkAsync(campaignId, target.AbsoluteUri, toolName, token)
                 .ConfigureAwait(false);
 
-            return result.Allowed || turnContext.SanctumMode == SanctumMode.AuditOnly;
+            return SanctumEnforcement.AllowsContinuation(result, turnContext.SanctumMode);
         });
     }
 

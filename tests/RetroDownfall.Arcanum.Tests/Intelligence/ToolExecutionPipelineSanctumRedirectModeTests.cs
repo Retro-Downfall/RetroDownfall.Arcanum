@@ -2,6 +2,8 @@ using System.Diagnostics.CodeAnalysis;
 using System.Net;
 using System.Text;
 using System.Text.Json;
+using Microsoft.Extensions.AI;
+using Microsoft.Extensions.Logging.Abstractions;
 using RetroDownfall.Arcanum.Api.Intelligence;
 using RetroDownfall.Arcanum.Api.Intelligence.Tools;
 using RetroDownfall.Arcanum.Core.Configuration;
@@ -103,8 +105,121 @@ public sealed class ToolExecutionPipelineSanctumRedirectModeTests : IDisposable
         Assert.Empty(harness.Breaches.Records);
     }
 
+    // The initial target and the legacy alias follow the rule the redirect hop does: a target outside the allowed domains is recorded
+    // as a breach in both modes, refused before any request in Strict, and fetched in AuditOnly.
+    [Theory]
+    [InlineData("read_url", SanctumMode.Strict)]
+    [InlineData("read_url", SanctumMode.AuditOnly)]
+    [InlineData("browse_web", SanctumMode.Strict)]
+    [InlineData("browse_web", SanctumMode.AuditOnly)]
+    public async Task The_initial_target_outside_the_allowed_domains_is_recorded_in_both_modes_and_fetched_only_in_audit_only(string toolName, SanctumMode mode)
+    {
+        SanctumPipelineHarness harness = CreateHarness(mode, ["allowed.test"]);
+
+        using RedirectScriptHandler http = new(PublicTarget);
+
+        using SingleClientFactory clients = new(http);
+
+        AITool tool = CreateTool(toolName, clients);
+
+        ToolExecutionPipeline.ProcessedToolCall processed = await harness.ProcessAsync(tool, toolName,
+            new Dictionary<string, object?> { ["url"] = PublicTarget }, TurnFor(harness, mode));
+
+        if (mode == SanctumMode.Strict)
+        {
+            Assert.True(processed.Denied);
+
+            Assert.Contains("The Sanctum Guard has blocked this action: NetworkEgress", processed.ResultText, StringComparison.Ordinal);
+
+            Assert.Empty(http.Requests);
+        }
+        else
+        {
+            Assert.False(processed.Denied);
+
+            Assert.Contains("controlled second-hop page", processed.ResultText, StringComparison.Ordinal);
+
+            Assert.Equal([PublicTarget], http.Requests);
+        }
+
+        AssertOneTargetBreach(harness, PublicTarget, toolName);
+    }
+
+    [Theory]
+    [InlineData(SanctumMode.AuditOnly)]
+    [InlineData(SanctumMode.Strict)]
+    public async Task The_initial_target_inside_the_allowed_domains_is_never_a_breach_in_either_mode(SanctumMode mode)
+    {
+        SanctumPipelineHarness harness = CreateHarness(mode, ["allowed.test", "off-list.test"]);
+
+        using RedirectScriptHandler http = new(PublicTarget);
+
+        using SingleClientFactory clients = new(http);
+
+        // Both hosts are allowed, so the redirect is the same operation as the initial target: nothing is recorded or refused.
+        ToolExecutionPipeline.ProcessedToolCall processed = await harness.ProcessAsync(CreateTool("browse_web", clients), "browse_web",
+            new Dictionary<string, object?> { ["url"] = InitialUrl }, TurnFor(harness, mode));
+
+        Assert.False(processed.Denied);
+
+        Assert.Contains("controlled second-hop page", processed.ResultText, StringComparison.Ordinal);
+
+        Assert.Equal([InitialUrl, PublicTarget], http.Requests);
+
+        Assert.Empty(harness.Breaches.Records);
+    }
+
+    // The legacy alias publishes the same ward as read_url, so its redirect hop is recorded in both modes and refused only in Strict.
+    [Theory]
+    [InlineData(SanctumMode.AuditOnly)]
+    [InlineData(SanctumMode.Strict)]
+    public async Task The_legacy_alias_redirect_outside_the_allowed_domains_is_recorded_in_both_modes_and_followed_only_in_audit_only(SanctumMode mode)
+    {
+        SanctumPipelineHarness harness = CreateHarness(mode, ["allowed.test"]);
+
+        using RedirectScriptHandler http = new(PublicTarget);
+
+        using SingleClientFactory clients = new(http);
+
+        ToolExecutionPipeline.ProcessedToolCall processed = await harness.ProcessAsync(CreateTool("browse_web", clients), "browse_web",
+            new Dictionary<string, object?> { ["url"] = InitialUrl }, TurnFor(harness, mode));
+
+        Assert.False(processed.Denied);
+
+        if (mode == SanctumMode.AuditOnly)
+        {
+            Assert.Contains("controlled second-hop page", processed.ResultText, StringComparison.Ordinal);
+
+            Assert.Equal([InitialUrl, PublicTarget], http.Requests);
+        }
+        else
+        {
+            Assert.Contains("WebBrowsing.SsrfBlocked", processed.ResultText, StringComparison.Ordinal);
+
+            Assert.DoesNotContain("controlled second-hop page", processed.ResultText, StringComparison.Ordinal);
+
+            Assert.Equal([InitialUrl], http.Requests);
+        }
+
+        AssertOneTargetBreach(harness, PublicTarget, "browse_web");
+    }
+
     public void Dispose() =>
         _ = TestDirectoryCleanup.TryDelete(_root, nameof(ToolExecutionPipelineSanctumRedirectModeTests));
+
+    private static AITool CreateTool(string toolName, IHttpClientFactory clients) => toolName == ArcanumReadUrlTool.ToolName
+        ? new ArcanumReadUrlTool(new SingleProviderCatalog(CreateProvider(clients)), new TestOptionsSnapshot<ArcanumSettings>(new ArcanumSettings()))
+        : new ArcanumBrowseWebTool(clients, new TestOptionsSnapshot<ArcanumSettings>(new ArcanumSettings { Features = new FeatureSettings { WebBrowsing = true } }),
+            NullLogger.Instance, null, Dns());
+
+    private static ToolExecutionPipeline.TurnContext TurnFor(SanctumPipelineHarness harness, SanctumMode mode) => new()
+    {
+        Campaign = harness.Campaign,
+        CampaignId = harness.CampaignId,
+        WorkspaceRoot = harness.WorkspaceRoot,
+        SanctumEnabled = true,
+        SanctumMode = mode,
+    };
 
     private SanctumPipelineHarness CreateHarness(SanctumMode mode, string[] allowedDomains)
     {
@@ -125,7 +240,7 @@ public sealed class ToolExecutionPipelineSanctumRedirectModeTests : IDisposable
         return harness;
     }
 
-    private static LocalHttpWebProvider CreateProvider(IHttpClientFactory clients)
+    private static FakeDnsResolver Dns()
     {
         FakeDnsResolver dns = new();
 
@@ -135,8 +250,11 @@ public sealed class ToolExecutionPipelineSanctumRedirectModeTests : IDisposable
 
         dns.Add("private.test", IPAddress.Parse("10.1.2.3"));
 
-        return new LocalHttpWebProvider(clients, new WebPageContentExtractor(), dns);
+        return dns;
     }
+
+    private static LocalHttpWebProvider CreateProvider(IHttpClientFactory clients) =>
+        new(clients, new WebPageContentExtractor(), Dns());
 
     private static async Task<ToolExecutionPipeline.ProcessedToolCall> RunReadUrlAsync(
         SanctumPipelineHarness harness,
@@ -177,13 +295,13 @@ public sealed class ToolExecutionPipelineSanctumRedirectModeTests : IDisposable
         Assert.DoesNotContain("controlled second-hop page", resultText, StringComparison.Ordinal);
     }
 
-    private static void AssertOneTargetBreach(SanctumPipelineHarness harness, string target)
+    private static void AssertOneTargetBreach(SanctumPipelineHarness harness, string target, string toolName = ArcanumReadUrlTool.ToolName)
     {
         SanctumBreachRecord breach = Assert.Single(harness.Breaches.Records);
 
         Assert.Equal("NetworkEgress", breach.BreachType);
 
-        Assert.Equal(ArcanumReadUrlTool.ToolName, breach.ToolName);
+        Assert.Equal(toolName, breach.ToolName);
 
         Assert.Equal(harness.CampaignId, breach.CampaignId);
 
