@@ -224,7 +224,7 @@ internal sealed partial class LongRestQualificationRun
             Observe(string.Create(
                 CultureInfo.InvariantCulture,
                 $"{scenario} model behavior, {kind}: {calls.Length} calls, {seconds.Median:0.0} s median ({seconds.P90:0.0} s p90, {seconds.Maximum:0.0} s max), "
-                + $"{written.Median:0} completion tokens median ({written.P90:0} p90, {written.Maximum:0} max), {cut} cut off at the output cap, {refused} refused"));
+                + $"{written.Median:0} completion tokens median ({written.P90:0} p90, {written.Maximum:0} max), {cut} cut off at the output cap, {refused} without a 2xx answer (refused or aborted)"));
         }
     }
 
@@ -408,7 +408,8 @@ internal sealed partial class LongRestQualificationRun
         IReadOnlyList<LongRestEffectRow> effects,
         IReadOnlyList<LongRestRecordedRequest> traffic,
         decimal spendDelta,
-        LongRestRecordedRequest? killedRequest)
+        LongRestRecordedRequest? killedRequest,
+        decimal heldUsd = 0m)
     {
         LongRestRecordedRequest[] delivered =
         [
@@ -438,14 +439,14 @@ internal sealed partial class LongRestQualificationRun
         long journalCached = effects.Sum(static row => row.CachedInputTokens);
 
         // The host bills the prompt tokens the provider served from its cache at the cached rate and the rest at the input rate.
-        decimal expectedSpend = (((promptTokens - cachedTokens) * LongRestQualificationConfiguration.InputPricePerMillion)
+        decimal expectedSpend = ((((promptTokens - cachedTokens) * LongRestQualificationConfiguration.InputPricePerMillion)
             + (cachedTokens * LongRestQualificationConfiguration.CachedPricePerMillion)
-            + (completionTokens * LongRestQualificationConfiguration.OutputPricePerMillion)) / 1_000_000m;
+            + (completionTokens * LongRestQualificationConfiguration.OutputPricePerMillion)) / 1_000_000m) + heldUsd;
 
         Observe(string.Create(
             CultureInfo.InvariantCulture,
             $"{scenario} accounting: provider delivered {delivered.Length} paid responses ({promptTokens} prompt of which {cachedTokens} cached, {completionTokens} completion tokens); "
-            + $"journal counts {paidCalls} paid calls ({journalInput} input of which {journalCached} cached, {journalOutput} output tokens); budget spend {spendDelta:0.000000} USD against {expectedSpend:0.000000} USD from the provider's figures"));
+            + $"journal counts {paidCalls} paid calls ({journalInput} input of which {journalCached} cached, {journalOutput} output tokens); budget spend {spendDelta:0.000000} USD against {expectedSpend:0.000000} USD from the provider's figures{(heldUsd > 0m ? $" plus {heldUsd:0.000000} USD held for unknown usage" : string.Empty)}"));
 
         Check(
             paidCalls == delivered.Length,
@@ -467,7 +468,7 @@ internal sealed partial class LongRestQualificationRun
 
         Check(
             Math.Abs(spendDelta - expectedSpend) <= tolerance,
-            $"{scenario}: the budget's spend moved by {spendDelta:0.000000} USD but the provider's reported usage prices at {expectedSpend:0.000000} USD.");
+            $"{scenario}: the budget's spend moved by {spendDelta:0.000000} USD but the provider's reported usage prices at {expectedSpend:0.000000} USD (holds for unknown usage included).");
     }
 
     /// <summary>

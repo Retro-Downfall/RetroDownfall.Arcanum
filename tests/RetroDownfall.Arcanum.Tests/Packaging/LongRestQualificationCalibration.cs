@@ -535,11 +535,27 @@ internal static class LongRestQualificationCalibration
 
         double ownMedian = gate.OwnLeaves.Median;
 
-        double foreignMax = gate.ForeignSummaries.Count == 0 ? gate.ForeignLeaves.Maximum : gate.ForeignSummaries.Maximum;
+        bool foreignSummariesMeasured = gate.ForeignSummaries.Count > 0;
+
+        CalibrationDistribution foreign = foreignSummariesMeasured ? gate.ForeignSummaries : gate.ForeignLeaves;
+
+        int foreignAtOrAbove = foreignSummariesMeasured ? gate.ForeignSummariesAtOrAboveGate : gate.ForeignLeavesAtOrAboveGate;
+
+        string foreignName = foreignSummariesMeasured ? "foreign summaries" : "uncovered leaves";
+
+        string verdict = foreign.Count == 0
+            ? "no foreign score was measured, so the gate cannot be judged on this corpus."
+            : foreign.Maximum < gate.ConfiguredGate
+                ? string.Create(
+                    CultureInfo.InvariantCulture,
+                    $"the gate of {gate.ConfiguredGate:0.00} sits above the highest cosine to {foreignName} seen ({foreign.Maximum:0.000}), with {gate.ConfiguredGate - foreign.Maximum:0.000} of headroom, and admits {foreignAtOrAbove} of {foreign.Count}; a gate as low as {Math.Ceiling(foreign.Maximum * 100d) / 100d:0.00} would still admit none of them on this corpus.")
+                : string.Create(
+                    CultureInfo.InvariantCulture,
+                    $"the gate of {gate.ConfiguredGate:0.00} is at or below the highest cosine to {foreignName} seen ({foreign.Maximum:0.000}) and admits {foreignAtOrAbove} of {foreign.Count}; no gate that keeps the summaries it should join can exclude them here.");
 
         _ = text.AppendLine(string.Create(
             CultureInfo.InvariantCulture,
-            $"  Recommendation: the gate of {gate.ConfiguredGate:0.00} sits {(foreignMax < gate.ConfiguredGate ? "above" : "at or below")} the highest foreign score seen ({foreignMax:0.000}); a summary covers its own leaves with a median cosine of {ownMedian:0.000}. A gate between the highest foreign score and the own-leaf median separates them on this corpus."))
+            $"  Recommendation: {verdict} A summary's own leaves have a median cosine of {ownMedian:0.000} ({gate.OwnLeavesAtOrAboveGate} of {gate.OwnLeaves.Count} at or above the gate), which a gate does not apply to: it judges two summaries, not a summary and its own leaves."))
             .AppendLine();
     }
 

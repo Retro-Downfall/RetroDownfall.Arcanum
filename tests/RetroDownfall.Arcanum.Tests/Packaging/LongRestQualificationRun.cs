@@ -244,6 +244,11 @@ internal sealed partial class LongRestQualificationRun(
 
         await AssertNativeAotMetadataAsync(cancellationToken);
 
+        // The host starts its metrics listener when /metrics is first scraped, and the listener never replays what happened before it, so
+        // a counter the sweep moves before the first scrape is lost. One scrape here, before any sweep runs, is what lets the counters
+        // below be compared at all.
+        _ = await Api.ReadMetricsAsync(cancellationToken);
+
         _log.Info($"Published host restarted on the same home ({description})");
     }
 

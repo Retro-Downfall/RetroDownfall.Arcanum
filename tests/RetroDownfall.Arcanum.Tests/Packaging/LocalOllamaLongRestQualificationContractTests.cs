@@ -379,6 +379,12 @@ public sealed class LocalOllamaLongRestQualificationContractTests
         Assert.Contains("RunCleanSweepAsync", test, StringComparison.Ordinal);
         Assert.Contains("RunKilledHostSweepAsync", test, StringComparison.Ordinal);
         Assert.Contains("RunOrdinaryTurnAsync", test, StringComparison.Ordinal);
+
+        // The host's metrics listener starts at the first scrape and never replays, so each restart scrapes once before any sweep runs; the
+        // held-reservation figure is read from the same read-only reader.
+        Assert.Contains("_ = await Api.ReadMetricsAsync(cancellationToken);", run, StringComparison.Ordinal);
+        Assert.Contains("ReadOutstandingReservationsAsync", run, StringComparison.Ordinal);
+        Assert.Contains("FROM BudgetReservations WHERE Status = 0", grimoire, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -881,6 +887,51 @@ public sealed class LocalOllamaLongRestQualificationContractTests
         Assert.Contains(gate.Composition, static line => line.Contains("dogx2", StringComparison.Ordinal));
         Assert.Contains(gate.Composition, static line => line.Contains("layer 2", StringComparison.Ordinal) && line.Contains("covers 4 memories", StringComparison.Ordinal));
         Assert.Equal(summaries.Select(static summary => Encoding.UTF8.GetByteCount(summary.Text)), gate.SummaryBytes);
+
+        string text = LongRestQualificationCalibration.RenderText(report, Options);
+
+        Assert.Contains("sits above the highest cosine to foreign summaries seen", text, StringComparison.Ordinal);
+        Assert.Contains("admits 0 of 2", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("A gate between the highest foreign score and the own-leaf median", text, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Calibration_says_so_when_foreign_summaries_reach_the_gate_and_never_claims_a_gate_between_a_higher_and_a_lower_score()
+    {
+        CalibrationMemory[] corpus =
+        [
+            Memory("m1", "dog", "The user's dog is a beagle named Biscuit.", 1f, 0f),
+            Memory("m2", "dog", "The user owns a beagle called Biscuit.", 0.99f, 0.05f),
+            Memory("m3", "cat", "The user's cat is a grey tabby named Mochi.", 0f, 1f),
+            Memory("m4", "cat", "The user has a grey tabby cat called Mochi.", 0.05f, 0.99f),
+        ];
+
+        // Two summaries about different topics whose vectors nearly coincide (a foreign cosine above the gate, scored from each side), and leaves far from both.
+        CalibrationSummary[] summaries =
+        [
+            new("s-dog", 1, "A pet.", [1f, 0.05f], ["n1", "n2"]),
+            new("s-cat", 1, "A pet too.", [1f, 0.1f], ["n3", "n4"]),
+        ];
+
+        Dictionary<string, string?> leaves = new()
+        {
+            ["n1"] = "m1",
+            ["n2"] = "m2",
+            ["n3"] = "m3",
+            ["n4"] = "m4",
+        };
+
+        CalibrationReport report = LongRestQualificationCalibration.Calibrate(corpus, summaries, leaves, 1766);
+
+        CalibrationSummaryGate gate = Assert.IsType<CalibrationSummaryGate>(report.SummaryGate);
+
+        Assert.Equal(2, gate.ForeignSummariesAtOrAboveGate);
+
+        string text = LongRestQualificationCalibration.RenderText(report, Options);
+
+        Assert.Contains("is at or below the highest cosine to foreign summaries seen", text, StringComparison.Ordinal);
+        Assert.Contains("admits 2 of 2", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("A gate between the highest foreign score and the own-leaf median", text, StringComparison.Ordinal);
     }
 
     [Fact]
