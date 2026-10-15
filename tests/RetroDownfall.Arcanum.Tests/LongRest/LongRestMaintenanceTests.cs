@@ -126,6 +126,9 @@ public sealed partial class LongRestMaintenanceTests
 
         internal Func<LongRestDispatchAttempt, CancellationToken, Task>? AfterAttemptValidated;
 
+        /// <summary>Rewrites the fold the maintenance reads from the discovery store, to hand it work the store itself would never produce.</summary>
+        internal Func<LongRestHierarchyWork, LongRestHierarchyWork>? FoldRead;
+
         internal Func<ILongRestAttemptStore, ILongRestAttemptStore>? DecorateIndependentAttempts;
 
         internal Func<ILongRunningOperationStore, ILongRunningOperationStore>? DecorateIndependentOperations;
@@ -411,13 +414,51 @@ public sealed partial class LongRestMaintenanceTests
                 new ModelCallExecutor(estimator, Options), Epoch, new PaidWriter(new TurnRunWriter(H.Saga.Context), () => PaidRecorded?.Invoke(), () => Completing?.Invoke()),
                 new BudgetReservationService(H.Saga.Context, Options));
 
-            Maintenance = new(Epoch, H.Store, sweeps, attempts, facts, Gate, new ObservedProvider(provider, result => ProviderResult = result, () => RepeatDispatch, payload => Payloads.Add(payload), ct => DispatchObserved?.Invoke(ct), () => ProviderReturned?.Invoke() ?? Task.CompletedTask), estimator, Journal,
+            Maintenance = new(Epoch, new DiscoveryTap(H.Store, this), sweeps, attempts, facts, Gate, new ObservedProvider(provider, result => ProviderResult = result, () => RepeatDispatch, payload => Payloads.Add(payload), ct => DispatchObserved?.Invoke(ct), () => ProviderReturned?.Invoke() ?? Task.CompletedTask), estimator, Journal,
                 Services.GetRequiredService<IServiceScopeFactory>(), Clock);
 
             Operations = new(H.Saga.Context, TestOrdinaryConnectionFactory.For(H.Saga.Context));
 
             Coordinator = new(Operations, sweeps, H.Store, Epoch, facts, Maintenance, Gate,
                 Ownership, new LongRestSweepQueue(), Services.GetRequiredService<IServiceScopeFactory>(), Clock, RecordedAdmission);
+        }
+
+        private sealed class DiscoveryTap(ILongRestDiscoveryStore inner, MaintenanceFixture fixture) : ILongRestDiscoveryStore
+        {
+            public Task<Result<CovenantDigest?>> ReadNextProtectedPartitionAsync(CanonicalCampaignContext scope, CovenantDigest? after, CancellationToken ct) => inner.ReadNextProtectedPartitionAsync(scope, after, ct);
+
+            public Task<Result<LongRestDiscoveryGeneration?>> ReadGenerationMetadataAsync(Guid operationId, CancellationToken ct) => inner.ReadGenerationMetadataAsync(operationId, ct);
+
+            public Task<Result<LongRestDiscoveryGeneration>> StartOrResumeAsync(Guid operationId, LongRestSweepScope scope, LongRestSweepFence fence, LongRestRecipeIdentity recipe, CancellationToken ct) =>
+                inner.StartOrResumeAsync(operationId, scope, fence, recipe, ct);
+
+            public Task<Result<LongRestSourcePage>> CaptureNextSourcePageAsync(Guid generationId, long expectedRevision, LongRestMaintenanceCapability? capability, CancellationToken ct) =>
+                inner.CaptureNextSourcePageAsync(generationId, expectedRevision, capability, ct);
+
+            public async Task<Result<LongRestHierarchyWork?>> ReadNextFoldAsync(Guid generationId, LongRestMaintenanceCapability? capability, CancellationToken ct)
+            {
+                Result<LongRestHierarchyWork?> read = await inner.ReadNextFoldAsync(generationId, capability, ct);
+
+                return read.IsSuccess && read.Value is { } work && fixture.FoldRead is { } rewrite ? Result<LongRestHierarchyWork?>.Success(rewrite(work)) : read;
+            }
+
+            public Task<Result<LongRestAcceptedHierarchySummary>> CommitAcceptedHierarchySummaryAsync(LongRestAcceptedHierarchySummary summary, LongRestMaintenanceCapability? capability, CancellationToken ct) =>
+                inner.CommitAcceptedHierarchySummaryAsync(summary, capability, ct);
+
+            public Task<Result<LongRestAcceptedHierarchySummary>> CommitAcceptedHierarchySummaryAsync(LongRestAcceptedHierarchySummary summary, LongRestDispatchCompletion completion, string workerOwner, LongRestMaintenanceCapability? capability, CancellationToken ct, bool committedOnly = false) =>
+                inner.CommitAcceptedHierarchySummaryAsync(summary, completion, workerOwner, capability, ct, committedOnly);
+
+            public Task<Result<LongRestDiscoveryGeneration>> CommitFoldAsync(LongRestHierarchyPublication publication, LongRestMaintenanceCapability? capability, CancellationToken ct) =>
+                inner.CommitFoldAsync(publication, capability, ct);
+
+            public Task<Result<LongRestDiscoveryGeneration>> CommitFoldAsync(LongRestHierarchyPublication publication, LongRestDispatchCompletion completion, string workerOwner, LongRestMaintenanceCapability? capability, CancellationToken ct, bool committedOnly = false) =>
+                inner.CommitFoldAsync(publication, completion, workerOwner, capability, ct, committedOnly);
+
+            public Task<Result<LongRestDiscoveryGeneration>> PublishAsync(Guid generationId, long expectedRevision, LongRestSweepFence fence, LongRestMaintenanceCapability? capability, CancellationToken ct) =>
+                inner.PublishAsync(generationId, expectedRevision, fence, capability, ct);
+
+            public Task<Result<LongRestCandidateGroup[]>> DiscoverAsync(Guid generationId, LongRestTarget anchor, LongRestMaintenanceCapability? capability, CancellationToken ct) =>
+                inner.DiscoverAsync(generationId, anchor, capability, ct);
         }
 
         /// <summary>The newest real Long Rest sweep lease this fixture's gate has issued: the one the active work holds.</summary>

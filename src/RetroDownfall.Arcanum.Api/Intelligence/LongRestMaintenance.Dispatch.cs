@@ -13,14 +13,18 @@ namespace RetroDownfall.Arcanum.Api.Intelligence;
 
 internal sealed partial class LongRestMaintenance
 {
+    /// <param name="used">
+    /// Every leaf the request is built from, however it reaches the request: an adjudication's inputs, or everything under a fold's children. Each is
+    /// re-proved in full at every gate that stands between it and the send, so no gate is left to take a leaf on trust because a request lists few.
+    /// </param>
     private async Task<T> ExecutePaidAsync<T>(LongRestDiscoveryGeneration generation, LongRestProviderPayload payload,
         GenerationProvenance provenance, LongRestMaintenanceCapability? capability, string workerOwner, IGrimoireWorkLease admission,
-        Func<PaidResult, LongRestDispatchCompletion, CancellationToken, bool, Task<T>> accept, CancellationToken ct)
+        IReadOnlyCollection<string> used, Func<PaidResult, LongRestDispatchCompletion, CancellationToken, bool, Task<T>> accept, CancellationToken ct)
     {
-        // The leaves this request is built from: each is re-proved in full at every gate that stands between them and the send.
-        string[] used = payload.UsedMemoryIds();
+        // A paid unit derives from at least one leaf. One that names none would have every gate below prove nothing about its request.
+        if (used.Count == 0) throw new Refused(Stale());
 
-        await EnsureCurrentAsync(generation, capability, workerOwner, ct, inputs: used).ConfigureAwait(false);
+        await EnsureCurrentAsync(generation, capability, workerOwner, LongRestVerificationDepth.Step, used, ct).ConfigureAwait(false);
 
         if (!admission.TryBeginExternalEffectGroup(out IGrimoireExternalEffectGroup? group) || group is null)
         {
@@ -86,7 +90,7 @@ internal sealed partial class LongRestMaintenance
                         throw new Refused(Stale());
                     }
 
-                    await EnsureCurrentAsync(generation, capability, workerOwner, token, inputs: used).ConfigureAwait(false);
+                    await EnsureCurrentAsync(generation, capability, workerOwner, LongRestVerificationDepth.Step, used, token).ConfigureAwait(false);
 
                     Require(await attempts.ValidateAttemptAsync(attempt, token).ConfigureAwait(false));
 
@@ -112,7 +116,7 @@ internal sealed partial class LongRestMaintenance
                         attempt = Require(await attempts.RecordDisclosureAsync(attempt, receipt.Digest, token).ConfigureAwait(false));
 
                         // Durable evidence never replaces the independently current source, claim and lease.
-                        await EnsureCurrentAsync(generation, capability, workerOwner, token, inputs: used).ConfigureAwait(false);
+                        await EnsureCurrentAsync(generation, capability, workerOwner, LongRestVerificationDepth.Step, used, token).ConfigureAwait(false);
 
                         Require(await attempts.ValidateAttemptAsync(attempt, token).ConfigureAwait(false));
 
@@ -122,7 +126,7 @@ internal sealed partial class LongRestMaintenance
 
                     attempt = Require(await attempts.MarkSentAsync(attempt, token).ConfigureAwait(false));
 
-                    await EnsureCurrentAsync(generation, capability, workerOwner, token, inputs: used).ConfigureAwait(false);
+                    await EnsureCurrentAsync(generation, capability, workerOwner, LongRestVerificationDepth.Step, used, token).ConfigureAwait(false);
 
                     Require(await attempts.ValidateAttemptAsync(attempt, token).ConfigureAwait(false));
                 }
@@ -179,7 +183,7 @@ internal sealed partial class LongRestMaintenance
 
                 try
                 {
-                    await EnsureCurrentAsync(generation, capability, workerOwner, dispatch.Token, inputs: used).ConfigureAwait(false);
+                    await EnsureCurrentAsync(generation, capability, workerOwner, LongRestVerificationDepth.Step, used, dispatch.Token).ConfigureAwait(false);
 
                     Require(await attempts.ValidateAttemptAsync(attempt, dispatch.Token).ConfigureAwait(false));
 
@@ -289,11 +293,13 @@ internal sealed partial class LongRestMaintenance
 
                 LongRestLiveFenceReader independent = scope.ServiceProvider.GetRequiredService<LongRestLiveFenceReader>();
 
-                await EnsureCurrentAsync(generation, capability, workerOwner, stoppingToken, renewClaim: false, independent).ConfigureAwait(false);
+                // The heartbeat keeps the claim, the lease and the fence current while a send is in flight. It acts on no leaf, so it names none: the
+                // gates around the send are the ones that re-prove them.
+                await EnsureCurrentAsync(generation, capability, workerOwner, LongRestVerificationDepth.Step, [], stoppingToken, renewClaim: false, independent).ConfigureAwait(false);
 
                 await RenewClaimAsync(capability, stoppingToken, scope.ServiceProvider.GetRequiredService<ILongRestAttemptStore>()).ConfigureAwait(false);
 
-                await EnsureCurrentAsync(generation, capability, workerOwner, stoppingToken, renewClaim: false, independent).ConfigureAwait(false);
+                await EnsureCurrentAsync(generation, capability, workerOwner, LongRestVerificationDepth.Step, [], stoppingToken, renewClaim: false, independent).ConfigureAwait(false);
             }
         }
         catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)

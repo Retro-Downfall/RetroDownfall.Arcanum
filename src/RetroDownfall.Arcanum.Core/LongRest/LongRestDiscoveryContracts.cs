@@ -68,7 +68,14 @@ public sealed record LongRestHierarchyChild(
 
 public sealed record LongRestHierarchyFold(LongRestWorkIdentity Work, int Layer, long Group, CovenantDigest MembershipDigest, ImmutableArray<LongRestHierarchyChild> Children);
 
-public sealed record LongRestHierarchyWork(LongRestHierarchyFold Fold, LongRestAcceptedHierarchySummary? AcceptedSummary);
+/// <summary>One fold to summarize and embed, and what its text derives from.</summary>
+/// <param name="Fold">The fold, with its children.</param>
+/// <param name="AcceptedSummary">The summary already accepted for it, if an earlier unit accepted one.</param>
+/// <param name="Leaves">
+/// Every leaf under the fold's children, however deep. A request lists only the first few of each child, but the summary it asks for, and the
+/// embedding of the summary after it, derive from all of them, so every gate in front of either send re-proves each in full.
+/// </param>
+public sealed record LongRestHierarchyWork(LongRestHierarchyFold Fold, LongRestAcceptedHierarchySummary? AcceptedSummary, ImmutableArray<string> Leaves);
 
 /// <summary>Exact model/recipe facts and fixed bounds that govern reusable derived work.</summary>
 public sealed record LongRestRecipeIdentity(

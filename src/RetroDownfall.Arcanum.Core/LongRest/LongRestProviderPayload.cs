@@ -65,38 +65,6 @@ public sealed class LongRestProviderPayload
 
     public LongRestHierarchyFold? Fold { get; }
 
-    /// <summary>
-    /// The memories this request is built from: an adjudication's inputs, or what a summary's children expand to. An embedding is built
-    /// from accepted text, which no leaf supplies. Every gate in front of the send re-proves each of them in full.
-    /// </summary>
-    internal string[] UsedMemoryIds()
-    {
-        List<string> ids = [];
-
-        if (Kind == LongRestProviderPayloadKind.Adjudication)
-        {
-            foreach (LongRestSourceLeaf leaf in _inputs)
-            {
-                ids.Add(leaf.Snapshot.MemoryId);
-            }
-        }
-        else if (Kind == LongRestProviderPayloadKind.Summary && Fold is not null)
-        {
-            foreach (LongRestHierarchyChild child in Fold.Children)
-            {
-                foreach (LongRestTarget target in child.ExpandedTargets)
-                {
-                    if (!ids.Contains(target.MemoryId))
-                    {
-                        ids.Add(target.MemoryId);
-                    }
-                }
-            }
-        }
-
-        return [.. ids];
-    }
-
     public string? EmbeddingText { get; }
 
     /// <summary>The rendered bytes the recipe lets this request take; the renderer refuses anything larger.</summary>

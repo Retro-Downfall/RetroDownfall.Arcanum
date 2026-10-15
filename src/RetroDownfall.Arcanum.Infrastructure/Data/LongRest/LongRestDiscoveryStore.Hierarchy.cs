@@ -117,13 +117,15 @@ internal sealed partial class LongRestDiscoveryStore
 
                 LongRestAcceptedHierarchySummary? accepted = await ReadAcceptedSummaryAsync(connection, transaction, fold, generation.Recipe, cancellationToken).ConfigureAwait(false);
 
+                ImmutableArray<string> leaves = await ReadSubtreeLeavesAsync(connection, transaction, generation, children, cancellationToken).ConfigureAwait(false);
+
                 await BindCurrentWorkAsync(connection, transaction, fold.Work, cancellationToken).ConfigureAwait(false);
 
                 await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
 
                 PublishOversize(oversize);
 
-                return Result<LongRestHierarchyWork?>.Success(new(fold, accepted));
+                return Result<LongRestHierarchyWork?>.Success(new(fold, accepted, leaves));
             }
 
             await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
@@ -136,6 +138,48 @@ internal sealed partial class LongRestDiscoveryStore
         {
             return Refuse<LongRestHierarchyWork?>(ErrorCodes.LongRest.Unavailable, "The hierarchy plan could not retain its exact source and child bindings.");
         }
+    }
+
+    /// <summary>
+    /// Every leaf of a node's subtree. The edges strictly descend, so a walk of a damaged forest still ends; a child that stands for no leaf at all
+    /// is refused rather than counted as none, because a fold that proves less than it derives from has proved nothing.
+    /// </summary>
+    private const string SubtreeLeavesSql = """
+        WITH RECURSIVE subtree(NodeId, Layer, MemoryId) AS (
+            SELECT NodeId, Layer, MemoryId FROM long_rest_discovery_nodes WHERE GenerationId = $generation AND NodeId = $root
+            UNION
+            SELECT child.NodeId, child.Layer, child.MemoryId FROM subtree
+                JOIN long_rest_discovery_edges edge ON edge.GenerationId = $generation AND edge.ParentNodeId = subtree.NodeId
+                JOIN long_rest_discovery_nodes child ON child.GenerationId = $generation AND child.NodeId = edge.ChildNodeId AND child.Layer < subtree.Layer)
+        SELECT MemoryId FROM subtree WHERE Layer = 0 ORDER BY MemoryId;
+        """;
+
+    private static async Task<ImmutableArray<string>> ReadSubtreeLeavesAsync(SqliteConnection connection, SqliteTransaction transaction,
+        LongRestDiscoveryGeneration generation, ImmutableArray<LongRestHierarchyChild> children, CancellationToken cancellationToken)
+    {
+        ImmutableArray<string>.Builder leaves = ImmutableArray.CreateBuilder<string>();
+
+        foreach (LongRestHierarchyChild child in children)
+        {
+            int before = leaves.Count;
+
+            await using SqliteCommand command = Command(connection, transaction, SubtreeLeavesSql,
+                ("$generation", Format(generation.GenerationId)), ("$root", Format(child.NodeId)));
+
+            await using SqliteDataReader reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+
+            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                leaves.Add(reader.GetString(0));
+            }
+
+            if (leaves.Count == before)
+            {
+                throw new InvalidDataException();
+            }
+        }
+
+        return leaves.ToImmutable();
     }
 
     private static void PublishOversize(long oversize)
