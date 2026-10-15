@@ -1076,18 +1076,25 @@ public sealed partial class HostedGrimoireProducerInventoryTests
     // compiled checker, so a foreach, a .Values read, a LINQ call, a copy, an alias and a lambda are one thing to it: every method
     // that enumerates the value-binding dictionary and reads a source's caller either calls the guard or is one of the reviewed readers
     // below, each of which only names a source (an identity) or compares or copies sources whole. A method that enumerates the dictionary
-    // and never reads a caller cannot follow a source to it.
+    // and never reads a caller cannot follow a source to it. A method reads a caller when it hands a source, a pair, a collection of
+    // sources or the dictionary to a checker method that reads one, so a walk that follows each source to its caller in a helper is found
+    // too. The scan follows calls and not values, so a method that copies the dictionary and, separately, hands a source it looked up by
+    // key (or was given) to a comparing helper is listed as well; its row says so.
     private const string ConstantGuard = "TryConstantValueIdentity";
 
     private static readonly (string Method, string Reason)[] ReviewedValueBindingReaders =
     [
         ("BindDeclaredRootFactoryContext", "copies the entries into the factory's context whole, each with its own source and caller"),
         ("BindDemandedReceiverReadonlyFieldContext", "rebinds the demanded entries whole, each with its own source and caller"),
+        ("BindExactConstructedReceiverPropertyContext", "copies the entries whole into a new dictionary and adds the property values the exact construction proves; the one source it hands to a reading helper is the exact receiver it was given, not an entry of the dictionary"),
+        ("BindPerUnitReconcilerEntryContext", "copies the entries whole into a new dictionary and adds one entry; it compares the one source it looks up by key with the source the authenticated factory edge supplies, through the reviewed comparison, and refuses on any difference"),
+        ("BindPerUnitRecoveryReceiverContext", "drops the protected entries from a copy and keeps the others whole; for the caller's constructor-parameter entries it compares each source with the generic bound's source for the same key through PerUnitSameBoundSource, which refuses unless the expression and the caller's identity are equal, and keeps the source whole"),
         ("CleanupBindingIdentity", "names each source by its caller's identity in a cache key; a constant stays distinct by caller, which is never fewer states"),
         ("EvaluationEnvironmentLocalBindingIdentity", "names each source by its caller's identity in a state identity; a constant stays distinct by caller, which is never fewer states"),
         ("HasReviewedValueConversions", "copies the captured entries and reviews the conversion of the one source bound to the parameter it is asked about"),
         ("PerUnitMaterializationValueCompatible", "compares two sources by caller identity and expression span and refuses on any difference"),
         ("PreservePerUnitReconcilerFieldContext", "keeps the field sources of a constructor context whole and refuses on any disagreement"),
+        ("TryBindPerUnitRecoveryHandoff", "copies the entries whole into a new dictionary; each source it compares it looks up by key, through PerUnitSameBoundSource, which refuses unless the expression and the caller's identity are equal"),
     ];
 
     private static bool IsTheChecker(Type type) =>
@@ -1126,14 +1133,38 @@ public sealed partial class HostedGrimoireProducerInventoryTests
 
         string[] unguardedReaders = [.. enumerations.Where(static item => item.ReadsCaller && !item.Guarded).Select(Short).Order(StringComparer.Ordinal)];
 
-        Assert.Equal(["ByAlias", "ByCopyAndForeach", "ByDeconstruction", "ByForeach", "ByLambdaInLinq", "ByValues"], unguardedReaders);
+        Assert.Equal(
+            [
+                "ByAlias",
+                "ByCopiedKeys",
+                "ByCopyAndForeach",
+                "ByDeconstruction",
+                "ByForeach",
+                "ByKeysAndTryGetValue",
+                "ByLambdaInLinq",
+                "ByValues",
+                "EnumerateAndDelegate",
+                "EnumerateAndDelegateAMethodGroup",
+                "EnumerateAndDelegateInALambda",
+                "EnumerateAndDelegatePairs",
+                "EnumerateAndDelegateThroughTwoHelpers",
+            ],
+            unguardedReaders);
 
-        // The guarded walk is found and guarded; the walk that never reads a caller and the point lookup are not readers at all.
+        // The guarded walk is found and guarded, in every spelling; the walk that never reads a caller and the point lookup are not readers at all.
         Assert.Contains(enumerations, static item => Short(item) == "Guarded" && item.Guarded && item.ReadsCaller);
+
+        Assert.Contains(enumerations, static item => Short(item) == "GuardedDelegation" && item.Guarded && item.ReadsCaller);
 
         Assert.Contains(enumerations, static item => Short(item) == "CopyOnly" && !item.ReadsCaller);
 
+        // A walk that hands each source to a helper that never reads a caller cannot follow a source to one.
+        Assert.Contains(enumerations, static item => Short(item) == "EnumerateAndDelegateWithoutReading" && !item.ReadsCaller);
+
         Assert.DoesNotContain(enumerations, static item => Short(item) == "LookupOnly");
+
+        // The keys alone are no walk over the sources, and neither is a helper that reads a caller of the source it is handed.
+        Assert.DoesNotContain(enumerations, static item => Short(item) is "KeysOnly" or "ReadsTheCaller" or "ReadsTheCallerOfThePair" or "ReadsTheCallerThroughAnother");
     }
 
     internal sealed record BoundValueSource(string Caller);
@@ -1205,5 +1236,112 @@ public sealed partial class HostedGrimoireProducerInventoryTests
 
         internal static int LookupOnly(IReadOnlyDictionary<Microsoft.CodeAnalysis.ISymbol, BoundValueSource> bindings, Microsoft.CodeAnalysis.ISymbol key) =>
             bindings.TryGetValue(key, out BoundValueSource? source) ? source.Caller.Length : bindings.ContainsKey(key) ? 1 : 0;
+
+        // Helpers a walk hands its sources to: one reads the caller, one reads it through another helper, one never does.
+        internal static int ReadsTheCaller(BoundValueSource source) => source.Caller.Length;
+
+        internal static int ReadsTheCallerOfThePair(KeyValuePair<Microsoft.CodeAnalysis.ISymbol, BoundValueSource> pair) => pair.Value.Caller.Length;
+
+        internal static int ReadsTheCallerThroughAnother(BoundValueSource source) => ReadsTheCaller(source);
+
+        internal static int NamesTheSource(BoundValueSource source) => source.GetHashCode();
+
+        internal static int EnumerateAndDelegate(IReadOnlyDictionary<Microsoft.CodeAnalysis.ISymbol, BoundValueSource> bindings)
+        {
+            int total = 0;
+
+            foreach (KeyValuePair<Microsoft.CodeAnalysis.ISymbol, BoundValueSource> pair in bindings)
+            {
+                total += ReadsTheCaller(pair.Value);
+            }
+
+            return total;
+        }
+
+        internal static int EnumerateAndDelegatePairs(IReadOnlyDictionary<Microsoft.CodeAnalysis.ISymbol, BoundValueSource> bindings)
+        {
+            int total = 0;
+
+            foreach (KeyValuePair<Microsoft.CodeAnalysis.ISymbol, BoundValueSource> pair in bindings)
+            {
+                total += ReadsTheCallerOfThePair(pair);
+            }
+
+            return total;
+        }
+
+        internal static int EnumerateAndDelegateThroughTwoHelpers(IReadOnlyDictionary<Microsoft.CodeAnalysis.ISymbol, BoundValueSource> bindings)
+        {
+            int total = 0;
+
+            foreach (KeyValuePair<Microsoft.CodeAnalysis.ISymbol, BoundValueSource> pair in bindings)
+            {
+                total += ReadsTheCallerThroughAnother(pair.Value);
+            }
+
+            return total;
+        }
+
+        internal static int EnumerateAndDelegateInALambda(Dictionary<Microsoft.CodeAnalysis.ISymbol, BoundValueSource> bindings) => bindings.Values.Sum(static source => ReadsTheCaller(source));
+
+        internal static IEnumerable<int> EnumerateAndDelegateAMethodGroup(Dictionary<Microsoft.CodeAnalysis.ISymbol, BoundValueSource> bindings) => bindings.Values.Select(ReadsTheCaller);
+
+        internal static int EnumerateAndDelegateWithoutReading(IReadOnlyDictionary<Microsoft.CodeAnalysis.ISymbol, BoundValueSource> bindings)
+        {
+            int total = 0;
+
+            foreach (KeyValuePair<Microsoft.CodeAnalysis.ISymbol, BoundValueSource> pair in bindings)
+            {
+                total += NamesTheSource(pair.Value);
+            }
+
+            return total;
+        }
+
+        internal static int GuardedDelegation(IReadOnlyDictionary<Microsoft.CodeAnalysis.ISymbol, BoundValueSource> bindings)
+        {
+            Guard();
+
+            int total = 0;
+
+            foreach (KeyValuePair<Microsoft.CodeAnalysis.ISymbol, BoundValueSource> pair in bindings)
+            {
+                total += ReadsTheCaller(pair.Value);
+            }
+
+            return total;
+        }
+
+        // The keys copied out and every source then read through a lookup is a walk over the sources like any other.
+        internal static int ByCopiedKeys(IReadOnlyDictionary<Microsoft.CodeAnalysis.ISymbol, BoundValueSource> bindings)
+        {
+            Microsoft.CodeAnalysis.ISymbol[] keys = [.. bindings.Keys];
+
+            int total = 0;
+
+            foreach (Microsoft.CodeAnalysis.ISymbol key in keys)
+            {
+                total += bindings[key].Caller.Length;
+            }
+
+            return total;
+        }
+
+        internal static int ByKeysAndTryGetValue(IReadOnlyDictionary<Microsoft.CodeAnalysis.ISymbol, BoundValueSource> bindings)
+        {
+            int total = 0;
+
+            foreach (Microsoft.CodeAnalysis.ISymbol key in bindings.Keys.ToList())
+            {
+                if (bindings.TryGetValue(key, out BoundValueSource? source))
+                {
+                    total += source.Caller.Length;
+                }
+            }
+
+            return total;
+        }
+
+        internal static int KeysOnly(IReadOnlyDictionary<Microsoft.CodeAnalysis.ISymbol, BoundValueSource> bindings) => bindings.Keys.Count();
     }
 }
