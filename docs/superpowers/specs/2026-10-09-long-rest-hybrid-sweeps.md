@@ -2,6 +2,8 @@
 
 Status: design approved by the user on 2026-10-09. Implementation plan approved and subagent execution selected on 2026-10-10.
 
+> **Superseded in part by [2026-10-13-long-rest-carried-admission.md](2026-10-13-long-rest-carried-admission.md).** The domain and public surface below stand: the `Arcanum:Features:LongRest` gate, the sweeps endpoint, exact Global and Campaign partitions, source generations, protected authority, disclosure before dispatch and the required behavioral proof. The internals were replaced by the Carried Admission architecture: how the work lease reaches the code that uses it (the implementation of "Request-bound protected maintenance" admission), how a crashed sweep is recovered and readmitted (in "Sweep checkpoints, recovery and lifecycle", the recovery handler, the `ResetForRetry` readmission of protected sweeps and the startup reconciliation of clean ones), the provider input and summary bounds (now derived from the configured model windows), the lexical lane and hierarchy recall, source capture (retired, pinned and suppressed sources are excluded), and the qualification and delivery steps. The text below is kept as it was approved; the new document's table "What stands and what is superseded" maps each section.
+
 ## Intent and inherited contract
 
 Implement #91 under #75: lexical, semantic and hierarchical Saga candidate discovery; bounded resumable consolidation; protected work bound to one authenticated request; durable provider disclosure before every dispatch; and invalidation before further dispatch when scope, ownership, dataset, feature or authority changes.
