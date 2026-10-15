@@ -57,6 +57,7 @@ public sealed class HostedProducerAnalysisCollectionTests
             "RetroDownfall.Arcanum.Tests.Operations.HostedGrimoireProducerInventoryTests.BackupLiveSourceHasExactCliCallerAuthority",
             "RetroDownfall.Arcanum.Tests.Operations.HostedGrimoireProducerInventoryTests.EveryApplicationHostedServiceHasExactlyOneEntry",
             "RetroDownfall.Arcanum.Tests.Operations.HostedGrimoireProducerInventoryTests.EveryDiscoveredProducerSiteIsCataloguedExactlyOnce",
+            "RetroDownfall.Arcanum.Tests.Operations.HostedGrimoireProducerInventoryTests.Every_additional_root_stays_within_its_ratchet_ceiling",
             "RetroDownfall.Arcanum.Tests.Operations.HostedGrimoireProducerInventoryTests.Every_production_root_stays_within_its_ratchet_ceiling",
             "RetroDownfall.Arcanum.Tests.Operations.HostedGrimoireProducerInventoryTests.FrameworkCollectionIndexerUsesProductionReferencePackIdentity",
             "RetroDownfall.Arcanum.Tests.Operations.HostedGrimoireProducerInventoryTests.LiveSourceCannotBecomeReachableFromHostedOrUnadmittedCaller",
@@ -100,7 +101,7 @@ public sealed class HostedProducerAnalysisCollectionTests
     }
 
     [Fact]
-    public void Additional_production_graph_lane_has_exactly_the_four_known_consumers()
+    public void Additional_production_graph_lane_has_exactly_the_five_known_consumers()
     {
 
         static bool HasAdditionalTrait(MethodInfo method) =>
@@ -133,12 +134,62 @@ public sealed class HostedProducerAnalysisCollectionTests
         string[] expected =
         [
             "RetroDownfall.Arcanum.Tests.Covenant.CovenantArchitectureBoundaryTests.Every_effectful_recovery_handler_has_the_required_source_effects",
+            "RetroDownfall.Arcanum.Tests.Operations.HostedGrimoireProducerInventoryTests.Every_additional_root_stays_within_its_ratchet_ceiling",
             "RetroDownfall.Arcanum.Tests.Operations.HostedGrimoireProducerInventoryTests.ProductionImmutableArraySequenceEqualityUsesDefaultValueEquality",
             "RetroDownfall.Arcanum.Tests.Operations.HostedGrimoireProducerInventoryTests.ProductionSchemaLazyFactoriesAreProvenAsBoundedData",
             "RetroDownfall.Arcanum.Tests.Operations.HostedGrimoireProducerInventoryTests.ProductionSequenceOperationUsesTheSameReviewedComparerProof",
         ];
 
         Assert.Equal(expected, actual);
+
+    }
+
+    // The fixtures that run in the serve host partition: each case of these theories analyses the production compilations with trees of the
+    // serving host replaced, so each case is a whole discovery, and together they cost about as much as every other fixture. The runner reads
+    // this category to split the fixtures between two CI jobs, so the set is closed here. The two worker theories
+    // (ServeWorkerMutationHasExplicitConditionalSourceAssociation, CanonicalServeCallbackHasConditionalBuildStartWorkerSourceAssociation) are
+    // whole discoveries too and stay with the other fixtures, which keeps the two jobs about the same length.
+    [Fact]
+    public void Serve_host_fixture_lane_is_closed_and_holds_no_production_method()
+    {
+
+        static bool HasCategory(MethodInfo method, string category) =>
+            method.GetCustomAttributesData().Any(attribute =>
+                attribute.AttributeType == typeof(TraitAttribute)
+                && attribute.ConstructorArguments.Count == 2
+                && attribute.ConstructorArguments[0].Value as string == "Category"
+                && attribute.ConstructorArguments[1].Value as string == category);
+
+        MethodInfo[] methods = [.. typeof(HostedGrimoireProducerInventoryTests).GetMethods(
+            BindingFlags.Instance
+                | BindingFlags.Public
+                | BindingFlags.DeclaredOnly)];
+
+        string[] actual = [.. methods
+            .Where(method => HasCategory(method, "HostedProducerServeHostAnalysis"))
+            .Select(static method => method.Name)
+            .Order(StringComparer.Ordinal)];
+
+        string[] expected =
+        [
+            "CanonicalServeBuildHasConditionalScopedFactorySourceAssociation",
+            "ServeBuildMutationHasExplicitConditionalSourceAssociation",
+            "ServeCompositionMutationHasExplicitConditionalSourceAssociation",
+            "ServeScopedConsumerHasExplicitConditionalSourceOrigin",
+        ];
+
+        Assert.Equal(expected, actual);
+
+        Assert.DoesNotContain(
+            methods.Where(method => HasCategory(method, "HostedProducerServeHostAnalysis")),
+            method => HasCategory(method, "HostedProducerProductionAnalysis")
+                || HasCategory(method, "HostedProducerAdditionalAnalysis"));
+
+        Assert.Contains(
+            typeof(HostedGrimoireProducerInventoryTests).GetCustomAttributesData(),
+            attribute => attribute.AttributeType == typeof(TraitAttribute)
+                && attribute.ConstructorArguments[0].Value as string == "Category"
+                && attribute.ConstructorArguments[1].Value as string == "HostedProducerAnalysis");
 
     }
 

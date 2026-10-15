@@ -38347,6 +38347,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
     }
 
     [Fact]
+    [Trait("Category", "HostedProducerServeHostAnalysis")]
     public void CanonicalServeBuildHasConditionalScopedFactorySourceAssociation() =>
         AnalyzeActualServeHost("actual", true);
 
@@ -38368,6 +38369,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
     [InlineData("competing-host")]
     [InlineData("captured-builder-callback")]
     [InlineData("hostbuilding-observer")]
+    [Trait("Category", "HostedProducerServeHostAnalysis")]
     public void ServeBuildMutationHasExplicitConditionalSourceAssociation(string shape) =>
         AnalyzeActualServeHost(shape, false);
 
@@ -38385,6 +38387,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
     [InlineData("observer-unknown")]
     [InlineData("observer-constructed-slot")]
     [InlineData("observer-initializer")]
+    [Trait("Category", "HostedProducerServeHostAnalysis")]
     public void ServeCompositionMutationHasExplicitConditionalSourceAssociation(string shape) =>
         AnalyzeActualServeHost(shape, false);
 
@@ -38398,6 +38401,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
     [InlineData("same-helper-good", true)]
     [InlineData("same-helper-good-bad", false)]
     [InlineData("same-helper-bad-good", false)]
+    [Trait("Category", "HostedProducerServeHostAnalysis")]
     public void ServeScopedConsumerHasExplicitConditionalSourceOrigin(string shape, bool reviewed) =>
         AnalyzeActualServeHost(shape, reviewed);
 

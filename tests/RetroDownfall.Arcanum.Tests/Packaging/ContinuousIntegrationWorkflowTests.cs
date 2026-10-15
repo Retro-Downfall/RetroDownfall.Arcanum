@@ -20,20 +20,34 @@ public sealed class ContinuousIntegrationWorkflowTests
     /// </summary>
     private sealed record WorkflowJob(string Id, string RunsOn, bool IsConditional, string Body);
 
+    // The closed list of source analysis partitions: the CI job that runs each, the name it shows, the worker slots it asks the runner for and
+    // the partition it passes. The two production partitions keep two slots (production reserves up to three and the runner gives it the two). A
+    // fixture partition asks for one slot and so for one fixture process: the process keeps the bound production compilations in memory, and a
+    // standard macos-26 runner has about 7 GB.
+    private static readonly (string JobId, string Name, string Partition, int Jobs)[] SourceAnalysisPartitions =
+    [
+        ("hosted-producer-primary-analysis", "Hosted producer primary analysis", "primary", 2),
+        ("hosted-producer-additional-analysis", "Hosted producer additional analysis", "additional", 2),
+        ("hosted-producer-fixture-analysis", "Hosted producer fixture analysis", "fixtures", 1),
+        ("hosted-producer-serve-host-analysis", "Hosted producer serve host analysis", "serve-host", 1),
+    ];
+
+    private static WorkflowJob[] SourceAnalysisWorkers(string repositoryRoot) =>
+        [.. ContinuousIntegrationJobs(repositoryRoot).Where(static job => job.Id.StartsWith("hosted-producer-", StringComparison.Ordinal) && job.Id != "hosted-producer-analysis")];
+
     [Fact]
     public void Macos_source_analysis_partitions_each_keep_the_existing_worker_and_deadline_bounds()
     {
-        WorkflowJob[] lanes = ContinuousIntegrationJobs(FindRepositoryRoot())
-            .Where(static job => job.Id is
-                "hosted-producer-primary-analysis"
-                    or "hosted-producer-additional-analysis")
-            .OrderBy(static job => job.Id, StringComparer.Ordinal)
-            .ToArray();
+        WorkflowJob[] lanes = SourceAnalysisWorkers(FindRepositoryRoot());
 
-        Assert.Equal(2, lanes.Length);
+        Assert.Equal(
+            SourceAnalysisPartitions.Select(static entry => entry.JobId).Order(StringComparer.Ordinal),
+            lanes.Select(static lane => lane.Id).Order(StringComparer.Ordinal));
 
-        foreach (WorkflowJob lane in lanes)
+        foreach ((string jobId, string name, string partition, int jobs) in SourceAnalysisPartitions)
         {
+            WorkflowJob lane = Assert.Single(lanes, job => job.Id == jobId);
+
             Assert.Equal("macos-26", lane.RunsOn);
 
             Assert.False(lane.IsConditional);
@@ -42,7 +56,7 @@ public sealed class ContinuousIntegrationWorkflowTests
 
             Assert.Contains("--configuration Release", lane.Body, StringComparison.Ordinal);
 
-            Assert.Contains("--jobs 2", lane.Body, StringComparison.Ordinal);
+            Assert.Contains("--jobs " + jobs + " ", lane.Body, StringComparison.Ordinal);
 
             Assert.Contains("--timeout-seconds 1740", lane.Body, StringComparison.Ordinal);
 
@@ -53,19 +67,45 @@ public sealed class ContinuousIntegrationWorkflowTests
             Assert.DoesNotContain("continue-on-error:", lane.Body, StringComparison.Ordinal);
 
             Assert.DoesNotContain("--collect", lane.Body, StringComparison.Ordinal);
+
+            Assert.Contains("name: " + name, lane.Body, StringComparison.Ordinal);
+
+            Assert.Single(Regex.Matches(lane.Body, @"--partition (\S+)"));
+
+            Assert.Contains("--partition " + partition + " ", lane.Body, StringComparison.Ordinal);
+
+            Assert.Contains("name: " + jobId, lane.Body, StringComparison.Ordinal);
         }
 
-        Assert.Contains("name: Hosted producer primary analysis", lanes[1].Body, StringComparison.Ordinal);
-
-        Assert.Contains("--partition primary", lanes[1].Body, StringComparison.Ordinal);
-
-        Assert.Contains("name: Hosted producer additional analysis and fixtures", lanes[0].Body, StringComparison.Ordinal);
-
-        Assert.Contains("--partition additional", lanes[0].Body, StringComparison.Ordinal);
+        // Each worker uploads evidence under its own name, so no two partitions can overwrite one another's receipt.
+        Assert.Equal(
+            lanes.Length,
+            lanes.Select(static lane => Regex.Match(lane.Body, @"upload-artifact@[^\n]*\n\s+with:\n\s+name: (\S+)").Groups[1].Value).Distinct(StringComparer.Ordinal).Count());
     }
 
     [Fact]
-    public void Source_analysis_authority_requires_both_workers_and_reconciles_their_artifacts()
+    public void A_fixture_partition_is_one_process_on_one_slot_and_never_runs_production()
+    {
+        foreach ((string jobId, _, string partition, _) in SourceAnalysisPartitions.Where(static entry => entry.Partition is "fixtures" or "serve-host"))
+        {
+            WorkflowJob lane = Assert.Single(SourceAnalysisWorkers(FindRepositoryRoot()), job => job.Id == jobId);
+
+            Assert.Contains("--jobs 1 ", lane.Body, StringComparison.Ordinal);
+
+            Assert.DoesNotContain("--jobs 2", lane.Body, StringComparison.Ordinal);
+
+            Assert.DoesNotContain("--partition primary", lane.Body, StringComparison.Ordinal);
+
+            Assert.DoesNotContain("--partition additional", lane.Body, StringComparison.Ordinal);
+
+            Assert.DoesNotContain("ARCANUM_HOSTED_ANALYSIS_ROOT_WORKERS", lane.Body, StringComparison.Ordinal);
+
+            Assert.Contains("--partition " + partition + " ", lane.Body, StringComparison.Ordinal);
+        }
+    }
+
+    [Fact]
+    public void Source_analysis_authority_requires_every_worker_and_reconciles_their_artifacts()
     {
         WorkflowJob lane = Assert.Single(
             ContinuousIntegrationJobs(FindRepositoryRoot()),
@@ -79,19 +119,23 @@ public sealed class ContinuousIntegrationWorkflowTests
 
         Assert.Contains("name: Hosted producer source analysis", lane.Body, StringComparison.Ordinal);
 
-        Assert.Contains("hosted-producer-primary-analysis", lane.Body, StringComparison.Ordinal);
-
-        Assert.Contains("hosted-producer-additional-analysis", lane.Body, StringComparison.Ordinal);
-
         Assert.Contains("if: always()", lane.Body, StringComparison.Ordinal);
 
-        Assert.Contains("needs.hosted-producer-primary-analysis.result", lane.Body, StringComparison.Ordinal);
+        // The authority needs exactly the workers, so a partition added to the list without a worker, or a worker without a partition, fails here.
+        string[] needs = [.. Regex.Matches(lane.Body, @"^      - (hosted-producer-\S+)$", RegexOptions.Multiline).Select(static match => match.Groups[1].Value)];
 
-        Assert.Contains("needs.hosted-producer-additional-analysis.result", lane.Body, StringComparison.Ordinal);
+        Assert.Equal(
+            SourceAnalysisPartitions.Select(static entry => entry.JobId).Order(StringComparer.Ordinal),
+            needs.Order(StringComparer.Ordinal));
 
-        Assert.Contains("--aggregate-primary-results .tmp/coverage/analysis-primary", lane.Body, StringComparison.Ordinal);
+        foreach ((string jobId, _, string partition, _) in SourceAnalysisPartitions)
+        {
+            Assert.Contains("needs." + jobId + ".result", lane.Body, StringComparison.Ordinal);
 
-        Assert.Contains("--aggregate-additional-results .tmp/coverage/analysis-additional", lane.Body, StringComparison.Ordinal);
+            Assert.Contains("name: " + jobId + "\n          path: .tmp/coverage/analysis-" + partition, lane.Body.Replace("\r\n", "\n", StringComparison.Ordinal), StringComparison.Ordinal);
+
+            Assert.Contains("--aggregate-" + partition + "-results .tmp/coverage/analysis-" + partition, lane.Body, StringComparison.Ordinal);
+        }
 
         Assert.Contains("--source-sha \"$GITHUB_SHA\"", lane.Body, StringComparison.Ordinal);
 
@@ -107,13 +151,9 @@ public sealed class ContinuousIntegrationWorkflowTests
     [Fact]
     public void Source_analysis_workers_retain_progress_and_receipt_artifacts_even_on_failure()
     {
-        WorkflowJob[] lanes = ContinuousIntegrationJobs(FindRepositoryRoot())
-            .Where(static job => job.Id is
-                "hosted-producer-primary-analysis"
-                    or "hosted-producer-additional-analysis")
-            .ToArray();
+        WorkflowJob[] lanes = SourceAnalysisWorkers(FindRepositoryRoot());
 
-        Assert.Equal(2, lanes.Length);
+        Assert.Equal(SourceAnalysisPartitions.Length, lanes.Length);
 
         foreach (WorkflowJob lane in lanes)
         {

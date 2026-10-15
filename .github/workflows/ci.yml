@@ -195,7 +195,7 @@ jobs:
           retention-days: 14
 
   hosted-producer-additional-analysis:
-    name: Hosted producer additional analysis and fixtures
+    name: Hosted producer additional analysis
     runs-on: macos-26
     timeout-minutes: 60
     env:
@@ -219,7 +219,7 @@ jobs:
       - name: Build uninstrumented source analysis
         run: dotnet build tests/RetroDownfall.Arcanum.Tests/RetroDownfall.Arcanum.Tests.csproj --configuration Release
 
-      - name: Test hosted-producer additional analysis and fixtures
+      - name: Test hosted-producer additional analysis
         timeout-minutes: 30
         run: |
           python3 scripts/hosted_producer_analysis_runner.py \
@@ -236,11 +236,101 @@ jobs:
           path: .tmp/coverage/analysis/
           retention-days: 14
 
+  hosted-producer-fixture-analysis:
+    name: Hosted producer fixture analysis
+    # One fixture process per job, whatever the slot count: the process keeps the bound production compilations in memory and a
+    # standard macos-26 runner has about 7 GB, so --jobs 1 and the runner's own one-process plan agree.
+    runs-on: macos-26
+    timeout-minutes: 60
+    env:
+      DOTNET_NOLOGO: true
+      DOTNET_CLI_TELEMETRY_OPTOUT: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4.3.1
+        with:
+          global-json-file: global.json
+          cache: true
+          cache-dependency-path: |
+            **/packages.lock.json
+            **/*.csproj
+            **/Directory.Packages.props
+            .config/dotnet-tools.json
+
+      - name: Build uninstrumented source analysis
+        run: dotnet build tests/RetroDownfall.Arcanum.Tests/RetroDownfall.Arcanum.Tests.csproj --configuration Release
+
+      - name: Test hosted-producer fixture analysis
+        timeout-minutes: 30
+        run: |
+          python3 scripts/hosted_producer_analysis_runner.py \
+            --project tests/RetroDownfall.Arcanum.Tests/RetroDownfall.Arcanum.Tests.csproj \
+            --configuration Release --jobs 1 --timeout-seconds 1740 \
+            --partition fixtures --source-sha "$GITHUB_SHA" \
+            --results-directory .tmp/coverage/analysis
+
+      - name: Upload fixture source analysis evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: hosted-producer-fixture-analysis
+          path: .tmp/coverage/analysis/
+          retention-days: 14
+
+  hosted-producer-serve-host-analysis:
+    name: Hosted producer serve host analysis
+    # One fixture process per job, whatever the slot count: the process keeps the bound production compilations in memory and a
+    # standard macos-26 runner has about 7 GB, so --jobs 1 and the runner's own one-process plan agree.
+    runs-on: macos-26
+    timeout-minutes: 60
+    env:
+      DOTNET_NOLOGO: true
+      DOTNET_CLI_TELEMETRY_OPTOUT: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4.3.1
+        with:
+          global-json-file: global.json
+          cache: true
+          cache-dependency-path: |
+            **/packages.lock.json
+            **/*.csproj
+            **/Directory.Packages.props
+            .config/dotnet-tools.json
+
+      - name: Build uninstrumented source analysis
+        run: dotnet build tests/RetroDownfall.Arcanum.Tests/RetroDownfall.Arcanum.Tests.csproj --configuration Release
+
+      - name: Test hosted-producer serve host analysis
+        timeout-minutes: 30
+        run: |
+          python3 scripts/hosted_producer_analysis_runner.py \
+            --project tests/RetroDownfall.Arcanum.Tests/RetroDownfall.Arcanum.Tests.csproj \
+            --configuration Release --jobs 1 --timeout-seconds 1740 \
+            --partition serve-host --source-sha "$GITHUB_SHA" \
+            --results-directory .tmp/coverage/analysis
+
+      - name: Upload serve host source analysis evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: hosted-producer-serve-host-analysis
+          path: .tmp/coverage/analysis/
+          retention-days: 14
+
   hosted-producer-analysis:
     name: Hosted producer source analysis
     needs:
       - hosted-producer-primary-analysis
       - hosted-producer-additional-analysis
+      - hosted-producer-fixture-analysis
+      - hosted-producer-serve-host-analysis
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -252,8 +342,10 @@ jobs:
         run: |
           set -euo pipefail
           if [[ "${{ needs.hosted-producer-primary-analysis.result }}" != "success" \
-            || "${{ needs.hosted-producer-additional-analysis.result }}" != "success" ]]; then
-            echo "Both hosted-producer source analysis workers must succeed." >&2
+            || "${{ needs.hosted-producer-additional-analysis.result }}" != "success" \
+            || "${{ needs.hosted-producer-fixture-analysis.result }}" != "success" \
+            || "${{ needs.hosted-producer-serve-host-analysis.result }}" != "success" ]]; then
+            echo "All four hosted-producer source analysis workers must succeed." >&2
             exit 1
           fi
 
@@ -269,11 +361,25 @@ jobs:
           name: hosted-producer-additional-analysis
           path: .tmp/coverage/analysis-additional
 
+      - name: Download fixture source analysis evidence
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: hosted-producer-fixture-analysis
+          path: .tmp/coverage/analysis-fixtures
+
+      - name: Download serve host source analysis evidence
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: hosted-producer-serve-host-analysis
+          path: .tmp/coverage/analysis-serve-host
+
       - name: Reconcile complete source analysis evidence
         run: |
           python3 scripts/hosted_producer_analysis_runner.py \
             --aggregate-primary-results .tmp/coverage/analysis-primary \
             --aggregate-additional-results .tmp/coverage/analysis-additional \
+            --aggregate-fixtures-results .tmp/coverage/analysis-fixtures \
+            --aggregate-serve-host-results .tmp/coverage/analysis-serve-host \
             --source-sha "$GITHUB_SHA" \
             --aggregate-summary .tmp/coverage/analysis-authority/hosted-producer-analysis-summary.json
 
