@@ -94,6 +94,7 @@ internal static class CliTestHarness
         // returns and the whole suite hangs on it forever. An empty reader is the answer CI gives,
         // given deterministically.
         Console.SetIn(input is null ? TextReader.Null : new StringReader(input));
+
         // Built through the production factory: a bare AnsiConsole.Create would let a CI runner's
         // environment turn ANSI back on, and every assertion on rendered text would then fail there
         // for a reason that has nothing to do with what it checks.
