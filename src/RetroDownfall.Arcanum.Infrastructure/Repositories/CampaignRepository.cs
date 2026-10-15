@@ -54,6 +54,11 @@ public sealed class CampaignRepository : ICampaignRepository
             cancellationToken).ConfigureAwait(false);
     }
 
+    /// <summary>
+    /// The Campaign registered at <paramref name="path"/>: the row holding exactly that spelling when there is one, otherwise the row that
+    /// names the same path under another spelling (a trailing separator, or the case of the name on a platform whose file systems fold
+    /// case). The same registration spelled two ways is one registration, which is what makes this the duplicate check registration asks.
+    /// </summary>
     public async Task<Campaign?> GetByPathAsync(string path, CancellationToken cancellationToken = default)
     {
         string normalized;
@@ -67,10 +72,141 @@ public sealed class CampaignRepository : ICampaignRepository
             return null;
         }
 
-        return await ReadSingleAsync(
+        Campaign? exact = await ReadSingleAsync(
             $"SELECT {GrimoireEntitySql.CampaignColumns} FROM \"Campaigns\" WHERE \"Path\" = $path LIMIT 1;",
             command => GrimoireEntitySql.AddParameter(command, "$path", normalized),
             cancellationToken).ConfigureAwait(false);
+
+        if (exact is not null)
+        {
+            return exact;
+        }
+
+        List<Guid> equivalent = await FindEquivalentPathIdsAsync(normalized, cancellationToken).ConfigureAwait(false);
+
+        return await ReadGoverningAsync(equivalent, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// The registered Campaign whose root is <paramref name="path"/> or one of its ancestors; the deepest wins, and when several rows name
+    /// the same directory the one whose Sanctum is strictest governs it.
+    /// </summary>
+    /// <remarks>
+    /// Containment is decided by <see cref="CampaignRootContainment"/> over the registered roots, not by SQL text matching, because the
+    /// directory the operating system reports and the root an operator typed can be one directory spelled differently (a symbolic link, a
+    /// case variant, another Unicode normalisation form). There is no prefix predicate, no limit on how many components deep the directory
+    /// is, and the Campaign table is small enough that reading each registered root costs less than a missed Sanctum.
+    /// </remarks>
+    public async Task<Campaign?> GetByContainedPathAsync(string path, CancellationToken cancellationToken = default)
+    {
+        CampaignRootContainment? containment = CampaignRootContainment.TryCreate(path);
+
+        if (containment is null)
+        {
+            return null;
+        }
+
+        List<RegisteredRoot> roots = await ReadRegisteredRootsAsync(cancellationToken).ConfigureAwait(false);
+
+        int deepest = int.MaxValue;
+
+        List<Guid> governing = [];
+
+        foreach (RegisteredRoot root in roots)
+        {
+            if (containment.DepthBelow(root.Path) is not { } depth || depth > deepest)
+            {
+                continue;
+            }
+
+            if (depth < deepest)
+            {
+                deepest = depth;
+
+                governing.Clear();
+            }
+
+            governing.Add(root.Id);
+        }
+
+        return await ReadGoverningAsync(governing, cancellationToken).ConfigureAwait(false);
+    }
+
+    private readonly record struct RegisteredRoot(Guid Id, string Path);
+
+    private async Task<List<RegisteredRoot>> ReadRegisteredRootsAsync(CancellationToken cancellationToken)
+    {
+        await using SqliteCommand command = await GrimoireSqlCommandFactory.CreateAsync(
+            _db,
+            "SELECT \"Id\", \"Path\" FROM \"Campaigns\";",
+            cancellationToken).ConfigureAwait(false);
+
+        await using SqliteDataReader reader = await command
+            .ExecuteReaderAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        List<RegisteredRoot> roots = [];
+
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            roots.Add(new RegisteredRoot(Guid.Parse(reader.GetString(0)), reader.GetString(1)));
+        }
+
+        return roots;
+    }
+
+    private async Task<List<Guid>> FindEquivalentPathIdsAsync(string path, CancellationToken cancellationToken)
+    {
+        List<RegisteredRoot> roots = await ReadRegisteredRootsAsync(cancellationToken).ConfigureAwait(false);
+
+        return
+        [
+            .. roots
+                .Where(root => CampaignRootContainment.SameText(root.Path, path))
+                .Select(static root => root.Id),
+        ];
+    }
+
+    /// <summary>
+    /// The Campaign among <paramref name="ids"/> whose Sanctum is strictest, a Sanctum that cannot be read ranking above all others so
+    /// the caller refuses rather than guesses. Equal rows are ordered by identifier so the choice never depends on table order.
+    /// </summary>
+    private async Task<Campaign?> ReadGoverningAsync(IReadOnlyList<Guid> ids, CancellationToken cancellationToken)
+    {
+        if (ids.Count == 0)
+        {
+            return null;
+        }
+
+        if (ids.Count == 1)
+        {
+            return await GetByIdAsync(ids[0], cancellationToken).ConfigureAwait(false);
+        }
+
+        Campaign? best = null;
+
+        SanctumStrictness bestStrictness = SanctumStrictness.Disabled;
+
+        foreach (Guid id in ids.Order())
+        {
+            Campaign? candidate = await GetByIdAsync(id, cancellationToken).ConfigureAwait(false);
+
+            if (candidate is null)
+            {
+                continue;
+            }
+
+            SanctumStrictness strictness = GetSanctumStrictness(candidate);
+
+            if (best is null || strictness > bestStrictness)
+            {
+                best = candidate;
+
+                bestStrictness = strictness;
+            }
+        }
+
+        return best;
     }
 
     public async Task<Campaign?> GetByNameAsync(string name, CancellationToken cancellationToken = default)
@@ -248,6 +384,20 @@ public sealed class CampaignRepository : ICampaignRepository
             cancellationToken.ThrowIfCancellationRequested();
 
             campaign.NameLower = campaign.Name.Trim().ToLowerInvariant();
+
+            // The unique index on Path compares bytes, so it cannot see that "/work/app/" and "/work/app" (or, where the file system folds
+            // case, "/work/App") are one directory. Two rows for one directory leave the Sanctum of whichever is read first in charge of it,
+            // so the same registration spelled another way is refused here, in the transaction that would write it. A taken name still
+            // reports as a taken name, the way the unique index reports it.
+            if (!await ExistsAsync(
+                    "SELECT 1 FROM \"Campaigns\" WHERE \"NameLower\" = $value LIMIT 1;",
+                    campaign.NameLower,
+                    cancellationToken).ConfigureAwait(false)
+                && (await FindEquivalentPathIdsAsync(campaign.Path, cancellationToken).ConfigureAwait(false)).Count > 0)
+            {
+                return Result<Campaign>.Failure(
+                    new Error(ErrorCodes.Campaign.DuplicatePath, "A campaign with this path already exists."));
+            }
 
             _db.Campaigns.Add(campaign);
 
@@ -529,6 +679,24 @@ public sealed class CampaignRepository : ICampaignRepository
 
     public static SanctumConfig GetSanctumConfig(Campaign campaign) =>
         DeserializeSanctumConfig(campaign.SanctumConfigJson);
+
+    /// <summary>
+    /// How tightly the Campaign's Sanctum binds. A configuration that cannot be read is <see cref="SanctumStrictness.Unreadable"/>, never
+    /// disabled: whether it was switched on is unknowable, so a caller refuses instead of running without it.
+    /// </summary>
+    public static SanctumStrictness GetSanctumStrictness(Campaign campaign)
+    {
+        ArgumentNullException.ThrowIfNull(campaign);
+
+        try
+        {
+            return SanctumStrictnessPolicy.Of(GetSanctumConfig(campaign));
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            return SanctumStrictness.Unreadable;
+        }
+    }
 
     public static void SetSanctumConfig(Campaign campaign, SanctumConfig config) =>
         campaign.SanctumConfigJson = SerializeSanctumConfig(config);
