@@ -53,8 +53,7 @@ internal sealed partial class LongRestMaintenance(LongRestConfigurationEpoch epo
                 || generation.Fence.CanonicalScope != scope || generation.Fence.DatasetGeneration != current.DatasetGeneration
                 || generation.Fence.Configuration.BootId == current.Configuration.BootId && generation.Fence != current)
                 || lease.Snapshot.DatasetGeneration != current.DatasetGeneration
-                || lease.Snapshot.RuntimeAuthorityGeneration != current.RuntimeAuthorityGeneration
-                || lease.Snapshot.CapabilityGeneration != current.CapabilityGeneration)
+                || lease.Snapshot.RuntimeAuthorityGeneration != current.RuntimeAuthorityGeneration)
             {
                 return Stale();
             }

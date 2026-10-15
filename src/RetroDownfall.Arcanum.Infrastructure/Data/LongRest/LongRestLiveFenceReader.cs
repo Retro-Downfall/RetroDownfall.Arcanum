@@ -67,20 +67,31 @@ internal sealed partial class LongRestLiveFenceReader(ArcanumDbContext db, ICove
 
             long highwater = retainedHighwater ?? currentHighwater;
 
-            if (highwater < 0 || highwater > currentHighwater || !ReferenceEquals(live, runtime.Current)
+            if (highwater < 0 || highwater > currentHighwater || !SameCapabilityFacts(live, runtime.Current)
                 || admitted != admission.CurrentGeneration || !configuration.IsCurrent(stamp))
             {
                 return Unavailable();
             }
 
             return new LongRestSweepFence(scope, highwater, dataset, admitted, live.RuntimeAuthorityGeneration,
-                live.Availability.Generation, stamp);
+                LongRestCapabilityState.Of(live.Availability), stamp);
         }
         catch (Exception exception) when (exception is InvalidOperationException or ArgumentException or SqliteException or OverflowException)
         {
             return Unavailable();
         }
     }
+
+    /// <summary>
+    /// Whether a publication that landed while a capture was reading left every fact the capture records untouched. A republication
+    /// (a Covenant write's new sequence, a maintenance pass that changed nothing) is not a reason to refuse the capture it interrupted.
+    /// </summary>
+    private static bool SameCapabilityFacts(CovenantRuntimeGenerationState captured, CovenantRuntimeGenerationState now) =>
+        ReferenceEquals(captured, now)
+        || !now.AuthorityRetired && now.RuntimeAuthorityGeneration == captured.RuntimeAuthorityGeneration
+            && now.Availability.Canonical == CovenantCapabilityState.Healthy
+            && now.Availability.DatasetGeneration == captured.Availability.DatasetGeneration
+            && LongRestCapabilityState.Of(now.Availability) == LongRestCapabilityState.Of(captured.Availability);
 
     private static Error Unavailable() => new(ErrorCodes.LongRest.Unavailable, "The current Long Rest dataset, scope or configuration could not be proved.");
 }

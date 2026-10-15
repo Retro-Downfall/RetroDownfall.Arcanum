@@ -65,21 +65,22 @@ internal sealed partial class LongRestSweepCoordinator(ILongRunningOperationStor
 
             Guid? completed = Require(await completedRequests.FindCompletedRequestReplayAsync(scope, partition, options.Recipe.Value, ct).ConfigureAwait(false));
 
-            if (completed is { } completedId)
+            LongRestDiscoveryGeneration? replayed = completed is { } completedId
+                ? Require(await discovery.ReadGenerationMetadataAsync(completedId, ct).ConfigureAwait(false)) ?? throw new Refused(Unavailable()) : null;
+
+            // A completed sweep answers a request only while it still describes the installation: the same configuration value, dataset and,
+            // inside one boot, the same fence. One that no longer does is history, not an answer, and not a refusal either: the request
+            // admits a new generation exactly as it does when no completed sweep matches (the old one keeps its evidence).
+            if (replayed is not null && await IsHistoricallyCurrentAsync(replayed, scope, partition, options, ct).ConfigureAwait(false))
             {
-                LongRestDiscoveryGeneration generation = Require(await discovery.ReadGenerationMetadataAsync(completedId, ct).ConfigureAwait(false))
-                    ?? throw new Refused(Unavailable());
-
-                Require(await ValidateHistoricalAsync(generation, scope, partition, options, ct).ConfigureAwait(false));
-
-                LongRunningOperation operation = await operations.GetAsync(completedId, ct).ConfigureAwait(false) ?? throw new Refused(Unavailable());
+                LongRunningOperation operation = await operations.GetAsync(completed!.Value, ct).ConfigureAwait(false) ?? throw new Refused(Unavailable());
 
                 if (operation.Kind != LongRunningOperationKinds.LongRestSweep || operation.State != LongRunningOperationState.Completed)
                 {
                     return Unavailable();
                 }
 
-                Require(await ValidateHistoricalAsync(generation, scope, partition, options, ct).ConfigureAwait(false));
+                Require(await ValidateHistoricalAsync(replayed, scope, partition, options, ct).ConfigureAwait(false));
 
                 return LongRunningOperationDto.FromOperation(operation);
             }
@@ -354,19 +355,26 @@ internal sealed partial class LongRestSweepCoordinator(ILongRunningOperationStor
     }
 
     private async Task<Result> ValidateHistoricalAsync(LongRestDiscoveryGeneration generation, CanonicalCampaignContext scope,
+        LongRestSweepScope partition, LongRestSweepConfiguration options, CancellationToken ct) =>
+        await IsHistoricallyCurrentAsync(generation, scope, partition, options, ct).ConfigureAwait(false) ? Result.Success() : Unavailable();
+
+    /// <summary>
+    /// Whether the generation still describes this installation: its scope, partition and recipe, the dataset, the configuration value and,
+    /// inside the boot that made it, the whole fence. A live fence that cannot be captured at all is a refusal, not a "no".
+    /// </summary>
+    private async Task<bool> IsHistoricallyCurrentAsync(LongRestDiscoveryGeneration generation, CanonicalCampaignContext scope,
         LongRestSweepScope partition, LongRestSweepConfiguration options, CancellationToken ct)
     {
         LongRestSweepFence current = Require(await facts.CaptureAsync(scope, options.Stamp, generation.Fence.InsertionHighWatermark, ct).ConfigureAwait(false));
 
         return generation.Scope == partition && generation.Recipe == options.Recipe.Value && generation.Fence.CanonicalScope == scope
             && generation.Fence.DatasetGeneration == current.DatasetGeneration && generation.Fence.Configuration.ValueDigest == options.Stamp.ValueDigest
-            && (generation.Fence.Configuration.BootId != current.Configuration.BootId || generation.Fence == current)
-            ? Result.Success() : Unavailable();
+            && (generation.Fence.Configuration.BootId != current.Configuration.BootId || generation.Fence == current);
     }
 
     /// <summary>
     /// Fresh-Authority Retire's proof: the borrowed turn lease is this gate's own and still held, covers exactly this Campaign root
-    /// and availability generation, and was issued under the dataset, authority and capability generations the request fence just
+    /// and availability generation, and was issued under the dataset and authority generations the request fence just
     /// proved current, the same facts a maintenance capability is created from. It proves authority only; it reads no protected content.
     /// </summary>
     private async ValueTask<Result> ProveRequestAuthorityAsync(CovenantTurnLease authority, CanonicalCampaignContext scope,
@@ -386,7 +394,6 @@ internal sealed partial class LongRestSweepCoordinator(ILongRunningOperationStor
             && snapshot.CampaignPathRevision == scope.PathIdentityRevision
             && snapshot.DatasetGeneration == fence.DatasetGeneration
             && snapshot.RuntimeAuthorityGeneration == fence.RuntimeAuthorityGeneration
-            && snapshot.CapabilityGeneration == fence.CapabilityGeneration
             ? Result.Success()
             : new Error(ErrorCodes.LongRest.StaleInput, "The request's turn authority does not cover this exact Long Rest scope.");
     }

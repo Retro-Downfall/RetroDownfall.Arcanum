@@ -1263,6 +1263,13 @@ public static class ErrorCodes
         public const string TransportUnknown = "LongRest.TransportUnknown";
 
         /// <summary>
+        /// The failure code written to a physical attempt that a reboot found still <c>Sent</c> and settled as failed: the process
+        /// that sent it is gone, so its billing is unknown and, like <see cref="TransportUnknown"/>, it counts toward the Unknown-Usage
+        /// Cap. It is an internal attempt reason and never an HTTP error, so it has no status and no catalog row.
+        /// </summary>
+        public const string InterruptedTransport = "LongRest.InterruptedTransport";
+
+        /// <summary>
         /// The configured model cannot take a Long Rest unit: the chat provider's context window leaves no room for the smallest
         /// recipe or for a request the recipe admitted, or the embedding provider's window cannot hold a summary. It is raised
         /// before any provider-effect row or accounting run exists, and only an operator can clear it: raise the provider's

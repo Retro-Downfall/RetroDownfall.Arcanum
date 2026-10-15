@@ -41,7 +41,7 @@ internal sealed partial class LongRestLiveFenceReader
             && live.Availability.Canonical == CovenantCapabilityState.Healthy
             && live.Availability.DatasetGeneration == expected.DatasetGeneration
             && live.RuntimeAuthorityGeneration == expected.RuntimeAuthorityGeneration
-            && live.Availability.Generation == expected.CapabilityGeneration
+            && LongRestCapabilityState.Of(live.Availability) == expected.CapabilityGeneration
             && admission.CurrentGeneration == expected.AdmissionGeneration;
     }
 

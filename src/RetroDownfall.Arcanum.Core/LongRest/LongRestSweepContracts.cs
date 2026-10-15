@@ -125,7 +125,11 @@ public enum LongRestUnresolvedSend : byte
     NotSent = 2,
 }
 
-/// <summary>Content-free owner and source facts; canonical roots are digests, never host paths.</summary>
+/// <summary>
+/// Content-free owner and source facts; canonical roots are digests, never host paths. <c>CapabilityGeneration</c> is the Covenant
+/// capability state the sweep stands on (<see cref="LongRestCapabilityState"/>), not the availability publication counter, so a
+/// publication that changes no capability fact leaves a fence current.
+/// </summary>
 public sealed record LongRestSweepFence(
     CanonicalCampaignContext CanonicalScope,
     long InsertionHighWatermark,

@@ -94,6 +94,15 @@ public sealed class LongRestDocumentationTests
 
         // TransportUnknown is the one park a retry cannot clear, and the guidance an operator reads has to say so.
         Assert.Contains("cleared only by cancel", descriptor.ManualRepairGuidance, StringComparison.Ordinal);
+
+        // Every code the worker readmits needs no repair, so every one is named in that list and none is left to read as "fix the cause".
+        foreach (string code in LongRestFaultPolicy.ResumeLaterCodes)
+        {
+            Assert.Contains(code, descriptor.ManualRepairGuidance, StringComparison.Ordinal);
+        }
+
+        // A transient provider failure is also an unknown-usage attempt, so the guidance says what a second one of the same unit does.
+        Assert.Contains("second such failure of the same unit parks as LongRest.TransportUnknown", descriptor.ManualRepairGuidance, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -283,6 +292,7 @@ public sealed class LongRestDocumentationTests
             LongRestParkCodes.NotStarted,
             LongRestParkCodes.StaleConfiguration,
             ErrorCodes.LongRest.SweepParked,
+            ErrorCodes.LongRest.InterruptedTransport,
         };
 
         foreach ((string code, LongRestFaultClass fault) in LongRestFaultPolicy.KnownCodes)

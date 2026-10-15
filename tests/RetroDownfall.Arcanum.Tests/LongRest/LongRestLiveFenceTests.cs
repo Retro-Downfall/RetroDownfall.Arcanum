@@ -44,7 +44,7 @@ public sealed class LongRestLiveFenceTests
 
         Assert.Equal(runtime.Current.RuntimeAuthorityGeneration, first.RuntimeAuthorityGeneration);
 
-        Assert.Equal(runtime.Current.Availability.Generation, first.CapabilityGeneration);
+        Assert.Equal(LongRestCapabilityState.Of(runtime.Current.Availability), first.CapabilityGeneration);
 
         Assert.Equal(gate.CurrentGeneration, first.AdmissionGeneration);
 
@@ -59,6 +59,51 @@ public sealed class LongRestLiveFenceTests
         Assert.Equal(first.InsertionHighWatermark, resumed.InsertionHighWatermark);
 
         Assert.Equal(first, resumed);
+    }
+
+    [Fact]
+    public async Task A_publication_that_changes_no_capability_fact_leaves_the_fence_equal_and_one_that_does_changes_it()
+    {
+        await using LongRestSweepHarness h = await LongRestSweepHarness.CreateAsync();
+
+        await h.SeedAsync("first", "observation");
+
+        using CovenantRuntimeGenerationProvider runtime = new();
+
+        runtime.PublishAvailability(current => current with { DatasetGeneration = Guid.NewGuid(), Canonical = CovenantCapabilityState.Healthy, FeatureEnabled = true });
+
+        LongRestConfigurationEpochTests.NotifyingOptions options = new(LongRestConfigurationEpochTests.Settings());
+
+        using LongRestConfigurationEpoch epoch = new(options, Guid.NewGuid());
+
+        NoCampaigns campaigns = new();
+
+        LongRestLiveFenceReader reader = new(h.Saga.Context, runtime, new GrimoireConnectionAdmissionGate(TimeProvider.System), epoch, campaigns, campaigns);
+
+        LongRestSweepFence first = LongRestSweepHarness.Require(await reader.CaptureAsync(CanonicalCampaignContext.GlobalOnly, epoch.Capture().Stamp, null, CancellationToken.None));
+
+        // A Covenant write's new sequence, then a maintenance pass that changed nothing: both republish, neither changes a capability fact.
+        runtime.PublishAvailability(current => current with { CanonicalSequence = current.CanonicalSequence + 1, LastHealthTransition = CovenantHealthTransition.CanonicalMutation });
+
+        runtime.PublishAvailability(current => current with { LastHealthTransition = CovenantHealthTransition.OwnerCleanup });
+
+        Assert.True(runtime.Current.Availability.Generation > 2);
+
+        LongRestSweepFence republished = LongRestSweepHarness.Require(await reader.CaptureAsync(CanonicalCampaignContext.GlobalOnly, epoch.Capture().Stamp, first.InsertionHighWatermark, CancellationToken.None));
+
+        Assert.Equal(first, republished);
+
+        Assert.True(reader.IsRequestFenceCurrent(first));
+
+        runtime.PublishAvailability(current => current with { FeatureEnabled = false });
+
+        LongRestSweepFence switched = LongRestSweepHarness.Require(await reader.CaptureAsync(CanonicalCampaignContext.GlobalOnly, epoch.Capture().Stamp, first.InsertionHighWatermark, CancellationToken.None));
+
+        Assert.NotEqual(first, switched);
+
+        Assert.NotEqual(first.CapabilityGeneration, switched.CapabilityGeneration);
+
+        Assert.False(reader.IsRequestFenceCurrent(first));
     }
 
     [Theory]

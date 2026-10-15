@@ -128,7 +128,8 @@ public sealed class LongRestConfigurationSnapshot
 
     /// <summary>
     /// The chat choice. An explicit <paramref name="model"/> resolves exactly (an admitted choice does not drift); without one the
-    /// fast model is used when it is set, else the default model. A fast model that is set but unusable fails closed.
+    /// fast model is used when it is set, else the default model, else the first advertised model. A fast model that is set but
+    /// unusable fails closed.
     /// </summary>
     public Result<LongRestProviderSelection> ResolveChat(string? model = null)
     {
