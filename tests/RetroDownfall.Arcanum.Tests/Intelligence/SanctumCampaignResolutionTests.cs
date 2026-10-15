@@ -360,6 +360,53 @@ public sealed class SanctumCampaignResolutionTests
         Assert.True(resolved.PolicyUnreadable);
     }
 
+    // A Session's immutable binding is written when its first turn begins, so a Session created and not yet used has no binding row and the
+    // reader reports it as an integrity failure. It is bound to nothing yet: it names no Campaign, and the other sources still claim.
+    [Fact]
+    public async Task A_session_with_no_binding_row_names_no_campaign_and_the_other_sources_still_govern()
+    {
+        Table campaigns = new(Strict(Named));
+
+        ShapeResolver resolver = ShapeResolver.RefusingTheCombination(
+            explicitCampaign: Named,
+            sessionFailure: ErrorCodes.Covenant.IntegrityFailure);
+
+        SanctumCampaignResolution.Resolved resolved = await SanctumCampaignResolution.ResolveAsync(
+            Guid.NewGuid(), Named, "/somewhere/else", null, resolver, campaigns, Token);
+
+        Assert.Equal(Named, resolved.CampaignId);
+
+        Assert.False(resolved.PolicyUnreadable);
+    }
+
+    [Fact]
+    public async Task A_session_with_no_binding_row_and_nothing_else_to_claim_binds_the_turn_to_no_campaign()
+    {
+        ShapeResolver resolver = ShapeResolver.RefusingTheCombination(sessionFailure: ErrorCodes.Covenant.IntegrityFailure);
+
+        SanctumCampaignResolution.Resolved resolved = await SanctumCampaignResolution.ResolveAsync(
+            Guid.NewGuid(), null, null, null, resolver, new Table(), Token);
+
+        Assert.Null(resolved.CampaignId);
+
+        Assert.False(resolved.PolicyUnreadable);
+    }
+
+    [Fact]
+    public async Task A_malformed_registry_of_root_identities_leaves_the_sanctum_unreadable()
+    {
+        Table campaigns = new(Open(FromSession));
+
+        ShapeResolver resolver = ShapeResolver.RefusingTheCombination(
+            session: FromSession,
+            directoryFailure: ErrorCodes.Covenant.IntegrityFailure);
+
+        SanctumCampaignResolution.Resolved resolved = await SanctumCampaignResolution.ResolveAsync(
+            Guid.NewGuid(), null, "/work/open/src", null, resolver, campaigns, Token);
+
+        Assert.True(resolved.PolicyUnreadable);
+    }
+
     private static Campaign Strict(Guid id) => Build(id, new SanctumConfig { Enabled = true, Mode = SanctumMode.Strict });
 
     private static Campaign AuditOnly(Guid id) => Build(id, new SanctumConfig { Enabled = true, Mode = SanctumMode.AuditOnly });
@@ -417,17 +464,25 @@ public sealed class SanctumCampaignResolutionTests
 
         private Guid? _missingExplicit;
 
+        private string? _sessionFailure;
+
+        private string? _directoryFailure;
+
         public static ShapeResolver RefusingTheCombination(
             Guid? session = null,
             Guid? explicitCampaign = null,
             Guid? directory = null,
-            Guid? missingExplicit = null) =>
+            Guid? missingExplicit = null,
+            string? sessionFailure = null,
+            string? directoryFailure = null) =>
             new()
             {
                 _session = session,
                 _explicitCampaign = explicitCampaign,
                 _directory = directory,
                 _missingExplicit = missingExplicit,
+                _sessionFailure = sessionFailure,
+                _directoryFailure = directoryFailure,
             };
 
         public ValueTask<Result<CanonicalCampaignContext>> ResolveAsync(
@@ -445,7 +500,7 @@ public sealed class SanctumCampaignResolutionTests
 
             if (request.SessionId is not null)
             {
-                return Answer(_session);
+                return _sessionFailure is { } sessionFailure ? Refused(sessionFailure) : Answer(_session);
             }
 
             if (request.ExplicitCampaignId is { } explicitId)
@@ -453,7 +508,7 @@ public sealed class SanctumCampaignResolutionTests
                 return _missingExplicit == explicitId ? Refused(ErrorCodes.Campaign.NotFound) : Answer(_explicitCampaign);
             }
 
-            return Answer(_directory);
+            return _directoryFailure is { } directoryFailure ? Refused(directoryFailure) : Answer(_directory);
         }
 
         private static ValueTask<Result<CanonicalCampaignContext>> Answer(Guid? campaignId) =>

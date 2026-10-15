@@ -130,7 +130,7 @@ internal static class SanctumCampaignResolution
                     .ResolveAsync(new CanonicalCampaignResolutionRequest(sessionId, null, null), cancellationToken)
                     .ConfigureAwait(false);
 
-            claims.Absorb(answer, naming: null);
+            claims.Absorb(answer, naming: null, SourceKind.Session);
         }
 
         if (explicitCampaignId is not null)
@@ -143,7 +143,7 @@ internal static class SanctumCampaignResolution
 
             // A Campaign the resolver cannot find is still the Campaign the request named. Its Sanctum cannot be read, which is a refusal
             // of its own, not a way to run without one.
-            claims.Absorb(answer, naming: explicitCampaignId);
+            claims.Absorb(answer, naming: explicitCampaignId, SourceKind.Explicit);
         }
 
         if (directory is not null)
@@ -154,7 +154,7 @@ internal static class SanctumCampaignResolution
                     .ResolveAsync(new CanonicalCampaignResolutionRequest(null, null, directory), cancellationToken)
                     .ConfigureAwait(false);
 
-            claims.Absorb(answer, naming: null);
+            claims.Absorb(answer, naming: null, SourceKind.Directory);
         }
     }
 
@@ -231,9 +231,11 @@ internal static class SanctumCampaignResolution
         /// Records what one source on its own says. A Campaign the request names explicitly stays a claim whatever the resolver answers: its
         /// identifier is the evidence, and a Campaign nobody can load is a Sanctum nobody can read. Any other source that names no Campaign
         /// (no such Session, a Session that predates binding, a Campaign that is gone, a conflict that cannot arise from one source) claims
-        /// nothing; any other failure means the source could not be read, and a Sanctum that cannot be read is not a Sanctum that is off.
+        /// nothing, and so does a Session that has no binding row: a Session's immutable binding is written when its first turn begins, so
+        /// one created and not yet used is bound to nothing yet. Any other failure means the source could not be read, and a Sanctum that
+        /// cannot be read is not a Sanctum that is off.
         /// </summary>
-        public void Absorb(Result<CanonicalCampaignContext> answer, Guid? naming)
+        public void Absorb(Result<CanonicalCampaignContext> answer, Guid? naming, SourceKind source)
         {
             if (answer.IsSuccess)
             {
@@ -249,13 +251,28 @@ internal static class SanctumCampaignResolution
                 return;
             }
 
-            if (answer.Error.Code is not (ErrorCodes.Session.NotFound
+            string code = answer.Error.Code;
+
+            if (code is ErrorCodes.Session.NotFound
                 or ErrorCodes.Session.CampaignBindingRequired
                 or ErrorCodes.Covenant.CampaignBindingConflict
-                or ErrorCodes.Campaign.NotFound))
+                or ErrorCodes.Campaign.NotFound
+                || (source == SourceKind.Session && code == ErrorCodes.Covenant.IntegrityFailure))
             {
-                Unreadable = true;
+                return;
             }
+
+            Unreadable = true;
         }
+    }
+
+    /// <summary>Which of the request's sources an answer is about.</summary>
+    private enum SourceKind
+    {
+        Session,
+
+        Explicit,
+
+        Directory,
     }
 }
