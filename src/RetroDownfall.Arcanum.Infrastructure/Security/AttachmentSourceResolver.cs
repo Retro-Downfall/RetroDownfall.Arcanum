@@ -189,12 +189,12 @@ internal sealed class AttachmentSourceResolver(
     public async Task<AttachmentSourceResolution> ResolveForReferenceAsync(
         AttachmentSourceClaim claim,
         long maxBytes,
-        AttachmentSourcePathAuthorizer authorizeCanonicalPath,
+        AttachmentSourcePathAuthorizer authorizeRead,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(claim);
 
-        ArgumentNullException.ThrowIfNull(authorizeCanonicalPath);
+        ArgumentNullException.ThrowIfNull(authorizeRead);
 
         if (maxBytes < 0)
         {
@@ -273,7 +273,9 @@ internal sealed class AttachmentSourceResolver(
                     "Source identity or containment changed during validation.");
             }
 
-            if (!await authorizeCanonicalPath(openedCanonical, cancellationToken).ConfigureAwait(false))
+            AttachmentSourceRead read = new(candidate, openedCanonical);
+
+            if (!await authorizeRead(read, cancellationToken).ConfigureAwait(false))
             {
                 return Snapshot(
                     AttachmentSourceStatus.Inaccessible,
@@ -601,14 +603,14 @@ internal sealed class AttachmentSourceResolver(
         AttachmentSourceMetadata source,
         string expectedSnapshotSha256,
         long maxBytes,
-        AttachmentSourcePathAuthorizer authorizeCanonicalPath,
+        AttachmentSourcePathAuthorizer authorizeRead,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(source);
 
         ArgumentException.ThrowIfNullOrWhiteSpace(expectedSnapshotSha256);
 
-        ArgumentNullException.ThrowIfNull(authorizeCanonicalPath);
+        ArgumentNullException.ThrowIfNull(authorizeRead);
 
         if (maxBytes < 0)
         {
@@ -701,7 +703,9 @@ internal sealed class AttachmentSourceResolver(
                     "Source identity or containment changed during validation.");
             }
 
-            if (!await authorizeCanonicalPath(openedCanonical, cancellationToken).ConfigureAwait(false))
+            AttachmentSourceRead read = new(candidate, openedCanonical);
+
+            if (!await authorizeRead(read, cancellationToken).ConfigureAwait(false))
             {
                 return Fail(
                     source,

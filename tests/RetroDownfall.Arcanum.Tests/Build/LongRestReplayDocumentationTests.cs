@@ -225,11 +225,27 @@ public sealed class LongRestReplayDocumentationTests
     }
 
     [Fact]
-    public void The_attachment_reference_route_names_the_campaign_it_asks()
+    public void The_attachment_source_routes_name_the_campaign_they_ask_and_the_mode_they_honour()
     {
         string design = ReadDocument("Arcanum.DESIGN.md");
 
-        Assert.Contains("The Campaign it asks is the Session's stored `CampaignId` alone", design, StringComparison.Ordinal);
+        Assert.Contains("put the same question to a Campaign chosen the same way (`AttachmentSourceSanctum`)", design, StringComparison.Ordinal);
+
+        Assert.Contains("a link that lies inside a Campaign's root and leaves it is still that Campaign's read", design, StringComparison.Ordinal);
+
+        Assert.Contains("a source that no claim names is unrestricted", design, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("The Campaign it asks is the Session's stored `CampaignId` alone", design, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("it never reads the Campaign's mode", design, StringComparison.Ordinal);
+
+        string api = ReadDocument("Arcanum.API.md");
+
+        Assert.Contains("The governing Campaign is the stricter of the Session's Campaigns", api, StringComparison.Ordinal);
+
+        Assert.Contains("neither mode lets through a Sanctum that cannot be read or a breach that cannot be recorded", api, StringComparison.Ordinal);
+
+        Assert.Contains("Its Sanctum decision is the live reference's", api, StringComparison.Ordinal);
     }
 
     private static string ReadDocument(string fileName) =>

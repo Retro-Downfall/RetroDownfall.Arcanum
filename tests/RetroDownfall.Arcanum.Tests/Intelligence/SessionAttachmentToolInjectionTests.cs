@@ -918,7 +918,7 @@ public sealed class SessionAttachmentToolInjectionTests
         var refreshed = await pipeline.RefreshSessionAttachmentAsync(
             sessionId,
             attachmentId,
-            campaignId: null);
+            static (_, _) => Task.FromResult(true));
 
         Assert.True(refreshed.IsSuccess, refreshed.Error.Message);
 
@@ -1065,7 +1065,7 @@ public sealed class SessionAttachmentToolInjectionTests
         var refreshed = await pipeline.RefreshSessionAttachmentAsync(
             sessionId,
             attachmentId,
-            campaignId: null);
+            static (_, _) => Task.FromResult(true));
 
         Assert.True(refreshed.IsFailure);
 
