@@ -592,7 +592,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests
     {
         // Fresh metadata references, so the library's framework symbols are not the application's (the project
         // compilations of the production universe load their references separately in the same way).
-        MetadataReference[] separateReferences = [.. ((string)AppContext.GetData("TRUSTED_PLATFORM_ASSEMBLIES")!).Split(Path.PathSeparator).Select(static path => MetadataReference.CreateFromFile(path))];
+        MetadataReference[] separateReferences = [.. TrustedPlatformReferences.Separate()];
 
         CSharpCompilation library = CSharpCompilation.Create(
             "Library",

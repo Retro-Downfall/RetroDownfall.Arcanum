@@ -262,15 +262,12 @@ public sealed class AdmittedEntryCensusTests(ITestOutputHelper output)
         }
         """;
 
-    private static readonly Lazy<IReadOnlyList<MetadataReference>> PlatformReferences = new(static () =>
-        [.. ((string)AppContext.GetData("TRUSTED_PLATFORM_ASSEMBLIES")!).Split(Path.PathSeparator).Select(static path => MetadataReference.CreateFromFile(path))]);
-
     private static IReadOnlyList<Compilation> SyntheticCompilation()
     {
         CSharpCompilation compilation = CSharpCompilation.Create(
             "SyntheticEntries",
             [CSharpSyntaxTree.ParseText(Synthetic, path: "src/Fixture.cs")],
-            PlatformReferences.Value,
+            TrustedPlatformReferences.Shared,
             new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
 
         Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
