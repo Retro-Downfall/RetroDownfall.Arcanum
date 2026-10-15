@@ -122,6 +122,56 @@ public sealed partial class LongRestSweepStoreTests
         Assert.Equal(untouched + (2 * proof), await SeamStatementsAsync(large));
     }
 
+    /// <summary>
+    /// The turn that matters: a sweep that consolidated leaves has completed, and the idle Session turn that follows adopts its answer. That is a
+    /// seam over a generation whose leaves are flagged, and its statements are the same at six memories as at fourteen, though the decision
+    /// consolidated six leaves in one and fourteen in the other, because the leaves share a receipt and the receipt is proved once.
+    /// </summary>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task The_idle_turn_after_a_sweep_that_consolidated_leaves_runs_the_same_statements_whatever_the_size_of_the_corpus(bool protect)
+    {
+        async Task<(int Statements, long Leaves, int Consolidated)> IdleTurnAsync(int sources)
+        {
+            await using Fixture fixture = await Fixture.CreateAsync(protect, sourceCount: sources, duplicates: true);
+
+            LongRestSweep sweep = await fixture.BeginAsync();
+
+            LongRestSweepWork work = LongRestSweepHarness.Require(await fixture.Store.ReadNextWorkAsync(sweep, fixture.Capability, CancellationToken.None))!;
+
+            LongRestSweep committed = LongRestSweepHarness.Require(await fixture.Store.CommitExactDuplicatesAsync(sweep, work.Identity, fixture.Capability, CancellationToken.None));
+
+            await DrainCompletedCorpusAsync(fixture, committed);
+
+            await fixture.H.ExecuteAsync("UPDATE LongRunningOperations SET State = $completed;", ("$completed", (int)RetroDownfall.Arcanum.Core.Operations.LongRunningOperationState.Completed));
+
+            Assert.Equal(1L, await fixture.H.ScalarAsync("SELECT count(*) FROM long_rest_receipts WHERE OutcomeCode = 1;"));
+
+            using SqliteStatementTrace trace = new(fixture.H.Connection);
+
+            using LongRestVerificationTally tally = LongRestVerificationCounters.Measure();
+
+            Assert.Equal(fixture.Generation.OperationId, LongRestSweepHarness.Require(await fixture.Store.FindCompletedRequestReplayAsync(
+                fixture.Generation.Fence.CanonicalScope, fixture.Generation.Scope, fixture.Generation.Recipe, CancellationToken.None)));
+
+            Assert.Equal(0, trace.ImmediateTransactions);
+
+            return (trace.Count, tally.MetadataLeafReads, work.Inputs.Length);
+        }
+
+        (int smallStatements, long smallLeaves, int smallConsolidated) = await IdleTurnAsync(6);
+
+        (int largeStatements, long largeLeaves, int largeConsolidated) = await IdleTurnAsync(14);
+
+        Assert.NotEqual(smallConsolidated, largeConsolidated);
+
+        // Every leaf is still proved: the work that grew with the corpus is the work inside the one statement.
+        Assert.Equal([6L, 14L], [smallLeaves, largeLeaves]);
+
+        Assert.Equal(smallStatements, largeStatements);
+    }
+
     private static async Task<LongRestSweepWork> DecideNextAsync(Fixture fixture)
     {
         LongRestSweep sweep = await fixture.BeginAsync();
