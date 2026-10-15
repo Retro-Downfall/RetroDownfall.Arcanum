@@ -56,7 +56,11 @@ public sealed partial class LongRestMaintenanceTests
 
         Assert.NotNull(retired.CompletedAt);
 
-        Assert.Equal(1, metrics.Measurements.Count(static m => m.Instrument == ParkedMetric));
+        // Two parks happened and each is counted once: the crash park the Pure Park Handler wrote (counted where the worker readmitted it, as a
+        // resumable park) and the retirement the restart-generation fault ended the readmitted sweep with.
+        Assert.Equal(2, metrics.Measurements.Count(static m => m.Instrument == ParkedMetric));
+
+        Assert.Equal(1, metrics.Sum(ParkedMetric, "class", "resume_later"));
 
         Assert.Equal(1, metrics.Sum(ParkedMetric, "class", "restart_generation"));
 

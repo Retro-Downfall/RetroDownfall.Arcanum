@@ -239,7 +239,7 @@ internal sealed partial class LongRestDiscoveryStore(ArcanumDbContext db, TimePr
                 source.MemoryId IS NULL OR memory.Id IS NULL OR head.CurrentVersionId IS NULL
                 OR source.InsertionSequence <> leaf.InsertionSequence OR source.MutationEpoch <> leaf.MutationEpoch
                 OR head.CurrentVersionId <> leaf.VersionId OR memory.ScopeKindCode <> $scope OR memory.CampaignId IS NOT $campaign
-                OR NOT ({SourceOwnerEligible})
+                OR NOT ({CleanAwareSourceOwnerEligible})
                 OR embedding.Dim IS NOT leaf.EmbeddingDimensions
                 OR ($partition IS NULL AND EXISTS (SELECT 1 FROM artifact_sensitivity label WHERE label.ArtifactKindCode = 6
                     AND lower(replace(label.ArtifactId, '-', '')) = lower(replace(leaf.MemoryId, '-', ''))))
