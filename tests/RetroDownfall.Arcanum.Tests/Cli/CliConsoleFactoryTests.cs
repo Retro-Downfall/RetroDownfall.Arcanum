@@ -1,3 +1,4 @@
+using RetroDownfall.Arcanum.Cli.Infrastructure;
 using RetroDownfall.Arcanum.Cli.UX;
 
 using Spectre.Console;
@@ -85,6 +86,71 @@ public sealed class CliConsoleFactoryTests
         _ = CliConsoleFactory.Create(settings);
 
         Assert.False(settings.Enrichment.UseDefaultEnrichers);
+
+    }
+
+    /// <summary>
+    /// Built here, not through <c>CliTestHarness</c>: the harness pre-installs a console that already
+    /// declines ANSI, so a harness-level assertion could not tell an invocation that replaced the
+    /// stdout console from one that left it alone.
+    /// </summary>
+    [Theory]
+    [InlineData(true, false, false)]
+    [InlineData(false, true, false)]
+    [InlineData(false, false, true)]
+    public void Each_per_invocation_opt_out_builds_a_stdout_console_without_ansi_colour_or_interaction(
+        bool plain,
+        bool json,
+        bool print)
+    {
+
+        CliInvocationOptions options = new(Json: json, Plain: plain, Yes: false, Print: print);
+
+        StringWriter output = new();
+
+        AnsiConsoleSettings? settings = CliApplicationFactory.CreateInvocationConsoleSettings(options, output);
+
+        Assert.NotNull(settings);
+
+        Assert.Equal(AnsiSupport.No, settings.Ansi);
+
+        Assert.Equal(ColorSystemSupport.NoColors, settings.ColorSystem);
+
+        Assert.Equal(InteractionSupport.No, settings.Interactive);
+
+        settings.EnvironmentVariables = new Dictionary<string, string>
+        {
+
+            ["GITHUB_ACTIONS"] = "true",
+
+        };
+
+        IAnsiConsole console = CliConsoleFactory.Create(settings);
+
+        Assert.False(settings.Enrichment.UseDefaultEnrichers);
+
+        Assert.False(console.Profile.Capabilities.Ansi);
+
+        Assert.Equal(ColorSystem.NoColors, console.Profile.Capabilities.ColorSystem);
+
+        Assert.False(console.Profile.Capabilities.Interactive);
+
+        console.MarkupLine(BoldMarkup);
+
+        Assert.Equal("plain words" + System.Environment.NewLine, output.ToString());
+
+    }
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    public void An_invocation_with_no_opt_out_leaves_the_stdout_console_to_detection(bool yes, bool verbose)
+    {
+
+        CliInvocationOptions options = new(Json: false, Plain: false, Yes: yes, Verbose: verbose);
+
+        Assert.Null(CliApplicationFactory.CreateInvocationConsoleSettings(options, new StringWriter()));
 
     }
 

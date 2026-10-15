@@ -54,12 +54,17 @@ internal static class CliConsoleFactory
 
     /// <summary>
     /// A console bound to the current <see cref="Console.Error"/> under the diagnostic colour policy of
-    /// <see cref="CreateDiagnosticSettings"/>: the one every writer to standard error builds through.
+    /// <see cref="CreateDiagnosticSettings"/>: the one the themed failure writer, the tool-call summary
+    /// and the <c>ask_human</c> diagnostics build through.
     /// </summary>
     /// <remarks>
     /// Created per call rather than cached, because <see cref="Console.Error"/> is replaced during a run
     /// — by the test harness and by the JSON capture — and a cached writer would keep publishing to a
     /// stream that is no longer current.
+    ///
+    /// <para>Every writer to standard error applies the same opt-outs, but not every one builds through
+    /// this method: the credential prompt must stay interactive, so it decides them in
+    /// <c>SensitiveValueInput.CreatePromptSettings</c> and builds with <see cref="Create"/>.</para>
     /// </remarks>
     internal static IAnsiConsole CreateDiagnostic() =>
         Create(CreateDiagnosticSettings(Console.Error));
