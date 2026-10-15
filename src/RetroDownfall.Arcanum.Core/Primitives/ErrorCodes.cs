@@ -1270,5 +1270,4 @@ public static class ErrorCodes
         /// </summary>
         public const string ModelContextTooSmall = "LongRest.ModelContextTooSmall";
     }
-
 }

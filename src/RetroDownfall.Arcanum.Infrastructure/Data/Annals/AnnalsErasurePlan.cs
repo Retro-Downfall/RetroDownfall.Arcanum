@@ -28,7 +28,6 @@ internal sealed record AnnalsErasureStep(string Table, string Predicate, int? Re
 /// </remarks>
 internal static class AnnalsErasurePlan
 {
-
     /// <summary>Every claim belonging to one store, leaving the other store's untouched.</summary>
     internal static IReadOnlyList<AnnalsErasureStep> ForStore(AnnalSubjectStore subjectStore) =>
         Build($"SubjectStoreCode = {(int)subjectStore}", (int)subjectStore, sourcePredicate: "1 = 1",
@@ -59,7 +58,6 @@ internal static class AnnalsErasurePlan
         string? sourcePredicate = null,
         string? generationIdQuery = null)
     {
-
         string claimScope = $"SELECT ClaimId FROM annal_claims WHERE {claimPredicate}";
 
         string versionScope = $"SELECT VersionId FROM annal_versions WHERE ClaimId IN ({claimScope})";
@@ -131,7 +129,5 @@ internal static class AnnalsErasurePlan
 
             new("annal_claims", claimPredicate),
         ];
-
     }
-
 }

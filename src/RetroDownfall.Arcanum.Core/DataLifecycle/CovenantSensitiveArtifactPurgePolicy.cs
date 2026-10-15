@@ -13,13 +13,11 @@ namespace RetroDownfall.Arcanum.Core.DataLifecycle;
 /// </remarks>
 public enum CovenantArtifactPurgeExecutor : byte
 {
-
     /// <summary>One immediate SQLite transaction deletes content, projections, and the label.</summary>
     DatabaseTransaction = 1,
 
     /// <summary>Delegated once to the single managed-file erasure kernel.</summary>
     ManagedFileKernel = 2,
-
 }
 
 /// <summary>
@@ -74,7 +72,6 @@ public sealed record CovenantSensitiveArtifactPurgeRule(
     bool PreservesReplayDenialEvidence,
     string Policy)
 {
-
     /// <summary>
     /// Whether this kind's label is removed by the same database transaction that deletes its content.
     /// </summary>
@@ -84,7 +81,6 @@ public sealed record CovenantSensitiveArtifactPurgeRule(
     /// beside the content, so a second stored field could only ever disagree with the executor.
     /// </remarks>
     public bool RemovesLabelWithContent => Executor == CovenantArtifactPurgeExecutor.DatabaseTransaction;
-
 }
 
 /// <summary>
@@ -104,7 +100,6 @@ public sealed record CovenantSensitiveArtifactPurgeRule(
 /// </remarks>
 public static class CovenantSensitiveArtifactPurgePolicy
 {
-
     private static readonly CovenantSensitiveArtifactPurgeRule[] Rules =
     [
         new(
@@ -374,5 +369,4 @@ public static class CovenantSensitiveArtifactPurgePolicy
 
     /// <summary>Whether a value is one of the sixteen kinds this table covers.</summary>
     public static bool IsCovered(SensitiveArtifactKind kind) => ByKind.ContainsKey(kind);
-
 }

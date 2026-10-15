@@ -103,5 +103,4 @@ public sealed partial class BackupRestoreServiceTests
 
         return (staging, journal, secrets);
     }
-
 }

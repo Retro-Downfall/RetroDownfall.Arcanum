@@ -12,11 +12,9 @@ namespace RetroDownfall.Arcanum.Tests.Collections;
 
 public sealed class HostedProducerAnalysisCollectionTests
 {
-
     [Fact]
     public void Production_graph_lane_is_closed_and_complete()
     {
-
         static bool HasProductionTrait(MethodInfo method) =>
             method.GetCustomAttributesData().Any(static attribute =>
                 attribute.AttributeType == typeof(TraitAttribute)
@@ -97,13 +95,11 @@ public sealed class HostedProducerAnalysisCollectionTests
         ];
 
         Assert.Equal(expected, actual);
-
     }
 
     [Fact]
-    public void Additional_production_graph_lane_has_exactly_the_five_known_consumers()
+    public void Additional_production_graph_lane_has_exactly_its_known_consumers()
     {
-
         static bool HasAdditionalTrait(MethodInfo method) =>
             method.GetCustomAttributesData().Any(static attribute =>
                 attribute.AttributeType == typeof(TraitAttribute)
@@ -141,7 +137,6 @@ public sealed class HostedProducerAnalysisCollectionTests
         ];
 
         Assert.Equal(expected, actual);
-
     }
 
     // The fixtures that run in the serve host partition: each case of these theories analyses the production compilations with trees of the
@@ -199,9 +194,10 @@ public sealed class HostedProducerAnalysisCollectionTests
     [InlineData(typeof(ArcanumAuthenticatedHttpSenderTests))]
     [InlineData(typeof(AuthorityCarrierBanTests))]
     [InlineData(typeof(AdmittedEntryCensusTests))]
+    [InlineData(typeof(SingleGateCensusTests))]
+    [InlineData(typeof(CheckerLimitPinTests))]
     public void Production_compilation_consumers_are_isolated_from_parallel_suite(Type consumer)
     {
-
         CustomAttributeData collection = Assert.Single(
             consumer.GetCustomAttributesData(),
             attribute => attribute.AttributeType == typeof(CollectionAttribute));
@@ -215,7 +211,5 @@ public sealed class HostedProducerAnalysisCollectionTests
                 .GetCustomAttribute<CollectionDefinitionAttribute>());
 
         Assert.True(definition.DisableParallelization);
-
     }
-
 }

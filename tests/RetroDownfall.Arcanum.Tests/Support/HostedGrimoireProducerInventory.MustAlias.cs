@@ -6,6 +6,10 @@ namespace RetroDownfall.Arcanum.Tests.Support;
 
 internal static partial class HostedGrimoireProducerInventory
 {
+    // The Departed-Lease Group. A send whose Effect is a group begun on another lease than the one whose Work is live at the send: the
+    // Effect carries the origin of its group's lease, and the pair a send holds must be one lease's, whichever frame the group was begun in.
+    internal const string EffectLeaseMismatchCode = "HOSTED_ADMISSION_EFFECT_LEASE_MISMATCH";
+
     // Lease Receiver Proof (CK-3). A TryBeginExternalEffectGroup call grants an Effect only when its receiver is a
     // must-alias of a work lease the traversal knows. The receiver must be an identifier of a parameter, or of a
     // never-reassigned, uncaptured local, and its one reaching definition must be one of: the out designation of the
@@ -96,12 +100,42 @@ internal static partial class HostedGrimoireProducerInventory
                 .Any(call => Location(call) == origin && member.Model.GetSymbolInfo(call).Symbol is IMethodSymbol method && Normalize(method) == LeaseAcquisitionCallee);
         }
 
+        // An Effect names its group and, after this marker, the origin of the lease the group was begun on, so a send can judge that the
+        // Effect it holds is the one of the lease whose Work it holds. An Effect with no marker carries no lease origin (a holder-era
+        // witness proves its own receiver).
+        private const string EffectLeaseMarker = "@lease:";
+
+        private static string EffectOf(string rootOperation, string group, string? leaseOrigin) =>
+            rootOperation + "@effect:" + group + (leaseOrigin is null ? "" : EffectLeaseMarker + leaseOrigin);
+
+        // The location of the group, with the lease it was begun on removed.
+        private static string EffectGroupLocation(string effect)
+        {
+            int start = effect.LastIndexOf("@effect:", StringComparison.Ordinal) + "@effect:".Length;
+
+            int marker = effect.IndexOf(EffectLeaseMarker, start, StringComparison.Ordinal);
+
+            return marker < 0 ? effect[start..] : effect[start..marker];
+        }
+
+        private static string? EffectLeaseOrigin(string effect)
+        {
+            int marker = effect.IndexOf(EffectLeaseMarker, StringComparison.Ordinal);
+
+            return marker < 0 ? null : effect[(marker + EffectLeaseMarker.Length)..];
+        }
+
         private static string? WorkOrigin(string work)
         {
             int marker = work.LastIndexOf("@work:", StringComparison.Ordinal);
 
             return marker < 0 ? null : work[(marker + "@work:".Length)..];
         }
+
+        private HostedProducerInventoryDiagnostic EffectLeaseMismatch(string operationId, SyntaxNode site, string callee) => new(
+            EffectLeaseMismatchCode,
+            operationId + "/site@" + Location(site),
+            callee + "; The Effect the send inherits is a group begun on another lease than the one whose Work is live at the send, so the group grants no Effect.");
 
         private HostedProducerInventoryDiagnostic LeaseReceiverMismatch(string operationId, SyntaxNode group) => new(
             "HOSTED_ADMISSION_RECEIVER_MISMATCH",
@@ -233,9 +267,11 @@ internal static partial class HostedGrimoireProducerInventory
             return null;
         }
 
-        // The guarded TryAcquireWorkLease call whose out argument declares this designation.
-        private static InvocationExpressionSyntax? LeaseAcquisitionOf(AuthoredMember member, SingleVariableDesignationSyntax designation) =>
-            designation.Parent is DeclarationExpressionSyntax
+        // The guarded TryAcquireWorkLease call whose out argument declares this designation, on a gate the Single Gate Census trusts.
+        // A lease from a gate beside the reviewed one is the origin of nothing.
+        private InvocationExpressionSyntax? LeaseAcquisitionOf(AuthoredMember member, SingleVariableDesignationSyntax designation) =>
+            AdmissionGateTrusted
+            && designation.Parent is DeclarationExpressionSyntax
             {
                 Parent: ArgumentSyntax
                 {

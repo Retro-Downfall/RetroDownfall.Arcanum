@@ -1851,6 +1851,123 @@ internal static partial class HostedGrimoireProducerInventory
             return found;
         }
 
+        // The authored members of one class of framework entry point that reach a classified producer site or cannot be followed, with what
+        // was found. The framework calls them on its own schedule, at points no operation of the census names: an override of a member the
+        // framework declares is reached through the framework's type, a disposal runs when a container or a scope is disposed, and an accessor
+        // runs when a serializer or a logger reads a value. Each is judged here by whether it can reach a site, by the sites-only scan.
+        internal IReadOnlyList<string> FrameworkEntryPointsThatReach(FrameworkEntryPoints kind) =>
+            MembersThatReach((type, method) => IsFrameworkEntryPoint(kind, type, method));
+
+        // The authored methods the predicate selects that reach a classified producer site or cannot be followed, by the sites-only scan.
+        internal IReadOnlyList<string> MembersThatReach(Func<INamedTypeSymbol, IMethodSymbol, bool> selected)
+        {
+            List<string> found = [];
+
+            if (analysedCompilations.Count == 0)
+            {
+                return found;
+            }
+
+            AuthoredMember anchor = AuthoredMembers.First();
+
+            foreach (INamedTypeSymbol type in analysedCompilations.SelectMany(static compilation => SourceTypes(compilation.Assembly.GlobalNamespace)))
+            {
+                if (type.TypeKind is not (TypeKind.Class or TypeKind.Struct or TypeKind.Interface) || type.IsImplicitlyDeclared || !type.Locations.Any(static location => location.IsInSource))
+                {
+                    continue;
+                }
+
+                foreach (IMethodSymbol method in type.GetMembers().OfType<IMethodSymbol>())
+                {
+                    if (!selected(type, method))
+                    {
+                        continue;
+                    }
+
+                    ImplicitTargetCollector collector = new(this, anchor);
+
+                    collector.Add(method, method);
+
+                    string reason = !ImplicitTargetsReachProducerSite(anchor, collector.Result, anchor.Syntax, [])
+                        ? string.Empty
+                        : collector.Unresolved.Count != 0 && !scanSitesOnly
+                            ? "unresolved " + string.Join(",", collector.Unresolved.Distinct())
+                            : collector.Members.FirstOrDefault(target => ContainsPotentialProducerSite(target)) is { } reaching
+                                ? "body " + Normalize(reaching.Symbol)
+                                : "framework " + string.Join(",", collector.Framework.Select(Normalize));
+
+                    if (reason.Length != 0)
+                    {
+                        // An explicit implementation is named by the member it implements, so that its type is the type before the last dot.
+                        found.Add(TypeKey(type) + "." + (method.ExplicitInterfaceImplementations is [{ } implemented, ..] ? implemented.Name : method.Name) + " :: " + reason);
+                    }
+                }
+            }
+
+            return found;
+        }
+
+        // Whether the method is the implementation or overrides it, however many overrides stand between.
+        private static bool RunsInPlaceOfTheImplementation(IMethodSymbol method, IMethodSymbol? implementation)
+        {
+            for (IMethodSymbol? current = method; current is not null && implementation is not null; current = current.OverriddenMethod)
+            {
+                if (SymbolEqualityComparer.Default.Equals(current, implementation))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private static bool IsFrameworkEntryPoint(FrameworkEntryPoints kind, INamedTypeSymbol type, IMethodSymbol method)
+        {
+            if (method.IsImplicitlyDeclared
+                || method.IsStatic
+                || method.IsAbstract && type.TypeKind != TypeKind.Interface
+                || !method.Locations.Any(static location => location.IsInSource)
+                || method.DeclaringSyntaxReferences.Length == 0)
+            {
+                return false;
+            }
+
+            switch (kind)
+            {
+                case FrameworkEntryPoints.Overrides:
+                    if (!method.IsOverride)
+                    {
+                        return false;
+                    }
+
+                    IMethodSymbol root = method;
+
+                    while (root.OverriddenMethod is { } next)
+                    {
+                        root = next;
+                    }
+
+                    return !root.Locations.Any(static location => location.IsInSource);
+
+                case FrameworkEntryPoints.Disposals:
+                    // The container calls the slot, so the disposal is the method the type runs for it, an explicit implementation included, and every
+                    // override of that method: an override of a virtual Dispose runs in place of the method the interface mapping finds.
+                    return method.TypeParameters.Length == 0
+                        && method.Parameters.Length == 0
+                        && type.AllInterfaces.Any(contract => TypeKey(contract) is "System.IDisposable" or "System.IAsyncDisposable"
+                            && contract.GetMembers().OfType<IMethodSymbol>().Any(slot => RunsInPlaceOfTheImplementation(method, type.FindImplementationForInterfaceMember(slot) as IMethodSymbol)));
+
+                case FrameworkEntryPoints.Accessors:
+                    return method.MethodKind == MethodKind.PropertyGet
+                        && method.AssociatedSymbol is IPropertySymbol property
+                        && !property.IsAbstract
+                        && method.DeclaringSyntaxReferences.Any(static reference => reference.GetSyntax() is AccessorDeclarationSyntax { Body: not null } or AccessorDeclarationSyntax { ExpressionBody: not null } or ArrowExpressionClauseSyntax);
+
+                default:
+                    return false;
+            }
+        }
+
         // Fixture seam: the key of the implementation answers. One implementation is judged for an anchor member, again for the same anchor, and then
         // for a second member made over the very same syntax with another binding environment: the first resolves the implementation, the repeat
         // resolves nothing, and the member with other bindings is another key, so it resolves it again.

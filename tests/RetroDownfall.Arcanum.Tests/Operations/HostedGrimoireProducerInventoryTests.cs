@@ -3607,7 +3607,6 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
             Assert.True(SymbolEqualityComparer.Default.Equals(parameter, constructor.Parameters[ordinal]));
 
             getterSyntax = positional;
-
         }
         else
         {
@@ -3653,7 +3652,6 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
             }
 
             getterSyntax = authoredGetterSyntax;
-
         }
 
         InvocationExpressionSyntax[] ingress = tree.GetRoot().DescendantNodes().OfType<InvocationExpressionSyntax>().Where(call => model.GetSymbolInfo(call).Symbol is IMethodSymbol { Name: "GetCode" }).ToArray();
@@ -6780,9 +6778,12 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
 
         Assert.Equal("Worker.StartAsync@work:" + source.FilePath + ":" + work.SpanStart, target.WorkFrontier);
 
-        Assert.Equal("Worker.StartAsync@effect:" + source.FilePath + ":" + effect.SpanStart, target.EffectFrontier);
+        // The Effect names its group and the origin of the lease the group was begun on, which is the acquisition whose Work this is.
+        string effectFrontier = "Worker.StartAsync@effect:" + source.FilePath + ":" + effect.SpanStart + "@lease:" + source.FilePath + ":" + work.SpanStart;
 
-        Assert.Equal("Worker.StartAsync@effect:" + source.FilePath + ":" + effect.SpanStart, target.RecoveryEffectFrontier);
+        Assert.Equal(effectFrontier, target.EffectFrontier);
+
+        Assert.Equal(effectFrontier, target.RecoveryEffectFrontier);
 
         Assert.True(target.CompletionOwned);
     }
@@ -18348,7 +18349,6 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
             }
         }
 
-
         if (shape is "conditional-expression-cleanup" or "switch-expression-cleanup" or "coalescing-expression-cleanup")
         {
             InvocationExpressionSyntax cleanupCall = Assert.Single(protector.Finally!.Block.DescendantNodes().OfType<InvocationExpressionSyntax>(),
@@ -23563,6 +23563,8 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
             + "internal static void Run(RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireConnectionAdmissionGate gate) { "
             + "if (!gate.TryAcquireWorkLease(RetroDownfall.Arcanum.Infrastructure.Data.GrimoireWorkKind.WorkspaceIndexing, out var work)) return; "
             + "using var lease = work; "
+            + "if (!lease.TryBeginExternalEffectGroup(out var group)) return; "
+            + "using var held = group; "
             + effects
             + " } }";
 
@@ -37991,7 +37993,6 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
         // shared HttpClient observers, reflection/loader/native and external listeners remain limits.
     }
 
-
     [Theory]
     [InlineData("direct", true, false)]
     [InlineData("extension", true, false)]
@@ -38187,8 +38188,6 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
             && site.Callee == "System.Data.Common.DbDataReader.this[]"
             && site.EnclosingType == "RetroDownfall.Arcanum.Infrastructure.Data.LongRest.SagaLongRestService")
             .DistinctBy(static site => site.CapsuleId).ToArray();
-
-
 
         foreach (string name in new[] { "ReadSnapshotAsync", "ReadReceiptAsync", "ReplayProtectedAsync" })
         {
@@ -41258,7 +41257,6 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
         {
             Assert.Contains(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED");
         }
-
     }
 
     [Fact]

@@ -753,5 +753,4 @@ public sealed partial class WizardIntelligenceProviderTests
 
         public ValueTask<Result<SessionTurnClaim>> CompleteAsync(SessionTurnClaimLease lease, SessionTurnClaimOutcome outcome, CancellationToken cancellationToken) => throw new NotSupportedException();
     }
-
 }

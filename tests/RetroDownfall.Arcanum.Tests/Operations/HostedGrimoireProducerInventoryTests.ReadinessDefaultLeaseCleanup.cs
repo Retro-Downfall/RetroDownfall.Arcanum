@@ -35,7 +35,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests
         unit = unit.ReplaceNode(contract, contract.ReplaceNode(slot, inherited));
 
         ClassDeclarationSyntax gate = Assert.Single(unit.DescendantNodes().OfType<ClassDeclarationSyntax>(), static type =>
-            type.Identifier.ValueText == "ReadinessWorkGate");
+            type.Identifier.ValueText == "GrimoireConnectionAdmissionGate");
 
         unit = unit.ReplaceNode(gate, gate.WithMembers(SyntaxFactory.List(gate.Members.Where(static member => member is not
             MethodDeclarationSyntax { Identifier.ValueText: "TryAcquireWorkLease" }))));
@@ -55,9 +55,9 @@ public sealed partial class HostedGrimoireProducerInventoryTests
 
         if (unknownReceiver)
         {
-            Assert.Equal(1, source.Split("gate = new ReadinessWorkGate();", StringSplitOptions.None).Length - 1);
+            Assert.Equal(1, source.Split("gate = new GrimoireConnectionAdmissionGate();", StringSplitOptions.None).Length - 1);
 
-            source = source.Replace("gate = new ReadinessWorkGate();", nestedFactory
+            source = source.Replace("gate = new GrimoireConnectionAdmissionGate();", nestedFactory
                 ? "gate = UnprovenDefaultReadinessGate.Factory.Create();"
                 : "gate = UnprovenDefaultReadinessGate.Current;", StringComparison.Ordinal);
 
@@ -66,14 +66,14 @@ public sealed partial class HostedGrimoireProducerInventoryTests
                 {
                     internal static class UnprovenDefaultReadinessGate
                     {
-                        internal static IGrimoireConnectionAdmissionGate Current = new ReadinessWorkGate();
+                        internal static IGrimoireConnectionAdmissionGate Current = new GrimoireConnectionAdmissionGate();
 
                         internal static IReadinessGateFactory Factory = new DefaultReadinessGateFactory();
                     }
 
                     internal interface IReadinessGateFactory
                     {
-                        IGrimoireConnectionAdmissionGate Create() => new ReadinessWorkGate();
+                        IGrimoireConnectionAdmissionGate Create() => new GrimoireConnectionAdmissionGate();
                     }
 
                     internal sealed class DefaultReadinessGateFactory : IReadinessGateFactory { }
@@ -108,7 +108,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests
         Assert.False(exactSlot.IsAbstract);
 
         ClassDeclarationSyntax concreteGate = Assert.Single(tree.GetRoot().DescendantNodes().OfType<ClassDeclarationSyntax>(), static type =>
-            type.Identifier.ValueText == "ReadinessWorkGate");
+            type.Identifier.ValueText == "GrimoireConnectionAdmissionGate");
 
         INamedTypeSymbol concrete = Assert.IsAssignableFrom<INamedTypeSymbol>(model.GetDeclaredSymbol(concreteGate));
 

@@ -28,7 +28,6 @@ namespace RetroDownfall.Arcanum.Api.Intelligence;
 /// </remarks>
 internal static class ArcanumInvocationContexts
 {
-
     /// <summary>
     /// The context for a session-backed operator turn: the only surface that may stage a mutation.
     /// </summary>
@@ -100,7 +99,6 @@ internal static class ArcanumInvocationContexts
         PingRequest request,
         CanonicalCampaignContext? campaign)
     {
-
         ArgumentNullException.ThrowIfNull(request);
 
         return Create(
@@ -109,7 +107,6 @@ internal static class ArcanumInvocationContexts
             request.UnattendedMode ? InvocationAttendance.Unattended : InvocationAttendance.Attended,
             ResolveToolPolicy(request),
             campaign);
-
     }
 
     private static ArcanumInvocationContext Create(
@@ -119,7 +116,6 @@ internal static class ArcanumInvocationContexts
         ToolPolicy toolPolicy,
         CanonicalCampaignContext? campaign)
     {
-
         ArgumentNullException.ThrowIfNull(httpContext);
 
         Result<ArcanumInvocationContext> created = ArcanumInvocationContext.Create(
@@ -136,7 +132,6 @@ internal static class ArcanumInvocationContexts
         return created.IsSuccess
             ? created.Value
             : ArcanumInvocationContext.None;
-
     }
 
     private static CovenantContextPolicy ResolveContextPolicy(HttpContext httpContext) =>
@@ -146,7 +141,6 @@ internal static class ArcanumInvocationContexts
 
     private static CovenantReadAuthorityEpoch? ResolveReadAuthorityEpoch(HttpContext httpContext)
     {
-
         // Tolerate a partially composed context: unit tests drive these writers with a bare
         // DefaultHttpContext, and an absent issuer simply means this turn carries no Covenant
         // authority — the same answer a tainted installation gives.
@@ -163,7 +157,6 @@ internal static class ArcanumInvocationContexts
         return epoch.IsSuccess
             ? epoch.Value
             : null;
-
     }
 
     /// <summary>
@@ -197,5 +190,4 @@ internal static class ArcanumInvocationContexts
     /// every route takes its typed default.
     /// </remarks>
     internal const string NoContextRequestFeatureKey = "Arcanum.Covenant.NoContext";
-
 }

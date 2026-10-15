@@ -45,9 +45,6 @@ public sealed class EnvironmentIsolationContractTests
     private static readonly Lazy<IReadOnlyList<Type>> FactoryDependents =
         new(LoadFactoryDependents);
 
-    private static readonly Lazy<IReadOnlyDictionary<short, OpCode>> OpCodesByValue =
-        new(LoadOpCodesByValue);
-
     private static readonly Lazy<IReadOnlyList<Type>> EnvironmentMutatingTestClasses =
         new(LoadEnvironmentMutatingTestClasses);
 
@@ -266,6 +263,61 @@ public sealed class EnvironmentIsolationContractTests
 
         // Reaches the swap only through CliTestHarness.
         Assert.Contains("WorkspaceCommandTests", found);
+    }
+
+    /// <summary>
+    /// The scan reaches a swap through an async helper whichever way the compiler spells its state machine. A debug build
+    /// makes the state machine a class, which the helper reaches by calling its constructor; a release build makes it a
+    /// struct, which the helper reaches only as the argument of the generic start and as a local. The closure used to read
+    /// the called methods alone, so a release build lost every helper of that shape and the harness-driven test classes with
+    /// it. These fixtures are structs in both configurations and the mutation is a stand-in, so the control holds in both and
+    /// the real scans never see it.
+    /// </summary>
+    [Fact]
+    public void The_mutation_closure_reaches_a_swap_through_a_struct_state_machine_by_local_and_by_generic_argument()
+    {
+        Type machine = typeof(StructSwapHelper.SwapStateMachine);
+
+        HashSet<Type> mutating = MutatingClosure(
+            [
+                machine,
+                typeof(StructSwapHelper),
+                typeof(StructSwapCaller),
+                typeof(StructSwapByGenericArgument),
+                typeof(StructSwapByLocal),
+            ],
+            static called => called.DeclaringType == typeof(StructSwapSink));
+
+        // The state machine swaps directly.
+        Assert.Contains(machine, mutating);
+
+        // Started through the builder: the machine is both a local and the generic argument of the start.
+        Assert.Contains(typeof(StructSwapHelper), mutating);
+
+        Assert.Contains(typeof(StructSwapCaller), mutating);
+
+        // Each of the two references is enough on its own.
+        Assert.Contains(typeof(StructSwapByGenericArgument), mutating);
+
+        Assert.Contains(typeof(StructSwapByLocal), mutating);
+    }
+
+    /// <summary>
+    /// The negative twin: a struct state machine that does not swap, started the same way, makes neither its helper nor the
+    /// caller of that helper a swapper, so the references the closure now follows do not blur it.
+    /// </summary>
+    [Fact]
+    public void The_mutation_closure_does_not_follow_a_struct_state_machine_that_swaps_nothing()
+    {
+        HashSet<Type> mutating = MutatingClosure(
+            [
+                typeof(StructQuietHelper.QuietStateMachine),
+                typeof(StructQuietHelper),
+                typeof(StructQuietCaller),
+            ],
+            static called => called.DeclaringType == typeof(StructSwapSink));
+
+        Assert.Empty(mutating);
     }
 
     /// <summary>
@@ -577,22 +629,6 @@ public sealed class EnvironmentIsolationContractTests
         return collections;
     }
 
-    private static IReadOnlyDictionary<short, OpCode> LoadOpCodesByValue()
-    {
-        Dictionary<short, OpCode> lookup = [];
-
-        foreach (FieldInfo field in typeof(OpCodes).GetFields(
-            BindingFlags.Public | BindingFlags.Static))
-        {
-            if (field.GetValue(null) is OpCode opCode)
-            {
-                lookup[opCode.Value] = opCode;
-            }
-        }
-
-        return lookup;
-    }
-
     /// <summary>
     /// A test class offends if its own IL calls <c>Environment.SetEnvironmentVariable</c>, or if it
     /// calls into a first-party helper that does (one closure pass covers scopes such as
@@ -617,6 +653,92 @@ public sealed class EnvironmentIsolationContractTests
 
             _ = value;
         }
+    }
+
+    // IL-only fixtures for the mutation-closure control tests. Nothing calls them. The sink stands in for a process-global
+    // mutation so that no real scan counts them, and each state machine is a struct in every build configuration.
+    internal static class StructSwapSink
+    {
+        internal static void Swap()
+        {
+        }
+    }
+
+    internal static class StructSwapHelper
+    {
+        internal struct SwapStateMachine : System.Runtime.CompilerServices.IAsyncStateMachine
+        {
+            public void MoveNext() => StructSwapSink.Swap();
+
+            public void SetStateMachine(System.Runtime.CompilerServices.IAsyncStateMachine stateMachine)
+            {
+            }
+        }
+
+        internal static void Run()
+        {
+            SwapStateMachine machine = default;
+
+            System.Runtime.CompilerServices.AsyncTaskMethodBuilder builder = System.Runtime.CompilerServices.AsyncTaskMethodBuilder.Create();
+
+            builder.Start(ref machine);
+        }
+    }
+
+    internal static class StructSwapCaller
+    {
+        internal static void Run() => StructSwapHelper.Run();
+    }
+
+    // Reaches the state machine only as the argument of a generic call: no local of that type, no call into it.
+    internal static class StructSwapByGenericArgument
+    {
+        internal static void Run() => Touch<StructSwapHelper.SwapStateMachine>();
+
+        private static void Touch<T>()
+        {
+        }
+    }
+
+    // Reaches the state machine only as a local: the one call is to a method of this class.
+    internal static class StructSwapByLocal
+    {
+        internal static void Run()
+        {
+            StructSwapHelper.SwapStateMachine machine = default;
+
+            Hold(ref machine);
+        }
+
+        private static void Hold(ref StructSwapHelper.SwapStateMachine machine) => machine = default;
+    }
+
+    internal static class StructQuietHelper
+    {
+        internal struct QuietStateMachine : System.Runtime.CompilerServices.IAsyncStateMachine
+        {
+            public void MoveNext()
+            {
+            }
+
+            public void SetStateMachine(System.Runtime.CompilerServices.IAsyncStateMachine stateMachine)
+            {
+            }
+        }
+
+        internal static void Run()
+        {
+            QuietStateMachine machine = default;
+
+            System.Runtime.CompilerServices.AsyncTaskMethodBuilder builder = System.Runtime.CompilerServices.AsyncTaskMethodBuilder.Create();
+
+            builder.Start(ref machine);
+        }
+    }
+
+    internal static class StructQuietCaller
+    {
+        internal static void Run() => StructQuietHelper.Run();
     }
 
     internal static class HostEnvironmentReader
@@ -802,13 +924,33 @@ public sealed class EnvironmentIsolationContractTests
     /// </summary>
     private static IReadOnlyList<Type> LoadMutatingTestClasses(
         Func<MethodBase, bool> mutates,
+        params Type[] seeds) =>
+        [
+            .. MutatingClosure(AssemblyTypes.Value, mutates, seeds)
+                .Select(OutermostDeclaring)
+                .Where(IsTestClass)
+                .Distinct()
+                .OrderBy(static type => type.FullName, StringComparer.Ordinal),
+        ];
+
+    /// <summary>
+    /// Every type in <paramref name="universe"/> that reaches a mutation: it calls one, or it references a type that does.
+    /// A reference is a call into the type, a generic argument of a call (the argument of the generic start of an async state
+    /// machine, which is how a struct state machine is reached), or a local of the type (the local that holds that state
+    /// machine). The compiler makes a state machine a class in a debug build and a struct in a release build, and a class is
+    /// reached by its constructor call while a struct is reached by neither, so a scan that reads only the called methods
+    /// loses every async helper in a release build and with it each test class that swaps the console through one.
+    /// </summary>
+    private static HashSet<Type> MutatingClosure(
+        IEnumerable<Type> universe,
+        Func<MethodBase, bool> mutates,
         params Type[] seeds)
     {
         Dictionary<Type, HashSet<Type>> callees = [];
 
         HashSet<Type> mutating = [.. seeds];
 
-        foreach (Type type in AssemblyTypes.Value)
+        foreach (Type type in universe)
         {
             HashSet<Type> referenced = [];
 
@@ -816,8 +958,18 @@ public sealed class EnvironmentIsolationContractTests
 
             foreach (MethodBase method in DeclaredMethods(type))
             {
+                foreach (Type local in LocalTypes(method))
+                {
+                    AddReferencedTypes(referenced, local, type.Assembly);
+                }
+
                 foreach (MethodBase called in CalledMethods(method))
                 {
+                    foreach (Type argument in GenericArgumentsOf(called))
+                    {
+                        AddReferencedTypes(referenced, argument, type.Assembly);
+                    }
+
                     if (mutates(called))
                     {
                         found = true;
@@ -825,10 +977,9 @@ public sealed class EnvironmentIsolationContractTests
                         continue;
                     }
 
-                    if (called.DeclaringType is { } declaring
-                        && declaring.Assembly == type.Assembly)
+                    if (called.DeclaringType is { } declaring)
                     {
-                        _ = referenced.Add(declaring);
+                        AddReferencedTypes(referenced, declaring, type.Assembly);
                     }
                 }
             }
@@ -860,12 +1011,39 @@ public sealed class EnvironmentIsolationContractTests
             }
         }
 
-        return mutating
-            .Select(OutermostDeclaring)
-            .Where(IsTestClass)
-            .Distinct()
-            .OrderBy(static type => type.FullName, StringComparer.Ordinal)
-            .ToArray();
+        return mutating;
+    }
+
+    /// <summary>
+    /// Adds <paramref name="type"/> when it belongs to <paramref name="assembly"/>, and every such type it is built from: the
+    /// element of an array or reference, and the arguments of a constructed generic type.
+    /// </summary>
+    private static void AddReferencedTypes(
+        HashSet<Type> referenced,
+        Type type,
+        Assembly assembly)
+    {
+        if (type.HasElementType && type.GetElementType() is { } element)
+        {
+            AddReferencedTypes(referenced, element, assembly);
+
+            return;
+        }
+
+        if (type.IsGenericType && !type.IsGenericTypeDefinition)
+        {
+            foreach (Type argument in type.GetGenericArguments())
+            {
+                AddReferencedTypes(referenced, argument, assembly);
+            }
+        }
+
+        Type definition = type.IsGenericType ? type.GetGenericTypeDefinition() : type;
+
+        if (definition.Assembly == assembly)
+        {
+            _ = referenced.Add(definition);
+        }
     }
 
     private static IEnumerable<MethodBase> DeclaredMethods(
@@ -888,203 +1066,13 @@ public sealed class EnvironmentIsolationContractTests
         }
     }
 
-    /// <summary>
-    /// Walks a method body one opcode at a time — a naive byte scan for <c>call</c> would resolve
-    /// operand bytes as tokens and produce false accusations. Bails out of the whole method on the
-    /// first unknown opcode rather than guessing at an operand length.
-    /// </summary>
-    private static IEnumerable<MethodBase> CalledMethods(
-        MethodBase method)
-    {
-        Module module = method.Module;
+    private static IEnumerable<MethodBase> CalledMethods(MethodBase method) => ClrMethodBodyReader.CalledMethods(method);
 
-        Type[]? typeArguments = null;
+    private static IEnumerable<string> LoadedStrings(MethodBase method) => ClrMethodBodyReader.LoadedStrings(method);
 
-        Type[]? methodArguments = null;
+    private static IEnumerable<Type> GenericArgumentsOf(MethodBase called) => ClrMethodBodyReader.GenericArgumentsOf(called);
 
-        try
-        {
-            typeArguments = method.DeclaringType?.IsGenericType == true
-                ? method.DeclaringType.GetGenericArguments()
-                : null;
-
-            methodArguments = method.IsGenericMethodDefinition
-                ? method.GetGenericArguments()
-                : null;
-        }
-        catch (Exception exception) when (exception is NotSupportedException
-            or InvalidOperationException
-            or TypeLoadException)
-        {
-            yield break;
-        }
-
-        foreach ((OpCode opCode, int operand) in Instructions(method))
-        {
-            if (opCode.OperandType is not OperandType.InlineMethod)
-            {
-                continue;
-            }
-
-            MethodBase? called = ResolveMethod(module, operand, typeArguments, methodArguments);
-
-            if (called is not null)
-            {
-                yield return called;
-            }
-        }
-    }
-
-    /// <summary>
-    /// Every string literal a method loads. The C# compiler inlines <c>const string</c> values as
-    /// <c>ldstr</c>, so a name spelled once as a constant and used in another method still shows up
-    /// in the declaring class.
-    /// </summary>
-    private static IEnumerable<string> LoadedStrings(
-        MethodBase method)
-    {
-        Module module = method.Module;
-
-        foreach ((OpCode opCode, int operand) in Instructions(method))
-        {
-            if (opCode.OperandType is not OperandType.InlineString)
-            {
-                continue;
-            }
-
-            string? literal;
-
-            try
-            {
-                literal = module.ResolveString(operand);
-            }
-            catch (Exception exception) when (exception is ArgumentException
-                or BadImageFormatException)
-            {
-                continue;
-            }
-
-            yield return literal;
-        }
-    }
-
-    /// <summary>
-    /// The opcode stream of a method body, with the 32-bit operand of every token-carrying
-    /// instruction. Shared by the call-site and string-literal walks so neither re-implements the
-    /// operand-length bookkeeping.
-    /// </summary>
-    private static IEnumerable<(OpCode OpCode, int Operand)> Instructions(
-        MethodBase method)
-    {
-        byte[]? il;
-
-        try
-        {
-            il = method.GetMethodBody()?.GetILAsByteArray();
-        }
-        catch (Exception exception) when (exception is BadImageFormatException
-            or NotSupportedException
-            or InvalidOperationException
-            or TypeLoadException)
-        {
-            yield break;
-        }
-
-        if (il is null)
-        {
-            yield break;
-        }
-
-        IReadOnlyDictionary<short, OpCode> lookup = OpCodesByValue.Value;
-
-        int offset = 0;
-
-        while (offset < il.Length)
-        {
-            short code = il[offset];
-
-            offset++;
-
-            if (code == 0xFE)
-            {
-                if (offset >= il.Length)
-                {
-                    yield break;
-                }
-
-                code = unchecked((short)(0xFE00 | il[offset]));
-
-                offset++;
-            }
-
-            if (!lookup.TryGetValue(code, out OpCode opCode))
-            {
-                yield break;
-            }
-
-            if (opCode.OperandType is OperandType.InlineMethod or OperandType.InlineString
-                && offset + 4 <= il.Length)
-            {
-                yield return (opCode, BitConverter.ToInt32(il, offset));
-            }
-
-            int operandSize = OperandSize(opCode, il, offset);
-
-            if (operandSize < 0)
-            {
-                yield break;
-            }
-
-            offset += operandSize;
-        }
-    }
-
-    private static int OperandSize(
-        OpCode opCode,
-        byte[] il,
-        int offset) =>
-        opCode.OperandType switch
-        {
-            OperandType.InlineNone => 0,
-            OperandType.ShortInlineBrTarget
-                or OperandType.ShortInlineI
-                or OperandType.ShortInlineVar => 1,
-            OperandType.InlineVar => 2,
-            OperandType.InlineBrTarget
-                or OperandType.InlineField
-                or OperandType.InlineI
-                or OperandType.InlineMethod
-                or OperandType.InlineSig
-                or OperandType.InlineString
-                or OperandType.InlineTok
-                or OperandType.InlineType
-                or OperandType.ShortInlineR => 4,
-            OperandType.InlineI8 or OperandType.InlineR => 8,
-            OperandType.InlineSwitch => offset + 4 <= il.Length
-                ? 4 + (4 * BitConverter.ToInt32(il, offset))
-                : -1,
-            _ => -1,
-        };
-
-    private static MethodBase? ResolveMethod(
-        Module module,
-        int token,
-        Type[]? typeArguments,
-        Type[]? methodArguments)
-    {
-        try
-        {
-            return module.ResolveMethod(token, typeArguments, methodArguments);
-        }
-        catch (Exception exception) when (exception is ArgumentException
-            or BadImageFormatException
-            or MissingMethodException
-            or TypeLoadException
-            or FileNotFoundException)
-        {
-            return null;
-        }
-    }
+    private static IEnumerable<Type> LocalTypes(MethodBase method) => ClrMethodBodyReader.LocalTypes(method);
 
     /// <summary>
     /// Assignment to the process-global environment. <c>SetEnvironmentVariable</c> is the obvious

@@ -32,14 +32,14 @@ public sealed partial class HostedGrimoireProducerInventoryTests
 
         if (shape == "forwarded-readonly-gate")
         {
-            ReplaceOne("gate = new ReadinessWorkGate();", "gate = new ForwardingReadinessWorkGate();");
+            ReplaceOne("gate = new GrimoireConnectionAdmissionGate();", "gate = new ForwardingReadinessWorkGate();");
 
             source += """
                 namespace RetroDownfall.Arcanum.Infrastructure.Data.LongRest
                 {
                     internal sealed class ForwardingReadinessWorkGate : IGrimoireConnectionAdmissionGate
                     {
-                        private readonly IGrimoireConnectionAdmissionGate inner = new ReadinessWorkGate();
+                        private readonly IGrimoireConnectionAdmissionGate inner = new GrimoireConnectionAdmissionGate();
 
                         public bool TryAcquireWorkLease(GrimoireWorkKind kind, out IGrimoireWorkLease lease)
                             => inner.TryAcquireWorkLease(kind, out lease);
@@ -49,14 +49,14 @@ public sealed partial class HostedGrimoireProducerInventoryTests
         }
         else if (shape == "unknown-gate")
         {
-            ReplaceOne("gate = new ReadinessWorkGate();", "gate = UnprovenReadinessGate.Current;");
+            ReplaceOne("gate = new GrimoireConnectionAdmissionGate();", "gate = UnprovenReadinessGate.Current;");
 
             source += """
                 namespace RetroDownfall.Arcanum.Infrastructure.Data.LongRest
                 {
                     internal static class UnprovenReadinessGate
                     {
-                        internal static IGrimoireConnectionAdmissionGate Current = new ReadinessWorkGate();
+                        internal static IGrimoireConnectionAdmissionGate Current = new GrimoireConnectionAdmissionGate();
                     }
                 }
                 """;

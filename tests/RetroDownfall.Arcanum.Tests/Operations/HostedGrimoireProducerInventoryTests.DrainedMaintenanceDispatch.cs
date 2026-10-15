@@ -32,10 +32,10 @@ public sealed partial class HostedGrimoireProducerInventoryTests
 
         const string protocol = "public interface IGrimoireWorkLease : System.IDisposable, System.IAsyncDisposable { bool TryBeginExternalEffectGroup(out System.IDisposable group); }";
 
-        source = source.ReplaceSdkFixtureText(protocol, "public interface IGrimoireWorkLease : System.IDisposable, System.IAsyncDisposable { bool TryBeginExternalEffectGroup(out System.IDisposable group); GrimoireConnectionAdmissionGate.DrainedMaintenanceProof? ProveDrainedMaintenance(long previousGeneration) => null; } public sealed class GrimoireConnectionAdmissionGate { public sealed class DrainedMaintenanceProof { } }", StringComparison.Ordinal);
+        source = source.ReplaceSdkFixtureText(protocol, "public interface IGrimoireWorkLease : System.IDisposable, System.IAsyncDisposable { bool TryBeginExternalEffectGroup(out System.IDisposable group); GrimoireConnectionAdmissionGate.DrainedMaintenanceProof? ProveDrainedMaintenance(long previousGeneration) => null; } public sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmissionGate { public sealed class DrainedMaintenanceProof { } public bool TryAcquireWorkLease(GrimoireWorkKind kind, out IGrimoireWorkLease lease) { lease = new global::Worker.DrainedWorkLease(); return true; } }", StringComparison.Ordinal);
 
         source = source.ReplaceSdkFixtureText("RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireConnectionAdmissionGate gate = null!;",
-            "RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireConnectionAdmissionGate gate = new ClosedDrainedGate();", StringComparison.Ordinal);
+            "RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireConnectionAdmissionGate gate = new RetroDownfall.Arcanum.Infrastructure.Data.GrimoireConnectionAdmissionGate();", StringComparison.Ordinal);
 
         ClassDeclarationSyntax oldLease = Assert.Single(CSharpSyntaxTree.ParseText(source).GetRoot().DescendantNodes().OfType<ClassDeclarationSyntax>(),
             static type => type.Identifier.ValueText == "ForeignLease" && type.Parent is ClassDeclarationSyntax { Identifier.ValueText: "Worker" });
@@ -67,18 +67,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests
         };
 
         source = source.ReplaceSdkFixtureText(oldLease.ToFullString(), $$"""
-            private sealed class ClosedDrainedGate : RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireConnectionAdmissionGate
-            {
-                public bool TryAcquireWorkLease(RetroDownfall.Arcanum.Infrastructure.Data.GrimoireWorkKind kind,
-                    out RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireWorkLease lease)
-                {
-                    lease = new DrainedWorkLease();
-
-                    return true;
-                }
-            }
-
-            private sealed class DrainedWorkLease : RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireWorkLease
+            internal sealed class DrainedWorkLease : RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireWorkLease
             {
                 {{storage}}
 
@@ -150,13 +139,13 @@ public sealed partial class HostedGrimoireProducerInventoryTests
 
         Assert.Equal(compilation.Assembly.Identity, acquisition.TargetMethod.ContainingAssembly.Identity);
 
-        INamedTypeSymbol gateType = Assert.IsAssignableFrom<INamedTypeSymbol>(model.GetDeclaredSymbol(Type("ClosedDrainedGate")));
+        INamedTypeSymbol gateType = Assert.IsAssignableFrom<INamedTypeSymbol>(model.GetDeclaredSymbol(Type("GrimoireConnectionAdmissionGate")));
 
         Assert.True(gateType.IsSealed);
 
         IMethodSymbol gateImplementation = Assert.IsAssignableFrom<IMethodSymbol>(gateType.FindImplementationForInterfaceMember(acquisition.TargetMethod));
 
-        Assert.True(SymbolEqualityComparer.Default.Equals(gateImplementation, model.GetDeclaredSymbol(Method("ClosedDrainedGate", "TryAcquireWorkLease"))));
+        Assert.True(SymbolEqualityComparer.Default.Equals(gateImplementation, model.GetDeclaredSymbol(Method("GrimoireConnectionAdmissionGate", "TryAcquireWorkLease"))));
 
         VariableDeclaratorSyntax gateSyntax = Assert.Single(run.DescendantNodes().OfType<VariableDeclaratorSyntax>(),
             static variable => variable.Identifier.ValueText == "gate");
@@ -169,7 +158,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests
 
         Assert.True(SymbolEqualityComparer.Default.Equals(gateLocal, Assert.IsAssignableFrom<ILocalReferenceOperation>(acquisition.Instance).Local));
 
-        MethodDeclarationSyntax gateBody = Method("ClosedDrainedGate", "TryAcquireWorkLease");
+        MethodDeclarationSyntax gateBody = Method("GrimoireConnectionAdmissionGate", "TryAcquireWorkLease");
 
         ISimpleAssignmentOperation outAssignment = Assert.IsAssignableFrom<ISimpleAssignmentOperation>(model.GetOperation(
             Assert.Single(gateBody.DescendantNodes().OfType<AssignmentExpressionSyntax>())));

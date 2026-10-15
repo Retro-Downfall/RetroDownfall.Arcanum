@@ -763,7 +763,6 @@ public sealed partial class GrimoireMaintenanceAdmissionTests
                     starting,
                     startup);
             }
-
         }
 
         await using (second)

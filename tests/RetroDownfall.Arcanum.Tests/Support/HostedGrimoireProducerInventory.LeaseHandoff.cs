@@ -70,124 +70,22 @@ internal static partial class HostedGrimoireProducerInventory
         "ILongRestSweepCoordinator",
     ];
 
-    private static IEnumerable<INamedTypeSymbol> HandoffChainTypes(INamespaceSymbol scope)
-    {
-        foreach (INamedTypeSymbol type in scope.GetTypeMembers())
-        {
-            foreach (INamedTypeSymbol nested in HandoffChainNestedTypes(type))
-            {
-                yield return nested;
-            }
-        }
-
-        foreach (INamespaceSymbol child in scope.GetNamespaceMembers())
-        {
-            foreach (INamedTypeSymbol type in HandoffChainTypes(child))
-            {
-                yield return type;
-            }
-        }
-    }
-
-    private static IEnumerable<INamedTypeSymbol> HandoffChainNestedTypes(INamedTypeSymbol type)
-    {
-        yield return type;
-
-        foreach (INamedTypeSymbol nested in type.GetTypeMembers())
-        {
-            foreach (INamedTypeSymbol inner in HandoffChainNestedTypes(nested))
-            {
-                yield return inner;
-            }
-        }
-    }
-
-    // True when a call to either method may run the other: one is a slot the other implements, or one overrides the other.
-    private static bool HandoffChainRelated(IMethodSymbol first, IMethodSymbol second)
-    {
-        static bool Implements(IMethodSymbol slot, IMethodSymbol implementation) =>
-            slot.ContainingType.TypeKind == TypeKind.Interface
-            && implementation.ContainingType.TypeKind != TypeKind.Interface
-            && implementation.ContainingType.FindImplementationForInterfaceMember(slot) is IMethodSymbol found
-            && MethodKey(found) == MethodKey(implementation);
-
-        static bool Overrides(IMethodSymbol derived, IMethodSymbol inherited)
-        {
-            for (IMethodSymbol? overridden = derived.OverriddenMethod; overridden is not null; overridden = overridden.OverriddenMethod)
-            {
-                if (MethodKey(overridden) == MethodKey(inherited))
-                {
-                    return true;
-                }
-            }
-
-            return false;
-        }
-
-        return Implements(first, second) || Implements(second, first) || Overrides(first, second) || Overrides(second, first);
-    }
-
     // Every reference to a link of the chain in the given compilations, as the member that holds it. `containingType` names the link's
     // type (an interface slot or a class) and `method` its name. A reference that is not an invocation is marked, so a method group or a
-    // delegate cannot be a caller the pin does not see.
+    // delegate cannot be a caller the pin does not see. The matching is the one shared matcher (see MethodReferences).
     internal static string[] HandoffChainReferences(IReadOnlyList<CSharpCompilation> compilations, string containingType, string method)
     {
-        IMethodSymbol[] pool = [.. compilations
-            .SelectMany(static compilation => HandoffChainTypes(compilation.Assembly.GlobalNamespace))
-            .SelectMany(type => type.GetMembers().OfType<IMethodSymbol>().Where(candidate => candidate.Name == method
-                || candidate.ExplicitInterfaceImplementations.Any(implemented => implemented.Name == method)))];
-
-        HashSet<string> identities = [.. pool.Where(candidate => TypeKey(candidate.ContainingType) == containingType).Select(MethodKey)];
-
-        for (bool grew = true; grew;)
-        {
-            grew = false;
-
-            IMethodSymbol[] known = [.. pool.Where(candidate => identities.Contains(MethodKey(candidate)))];
-
-            foreach (IMethodSymbol candidate in pool.Where(candidate => !identities.Contains(MethodKey(candidate))))
-            {
-                if (known.Any(link => HandoffChainRelated(candidate, link)))
-                {
-                    grew |= identities.Add(MethodKey(candidate));
-                }
-            }
-        }
-
-        IMethodSymbol[] links = [.. pool.Where(candidate => identities.Contains(MethodKey(candidate)))];
-
         List<string> found = [];
 
-        foreach (CSharpCompilation compilation in compilations)
+        foreach (MethodReference reference in MethodReferencesTo([.. compilations], containingType, method))
         {
-            foreach (SyntaxTree tree in compilation.SyntaxTrees)
-            {
-                SemanticModel model = compilation.GetSemanticModel(tree);
+            BaseMethodDeclarationSyntax? enclosing = reference.Name.Ancestors().OfType<BaseMethodDeclarationSyntax>().FirstOrDefault();
 
-                foreach (SimpleNameSyntax name in tree.GetRoot().DescendantNodes().OfType<SimpleNameSyntax>().Where(candidate => candidate.Identifier.ValueText == method))
-                {
-                    SymbolInfo info = model.GetSymbolInfo(name);
+            string owner = enclosing?.Ancestors().OfType<TypeDeclarationSyntax>().FirstOrDefault()?.Identifier.ValueText ?? "<none>";
 
-                    IEnumerable<IMethodSymbol> referenced = info.Symbol is IMethodSymbol exact ? [exact] : info.CandidateSymbols.OfType<IMethodSymbol>();
+            string member = enclosing is MethodDeclarationSyntax declared ? declared.Identifier.ValueText : "<other>";
 
-                    if (!referenced.Any(reference => identities.Contains(MethodKey(reference)) || links.Any(link => HandoffChainRelated(reference, link))))
-                    {
-                        continue;
-                    }
-
-                    BaseMethodDeclarationSyntax? enclosing = name.Ancestors().OfType<BaseMethodDeclarationSyntax>().FirstOrDefault();
-
-                    string owner = enclosing?.Ancestors().OfType<TypeDeclarationSyntax>().FirstOrDefault()?.Identifier.ValueText ?? "<none>";
-
-                    string member = enclosing is MethodDeclarationSyntax declared ? declared.Identifier.ValueText : "<other>";
-
-                    bool invoked = name.Parent is InvocationExpressionSyntax
-                        || name.Parent is MemberAccessExpressionSyntax { Parent: InvocationExpressionSyntax }
-                        || name.Parent is MemberBindingExpressionSyntax { Parent: InvocationExpressionSyntax };
-
-                    found.Add(owner + "." + member + (invoked ? "" : " (reference)"));
-                }
-            }
+            found.Add(owner + "." + member + (reference.Invoked ? "" : " (reference)"));
         }
 
         return [.. found.Order(StringComparer.Ordinal)];

@@ -760,6 +760,10 @@ internal static partial class HostedGrimoireProducerInventory
             : containingNamespace + "." + type.MetadataName;
     }
 
+    // A lookup into a tree the analysis does not read (generated code under obj/, a tree outside src/) refuses the traversal's
+    // completion with this code, naming the declaration, and the caller takes the value it takes when it cannot prove it.
+    internal const string UnanalysedTreeCode = "HOSTED_TREE_UNANALYSED";
+
     private static int connectionReplacementScans;
 
     private static long connectionReplacementScanTicks;
@@ -2168,6 +2172,37 @@ internal static partial class HostedGrimoireProducerInventory
 
     // The authored implementers of the framework slots (ToString, Equals, GetHashCode, CompareTo, GetFormat, ...) that reach
     // a producer site or cannot be followed, over the given compilations.
+    // The classes of framework entry point a limit pin asks about (see ProducerGraph.FrameworkEntryPointsThatReach).
+    internal enum FrameworkEntryPoints
+    {
+        // An authored override of a member whose first declaration is the framework's.
+        Overrides,
+
+        // An authored implementation of IDisposable.Dispose or IAsyncDisposable.DisposeAsync.
+        Disposals,
+
+        // An authored property getter with a body.
+        Accessors,
+    }
+
+    // The authored framework entry points of one class that reach a classified producer site or cannot be followed, over the given compilations.
+    internal static IReadOnlyList<string> ProbeFrameworkEntryPointsThatReach(IReadOnlyList<CSharpCompilation> compilations, FrameworkEntryPoints kind) =>
+        new ProducerGraph(compilations, DefaultEvaluationEnvironmentMaximumMembers, DefaultEvaluationEnvironmentMaximumDepth, DefaultTraversalMaximumDepth, DefaultMaximumAnalyzedStatesPerRoot, false, sitesOnly: true)
+            .FrameworkEntryPointsThatReach(kind);
+
+    // Every class of framework entry point, answered by one graph over the compilations: the graph is the cost, and its scans are shared.
+    internal static IReadOnlyDictionary<FrameworkEntryPoints, IReadOnlyList<string>> ProbeAllFrameworkEntryPointsThatReach(IReadOnlyList<CSharpCompilation> compilations)
+    {
+        ProducerGraph graph = new(compilations, DefaultEvaluationEnvironmentMaximumMembers, DefaultEvaluationEnvironmentMaximumDepth, DefaultTraversalMaximumDepth, DefaultMaximumAnalyzedStatesPerRoot, false, sitesOnly: true);
+
+        return Enum.GetValues<FrameworkEntryPoints>().ToDictionary(static kind => kind, kind => graph.FrameworkEntryPointsThatReach(kind));
+    }
+
+    // The authored methods a predicate selects that reach a classified producer site or cannot be followed, over the given compilations.
+    internal static IReadOnlyList<string> ProbeMembersThatReach(IReadOnlyList<CSharpCompilation> compilations, Func<INamedTypeSymbol, IMethodSymbol, bool> selected) =>
+        new ProducerGraph(compilations, DefaultEvaluationEnvironmentMaximumMembers, DefaultEvaluationEnvironmentMaximumDepth, DefaultTraversalMaximumDepth, DefaultMaximumAnalyzedStatesPerRoot, false, sitesOnly: true)
+            .MembersThatReach(selected);
+
     internal static IReadOnlyList<string> ProbeCallbackImplementersThatReach(IReadOnlyList<CSharpCompilation> compilations, CallbackFamilies? families = null) =>
         new ProducerGraph(compilations, DefaultEvaluationEnvironmentMaximumMembers, DefaultEvaluationEnvironmentMaximumDepth, DefaultTraversalMaximumDepth, DefaultMaximumAnalyzedStatesPerRoot, false, sitesOnly: true)
             .CallbackImplementersThatReach(families);
@@ -3313,6 +3348,27 @@ internal static partial class HostedGrimoireProducerInventory
         private readonly Dictionary<SyntaxTree, int> treeIdentities = new(ReferenceEqualityComparer.Instance);
 
         private readonly Dictionary<SyntaxTree, SemanticModel> semanticModels = new(ReferenceEqualityComparer.Instance);
+
+        // The model of an analysed tree, or null with the traversal refused. The analysis reads the trees under src/ that are not
+        // generated; a declaration in any other tree (generated code under obj/, a tree outside src/) has no model here. A lookup that
+        // reaches one fails closed with HOSTED_TREE_UNANALYSED naming the declaration, and its caller takes the value it takes when
+        // it cannot prove the declaration, never an exception out of the discovery.
+        private SemanticModel? AnalysedModel(SyntaxNode declaration)
+        {
+            if (semanticModels.TryGetValue(declaration.SyntaxTree, out SemanticModel? model))
+            {
+                return model;
+            }
+
+            RefuseTraversalCompletion();
+
+            diagnostics.Add(new(
+                UnanalysedTreeCode,
+                Location(declaration),
+                "The declaration is in a tree the analysis does not read (generated code or a tree outside src/), so it is not followed."));
+
+            return null;
+        }
 
         private readonly Dictionary<Compilation, Dictionary<IAssemblySymbol, int>> authoredCompilationIdentities = new(ReferenceEqualityComparer.Instance);
 
@@ -11122,9 +11178,11 @@ internal static partial class HostedGrimoireProducerInventory
                 return null;
             }
 
-            return RootOperation(operationId)
-                + "@effect:"
-                + Location(admission);
+            // The group's own site records its effect with the origin of the lease it was begun on; the recovery effect is the same string.
+            return EffectOf(
+                RootOperation(operationId),
+                Location(admission),
+                LeaseReceiverProven(member, admission, out string? begunOn) ? begunOn : null);
         }
 
         private bool RuntimeRecoveryDispatchRejectsNonGenericTuples(
@@ -13315,7 +13373,7 @@ internal static partial class HostedGrimoireProducerInventory
 
             if (effect is null || !effect.StartsWith(RootOperation(operationId) + "@effect:", StringComparison.Ordinal)
                 || FindRetainedAdmission(member, site, "TryBeginExternalEffectGroup", null) is not { } local
-                || effect != RootOperation(operationId) + "@effect:" + local) return false;
+                || EffectGroupLocation(effect) != local) return false;
 
             InvocationExpressionSyntax[] groups = AdmissionSyntax(member).AdmissionCalls
                 .Where(group => Location(group) == local).ToArray();
@@ -16081,7 +16139,7 @@ internal static partial class HostedGrimoireProducerInventory
 
             if (effect is null || !effect.StartsWith(RootOperation(operationId) + "@effect:", StringComparison.Ordinal)) return false;
 
-            string location = effect[(effect.LastIndexOf("@effect:", StringComparison.Ordinal) + 8)..];
+            string location = EffectGroupLocation(effect);
 
             // Local sends first authenticate the actually retained guarded group.
             if (FindRetainedAdmission(member, site, "TryBeginExternalEffectGroup", null) is { } local)
@@ -28832,7 +28890,10 @@ internal static partial class HostedGrimoireProducerInventory
                 return null;
             }
 
-            SemanticModel model = semanticModels[construction.SyntaxTree];
+            if (AnalysedModel(construction) is not { } model)
+            {
+                return null;
+            }
 
             if (model.GetOperation(construction) is not
                 IObjectCreationOperation operation)
@@ -29862,11 +29923,11 @@ internal static partial class HostedGrimoireProducerInventory
                         _ => null,
                     };
 
-                    if (initializer is not null)
+                    if (initializer is not null && AnalysedModel(initializer) is { } initializerModel)
                     {
                         CollectLazyConstructions(
                             initializer,
-                            semanticModels[initializer.SyntaxTree],
+                            initializerModel,
                             lazyType,
                             constructions,
                             path);
@@ -31051,7 +31112,13 @@ internal static partial class HostedGrimoireProducerInventory
                 }
 
                 expression = StripTransparentExpression(initializer);
-                model = semanticModels[expression.SyntaxTree];
+
+                if (AnalysedModel(expression) is not { } initializerModel)
+                {
+                    return false;
+                }
+
+                model = initializerModel;
             }
 
             if (model.GetOperation(expression) is not IObjectCreationOperation creation
@@ -32614,7 +32681,10 @@ internal static partial class HostedGrimoireProducerInventory
                             return false;
                         }
 
-                        SemanticModel model = semanticModels[variable.SyntaxTree];
+                        if (AnalysedModel(variable) is not { } model)
+                        {
+                            return false;
+                        }
 
                         SyntaxNode root = variable.SyntaxTree.GetRoot();
 
@@ -33966,9 +34036,10 @@ internal static partial class HostedGrimoireProducerInventory
                         };
 
                         if (initializer is not null
+                            && AnalysedModel(initializer) is { } initializerModel
                             && IsReviewedPureComparerExpression(
                                 initializer,
-                                semanticModels[initializer.SyntaxTree],
+                                initializerModel,
                                 path))
                         {
                             return true;
@@ -34379,12 +34450,14 @@ internal static partial class HostedGrimoireProducerInventory
                         },
                         ])
                     {
-                        return ResolveContextualCallable(
-                            initializer,
-                            semanticModels[initializer.SyntaxTree],
-                            callableBindings,
-                            absentCallables,
-                            path);
+                        return AnalysedModel(initializer) is { } initializerModel
+                            ? ResolveContextualCallable(
+                                initializer,
+                                initializerModel,
+                                callableBindings,
+                                absentCallables,
+                                path)
+                            : default;
                     }
                 }
                 finally
@@ -34496,6 +34569,12 @@ internal static partial class HostedGrimoireProducerInventory
                     return default;
                 }
 
+                // The same reason: a callable declared in a tree the analysis does not read is written there, unseen.
+                if (symbol.DeclaringSyntaxReferences.Any(reference => AnalysedModel(reference.GetSyntax()) is null))
+                {
+                    return default;
+                }
+
                 if (symbol is IEventSymbol eventSymbol)
                 {
                     return HasAuthoredCallableMutation(eventSymbol) ? default : new(true, null, true, false);
@@ -34510,15 +34589,24 @@ internal static partial class HostedGrimoireProducerInventory
                 {
                     SyntaxNode? declaration = local.DeclaringSyntaxReferences.SingleOrDefault()?.GetSyntax();
 
-                    if (declaration is VariableDeclaratorSyntax { Initializer.Value: { } initializer } variable
-                        && !variable.Ancestors().OfType<BlockSyntax>().First().DescendantNodes().OfType<AssignmentExpressionSyntax>().Any(assignment => SymbolEqualityComparer.Default.Equals(semanticModels[assignment.SyntaxTree].GetSymbolInfo(assignment.Left).Symbol, local)))
+                    if (declaration is VariableDeclaratorSyntax { Initializer.Value: { } initializer } variable)
                     {
-                        return ResolveClosedCallable(initializer, semanticModels[initializer.SyntaxTree], path);
+                        if (AnalysedModel(variable) is not { } variableModel)
+                        {
+                            return default;
+                        }
+
+                        if (!variable.Ancestors().OfType<BlockSyntax>().First().DescendantNodes().OfType<AssignmentExpressionSyntax>().Any(assignment => SymbolEqualityComparer.Default.Equals(variableModel.GetSymbolInfo(assignment.Left).Symbol, local)))
+                        {
+                            return ResolveClosedCallable(initializer, variableModel, path);
+                        }
                     }
 
                     if (declaration?.AncestorsAndSelf().OfType<IsPatternExpressionSyntax>().FirstOrDefault() is { } pattern)
                     {
-                        return ResolveClosedCallable(pattern.Expression, semanticModels[pattern.SyntaxTree], path);
+                        return AnalysedModel(pattern) is { } patternModel
+                            ? ResolveClosedCallable(pattern.Expression, patternModel, path)
+                            : default;
                     }
 
                     return default;
@@ -34566,7 +34654,12 @@ internal static partial class HostedGrimoireProducerInventory
                 {
                     if (reference.GetSyntax() is VariableDeclaratorSyntax { Initializer.Value: { } initializer })
                     {
-                        values.Add(ResolveClosedCallable(initializer, semanticModels[initializer.SyntaxTree], path));
+                        if (AnalysedModel(initializer) is not { } initializerModel)
+                        {
+                            return default;
+                        }
+
+                        values.Add(ResolveClosedCallable(initializer, initializerModel, path));
                     }
                 }
 
@@ -34872,6 +34965,15 @@ internal static partial class HostedGrimoireProducerInventory
                 return absent;
             }
 
+            // A callable declared in a tree the analysis does not read can be assigned there, in code nothing here sees, so it is
+            // never proven absent: the lookup refuses and the callable stays unproven.
+            if (symbol.DeclaringSyntaxReferences.Any(reference => AnalysedModel(reference.GetSyntax()) is null))
+            {
+                absentTestCallables[symbol] = false;
+
+                return false;
+            }
+
             ITypeSymbol? callableType = symbol switch
             {
                 IEventSymbol declaredEvent => declaredEvent.Type,
@@ -34885,7 +34987,7 @@ internal static partial class HostedGrimoireProducerInventory
                 VariableDeclaratorSyntax variable => variable.Initializer?.Value,
                 PropertyDeclarationSyntax property => property.Initializer?.Value,
                 _ => null,
-            }).OfType<ExpressionSyntax>().Any(initializer => initializer is not DefaultExpressionSyntax && !(initializer is LiteralExpressionSyntax literal && literal.IsKind(SyntaxKind.DefaultLiteralExpression)) && semanticModels[initializer.SyntaxTree].GetConstantValue(initializer) is not { HasValue: true, Value: null });
+            }).OfType<ExpressionSyntax>().Any(initializer => initializer is not DefaultExpressionSyntax && !(initializer is LiteralExpressionSyntax literal && literal.IsKind(SyntaxKind.DefaultLiteralExpression)) && (AnalysedModel(initializer) is not { } initializerModel || initializerModel.GetConstantValue(initializer) is not { HasValue: true, Value: null }));
 
             absent = symbol.DeclaredAccessibility is Accessibility.Private or Accessibility.Internal or Accessibility.ProtectedAndInternal
                 && callableType?.TypeKind == TypeKind.Delegate
@@ -36845,9 +36947,9 @@ internal static partial class HostedGrimoireProducerInventory
                     (ExpressionSyntax Expression, SemanticModel Model)? value =
                         initializers is [ExpressionSyntax propertyInitializer]
                             && assignments.Length == 0
-                                ? (
-                                    propertyInitializer,
-                                    semanticModels[propertyInitializer.SyntaxTree])
+                                ? (AnalysedModel(propertyInitializer) is { } propertyInitializerModel
+                                    ? (propertyInitializer, propertyInitializerModel)
+                                    : null)
                                 : initializers.Length == 0
                                     && assignments is
                                     [
@@ -36994,9 +37096,14 @@ internal static partial class HostedGrimoireProducerInventory
                                 Initializer.Value: { } fieldInitializer,
                             })
                         {
+                            if (AnalysedModel(fieldInitializer) is not { } fieldInitializerModel)
+                            {
+                                return null;
+                            }
+
                             values.Add((
                                 fieldInitializer,
-                                semanticModels[fieldInitializer.SyntaxTree]));
+                                fieldInitializerModel));
                         }
                     }
 
@@ -37358,10 +37465,11 @@ internal static partial class HostedGrimoireProducerInventory
             {
                 ParameterList: { } parameters,
             }
+            && AnalysedModel(parameters) is { } parametersModel
                 ? new(
                     constructor,
                     parameters,
-                    semanticModels[parameters.SyntaxTree])
+                    parametersModel)
                 : null;
         }
 
@@ -51217,8 +51325,9 @@ internal static partial class HostedGrimoireProducerInventory
                 if (storage is IFieldSymbol { IsReadOnly: false }
                     || storage is IFieldSymbol readonlyStorage
                         && readonlyStorage.ContainingType.DeclaringSyntaxReferences.Any(reference =>
-                            HasCollectionValueReplacement(
-                                member with { Model = semanticModels[reference.SyntaxTree] },
+                            AnalysedModel(reference.GetSyntax()) is not { } declaredModel
+                            || HasCollectionValueReplacement(
+                                member with { Model = declaredModel },
                                 readonlyStorage,
                                 rejectSimpleAssignment: false))
                     || storage is IPropertySymbol { SetMethod.IsInitOnly: false }
@@ -52772,8 +52881,13 @@ internal static partial class HostedGrimoireProducerInventory
 
                 if (initializer is not null)
                 {
+                    if (AnalysedModel(initializer) is not { } initializerModel)
+                    {
+                        return new([], false, true);
+                    }
+
                     sources.Add(new(
-                        ValueExpressionContext(member, initializer, semanticModels[initializer.SyntaxTree]),
+                        ValueExpressionContext(member, initializer, initializerModel),
                         initializer));
                 }
             }
@@ -52782,7 +52896,10 @@ internal static partial class HostedGrimoireProducerInventory
             {
                 SyntaxNode declaration = reference.GetSyntax();
 
-                SemanticModel model = semanticModels[declaration.SyntaxTree];
+                if (AnalysedModel(declaration) is not { } model)
+                {
+                    return new([], false, true);
+                }
 
                 foreach (AssignmentExpressionSyntax assignment in declaration.DescendantNodes().OfType<AssignmentExpressionSyntax>())
                 {
@@ -57256,7 +57373,20 @@ internal static partial class HostedGrimoireProducerInventory
 
             string? local = FindRetainedAdmission(member, site, "TryBeginExternalEffectGroup", null, position, disposing);
 
-            return local is null ? LiveInheritedAdmission(member, site, inherited, position) : RootOperation(operationId) + "@effect:" + local;
+            if (local is null)
+            {
+                return LiveInheritedAdmission(member, site, inherited, position);
+            }
+
+            // The effect of a group begun here carries the origin of the lease it was begun on, as the group's own site records it.
+            string? begunOn = AdmissionSyntax(member).AdmissionCalls
+                .Where(call => Location(call) == local && call.Expression is MemberAccessExpressionSyntax { Name.Identifier.ValueText: "TryBeginExternalEffectGroup" })
+                .Take(2)
+                .ToArray() is [InvocationExpressionSyntax begun] && LeaseReceiverProven(member, begun, out string? origin)
+                    ? origin
+                    : null;
+
+            return EffectOf(RootOperation(operationId), local, begunOn);
         }
 
         private string? WorkAt(AuthoredMember member, SyntaxNode site, string operationId, GrimoireWorkKind? kind, string? inherited, int? position = null, SyntaxNode? disposing = null)
@@ -57292,9 +57422,12 @@ internal static partial class HostedGrimoireProducerInventory
                 return null;
             }
 
-            string origin = inherited[(inherited.LastIndexOf("@", StringComparison.Ordinal) + 1)..];
+            // An Effect is live while its group's value is; the lease it carries is the Work's to end, and the pairing at the send judges it.
+            string origin = inherited.Contains("@effect:", StringComparison.Ordinal)
+                ? EffectGroupLocation(inherited)
+                : inherited[(inherited.LastIndexOf("@", StringComparison.Ordinal) + 1)..];
 
-            origin = origin[(origin.IndexOf(':') + 1)..];
+            origin = inherited.Contains("@effect:", StringComparison.Ordinal) ? origin : origin[(origin.IndexOf(':') + 1)..];
 
             return AdmissionEndedBefore(member, origin, atPosition ?? site.SpanStart, []) ? null : inherited;
         }
@@ -57949,6 +58082,12 @@ internal static partial class HostedGrimoireProducerInventory
                 string expected = admissionName == "TryAcquireWorkLease" ? "RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireConnectionAdmissionGate.TryAcquireWorkLease" : "RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireWorkLease.TryBeginExternalEffectGroup";
 
                 if (Normalize(method) != expected || kind is not null && member.Model.GetSymbolInfo(admission.ArgumentList.Arguments[0].Expression).Symbol?.Name != kind.ToString())
+                {
+                    continue;
+                }
+
+                // The Single Gate Census: a lease from a gate the census does not trust retains nothing.
+                if (admissionName == "TryAcquireWorkLease" && !AdmissionGateTrusted)
                 {
                     continue;
                 }
@@ -58773,6 +58912,15 @@ internal static partial class HostedGrimoireProducerInventory
                 return HostedProducerSiteKind.OrdinaryConnectionRoute;
             }
 
+            // The Single Gate Census: while the analysed source declares a gate other than the reviewed one, an acquisition through the
+            // contract may be that gate's, and nothing it returns is an admitted lease.
+            if (callee == GateAcquisitionCallee && !AdmissionGateTrusted)
+            {
+                RefuseUnreviewedGate(node);
+
+                return null;
+            }
+
             if ((callee is "RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireWorkLease.TryBeginExternalEffectGroup" or "RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireConnectionAdmissionGate.TryAcquireWorkLease")
                 && (IsGuardedAdmission(node)
                     || callee == "RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireWorkLease.TryBeginExternalEffectGroup"
@@ -59240,6 +59388,22 @@ internal static partial class HostedGrimoireProducerInventory
 
             if (!ordinaryHolderPhysicalGroupProven) effectGroup = null;
 
+            // The pair a send holds is one lease's: the Effect carries the origin of the lease its group was begun on, and it is the Effect
+            // of a send only when that is the origin of the Work live at the send.
+            if (kind != HostedProducerSiteKind.EffectFrontier
+                && effectGroup is not null
+                && workAdmitted is not null
+                && EffectLeaseOrigin(effectGroup) is { } effectLease
+                && WorkOrigin(workAdmitted) is { } workLease
+                && effectLease != workLease)
+            {
+                effectGroup = null;
+
+                RefuseTraversalCompletion();
+
+                diagnostics.Add(EffectLeaseMismatch(operationId, node, callee));
+            }
+
             // CK-3: a group is the Effect of its own site only when its receiver is a must-alias of the lease whose Work is live.
             bool leaseReceiverProven = kind != HostedProducerSiteKind.EffectFrontier
                 || !callee.EndsWith(".TryBeginExternalEffectGroup", StringComparison.Ordinal)
@@ -59318,7 +59482,7 @@ internal static partial class HostedGrimoireProducerInventory
                 && (member.RecoveryContext is not { Disposition: RecoveryDisposition.OrdinaryPerUnitExternalEffect }
                     || perUnitPhysicalGroupProven))
             {
-                effectGroup = rootOperation + "@effect:" + Location(node);
+                effectGroup = EffectOf(rootOperation, Location(node), node is InvocationExpressionSyntax begun && LeaseReceiverProven(member, begun, out string? begunOn) ? begunOn : null);
 
                 admissionCapsules[effectGroup] = capsuleId;
             }
@@ -59505,7 +59669,8 @@ internal static partial class HostedGrimoireProducerInventory
                 {
                     string key = TypeKey(contract) + "." + slot.Name;
 
-                    if ((Vocabulary.ContainsKey(key) || key is "RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireWorkLease.TryBeginExternalEffectGroup" or "RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireConnectionAdmissionGate.TryAcquireWorkLease") && SymbolEqualityComparer.Default.Equals(type.FindImplementationForInterfaceMember(slot)?.OriginalDefinition, symbol.OriginalDefinition))
+                    // Only the reviewed gate's own slot is the acquisition: an implementation of the contract anywhere else is an authored method.
+                    if ((Vocabulary.ContainsKey(key) || key is "RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireWorkLease.TryBeginExternalEffectGroup" || key == GateAcquisitionCallee && TypeKey(type) == ReviewedAdmissionGate) && SymbolEqualityComparer.Default.Equals(type.FindImplementationForInterfaceMember(slot)?.OriginalDefinition, symbol.OriginalDefinition))
                     {
                         candidates.Add(key);
                     }

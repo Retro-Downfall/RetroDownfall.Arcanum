@@ -9,7 +9,6 @@ public readonly record struct Error(
     string Message,
     IReadOnlyList<ConfigurationValidationError>? Details = null)
 {
-
     /// <summary>
     /// W4.1: a defensive, non-downcastable read-only copy of the supplied details. Returning a plain
     /// <c>List&lt;&gt;</c> as <see cref="IReadOnlyList{T}"/> let a consumer cast it back and mutate the
@@ -30,5 +29,4 @@ public readonly record struct Error(
     /// </summary>
     [JsonIgnore]
     public bool IsNone => Code is { Length: 0 } && Message is { Length: 0 } && Details is null;
-
 }

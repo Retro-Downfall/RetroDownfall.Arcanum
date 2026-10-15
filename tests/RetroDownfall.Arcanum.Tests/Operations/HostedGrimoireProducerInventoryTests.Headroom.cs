@@ -94,7 +94,8 @@ public sealed partial class HostedGrimoireProducerInventoryTests
     // entry shares one state cache and the closure is admitted once for each distinct entry, while under two or three workers an
     // entry that lands on another worker admits its own, and which worker a family lands on is decided by timing. So the serial
     // count is the largest, and it is the one a table row must hold. A selection root is named without the digest after its
-    // tilde.
+    // tilde. A row lowered since then names the count it was lowered to and the count it began with, and a row whose root has since
+    // grown within its ceiling names both counts and keeps the ceiling.
     private static readonly HeadroomCeiling[] ProductionRootCeilings =
     [
         new("A2ASendingLeaseRenewer", "RetroDownfall.Arcanum.Infrastructure.A2A.A2ASendingLeaseRenewer.ExecuteAsync", 200), // measured 186
@@ -138,7 +139,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests
         // percent, rounded up to a multiple of eight, and the cost fixes after it moved each measurement by two states, inside them.
         new("LongRestSweepHostedService", "RetroDownfall.Arcanum.Api.Intelligence.LongRestMaintenance.ProcessAdmittedAsync", 5712), // measured 5438
         new("LongRestSweepHostedService", "RetroDownfall.Arcanum.Infrastructure.Hosting.LongRestSweepHostedService.ExecuteAsync", 3792), // measured 3612
-        new("LongRunningOperationStartupHostedService", "RetroDownfall.Arcanum.Infrastructure.Operations.LongRunningOperationStartupHostedService.ContinueInBackgroundAsync", 3744), // measured 3564
+        new("LongRunningOperationStartupHostedService", "RetroDownfall.Arcanum.Infrastructure.Operations.LongRunningOperationStartupHostedService.ContinueInBackgroundAsync", 3640), // measured 3466 now (3564 at the head that introduced the table), so the row is lowered
         new("LongRunningOperationStartupHostedService", "RetroDownfall.Arcanum.Infrastructure.Operations.LongRunningOperationStartupHostedService.StartAsync", 16), // measured 3
         new("LongRunningOperationStartupHostedService", "RetroDownfall.Arcanum.Infrastructure.Operations.LongRunningOperationStartupHostedService.StartAsync::call:RetroDownfall.Arcanum.Infrastructure.Operations.LongRunningOperationStartupHostedService.RunStartupPassAsync#0", 1408), // measured 1340
         new("LongRunningOperationStartupHostedService", "RetroDownfall.Arcanum.Infrastructure.Operations.LongRunningOperationStartupHostedService.StopAsync", 16), // measured 5

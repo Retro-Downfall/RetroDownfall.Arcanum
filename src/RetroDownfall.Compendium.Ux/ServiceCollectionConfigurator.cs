@@ -13,10 +13,8 @@ namespace RetroDownfall.Compendium.Ux;
 
 internal static class ServiceCollectionConfigurator
 {
-
     public static ServiceProvider Build()
     {
-
         ServiceCollection services = new();
 
         services.AddLogging(builder => builder.AddDebug());
@@ -58,7 +56,5 @@ internal static class ServiceCollectionConfigurator
         services.AddTransient<MainWindow>();
 
         return services.BuildServiceProvider();
-
     }
-
 }

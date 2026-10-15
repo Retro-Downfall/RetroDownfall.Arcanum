@@ -16,11 +16,11 @@ public sealed partial class HostedGrimoireProducerInventoryTests
     {
         string source = ExplicitReadinessSelfAdmissionFixture("owned-lease");
 
-        Assert.Equal(1, source.Split("gate = new ReadinessWorkGate();", StringSplitOptions.None).Length - 1);
+        Assert.Equal(1, source.Split("gate = new GrimoireConnectionAdmissionGate();", StringSplitOptions.None).Length - 1);
 
-        source = source.Replace("gate = new ReadinessWorkGate();", authoredConversion
-            ? "gate = (AlternateReadinessWorkGate)new ReadinessWorkGate();"
-            : "gate = (IGrimoireConnectionAdmissionGate)new ReadinessWorkGate();", StringComparison.Ordinal);
+        source = source.Replace("gate = new GrimoireConnectionAdmissionGate();", authoredConversion
+            ? "gate = (AlternateReadinessWorkGate)new GrimoireConnectionAdmissionGate();"
+            : "gate = (IGrimoireConnectionAdmissionGate)new GrimoireConnectionAdmissionGate();", StringComparison.Ordinal);
 
         Assert.Equal(1, source.Split("public ValueTask DisposeAsync() => ValueTask.CompletedTask;", StringSplitOptions.None).Length - 1);
 
@@ -38,15 +38,15 @@ public sealed partial class HostedGrimoireProducerInventoryTests
             CompilationUnitSyntax unit = CSharpSyntaxTree.ParseText(source).GetCompilationUnitRoot();
 
             ClassDeclarationSyntax gate = Assert.Single(unit.DescendantNodes().OfType<ClassDeclarationSyntax>(), static type =>
-                type.Identifier.ValueText == "ReadinessWorkGate");
+                type.Identifier.ValueText == "GrimoireConnectionAdmissionGate");
 
             unit = unit.ReplaceNode(gate, gate.AddMembers(SyntaxFactory.ParseMemberDeclaration("""
-                public static explicit operator AlternateReadinessWorkGate(ReadinessWorkGate value)
+                public static explicit operator AlternateReadinessWorkGate(GrimoireConnectionAdmissionGate value)
                     => new AlternateReadinessWorkGate();
                 """)!));
 
             source = unit.ToFullString() + """
-                namespace RetroDownfall.Arcanum.Infrastructure.Data.LongRest
+                namespace RetroDownfall.Arcanum.Infrastructure.Data
                 {
                     internal sealed class AlternateReadinessWorkGate : IGrimoireConnectionAdmissionGate
                     {
@@ -66,13 +66,13 @@ public sealed partial class HostedGrimoireProducerInventoryTests
         SemanticModel model = compilation.GetSemanticModel(tree);
 
         CastExpressionSyntax cast = Assert.Single(tree.GetRoot().DescendantNodes().OfType<CastExpressionSyntax>(), static expression =>
-            expression.Expression is ObjectCreationExpressionSyntax { Type: IdentifierNameSyntax { Identifier.ValueText: "ReadinessWorkGate" } });
+            expression.Expression is ObjectCreationExpressionSyntax { Type: IdentifierNameSyntax { Identifier.ValueText: "GrimoireConnectionAdmissionGate" } });
 
         IConversionOperation selected = Assert.IsAssignableFrom<IConversionOperation>(model.GetOperation(cast));
 
         Assert.Equal(authoredConversion, selected.Conversion.IsUserDefined);
 
-        Assert.Equal("RetroDownfall.Arcanum.Infrastructure.Data.LongRest.ReadinessWorkGate", selected.Operand.Type!.ToDisplayString());
+        Assert.Equal("RetroDownfall.Arcanum.Infrastructure.Data.GrimoireConnectionAdmissionGate", selected.Operand.Type!.ToDisplayString());
 
         if (authoredConversion)
         {
@@ -82,7 +82,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests
 
             Assert.True(SymbolEqualityComparer.Default.Equals(actualOperator, selected.OperatorMethod));
 
-            Assert.Equal("RetroDownfall.Arcanum.Infrastructure.Data.LongRest.AlternateReadinessWorkGate", selected.Type!.ToDisplayString());
+            Assert.Equal("RetroDownfall.Arcanum.Infrastructure.Data.AlternateReadinessWorkGate", selected.Type!.ToDisplayString());
         }
         else
         {

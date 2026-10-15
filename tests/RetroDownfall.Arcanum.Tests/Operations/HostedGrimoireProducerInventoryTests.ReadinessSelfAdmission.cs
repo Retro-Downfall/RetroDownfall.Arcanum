@@ -124,7 +124,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests
         ReplaceOne("private IGrimoireWorkLease? current;", """
             private IGrimoireWorkLease? current;
 
-            private readonly IGrimoireConnectionAdmissionGate gate = new ReadinessWorkGate();
+            private readonly IGrimoireConnectionAdmissionGate gate = new GrimoireConnectionAdmissionGate();
 
             internal IAsyncDisposable Enter(CancellationToken ct = default)
             {
@@ -158,18 +158,22 @@ public sealed partial class HostedGrimoireProducerInventoryTests
         ReplaceOne("await SendFirstAsync();", "await using IAsyncDisposable ownedEntry = workAdmission.Enter(cancellationToken); " + disposal + " await SendFirstAsync();");
 
         return source + """
-            namespace RetroDownfall.Arcanum.Infrastructure.Data.LongRest
+            namespace RetroDownfall.Arcanum.Infrastructure.Data
             {
-                internal sealed class ReadinessWorkGate : IGrimoireConnectionAdmissionGate
+                // The one gate the fixture's source declares is the reviewed gate (see the Single Gate Census).
+                internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmissionGate
                 {
                     public bool TryAcquireWorkLease(GrimoireWorkKind kind, out IGrimoireWorkLease lease)
                     {
-                        lease = new ReadinessWorkLease();
+                        lease = new LongRest.ReadinessWorkLease();
 
                         return true;
                     }
                 }
+            }
 
+            namespace RetroDownfall.Arcanum.Infrastructure.Data.LongRest
+            {
                 internal sealed class ReadinessWorkLease : IGrimoireWorkLease
                 {
                     public bool TryBeginExternalEffectGroup(out IDisposable group)

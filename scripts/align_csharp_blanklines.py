@@ -18,6 +18,11 @@ Rules:
     method bodies read like `McpBridgeTool` / `ApiBootstrapper` without hand-editing every file.
   - After a single-line type member (`public`/`private`/…), if the next line is `///` at the same
     indent, insert one blank line before the doc comment.
+
+Text inside a multiline raw string, verbatim string or block comment is not code, so no rule reads,
+adds, removes or trims anything in it (a fixture source that holds C# keeps every character). The line
+that opens the literal is code up to the delimiter and is aligned like any other; the lines from the
+second on, the closing one included, are carried through untouched.
 """
 
 from __future__ import annotations
@@ -100,7 +105,18 @@ def trim_trailing_ws(text: str) -> str:
 
 def protected_multiline_lines(lines: list[str]) -> set[int]:
     """Return lines whose delimiter-shaped text belongs to a multiline literal or comment."""
+    return scan_multiline_lines(lines)[0]
+
+
+def interior_multiline_lines(lines: list[str]) -> set[int]:
+    """Return the lines that begin inside a multiline literal or comment: its text from the second line on, the closing line included."""
+    return scan_multiline_lines(lines)[1]
+
+
+def scan_multiline_lines(lines: list[str]) -> tuple[set[int], set[int]]:
+    """Return (protected, interior): the lines that open, continue or close a multiline literal or comment, and those that begin inside one."""
     protected: set[int] = set()
+    interior: set[int] = set()
     mode: str | None = None
     raw_delimiter = ""
 
@@ -109,6 +125,7 @@ def protected_multiline_lines(lines: list[str]) -> set[int]:
 
         if mode is not None:
             protected.add(line_number)
+            interior.add(line_number)
 
         while position < len(line):
             if mode == "block_comment":
@@ -218,7 +235,7 @@ def protected_multiline_lines(lines: list[str]) -> set[int]:
 
             position += 1
 
-    return protected
+    return protected, interior
 
 
 def remove_blank_inside_delimiters(lines: list[str]) -> list[str]:
@@ -367,12 +384,29 @@ def process_file(path: Path, dry_run: bool, compact_delimiters: bool = False) ->
         raw = raw[1:]
 
     text = raw.replace("\r\n", "\n")
+
+    # Compaction reads the literals itself, so it runs on the file as written.
+    lines = text.split("\n")
+    if compact_delimiters:
+        lines = remove_blank_inside_delimiters(lines)
+
+    # Every other rule sees a literal's interior lines as opaque tokens, which are put back unchanged at the end.
+    interior = interior_multiline_lines(lines)
+    carried: dict[str, str] = {}
+    masked: list[str] = []
+    for index, line in enumerate(lines):
+        if index in interior:
+            token = f"\x00{index}\x00"
+            carried[token] = line
+            masked.append(token)
+        else:
+            masked.append(line)
+
+    text = "\n".join(masked)
     text = fix_using_namespace_block(text)
     text = fix_file_level_type_gap(text)
 
     lines = text.split("\n")
-    if compact_delimiters:
-        lines = remove_blank_inside_delimiters(lines)
     lines = insert_blank_between_member_lines(lines)
     lines = insert_blank_before_doc_after_member(lines)
     lines = insert_blank_after_closing_braces(lines)
@@ -384,6 +418,8 @@ def process_file(path: Path, dry_run: bool, compact_delimiters: bool = False) ->
     text = collapse_multi_blank_lines(text)
     if not text.endswith("\n"):
         text += "\n"
+
+    text = "\n".join(carried.get(line, line) for line in text.split("\n"))
 
     new_raw = ("\ufeff" if had_bom else "") + text
     if new_raw == original:

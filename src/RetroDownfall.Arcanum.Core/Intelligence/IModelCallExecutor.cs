@@ -56,5 +56,4 @@ public interface IModelCallExecutor
         ModelCallPurpose purpose,
         CancellationToken cancellationToken,
         ModelCallContext? context);
-
 }

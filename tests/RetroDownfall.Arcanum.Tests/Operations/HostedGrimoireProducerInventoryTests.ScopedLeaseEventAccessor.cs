@@ -19,27 +19,16 @@ public sealed partial class HostedGrimoireProducerInventoryTests
 
         const string protocol = "public interface IGrimoireWorkLease : System.IDisposable, System.IAsyncDisposable { bool TryBeginExternalEffectGroup(out System.IDisposable group); }";
 
-        source = source.ReplaceSdkFixtureText(protocol, "public interface IGrimoireWorkLease : System.IDisposable, System.IAsyncDisposable { bool TryBeginExternalEffectGroup(out System.IDisposable group); GrimoireConnectionAdmissionGate.DrainedMaintenanceProof? ProveDrainedMaintenance(long previousGeneration) => null; } public sealed class GrimoireConnectionAdmissionGate { public sealed class DrainedMaintenanceProof { } }", StringComparison.Ordinal);
+        source = source.ReplaceSdkFixtureText(protocol, "public interface IGrimoireWorkLease : System.IDisposable, System.IAsyncDisposable { bool TryBeginExternalEffectGroup(out System.IDisposable group); GrimoireConnectionAdmissionGate.DrainedMaintenanceProof? ProveDrainedMaintenance(long previousGeneration) => null; } public sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmissionGate { public sealed class DrainedMaintenanceProof { } public bool TryAcquireWorkLease(GrimoireWorkKind kind, out IGrimoireWorkLease lease) { lease = new global::Worker.EventDrainedLease(); return true; } }", StringComparison.Ordinal);
 
         source = source.ReplaceSdkFixtureText("RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireConnectionAdmissionGate gate = null!;",
-            "RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireConnectionAdmissionGate gate = new EventDrainedGate();", StringComparison.Ordinal);
+            "RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireConnectionAdmissionGate gate = new RetroDownfall.Arcanum.Infrastructure.Data.GrimoireConnectionAdmissionGate();", StringComparison.Ordinal);
 
         ClassDeclarationSyntax oldLease = Assert.Single(CSharpSyntaxTree.ParseText(source).GetRoot().DescendantNodes().OfType<ClassDeclarationSyntax>(),
             static type => type.Identifier.ValueText == "ForeignLease" && type.Parent is ClassDeclarationSyntax { Identifier.ValueText: "Worker" });
 
         source = source.ReplaceSdkFixtureText(oldLease.ToFullString(), """
-            private sealed class EventDrainedGate : RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireConnectionAdmissionGate
-            {
-                public bool TryAcquireWorkLease(RetroDownfall.Arcanum.Infrastructure.Data.GrimoireWorkKind kind,
-                    out RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireWorkLease lease)
-                {
-                    lease = new EventDrainedLease();
-
-                    return true;
-                }
-            }
-
-            private sealed class EventDrainedLease : RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireWorkLease
+            internal sealed class EventDrainedLease : RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireWorkLease
             {
                 public bool TryBeginExternalEffectGroup(out IDisposable group) { group = new ForeignGroup(); return true; }
 
@@ -109,7 +98,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests
 
         Assert.All(leaseSyntax.Members.OfType<PropertyDeclarationSyntax>(), static property => Assert.Null(property.Initializer));
 
-        MethodDeclarationSyntax acquisitionBody = Method("EventDrainedGate", "TryAcquireWorkLease");
+        MethodDeclarationSyntax acquisitionBody = Method("GrimoireConnectionAdmissionGate", "TryAcquireWorkLease");
 
         IMethodSymbol gateMethod = Assert.IsAssignableFrom<IMethodSymbol>(model.GetDeclaredSymbol(acquisitionBody));
 
@@ -146,7 +135,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests
 
         Assert.Equal(compilation.Assembly.Identity, acquire.TargetMethod.ContainingAssembly.Identity);
 
-        INamedTypeSymbol gateType = Assert.IsAssignableFrom<INamedTypeSymbol>(model.GetDeclaredSymbol(Type("EventDrainedGate")));
+        INamedTypeSymbol gateType = Assert.IsAssignableFrom<INamedTypeSymbol>(model.GetDeclaredSymbol(Type("GrimoireConnectionAdmissionGate")));
 
         Assert.True(gateType.IsSealed);
 
