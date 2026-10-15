@@ -243,7 +243,8 @@ internal sealed class WindowsJobObjectSession : IDisposable
 {
     /// <summary>
     /// Committed memory the job-wide ceiling leaves for the trusted sandbox broker, which is a member of
-    /// the job beside the tool it creates. Sized for the Native AOT apphost the shipping broker is.
+    /// the job beside the tool it creates. An estimate for the Native AOT apphost the shipping broker is,
+    /// not a measured figure.
     /// </summary>
     internal const ulong BrokerJobMemoryHeadroomBytes = 64UL * 1024UL * 1024UL;
 
