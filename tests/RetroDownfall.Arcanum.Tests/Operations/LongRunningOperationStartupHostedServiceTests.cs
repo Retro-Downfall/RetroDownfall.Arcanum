@@ -61,12 +61,16 @@ public sealed class LongRunningOperationStartupHostedServiceTests
 
         SetBackgroundTask(host, release.Task);
 
-        using CancellationTokenSource expiringBudget = new(
-            TimeSpan.FromMilliseconds(25));
+        // The budget expires after the stop has started and is joining the background owner. It is
+        // cancelled explicitly rather than by a timer: two timers racing on a loaded runner fire in either
+        // order, and the order is not what this test is about.
+        using CancellationTokenSource expiringBudget = new();
 
         Task stop = host.StopAsync(expiringBudget.Token);
 
-        await Task.Delay(TimeSpan.FromMilliseconds(75));
+        await expiringBudget.CancelAsync();
+
+        await Task.Delay(TimeSpan.FromMilliseconds(50));
 
         Assert.True(expiringBudget.IsCancellationRequested);
         Assert.False(stop.IsCompleted);

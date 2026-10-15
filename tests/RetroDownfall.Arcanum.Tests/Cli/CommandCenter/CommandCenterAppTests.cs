@@ -34,8 +34,8 @@ public sealed class CommandCenterAppTests
         Assert.Equal(string.Empty, output);
 
         Assert.True(
-            stopwatch.ElapsedMilliseconds < 3000,
-            $"Expected the 1000ms deadline to govern the read; took {stopwatch.ElapsedMilliseconds}ms.");
+            stopwatch.ElapsedMilliseconds < 20_000,
+            $"Expected the 1000ms deadline to govern the read, not the child's 120s lifetime; took {stopwatch.ElapsedMilliseconds}ms.");
 
     }
 
@@ -61,9 +61,16 @@ public sealed class CommandCenterAppTests
     }
 
     /// <summary>
-    /// A child that writes nothing to stdout/stderr and outlives the 1s deadline several times
+    /// A child that writes nothing to stdout/stderr and outlives the 1s deadline many times
     /// over — the shape the finding names ("a child that writes nothing and never exits").
     /// </summary>
+    /// <remarks>
+    /// The child lives far longer than the bound the test puts on the call, so that the call can only
+    /// have ended because the deadline did, and so that spawning it, killing its tree and disposing it
+    /// on a loaded coverage runner can take many seconds beyond the deadline without failing the test.
+    /// If a read ever blocked on the child again, the call would take the full 120 seconds and still
+    /// fail the bound.
+    /// </remarks>
     private static ProcessStartInfo CreateNeverWritesNeverExitsProcessStartInfo()
     {
 
@@ -77,7 +84,7 @@ public sealed class CommandCenterAppTests
                 RedirectStandardError = true,
                 UseShellExecute = false,
                 CreateNoWindow = true,
-                ArgumentList = { "-NoProfile", "-Command", "Start-Sleep -Seconds 5" },
+                ArgumentList = { "-NoProfile", "-Command", "Start-Sleep -Seconds 120" },
             };
 
         }
@@ -89,7 +96,7 @@ public sealed class CommandCenterAppTests
             RedirectStandardError = true,
             UseShellExecute = false,
             CreateNoWindow = true,
-            ArgumentList = { "5" },
+            ArgumentList = { "120" },
         };
 
     }

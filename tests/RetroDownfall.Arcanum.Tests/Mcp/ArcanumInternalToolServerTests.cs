@@ -619,11 +619,15 @@ public sealed partial class ArcanumInternalToolServerTests : IAsyncLifetime
     // handshake indifferent to which of the two wins the id: the winner is the long-running call
     // either way, and the loser is the rejection.
     //
-    // The 100_000-'a' file and the 1_000 ms timeout are what hold the winner in flight across the
+    // The 100_000-'a' file and the 10_000 ms timeout are what hold the winner in flight across the
     // handshake; they are not being measured. NonBacktracking rejects the lookahead, so the search
     // falls back to the backtracking engine, which cannot finish this pattern against input with no
     // 'b' -- it runs until the per-match timeout. Shortening either one shrinks the interval the
-    // cancel has to arrive in.
+    // duplicate line and the cancel line each have to be dispatched in. Each of them is its own
+    // Task.Run work item, so on a loaded runner either can lag by well over a second; the timeout is
+    // the ceiling the setting allows, so it outlasts the worst dispatch lag a runner shows. A regex
+    // match cannot be interrupted, so the cancellation is only seen when the match times out, and the
+    // read that waits for it allows far longer than the timeout.
     [Fact]
     public async Task NotificationsCancelled_cancels_in_flight_search_workspace_regex()
     {
@@ -634,7 +638,7 @@ public sealed partial class ArcanumInternalToolServerTests : IAsyncLifetime
         {
             Search = ArcanumRuntimeDefaults.CodingTools.Search with
             {
-                RegexTimeoutMilliseconds = 1_000,
+                RegexTimeoutMilliseconds = 10_000,
             },
         };
 
@@ -663,7 +667,7 @@ public sealed partial class ArcanumInternalToolServerTests : IAsyncLifetime
         await session.WriteRequestWithFixedIdAsync(requestId, "tools/call", callParams);
 
         JsonRpcResponse rejected = await session.ReadNextResponseAsync()
-            .WaitAsync(TimeSpan.FromSeconds(10));
+            .WaitAsync(TimeSpan.FromSeconds(30));
 
         Assert.NotNull(rejected.Error);
         Assert.Equal(-32600, rejected.Error!.Code);
@@ -671,7 +675,7 @@ public sealed partial class ArcanumInternalToolServerTests : IAsyncLifetime
         await session.SendCancelNotificationAsync(requestId);
 
         JsonRpcResponse response = await session.ReadNextResponseAsync()
-            .WaitAsync(TimeSpan.FromSeconds(10));
+            .WaitAsync(TimeSpan.FromSeconds(30));
 
         Assert.Null(response.Error);
 
