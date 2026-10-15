@@ -11,16 +11,17 @@ public sealed partial class HostedGrimoireProducerInventoryTests
     // The Headroom Tripwire. The checker refuses a root that analyses more than the per-root state cap, and a root
     // refused for its size reports nothing about the sites below the cap, so a root is never allowed to drift toward it
     // unnoticed. Every primary production root has a committed ceiling: what it analyses plus a small stated margin,
-    // and never more than ninety percent of the cap. The cap is not raised and the ceilings only move down; a change that
-    // makes a root cheaper lowers its row in the same change, and a change that makes one dearer must first earn the room, after which
-    // its row rises only to the rule below, never past the ninety percent bound, and says why beside the row.
+    // and never more than ninety percent of the cap. The cap is not raised. A ceiling follows the measured count of its root: a change
+    // that makes a root cheaper lowers its row in the same change, and a change that makes one dearer raises it only after the change has
+    // earned the room, only to the rule below, never past the ninety percent bound, and with the reason beside the row.
     //
     // A ceiling is meant to be the maximum, over one, two and three root workers, of what the root analyses, plus the margin, so a
     // discovery under any of the three stays at or under it, CI's two included (the production lanes run two). A root a handoff
     // re-roots into is entered once from its own declaration and once from the traversal that hands off to it, and which worker each
     // entry lands on decides whether the closure is admitted for one entry or for both, so its count depends on the arrangement:
-    // ApprenticeService.RunApprenticeAsync analyses 3,090 states under one worker and 1,545 under two and under three. A row is taken
-    // from the largest of the three counts; it is not taken from the one that was measured last.
+    // ApprenticeService.RunApprenticeAsync analysed 3,090 states under one worker, 1,545 under two and 3,090 under three when it was
+    // measured (e9eaee35); which worker a family lands on is decided by timing. A row is taken from the largest of the three counts; it is
+    // not taken from the one that was measured last.
     private const int HeadroomPercentOfCap = 90;
 
     private readonly record struct HeadroomCeiling(string RootType, string RootOperation, int Ceiling);

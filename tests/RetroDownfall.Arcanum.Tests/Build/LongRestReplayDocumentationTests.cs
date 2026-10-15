@@ -89,12 +89,25 @@ public sealed class LongRestReplayDocumentationTests
         "the shapes the work reshaped",
         "the group shapes the work replaced",
         "The gate stays after the asset landed",
+        "The actual hosted traversal limit remains unresolved",
+        "has been seen at",
+        "Ceilings only move down",
+        "The lane was dormant",
+        "They were previously",
+        "The shared state cap is unchanged",
+        "This changes neither value/ref provenance demand",
+        "proof limits are unchanged",
+        "The audit that backs this rule",
+        "the first regeneration",
+        "the checker the one that rendered the old manifest",
+        "measured on the delivered tree",
+        "Measured on the delivered tree",
     ];
 
     /// <summary>
-    /// The words that mark such a sentence, refused wherever the checker, the testing contract and the CI jobs are described. Each region
-    /// below is a statement about the delivered code, so none of them says what a thing no longer does, what this work changed, or what the
-    /// delivery tree measured.
+    /// The words that introduce such a sentence, refused wherever the checker, the testing contract and the CI jobs are described. Each
+    /// region below is meant to be a statement about the delivered code. A closed list cannot prove a region free of narration: it keeps the
+    /// sentences that were removed, and the wording that introduced them, from returning.
     /// </summary>
     private static readonly string[] NarratingWords =
     [
@@ -109,6 +122,16 @@ public sealed class LongRestReplayDocumentationTests
         "at delivery",
         "at the start of",
         "until that lands",
+        " was dormant",
+        "were previously",
+        "has been seen",
+        "have been seen",
+        "changes neither",
+        " is unchanged",
+        " are unchanged",
+        "remain unchanged",
+        "remains unchanged",
+        "the unchanged ",
     ];
 
     [Fact]
