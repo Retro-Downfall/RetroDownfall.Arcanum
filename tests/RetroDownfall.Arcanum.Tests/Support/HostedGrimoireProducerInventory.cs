@@ -760,6 +760,10 @@ internal static partial class HostedGrimoireProducerInventory
             : containingNamespace + "." + type.MetadataName;
     }
 
+    // A lookup into a tree the analysis does not read (generated code under obj/, a tree outside src/) refuses the traversal's
+    // completion with this code, naming the declaration, and the caller takes the value it takes when it cannot prove it.
+    internal const string UnanalysedTreeCode = "HOSTED_TREE_UNANALYSED";
+
     private static int connectionReplacementScans;
 
     private static long connectionReplacementScanTicks;
@@ -3261,6 +3265,27 @@ internal static partial class HostedGrimoireProducerInventory
         private readonly Dictionary<SyntaxTree, int> treeIdentities = new(ReferenceEqualityComparer.Instance);
 
         private readonly Dictionary<SyntaxTree, SemanticModel> semanticModels = new(ReferenceEqualityComparer.Instance);
+
+        // The model of an analysed tree, or null with the traversal refused. The analysis reads the trees under src/ that are not
+        // generated; a declaration in any other tree (generated code under obj/, a tree outside src/) has no model here. A lookup that
+        // reaches one fails closed with HOSTED_TREE_UNANALYSED naming the declaration, and its caller takes the value it takes when
+        // it cannot prove the declaration, never an exception out of the discovery.
+        private SemanticModel? AnalysedModel(SyntaxNode declaration)
+        {
+            if (semanticModels.TryGetValue(declaration.SyntaxTree, out SemanticModel? model))
+            {
+                return model;
+            }
+
+            RefuseTraversalCompletion();
+
+            diagnostics.Add(new(
+                UnanalysedTreeCode,
+                Location(declaration),
+                "The declaration is in a tree the analysis does not read (generated code or a tree outside src/), so it is not followed."));
+
+            return null;
+        }
 
         private readonly Dictionary<Compilation, Dictionary<IAssemblySymbol, int>> authoredCompilationIdentities = new(ReferenceEqualityComparer.Instance);
 
@@ -28782,7 +28807,10 @@ internal static partial class HostedGrimoireProducerInventory
                 return null;
             }
 
-            SemanticModel model = semanticModels[construction.SyntaxTree];
+            if (AnalysedModel(construction) is not { } model)
+            {
+                return null;
+            }
 
             if (model.GetOperation(construction) is not
                 IObjectCreationOperation operation)
@@ -29812,11 +29840,11 @@ internal static partial class HostedGrimoireProducerInventory
                         _ => null,
                     };
 
-                    if (initializer is not null)
+                    if (initializer is not null && AnalysedModel(initializer) is { } initializerModel)
                     {
                         CollectLazyConstructions(
                             initializer,
-                            semanticModels[initializer.SyntaxTree],
+                            initializerModel,
                             lazyType,
                             constructions,
                             path);
@@ -31001,7 +31029,13 @@ internal static partial class HostedGrimoireProducerInventory
                 }
 
                 expression = StripTransparentExpression(initializer);
-                model = semanticModels[expression.SyntaxTree];
+
+                if (AnalysedModel(expression) is not { } initializerModel)
+                {
+                    return false;
+                }
+
+                model = initializerModel;
             }
 
             if (model.GetOperation(expression) is not IObjectCreationOperation creation
@@ -32564,7 +32598,10 @@ internal static partial class HostedGrimoireProducerInventory
                             return false;
                         }
 
-                        SemanticModel model = semanticModels[variable.SyntaxTree];
+                        if (AnalysedModel(variable) is not { } model)
+                        {
+                            return false;
+                        }
 
                         SyntaxNode root = variable.SyntaxTree.GetRoot();
 
@@ -33916,9 +33953,10 @@ internal static partial class HostedGrimoireProducerInventory
                         };
 
                         if (initializer is not null
+                            && AnalysedModel(initializer) is { } initializerModel
                             && IsReviewedPureComparerExpression(
                                 initializer,
-                                semanticModels[initializer.SyntaxTree],
+                                initializerModel,
                                 path))
                         {
                             return true;
@@ -34329,12 +34367,14 @@ internal static partial class HostedGrimoireProducerInventory
                         },
                         ])
                     {
-                        return ResolveContextualCallable(
-                            initializer,
-                            semanticModels[initializer.SyntaxTree],
-                            callableBindings,
-                            absentCallables,
-                            path);
+                        return AnalysedModel(initializer) is { } initializerModel
+                            ? ResolveContextualCallable(
+                                initializer,
+                                initializerModel,
+                                callableBindings,
+                                absentCallables,
+                                path)
+                            : default;
                     }
                 }
                 finally
@@ -34446,6 +34486,12 @@ internal static partial class HostedGrimoireProducerInventory
                     return default;
                 }
 
+                // The same reason: a callable declared in a tree the analysis does not read is written there, unseen.
+                if (symbol.DeclaringSyntaxReferences.Any(reference => AnalysedModel(reference.GetSyntax()) is null))
+                {
+                    return default;
+                }
+
                 if (symbol is IEventSymbol eventSymbol)
                 {
                     return HasAuthoredCallableMutation(eventSymbol) ? default : new(true, null, true, false);
@@ -34460,15 +34506,24 @@ internal static partial class HostedGrimoireProducerInventory
                 {
                     SyntaxNode? declaration = local.DeclaringSyntaxReferences.SingleOrDefault()?.GetSyntax();
 
-                    if (declaration is VariableDeclaratorSyntax { Initializer.Value: { } initializer } variable
-                        && !variable.Ancestors().OfType<BlockSyntax>().First().DescendantNodes().OfType<AssignmentExpressionSyntax>().Any(assignment => SymbolEqualityComparer.Default.Equals(semanticModels[assignment.SyntaxTree].GetSymbolInfo(assignment.Left).Symbol, local)))
+                    if (declaration is VariableDeclaratorSyntax { Initializer.Value: { } initializer } variable)
                     {
-                        return ResolveClosedCallable(initializer, semanticModels[initializer.SyntaxTree], path);
+                        if (AnalysedModel(variable) is not { } variableModel)
+                        {
+                            return default;
+                        }
+
+                        if (!variable.Ancestors().OfType<BlockSyntax>().First().DescendantNodes().OfType<AssignmentExpressionSyntax>().Any(assignment => SymbolEqualityComparer.Default.Equals(variableModel.GetSymbolInfo(assignment.Left).Symbol, local)))
+                        {
+                            return ResolveClosedCallable(initializer, variableModel, path);
+                        }
                     }
 
                     if (declaration?.AncestorsAndSelf().OfType<IsPatternExpressionSyntax>().FirstOrDefault() is { } pattern)
                     {
-                        return ResolveClosedCallable(pattern.Expression, semanticModels[pattern.SyntaxTree], path);
+                        return AnalysedModel(pattern) is { } patternModel
+                            ? ResolveClosedCallable(pattern.Expression, patternModel, path)
+                            : default;
                     }
 
                     return default;
@@ -34516,7 +34571,12 @@ internal static partial class HostedGrimoireProducerInventory
                 {
                     if (reference.GetSyntax() is VariableDeclaratorSyntax { Initializer.Value: { } initializer })
                     {
-                        values.Add(ResolveClosedCallable(initializer, semanticModels[initializer.SyntaxTree], path));
+                        if (AnalysedModel(initializer) is not { } initializerModel)
+                        {
+                            return default;
+                        }
+
+                        values.Add(ResolveClosedCallable(initializer, initializerModel, path));
                     }
                 }
 
@@ -34831,6 +34891,15 @@ internal static partial class HostedGrimoireProducerInventory
                 return absent;
             }
 
+            // A callable declared in a tree the analysis does not read can be assigned there, in code nothing here sees, so it is
+            // never proven absent: the lookup refuses and the callable stays unproven.
+            if (symbol.DeclaringSyntaxReferences.Any(reference => AnalysedModel(reference.GetSyntax()) is null))
+            {
+                absentTestCallables[symbol] = false;
+
+                return false;
+            }
+
             ITypeSymbol? callableType = symbol switch
             {
                 IEventSymbol declaredEvent => declaredEvent.Type,
@@ -34844,7 +34913,7 @@ internal static partial class HostedGrimoireProducerInventory
                 VariableDeclaratorSyntax variable => variable.Initializer?.Value,
                 PropertyDeclarationSyntax property => property.Initializer?.Value,
                 _ => null,
-            }).OfType<ExpressionSyntax>().Any(initializer => initializer is not DefaultExpressionSyntax && !(initializer is LiteralExpressionSyntax literal && literal.IsKind(SyntaxKind.DefaultLiteralExpression)) && semanticModels[initializer.SyntaxTree].GetConstantValue(initializer) is not { HasValue: true, Value: null });
+            }).OfType<ExpressionSyntax>().Any(initializer => initializer is not DefaultExpressionSyntax && !(initializer is LiteralExpressionSyntax literal && literal.IsKind(SyntaxKind.DefaultLiteralExpression)) && (AnalysedModel(initializer) is not { } initializerModel || initializerModel.GetConstantValue(initializer) is not { HasValue: true, Value: null }));
 
             absent = symbol.DeclaredAccessibility is Accessibility.Private or Accessibility.Internal or Accessibility.ProtectedAndInternal
                 && callableType?.TypeKind == TypeKind.Delegate
@@ -36804,9 +36873,9 @@ internal static partial class HostedGrimoireProducerInventory
                     (ExpressionSyntax Expression, SemanticModel Model)? value =
                         initializers is [ExpressionSyntax propertyInitializer]
                             && assignments.Length == 0
-                                ? (
-                                    propertyInitializer,
-                                    semanticModels[propertyInitializer.SyntaxTree])
+                                ? (AnalysedModel(propertyInitializer) is { } propertyInitializerModel
+                                    ? (propertyInitializer, propertyInitializerModel)
+                                    : null)
                                 : initializers.Length == 0
                                     && assignments is
                                     [
@@ -36953,9 +37022,14 @@ internal static partial class HostedGrimoireProducerInventory
                                 Initializer.Value: { } fieldInitializer,
                             })
                         {
+                            if (AnalysedModel(fieldInitializer) is not { } fieldInitializerModel)
+                            {
+                                return null;
+                            }
+
                             values.Add((
                                 fieldInitializer,
-                                semanticModels[fieldInitializer.SyntaxTree]));
+                                fieldInitializerModel));
                         }
                     }
 
@@ -37317,10 +37391,11 @@ internal static partial class HostedGrimoireProducerInventory
             {
                 ParameterList: { } parameters,
             }
+            && AnalysedModel(parameters) is { } parametersModel
                 ? new(
                     constructor,
                     parameters,
-                    semanticModels[parameters.SyntaxTree])
+                    parametersModel)
                 : null;
         }
 
@@ -51069,8 +51144,9 @@ internal static partial class HostedGrimoireProducerInventory
                 if (storage is IFieldSymbol { IsReadOnly: false }
                     || storage is IFieldSymbol readonlyStorage
                         && readonlyStorage.ContainingType.DeclaringSyntaxReferences.Any(reference =>
-                            HasCollectionValueReplacement(
-                                member with { Model = semanticModels[reference.SyntaxTree] },
+                            AnalysedModel(reference.GetSyntax()) is not { } declaredModel
+                            || HasCollectionValueReplacement(
+                                member with { Model = declaredModel },
                                 readonlyStorage,
                                 rejectSimpleAssignment: false))
                     || storage is IPropertySymbol { SetMethod.IsInitOnly: false }
@@ -52624,8 +52700,13 @@ internal static partial class HostedGrimoireProducerInventory
 
                 if (initializer is not null)
                 {
+                    if (AnalysedModel(initializer) is not { } initializerModel)
+                    {
+                        return new([], false, true);
+                    }
+
                     sources.Add(new(
-                        ValueExpressionContext(member, initializer, semanticModels[initializer.SyntaxTree]),
+                        ValueExpressionContext(member, initializer, initializerModel),
                         initializer));
                 }
             }
@@ -52634,7 +52715,10 @@ internal static partial class HostedGrimoireProducerInventory
             {
                 SyntaxNode declaration = reference.GetSyntax();
 
-                SemanticModel model = semanticModels[declaration.SyntaxTree];
+                if (AnalysedModel(declaration) is not { } model)
+                {
+                    return new([], false, true);
+                }
 
                 foreach (AssignmentExpressionSyntax assignment in declaration.DescendantNodes().OfType<AssignmentExpressionSyntax>())
                 {
