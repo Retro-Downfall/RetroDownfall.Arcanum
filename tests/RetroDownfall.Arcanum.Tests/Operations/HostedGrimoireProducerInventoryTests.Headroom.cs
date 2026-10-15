@@ -143,8 +143,11 @@ public sealed partial class HostedGrimoireProducerInventoryTests
         // constructor reaches, analysed in each of the fifty or so contexts that reach VerifyFrozenMetadataAsync) beside the per-leaf read a step
         // still makes: 5438 and 3612. The rows were set from the measurement of the delivery that added the statement (5436 and 3610) plus five
         // percent, rounded up to a multiple of eight, and the cost fixes after it moved each measurement by two states, inside them.
-        new("LongRestSweepHostedService", "RetroDownfall.Arcanum.Api.Intelligence.LongRestMaintenance.ProcessAdmittedAsync", 5712), // measured 5448 now under one, two and three workers (5438 when the row was set), inside the row, which is kept
-        new("LongRestSweepHostedService", "RetroDownfall.Arcanum.Infrastructure.Hosting.LongRestSweepHostedService.ExecuteAsync", 3792), // measured 3638 now under one, two and three workers (3612 when the row was set), inside the row, which is kept
+        // The delivery of the Lease-Handoff chain and the receiver proof grew the two roots again, by 10 and 26 states, to 5448 and 3638 under one, two
+        // and three workers, which left 264 and 154 states under rows of 5712 and 3792: less than the five percent margin the rule gives. The rows are
+        // raised to the rule, the measured maximum plus five percent rounded up to a multiple of eight (5448 + 273 = 5721, 3638 + 182 = 3820), and no further.
+        new("LongRestSweepHostedService", "RetroDownfall.Arcanum.Api.Intelligence.LongRestMaintenance.ProcessAdmittedAsync", 5728), // measured 5448 under one, two and three workers (5438 when the earlier row was set), so the row is raised to the rule
+        new("LongRestSweepHostedService", "RetroDownfall.Arcanum.Infrastructure.Hosting.LongRestSweepHostedService.ExecuteAsync", 3824), // measured 3638 under one, two and three workers (3612 when the earlier row was set), so the row is raised to the rule
         new("LongRunningOperationStartupHostedService", "RetroDownfall.Arcanum.Infrastructure.Operations.LongRunningOperationStartupHostedService.ContinueInBackgroundAsync", 3640), // measured 3466 now (3564 at the head that introduced the table), so the row is lowered
         new("LongRunningOperationStartupHostedService", "RetroDownfall.Arcanum.Infrastructure.Operations.LongRunningOperationStartupHostedService.StartAsync", 16), // measured 3
         new("LongRunningOperationStartupHostedService", "RetroDownfall.Arcanum.Infrastructure.Operations.LongRunningOperationStartupHostedService.StartAsync::call:RetroDownfall.Arcanum.Infrastructure.Operations.LongRunningOperationStartupHostedService.RunStartupPassAsync#0", 1408), // measured 1340
