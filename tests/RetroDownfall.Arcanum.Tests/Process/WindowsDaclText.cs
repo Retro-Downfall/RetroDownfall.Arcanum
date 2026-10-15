@@ -30,7 +30,6 @@ namespace RetroDownfall.Arcanum.Tests.Process;
 /// </remarks>
 internal static class WindowsDaclText
 {
-
     private const string DaclMarker = "D:";
 
     private const string AutoInherited = "AI";
@@ -65,16 +64,13 @@ internal static class WindowsDaclText
     /// </remarks>
     internal static string WithoutAutoInheritedFlag(string sddl)
     {
-
         ArgumentNullException.ThrowIfNull(sddl);
 
         if (!sddl.StartsWith(DaclMarker, StringComparison.Ordinal))
         {
-
             throw new ArgumentException(
                 $"Expected a DACL-only SDDL string beginning '{DaclMarker}', got '{sddl}'.",
                 nameof(sddl));
-
         }
 
         int aclStart = sddl.IndexOf('(', DaclMarker.Length);
@@ -89,36 +85,29 @@ internal static class WindowsDaclText
 
         while (index < flags.Length)
         {
-
             if (flags[index] == Protected)
             {
-
                 _ = kept.Append(Protected);
 
                 index++;
 
                 continue;
-
             }
 
             if (flags.AsSpan(index).StartsWith(AutoInherited, StringComparison.Ordinal))
             {
-
                 index += AutoInherited.Length;
 
                 continue;
-
             }
 
             if (flags.AsSpan(index).StartsWith(AutoInheritRequested, StringComparison.Ordinal))
             {
-
                 _ = kept.Append(AutoInheritRequested);
 
                 index += AutoInheritRequested.Length;
 
                 continue;
-
             }
 
             // Anything else (NO_ACCESS_CONTROL, a flag this reader does not know) is kept verbatim,
@@ -126,11 +115,8 @@ internal static class WindowsDaclText
             _ = kept.Append(flags, index, flags.Length - index);
 
             break;
-
         }
 
         return DaclMarker + kept + (aclStart < 0 ? string.Empty : sddl[aclStart..]);
-
     }
-
 }

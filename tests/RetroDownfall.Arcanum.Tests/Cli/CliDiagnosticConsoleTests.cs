@@ -26,17 +26,14 @@ namespace RetroDownfall.Arcanum.Tests.Cli;
 [Collection("ProcessEnvironment")]
 public sealed class CliDiagnosticConsoleTests
 {
-
     private const string Markup = "[bold]diagnostic words[/]";
 
     [Fact]
     public void Control_a_stream_with_no_opt_out_is_forced_to_ansi_by_the_GitHub_Actions_detector()
     {
-
         string written = CaptureError(optOut: null, static () => CliErrorOutput.WriteMarkupLine(Markup));
 
         Assert.Contains('\u001b', written);
-
     }
 
     [Theory]
@@ -47,13 +44,11 @@ public sealed class CliDiagnosticConsoleTests
     [InlineData("arcanum-no-color")]
     public void The_themed_error_writer_stays_free_of_ansi_inside_GitHub_Actions(string optOut)
     {
-
         string written = CaptureError(optOut, static () => CliErrorOutput.WriteMarkupLine(Markup));
 
         Assert.Contains("diagnostic words", written, StringComparison.Ordinal);
 
         Assert.DoesNotContain('\u001b', written);
-
     }
 
     [Theory]
@@ -64,7 +59,6 @@ public sealed class CliDiagnosticConsoleTests
     [InlineData("arcanum-no-color")]
     public void The_ask_human_diagnostic_console_honours_the_opt_outs_inside_GitHub_Actions(string optOut)
     {
-
         string written = CaptureError(
             optOut,
             static () => ConsoleAskHumanCoordinator.CreateStandardErrorConsole().MarkupLine(Markup));
@@ -72,7 +66,6 @@ public sealed class CliDiagnosticConsoleTests
         Assert.Contains("diagnostic words", written, StringComparison.Ordinal);
 
         Assert.DoesNotContain('\u001b', written);
-
     }
 
     [Theory]
@@ -83,7 +76,6 @@ public sealed class CliDiagnosticConsoleTests
     [InlineData("arcanum-no-color")]
     public void The_tool_call_summary_honours_the_opt_outs_inside_GitHub_Actions(string optOut)
     {
-
         PromptResponseDto response = new(
             "done",
             null,
@@ -100,13 +92,11 @@ public sealed class CliDiagnosticConsoleTests
         Assert.Contains("read_file", written, StringComparison.Ordinal);
 
         Assert.DoesNotContain('\u001b', written);
-
     }
 
     [Fact]
     public void Control_the_tool_call_summary_is_styled_when_nothing_opts_out()
     {
-
         PromptResponseDto response = new(
             "done",
             null,
@@ -119,7 +109,6 @@ public sealed class CliDiagnosticConsoleTests
             () => ExecuteResultRendering.WriteExecuteResultAsync(response, palette).GetAwaiter().GetResult());
 
         Assert.Contains('\u001b', written);
-
     }
 
     /// <summary>
@@ -129,7 +118,6 @@ public sealed class CliDiagnosticConsoleTests
     /// </summary>
     private static string CaptureError(string? optOut, Action write)
     {
-
         using EnvironmentScope environment = new(
             gitHubActions: "true",
             noColor: optOut == "no-color" ? "1" : null,
@@ -150,30 +138,24 @@ public sealed class CliDiagnosticConsoleTests
 
         try
         {
-
             Console.SetOut(new StringWriter());
 
             Console.SetError(captured);
 
             write();
-
         }
         finally
         {
-
             Console.SetOut(originalOut);
 
             Console.SetError(originalError);
-
         }
 
         return captured.ToString();
-
     }
 
     private sealed class EnvironmentScope : IDisposable
     {
-
         private readonly string? _originalGitHubActions = System.Environment.GetEnvironmentVariable("GITHUB_ACTIONS");
 
         private readonly string? _originalNoColor = System.Environment.GetEnvironmentVariable("NO_COLOR");
@@ -183,26 +165,20 @@ public sealed class CliDiagnosticConsoleTests
 
         internal EnvironmentScope(string? gitHubActions, string? noColor, string? arcanumNoColor)
         {
-
             System.Environment.SetEnvironmentVariable("GITHUB_ACTIONS", gitHubActions);
 
             System.Environment.SetEnvironmentVariable("NO_COLOR", noColor);
 
             System.Environment.SetEnvironmentVariable("ARCANUM_NO_COLOR", arcanumNoColor);
-
         }
 
         public void Dispose()
         {
-
             System.Environment.SetEnvironmentVariable("GITHUB_ACTIONS", _originalGitHubActions);
 
             System.Environment.SetEnvironmentVariable("NO_COLOR", _originalNoColor);
 
             System.Environment.SetEnvironmentVariable("ARCANUM_NO_COLOR", _originalArcanumNoColor);
-
         }
-
     }
-
 }

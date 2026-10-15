@@ -308,6 +308,7 @@ internal static partial class WindowsAppContainerLauncher
         if (!InitializeProcThreadAttributeList(0, 2, 0, ref size))
         {
             int sizingError = Marshal.GetLastPInvokeError();
+
             if (sizingError != ErrorInsufficientBuffer)
             {
                 throw new Win32Exception(sizingError);
@@ -320,7 +321,9 @@ internal static partial class WindowsAppContainerLauncher
         }
 
         nint attributes = Marshal.AllocHGlobal((nint)size);
+
         bool initialized = false;
+
         nint capabilitiesPtr = 0;
         nint handlesPtr = 0;
         try

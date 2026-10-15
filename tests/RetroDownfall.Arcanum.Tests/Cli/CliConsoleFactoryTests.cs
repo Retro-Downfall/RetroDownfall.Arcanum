@@ -19,7 +19,6 @@ namespace RetroDownfall.Arcanum.Tests.Cli;
 /// </remarks>
 public sealed class CliConsoleFactoryTests
 {
-
     private const string BoldMarkup = "[bold]plain words[/]";
 
     /// <summary>
@@ -28,7 +27,6 @@ public sealed class CliConsoleFactoryTests
     [Fact]
     public void Spectre_alone_lets_the_GitHub_enricher_override_an_explicit_ansi_opt_out()
     {
-
         StringWriter output = new();
 
         IAnsiConsole console = AnsiConsole.Create(DeclinedAnsiInsideGitHubActions(output));
@@ -38,13 +36,11 @@ public sealed class CliConsoleFactoryTests
         console.MarkupLine(BoldMarkup);
 
         Assert.Contains('\u001b', output.ToString());
-
     }
 
     [Fact]
     public void A_console_that_declines_ansi_stays_free_of_it_inside_GitHub_Actions()
     {
-
         StringWriter output = new();
 
         IAnsiConsole console = CliConsoleFactory.Create(DeclinedAnsiInsideGitHubActions(output));
@@ -56,7 +52,6 @@ public sealed class CliConsoleFactoryTests
         Assert.DoesNotContain('\u001b', output.ToString());
 
         Assert.Equal("plain words" + System.Environment.NewLine, output.ToString());
-
     }
 
     [Theory]
@@ -64,7 +59,6 @@ public sealed class CliConsoleFactoryTests
     [InlineData(AnsiSupport.Yes)]
     public void A_console_that_has_not_declined_ansi_keeps_the_environment_enrichers(AnsiSupport ansi)
     {
-
         AnsiConsoleSettings settings = DeclinedAnsiInsideGitHubActions(new StringWriter());
 
         settings.Ansi = ansi;
@@ -74,19 +68,16 @@ public sealed class CliConsoleFactoryTests
         Assert.True(settings.Enrichment.UseDefaultEnrichers);
 
         Assert.True(console.Profile.Capabilities.Ansi);
-
     }
 
     [Fact]
     public void A_console_that_declines_ansi_has_no_default_enrichers()
     {
-
         AnsiConsoleSettings settings = DeclinedAnsiInsideGitHubActions(new StringWriter());
 
         _ = CliConsoleFactory.Create(settings);
 
         Assert.False(settings.Enrichment.UseDefaultEnrichers);
-
     }
 
     /// <summary>
@@ -103,7 +94,6 @@ public sealed class CliConsoleFactoryTests
         bool json,
         bool print)
     {
-
         CliInvocationOptions options = new(Json: json, Plain: plain, Yes: false, Print: print);
 
         StringWriter output = new();
@@ -120,9 +110,7 @@ public sealed class CliConsoleFactoryTests
 
         settings.EnvironmentVariables = new Dictionary<string, string>
         {
-
             ["GITHUB_ACTIONS"] = "true",
-
         };
 
         IAnsiConsole console = CliConsoleFactory.Create(settings);
@@ -138,7 +126,6 @@ public sealed class CliConsoleFactoryTests
         console.MarkupLine(BoldMarkup);
 
         Assert.Equal("plain words" + System.Environment.NewLine, output.ToString());
-
     }
 
     [Theory]
@@ -147,25 +134,20 @@ public sealed class CliConsoleFactoryTests
     [InlineData(false, true)]
     public void An_invocation_with_no_opt_out_leaves_the_stdout_console_to_detection(bool yes, bool verbose)
     {
-
         CliInvocationOptions options = new(Json: false, Plain: false, Yes: yes, Verbose: verbose);
 
         Assert.Null(CliApplicationFactory.CreateInvocationConsoleSettings(options, new StringWriter()));
-
     }
 
     [Fact]
     public void Settings_are_required()
     {
-
         _ = Assert.Throws<ArgumentNullException>(() => CliConsoleFactory.Create(null!));
-
     }
 
     private static AnsiConsoleSettings DeclinedAnsiInsideGitHubActions(StringWriter output) =>
         new()
         {
-
             Ansi = AnsiSupport.No,
 
             ColorSystem = ColorSystemSupport.NoColors,
@@ -174,11 +156,7 @@ public sealed class CliConsoleFactoryTests
 
             EnvironmentVariables = new Dictionary<string, string>
             {
-
                 ["GITHUB_ACTIONS"] = "true",
-
             },
-
         };
-
 }

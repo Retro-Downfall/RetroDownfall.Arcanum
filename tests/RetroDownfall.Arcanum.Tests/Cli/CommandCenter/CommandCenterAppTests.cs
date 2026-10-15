@@ -13,11 +13,9 @@ namespace RetroDownfall.Arcanum.Tests.Cli.CommandCenter;
 /// </summary>
 public sealed class CommandCenterAppTests
 {
-
     [Fact]
     public void TryReadWithDeadline_returns_false_within_the_deadline_when_the_child_never_exits()
     {
-
         ProcessStartInfo startInfo = CreateNeverWritesNeverExitsProcessStartInfo();
 
         Stopwatch stopwatch = Stopwatch.StartNew();
@@ -36,13 +34,11 @@ public sealed class CommandCenterAppTests
         Assert.True(
             stopwatch.ElapsedMilliseconds < 20_000,
             $"Expected the 1000ms deadline to govern the read, not the child's 120s lifetime; took {stopwatch.ElapsedMilliseconds}ms.");
-
     }
 
     [Fact]
     public void TryReadWithDeadline_returns_the_captured_output_when_the_child_exits_in_time()
     {
-
         ProcessStartInfo startInfo = CreateEchoProcessStartInfo("24 80");
 
         // Not 1000ms: this test exercises the captured-output path, not the deadline, and a cold
@@ -57,7 +53,6 @@ public sealed class CommandCenterAppTests
         Assert.Contains("24", output, StringComparison.Ordinal);
 
         Assert.Contains("80", output, StringComparison.Ordinal);
-
     }
 
     /// <summary>
@@ -73,10 +68,8 @@ public sealed class CommandCenterAppTests
     /// </remarks>
     private static ProcessStartInfo CreateNeverWritesNeverExitsProcessStartInfo()
     {
-
         if (OperatingSystem.IsWindows())
         {
-
             return new ProcessStartInfo
             {
                 FileName = "powershell.exe",
@@ -86,7 +79,6 @@ public sealed class CommandCenterAppTests
                 CreateNoWindow = true,
                 ArgumentList = { "-NoProfile", "-Command", "Start-Sleep -Seconds 120" },
             };
-
         }
 
         return new ProcessStartInfo
@@ -98,15 +90,12 @@ public sealed class CommandCenterAppTests
             CreateNoWindow = true,
             ArgumentList = { "120" },
         };
-
     }
 
     private static ProcessStartInfo CreateEchoProcessStartInfo(string text)
     {
-
         if (OperatingSystem.IsWindows())
         {
-
             return new ProcessStartInfo
             {
                 FileName = "powershell.exe",
@@ -116,7 +105,6 @@ public sealed class CommandCenterAppTests
                 CreateNoWindow = true,
                 ArgumentList = { "-NoProfile", "-Command", $"Write-Output '{text}'" },
             };
-
         }
 
         return new ProcessStartInfo
@@ -128,7 +116,5 @@ public sealed class CommandCenterAppTests
             CreateNoWindow = true,
             ArgumentList = { text },
         };
-
     }
-
 }

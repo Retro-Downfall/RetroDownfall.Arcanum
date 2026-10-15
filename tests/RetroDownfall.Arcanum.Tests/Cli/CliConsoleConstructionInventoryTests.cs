@@ -26,7 +26,6 @@ namespace RetroDownfall.Arcanum.Tests.Cli;
 /// </remarks>
 public sealed class CliConsoleConstructionInventoryTests
 {
-
     private const string CliSourceRoot = "src/RetroDownfall.Arcanum.Cli/";
 
     private const string FactoryPath = "src/RetroDownfall.Arcanum.Cli/UX/CliConsoleFactory.cs";
@@ -61,7 +60,6 @@ public sealed class CliConsoleConstructionInventoryTests
     [Fact]
     public void The_console_factory_is_the_only_cli_source_that_builds_a_spectre_console()
     {
-
         string[] builders =
         [
             .. ProductionSourceInventory.Sources()
@@ -73,13 +71,11 @@ public sealed class CliConsoleConstructionInventoryTests
         ];
 
         Assert.Equal([FactoryPath], builders);
-
     }
 
     [Fact]
     public void No_cli_source_aliases_or_statically_imports_AnsiConsole()
     {
-
         string[] aliasing =
         [
             .. ProductionSourceInventory.Sources()
@@ -91,18 +87,15 @@ public sealed class CliConsoleConstructionInventoryTests
         ];
 
         Assert.Empty(aliasing);
-
     }
 
     [Fact]
     public void The_cli_project_does_not_import_AnsiConsole_for_every_source()
     {
-
         string project = File.ReadAllText(
             Path.Combine(NativeSqlCipherTestPaths.RepositoryRoot(), CliProjectPath));
 
         Assert.DoesNotMatch(ProjectConsoleUsing, project);
-
     }
 
     /// <summary>
@@ -116,9 +109,7 @@ public sealed class CliConsoleConstructionInventoryTests
     [InlineData("Func<AnsiConsoleSettings, IAnsiConsole> make = AnsiConsole.Create;")]
     public void The_inventory_recognises_the_known_spellings_of_the_construction(string source)
     {
-
         Assert.Matches(ConsoleConstruction, source);
-
     }
 
     [Theory]
@@ -128,9 +119,7 @@ public sealed class CliConsoleConstructionInventoryTests
     [InlineData("AnsiConsole.CreateSettings(settings)")]
     public void The_inventory_leaves_the_factory_and_the_global_console_alone(string source)
     {
-
         Assert.DoesNotMatch(ConsoleConstruction, source);
-
     }
 
     [Theory]
@@ -141,9 +130,7 @@ public sealed class CliConsoleConstructionInventoryTests
     [InlineData("namespace X;\n\nusing static Spectre.Console.AnsiConsole;\n")]
     public void The_inventory_recognises_the_aliases_and_static_imports(string source)
     {
-
         Assert.Matches(ConsoleAlias, source);
-
     }
 
     [Theory]
@@ -153,9 +140,7 @@ public sealed class CliConsoleConstructionInventoryTests
     [InlineData("using Settings = Spectre.Console.AnsiConsoleSettings;")]
     public void The_inventory_leaves_ordinary_imports_alone(string source)
     {
-
         Assert.DoesNotMatch(ConsoleAlias, source);
-
     }
 
     [Theory]
@@ -163,9 +148,7 @@ public sealed class CliConsoleConstructionInventoryTests
     [InlineData("<Using Static=\"true\" Include=\"Spectre.Console.AnsiConsole\" />")]
     public void The_inventory_recognises_a_project_level_import(string project)
     {
-
         Assert.Matches(ProjectConsoleUsing, project);
-
     }
 
     [Theory]
@@ -173,9 +156,6 @@ public sealed class CliConsoleConstructionInventoryTests
     [InlineData("<Using Include=\"System.Net.Http\" />")]
     public void The_inventory_leaves_other_project_imports_alone(string project)
     {
-
         Assert.DoesNotMatch(ProjectConsoleUsing, project);
-
     }
-
 }

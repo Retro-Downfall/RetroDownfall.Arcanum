@@ -8,7 +8,6 @@ namespace RetroDownfall.Arcanum.Cli.UX;
 /// </summary>
 public interface ICliEnvironment
 {
-
     /// <summary>
     /// <c>true</c> when neither stdout nor stdin is redirected and the runtime detects a TTY.
     /// </summary>
@@ -26,12 +25,10 @@ public interface ICliEnvironment
     /// AND running interactively (otherwise the bar pollutes piped output and scripts).
     /// </summary>
     bool ShouldShowManaBar { get; }
-
 }
 
 public sealed class CliEnvironment : ICliEnvironment
 {
-
     private readonly bool _isInteractive;
 
     private readonly bool _colorEnabled;
@@ -43,14 +40,12 @@ public sealed class CliEnvironment : ICliEnvironment
     public CliEnvironment(bool showManaBarConfigured)
         : this(showManaBarConfigured, invocationContext: null)
     {
-
     }
 
     internal CliEnvironment(
         bool showManaBarConfigured,
         ICliInvocationContext? invocationContext)
     {
-
         bool stdoutRedirected = Console.IsOutputRedirected;
 
         bool stdinRedirected = Console.IsInputRedirected;
@@ -62,7 +57,6 @@ public sealed class CliEnvironment : ICliEnvironment
         _showManaBarConfigured = showManaBarConfigured;
 
         _invocationContext = invocationContext;
-
     }
 
     /// <summary>
@@ -97,5 +91,4 @@ public sealed class CliEnvironment : ICliEnvironment
         _showManaBarConfigured
         && IsInteractive
         && ColorEnabled;
-
 }

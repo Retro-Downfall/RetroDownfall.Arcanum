@@ -597,27 +597,36 @@ public sealed class CommandCenterTurnAttachmentBuilderTests : IDisposable
         if (compact is null)
         {
             diagnostic = "compact.exe could not be started.";
+
             return false;
         }
 
         Task<string> standardOutput = compact.StandardOutput.ReadToEndAsync();
+
         Task<string> standardError = compact.StandardError.ReadToEndAsync();
 
         if (!compact.WaitForExit(30_000))
         {
             compact.Kill(entireProcessTree: true);
+
             diagnostic = "compact.exe did not exit within 30 seconds.";
+
             return false;
         }
 
         // Exit has been observed, so the pipes are closed and both reads complete.
         string output = standardOutput.GetAwaiter().GetResult().Trim();
+
         string error = standardError.GetAwaiter().GetResult().Trim();
 
         FileAttributes attributes = File.GetAttributes(path);
+
         string? linkTarget = new FileInfo(path).LinkTarget;
+
         string fileSystem = new DriveInfo(Path.GetPathRoot(Path.GetFullPath(path))!).DriveFormat;
+
         bool kindKnown = FileHandleIdentityInterop.TryGetPathMetadata(path, out FileHandleMetadata metadata);
+
         string kind = kindKnown ? metadata.Kind.ToString() : "unavailable";
 
         diagnostic =

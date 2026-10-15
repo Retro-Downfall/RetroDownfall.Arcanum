@@ -10,11 +10,9 @@ namespace RetroDownfall.Arcanum.Tests.Platform;
 [Collection("ChildProcess")]
 public sealed class ProcessResourceLimiterWindowsBehaviorTests
 {
-
     [Fact]
     public void Apply_rejects_null_arguments_before_platform_dispatch()
     {
-
         ProcessResourceLimiter limiter = new();
 
         Assert.Throws<ArgumentNullException>(() =>
@@ -22,13 +20,11 @@ public sealed class ProcessResourceLimiterWindowsBehaviorTests
 
         Assert.Throws<ArgumentNullException>(() =>
             limiter.Apply(new ProcessStartInfo { FileName = "ignored" }, null!));
-
     }
 
     [SkippableFact]
     public void Apply_on_windows_skips_job_for_file_descriptor_limit_only()
     {
-
         Skip.IfNot(
             OperatingSystem.IsWindows(),
             "Windows Job Object behavior requires Windows.");
@@ -59,13 +55,11 @@ public sealed class ProcessResourceLimiterWindowsBehaviorTests
         Assert.Equal(0, api.CreateCount);
 
         Assert.Equal("cmd.exe", startInfo.FileName);
-
     }
 
     [SkippableFact]
     public void Apply_on_windows_rejects_missing_executable_before_job_creation()
     {
-
         Skip.IfNot(
             OperatingSystem.IsWindows(),
             "Windows Job Object behavior requires Windows.");
@@ -89,13 +83,11 @@ public sealed class ProcessResourceLimiterWindowsBehaviorTests
         Assert.Null(result.CleanupAsync);
 
         Assert.Equal(0, api.CreateCount);
-
     }
 
     [SkippableFact]
     public void Apply_on_windows_surfaces_job_creation_failure()
     {
-
         Skip.IfNot(
             OperatingSystem.IsWindows(),
             "Windows Job Object behavior requires Windows.");
@@ -119,13 +111,11 @@ public sealed class ProcessResourceLimiterWindowsBehaviorTests
         Assert.Equal(1, api.CreateCount);
 
         Assert.Equal(0, api.ConfigureCount);
-
     }
 
     [SkippableFact]
     public void Apply_on_windows_treats_invalid_job_handle_as_creation_failure()
     {
-
         Skip.IfNot(
             OperatingSystem.IsWindows(),
             "Windows Job Object behavior requires Windows.");
@@ -147,13 +137,11 @@ public sealed class ProcessResourceLimiterWindowsBehaviorTests
         Assert.True(api.LastCreatedHandle.IsClosed);
 
         Assert.Equal(0, api.ConfigureCount);
-
     }
 
     [SkippableFact]
     public void Apply_on_windows_surfaces_limit_configuration_failure()
     {
-
         Skip.IfNot(
             OperatingSystem.IsWindows(),
             "Windows Job Object behavior requires Windows.");
@@ -183,13 +171,11 @@ public sealed class ProcessResourceLimiterWindowsBehaviorTests
         Assert.NotNull(api.LastCreatedHandle);
 
         Assert.True(api.LastCreatedHandle.IsClosed);
-
     }
 
     [SkippableFact]
     public async Task Apply_on_windows_assigns_through_fake_and_cleanup_closes_session()
     {
-
         Skip.IfNot(
             OperatingSystem.IsWindows(),
             "Windows Job Object behavior requires Windows.");
@@ -229,7 +215,6 @@ public sealed class ProcessResourceLimiterWindowsBehaviorTests
         Assert.NotNull(api.LastCreatedHandle);
 
         Assert.True(api.LastCreatedHandle.IsClosed);
-
     }
 
     /// <summary>
@@ -240,7 +225,6 @@ public sealed class ProcessResourceLimiterWindowsBehaviorTests
     [SkippableFact]
     public void Apply_on_windows_offers_a_broker_slot_that_widens_the_job_by_exactly_one()
     {
-
         Skip.IfNot(
             OperatingSystem.IsWindows(),
             "Windows Job Object behavior requires Windows.");
@@ -274,13 +258,11 @@ public sealed class ProcessResourceLimiterWindowsBehaviorTests
             api.LastLimits.Value.JobMemoryBytes);
 
         Assert.Equal(0, api.AssignCount);
-
     }
 
     [Fact]
     public void SafeJobHandle_default_constructor_creates_invalid_owned_handle()
     {
-
         SafeJobHandle handle = new();
 
         Assert.True(handle.IsInvalid);
@@ -290,13 +272,11 @@ public sealed class ProcessResourceLimiterWindowsBehaviorTests
         handle.Dispose();
 
         Assert.True(handle.IsClosed);
-
     }
 
     [SkippableFact]
     public void SafeJobHandle_on_windows_closes_transferred_kernel_handle()
     {
-
         Skip.IfNot(
             OperatingSystem.IsWindows(),
             "Windows kernel-handle ownership requires Windows.");
@@ -318,23 +298,19 @@ public sealed class ProcessResourceLimiterWindowsBehaviorTests
         jobHandle.Dispose();
 
         Assert.True(jobHandle.IsClosed);
-
     }
 
     private enum CreateResult
     {
-
         Valid,
 
         Null,
 
         Invalid,
-
     }
 
     private sealed class FakeWindowsJobObjectApi : IWindowsJobObjectApi
     {
-
         public CreateResult JobCreation { get; init; }
 
         public bool ConfigureResult { get; init; } = true;
@@ -355,7 +331,6 @@ public sealed class ProcessResourceLimiterWindowsBehaviorTests
 
         public SafeJobHandle? CreateJobObject()
         {
-
             CreateCount++;
 
             LastCreatedHandle = JobCreation switch
@@ -366,33 +341,26 @@ public sealed class ProcessResourceLimiterWindowsBehaviorTests
             };
 
             return LastCreatedHandle;
-
         }
 
         public bool ConfigureLimits(SafeJobHandle job, in WindowsJobObjectLimits limits)
         {
-
             ConfigureCount++;
 
             LastLimits = limits;
 
             return ConfigureResult;
-
         }
 
         public bool AssignProcess(SafeJobHandle job, SafeHandle processHandle)
         {
-
             AssignCount++;
 
             LastAssignedProcessHandle = processHandle;
 
             return true;
-
         }
 
         public int GetLastError() => LastError;
-
     }
-
 }

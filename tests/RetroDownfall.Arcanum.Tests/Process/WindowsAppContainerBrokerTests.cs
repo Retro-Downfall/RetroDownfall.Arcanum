@@ -70,6 +70,7 @@ public sealed class WindowsAppContainerBrokerTests : IDisposable
         string executable = RequirePublishedExecutable();
 
         string daclBefore = WindowsDaclText.Of(_workspace);
+
         int profilesBefore = ArcanumProfileCount();
 
         CappedChildProcessRunResult result = await RunBrokeredAsync(
@@ -84,9 +85,13 @@ public sealed class WindowsAppContainerBrokerTests : IDisposable
         string diagnostic = Describe(result);
 
         Assert.True(result.Outcome == CappedChildProcessOutcome.Completed, diagnostic);
+
         Assert.True(result.ExitCode == 0, diagnostic);
+
         Assert.Contains("broker-ok", result.Stdout.Text, StringComparison.Ordinal);
+
         Assert.Equal(daclBefore, WindowsDaclText.Of(_workspace));
+
         Assert.Equal(profilesBefore, ArcanumProfileCount());
     }
 
@@ -111,7 +116,9 @@ public sealed class WindowsAppContainerBrokerTests : IDisposable
         string diagnostic = Describe(result);
 
         Assert.True(result.Outcome == CappedChildProcessOutcome.Completed, diagnostic);
+
         Assert.True(result.ExitCode == 0, diagnostic);
+
         Assert.Contains("broker-one-slot", result.Stdout.Text, StringComparison.Ordinal);
     }
 
@@ -143,7 +150,9 @@ public sealed class WindowsAppContainerBrokerTests : IDisposable
         string readDiagnostic = Describe(read);
 
         Assert.True(read.Outcome == CappedChildProcessOutcome.Completed, readDiagnostic);
+
         Assert.True(read.ExitCode != 0, "The target read a file outside every granted root. " + readDiagnostic);
+
         Assert.DoesNotContain(token, read.Stdout.Text, StringComparison.Ordinal);
 
         CappedChildProcessRunResult write = await RunBrokeredAsync(
@@ -157,6 +166,7 @@ public sealed class WindowsAppContainerBrokerTests : IDisposable
         string writeDiagnostic = Describe(write);
 
         Assert.True(write.Outcome == CappedChildProcessOutcome.Completed, writeDiagnostic);
+
         Assert.False(File.Exists(written), "The target wrote a file outside every granted root. " + writeDiagnostic);
 
         string inside = Path.Combine(_workspace, "granted.txt");
@@ -172,8 +182,11 @@ public sealed class WindowsAppContainerBrokerTests : IDisposable
         string controlDiagnostic = Describe(control);
 
         Assert.True(control.Outcome == CappedChildProcessOutcome.Completed, controlDiagnostic);
+
         Assert.True(control.ExitCode == 0, controlDiagnostic);
+
         Assert.True(File.Exists(inside), "The target could not write inside the workspace it was granted. " + controlDiagnostic);
+
         Assert.Contains("granted", File.ReadAllText(inside), StringComparison.Ordinal);
     }
 
@@ -186,6 +199,7 @@ public sealed class WindowsAppContainerBrokerTests : IDisposable
         // Exit 70 used to be a bare number: the runner handed the model an exit code and no reason.
         // Runs in-process, so it needs no published apphost.
         using StringWriter error = new();
+
         int profilesBefore = ArcanumProfileCount();
 
         int exitCode = WindowsAppContainerLauncher.Run(
@@ -198,8 +212,11 @@ public sealed class WindowsAppContainerBrokerTests : IDisposable
             error);
 
         Assert.Equal(WindowsAppContainerBrokerExit.InvalidPayload, exitCode);
+
         Assert.StartsWith("sandbox-exec: ", error.ToString(), StringComparison.Ordinal);
+
         Assert.Contains("WindowsJobAssignedSignalPath", error.ToString(), StringComparison.Ordinal);
+
         Assert.Equal(profilesBefore, ArcanumProfileCount());
     }
 
@@ -279,13 +296,16 @@ public sealed class WindowsAppContainerBrokerTests : IDisposable
         SecurityIdentifier user = WindowsIdentity.GetCurrent().User!;
 
         DirectorySecurity security = new();
+
         security.SetAccessRuleProtection(isProtected: true, preserveInheritance: false);
+
         security.AddAccessRule(new FileSystemAccessRule(
             user,
             FileSystemRights.FullControl,
             InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit,
             PropagationFlags.None,
             AccessControlType.Allow));
+
         directory.SetAccessControl(security);
 
         // The precondition the probe rests on: no entry may name an AppContainer, in particular the

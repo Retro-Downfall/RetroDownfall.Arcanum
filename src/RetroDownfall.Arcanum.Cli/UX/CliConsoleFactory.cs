@@ -27,7 +27,6 @@ namespace RetroDownfall.Arcanum.Cli.UX;
 /// </remarks>
 internal static class CliConsoleFactory
 {
-
     /// <summary>
     /// Creates the console for <paramref name="settings"/>, withholding the environment enrichers from
     /// any console that declines ANSI.
@@ -38,18 +37,14 @@ internal static class CliConsoleFactory
     /// </param>
     internal static IAnsiConsole Create(AnsiConsoleSettings settings)
     {
-
         ArgumentNullException.ThrowIfNull(settings);
 
         if (settings.Ansi == AnsiSupport.No)
         {
-
             settings.Enrichment.UseDefaultEnrichers = false;
-
         }
 
         return AnsiConsole.Create(settings);
-
     }
 
     /// <summary>
@@ -87,20 +82,16 @@ internal static class CliConsoleFactory
     /// </summary>
     internal static AnsiConsoleSettings CreateDiagnosticSettings(TextWriter output)
     {
-
         bool colorEnabled = DiagnosticColorEnabled();
 
         return new AnsiConsoleSettings
         {
-
             Ansi = colorEnabled ? AnsiSupport.Detect : AnsiSupport.No,
 
             ColorSystem = colorEnabled ? ColorSystemSupport.Detect : ColorSystemSupport.NoColors,
 
             Out = new AnsiConsoleOutput(output),
-
         };
-
     }
 
     /// <summary>
@@ -111,18 +102,13 @@ internal static class CliConsoleFactory
     /// </summary>
     private static bool DiagnosticColorEnabled()
     {
-
         CliInvocationOptions options = CliInvocationContext.Current;
 
         if (options.Plain || options.Json || options.Print)
         {
-
             return false;
-
         }
 
         return !CliEnvironment.NoColorRequested;
-
     }
-
 }
