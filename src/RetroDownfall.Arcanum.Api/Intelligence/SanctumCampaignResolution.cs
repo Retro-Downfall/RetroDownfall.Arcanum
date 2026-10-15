@@ -28,6 +28,10 @@ namespace RetroDownfall.Arcanum.Api.Intelligence;
 /// and the containing root can name different Campaigns (a Campaign nested inside another), and then the stricter of the two governs.</item>
 /// </list>
 ///
+/// A surface that names a path in more than one way (an attachment source is a file, spelled with links that may lead out of the root it
+/// stands in) hands the Campaigns each way names as <em>path claims</em>. They are claims like the others and sit before the root that
+/// contains the working directory, so on a tie the Campaign the spelling is inside governs the one its target is inside.
+///
 /// The strictest claim wins: a Strict Sanctum over an audit-only one over one that is switched off, and a Campaign whose policy cannot be
 /// read over all of them (<see cref="Resolved.PolicyUnreadable"/>), so the caller refuses what that Sanctum would have judged. A
 /// directory that no registered root contains, on a turn bound to no Campaign, stays unrestricted. When two claims are equally strict the
@@ -41,15 +45,32 @@ internal static class SanctumCampaignResolution
     /// </summary>
     internal readonly record struct Resolved(Guid? CampaignId, Campaign? Loaded, bool PolicyUnreadable = false);
 
-    internal static async Task<Resolved> ResolveAsync(
+    internal static Task<Resolved> ResolveAsync(
         Guid? sessionId,
         Guid? explicitCampaignId,
         string? workingDirectory,
         CanonicalCampaignContext? known,
         ICanonicalCampaignContextResolver resolver,
         ICampaignRepository campaigns,
+        CancellationToken cancellationToken) =>
+        ResolveAsync(sessionId, explicitCampaignId, workingDirectory, known, pathClaims: [], resolver, campaigns, cancellationToken);
+
+    /// <summary>
+    /// Resolves as for a turn, with <paramref name="pathClaims"/>: the Campaigns the surface found by reading its path in ways the working
+    /// directory's own lookup does not (see the remarks of the type), each a claim ahead of the root that contains the working directory.
+    /// </summary>
+    internal static async Task<Resolved> ResolveAsync(
+        Guid? sessionId,
+        Guid? explicitCampaignId,
+        string? workingDirectory,
+        CanonicalCampaignContext? known,
+        IReadOnlyList<Campaign> pathClaims,
+        ICanonicalCampaignContextResolver resolver,
+        ICampaignRepository campaigns,
         CancellationToken cancellationToken)
     {
+        ArgumentNullException.ThrowIfNull(pathClaims);
+
         ArgumentNullException.ThrowIfNull(resolver);
 
         ArgumentNullException.ThrowIfNull(campaigns);
@@ -90,21 +111,30 @@ internal static class SanctumCampaignResolution
             }
         }
 
-        Campaign? containing = null;
+        Dictionary<Guid, Campaign> loaded = [];
+
+        foreach (Campaign pathClaim in pathClaims)
+        {
+            claims.Add(pathClaim.Id);
+
+            _ = loaded.TryAdd(pathClaim.Id, pathClaim);
+        }
 
         if (directory is not null)
         {
-            containing = await campaigns
+            Campaign? containing = await campaigns
                 .GetByContainedPathAsync(directory, cancellationToken)
                 .ConfigureAwait(false);
 
             if (containing is not null)
             {
                 claims.Add(containing.Id);
+
+                _ = loaded.TryAdd(containing.Id, containing);
             }
         }
 
-        return await ChooseAsync(claims, containing, campaigns, cancellationToken).ConfigureAwait(false);
+        return await ChooseAsync(claims, loaded, campaigns, cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -161,7 +191,7 @@ internal static class SanctumCampaignResolution
     /// <summary>The strictest Sanctum among the claimed Campaigns, the earliest claim winning a tie.</summary>
     private static async Task<Resolved> ChooseAsync(
         Claims claims,
-        Campaign? alreadyLoaded,
+        IReadOnlyDictionary<Guid, Campaign> alreadyLoaded,
         ICampaignRepository campaigns,
         CancellationToken cancellationToken)
     {
@@ -173,8 +203,8 @@ internal static class SanctumCampaignResolution
 
         foreach (Guid id in claims.Ids)
         {
-            Campaign? candidate = alreadyLoaded is not null && alreadyLoaded.Id == id
-                ? alreadyLoaded
+            Campaign? candidate = alreadyLoaded.TryGetValue(id, out Campaign? row)
+                ? row
                 : await TryLoadAsync(campaigns, id, cancellationToken).ConfigureAwait(false);
 
             SanctumStrictness strictness = candidate is null

@@ -44098,11 +44098,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
         }
     }
 
-    private static readonly Lazy<ImmutableArray<PortableExecutableReference>> FixturePlatformReferences = new(
-        static () => ((string)AppContext.GetData("TRUSTED_PLATFORM_ASSEMBLIES")!)
-            .Split(Path.PathSeparator)
-            .Select(static path => MetadataReference.CreateFromFile(path))
-            .ToImmutableArray());
+    private static readonly Lazy<ImmutableArray<PortableExecutableReference>> FixturePlatformReferences = new(static () => TrustedPlatformReferences.Shared);
 
     private static CSharpCompilation Compile(string source) =>
         CSharpCompilation.Create(

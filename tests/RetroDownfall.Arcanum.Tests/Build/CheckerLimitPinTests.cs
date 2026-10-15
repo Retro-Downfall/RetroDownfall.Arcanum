@@ -24,7 +24,7 @@ namespace RetroDownfall.Arcanum.Tests.Build;
 /// </remarks>
 [Collection(HostedProducerAnalysisCollection.Name)]
 [Trait("Category", "HostedProducerAnalysis")]
-public sealed class CheckerLimitPinTests(ITestOutputHelper output)
+public sealed class CheckerLimitPinTests(ITestOutputHelper output) : IClassFixture<SemanticModelScope>
 {
     /// <summary>One stated limit: the id, the words of docs/Arcanum.DESIGN.md that state it, and the test that pins the production source against it.</summary>
     private sealed record Limit(string Id, string Anchor, string Pin);
@@ -485,15 +485,12 @@ public sealed class CheckerLimitPinTests(ITestOutputHelper output)
         }
         """;
 
-    private static readonly Lazy<IReadOnlyList<MetadataReference>> References = new(static () =>
-        [.. ((string)AppContext.GetData("TRUSTED_PLATFORM_ASSEMBLIES")!).Split(Path.PathSeparator).Select(static path => MetadataReference.CreateFromFile(path))]);
-
     private static readonly Lazy<IReadOnlyList<CSharpCompilation>> Synthetic = new(static () =>
     {
         CSharpCompilation compilation = CSharpCompilation.Create(
             "SyntheticLimits",
             [CSharpSyntaxTree.ParseText(Shapes, path: "src/Fixture.cs")],
-            References.Value,
+            TrustedPlatformReferences.Shared,
             new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary, allowUnsafe: true));
 
         Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));

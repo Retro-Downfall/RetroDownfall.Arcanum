@@ -73,8 +73,24 @@ public sealed record AttachmentSourceResolution(
     ReadOnlyMemory<byte> VerifiedBytes,
     string? DetectedMimeType = null);
 
+/// <summary>
+/// The two paths one live read of an attachment source is judged by: the path as the request or the stored provenance spells it, and the
+/// path the opened handle resolves to.
+/// </summary>
+/// <param name="SourcePath">
+/// The absolute path of the source inside the registered workspace, with its links unresolved: the path the reference request names, or the
+/// stored workspace-relative path under its workspace root. The Campaign whose root contains the text of this spelling, the one whose root
+/// contains the directory it stands in (its links resolved) and the one nearest the path in every form it can be read in are each a claim on
+/// the read, so a link that lies inside a Campaign's root and leaves it is still that Campaign's read, wherever it leads.
+/// </param>
+/// <param name="CanonicalPath">The path the opened handle resolves to once every link is followed. This is what a Sanctum's path boundary judges.</param>
+public sealed record AttachmentSourceRead(string SourcePath, string CanonicalPath);
+
+/// <summary>
+/// Decides, after the source is opened and before a byte of it is read, whether the read may go on. Returns <see langword="false"/> to stop it.
+/// </summary>
 public delegate Task<bool> AttachmentSourcePathAuthorizer(
-    string canonicalPath,
+    AttachmentSourceRead read,
     CancellationToken cancellationToken);
 
 public interface IAttachmentSourceResolver
@@ -91,7 +107,7 @@ public interface IAttachmentSourceResolver
     Task<AttachmentSourceResolution> ResolveForReferenceAsync(
         AttachmentSourceClaim claim,
         long maxBytes,
-        AttachmentSourcePathAuthorizer authorizeCanonicalPath,
+        AttachmentSourcePathAuthorizer authorizeRead,
         CancellationToken cancellationToken = default) =>
         throw new NotSupportedException("Live attachment references are not supported by this resolver.");
 
@@ -99,7 +115,7 @@ public interface IAttachmentSourceResolver
         AttachmentSourceMetadata source,
         string expectedSnapshotSha256,
         long maxBytes,
-        AttachmentSourcePathAuthorizer authorizeCanonicalPath,
+        AttachmentSourcePathAuthorizer authorizeRead,
         CancellationToken cancellationToken = default) =>
         throw new NotSupportedException("Current attachment source reads are not supported by this resolver.");
 }

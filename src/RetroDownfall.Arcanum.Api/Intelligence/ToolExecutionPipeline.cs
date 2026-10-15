@@ -651,6 +651,8 @@ public sealed class ToolExecutionPipeline(
 
                 turnContext,
 
+                TurnAuthorizer(turnContext),
+
                 includeAdditionalContext: true,
 
                 cancellationToken)
@@ -658,16 +660,49 @@ public sealed class ToolExecutionPipeline(
             .ConfigureAwait(false);
     }
 
+    /// <summary>
+    /// The Sanctum a refresh made by a tool call of a turn is judged by: the one the turn is already bound to, which was chosen from every
+    /// claim the turn carries when it began, and the mode that Sanctum is in.
+    /// </summary>
+    private AttachmentSourcePathAuthorizer TurnAuthorizer(TurnContext turnContext) =>
+        async (read, cancellationToken) =>
+        {
+            if (string.IsNullOrWhiteSpace(turnContext.CampaignId))
+            {
+                return true;
+            }
+
+            SanctumResult result = await sanctumGuard.ValidatePathAsync(
+                    turnContext.CampaignId,
+                    read.CanonicalPath,
+                    AttachmentSourceSanctum.OperationType,
+                    "refresh_session_file",
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+            return SanctumEnforcement.AllowsContinuation(result, turnContext.SanctumMode);
+        };
+
+    /// <summary>
+    /// Refreshes one tracked attachment of a Session for the operator route. No turn is running, so the caller supplies the decision that
+    /// judges the live read, chosen the way a reference chooses it (<see cref="AttachmentSourceSanctum"/>), instead of taking one from a turn.
+    /// </summary>
+    /// <param name="sessionId">The Session the attachment belongs to.</param>
+    /// <param name="attachmentId">The attachment to refresh.</param>
+    /// <param name="authorizeRead">Decides, once the source is open and before it is read, whether the Sanctum lets the read go on.</param>
+    /// <param name="cancellationToken">Cancels the refresh.</param>
     public async Task<Result<AttachmentRefreshEvent>> RefreshSessionAttachmentAsync(
         Guid sessionId,
 
         Guid attachmentId,
 
-        Guid? campaignId,
+        AttachmentSourcePathAuthorizer authorizeRead,
 
         CancellationToken cancellationToken = default)
 
     {
+        ArgumentNullException.ThrowIfNull(authorizeRead);
+
         if (sessionId == Guid.Empty || attachmentId == Guid.Empty)
 
         {
@@ -690,17 +725,7 @@ public sealed class ToolExecutionPipeline(
 
             Model: settings.Value.DefaultModel,
 
-            SessionId: sessionId,
-
-            CampaignId: campaignId);
-
-        TurnContext context = new()
-
-        {
-            CampaignId = campaignId?.ToString("D", CultureInfo.InvariantCulture),
-
-            SanctumMode = SanctumMode.Strict,
-        };
+            SessionId: sessionId);
 
         RefreshPostProcess refreshed = await ProcessRefreshSessionFileCoreAsync(
                 sessionId,
@@ -711,7 +736,9 @@ public sealed class ToolExecutionPipeline(
 
                 request,
 
-                context,
+                new TurnContext(),
+
+                authorizeRead,
 
                 includeAdditionalContext: false,
 
@@ -765,6 +792,8 @@ public sealed class ToolExecutionPipeline(
         PingRequest request,
 
         TurnContext turnContext,
+
+        AttachmentSourcePathAuthorizer authorizeRead,
 
         bool includeAdditionalContext,
 
@@ -837,28 +866,11 @@ public sealed class ToolExecutionPipeline(
 
         long maxBytes = SessionAttachmentContentPolicy.ResolveMaximumReadBytes(settings.Value);
 
-        async Task<bool> AuthorizePathAsync(string canonicalPath, CancellationToken ct)
-        {
-            if (string.IsNullOrWhiteSpace(turnContext.CampaignId))
-            {
-                return true;
-            }
-
-            SanctumResult result = await sanctumGuard.ValidatePathAsync(
-                    turnContext.CampaignId,
-                    canonicalPath,
-                    "attachment source read",
-                    "refresh_session_file",
-                    ct)
-                .ConfigureAwait(false);
-            return SanctumEnforcement.AllowsContinuation(result, turnContext.SanctumMode);
-        }
-
         AttachmentSourceResolution current = await sourceResolver.ResolveCurrentAsync(
                 source,
                 latest.ContentSha256,
                 maxBytes,
-                AuthorizePathAsync,
+                authorizeRead,
                 cancellationToken)
             .ConfigureAwait(false);
 

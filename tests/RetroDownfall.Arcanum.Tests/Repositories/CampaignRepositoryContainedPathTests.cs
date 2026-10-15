@@ -185,6 +185,130 @@ public sealed class CampaignRepositoryContainedPathTests : IAsyncLifetime
         Assert.Equal(registered.Id, (await repository.GetByContainedPathAsync(src))?.Id);
     }
 
+    // GetBySpelledPathAsync answers for the way a path is written, not for where its links lead. A link inside a root is a name inside that root
+    // whatever it points at, which GetByContainedPathAsync (the nearest root over every form of the path) cannot say once the link points into
+    // a root that is nearer to its target than the first root is to the link.
+    [SkippableFact]
+    public async Task A_link_inside_a_root_is_spelled_inside_it_even_when_it_points_into_a_nearer_root()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Skip.If(OperatingSystem.IsWindows(), "Creating a symbolic link needs a privilege the Windows test host does not have.");
+
+        Assert.True(WorkspacePathPolicy.TryCanonicalize(_parent, out string? canonicalParent, out _));
+
+        string first = Directory.CreateDirectory(Path.Combine(canonicalParent, "first")).FullName;
+
+        string second = Directory.CreateDirectory(Path.Combine(canonicalParent, "second")).FullName;
+
+        string target = Path.Combine(second, "target.txt");
+
+        await File.WriteAllTextAsync(target, "in the second root");
+
+        string link = Path.Combine(Directory.CreateDirectory(Path.Combine(first, "sub")).FullName, "deep.txt");
+
+        File.CreateSymbolicLink(link, target);
+
+        ICampaignRepository repository = CreateRepository();
+
+        Campaign firstCampaign = await AddAsync(repository, "first", first);
+
+        Campaign secondCampaign = await AddAsync(repository, "second", second);
+
+        // The nearest root over every form of the path is the one the link points into, one component above its target, not two above the link.
+        Assert.Equal(secondCampaign.Id, (await repository.GetByContainedPathAsync(link))?.Id);
+
+        Assert.Equal(firstCampaign.Id, (await repository.GetBySpelledPathAsync(link))?.Id);
+
+        Assert.Equal(secondCampaign.Id, (await repository.GetBySpelledPathAsync(target))?.Id);
+    }
+
+    [SkippableFact]
+    public async Task A_directory_link_inside_a_root_is_spelled_inside_it_even_when_it_points_into_another_root()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Skip.If(OperatingSystem.IsWindows(), "Creating a symbolic link needs a privilege the Windows test host does not have.");
+
+        Assert.True(WorkspacePathPolicy.TryCanonicalize(_parent, out string? canonicalParent, out _));
+
+        string first = Directory.CreateDirectory(Path.Combine(canonicalParent, "first")).FullName;
+
+        string second = Directory.CreateDirectory(Path.Combine(canonicalParent, "second")).FullName;
+
+        Directory.CreateSymbolicLink(Path.Combine(first, "dirlink"), second);
+
+        ICampaignRepository repository = CreateRepository();
+
+        Campaign firstCampaign = await AddAsync(repository, "first", first);
+
+        Campaign secondCampaign = await AddAsync(repository, "second", second);
+
+        string through = Path.Combine(first, "dirlink", "target.txt");
+
+        Assert.Equal(secondCampaign.Id, (await repository.GetByContainedPathAsync(through))?.Id);
+
+        Assert.Equal(firstCampaign.Id, (await repository.GetBySpelledPathAsync(through))?.Id);
+    }
+
+    [SkippableFact]
+    public async Task A_path_spelled_through_a_link_to_a_root_is_not_spelled_inside_it()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Skip.If(OperatingSystem.IsWindows(), "Creating a symbolic link needs a privilege the Windows test host does not have.");
+
+        Assert.True(WorkspacePathPolicy.TryCanonicalize(_parent, out string? canonicalParent, out _));
+
+        string root = Directory.CreateDirectory(Path.Combine(canonicalParent, "root")).FullName;
+
+        string alias = Path.Combine(canonicalParent, "alias");
+
+        Directory.CreateSymbolicLink(alias, root);
+
+        ICampaignRepository repository = CreateRepository();
+
+        Campaign registered = await AddAsync(repository, "root", root);
+
+        // The spelling names the alias, which no root's text contains; the directory it resolves to is what GetByContainedPathAsync finds.
+        Assert.Null(await repository.GetBySpelledPathAsync(Path.Combine(alias, "file.txt")));
+
+        Assert.Equal(registered.Id, (await repository.GetByContainedPathAsync(alias))?.Id);
+    }
+
+    [SkippableFact]
+    public async Task The_spelled_path_is_matched_by_whole_components_below_the_deepest_root_and_a_root_registered_through_a_link_is_found_by_its_physical_text()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Skip.If(OperatingSystem.IsWindows(), "Creating a symbolic link needs a privilege the Windows test host does not have.");
+
+        Assert.True(WorkspacePathPolicy.TryCanonicalize(_parent, out string? canonicalParent, out _));
+
+        string outer = Directory.CreateDirectory(Path.Combine(canonicalParent, "real", "outer")).FullName;
+
+        string inner = Directory.CreateDirectory(Path.Combine(outer, "inner")).FullName;
+
+        string legacy = Directory.CreateDirectory(Path.Combine(canonicalParent, "real", "outer-legacy")).FullName;
+
+        Directory.CreateSymbolicLink(Path.Combine(_parent, "link"), Path.Combine(canonicalParent, "real"));
+
+        ICampaignRepository repository = CreateRepository();
+
+        // The outer root is registered through a link and the path is written with the physical spelling.
+        Campaign outerCampaign = await AddAsync(repository, "outer", Path.Combine(_parent, "link", "outer"));
+
+        Campaign innerCampaign = await AddAsync(repository, "inner", inner);
+
+        Assert.Equal(outerCampaign.Id, (await repository.GetBySpelledPathAsync(Path.Combine(outer, "docs", "a.txt")))?.Id);
+
+        Assert.Equal(innerCampaign.Id, (await repository.GetBySpelledPathAsync(Path.Combine(inner, "src", "a.txt")))?.Id);
+
+        Assert.Null(await repository.GetBySpelledPathAsync(Path.Combine(legacy, "a.txt")));
+
+        Assert.Null(await repository.GetBySpelledPathAsync("bad\u0000path"));
+    }
+
     [SkippableFact]
     public async Task The_case_of_the_working_directory_does_not_hide_the_campaign_on_a_case_insensitive_platform()
     {
@@ -202,7 +326,6 @@ public sealed class CampaignRepositoryContainedPathTests : IAsyncLifetime
 
         Assert.Equal(registered.Id, (await repository.GetByContainedPathAsync(Path.Combine(_parent, "CASEDROOT", "src")))?.Id);
     }
-
 
     // The operating system reports a working directory by its physical path (getcwd, Environment.CurrentDirectory), whatever spelling the
     // root was registered under. A root registered through a symbolic link, or through the /var -> /private/var link a macOS temporary

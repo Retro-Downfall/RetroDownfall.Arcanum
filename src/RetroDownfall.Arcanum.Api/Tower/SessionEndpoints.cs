@@ -634,9 +634,15 @@ internal static class SessionEndpoints
 
                 ISanctumGuard sanctumGuard,
 
+                ICanonicalCampaignContextResolver campaignResolver,
+
+                ICampaignRepository campaigns,
+
                 IWorkspaceRegistry workspaceRegistry,
 
                 IOptionsMonitor<ArcanumSettings> options,
+
+                ILoggerFactory loggerFactory,
 
                 HttpContext ctx) =>
 
@@ -819,35 +825,20 @@ internal static class SessionEndpoints
                         "The attachment logical name is invalid.");
                 }
 
-                async Task<bool> AuthorizeCanonicalPathAsync(
-                    string canonicalPath,
+                AttachmentSourcePathAuthorizer authorizeRead = AttachmentSourceSanctum.Authorizer(
+                    id,
 
-                    CancellationToken cancellationToken)
+                    session.CampaignId,
 
-                {
-                    if (session.CampaignId is not { } campaignId)
+                    "attachment_reference",
 
-                    {
-                        return true;
-                    }
+                    campaignResolver,
 
-                    SanctumResult result = await sanctumGuard
+                    campaigns,
 
-                        .ValidatePathAsync(
-                            campaignId.ToString("D"),
+                    sanctumGuard,
 
-                            canonicalPath,
-
-                            "attachment source read",
-
-                            "attachment_reference",
-
-                            cancellationToken)
-
-                        .ConfigureAwait(false);
-
-                    return result.Allowed;
-                }
+                    loggerFactory.CreateLogger(typeof(SessionEndpoints)));
 
                 long maximumReadBytes = SessionAttachmentContentPolicy
 
@@ -863,7 +854,7 @@ internal static class SessionEndpoints
 
                         maximumReadBytes,
 
-                        AuthorizeCanonicalPathAsync,
+                        authorizeRead,
 
                         ctx.RequestAborted)
 
@@ -1087,6 +1078,14 @@ internal static class SessionEndpoints
 
                 ToolExecutionPipeline refreshPipeline,
 
+                ISanctumGuard sanctumGuard,
+
+                ICanonicalCampaignContextResolver campaignResolver,
+
+                ICampaignRepository campaigns,
+
+                ILoggerFactory loggerFactory,
+
                 HttpContext ctx) =>
 
             {
@@ -1120,7 +1119,20 @@ internal static class SessionEndpoints
 
                         attachmentId,
 
-                        session.CampaignId,
+                        AttachmentSourceSanctum.Authorizer(
+                            id,
+
+                            session.CampaignId,
+
+                            "attachment_refresh",
+
+                            campaignResolver,
+
+                            campaigns,
+
+                            sanctumGuard,
+
+                            loggerFactory.CreateLogger(typeof(SessionEndpoints))),
 
                         ctx.RequestAborted)
 

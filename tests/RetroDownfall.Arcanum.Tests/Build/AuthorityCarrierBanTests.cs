@@ -1,3 +1,5 @@
+using System.Collections.Immutable;
+
 using Microsoft.CodeAnalysis;
 
 using Microsoft.CodeAnalysis.CSharp;
@@ -24,7 +26,7 @@ namespace RetroDownfall.Arcanum.Tests.Build;
 /// </summary>
 [Collection(HostedProducerAnalysisCollection.Name)]
 [Trait("Category", "HostedProducerAnalysis")]
-public sealed class AuthorityCarrierBanTests(ITestOutputHelper output)
+public sealed class AuthorityCarrierBanTests(ITestOutputHelper output) : IClassFixture<SemanticModelScope>
 {
     private const string Data = AuthorityCarrierScanner.Namespace;
 
@@ -183,17 +185,12 @@ public sealed class AuthorityCarrierBanTests(ITestOutputHelper output)
         return names;
     }
 
-    private static readonly Lazy<IReadOnlyList<MetadataReference>> PlatformReferences = new(FreshPlatformReferences);
-
-    private static IReadOnlyList<MetadataReference> FreshPlatformReferences() =>
-        [.. ((string)AppContext.GetData("TRUSTED_PLATFORM_ASSEMBLIES")!).Split(Path.PathSeparator).Select(static path => MetadataReference.CreateFromFile(path))];
-
     private static CSharpCompilation Synthetic(string source)
     {
         CSharpCompilation compilation = CSharpCompilation.Create(
             "SyntheticHolderAssembly",
             [CSharpSyntaxTree.ParseText("#nullable enable\n" + AuthorityCarrierShapes.Protocol + "\nnamespace Fixture\n{\n" + source + "\n}\n", path: "src/Fixture.cs")],
-            PlatformReferences.Value,
+            TrustedPlatformReferences.Shared,
             new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary, allowUnsafe: true));
 
         Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
@@ -231,9 +228,9 @@ public sealed class AuthorityCarrierBanTests(ITestOutputHelper output)
     {
         CSharpParseOptions parse = CSharpParseOptions.Default;
 
-        IReadOnlyList<MetadataReference> lowerPlatform = retargeted ? FreshPlatformReferences() : PlatformReferences.Value;
+        ImmutableArray<PortableExecutableReference> lowerPlatform = retargeted ? TrustedPlatformReferences.Separate() : TrustedPlatformReferences.Shared;
 
-        IReadOnlyList<MetadataReference> upperPlatform = retargeted ? FreshPlatformReferences() : PlatformReferences.Value;
+        ImmutableArray<PortableExecutableReference> upperPlatform = retargeted ? TrustedPlatformReferences.Separate() : TrustedPlatformReferences.Shared;
 
         CSharpCompilation lower = CSharpCompilation.Create(
             "SyntheticLower",
@@ -392,7 +389,7 @@ public sealed class AuthorityCarrierBanTests(ITestOutputHelper output)
             [CSharpSyntaxTree.ParseText("#nullable enable\n" + AuthorityCarrierShapes.Protocol
                 .Replace("class GrimoireConnectionAdmissionGate", "class SomeOtherGate", StringComparison.Ordinal)
                 .Replace("(GrimoireConnectionAdmissionGate gate)", "(SomeOtherGate gate)", StringComparison.Ordinal), path: "src/Fixture.cs")],
-            PlatformReferences.Value,
+            TrustedPlatformReferences.Shared,
             new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
 
         string[] reported = Scan(renamed);

@@ -58,8 +58,12 @@ internal sealed class CampaignRootContainment
         ? StringComparison.OrdinalIgnoreCase
         : StringComparison.Ordinal;
 
-    /// <summary>The working directory as a path the operating system can resolve, or <see langword="null"/> when it cannot be spelled as one.</summary>
-    internal static CampaignRootContainment? TryCreate(string path)
+    /// <summary>
+    /// The working directory as a path the operating system can resolve, or <see langword="null"/> when it cannot be spelled as one.
+    /// <paramref name="followLinks"/> false reads the path as it is spelled instead: only its own text is compared, with the roots'
+    /// spellings (their links resolved) but not with the path's, so a link inside a root counts as inside it and a link to a root does not.
+    /// </summary>
+    internal static CampaignRootContainment? TryCreate(string path, bool followLinks = true)
     {
         ArgumentNullException.ThrowIfNull(path);
 
@@ -76,7 +80,8 @@ internal sealed class CampaignRootContainment
 
         string logicalKey = TextKey(full);
 
-        if (full.Length > MaxExistingPathCharacters
+        if (!followLinks
+            || full.Length > MaxExistingPathCharacters
             || !WorkspacePathPolicy.TryCanonicalize(full, out string? canonical, out _))
         {
             return new CampaignRootContainment(logicalKey, canonicalKey: null, identities: null);

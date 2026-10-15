@@ -116,7 +116,7 @@ public sealed class AttachmentSourceResolverTests : IDisposable
             expectedSnapshotSha256: Convert.ToHexString(
                 System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes("older"))),
             maxBytes: 1024,
-            authorizeCanonicalPath: static (_, _) => Task.FromResult(true));
+            authorizeRead: static (_, _) => Task.FromResult(true));
 
         Assert.Equal(AttachmentSourceStatus.PriorVersion, refreshed.Metadata.Status);
         Assert.Equal("current", Encoding.UTF8.GetString(refreshed.VerifiedBytes.Span));
@@ -137,7 +137,7 @@ public sealed class AttachmentSourceResolverTests : IDisposable
             persisted.Metadata,
             persisted.Metadata.LastObservedContentSha256!,
             maxBytes: 1024,
-            authorizeCanonicalPath: static (_, _) => Task.FromResult(true));
+            authorizeRead: static (_, _) => Task.FromResult(true));
 
         Assert.Equal(AttachmentSourceStatus.Unsafe, refreshed.Metadata.Status);
         Assert.True(refreshed.VerifiedBytes.IsEmpty);
@@ -158,7 +158,7 @@ public sealed class AttachmentSourceResolverTests : IDisposable
             persisted.Metadata,
             persisted.Metadata.LastObservedContentSha256!,
             maxBytes: 4,
-            authorizeCanonicalPath: (_, _) =>
+            authorizeRead: (_, _) =>
             {
                 authorizerCalls++;
                 return Task.FromResult(false);
@@ -182,13 +182,13 @@ public sealed class AttachmentSourceResolverTests : IDisposable
             persisted.Metadata,
             persisted.Metadata.LastObservedContentSha256!,
             maxBytes: 4,
-            authorizeCanonicalPath: static (_, _) => Task.FromResult(true));
+            authorizeRead: static (_, _) => Task.FromResult(true));
         File.Delete(path);
         AttachmentSourceResolution missing = await resolver.ResolveCurrentAsync(
             persisted.Metadata,
             persisted.Metadata.LastObservedContentSha256!,
             maxBytes: 1024,
-            authorizeCanonicalPath: static (_, _) => Task.FromResult(true));
+            authorizeRead: static (_, _) => Task.FromResult(true));
 
         Assert.Equal(AttachmentSourceStatus.Inaccessible, oversized.Metadata.Status);
         Assert.Contains("size limit", oversized.Metadata.DiagnosticReason, StringComparison.OrdinalIgnoreCase);
@@ -223,7 +223,7 @@ public sealed class AttachmentSourceResolverTests : IDisposable
             persisted.Metadata,
             persisted.Metadata.LastObservedContentSha256!,
             maxBytes: 1024,
-            authorizeCanonicalPath: static (_, _) => Task.FromResult(true));
+            authorizeRead: static (_, _) => Task.FromResult(true));
 
         Assert.Equal(AttachmentSourceStatus.Unsafe, refreshed.Metadata.Status);
         Assert.True(refreshed.VerifiedBytes.IsEmpty);
@@ -254,7 +254,7 @@ public sealed class AttachmentSourceResolverTests : IDisposable
                 resolver,
                 claim,
                 maxBytes: 1024,
-                authorizeCanonicalPath: static (_, _) => Task.FromResult(true));
+                authorizeRead: static (_, _) => Task.FromResult(true));
 
             AttachmentSourceMetadata revalidated = await resolver.RevalidateAsync(referenced.Metadata);
 
@@ -262,7 +262,7 @@ public sealed class AttachmentSourceResolverTests : IDisposable
                 referenced.Metadata,
                 referenced.Metadata.LastObservedContentSha256!,
                 maxBytes: 1024,
-                authorizeCanonicalPath: static (_, _) => Task.FromResult(true));
+                authorizeRead: static (_, _) => Task.FromResult(true));
 
             Assert.Equal(AttachmentSourceStatus.Refreshable, referenced.Metadata.Status);
 
@@ -301,15 +301,19 @@ public sealed class AttachmentSourceResolverTests : IDisposable
 
         string? authorizedPath = null;
 
+        string? authorizedSourcePath = null;
+
         AttachmentSourceResolution result = await ResolveForReferenceAsync(
             resolver,
             claim,
             maxBytes: 7,
-            authorizeCanonicalPath: (canonicalPath, _) =>
+            authorizeRead: (read, _) =>
             {
                 authorizerCalls++;
 
-                authorizedPath = canonicalPath;
+                authorizedPath = read.CanonicalPath;
+
+                authorizedSourcePath = read.SourcePath;
 
                 return Task.FromResult(true);
             });
@@ -318,11 +322,70 @@ public sealed class AttachmentSourceResolverTests : IDisposable
 
         Assert.Equal(Path.GetFullPath(path), authorizedPath);
 
+        Assert.Equal(Path.GetFullPath(path), authorizedSourcePath);
+
         Assert.Equal(AttachmentSourceStatus.Refreshable, result.Metadata.Status);
 
         Assert.Equal("bounded", Encoding.UTF8.GetString(result.VerifiedBytes.Span));
 
         Assert.Equal("text/plain", result.DetectedMimeType);
+    }
+
+    [SkippableFact]
+    public async Task The_authorizer_is_told_the_path_the_source_is_spelled_with_and_the_path_its_links_resolve_to()
+    {
+        Skip.If(OperatingSystem.IsWindows(), "Creating a symbolic link needs a privilege the Windows test host does not have.");
+
+        string target = Path.Combine(_workspace, "target.txt");
+
+        string link = Path.Combine(_workspace, "notes.txt");
+
+        await File.WriteAllTextAsync(target, "through a link");
+
+        File.CreateSymbolicLink(link, target);
+
+        AttachmentSourceResolver resolver = new(new TestWorkspaceContext(_workspace), new EmptyWorkspaceRegistry());
+
+        List<AttachmentSourceRead> reads = [];
+
+        AttachmentSourceResolution referenced = await ResolveForReferenceAsync(
+            resolver,
+            new AttachmentSourceClaim(link),
+            maxBytes: 1024,
+            authorizeRead: (read, _) =>
+            {
+                reads.Add(read);
+
+                return Task.FromResult(true);
+            });
+
+        Assert.Equal(AttachmentSourceStatus.Refreshable, referenced.Metadata.Status);
+
+        AttachmentSourceResolution persisted = await resolver.ResolveForPersistenceAsync(
+            new AttachmentSourceClaim(link),
+            Encoding.UTF8.GetBytes("through a link"));
+
+        AttachmentSourceResolution current = await resolver.ResolveCurrentAsync(
+            persisted.Metadata,
+            persisted.Metadata.LastObservedContentSha256!,
+            maxBytes: 1024,
+            authorizeRead: (read, _) =>
+            {
+                reads.Add(read);
+
+                return Task.FromResult(true);
+            });
+
+        Assert.Equal(AttachmentSourceStatus.Refreshable, current.Metadata.Status);
+
+        Assert.Equal(2, reads.Count);
+
+        foreach (AttachmentSourceRead read in reads)
+        {
+            Assert.Equal(Path.GetFullPath(link), read.SourcePath);
+
+            Assert.Equal(Path.GetFullPath(target), read.CanonicalPath);
+        }
     }
 
     [SkippableFact]
@@ -365,10 +428,10 @@ public sealed class AttachmentSourceResolverTests : IDisposable
 
             maxBytes: 1024,
 
-            authorizeCanonicalPath: (canonicalPath, _) =>
+            authorizeRead: (read, _) =>
 
             {
-                authorizedPath = canonicalPath;
+                authorizedPath = read.CanonicalPath;
 
                 return Task.FromResult(true);
             });
@@ -399,13 +462,13 @@ public sealed class AttachmentSourceResolverTests : IDisposable
             resolver,
             claim,
             maxBytes: 4,
-            authorizeCanonicalPath: static (_, _) => Task.FromResult(true));
+            authorizeRead: static (_, _) => Task.FromResult(true));
 
         AttachmentSourceResolution denied = await ResolveForReferenceAsync(
             resolver,
             claim,
             maxBytes: 1024,
-            authorizeCanonicalPath: static (_, _) => Task.FromResult(false));
+            authorizeRead: static (_, _) => Task.FromResult(false));
 
         string externalPath = Path.Combine(
             Path.GetTempPath(),
@@ -419,7 +482,7 @@ public sealed class AttachmentSourceResolverTests : IDisposable
                 resolver,
                 CreateSourceClaim(externalPath, _workspace),
                 maxBytes: 1024,
-                authorizeCanonicalPath: static (_, _) => Task.FromResult(true));
+                authorizeRead: static (_, _) => Task.FromResult(true));
 
             Assert.Equal(AttachmentSourceStatus.Inaccessible, oversized.Metadata.Status);
 
@@ -468,7 +531,7 @@ public sealed class AttachmentSourceResolverTests : IDisposable
             resolver,
             CreateSourceClaim(path, _workspace),
             maxBytes: 4,
-            authorizeCanonicalPath: static (_, _) => Task.FromResult(true));
+            authorizeRead: static (_, _) => Task.FromResult(true));
 
         Assert.True(new FileInfo(path).Length > 4);
 
@@ -525,7 +588,7 @@ public sealed class AttachmentSourceResolverTests : IDisposable
             resolver,
             claim,
             maxBytes: 1024,
-            authorizeCanonicalPath: static (_, _) => Task.FromResult(true));
+            authorizeRead: static (_, _) => Task.FromResult(true));
 
         Assert.Equal(AttachmentSourceStatus.Unsafe, persisted.Metadata.Status);
 
@@ -583,7 +646,7 @@ public sealed class AttachmentSourceResolverTests : IDisposable
                 resolver,
                 claim,
                 maxBytes: 1024,
-                authorizeCanonicalPath: static (_, _) => Task.FromResult(true));
+                authorizeRead: static (_, _) => Task.FromResult(true));
 
             Assert.Equal(AttachmentSourceStatus.Unsafe, persisted.Metadata.Status);
 
@@ -606,11 +669,11 @@ public sealed class AttachmentSourceResolverTests : IDisposable
         IAttachmentSourceResolver resolver,
         AttachmentSourceClaim claim,
         long maxBytes,
-        AttachmentSourcePathAuthorizer authorizeCanonicalPath) =>
+        AttachmentSourcePathAuthorizer authorizeRead) =>
         await resolver.ResolveForReferenceAsync(
             claim,
             maxBytes,
-            authorizeCanonicalPath);
+            authorizeRead);
 
     private sealed class TestWorkspaceRegistry(string workspacePath) : IWorkspaceRegistry
     {

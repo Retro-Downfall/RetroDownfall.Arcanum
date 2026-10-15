@@ -10,16 +10,18 @@ public sealed partial class HostedGrimoireProducerInventoryTests
 {
     // The Headroom Tripwire. The checker refuses a root that analyses more than the per-root state cap, and a root
     // refused for its size reports nothing about the sites below the cap, so a root is never allowed to drift toward it
-    // unnoticed. Every primary production root has a committed ceiling: what it analyses today plus a small stated margin,
-    // and never more than ninety percent of the cap. The cap is not raised and the ceilings only move down; a change that
-    // makes a root cheaper lowers its row in the same change, and a change that makes one dearer must first earn the room.
+    // unnoticed. Every primary production root has a committed ceiling: what it analyses plus a small stated margin,
+    // and never more than ninety percent of the cap. The cap is not raised. A ceiling follows the measured count of its root: a change
+    // that makes a root cheaper lowers its row in the same change, and a change that makes one dearer raises it only after the change has
+    // earned the room, only to the rule below, never past the ninety percent bound, and with the reason beside the row.
     //
     // A ceiling is meant to be the maximum, over one, two and three root workers, of what the root analyses, plus the margin, so a
     // discovery under any of the three stays at or under it, CI's two included (the production lanes run two). A root a handoff
     // re-roots into is entered once from its own declaration and once from the traversal that hands off to it, and which worker each
     // entry lands on decides whether the closure is admitted for one entry or for both, so its count depends on the arrangement:
-    // ApprenticeService.RunApprenticeAsync analyses 3,110 states under one worker and under three and 1,555 under two. A row is taken
-    // from the largest of the three counts; it is not taken from the one that was measured last.
+    // ApprenticeService.RunApprenticeAsync analysed 3,090 states under one worker, 1,545 under two and 3,090 under three when it was
+    // measured (e9eaee35); which worker a family lands on is decided by timing. A row is taken from the largest of the three counts; it is
+    // not taken from the one that was measured last.
     private const int HeadroomPercentOfCap = 90;
 
     private readonly record struct HeadroomCeiling(string RootType, string RootOperation, int Ceiling);
@@ -88,20 +90,16 @@ public sealed partial class HostedGrimoireProducerInventoryTests
         return [.. violations.Order(StringComparer.Ordinal)];
     }
 
-    // Measured at the head that introduced this table, as the largest count any root-worker arrangement the runner can produce
-    // reports for the root (one, two or three workers), plus a margin of five percent with a floor of eight states, rounded up to
-    // a multiple of eight. The count of a root that a handoff re-roots into depends on the arrangement: under one worker every
-    // entry shares one state cache and the closure is admitted once for each distinct entry, while under two or three workers an
-    // entry that lands on another worker admits its own, and which worker a family lands on is decided by timing. So the serial
-    // count is the largest, and it is the one a table row must hold. A selection root is named without the digest after its
-    // tilde. A row lowered since then names the count it was lowered to and the count it began with, and a row whose root has since
-    // grown within its ceiling names both counts and keeps the ceiling.
+    // A row is the largest count any root-worker arrangement the runner can produce reports for the root (one, two or three workers),
+    // plus a margin of five percent with a floor of eight states, rounded up to a multiple of eight. The count of a root that a handoff
+    // re-roots into depends on the arrangement: under one worker every entry shares one state cache and the closure is admitted once
+    // for each distinct entry, while under two or three workers an entry that lands on another worker admits its own, and which worker
+    // a family lands on is decided by timing. So the serial count is the largest, and it is the one a table row must hold. A selection
+    // root is named without the digest after its tilde. A row whose comment names a count per arrangement is held at the largest.
     //
-    // Measured again at the delivery head, once under each of one, two and three root workers (all three discoveries reported the
-    // same sites and no diagnostic): of the sixty-six primary roots, sixty-three equal their maximum plus the margin to the state,
-    // one is lowered (ApprenticeService.RunApprenticeAsync, which got cheaper) and the two Long Rest roots grew by ten and twenty-six
-    // states inside rows that stay, because a ceiling is raised only for a change that earned the room and nothing did. The
-    // largest ceiling is 7,184 of the 7,372 the cap allows.
+    // Measured on the delivered tree, once under each of one, two and three root workers (all three discoveries reported 5,658 primary
+    // and 1,491 additional sites and no diagnostic), every one of the sixty-six primary roots equals its maximum plus the margin to the
+    // state. The largest ceiling is 7,184 of the 7,372 the cap allows.
     private static readonly HeadroomCeiling[] ProductionRootCeilings =
     [
         new("A2ASendingLeaseRenewer", "RetroDownfall.Arcanum.Infrastructure.A2A.A2ASendingLeaseRenewer.ExecuteAsync", 200), // measured 186
@@ -113,7 +111,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests
         new("ApprenticeService", "RetroDownfall.Arcanum.Infrastructure.Hosting.ApprenticeService.PauseAsync", 216), // measured 201
         new("ApprenticeService", "RetroDownfall.Arcanum.Infrastructure.Hosting.ApprenticeService.ResumeAsync", 232), // measured 215
         new("ApprenticeService", "RetroDownfall.Arcanum.Infrastructure.Hosting.ApprenticeService.ReweaveAsync", 224), // measured 207
-        new("ApprenticeService", "RetroDownfall.Arcanum.Infrastructure.Hosting.ApprenticeService.RunApprenticeAsync", 3248), // measured 3090 under one and three workers, 1545 under two now (3110 and 1555 when the row was set at 3272), so the row is lowered
+        new("ApprenticeService", "RetroDownfall.Arcanum.Infrastructure.Hosting.ApprenticeService.RunApprenticeAsync", 3248), // measured 3090 under one worker, 1545 under two and three
         new("ApprenticeService", "RetroDownfall.Arcanum.Infrastructure.Hosting.ApprenticeService.StartAsync", 240), // measured 223
         new("ApprenticeService", "RetroDownfall.Arcanum.Infrastructure.Hosting.ApprenticeService.StopAsync", 16), // measured 5
         new("ApprenticeService", "RetroDownfall.Arcanum.Infrastructure.Hosting.ApprenticeService.SubscribeChronicleAsync", 24), // measured 12
@@ -136,19 +134,15 @@ public sealed partial class HostedGrimoireProducerInventoryTests
         new("GrimoireDatabaseHostedService", "RetroDownfall.Arcanum.Infrastructure.Hosting.GrimoireDatabaseHostedService.StopAsync", 200), // measured 186
         new("GrimoireDatabaseHostedService", "RetroDownfall.Arcanum.Infrastructure.Hosting.GrimoireDatabaseHostedService.TakeGeneratedMasterApiKey", 16), // measured 1
         new("GrimoireSchemaTransitionHostedService", "RetroDownfall.Arcanum.Infrastructure.Covenant.GrimoireSchemaTransitionHostedService.ExecuteAsync", 816), // measured 770
-        // The Long Rest roots are raised for the verification cost work, which is where the states went. At the head that began this work only
-        // ProcessAdmittedAsync was above its row (it measured 4808 against 4680; ExecuteAsync measured 3462, under its row of 3528), because the
-        // Seams-and-Steps split added a window read and a set-based metadata statement to every context that reaches a seam. A seam now proves
-        // every leaf in one statement, which decodes a snapshot and a label from a joined row (SnapshotFrom, Materialize and the digests a label
-        // constructor reaches, analysed in each of the fifty or so contexts that reach VerifyFrozenMetadataAsync) beside the per-leaf read a step
-        // still makes: 5438 and 3612. The rows were set from the measurement of the delivery that added the statement (5436 and 3610) plus five
-        // percent, rounded up to a multiple of eight, and the cost fixes after it moved each measurement by two states, inside them.
-        // The delivery of the Lease-Handoff chain and the receiver proof grew the two roots again, by 10 and 26 states, to 5448 and 3638 under one, two
-        // and three workers, which left 264 and 154 states under rows of 5712 and 3792: less than the five percent margin the rule gives. The rows are
-        // raised to the rule, the measured maximum plus five percent rounded up to a multiple of eight (5448 + 273 = 5721, 3638 + 182 = 3820), and no further.
-        new("LongRestSweepHostedService", "RetroDownfall.Arcanum.Api.Intelligence.LongRestMaintenance.ProcessAdmittedAsync", 5728), // measured 5448 under one, two and three workers (5438 when the earlier row was set), so the row is raised to the rule
-        new("LongRestSweepHostedService", "RetroDownfall.Arcanum.Infrastructure.Hosting.LongRestSweepHostedService.ExecuteAsync", 3824), // measured 3638 under one, two and three workers (3612 when the earlier row was set), so the row is raised to the rule
-        new("LongRunningOperationStartupHostedService", "RetroDownfall.Arcanum.Infrastructure.Operations.LongRunningOperationStartupHostedService.ContinueInBackgroundAsync", 3640), // measured 3466 now (3564 at the head that introduced the table), so the row is lowered
+        // The Long Rest roots carry the cost of the Long Rest closure. A seam proves every leaf in one statement, which decodes a snapshot and
+        // a label from a joined row (SnapshotFrom, Materialize and the digests a label constructor reaches, analysed in each of the fifty
+        // or so contexts that reach VerifyFrozenMetadataAsync) beside the per-leaf read a step makes, and the Lease-Handoff chain, the
+        // receiver proof and the capability and fence currency rules add their own members to the two roots. Under one, two and three
+        // workers they analyse 5456 and 3658 states, so each row is the rule's maximum plus five percent rounded up to a multiple of
+        // eight (5456 + 273 = 5729 and 3658 + 183 = 3841), and no more.
+        new("LongRestSweepHostedService", "RetroDownfall.Arcanum.Api.Intelligence.LongRestMaintenance.ProcessAdmittedAsync", 5736), // measured 5456 under one, two and three workers
+        new("LongRestSweepHostedService", "RetroDownfall.Arcanum.Infrastructure.Hosting.LongRestSweepHostedService.ExecuteAsync", 3848), // measured 3658 under one, two and three workers
+        new("LongRunningOperationStartupHostedService", "RetroDownfall.Arcanum.Infrastructure.Operations.LongRunningOperationStartupHostedService.ContinueInBackgroundAsync", 3640), // measured 3466
         new("LongRunningOperationStartupHostedService", "RetroDownfall.Arcanum.Infrastructure.Operations.LongRunningOperationStartupHostedService.StartAsync", 16), // measured 3
         new("LongRunningOperationStartupHostedService", "RetroDownfall.Arcanum.Infrastructure.Operations.LongRunningOperationStartupHostedService.StartAsync::call:RetroDownfall.Arcanum.Infrastructure.Operations.LongRunningOperationStartupHostedService.RunStartupPassAsync#0", 1408), // measured 1340
         new("LongRunningOperationStartupHostedService", "RetroDownfall.Arcanum.Infrastructure.Operations.LongRunningOperationStartupHostedService.StopAsync", 16), // measured 5

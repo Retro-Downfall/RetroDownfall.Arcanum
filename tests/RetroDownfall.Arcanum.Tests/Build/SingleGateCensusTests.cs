@@ -27,7 +27,7 @@ namespace RetroDownfall.Arcanum.Tests.Build;
 /// </remarks>
 [Collection(HostedProducerAnalysisCollection.Name)]
 [Trait("Category", "HostedProducerAnalysis")]
-public sealed class SingleGateCensusTests(ITestOutputHelper output)
+public sealed class SingleGateCensusTests(ITestOutputHelper output) : IClassFixture<SemanticModelScope>
 {
     private const string ProductionData = "RetroDownfall.Arcanum.Infrastructure.Data";
 
@@ -225,16 +225,13 @@ public sealed class SingleGateCensusTests(ITestOutputHelper output)
         CSharpCompilation compilation = CSharpCompilation.Create(
             "SyntheticGate",
             [CSharpSyntaxTree.ParseText(source, path: "src/Fixture.cs")],
-            Platform.Value,
+            TrustedPlatformReferences.Shared,
             new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
 
         Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
 
         return [compilation];
     }
-
-    private static readonly Lazy<IReadOnlyList<MetadataReference>> Platform = new(static () =>
-        [.. ((string)AppContext.GetData("TRUSTED_PLATFORM_ASSEMBLIES")!).Split(Path.PathSeparator).Select(static path => MetadataReference.CreateFromFile(path))]);
 
     [Fact]
     public void The_pins_find_nothing_wrong_in_the_clean_source()
