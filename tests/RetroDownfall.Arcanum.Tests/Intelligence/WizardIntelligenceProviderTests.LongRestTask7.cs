@@ -407,7 +407,7 @@ public sealed partial class WizardIntelligenceProviderTests
 
         CampaignRollupTurnPreparer preparer = new(store, new TestOptionsMonitor<ArcanumSettings>(settings),
             new LongRestTask7ScopeResolver(scope), null!, new LongRestTask7QueuedCoordinator(claims), UnreachedLongRestPorts.Maintenance,
-            UnreachedLongRestPorts.Discovery, new LongRestTask7Configuration(settings),
+            UnreachedLongRestPorts.Discovery, new LongRestTask7Configuration(settings), new PassThroughRootEnricher(),
             maintenance, claims, grimoire, claims,
             new CampaignRollupTurnSnapshotTests.Authority(), lookup, replayStore: claims);
 
@@ -464,6 +464,9 @@ public sealed partial class WizardIntelligenceProviderTests
         }
 
         public Task<Result<LongRunningOperationDto>> RequestAsync(CanonicalCampaignContext scope, LongRestSweepScope partition, CancellationToken ct) =>
+            throw new InvalidOperationException("An authority-free fixture cannot schedule protected work.");
+
+        public Task<Result<LongRunningOperationDto>> RequestAsync(CanonicalCampaignContext scope, LongRestSweepScope partition, CovenantTurnLease authority, CancellationToken ct) =>
             throw new InvalidOperationException("An authority-free fixture cannot schedule protected work.");
 
         public Task<Result<LongRestSweepProgress>> ResumeAsync(Guid operation, LongRestMaintenanceCapability? capability, CancellationToken ct) =>

@@ -305,7 +305,7 @@ public static class LongRestDiscoveryHash
             || recipe.EmbeddingDimensions < 1
             || recipe.SourcePageSize != LongRestDiscoveryLimits.SourcePage
             || recipe.ProviderInputUtf8Bytes is < LongRestPromptLayout.MinimumInputUtf8Bytes or > LongRestDiscoveryLimits.ProviderInputUtf8Bytes
-            || recipe.SummaryUtf8Bytes != LongRestDiscoveryLimits.SummaryUtf8Bytes
+            || !LongRestPromptLayout.IsSummaryBound(recipe.SummaryUtf8Bytes)
             || recipe.TargetLimit != LongRestDiscoveryLimits.Targets
             || recipe.HierarchyChildLimit != LongRestDiscoveryLimits.HierarchyChildren
             || recipe.HierarchyLevelLimit != LongRestDiscoveryLimits.HierarchyLevels

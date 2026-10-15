@@ -657,6 +657,11 @@ public static class ApiBootstrapper
             sp.GetRequiredService<ICampaignPathIdentityReader>(),
             sp.GetRequiredService<ICampaignAvailabilityReader>()));
 
+        // Long Rest-scoped enrichment of that answer: the registered root, added only while Long Rest is on, at its request and fence paths.
+        services.AddScoped<ICanonicalCampaignRootEnricher>(static sp => new CanonicalCampaignRootEnricher(
+            sp.GetRequiredService<ICampaignPathIdentityReader>(),
+            sp.GetRequiredService<IOptionsMonitor<ArcanumSettings>>()));
+
         services.AddScoped<WebResearchWorkflowService>();
 
         services.AddScoped<IBuiltInToolRegistry, BuiltInToolRegistry>();

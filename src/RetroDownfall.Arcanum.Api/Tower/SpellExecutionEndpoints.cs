@@ -100,7 +100,7 @@ internal static partial class SpellExecutionEndpoints
                 }
 
                 Result<CanonicalPingTurn> resolvedPing = await CanonicalPingResolution
-                    .ResolveAsync(pingResult.Value, ctx.RequestServices, ctx.RequestAborted)
+                    .ResolveTurnAsync(pingResult.Value, ctx, ctx.RequestAborted)
                     .ConfigureAwait(false);
 
                 if (resolvedPing.IsFailure)
@@ -232,7 +232,7 @@ internal static partial class SpellExecutionEndpoints
                 }
 
                 Result<CanonicalPingTurn> resolvedPing = await CanonicalPingResolution
-                    .ResolveAsync(pingResult.Value, ctx.RequestServices, ctx.RequestAborted)
+                    .ResolveTurnAsync(pingResult.Value, ctx, ctx.RequestAborted)
                     .ConfigureAwait(false);
 
                 if (resolvedPing.IsFailure)

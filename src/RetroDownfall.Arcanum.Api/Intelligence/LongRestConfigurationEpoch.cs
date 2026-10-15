@@ -148,8 +148,20 @@ public sealed class LongRestConfigurationSnapshot
             : Result<LongRestProviderSelection>.Failure(Invalid());
     }
 
-    /// <summary>The recipe these frozen settings run: chat (fast model first), embedding and their destinations.</summary>
-    public Result<LongRestRecipeIdentity> ResolveRecipe() => LongRestRecipeResolver.Resolve(Read());
+    /// <summary>
+    /// The recipe these frozen settings run: chat (fast model first), embedding and their destinations. A recipe that cannot resolve
+    /// fails with <see cref="ErrorCodes.LongRest.Unavailable"/> and the one content-free sentence the configuration validator, the
+    /// doctor row and the health component give (<see cref="LongRestRecipeResolver.Describe"/>), so a Session turn that ends on it says why.
+    /// </summary>
+    public Result<LongRestRecipeIdentity> ResolveRecipe()
+    {
+        ArcanumSettings settings = Read();
+
+        Result<LongRestRecipeIdentity> recipe = LongRestRecipeResolver.Resolve(settings);
+
+        return recipe.IsSuccess ? recipe : Result<LongRestRecipeIdentity>.Failure(
+            new Error(ErrorCodes.LongRest.Unavailable, LongRestRecipeResolver.Describe(LongRestRecipeResolver.Problems(settings))));
+    }
 
     private static Error Invalid() => new(ErrorCodes.LongRest.InvalidRequest, "No exact configured Long Rest provider model is available.");
 }

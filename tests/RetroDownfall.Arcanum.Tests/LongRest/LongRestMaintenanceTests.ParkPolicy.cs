@@ -13,8 +13,9 @@ using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.LongRest;
 
-// Park policy: a restart-generation fault retires a clean sweep so a fresh request starts a new generation; the park, readmission
-// and budget metrics count exactly what happened; a contested in-process claim is OperationBusy and writes nothing.
+// Park policy: a restart-generation fault retires a clean sweep so a fresh request starts a new generation (a protected one is
+// retired by a fresh request that carries live turn authority, see FreshAuthorityRetire); the park, readmission and budget metrics
+// count exactly what happened; a contested in-process claim is OperationBusy and writes nothing.
 public sealed partial class LongRestMaintenanceTests
 {
     private const string ParkedMetric = "arcanum.long_rest.sweep.parked";
@@ -77,7 +78,7 @@ public sealed partial class LongRestMaintenanceTests
     }
 
     [Fact]
-    public async Task A_protected_restart_generation_fault_is_not_retired_because_only_a_clean_sweep_is()
+    public async Task A_protected_restart_generation_fault_is_parked_by_the_sweep_and_a_request_without_authority_does_not_free_it()
     {
         await using MaintenanceFixture f = await MaintenanceFixture.CreateAsync(ownWorker: false, protectedSources: true);
 
@@ -87,15 +88,16 @@ public sealed partial class LongRestMaintenanceTests
 
         Assert.Equal(ErrorCodes.LongRest.StaleFence, progress.DeferredReason);
 
-        // A protected sweep keeps its park; the retire path is the clean sweep's alone.
+        // A faulting protected sweep keeps its park: the coordinator never retires it, because only the authority of a Session turn may.
         LongRunningOperation parked = (await f.Operations.GetAsync(f.Operation))!;
 
         Assert.Equal(LongRunningOperationState.ReconciliationRequired, parked.State);
 
         Assert.Equal(ErrorCodes.LongRest.StaleFence, parked.TerminalErrorCode);
 
-        // A fresh request does not clear it either: a protected park is resumable only as authorized_request_required, so a fresh
-        // request never frees the partition and every turn that needs it fails until an operator resolves the park (a recorded follow-up).
+        // A fresh request that carries no turn authority does not clear it: a protected park is resumable only as
+        // authorized_request_required, so the request is refused and writes nothing. The request that does carry live authority is
+        // the Fresh-Authority Retire contract, pinned in LongRestMaintenanceTests.FreshAuthorityRetire.
         Result<LongRunningOperationDto> request = await coordinator.RequestAsync(f.Scope, f.Partition, CancellationToken.None);
 
         Assert.True(request.IsFailure);

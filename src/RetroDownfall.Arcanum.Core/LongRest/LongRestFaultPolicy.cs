@@ -9,8 +9,10 @@ public enum LongRestFaultClass : byte
     ResumeLater = 1,
 
     /// <summary>
-    /// The captured generation can never complete, so a fresh request should start a new one. Until the turn policy
-    /// retires these parks, request admission refuses a parked sweep with one of these codes as <c>LongRest.SweepParked</c>.
+    /// The captured generation can never complete, so a fresh request starts a new one. A clean sweep is never parked with one of these
+    /// codes: the coordinator settles it <c>Abandoned</c> and the next request retires it. A protected sweep keeps its park, because retiring
+    /// it takes the live authority of a Session turn: a request that carries that authority retires it (Fresh-Authority Retire), and a
+    /// request that does not is refused as <c>LongRest.SweepParked</c>. Request admission reads this class, and lists no code of its own.
     /// </summary>
     RestartGeneration = 2,
 

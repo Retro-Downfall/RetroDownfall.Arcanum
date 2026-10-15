@@ -463,7 +463,7 @@ public sealed partial class WizardIntelligenceProviderTests
 
         CampaignRollupTurnPreparer preparer = new(store, new TestOptionsMonitor<ArcanumSettings>(monitorSettings),
             new CampaignRollupTurnSnapshotTests.Resolver(), null!,
-            UnreachedLongRestPorts.Coordinator, UnreachedLongRestPorts.Maintenance, UnreachedLongRestPorts.Discovery, UnreachedLongRestPorts.Configuration,
+            UnreachedLongRestPorts.Coordinator, UnreachedLongRestPorts.Maintenance, UnreachedLongRestPorts.Discovery, UnreachedLongRestPorts.Configuration, UnreachedLongRestPorts.RootEnricher,
             maintenance, claims, grimoire, claims,
             new CampaignRollupTurnSnapshotTests.Authority(), lookup, replayStore: claims);
 
@@ -718,7 +718,7 @@ public sealed partial class WizardIntelligenceProviderTests
 
         return new(store, new TestOptionsMonitor<Core.Configuration.ArcanumSettings>(settings),
             new CampaignRollupTurnSnapshotTests.Resolver(), null!,
-            UnreachedLongRestPorts.Coordinator, UnreachedLongRestPorts.Maintenance, UnreachedLongRestPorts.Discovery, UnreachedLongRestPorts.Configuration,
+            UnreachedLongRestPorts.Coordinator, UnreachedLongRestPorts.Maintenance, UnreachedLongRestPorts.Discovery, UnreachedLongRestPorts.Configuration, UnreachedLongRestPorts.RootEnricher,
             new CampaignRollupTurnSnapshotTests.RefusingMaintenance(), new CampaignRollupTurnSnapshotTests.InputStore(),
             null, claims, new CampaignRollupTurnSnapshotTests.Authority());
     }

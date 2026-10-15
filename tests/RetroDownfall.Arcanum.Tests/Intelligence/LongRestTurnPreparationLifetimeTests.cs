@@ -294,6 +294,7 @@ public sealed class LongRestTurnPreparationLifetimeTests
                 .AddSingleton<IOptionsMonitor<ArcanumSettings>>(f.Options)
                 .AddSingleton<ICampaignRollupStore>(new CampaignRollupTurnSnapshotTests.ProbeStore())
                 .AddSingleton<ICanonicalCampaignContextResolver>(new Resolver(f.Scope))
+                .AddSingleton<ICanonicalCampaignRootEnricher>(new PassThroughRootEnricher())
                 .AddSingleton<ICovenantOperationGate>(f.Gate)
                 .AddSingleton<ISessionTurnClaimBeginStore>(repository)
                 .AddSingleton<ISessionTurnBeginStore>(repository)
@@ -395,6 +396,13 @@ public sealed class LongRestTurnPreparationLifetimeTests
             Partitions.Add(partition);
 
             return f.Coordinator.RequestAsync(scope, partition, ct);
+        }
+
+        public Task<Result<LongRunningOperationDto>> RequestAsync(CanonicalCampaignContext scope, LongRestSweepScope partition, CovenantTurnLease authority, CancellationToken ct)
+        {
+            Partitions.Add(partition);
+
+            return f.Coordinator.RequestAsync(scope, partition, authority, ct);
         }
 
         public async Task<Result<LongRestSweepProgress>> ResumeAsync(Guid operation, LongRestMaintenanceCapability? capability, CancellationToken ct)

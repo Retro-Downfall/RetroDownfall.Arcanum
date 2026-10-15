@@ -37,7 +37,17 @@ internal sealed partial class LongRestSweepCoordinator(ILongRunningOperationStor
         }
     }
 
-    public async Task<Result<LongRunningOperationDto>> RequestAsync(CanonicalCampaignContext scope, LongRestSweepScope partition, CancellationToken ct)
+    public Task<Result<LongRunningOperationDto>> RequestAsync(CanonicalCampaignContext scope, LongRestSweepScope partition, CancellationToken ct) =>
+        RequestCoreAsync(scope, partition, null, ct);
+
+    public Task<Result<LongRunningOperationDto>> RequestAsync(CanonicalCampaignContext scope, LongRestSweepScope partition, CovenantTurnLease authority, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(authority);
+
+        return RequestCoreAsync(scope, partition, authority, ct);
+    }
+
+    private async Task<Result<LongRunningOperationDto>> RequestCoreAsync(CanonicalCampaignContext scope, LongRestSweepScope partition, CovenantTurnLease? authority, CancellationToken ct)
     {
         try
         {
@@ -78,7 +88,11 @@ internal sealed partial class LongRestSweepCoordinator(ILongRunningOperationStor
 
             if (sweeps is not ILongRestSweepRequestAdmission requests) return Unavailable();
 
-            LongRunningOperation admitted = Require(await requests.AdmitRequestAsync(partition, fence, facts, ownership, ct).ConfigureAwait(false));
+            // Only a protected partition can be freed by authority, and only a request that carries a turn lease has any to offer.
+            Func<CancellationToken, ValueTask<Result>>? prove = authority is not null && partition.ProtectedPartitionDigest is not null
+                ? token => ProveRequestAuthorityAsync(authority, scope, fence, options, token) : null;
+
+            LongRunningOperation admitted = Require(await requests.AdmitRequestAsync(partition, fence, facts, ownership, ct, prove).ConfigureAwait(false));
 
             if (partition.ProtectedPartitionDigest is null) queue.Signal(admitted.Id);
 
@@ -350,6 +364,33 @@ internal sealed partial class LongRestSweepCoordinator(ILongRunningOperationStor
             ? Result.Success() : Unavailable();
     }
 
+    /// <summary>
+    /// Fresh-Authority Retire's proof: the borrowed turn lease is this gate's own and still held, covers exactly this Campaign root
+    /// and availability generation, and was issued under the dataset, authority and capability generations the request fence just
+    /// proved current, the same facts a maintenance capability is created from. It proves authority only; it reads no protected content.
+    /// </summary>
+    private async ValueTask<Result> ProveRequestAuthorityAsync(CovenantTurnLease authority, CanonicalCampaignContext scope,
+        LongRestSweepFence fence, LongRestSweepConfiguration options, CancellationToken ct)
+    {
+        if (!options.Enabled || !options.CovenantEnabled || !configuration.IsCurrent(options.Stamp)) return Unavailable();
+
+        Result live = await gate.ValidateTurnLeaseAsync(authority, ct).ConfigureAwait(false);
+
+        if (live.IsFailure) return live;
+
+        CovenantOperationLeaseSnapshot snapshot = authority.Snapshot;
+
+        return snapshot.Kind == CovenantLeaseKind.Turn && snapshot.Coverage == CovenantLeaseCoverage.Scoped
+            && snapshot.Scope == (scope.IsCampaignBound ? CovenantOperationScope.ForCampaign(scope.CampaignId!.Value) : CovenantOperationScope.Global)
+            && snapshot.CampaignAvailabilityGeneration == scope.CampaignAvailabilityGeneration
+            && snapshot.CampaignPathRevision == scope.PathIdentityRevision
+            && snapshot.DatasetGeneration == fence.DatasetGeneration
+            && snapshot.RuntimeAuthorityGeneration == fence.RuntimeAuthorityGeneration
+            && snapshot.CapabilityGeneration == fence.CapabilityGeneration
+            ? Result.Success()
+            : new Error(ErrorCodes.LongRest.StaleInput, "The request's turn authority does not cover this exact Long Rest scope.");
+    }
+
     private async Task ValidateCapabilityAsync(Guid operationId, LongRestSweepScope partition, LongRestMaintenanceCapability capability,
         LongRestSweepConfiguration options, CancellationToken ct)
     {
@@ -380,7 +421,11 @@ internal sealed partial class LongRestSweepCoordinator(ILongRunningOperationStor
     {
         LongRestSweepConfiguration options = configuration.Capture();
 
-        if (!options.Enabled || options.Recipe.IsFailure || !configuration.IsCurrent(options.Stamp)) throw new Refused(Unavailable());
+        if (!options.Enabled || !configuration.IsCurrent(options.Stamp)) throw new Refused(Unavailable());
+
+        // An enabled configuration whose recipe cannot resolve says so, in the one content-free sentence its other readers give, instead
+        // of the generic "could not be proved": the request, and so the protected turn that made it, ends with a reason.
+        if (options.Recipe.IsFailure) throw new Refused(new Error(ErrorCodes.LongRest.Unavailable, options.Recipe.Error.Message));
 
         return options;
     }

@@ -173,7 +173,7 @@ public sealed class LongRestTurnPolicyTests
             Coordinator = new(cleanSchedule);
 
             _preparer = new(new CampaignRollupTurnSnapshotTests.ProbeStore(), Options, new CampaignRollupTurnSnapshotTests.Resolver(), null!,
-                Coordinator, UnreachedLongRestPorts.Maintenance, UnreachedLongRestPorts.Discovery, epoch,
+                Coordinator, UnreachedLongRestPorts.Maintenance, UnreachedLongRestPorts.Discovery, epoch, new PassThroughRootEnricher(),
                 claimBegin: new CampaignRollupTurnSnapshotTests.InputStore(), claims: Claims,
                 authoritySnapshot: new CampaignRollupTurnSnapshotTests.Authority(), logger: Logger);
         }
@@ -206,6 +206,9 @@ public sealed class LongRestTurnPolicyTests
         }
 
         public Task<Result<LongRunningOperationDto>> RequestAsync(CanonicalCampaignContext scope, LongRestSweepScope partition, CancellationToken ct) =>
+            throw new InvalidOperationException("A clean-only turn never requests a protected partition.");
+
+        public Task<Result<LongRunningOperationDto>> RequestAsync(CanonicalCampaignContext scope, LongRestSweepScope partition, CovenantTurnLease authority, CancellationToken ct) =>
             throw new InvalidOperationException("A clean-only turn never requests a protected partition.");
 
         public Task<Result<LongRestSweepProgress>> ResumeAsync(Guid operationId, LongRestMaintenanceCapability? capability, CancellationToken ct) =>

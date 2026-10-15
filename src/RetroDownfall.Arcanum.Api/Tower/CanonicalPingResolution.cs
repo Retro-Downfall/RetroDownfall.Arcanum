@@ -1,4 +1,9 @@
+using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
+using RetroDownfall.Arcanum.Api.Intelligence;
+using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Tower;
@@ -37,16 +42,43 @@ internal sealed record CanonicalPingTurn(
 /// </remarks>
 internal static class CanonicalPingResolution
 {
-
     /// <summary>
-    /// Resolves authority and fills the workspace directory, or returns the first typed failure.
+    /// Resolves authority and fills the workspace directory, or returns the first typed failure. The answer is the resolver's alone: it never
+    /// carries the Campaign's registered root and never reads the registry, so inspection and every caller that is not a turn keep exactly what
+    /// the resolver says.
     /// </summary>
-    internal static async Task<Result<CanonicalPingTurn>> ResolveAsync(
+    internal static Task<Result<CanonicalPingTurn>> ResolveAsync(
         PingRequest request,
         IServiceProvider services,
+        CancellationToken cancellationToken) =>
+        ResolveCoreAsync(request, services, null, cancellationToken);
+
+    /// <summary>
+    /// Resolves a turn's authority at the HTTP seam (Long Rest-Scoped Enrichment). When the request is a Campaign turn that Long Rest prepares
+    /// maintenance for, the Campaign additionally carries its registered root for the whole turn, so the invocation, the turn lease and the
+    /// maintenance capability all agree with the fence the Long Rest request is admitted under. Every other request, and every request while
+    /// Long Rest is off, gets <see cref="ResolveAsync"/>'s answer and reads no registry.
+    /// </summary>
+    internal static Task<Result<CanonicalPingTurn>> ResolveTurnAsync(
+        PingRequest request,
+        HttpContext httpContext,
         CancellationToken cancellationToken)
     {
+        ArgumentNullException.ThrowIfNull(httpContext);
 
+        return ResolveCoreAsync(
+            request,
+            httpContext.RequestServices,
+            ArcanumInvocationContexts.ResolveContextPolicy(httpContext),
+            cancellationToken);
+    }
+
+    private static async Task<Result<CanonicalPingTurn>> ResolveCoreAsync(
+        PingRequest request,
+        IServiceProvider services,
+        CovenantContextPolicy? turnContextPolicy,
+        CancellationToken cancellationToken)
+    {
         ArgumentNullException.ThrowIfNull(request);
 
         ArgumentNullException.ThrowIfNull(services);
@@ -68,6 +100,31 @@ internal static class CanonicalPingResolution
             return campaign.Error;
         }
 
+        CanonicalCampaignContext resolved = campaign.Value;
+
+        // The turn boundary is where a Long Rest request begins: a request that Long Rest prepares maintenance for carries its Campaign's
+        // registered root for the whole turn, so the invocation, the turn lease and the maintenance capability all agree with the fence.
+        // Any other request, and every request with Long Rest off, keeps the resolver's answer and reads nothing.
+        if (turnContextPolicy is { } contextPolicy
+            && ArcanumInvocationContexts.IsLongRestTurn(
+                services.GetService<IOptionsMonitor<ArcanumSettings>>()?.CurrentValue,
+                request,
+                resolved,
+                contextPolicy))
+        {
+            Result<CanonicalCampaignContext> enriched = await services
+                .GetRequiredService<ICanonicalCampaignRootEnricher>()
+                .EnrichAsync(resolved, cancellationToken)
+                .ConfigureAwait(false);
+
+            if (enriched.IsFailure)
+            {
+                return enriched.Error;
+            }
+
+            resolved = enriched.Value;
+        }
+
         Result<PingRequest> filled = await FillWorkingDirectoryAsync(
             request,
             services,
@@ -75,8 +132,7 @@ internal static class CanonicalPingResolution
 
         return filled.IsFailure
             ? filled.Error
-            : Result<CanonicalPingTurn>.Success(new CanonicalPingTurn(filled.Value, campaign.Value));
-
+            : Result<CanonicalPingTurn>.Success(new CanonicalPingTurn(filled.Value, resolved));
     }
 
     private static Task<Result<PingRequest>> FillWorkingDirectoryAsync(
@@ -87,7 +143,6 @@ internal static class CanonicalPingResolution
             request,
             services.GetRequiredService<ICampaignRepository>(),
             cancellationToken);
-
 }
 
 /// <summary>
@@ -104,13 +159,11 @@ internal static class CanonicalPingResolution
 /// </remarks>
 internal static class CampaignWorkspaceFill
 {
-
     internal static async Task<Result<PingRequest>> ApplyAsync(
         PingRequest request,
         ICampaignRepository campaigns,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(request);
 
         ArgumentNullException.ThrowIfNull(campaigns);
@@ -133,7 +186,5 @@ internal static class CampaignWorkspaceFill
             ? Result<PingRequest>.Failure(
                 new Error(ErrorCodes.Campaign.NotFound, "No campaign exists with that identifier."))
             : Result<PingRequest>.Success(request with { WorkingDirectory = campaign.Path });
-
     }
-
 }

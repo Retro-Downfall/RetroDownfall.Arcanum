@@ -162,6 +162,58 @@ public sealed class CanonicalCampaignContextResolverTests
 
     }
 
+    [Fact]
+    public async Task The_resolver_answers_the_table_and_never_reads_the_registered_root_of_the_campaign_it_resolved()
+    {
+
+        // The Campaign is named, no directory is supplied, and its root is registered: the root is not part of this answer.
+        StubPaths paths = new() { Root = Registered(CampaignC) };
+
+        CanonicalCampaignContextResolver resolver = new(
+            new StubBindings(),
+            paths,
+            new StubAvailability { Generation = 12 });
+
+        Result<CanonicalCampaignContext> result = await resolver.ResolveAsync(
+            new CanonicalCampaignResolutionRequest(null, CampaignC, null),
+            Token);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(0, paths.FindCalls);
+
+        // Byte-identical to the pure policy's answer: a policy version and nothing of the root.
+        Assert.Equal(CanonicalCampaignResolutionPolicy.Resolve(null, CampaignC, null, false, 12).Value, result.Value);
+        Assert.Equal(CampaignPathIdentityPolicy.Version, result.Value.PathIdentityPolicyVersion);
+        Assert.Null(result.Value.PathIdentityRevision);
+        Assert.Null(result.Value.RootIdentityDigest);
+
+    }
+
+    [Fact]
+    public async Task A_workspace_the_resolver_observed_is_carried_as_observed_whatever_the_registry_says_later()
+    {
+
+        RegisteredCampaignIdentity workspace = Registered(CampaignC);
+
+        // The registry now holds a newer revision of the same root. Telling the two apart is the enricher's job, not the resolver's.
+        StubPaths paths = new() { Workspace = workspace, Root = workspace with { Revision = 9 } };
+
+        CanonicalCampaignContextResolver resolver = new(
+            new StubBindings(),
+            paths,
+            new StubAvailability { Generation = 12 });
+
+        Result<CanonicalCampaignContext> result = await resolver.ResolveAsync(
+            new CanonicalCampaignResolutionRequest(null, CampaignC, "/inside"),
+            Token);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(0, paths.FindCalls);
+        Assert.Equal(CanonicalCampaignResolutionPolicy.Resolve(null, CampaignC, workspace, true, 12).Value, result.Value);
+        Assert.Equal(1, result.Value.PathIdentityRevision);
+
+    }
+
     private static RegisteredCampaignIdentity Registered(Guid campaignId) =>
         new(
             campaignId,
@@ -195,9 +247,14 @@ public sealed class CanonicalCampaignContextResolverTests
 
         public RegisteredCampaignIdentity? Workspace { get; init; }
 
+        /// <summary>The root the registry holds for a Campaign; the observed <see cref="Workspace"/> when a test sets only that.</summary>
+        public RegisteredCampaignIdentity? Root { get; init; }
+
         public Error? Failure { get; init; }
 
         public int ResolveCalls { get; private set; }
+
+        public int FindCalls { get; private set; }
 
         public ValueTask<Result<RegisteredCampaignIdentity?>> ResolveMostSpecificAsync(
             string? workingDirectory,
@@ -215,8 +272,14 @@ public sealed class CanonicalCampaignContextResolverTests
 
         public ValueTask<Result<RegisteredCampaignIdentity?>> FindByCampaignAsync(
             Guid campaignId,
-            CancellationToken cancellationToken) =>
-            ValueTask.FromResult(Result<RegisteredCampaignIdentity?>.Success(Workspace));
+            CancellationToken cancellationToken)
+        {
+
+            FindCalls++;
+
+            return ValueTask.FromResult(Result<RegisteredCampaignIdentity?>.Success(Root ?? Workspace));
+
+        }
 
     }
 

@@ -24,7 +24,7 @@ public sealed class CampaignRollupTurnSnapshotTests
 
         CampaignRollupTurnPreparer preparer = new(
             store, new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings()),
-            new Resolver(), null!, UnreachedLongRestPorts.Coordinator, UnreachedLongRestPorts.Maintenance, UnreachedLongRestPorts.Discovery, UnreachedLongRestPorts.Configuration, authoritySnapshot: new UnavailableAuthority(), lookup: lookup);
+            new Resolver(), null!, UnreachedLongRestPorts.Coordinator, UnreachedLongRestPorts.Maintenance, UnreachedLongRestPorts.Discovery, UnreachedLongRestPorts.Configuration, UnreachedLongRestPorts.RootEnricher, authoritySnapshot: new UnavailableAuthority(), lookup: lookup);
 
         TurnIdempotencyAmbient.PublishIdentity(new string('B', 64), new string('C', 64));
 
@@ -165,7 +165,7 @@ public sealed class CampaignRollupTurnSnapshotTests
             InvocationAttendance.Attended, CovenantContextPolicy.Default, ToolPolicy.NoTools, null).Value;
 
         CampaignRollupTurnPreparer preparer = new(store, new TestOptionsMonitor<ArcanumSettings>(Enabled()),
-            new Resolver(), null!, UnreachedLongRestPorts.Coordinator, UnreachedLongRestPorts.Maintenance, UnreachedLongRestPorts.Discovery, UnreachedLongRestPorts.Configuration, new RefusingMaintenance(), new InputStore(), null, claims, new Authority());
+            new Resolver(), null!, UnreachedLongRestPorts.Coordinator, UnreachedLongRestPorts.Maintenance, UnreachedLongRestPorts.Discovery, UnreachedLongRestPorts.Configuration, UnreachedLongRestPorts.RootEnricher, new RefusingMaintenance(), new InputStore(), null, claims, new Authority());
 
         Result<CampaignRollupTurnSnapshot?> prepared = await preparer.PrepareLiveAsync(
             Request(), invocation, false, CancellationToken.None);
@@ -200,7 +200,7 @@ public sealed class CampaignRollupTurnSnapshotTests
             InvocationAttendance.Attended, CovenantContextPolicy.Default, ToolPolicy.NoTools, null).Value;
 
         CampaignRollupTurnPreparer preparer = new(store, new TestOptionsMonitor<ArcanumSettings>(Enabled()),
-            new Resolver(), null!, UnreachedLongRestPorts.Coordinator, UnreachedLongRestPorts.Maintenance, UnreachedLongRestPorts.Discovery, UnreachedLongRestPorts.Configuration, new RecordingMaintenance(store.Actions), new InputStore(), null, claims, new Authority());
+            new Resolver(), null!, UnreachedLongRestPorts.Coordinator, UnreachedLongRestPorts.Maintenance, UnreachedLongRestPorts.Discovery, UnreachedLongRestPorts.Configuration, UnreachedLongRestPorts.RootEnricher, new RecordingMaintenance(store.Actions), new InputStore(), null, claims, new Authority());
 
         Result<CampaignRollupTurnSnapshot?> prepared = await preparer.PrepareLiveAsync(request, invocation, true, CancellationToken.None);
 
@@ -313,7 +313,7 @@ public sealed class CampaignRollupTurnSnapshotTests
 
     private static CampaignRollupTurnPreparer Preparer(ProbeStore store, ArcanumSettings settings) =>
         new(store, new TestOptionsMonitor<ArcanumSettings>(settings), new Resolver(), null!,
-            UnreachedLongRestPorts.Coordinator, UnreachedLongRestPorts.Maintenance, UnreachedLongRestPorts.Discovery, UnreachedLongRestPorts.Configuration);
+            UnreachedLongRestPorts.Coordinator, UnreachedLongRestPorts.Maintenance, UnreachedLongRestPorts.Discovery, UnreachedLongRestPorts.Configuration, UnreachedLongRestPorts.RootEnricher);
 
     private static ArcanumSettings Enabled()
     {

@@ -151,6 +151,184 @@ public sealed class LongRestTurnPreparationProtectedTests
         Assert.Equal(0L, await PendingClaimsAsync(f.H.Connection, session));
     }
 
+    [Theory]
+    [InlineData("LongRest.StaleInput")]
+    [InlineData("LongRest.StaleFence")]
+    [InlineData("LongRest.CurrentnessLost")]
+    [InlineData("LongRest.ConfigurationChanged")]
+    public async Task A_protected_sweep_parked_by_a_restart_generation_fault_no_longer_fails_the_turn_that_needs_the_partition(string code)
+    {
+        await using LongRestMaintenanceTests.MaintenanceFixture f = await LongRestMaintenanceTests.MaintenanceFixture.CreateAsync(ownWorker: false);
+
+        // Protected debt, parked; then stamped with the fault that stranded its generation, which nothing can ever readmit.
+        Assert.Equal("long_rest.authorized_request_required",
+            LongRestSweepHarness.Require(await f.Coordinator.ResumeAsync(f.Operation, null, CancellationToken.None)).DeferredReason);
+
+        await f.H.ExecuteAsync("UPDATE LongRunningOperations SET TerminalErrorCode = $code WHERE Id = $operation;",
+            ("$code", code), ("$operation", f.Operation.ToString("N")));
+
+        (CampaignRollupTurnPreparer preparer, GrimoireRepository _, CampaignRollupTurnSnapshotTests.ProbeStore _, Guid session) = await BuildAsync(f, f.Coordinator);
+
+        f.Handler.InsideSend = () =>
+        {
+            f.Handler.ChatText = f.Handler.LastBody!.Contains("survivorVersionId", StringComparison.Ordinal)
+                ? "{\"kind\":\"NoChange\",\"survivorVersionId\":null}" : "{\"summary\":\"Accepted summary.\"}";
+
+            return Task.CompletedTask;
+        };
+
+        Result<CampaignRollupTurnSnapshot?> result = await preparer.PrepareLiveAsync(
+            new("Continue after a stranded protected sweep.", Model: "model", SessionId: session, CampaignId: f.CampaignId, SkipSpellRouting: true, DisableAllTools: true),
+            f.Invocation, false, CancellationToken.None);
+
+        Assert.True(result.IsSuccess, result.IsFailure ? result.Error.Message : null);
+
+        await using CampaignRollupTurnSnapshot snapshot = result.Value!;
+
+        // The stranded sweep was retired under its own fault and a new generation did the work under this turn's pending claim.
+        LongRunningOperation retired = (await f.Operations.GetAsync(f.Operation))!;
+
+        Assert.Equal(LongRunningOperationState.Abandoned, retired.State);
+
+        Assert.Equal(code, retired.TerminalErrorCode);
+
+        Assert.Equal(1L, await f.H.ScalarAsync($"SELECT count(*) FROM LongRunningOperations WHERE Kind = 'long-rest-sweep' AND State = {(int)LongRunningOperationState.Completed} AND Id <> '{f.Operation:N}';"));
+
+        Assert.True(f.Handler.SendCount > 0);
+    }
+
+    [Theory]
+    [InlineData("LongRest.ProviderRejected")]
+    [InlineData("LongRest.TransportUnknown")]
+    public async Task A_protected_sweep_parked_by_an_operator_only_fault_still_ends_the_turn_whatever_authority_the_turn_carries(string code)
+    {
+        await using LongRestMaintenanceTests.MaintenanceFixture f = await LongRestMaintenanceTests.MaintenanceFixture.CreateAsync(ownWorker: false);
+
+        LongRestSweepHarness.Require(await f.Coordinator.ResumeAsync(f.Operation, null, CancellationToken.None));
+
+        await f.H.ExecuteAsync("UPDATE LongRunningOperations SET TerminalErrorCode = $code WHERE Id = $operation;",
+            ("$code", code), ("$operation", f.Operation.ToString("N")));
+
+        (CampaignRollupTurnPreparer preparer, GrimoireRepository _, CampaignRollupTurnSnapshotTests.ProbeStore _, Guid session) = await BuildAsync(f, f.Coordinator);
+
+        Result<CampaignRollupTurnSnapshot?> result = await preparer.PrepareLiveAsync(
+            new("Continue.", Model: "model", SessionId: session, CampaignId: f.CampaignId, SkipSpellRouting: true, DisableAllTools: true),
+            f.Invocation, false, CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.LongRest.SweepParked, result.Error.Code);
+
+        Assert.Equal(0, f.Handler.SendCount);
+
+        LongRunningOperation parked = (await f.Operations.GetAsync(f.Operation))!;
+
+        Assert.Equal(LongRunningOperationState.ReconciliationRequired, parked.State);
+
+        Assert.Equal(code, parked.TerminalErrorCode);
+
+        Assert.Equal(0L, await PendingClaimsAsync(f.H.Connection, session));
+    }
+
+    [Fact]
+    public async Task An_unresolved_recipe_ends_a_turn_with_protected_debt_with_the_headline_the_health_row_gives()
+    {
+        await using LongRestMaintenanceTests.MaintenanceFixture f = await LongRestMaintenanceTests.MaintenanceFixture.CreateAsync(ownWorker: false);
+
+        Assert.Equal("long_rest.authorized_request_required",
+            LongRestSweepHarness.Require(await f.Coordinator.ResumeAsync(f.Operation, null, CancellationToken.None)).DeferredReason);
+
+        // FastModel names a model no provider advertises, so the recipe fails closed after the protected debt was parked.
+        ArcanumSettings unresolved = LongRestConfigurationEpochTests.Settings();
+
+        unresolved.FastModel = "not-configured";
+
+        f.Options.Set(unresolved);
+
+        (CampaignRollupTurnPreparer preparer, GrimoireRepository _, CampaignRollupTurnSnapshotTests.ProbeStore _, Guid session) = await BuildAsync(f, f.Coordinator);
+
+        Result<CampaignRollupTurnSnapshot?> result = await preparer.PrepareLiveAsync(
+            new("Continue.", Model: "model", SessionId: session, CampaignId: f.CampaignId, SkipSpellRouting: true, DisableAllTools: true),
+            f.Invocation, false, CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.LongRest.Unavailable, result.Error.Code);
+
+        // The same sentence the validator warning, the doctor row and the health component give, and nothing the generic refusal said.
+        Assert.StartsWith(LongRestRecipeResolver.UnresolvedHeadline, result.Error.Message, StringComparison.Ordinal);
+
+        Assert.Equal(LongRestRecipeResolver.Describe(LongRestRecipeResolver.Problems(unresolved)), result.Error.Message);
+
+        Assert.Equal(0, f.Handler.SendCount);
+
+        Assert.Equal(0L, await PendingClaimsAsync(f.H.Connection, session));
+    }
+
+    [Fact]
+    public async Task An_unresolved_recipe_does_not_end_a_turn_that_has_no_protected_debt()
+    {
+        await using LongRestMaintenanceTests.MaintenanceFixture f = await LongRestMaintenanceTests.MaintenanceFixture.CreateAsync(ownWorker: false, protectedSources: false);
+
+        ArcanumSettings unresolved = LongRestConfigurationEpochTests.Settings();
+
+        unresolved.FastModel = "not-configured";
+
+        f.Options.Set(unresolved);
+
+        (CampaignRollupTurnPreparer preparer, GrimoireRepository _, CampaignRollupTurnSnapshotTests.ProbeStore _, Guid session) = await BuildAsync(f, f.Coordinator);
+
+        Result<CampaignRollupTurnSnapshot?> result = await preparer.PrepareLiveAsync(
+            new("Continue.", Model: "model", SessionId: session, CampaignId: f.CampaignId, SkipSpellRouting: true, DisableAllTools: true),
+            f.Invocation, false, CancellationToken.None);
+
+        // A refused clean schedule is skipped, so a turn with no protected partition proceeds on the unresolved recipe.
+        Assert.True(result.IsSuccess, result.IsFailure ? result.Error.Message : null);
+
+        await using CampaignRollupTurnSnapshot snapshot = result.Value!;
+
+        Assert.Equal(0, f.Handler.SendCount);
+    }
+
+    [Fact]
+    public async Task A_prepared_snapshot_revalidates_its_campaign_through_the_enricher_the_preparer_was_given()
+    {
+        await using LongRestMaintenanceTests.MaintenanceFixture f = await LongRestMaintenanceTests.MaintenanceFixture.CreateAsync(ownWorker: false, protectedSources: false);
+
+        CountingEnricher enricher = new();
+
+        (CampaignRollupTurnPreparer preparer, GrimoireRepository _, CampaignRollupTurnSnapshotTests.ProbeStore _, Guid session) = await BuildAsync(f, f.Coordinator, enricher);
+
+        Result<CampaignRollupTurnSnapshot?> result = await preparer.PrepareLiveAsync(
+            new("Continue.", Model: "model", SessionId: session, CampaignId: f.CampaignId, SkipSpellRouting: true, DisableAllTools: true),
+            f.Invocation, false, CancellationToken.None);
+
+        Assert.True(result.IsSuccess, result.IsFailure ? result.Error.Message : null);
+
+        await using CampaignRollupTurnSnapshot snapshot = result.Value!;
+
+        // Preparing a turn reads no root of its own: the boundary enriched the Campaign before the preparer was reached.
+        Assert.Equal(0, enricher.Calls);
+
+        Result valid = await snapshot.ValidateAsync(CancellationToken.None);
+
+        Assert.True(valid.IsSuccess, valid.IsFailure ? valid.Error.Message : null);
+
+        Assert.Equal(1, enricher.Calls);
+    }
+
+    private sealed class CountingEnricher : ICanonicalCampaignRootEnricher
+    {
+        internal int Calls;
+
+        public ValueTask<Result<CanonicalCampaignContext>> EnrichAsync(CanonicalCampaignContext resolved, CancellationToken cancellationToken)
+        {
+            Calls++;
+
+            return ValueTask.FromResult(Result<CanonicalCampaignContext>.Success(resolved));
+        }
+    }
+
     [Fact]
     public async Task A_protected_resume_that_is_busy_or_fails_still_ends_the_turn()
     {
@@ -417,6 +595,13 @@ public sealed class LongRestTurnPreparationProtectedTests
             return Partition?.Invoke() is { } error ? Task.FromResult(Result<LongRunningOperationDto>.Failure(error)) : inner.RequestAsync(scope, partition, ct);
         }
 
+        public Task<Result<LongRunningOperationDto>> RequestAsync(CanonicalCampaignContext scope, LongRestSweepScope partition, CovenantTurnLease authority, CancellationToken ct)
+        {
+            PartitionRequests++;
+
+            return Partition?.Invoke() is { } error ? Task.FromResult(Result<LongRunningOperationDto>.Failure(error)) : inner.RequestAsync(scope, partition, authority, ct);
+        }
+
         public Task<Result<LongRestSweepProgress>> ResumeAsync(Guid operationId, LongRestMaintenanceCapability? capability, CancellationToken ct)
         {
             Resumes++;
@@ -426,7 +611,7 @@ public sealed class LongRestTurnPreparationProtectedTests
     }
 
     private static async Task<(CampaignRollupTurnPreparer Preparer, GrimoireRepository Repository, CampaignRollupTurnSnapshotTests.ProbeStore Rollups, Guid Session)>
-        BuildAsync(LongRestMaintenanceTests.MaintenanceFixture f, ILongRestSweepCoordinator coordinator)
+        BuildAsync(LongRestMaintenanceTests.MaintenanceFixture f, ILongRestSweepCoordinator coordinator, ICanonicalCampaignRootEnricher? enricher = null)
     {
         Guid session = await f.H.SessionAsync(f.CampaignId);
 
@@ -442,6 +627,7 @@ public sealed class LongRestTurnPreparationProtectedTests
             .AddSingleton<IOptionsMonitor<ArcanumSettings>>(f.Options)
             .AddSingleton<ICampaignRollupStore>(rollups)
             .AddSingleton<ICanonicalCampaignContextResolver>(new ExactScopeResolver(f.Scope))
+            .AddSingleton(enricher ?? new PassThroughRootEnricher())
             .AddSingleton<ICovenantOperationGate>(f.Gate)
             .AddSingleton<ICampaignRollupMaintenance>(new CampaignRollupTurnSnapshotTests.RefusingMaintenance())
             .AddSingleton<ISessionTurnClaimBeginStore>(repository)

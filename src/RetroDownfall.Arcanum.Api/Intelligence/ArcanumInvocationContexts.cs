@@ -75,11 +75,7 @@ internal static class ArcanumInvocationContexts
 
         ArcanumSettings? settings = httpContext.RequestServices?.GetService<IOptionsMonitor<ArcanumSettings>>()?.CurrentValue;
 
-        bool campaignTurn = !InferenceContextBuilder.HasStatelessMessages(request)
-            && campaign is { } canonical && canonical != default
-            && ResolveContextPolicy(httpContext) is CovenantContextPolicy.Default
-            && (settings?.Features.LongRest is true
-                || (settings?.Features.CampaignRollups is true && canonical.IsCampaignBound));
+        bool campaignTurn = IsCampaignTurn(settings, request, campaign, ResolveContextPolicy(httpContext));
 
         if (campaignTurn)
         {
@@ -92,6 +88,36 @@ internal static class ArcanumInvocationContexts
             ? ForSessionTurn(httpContext, request, campaign)
             : ForStatelessTurn(httpContext, request, campaign);
     }
+
+    /// <summary>
+    /// Whether a ping-shaped request is a Campaign turn: a default-context request with no stateless transcript, whose canonical context is
+    /// not the empty one, and for which Long Rest is on or Campaign rollups are on for a bound Campaign. This is the one rule
+    /// <see cref="ForTurn"/> uses to choose the Session surface and mark the response private, and the one rule
+    /// <see cref="IsLongRestTurn"/> narrows.
+    /// </summary>
+    internal static bool IsCampaignTurn(
+        ArcanumSettings? settings,
+        PingRequest request,
+        CanonicalCampaignContext? campaign,
+        CovenantContextPolicy contextPolicy) =>
+        !InferenceContextBuilder.HasStatelessMessages(request)
+        && campaign is { } canonical && canonical != default
+        && contextPolicy is CovenantContextPolicy.Default
+        && (settings?.Features.LongRest is true
+            || (settings?.Features.CampaignRollups is true && canonical.IsCampaignBound));
+
+    /// <summary>
+    /// Whether a request is a Campaign turn that Long Rest prepares maintenance for (Long Rest-Scoped Enrichment). It is the rule
+    /// <see cref="CampaignRollupTurnPreparer.IsLiveEligible"/> applies to the invocation <see cref="ForTurn"/> builds for the same request, so
+    /// the turn boundary enriches the Campaign with its registered root exactly for the requests that will need it. Inspection, previews, stateless
+    /// transcripts and no-context requests are not Long Rest turns, and Long Rest being off makes none of them one.
+    /// </summary>
+    internal static bool IsLongRestTurn(
+        ArcanumSettings? settings,
+        PingRequest request,
+        CanonicalCampaignContext? campaign,
+        CovenantContextPolicy contextPolicy) =>
+        settings?.Features.LongRest is true && IsCampaignTurn(settings, request, campaign, contextPolicy);
 
     private static ArcanumInvocationContext Build(
         HttpContext httpContext,
@@ -134,7 +160,8 @@ internal static class ArcanumInvocationContexts
             : ArcanumInvocationContext.None;
     }
 
-    private static CovenantContextPolicy ResolveContextPolicy(HttpContext httpContext) =>
+    /// <summary>The request's context policy: the irrevocable no-context marker, when the pre-binding middleware set it, otherwise the default.</summary>
+    internal static CovenantContextPolicy ResolveContextPolicy(HttpContext httpContext) =>
         httpContext.Items.TryGetValue(NoContextRequestFeatureKey, out object? value) && value is true
             ? CovenantContextPolicy.None
             : CovenantContextPolicy.Default;

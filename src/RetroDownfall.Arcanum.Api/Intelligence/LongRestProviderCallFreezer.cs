@@ -35,7 +35,7 @@ public static class LongRestProviderCallFreezer
 
         if (payload.Kind == LongRestProviderPayloadKind.Summary)
         {
-            system = LongRestPromptLayout.SummarySystemPrompt;
+            system = LongRestPromptLayout.SummarySystemPromptFor(payload.SummaryBoundBytes);
 
             schema = LongRestPromptLayout.SummarySchema;
 

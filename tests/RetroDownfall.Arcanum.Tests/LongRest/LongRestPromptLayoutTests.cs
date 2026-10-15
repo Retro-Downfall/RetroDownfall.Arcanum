@@ -102,7 +102,7 @@ public sealed class LongRestPromptLayoutTests
         string block = LongRestPromptLayout.SummaryObservation(1, "child summary é");
 
         Assert.Equal(LongRestPromptLayout.FixedBytes(LongRestProviderPayloadKind.Summary) + LongRestPromptLayout.SummaryObservationBytes("child summary é"),
-            LongRestPromptLayout.RenderedBytes(LongRestPromptLayout.SummarySystemPrompt, block, LongRestPromptLayout.SummarySchema,
+            LongRestPromptLayout.RenderedBytes(LongRestPromptLayout.SummarySystemPromptFor(7109), block, LongRestPromptLayout.SummarySchema,
                 LongRestPromptLayout.SummarySchemaName, LongRestPromptLayout.SummarySchemaDescription));
 
         string memory = LongRestPromptLayout.AdjudicationMemory("m", "v", "h", "text");

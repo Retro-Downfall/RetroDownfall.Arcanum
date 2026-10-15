@@ -23,7 +23,7 @@ using RetroDownfall.Arcanum.Tests.Support;
 namespace RetroDownfall.Arcanum.Tests.Intelligence;
 
 /// <summary>
-/// The four Long Rest ports of <see cref="CampaignRollupTurnPreparer"/> are required. A turn never discovers at preparation time
+/// The five Long Rest ports of <see cref="CampaignRollupTurnPreparer"/> are required. A turn never discovers at preparation time
 /// that Long Rest has no coordinator, so no fail-closed branch for an absent port exists; what remains is the fail-closed answer
 /// to a configuration that is no longer enabled.
 /// </summary>
@@ -34,6 +34,7 @@ public sealed class LongRestRequiredPortTests
     [InlineData("longRestMaintenance", typeof(ILongRestMaintenance))]
     [InlineData("longRestDiscovery", typeof(ILongRestDiscoveryStore))]
     [InlineData("longRestConfiguration", typeof(ILongRestConfigurationProvider))]
+    [InlineData("rootEnricher", typeof(ICanonicalCampaignRootEnricher))]
     public void The_Long_Rest_ports_are_required_non_nullable_constructor_parameters(string name, Type port)
     {
         ConstructorInfo constructor = Assert.Single(typeof(CampaignRollupTurnPreparer).GetConstructors());
@@ -71,7 +72,7 @@ public sealed class LongRestRequiredPortTests
         // any maintenance is requested, and the claim it acquired is terminalized rather than leaked.
         CampaignRollupTurnPreparer preparer = new(store, options,
             new CampaignRollupTurnSnapshotTests.Resolver(), null!,
-            new UnreachedCoordinator(), UnreachedLongRestPorts.Maintenance, UnreachedLongRestPorts.Discovery, UnreachedLongRestPorts.Configuration,
+            new UnreachedCoordinator(), UnreachedLongRestPorts.Maintenance, UnreachedLongRestPorts.Discovery, UnreachedLongRestPorts.Configuration, UnreachedLongRestPorts.RootEnricher,
             claimBegin: new CampaignRollupTurnSnapshotTests.InputStore(), claims: claims,
             authoritySnapshot: new CampaignRollupTurnSnapshotTests.Authority());
 
@@ -98,6 +99,10 @@ public sealed class LongRestRequiredPortTests
 
         public Task<Result<LongRunningOperationDto>> RequestAsync(
             CanonicalCampaignContext scope, LongRestSweepScope partition, CancellationToken ct) =>
+            throw new InvalidOperationException("A disabled Long Rest configuration must refuse before partition dispatch.");
+
+        public Task<Result<LongRunningOperationDto>> RequestAsync(
+            CanonicalCampaignContext scope, LongRestSweepScope partition, CovenantTurnLease authority, CancellationToken ct) =>
             throw new InvalidOperationException("A disabled Long Rest configuration must refuse before partition dispatch.");
 
         public Task<Result<LongRestSweepProgress>> ResumeAsync(

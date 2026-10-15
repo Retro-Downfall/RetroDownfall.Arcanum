@@ -99,7 +99,7 @@ public sealed partial class WizardIntelligenceProviderTests
 
         CampaignRollupTurnPreparer disabled = new(rollups, new TestOptionsMonitor<ArcanumSettings>(settings),
             new LongRestTask7ScopeResolver(CanonicalCampaignContext.GlobalOnly), null!,
-            UnreachedLongRestPorts.Coordinator, UnreachedLongRestPorts.Maintenance, UnreachedLongRestPorts.Discovery, UnreachedLongRestPorts.Configuration,
+            UnreachedLongRestPorts.Coordinator, UnreachedLongRestPorts.Maintenance, UnreachedLongRestPorts.Discovery, UnreachedLongRestPorts.Configuration, UnreachedLongRestPorts.RootEnricher,
             maintenance, claims,
             currentRepository, claims, new CampaignRollupTurnSnapshotTests.Authority(), new CampaignWizardLookup());
 
@@ -674,6 +674,7 @@ public sealed partial class WizardIntelligenceProviderTests
                 .AddSingleton<IOptionsMonitor<ArcanumSettings>>(f.Options)
                 .AddSingleton<ICampaignRollupStore>(h.Rollups)
                 .AddSingleton<ICanonicalCampaignContextResolver>(new LongRestTask7ScopeResolver(f.Scope))
+                .AddSingleton<ICanonicalCampaignRootEnricher>(new PassThroughRootEnricher())
                 .AddSingleton<ICovenantOperationGate>(f.Gate)
                 .AddSingleton<ICampaignRollupMaintenance>(new CampaignRollupTurnSnapshotTests.RefusingMaintenance())
                 .AddSingleton<ISessionTurnClaimBeginStore>(h.Begin)
@@ -790,6 +791,15 @@ public sealed partial class WizardIntelligenceProviderTests
             Partitions.Add(partition);
 
             return inner.RequestAsync(scope, partition, ct);
+        }
+
+        public Task<Result<LongRunningOperationDto>> RequestAsync(CanonicalCampaignContext scope, LongRestSweepScope partition, CovenantTurnLease authority, CancellationToken ct)
+        {
+            Requests++;
+
+            Partitions.Add(partition);
+
+            return inner.RequestAsync(scope, partition, authority, ct);
         }
 
         public Task<Result<LongRestSweepProgress>> ResumeAsync(Guid operation, LongRestMaintenanceCapability? capability, CancellationToken ct)

@@ -295,6 +295,16 @@ public static class ArcanumMetrics
         "Long Rest sweeps whose failure budget was spent");
 
     /// <summary>
+    /// Paid Long Rest summaries the embedding provider's context window refused at their embedding (the last guard of Embedding-Bounded Summary).
+    /// The summary request states the recipe's summary bound and caps its answer with it, so a refusal here means the model ignored the bound.
+    /// Never carries an identity or any content.
+    /// </summary>
+    public static readonly Counter<long> LongRestEmbeddingWindowRefusedTotal = Meter.CreateCounter<long>(
+        "arcanum.long_rest.summary.embedding_window_refused",
+        "{summaries}",
+        "Paid Long Rest summaries refused at their embedding because they exceed the embedding window");
+
+    /// <summary>
     /// Session turns whose clean Long Rest scheduling was refused with a Long Rest error and which proceeded anyway. Label:
     /// <c>code</c>, the closed <c>LongRest.*</c> error code. Never carries an identity or any content.
     /// </summary>
