@@ -12,6 +12,13 @@ namespace RetroDownfall.Arcanum.Tests.Support;
 // a discovery that never demands a fact never pays for it.
 internal static partial class HostedGrimoireProducerInventory
 {
+    /// <summary>The one semantic model of a tree in a compilation, for every reader in the process (the checker and the Build scans).</summary>
+    internal static SemanticModel ProcessSemanticModel(CSharpCompilation compilation, SyntaxTree tree) =>
+        InventoryFacts.ProcessSemanticModel(compilation, tree);
+
+    /// <summary>Lets every process-wide semantic model go. A reader that asks again is given a new one, so no answer changes.</summary>
+    internal static void ReleaseProcessSemanticModels() => InventoryFacts.ReleaseProcessSemanticModels();
+
     private sealed class InventoryFacts
     {
         private readonly ConcurrentDictionary<SyntaxTree, Lazy<SemanticModel>> semanticModels = new(ReferenceEqualityComparer.Instance);
@@ -73,6 +80,11 @@ internal static partial class HostedGrimoireProducerInventory
         // earlier discovery bound. A compilation made from another (a replaced tree or reference) is another key and gets models of its
         // own; the models of a compilation the process lets go of are let go with it.
         private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<CSharpCompilation, CompilationModels> CompilationSemanticModels = new();
+
+        internal static SemanticModel ProcessSemanticModel(CSharpCompilation compilation, SyntaxTree tree) =>
+            CompilationSemanticModels.GetValue(compilation, static _ => new()).GetOrAdd(tree, compilation);
+
+        internal static void ReleaseProcessSemanticModels() => CompilationSemanticModels.Clear();
 
         private sealed class CompilationModels
         {

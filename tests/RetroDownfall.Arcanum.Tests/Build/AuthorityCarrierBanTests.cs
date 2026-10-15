@@ -26,7 +26,7 @@ namespace RetroDownfall.Arcanum.Tests.Build;
 /// </summary>
 [Collection(HostedProducerAnalysisCollection.Name)]
 [Trait("Category", "HostedProducerAnalysis")]
-public sealed class AuthorityCarrierBanTests(ITestOutputHelper output)
+public sealed class AuthorityCarrierBanTests(ITestOutputHelper output) : IClassFixture<SemanticModelScope>
 {
     private const string Data = AuthorityCarrierScanner.Namespace;
 

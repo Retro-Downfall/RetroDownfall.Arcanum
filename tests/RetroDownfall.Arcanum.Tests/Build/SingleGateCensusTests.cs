@@ -27,7 +27,7 @@ namespace RetroDownfall.Arcanum.Tests.Build;
 /// </remarks>
 [Collection(HostedProducerAnalysisCollection.Name)]
 [Trait("Category", "HostedProducerAnalysis")]
-public sealed class SingleGateCensusTests(ITestOutputHelper output)
+public sealed class SingleGateCensusTests(ITestOutputHelper output) : IClassFixture<SemanticModelScope>
 {
     private const string ProductionData = "RetroDownfall.Arcanum.Infrastructure.Data";
 
