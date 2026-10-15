@@ -357,6 +357,57 @@ public sealed partial class HostedGrimoireProducerInventoryTests
         }, codes);
     }
 
+    // The receiver proof has no member it does not apply to, and the member that carries a recovery context is no exception. A
+    // recovery handler is dispatched from a shell that holds the worker's Work and begins the recovery effect, and it has no lease of
+    // its own: a group it begins on a lease it made up, forgave or read out of a holder is no must-alias of the Work's lease origin.
+    // Each is HOSTED_ADMISSION_RECEIVER_MISMATCH at the group's coordinate, and the group is no Effect of the handler's send, which
+    // holds the shell's group and nothing else. The twin is the unmodified recovery matrix, which AmbientHolderIsRefusedInARecoveryHandler
+    // proves granted in full.
+    [Theory]
+    [InlineData("new-fake")]
+    [InlineData("null-forgiven")]
+    [InlineData("holder-lease")]
+    public void LeaseReceiverProofRefusesAGroupBegunInsideARecoveryHandlerOnALeaseThatIsNotTheShells(string shape)
+    {
+        const string lease = "RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireWorkLease ambient = ";
+
+        string source = shape switch
+        {
+            "new-fake" => RecoveryHandlerSource(lease + "new RecoveryFakeLease();" + RecoveryHandlerGroup),
+            "null-forgiven" => RecoveryHandlerSource(lease + "null!;" + RecoveryHandlerGroup),
+            "holder-lease" => RecoveryHandlerSource(lease + "holder.Lease;" + RecoveryHandlerGroup, holder: true),
+            _ => throw new ArgumentOutOfRangeException(nameof(shape), shape, null),
+        };
+
+        RecoveryHandlerRun run = RunRecoveryHandler(shape, source);
+
+        InvocationExpressionSyntax group = run.Group("ambient");
+
+        HostedProducerInventoryDiagnostic mismatch = Assert.Single(run.Result.Diagnostics, static diagnostic => diagnostic.Code == LeaseReceiverMismatch);
+
+        Assert.EndsWith("/call@" + run.Tree.FilePath + ":" + group.SpanStart, mismatch.Identity, StringComparison.Ordinal);
+
+        // The refused group is the Effect of nothing: it does not begin an Effect of its own, and neither does the send after it.
+        Assert.NotEqual(run.HandlerGroup.CapsuleId, run.HandlerGroup.EffectFrontierCapsuleId);
+
+        Assert.NotEqual(run.HandlerGroup.CapsuleId, run.HandlerSend.EffectFrontierCapsuleId);
+
+        if (shape == "holder-lease")
+        {
+            // Reading the holder also drops the handler's Work and Effect, so its send is refused for want of both.
+            Assert.Null(run.HandlerSend.EffectFrontierCapsuleId);
+
+            return;
+        }
+
+        // The handler keeps what its shell gave it, and nothing else is reported.
+        Assert.Single(run.Result.Diagnostics);
+
+        Assert.Equal(run.ShellGroup.EffectFrontierCapsuleId, run.HandlerSend.EffectFrontierCapsuleId);
+
+        Assert.Equal(run.ShellGroup.EffectFrontierCapsuleId, run.HandlerGroup.EffectFrontierCapsuleId);
+    }
+
     // The ordinary external-effect recovery shell is the production text of SettleAdmittedAsync inside the recovery
     // matrix, with four more external-effect tuples. The shell begins its group on the lease it acquires inline, and the
     // recovery effect every tuple's handler inherits is that group. A group on a second acquisition is not the shell's own.

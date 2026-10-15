@@ -11518,6 +11518,13 @@ internal static partial class HostedGrimoireProducerInventory
         // holder is called or how it came by its lease: a binder of any name, a setter, a constructor, or no assignment at all.
         // No witness can lift it, which is why the traversal drops the Work of the member rather than looking for one. The name
         // predates the retirement of the holder-era witnesses that used to lift it.
+        //
+        // What it reads is exact: an instance property or field whose declared type is IGrimoireWorkLease, declared in authored
+        // source, reached through a member access or a conditional access in the member's own body (a lambda or a local function of
+        // it is a member of its own), and it applies to every member under an ordinary hosted root, a recovery handler included. A
+        // lease that comes out of an object some other way (a simple name inside the holder, a property pattern, a method's return,
+        // a slot of a class that implements the interface) is not read here; the Lease Receiver Proof refuses any group begun on it
+        // and the send under such a group holds no Effect, and AmbientHolderLeftToTheReceiverProofIsStillRefusedAtItsGroup pins that.
         private bool RequiresOrdinaryScopedHolderWitness(AuthoredMember member)
         {
             GraphMemberIdentity identity = MemberIdentity(member);
@@ -19843,8 +19850,9 @@ internal static partial class HostedGrimoireProducerInventory
         private TraversalEvidence TraverseState(AuthoredMember member, string rootType, string operationId, HashSet<TraversalStateIdentity> active, bool lifecycle, string? inheritedWork, string? inheritedEffect, SyntaxNode? selection, IReadOnlySet<int>? fieldPublications, bool completionOwned, string? recoveryEffect, PlannedRoot? plannedRoot)
         {
             // A member that reads a lease out of a holder object takes no Work from its caller, before any child getter or call can
-            // inherit it. Nothing lifts this refusal; generic WorkAt keeps its existing contract for every other member.
-            if (inheritedWork is not null && member.RecoveryContext is null
+            // inherit it. Nothing lifts this refusal and no member is exempt from it, a recovery handler included; generic WorkAt keeps
+            // its existing contract for every other member.
+            if (inheritedWork is not null
                 && declaredOperations.Any(operation => operation.Authority == HostedProducerAuthorityKind.OrdinaryHostedWork
                     && RootOperation(operation.OperationId) == RootOperation(operationId))
                 && RequiresOrdinaryScopedHolderWitness(member)) inheritedWork = null;
@@ -54196,8 +54204,9 @@ internal static partial class HostedGrimoireProducerInventory
             HostedProducerOperationEntry? ordinary = declaredOperations.FirstOrDefault(entry => entry.Authority == HostedProducerAuthorityKind.OrdinaryHostedWork && rootOperation == entry.OperationId);
 
             // A member that reads a lease out of a holder object is granted no Effect for a physical send or a group, whichever lease the
-            // group was begun on: nothing witnesses the holder, so its lease is nobody's.
-            bool ordinaryHolderPhysicalGroupProven = ordinary is null || member.RecoveryContext is not null
+            // group was begun on: nothing witnesses the holder, so its lease is nobody's. A member that carries a recovery context is
+            // judged the same way.
+            bool ordinaryHolderPhysicalGroupProven = ordinary is null
                 || !RequiresOrdinaryScopedHolderWitness(member)
                 || !(RequiresExternalEffect(kind, callee)
                     || kind == HostedProducerSiteKind.EffectFrontier
