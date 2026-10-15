@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Security.Cryptography;
+using RetroDownfall.Arcanum.Infrastructure.Security;
 using DiagnosticsProcess = System.Diagnostics.Process;
 
 namespace RetroDownfall.Arcanum.Tests.Packaging;
@@ -91,7 +92,39 @@ internal sealed class LongRestQualificationEnvironment(PublishedTestProcessIsola
 
         Isolation.ApplyTemporaryEnvironment(start);
 
+        AssertInMemoryCredentialBackend(start);
+
         return start;
+    }
+
+    /// <summary>
+    /// Proves, from the environment a child is about to be given, that the product's own testing gate will select the in-memory credential
+    /// store, so that the published host cannot reach the operating-system credential store (and prompt for the keychain) when it first
+    /// writes a secret. The gate falls back to the real store whenever any of its conditions fails, and nothing else would notice. The
+    /// failure names the variables and never their values.
+    /// </summary>
+    internal static void AssertInMemoryCredentialBackend(ProcessStartInfo start)
+    {
+        ArgumentNullException.ThrowIfNull(start);
+
+        _ = start.Environment.TryGetValue("DOTNET_ENVIRONMENT", out string? dotnetEnvironment);
+
+        _ = start.Environment.TryGetValue("ASPNETCORE_ENVIRONMENT", out string? aspNetCoreEnvironment);
+
+        _ = start.Environment.TryGetValue("ARCANUM_TEST_HOME", out string? testHome);
+
+        _ = start.Environment.TryGetValue(TestCredentialOptInVariable, out string? optIn);
+
+        _ = start.Environment.TryGetValue(OperatingSystem.IsWindows() ? "TMP" : "TMPDIR", out string? temporaryDirectory);
+
+        if (!string.Equals(dotnetEnvironment, aspNetCoreEnvironment, StringComparison.Ordinal)
+            || !TestCredentialStorePolicy.IsEnabled(dotnetEnvironment, testHome, optIn, temporaryDirectory))
+        {
+            throw new InvalidOperationException(
+                "The isolated installation would not select the in-memory credential store: the product's testing gate "
+                + $"(DOTNET_ENVIRONMENT and ASPNETCORE_ENVIRONMENT agreeing on Testing, ARCANUM_TEST_HOME beneath the rebased temporary directory, and {TestCredentialOptInVariable}) did not hold, "
+                + "so the published host could reach the operating-system credential store. It is not started.");
+        }
     }
 
     public string Redact(string value) =>

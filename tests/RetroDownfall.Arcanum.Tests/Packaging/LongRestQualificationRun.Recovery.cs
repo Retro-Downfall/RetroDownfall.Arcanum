@@ -1,25 +1,25 @@
 using System.Diagnostics;
 using System.Globalization;
+using RetroDownfall.Arcanum.Core.LongRest;
 
 namespace RetroDownfall.Arcanum.Tests.Packaging;
 
 internal sealed partial class LongRestQualificationRun
 {
-    private static readonly string[] ResumableParkCodes =
-    [
-        "long_rest.interrupted",
-        "long_rest.maintenance_deferred",
-        "long_rest.worker_unavailable",
-        "long_rest.readmit_requested",
-    ];
-
     private static readonly TimeSpan RecoveryPollInterval = TimeSpan.FromMilliseconds(500);
 
     /// <summary>
-    /// Scenario B: a sweep whose host is killed with SIGKILL while a Long Rest chat request is in flight (so its attempt is
-    /// <c>Sent</c> and the host cannot settle it), restarted on the same home. The restarted host must park the interrupted sweep, its
-    /// worker must readmit it, the sweep must complete, the interrupted attempt must be settled rather than left <c>Sent</c>, and the
-    /// paid work must be counted once.
+    /// How long the first Long Rest chat request of the second sweep may take to arrive. The corpus is read, embedded and grouped first;
+    /// a sweep that has made no chat request by now is not going to, and the run says so instead of waiting out the whole sweep budget.
+    /// </summary>
+    private static readonly TimeSpan KillPointBudget = TimeSpan.FromMinutes(10);
+
+    /// <summary>
+    /// Scenario B: a sweep whose host is killed with SIGKILL after the provider has answered (and billed) a Long Rest chat request and
+    /// before the host has seen a byte of the answer, so its attempt is <c>Sent</c> and the host cannot settle it; the same home is then
+    /// restarted. The restarted host must park the interrupted sweep under a resumable code, its worker must readmit it without an
+    /// operator, the sweep must complete, the interrupted attempt must be settled rather than left <c>Sent</c>, and the paid work must
+    /// be counted once: the answer the provider billed and the host never received is unknown usage, never paid.
     /// </summary>
     public async Task RunKilledHostSweepAsync(CancellationToken cancellationToken)
     {
@@ -38,21 +38,27 @@ internal sealed partial class LongRestQualificationRun
 
         TaskCompletionSource<LongRestRecordedRequest> killedSignal = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        Proxy.SetArrivalHook(request =>
-        {
-            if (!request.IsLongRestChat)
+        Proxy.SetBeforeDeliveryHook(
+            static request => request.IsLongRestChat,
+            async request =>
             {
-                return false;
-            }
+                try
+                {
+                    // SIGKILL once the provider has answered this very request and before the host has seen any of it: the host wrote the
+                    // attempt as Sent before it sent, and will never write another byte. The forwarder then withholds the answer.
+                    await doomed.KillAsync(TimeSpan.FromSeconds(30));
 
-            // SIGKILL while this very request is in flight: the host wrote the attempt as Sent before it sent, and will never write
-            // another byte. The forwarder then forwards a request whose client is gone.
-            doomed.KillNow();
+                    _ = killedSignal.TrySetResult(request);
 
-            _ = killedSignal.TrySetResult(request);
+                    return true;
+                }
+                catch (Exception exception)
+                {
+                    _ = killedSignal.TrySetException(exception);
 
-            return true;
-        });
+                    throw;
+                }
+            });
 
         LongRestOperationSnapshot requested = await Api.RequestGlobalSweepAsync(cancellationToken);
 
@@ -60,9 +66,15 @@ internal sealed partial class LongRestQualificationRun
 
         _log.Info($"Scenario B: sweep requested, operation {requested.Id:D} ({requested}); waiting for a Long Rest chat request to kill the host under");
 
-        LongRestRecordedRequest killed = await killedSignal.Task.WaitAsync(SweepBudget, cancellationToken);
+        LongRestRecordedRequest killed = await LongRestQualificationKillPoint.AwaitAsync(
+            killedSignal.Task,
+            token => Api.GetOperationAsync(requested.Id, token),
+            () => DescribeTraffic(Proxy.Since(proxyStart)),
+            PollInterval,
+            KillPointBudget,
+            cancellationToken);
 
-        Proxy.SetArrivalHook(null);
+        Proxy.SetBeforeDeliveryHook(null, null);
 
         await doomed.KillAsync(TimeSpan.FromSeconds(30));
 
@@ -70,7 +82,12 @@ internal sealed partial class LongRestQualificationRun
 
         _host = null;
 
-        _log.Info($"Scenario B: host killed with SIGKILL during {LongRestQualificationProxy.Describe(killed)}");
+        _log.Info($"Scenario B: host killed with SIGKILL after the provider answered {LongRestQualificationProxy.Describe(killed)}");
+
+        // The kill came after the provider's whole answer was received and before any of it was passed on: the call was billed and lost.
+        Assert.True(killed.UpstreamCompleted, "The killed request had not been answered by the provider, so the kill did not exercise a billed-but-undelivered call.");
+
+        Assert.False(killed.Delivered, "The killed request's answer reached the host.");
 
         // What the dead host left behind: an unsettled Sent attempt, and a sweep that did not complete.
         IReadOnlyList<LongRestEffectRow> leftBehind = [.. (await Grimoire.ReadEffectsAsync(cancellationToken)).Where(row => IsSameGuid(row.OperationId, requested.Id))];
@@ -99,26 +116,44 @@ internal sealed partial class LongRestQualificationRun
 
         List<(TimeSpan At, LongRestOperationSnapshot Snapshot)> timeline = [];
 
+        List<TimeSpan> operatorRetryTimes = [];
+
         LongRestOperationSnapshot completed = await DriveToCompletionAsync(
             "Scenario B recovery",
             requested.Id,
             RecoveryPollInterval,
             timeline,
+            LongRestRetryScope.ModelFaultsOnly,
+            operatorRetryTimes,
             cancellationToken);
 
         Assert.Equal(LongRestOperationState.Completed, completed.State);
 
         int parkedIndex = timeline.FindIndex(static entry => entry.Snapshot.State == LongRestOperationState.ReconciliationRequired
-            && Array.IndexOf(ResumableParkCodes, entry.Snapshot.TerminalErrorCode ?? string.Empty) >= 0);
+            && LongRestFaultPolicy.Classify(entry.Snapshot.TerminalErrorCode) == LongRestFaultClass.ResumeLater);
 
         string timelineText = string.Join(" -> ", timeline.Select(static entry => $"{entry.At:mm\\:ss\\.fff} {entry.Snapshot}"));
 
+        // The crash must be recovered by the worker alone: the first park is a resumable one, and the sweep was seen running again two
+        // attempts beyond the dead owner's before the run first answered a park as an operator.
+        string? crashPark = LongRestQualificationChecks.CrashParkFinding([.. timeline.Select(static entry => entry.Snapshot)]);
+
+        if (crashPark is not null)
+        {
+            RecordFinding(crashPark + " Timeline: " + timelineText);
+        }
+
+        Check(
+            LongRestQualificationChecks.ReadmittedBeforeAnyOperator(timeline, operatorRetryTimes),
+            $"Scenario B: no snapshot shows the worker readmitting the crashed sweep (two attempts beyond the dead owner's) before the run first answered a park as an operator ({operatorRetryTimes.Count} operator retries). Timeline: " + timelineText);
+
         // The park can be too brief for a poll to see (a stale lease is parked and readmitted in one pass), so the durable record of it counts
         // too: the sweep row's park stamp is written by a park and again by a readmission, and a free park (the interrupted code is one)
-        // spends none of the failure budget, so its readmission count stays zero.
+        // spends none of the failure budget, so its readmission count stays zero. With no operator retry in the recovery the stamp is the
+        // worker's own; otherwise only a resumable park in the timeline shows the worker's.
         LongRestSweepRow recovered = Assert.Single(await Grimoire.ReadSweepsAsync(cancellationToken), row => IsSameGuid(row.OperationId, requested.Id));
 
-        bool parkEvidence = parkedIndex >= 0 || recovered.ReadmitCount >= 1 || recovered.ParkedAt is not null;
+        bool parkEvidence = parkedIndex >= 0 || (operatorRetryTimes.Count == 0 && (recovered.ReadmitCount >= 1 || recovered.ParkedAt is not null));
 
         Check(
             parkEvidence,
@@ -143,7 +178,7 @@ internal sealed partial class LongRestQualificationRun
         Observe(string.Create(
             CultureInfo.InvariantCulture,
             $"Scenario B: the restarted host was ready in {restartReady:mm\\:ss\\.fff}; the sweep stayed on its dead owner's attempt until {resumedAfter:mm\\:ss} after the restart, then was parked as '{parkedCode}' and readmitted "
-            + $"(sweep row: {recovered.ReadmitCount} readmissions, parked at {recovered.ParkedAt ?? "-"}; {(readmitted ? "seen running again" : "not seen running")}); completed on attempt {completed.AttemptCount} after {Took(clock)} in all. Timeline: {timelineText}"));
+            + $"(sweep row: {recovered.ReadmitCount} readmissions, parked at {recovered.ParkedAt ?? "-"}; {(readmitted ? "seen running again" : "not seen running")}; {operatorRetryTimes.Count} operator retries); completed on attempt {completed.AttemptCount} after {Took(clock)} in all. Timeline: {timelineText}"));
 
         IReadOnlyList<LongRestRecordedRequest> traffic = Proxy.Since(proxyStart);
 
@@ -151,6 +186,23 @@ internal sealed partial class LongRestQualificationRun
         IReadOnlyList<LongRestEffectRow> effects = [.. (await Grimoire.ReadEffectsAsync(cancellationToken)).Where(row => IsSameGuid(row.OperationId, requested.Id))];
 
         AssertEffectsSettled(effects);
+
+        // The provider answered and billed the withheld call. The host never saw the answer, so it can count that call as unknown usage
+        // and nothing else: reconciled below, the journal's paid calls equal the answers it received, and the lost answer is on top.
+        LongRestRecordedRequest[] lost = LongRestQualificationChecks.BilledButUndelivered(traffic);
+
+        Observe(string.Create(
+            CultureInfo.InvariantCulture,
+            $"Scenario B: the provider completed {lost.Length} paid call(s) the host never received ({lost.Sum(static request => request.PromptTokens ?? 0)} prompt and {lost.Sum(static request => request.CompletionTokens ?? 0)} completion tokens); "
+            + $"the host owes them as unknown usage (a failed attempt and a held reservation), never as paid"));
+
+        Check(
+            lost.Any(request => request.Sequence == killed.Sequence),
+            "Scenario B: the withheld answer was not recorded as billed by the provider but never delivered.");
+
+        Check(
+            lost.Length <= unsettled.Length,
+            $"Scenario B: the provider completed {lost.Length} calls the host never received but the host left only {unsettled.Length} unit(s) unsettled.");
 
         foreach (LongRestEffectRow row in unsettled)
         {
@@ -216,6 +268,8 @@ internal sealed partial class LongRestQualificationRun
         // Supersede-on-Completion across generations: the first sweep keeps its Completed operation but loses its derived data, and an
         // unchanged request now replays the newest sweep.
         await AssertSupersededAsync(requested.Id, cancellationToken);
+
+        await CheckHealthAsync("Scenario B", cancellationToken);
     }
 
     private async Task AssertSupersededAsync(Guid newest, CancellationToken cancellationToken)
@@ -237,6 +291,10 @@ internal sealed partial class LongRestQualificationRun
         LongRestSweepRow second = Assert.Single(sweeps, row => IsSameGuid(row.OperationId, newest));
 
         Assert.NotNull(second.GenerationId);
+
+        (IReadOnlyList<LongRestNodeRow> secondNodes, _) = await Grimoire.ReadHierarchyAsync(second.GenerationId!, cancellationToken);
+
+        CheckSummaryBound("Scenario B", secondNodes);
 
         long secondIndexRows = await Grimoire.CountCleanIndexRowsAsync(second.GenerationId!, cancellationToken);
 

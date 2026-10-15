@@ -3,6 +3,7 @@ using System.Net;
 using System.Net.Http.Json;
 using System.Text;
 using System.Text.Json;
+using RetroDownfall.Arcanum.Api.Models;
 using RetroDownfall.Arcanum.Api.Security;
 
 namespace RetroDownfall.Arcanum.Tests.Packaging;
@@ -55,6 +56,15 @@ internal sealed record LongRestApiMemory(
     bool Pinned,
     string? ConsolidatedIntoMemoryId,
     string? LongRestReceiptId);
+
+/// <summary>One component of the readiness report, with its status by name.</summary>
+internal sealed record LongRestApiHealthComponent(string Name, string Status, string? Detail);
+
+/// <summary>The readiness report <c>GET /api/health</c> returns, its statuses spelled by name whether the wire carries numbers or names.</summary>
+internal sealed record LongRestApiHealth(string Status, IReadOnlyList<LongRestApiHealthComponent> Components);
+
+/// <summary>A Long Rest receipt as <c>GET /api/memory/saga/long-rest/receipts/{id}</c> returns it, with the raw body kept to prove it is content-free.</summary>
+internal sealed record LongRestApiReceipt(string ReceiptId, IReadOnlyList<string> TargetMemoryIds, string? SurvivorMemoryId, string RawJson);
 
 /// <summary>The authenticated HTTP surface of the isolated host that the qualification drives.</summary>
 internal sealed class LongRestQualificationApi : IDisposable
@@ -199,6 +209,28 @@ internal sealed class LongRestQualificationApi : IDisposable
         }
     }
 
+    /// <summary>The readiness report. A valid Unhealthy report is a success envelope answered with 503, and is returned like any other.</summary>
+    public async Task<LongRestApiHealth> GetHealthAsync(CancellationToken cancellationToken)
+    {
+        ApiResult result = await SendAsync(HttpMethod.Get, "api/health", null, cancellationToken);
+
+        return result.IsSuccessBody
+            ? ReadHealth(result.Data)
+            : throw new InvalidOperationException($"The health report returned {(int)result.Status}: {result.ErrorCode}.");
+    }
+
+    /// <summary>One immutable, content-free Long Rest receipt by its identity.</summary>
+    public async Task<LongRestApiReceipt> GetReceiptAsync(string receiptId, CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(receiptId);
+
+        ApiResult result = await SendAsync(HttpMethod.Get, $"api/memory/saga/long-rest/receipts/{Uri.EscapeDataString(receiptId)}", null, cancellationToken);
+
+        return result.IsSuccess
+            ? ReadReceipt(result.Data)
+            : throw new InvalidOperationException($"The receipt request returned {(int)result.Status}: {result.ErrorCode}.");
+    }
+
     /// <summary>Today's local spend in USD from the budget snapshot.</summary>
     public async Task<decimal> LocalSpendUsdAsync(CancellationToken cancellationToken)
     {
@@ -249,6 +281,28 @@ internal sealed class LongRestQualificationApi : IDisposable
 
         return metrics;
     }
+
+    internal static LongRestApiHealth ReadHealth(JsonElement element) =>
+        new(
+            ReadHealthStatus(element.GetProperty("status")),
+            [
+                .. element.GetProperty("components").EnumerateArray().Select(static component => new LongRestApiHealthComponent(
+                    component.GetProperty("name").GetString()!,
+                    ReadHealthStatus(component.GetProperty("status")),
+                    ReadOptionalString(component, "detail"))),
+            ]);
+
+    private static string ReadHealthStatus(JsonElement status) =>
+        status.ValueKind == JsonValueKind.Number
+            ? ((HealthStatus)status.GetInt32()).ToString()
+            : Enum.Parse<HealthStatus>(status.GetString()!, ignoreCase: true).ToString();
+
+    internal static LongRestApiReceipt ReadReceipt(JsonElement element) =>
+        new(
+            element.GetProperty("receiptId").GetString()!,
+            [.. element.GetProperty("targets").EnumerateArray().Select(static target => target.GetProperty("memoryId").GetString()!)],
+            ReadOptionalString(element, "survivorMemoryId"),
+            element.GetRawText());
 
     private static LongRestApiMemory ReadMemory(JsonElement element) =>
         new(

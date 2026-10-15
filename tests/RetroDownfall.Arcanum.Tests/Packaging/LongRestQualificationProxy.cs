@@ -73,6 +73,9 @@ internal sealed class LongRestRecordedRequest
 
     public int? StatusCode { get; set; }
 
+    /// <summary>The provider answered and the whole answer was received by the forwarder, whether or not it was passed on. The provider has billed such a call.</summary>
+    public bool UpstreamCompleted { get; set; }
+
     /// <summary>The response reached the host: the whole body was written to the connection without the host going away first.</summary>
     public bool Delivered { get; set; }
 
@@ -102,7 +105,8 @@ internal sealed class LongRestRecordedRequest
 /// what the host sends: which model id served each call, whether a retired or pinned memory ever left the process,
 /// when a request is in flight (so the host can be killed with an attempt <c>Sent</c>), and what usage the provider
 /// reported, which the host's own accounting is then compared with. It forwards every request unchanged to the one
-/// literal-loopback endpoint the operator named, follows no redirect and uses no proxy.
+/// literal-loopback endpoint the operator named (a request whose path would resolve to any other scheme, host, port or path
+/// is answered 502 and never forwarded), follows no redirect and uses no proxy.
 /// </summary>
 internal sealed class LongRestQualificationProxy : IAsyncDisposable
 {
@@ -122,7 +126,9 @@ internal sealed class LongRestQualificationProxy : IAsyncDisposable
 
     private int _sequence;
 
-    private Func<LongRestRecordedRequest, bool>? _arrivalHook;
+    private Func<LongRestRecordedRequest, bool>? _holdSelector;
+
+    private Func<LongRestRecordedRequest, Task<bool>>? _beforeDelivery;
 
     private LongRestQualificationProxy(WebApplication application, HttpClient upstream, Uri upstreamEndpoint, Uri endpoint)
     {
@@ -214,15 +220,40 @@ internal sealed class LongRestQualificationProxy : IAsyncDisposable
     public IReadOnlyList<LongRestRecordedRequest> All => Since(0);
 
     /// <summary>
-    /// Runs <paramref name="hook"/> once for each request after the forwarder has read and classified it and before it is
-    /// forwarded; returning <see langword="true"/> disarms it. The hook runs on the request's own thread, so a hook that
-    /// kills the host does so while that request is in flight.
+    /// Arms a one-shot interception of the first request <paramref name="selects"/> picks. The forwarder then receives the provider's whole
+    /// answer without passing one byte of it on, runs <paramref name="beforeDelivery"/>, and passes the answer on unless that returns
+    /// <see langword="true"/>, which withholds it for good and aborts the host's connection. A hook that kills the host does so after the
+    /// provider has answered and billed the call and before the host has seen any of it: the case where the host cannot know what was spent.
     /// </summary>
-    public void SetArrivalHook(Func<LongRestRecordedRequest, bool>? hook)
+    public void SetBeforeDeliveryHook(Func<LongRestRecordedRequest, bool>? selects, Func<LongRestRecordedRequest, Task<bool>>? beforeDelivery)
+    {
+        if ((selects is null) != (beforeDelivery is null))
+        {
+            throw new ArgumentException("A before-delivery hook needs both a selector and an action, or neither.");
+        }
+
+        lock (_sync)
+        {
+            _holdSelector = selects;
+
+            _beforeDelivery = beforeDelivery;
+        }
+    }
+
+    private Func<LongRestRecordedRequest, Task<bool>>? TakeBeforeDeliveryHook(LongRestRecordedRequest record)
     {
         lock (_sync)
         {
-            _arrivalHook = hook;
+            if (_beforeDelivery is not { } hook || _holdSelector is not { } selects || !selects(record))
+            {
+                return null;
+            }
+
+            _beforeDelivery = null;
+
+            _holdSelector = null;
+
+            return hook;
         }
     }
 
@@ -388,24 +419,6 @@ internal sealed class LongRestQualificationProxy : IAsyncDisposable
             _requests.Add(record);
         }
 
-        Func<LongRestRecordedRequest, bool>? hook;
-
-        lock (_sync)
-        {
-            hook = _arrivalHook;
-        }
-
-        if (hook is not null && hook(record))
-        {
-            lock (_sync)
-            {
-                if (ReferenceEquals(_arrivalHook, hook))
-                {
-                    _arrivalHook = null;
-                }
-            }
-        }
-
         try
         {
             await ForwardUpstreamAsync(context, record, body);
@@ -431,15 +444,64 @@ internal sealed class LongRestQualificationProxy : IAsyncDisposable
         }
     }
 
-    private async Task ForwardUpstreamAsync(HttpContext context, LongRestRecordedRequest record, byte[] body)
+    /// <summary>
+    /// Resolves where a request goes: the validated endpoint's own <c>/v1/</c> plus whatever follows the request's version segment. A path
+    /// that names another scheme, host or port, carries credentials, or climbs out of the endpoint's path resolves to no target, so the
+    /// forwarder can only ever reach the one literal-loopback endpoint it was given.
+    /// </summary>
+    internal static bool TryResolveUpstream(Uri upstreamEndpoint, string requestPath, string query, out Uri? target)
     {
-        string relative = (context.Request.Path.Value ?? string.Empty).TrimStart('/');
+        ArgumentNullException.ThrowIfNull(upstreamEndpoint);
+
+        ArgumentNullException.ThrowIfNull(requestPath);
+
+        ArgumentNullException.ThrowIfNull(query);
+
+        target = null;
+
+        string relative = requestPath.TrimStart('/');
 
         // The configured endpoint ends in /v1/, and the host's requests are made relative to it, so the forwarded path is the
         // upstream endpoint's own /v1/ plus whatever follows it.
         string afterVersion = relative.StartsWith("v1/", StringComparison.Ordinal) ? relative[3..] : relative;
 
-        Uri target = new(_upstreamEndpoint, afterVersion + context.Request.QueryString.Value);
+        Uri resolved;
+
+        try
+        {
+            resolved = new Uri(upstreamEndpoint, afterVersion + query);
+        }
+        catch (UriFormatException)
+        {
+            return false;
+        }
+
+        if (!string.Equals(resolved.Scheme, upstreamEndpoint.Scheme, StringComparison.Ordinal)
+            || !string.Equals(resolved.Host, upstreamEndpoint.Host, StringComparison.OrdinalIgnoreCase)
+            || resolved.Port != upstreamEndpoint.Port
+            || resolved.UserInfo.Length > 0
+            || !resolved.AbsolutePath.StartsWith(upstreamEndpoint.AbsolutePath, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        target = resolved;
+
+        return true;
+    }
+
+    private async Task ForwardUpstreamAsync(HttpContext context, LongRestRecordedRequest record, byte[] body)
+    {
+        if (!TryResolveUpstream(_upstreamEndpoint, context.Request.Path.Value ?? string.Empty, context.Request.QueryString.Value ?? string.Empty, out Uri? target))
+        {
+            record.Error = "TargetOutsideEndpoint";
+
+            record.StatusCode = StatusCodes.Status502BadGateway;
+
+            context.Response.StatusCode = StatusCodes.Status502BadGateway;
+
+            return;
+        }
 
         using HttpRequestMessage request = new(new HttpMethod(context.Request.Method), target);
 
@@ -485,6 +547,9 @@ internal sealed class LongRestQualificationProxy : IAsyncDisposable
             context.Response.Headers[header.Key] = header.Value.ToArray();
         }
 
+        // An intercepted request is received whole before any of it is passed on; every other one streams through as it arrives.
+        Func<LongRestRecordedRequest, Task<bool>>? beforeDelivery = TakeBeforeDeliveryHook(record);
+
         await using Stream upstream = await response.Content.ReadAsStreamAsync(context.RequestAborted);
 
         using MemoryStream capture = new();
@@ -504,15 +569,20 @@ internal sealed class LongRestQualificationProxy : IAsyncDisposable
             {
                 capture.Write(buffer, 0, read);
             }
+            else if (beforeDelivery is not null)
+            {
+                throw new InvalidOperationException("The provider's answer exceeded the bound for holding it back.");
+            }
 
-            await context.Response.Body.WriteAsync(buffer.AsMemory(0, read), context.RequestAborted);
+            if (beforeDelivery is null)
+            {
+                await context.Response.Body.WriteAsync(buffer.AsMemory(0, read), context.RequestAborted);
 
-            await context.Response.Body.FlushAsync(context.RequestAborted);
+                await context.Response.Body.FlushAsync(context.RequestAborted);
+            }
         }
 
-        await context.Response.CompleteAsync();
-
-        record.Delivered = true;
+        record.UpstreamCompleted = true;
 
         byte[] captured = capture.ToArray();
 
@@ -523,6 +593,25 @@ internal sealed class LongRestQualificationProxy : IAsyncDisposable
         record.FinishReason = record.Streaming ? null : ReadFinishReason(captured);
 
         record.ResponseContent = record.Streaming || !record.IsLongRestChat ? null : ReadMessageContent(captured);
+
+        if (beforeDelivery is not null)
+        {
+            if (await beforeDelivery(record))
+            {
+                // The host is gone, or is meant to be: the answer the provider billed is never passed on.
+                record.ClientAborted = true;
+
+                context.Abort();
+
+                return;
+            }
+
+            await context.Response.Body.WriteAsync(captured, context.RequestAborted);
+        }
+
+        await context.Response.CompleteAsync();
+
+        record.Delivered = true;
     }
 
     /// <summary>The first choice's message text of a whole chat response, bounded to 16,384 characters, or <see langword="null"/>.</summary>

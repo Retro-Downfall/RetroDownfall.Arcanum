@@ -102,6 +102,12 @@ internal sealed partial class LongRestQualificationRun(
 
         _portReservation = null;
 
+        // Fail closed before the host first writes a secret: the product falls back to the operating-system credential store (and so
+        // the keychain) whenever its testing gate does not hold, and nothing else would notice until it prompted.
+        LongRestQualificationEnvironment.AssertInMemoryCredentialBackend(Installation.CreateStartInfo(_options.Executable, ["serve", "--plain"]));
+
+        _log.Info("The isolated environment selects the in-memory credential store (the product's testing gate holds); no operating-system credential store can be reached");
+
         _host = LongRestPublishedHost.Start(_options.Executable, Installation, knownMasterApiKey: null);
 
         _masterApiKey = await _host.WaitForInitialReadyAsync(HostStartupBudget);
@@ -244,10 +250,25 @@ internal sealed partial class LongRestQualificationRun(
 
         await AssertNativeAotMetadataAsync(cancellationToken);
 
-        // The host starts its metrics listener when /metrics is first scraped, and the listener never replays what happened before it, so
-        // a counter the sweep moves before the first scrape is lost. One scrape here, before any sweep runs, is what lets the counters
-        // below be compared at all.
-        _ = await Api.ReadMetricsAsync(cancellationToken);
+        // The exporter should listen from the host's start. Authenticated requests are answered, then the first scrape must carry them:
+        // when it does not, the exporter only starts at that scrape and loses everything measured before it, which is a product defect
+        // and a finding on every restart.
+        _ = await Api.GetMetaAsync(cancellationToken);
+
+        _ = await Api.GetMetaAsync(cancellationToken);
+
+        IReadOnlyDictionary<string, double> firstScrape = await Api.ReadMetricsAsync(cancellationToken);
+
+        string? lateExporter = LongRestQualificationChecks.ExporterStartFinding(description, firstScrape);
+
+        if (lateExporter is not null)
+        {
+            RecordFinding(lateExporter);
+        }
+
+        // That scrape is also a temporary workaround, kept only until the exporter starts with the host: the listener never replays earlier
+        // measurements, so the counters a sweep moves can be compared only if a scrape came before it. The finding above is what shows
+        // whether the workaround is still needed; the product defect is reported with the #91 delivery, not fixed in this stream.
 
         _log.Info($"Published host restarted on the same home ({description})");
     }

@@ -375,14 +375,14 @@ public sealed class LocalOllamaLongRestQualificationContractTests
         Assert.Contains("IPAddress.Loopback", proxy, StringComparison.Ordinal);
 
         Assert.Contains("SIGKILL", run, StringComparison.Ordinal);
-        Assert.Contains("KillNow()", run, StringComparison.Ordinal);
+        Assert.Contains("doomed.KillAsync(", run, StringComparison.Ordinal);
         Assert.Contains("RunCleanSweepAsync", test, StringComparison.Ordinal);
         Assert.Contains("RunKilledHostSweepAsync", test, StringComparison.Ordinal);
         Assert.Contains("RunOrdinaryTurnAsync", test, StringComparison.Ordinal);
 
-        // The host's metrics listener starts at the first scrape and never replays, so each restart scrapes once before any sweep runs; the
-        // held-reservation figure is read from the same read-only reader.
-        Assert.Contains("_ = await Api.ReadMetricsAsync(cancellationToken);", run, StringComparison.Ordinal);
+        // Each restart scrapes once before any sweep runs, after requests the exporter should already have recorded (its late start is
+        // a finding, not a given); the held-reservation figure is read from the same read-only reader.
+        Assert.Contains("await Api.ReadMetricsAsync(cancellationToken);", run, StringComparison.Ordinal);
         Assert.Contains("ReadOutstandingReservationsAsync", run, StringComparison.Ordinal);
         Assert.Contains("FROM BudgetReservations WHERE Status = 0", grimoire, StringComparison.Ordinal);
     }

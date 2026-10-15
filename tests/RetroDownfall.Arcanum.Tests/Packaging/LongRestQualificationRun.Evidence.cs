@@ -6,7 +6,8 @@ namespace RetroDownfall.Arcanum.Tests.Packaging;
 
 internal sealed partial class LongRestQualificationRun
 {
-    private const int AttemptStateSettledLow = 4;
+    /// <summary>The first attempt state a paid unit is settled in: every lower one (<c>Prepared</c>, <c>Disclosed</c>, <c>Sent</c>) is still in flight.</summary>
+    private const int AttemptStateSettledLow = (int)LongRestDispatchAttemptState.Accepted;
 
     private readonly List<string> _findings = [];
 
@@ -110,6 +111,88 @@ internal sealed partial class LongRestQualificationRun
                 $"{scenario}: Long Rest folded {wrong.Count} memories into survivors of a different topic ({right} correctly), which suppresses them from recall. For example: {string.Join("; ", wrong.Take(5))}."));
         }
     }
+
+    /// <summary>
+    /// Embedding-Bounded Summary: every accepted summary of a completed generation must fit the byte bound the recipe derives from the
+    /// embedding window, because a longer one is a summary the embedding model could not read whole.
+    /// </summary>
+    private void CheckSummaryBound(string scenario, IReadOnlyList<LongRestNodeRow> nodes)
+    {
+        int bound = LongRestPromptLayout.SummaryBoundUtf8Bytes(_options.EmbeddingWindow);
+
+        IReadOnlyList<(string NodeId, int Bytes)> oversized = LongRestQualificationChecks.OversizedSummaries(nodes, bound);
+
+        Check(
+            oversized.Count == 0,
+            string.Create(
+                CultureInfo.InvariantCulture,
+                $"{scenario}: {oversized.Count} accepted summaries exceed the {bound}-byte Embedding-Bounded Summary limit of the {_options.EmbeddingWindow}-token embedding window ({string.Join(", ", oversized.Take(5).Select(static node => $"{Short(node.NodeId)} {node.Bytes} bytes"))})."));
+
+        int summaries = nodes.Count(static node => node.Layer > 0 && node.Summary is not null);
+
+        Observe(string.Create(
+            CultureInfo.InvariantCulture,
+            $"{scenario}: {summaries - oversized.Count} of {summaries} accepted summaries fit the {bound}-byte Embedding-Bounded Summary limit"));
+    }
+
+    /// <summary>The readiness report after a scenario: not Unhealthy, and the Long Rest component present and healthy.</summary>
+    private async Task CheckHealthAsync(string scenario, CancellationToken cancellationToken)
+    {
+        LongRestApiHealth health = await Api.GetHealthAsync(cancellationToken);
+
+        string? finding = LongRestQualificationChecks.HealthFinding(scenario, health);
+
+        if (finding is not null)
+        {
+            RecordFinding(finding);
+        }
+
+        Observe($"{scenario} health: {health.Status} ({string.Join(", ", health.Components.Select(static component => $"{component.Name} {component.Status}"))})");
+    }
+
+    /// <summary>
+    /// Fetches the receipt each consolidated memory names, through the API an operator would use, and checks that it is that receipt,
+    /// names the memory and its survivor, and carries no memory text.
+    /// </summary>
+    private async Task CheckReceiptsAsync(string scenario, IReadOnlyList<LongRestApiMemory> consolidated, CancellationToken cancellationToken)
+    {
+        string[] corpus = [.. _corpus.Select(static memory => memory.Content)];
+
+        LongRestApiMemory[] named = [.. consolidated
+            .Where(static memory => !string.IsNullOrEmpty(memory.LongRestReceiptId))
+            .GroupBy(static memory => memory.LongRestReceiptId, StringComparer.OrdinalIgnoreCase)
+            .Select(static group => group.First())
+            .Take(10)];
+
+        Check(named.Length > 0, $"{scenario}: no consolidated memory names a receipt to fetch.");
+
+        int problems = 0;
+
+        foreach (LongRestApiMemory memory in named)
+        {
+            LongRestApiReceipt receipt = await Api.GetReceiptAsync(memory.LongRestReceiptId!, cancellationToken);
+
+            foreach (string problem in LongRestQualificationChecks.ReceiptProblems(receipt, memory, corpus))
+            {
+                problems++;
+
+                RecordFinding($"{scenario}: {problem}.");
+            }
+        }
+
+        Observe(string.Create(
+            CultureInfo.InvariantCulture,
+            $"{scenario}: {named.Length} receipt(s) fetched through GET /api/memory/saga/long-rest/receipts/{{id}}, {problems} problem(s) (each must be the receipt its memory names, name the memory and its survivor, and carry no memory text)"));
+    }
+
+    /// <summary>What reached the provider so far, by kind, for a failure that needs to say what the sweep had done.</summary>
+    private static string DescribeTraffic(IReadOnlyList<LongRestRecordedRequest> traffic) =>
+        string.Create(
+            CultureInfo.InvariantCulture,
+            $"{traffic.Count(static request => request.Kind == LongRestProviderRequestKind.Embedding)} embeddings, "
+            + $"{traffic.Count(static request => request.Kind == LongRestProviderRequestKind.Summary)} summaries, "
+            + $"{traffic.Count(static request => request.Kind == LongRestProviderRequestKind.Adjudication)} adjudications, "
+            + $"{traffic.Count(static request => request.Kind is not (LongRestProviderRequestKind.Embedding or LongRestProviderRequestKind.Summary or LongRestProviderRequestKind.Adjudication))} other requests");
 
     /// <summary>The calibration, once the clean sweep has completed: printed whatever happens afterwards.</summary>
     public string? CalibrationText { get; private set; }
@@ -568,6 +651,5 @@ internal sealed partial class LongRestQualificationRun
 
     private static string Short(string identity) => identity.Length > 8 ? identity[..8] : identity;
 
-    private static string NormalizeIdentity(string identity) =>
-        identity.Replace("-", string.Empty, StringComparison.Ordinal).ToLowerInvariant();
+    private static string NormalizeIdentity(string identity) => LongRestQualificationChecks.NormalizeIdentity(identity);
 }

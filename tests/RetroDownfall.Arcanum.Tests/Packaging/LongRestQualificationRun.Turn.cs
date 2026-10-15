@@ -117,6 +117,8 @@ internal sealed partial class LongRestQualificationRun
             "SELECT Status, ReservedUsd, ReconciledUsd, ExpiresAt FROM BudgetReservations ORDER BY CreatedAt DESC LIMIT 8;",
             cancellationToken);
 
+        await CheckHealthAsync("Scenario C", cancellationToken);
+
         decimal outstanding = await Api.LocalSpendUsdAsync(cancellationToken);
 
         Observe(string.Create(CultureInfo.InvariantCulture, $"Scenario C: the budget snapshot ends the run at {outstanding:0.000000} USD of local spend"));

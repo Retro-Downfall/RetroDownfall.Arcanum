@@ -8,11 +8,9 @@ internal sealed partial class LongRestQualificationRun
 {
     private const int MaximumOperatorRetries = 24;
 
-    private const int AttemptStateSent = 3;
+    private const int AttemptStateSent = (int)LongRestDispatchAttemptState.Sent;
 
-    private const int AttemptStateAccepted = 4;
-
-    private const int SweepPhaseCompleted = 6;
+    private const int SweepPhaseCompleted = (int)LongRestSweepPhase.Completed;
 
     /// <summary>The generation the clean sweep completed, whose hierarchy the calibration reads before a successor replaces it.</summary>
     private string? _cleanSweepGeneration;
@@ -49,6 +47,8 @@ internal sealed partial class LongRestQualificationRun
             requested.Id,
             PollInterval,
             timeline: null,
+            LongRestRetryScope.AnyFault,
+            operatorRetryTimes: null,
             cancellationToken);
 
         Assert.Equal(LongRestOperationState.Completed, completed.State);
@@ -94,7 +94,7 @@ internal sealed partial class LongRestQualificationRun
 
         Observe(string.Create(
             CultureInfo.InvariantCulture,
-            $"Scenario A evidence: {summaries} accepted summaries, {adjudications} accepted adjudications ({string.Join(", ", decisions.Select(static decision => $"kind {decision.Code} x{decision.Count}"))}), {receipts} receipts"));
+            $"Scenario A evidence: {summaries} accepted summaries, {adjudications} accepted adjudications ({string.Join(", ", decisions.Select(static decision => $"{LongRestQualificationChecks.DescribeAdjudicationKind(decision.Code)} x{decision.Count}"))}), {receipts} receipts"));
 
         // Receipts reach the memories: at least one memory is consolidated, and the API names its receipt.
         IReadOnlyList<LongRestApiMemory> memories = await Api.ListMemoriesAsync(cancellationToken);
@@ -108,6 +108,8 @@ internal sealed partial class LongRestQualificationRun
             "Scenario A: a consolidated memory does not name its Long Rest receipt.");
 
         Observe(string.Create(CultureInfo.InvariantCulture, $"Scenario A: {consolidated.Length} of {memories.Count} memories consolidated into a survivor"));
+
+        await CheckReceiptsAsync("Scenario A", consolidated, cancellationToken);
 
         ObserveExactDuplicates(memories);
 
@@ -130,6 +132,8 @@ internal sealed partial class LongRestQualificationRun
         Check(nodes.Count > 0, "Scenario A: the completed generation retained no nodes.");
 
         Observe(string.Create(CultureInfo.InvariantCulture, $"Scenario A: completed generation holds {nodes.Count} nodes ({nodes.Count(static node => node.Layer > 0)} summaries) and {indexRows} search-index rows"));
+
+        CheckSummaryBound("Scenario A", nodes);
 
         // Which models served which calls, and with which credential.
         AssertServedBy(traffic, requireBothKinds: true);
@@ -178,6 +182,8 @@ internal sealed partial class LongRestQualificationRun
                 CultureInfo.InvariantCulture,
                 $"Scenario A: the sweep was parked {_operatorRetries} times by a fault only an operator clears, but arcanum.long_rest.sweep.parked counted {operatorParks} needs-operator parks."));
         }
+
+        await CheckHealthAsync("Scenario A", cancellationToken);
 
         // An unchanged request replays the completed sweep: the same operation, and not one more provider call.
         int beforeReplay = Proxy.Position;
@@ -248,13 +254,16 @@ internal sealed partial class LongRestQualificationRun
     /// Waits for a sweep to complete the way an operator would: a park the worker resumes by itself is waited out, and a park only an
     /// operator can clear (a paid answer the model got wrong, which the fault table classifies as needs-operator) is answered with
     /// <c>arcanum operation retry</c>, the documented remedy, up to a bound. Every retry is an observation: a real model's malformed
-    /// answers are part of what this qualification measures.
+    /// answers are part of what this qualification measures. Where the scope is <see cref="LongRestRetryScope.ModelFaultsOnly"/> an
+    /// answer to any other fault is also a finding, and each retry's time is recorded so that a readmission can be told from an operator's.
     /// </summary>
     private async Task<LongRestOperationSnapshot> DriveToCompletionAsync(
         string what,
         Guid operation,
         TimeSpan interval,
         List<(TimeSpan At, LongRestOperationSnapshot Snapshot)>? timeline,
+        LongRestRetryScope retryScope,
+        List<TimeSpan>? operatorRetryTimes,
         CancellationToken cancellationToken)
     {
         Stopwatch clock = Stopwatch.StartNew();
@@ -285,6 +294,16 @@ internal sealed partial class LongRestQualificationRun
                         $"{what} was parked {retries} times by faults only an operator can clear (last: {snapshot.TerminalErrorCode}); the real models did not let it finish.");
 
                     Observe($"{what}: parked as '{snapshot.TerminalErrorCode}' (a fault only an operator clears); retrying as the operator (retry {retries})");
+
+                    // Where the scope does not allow an operator's help the run still gives it, to go on and report the rest, but it is a finding.
+                    string? finding = LongRestQualificationChecks.OperatorRetryFinding(retryScope, what, snapshot.TerminalErrorCode);
+
+                    if (finding is not null)
+                    {
+                        RecordFinding(finding);
+                    }
+
+                    operatorRetryTimes?.Add(clock.Elapsed);
 
                     await Api.RetryOperationAsync(operation, token);
                 }
