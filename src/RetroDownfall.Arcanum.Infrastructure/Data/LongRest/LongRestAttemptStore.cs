@@ -492,14 +492,7 @@ internal sealed partial class LongRestAttemptStore(ArcanumDbContext db, TimeProv
 
                 await using SqliteTransaction transaction = connection.BeginTransaction(deferred: deferred);
 
-                if (deferred)
-                {
-                    LongRestVerificationCounters.ReadTransaction();
-                }
-                else
-                {
-                    LongRestVerificationCounters.WriterTransaction();
-                }
+                LongRestVerificationCounters.Transaction(deferred: deferred);
 
                 T result = await action(connection, transaction).ConfigureAwait(false);
 

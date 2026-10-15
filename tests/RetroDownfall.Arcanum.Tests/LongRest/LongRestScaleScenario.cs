@@ -182,7 +182,7 @@ internal sealed class LongRestScaleScenario : IAsyncDisposable
         Assert.Equal(ProtectedPartitions, partitions.Count);
 
         return new(trace.ByText(), trace.Count, tally.CorpusPasses, tally.MetadataLeafReads, tally.FullLeafReads, tally.PartitionPasses,
-            tally.ReadTransactions, tally.WriterTransactions, tally.AntiJoinPasses);
+            tally.ReadTransactions, tally.WriterTransactions, tally.AntiJoinPasses, trace.ImmediateTransactions);
     }
 
     public ValueTask DisposeAsync() => H.DisposeAsync();
@@ -191,6 +191,9 @@ internal sealed class LongRestScaleScenario : IAsyncDisposable
 /// <summary>The verification one unit of an open sweep performed.</summary>
 internal sealed record ScanUnit(long FullLeafReads, long MetadataLeafReads, long CorpusPasses, long AntiJoinPasses, long WriterTransactions);
 
-/// <summary>The cost of one idle turn: every statement text with the number of times it ran, and the verification counts.</summary>
+/// <summary>
+/// The cost of one idle turn: every statement text with the number of times it ran, and the verification counts. The immediate
+/// transactions are what SQLite itself saw begin with the writer lock, which no counter in the stores can under-report.
+/// </summary>
 internal sealed record IdleTurn(Dictionary<string, int> Statements, int StatementCount, long CorpusPasses, long MetadataLeafReads, long FullLeafReads,
-    long PartitionPasses, long ReadTransactions, long WriterTransactions, long AntiJoinPasses);
+    long PartitionPasses, long ReadTransactions, long WriterTransactions, long AntiJoinPasses, int ImmediateTransactions);

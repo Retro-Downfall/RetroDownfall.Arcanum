@@ -26,6 +26,8 @@ internal sealed partial class LongRestDiscoveryStore
 
             await using SqliteTransaction transaction = connection.BeginTransaction(deferred: true);
 
+            LongRestVerificationCounters.Transaction(deferred: true);
+
             await using SqliteCommand owner = Command(connection, transaction,
                 "SELECT count(*) FROM LongRunningOperations WHERE Id = $id AND Kind = 'long-rest-sweep';", ("$id", operationId.ToString("N")));
 

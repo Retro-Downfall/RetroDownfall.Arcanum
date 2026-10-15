@@ -57,6 +57,23 @@ internal static class LongRestVerificationCounters
 
     /// <summary>One transaction that only reads, so it takes no writer lock.</summary>
     internal static void ReadTransaction() => Current.Value?.Add(LongRestVerificationMetric.ReadTransaction);
+
+    /// <summary>
+    /// One transaction a Long Rest store has just begun, counted under the lock it took. Every store calls this where it begins one, whichever
+    /// store it is, so the count of writer transactions is a fact about the whole of the Long Rest and not about the two stores that used to
+    /// report; a test reads the folder to hold that to every future site.
+    /// </summary>
+    internal static void Transaction(bool deferred)
+    {
+        if (deferred)
+        {
+            ReadTransaction();
+        }
+        else
+        {
+            WriterTransaction();
+        }
+    }
 }
 
 /// <summary>The counted facts; <see cref="ReadTransaction"/> stays last because it sizes a tally.</summary>

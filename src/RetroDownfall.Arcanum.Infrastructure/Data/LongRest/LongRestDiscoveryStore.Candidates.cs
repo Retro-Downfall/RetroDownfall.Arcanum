@@ -29,6 +29,8 @@ internal sealed partial class LongRestDiscoveryStore
             // from inside its own writer transaction instead.
             await using SqliteTransaction transaction = connection.BeginTransaction(deferred: true);
 
+            LongRestVerificationCounters.Transaction(deferred: true);
+
             return await DiscoverWithinAsync(connection, transaction, generationId, anchor, capability, cancellationToken).ConfigureAwait(false);
         }
         catch (Exception exception) when (StorageFailure(exception))

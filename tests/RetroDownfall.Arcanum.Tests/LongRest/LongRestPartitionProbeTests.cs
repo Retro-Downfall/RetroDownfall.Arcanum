@@ -1,3 +1,7 @@
+using Microsoft.Data.Sqlite;
+
+using SQLitePCL;
+
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.LongRest;
 using RetroDownfall.Arcanum.Core.Tower;
@@ -89,6 +93,60 @@ public sealed class LongRestPartitionProbeTests
 
         // One deferred transaction and the one early-out statement.
         Assert.Equal(1, trace.Statements.Count(static statement => statement.Contains("FROM annal_versions", StringComparison.Ordinal)));
+    }
+
+    /// <summary>
+    /// "Nothing protected here" is asked on every eligible Session turn, so the answer may not cost more as the installation stores more.
+    /// The count of SQLite virtual-machine operations the early-out statement takes is the cost, free of the clock: it is the same over 6
+    /// stored versions and over 160, which a sequential read of the version table is not.
+    /// </summary>
+    [Fact]
+    public async Task The_early_out_takes_the_same_steps_however_many_versions_are_stored()
+    {
+        long few;
+
+        long many;
+
+        (LongRestSweepHarness small, _) = await SeedAsync(clean: 6, protectedSources: 0);
+
+        await using (LongRestSweepHarness harness = small)
+        {
+            few = VirtualMachineSteps(small.Connection, LongRestDiscoveryStore.ProtectedPartitionAbsentSql);
+        }
+
+        (LongRestSweepHarness large, _) = await SeedAsync(clean: 160, protectedSources: 0);
+
+        await using (LongRestSweepHarness harness = large)
+        {
+            many = VirtualMachineSteps(large.Connection, LongRestDiscoveryStore.ProtectedPartitionAbsentSql);
+        }
+
+        Assert.True(few > 0);
+
+        Assert.Equal(few, many);
+    }
+
+    /// <summary>Runs one statement to its end and returns how many virtual-machine operations SQLite executed for it.</summary>
+    private static long VirtualMachineSteps(SqliteConnection connection, string sql)
+    {
+        Assert.Equal(raw.SQLITE_OK, raw.sqlite3_prepare_v2(connection.Handle, sql, out sqlite3_stmt statement));
+
+        try
+        {
+            int result;
+
+            while ((result = raw.sqlite3_step(statement)) == raw.SQLITE_ROW)
+            {
+            }
+
+            Assert.Equal(raw.SQLITE_DONE, result);
+
+            return raw.sqlite3_stmt_status(statement, raw.SQLITE_STMTSTATUS_VM_STEP, 1);
+        }
+        finally
+        {
+            _ = raw.sqlite3_finalize(statement);
+        }
     }
 
     /// <summary>

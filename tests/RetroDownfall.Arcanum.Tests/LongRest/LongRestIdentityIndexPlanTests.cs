@@ -138,6 +138,53 @@ public sealed class LongRestIdentityIndexPlanTests(GrimoireFixture fixture) : IA
             await ExplainAsync(statement));
     }
 
+    /// <summary>
+    /// A node delete retires the node's orphan label. SQLite plans a bare <c>DELETE ... WHERE kind AND expression</c> against the kind-only
+    /// unique index rather than the expression index, so every node delete read every kind-16 label and retiring a generation cost the
+    /// product of its nodes and the labels alive. Finding the label ids by a <c>SELECT</c>, which the planner does answer from the
+    /// expression index, and deleting by label id keeps the loose comparison and makes the cleanup one search for each node. A trigger body
+    /// cannot carry <c>INDEXED BY</c>, so the shape of the statement is the only way to steer it.
+    /// </summary>
+    [SkippableFact]
+
+    public async Task The_orphan_label_cleanup_after_a_node_delete_finds_its_label_through_the_normalized_index()
+    {
+        RequireSqlCipher();
+
+        string statement = (await TriggerBodyAsync("long_rest_node_label_delete")).Replace("OLD.NodeId", "$id", StringComparison.Ordinal);
+
+        Assert.Contains("lower(replace(ArtifactId, '-', '')) = lower(replace($id, '-', ''))", Squash(statement), StringComparison.Ordinal);
+
+        string plan = await ExplainAsync(statement);
+
+        Assert.Matches(@"SEARCH artifact_sensitivity USING INDEX idx_artifact_sensitivity_artifact_norm \(ArtifactKindCode=\? AND <expr>=\?\)", plan);
+
+        Assert.DoesNotContain("ux_artifact_sensitivity_artifact (ArtifactKindCode=?)", plan, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("SCAN", plan, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The early-out of the partition probe is the question "is anything protected here at all", asked on every eligible Session turn. It is
+    /// answered from two places: whether a kind-6 label exists, and whether any stored version carries a sensitivity. The second was a
+    /// sequential read of the version table; a partial index holds exactly the sensitive versions, so an installation with none asks an
+    /// empty index and one with some stops at the first.
+    /// </summary>
+    [SkippableFact]
+
+    public async Task The_partition_early_out_asks_an_index_of_the_sensitive_versions_and_never_reads_the_version_table()
+    {
+        RequireSqlCipher();
+
+        string plan = await ExplainAsync(LongRestDiscoveryStore.ProtectedPartitionAbsentSql);
+
+        Assert.Contains("USING COVERING INDEX idx_annal_versions_sensitive", plan, StringComparison.Ordinal);
+
+        Assert.DoesNotMatch(@"(^|\n)SCAN annal_versions(\n|$)", plan);
+
+        Assert.DoesNotMatch(@"SCAN artifact_sensitivity(\n|$)", plan);
+    }
+
     [SkippableTheory]
     [InlineData("long_rest_discovery_nodes", "idx_long_rest_nodes_node_norm", "NodeId")]
     [InlineData("long_rest_discovery_embeddings", "idx_long_rest_embeddings_node_norm", "NodeId")]

@@ -41,10 +41,14 @@ public sealed class LongRestVerificationBudgetTests
         // The probe builds its projection once per call: once for each partition and once more to learn there are no more.
         Assert.Equal(Partitions + 1, turn.PartitionPasses);
 
-        // Every lookup is a read, and nothing on the idle path takes the writer lock.
-        Assert.Equal(1 + Partitions, turn.ReadTransactions);
+        // Every store's transaction is counted: the lookups (one for the clean scope and one for each partition's) and the probe (one for
+        // each partition and one more to learn there are no more). Every one of them is a read, so nothing on the idle path takes the
+        // writer lock; SQLite's own statement trace agrees, because it sees a BEGIN IMMEDIATE whichever store issued it.
+        Assert.Equal(2 * (1 + Partitions), turn.ReadTransactions);
 
         Assert.Equal(0, turn.WriterTransactions);
+
+        Assert.Equal(0, turn.ImmediateTransactions);
     }
 
     [Fact]

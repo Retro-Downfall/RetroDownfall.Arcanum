@@ -70,3 +70,11 @@ ON annal_versions(ClaimId, RecordedAtUtc);
 -- walks the same edge.
 CREATE INDEX IF NOT EXISTS idx_annal_versions_predecessor
 ON annal_versions(PredecessorVersionId);
+
+-- The Long Rest asks on every eligible Session turn whether any stored version carries a sensitivity at all, so that an installation with
+-- nothing protected in it answers "no partition" without building the protected projection. A version nobody marked sensitive is the
+-- ordinary case, and a partial index holds exactly the ones that are: with none the question reads an empty index, and with some it stops
+-- at the first, whatever the number of versions stored. The WHERE has to stay character for character the shape the predicate has,
+-- because that is how SQLite decides the index applies.
+CREATE INDEX IF NOT EXISTS idx_annal_versions_sensitive
+ON annal_versions(SensitivityCode) WHERE SensitivityCode <> 0;

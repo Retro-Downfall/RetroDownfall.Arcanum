@@ -61,6 +61,8 @@ internal sealed partial class LongRestLiveFenceReader
 
             await using SqliteTransaction transaction = connection.BeginTransaction(deferred: true);
 
+            LongRestVerificationCounters.Transaction(deferred: true);
+
             long sensitivity = await LongRestAttemptStore.ValidatePendingClaimWithinTransactionAsync(connection, transaction, claim, scope, now, ct).ConfigureAwait(false);
 
             return sensitivity == claim.Claim.ExpectedCurrentSensitivityRevision ? Result.Success() : Unavailable();
@@ -92,6 +94,8 @@ internal sealed partial class LongRestLiveFenceReader
 
             await using (SqliteTransaction transaction = connection.BeginTransaction(deferred: true))
             {
+                LongRestVerificationCounters.Transaction(deferred: true);
+
                 LongRestDiscoveryGeneration? current = await LongRestDiscoveryStore.ReadSweepGenerationAsync(connection, transaction, expected.OperationId, ct).ConfigureAwait(false);
 
                 if (current is null || current.GenerationId != expected.GenerationId || current.Scope != expected.Scope
@@ -142,6 +146,8 @@ internal sealed partial class LongRestLiveFenceReader
             SqliteConnection connection = await OpenAsync(ct).ConfigureAwait(false);
 
             await using SqliteTransaction transaction = connection.BeginTransaction(deferred: true);
+
+            LongRestVerificationCounters.Transaction(deferred: true);
 
             LongRestDiscoveryGeneration? current = await LongRestDiscoveryStore.ReadSweepGenerationAsync(connection, transaction, expected.OperationId, ct).ConfigureAwait(false);
 

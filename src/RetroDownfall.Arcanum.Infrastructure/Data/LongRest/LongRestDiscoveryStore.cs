@@ -43,6 +43,8 @@ internal sealed partial class LongRestDiscoveryStore(ArcanumDbContext db, TimePr
 
                 await using SqliteTransaction transaction = connection.BeginTransaction(deferred: false);
 
+                LongRestVerificationCounters.Transaction(deferred: false);
+
                 if (await GrimoireCoreSchemaVersion.ReadAsync(connection, cancellationToken, transaction).ConfigureAwait(false) < 18)
                 {
                     return Refuse<LongRestDiscoveryGeneration>(ErrorCodes.LongRest.Unavailable, "Discovery storage is not ready.");

@@ -81,9 +81,11 @@ public sealed class LongRestScaleProbe(ITestOutputHelper output)
 
         Assert.Equal(Partitions + 1, turn.PartitionPasses);
 
-        Assert.Equal(1 + Partitions, turn.ReadTransactions);
+        Assert.Equal(2 * (1 + Partitions), turn.ReadTransactions);
 
         Assert.Equal(0, turn.WriterTransactions);
+
+        Assert.Equal(0, turn.ImmediateTransactions);
 
         // The statements beyond the corpus pass do not depend on the corpus: the same shapes run the same number of times as over the small corpus.
         await using LongRestScaleScenario baseline = await LongRestScaleScenario.CreateAsync(30, Partitions, LongRestScaleCompletion.Marked);
