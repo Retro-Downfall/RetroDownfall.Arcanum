@@ -101,7 +101,8 @@ internal static class LongRestPackingData
     }
 
     /// <summary>The summary payload the maintenance would build for one planned fold under <paramref name="budget"/>.</summary>
-    internal static Result<LongRestProviderPayload> SummaryPayload(ImmutableArray<LongRestHierarchyChild> group, CovenantDigest recipe, int budget)
+    internal static Result<LongRestProviderPayload> SummaryPayload(ImmutableArray<LongRestHierarchyChild> group, CovenantDigest recipe, int budget,
+        int summaryBound = LongRestDiscoveryLimits.SummaryUtf8Bytes)
     {
         LongRestWorkIdentity work = BaseWork(LongRestWorkKind.HierarchyFold, "fold-1", Digest);
 
@@ -109,6 +110,6 @@ internal static class LongRestPackingData
 
         fold = fold with { Work = work with { SourceDigest = LongRestDiscoveryHash.HierarchyFold(fold).Value } };
 
-        return LongRestProviderPayload.Summary(fold, budget);
+        return LongRestProviderPayload.Summary(fold, budget, summaryBound);
     }
 }

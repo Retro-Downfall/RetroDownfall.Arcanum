@@ -31,7 +31,8 @@ public enum LongRestProviderResultDisposition : byte
 /// <summary>Closed immutable transient input; exact provider message bytes are checked before send.</summary>
 public sealed class LongRestProviderPayload
 {
-    private LongRestProviderPayload(LongRestProviderPayloadKind kind, LongRestWorkIdentity work, ImmutableArray<LongRestSourceLeaf> inputs, LongRestHierarchyFold? fold, string? text, int inputBudgetBytes)
+    private LongRestProviderPayload(LongRestProviderPayloadKind kind, LongRestWorkIdentity work, ImmutableArray<LongRestSourceLeaf> inputs, LongRestHierarchyFold? fold, string? text, int inputBudgetBytes,
+        int summaryBoundBytes = 0)
     {
         Kind = kind;
 
@@ -44,6 +45,15 @@ public sealed class LongRestProviderPayload
         EmbeddingText = text;
 
         InputBudgetBytes = inputBudgetBytes;
+
+        SummaryBoundBytes = summaryBoundBytes;
+
+        MaxOutputTokens = kind switch
+        {
+            LongRestProviderPayloadKind.Summary => LongRestPromptLayout.SummaryMaxOutputTokens(summaryBoundBytes),
+            LongRestProviderPayloadKind.Adjudication => LongRestPromptLayout.ReservedAnswerTokens,
+            _ => 0,
+        };
     }
 
     public LongRestProviderPayloadKind Kind { get; }
@@ -70,11 +80,25 @@ public sealed class LongRestProviderPayload
     /// <summary>The rendered bytes the recipe lets this request take; the renderer refuses anything larger.</summary>
     public int InputBudgetBytes { get; }
 
+    /// <summary>
+    /// For a summary, the most bytes the recipe lets the answer take: the request states it and caps its answer with it
+    /// (<see cref="MaxOutputTokens"/>). Zero for every other kind.
+    /// </summary>
+    public int SummaryBoundBytes { get; }
+
+    /// <summary>
+    /// The output tokens this request's answer is capped at, which is also what the call's admission reserves: derived from the summary
+    /// bound for a summary, the fixed answer reservation for an adjudication, and zero for an embedding, which has no answer.
+    /// </summary>
+    public int MaxOutputTokens { get; }
+
     private static readonly UTF8Encoding StrictUtf8 = new(false, true);
 
-    public static Result<LongRestProviderPayload> Summary(LongRestHierarchyFold fold, int inputBudgetBytes)
+    public static Result<LongRestProviderPayload> Summary(LongRestHierarchyFold fold, int inputBudgetBytes,
+        int summaryBoundBytes = LongRestDiscoveryLimits.SummaryUtf8Bytes)
     {
-        if (fold is null || !ValidBudget(inputBudgetBytes) || LongRestDiscoveryHash.Work(fold.Work).IsFailure)
+        if (fold is null || !ValidBudget(inputBudgetBytes) || !LongRestPromptLayout.IsSummaryBound(summaryBoundBytes)
+            || LongRestDiscoveryHash.Work(fold.Work).IsFailure)
         {
             return Invalid("A summary payload requires one bounded exact hierarchy fold.");
         }
@@ -93,7 +117,7 @@ public sealed class LongRestProviderPayload
             ExpandedTargets = [.. child.ExpandedTargets],
         })];
 
-        return new LongRestProviderPayload(LongRestProviderPayloadKind.Summary, fold.Work, [], fold with { Children = children }, null, inputBudgetBytes);
+        return new LongRestProviderPayload(LongRestProviderPayloadKind.Summary, fold.Work, [], fold with { Children = children }, null, inputBudgetBytes, summaryBoundBytes);
     }
 
     public static Result<LongRestProviderPayload> Adjudication(LongRestWorkIdentity work, ImmutableArray<LongRestSourceLeaf> inputs,

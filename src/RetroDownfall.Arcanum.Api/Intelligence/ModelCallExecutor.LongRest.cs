@@ -7,6 +7,7 @@ using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.LongRest;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.Telemetry;
 
 namespace RetroDownfall.Arcanum.Api.Intelligence;
 
@@ -26,7 +27,7 @@ public sealed partial class ModelCallExecutor
 
         if (_tokenEstimator is null || payload.Kind is not (LongRestProviderPayloadKind.Summary or LongRestProviderPayloadKind.Adjudication)
             || admission is not LongRestProviderAdmission.Chat chat || chat.Context.PrecomputedBreakdown is not { } admitted
-            || chat.Context.ReservedAnswerTokens != 2048 || chat.Context.ReservedReasoningTokens != 0 || chat.Context.PromptCachePlan is not null)
+            || chat.Context.ReservedAnswerTokens != payload.MaxOutputTokens || chat.Context.ReservedReasoningTokens != 0 || chat.Context.PromptCachePlan is not null)
         {
             return ClosedLongRestAdmissionError();
         }
@@ -194,11 +195,16 @@ public sealed partial class ModelCallExecutor
                     window.Error.Message + " Raise the provider's contextWindowLimit or choose a model with a larger window."));
 
             case LongRestProviderAdmission.Embedding embedding when embedding.ReservedInputTokens > 0:
-                return EmbeddingFitsWindow(embedding.Provider, embedding.ReservedInputTokens) ? Result.Success()
-                    : Result.Failure(new Error(ErrorCodes.LongRest.ModelContextTooSmall,
-                        "A Long Rest summary needs " + embedding.ReservedInputTokens.ToString(System.Globalization.CultureInfo.InvariantCulture)
-                        + " embedding tokens but the embedding provider's window is " + embedding.Provider.ContextWindowLimit.ToString(System.Globalization.CultureInfo.InvariantCulture)
-                        + ". Raise the provider's contextWindowLimit or choose an embedding provider with a larger window."));
+                if (EmbeddingFitsWindow(embedding.Provider, embedding.ReservedInputTokens)) return Result.Success();
+
+                // The summary request states the recipe's summary bound, which always fits this window, so a summary that does not fit is
+                // one the model ignored the bound on. This gate is the last guard for it, and the case is counted.
+                ArcanumMetrics.LongRestEmbeddingWindowRefusedTotal.Add(1);
+
+                return Result.Failure(new Error(ErrorCodes.LongRest.ModelContextTooSmall,
+                    "A Long Rest summary needs " + embedding.ReservedInputTokens.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                    + " embedding tokens but the embedding provider's window is " + embedding.Provider.ContextWindowLimit.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                    + ". Raise the provider's contextWindowLimit or choose an embedding provider with a larger window."));
 
             default:
                 return Result.Failure(new Error(ErrorCodes.LongRest.InvalidAdmission, "The exact Long Rest provider admission is invalid."));

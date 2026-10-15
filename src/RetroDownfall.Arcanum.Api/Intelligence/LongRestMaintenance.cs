@@ -185,7 +185,7 @@ internal sealed partial class LongRestMaintenance(LongRestConfigurationEpoch epo
         {
             Guid node = Guid.NewGuid();
 
-            summary = await ExecutePaidAsync(generation, Require(LongRestProviderPayload.Summary(work.Fold, generation.Recipe.ProviderInputUtf8Bytes)), provenance, capability, workerOwner, admission,
+            summary = await ExecutePaidAsync(generation, Require(LongRestProviderPayload.Summary(work.Fold, generation.Recipe.ProviderInputUtf8Bytes, generation.Recipe.SummaryUtf8Bytes)), provenance, capability, workerOwner, admission,
                 async (paid, completion, token, committedOnly) =>
                 {
                     LongRestAcceptedHierarchySummary accepted = new(generation.GenerationId, node, work.Fold,

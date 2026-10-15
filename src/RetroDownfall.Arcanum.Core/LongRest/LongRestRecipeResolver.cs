@@ -79,7 +79,8 @@ public static class LongRestRecipeResolver
         ProviderSettings embeddingHost = embeddingProvider!;
 
         // The recipe carries the rendered-request budget the chat provider's window allows, so what the planner admits is what the
-        // model can take. A window too small for the smallest unit, or an embedding window too small for one summary, is refused here.
+        // model can take, and the summary bound the embedding provider's window allows, so what the model is asked for is what can be
+        // embedded. A window too small for the smallest unit, or an embedding window too small for the smallest summary, is refused here.
         if (ChatWindowTooSmall(chatProvider) || EmbeddingWindowTooSmall(embeddingHost))
         {
             return Result<LongRestRecipeIdentity>.Failure(new Error(ErrorCodes.LongRest.ModelContextTooSmall,
@@ -90,6 +91,7 @@ public static class LongRestRecipeResolver
             embeddingHost.Name, embedding.Model!, Destination(embeddingHost), embedding.Dimensions)
         {
             ProviderInputUtf8Bytes = LongRestPromptLayout.InputBudgetUtf8Bytes(chatProvider.ContextWindowLimit),
+            SummaryUtf8Bytes = LongRestPromptLayout.SummaryBoundUtf8Bytes(embeddingHost.ContextWindowLimit),
         };
 
         return LongRestDiscoveryHash.Recipe(recipe).IsFailure

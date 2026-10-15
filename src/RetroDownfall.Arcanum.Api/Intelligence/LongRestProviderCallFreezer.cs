@@ -35,7 +35,7 @@ public static class LongRestProviderCallFreezer
 
         if (payload.Kind == LongRestProviderPayloadKind.Summary)
         {
-            system = LongRestPromptLayout.SummarySystemPrompt;
+            system = LongRestPromptLayout.SummarySystemPromptFor(payload.SummaryBoundBytes);
 
             schema = LongRestPromptLayout.SummarySchema;
 
@@ -68,7 +68,7 @@ public static class LongRestProviderCallFreezer
             }
         }
 
-        LongRestChatRequest request = new(system, user.ToString(), schema, name, description, LongRestPromptLayout.ReservedAnswerTokens);
+        LongRestChatRequest request = new(system, user.ToString(), schema, name, description, payload.MaxOutputTokens);
 
         try
         {
