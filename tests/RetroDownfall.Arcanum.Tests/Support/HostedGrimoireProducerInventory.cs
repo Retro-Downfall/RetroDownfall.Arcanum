@@ -2186,6 +2186,12 @@ internal static partial class HostedGrimoireProducerInventory
         return (ReferenceEquals(first, second), !ReferenceEquals(first, foreign) && ReferenceEquals(foreign.Compilation, other));
     }
 
+    // The work the callback judgement does over the authored formatters of the compilations: judged for object and then for a value, which ask
+    // about the same implementations.
+    internal static (int Implementations, int FirstResolutions, int FirstSteps, bool FirstReaches, int SecondResolutions, int SecondSteps, bool SecondReaches) ProbeCallbackReachWork(IReadOnlyList<CSharpCompilation> compilations) =>
+        new ProducerGraph(compilations, DefaultEvaluationEnvironmentMaximumMembers, DefaultEvaluationEnvironmentMaximumDepth, DefaultTraversalMaximumDepth, DefaultMaximumAnalyzedStatesPerRoot, false, sitesOnly: true)
+            .ProbeCallbackReachWork();
+
     // Where the candidates of a callback slot are read from an index of the authored formatters instead of asked of every formatter, this is
     // the pairs of receiver type and slot, over a sample of the formatters, for which the index and the definition disagree.
     internal static (int Pairs, int Selective, IReadOnlyList<string> Mismatches) ProbeFormatterCandidateIndex(IReadOnlyList<CSharpCompilation> compilations, int receiverSample) =>

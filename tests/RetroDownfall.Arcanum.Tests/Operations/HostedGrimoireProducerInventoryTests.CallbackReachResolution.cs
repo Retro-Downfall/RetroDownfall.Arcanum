@@ -73,4 +73,33 @@ public sealed partial class HostedGrimoireProducerInventoryTests
 
         Assert.True(selective * 4 >= pairs, "Only " + selective + " of " + pairs + " pairs select some of the formatters.");
     }
+
+    // The judgement of a callback slot resolves each authored implementation once and takes each formatting step once per resolution. The
+    // judgement for object resolves each production implementation at most once (the sum of the work is bounded by the implementations, not
+    // by the implementations and the types that ask), and the judgement for a value, which asks about the same implementations, resolves none
+    // of them again. The production source has no callback that reaches a site, so both answers are no.
+    [Fact]
+    public void TheCallbackJudgementResolvesEachProductionImplementationOnce()
+    {
+        (int implementations, int firstResolutions, int firstSteps, bool firstReaches, int secondResolutions, int secondSteps, bool secondReaches) =
+            HostedGrimoireProducerInventory.ProbeCallbackReachWork(HostedGrimoireProducerInventory.ProductionCompilations);
+
+        output.WriteLine($"CALLBACK_REACH_WORK implementations={implementations} firstResolutions={firstResolutions} firstSteps={firstSteps} secondResolutions={secondResolutions} secondSteps={secondSteps}");
+
+        Assert.True(implementations >= 1000, "The production source holds " + implementations + " callback implementations.");
+
+        Assert.False(firstReaches);
+
+        Assert.False(secondReaches);
+
+        Assert.True(firstResolutions <= implementations, firstResolutions + " resolutions for " + implementations + " implementations.");
+
+        Assert.Equal(0, secondResolutions);
+
+        Assert.Equal(0, secondSteps);
+
+        // A step is a slot of a type, and the steps of one resolution are the types its fields can hold: the work is bounded by the product of
+        // the implementations and a small factor, never by the product of the implementations and the formatters.
+        Assert.True(firstSteps <= implementations * 64, firstSteps + " formatting steps for " + implementations + " implementations.");
+    }
 }

@@ -163,6 +163,8 @@ internal static partial class HostedGrimoireProducerInventory
                     return;
                 }
 
+                graph.formattingSteps++;
+
                 // The members of an anonymous type are generated, and Roslyn does not expose them: the type formats,
                 // compares and hashes every member it holds.
                 if (type.IsAnonymousType && slot.ContainingType.SpecialType == SpecialType.System_Object)
@@ -507,8 +509,8 @@ internal static partial class HostedGrimoireProducerInventory
 
         private readonly Dictionary<(string? Receiver, EnumerationSlotKey Slot, bool IsToString), int[]> formatterCandidates = [];
 
-        // The positions, ascending, of the formatters FormatterIsCandidate holds for: assignable to the receiver, and either reading
-        // the virtual members a framework ToString reads when the slot is ToString, or implementing the slot.
+        // The positions, ascending, of the formatters that are assignable to the receiver (IsFormatterAssignableTo) and have a callback
+        // of the slot (FormatterRunsSlot): the formatters a loop over all of them would select, in the order it would select them.
         private int[] FormatterCandidatePositions(ITypeSymbol receiver, IMethodSymbol slot)
         {
             bool toString = slot.Name == "ToString" && slot.Parameters.Length == 0;
@@ -1661,6 +1663,11 @@ internal static partial class HostedGrimoireProducerInventory
                 HashCode.Combine(System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(key.Anchor), SymbolEqualityComparer.Default.GetHashCode(key.Implementation), SymbolEqualityComparer.Default.GetHashCode(key.Slot));
         }
 
+        // The work the callback judgement has done, for the fixture that pins it: formatting steps taken and implementations resolved.
+        private int formattingSteps;
+
+        private int callbackImplementationResolutions;
+
         private bool CallbackImplementationReaches(AuthoredMember member, IMethodSymbol slot, ISymbol implementation)
         {
             var key = (member.Syntax, implementation, (ISymbol)slot);
@@ -1669,6 +1676,8 @@ internal static partial class HostedGrimoireProducerInventory
             {
                 return known;
             }
+
+            callbackImplementationResolutions++;
 
             int cutsBefore = producerSiteScanCuts;
 
@@ -1753,6 +1762,25 @@ internal static partial class HostedGrimoireProducerInventory
             }
 
             return reaches;
+        }
+
+        // Fixture seam: the callback judgement of every authored formatter for two receivers that ask about the same implementations (object, then
+        // a value), with the work each judgement did: implementations resolved, formatting steps taken, and the answers.
+        internal (int Implementations, int FirstResolutions, int FirstSteps, bool FirstReaches, int SecondResolutions, int SecondSteps, bool SecondReaches) ProbeCallbackReachWork()
+        {
+            AuthoredMember anchor = AuthoredMembers.First();
+
+            CallbackFamilies families = CallbackFamilies.Format | CallbackFamilies.Equality | CallbackFamilies.Compare;
+
+            int implementations = AuthoredFormatters().SelectMany(static formatter => formatter.Implementations).Count(implementation => (FamilyOf(implementation.Slot) & families) != CallbackFamilies.None);
+
+            bool first = CallbackImplementersReach(anchor, analysedCompilations[0].GetSpecialType(SpecialType.System_Object), families);
+
+            (int resolutions, int steps) = (callbackImplementationResolutions, formattingSteps);
+
+            bool second = CallbackImplementersReach(anchor, analysedCompilations[0].GetSpecialType(SpecialType.System_ValueType), families);
+
+            return (implementations, resolutions, steps, first, callbackImplementationResolutions - resolutions, formattingSteps - steps, second);
         }
 
         // The authored implementers of the framework slots that reach a producer site or cannot be followed, with the slot and
