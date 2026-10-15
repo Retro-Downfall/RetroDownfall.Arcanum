@@ -526,4 +526,26 @@ public sealed class LongRestPairingTests
 
         Assert.False(LongRestPairing.FoldCheck(default, equivalent, 950));
     }
+
+    // The label of the pairing_floor counter is a closed vocabulary: a floor is reported by the smallest fixed upper edge that is not under it.
+    [Theory]
+    [InlineData(500, "600")]
+    [InlineData(600, "600")]
+    [InlineData(601, "700")]
+    [InlineData(700, "700")]
+    [InlineData(800, "800")]
+    [InlineData(801, "900")]
+    [InlineData(900, "900")]
+    [InlineData(901, "920")]
+    [InlineData(920, "920")]
+    [InlineData(921, "950")]
+    [InlineData(950, "950")]
+    [InlineData(951, "980")]
+    [InlineData(980, "980")]
+    [InlineData(981, "1000")]
+    [InlineData(1000, "1000")]
+    public void A_floor_is_reported_in_the_smallest_fixed_bucket_that_is_not_under_it(int floor, string bucket)
+    {
+        Assert.Equal(bucket, LongRestPairing.FloorBucket(floor));
+    }
 }

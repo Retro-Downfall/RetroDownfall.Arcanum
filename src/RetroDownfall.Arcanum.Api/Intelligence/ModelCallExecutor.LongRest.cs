@@ -13,6 +13,9 @@ namespace RetroDownfall.Arcanum.Api.Intelligence;
 
 public sealed partial class ModelCallExecutor
 {
+    /// <summary>The reasoning control of an adjudication request to a model that declares reasoning: the typed effort None.</summary>
+    private static readonly ReasoningOptions AdjudicationReasoningOff = new() { Effort = ReasoningEffort.None };
+
     public async Task<Result<LongRestProviderResult>> ExecuteLongRestChatAsync(IChatClient chatClient, LongRestProviderPayload payload,
         ITurnBudget budget, Func<CancellationToken, Task> beforeSend, Func<LongRestProviderUsage, Task> recordPaidUsage,
         LongRestProviderAdmission admission, CancellationToken cancellationToken)
@@ -73,7 +76,7 @@ public sealed partial class ModelCallExecutor
             // A model that declares reasoning answers an adjudication with none (the digest the attempt was prepared under binds this).
             if (LongRestProviderCallFreezer.AdjudicationReasoningOff(payload.Kind, chat.Context.Provider, chat.Context.Model))
             {
-                ReasoningChatOptionsAdapter.Apply(options, new ReasoningRequestOptions(Effort: ReasoningEffortLevel.None), ReasoningWireDialect.Standard);
+                options.Reasoning = AdjudicationReasoningOff;
             }
 
             dispatched = true;

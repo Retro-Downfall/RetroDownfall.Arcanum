@@ -145,6 +145,22 @@ public static class LongRestPairing
         return permille >= 1000.0 ? 1000 : (int)permille;
     }
 
+    /// <summary>
+    /// The fixed bucket of a floor for the <c>arcanum.long_rest.discovery.pairing_floor</c> counter: the smallest upper edge of 600, 700, 800, 900,
+    /// 920, 950, 980 and 1000 thousandths that is not under the floor. A closed vocabulary, so the label is bounded by construction.
+    /// </summary>
+    public static string FloorBucket(int floorPermille) => floorPermille switch
+    {
+        <= 600 => "600",
+        <= 700 => "700",
+        <= 800 => "800",
+        <= 900 => "900",
+        <= 920 => "920",
+        <= 950 => "950",
+        <= 980 => "980",
+        _ => "1000",
+    };
+
     private static int BitLength(int value)
     {
         int bits = 0;

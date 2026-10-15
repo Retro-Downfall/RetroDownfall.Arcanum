@@ -78,7 +78,7 @@ public sealed class OsKeychainSecretStore : ISecretStore, IDisposable
         DataProtectionSecretStore dataProtectionStore,
         ILogger<OsKeychainSecretStore>? logger,
         TimeSpan? osReadTimeout) =>
-        new(
+        new MirroredOsCredential(
             osStore,
             ArcanumCredentialIdentity.MasterApiKeyAccount,
             new DataProtectionStoreCredentialMirror(
@@ -97,7 +97,7 @@ public sealed class OsKeychainSecretStore : ISecretStore, IDisposable
         DataProtectionSecretStore dataProtectionStore,
         ILogger<OsKeychainSecretStore>? logger,
         TimeSpan? osReadTimeout) =>
-        new(
+        new MirroredOsCredential(
             osStore,
             ArcanumCredentialIdentity.FileEncryptionKeyAccount,
             new DataProtectionStoreCredentialMirror(

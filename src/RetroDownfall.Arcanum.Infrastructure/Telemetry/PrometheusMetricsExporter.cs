@@ -35,12 +35,6 @@ public sealed class PrometheusMetricsExporter : IDisposable
         1, 4, 16, 64, 256, 1_024, 4_096, 16_384, 65_536, 262_144, 1_048_576, 2_097_152,
     ];
 
-    // Thousandths of a cosine: the Long Rest pairing floors lie between 500 and 1000.
-    private static readonly double[] PermilleHistogramBucketBoundaries =
-    [
-        500, 600, 650, 700, 750, 800, 850, 900, 920, 950, 975, 1000,
-    ];
-
     /// <summary>
     /// Render-time metric name allowlist. The <see cref="MeterListener"/> subscribes to every published
     /// meter (required to capture the built-in runtime meters), but only sanitized names starting with one
@@ -743,9 +737,7 @@ public sealed class PrometheusMetricsExporter : IDisposable
     private static double[] ResolveHistogramBucketBoundaries(Instrument instrument) =>
         string.Equals(instrument.Unit, "{tokens}", StringComparison.Ordinal)
             ? TokenHistogramBucketBoundaries
-            : string.Equals(instrument.Unit, "{permille}", StringComparison.Ordinal)
-                ? PermilleHistogramBucketBoundaries
-                : DurationHistogramBucketBoundaries;
+            : DurationHistogramBucketBoundaries;
 
     private sealed record InstrumentInfo(
         string PrometheusKind,

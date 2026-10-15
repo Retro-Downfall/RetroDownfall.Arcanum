@@ -15,7 +15,8 @@ public static class LongRestMemberVerdict
 {
     /// <summary>
     /// The decision for <paramref name="answerJson"/>, or null when the answer is not a well-formed instance of the closed shape (the caller
-    /// treats it as an invalid paid answer). A well-formed answer never fails: a reference to a memory that does not exist, a memory that refers
+    /// treats it as an invalid paid answer). A number that is not a 32-bit integer is outside the shape too: it fails when it is read, and that
+    /// failure is the same invalid answer. A well-formed answer never fails: a reference to a memory that does not exist, a memory that refers
     /// to itself, and a memory listed twice contribute nothing. The restated facts are read and discarded; nothing here keeps or returns them.
     /// </summary>
     public static LongRestAdjudicationDecision? Decide(string answerJson, ImmutableArray<LongRestSourceLeaf> inputs)
@@ -44,7 +45,7 @@ public static class LongRestMemberVerdict
             foreach (JsonElement entry in memories.EnumerateArray())
             {
                 if (entry.ValueKind != JsonValueKind.Object || !ExactlyProperties(entry, "memory", "fact", "sameAs")
-                    || !entry.GetProperty("memory").TryGetInt32(out _) || entry.GetProperty("fact").ValueKind != JsonValueKind.String
+                    || entry.GetProperty("memory").ValueKind != JsonValueKind.Number || entry.GetProperty("fact").ValueKind != JsonValueKind.String
                     || entry.GetProperty("sameAs").ValueKind != JsonValueKind.Array)
                 {
                     return null;
@@ -52,7 +53,7 @@ public static class LongRestMemberVerdict
 
                 foreach (JsonElement reference in entry.GetProperty("sameAs").EnumerateArray())
                 {
-                    if (!reference.TryGetInt32(out _))
+                    if (reference.ValueKind != JsonValueKind.Number)
                     {
                         return null;
                     }

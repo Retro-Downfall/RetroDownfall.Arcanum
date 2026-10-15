@@ -78,7 +78,8 @@ internal static class LongRestQualificationConfiguration
                         CredentialEnvironmentVariable = ChatCredentialVariable,
                         Models =
                         [
-                            new ModelEntry(options.ChatModel, SupportsVision: false, SupportsTools: true),
+                            // The fast model declares reasoning, so Long Rest asks it to answer an adjudication with reasoning off (DESIGN §21.16.4).
+                            new ModelEntry(options.ChatModel, SupportsVision: false, SupportsTools: true, Reasoning: new ModelReasoningSettings { WireDialect = ReasoningWireDialect.Standard }),
                             new ModelEntry(options.DefaultModel, SupportsVision: false, SupportsTools: true),
                         ],
                         ContextWindowLimit = ChatContextWindow,

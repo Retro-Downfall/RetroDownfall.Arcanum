@@ -163,11 +163,18 @@ public sealed partial class LongRestSweepStoreTests
         // Eight memories that name one another among sixteen that each have a vector of their own.
         await using Fixture fixture = await Fixture.CreateAsync(protect: false, sourceCount: 24, related: 8);
 
-        using AsyncFlowMetricCapture metrics = new(SkippedMetric);
+        using AsyncFlowMetricCapture metrics = new(SkippedMetric, "arcanum.long_rest.discovery.pairing_floor");
 
         LongRestSweep sweep = await fixture.BeginAsync();
 
         LongRestSweepWork first = LongRestSweepHarness.Require(await fixture.Store.ReadNextWorkAsync(sweep, fixture.Capability, CancellationToken.None))!;
+
+        // The floor of each anchor with a unit is published once, in its fixed bucket, after the read committed; the labels are the closed vocabulary.
+        Assert.True(metrics.Sum("arcanum.long_rest.discovery.pairing_floor") >= 1);
+
+        Assert.Equal(
+            metrics.Sum("arcanum.long_rest.discovery.pairing_floor"),
+            new[] { "600", "700", "800", "900", "920", "950", "980", "1000" }.Sum(bucket => metrics.Sum("arcanum.long_rest.discovery.pairing_floor", "floor_le_permille", bucket)));
 
         LongRestTarget anchor = await fixture.H.TargetAsync("10000000-0000-0000-0000-000000000001");
 

@@ -70,7 +70,7 @@ internal sealed partial class LongRestSweepStore
 
             foreach (int floor in Floors)
             {
-                ArcanumMetrics.LongRestPairingFloor.Record(floor);
+                ArcanumMetrics.LongRestPairingFloorAnchorsTotal.Add(1, new KeyValuePair<string, object?>("floor_le_permille", LongRestPairing.FloorBucket(floor)));
             }
 
             if (Reused > 0)

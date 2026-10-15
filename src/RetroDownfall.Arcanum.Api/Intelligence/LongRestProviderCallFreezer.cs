@@ -91,8 +91,8 @@ public static class LongRestProviderCallFreezer
     /// only for a model whose entry declares reasoning: the answer is a few short member verdicts under a closed schema, a reasoning model given the
     /// fixed answer reservation can spend it on thought and be cut off before the verdicts (an invalid paid answer), and what the verdicts must
     /// carry is the restated fact of each memory, not a chain of thought. A summary keeps the model's own default. The control is the typed
-    /// Microsoft.Extensions.AI effort, applied by <see cref="ReasoningChatOptionsAdapter"/>, and the digest binds it, so a model that declares
-    /// reasoning and one that does not are different requests.
+    /// Microsoft.Extensions.AI effort <c>None</c> on the request's options, and the digest binds it, so a model that declares reasoning and one
+    /// that does not are different requests.
     /// </summary>
     public static bool AdjudicationReasoningOff(LongRestProviderPayloadKind kind, ProviderSettings provider, string model) =>
         kind == LongRestProviderPayloadKind.Adjudication && provider is not null && model is not null

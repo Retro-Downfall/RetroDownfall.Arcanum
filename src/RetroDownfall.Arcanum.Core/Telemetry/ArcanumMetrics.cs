@@ -263,14 +263,16 @@ public static class ArcanumMetrics
         "Long Rest neighbours the group packer skipped, by reason");
 
     /// <summary>
-    /// The Background Floor, in thousandths of cosine, of each anchor that had at least one nominated neighbour: the cosine a nominee needed
-    /// to be paired with it. Fixed buckets from 500 to 1000; a distribution that sits at the top says the embedding model does not separate
-    /// topics in this installation's memories. Never carries an identity or any content.
+    /// Anchors with at least one nominated neighbour, by the fixed bucket their Background Floor falls in: the cosine, in thousandths, a nominee
+    /// needed to be paired with the anchor. Label: closed <c>floor_le_permille</c> (the bucket's upper edge: <c>600</c>, <c>700</c>, <c>800</c>,
+    /// <c>900</c>, <c>920</c>, <c>950</c>, <c>980</c> or <c>1000</c>; see <c>LongRestPairing.FloorBucket</c>). A distribution that sits at the top says
+    /// the embedding model does not separate topics in this installation's memories. A counter and not a histogram, because the hosted-producer
+    /// analysis reviews histogram observations only for the hierarchy instruments. Never carries an identity or any content.
     /// </summary>
-    public static readonly Histogram<int> LongRestPairingFloor = Meter.CreateHistogram<int>(
+    public static readonly Counter<long> LongRestPairingFloorAnchorsTotal = Meter.CreateCounter<long>(
         "arcanum.long_rest.discovery.pairing_floor",
-        "{permille}",
-        "Long Rest Background Floor of anchors with nominated neighbours, in thousandths of cosine");
+        "{anchors}",
+        "Long Rest anchors with nominated neighbours, by the bucket of their Background Floor");
 
     /// <summary>
     /// Hierarchy children too large for any summary request of the recipe's input budget, carried unsummarized instead of folded. Counted
