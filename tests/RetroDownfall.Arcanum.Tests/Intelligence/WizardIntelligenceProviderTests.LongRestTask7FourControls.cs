@@ -792,6 +792,15 @@ public sealed partial class WizardIntelligenceProviderTests
             return inner.RequestAsync(scope, partition, ct);
         }
 
+        public Task<Result<LongRunningOperationDto>> RequestAsync(CanonicalCampaignContext scope, LongRestSweepScope partition, CovenantTurnLease authority, CancellationToken ct)
+        {
+            Requests++;
+
+            Partitions.Add(partition);
+
+            return inner.RequestAsync(scope, partition, authority, ct);
+        }
+
         public Task<Result<LongRestSweepProgress>> ResumeAsync(Guid operation, LongRestMaintenanceCapability? capability, CancellationToken ct)
         {
             Resumes++;

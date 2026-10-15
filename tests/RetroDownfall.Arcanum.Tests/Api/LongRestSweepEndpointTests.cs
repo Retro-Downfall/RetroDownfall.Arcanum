@@ -382,6 +382,9 @@ public sealed class LongRestSweepEndpointTests
             return RequestAsync(scope, ct);
         }
 
+        public Task<Result<LongRunningOperationDto>> RequestAsync(CanonicalCampaignContext scope, LongRestSweepScope partition, CovenantTurnLease authority, CancellationToken ct) =>
+            RequestAsync(scope, partition, ct);
+
         public Task<Result<LongRestSweepProgress>> ResumeAsync(Guid operationId, LongRestMaintenanceCapability? capability, CancellationToken ct)
         {
             Resumes++;

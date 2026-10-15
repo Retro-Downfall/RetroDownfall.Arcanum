@@ -12,8 +12,18 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.LongRest;
 
 internal interface ILongRestSweepRequestAdmission
 {
+    /// <param name="scope">The exact sweep scope the request is for.</param>
+    /// <param name="fence">The independently captured request fence.</param>
+    /// <param name="facts">The live fence reader the transaction re-proves the fence with.</param>
+    /// <param name="ownership">The in-process ownership claims.</param>
+    /// <param name="ct">Cancellation.</param>
+    /// <param name="proveAuthority">
+    /// Present only when the request carries the live turn authority of a Session turn for a protected partition: it re-proves that
+    /// authority at the moment a protected restart-generation park would be retired, and a request without it never retires one.
+    /// </param>
     Task<Result<LongRunningOperation>> AdmitRequestAsync(LongRestSweepScope scope, LongRestSweepFence fence,
-        LongRestLiveFenceReader facts, LongRunningOperationOwnership ownership, CancellationToken ct);
+        LongRestLiveFenceReader facts, LongRunningOperationOwnership ownership, CancellationToken ct,
+        Func<CancellationToken, ValueTask<Result>>? proveAuthority = null);
 }
 
 internal sealed partial class LongRestSweepStore : ILongRestSweepRequestAdmission
@@ -21,7 +31,8 @@ internal sealed partial class LongRestSweepStore : ILongRestSweepRequestAdmissio
     private const string StaleRequestConfiguration = LongRestParkCodes.StaleConfiguration;
 
     public async Task<Result<LongRunningOperation>> AdmitRequestAsync(LongRestSweepScope scope, LongRestSweepFence fence,
-        LongRestLiveFenceReader facts, LongRunningOperationOwnership ownership, CancellationToken ct)
+        LongRestLiveFenceReader facts, LongRunningOperationOwnership ownership, CancellationToken ct,
+        Func<CancellationToken, ValueTask<Result>>? proveAuthority = null)
     {
         try
         {
@@ -29,12 +40,17 @@ internal sealed partial class LongRestSweepStore : ILongRestSweepRequestAdmissio
                 || scope.CampaignId != fence.CanonicalScope.CampaignId
                 || (scope.Kind == LongRestSweepScopeKind.Campaign) != fence.CanonicalScope.IsCampaignBound) throw new InvalidDataException();
 
-            return await SqliteBusyRetry.ExecuteAsync(() => AdmitOnceAsync(scope, fence, facts, ownership, ct), ct).ConfigureAwait(false);
+            return await SqliteBusyRetry.ExecuteAsync(() => AdmitOnceAsync(scope, fence, facts, ownership, proveAuthority, ct), ct).ConfigureAwait(false);
         }
         catch (OperationBusyException)
         {
             // Another executor in this process owns the sweep this request would have to replace. Nothing was written.
             return new Error(ErrorCodes.LongRest.OperationBusy, "Another executor in this process owns the active sweep for this scope right now.");
+        }
+        catch (AuthorityRefusedException refused)
+        {
+            // The turn authority the request carried is not live for this exact scope: nothing was written, and the park stays.
+            return refused.Error;
         }
         catch (SweepParkedException parked)
         {
@@ -54,11 +70,14 @@ internal sealed partial class LongRestSweepStore : ILongRestSweepRequestAdmissio
     }
 
     private async Task<LongRunningOperation> AdmitOnceAsync(LongRestSweepScope scope, LongRestSweepFence fence,
-        LongRestLiveFenceReader facts, LongRunningOperationOwnership ownership, CancellationToken ct)
+        LongRestLiveFenceReader facts, LongRunningOperationOwnership ownership,
+        Func<CancellationToken, ValueTask<Result>>? proveAuthority, CancellationToken ct)
     {
         Guid claimed = Guid.Empty;
 
         Guid token = Guid.Empty;
+
+        bool retiredByAuthority = false;
 
         try
         {
@@ -91,31 +110,39 @@ internal sealed partial class LongRestSweepStore : ILongRestSweepRequestAdmissio
 
                 if (operation.State == LongRunningOperationState.ReconciliationRequired)
                 {
-                    // Parked-Is-Active: a parked sweep still owns its scope. A request never claims, resets or runs it.
-                    // It keeps that scope while its generation can still revalidate against the current stamp: the stamp is
-                    // identical, or only the boot differs (a restart is why it parked). The same rule retires a never-started
-                    // sweep, and it is the one historical validation applies to the generation's own fence.
-                    if (stored.ValueDigest == fence.Configuration.ValueDigest
-                        && (stored == fence.Configuration || stored.BootId != fence.Configuration.BootId))
+                    // Parked-Is-Active: a parked sweep still owns its scope. A request never claims, resets or runs it. It keeps that
+                    // scope while its generation can still revalidate against the current stamp: the stamp is identical, or only the
+                    // boot differs (a restart is why it parked). The same rule retires a never-started sweep, and it is the one
+                    // historical validation applies to the generation's own fence.
+                    ParkedReplacement? replacement = ReplacementOfPark(scope, operation, active, stored, fence, proveAuthority is not null);
+
+                    if (replacement is null)
                     {
                         // The sweep is returned unchanged for its own authority class to readmit.
-                        if (!IsResumablePark(scope, operation, active)) throw new SweepParkedException(operation.Id, operation.TerminalErrorCode);
-
                         admitted = operation;
                     }
                     else
                     {
-                        // The value digest changed, or only the epoch did inside one boot (a configuration flip A to B to A bumps
-                        // it twice), so the generation can no longer revalidate and this park can never resume. Retire it as a
-                        // terminal sweep and replace it.
+                        // The generation can never resume: its value digest changed, or only the epoch did inside one boot (a configuration
+                        // flip A to B to A bumps it twice), or a protected sweep faulted in a way no revalidation survives and this request
+                        // carries live authority for it. Retire it as a terminal sweep and replace it, evidence preserved.
                         if (operation.RecoveryPolicy != LongRunningOperationRecoveryPolicy.ResumeFromCheckpoint
                             || operation.LeaseOwner is not null || operation.LeaseExpiresAt is not null) throw new InvalidDataException();
+
+                        if (replacement.ByAuthority)
+                        {
+                            Result proof = await proveAuthority!(ct).ConfigureAwait(false);
+
+                            if (proof.IsFailure) throw new AuthorityRefusedException(proof.Error);
+
+                            retiredByAuthority = true;
+                        }
 
                         if (!ownership.TryClaim(operation.Id, out token)) throw new OperationBusyException();
 
                         claimed = operation.Id;
 
-                        LongRunningOperation abandoned = await AbandonParkedWithinAsync(connection, transaction, operation, ct).ConfigureAwait(false);
+                        LongRunningOperation abandoned = await AbandonParkedWithinAsync(connection, transaction, operation, replacement.TerminalCode, ct).ConfigureAwait(false);
 
                         await RetireTerminalRequestWithinAsync(connection, transaction, scope, active, abandoned, ct).ConfigureAwait(false);
 
@@ -186,6 +213,14 @@ internal sealed partial class LongRestSweepStore : ILongRestSweepRequestAdmissio
             if (!await facts.ValidateRequestFenceWithinAsync(connection, transaction, fence, ct).ConfigureAwait(false)
                 || !facts.IsRequestFenceCurrent(fence)) throw new InvalidDataException();
 
+            if (retiredByAuthority)
+            {
+                // The authority that freed the partition must still be live at the commit, like the fence it was proved against.
+                Result proof = await proveAuthority!(ct).ConfigureAwait(false);
+
+                if (proof.IsFailure) throw new AuthorityRefusedException(proof.Error);
+            }
+
             await transaction.CommitAsync(ct).ConfigureAwait(false);
 
             return admitted;
@@ -209,8 +244,36 @@ internal sealed partial class LongRestSweepStore : ILongRestSweepRequestAdmissio
         return LongRestFaultPolicy.IsFreePark(operation.TerminalErrorCode) || LongRestFaultPolicy.CanReadmit(active.ReadmitCount);
     }
 
+    /// <summary>
+    /// What a request does with the parked sweep that owns its scope: nothing (<see langword="null"/>, the park is returned unchanged
+    /// for its own authority class to readmit), or replacement by a new sweep. A stored configuration that can no longer revalidate is
+    /// replaced as <c>long_rest.stale_configuration</c>. A protected sweep parked with a restart-generation fault (its captured
+    /// generation can never complete, and nothing automatic may readmit a protected sweep) is replaced under that fault's own code, and
+    /// only by a request that carries live turn authority (Fresh-Authority Retire); any other park is refused as a sweep only an operator
+    /// can clear.
+    /// </summary>
+    private static ParkedReplacement? ReplacementOfPark(LongRestSweepScope scope, LongRunningOperation operation, ActiveRequest active,
+        LongRestConfigurationStamp stored, LongRestSweepFence fence, bool carriesAuthority)
+    {
+        if (stored.ValueDigest != fence.Configuration.ValueDigest
+            || stored != fence.Configuration && stored.BootId == fence.Configuration.BootId)
+        {
+            return new(StaleRequestConfiguration, false);
+        }
+
+        if (IsResumablePark(scope, operation, active)) return null;
+
+        if (carriesAuthority && scope.ProtectedPartitionDigest is not null && operation.TerminalErrorCode is { } code
+            && LongRestFaultPolicy.Classify(code) == LongRestFaultClass.RestartGeneration)
+        {
+            return new(code, true);
+        }
+
+        throw new SweepParkedException(operation.Id, operation.TerminalErrorCode);
+    }
+
     private async Task<LongRunningOperation> AbandonParkedWithinAsync(SqliteConnection connection, SqliteTransaction transaction,
-        LongRunningOperation operation, CancellationToken ct)
+        LongRunningOperation operation, string terminalCode, CancellationToken ct)
     {
         await using SqliteCommand abandon = Command(connection, transaction, """
             UPDATE LongRunningOperations SET State = $abandoned, CompletedAt = $at, TerminalErrorCode = $error, Revision = Revision + 1
@@ -218,7 +281,7 @@ internal sealed partial class LongRestSweepStore : ILongRestSweepRequestAdmissio
                 AND LeaseOwner IS NULL AND LeaseExpiresAt IS NULL;
             """, ("$operation", operation.Id.ToString("N")), ("$revision", operation.Revision), ("$kind", LongRunningOperationKinds.LongRestSweep),
             ("$policy", (int)LongRunningOperationRecoveryPolicy.ResumeFromCheckpoint), ("$attention", (int)LongRunningOperationState.ReconciliationRequired),
-            ("$abandoned", (int)LongRunningOperationState.Abandoned), ("$at", UtcInstantText.Format(timeProvider.GetUtcNow())), ("$error", StaleRequestConfiguration));
+            ("$abandoned", (int)LongRunningOperationState.Abandoned), ("$at", UtcInstantText.Format(timeProvider.GetUtcNow())), ("$error", terminalCode));
 
         if (await abandon.ExecuteNonQueryAsync(ct).ConfigureAwait(false) != 1) throw new InvalidDataException();
 
@@ -362,6 +425,14 @@ internal sealed partial class LongRestSweepStore : ILongRestSweepRequestAdmissio
         int ReadmitCount);
 
     private sealed class OperationBusyException : Exception;
+
+    /// <summary>The replacement of a parked sweep: the terminal code it is abandoned under, and whether live request authority freed it.</summary>
+    private sealed record ParkedReplacement(string TerminalCode, bool ByAuthority);
+
+    private sealed class AuthorityRefusedException(Error error) : Exception(error.Code)
+    {
+        internal Error Error { get; } = error;
+    }
 
     private sealed class SweepParkedException(Guid operationId, string? terminalErrorCode) : Exception
     {

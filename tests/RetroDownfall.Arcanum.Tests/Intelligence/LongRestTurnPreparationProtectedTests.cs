@@ -417,6 +417,13 @@ public sealed class LongRestTurnPreparationProtectedTests
             return Partition?.Invoke() is { } error ? Task.FromResult(Result<LongRunningOperationDto>.Failure(error)) : inner.RequestAsync(scope, partition, ct);
         }
 
+        public Task<Result<LongRunningOperationDto>> RequestAsync(CanonicalCampaignContext scope, LongRestSweepScope partition, CovenantTurnLease authority, CancellationToken ct)
+        {
+            PartitionRequests++;
+
+            return Partition?.Invoke() is { } error ? Task.FromResult(Result<LongRunningOperationDto>.Failure(error)) : inner.RequestAsync(scope, partition, authority, ct);
+        }
+
         public Task<Result<LongRestSweepProgress>> ResumeAsync(Guid operationId, LongRestMaintenanceCapability? capability, CancellationToken ct)
         {
             Resumes++;

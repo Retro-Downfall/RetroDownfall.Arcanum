@@ -466,6 +466,9 @@ public sealed partial class WizardIntelligenceProviderTests
         public Task<Result<LongRunningOperationDto>> RequestAsync(CanonicalCampaignContext scope, LongRestSweepScope partition, CancellationToken ct) =>
             throw new InvalidOperationException("An authority-free fixture cannot schedule protected work.");
 
+        public Task<Result<LongRunningOperationDto>> RequestAsync(CanonicalCampaignContext scope, LongRestSweepScope partition, CovenantTurnLease authority, CancellationToken ct) =>
+            throw new InvalidOperationException("An authority-free fixture cannot schedule protected work.");
+
         public Task<Result<LongRestSweepProgress>> ResumeAsync(Guid operation, LongRestMaintenanceCapability? capability, CancellationToken ct) =>
             throw new InvalidOperationException("Clean scheduling must not resume on the live turn.");
     }

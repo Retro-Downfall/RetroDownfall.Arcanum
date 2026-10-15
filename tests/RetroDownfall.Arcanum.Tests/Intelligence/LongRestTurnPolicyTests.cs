@@ -208,6 +208,9 @@ public sealed class LongRestTurnPolicyTests
         public Task<Result<LongRunningOperationDto>> RequestAsync(CanonicalCampaignContext scope, LongRestSweepScope partition, CancellationToken ct) =>
             throw new InvalidOperationException("A clean-only turn never requests a protected partition.");
 
+        public Task<Result<LongRunningOperationDto>> RequestAsync(CanonicalCampaignContext scope, LongRestSweepScope partition, CovenantTurnLease authority, CancellationToken ct) =>
+            throw new InvalidOperationException("A clean-only turn never requests a protected partition.");
+
         public Task<Result<LongRestSweepProgress>> ResumeAsync(Guid operationId, LongRestMaintenanceCapability? capability, CancellationToken ct) =>
             throw new InvalidOperationException("A clean-only turn never resumes a sweep.");
     }

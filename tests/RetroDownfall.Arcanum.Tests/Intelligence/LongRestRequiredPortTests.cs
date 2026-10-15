@@ -100,6 +100,10 @@ public sealed class LongRestRequiredPortTests
             CanonicalCampaignContext scope, LongRestSweepScope partition, CancellationToken ct) =>
             throw new InvalidOperationException("A disabled Long Rest configuration must refuse before partition dispatch.");
 
+        public Task<Result<LongRunningOperationDto>> RequestAsync(
+            CanonicalCampaignContext scope, LongRestSweepScope partition, CovenantTurnLease authority, CancellationToken ct) =>
+            throw new InvalidOperationException("A disabled Long Rest configuration must refuse before partition dispatch.");
+
         public Task<Result<LongRestSweepProgress>> ResumeAsync(
             Guid operationId, LongRestMaintenanceCapability? capability, CancellationToken ct) =>
             throw new InvalidOperationException("A disabled Long Rest configuration must refuse before provider work.");

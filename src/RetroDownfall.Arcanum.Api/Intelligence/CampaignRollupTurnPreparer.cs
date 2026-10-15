@@ -138,7 +138,6 @@ public sealed class CampaignRollupTurnSnapshot(
             }
         }
     }
-
 }
 
 /// <summary>
@@ -206,7 +205,6 @@ public sealed class CampaignRollupTurnPreparer(
     ISessionTurnClaimReplayStore? replayStore = null,
     ILogger<CampaignRollupTurnPreparer>? logger = null)
 {
-
     internal static bool IsLiveEligible(ArcanumSettings configuration, PingRequest request, ArcanumInvocationContext invocation) =>
         invocation.Surface is ArcanumExecutionSurface.SessionBackedOperatorTurn
         && invocation.ContextPolicy is CovenantContextPolicy.Default
@@ -511,8 +509,10 @@ public sealed class CampaignRollupTurnPreparer(
 
                         // Clean-Only Busy Skip: a busy protected partition is not skipped. Only exact protected work finishing
                         // under the request keeps pending maintenance from ending with a protected partition unfinished.
+                        // The request carries this turn's live authority, so a protected sweep parked with a fault that left its
+                        // generation unable to complete is retired and replaced instead of failing every turn that needs the partition.
                         Result<LongRunningOperationDto> operation = await longRest.RequestAsync(
-                            campaign, partition.Value, cancellationToken).ConfigureAwait(false);
+                            campaign, partition.Value, authority, cancellationToken).ConfigureAwait(false);
 
                         if (operation.IsFailure)
                         {
@@ -814,5 +814,4 @@ public sealed class CampaignRollupTurnPreparer(
             }
         }
     }
-
 }

@@ -397,6 +397,13 @@ public sealed class LongRestTurnPreparationLifetimeTests
             return f.Coordinator.RequestAsync(scope, partition, ct);
         }
 
+        public Task<Result<LongRunningOperationDto>> RequestAsync(CanonicalCampaignContext scope, LongRestSweepScope partition, CovenantTurnLease authority, CancellationToken ct)
+        {
+            Partitions.Add(partition);
+
+            return f.Coordinator.RequestAsync(scope, partition, authority, ct);
+        }
+
         public async Task<Result<LongRestSweepProgress>> ResumeAsync(Guid operation, LongRestMaintenanceCapability? capability, CancellationToken ct)
         {
             if (capability is null)
