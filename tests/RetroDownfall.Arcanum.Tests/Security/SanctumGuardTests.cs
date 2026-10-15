@@ -1543,6 +1543,10 @@ public sealed class SanctumGuardTests : IAsyncLifetime
             return Task.FromResult(campaign);
         }
 
+        // Every scenario here asks about the very root its Campaign is registered at, so the exact match is the whole answer.
+        public Task<Campaign?> GetByContainedPathAsync(string path, CancellationToken cancellationToken = default) =>
+            GetByPathAsync(path, cancellationToken);
+
         public Task<Campaign?> GetByNameAsync(string name, CancellationToken cancellationToken = default) =>
             Task.FromResult<Campaign?>(null);
 

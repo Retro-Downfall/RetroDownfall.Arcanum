@@ -175,6 +175,10 @@ public sealed class SanctumCampaignResolutionBindingReaderTests : IAsyncLifetime
         public Task<Campaign?> GetByPathAsync(string path, CancellationToken cancellationToken = default) =>
             Task.FromResult<Campaign?>(null);
 
+        // A table with no rows is contained by no root, and the exact match finds no row either.
+        public Task<Campaign?> GetByContainedPathAsync(string path, CancellationToken cancellationToken = default) =>
+            GetByPathAsync(path, cancellationToken);
+
         public Task<Campaign?> GetByNameAsync(string name, CancellationToken cancellationToken = default) =>
             Task.FromResult<Campaign?>(null);
 

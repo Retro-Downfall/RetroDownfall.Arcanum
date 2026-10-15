@@ -634,6 +634,10 @@ public sealed class CampaignEndpointTests
         public Task<Campaign?> GetByPathAsync(string path, CancellationToken cancellationToken = default) =>
             Task.FromResult<Campaign?>(null);
 
+        // No root is registered in these scenarios, so the exact match, which finds none, is the whole answer.
+        public Task<Campaign?> GetByContainedPathAsync(string path, CancellationToken cancellationToken = default) =>
+            GetByPathAsync(path, cancellationToken);
+
         public Task<Campaign?> GetByNameAsync(string name, CancellationToken cancellationToken = default) =>
             Task.FromResult<Campaign?>(null);
 
@@ -771,6 +775,9 @@ public sealed class CampaignEndpointTests
 
         public Task<Campaign?> GetByPathAsync(string path, CancellationToken cancellationToken = default) =>
             inner.GetByPathAsync(path, cancellationToken);
+
+        public Task<Campaign?> GetByContainedPathAsync(string path, CancellationToken cancellationToken = default) =>
+            inner.GetByContainedPathAsync(path, cancellationToken);
 
         public Task<Campaign?> GetByNameAsync(string name, CancellationToken cancellationToken = default) =>
             inner.GetByNameAsync(name, cancellationToken);
@@ -912,6 +919,12 @@ public sealed class CampaignEndpointTests
             string path,
             CancellationToken cancellationToken = default) =>
             Task.FromResult<Campaign?>(null);
+
+        // No root is registered in these scenarios, so the exact match, which finds none, is the whole answer.
+        public Task<Campaign?> GetByContainedPathAsync(
+            string path,
+            CancellationToken cancellationToken = default) =>
+            GetByPathAsync(path, cancellationToken);
 
         public Task<Campaign?> GetByNameAsync(
             string name,
