@@ -493,6 +493,7 @@ R	src/RetroDownfall.Arcanum.Core/Tower/PromptDtos.cs
 R	src/RetroDownfall.Arcanum.Core/Tower/PromptExecuteRequest.cs
 R	src/RetroDownfall.Arcanum.Core/Tower/RegisterCampaignRequest.cs
 R	src/RetroDownfall.Arcanum.Core/Tower/SessionCampaignBinding.cs
+R	src/RetroDownfall.Arcanum.Core/Tower/SessionCampaignBindingErrors.cs
 R	src/RetroDownfall.Arcanum.Core/Tower/SessionDivinationDtos.cs
 R	src/RetroDownfall.Arcanum.Core/Tower/SessionDtos.cs
 R	src/RetroDownfall.Arcanum.Core/Tower/SessionHeaderPatch.cs
