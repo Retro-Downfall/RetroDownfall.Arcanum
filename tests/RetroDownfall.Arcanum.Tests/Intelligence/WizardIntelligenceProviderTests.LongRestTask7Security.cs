@@ -56,6 +56,7 @@ public sealed partial class WizardIntelligenceProviderTests
             .AddSingleton<IOptionsMonitor<ArcanumSettings>>(f.Options)
             .AddSingleton<ICampaignRollupStore>(h.Rollups)
             .AddSingleton<ICanonicalCampaignContextResolver>(resolver)
+            .AddSingleton<ICanonicalCampaignRootEnricher>(new PassThroughRootEnricher())
             .AddSingleton<ICovenantOperationGate>(f.Gate)
             .AddSingleton<ISessionTurnClaimBeginStore>(h.Begin)
             .AddSingleton<ISessionTurnBeginStore>(h.Begin)

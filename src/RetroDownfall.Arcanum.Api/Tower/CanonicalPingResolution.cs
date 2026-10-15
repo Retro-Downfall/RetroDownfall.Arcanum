@@ -68,6 +68,18 @@ internal static class CanonicalPingResolution
             return campaign.Error;
         }
 
+        // The turn boundary is where a Long Rest request begins: with Long Rest on, the Campaign carries its registered root for the whole
+        // turn, so the invocation, the turn lease and the maintenance capability all agree with the fence. With it off this reads nothing.
+        Result<CanonicalCampaignContext> enriched = await services
+            .GetRequiredService<ICanonicalCampaignRootEnricher>()
+            .EnrichAsync(campaign.Value, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (enriched.IsFailure)
+        {
+            return enriched.Error;
+        }
+
         Result<PingRequest> filled = await FillWorkingDirectoryAsync(
             request,
             services,
@@ -75,7 +87,7 @@ internal static class CanonicalPingResolution
 
         return filled.IsFailure
             ? filled.Error
-            : Result<CanonicalPingTurn>.Success(new CanonicalPingTurn(filled.Value, campaign.Value));
+            : Result<CanonicalPingTurn>.Success(new CanonicalPingTurn(filled.Value, enriched.Value));
 
     }
 

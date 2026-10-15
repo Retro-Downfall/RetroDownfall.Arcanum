@@ -106,6 +106,8 @@ public sealed class NullableInterfaceConstructorDefaultTests
 
         ["src/RetroDownfall.Arcanum.Api/Intelligence/CampaignRollupTurnPreparer.cs:CampaignRollupTurnPreparer:logger"] = "diagnostic sink; null-safe content-free logging of a skipped clean schedule observes the refusal without changing whether the turn proceeds or any admission decision",
 
+        ["src/RetroDownfall.Arcanum.Api/Intelligence/CampaignRollupTurnPreparer.cs:CampaignRollupTurnSnapshot:rootEnricher"] = "preview and replay snapshots with no Long Rest stamp need no enricher; a stamped snapshot refuses validation before authority or source reads if it has none, and live preparation supplies the preparer's required, registered enricher",
+
         ["src/RetroDownfall.Arcanum.Api/Intelligence/CampaignRollupTurnPreparer.cs:CampaignRollupTurnSnapshot:longRestConfiguration"] = "preview and replay snapshots with no Long Rest stamp need no epoch; a stamped snapshot refuses validation before authority or source reads if absent, and live preparation supplies the registered epoch",
 
         ["src/RetroDownfall.Arcanum.Api/Intelligence/ContextCompressionService.cs:ContextCompressionService:modelTokenEstimator"] = "the null coalesces to a constructed default at the use site, so no host runs without a IModelTokenEstimator",

@@ -291,6 +291,45 @@ public sealed class LongRestTurnPreparationProtectedTests
     }
 
     [Fact]
+    public async Task A_prepared_snapshot_revalidates_its_campaign_through_the_enricher_the_preparer_was_given()
+    {
+        await using LongRestMaintenanceTests.MaintenanceFixture f = await LongRestMaintenanceTests.MaintenanceFixture.CreateAsync(ownWorker: false, protectedSources: false);
+
+        CountingEnricher enricher = new();
+
+        (CampaignRollupTurnPreparer preparer, GrimoireRepository _, CampaignRollupTurnSnapshotTests.ProbeStore _, Guid session) = await BuildAsync(f, f.Coordinator, enricher);
+
+        Result<CampaignRollupTurnSnapshot?> result = await preparer.PrepareLiveAsync(
+            new("Continue.", Model: "model", SessionId: session, CampaignId: f.CampaignId, SkipSpellRouting: true, DisableAllTools: true),
+            f.Invocation, false, CancellationToken.None);
+
+        Assert.True(result.IsSuccess, result.IsFailure ? result.Error.Message : null);
+
+        await using CampaignRollupTurnSnapshot snapshot = result.Value!;
+
+        // Preparing a turn reads no root of its own: the boundary enriched the Campaign before the preparer was reached.
+        Assert.Equal(0, enricher.Calls);
+
+        Result valid = await snapshot.ValidateAsync(CancellationToken.None);
+
+        Assert.True(valid.IsSuccess, valid.IsFailure ? valid.Error.Message : null);
+
+        Assert.Equal(1, enricher.Calls);
+    }
+
+    private sealed class CountingEnricher : ICanonicalCampaignRootEnricher
+    {
+        internal int Calls;
+
+        public ValueTask<Result<CanonicalCampaignContext>> EnrichAsync(CanonicalCampaignContext resolved, CancellationToken cancellationToken)
+        {
+            Calls++;
+
+            return ValueTask.FromResult(Result<CanonicalCampaignContext>.Success(resolved));
+        }
+    }
+
+    [Fact]
     public async Task A_protected_resume_that_is_busy_or_fails_still_ends_the_turn()
     {
         await using LongRestMaintenanceTests.MaintenanceFixture f = await LongRestMaintenanceTests.MaintenanceFixture.CreateAsync(ownWorker: false);
@@ -572,7 +611,7 @@ public sealed class LongRestTurnPreparationProtectedTests
     }
 
     private static async Task<(CampaignRollupTurnPreparer Preparer, GrimoireRepository Repository, CampaignRollupTurnSnapshotTests.ProbeStore Rollups, Guid Session)>
-        BuildAsync(LongRestMaintenanceTests.MaintenanceFixture f, ILongRestSweepCoordinator coordinator)
+        BuildAsync(LongRestMaintenanceTests.MaintenanceFixture f, ILongRestSweepCoordinator coordinator, ICanonicalCampaignRootEnricher? enricher = null)
     {
         Guid session = await f.H.SessionAsync(f.CampaignId);
 
@@ -588,6 +627,7 @@ public sealed class LongRestTurnPreparationProtectedTests
             .AddSingleton<IOptionsMonitor<ArcanumSettings>>(f.Options)
             .AddSingleton<ICampaignRollupStore>(rollups)
             .AddSingleton<ICanonicalCampaignContextResolver>(new ExactScopeResolver(f.Scope))
+            .AddSingleton(enricher ?? new PassThroughRootEnricher())
             .AddSingleton<ICovenantOperationGate>(f.Gate)
             .AddSingleton<ICampaignRollupMaintenance>(new CampaignRollupTurnSnapshotTests.RefusingMaintenance())
             .AddSingleton<ISessionTurnClaimBeginStore>(repository)

@@ -61,7 +61,7 @@ internal static class LongRestEndpoints
 
         apiGroup.MapPost(
             "/memory/saga/long-rest/sweeps",
-            async (ILongRestSweepCoordinator sweeps, ICanonicalCampaignContextResolver resolver, HttpContext context) =>
+            async (ILongRestSweepCoordinator sweeps, ICanonicalCampaignContextResolver resolver, ICanonicalCampaignRootEnricher enricher, HttpContext context) =>
             {
                 (LongRestSweepRequest? request, IResult? bodyError) = await ApiRequestJson.ReadAsync(
                     context,
@@ -98,8 +98,18 @@ internal static class LongRestEndpoints
                     return SweepResponse(canonical.Error, context);
                 }
 
-                Result<LongRunningOperationDto> result = await sweeps.RequestAsync(
+                // A sweep request is a Long Rest request: the Campaign it names carries its registered root, which the fence compares.
+                // With Long Rest off the context stays exactly what the resolver returned and the registry is not read.
+                Result<CanonicalCampaignContext> enriched = await enricher.EnrichAsync(
                     canonical.Value, context.RequestAborted).ConfigureAwait(false);
+
+                if (enriched.IsFailure)
+                {
+                    return SweepResponse(enriched.Error, context);
+                }
+
+                Result<LongRunningOperationDto> result = await sweeps.RequestAsync(
+                    enriched.Value, context.RequestAborted).ConfigureAwait(false);
 
                 return SweepResponse(result, context);
             })

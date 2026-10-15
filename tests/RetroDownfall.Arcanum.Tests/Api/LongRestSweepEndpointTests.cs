@@ -283,7 +283,38 @@ public sealed class LongRestSweepEndpointTests
         Assert.NotNull(ArcanumJsonContext.Default.GetTypeInfo(typeof(ApiResponse<LongRunningOperationDto>)));
     }
 
-    private static ArcanumWebApplicationFactory Host(SweepCoordinator coordinator, bool enabled = true, Availability? availability = null) => new()
+    [SkippableFact]
+    public async Task A_sweep_request_with_Long_Rest_off_reads_no_registered_root_and_hands_the_coordinator_the_resolvers_answer()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        SweepCoordinator coordinator = new();
+
+        Paths paths = new();
+
+        await using ArcanumWebApplicationFactory factory = Host(coordinator, enabled: false, paths: paths);
+
+        using HttpClient client = factory.CreateAuthenticatedClient();
+
+        using HttpResponseMessage response = await client.PostAsync(Path, Json($$"""{"scope":"Campaign","campaignId":"{{CampaignId:D}}"}"""));
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        CanonicalCampaignContext scope = Assert.Single(coordinator.Requests);
+
+        Assert.Equal(CampaignId, scope.CampaignId);
+
+        Assert.Equal((long?)12, scope.CampaignAvailabilityGeneration);
+
+        // The context is exactly the resolver's: no root, no revision, and the registry was never asked.
+        Assert.Null(scope.PathIdentityRevision);
+
+        Assert.Null(scope.RootIdentityDigest);
+
+        Assert.Equal(0, paths.FindCalls);
+    }
+
+    private static ArcanumWebApplicationFactory Host(SweepCoordinator coordinator, bool enabled = true, Availability? availability = null, Paths? paths = null) => new()
     {
         SettingsOverride = settings => settings with
         {
@@ -302,7 +333,7 @@ public sealed class LongRestSweepEndpointTests
 
             services.RemoveAll<ICampaignPathIdentityReader>();
 
-            services.AddScoped<ICampaignPathIdentityReader>(_ => new Paths());
+            services.AddScoped<ICampaignPathIdentityReader>(_ => paths ?? new Paths());
 
             services.RemoveAll<ICampaignAvailabilityReader>();
 
@@ -430,6 +461,8 @@ public sealed class LongRestSweepEndpointTests
 
     private sealed class Paths : ICampaignPathIdentityReader
     {
+        public int FindCalls { get; private set; }
+
         public ValueTask<Result<RegisteredCampaignIdentity?>> ResolveMostSpecificAsync(string? workingDirectory, CancellationToken cancellationToken)
         {
             Assert.True(string.IsNullOrWhiteSpace(workingDirectory));
@@ -439,6 +472,8 @@ public sealed class LongRestSweepEndpointTests
 
         public ValueTask<Result<RegisteredCampaignIdentity?>> FindByCampaignAsync(Guid campaignId, CancellationToken cancellationToken)
         {
+            FindCalls++;
+
             Assert.Equal(CampaignId, campaignId);
 
             return ValueTask.FromResult(Result<RegisteredCampaignIdentity?>.Success(new(CampaignId, 1, 7, 2, RootDigest)));

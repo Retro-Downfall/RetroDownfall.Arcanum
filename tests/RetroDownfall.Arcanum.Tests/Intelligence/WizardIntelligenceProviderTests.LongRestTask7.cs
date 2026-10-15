@@ -407,7 +407,7 @@ public sealed partial class WizardIntelligenceProviderTests
 
         CampaignRollupTurnPreparer preparer = new(store, new TestOptionsMonitor<ArcanumSettings>(settings),
             new LongRestTask7ScopeResolver(scope), null!, new LongRestTask7QueuedCoordinator(claims), UnreachedLongRestPorts.Maintenance,
-            UnreachedLongRestPorts.Discovery, new LongRestTask7Configuration(settings),
+            UnreachedLongRestPorts.Discovery, new LongRestTask7Configuration(settings), new PassThroughRootEnricher(),
             maintenance, claims, grimoire, claims,
             new CampaignRollupTurnSnapshotTests.Authority(), lookup, replayStore: claims);
 

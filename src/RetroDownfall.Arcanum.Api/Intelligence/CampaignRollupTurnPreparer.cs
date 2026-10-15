@@ -32,7 +32,8 @@ public sealed class CampaignRollupTurnSnapshot(
     CovenantDigest? frozenConfigurationDigest = null,
     bool requiresRollups = true,
     LongRestConfigurationStamp? longRestStamp = null,
-    ILongRestConfigurationProvider? longRestConfiguration = null) : IAsyncDisposable
+    ILongRestConfigurationProvider? longRestConfiguration = null,
+    ICanonicalCampaignRootEnricher? rootEnricher = null) : IAsyncDisposable
 {
     private readonly CovenantDigest _configurationDigest = frozenConfigurationDigest
         ?? CampaignRollupTurnPreparer.ConfigurationDigest(settings.CurrentValue);
@@ -97,6 +98,23 @@ public sealed class CampaignRollupTurnSnapshot(
         if (current.IsFailure)
         {
             return current.Error;
+        }
+
+        if (longRestStamp is not null)
+        {
+            // A turn that accepted Long Rest carries its Campaign's registered root (the boundary enriched it), so the fence that
+            // revalidates the turn reads the root the same way. A snapshot that cannot do so cannot prove its Campaign is unchanged.
+            if (rootEnricher is null)
+            {
+                return new Error(ErrorCodes.Covenant.StaleSnapshot, "This turn's canonical Campaign identity cannot be revalidated.");
+            }
+
+            current = await rootEnricher.EnrichAsync(current.Value, cancellationToken).ConfigureAwait(false);
+
+            if (current.IsFailure)
+            {
+                return current.Error;
+            }
         }
 
         if (current.Value != Campaign)
@@ -183,8 +201,9 @@ public sealed class CampaignPreparationProgress(bool holdUntilAcknowledged = fal
 }
 
 /// <summary>
-/// The shared snapshot preparation seam for live inference and read-only inspection. The four Long Rest ports are required: the
-/// composed host always registers them, and a turn never discovers at preparation time that Long Rest has no coordinator.
+/// The shared snapshot preparation seam for live inference and read-only inspection. The five Long Rest ports (the sweep coordinator,
+/// the maintenance, the discovery store, the configuration epoch and the Campaign root enricher) are required: the composed host
+/// always registers them, and a turn never discovers at preparation time that Long Rest has no coordinator.
 /// </summary>
 public sealed class CampaignRollupTurnPreparer(
     ICampaignRollupStore store,
@@ -195,6 +214,7 @@ public sealed class CampaignRollupTurnPreparer(
     ILongRestMaintenance longRestMaintenance,
     ILongRestDiscoveryStore longRestDiscovery,
     ILongRestConfigurationProvider longRestConfiguration,
+    ICanonicalCampaignRootEnricher rootEnricher,
     ICampaignRollupMaintenance? maintenance = null,
     ISessionTurnClaimBeginStore? claimBegin = null,
     ISessionTurnBeginStore? sessionBegin = null,
@@ -638,7 +658,7 @@ public sealed class CampaignRollupTurnPreparer(
             }
 
             CampaignRollupTurnSnapshot snapshot = new(artifact, campaign, boundRequest, store, settings, resolver, authority, lease, claims,
-                configurationDigest, maintainRollups, longRestStamp, longRestConfiguration);
+                configurationDigest, maintainRollups, longRestStamp, longRestConfiguration, rootEnricher);
 
             transferred = true;
 

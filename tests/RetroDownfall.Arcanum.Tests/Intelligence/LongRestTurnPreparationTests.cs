@@ -53,7 +53,7 @@ public sealed class LongRestTurnPreparationTests
 
         CampaignRollupTurnPreparer preparer = new(store, new TestOptionsMonitor<ArcanumSettings>(settings),
             new CampaignRollupTurnSnapshotTests.Resolver(), null!,
-            UnreachedLongRestPorts.Coordinator, UnreachedLongRestPorts.Maintenance, UnreachedLongRestPorts.Discovery, UnreachedLongRestPorts.Configuration,
+            UnreachedLongRestPorts.Coordinator, UnreachedLongRestPorts.Maintenance, UnreachedLongRestPorts.Discovery, UnreachedLongRestPorts.Configuration, UnreachedLongRestPorts.RootEnricher,
             new CampaignRollupTurnSnapshotTests.RefusingMaintenance(),
             new CampaignRollupTurnSnapshotTests.InputStore(), null, claims, new CampaignRollupTurnSnapshotTests.Authority());
 
@@ -152,7 +152,7 @@ public sealed class LongRestTurnPreparationTests
 
         CampaignRollupTurnPreparer preparer = new(store, new TestOptionsMonitor<ArcanumSettings>(settings),
             new CampaignRollupTurnSnapshotTests.Resolver(), null!,
-            UnreachedLongRestPorts.Coordinator, UnreachedLongRestPorts.Maintenance, UnreachedLongRestPorts.Discovery, UnreachedLongRestPorts.Configuration,
+            UnreachedLongRestPorts.Coordinator, UnreachedLongRestPorts.Maintenance, UnreachedLongRestPorts.Discovery, UnreachedLongRestPorts.Configuration, UnreachedLongRestPorts.RootEnricher,
             new CampaignRollupTurnSnapshotTests.RefusingMaintenance(),
             new CampaignRollupTurnSnapshotTests.InputStore(), null, claims, new CampaignRollupTurnSnapshotTests.Authority());
 
@@ -173,14 +173,28 @@ public sealed class LongRestTurnPreparationTests
     }
 
     [Fact]
-    public async Task Explicit_campaign_resolution_loads_registered_root_facts_after_successful_scope_resolution()
+    public async Task Explicit_campaign_resolution_loads_registered_root_facts_through_the_enricher_after_successful_scope_resolution()
     {
         RootReader roots = new();
 
         CanonicalCampaignContextResolver resolver = new(new BindingReader(), roots, new AvailabilityReader());
 
-        Result<CanonicalCampaignContext> result = await resolver.ResolveAsync(
+        Result<CanonicalCampaignContext> resolved = await resolver.ResolveAsync(
             new(null, RootReader.Campaign, null), CancellationToken.None);
+
+        // Scope resolution answers the table and reads no root: the Long Rest-scoped enrichment that follows does.
+        Assert.True(resolved.IsSuccess);
+
+        Assert.Null(resolved.Value.PathIdentityRevision);
+
+        Assert.Empty(roots.RootReads);
+
+        ArcanumSettings enabled = new();
+
+        enabled.Features.LongRest = true;
+
+        Result<CanonicalCampaignContext> result = await new CanonicalCampaignRootEnricher(roots, new TestOptionsMonitor<ArcanumSettings>(enabled))
+            .EnrichAsync(resolved.Value, CancellationToken.None);
 
         Assert.True(result.IsSuccess);
 

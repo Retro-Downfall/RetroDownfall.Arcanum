@@ -2,11 +2,12 @@ using System.Reflection;
 
 using RetroDownfall.Arcanum.Core.LongRest;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.Tower;
 
 namespace RetroDownfall.Arcanum.Tests.Support;
 
 /// <summary>
-/// The four Long Rest ports <c>CampaignRollupTurnPreparer</c> now requires, for fixtures that never enable Long Rest. Reaching any
+/// The five Long Rest ports <c>CampaignRollupTurnPreparer</c> requires, for fixtures that never enable Long Rest. Reaching any
 /// member fails the test loudly: a fixture that needs Long Rest supplies its own real or scripted port instead.
 /// </summary>
 internal static class UnreachedLongRestPorts
@@ -19,6 +20,9 @@ internal static class UnreachedLongRestPorts
 
     /// <summary>A configuration view that reports Long Rest disabled, which is what a fixture without the feature observes.</summary>
     internal static ILongRestConfigurationProvider Configuration => new DisabledConfiguration();
+
+    /// <summary>The Campaign root enricher, which a fixture with Long Rest off never reaches.</summary>
+    internal static ICanonicalCampaignRootEnricher RootEnricher => Unreached<ICanonicalCampaignRootEnricher>();
 
     private static T Unreached<T>() where T : class => DispatchProxy.Create<T, UnreachedLongRestProxy>();
 

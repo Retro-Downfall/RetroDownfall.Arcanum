@@ -294,6 +294,7 @@ public sealed class LongRestTurnPreparationLifetimeTests
                 .AddSingleton<IOptionsMonitor<ArcanumSettings>>(f.Options)
                 .AddSingleton<ICampaignRollupStore>(new CampaignRollupTurnSnapshotTests.ProbeStore())
                 .AddSingleton<ICanonicalCampaignContextResolver>(new Resolver(f.Scope))
+                .AddSingleton<ICanonicalCampaignRootEnricher>(new PassThroughRootEnricher())
                 .AddSingleton<ICovenantOperationGate>(f.Gate)
                 .AddSingleton<ISessionTurnClaimBeginStore>(repository)
                 .AddSingleton<ISessionTurnBeginStore>(repository)
