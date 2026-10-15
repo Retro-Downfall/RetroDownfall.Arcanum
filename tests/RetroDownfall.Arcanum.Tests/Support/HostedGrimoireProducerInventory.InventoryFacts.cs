@@ -59,7 +59,22 @@ internal static partial class HostedGrimoireProducerInventory
         // A model binds lazily and is safe to read from several threads, so what one scan or worker has bound, the next
         // finds already bound instead of binding it again on a model of its own.
         internal SemanticModel SemanticModelOf(CSharpCompilation compilation, SyntaxTree tree) =>
-            semanticModels.GetOrAdd(tree, key => new Lazy<SemanticModel>(() => compilation.GetSemanticModel(key), LazyThreadSafetyMode.ExecutionAndPublication)).Value;
+            semanticModels.GetOrAdd(tree, key => new Lazy<SemanticModel>(() => CompilationSemanticModels.GetValue(compilation, static _ => new()).GetOrAdd(key, compilation), LazyThreadSafetyMode.ExecutionAndPublication)).Value;
+
+        // The semantic model of a tree in a compilation is a function of that compilation and that tree alone: the references the
+        // compilation was made with and the source of the tree decide every answer the model gives. A model is therefore made once for
+        // a compilation object and a tree object, and every discovery over that compilation reads the same one, which finds bound what an
+        // earlier discovery bound. A compilation made from another (a replaced tree or reference) is another key and gets models of its
+        // own; the models of a compilation the process lets go of are let go with it.
+        private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<CSharpCompilation, CompilationModels> CompilationSemanticModels = new();
+
+        private sealed class CompilationModels
+        {
+            private readonly ConcurrentDictionary<SyntaxTree, Lazy<SemanticModel>> models = new(ReferenceEqualityComparer.Instance);
+
+            internal SemanticModel GetOrAdd(SyntaxTree tree, CSharpCompilation compilation) =>
+                models.GetOrAdd(tree, key => new Lazy<SemanticModel>(() => compilation.GetSemanticModel(key), LazyThreadSafetyMode.ExecutionAndPublication)).Value;
+        }
 
         // True when any analysed source name binds a member that can replace a built context's connection or
         // provider services (H3). Whole-tree and deterministic: every simple name of every analysed tree is read.

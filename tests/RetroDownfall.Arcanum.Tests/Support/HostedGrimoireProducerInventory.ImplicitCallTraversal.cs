@@ -117,15 +117,34 @@ internal static partial class HostedGrimoireProducerInventory
         private static bool IsExactAiTool(ITypeSymbol type) =>
             IsExactFrameworkType(type, "Microsoft.Extensions.AI.AITool", typeof(Microsoft.Extensions.AI.AITool).Assembly.GetName());
 
-        private sealed class ImplicitTargetCollector(ProducerGraph graph, AuthoredMember member, HashSet<ISymbol>? shared = null)
+        // Two formatting steps are the same step when their type and their slot are the same symbols.
+        private sealed class FormattingStepComparer : IEqualityComparer<(ISymbol Type, ISymbol Slot)>
+        {
+            internal static readonly FormattingStepComparer Instance = new();
+
+            public bool Equals((ISymbol Type, ISymbol Slot) left, (ISymbol Type, ISymbol Slot) right) =>
+                SymbolEqualityComparer.Default.Equals(left.Type, right.Type) && SymbolEqualityComparer.Default.Equals(left.Slot, right.Slot);
+
+            public int GetHashCode((ISymbol Type, ISymbol Slot) step) =>
+                HashCode.Combine(SymbolEqualityComparer.Default.GetHashCode(step.Type), SymbolEqualityComparer.Default.GetHashCode(step.Slot));
+        }
+
+        private sealed class ImplicitTargetCollector(ProducerGraph graph, AuthoredMember member, HashSet<ISymbol>? shared = null, HashSet<(ISymbol Type, ISymbol Slot)>? sharedFormatting = null)
         {
             // A collector made for a nested resolution shares the visited set of its parent, so that a generated member that
             // prints a value of its own type, directly or through a member typed object, is followed once.
             private readonly HashSet<ISymbol> visited = shared ?? new(SymbolEqualityComparer.Default);
 
+            // The formatting steps taken in this resolution, shared with every nested collector like the visited set. A step is the
+            // slot of a type: it adds what the implementation the type selects for the slot runs, which the visited set already
+            // holds once the step was taken, so taking it again adds nothing.
+            private readonly HashSet<(ISymbol Type, ISymbol Slot)> formatting = sharedFormatting ?? new(FormattingStepComparer.Instance);
+
             internal AuthoredMember Member => member;
 
             internal HashSet<ISymbol> Visited => visited;
+
+            internal HashSet<(ISymbol Type, ISymbol Slot)> Formatting => formatting;
 
             internal List<AuthoredMember> Members { get; } = [];
 
@@ -139,6 +158,13 @@ internal static partial class HostedGrimoireProducerInventory
             // Exception.ToString reads.
             internal void AddFormatting(INamedTypeSymbol type, IMethodSymbol slot)
             {
+                if (!formatting.Add((type, slot)))
+                {
+                    return;
+                }
+
+                graph.formattingSteps++;
+
                 // The members of an anonymous type are generated, and Roslyn does not expose them: the type formats,
                 // compares and hashes every member it holds.
                 if (type.IsAnonymousType && slot.ContainingType.SpecialType == SpecialType.System_Object)
@@ -389,6 +415,263 @@ internal static partial class HostedGrimoireProducerInventory
 
         private IReadOnlyList<AuthoredFormatter> AuthoredFormatters() => authoredFormatters ??= BuildAuthoredFormatters();
 
+        // What a slot is, for comparing the slots of different compilations: the kind, name, containing type, assembly and arity
+        // that SameEnumerationSlot compares when the two symbols are not the same symbol.
+        private readonly record struct EnumerationSlotKey(SymbolKind Kind, string Name, string ContainingType, string? Assembly, int Parameters);
+
+        private static EnumerationSlotKey EnumerationSlotKeyOf(IMethodSymbol slot) =>
+            new(slot.Kind, slot.Name, slot.ContainingType.OriginalDefinition.ToDisplayString(), slot.ContainingType.ContainingAssembly?.Identity.Name, slot.Parameters.Length);
+
+        // The authored formatters by what they are assignable to and by the slots they implement, as ascending positions in the
+        // list AuthoredFormatters returns. The candidates of a receiver type and a slot are read from these instead of asking
+        // every formatter in turn, which AddFormatterCandidates would otherwise do for every type it is handed.
+        private sealed class FormatterIndex
+        {
+            internal required IReadOnlyDictionary<string, int[]> ByAssignableKey { get; init; }
+
+            internal required IReadOnlyDictionary<EnumerationSlotKey, int[]> BySlot { get; init; }
+
+            internal required int[] ReadsForToString { get; init; }
+
+            internal required int[] All { get; init; }
+        }
+
+        private FormatterIndex? formatterIndex;
+
+        private FormatterIndex FormatterIndexOf() => formatterIndex ??= BuildFormatterIndex();
+
+        private FormatterIndex BuildFormatterIndex()
+        {
+            IReadOnlyList<AuthoredFormatter> formatters = AuthoredFormatters();
+
+            Dictionary<string, List<int>> byKey = new(StringComparer.Ordinal);
+
+            Dictionary<EnumerationSlotKey, List<int>> bySlot = [];
+
+            List<int> readsForToString = [];
+
+            for (int position = 0; position < formatters.Count; position++)
+            {
+                AuthoredFormatter formatter = formatters[position];
+
+                foreach (string key in formatter.AssignableKeys)
+                {
+                    if (!byKey.TryGetValue(key, out List<int>? positions))
+                    {
+                        byKey.Add(key, positions = []);
+                    }
+
+                    positions.Add(position);
+                }
+
+                foreach (EnumerationSlotKey key in formatter.Implementations.Select(static implementation => EnumerationSlotKeyOf(implementation.Slot)).Distinct())
+                {
+                    if (!bySlot.TryGetValue(key, out List<int>? positions))
+                    {
+                        bySlot.Add(key, positions = []);
+                    }
+
+                    positions.Add(position);
+                }
+
+                if (formatter.ReadsForToString)
+                {
+                    readsForToString.Add(position);
+                }
+            }
+
+            return new()
+            {
+                ByAssignableKey = byKey.ToDictionary(static pair => pair.Key, static pair => pair.Value.ToArray(), StringComparer.Ordinal),
+                BySlot = bySlot.ToDictionary(static pair => pair.Key, static pair => pair.Value.ToArray()),
+                ReadsForToString = readsForToString.ToArray(),
+                All = Enumerable.Range(0, formatters.Count).ToArray(),
+            };
+        }
+
+        private readonly Dictionary<ITypeSymbol, string> originalDefinitionDisplays = new(SymbolEqualityComparer.Default);
+
+        // The display name IsFormatterAssignableTo compares a receiver type by, read once per type.
+        private string OriginalDefinitionDisplay(ITypeSymbol type)
+        {
+            if (!originalDefinitionDisplays.TryGetValue(type, out string? display))
+            {
+                originalDefinitionDisplays.Add(type, display = type.OriginalDefinition.ToDisplayString());
+            }
+
+            return display;
+        }
+
+        // Whether IsFormatterAssignableTo holds for every formatter, whatever its keys: the receiver is any object, any value, or a
+        // type parameter.
+        private static bool IsUniversalFormatterReceiver(ITypeSymbol receiver) =>
+            receiver.SpecialType is SpecialType.System_Object or SpecialType.System_ValueType || receiver.TypeKind == TypeKind.TypeParameter;
+
+        private readonly Dictionary<(string? Receiver, EnumerationSlotKey Slot, bool IsToString), int[]> formatterCandidates = [];
+
+        // The positions, ascending, of the formatters that are assignable to the receiver (IsFormatterAssignableTo) and have a callback
+        // of the slot (FormatterRunsSlot): the formatters a loop over all of them would select, in the order it would select them.
+        private int[] FormatterCandidatePositions(ITypeSymbol receiver, IMethodSymbol slot)
+        {
+            bool toString = slot.Name == "ToString" && slot.Parameters.Length == 0;
+
+            string? receiverKey = IsUniversalFormatterReceiver(receiver) ? null : OriginalDefinitionDisplay(receiver);
+
+            EnumerationSlotKey slotKey = EnumerationSlotKeyOf(slot);
+
+            if (formatterCandidates.TryGetValue((receiverKey, slotKey, toString), out int[]? known))
+            {
+                return known;
+            }
+
+            FormatterIndex index = FormatterIndexOf();
+
+            int[] implementing = index.BySlot.TryGetValue(slotKey, out int[]? slotted) ? slotted : [];
+
+            int[] eligible = toString ? MergeAscending(implementing, index.ReadsForToString) : implementing;
+
+            int[] candidates = receiverKey is null
+                ? eligible
+                : IntersectAscending(index.ByAssignableKey.TryGetValue(receiverKey, out int[]? assignable) ? assignable : [], eligible);
+
+            formatterCandidates.Add((receiverKey, slotKey, toString), candidates);
+
+            return candidates;
+        }
+
+        private static int[] MergeAscending(int[] left, int[] right)
+        {
+            if (right.Length == 0)
+            {
+                return left;
+            }
+
+            if (left.Length == 0)
+            {
+                return right;
+            }
+
+            List<int> merged = new(left.Length + right.Length);
+
+            int leftAt = 0;
+
+            int rightAt = 0;
+
+            while (leftAt < left.Length || rightAt < right.Length)
+            {
+                int next = rightAt == right.Length || leftAt < left.Length && left[leftAt] <= right[rightAt] ? left[leftAt] : right[rightAt];
+
+                merged.Add(next);
+
+                while (leftAt < left.Length && left[leftAt] == next)
+                {
+                    leftAt++;
+                }
+
+                while (rightAt < right.Length && right[rightAt] == next)
+                {
+                    rightAt++;
+                }
+            }
+
+            return merged.ToArray();
+        }
+
+        private static int[] IntersectAscending(int[] left, int[] right)
+        {
+            (int[] small, int[] large) = left.Length <= right.Length ? (left, right) : (right, left);
+
+            List<int> common = new(small.Length);
+
+            foreach (int position in small)
+            {
+                if (Array.BinarySearch(large, position) >= 0)
+                {
+                    common.Add(position);
+                }
+            }
+
+            return common.ToArray();
+        }
+
+        // Whether the formatter has a callback of the slot: it reads the virtual members a framework ToString reads (for the ToString slot,
+        // because ToString of a framework base type also reads the virtual properties its subclass overrides: the members of an exception,
+        // the name of a tool), or it implements the slot.
+        private static bool FormatterRunsSlot(AuthoredFormatter formatter, IMethodSymbol slot) =>
+            slot.Name == "ToString" && slot.Parameters.Length == 0 && formatter.ReadsForToString
+            || formatter.Implementations.Any(implementation => SameEnumerationSlot(implementation.Slot, slot));
+
+        // Fixture seam: the receivers and slots a sample of the formatters stands for, with the positions the index selects for each
+        // beside the positions the definition selects (the formatters assignable to the receiver that run the slot), and the pairs
+        // that differ. The definition is evaluated a part at a time, so the sample can be wide.
+        internal (int Pairs, int Selective, IReadOnlyList<string> Mismatches) ProbeFormatterCandidateIndex(int receiverSample)
+        {
+            IReadOnlyList<AuthoredFormatter> formatters = AuthoredFormatters();
+
+            List<ITypeSymbol> receivers =
+            [
+                analysedCompilations[0].GetSpecialType(SpecialType.System_Object),
+                analysedCompilations[0].GetSpecialType(SpecialType.System_ValueType),
+            ];
+
+            int stride = Math.Max(1, formatters.Count / Math.Max(1, receiverSample));
+
+            for (int position = 0; position < formatters.Count; position += stride)
+            {
+                INamedTypeSymbol type = formatters[position].Type;
+
+                receivers.Add(type);
+
+                receivers.AddRange(type.AllInterfaces.Take(3));
+
+                if (type.BaseType is { SpecialType: not SpecialType.System_Object } baseType)
+                {
+                    receivers.Add(baseType);
+                }
+
+                if (type.TypeParameters.FirstOrDefault() is { } parameter)
+                {
+                    receivers.Add(parameter);
+                }
+            }
+
+            IMethodSymbol[] slots = [.. formatters.SelectMany(static formatter => formatter.Implementations).Select(static implementation => implementation.Slot).DistinctBy(static slot => EnumerationSlotKeyOf(slot))];
+
+            List<string> mismatches = [];
+
+            int pairs = 0;
+
+            int selective = 0;
+
+            bool[][] runs = [.. slots.Select(slot => formatters.Select(formatter => FormatterRunsSlot(formatter, slot)).ToArray())];
+
+            foreach (ITypeSymbol receiver in receivers)
+            {
+                bool[] assignable = [.. formatters.Select(formatter => IsFormatterAssignableTo(formatter, receiver))];
+
+                for (int slotAt = 0; slotAt < slots.Length; slotAt++)
+                {
+                    int[] defined = [.. Enumerable.Range(0, formatters.Count).Where(position => assignable[position] && runs[slotAt][position])];
+
+                    int[] indexed = FormatterCandidatePositions(receiver, slots[slotAt]);
+
+                    pairs++;
+
+                    if (defined.Length != 0 && defined.Length < formatters.Count)
+                    {
+                        selective++;
+                    }
+
+                    if (!defined.AsSpan().SequenceEqual(indexed))
+                    {
+                        mismatches.Add(receiver.ToDisplayString() + " / " + Normalize(slots[slotAt]) + ": indexed " + indexed.Length + ", defined " + defined.Length);
+                    }
+                }
+            }
+
+            return (pairs, selective, mismatches);
+        }
+
         private IReadOnlyList<AuthoredFormatter> BuildAuthoredFormatters()
         {
             List<AuthoredFormatter> formatters = [];
@@ -473,7 +756,7 @@ internal static partial class HostedGrimoireProducerInventory
         // each runs. A formatter that cannot reach a producer site adds nothing, so it is not traversed.
         private void AddFormatterCandidates(ITypeSymbol receiverType, IMethodSymbol slot, ImplicitTargetCollector targets)
         {
-            ImplicitTargetCollector formatting = new(this, targets.Member, targets.Visited);
+            ImplicitTargetCollector formatting = new(this, targets.Member, targets.Visited, targets.Formatting);
 
             // The framework implementation the static type itself runs when the value is exactly that type: a framework
             // class or struct formats, compares and hashes with code of its own, which is classified or refused as it is for
@@ -485,19 +768,11 @@ internal static partial class HostedGrimoireProducerInventory
                 formatting.AddFormatting(staticType, slot);
             }
 
-            foreach (AuthoredFormatter formatter in AuthoredFormatters())
+            IReadOnlyList<AuthoredFormatter> formatters = AuthoredFormatters();
+
+            foreach (int position in FormatterCandidatePositions(receiverType, slot))
             {
-                // ToString of a framework base type also reads the virtual properties its subclass overrides (the members of an
-                // exception, the name of a tool), so a formatter with such an override is a candidate for ToString.
-                bool readsForToString = slot.Name == "ToString" && slot.Parameters.Length == 0 && formatter.ReadsForToString;
-
-                if (!IsFormatterAssignableTo(formatter, receiverType)
-                    || !readsForToString && !formatter.Implementations.Any(implementation => SameEnumerationSlot(implementation.Slot, slot)))
-                {
-                    continue;
-                }
-
-                formatting.AddFormatting(formatter.Type, slot);
+                formatting.AddFormatting(formatters[position].Type, slot);
             }
 
             targets.Members.AddRange(formatting.Members.Where(ContainsPotentialProducerSite));
@@ -1370,6 +1645,56 @@ internal static partial class HostedGrimoireProducerInventory
 
         private readonly HashSet<(string Type, CallbackFamilies Families)> callbackImplementerReachInProgress = [];
 
+        // Whether the members one authored implementation of a callback slot runs can reach a producer site or cannot be followed. The
+        // resolution starts from the implementation alone, in a collector of its own, so the answer is the same for every type and
+        // every family that asks about it, and it is remembered the way an answer for a type is: unless a cycle cut it.
+        private readonly Dictionary<(SyntaxNode Anchor, ISymbol Implementation, ISymbol Slot), bool> callbackImplementationReach = new(CallbackImplementationComparer.Instance);
+
+        private sealed class CallbackImplementationComparer : IEqualityComparer<(SyntaxNode Anchor, ISymbol Implementation, ISymbol Slot)>
+        {
+            internal static readonly CallbackImplementationComparer Instance = new();
+
+            public bool Equals((SyntaxNode Anchor, ISymbol Implementation, ISymbol Slot) left, (SyntaxNode Anchor, ISymbol Implementation, ISymbol Slot) right) =>
+                ReferenceEquals(left.Anchor, right.Anchor)
+                && SymbolEqualityComparer.Default.Equals(left.Implementation, right.Implementation)
+                && SymbolEqualityComparer.Default.Equals(left.Slot, right.Slot);
+
+            public int GetHashCode((SyntaxNode Anchor, ISymbol Implementation, ISymbol Slot) key) =>
+                HashCode.Combine(System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(key.Anchor), SymbolEqualityComparer.Default.GetHashCode(key.Implementation), SymbolEqualityComparer.Default.GetHashCode(key.Slot));
+        }
+
+        // The work the callback judgement has done, for the fixture that pins it: formatting steps taken and implementations resolved.
+        private int formattingSteps;
+
+        private int callbackImplementationResolutions;
+
+        private bool CallbackImplementationReaches(AuthoredMember member, IMethodSymbol slot, ISymbol implementation)
+        {
+            var key = (member.Syntax, implementation, (ISymbol)slot);
+
+            if (callbackImplementationReach.TryGetValue(key, out bool known))
+            {
+                return known;
+            }
+
+            callbackImplementationResolutions++;
+
+            int cutsBefore = producerSiteScanCuts;
+
+            ImplicitTargetCollector collector = new(this, member);
+
+            collector.Add(implementation, slot);
+
+            bool reaches = ImplicitTargetsReachProducerSite(member, collector.Result, member.Syntax, []);
+
+            if (producerSiteScanCuts == cutsBefore)
+            {
+                callbackImplementationReach[key] = reaches;
+            }
+
+            return reaches;
+        }
+
         private bool CallbackImplementersReach(AuthoredMember member, ITypeSymbol type, CallbackFamilies families)
         {
             if (type.TypeKind is TypeKind.Error or TypeKind.Pointer or TypeKind.FunctionPointer or TypeKind.Delegate or TypeKind.Enum
@@ -1399,12 +1724,11 @@ internal static partial class HostedGrimoireProducerInventory
 
             try
             {
-                foreach (AuthoredFormatter implementer in AuthoredFormatters())
+                IReadOnlyList<AuthoredFormatter> formatters = AuthoredFormatters();
+
+                foreach (int position in IsUniversalFormatterReceiver(type) ? FormatterIndexOf().All : FormatterIndexOf().ByAssignableKey.GetValueOrDefault(OriginalDefinitionDisplay(type), []))
                 {
-                    if (!IsFormatterAssignableTo(implementer, type))
-                    {
-                        continue;
-                    }
+                    AuthoredFormatter implementer = formatters[position];
 
                     foreach ((IMethodSymbol slot, ISymbol implementation) in implementer.Implementations)
                     {
@@ -1413,11 +1737,7 @@ internal static partial class HostedGrimoireProducerInventory
                             continue;
                         }
 
-                        ImplicitTargetCollector collector = new(this, member);
-
-                        collector.Add(implementation, slot);
-
-                        if (ImplicitTargetsReachProducerSite(member, collector.Result, member.Syntax, []))
+                        if (CallbackImplementationReaches(member, slot, implementation))
                         {
                             reaches = true;
 
@@ -1442,6 +1762,25 @@ internal static partial class HostedGrimoireProducerInventory
             }
 
             return reaches;
+        }
+
+        // Fixture seam: the callback judgement of every authored formatter for two receivers that ask about the same implementations (object, then
+        // a value), with the work each judgement did: implementations resolved, formatting steps taken, and the answers.
+        internal (int Implementations, int FirstResolutions, int FirstSteps, bool FirstReaches, int SecondResolutions, int SecondSteps, bool SecondReaches) ProbeCallbackReachWork()
+        {
+            AuthoredMember anchor = AuthoredMembers.First();
+
+            CallbackFamilies families = CallbackFamilies.Format | CallbackFamilies.Equality | CallbackFamilies.Compare;
+
+            int implementations = AuthoredFormatters().SelectMany(static formatter => formatter.Implementations).Count(implementation => (FamilyOf(implementation.Slot) & families) != CallbackFamilies.None);
+
+            bool first = CallbackImplementersReach(anchor, analysedCompilations[0].GetSpecialType(SpecialType.System_Object), families);
+
+            (int resolutions, int steps) = (callbackImplementationResolutions, formattingSteps);
+
+            bool second = CallbackImplementersReach(anchor, analysedCompilations[0].GetSpecialType(SpecialType.System_ValueType), families);
+
+            return (implementations, resolutions, steps, first, callbackImplementationResolutions - resolutions, formattingSteps - steps, second);
         }
 
         // The authored implementers of the framework slots that reach a producer site or cannot be followed, with the slot and

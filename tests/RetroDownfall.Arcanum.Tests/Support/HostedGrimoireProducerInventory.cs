@@ -2172,6 +2172,38 @@ internal static partial class HostedGrimoireProducerInventory
         new ProducerGraph(compilations, DefaultEvaluationEnvironmentMaximumMembers, DefaultEvaluationEnvironmentMaximumDepth, DefaultTraversalMaximumDepth, DefaultMaximumAnalyzedStatesPerRoot, false, sitesOnly: true)
             .CallbackImplementersThatReach();
 
+    // The semantic model of a tree in a compilation, as two discoveries over the compilation and a discovery over another compilation
+    // that holds the same tree are given it: whether the two discoveries over one compilation read one model, and whether the other
+    // compilation reads a model of its own.
+    internal static (bool SharedByDiscoveries, bool DistinctAcrossCompilations) ProbeSemanticModelSharing(CSharpCompilation compilation, CSharpCompilation other, SyntaxTree tree)
+    {
+        SemanticModel first = new InventoryFacts([compilation]).SemanticModelOf(compilation, tree);
+
+        SemanticModel second = new InventoryFacts([compilation]).SemanticModelOf(compilation, tree);
+
+        SemanticModel foreign = new InventoryFacts([other]).SemanticModelOf(other, tree);
+
+        return (ReferenceEquals(first, second), !ReferenceEquals(first, foreign) && ReferenceEquals(foreign.Compilation, other));
+    }
+
+    // The work the callback judgement does over the authored formatters of the compilations: judged for object and then for a value, which ask
+    // about the same implementations.
+    internal static (int Implementations, int FirstResolutions, int FirstSteps, bool FirstReaches, int SecondResolutions, int SecondSteps, bool SecondReaches) ProbeCallbackReachWork(IReadOnlyList<CSharpCompilation> compilations) =>
+        new ProducerGraph(compilations, DefaultEvaluationEnvironmentMaximumMembers, DefaultEvaluationEnvironmentMaximumDepth, DefaultTraversalMaximumDepth, DefaultMaximumAnalyzedStatesPerRoot, false, sitesOnly: true)
+            .ProbeCallbackReachWork();
+
+    // The indexes and memos a graph answers program-wide queries from, beside the passes and computations they replace, over a sample of the queries:
+    // the counts of what was compared and the queries that differ.
+    internal static (int Calls, int Constructors, int Implementers, int Parameters, int Mutations, IReadOnlyList<string> Mismatches) ProbeProgramIndexes(IReadOnlyList<CSharpCompilation> compilations, int sample) =>
+        new ProducerGraph(compilations, DefaultEvaluationEnvironmentMaximumMembers, DefaultEvaluationEnvironmentMaximumDepth, DefaultTraversalMaximumDepth, DefaultMaximumAnalyzedStatesPerRoot, false)
+            .ProbeProgramIndexes(sample);
+
+    // Where the candidates of a callback slot are read from an index of the authored formatters instead of asked of every formatter, this is
+    // the pairs of receiver type and slot, over a sample of the formatters, for which the index and the definition disagree.
+    internal static (int Pairs, int Selective, IReadOnlyList<string> Mismatches) ProbeFormatterCandidateIndex(IReadOnlyList<CSharpCompilation> compilations, int receiverSample) =>
+        new ProducerGraph(compilations, DefaultEvaluationEnvironmentMaximumMembers, DefaultEvaluationEnvironmentMaximumDepth, DefaultTraversalMaximumDepth, DefaultMaximumAnalyzedStatesPerRoot, false, sitesOnly: true)
+            .ProbeFormatterCandidateIndex(receiverSample);
+
     internal static IReadOnlyList<HostedProducerProjectionSymbolProbe> ProbeProjectionSymbolLookups(
         CSharpCompilation compilation,
         IMethodSymbol method,
@@ -3395,8 +3427,6 @@ internal static partial class HostedGrimoireProducerInventory
                 ReadBinding(call, model);
             }
         }
-
-        private static MethodIdentity Identity(IMethodSymbol method) => new(method.ContainingAssembly.Identity, MethodKey(method));
 
         private IEnumerable<AuthoredMember> AuthoredMembers => members.Values.SelectMany(static group => group);
 
@@ -34647,46 +34677,40 @@ internal static partial class HostedGrimoireProducerInventory
 
             if (method.MethodKind == MethodKind.Constructor)
             {
-                foreach ((BaseObjectCreationExpressionSyntax creation, SemanticModel model) in objectCreations)
+                foreach ((BaseObjectCreationExpressionSyntax creation, SemanticModel model) in CreationsOf(method))
                 {
-                    if (model.GetSymbolInfo(creation).Symbol is IMethodSymbol target && Identity(target) == Identity(method))
+                    ClosedCallableValue value = ResolveArgument(
+                        parameter,
+                        creation.ArgumentList?.Arguments ?? default,
+                        model,
+                        path);
+
+                    values.Add(value);
+
+                    AuthoredMember? owner = AuthoredMembers
+                        .Where(member => member.Syntax.SyntaxTree == creation.SyntaxTree
+                            && member.Syntax.Span.Contains(creation.Span))
+                        .OrderBy(member => member.Syntax.Span.Length)
+                        .FirstOrDefault();
+
+                    if (owner is not null)
                     {
-                        ClosedCallableValue value = ResolveArgument(
-                            parameter,
-                            creation.ArgumentList?.Arguments ?? default,
-                            model,
-                            path);
+                        GraphMemberIdentity identity = MemberIdentity(owner);
 
-                        values.Add(value);
-
-                        AuthoredMember? owner = AuthoredMembers
-                            .Where(member => member.Syntax.SyntaxTree == creation.SyntaxTree
-                                && member.Syntax.Span.Contains(creation.Span))
-                            .OrderBy(member => member.Syntax.Span.Length)
-                            .FirstOrDefault();
-
-                        if (owner is not null)
+                        if (!constructionValues.TryGetValue(
+                                identity,
+                                out List<ClosedCallableValue>? ownedValues))
                         {
-                            GraphMemberIdentity identity = MemberIdentity(owner);
-
-                            if (!constructionValues.TryGetValue(
-                                    identity,
-                                    out List<ClosedCallableValue>? ownedValues))
-                            {
-                                constructionValues.Add(identity, ownedValues = []);
-                            }
-
-                            ownedValues.Add(value);
+                            constructionValues.Add(identity, ownedValues = []);
                         }
+
+                        ownedValues.Add(value);
                     }
                 }
 
-                foreach ((ConstructorInitializerSyntax initializer, SemanticModel model) in constructorInitializers)
+                foreach ((ConstructorInitializerSyntax initializer, SemanticModel model) in InitializersOf(method))
                 {
-                    if (model.GetSymbolInfo(initializer).Symbol is IMethodSymbol target && Identity(target) == Identity(method))
-                    {
-                        values.Add(ResolveArgument(parameter, initializer.ArgumentList.Arguments, model, path));
-                    }
+                    values.Add(ResolveArgument(parameter, initializer.ArgumentList.Arguments, model, path));
                 }
 
                 if (constructionValues.Values.Any(group => group
@@ -34698,12 +34722,9 @@ internal static partial class HostedGrimoireProducerInventory
             }
             else
             {
-                foreach ((InvocationExpressionSyntax call, SemanticModel model) in invocations)
+                foreach ((InvocationExpressionSyntax call, SemanticModel model) in InvocationsOf(method))
                 {
-                    if (model.GetSymbolInfo(call).Symbol is IMethodSymbol target && Identity(target) == Identity(method))
-                    {
-                        values.Add(ResolveArgument(parameter, call.ArgumentList.Arguments, model, path));
-                    }
+                    values.Add(ResolveArgument(parameter, call.ArgumentList.Arguments, model, path));
                 }
             }
 
@@ -39990,7 +40011,18 @@ internal static partial class HostedGrimoireProducerInventory
                     : [];
             }
 
-            return AuthoredMembers
+            // The members that implement an interface method are the members of the program and the method alone decide, and the members of the
+            // program are fixed once the graph is made, so the answer for a method is read once.
+            if (!interfaceReceiverTargets.TryGetValue(method, out AuthoredMember[]? targets))
+            {
+                interfaceReceiverTargets.Add(method, targets = InterfaceReceiverTargetsOf(method));
+            }
+
+            return targets;
+        }
+
+        private AuthoredMember[] InterfaceReceiverTargetsOf(IMethodSymbol method) =>
+            AuthoredMembers
                 .Where(candidate =>
                     candidate.Symbol.ContainingType.AllInterfaces
                         .Where(contract =>
@@ -40008,7 +40040,8 @@ internal static partial class HostedGrimoireProducerInventory
                                 candidate.Symbol.OriginalDefinition)))
                 .DistinctBy(MemberIdentity)
                 .ToArray();
-        }
+
+        private readonly Dictionary<IMethodSymbol, AuthoredMember[]> interfaceReceiverTargets = new(ReferenceEqualityComparer.Instance);
 
         private bool PrimaryConstructorCapturedReceiverCarriesCleanupState(
             AuthoredMember member,
@@ -40998,11 +41031,39 @@ internal static partial class HostedGrimoireProducerInventory
         // The work budget of one callable-mutation query. It is a field and not a local so that LimitsAreFrozen can pin it.
         private const int MaxCallableWork = 256;
 
+        // Whether a callable written in the member can mutate the symbol between two positions is decided by the member's syntax, the symbol and the
+        // two positions, bound by the member's semantic model, so the answer is read once per model and query. The memo of a model is let go with
+        // the model, and a symbol is a symbol of the compilation its model belongs to, so no answer is read for another compilation.
+        private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<SemanticModel, System.Collections.Concurrent.ConcurrentDictionary<(SyntaxNode Member, ISymbol Symbol, int Before, int After), bool>> InvokedCallableMutations = new();
+
+        private sealed class InvokedCallableMutationComparer : IEqualityComparer<(SyntaxNode Member, ISymbol Symbol, int Before, int After)>
+        {
+            internal static readonly InvokedCallableMutationComparer Instance = new();
+
+            public bool Equals((SyntaxNode Member, ISymbol Symbol, int Before, int After) left, (SyntaxNode Member, ISymbol Symbol, int Before, int After) right) =>
+                ReferenceEquals(left.Member, right.Member)
+                && left.Before == right.Before
+                && left.After == right.After
+                && SymbolEqualityComparer.Default.Equals(left.Symbol, right.Symbol);
+
+            public int GetHashCode((SyntaxNode Member, ISymbol Symbol, int Before, int After) key) =>
+                HashCode.Combine(System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(key.Member), SymbolEqualityComparer.Default.GetHashCode(key.Symbol), key.Before, key.After);
+        }
+
         private static bool InvokedCallableMayMutateSymbol(
             AuthoredMember member,
             ISymbol symbol,
             int before,
-            int after = int.MinValue)
+            int after = int.MinValue) =>
+            InvokedCallableMutations
+                .GetValue(member.Model, static _ => new(InvokedCallableMutationComparer.Instance))
+                .GetOrAdd((member.Syntax, symbol, before, after), static (key, owner) => ComputeInvokedCallableMayMutateSymbol(owner, key.Symbol, key.Before, key.After), member);
+
+        private static bool ComputeInvokedCallableMayMutateSymbol(
+            AuthoredMember member,
+            ISymbol symbol,
+            int before,
+            int after)
         {
             int work = 0;
 
@@ -44431,12 +44492,38 @@ internal static partial class HostedGrimoireProducerInventory
             return direct ? null : false;
         }
 
-        private bool ConstructorParameterNeverWritten(IParameterSymbol parameter) =>
+        // Whether a parameter is written is decided by the scopes the parameter itself names (the declarations of its type, or its lambda) and
+        // by trees that do not change once the graph is made, so each answer is read once per parameter.
+        private readonly Dictionary<IParameterSymbol, bool> constructorParametersNeverWritten = new(SymbolEqualityComparer.Default);
+
+        private readonly Dictionary<IParameterSymbol, bool> parametersNeverWritten = new(SymbolEqualityComparer.Default);
+
+        private bool ConstructorParameterNeverWritten(IParameterSymbol parameter)
+        {
+            if (!constructorParametersNeverWritten.TryGetValue(parameter, out bool known))
+            {
+                constructorParametersNeverWritten.Add(parameter, known = ComputeConstructorParameterNeverWritten(parameter));
+            }
+
+            return known;
+        }
+
+        private bool ComputeConstructorParameterNeverWritten(IParameterSymbol parameter) =>
             parameter.ContainingSymbol is IMethodSymbol { ContainingType: { } owner }
             && owner.DeclaringSyntaxReferences.Length != 0
             && ParameterNeverWrittenWithin(parameter, owner.DeclaringSyntaxReferences.Select(static reference => reference.GetSyntax()));
 
-        private bool ParameterNeverWritten(IParameterSymbol parameter) =>
+        private bool ParameterNeverWritten(IParameterSymbol parameter)
+        {
+            if (!parametersNeverWritten.TryGetValue(parameter, out bool known))
+            {
+                parametersNeverWritten.Add(parameter, known = ComputeParameterNeverWritten(parameter));
+            }
+
+            return known;
+        }
+
+        private bool ComputeParameterNeverWritten(IParameterSymbol parameter) =>
             parameter.DeclaringSyntaxReferences is [{ } reference]
             && reference.GetSyntax().FirstAncestorOrSelf<AnonymousFunctionExpressionSyntax>() is { } function
             && ParameterNeverWrittenWithin(parameter, [function]);
@@ -54191,49 +54278,26 @@ internal static partial class HostedGrimoireProducerInventory
                     initializer));
             }
 
-            foreach (AuthoredMember constructor in AuthoredMembers.Where(
-                candidate => candidate.Symbol.MethodKind
-                        == MethodKind.Constructor
-                    && SymbolEqualityComparer.Default.Equals(
-                        candidate.Symbol.ContainingType,
-                        field.ContainingType)
-                    && (boundConstructors.Length == 0
-                        || boundConstructors.Any(bound =>
-                            SymbolEqualityComparer.Default.Equals(
-                                bound.OriginalDefinition,
-                                candidate.Symbol.OriginalDefinition)))))
+            foreach (AuthoredMember constructor in ConstructorsOf(field.ContainingType).Where(
+                candidate => boundConstructors.Length == 0
+                    || boundConstructors.Any(bound =>
+                        SymbolEqualityComparer.Default.Equals(
+                            bound.OriginalDefinition,
+                            candidate.Symbol.OriginalDefinition))))
             {
-                if (constructor.Syntax.DescendantNodesAndSelf().Any(node =>
-                    node is RefExpressionSyntax alias
-                        && SymbolEqualityComparer.Default.Equals(
-                            constructor.Model.GetSymbolInfo(alias.Expression).Symbol,
-                            field)
-                    || node is ArgumentSyntax argument
-                        && argument.RefKindKeyword.Kind() is SyntaxKind.RefKeyword or SyntaxKind.OutKeyword
-                        && SymbolEqualityComparer.Default.Equals(
-                            constructor.Model.GetSymbolInfo(argument.Expression).Symbol,
-                            field)))
+                (bool aliased, ExpressionSyntax[] assigned) = ConstructorFieldWrites(constructor, field);
+
+                if (aliased)
                 {
                     return [];
                 }
 
-                values.AddRange(constructor.Syntax.DescendantNodesAndSelf(
-                        node => node == constructor.Syntax
-                            || node is not AnonymousFunctionExpressionSyntax
-                                and not LocalFunctionStatementSyntax)
-                    .OfType<AssignmentExpressionSyntax>()
-                    .Where(assignment => assignment.IsKind(
-                            SyntaxKind.SimpleAssignmentExpression)
-                        && SymbolEqualityComparer.Default.Equals(
-                            constructor.Model.GetSymbolInfo(
-                                assignment.Left).Symbol,
-                            field))
-                    .Select(assignment => new BoundValueSource(
-                        expression is IdentifierNameSyntax or MemberAccessExpressionSyntax { Expression: ThisExpressionSyntax }
-                            && SymbolEqualityComparer.Default.Equals(field.ContainingType, member.Symbol.ContainingType)
-                            ? MergeValueContext(constructor, member)
-                            : constructor,
-                        assignment.Right)));
+                values.AddRange(assigned.Select(right => new BoundValueSource(
+                    expression is IdentifierNameSyntax or MemberAccessExpressionSyntax { Expression: ThisExpressionSyntax }
+                        && SymbolEqualityComparer.Default.Equals(field.ContainingType, member.Symbol.ContainingType)
+                        ? MergeValueContext(constructor, member)
+                        : constructor,
+                    right)));
             }
 
             return values.ToArray();
