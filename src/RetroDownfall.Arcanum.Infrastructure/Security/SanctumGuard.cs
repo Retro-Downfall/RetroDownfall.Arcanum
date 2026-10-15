@@ -3,6 +3,7 @@ using System.Net;
 using System.Net.Sockets;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Platform;
+using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Tower;
 using RetroDownfall.Arcanum.Core.Sanctum;
 using RetroDownfall.Arcanum.Core.Security;
@@ -32,6 +33,7 @@ public sealed class SanctumGuard(
     ICampaignRepository campaignRepository,
     ISanctumBreachRepository breachRepository,
     ILogger<SanctumGuard> logger,
+    ICampaignPathIdentityReader pathIdentities,
     IDnsResolver? dnsResolver = null) : ISanctumGuard
 {
     /// <summary>
@@ -243,9 +245,7 @@ public sealed class SanctumGuard(
             return ClampResourceLimits(new ResourceLimits());
         }
 
-        Campaign? campaign = await campaignRepository
-            .GetByPathAsync(workspaceRoot.Trim(), ct)
-            .ConfigureAwait(false);
+        Campaign? campaign = await FindWorkspaceCampaignAsync(workspaceRoot, ct).ConfigureAwait(false);
 
         if (campaign is null)
         {
@@ -277,9 +277,7 @@ public sealed class SanctumGuard(
             return null;
         }
 
-        Campaign? campaign = await campaignRepository
-            .GetByPathAsync(normalizedRoot, ct)
-            .ConfigureAwait(false);
+        Campaign? campaign = await FindWorkspaceCampaignAsync(normalizedRoot, ct).ConfigureAwait(false);
 
         if (campaign is null)
         {
@@ -318,9 +316,7 @@ public sealed class SanctumGuard(
             return;
         }
 
-        Campaign? campaign = await campaignRepository
-            .GetByPathAsync(workspaceRoot.Trim(), ct)
-            .ConfigureAwait(false);
+        Campaign? campaign = await FindWorkspaceCampaignAsync(workspaceRoot, ct).ConfigureAwait(false);
 
         if (campaign is null)
         {
@@ -375,6 +371,40 @@ public sealed class SanctumGuard(
                 "Failed to persist Sanctum ResourceLimit breach for campaign {CampaignId}.",
                 breach.CampaignId);
         }
+    }
+
+    /// <summary>
+    /// The Campaign a workspace directory belongs to, found the way a turn finds it: by the physical identity of the directory and its
+    /// ancestors when a root is registered, otherwise by the registered root that contains the directory. A directory below a Campaign's
+    /// root, or the root spelled differently, is that Campaign's workspace, so its resource limits and path boundary apply to it.
+    /// </summary>
+    private async Task<Campaign?> FindWorkspaceCampaignAsync(string workspaceRoot, CancellationToken ct)
+    {
+        string trimmed = workspaceRoot.Trim();
+
+        Result<RegisteredCampaignIdentity?> identity = await pathIdentities
+            .ResolveMostSpecificAsync(trimmed, ct)
+            .ConfigureAwait(false);
+
+        if (identity.IsSuccess && identity.Value is { } registered)
+        {
+            Campaign? byIdentity = await campaignRepository
+                .GetByIdAsync(registered.CampaignId, ct)
+                .ConfigureAwait(false);
+
+            if (byIdentity is not null)
+            {
+                return byIdentity;
+            }
+        }
+        else if (identity.IsFailure)
+        {
+            logger.LogWarning(
+                "The registered Campaign root identity of a workspace could not be read ({ErrorCode}); falling back to the registered root that contains it.",
+                identity.Error.Code);
+        }
+
+        return await campaignRepository.GetByContainedPathAsync(trimmed, ct).ConfigureAwait(false);
     }
 
     private static string DescribeResource(ResourceLimitKind resource) => resource switch

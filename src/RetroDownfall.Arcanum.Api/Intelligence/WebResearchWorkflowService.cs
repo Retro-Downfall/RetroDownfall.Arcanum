@@ -39,8 +39,11 @@ public sealed class WebResearchWorkflowService(
     ISessionRepository sessions,
     ISessionAttachmentStore attachments,
     ICampaignRepository campaigns,
-    ISanctumGuard sanctum)
+    ISanctumGuard sanctum,
+    ICanonicalCampaignContextResolver campaignResolver)
 {
+    private readonly ICanonicalCampaignContextResolver _campaignResolver = campaignResolver;
+
     private const int MaximumResearchPromptCharacters = 120_000;
 
     /// <summary>
@@ -428,12 +431,43 @@ public sealed class WebResearchWorkflowService(
 
         int retainedContentBudget = ResolveRetainedContentBudget(searches);
 
+        // The Campaign whose Sanctum gates the citations is the one the run is bound to, by the same resolution a chat turn uses: its Session,
+        // its explicit identifier, or the registered root that contains its working directory. A run that names no Campaign but stands in a
+        // contained one is as contained as a turn that does.
+        SanctumCampaignResolution.Resolved governing = await SanctumCampaignResolution
+            .ResolveAsync(
+                request.ContinueSessionId,
+                synthesisEnvelope.CampaignId,
+                synthesisEnvelope.WorkingDirectory,
+                known: null,
+                _campaignResolver,
+                campaigns,
+                cancellationToken)
+            .ConfigureAwait(false);
+
         Func<Uri, CancellationToken, ValueTask<bool>>? egressWard =
-            await BuildCampaignEgressWardAsync(synthesisEnvelope.CampaignId, cancellationToken).ConfigureAwait(false);
+            await BuildCampaignEgressWardAsync(governing.CampaignId, cancellationToken).ConfigureAwait(false);
+
+        // Whether the Sanctum, rather than the outbound address guard, is what refused the citation being fetched: a refused redirect hop and
+        // a refused address both come back from the reader as SsrfBlocked, and the run tells the operator which control said no.
+        bool sanctumRefused = false;
+
+        Func<Uri, CancellationToken, ValueTask<bool>>? fetchWard = egressWard is null
+            ? null
+            : async (Uri target, CancellationToken token) =>
+            {
+                bool allowed = await egressWard(target, token).ConfigureAwait(false);
+
+                sanctumRefused |= !allowed;
+
+                return allowed;
+            };
 
         for (int index = 0; index < selectedCitations.Length; index++)
         {
             WebCitation citation = selectedCitations[index];
+
+            sanctumRefused = false;
 
             // Everything past the synthesis prompt's character budget is fetched, held, and then
             // discarded unread, so the phase stops here rather than paying for pages the model will
@@ -472,9 +506,23 @@ public sealed class WebResearchWorkflowService(
                 Result<WebReadResult> read = await readProvider
                     .ReadUrlAsync(
                         citation.Url,
-                        BuildReadOptions(egressWard),
+                        BuildReadOptions(fetchWard),
                         cancellationToken)
                     .ConfigureAwait(false);
+
+                // A citation a control refused (the Sanctum at a redirect hop, or the outbound address guard at any hop) is reported as
+                // denied and dropped, exactly as one the Sanctum refuses up front is. Keeping it with an empty body would hand the
+                // synthesis a source nobody read.
+                if (read.IsFailure && read.Error.Code == ErrorCodes.WebResearch.SsrfBlocked)
+                {
+                    yield return Progress(
+                        "source_denied",
+                        sanctumRefused
+                            ? $"Source {index + 1} of {selectedCitations.Length} was denied by the Campaign Sanctum network policy."
+                            : $"Source {index + 1} of {selectedCitations.Length} was refused by the outbound network policy.");
+
+                    continue;
+                }
 
                 if (read.IsSuccess)
                 {

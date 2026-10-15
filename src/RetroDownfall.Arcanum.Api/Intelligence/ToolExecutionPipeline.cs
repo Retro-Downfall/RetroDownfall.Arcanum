@@ -116,6 +116,13 @@ public sealed class ToolExecutionPipeline(
 
         public SanctumMode SanctumMode { get; init; }
 
+        /// <summary>
+        /// True when the turn is bound to a Campaign whose Sanctum policy could not be read (the row is gone, the read failed, or the stored
+        /// configuration does not parse). Whether that Sanctum was enabled is unknowable, so every tool call of the turn is refused rather than
+        /// run unrestricted.
+        /// </summary>
+        public bool SanctumPolicyUnreadable { get; init; }
+
         public IReadOnlyList<AITool> InferenceTools { get; init; } = [];
 
         public IReadOnlySet<Guid>? VisibleAttachmentIds { get; init; }
@@ -1745,6 +1752,11 @@ public sealed class ToolExecutionPipeline(
     {
         SanctumResult allowed = new() { Allowed = true };
 
+        if (turnContext.SanctumPolicyUnreadable)
+        {
+            return new SanctumEnforcementOutcome(UnreadableSanctumDenial(turnContext.CampaignId), SanctumMode.Strict, true);
+        }
+
         if (turnContext.Campaign is null)
         {
             return new SanctumEnforcementOutcome(allowed, SanctumMode.Strict, false);
@@ -1790,6 +1802,26 @@ public sealed class ToolExecutionPipeline(
 
         return new SanctumEnforcementOutcome(allowed, turnContext.SanctumMode, true);
     }
+
+    /// <summary>
+    /// The refusal for a turn bound to a Campaign whose Sanctum cannot be read. Nothing was evaluated, so no breach is recorded (there may be
+    /// no Campaign row to hold one) and no mode can override it.
+    /// </summary>
+    private static SanctumResult UnreadableSanctumDenial(string? campaignId) =>
+        new()
+        {
+            Allowed = false,
+            DenyReason = "The Sanctum policy of the Campaign this turn is bound to could not be read, so no tool call can be checked against it",
+            DenialKind = SanctumDenialKind.PolicyUnavailable,
+            Breach = new SanctumBreach
+            {
+                BreachId = Guid.NewGuid().ToString("N"),
+                CampaignId = campaignId ?? string.Empty,
+                BreachType = "PolicyUnavailable",
+                Detail = "The Sanctum policy could not be read.",
+                Timestamp = DateTimeOffset.UtcNow,
+            },
+        };
 
     /// <summary>
     /// Publishes a per-hop network ward for the native web tools when the turn runs inside an enabled

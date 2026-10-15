@@ -81,6 +81,7 @@ internal sealed class SanctumPipelineHarness
                 new SingleCampaignRepository(campaign),
                 breaches,
                 NullLogger<SanctumGuard>.Instance,
+                UnregisteredCampaignRoots.Instance,
                 new FakeDnsResolver()));
 
         return new SanctumPipelineHarness(workspaceRoot, campaign, guard, breaches);

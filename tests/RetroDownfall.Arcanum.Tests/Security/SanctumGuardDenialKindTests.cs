@@ -158,7 +158,7 @@ public sealed class SanctumGuardDenialKindTests : IDisposable
             ? LoggerFactory.Create(static _ => { })
             : LoggerFactory.Create(builder => builder.AddProvider(logs));
 
-        return new SanctumGuard(new SingleCampaignRepository(campaign), breaches, factory.CreateLogger<SanctumGuard>(), dns);
+        return new SanctumGuard(new SingleCampaignRepository(campaign), breaches, factory.CreateLogger<SanctumGuard>(), UnregisteredCampaignRoots.Instance, dns);
     }
 
     private Campaign CreateCampaign(SanctumMode mode)

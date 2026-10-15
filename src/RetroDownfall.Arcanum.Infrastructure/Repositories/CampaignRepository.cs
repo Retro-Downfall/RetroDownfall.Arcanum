@@ -1,4 +1,5 @@
 using System.Data;
+using System.Globalization;
 using System.Text.Json;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
@@ -15,6 +16,7 @@ using RetroDownfall.Arcanum.Core.Workspaces;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Data.LongRest;
+using RetroDownfall.Arcanum.Infrastructure.Security;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Repositories;
 
@@ -80,6 +82,105 @@ public sealed class CampaignRepository : ICampaignRepository
             $"SELECT {GrimoireEntitySql.CampaignColumns} FROM \"Campaigns\" WHERE \"Path\" = $path LIMIT 1;",
             command => GrimoireEntitySql.AddParameter(command, "$path", normalized),
             cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// The registered Campaign whose root is <paramref name="path"/> or one of its ancestors; the deepest wins.
+    /// </summary>
+    /// <remarks>
+    /// One parameterized statement over the bounded list of ancestor spellings of the path, compared by whole directory components with a
+    /// trailing separator ignored on both sides. There is no prefix predicate (<c>LIKE 'root%'</c> is what makes <c>/work/app</c> and
+    /// <c>/work/app-legacy</c> confusable). The spellings also include the ancestors of the path with its symbolic links resolved, so a
+    /// working directory reached through a link into the Campaign is still the Campaign's. Platforms whose file systems fold case compare
+    /// without regard to ASCII case: over-applying a Sanctum to a case variant of a registered root is the safe error, and a miss is not.
+    /// </remarks>
+    public async Task<Campaign?> GetByContainedPathAsync(string path, CancellationToken cancellationToken = default)
+    {
+        IReadOnlyList<string> spellings = AncestorSpellings(path);
+
+        if (spellings.Count == 0)
+        {
+            return null;
+        }
+
+        string separators = new([Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar]);
+
+        string collation = FoldsCase ? " COLLATE NOCASE" : string.Empty;
+
+        string placeholders = string.Join(
+            ", ",
+            Enumerable.Range(0, spellings.Count).Select(static index => "$root" + index.ToString(CultureInfo.InvariantCulture)));
+
+        return await ReadSingleAsync(
+            $"SELECT {GrimoireEntitySql.CampaignColumns} FROM \"Campaigns\" "
+            + $"WHERE rtrim(\"Path\", $separators){collation} IN ({placeholders}) "
+            + "ORDER BY length(rtrim(\"Path\", $separators)) DESC LIMIT 1;",
+            command =>
+            {
+                GrimoireEntitySql.AddParameter(command, "$separators", separators);
+
+                for (int index = 0; index < spellings.Count; index++)
+                {
+                    GrimoireEntitySql.AddParameter(command, "$root" + index.ToString(CultureInfo.InvariantCulture), spellings[index]);
+                }
+            },
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>Whether this platform's file systems fold case, so a registered root and a differently cased spelling are one directory.</summary>
+    private static bool FoldsCase => OperatingSystem.IsWindows() || OperatingSystem.IsMacOS();
+
+    /// <summary>
+    /// The directory itself and each ancestor of it, deepest first, spelled without a trailing separator; then the same for the path with
+    /// its symbolic links resolved when that is a different spelling. Bounded by the same ancestor limit as the physical-identity walk.
+    /// </summary>
+    private static List<string> AncestorSpellings(string path)
+    {
+        string full;
+
+        try
+        {
+            full = Path.GetFullPath(path.Trim());
+        }
+        catch (Exception exception) when (exception is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            return [];
+        }
+
+        List<string> spellings = [];
+
+        AddAncestors(full, spellings);
+
+        if (WorkspacePathPolicy.TryCanonicalize(full, out string? canonical, out _)
+            && !string.Equals(canonical, full, StringComparison.Ordinal))
+        {
+            AddAncestors(canonical, spellings);
+        }
+
+        return spellings;
+    }
+
+    private static void AddAncestors(string full, List<string> spellings)
+    {
+        char[] separators = [Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar];
+
+        string? cursor = full;
+
+        int walked = 0;
+
+        while (cursor is not null && walked < CampaignPathIdentityPolicy.MaxAncestorCandidates)
+        {
+            string spelling = cursor.TrimEnd(separators);
+
+            if (!spellings.Contains(spelling, StringComparer.Ordinal))
+            {
+                spellings.Add(spelling);
+            }
+
+            cursor = Path.GetDirectoryName(Path.TrimEndingDirectorySeparator(cursor));
+
+            walked++;
+        }
     }
 
     public async Task<Campaign?> GetByNameAsync(string name, CancellationToken cancellationToken = default)

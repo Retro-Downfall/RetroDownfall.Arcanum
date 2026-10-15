@@ -49,7 +49,8 @@ public sealed class WebResearchSanctumWardTests : IDisposable
         sessions: null!,
         attachments: null!,
         new SingleCampaignRepository(harness.Campaign),
-        harness.Guard);
+        harness.Guard,
+        RefusingCampaignResolver.Instance);
 
     [Theory]
     [InlineData(SanctumMode.Strict, false)]
@@ -147,7 +148,7 @@ public sealed class WebResearchSanctumWardTests : IDisposable
 
         InMemorySanctumBreachRepository breaches = new();
 
-        SanctumGuard guard = new(campaigns, breaches, NullLogger<SanctumGuard>.Instance, new FakeDnsResolver());
+        SanctumGuard guard = new(campaigns, breaches, NullLogger<SanctumGuard>.Instance, UnregisteredCampaignRoots.Instance, new FakeDnsResolver());
 
         WebResearchWorkflowService service = new(
             providers: null!,
@@ -156,7 +157,8 @@ public sealed class WebResearchSanctumWardTests : IDisposable
             sessions: null!,
             attachments: null!,
             campaigns,
-            guard);
+            guard,
+            RefusingCampaignResolver.Instance);
 
         Func<Uri, CancellationToken, ValueTask<bool>> ward =
             (await service.BuildCampaignEgressWardAsync(campaigns.Campaign!.Id, CancellationToken.None))!;

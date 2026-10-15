@@ -141,6 +141,31 @@ public sealed class DiWiringSmokeTests
         Assert.NotNull(services.GetRequiredService<IDataRetentionPolicyStore>());
     }
 
+    /// <summary>
+    /// The three consumers that decide which Campaign's Sanctum applies to a directory take the ports that find the Campaign as required
+    /// constructor parameters, so the container composing them is what proves the ports are registered: a missing registration is a
+    /// resolution failure here, not a consumer that silently falls back to a weaker lookup.
+    /// </summary>
+    [SkippableFact]
+    public void Host_ComposesTheCampaignBindingPortsIntoTheSanctumDeciders()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        using IServiceScope scope = _factory.Services.CreateScope();
+
+        IServiceProvider services = scope.ServiceProvider;
+
+        Assert.NotNull(services.GetRequiredService<ICanonicalCampaignContextResolver>());
+
+        Assert.NotNull(services.GetRequiredService<ICampaignPathIdentityReader>());
+
+        Assert.NotNull(services.GetRequiredService<WizardIntelligenceProvider>());
+
+        Assert.NotNull(services.GetRequiredService<WebResearchWorkflowService>());
+
+        Assert.NotNull(services.GetRequiredService<ISanctumGuard>());
+    }
+
     [SkippableFact]
     public async Task Host_ModelCallExecutorProviderFailure_UsesDiLoggerSafely()
     {
