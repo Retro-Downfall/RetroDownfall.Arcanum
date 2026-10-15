@@ -212,11 +212,19 @@ internal sealed class InMemorySanctumBreachRepository : ISanctumBreachRepository
 {
     public List<SanctumBreachRecord> Records { get; } = [];
 
+    /// <summary>When set, every write fails with it and nothing is recorded: the audit row an audit-only Sanctum relies on cannot be kept.</summary>
+    public Exception? RecordFailure { get; set; }
+
     public Task RecordAsync(
         SanctumBreachRecord breach,
         int maxBreachCount,
         CancellationToken ct = default)
     {
+        if (RecordFailure is { } failure)
+        {
+            return Task.FromException(failure);
+        }
+
         Records.Add(breach);
 
         return Task.CompletedTask;

@@ -1,5 +1,6 @@
 using System.Diagnostics.CodeAnalysis;
 using System.Net;
+using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.AI;
@@ -12,6 +13,7 @@ using RetroDownfall.Arcanum.Core.Sanctum;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.Intelligence.WebResearch;
 using RetroDownfall.Arcanum.Infrastructure.Repositories;
+using RetroDownfall.Arcanum.Infrastructure.Security;
 using RetroDownfall.Arcanum.Tests.Support;
 using Xunit;
 
@@ -202,6 +204,194 @@ public sealed class ToolExecutionPipelineSanctumRedirectModeTests : IDisposable
         }
 
         AssertOneTargetBreach(harness, PublicTarget, "browse_web");
+    }
+
+    // The breach row is the only control an audit-only Sanctum has. A breach the store cannot keep is refused rather than waved through on a
+    // log line, at the initial target and at every redirect hop.
+    [Theory]
+    [InlineData("read_url")]
+    [InlineData("browse_web")]
+    public async Task AuditOnly_refuses_the_initial_target_when_the_breach_cannot_be_recorded_and_sends_nothing(string toolName)
+    {
+        SanctumPipelineHarness harness = CreateHarness(SanctumMode.AuditOnly, ["allowed.test"]);
+
+        harness.Breaches.RecordFailure = new IOException("simulated breach store failure");
+
+        using RedirectScriptHandler http = new(PublicTarget);
+
+        using SingleClientFactory clients = new(http);
+
+        ToolExecutionPipeline.ProcessedToolCall processed = await harness.ProcessAsync(CreateTool(toolName, clients), toolName,
+            new Dictionary<string, object?> { ["url"] = PublicTarget }, TurnFor(harness, SanctumMode.AuditOnly));
+
+        Assert.True(processed.Denied);
+
+        Assert.Contains("The Sanctum Guard has blocked this action: NetworkEgress", processed.ResultText, StringComparison.Ordinal);
+
+        Assert.Contains("could not be recorded", processed.ResultText, StringComparison.Ordinal);
+
+        Assert.Empty(http.Requests);
+
+        Assert.Empty(harness.Breaches.Records);
+    }
+
+    [Fact]
+    public async Task AuditOnly_does_not_follow_an_off_list_redirect_when_the_breach_cannot_be_recorded()
+    {
+        SanctumPipelineHarness harness = CreateHarness(SanctumMode.AuditOnly, ["allowed.test"]);
+
+        harness.Breaches.RecordFailure = new IOException("simulated breach store failure");
+
+        using RedirectScriptHandler http = new(PublicTarget);
+
+        using SingleClientFactory clients = new(http);
+
+        ToolExecutionPipeline.ProcessedToolCall processed = await RunReadUrlAsync(harness, CreateProvider(clients), SanctumMode.AuditOnly);
+
+        Assert.False(processed.Denied);
+
+        AssertReadRefused(processed.ResultText);
+
+        Assert.Equal([InitialUrl], http.Requests);
+
+        Assert.Empty(harness.Breaches.Records);
+    }
+
+    // A campaign the guard cannot read has no policy to audit. AuditOnly cannot be honoured for it, so the target is refused in both modes.
+    [Theory]
+    [InlineData("read_url", SanctumMode.Strict)]
+    [InlineData("read_url", SanctumMode.AuditOnly)]
+    [InlineData("browse_web", SanctumMode.Strict)]
+    [InlineData("browse_web", SanctumMode.AuditOnly)]
+    public async Task A_campaign_the_guard_cannot_resolve_refuses_the_target_in_both_modes_and_sends_nothing(string toolName, SanctumMode mode)
+    {
+        SanctumPipelineHarness harness = CreateHarness(mode, ["allowed.test"]);
+
+        using RedirectScriptHandler http = new(PublicTarget);
+
+        using SingleClientFactory clients = new(http);
+
+        ToolExecutionPipeline.TurnContext turn = new()
+        {
+            Campaign = harness.Campaign,
+            CampaignId = Guid.NewGuid().ToString("D"),
+            WorkspaceRoot = harness.WorkspaceRoot,
+            SanctumEnabled = true,
+            SanctumMode = mode,
+        };
+
+        ToolExecutionPipeline.ProcessedToolCall processed = await harness.ProcessAsync(CreateTool(toolName, clients), toolName,
+            new Dictionary<string, object?> { ["url"] = PublicTarget }, turn);
+
+        Assert.True(processed.Denied);
+
+        Assert.Contains("The Sanctum Guard has blocked this action", processed.ResultText, StringComparison.Ordinal);
+
+        Assert.Empty(http.Requests);
+
+        Assert.Empty(harness.Breaches.Records);
+    }
+
+    // The baseline address guard is independent of the Sanctum mode. An AuditOnly Sanctum records an off-list initial target and lets the
+    // tool go on, and the tool still refuses a target that resolves to a private address before any request is made.
+    [Theory]
+    [InlineData("read_url", false)]
+    [InlineData("read_url", true)]
+    [InlineData("browse_web", false)]
+    [InlineData("browse_web", true)]
+    public async Task AuditOnly_initial_target_that_resolves_privately_is_refused_with_no_request(string toolName, bool campaignAllowsTheHost)
+    {
+        SanctumPipelineHarness harness = CreateHarness(
+            SanctumMode.AuditOnly,
+            campaignAllowsTheHost ? ["allowed.test", "private.test"] : ["allowed.test"]);
+
+        using RedirectScriptHandler http = new(PublicTarget);
+
+        using SingleClientFactory clients = new(http);
+
+        ToolExecutionPipeline.ProcessedToolCall processed = await harness.ProcessAsync(CreateTool(toolName, clients), toolName,
+            new Dictionary<string, object?> { ["url"] = PrivateTarget }, TurnFor(harness, SanctumMode.AuditOnly));
+
+        Assert.False(processed.Denied);
+
+        string ssrfCode = toolName == ArcanumReadUrlTool.ToolName ? "WebResearch.SsrfBlocked" : "WebBrowsing.SsrfBlocked";
+
+        Assert.Contains(ssrfCode, processed.ResultText, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("controlled second-hop page", processed.ResultText, StringComparison.Ordinal);
+
+        Assert.Empty(http.Requests);
+
+        if (campaignAllowsTheHost)
+        {
+            Assert.Empty(harness.Breaches.Records);
+        }
+        else
+        {
+            AssertOneTargetBreach(harness, PrivateTarget, toolName);
+        }
+    }
+
+    // DNS rebinding: the name resolves to a public address when the tool validates it and to loopback when the connection is made. The real
+    // untrusted-egress handler re-validates the address it is about to dial, so nothing reaches the loopback listener, in either mode and
+    // whether or not the campaign allows the host.
+    [Theory]
+    [InlineData("read_url", SanctumMode.AuditOnly, false)]
+    [InlineData("read_url", SanctumMode.AuditOnly, true)]
+    [InlineData("read_url", SanctumMode.Strict, true)]
+    [InlineData("browse_web", SanctumMode.AuditOnly, false)]
+    [InlineData("browse_web", SanctumMode.AuditOnly, true)]
+    [InlineData("browse_web", SanctumMode.Strict, true)]
+    public async Task A_target_that_rebinds_to_loopback_at_connect_time_is_refused_and_nothing_is_dialed(string toolName, SanctumMode mode, bool campaignAllowsTheHost)
+    {
+        using TcpListener loopback = new(IPAddress.Loopback, 0);
+
+        loopback.Start();
+
+        string target = $"http://rebind.test:{((IPEndPoint)loopback.LocalEndpoint).Port}/page";
+
+        SanctumPipelineHarness harness = CreateHarness(mode, campaignAllowsTheHost ? ["allowed.test", "rebind.test"] : ["allowed.test"]);
+
+        FakeDnsResolver validation = new();
+
+        validation.Add("rebind.test", IPAddress.Parse("93.184.216.36"));
+
+        FakeDnsResolver connect = new();
+
+        connect.Add("rebind.test", IPAddress.Loopback);
+
+        using SocketsHttpHandler handler = OutboundUrlGuard.CreateUntrustedEgressHandler(connect);
+
+        using SingleClientFactory clients = new(handler);
+
+        AITool tool = toolName == ArcanumReadUrlTool.ToolName
+            ? new ArcanumReadUrlTool(
+                new SingleProviderCatalog(new LocalHttpWebProvider(clients, new WebPageContentExtractor(), validation)),
+                new TestOptionsSnapshot<ArcanumSettings>(new ArcanumSettings()))
+            : new ArcanumBrowseWebTool(
+                clients,
+                new TestOptionsSnapshot<ArcanumSettings>(new ArcanumSettings { Features = new FeatureSettings { WebBrowsing = true } }),
+                NullLogger.Instance,
+                null,
+                validation);
+
+        ToolExecutionPipeline.ProcessedToolCall processed = await harness.ProcessAsync(tool, toolName,
+            new Dictionary<string, object?> { ["url"] = target }, TurnFor(harness, mode));
+
+        string ssrfCode = toolName == ArcanumReadUrlTool.ToolName ? "WebResearch.SsrfBlocked" : "WebBrowsing.SsrfBlocked";
+
+        Assert.Contains(ssrfCode, processed.ResultText, StringComparison.Ordinal);
+
+        Assert.False(loopback.Pending());
+
+        if (campaignAllowsTheHost)
+        {
+            Assert.Empty(harness.Breaches.Records);
+        }
+        else
+        {
+            AssertOneTargetBreach(harness, target, toolName);
+        }
     }
 
     public void Dispose() =>

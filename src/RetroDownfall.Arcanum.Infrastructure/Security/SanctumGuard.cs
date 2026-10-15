@@ -226,14 +226,9 @@ public sealed class SanctumGuard(
                 "DisabledTool",
                 $"Tool '{toolName}' is disabled in this Sanctum.");
 
-            await RecordBreachAsync(breach, config.MaxBreachCount, ct).ConfigureAwait(false);
+            bool recorded = await RecordBreachAsync(breach, config.MaxBreachCount, ct).ConfigureAwait(false);
 
-            return new SanctumResult
-            {
-                Allowed = false,
-                DenyReason = breach.Detail,
-                Breach = breach,
-            };
+            return Denied(breach, breach.Detail, recorded);
         }
 
         return AllowedResult();
@@ -534,6 +529,7 @@ public sealed class SanctumGuard(
             Allowed = false,
             DenyReason = breach.Detail,
             Breach = RedactBreachForApi(breach),
+            DenialKind = SanctumDenialKind.PolicyUnavailable,
         };
     }
 
@@ -671,14 +667,9 @@ public sealed class SanctumGuard(
             resolvedPath,
             workspaceRoot);
 
-        await RecordBreachAsync(breach, maxBreachCount, ct).ConfigureAwait(false);
+        bool recorded = await RecordBreachAsync(breach, maxBreachCount, ct).ConfigureAwait(false);
 
-        return new SanctumResult
-        {
-            Allowed = false,
-            DenyReason = detail,
-            Breach = breach,
-        };
+        return Denied(breach, detail, recorded);
     }
 
     private async Task<SanctumResult> DenyNetworkAsync(
@@ -696,17 +687,31 @@ public sealed class SanctumGuard(
             detail,
             requestedUrl: url);
 
-        await RecordBreachAsync(breach, maxBreachCount, ct).ConfigureAwait(false);
+        bool recorded = await RecordBreachAsync(breach, maxBreachCount, ct).ConfigureAwait(false);
 
-        return new SanctumResult
-        {
-            Allowed = false,
-            DenyReason = detail,
-            Breach = breach,
-        };
+        return Denied(breach, detail, recorded);
     }
 
-    private async Task RecordBreachAsync(SanctumBreach breach, int maxBreachCount, CancellationToken ct)
+    /// <summary>
+    /// The refusal for a policy breach. The breach row is the audit control an audit-only Sanctum relies on, so a breach that could not be
+    /// written is not a breach an audit-only Sanctum may wave through: the verdict says so and every mode refuses it.
+    /// </summary>
+    private static SanctumResult Denied(SanctumBreach breach, string detail, bool recorded) =>
+        new()
+        {
+            Allowed = false,
+            DenyReason = recorded
+                ? detail
+                : $"{detail} The breach could not be recorded, so the operation is refused in every Sanctum mode.",
+            Breach = breach,
+            DenialKind = recorded ? SanctumDenialKind.Policy : SanctumDenialKind.AuditRecordFailed,
+        };
+
+    /// <summary>
+    /// Logs the breach and writes its audit row. Returns whether the row was written; a failed write is logged and reported to the caller,
+    /// which fails the operation closed, because for an audit-only Sanctum the row is the only control.
+    /// </summary>
+    private async Task<bool> RecordBreachAsync(SanctumBreach breach, int maxBreachCount, CancellationToken ct)
     {
         LogBreach(breach);
 
@@ -722,16 +727,20 @@ public sealed class SanctumGuard(
         try
         {
             await breachRepository.RecordAsync(record, maxBreachCount, ct).ConfigureAwait(false);
+
+            return true;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            // Persistence failure must not break tool-invocation enforcement: the synthetic
-            // denial has already been decided and is returned regardless of write outcome.
+            // A persistence failure must not become an unhandled exception inside tool enforcement, so it is logged and reported to the
+            // caller as an unrecorded breach instead of surfacing to the model.
             logger.LogError(
                 ex,
                 "Failed to persist Sanctum breach {BreachType} for campaign {CampaignId}.",
                 breach.BreachType,
                 breach.CampaignId);
+
+            return false;
         }
     }
 
