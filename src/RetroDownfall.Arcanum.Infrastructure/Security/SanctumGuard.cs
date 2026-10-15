@@ -375,9 +375,14 @@ public sealed class SanctumGuard(
 
     /// <summary>
     /// The Campaign a workspace directory belongs to, found the way a turn finds it: by the physical identity of the directory and its
-    /// ancestors when a root is registered, otherwise by the registered root that contains the directory. A directory below a Campaign's
-    /// root, or the root spelled differently, is that Campaign's workspace, so its resource limits and path boundary apply to it.
+    /// ancestors when a root is registered, and by the registered root that contains the directory. A directory below a Campaign's root,
+    /// or the root spelled differently, is that Campaign's workspace, so its resource limits and path boundary apply to it.
     /// </summary>
+    /// <remarks>
+    /// The two answers can name different Campaigns (a Campaign with a registered identity, and a Campaign registered by path only inside
+    /// it), and neither is better evidence of where the directory belongs. The stricter Sanctum governs, because applying too much
+    /// containment is the safe error; on equal strictness the identity answer wins, since it is the one that does not depend on a spelling.
+    /// </remarks>
     private async Task<Campaign?> FindWorkspaceCampaignAsync(string workspaceRoot, CancellationToken ct)
     {
         string trimmed = workspaceRoot.Trim();
@@ -386,25 +391,31 @@ public sealed class SanctumGuard(
             .ResolveMostSpecificAsync(trimmed, ct)
             .ConfigureAwait(false);
 
+        Campaign? byIdentity = null;
+
         if (identity.IsSuccess && identity.Value is { } registered)
         {
-            Campaign? byIdentity = await campaignRepository
+            byIdentity = await campaignRepository
                 .GetByIdAsync(registered.CampaignId, ct)
                 .ConfigureAwait(false);
-
-            if (byIdentity is not null)
-            {
-                return byIdentity;
-            }
         }
         else if (identity.IsFailure)
         {
             logger.LogWarning(
-                "The registered Campaign root identity of a workspace could not be read ({ErrorCode}); falling back to the registered root that contains it.",
+                "The registered Campaign root identity of a workspace could not be read ({ErrorCode}); using the registered root that contains it.",
                 identity.Error.Code);
         }
 
-        return await campaignRepository.GetByContainedPathAsync(trimmed, ct).ConfigureAwait(false);
+        Campaign? byPath = await campaignRepository.GetByContainedPathAsync(trimmed, ct).ConfigureAwait(false);
+
+        if (byIdentity is null || byPath is null || byIdentity.Id == byPath.Id)
+        {
+            return byIdentity ?? byPath;
+        }
+
+        return CampaignRepository.GetSanctumStrictness(byPath) > CampaignRepository.GetSanctumStrictness(byIdentity)
+            ? byPath
+            : byIdentity;
     }
 
     private static string DescribeResource(ResourceLimitKind resource) => resource switch

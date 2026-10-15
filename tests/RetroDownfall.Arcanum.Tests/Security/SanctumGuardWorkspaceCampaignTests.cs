@@ -136,6 +136,60 @@ public sealed class SanctumGuardWorkspaceCampaignTests : IDisposable
         Assert.Equal(0, identities.Calls);
     }
 
+    // The physical identity of a root is only known once the root is registered, and nothing in this release registers one, so the
+    // registered-root lookup is the registry every installation has. When both answer and they name different Campaigns (an
+    // identity-registered Campaign with a path-only Campaign nested inside it), the stricter Sanctum governs the directory.
+    [Theory]
+    [InlineData(SanctumMode.AuditOnly, SanctumMode.Strict, 7)]
+    [InlineData(SanctumMode.Strict, SanctumMode.AuditOnly, 3)]
+    public async Task A_path_only_campaign_nested_in_an_identity_registered_one_is_governed_by_the_stricter_of_the_two(
+        SanctumMode outerMode,
+        SanctumMode innerMode,
+        int expectedMaxFileWriteMb)
+    {
+        Campaign outer = CreateCampaign(new SanctumConfig { Enabled = true, Mode = outerMode, ResourceLimits = new ResourceLimits(MaxFileWriteMb: 3) });
+
+        Campaign inner = CreateNestedCampaign(new SanctumConfig { Enabled = true, Mode = innerMode, ResourceLimits = new ResourceLimits(MaxFileWriteMb: 7) });
+
+        FixedIdentityReader identities = new(Result<RegisteredCampaignIdentity?>.Success(Registered(outer.Id)));
+
+        SanctumGuard guard = CreateGuard(new NestedRepository(outer, inner), identities: identities);
+
+        string workspace = Path.Combine(inner.Path, "src");
+
+        Assert.Equal(expectedMaxFileWriteMb, (await guard.GetEffectiveResourceLimitsForWorkspaceAsync(workspace)).MaxFileWriteMb);
+
+        Assert.NotNull(await guard.GetChildProcessBoundaryForWorkspaceAsync(workspace));
+    }
+
+    [Fact]
+    public async Task Equally_strict_campaigns_that_claim_one_directory_are_governed_by_the_identity_registered_one()
+    {
+        Campaign outer = CreateCampaign(new SanctumConfig { Enabled = true, ResourceLimits = new ResourceLimits(MaxFileWriteMb: 3) });
+
+        Campaign inner = CreateNestedCampaign(new SanctumConfig { Enabled = true, ResourceLimits = new ResourceLimits(MaxFileWriteMb: 7) });
+
+        SanctumGuard guard = CreateGuard(
+            new NestedRepository(outer, inner),
+            identities: new FixedIdentityReader(Result<RegisteredCampaignIdentity?>.Success(Registered(outer.Id))));
+
+        Assert.Equal(3, (await guard.GetEffectiveResourceLimitsForWorkspaceAsync(Path.Combine(inner.Path, "src"))).MaxFileWriteMb);
+    }
+
+    [Fact]
+    public async Task A_path_only_campaign_nested_in_an_identity_registered_one_with_the_sanctum_off_is_still_governed_by_the_outer_strict_one()
+    {
+        Campaign outer = CreateCampaign(new SanctumConfig { Enabled = true, ResourceLimits = new ResourceLimits(MaxFileWriteMb: 3) });
+
+        Campaign inner = CreateNestedCampaign(new SanctumConfig { Enabled = false, ResourceLimits = new ResourceLimits(MaxFileWriteMb: 7) });
+
+        SanctumGuard guard = CreateGuard(
+            new NestedRepository(outer, inner),
+            identities: new FixedIdentityReader(Result<RegisteredCampaignIdentity?>.Success(Registered(outer.Id))));
+
+        Assert.Equal(3, (await guard.GetEffectiveResourceLimitsForWorkspaceAsync(Path.Combine(inner.Path, "src"))).MaxFileWriteMb);
+    }
+
     public void Dispose() =>
         _ = TestDirectoryCleanup.TryDelete(_root, nameof(SanctumGuardWorkspaceCampaignTests));
 
@@ -165,6 +219,25 @@ public sealed class SanctumGuardWorkspaceCampaignTests : IDisposable
         };
     }
 
+    private Campaign CreateNestedCampaign(SanctumConfig config)
+    {
+        string nested = Path.Combine(_root, "nested");
+
+        _ = Directory.CreateDirectory(nested);
+
+        return new Campaign
+        {
+            Id = Guid.NewGuid(),
+            Name = "nested-campaign",
+            NameLower = "nested-campaign",
+            Path = nested,
+            Type = WorkspaceType.Campaign,
+            SanctumConfigJson = CampaignRepository.SerializeSanctumConfig(config),
+            CreatedAt = DateTimeOffset.UtcNow,
+            UpdatedAt = DateTimeOffset.UtcNow,
+        };
+    }
+
     private sealed class FixedIdentityReader(Result<RegisteredCampaignIdentity?> answer) : ICampaignPathIdentityReader
     {
         public int Calls { get; private set; }
@@ -183,7 +256,7 @@ public sealed class SanctumGuardWorkspaceCampaignTests : IDisposable
     /// <summary>A store that finds its one Campaign by id and by the root that contains a directory, as the real one does.</summary>
     private class ContainingRepository(Campaign campaign) : ICampaignRepository
     {
-        public Task<Campaign?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default) =>
+        public virtual Task<Campaign?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default) =>
             Task.FromResult<Campaign?>(id == campaign.Id ? campaign : null);
 
         public Task<Campaign?> GetByPathAsync(string path, CancellationToken cancellationToken = default) =>
@@ -226,5 +299,35 @@ public sealed class SanctumGuardWorkspaceCampaignTests : IDisposable
     {
         public override Task<Campaign?> GetByContainedPathAsync(string path, CancellationToken cancellationToken = default) =>
             Task.FromResult<Campaign?>(null);
+    }
+
+    /// <summary>Two Campaigns, one nested in the other, found by id and by the deepest registered root that contains a directory.</summary>
+    private sealed class NestedRepository : ContainingRepository
+    {
+        private readonly Campaign _outer;
+
+        private readonly Campaign _inner;
+
+        public NestedRepository(Campaign outer, Campaign inner)
+            : base(outer)
+        {
+            _outer = outer;
+
+            _inner = inner;
+        }
+
+        public override Task<Campaign?> GetByContainedPathAsync(string path, CancellationToken cancellationToken = default)
+        {
+            string candidate = Path.TrimEndingDirectorySeparator(Path.GetFullPath(path));
+
+            string innerRoot = Path.TrimEndingDirectorySeparator(Path.GetFullPath(_inner.Path));
+
+            return candidate == innerRoot || candidate.StartsWith(innerRoot + Path.DirectorySeparatorChar, StringComparison.Ordinal)
+                ? Task.FromResult<Campaign?>(_inner)
+                : base.GetByContainedPathAsync(path, cancellationToken);
+        }
+
+        public override Task<Campaign?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default) =>
+            Task.FromResult<Campaign?>(id == _inner.Id ? _inner : id == _outer.Id ? _outer : null);
     }
 }

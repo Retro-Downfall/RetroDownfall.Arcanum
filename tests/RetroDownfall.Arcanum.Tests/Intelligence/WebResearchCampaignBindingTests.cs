@@ -12,6 +12,7 @@ using RetroDownfall.Arcanum.Core.Intelligence.WebResearch;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Sanctum;
 using RetroDownfall.Arcanum.Core.Storage;
+using RetroDownfall.Arcanum.Core.Storage.Entities;
 using RetroDownfall.Arcanum.Core.Tower;
 using RetroDownfall.Arcanum.Core.Workspaces;
 using RetroDownfall.Arcanum.Infrastructure.Intelligence.WebResearch;
@@ -38,6 +39,8 @@ public sealed class WebResearchCampaignBindingTests : IDisposable
     private const string PrivateCitation = "https://private.test/page";
 
     private readonly string _root = Path.Combine(Path.GetTempPath(), "arcanum-research-binding-" + Guid.NewGuid().ToString("N"));
+
+    private readonly List<string> _extraRoots = [];
 
     [Theory]
     [InlineData("")]
@@ -275,8 +278,135 @@ public sealed class WebResearchCampaignBindingTests : IDisposable
         Assert.Empty(run.Breaches.Records);
     }
 
-    public void Dispose() =>
+    // A Session is bound to one Campaign for good. In production no Campaign root has a registered identity, so a working directory the
+    // Session's Campaign does not contain is a disagreement the canonical seam refuses; a refusal is not permission to fetch ungated, and the
+    // Session's Strict Sanctum still gates the run whatever directory it stands in.
+    [Theory]
+    [InlineData("none")]
+    [InlineData("outside")]
+    [InlineData("inside-a-campaign-with-the-sanctum-off")]
+    public async Task A_run_continuing_a_session_bound_to_a_strict_campaign_gates_every_citation_whatever_directory_it_stands_in(string where)
+    {
+        Run run = Start(SanctumMode.Strict);
+
+        Campaign open = run.AddCampaign(OpenCampaign("elsewhere-open"));
+
+        run.Citations = [OffListCitation];
+
+        Guid session = Guid.NewGuid();
+
+        run.BindSession(session, run.Campaign.Id);
+
+        string workingDirectory = where switch
+        {
+            "none" => string.Empty,
+            "outside" => Path.GetTempPath(),
+            _ => Directory.CreateDirectory(Path.Combine(open.Path, "src")).FullName,
+        };
+
+        List<WebResearchStreamFrame> frames = await run.ResearchAsync(workingDirectory: workingDirectory, continueSessionId: session);
+
+        Assert.Contains(frames, static frame => frame.Stage == "source_denied");
+
+        Assert.Empty(run.Http.Requests);
+
+        Assert.Single(run.Breaches.Records);
+
+        Assert.DoesNotContain(OffListCitation, run.Synthesis.Prompt, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task A_run_naming_a_strict_campaign_gates_every_citation_when_it_stands_in_a_campaign_with_the_sanctum_off()
+    {
+        Run run = Start(SanctumMode.Strict);
+
+        Campaign open = run.AddCampaign(OpenCampaign("elsewhere-open"));
+
+        run.Citations = [OffListCitation];
+
+        run.UseProductionResolver();
+
+        List<WebResearchStreamFrame> frames = await run.ResearchAsync(
+            workingDirectory: Directory.CreateDirectory(Path.Combine(open.Path, "src")).FullName,
+            campaignId: run.Campaign.Id);
+
+        Assert.Contains(frames, static frame => frame.Stage == "source_denied");
+
+        Assert.Empty(run.Http.Requests);
+
+        Assert.Single(run.Breaches.Records);
+    }
+
+    [Fact]
+    public async Task A_run_standing_in_a_strict_campaign_is_gated_by_it_though_its_session_is_bound_to_a_campaign_with_the_sanctum_off()
+    {
+        Run run = Start(SanctumMode.Strict);
+
+        Campaign open = run.AddCampaign(OpenCampaign("session-open"));
+
+        run.Citations = [OffListCitation];
+
+        Guid session = Guid.NewGuid();
+
+        run.BindSession(session, open.Id);
+
+        List<WebResearchStreamFrame> frames = await run.ResearchAsync(workingDirectory: _root, continueSessionId: session);
+
+        Assert.Contains(frames, static frame => frame.Stage == "source_denied");
+
+        Assert.Empty(run.Http.Requests);
+    }
+
+    [Fact]
+    public async Task A_run_whose_session_and_directory_are_both_in_campaigns_with_the_sanctum_off_is_not_gated()
+    {
+        Run run = Start(SanctumMode.Strict, enabled: false);
+
+        Campaign open = run.AddCampaign(OpenCampaign("session-open"));
+
+        run.Citations = [OffListCitation];
+
+        Guid session = Guid.NewGuid();
+
+        run.BindSession(session, open.Id);
+
+        List<WebResearchStreamFrame> frames = await run.ResearchAsync(workingDirectory: _root, continueSessionId: session);
+
+        Assert.DoesNotContain(frames, static frame => frame.Stage == "source_denied");
+
+        Assert.Equal([OffListCitation], run.Http.Requests);
+
+        Assert.Empty(run.Breaches.Records);
+    }
+
+    // A Campaign whose Sanctum cannot be read is not one whose Sanctum is off.
+    [Fact]
+    public async Task A_run_bound_to_a_campaign_whose_sanctum_cannot_be_read_denies_every_citation()
+    {
+        Run run = Start(SanctumMode.Strict);
+
+        run.Campaign.SanctumConfigJson = "{ not json";
+
+        run.Citations = [AllowedCitation, OffListCitation];
+
+        List<WebResearchStreamFrame> frames = await run.ResearchAsync(workingDirectory: _root);
+
+        Assert.Equal(2, frames.Count(static frame => frame.Stage == "source_denied"));
+
+        Assert.Empty(run.Http.Requests);
+
+        Assert.Empty(run.Result!.Citations);
+    }
+
+    public void Dispose()
+    {
         _ = TestDirectoryCleanup.TryDelete(_root, nameof(WebResearchCampaignBindingTests));
+
+        foreach (string extra in _extraRoots)
+        {
+            _ = TestDirectoryCleanup.TryDelete(extra, nameof(WebResearchCampaignBindingTests));
+        }
+    }
 
     private Run Start(SanctumMode mode, bool enabled = true, string[]? allowedDomains = null)
     {
@@ -304,6 +434,27 @@ public sealed class WebResearchCampaignBindingTests : IDisposable
         return new Run(campaign);
     }
 
+    private Campaign OpenCampaign(string name)
+    {
+        string root = Path.Combine(_root + "-" + name);
+
+        _ = Directory.CreateDirectory(root);
+
+        _extraRoots.Add(root);
+
+        return new Campaign
+        {
+            Id = Guid.NewGuid(),
+            Name = name,
+            NameLower = name,
+            Path = root,
+            Type = WorkspaceType.Campaign,
+            SanctumConfigJson = CampaignRepository.SerializeSanctumConfig(new SanctumConfig { Enabled = false }),
+            CreatedAt = DateTimeOffset.UtcNow,
+            UpdatedAt = DateTimeOffset.UtcNow,
+        };
+    }
+
     private static CanonicalCampaignContext CanonicalFor(Guid campaignId) =>
         CanonicalCampaignContext.Create(
             SessionCampaignBinding.ForCampaign(campaignId),
@@ -321,11 +472,19 @@ public sealed class WebResearchCampaignBindingTests : IDisposable
 
         private HttpMessageHandler _handler;
 
+        private readonly StubSessionBindings _sessionBindings = new();
+
+        private readonly List<Guid> _availability;
+
+        private ICanonicalCampaignContextResolver? _production;
+
         public Run(Campaign campaign)
         {
             Campaign = campaign;
 
             _campaigns = new ContainingCampaigns(campaign);
+
+            _availability = new List<Guid> { campaign.Id };
 
             Breaches = new InMemorySanctumBreachRepository();
 
@@ -364,7 +523,27 @@ public sealed class WebResearchCampaignBindingTests : IDisposable
 
         public void UseHandler(HttpMessageHandler handler) => _handler = handler;
 
-        public async Task<List<WebResearchStreamFrame>> ResearchAsync(string workingDirectory, Guid? campaignId = null)
+        public Campaign AddCampaign(Campaign other)
+        {
+            _campaigns.Add(other);
+
+            _availability.Add(other.Id);
+
+            return other;
+        }
+
+        public void BindSession(Guid sessionId, Guid campaignId)
+        {
+            _ = _sessionBindings.Bind(sessionId, campaignId);
+
+            UseProductionResolver();
+        }
+
+        /// <summary>The production canonical resolver over fake readers: no Campaign root has a registered identity, as in production.</summary>
+        public void UseProductionResolver() =>
+            _production = ProductionCampaignResolver.Over(_sessionBindings, new AvailableCampaigns([.. _availability]));
+
+        public async Task<List<WebResearchStreamFrame>> ResearchAsync(string workingDirectory, Guid? campaignId = null, Guid? continueSessionId = null)
         {
             using SingleClientFactory clients = new(_handler);
 
@@ -390,11 +569,11 @@ public sealed class WebResearchCampaignBindingTests : IDisposable
                 new Catalog(new SearchStub(Citations), reader),
                 new TestOptionsSnapshot<ArcanumSettings>(settings),
                 Synthesis,
-                sessions: null!,
+                sessions: new ExistingSessions(),
                 attachments: null!,
                 _campaigns,
                 _guard,
-                (ICanonicalCampaignContextResolver?)Resolver ?? RefusingCampaignResolver.Instance);
+                _production ?? (ICanonicalCampaignContextResolver?)Resolver ?? RefusingCampaignResolver.Instance);
 
             List<WebResearchStreamFrame> frames = [];
 
@@ -406,6 +585,7 @@ public sealed class WebResearchCampaignBindingTests : IDisposable
                     TokenBudget = 1_200,
                     WorkingDirectory = workingDirectory,
                     CampaignId = campaignId,
+                    ContinueSessionId = continueSessionId,
                 },
                 CancellationToken.None))
             {
@@ -530,23 +710,33 @@ public sealed class WebResearchCampaignBindingTests : IDisposable
         public void Dispose() => _client.Dispose();
     }
 
-    /// <summary>The Campaign table: one Campaign, found by its identifier and by the registered root that contains a directory.</summary>
-    private sealed class ContainingCampaigns(Campaign campaign) : ICampaignRepository
+    /// <summary>The Campaign table: its Campaigns, found by identifier and by the deepest registered root that contains a directory.</summary>
+    private sealed class ContainingCampaigns(Campaign first) : ICampaignRepository
     {
+        private readonly List<Campaign> _campaigns = [first];
+
+        public void Add(Campaign campaign) => _campaigns.Add(campaign);
+
         public Task<Campaign?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default) =>
-            Task.FromResult<Campaign?>(id == campaign.Id ? campaign : null);
+            Task.FromResult(_campaigns.FirstOrDefault(campaign => campaign.Id == id));
 
         public Task<Campaign?> GetByPathAsync(string path, CancellationToken cancellationToken = default) =>
-            Task.FromResult<Campaign?>(string.Equals(Path.GetFullPath(path), Path.GetFullPath(campaign.Path), StringComparison.Ordinal) ? campaign : null);
+            Task.FromResult(_campaigns.FirstOrDefault(campaign => string.Equals(Path.GetFullPath(path), Path.GetFullPath(campaign.Path), StringComparison.Ordinal)));
 
         public Task<Campaign?> GetByContainedPathAsync(string path, CancellationToken cancellationToken = default)
         {
-            string root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(campaign.Path));
-
             string candidate = Path.TrimEndingDirectorySeparator(Path.GetFullPath(path));
 
-            return Task.FromResult<Campaign?>(
-                candidate == root || candidate.StartsWith(root + Path.DirectorySeparatorChar, StringComparison.Ordinal) ? campaign : null);
+            return Task.FromResult(
+                _campaigns
+                    .Where(campaign =>
+                    {
+                        string root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(campaign.Path));
+
+                        return candidate == root || candidate.StartsWith(root + Path.DirectorySeparatorChar, StringComparison.Ordinal);
+                    })
+                    .OrderByDescending(static campaign => campaign.Path.Length)
+                    .FirstOrDefault());
         }
 
         public Task<Campaign?> GetByNameAsync(string name, CancellationToken cancellationToken = default) =>
@@ -569,6 +759,45 @@ public sealed class WebResearchCampaignBindingTests : IDisposable
             throw new NotSupportedException();
 
         public Task<int> CountAsync(CancellationToken cancellationToken = default) =>
-            Task.FromResult(1);
+            Task.FromResult(_campaigns.Count);
+    }
+
+    /// <summary>A Session store in which every Session exists; research only asks whether the Session it continues is there.</summary>
+    private sealed class ExistingSessions : ISessionRepository
+    {
+        public Task<Session?> GetByIdAsync(Guid id, CancellationToken ct) =>
+            Task.FromResult<Session?>(new Session { Id = id });
+
+        public Task<Session> CreateAsync(Guid? campaignId, string? title, CancellationToken ct) => throw new NotSupportedException();
+
+        public Task<SessionQueryResult> QueryAsync(SessionQueryRequest request, CancellationToken ct) => throw new NotSupportedException();
+
+        public Task<SessionAnalytics> GetAnalyticsAsync(CancellationToken ct) => throw new NotSupportedException();
+
+        public Task<Result<SessionExportResult>> ExportAsync(Guid id, SessionExportFormat format, CancellationToken ct) => throw new NotSupportedException();
+
+        public Task<Result<Entry>> AddEntryAsync(Guid sessionId, Entry entry, CancellationToken ct) => throw new NotSupportedException();
+
+        public Task<Result<Session>> ForkAsync(Guid sourceId, ForkSessionRequest request, CancellationToken ct) => throw new NotSupportedException();
+
+        public Task<List<Entry>> GetEntriesAscendingAsync(Guid sessionId, int takeLast, CancellationToken ct = default) => throw new NotSupportedException();
+
+        public Task<List<Entry>> GetEntriesAfterAsync(Guid sessionId, long afterSequence, int limit, CancellationToken ct = default) => throw new NotSupportedException();
+
+        public Task<Entry?> GetEntryAsync(Guid sessionId, Guid entryId, CancellationToken ct = default) => throw new NotSupportedException();
+
+        public Task<List<Entry>> GetEntriesAsync(
+            Guid sessionId,
+            int offset = 0,
+            int limit = 100,
+            DateTimeOffset? beforeCreatedAt = null,
+            Guid? beforeId = null,
+            CancellationToken ct = default) => throw new NotSupportedException();
+
+        public Task<int> GetEntryCountAsync(Guid sessionId, CancellationToken ct) => throw new NotSupportedException();
+
+        public Task<Session?> PatchSessionAsync(Guid id, SessionHeaderPatch patch, CancellationToken ct) => throw new NotSupportedException();
+
+        public Task ArchiveAsync(Guid id, CancellationToken ct) => throw new NotSupportedException();
     }
 }

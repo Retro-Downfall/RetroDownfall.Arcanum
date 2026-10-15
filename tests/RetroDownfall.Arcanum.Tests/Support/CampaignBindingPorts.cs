@@ -35,3 +35,49 @@ internal sealed class UnregisteredCampaignRoots : ICampaignPathIdentityReader
         CancellationToken cancellationToken) =>
         ValueTask.FromResult(Result<RegisteredCampaignIdentity?>.Success(null));
 }
+
+/// <summary>Sessions with a known immutable Campaign binding; any other Session does not exist.</summary>
+internal sealed class StubSessionBindings : ISessionCampaignBindingReader
+{
+    private readonly Dictionary<Guid, SessionCampaignBinding> _bindings = [];
+
+    internal StubSessionBindings Bind(Guid sessionId, Guid campaignId)
+    {
+        _bindings[sessionId] = SessionCampaignBinding.ForCampaign(campaignId);
+
+        return this;
+    }
+
+    public ValueTask<Result<SessionCampaignBindingRecord?>> FindAsync(Guid? sessionId, CancellationToken cancellationToken)
+    {
+        if (sessionId is not { } id)
+        {
+            return ValueTask.FromResult(Result<SessionCampaignBindingRecord?>.Success(null));
+        }
+
+        return ValueTask.FromResult(
+            _bindings.TryGetValue(id, out SessionCampaignBinding binding)
+                ? Result<SessionCampaignBindingRecord?>.Success(new SessionCampaignBindingRecord(id, binding))
+                : Result<SessionCampaignBindingRecord?>.Failure(new Error(ErrorCodes.Session.NotFound, "Session not found.")));
+    }
+}
+
+/// <summary>Campaigns that exist, at availability generation 1.</summary>
+internal sealed class AvailableCampaigns(params Guid[] campaignIds) : ICampaignAvailabilityReader
+{
+    public ValueTask<Result<long?>> FindAvailabilityGenerationAsync(Guid campaignId, CancellationToken cancellationToken) =>
+        ValueTask.FromResult(Result<long?>.Success(campaignIds.Contains(campaignId) ? 1L : null));
+}
+
+/// <summary>The production canonical resolver over fake readers, for a test whose scenario is the resolver's own refusal rules.</summary>
+internal static class ProductionCampaignResolver
+{
+    internal static ICanonicalCampaignContextResolver Over(
+        StubSessionBindings sessions,
+        AvailableCampaigns campaigns,
+        ICampaignPathIdentityReader? paths = null) =>
+        new RetroDownfall.Arcanum.Api.Tower.CanonicalCampaignContextResolver(
+            sessions,
+            paths ?? UnregisteredCampaignRoots.Instance,
+            campaigns);
+}

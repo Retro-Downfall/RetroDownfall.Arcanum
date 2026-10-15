@@ -4648,25 +4648,22 @@ public sealed partial class WizardIntelligenceProvider(
                 cancellationToken)
             .ConfigureAwait(false);
 
-        if (resolved.CampaignId is not { } campaignId)
+        if (resolved.PolicyUnreadable || (resolved.CampaignId is not null && resolved.Loaded is null))
+        {
+            logger.LogWarning(
+                "The Sanctum policy of the Campaign {CampaignId} this turn is bound to could not be read; the turn's tool calls are refused.",
+                resolved.CampaignId);
+
+            return new BoundSanctum(null, resolved.CampaignId, Enabled: true, SanctumMode.Strict, PolicyUnreadable: true);
+        }
+
+        if (resolved.CampaignId is not { } campaignId || resolved.Loaded is not { } campaign)
         {
             return default;
         }
 
         try
         {
-            Campaign? campaign = resolved.Loaded
-                ?? await campaignRepository.GetByIdAsync(campaignId, cancellationToken).ConfigureAwait(false);
-
-            if (campaign is null)
-            {
-                logger.LogWarning(
-                    "The Campaign {CampaignId} this turn is bound to could not be read; the turn's tool calls are refused.",
-                    campaignId);
-
-                return Unreadable(null, campaignId);
-            }
-
             SanctumConfig config = CampaignRepository.GetSanctumConfig(campaign);
 
             return new BoundSanctum(campaign, campaignId, config.Enabled, config.Mode, PolicyUnreadable: false);
@@ -4678,11 +4675,8 @@ public sealed partial class WizardIntelligenceProvider(
                 campaignId,
                 exception.GetType().Name);
 
-            return Unreadable(null, campaignId);
+            return new BoundSanctum(null, campaignId, Enabled: true, SanctumMode.Strict, PolicyUnreadable: true);
         }
-
-        static BoundSanctum Unreadable(Campaign? campaign, Guid campaignId) =>
-            new(campaign, campaignId, Enabled: true, SanctumMode.Strict, PolicyUnreadable: true);
     }
 
     /// <summary>

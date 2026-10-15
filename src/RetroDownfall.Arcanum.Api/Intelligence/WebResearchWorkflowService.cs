@@ -432,8 +432,9 @@ public sealed class WebResearchWorkflowService(
         int retainedContentBudget = ResolveRetainedContentBudget(searches);
 
         // The Campaign whose Sanctum gates the citations is the one the run is bound to, by the same resolution a chat turn uses: its Session,
-        // its explicit identifier, or the registered root that contains its working directory. A run that names no Campaign but stands in a
-        // contained one is as contained as a turn that does.
+        // its explicit identifier, or the registered root that contains its working directory, and when those name different Campaigns the
+        // stricter Sanctum governs. A run that names no Campaign but stands in a contained one is as contained as a turn that does, and a
+        // run whose sources the canonical seam would refuse is no less contained for it.
         SanctumCampaignResolution.Resolved governing = await SanctumCampaignResolution
             .ResolveAsync(
                 request.ContinueSessionId,
@@ -445,8 +446,11 @@ public sealed class WebResearchWorkflowService(
                 cancellationToken)
             .ConfigureAwait(false);
 
-        Func<Uri, CancellationToken, ValueTask<bool>>? egressWard =
-            await BuildCampaignEgressWardAsync(governing.CampaignId, cancellationToken).ConfigureAwait(false);
+        // A Campaign whose Sanctum cannot be read is not one whose Sanctum is off: no citation of the run can be judged against it, so every
+        // citation is refused rather than fetched ungated.
+        Func<Uri, CancellationToken, ValueTask<bool>>? egressWard = governing.PolicyUnreadable
+            ? static (Uri _, CancellationToken _) => ValueTask.FromResult(false)
+            : await BuildCampaignEgressWardAsync(governing.CampaignId, cancellationToken).ConfigureAwait(false);
 
         // Whether the Sanctum, rather than the outbound address guard, is what refused the citation being fetched: a refused redirect hop and
         // a refused address both come back from the reader as SsrfBlocked, and the run tells the operator which control said no.

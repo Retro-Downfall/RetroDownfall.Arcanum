@@ -39,7 +39,8 @@ public sealed partial class WizardIntelligenceProviderTests
         string? workingDirectory,
         ArcanumInvocationContext invocation,
         ICanonicalCampaignContextResolver? resolver = null,
-        Guid? requestCampaignId = null)
+        Guid? requestCampaignId = null,
+        Guid? sessionId = null)
     {
         ScriptingChatClient chat = new();
 
@@ -91,6 +92,7 @@ public sealed partial class WizardIntelligenceProviderTests
                 WorkingDirectory = workingDirectory ?? string.Empty,
                 SkipSpellRouting = true,
                 CampaignId = requestCampaignId,
+                SessionId = sessionId,
             },
             invocation,
             CancellationToken.None);
@@ -396,6 +398,167 @@ public sealed partial class WizardIntelligenceProviderTests
         Assert.False(probe.Blocked);
     }
 
+    // Internal callers (an Apprentice step, a subagent) carry a Session and a working directory and no canonical context. In production no
+    // Campaign root has a registered identity, so the canonical seam refuses a Session bound to a Campaign that also names a working
+    // directory the Campaign does not contain. A refusal must not govern less strictly than the sources it refused.
+    [Theory]
+    [InlineData("outside")]
+    [InlineData("inside-a-campaign-with-the-sanctum-off")]
+    public async Task A_turn_with_no_canonical_context_for_a_session_bound_to_a_strict_campaign_is_governed_by_it_wherever_it_runs(string where)
+    {
+        Campaign strict = StrictSanctumCampaign(_workspace.Root);
+
+        string openRoot = _workspace.CreateSubdir("open-campaign");
+
+        Campaign open = StrictSanctumCampaign(openRoot, enabled: false);
+
+        open.Id = Guid.NewGuid();
+
+        string workingDirectory = where == "outside"
+            ? Path.GetTempPath()
+            : Directory.CreateDirectory(Path.Combine(openRoot, "src")).FullName;
+
+        Guid session = Guid.NewGuid();
+
+        SanctumProbe probe = await ProbeSanctumAsync(
+            new MultiCampaignRepository(strict, open),
+            workingDirectory,
+            ArcanumInvocationContext.None,
+            ProductionCampaignResolver.Over(new StubSessionBindings().Bind(session, strict.Id), new AvailableCampaigns(strict.Id, open.Id)),
+            sessionId: session);
+
+        Assert.True(probe.Succeeded);
+
+        Assert.True(probe.Blocked);
+
+        Assert.False(probe.ToolRan);
+
+        Assert.Equal(1, probe.ToolChecks);
+    }
+
+    [Fact]
+    public async Task A_turn_with_no_canonical_context_naming_a_strict_campaign_is_governed_by_it_when_it_runs_in_a_campaign_with_the_sanctum_off()
+    {
+        Campaign strict = StrictSanctumCampaign(_workspace.Root);
+
+        string openRoot = _workspace.CreateSubdir("open-campaign");
+
+        Campaign open = StrictSanctumCampaign(openRoot, enabled: false);
+
+        open.Id = Guid.NewGuid();
+
+        SanctumProbe probe = await ProbeSanctumAsync(
+            new MultiCampaignRepository(strict, open),
+            Directory.CreateDirectory(Path.Combine(openRoot, "src")).FullName,
+            ArcanumInvocationContext.None,
+            ProductionCampaignResolver.Over(new StubSessionBindings(), new AvailableCampaigns(strict.Id, open.Id)),
+            requestCampaignId: strict.Id);
+
+        Assert.True(probe.Blocked);
+
+        Assert.False(probe.ToolRan);
+    }
+
+    [Fact]
+    public async Task A_turn_with_no_canonical_context_for_a_session_bound_to_a_campaign_with_the_sanctum_off_is_governed_by_the_strict_root_it_runs_in()
+    {
+        Campaign strict = StrictSanctumCampaign(_workspace.Root);
+
+        string openRoot = _workspace.CreateSubdir("open-campaign");
+
+        Campaign open = StrictSanctumCampaign(openRoot, enabled: false);
+
+        open.Id = Guid.NewGuid();
+
+        Guid session = Guid.NewGuid();
+
+        SanctumProbe probe = await ProbeSanctumAsync(
+            new MultiCampaignRepository(strict, open),
+            _workspace.CreateSubdir("src"),
+            ArcanumInvocationContext.None,
+            ProductionCampaignResolver.Over(new StubSessionBindings().Bind(session, open.Id), new AvailableCampaigns(strict.Id, open.Id)),
+            sessionId: session);
+
+        Assert.True(probe.Blocked);
+    }
+
+    [Fact]
+    public async Task A_turn_with_no_canonical_context_for_a_session_bound_to_a_campaign_with_the_sanctum_off_stays_unrestricted_outside_every_root()
+    {
+        Campaign strict = StrictSanctumCampaign(_workspace.Root);
+
+        string openRoot = _workspace.CreateSubdir("open-campaign");
+
+        Campaign open = StrictSanctumCampaign(openRoot, enabled: false);
+
+        open.Id = Guid.NewGuid();
+
+        Guid session = Guid.NewGuid();
+
+        SanctumProbe probe = await ProbeSanctumAsync(
+            new MultiCampaignRepository(strict, open),
+            Path.GetTempPath(),
+            ArcanumInvocationContext.None,
+            ProductionCampaignResolver.Over(new StubSessionBindings().Bind(session, open.Id), new AvailableCampaigns(strict.Id, open.Id)),
+            sessionId: session);
+
+        Assert.True(probe.ToolRan);
+
+        Assert.False(probe.Blocked);
+
+        Assert.Equal(0, probe.ToolChecks);
+    }
+
+    [Fact]
+    public async Task A_turn_with_no_canonical_context_for_a_session_bound_to_a_campaign_whose_sanctum_cannot_be_read_refuses_every_tool_call()
+    {
+        Campaign unreadable = StrictSanctumCampaign(_workspace.Root);
+
+        unreadable.SanctumConfigJson = "{ this is not json";
+
+        Guid session = Guid.NewGuid();
+
+        SanctumProbe probe = await ProbeSanctumAsync(
+            new MultiCampaignRepository(unreadable),
+            Path.GetTempPath(),
+            ArcanumInvocationContext.None,
+            ProductionCampaignResolver.Over(new StubSessionBindings().Bind(session, unreadable.Id), new AvailableCampaigns(unreadable.Id)),
+            sessionId: session);
+
+        Assert.True(probe.Succeeded);
+
+        Assert.True(probe.Blocked);
+
+        Assert.False(probe.ToolRan);
+    }
+
+    // A Campaign nested inside another, found by path only, is claimed alongside the canonical Campaign the outer registration binds; the
+    // stricter Sanctum governs.
+    [Theory]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    public async Task A_nested_campaign_found_by_path_and_the_canonical_campaign_are_governed_by_the_stricter_of_the_two(
+        bool canonicalIsStrict,
+        bool nestedIsStrict)
+    {
+        Campaign outer = StrictSanctumCampaign(_workspace.Root, enabled: canonicalIsStrict);
+
+        string nestedRoot = _workspace.CreateSubdir("nested");
+
+        Campaign nested = StrictSanctumCampaign(nestedRoot, enabled: nestedIsStrict);
+
+        nested.Id = Guid.NewGuid();
+
+        SanctumProbe probe = await ProbeSanctumAsync(
+            new MultiCampaignRepository(outer, nested),
+            Directory.CreateDirectory(Path.Combine(nestedRoot, "src")).FullName,
+            InvocationContexts.AttendedSession(outer.Id));
+
+        Assert.True(probe.Blocked);
+
+        Assert.False(probe.ToolRan);
+    }
+
     // The bound Campaign has a Sanctum that cannot be read: its row is gone, the read fails, or the stored configuration does not parse.
     // Whether it was enabled is unknowable, so every tool call is refused; the turn itself, which needs no tool, still answers.
     [Fact]
@@ -642,5 +805,54 @@ public sealed partial class WizardIntelligenceProviderTests
 
         public Task<int> CountAsync(CancellationToken cancellationToken = default) =>
             Task.FromResult(0);
+    }
+
+    /// <summary>A Campaign table with several Campaigns, found by identifier and by the deepest registered root that contains a directory.</summary>
+    private sealed class MultiCampaignRepository(params Campaign[] campaigns) : ICampaignRepository
+    {
+        public Task<Campaign?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default) =>
+            Task.FromResult(campaigns.FirstOrDefault(campaign => campaign.Id == id));
+
+        public Task<Campaign?> GetByPathAsync(string path, CancellationToken cancellationToken = default) =>
+            Task.FromResult<Campaign?>(null);
+
+        public Task<Campaign?> GetByContainedPathAsync(string path, CancellationToken cancellationToken = default)
+        {
+            string candidate = Path.TrimEndingDirectorySeparator(Path.GetFullPath(path.Trim()));
+
+            return Task.FromResult(
+                campaigns
+                    .Where(campaign =>
+                    {
+                        string root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(campaign.Path.Trim()));
+
+                        return string.Equals(candidate, root, StringComparison.OrdinalIgnoreCase)
+                            || candidate.StartsWith(root + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
+                    })
+                    .OrderByDescending(static campaign => campaign.Path.Length)
+                    .FirstOrDefault());
+        }
+
+        public Task<Campaign?> GetByNameAsync(string name, CancellationToken cancellationToken = default) =>
+            Task.FromResult<Campaign?>(null);
+
+        public Task<ListPageResult<Campaign>> ListAsync(
+            Core.Workspaces.WorkspaceType? typeFilter,
+            int? limit = null,
+            int offset = 0,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(new ListPageResult<Campaign>([], false));
+
+        public Task<Result<Campaign>> AddAsync(Campaign campaign, CancellationToken cancellationToken = default) =>
+            Task.FromResult(Result<Campaign>.Success(campaign));
+
+        public Task<Campaign> UpdateAsync(Campaign campaign, CancellationToken cancellationToken = default) =>
+            Task.FromResult(campaign);
+
+        public Task<bool> DeleteAsync(Guid id, CancellationToken cancellationToken = default) =>
+            Task.FromResult(false);
+
+        public Task<int> CountAsync(CancellationToken cancellationToken = default) =>
+            Task.FromResult(campaigns.Length);
     }
 }
