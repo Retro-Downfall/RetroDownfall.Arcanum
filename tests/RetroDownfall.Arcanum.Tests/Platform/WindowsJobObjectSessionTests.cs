@@ -53,6 +53,265 @@ public sealed class WindowsJobObjectSessionTests
         Assert.Equal(3u, built.Value.ActiveProcessLimit);
     }
 
+    /// <summary>
+    /// The trusted broker is the process assigned to the job and it creates the tool inside the same
+    /// job, so a limit of exactly <c>MaxProcessCount</c> would leave the tool no slot at all when the
+    /// count is 1. An unbrokered job, where the tool itself is assigned, keeps exactly the count.
+    /// </summary>
+    [Theory]
+    [InlineData(1)]
+    [InlineData(3)]
+    [InlineData(10)]
+    public void BuildLimits_gives_a_brokered_job_one_more_slot_than_an_unbrokered_one(int maxProcessCount)
+    {
+        ResourceLimits limits = new() { MaxProcessCount = maxProcessCount };
+
+        WindowsJobObjectLimits? unbrokered = WindowsJobObjectSession.BuildLimits(limits);
+
+        WindowsJobObjectLimits? brokered = WindowsJobObjectSession.BuildLimits(limits, brokered: true);
+
+        Assert.Equal((uint)maxProcessCount, unbrokered!.Value.ActiveProcessLimit);
+
+        Assert.Equal((uint)maxProcessCount + 1, brokered!.Value.ActiveProcessLimit);
+    }
+
+    [Fact]
+    public void BuildLimits_brokered_leaves_the_per_process_ceiling_and_cpu_limit_alone()
+    {
+        ResourceLimits limits = new() { MaxCpuSeconds = 12, MaxMemoryMb = 64, MaxProcessMemoryMb = 128 };
+
+        WindowsJobObjectLimits unbrokered = WindowsJobObjectSession.BuildLimits(limits)!.Value;
+
+        WindowsJobObjectLimits brokered = WindowsJobObjectSession.BuildLimits(limits, brokered: true)!.Value;
+
+        Assert.Equal(unbrokered.ProcessMemoryBytes, brokered.ProcessMemoryBytes);
+
+        Assert.Equal(unbrokered.PerProcessUserTime100Ns, brokered.PerProcessUserTime100Ns);
+
+        Assert.Equal(64UL * 1024UL * 1024UL, unbrokered.JobMemoryBytes);
+
+        Assert.Equal(
+            64UL * 1024UL * 1024UL + WindowsJobObjectSession.BrokerJobMemoryHeadroomBytes,
+            brokered.JobMemoryBytes);
+    }
+
+    [Fact]
+    public void BuildLimits_brokered_does_not_invent_a_limit_the_operator_did_not_set()
+    {
+        ResourceLimits limits = new()
+        {
+            MaxCpuSeconds = 5,
+            MaxMemoryMb = 0,
+            MaxProcessMemoryMb = 0,
+            MaxProcessCount = 0,
+        };
+
+        WindowsJobObjectLimits brokered = WindowsJobObjectSession.BuildLimits(limits, brokered: true)!.Value;
+
+        Assert.Null(brokered.ActiveProcessLimit);
+
+        Assert.Null(brokered.ProcessMemoryBytes);
+
+        Assert.Null(brokered.JobMemoryBytes);
+    }
+
+    [Fact]
+    public void BuildLimits_brokered_still_returns_null_when_nothing_is_enforceable()
+    {
+        ResourceLimits limits = new()
+        {
+            MaxCpuSeconds = 0,
+            MaxMemoryMb = 0,
+            MaxProcessMemoryMb = 0,
+            MaxProcessCount = 0,
+        };
+
+        Assert.Null(WindowsJobObjectSession.BuildLimits(limits, brokered: true));
+    }
+
+    [Fact]
+    public void ReserveBrokerSlot_rewrites_the_limits_with_the_broker_slot_and_nothing_else_changes()
+    {
+        FakeWindowsJobObjectApi api = new();
+
+        ResourceLimits limits = new() { MaxCpuSeconds = 5, MaxMemoryMb = 32, MaxProcessCount = 1 };
+
+        using WindowsJobObjectSession? session = WindowsJobObjectSession.TryCreate(limits, api, out _);
+
+        Assert.NotNull(session);
+
+        Assert.Equal(1u, api.LastLimits!.Value.ActiveProcessLimit);
+
+        Assert.Null(session.ReserveBrokerSlot());
+
+        Assert.Equal(2, api.ConfigureCount);
+
+        Assert.Equal(2u, api.LastLimits.Value.ActiveProcessLimit);
+
+        Assert.Equal(32UL * 1024UL * 1024UL, api.LastLimits.Value.ProcessMemoryBytes);
+
+        Assert.Equal(5L * 10_000_000L, api.LastLimits.Value.PerProcessUserTime100Ns);
+
+        Assert.Equal(0, api.AssignCount);
+    }
+
+    [Fact]
+    public void ReserveBrokerSlot_reports_a_limit_write_that_the_kernel_refused()
+    {
+        FakeWindowsJobObjectApi api = new();
+
+        using WindowsJobObjectSession? session = WindowsJobObjectSession.TryCreate(
+            new ResourceLimits { MaxProcessCount = 1 },
+            api,
+            out _);
+
+        Assert.NotNull(session);
+
+        api.FailConfigure = true;
+
+        api.LastError = 87;
+
+        ResourceLimitError? error = session.ReserveBrokerSlot();
+
+        Assert.NotNull(error);
+
+        Assert.Contains("broker", error.Message, StringComparison.Ordinal);
+
+        Assert.Contains("87", error.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ReserveBrokerSlot_after_dispose_reports_the_closed_handle()
+    {
+        FakeWindowsJobObjectApi api = new();
+
+        WindowsJobObjectSession? session = WindowsJobObjectSession.TryCreate(
+            new ResourceLimits { MaxProcessCount = 1 },
+            api,
+            out _);
+
+        Assert.NotNull(session);
+
+        session.Dispose();
+
+        ResourceLimitError? error = session.ReserveBrokerSlot();
+
+        Assert.NotNull(error);
+
+        Assert.Contains("already closed", error.Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The runner binds the started process to the job. A started broker widens the job first and only
+    /// then is assigned; the tool assigned directly is bound as it is, with no reservation.
+    /// </summary>
+    [Fact]
+    public void BindToJobObject_reserves_the_broker_slot_before_assigning_a_started_broker()
+    {
+        List<string> calls = [];
+
+        ProcessResourceLimiterResult limiterResult = RecordingLimiterResult(calls, reserveError: null, assignError: null);
+
+        ChildProcessSandboxApplyResult brokered = new()
+        {
+            Status = ChildProcessSandboxApplyStatus.Applied,
+
+            WindowsJobAssignedSignalPath = "broker.signal",
+        };
+
+        using global::System.Diagnostics.Process process = global::System.Diagnostics.Process.GetCurrentProcess();
+
+        Assert.Null(CappedChildProcessRunner.BindToJobObject(limiterResult, brokered, process));
+
+        Assert.Equal(["reserve", "assign"], calls);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void BindToJobObject_assigns_a_started_tool_without_a_reservation(bool hasSandboxResult)
+    {
+        List<string> calls = [];
+
+        ProcessResourceLimiterResult limiterResult = RecordingLimiterResult(calls, reserveError: null, assignError: null);
+
+        ChildProcessSandboxApplyResult? unbrokered = hasSandboxResult
+            ? new ChildProcessSandboxApplyResult { Status = ChildProcessSandboxApplyStatus.EscapedByOperator }
+            : null;
+
+        using global::System.Diagnostics.Process process = global::System.Diagnostics.Process.GetCurrentProcess();
+
+        Assert.Null(CappedChildProcessRunner.BindToJobObject(limiterResult, unbrokered, process));
+
+        Assert.Equal(["assign"], calls);
+    }
+
+    [Fact]
+    public void BindToJobObject_does_not_assign_a_broker_whose_slot_could_not_be_reserved()
+    {
+        List<string> calls = [];
+
+        ResourceLimitError refused = new("reserve refused");
+
+        ProcessResourceLimiterResult limiterResult = RecordingLimiterResult(calls, reserveError: refused, assignError: null);
+
+        ChildProcessSandboxApplyResult brokered = new()
+        {
+            Status = ChildProcessSandboxApplyStatus.Applied,
+
+            WindowsJobAssignedSignalPath = "broker.signal",
+        };
+
+        using global::System.Diagnostics.Process process = global::System.Diagnostics.Process.GetCurrentProcess();
+
+        Assert.Same(refused, CappedChildProcessRunner.BindToJobObject(limiterResult, brokered, process));
+
+        Assert.Equal(["reserve"], calls);
+    }
+
+    [Fact]
+    public void BindToJobObject_reports_the_assignment_failure_of_a_broker()
+    {
+        List<string> calls = [];
+
+        ResourceLimitError failed = new("assign failed");
+
+        ProcessResourceLimiterResult limiterResult = RecordingLimiterResult(calls, reserveError: null, assignError: failed);
+
+        ChildProcessSandboxApplyResult brokered = new()
+        {
+            Status = ChildProcessSandboxApplyStatus.Applied,
+
+            WindowsJobAssignedSignalPath = "broker.signal",
+        };
+
+        using global::System.Diagnostics.Process process = global::System.Diagnostics.Process.GetCurrentProcess();
+
+        Assert.Same(failed, CappedChildProcessRunner.BindToJobObject(limiterResult, brokered, process));
+
+        Assert.Equal(["reserve", "assign"], calls);
+    }
+
+    private static ProcessResourceLimiterResult RecordingLimiterResult(
+        List<string> calls,
+        ResourceLimitError? reserveError,
+        ResourceLimitError? assignError) =>
+        new(
+            null,
+            CleanupAsync: _ => Task.CompletedTask,
+            AssignAfterStart: _ =>
+            {
+                calls.Add("assign");
+
+                return assignError;
+            },
+            ReserveBrokerSlot: () =>
+            {
+                calls.Add("reserve");
+
+                return reserveError;
+            });
+
     [Fact]
     public void TryCreate_configures_kill_on_close_and_limits_via_api()
     {

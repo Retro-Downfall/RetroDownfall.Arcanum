@@ -11,6 +11,9 @@ internal static partial class WindowsAppContainerPolicy
 {
     private const int AppContainerNameMax = 64;
 
+    /// <summary><c>S_OK</c>, the one HRESULT <c>DeriveAppContainerSidFromAppContainerName</c> reports on success.</summary>
+    private const int SOk = 0;
+
     internal static string CreateProfileName()
     {
         string name = "RetroDownfall.Arcanum.Tool." + Guid.NewGuid().ToString("N");
@@ -63,8 +66,10 @@ internal static partial class WindowsAppContainerPolicy
                 FreeSid(sid);
             }
 
-            // ERROR_NOT_FOUND means the API is present and the probe profile simply does not exist.
-            return result is 0 or 1168;
+            // The call returns an HRESULT and derives the SID from the name alone, without looking up a
+            // profile, so S_OK shows the API is present and working. Any failure HRESULT, or a missing
+            // entry point (caught below), means the sandbox is unavailable.
+            return result == SOk;
         }
         catch (Exception)
         {
@@ -72,6 +77,7 @@ internal static partial class WindowsAppContainerPolicy
         }
     }
 
+    /// <summary>Returns an HRESULT: <c>S_OK</c>, or <c>E_INVALIDARG</c> for a name it cannot hash.</summary>
     [SupportedOSPlatform("windows")]
     [LibraryImport("userenv.dll", StringMarshalling = StringMarshalling.Utf16)]
     private static partial int DeriveAppContainerSidFromAppContainerName(

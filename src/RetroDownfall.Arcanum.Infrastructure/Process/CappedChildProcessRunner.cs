@@ -507,7 +507,7 @@ internal static class CappedChildProcessRunner
             // kill the tree and surface ResourceLimitApplyFailed — never leave the child unbounded.
             if (limiterResult.AssignAfterStart is not null)
             {
-                ResourceLimitError? assignError = limiterResult.AssignAfterStart(process);
+                ResourceLimitError? assignError = BindToJobObject(limiterResult, sandboxResult, process);
 
                 if (assignError is not null)
                 {
@@ -1330,6 +1330,33 @@ internal static class CappedChildProcessRunner
         }
 
         return null;
+    }
+
+    /// <summary>
+    /// Binds the started process to the run's Job Object. When the filesystem jail replaced the target
+    /// with the Windows sandbox broker, the started process is the broker, which creates the tool inside
+    /// the same job and stays alive beside it, so the job is first widened by the broker's own slot and
+    /// the tool's tree keeps exactly the configured process count. A run whose started process is the
+    /// tool itself is assigned as it is. Internal so the ordering can be pinned on every host: the only
+    /// caller runs behind a limiter that returns an assignment, which only the Windows limiter does.
+    /// </summary>
+    internal static ResourceLimitError? BindToJobObject(
+        ProcessResourceLimiterResult limiterResult,
+        ChildProcessSandboxApplyResult? sandboxResult,
+        Process process)
+    {
+        if (sandboxResult?.WindowsJobAssignedSignalPath is not null
+            && limiterResult.ReserveBrokerSlot is { } reserveBrokerSlot)
+        {
+            ResourceLimitError? reserveError = reserveBrokerSlot();
+
+            if (reserveError is not null)
+            {
+                return reserveError;
+            }
+        }
+
+        return limiterResult.AssignAfterStart?.Invoke(process);
     }
 
     /// <summary>

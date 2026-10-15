@@ -232,6 +232,51 @@ public sealed class ProcessResourceLimiterWindowsBehaviorTests
 
     }
 
+    /// <summary>
+    /// The runner calls the reservation only for a started broker, which shares the job with the tool it
+    /// creates. The configured count is what the tool's tree gets, so the job is widened by exactly the
+    /// broker's own slot before the assignment, and the unreserved job keeps exactly the count.
+    /// </summary>
+    [SkippableFact]
+    public void Apply_on_windows_offers_a_broker_slot_that_widens_the_job_by_exactly_one()
+    {
+
+        Skip.IfNot(
+            OperatingSystem.IsWindows(),
+            "Windows Job Object behavior requires Windows.");
+
+        FakeWindowsJobObjectApi api = new();
+
+        ProcessResourceLimiter limiter = new(logger: null, windowsJobApi: api);
+
+        ProcessResourceLimiterResult result = limiter.Apply(
+            new ProcessStartInfo { FileName = "cmd.exe" },
+            new ResourceLimits { MaxProcessCount = 1, MaxMemoryMb = 64 });
+
+        Assert.Null(result.Error);
+
+        Assert.NotNull(result.ReserveBrokerSlot);
+
+        Assert.Equal(1u, api.LastLimits!.Value.ActiveProcessLimit);
+
+        Assert.Equal(64UL * 1024UL * 1024UL, api.LastLimits.Value.JobMemoryBytes);
+
+        Assert.Null(result.ReserveBrokerSlot!());
+
+        Assert.Equal(2, api.ConfigureCount);
+
+        Assert.Equal(2u, api.LastLimits.Value.ActiveProcessLimit);
+
+        Assert.Equal(64UL * 1024UL * 1024UL, api.LastLimits.Value.ProcessMemoryBytes);
+
+        Assert.Equal(
+            64UL * 1024UL * 1024UL + WindowsJobObjectSession.BrokerJobMemoryHeadroomBytes,
+            api.LastLimits.Value.JobMemoryBytes);
+
+        Assert.Equal(0, api.AssignCount);
+
+    }
+
     [Fact]
     public void SafeJobHandle_default_constructor_creates_invalid_owned_handle()
     {
@@ -304,6 +349,8 @@ public sealed class ProcessResourceLimiterWindowsBehaviorTests
 
         public SafeJobHandle? LastCreatedHandle { get; private set; }
 
+        public WindowsJobObjectLimits? LastLimits { get; private set; }
+
         public SafeHandle? LastAssignedProcessHandle { get; private set; }
 
         public SafeJobHandle? CreateJobObject()
@@ -326,6 +373,8 @@ public sealed class ProcessResourceLimiterWindowsBehaviorTests
         {
 
             ConfigureCount++;
+
+            LastLimits = limits;
 
             return ConfigureResult;
 
