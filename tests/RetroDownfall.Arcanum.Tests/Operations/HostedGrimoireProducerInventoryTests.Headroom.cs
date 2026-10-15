@@ -13,6 +13,13 @@ public sealed partial class HostedGrimoireProducerInventoryTests
     // unnoticed. Every primary production root has a committed ceiling: what it analyses today plus a small stated margin,
     // and never more than ninety percent of the cap. The cap is not raised and the ceilings only move down; a change that
     // makes a root cheaper lowers its row in the same change, and a change that makes one dearer must first earn the room.
+    //
+    // A ceiling is the maximum, over one, two and three root workers, of what the root analyses, plus the margin, so a discovery
+    // under any of the three stays at or under it, CI's two included (the production lanes run two). A root a handoff re-roots into
+    // is entered once from its own declaration and once from the traversal that hands off to it, and which worker each entry lands
+    // on decides whether the closure is admitted for one entry or for both, so its count depends on the arrangement:
+    // ApprenticeService.RunApprenticeAsync analyses 3,110 states under one worker and under three and 1,555 under two. The rows
+    // below are taken from the larger counts, which is why the test at two workers passes with room to spare.
     private const int HeadroomPercentOfCap = 90;
 
     private readonly record struct HeadroomCeiling(string RootType, string RootOperation, int Ceiling);
@@ -99,7 +106,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests
         new("ApprenticeService", "RetroDownfall.Arcanum.Infrastructure.Hosting.ApprenticeService.PauseAsync", 216), // measured 201
         new("ApprenticeService", "RetroDownfall.Arcanum.Infrastructure.Hosting.ApprenticeService.ResumeAsync", 232), // measured 215
         new("ApprenticeService", "RetroDownfall.Arcanum.Infrastructure.Hosting.ApprenticeService.ReweaveAsync", 224), // measured 207
-        new("ApprenticeService", "RetroDownfall.Arcanum.Infrastructure.Hosting.ApprenticeService.RunApprenticeAsync", 3272), // measured 3110
+        new("ApprenticeService", "RetroDownfall.Arcanum.Infrastructure.Hosting.ApprenticeService.RunApprenticeAsync", 3272), // measured 3110 under one and three workers, 1555 under two
         new("ApprenticeService", "RetroDownfall.Arcanum.Infrastructure.Hosting.ApprenticeService.StartAsync", 240), // measured 223
         new("ApprenticeService", "RetroDownfall.Arcanum.Infrastructure.Hosting.ApprenticeService.StopAsync", 16), // measured 5
         new("ApprenticeService", "RetroDownfall.Arcanum.Infrastructure.Hosting.ApprenticeService.SubscribeChronicleAsync", 24), // measured 12
