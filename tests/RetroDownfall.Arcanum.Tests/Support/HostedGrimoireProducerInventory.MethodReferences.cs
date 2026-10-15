@@ -177,6 +177,11 @@ internal static partial class HostedGrimoireProducerInventory
         return [.. named.Where(candidate => identities.Contains(MethodKey(candidate)))];
     }
 
+    // The methods a call of `method` can run in the compilations: the method, its overrides, and the methods that implement it when it is an
+    // interface slot (overloads of the same name in the declaring type included, which only makes the answer wider).
+    internal static IReadOnlyList<IMethodSymbol> MethodsACallCanRun(IReadOnlyList<Compilation> compilations, IMethodSymbol method) =>
+        MethodLinks(compilations, TypeKey(method.ContainingType.OriginalDefinition), method.Name, out _);
+
     // Every reference to a link of the door in the compilations, in compilation, tree and source order. A name that binds to no link is not
     // a reference, a name inside nameof is not one either, and a reference that is not an invocation is reported like one that is; the
     // caller reads `Invoked` to tell a call from a method group or a delegate that could be invoked somewhere it cannot see.

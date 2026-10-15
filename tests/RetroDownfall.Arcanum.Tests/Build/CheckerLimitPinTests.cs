@@ -147,6 +147,16 @@ public sealed class CheckerLimitPinTests(ITestOutputHelper output)
                     services.AddSingleton<IDisposable>(sp => new Disposer());
                     services.AddScoped<Scoped>();
                     services.AddHostedService<Hosted>();
+                    services.AddHostedService<HostedWithDispose>();
+                    services.AddSingleton<IDisposable>(sp => Builders.Build());
+                    services.AddSingleton<IDisposable>(sp => sp.GetRequiredService<IProductFactory>().Create());
+                    services.AddSingleton<IDisposable>(sp => Holders.Held.Invoke(sp));
+                    services.AddSingleton<IDisposable>(Holders.Held);
+                    services.AddScoped<Both>();
+                    services.AddSingleton<Both>();
+                    services.AddScoped<Both>();
+                    services.AddTransient<Transient>();
+                    services.AddSingleton<Both>(sp => { int ignored = Holders.Count.Invoke(); return new Both(); });
                 }
 
                 public static void Convert(Ctx context)
@@ -164,6 +174,38 @@ public sealed class CheckerLimitPinTests(ITestOutputHelper output)
             public sealed class Scoped : IDisposable { public void Dispose() { } }
 
             public sealed class Hosted : Microsoft.Extensions.Hosting.BackgroundService { protected override Task ExecuteAsync(CancellationToken stoppingToken) => Task.CompletedTask; public override void Dispose() { } }
+
+            // A hosted service whose root member and whose other override both reach a site: only the root member is the hosted root.
+            public sealed class HostedWithDispose : Microsoft.Extensions.Hosting.BackgroundService
+            {
+                protected override Task ExecuteAsync(CancellationToken stoppingToken) { File.Delete("effect"); return Task.CompletedTask; }
+
+                public override void Dispose() => File.Delete("effect");
+            }
+
+            // Disposals that are not the implementation itself: an override of an authored virtual Dispose, an explicit implementation.
+            public class AuthoredBaseDisposal : IDisposable { public virtual void Dispose() { } }
+
+            public sealed class OverridingDisposal : AuthoredBaseDisposal { public override void Dispose() => File.Delete("effect"); }
+
+            public sealed class ExplicitDisposal : IDisposable { void IDisposable.Dispose() => File.Delete("effect"); }
+
+            // Types a registration factory builds through a helper, through an interface member and through nothing it can list.
+            public sealed class HelperBuilt : IDisposable { public void Dispose() => File.Delete("effect"); }
+
+            public sealed class ViaInterfaceBuilt : IDisposable { public void Dispose() => File.Delete("effect"); }
+
+            public interface IProductFactory { IDisposable Create(); }
+
+            public sealed class ProductFactory : IProductFactory { public IDisposable Create() => new ViaInterfaceBuilt(); }
+
+            public static class Builders { public static IDisposable Build() => new HelperBuilt(); }
+
+            public static class Holders { public static readonly Func<IServiceProvider, IDisposable> Held = sp => null; public static readonly Func<int> Count = () => 1; }
+
+            public sealed class Both : IDisposable { public void Dispose() { } }
+
+            public sealed class Transient : IDisposable { public void Dispose() { } }
 
             // Scheduling.
             public sealed class Contextual : SynchronizationContext { }
@@ -246,12 +288,59 @@ public sealed class CheckerLimitPinTests(ITestOutputHelper output)
 
             public static class Logging
             {
+                private const string Template = "constant {@Value}";
+
+                private const string Joined = "joined " + "{@" + "Value}";
+
+                private const string Plain = "plain {Value}";
+
                 public static void Log(object value)
                 {
                     Serilog.Log.Information("destructured {@Value}", value);
                     Serilog.Log.Information("formatted {Value}", value);
                     new LoggerConfiguration().Destructure.ByTransforming<Row>(row => row);
                 }
+
+                public static void ViaConstant(object value) { Serilog.Log.Information(Template, value); }
+
+                public static void ViaConcatenation(object value) { Serilog.Log.Information(Joined, value); }
+
+                public static void ViaMicrosoftLogger(Microsoft.Extensions.Logging.ILogger logger, object value) { Microsoft.Extensions.Logging.LoggerExtensions.LogInformation(logger, Template, value); }
+
+                public static void ViaPlainConstant(object value) { Serilog.Log.Information(Plain, value); }
+
+                public static void ViaRuntimeTemplate(object value, string template) { Serilog.Log.Information(template, value); }
+
+                public static void ViaConditional(object value, bool flag) { Serilog.Log.Information(flag ? "branch {@Value}" : "branch {Value}", value); }
+
+                public static void ViaConditionalPlain(object value, bool flag) { Serilog.Log.Information(flag ? "plain a {Value}" : "plain b {Value}", value); }
+
+                private static void Helper(string template, object value) { Serilog.Log.Information(template, value); }
+
+                public static void CallsHelperWithAnOperator(object value) { Helper("through a helper {@Value}", value); }
+
+                private static void PlainHelper(string template, object value) { Serilog.Log.Information(template, value); }
+
+                public static void CallsPlainHelper(object value) { PlainHelper("plain helper {Value}", value); PlainHelper("another {Value}", value); }
+
+                private static void EscapingHelper(string template, object value) { Serilog.Log.Information(template, value); }
+
+                public static Action<string, object> Escapes() => EscapingHelper;
+
+                public static void PublicHelper(string template, object value) { Serilog.Log.Information(template, value); }
+            }
+
+            public static partial class Generated
+            {
+                [Microsoft.Extensions.Logging.LoggerMessage(EventId = 1, Level = Microsoft.Extensions.Logging.LogLevel.Information, Message = "generated {@Value}")]
+                public static partial void Destructured(Microsoft.Extensions.Logging.ILogger logger, object value);
+
+                public static partial void Destructured(Microsoft.Extensions.Logging.ILogger logger, object value) { }
+
+                [Microsoft.Extensions.Logging.LoggerMessage(EventId = 2, Level = Microsoft.Extensions.Logging.LogLevel.Information, Message = "generated {Value}")]
+                public static partial void Plain(Microsoft.Extensions.Logging.ILogger logger, object value);
+
+                public static partial void Plain(Microsoft.Extensions.Logging.ILogger logger, object value) { }
             }
 
             public sealed class Listener : EventListener { protected override void OnEventWritten(EventWrittenEventArgs eventData) { } }
@@ -270,9 +359,43 @@ public sealed class CheckerLimitPinTests(ITestOutputHelper output)
             }
 
             [JsonSerializable(typeof(Root))]
+            [JsonSerializable(typeof(Holder))]
             public sealed class SerializerRoots { }
 
-            public sealed class Root { public Child Child { get; set; } public List<Leaf> Leaves { get; set; } public int[] Numbers { get; set; } private Hidden Private { get; set; } }
+            // A context that reads public fields: the types of the fields of the types it roots are read too.
+            [JsonSourceGenerationOptions(IncludeFields = true)]
+            [JsonSerializable(typeof(FieldRoot))]
+            public sealed class FieldSerializerRoots { }
+
+            public sealed class FieldRoot { public ViaField Field; }
+
+            public sealed class ViaField { public string Effect => File.ReadAllText("field"); }
+
+            public sealed class Root { public Child Child { get; set; } public List<Leaf> Leaves { get; set; } public int[] Numbers { get; set; } private Hidden Private { get; set; } public UnreadField Field; }
+
+            // Members the serializer reads without a public property: a subtype a base type names, a non-public property and a field marked for inclusion.
+            public sealed class Holder
+            {
+                public Poly Poly { get; set; }
+
+                [JsonInclude] internal Secret Included { get; set; }
+
+                [JsonInclude] public IncludedField Marked;
+
+                public UnreadField Unmarked;
+            }
+
+            [JsonPolymorphic]
+            [JsonDerivedType(typeof(Sub))]
+            public class Poly { }
+
+            public sealed class Sub : Poly { public string Effect => File.ReadAllText("sub"); }
+
+            public sealed class Secret { public string Effect => File.ReadAllText("secret"); }
+
+            public sealed class IncludedField { public string Effect => File.ReadAllText("included"); }
+
+            public sealed class UnreadField { public string Effect => File.ReadAllText("unread"); }
 
             public class Child : Base { public string Name => "child"; }
 
@@ -634,12 +757,27 @@ public sealed class CheckerLimitPinTests(ITestOutputHelper output)
 
         Assert.Contains("type Fixture.Callbacks implements System.Text.Json.Serialization.IJsonOnSerializing", findings);
 
-        Assert.Contains("destructuring template in Fixture.Logging.Log", findings);
-
         Assert.Contains("destructuring configuration in Fixture.Logging.Log", findings);
 
-        // The template with no destructuring operator is not a finding.
-        Assert.Equal(1, findings.Count(static finding => finding.StartsWith("destructuring template", StringComparison.Ordinal)));
+        // A template is judged by its constant value, wherever it is written: a literal, a constant, a concatenation of constants, a call through
+        // Microsoft.Extensions.Logging (whose provider is Serilog, so the operator is honoured) and the message of a LoggerMessage attribute.
+        // A conditional is both of its branches, and a parameter of a private method is every value its callers pass. A method that a method group,
+        // an override or a caller outside the source can reach has values the source does not list, and so does a runtime template: each is its own
+        // finding. The templates with no operator, the plain LoggerMessage and a private helper whose callers all pass plain constants are not findings.
+        Assert.Equal(
+            [
+                "destructuring template in Fixture.Generated.Destructured",
+                "destructuring template in Fixture.Logging.Helper",
+                "destructuring template in Fixture.Logging.Log",
+                "destructuring template in Fixture.Logging.ViaConcatenation",
+                "destructuring template in Fixture.Logging.ViaConditional",
+                "destructuring template in Fixture.Logging.ViaConstant",
+                "destructuring template in Fixture.Logging.ViaMicrosoftLogger",
+                "template without a constant value in Fixture.Logging.EscapingHelper",
+                "template without a constant value in Fixture.Logging.PublicHelper",
+                "template without a constant value in Fixture.Logging.ViaRuntimeTemplate",
+            ],
+            findings.Where(static finding => finding.Contains("template", StringComparison.Ordinal)));
 
         Assert.Equal(["Fixture.Converter"], CheckerLimitScans.JsonConverters(SyntheticCompilations()));
     }
@@ -680,6 +818,12 @@ public sealed class CheckerLimitPinTests(ITestOutputHelper output)
 
         Assert.DoesNotContain("Fixture.NotSerialized", closure);
 
+        // The serializer reads the subtypes a base type names, a non-public property marked for inclusion, a field marked for inclusion, and
+        // every public field of the types a context that includes fields roots. It does not read an unmarked public field of a context that does not.
+        Assert.Superset(new HashSet<string>(StringComparer.Ordinal) { "Fixture.Holder", "Fixture.Poly", "Fixture.Sub", "Fixture.Secret", "Fixture.IncludedField", "Fixture.FieldRoot", "Fixture.ViaField" }, closure);
+
+        Assert.DoesNotContain("Fixture.UnreadField", closure);
+
         // The accessor probe flags the effectful getter and not the plain property, and the closure does not hold the flagged type.
         string[] reaching = [.. HostedGrimoireProducerInventory.ProbeFrameworkEntryPointsThatReach(Synthetic.Value, HostedGrimoireProducerInventory.FrameworkEntryPoints.Accessors)];
 
@@ -688,6 +832,14 @@ public sealed class CheckerLimitPinTests(ITestOutputHelper output)
         Assert.DoesNotContain(reaching, static finding => finding.Contains("Plain", StringComparison.Ordinal));
 
         Assert.DoesNotContain("Fixture.EffectfulGetter", closure);
+
+        // The getters that reach a site in the types the serializer reads are exactly the ones the pin must refuse: each of these is in the closure.
+        foreach (string type in new[] { "Sub", "Secret", "IncludedField", "ViaField" })
+        {
+            Assert.Contains(reaching, finding => finding.StartsWith("Fixture." + type + ".get_Effect", StringComparison.Ordinal));
+
+            Assert.Contains("Fixture." + type, closure);
+        }
     }
 
     // ---------------------------------------------------------------------------------------------------------------------------------
@@ -707,6 +859,27 @@ public sealed class CheckerLimitPinTests(ITestOutputHelper output)
         return head[..head.LastIndexOf('.')];
     }
 
+    private static string MemberOfFinding(string finding)
+    {
+        string head = finding[..finding.IndexOf(" :: ", StringComparison.Ordinal)];
+
+        return head[(head.LastIndexOf('.') + 1)..];
+    }
+
+    // The members of a hosted service that the host runs as its roots: the rest of what a hosted service overrides is run by something else.
+    private static readonly HashSet<string> HostedRootMembers = new(StringComparer.Ordinal) { "StartAsync", "ExecuteAsync", "StopAsync" };
+
+    /// <summary>The types that override a framework virtual member and reach a site, once the hosted roots and the EF interceptors are left out.</summary>
+    private static string[] OverridesOutsideTheRoots(IEnumerable<string> findings, IReadOnlySet<string> hosted, Func<string, bool> isInterceptor) =>
+    [
+        .. findings
+            .Where(finding => !(hosted.Contains(TypeOfFinding(finding)[(TypeOfFinding(finding).LastIndexOf('.') + 1)..]) && HostedRootMembers.Contains(MemberOfFinding(finding))))
+            .Select(TypeOfFinding)
+            .Distinct(StringComparer.Ordinal)
+            .Where(type => !isInterceptor(type))
+            .Order(StringComparer.Ordinal),
+    ];
+
     [Fact]
     public void Authored_overrides_of_framework_virtual_members_that_reach_a_site_are_exactly_the_reviewed_types()
     {
@@ -714,12 +887,10 @@ public sealed class CheckerLimitPinTests(ITestOutputHelper output)
 
         HashSet<string> hosted = [.. HostedGrimoireProducerInventory.Catalog.Select(static entry => entry.ServiceType)];
 
-        string[] types = [.. ReachingMembers(HostedGrimoireProducerInventory.FrameworkEntryPoints.Overrides).Select(TypeOfFinding).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal)];
-
-        // Three kinds of type are not a limit. A hosted service's override is the hosted root. An EF interceptor's override is a callback the
-        // Interceptor and Logger lane follows. Every other type is a framework class or interface subclassed in the product, reached through
-        // the framework's type, and is pinned exactly with the reason it is outside the claim.
-        string[] unreviewed = [.. types.Where(type => !hosted.Contains(type[(type.LastIndexOf('.') + 1)..]) && !IsInterceptor(production, type))];
+        // Three kinds of override are not a limit. A hosted service's root member (StartAsync, ExecuteAsync, StopAsync) is the hosted root, and its
+        // other overrides are not. An EF interceptor's override is a callback the Interceptor and Logger lane follows. Every other type is a framework
+        // class or interface subclassed in the product, reached through the framework's type, and is pinned exactly with the reason it is outside the claim.
+        string[] unreviewed = OverridesOutsideTheRoots(ReachingMembers(HostedGrimoireProducerInventory.FrameworkEntryPoints.Overrides), hosted, type => IsInterceptor(production, type));
 
         Show("Overrides", unreviewed);
 
@@ -793,6 +964,40 @@ public sealed class CheckerLimitPinTests(ITestOutputHelper output)
         Assert.Contains(disposals, static finding => finding.StartsWith("Fixture.EffectfulDisposal.Dispose", StringComparison.Ordinal));
 
         Assert.DoesNotContain(disposals, static finding => finding.Contains("QuietDisposal", StringComparison.Ordinal));
+
+        // The container calls the implementation through the slot, so an override of an authored virtual Dispose, the Dispose a hosted service
+        // overrides and an explicit implementation are each a disposal; the quiet virtual they override is not one that reaches a site.
+        Assert.Contains(disposals, static finding => finding.StartsWith("Fixture.OverridingDisposal.Dispose ", StringComparison.Ordinal));
+
+        Assert.Contains(disposals, static finding => finding.StartsWith("Fixture.HostedWithDispose.Dispose ", StringComparison.Ordinal));
+
+        Assert.Contains(disposals, static finding => finding.StartsWith("Fixture.ExplicitDisposal.Dispose ", StringComparison.Ordinal));
+
+        Assert.DoesNotContain(disposals, static finding => finding.Contains("AuthoredBaseDisposal", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void The_hosted_exclusion_covers_the_root_members_of_a_hosted_service_and_not_its_other_overrides()
+    {
+        string[] reaching = [.. HostedGrimoireProducerInventory.ProbeFrameworkEntryPointsThatReach(Synthetic.Value, HostedGrimoireProducerInventory.FrameworkEntryPoints.Overrides)];
+
+        Assert.Contains(reaching, static finding => finding.StartsWith("Fixture.HostedWithDispose.ExecuteAsync ", StringComparison.Ordinal));
+
+        Assert.Contains(reaching, static finding => finding.StartsWith("Fixture.HostedWithDispose.Dispose ", StringComparison.Ordinal));
+
+        // The execute override is the hosted root and the dispose override is not, so the hosted service is still a type to review for its dispose.
+        Assert.Equal(
+            ["Fixture.FileBackedStream", "Fixture.HostedWithDispose"],
+            OverridesOutsideTheRoots(reaching, new HashSet<string>(StringComparer.Ordinal) { "HostedWithDispose" }, static _ => false));
+
+        // A service the catalog does not list has no root member at all.
+        Assert.Equal(
+            ["Fixture.FileBackedStream", "Fixture.HostedWithDispose"],
+            OverridesOutsideTheRoots(reaching, new HashSet<string>(StringComparer.Ordinal), static _ => false));
+
+        Assert.Equal(
+            ["Fixture.FileBackedStream"],
+            OverridesOutsideTheRoots([.. reaching.Where(static finding => !finding.Contains(".Dispose ", StringComparison.Ordinal))], new HashSet<string>(StringComparer.Ordinal) { "HostedWithDispose" }, static _ => false));
     }
 
     [Fact]
@@ -810,7 +1015,22 @@ public sealed class CheckerLimitPinTests(ITestOutputHelper output)
         Show("Disposals", owned);
 
         Assert.Equal(ReviewedContainerDisposals.Select(static entry => entry.Type).Order(StringComparer.Ordinal), owned);
+
+        // The registrations are complete only while every factory's product can be listed: a factory that invokes a delegate, takes a delegate as
+        // a value or builds by reflection may build an authored type that this list cannot name.
+        string[] unlisted = CheckerLimitScans.UnresolvedFactoryProducts(Production());
+
+        Show("UnlistedFactoryProducts", unlisted);
+
+        Assert.Equal(ReviewedUnlistedFactoryProducts.Select(static entry => entry.Finding).Order(StringComparer.Ordinal), unlisted);
     }
+
+    /// <summary>The factories whose product the scan cannot list, and why none of them builds a service the container owns.</summary>
+    private static readonly (string Finding, string Reason)[] ReviewedUnlistedFactoryProducts =
+    [
+        ("factory delegate invoked by " + P + "Infrastructure.Security.SecureFilePermissions.CreateOwnerOnlyStream for a registration in " + P + "Infrastructure.DependencyInjection.ServiceCollectionExtensions.AddArcanumInfrastructure",
+            "The test seam WindowsOwnerOnlyTempFileCreateForTests, a static delegate that only the tests assign, returns the FileStream the secure file writer uses as a local handle while it writes a file. It is a resource of that call, not the service a registration builds."),
+    ];
 
     /// <summary>The singleton registrations whose disposal reaches a site: the type, and why disposing it with the root provider is outside the claim.</summary>
     private static readonly (string Type, string Reason)[] ReviewedContainerDisposals =
@@ -831,6 +1051,30 @@ public sealed class CheckerLimitPinTests(ITestOutputHelper output)
         Assert.Equal("Singleton", registered["Fixture.Hosted"]);
 
         Assert.False(registered.ContainsKey("Fixture.QuietDisposal"));
+
+        // A factory is followed through the authored methods it calls, an interface member included (every authored implementation of it), to the
+        // types they construct, which the container builds and owns with the registration's lifetime.
+        Assert.Equal("Singleton", registered["Fixture.HelperBuilt"]);
+
+        Assert.Equal("Singleton", registered["Fixture.ViaInterfaceBuilt"]);
+
+        // A type registered with more than one lifetime is owned for the longest of them, whichever registration is written last.
+        Assert.Equal("Singleton", registered["Fixture.Both"]);
+
+        Assert.Equal("Transient", registered["Fixture.Transient"]);
+    }
+
+    [Fact]
+    public void The_factory_scan_reports_a_factory_whose_product_it_cannot_list()
+    {
+        // A delegate invoked inside a factory, and a delegate registered as a value rather than written at the registration, have bodies the
+        // scan does not read, so what they build is unlisted: each is a finding of its own. The factories that call authored methods are followed.
+        Assert.Equal(
+            [
+                "factory delegate invoked by Fixture.Wiring.Register for a registration in Fixture.Wiring.Register",
+                "factory delegate passed as a value for a registration in Fixture.Wiring.Register",
+            ],
+            CheckerLimitScans.UnresolvedFactoryProducts(SyntheticCompilations()));
     }
 
     // ---------------------------------------------------------------------------------------------------------------------------------

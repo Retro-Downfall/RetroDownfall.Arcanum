@@ -1530,12 +1530,27 @@ internal static partial class HostedGrimoireProducerInventory
 
                     if (reason.Length != 0)
                     {
-                        found.Add(TypeKey(type) + "." + method.Name + " :: " + reason);
+                        // An explicit implementation is named by the member it implements, so that its type is the type before the last dot.
+                        found.Add(TypeKey(type) + "." + (method.ExplicitInterfaceImplementations is [{ } implemented, ..] ? implemented.Name : method.Name) + " :: " + reason);
                     }
                 }
             }
 
             return found;
+        }
+
+        // Whether the method is the implementation or overrides it, however many overrides stand between.
+        private static bool RunsInPlaceOfTheImplementation(IMethodSymbol method, IMethodSymbol? implementation)
+        {
+            for (IMethodSymbol? current = method; current is not null && implementation is not null; current = current.OverriddenMethod)
+            {
+                if (SymbolEqualityComparer.Default.Equals(current, implementation))
+                {
+                    return true;
+                }
+            }
+
+            return false;
         }
 
         private static bool IsFrameworkEntryPoint(FrameworkEntryPoints kind, INamedTypeSymbol type, IMethodSymbol method)
@@ -1567,11 +1582,12 @@ internal static partial class HostedGrimoireProducerInventory
                     return !root.Locations.Any(static location => location.IsInSource);
 
                 case FrameworkEntryPoints.Disposals:
-                    return method.Name is "Dispose" or "DisposeAsync"
-                        && method.TypeParameters.Length == 0
+                    // The container calls the slot, so the disposal is the method the type runs for it, an explicit implementation included, and every
+                    // override of that method: an override of a virtual Dispose runs in place of the method the interface mapping finds.
+                    return method.TypeParameters.Length == 0
                         && method.Parameters.Length == 0
                         && type.AllInterfaces.Any(contract => TypeKey(contract) is "System.IDisposable" or "System.IAsyncDisposable"
-                            && contract.GetMembers(method.Name).OfType<IMethodSymbol>().Any(slot => SymbolEqualityComparer.Default.Equals(type.FindImplementationForInterfaceMember(slot), method)));
+                            && contract.GetMembers().OfType<IMethodSymbol>().Any(slot => RunsInPlaceOfTheImplementation(method, type.FindImplementationForInterfaceMember(slot) as IMethodSymbol)));
 
                 case FrameworkEntryPoints.Accessors:
                     return method.MethodKind == MethodKind.PropertyGet

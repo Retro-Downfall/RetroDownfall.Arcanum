@@ -1,3 +1,5 @@
+using System.Collections.Immutable;
+
 using System.Text.RegularExpressions;
 
 using Microsoft.CodeAnalysis;
@@ -437,9 +439,201 @@ internal static class CheckerLimitScans
     // structured logger that destructures it reads its properties.
     // ------------------------------------------------------------------------------------------------------------------------------
 
+    // The parameters of a logging method that carry the message template: Serilog's messageTemplate, the message of a Microsoft.Extensions.Logging
+    // call and the format string LoggerMessage.Define is handed.
+    private static readonly HashSet<string> TemplateParameters = new(StringComparer.Ordinal) { "messageTemplate", "message", "formatString" };
+
+    private static bool IsLoggingMethod(IMethodSymbol method)
+    {
+        string space = method.ContainingNamespace.ToDisplayString();
+
+        return space == "Serilog" || space.StartsWith("Serilog.", StringComparison.Ordinal)
+            || space == "Microsoft.Extensions.Logging" || space.StartsWith("Microsoft.Extensions.Logging.", StringComparison.Ordinal);
+    }
+
     /// <summary>
-    /// A type that implements a System.Text.Json callback contract (<c>IJsonOn*</c>), a type that declares a converter beyond the converters
-    /// listed by the pin, and a log message template that destructures its argument (<c>{@name}</c>), which makes a structured logger read the properties of the value.
+    /// The values a string argument can have where it is read, when every one of them is a constant the source writes: a constant (a literal, a
+    /// <c>const</c>, a concatenation of constants, whatever the compiler folds), either branch of a conditional, and a parameter of a private
+    /// method, whose values are those of the argument every call of that method passes (followed through the callers' own parameters). A value
+    /// that is read from anywhere else, and a parameter of a method that something other than a direct call can reach (a method group, an override,
+    /// an implementation of an interface member, a lambda or a local function) cannot be listed, so the answer is then <c>null</c>.
+    /// </summary>
+    internal sealed class StringValues(IReadOnlyList<Compilation> compilations)
+    {
+        // What reaches a private method is written inside its containing type (the declarations of a partial type, nested types included), so
+        // that is all the scan of one method reads.
+        private readonly Dictionary<IMethodSymbol, (List<ImmutableArray<IArgumentOperation>> Calls, bool ReachedOtherwise)> scanned = new(SymbolEqualityComparer.Default);
+
+        private (List<ImmutableArray<IArgumentOperation>> Calls, bool ReachedOtherwise) Scan(IMethodSymbol owner)
+        {
+            if (scanned.TryGetValue(owner, out (List<ImmutableArray<IArgumentOperation>>, bool) known))
+            {
+                return known;
+            }
+
+            List<ImmutableArray<IArgumentOperation>> calls = [];
+
+            bool reachedOtherwise = false;
+
+            foreach (SyntaxReference declaration in owner.ContainingType.DeclaringSyntaxReferences)
+            {
+                if (compilations.FirstOrDefault(candidate => candidate.ContainsSyntaxTree(declaration.SyntaxTree)) is not { } compilation)
+                {
+                    reachedOtherwise = true;
+
+                    continue;
+                }
+
+                SemanticModel model = SharedSemanticModels.Of(compilation, declaration.SyntaxTree);
+
+                foreach (SyntaxNode node in declaration.GetSyntax().DescendantNodes())
+                {
+                    switch (node)
+                    {
+                        case InvocationExpressionSyntax or BaseObjectCreationExpressionSyntax:
+                            (IMethodSymbol? target, ImmutableArray<IArgumentOperation> arguments) = model.GetOperation(node) switch
+                            {
+                                IInvocationOperation invocation => (invocation.TargetMethod, invocation.Arguments),
+                                IObjectCreationOperation { Constructor: { } constructor } creation => (constructor, creation.Arguments),
+                                _ => (null, default),
+                            };
+
+                            if (target is not null && SymbolEqualityComparer.Default.Equals(target.OriginalDefinition, owner))
+                            {
+                                calls.Add(arguments);
+                            }
+
+                            break;
+
+                        case IdentifierNameSyntax or GenericNameSyntax or MemberAccessExpressionSyntax or MemberBindingExpressionSyntax
+                            when model.GetOperation(node) is IMethodReferenceOperation reference && SymbolEqualityComparer.Default.Equals(reference.Method.OriginalDefinition, owner):
+                            reachedOtherwise = true;
+
+                            break;
+                    }
+                }
+            }
+
+            return scanned[owner] = (calls, reachedOtherwise);
+        }
+
+        /// <summary>Every value the operation can have, or <c>null</c> when some value is not a constant the source writes.</summary>
+        internal IReadOnlyList<string>? Of(IOperation value) => Resolve(value, new HashSet<IParameterSymbol>(SymbolEqualityComparer.Default));
+
+        private List<string>? Resolve(IOperation value, HashSet<IParameterSymbol> visiting)
+        {
+            if (value.ConstantValue is { HasValue: true } constant)
+            {
+                return constant.Value is string text ? [text] : [];
+            }
+
+            switch (value)
+            {
+                case IConversionOperation conversion:
+                    return Resolve(conversion.Operand, visiting);
+
+                case IParenthesizedOperation parenthesized:
+                    return Resolve(parenthesized.Operand, visiting);
+
+                case IConditionalOperation { WhenFalse: { } whenFalse } conditional:
+                    return Join(Resolve(conditional.WhenTrue, visiting), Resolve(whenFalse, visiting));
+
+                case IParameterReferenceOperation { Parameter: { ContainingSymbol: IMethodSymbol owner } parameter }:
+                    return visiting.Add(parameter) ? FromCallers(owner.OriginalDefinition, parameter, visiting) : [];
+
+                default:
+                    return null;
+            }
+        }
+
+        private List<string>? FromCallers(IMethodSymbol owner, IParameterSymbol parameter, HashSet<IParameterSymbol> visiting)
+        {
+            // Only a private method that nothing but a direct call reaches has the values its callers pass.
+            if (owner.DeclaredAccessibility != Accessibility.Private
+                || owner.MethodKind is not (MethodKind.Ordinary or MethodKind.Constructor)
+                || owner.IsVirtual || owner.IsOverride || owner.IsAbstract
+                || !owner.ExplicitInterfaceImplementations.IsEmpty
+                || !owner.Locations.Any(static location => location.IsInSource)
+                || Scan(owner) is not (var calls, false))
+            {
+                return null;
+            }
+
+            List<string> values = [];
+
+            foreach (ImmutableArray<IArgumentOperation> arguments in calls)
+            {
+                IArgumentOperation? passed = arguments.FirstOrDefault(argument => SymbolEqualityComparer.Default.Equals(argument.Parameter?.OriginalDefinition, parameter.OriginalDefinition));
+
+                if (passed is null || Join(values, Resolve(passed.Value, visiting)) is not { } joined)
+                {
+                    return null;
+                }
+
+                values = joined;
+            }
+
+            return values;
+        }
+
+        private static List<string>? Join(List<string>? first, List<string>? second) => first is null || second is null ? null : [.. first.Concat(second).Distinct(StringComparer.Ordinal)];
+    }
+
+    /// <summary>
+    /// The message template of every call to a Serilog or Microsoft.Extensions.Logging method: each value the argument bound to the method's
+    /// template parameter can have (see <see cref="StringValues"/>), and the templates a <c>LoggerMessage</c> attribute declares. A template whose
+    /// values cannot be listed is returned with <c>null</c> as its text, because nothing proves it holds no destructuring operator.
+    /// </summary>
+    internal static IEnumerable<(string Where, string? Template)> LogTemplates(IReadOnlyList<Compilation> compilations)
+    {
+        Lazy<StringValues> values = new(() => new StringValues(compilations));
+
+        foreach ((SemanticModel model, SyntaxNode node) in Nodes(compilations))
+        {
+            if (node is InvocationExpressionSyntax call
+                && model.GetOperation(call) is IInvocationOperation { TargetMethod: { } method } invocation
+                && IsLoggingMethod(method))
+            {
+                foreach (IArgumentOperation argument in invocation.Arguments.Where(static argument => argument.Parameter is { Type.SpecialType: SpecialType.System_String } parameter && TemplateParameters.Contains(parameter.Name)))
+                {
+                    IReadOnlyList<string>? templates = argument.Value.ConstantValue.HasValue ? [argument.Value.ConstantValue.Value as string ?? ""] : values.Value.Of(argument.Value);
+
+                    if (templates is null)
+                    {
+                        yield return (Where(model, node), null);
+                    }
+                    else
+                    {
+                        foreach (string template in templates)
+                        {
+                            yield return (Where(model, node), template);
+                        }
+                    }
+                }
+            }
+        }
+
+        foreach (INamedTypeSymbol type in SourceTypes(compilations))
+        {
+            foreach (IMethodSymbol method in type.GetMembers().OfType<IMethodSymbol>())
+            {
+                foreach (AttributeData attribute in method.GetAttributes().Where(static attribute => attribute.AttributeClass is { } owner && Key(owner) == "Microsoft.Extensions.Logging.LoggerMessageAttribute"))
+                {
+                    foreach (string template in attribute.ConstructorArguments.Concat(attribute.NamedArguments.Select(static named => named.Value)).Select(static value => value.Value).OfType<string>())
+                    {
+                        yield return (AuthorityCarrierScanner.Qualified(method), template);
+                    }
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// A type that implements a System.Text.Json callback contract (<c>IJsonOn*</c>), a destructuring configuration, and a log message template
+    /// that destructures its argument (<c>{@name}</c>), which makes a structured logger read the properties of the value. The template is the
+    /// constant value of the argument a logging call binds to its template parameter, so a literal, a constant, a concatenation and a call
+    /// through Microsoft.Extensions.Logging (whose provider here is Serilog) are one thing, and so is a <c>LoggerMessage</c> attribute's message.
+    /// A template that is not a constant is a finding of its own, because nothing proves it holds no operator.
     /// </summary>
     internal static string[] SerializerAndLoggerCallbacks(IReadOnlyList<Compilation> compilations)
     {
@@ -461,14 +655,17 @@ internal static class CheckerLimitScans
             {
                 findings.Add($"destructuring configuration in {Where(model, node)}");
             }
+        }
 
-            if (node is LiteralExpressionSyntax { RawKind: (int)SyntaxKind.StringLiteralExpression } literal
-                && Regex.IsMatch(literal.Token.ValueText, @"\{@", RegexOptions.CultureInvariant)
-                && literal.Parent?.Parent is ArgumentListSyntax { Parent: InvocationExpressionSyntax logging }
-                && model.GetSymbolInfo(logging).Symbol is IMethodSymbol { ContainingType: { } loggerType }
-                && Key(loggerType).Contains("Log", StringComparison.Ordinal))
+        foreach ((string where, string? template) in LogTemplates(compilations))
+        {
+            if (template is null)
             {
-                findings.Add($"destructuring template in {Where(model, node)}");
+                findings.Add($"template without a constant value in {where}");
+            }
+            else if (template.Contains("{@", StringComparison.Ordinal))
+            {
+                findings.Add($"destructuring template in {where}");
             }
         }
 
@@ -547,34 +744,45 @@ internal static class CheckerLimitScans
     // Native AOT), and it reads exactly the properties of the types a JsonSerializable attribute names, and of the types those reach.
     // ------------------------------------------------------------------------------------------------------------------------------
 
+    private static bool Is(AttributeData attribute, string key) => attribute.AttributeClass is { } owner && Key(owner) == key;
+
     /// <summary>
     /// The types a source-generated serializer can read: the types named by a <c>JsonSerializable</c> attribute and, transitively, the types of
-    /// their public instance properties, their base types, their type arguments and their array elements. The closure covers authored types only.
+    /// the members it reads, their base types, their type arguments, their array elements and the subtypes a base type names with
+    /// <c>JsonDerivedType</c>. The members it reads are the public instance properties, every member marked <c>JsonInclude</c> whatever its
+    /// accessibility (a field included), and the public instance fields of the types a context reads when that context includes fields. The
+    /// closure covers authored types only.
     /// </summary>
     internal static HashSet<string> SerializableClosure(IReadOnlyList<Compilation> compilations)
     {
         HashSet<string> closure = new(StringComparer.Ordinal);
 
-        Queue<ITypeSymbol> pending = [];
+        // A type is read once with fields and once without: a context that includes fields reads the fields of the types it reaches.
+        HashSet<(string, bool)> visited = [];
+
+        Queue<(ITypeSymbol Type, bool IncludeFields)> pending = [];
 
         foreach (INamedTypeSymbol context in SourceTypes(compilations))
         {
-            foreach (AttributeData attribute in context.GetAttributes().Where(static attribute => attribute.AttributeClass is { } owner && Key(owner) == "System.Text.Json.Serialization.JsonSerializableAttribute"))
+            bool includeFields = context.GetAttributes().Any(static attribute => Is(attribute, "System.Text.Json.Serialization.JsonSourceGenerationOptionsAttribute")
+                && attribute.NamedArguments.Any(static argument => argument is { Key: "IncludeFields", Value.Value: true }));
+
+            foreach (AttributeData attribute in context.GetAttributes().Where(static attribute => Is(attribute, "System.Text.Json.Serialization.JsonSerializableAttribute")))
             {
                 if (attribute.ConstructorArguments is [{ Value: ITypeSymbol named }, ..])
                 {
-                    pending.Enqueue(named);
+                    pending.Enqueue((named, includeFields));
                 }
             }
         }
 
         while (pending.Count > 0)
         {
-            ITypeSymbol type = pending.Dequeue();
+            (ITypeSymbol type, bool includeFields) = pending.Dequeue();
 
             if (type is IArrayTypeSymbol array)
             {
-                pending.Enqueue(array.ElementType);
+                pending.Enqueue((array.ElementType, includeFields));
 
                 continue;
             }
@@ -586,24 +794,46 @@ internal static class CheckerLimitScans
 
             foreach (ITypeSymbol argument in named.TypeArguments)
             {
-                pending.Enqueue(argument);
+                pending.Enqueue((argument, includeFields));
             }
 
             INamedTypeSymbol definition = named.OriginalDefinition;
 
-            if (!closure.Add(Key(definition)) || !definition.Locations.Any(static location => location.IsInSource))
+            closure.Add(Key(definition));
+
+            if (!visited.Add((Key(definition), includeFields)) || !definition.Locations.Any(static location => location.IsInSource))
             {
                 continue;
             }
 
             if (definition.BaseType is { } baseType)
             {
-                pending.Enqueue(baseType);
+                pending.Enqueue((baseType, includeFields));
             }
 
-            foreach (IPropertySymbol property in definition.GetMembers().OfType<IPropertySymbol>().Where(static property => !property.IsStatic && property.DeclaredAccessibility == Accessibility.Public))
+            foreach (AttributeData derived in definition.GetAttributes().Where(static attribute => Is(attribute, "System.Text.Json.Serialization.JsonDerivedTypeAttribute")))
             {
-                pending.Enqueue(property.Type);
+                if (derived.ConstructorArguments is [{ Value: ITypeSymbol subtype }, ..])
+                {
+                    pending.Enqueue((subtype, includeFields));
+                }
+            }
+
+            foreach (ISymbol member in definition.GetMembers().Where(static member => !member.IsStatic && member is IPropertySymbol or IFieldSymbol))
+            {
+                bool included = member.GetAttributes().Any(static attribute => Is(attribute, "System.Text.Json.Serialization.JsonIncludeAttribute"));
+
+                ITypeSymbol? read = member switch
+                {
+                    IPropertySymbol property when property.DeclaredAccessibility == Accessibility.Public || included => property.Type,
+                    IFieldSymbol field when !field.IsImplicitlyDeclared && (included || includeFields && field.DeclaredAccessibility == Accessibility.Public) => field.Type,
+                    _ => null,
+                };
+
+                if (read is not null)
+                {
+                    pending.Enqueue((read, includeFields));
+                }
             }
         }
 
@@ -614,25 +844,220 @@ internal static class CheckerLimitScans
     // Disposal when the container is disposed. The container disposes every disposable it owns when the host's root provider is disposed.
     // ------------------------------------------------------------------------------------------------------------------------------
 
+    // How long a registration's lifetime keeps what the container builds: a singleton, a pool and a context factory end with the root provider.
+    private static int Rank(string lifetime) => lifetime switch
+    {
+        "Singleton" => 5,
+        "Pool" => 4,
+        "Factory" => 3,
+        "Scoped" => 2,
+        "Transient" => 1,
+        _ => 0,
+    };
+
+    /// <summary>
+    /// What the factories passed to container registrations build. A factory is a lambda or a method group written at the registration; it is
+    /// followed through every authored method it calls (every authored override and implementation of a virtual or interface member, a local
+    /// function and a method group included) to the authored types those methods construct, with <c>new</c> or with the generic form of the
+    /// container's activator. A delegate that is invoked, a delegate that is passed as a value and a build by reflection have a product that is
+    /// not listed.
+    /// </summary>
+    internal sealed class FactoryProducts(IReadOnlyList<Compilation> compilations)
+    {
+        private readonly Dictionary<SyntaxNode, (HashSet<INamedTypeSymbol> Types, HashSet<string> Unlisted)> byRegistration = [];
+
+        private readonly Dictionary<IMethodSymbol, IReadOnlyList<IMethodSymbol>> implementations = new(SymbolEqualityComparer.Default);
+
+        /// <summary>The authored types the registration's factories construct, and why some product is not listed (one finding per kind).</summary>
+        internal (IReadOnlyCollection<INamedTypeSymbol> Types, IReadOnlyCollection<string> Unlisted) Of(ContainerRegistration registration)
+        {
+            if (!byRegistration.TryGetValue(registration.Node, out (HashSet<INamedTypeSymbol> Types, HashSet<string> Unlisted) known))
+            {
+                known = ([], []);
+
+                // Only the arguments are read: the receiver of a chained registration is a registration of its own.
+                ImmutableArray<IArgumentOperation> arguments = registration.Model.GetOperation(registration.Node) switch
+                {
+                    IInvocationOperation invocation => invocation.Arguments,
+                    IObjectCreationOperation creation => creation.Arguments,
+                    _ => default,
+                };
+
+                HashSet<IMethodSymbol> followed = new(SymbolEqualityComparer.Default);
+
+                foreach (IArgumentOperation argument in arguments.IsDefault ? [] : arguments)
+                {
+                    IOperation value = Unconverted(argument.Value);
+
+                    if (value.Type is { TypeKind: TypeKind.Delegate } && value is not (IAnonymousFunctionOperation or IMethodReferenceOperation))
+                    {
+                        known.Unlisted.Add("factory delegate passed as a value");
+                    }
+
+                    Walk(value, followed, known.Types, known.Unlisted);
+                }
+
+                byRegistration[registration.Node] = known;
+            }
+
+            return (known.Types, known.Unlisted);
+        }
+
+        // A lambda or a method group is converted to its delegate type: the operation that was written is the target of the delegate creation.
+        private static IOperation Unconverted(IOperation value) => value switch
+        {
+            IConversionOperation conversion => Unconverted(conversion.Operand),
+            IDelegateCreationOperation creation => Unconverted(creation.Target),
+            _ => value,
+        };
+
+        private void Walk(IOperation root, HashSet<IMethodSymbol> followed, HashSet<INamedTypeSymbol> types, HashSet<string> unlisted)
+        {
+            foreach (IOperation operation in root.DescendantsAndSelf())
+            {
+                switch (operation)
+                {
+                    case IObjectCreationOperation { Type: INamedTypeSymbol created } when created.Locations.Any(static location => location.IsInSource):
+                        types.Add(created.OriginalDefinition);
+
+                        break;
+
+                    // A delegate the factory invokes has a body that is written elsewhere, so what it returns is unlisted, unless no authored
+                    // disposable could be what it returns.
+                    case IInvocationOperation { TargetMethod: { MethodKind: MethodKind.DelegateInvoke } invoked } when CouldReturnAnAuthoredDisposable(invoked.ReturnType):
+                        unlisted.Add($"factory delegate invoked by {Holder(operation)}");
+
+                        break;
+
+                    case IInvocationOperation { TargetMethod: { MethodKind: MethodKind.DelegateInvoke } }:
+                        break;
+
+                    case IInvocationOperation { TargetMethod: { } target } when IsReflectiveBuild(target):
+                        if (target.TypeArguments is [INamedTypeSymbol built] && built.Locations.Any(static location => location.IsInSource))
+                        {
+                            types.Add(built.OriginalDefinition);
+                        }
+                        else if (target.TypeArguments.IsEmpty)
+                        {
+                            unlisted.Add($"factory built by reflection by {Holder(operation)}");
+                        }
+
+                        break;
+
+                    case IInvocationOperation { TargetMethod: { } target }:
+                        Follow(target, followed, types, unlisted);
+
+                        break;
+
+                    case IMethodReferenceOperation reference:
+                        Follow(reference.Method, followed, types, unlisted);
+
+                        break;
+                }
+            }
+        }
+
+        // The authored types that the container disposes when it owns an instance: the classes and structs that declare IDisposable or IAsyncDisposable.
+        private readonly Lazy<IReadOnlyList<INamedTypeSymbol>> authoredDisposables = new(() =>
+            [.. SourceTypes(compilations).Where(static type => type.TypeKind is TypeKind.Class or TypeKind.Struct
+                && type.AllInterfaces.Any(static contract => Key(contract) is "System.IDisposable" or "System.IAsyncDisposable"))]);
+
+        // Whether an authored disposable is, derives from or implements the type (or a type it is made of): then a value of that type may be one.
+        private bool CouldReturnAnAuthoredDisposable(ITypeSymbol type)
+        {
+            if (type.SpecialType == SpecialType.System_Void)
+            {
+                return false;
+            }
+
+            if (type.SpecialType == SpecialType.System_Object || Key(type) is "System.IDisposable" or "System.IAsyncDisposable" or "System.ValueType")
+            {
+                return true;
+            }
+
+            if (type is INamedTypeSymbol { IsGenericType: true } generic && generic.TypeArguments.Any(CouldReturnAnAuthoredDisposable))
+            {
+                return true;
+            }
+
+            string key = Key(type.OriginalDefinition);
+
+            return authoredDisposables.Value.Any(disposable => Key(disposable.OriginalDefinition) == key
+                || DerivesFrom(disposable, key)
+                || disposable.AllInterfaces.Any(contract => Key(contract.OriginalDefinition) == key));
+        }
+
+        // The member that holds an operation, a closure collapsed into the member that wrote it.
+        private static string Holder(IOperation operation) =>
+            operation.SemanticModel?.GetEnclosingSymbol(operation.Syntax.SpanStart) is { } enclosing
+                ? AuthorityCarrierScanner.Qualified(ContainerRegistrationScanner.EnclosingMember(enclosing))
+                : "<unknown>";
+
+        private static bool IsReflectiveBuild(IMethodSymbol method) =>
+            Key(method.ContainingType.OriginalDefinition) is "System.Activator" or "Microsoft.Extensions.DependencyInjection.ActivatorUtilities"
+            && method.Name is "CreateInstance" or "CreateFactory";
+
+        private void Follow(IMethodSymbol method, HashSet<IMethodSymbol> followed, HashSet<INamedTypeSymbol> types, HashSet<string> unlisted)
+        {
+            IMethodSymbol definition = method.OriginalDefinition;
+
+            if (!followed.Add(definition) || definition.DeclaringSyntaxReferences.IsEmpty)
+            {
+                return;
+            }
+
+            foreach (SyntaxReference declaration in definition.DeclaringSyntaxReferences)
+            {
+                if (compilations.FirstOrDefault(candidate => candidate.ContainsSyntaxTree(declaration.SyntaxTree)) is { } compilation
+                    && SharedSemanticModels.Of(compilation, declaration.SyntaxTree).GetOperation(declaration.GetSyntax()) is { } body)
+                {
+                    Walk(body, followed, types, unlisted);
+                }
+            }
+
+            // A virtual or interface member runs whichever authored override or implementation the receiver has.
+            if (definition.IsVirtual || definition.IsAbstract || definition.IsOverride || definition.ContainingType.TypeKind == TypeKind.Interface)
+            {
+                if (!implementations.TryGetValue(definition, out IReadOnlyList<IMethodSymbol>? related))
+                {
+                    implementations[definition] = related = HostedGrimoireProducerInventory.MethodsACallCanRun(compilations, definition);
+                }
+
+                foreach (IMethodSymbol implementation in related)
+                {
+                    Follow(implementation, followed, types, unlisted);
+                }
+            }
+        }
+    }
+
     /// <summary>
     /// The authored types a container registration can build: a type named by a registration call (as a service, an implementation or a
-    /// typeof operand) and a type that a factory passed to a registration constructs. The lifetime of the registration is kept, because a
-    /// scoped or transient service ends with its scope while a singleton ends with the root provider.
+    /// typeof operand) and a type that a factory passed to a registration constructs (see <see cref="FactoryProducts"/>). The lifetime of the
+    /// registration is kept, and a type registered more than once keeps the longest, because a scoped or transient service ends with its scope
+    /// while a singleton ends with the root provider.
     /// </summary>
     internal static IReadOnlyDictionary<string, string> RegisteredImplementations(IReadOnlyList<Compilation> compilations)
     {
         Dictionary<string, string> registered = new(StringComparer.Ordinal);
 
+        void Register(string type, string lifetime)
+        {
+            if (!registered.TryGetValue(type, out string? known) || Rank(lifetime) > Rank(known))
+            {
+                registered[type] = lifetime;
+            }
+        }
+
+        FactoryProducts products = new(compilations);
+
         foreach (ContainerRegistration registration in ContainerRegistrationScanner.Find(compilations, static _ => true, IsAnalysedTree))
         {
-            registered[Key(registration.Watched.OriginalDefinition)] = registration.Lifetime;
+            Register(Key(registration.Watched.OriginalDefinition), registration.Lifetime);
 
-            foreach (SyntaxNode creation in registration.Node.DescendantNodes().Where(static node => node is BaseObjectCreationExpressionSyntax))
+            foreach (INamedTypeSymbol built in products.Of(registration).Types)
             {
-                if (registration.Model.GetSymbolInfo(creation).Symbol is IMethodSymbol { ContainingType: { } built } && built.Locations.Any(static location => location.IsInSource))
-                {
-                    registered[Key(built.OriginalDefinition)] = registration.Lifetime;
-                }
+                Register(Key(built), registration.Lifetime);
             }
         }
 
@@ -642,11 +1067,25 @@ internal static class CheckerLimitScans
             if (node is InvocationExpressionSyntax call
                 && model.GetSymbolInfo(call).Symbol is IMethodSymbol { Name: "AddHostedService" or "AddInstallationResetRecoveryAwareHostedService", TypeArguments: [{ } service] })
             {
-                registered[Key(service.OriginalDefinition)] = "Singleton";
+                Register(Key(service.OriginalDefinition), "Singleton");
             }
         }
 
         return registered;
+    }
+
+    /// <summary>
+    /// The registrations whose factory builds something the scan cannot list: a delegate the factory invokes, a delegate registered as a value
+    /// instead of being written at the registration, and an object built by reflection from a type that is not a type argument. What such a
+    /// factory builds may be an authored type that the container owns, so the pin that lists the owned types refuses it.
+    /// </summary>
+    internal static string[] UnresolvedFactoryProducts(IReadOnlyList<Compilation> compilations)
+    {
+        FactoryProducts products = new(compilations);
+
+        return Ordered(ContainerRegistrationScanner.Find(compilations, static _ => true, IsAnalysedTree)
+            .SelectMany(registration => products.Of(registration).Unlisted.Select(unlisted => $"{unlisted} for a registration in {registration.Enclosing}"))
+            .Distinct(StringComparer.Ordinal));
     }
 
     /// <summary>The calls a lambda or a local function makes, as the containing type and name of each method it invokes.</summary>
