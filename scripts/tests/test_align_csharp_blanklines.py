@@ -86,6 +86,131 @@ internal static class Sample
 
         self.assertEqual(source, self._format(source))
 
+    def test_leaves_every_character_of_a_multiline_literal_or_comment_alone(self) -> None:
+        # A literal that holds C# is not C#: no rule may add, remove or trim anything inside it, whatever the code around it looks like.
+        # The shapes are the ones a fixture source takes: code with a closing brace before a sibling, a using block before a namespace,
+        # a run of blank lines, a trailing space, a raw string that ends and starts again on one line, a verbatim string and a block comment.
+        source = '''namespace Example;
+
+internal static class Sample
+{
+    private const string Fixture = """
+        using System;
+        namespace Fixture;
+        public sealed class Box
+        {
+            public void Run()
+            {
+                if (true)
+                {
+                    Act();
+                }
+                return;
+            }
+            private static Box First() => new();
+        }
+
+
+
+        public interface IDoor { }   
+        """;
+
+    private const string Joined = """
+        class A
+        {
+        }
+        public static void B() { }
+        """ + Fixture + """
+        class C
+        {
+        }
+        private static void D() { }
+        """;
+
+    private const string Verbatim = @"
+if (x)
+{
+}
+return;
+
+
+end";
+
+    /*
+    class E
+    {
+    }
+    private static void F() { }
+    */
+    public static string Value => Fixture;
+}
+'''
+
+        self.assertEqual(source, self._format(source))
+
+    def test_still_aligns_the_code_around_a_multiline_literal(self) -> None:
+        source = '''namespace Example;
+
+internal static class Sample
+{
+    public static void Before()
+    {
+        if (Check())
+        {
+            Act();
+        }
+        return;
+    }
+    private const string Raw = """
+        {
+        }
+        return;
+        """;
+
+    public static void After()
+    {
+        if (Check())
+        {
+            Act();
+        }
+        return;
+    }
+}
+'''
+        expected = '''namespace Example;
+
+internal static class Sample
+{
+    public static void Before()
+    {
+        if (Check())
+        {
+            Act();
+        }
+
+        return;
+    }
+
+    private const string Raw = """
+        {
+        }
+        return;
+        """;
+
+    public static void After()
+    {
+        if (Check())
+        {
+            Act();
+        }
+
+        return;
+    }
+}
+'''
+
+        self.assertEqual(expected, self._format(source))
+
     def test_formatting_is_idempotent(self) -> None:
         source = '''namespace Example;
 
