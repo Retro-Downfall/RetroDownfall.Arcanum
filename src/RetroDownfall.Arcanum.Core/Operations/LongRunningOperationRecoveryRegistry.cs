@@ -60,8 +60,21 @@ public static class LongRunningOperationRecoveryRegistry
                 MinCheckpointVersion: 0,
                 MaxCheckpointVersion: 1,
                 LongRunningOperationStartupPriority.Readiness,
-                RecoveryIntent: "Resume clean committed sweep work. Protected debt waits for a fresh eligible authenticated request.",
-                ManualRepairGuidance: "Inspect the operation. A protected parked sweep requires a fresh eligible authenticated Session request; retry alone grants no authority."),
+                RecoveryIntent:
+                    "Recovery only parks and never runs a sweep. A started sweep parks under a code that names the authority class "
+                    + "allowed to readmit it: the hosted Long Rest worker readmits a clean sweep after a cooldown and within a bounded "
+                    + "failure budget, and a fresh eligible authenticated Session request readmits a protected one. A sweep that never "
+                    + "saved a checkpoint, or whose cancellation was requested, is abandoned.",
+                ManualRepairGuidance:
+                    "Recovery parked this sweep instead of running it. A clean sweep parked as long_rest.interrupted, "
+                    + "long_rest.worker_unavailable, long_rest.maintenance_deferred, long_rest.readmit_requested, LongRest.Unavailable, "
+                    + "LongRest.ProviderUnavailable or LongRest.ProviderUnreachable needs no repair: the background Long Rest worker "
+                    + "readmits it after its cooldown, so wait ('arcanum operation retry <id>' skips the cooldown and resets the failure "
+                    + "budget). A clean sweep parked as long_rest.readmit_exhausted, LongRest.ProviderRejected, "
+                    + "LongRest.ModelContextTooSmall, LongRest.InvalidOutput or any other code needs its cause fixed, then "
+                    + "'arcanum operation retry <id>' or 'arcanum operation cancel <id>'; LongRest.TransportUnknown is cleared only by "
+                    + "cancel. A protected sweep parked as long_rest.authorized_request_required waits for a fresh eligible "
+                    + "authenticated Session request; retry alone grants no authority."),
 
             new LongRunningOperationRecoveryDescriptor(
                 LongRunningOperationKinds.Subagent,

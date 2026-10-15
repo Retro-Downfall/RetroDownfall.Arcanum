@@ -166,7 +166,7 @@ arcanum key list               # what credentials Arcanum holds (presence and st
 | [`Arcanum.Command.Reference.md`](docs/Arcanum.Command.Reference.md) | Complete CLI syntax, options, aliases, exit behavior |
 | [`Arcanum.CHAT-LOOP.md`](docs/Arcanum.CHAT-LOOP.md) | The chat loop, attachments, context ledger, and memory promotion |
 | [`Arcanum.OATH.md`](docs/Arcanum.OATH.md) | The formal architecture for governed, origin-bound memory |
-| [`Arcanum.OATH.Human.md`](docs/Arcanum.OATH.Human.md) | The human-friendly guide to the same architecture |
+| [`ArcanumOATH.Human.md`](docs/ArcanumOATH.Human.md) | The human-friendly guide to the same architecture |
 | [`Compendium.README.md`](docs/Compendium.README.md) | The complete configuration reference |
 | [`Arcanum.DEBUGGING.Human.md`](docs/Arcanum.DEBUGGING.Human.md) | Debugging guide |
 

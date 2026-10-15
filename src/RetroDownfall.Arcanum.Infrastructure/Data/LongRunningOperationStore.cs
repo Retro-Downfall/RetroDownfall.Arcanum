@@ -586,8 +586,9 @@ internal sealed partial class LongRunningOperationStore(
     /// </item>
     /// <item>
     /// <c>Pending</c> with a prior attempt — what <c>arcanum operation retry</c> produces. A row at
-    /// attempt zero is excluded deliberately: its creator is about to lease it in the very next
-    /// statement, and reconciling it would race the caller that just made it.
+    /// attempt zero is excluded deliberately: it is a first start, not abandoned work. Most kinds
+    /// lease it in the very next statement; a queued long-rest sweep waits for the hosted worker,
+    /// which finds it with its own scan, so reconciling it would race its owner.
     /// </item>
     /// </list>
     /// </summary>

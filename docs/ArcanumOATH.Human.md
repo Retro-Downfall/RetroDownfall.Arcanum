@@ -6,7 +6,7 @@
 >
 > This is the approachable guide. [`Arcanum.OATH.md`](Arcanum.OATH.md) provides the complete technical explanation and source map. The broader shipped design remains authoritative in [`Arcanum.DESIGN.md`](Arcanum.DESIGN.md).
 >
-> **Branch status.** None. This guide was written on `long-term-memory`, which has since been merged into `main` and deleted; everything it describes is on `main`. Section 11 is still the boundary between what ships and what does not.
+> **Branch status.** This guide was written on `long-term-memory`, which has since been merged into `main` and deleted. The Campaign rollup and the Long Rest it describes are delivered on the `memory-enhancement` integration branch and reach `main` when that branch merges. Section 11 is still the boundary between what ships and what does not.
 
 ---
 
@@ -26,7 +26,7 @@ OATH preserves that difference. Every durable memory travels with its papers: wh
 
 A memory may become shorter, easier to find, or more useful. It may not quietly become more powerful.
 
-OATH is not one database or one feature. It is the shared set of rules that governs Arcanum's memory systems. The **Covenant** is the subsystem that supplies the governed claim and authority foundation. The **Grimoire** stores encrypted records. The **Lexicon**, **Saga**, **Tapestry**, **Weave**, Session history, and future **Long Rest** each serve different memory roles. OATH controls what happens when information crosses between them.
+OATH is not one database or one feature. It is the shared set of rules that governs Arcanum's memory systems. The **Covenant** is the subsystem that supplies the governed claim and authority foundation. The **Grimoire** stores encrypted records. The **Lexicon**, **Saga**, **Tapestry**, **Weave**, Session history, and **Long Rest** each serve different memory roles. OATH controls what happens when information crosses between them.
 
 ## 2. Why AI memory needs rules
 
@@ -121,7 +121,7 @@ Even then, **Confirmed does not mean objectively true**. It means operator-autho
 
 ### 3.6 Summaries inherit the source's constraints
 
-Suppose the confirmed fact contributes to a Session summary or, in the future, a Campaign rollup. The shorter text does not become source-free. The derivative keeps lineage to every contributor and conservatively inherits their sensitivity. Tapestry is not a destination for protected Covenant-derived content.
+Suppose the confirmed fact contributes to a Session summary or a Campaign rollup. The shorter text does not become source-free. The derivative keeps lineage to every contributor and conservatively inherits their sensitivity. Tapestry is not a destination for protected Covenant-derived content.
 
 If several sources contribute, the result cannot be more authoritative than its least-authorized source, cannot apply outside their permitted scope, and cannot use a sensitivity lower than the most sensitive contributor.
 
@@ -255,7 +255,7 @@ OATH does not replace Arcanum's existing memory systems or force them into one t
 | **Tapestry** | Rebuildable hierarchy of summaries | Helps navigate large corpora but remains a derived discovery structure |
 | **Weave and Divination** | Embeddings, similarity, and ranking | Find candidates only; they do not establish authority |
 | **Session history** | Episodic record of a conversation | Preserves turns and derived summaries with labels and revision evidence |
-| **Long Rest** | Planned consolidation and adaptation | Will deduplicate, decay, reinforce, and supersede only with transformation and outcome evidence |
+| **Long Rest** | Consolidation and adaptation | Deduplicates and supersedes with receipts and evidence; decay and reinforcement are still to come |
 
 ```mermaid
 flowchart TD
@@ -382,7 +382,7 @@ Some of the shipped storage has moved past version one and some has not, and whi
 
 ## 11. What exists now and what comes next
 
-**Status as of 2026-09-05**, written on `long-term-memory` and since merged into `main`.
+**Status as of 2026-10-15**, written on `long-term-memory` (since merged into `main`) and brought up to date on `memory-enhancement`.
 
 OATH combines built foundations with an activated data-lifecycle erasure surface and dedicated management work that remains unregistered. The feature is still off by default.
 
@@ -401,9 +401,9 @@ OATH combines built foundations with an activated data-lifecycle erasure surface
 | **Still unregistered** | Covenant repair, rebuild, path, and Session-binding management routes and commands remain separate work. |
 | **Curating what was remembered for you** | An operator can now read one automatically extracted memory in full, replace its text, take it out of what the assistant can recall, put it back, and mark it so the automatic clean-up will not remove it. Every change that speaks about the memory's text names the exact text the operator read, checked at the moment of the write, so a change can never land on something they never saw. Taking a memory out also leaves a small unreadable fingerprint of what was rejected, which is what stops the next automatic pass from quietly putting it back — and asking for something a memory already is — already out, already back — succeeds and says which happened rather than arguing. Marking a memory to be kept is the one change that makes no statement about its text, so it needs no proof of what was read and simply takes effect. |
 | **Campaign-scoped recall** | Every Saga memory now records who owns it, and the Lexicon can hold one entity per Campaign. `features.campaignScopedMemory` makes retrieval, inspection, and reset honor that ownership together. It ships **off**, so an installation that never names it recalls exactly what it recalled before. |
-| **Remaining roadmap** | Full-installation marker/Campaign compare-deletion, remaining managed-file cleanup, identity rotation, release qualification, and later rollup, consolidation, curation, evaluation, scoped-recall, caching, delegation, and bitemporal work. |
+| **Remaining roadmap** | Full-installation marker/Campaign compare-deletion, remaining managed-file cleanup, identity rotation, release qualification, and later evaluation, caching, delegation, and bitemporal work, with decay and reinforcement for the Long Rest. |
 
-One practical caveat worth knowing: the shipping build targets `osx-arm64`, `win-x64`, and `win-arm64`. Only the macOS native asset is verified today; the two Windows assets are absent, and those builds intentionally fail rather than quietly falling back to a system library.
+One practical caveat worth knowing: the shipping build targets `osx-arm64`, `win-x64`, and `win-arm64`. All three shipping targets have verified native assets, and a build for a target without one intentionally fails rather than quietly falling back to a system library.
 
 The formal [OATH architecture](Arcanum.OATH.md) carries the precise status. The reset/factory data-lifecycle machinery is composed and activated; the Covenant write, read, and curation surfaces are registered, and the repair, rebuild, path, and Session-binding surfaces remain separate.
 

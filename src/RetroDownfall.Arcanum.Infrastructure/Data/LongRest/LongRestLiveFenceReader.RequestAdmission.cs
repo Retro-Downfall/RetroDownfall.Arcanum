@@ -15,8 +15,9 @@ internal sealed partial class LongRestLiveFenceReader
     /// clean sweep across such an abort is Long Rest policy, so it is decided here and never inside the generic gate.
     /// </summary>
     /// <remarks>
-    /// Only a Long Rest sweep lease may adopt a clean sweep. Every Long Rest entry, hosted or recovered, runs under
-    /// its own sweep lease, so a lease of any other kind is refused before the gate is consulted.
+    /// Only a Long Rest sweep lease may adopt a clean sweep. Every Long Rest entry runs under its own sweep lease (the
+    /// hosted worker's or the Session shell's); recovery runs no sweep, so a lease of any other kind is refused before the
+    /// gate is consulted.
     /// </remarks>
     internal bool AttestCleanAdmission(IGrimoireWorkLease lease, long previousGeneration, long currentGeneration) =>
         lease.Kind == GrimoireWorkKind.LongRestSweep

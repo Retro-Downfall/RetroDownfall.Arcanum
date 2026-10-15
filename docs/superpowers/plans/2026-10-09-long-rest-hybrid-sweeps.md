@@ -1,5 +1,7 @@
 # The Long Rest hybrid sweeps implementation plan (#91)
 
+Historical design record. Recovery as described here is superseded: durable recovery only parks a sweep and never resets or runs it, the hosted worker readmits a parked clean sweep and a fresh eligible Session request readmits a protected one (`docs/Arcanum.DESIGN.md` §10.8.2 and §21.16.3). The owning documents describe the delivered behavior.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox syntax for tracking. Design and plan approved; the user selected subagent-driven execution on 2026-10-10.
 
 **Goal:** Deliver #91's deterministic hybrid Saga discovery and resumable authority-scoped consolidation, then merge its qualified commit into memory-enhancement and complete #91.

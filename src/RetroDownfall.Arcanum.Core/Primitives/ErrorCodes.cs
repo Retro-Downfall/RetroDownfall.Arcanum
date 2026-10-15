@@ -1225,9 +1225,10 @@ public static class ErrorCodes
         public const string CancelledAfterPayment = "LongRest.CancelledAfterPayment";
 
         /// <summary>
-        /// A request found the active sweep for its scope parked in a way no automatic path may resume: its failure
-        /// budget is spent or its fault needs an operator (until the turn policy retires them, this includes a
-        /// restart-generation fault). The message names the parked operation, which the operator retries or cancels.
+        /// A request found the active sweep for its scope parked in a way only an operator can clear: its failure budget is
+        /// spent or its fault needs an operator, or it is a protected sweep parked with a restart-generation code and the
+        /// request carries no live turn authority to retire it. The message names the parked operation, which the operator
+        /// retries or, for <c>LongRest.TransportUnknown</c>, cancels.
         /// </summary>
         public const string SweepParked = "LongRest.SweepParked";
 
@@ -1239,7 +1240,7 @@ public static class ErrorCodes
 
         /// <summary>
         /// The provider answered a Long Rest call with a transient failure (5xx, 429, 408, a dropped connection or a timeout), or
-        /// could not be reached at all. The sweep may be readmitted later; the response body is never carried.
+        /// the call otherwise ended without a result. The sweep may be readmitted later; the response body is never carried.
         /// </summary>
         public const string ProviderUnavailable = "LongRest.ProviderUnavailable";
 
@@ -1263,10 +1264,10 @@ public static class ErrorCodes
 
         /// <summary>
         /// The configured model cannot take a Long Rest unit: the chat provider's context window leaves no room for the smallest
-        /// recipe, the embedding provider's window cannot hold one summary, or a hierarchy child or an admitted request does not
-        /// fit the window the recipe was derived from. It is raised before any provider-effect row or accounting run exists. A
-        /// fold cannot skip a child, so only an operator can clear it: raise the provider's <c>contextWindowLimit</c>, choose a
-        /// model with a larger window, or retire an oversized memory.
+        /// recipe or for a request the recipe admitted, or the embedding provider's window cannot hold a summary. It is raised
+        /// before any provider-effect row or accounting run exists, and only an operator can clear it: raise the provider's
+        /// <c>contextWindowLimit</c> or choose a model with a larger window. An oversized memory never raises it, because it is
+        /// carried unsummarized.
         /// </summary>
         public const string ModelContextTooSmall = "LongRest.ModelContextTooSmall";
     }

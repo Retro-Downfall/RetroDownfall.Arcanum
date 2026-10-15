@@ -2,6 +2,8 @@
 
 Status: design approved by the user on 2026-10-09. Implementation plan approved and subagent execution selected on 2026-10-10.
 
+Historical design record. Recovery as described here is superseded: durable recovery only parks a sweep and never resets or runs it, the hosted worker readmits a parked clean sweep and a fresh eligible Session request readmits a protected one (`docs/Arcanum.DESIGN.md` §10.8.2 and §21.16.3). The owning documents describe the delivered behavior.
+
 ## Intent and inherited contract
 
 Implement #91 under #75: lexical, semantic and hierarchical Saga candidate discovery; bounded resumable consolidation; protected work bound to one authenticated request; durable provider disclosure before every dispatch; and invalidation before further dispatch when scope, ownership, dataset, feature or authority changes.
