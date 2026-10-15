@@ -149,4 +149,24 @@ public sealed partial class HostedGrimoireProducerInventoryTests
 
         Assert.Contains(send.EffectFrontierCapsuleId, result.Items.Where(static site => site.Callee == DepartedGroupGroup).Select(static site => site.CapsuleId));
     }
+
+    // The twin for a handoff root: the root's lease formal is the origin of its Work, and the group begun on that formal carries the same origin, so
+    // the root's send keeps both. The worker's own acquisition is the origin of the worker's Work and is never mixed with the root's.
+    [Fact]
+    public void ARootsLeaseFormalIsTheOriginOfItsWorkAndOfTheGroupBegunOnIt()
+    {
+        LeaseHandoffRun run = RunLeaseHandoff("positive");
+
+        Assert.DoesNotContain(run.Result.Diagnostics, static diagnostic => diagnostic.Code == DepartedGroupMismatch);
+
+        HostedProducerSite formal = run.Single(LeaseHandoffRootOperation, HostedProducerSiteKind.EffectFrontier, HostedGrimoireProducerInventory.RootLeaseFormalCallee);
+
+        HostedProducerSite group = run.Single(LeaseHandoffRootOperation, HostedProducerSiteKind.EffectFrontier, LeaseHandoffGroup);
+
+        HostedProducerSite send = run.Single(LeaseHandoffRootOperation, HostedProducerSiteKind.FileSystemEffect, LeaseHandoffSend);
+
+        Assert.Equal(formal.CapsuleId, send.WorkFrontierCapsuleId);
+
+        Assert.Equal(group.CapsuleId, send.EffectFrontierCapsuleId);
+    }
 }
