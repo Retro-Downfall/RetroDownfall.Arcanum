@@ -7,17 +7,17 @@ using RetroDownfall.Arcanum.Core.Primitives;
 
 namespace RetroDownfall.Arcanum.Tests.Packaging;
 
-/// <summary>Which faults an operator retry may answer while a scenario waits for a sweep to finish.</summary>
+/// <summary>When an operator retry may answer a park while a scenario waits for a sweep to finish.</summary>
 internal enum LongRestRetryScope
 {
     /// <summary>Any park that only an operator clears: the sweep is run to its end whatever the real model did.</summary>
     AnyFault = 0,
 
     /// <summary>
-    /// Only the model's own invalid output. A crash must be recovered by the worker alone, so any other fault that needs an operator is
-    /// a finding even though the run answers it to carry on.
+    /// Only once the worker has readmitted the crashed sweep. A crash must be recovered by the worker alone, so an operator retry before
+    /// that is a finding even though the run gives it to carry on; a park after it belongs to the sweep running again.
     /// </summary>
-    ModelFaultsOnly = 1,
+    AfterWorkerReadmission = 1,
 }
 
 /// <summary>
@@ -27,31 +27,44 @@ internal enum LongRestRetryScope
 internal static class LongRestQualificationChecks
 {
     /// <summary>
-    /// The finding for answering a needs-operator park with an operator retry, or <see langword="null"/> when the scope permits the answer.
-    /// The run still retries (it must go on to report the rest), but a recovery that needed one has not been shown to need none.
+    /// The finding for answering a needs-operator park with an operator retry before the worker had readmitted the crashed sweep, or
+    /// <see langword="null"/> when the scope permits the answer. The run still retries (it must go on to report the rest), but a
+    /// recovery that needed an operator has not been shown to need none. After the readmission a park is the sweep running again, and
+    /// in a real-model run that is the model's own invalid answer, whichever code the product gives it.
     /// </summary>
-    public static string? OperatorRetryFinding(LongRestRetryScope scope, string what, string? code)
+    public static string? OperatorRetryFinding(LongRestRetryScope scope, string what, string? code, bool workerHasReadmitted)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(what);
 
-        if (scope == LongRestRetryScope.AnyFault || string.Equals(code, ErrorCodes.LongRest.InvalidOutput, StringComparison.Ordinal))
+        if (scope == LongRestRetryScope.AnyFault || workerHasReadmitted)
         {
             return null;
         }
 
-        return $"{what}: the sweep was parked as '{code ?? "(no code)"}', a fault only an operator clears, in a run where the worker must recover the crash without an operator. "
-            + $"The run answered it with an operator retry to go on, which proves nothing about automatic recovery. Only the model's own invalid output ({ErrorCodes.LongRest.InvalidOutput}) may be answered that way here.";
+        return $"{what}: the sweep was parked as '{code ?? "(no code)"}', a fault only an operator clears, before the worker had readmitted it, in a run where the worker must recover the crash without an operator. "
+            + "The run answered it with an operator retry to go on, which proves nothing about automatic recovery.";
     }
 
     /// <summary>
     /// The finding for the crashed sweep's first park when its code is not one the worker resumes by itself, or <see langword="null"/> when
-    /// there is no park in the observations (a stale lease is parked and readmitted in one pass, which a poll can miss) or the first one is resumable.
+    /// there is no such park in the observations (a stale lease is parked and readmitted in one pass, which a poll can miss) or it is
+    /// resumable. Only a park seen before the worker's readmission (running two or more attempts beyond the dead owner's) is the crash's:
+    /// a later one is the sweep running again.
     /// </summary>
     public static string? CrashParkFinding(IReadOnlyList<LongRestOperationSnapshot> observed)
     {
         ArgumentNullException.ThrowIfNull(observed);
 
-        LongRestOperationSnapshot? first = observed.FirstOrDefault(static snapshot => snapshot.State == LongRestOperationState.ReconciliationRequired);
+        if (observed.Count == 0)
+        {
+            return null;
+        }
+
+        int deadOwnersAttempt = observed[0].AttemptCount;
+
+        LongRestOperationSnapshot? first = observed
+            .TakeWhile(snapshot => !(snapshot.State == LongRestOperationState.Running && snapshot.AttemptCount >= deadOwnersAttempt + 2))
+            .FirstOrDefault(static snapshot => snapshot.State == LongRestOperationState.ReconciliationRequired);
 
         if (first is null)
         {

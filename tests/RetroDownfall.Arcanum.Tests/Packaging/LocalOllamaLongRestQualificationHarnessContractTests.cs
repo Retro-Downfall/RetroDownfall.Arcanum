@@ -35,15 +35,20 @@ public sealed class LocalOllamaLongRestQualificationHarnessContractTests
     // ---- Scenario B: recovery from a crash needs no operator ----
 
     [Theory]
-    [InlineData("LongRest.InvalidOutput", false)]
-    [InlineData("LongRest.TransportUnknown", true)]
-    [InlineData("LongRest.InvalidRequest", true)]
-    [InlineData("LongRest.SweepParked", true)]
-    [InlineData("long_rest.readmit_exhausted", true)]
-    [InlineData(null, true)]
-    public void Recovery_from_a_crash_may_be_answered_by_an_operator_only_for_the_models_own_invalid_output(string? code, bool expectsFinding)
+    [InlineData("LongRest.InvalidOutput", false, true)]
+    [InlineData("LongRest.TransportUnknown", false, true)]
+    [InlineData("LongRest.InvalidRequest", false, true)]
+    [InlineData("long_rest.readmit_exhausted", false, true)]
+    [InlineData(null, false, true)]
+    [InlineData("LongRest.InvalidRequest", true, false)]
+    [InlineData("LongRest.InvalidOutput", true, false)]
+    [InlineData("LongRest.TransportUnknown", true, false)]
+    [InlineData(null, true, false)]
+    public void Recovery_from_a_crash_may_be_answered_by_an_operator_only_once_the_worker_has_readmitted_the_sweep(string? code, bool workerHasReadmitted, bool expectsFinding)
     {
-        string? finding = LongRestQualificationChecks.OperatorRetryFinding(LongRestRetryScope.ModelFaultsOnly, "Scenario B recovery", code);
+        // A park after the worker's readmission belongs to the sweep running again (a real model's invalid answer, whatever code the
+        // product gives it); a park before it is the crash's own, and an operator's help there would hide a failed automatic recovery.
+        string? finding = LongRestQualificationChecks.OperatorRetryFinding(LongRestRetryScope.AfterWorkerReadmission, "Scenario B recovery", code, workerHasReadmitted);
 
         Assert.Equal(expectsFinding, finding is not null);
 
@@ -54,7 +59,7 @@ public sealed class LocalOllamaLongRestQualificationHarnessContractTests
             Assert.Contains("operator", finding, StringComparison.OrdinalIgnoreCase);
         }
 
-        Assert.Null(LongRestQualificationChecks.OperatorRetryFinding(LongRestRetryScope.AnyFault, "Scenario A sweep", code));
+        Assert.Null(LongRestQualificationChecks.OperatorRetryFinding(LongRestRetryScope.AnyFault, "Scenario A sweep", code, workerHasReadmitted));
     }
 
     [Fact]
@@ -83,13 +88,33 @@ public sealed class LocalOllamaLongRestQualificationHarnessContractTests
         Assert.Contains(ErrorCodes.LongRest.TransportUnknown, finding, StringComparison.Ordinal);
         Assert.Contains("only an operator", finding, StringComparison.OrdinalIgnoreCase);
 
-        // Only the first park is the crash's: a later park by the model's own invalid output is not.
+        // Only a park before the worker's readmission is the crash's: a later one is the sweep running again. This is the timeline the
+        // first live re-run recorded, where the model's invalid answer parked the sweep long after the worker had readmitted it.
+        Assert.Null(LongRestQualificationChecks.CrashParkFinding(
+            [
+                Snapshot(LongRestOperationState.Running, 1),
+                Snapshot(LongRestOperationState.Running, 3),
+                Snapshot(LongRestOperationState.ReconciliationRequired, 3, ErrorCodes.LongRest.InvalidRequest),
+                Snapshot(LongRestOperationState.Pending, 3),
+                Snapshot(LongRestOperationState.ReconciliationRequired, 4, LongRestParkCodes.ReadmitRequested),
+                Snapshot(LongRestOperationState.Running, 5),
+                Snapshot(LongRestOperationState.Completed, 5),
+            ]));
+
         Assert.Null(LongRestQualificationChecks.CrashParkFinding(
             [
                 Snapshot(LongRestOperationState.Running, 1),
                 Snapshot(LongRestOperationState.ReconciliationRequired, 2, LongRestParkCodes.Interrupted),
                 Snapshot(LongRestOperationState.Running, 3),
                 Snapshot(LongRestOperationState.ReconciliationRequired, 3, ErrorCodes.LongRest.InvalidOutput),
+            ]));
+
+        // A takeover (one attempt beyond the dead owner's) that parks for an operator is still the crash's own park.
+        Assert.NotNull(LongRestQualificationChecks.CrashParkFinding(
+            [
+                Snapshot(LongRestOperationState.Running, 1),
+                Snapshot(LongRestOperationState.Running, 2),
+                Snapshot(LongRestOperationState.ReconciliationRequired, 2, ErrorCodes.LongRest.TransportUnknown),
             ]));
     }
 
@@ -632,7 +657,7 @@ public sealed class LocalOllamaLongRestQualificationHarnessContractTests
         // Scenario B: the kill point can fail fast, recovery may not lean on an operator, and the provider's billed-but-lost answer is reconciled.
         Assert.Contains("LongRestQualificationKillPoint.AwaitAsync", run, StringComparison.Ordinal);
         Assert.DoesNotContain("killedSignal.Task.WaitAsync(SweepBudget", run, StringComparison.Ordinal);
-        Assert.Contains("LongRestRetryScope.ModelFaultsOnly", run, StringComparison.Ordinal);
+        Assert.Contains("LongRestRetryScope.AfterWorkerReadmission", run, StringComparison.Ordinal);
         Assert.Contains("LongRestQualificationChecks.CrashParkFinding", run, StringComparison.Ordinal);
         Assert.Contains("LongRestQualificationChecks.ReadmittedBeforeAnyOperator", run, StringComparison.Ordinal);
         Assert.Contains("SetBeforeDeliveryHook", run, StringComparison.Ordinal);

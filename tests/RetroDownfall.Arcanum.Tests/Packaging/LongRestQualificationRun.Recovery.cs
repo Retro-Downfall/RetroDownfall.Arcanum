@@ -123,14 +123,17 @@ internal sealed partial class LongRestQualificationRun
             requested.Id,
             RecoveryPollInterval,
             timeline,
-            LongRestRetryScope.ModelFaultsOnly,
+            LongRestRetryScope.AfterWorkerReadmission,
             operatorRetryTimes,
             cancellationToken);
 
         Assert.Equal(LongRestOperationState.Completed, completed.State);
 
-        int parkedIndex = timeline.FindIndex(static entry => entry.Snapshot.State == LongRestOperationState.ReconciliationRequired
-            && LongRestFaultPolicy.Classify(entry.Snapshot.TerminalErrorCode) == LongRestFaultClass.ResumeLater);
+        // The crash's own park, when a poll caught it: a resumable one before the run first answered a park as an operator (the park
+        // an operator's retry leaves behind is resumable too, and is not the worker's).
+        int parkedIndex = timeline.FindIndex(entry => entry.Snapshot.State == LongRestOperationState.ReconciliationRequired
+            && LongRestFaultPolicy.Classify(entry.Snapshot.TerminalErrorCode) == LongRestFaultClass.ResumeLater
+            && (operatorRetryTimes.Count == 0 || entry.At < operatorRetryTimes.Min()));
 
         string timelineText = string.Join(" -> ", timeline.Select(static entry => $"{entry.At:mm\\:ss\\.fff} {entry.Snapshot}"));
 
@@ -147,19 +150,10 @@ internal sealed partial class LongRestQualificationRun
             LongRestQualificationChecks.ReadmittedBeforeAnyOperator(timeline, operatorRetryTimes),
             $"Scenario B: no snapshot shows the worker readmitting the crashed sweep (two attempts beyond the dead owner's) before the run first answered a park as an operator ({operatorRetryTimes.Count} operator retries). Timeline: " + timelineText);
 
-        // The park can be too brief for a poll to see (a stale lease is parked and readmitted in one pass), so the durable record of it counts
-        // too: the sweep row's park stamp is written by a park and again by a readmission, and a free park (the interrupted code is one)
-        // spends none of the failure budget, so its readmission count stays zero. With no operator retry in the recovery the stamp is the
-        // worker's own; otherwise only a resumable park in the timeline shows the worker's.
+        // The park can be too brief for a poll to see (a stale lease is parked and readmitted in one pass): the attempt count then carries
+        // the proof, because the takeover that parks the sweep and the worker's readmission are two attempts. The sweep row's park stamp
+        // is reported beside it, but it is written by an operator's readmission too, so it proves nothing by itself.
         LongRestSweepRow recovered = Assert.Single(await Grimoire.ReadSweepsAsync(cancellationToken), row => IsSameGuid(row.OperationId, requested.Id));
-
-        bool parkEvidence = parkedIndex >= 0 || (operatorRetryTimes.Count == 0 && (recovered.ReadmitCount >= 1 || recovered.ParkedAt is not null));
-
-        Check(
-            parkEvidence,
-            "Scenario B: the restarted host left no evidence that it parked the interrupted sweep and readmitted it (no ReconciliationRequired state under a resumable code in the status timeline, and no park stamp or readmission on the sweep row). Timeline: " + timelineText);
-
-        TimeSpan parkedAt = parkedIndex >= 0 ? timeline[parkedIndex].At : TimeSpan.Zero;
 
         string parkedCode = parkedIndex >= 0 ? timeline[parkedIndex].Snapshot.TerminalErrorCode ?? "-" : "(not seen by polling every 500 ms)";
 

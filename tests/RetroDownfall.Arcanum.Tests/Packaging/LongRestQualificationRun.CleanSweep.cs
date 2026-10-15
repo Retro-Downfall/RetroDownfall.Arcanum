@@ -254,8 +254,8 @@ internal sealed partial class LongRestQualificationRun
     /// Waits for a sweep to complete the way an operator would: a park the worker resumes by itself is waited out, and a park only an
     /// operator can clear (a paid answer the model got wrong, which the fault table classifies as needs-operator) is answered with
     /// <c>arcanum operation retry</c>, the documented remedy, up to a bound. Every retry is an observation: a real model's malformed
-    /// answers are part of what this qualification measures. Where the scope is <see cref="LongRestRetryScope.ModelFaultsOnly"/> an
-    /// answer to any other fault is also a finding, and each retry's time is recorded so that a readmission can be told from an operator's.
+    /// answers are part of what this qualification measures. Where the scope is <see cref="LongRestRetryScope.AfterWorkerReadmission"/> an
+    /// answer before the worker has readmitted the sweep is also a finding, and each retry's time is recorded so that a readmission can be told from an operator's.
     /// </summary>
     private async Task<LongRestOperationSnapshot> DriveToCompletionAsync(
         string what,
@@ -296,7 +296,10 @@ internal sealed partial class LongRestQualificationRun
                     Observe($"{what}: parked as '{snapshot.TerminalErrorCode}' (a fault only an operator clears); retrying as the operator (retry {retries})");
 
                     // Where the scope does not allow an operator's help the run still gives it, to go on and report the rest, but it is a finding.
-                    string? finding = LongRestQualificationChecks.OperatorRetryFinding(retryScope, what, snapshot.TerminalErrorCode);
+                    bool workerHasReadmitted = timeline is not null
+                        && LongRestQualificationChecks.ReadmittedBeforeAnyOperator(timeline, operatorRetryTimes ?? []);
+
+                    string? finding = LongRestQualificationChecks.OperatorRetryFinding(retryScope, what, snapshot.TerminalErrorCode, workerHasReadmitted);
 
                     if (finding is not null)
                     {
