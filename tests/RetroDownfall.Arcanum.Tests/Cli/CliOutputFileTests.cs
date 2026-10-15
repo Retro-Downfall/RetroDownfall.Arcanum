@@ -251,16 +251,34 @@ public sealed class CliOutputFileTests : IDisposable
         }
     }
 
+    /// <summary>
+    /// Captures what the shared destination handling writes to standard error, as plain text.
+    /// </summary>
+    /// <remarks>
+    /// The invocation is declared <c>--plain</c> because these assertions read the rendered words, and
+    /// a diagnostic console left on stream detection answers for the CI runner as well as for the
+    /// writer: on GitHub Actions the provider detector forces ANSI on into any stream, a captured
+    /// <see cref="StringWriter"/> included, and the styling then splits the sentence the assertion
+    /// looks for.
+    /// </remarks>
     private sealed class ConsoleCapture : IDisposable
     {
         private readonly TextWriter _priorError = Console.Error;
 
         private readonly StringWriter _error = new();
 
+        private readonly IDisposable _invocation = CliInvocationContext.Push(
+            new CliInvocationOptions(Json: false, Plain: true, Yes: false));
+
         public ConsoleCapture() => Console.SetError(_error);
 
         public string Error => _error.ToString();
 
-        public void Dispose() => Console.SetError(_priorError);
+        public void Dispose()
+        {
+            Console.SetError(_priorError);
+
+            _invocation.Dispose();
+        }
     }
 }

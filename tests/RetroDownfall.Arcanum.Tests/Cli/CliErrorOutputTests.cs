@@ -1,5 +1,6 @@
 using RetroDownfall.Arcanum.Cli.Commands;
 using RetroDownfall.Arcanum.Cli.Infrastructure;
+using RetroDownfall.Arcanum.Cli.UX;
 
 using Spectre.Console;
 
@@ -74,7 +75,7 @@ public sealed class CliErrorOutputTests
         using IDisposable invocation = CliInvocationContext.Push(
             new CliInvocationOptions(Json: false, Plain: false, Yes: false));
 
-        AnsiConsoleSettings settings = CliErrorOutput.CreateSettings(new StringWriter());
+        AnsiConsoleSettings settings = CliConsoleFactory.CreateDiagnosticSettings(new StringWriter());
 
         Assert.Equal(AnsiSupport.Detect, settings.Ansi);
 
@@ -133,7 +134,7 @@ public sealed class CliErrorOutputTests
 
         using IDisposable invocation = CliInvocationContext.Push(options);
 
-        AnsiConsoleSettings settings = CliErrorOutput.CreateSettings(new StringWriter());
+        AnsiConsoleSettings settings = CliConsoleFactory.CreateDiagnosticSettings(new StringWriter());
 
         Assert.Equal(AnsiSupport.No, settings.Ansi);
 

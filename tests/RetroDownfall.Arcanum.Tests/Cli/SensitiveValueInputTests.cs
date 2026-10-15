@@ -1,5 +1,6 @@
 using RetroDownfall.Arcanum.Cli.Commands;
 using RetroDownfall.Arcanum.Cli.Infrastructure;
+using RetroDownfall.Arcanum.Cli.UX;
 
 using Spectre.Console;
 
@@ -152,7 +153,7 @@ public sealed class SensitiveValueInputTests
             AnsiConsoleSettings settings = SensitiveValueInput.CreatePromptSettings(
                 new CliInvocationOptions(Json: false, Plain: true, Yes: false));
 
-            AnsiConsole.Create(settings).WriteLine("Master API key:");
+            CliConsoleFactory.Create(settings).WriteLine("Master API key:");
 
             Assert.Contains("Master API key:", stderr.ToString(), StringComparison.Ordinal);
 

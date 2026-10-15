@@ -268,9 +268,12 @@ public sealed class PromptCommandTests
             new ApiResponse<PromptResponseDto>(response, true, null),
             ArcanumJsonContext.Default.ApiResponsePromptResponseDto));
 
+        // --plain, because the assertions below read the summary's own words and escape-freedom: the
+        // stderr console answers stream detection when nothing opts out, and the provider detector on
+        // GitHub Actions forces ANSI on into any stream, so styling would reach the captured text.
         CliTestResult result = RunCommand(
             handler,
-            ["prompt", "execute", SampleId.ToString(), "--input", "hello"]);
+            ["prompt", "execute", SampleId.ToString(), "--input", "hello", "--plain"]);
 
         Assert.Equal(0, result.ExitCode);
         Assert.Contains("read_file", result.Error, StringComparison.Ordinal);
