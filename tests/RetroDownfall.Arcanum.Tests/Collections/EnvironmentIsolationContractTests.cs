@@ -269,6 +269,61 @@ public sealed class EnvironmentIsolationContractTests
     }
 
     /// <summary>
+    /// The scan reaches a swap through an async helper whichever way the compiler spells its state machine. A debug build
+    /// makes the state machine a class, which the helper reaches by calling its constructor; a release build makes it a
+    /// struct, which the helper reaches only as the argument of the generic start and as a local. The closure used to read
+    /// the called methods alone, so a release build lost every helper of that shape and the harness-driven test classes with
+    /// it. These fixtures are structs in both configurations and the mutation is a stand-in, so the control holds in both and
+    /// the real scans never see it.
+    /// </summary>
+    [Fact]
+    public void The_mutation_closure_reaches_a_swap_through_a_struct_state_machine_by_local_and_by_generic_argument()
+    {
+        Type machine = typeof(StructSwapHelper.SwapStateMachine);
+
+        HashSet<Type> mutating = MutatingClosure(
+            [
+                machine,
+                typeof(StructSwapHelper),
+                typeof(StructSwapCaller),
+                typeof(StructSwapByGenericArgument),
+                typeof(StructSwapByLocal),
+            ],
+            static called => called.DeclaringType == typeof(StructSwapSink));
+
+        // The state machine swaps directly.
+        Assert.Contains(machine, mutating);
+
+        // Started through the builder: the machine is both a local and the generic argument of the start.
+        Assert.Contains(typeof(StructSwapHelper), mutating);
+
+        Assert.Contains(typeof(StructSwapCaller), mutating);
+
+        // Each of the two references is enough on its own.
+        Assert.Contains(typeof(StructSwapByGenericArgument), mutating);
+
+        Assert.Contains(typeof(StructSwapByLocal), mutating);
+    }
+
+    /// <summary>
+    /// The negative twin: a struct state machine that does not swap, started the same way, makes neither its helper nor the
+    /// caller of that helper a swapper, so the references the closure now follows do not blur it.
+    /// </summary>
+    [Fact]
+    public void The_mutation_closure_does_not_follow_a_struct_state_machine_that_swaps_nothing()
+    {
+        HashSet<Type> mutating = MutatingClosure(
+            [
+                typeof(StructQuietHelper.QuietStateMachine),
+                typeof(StructQuietHelper),
+                typeof(StructQuietCaller),
+            ],
+            static called => called.DeclaringType == typeof(StructSwapSink));
+
+        Assert.Empty(mutating);
+    }
+
+    /// <summary>
     /// The same invariant for every other process-global seam.
     ///
     /// Environment variables were the only shared resource anything enforced, but they are not the
@@ -619,6 +674,92 @@ public sealed class EnvironmentIsolationContractTests
         }
     }
 
+    // IL-only fixtures for the mutation-closure control tests. Nothing calls them. The sink stands in for a process-global
+    // mutation so that no real scan counts them, and each state machine is a struct in every build configuration.
+    internal static class StructSwapSink
+    {
+        internal static void Swap()
+        {
+        }
+    }
+
+    internal static class StructSwapHelper
+    {
+        internal struct SwapStateMachine : System.Runtime.CompilerServices.IAsyncStateMachine
+        {
+            public void MoveNext() => StructSwapSink.Swap();
+
+            public void SetStateMachine(System.Runtime.CompilerServices.IAsyncStateMachine stateMachine)
+            {
+            }
+        }
+
+        internal static void Run()
+        {
+            SwapStateMachine machine = default;
+
+            System.Runtime.CompilerServices.AsyncTaskMethodBuilder builder = System.Runtime.CompilerServices.AsyncTaskMethodBuilder.Create();
+
+            builder.Start(ref machine);
+        }
+    }
+
+    internal static class StructSwapCaller
+    {
+        internal static void Run() => StructSwapHelper.Run();
+    }
+
+    // Reaches the state machine only as the argument of a generic call: no local of that type, no call into it.
+    internal static class StructSwapByGenericArgument
+    {
+        internal static void Run() => Touch<StructSwapHelper.SwapStateMachine>();
+
+        private static void Touch<T>()
+        {
+        }
+    }
+
+    // Reaches the state machine only as a local: the one call is to a method of this class.
+    internal static class StructSwapByLocal
+    {
+        internal static void Run()
+        {
+            StructSwapHelper.SwapStateMachine machine = default;
+
+            Hold(ref machine);
+        }
+
+        private static void Hold(ref StructSwapHelper.SwapStateMachine machine) => machine = default;
+    }
+
+    internal static class StructQuietHelper
+    {
+        internal struct QuietStateMachine : System.Runtime.CompilerServices.IAsyncStateMachine
+        {
+            public void MoveNext()
+            {
+            }
+
+            public void SetStateMachine(System.Runtime.CompilerServices.IAsyncStateMachine stateMachine)
+            {
+            }
+        }
+
+        internal static void Run()
+        {
+            QuietStateMachine machine = default;
+
+            System.Runtime.CompilerServices.AsyncTaskMethodBuilder builder = System.Runtime.CompilerServices.AsyncTaskMethodBuilder.Create();
+
+            builder.Start(ref machine);
+        }
+    }
+
+    internal static class StructQuietCaller
+    {
+        internal static void Run() => StructQuietHelper.Run();
+    }
+
     internal static class HostEnvironmentReader
     {
         internal static string? Read() =>
@@ -802,13 +943,33 @@ public sealed class EnvironmentIsolationContractTests
     /// </summary>
     private static IReadOnlyList<Type> LoadMutatingTestClasses(
         Func<MethodBase, bool> mutates,
+        params Type[] seeds) =>
+        [
+            .. MutatingClosure(AssemblyTypes.Value, mutates, seeds)
+                .Select(OutermostDeclaring)
+                .Where(IsTestClass)
+                .Distinct()
+                .OrderBy(static type => type.FullName, StringComparer.Ordinal),
+        ];
+
+    /// <summary>
+    /// Every type in <paramref name="universe"/> that reaches a mutation: it calls one, or it references a type that does.
+    /// A reference is a call into the type, a generic argument of a call (the argument of the generic start of an async state
+    /// machine, which is how a struct state machine is reached), or a local of the type (the local that holds that state
+    /// machine). The compiler makes a state machine a class in a debug build and a struct in a release build, and a class is
+    /// reached by its constructor call while a struct is reached by neither, so a scan that reads only the called methods
+    /// loses every async helper in a release build and with it each test class that swaps the console through one.
+    /// </summary>
+    private static HashSet<Type> MutatingClosure(
+        IEnumerable<Type> universe,
+        Func<MethodBase, bool> mutates,
         params Type[] seeds)
     {
         Dictionary<Type, HashSet<Type>> callees = [];
 
         HashSet<Type> mutating = [.. seeds];
 
-        foreach (Type type in AssemblyTypes.Value)
+        foreach (Type type in universe)
         {
             HashSet<Type> referenced = [];
 
@@ -816,8 +977,18 @@ public sealed class EnvironmentIsolationContractTests
 
             foreach (MethodBase method in DeclaredMethods(type))
             {
+                foreach (Type local in LocalTypes(method))
+                {
+                    AddReferencedTypes(referenced, local, type.Assembly);
+                }
+
                 foreach (MethodBase called in CalledMethods(method))
                 {
+                    foreach (Type argument in GenericArgumentsOf(called))
+                    {
+                        AddReferencedTypes(referenced, argument, type.Assembly);
+                    }
+
                     if (mutates(called))
                     {
                         found = true;
@@ -825,10 +996,9 @@ public sealed class EnvironmentIsolationContractTests
                         continue;
                     }
 
-                    if (called.DeclaringType is { } declaring
-                        && declaring.Assembly == type.Assembly)
+                    if (called.DeclaringType is { } declaring)
                     {
-                        _ = referenced.Add(declaring);
+                        AddReferencedTypes(referenced, declaring, type.Assembly);
                     }
                 }
             }
@@ -860,12 +1030,86 @@ public sealed class EnvironmentIsolationContractTests
             }
         }
 
-        return mutating
-            .Select(OutermostDeclaring)
-            .Where(IsTestClass)
-            .Distinct()
-            .OrderBy(static type => type.FullName, StringComparer.Ordinal)
-            .ToArray();
+        return mutating;
+    }
+
+    /// <summary>
+    /// Adds <paramref name="type"/> when it belongs to <paramref name="assembly"/>, and every such type it is built from: the
+    /// element of an array or reference, and the arguments of a constructed generic type.
+    /// </summary>
+    private static void AddReferencedTypes(
+        HashSet<Type> referenced,
+        Type type,
+        Assembly assembly)
+    {
+        if (type.HasElementType && type.GetElementType() is { } element)
+        {
+            AddReferencedTypes(referenced, element, assembly);
+
+            return;
+        }
+
+        if (type.IsGenericType && !type.IsGenericTypeDefinition)
+        {
+            foreach (Type argument in type.GetGenericArguments())
+            {
+                AddReferencedTypes(referenced, argument, assembly);
+            }
+        }
+
+        Type definition = type.IsGenericType ? type.GetGenericTypeDefinition() : type;
+
+        if (definition.Assembly == assembly)
+        {
+            _ = referenced.Add(definition);
+        }
+    }
+
+    /// <summary>
+    /// The generic arguments a call is made with: those of the method, and those of the type that declares it.
+    /// </summary>
+    private static IEnumerable<Type> GenericArgumentsOf(
+        MethodBase called)
+    {
+        Type[] arguments;
+
+        try
+        {
+            arguments =
+            [
+                .. called.IsGenericMethod && !called.IsGenericMethodDefinition ? called.GetGenericArguments() : [],
+                .. called.DeclaringType is { IsGenericType: true, IsGenericTypeDefinition: false } declaring
+                    ? declaring.GetGenericArguments()
+                    : [],
+            ];
+        }
+        catch (Exception exception) when (exception is NotSupportedException
+            or InvalidOperationException
+            or TypeLoadException)
+        {
+            return [];
+        }
+
+        return arguments;
+    }
+
+    /// <summary>
+    /// The types of the locals of a method body.
+    /// </summary>
+    private static IEnumerable<Type> LocalTypes(
+        MethodBase method)
+    {
+        try
+        {
+            return method.GetMethodBody()?.LocalVariables.Select(static local => local.LocalType).ToArray() ?? [];
+        }
+        catch (Exception exception) when (exception is BadImageFormatException
+            or NotSupportedException
+            or InvalidOperationException
+            or TypeLoadException)
+        {
+            return [];
+        }
     }
 
     private static IEnumerable<MethodBase> DeclaredMethods(
