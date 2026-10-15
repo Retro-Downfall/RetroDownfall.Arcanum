@@ -1,11 +1,15 @@
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 
 using RetroDownfall.Arcanum.Api.Intelligence;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Sanctum;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.Tower;
+using RetroDownfall.Arcanum.Core.Workspaces;
 using RetroDownfall.Arcanum.Infrastructure.Repositories;
+using RetroDownfall.Arcanum.Infrastructure.Security;
 using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Intelligence;
@@ -45,7 +49,8 @@ public sealed class WebResearchSanctumWardTests : IDisposable
         sessions: null!,
         attachments: null!,
         new SingleCampaignRepository(harness.Campaign),
-        harness.Guard);
+        harness.Guard,
+        RefusingCampaignResolver.Instance);
 
     [Theory]
     [InlineData(SanctumMode.Strict, false)]
@@ -114,6 +119,61 @@ public sealed class WebResearchSanctumWardTests : IDisposable
         Assert.False(await ward(new Uri(Citation), CancellationToken.None));
     }
 
+    // The ward reads the mode once, when it is built. A campaign deleted while the citation loop runs leaves the guard with no Sanctum to read,
+    // and an audit-only decision cannot be honoured for it: every later citation and redirect is refused, with no fetch and no breach row.
+    [Theory]
+    [InlineData(SanctumMode.Strict)]
+    [InlineData(SanctumMode.AuditOnly)]
+    public async Task A_campaign_deleted_after_the_ward_was_built_refuses_every_later_target_in_both_modes(SanctumMode mode)
+    {
+        _ = Directory.CreateDirectory(_root);
+
+        MutableCampaignRepository campaigns = new(new Campaign
+        {
+            Id = Guid.NewGuid(),
+            Name = "vanishing",
+            NameLower = "vanishing",
+            Path = _root,
+            Type = WorkspaceType.Campaign,
+            SanctumConfigJson = CampaignRepository.SerializeSanctumConfig(new SanctumConfig
+            {
+                Enabled = true,
+                Mode = mode,
+                NetworkPolicy = NetworkPolicy.AllowList,
+                AllowedDomains = ["allowed.test"],
+            }),
+            CreatedAt = DateTimeOffset.UtcNow,
+            UpdatedAt = DateTimeOffset.UtcNow,
+        });
+
+        InMemorySanctumBreachRepository breaches = new();
+
+        SanctumGuard guard = new(campaigns, breaches, NullLogger<SanctumGuard>.Instance, UnregisteredCampaignRoots.Instance, new FakeDnsResolver());
+
+        WebResearchWorkflowService service = new(
+            providers: null!,
+            new TestOptionsSnapshot<ArcanumSettings>(new ArcanumSettings()),
+            intelligence: null!,
+            sessions: null!,
+            attachments: null!,
+            campaigns,
+            guard,
+            RefusingCampaignResolver.Instance);
+
+        Func<Uri, CancellationToken, ValueTask<bool>> ward =
+            (await service.BuildCampaignEgressWardAsync(campaigns.Campaign!.Id, CancellationToken.None))!;
+
+        Assert.True(await ward(new Uri(AllowedCitation), CancellationToken.None));
+
+        campaigns.Campaign = null;
+
+        Assert.False(await ward(new Uri(Citation), CancellationToken.None));
+
+        Assert.False(await ward(new Uri(AllowedCitation), CancellationToken.None));
+
+        Assert.Empty(breaches.Records);
+    }
+
     [Theory]
     [InlineData(true, SanctumMode.Strict, true)]
     [InlineData(true, SanctumMode.AuditOnly, true)]
@@ -124,4 +184,37 @@ public sealed class WebResearchSanctumWardTests : IDisposable
 
     public void Dispose() =>
         _ = TestDirectoryCleanup.TryDelete(_root, nameof(WebResearchSanctumWardTests));
+
+    private sealed class MutableCampaignRepository(Campaign? campaign) : ICampaignRepository
+    {
+        public Campaign? Campaign { get; set; } = campaign;
+
+        public Task<Campaign?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default) =>
+            Task.FromResult(Campaign is not null && Campaign.Id == id ? Campaign : null);
+
+        public Task<Campaign?> GetByPathAsync(string path, CancellationToken cancellationToken = default) =>
+            Task.FromResult<Campaign?>(null);
+
+        public Task<Campaign?> GetByNameAsync(string name, CancellationToken cancellationToken = default) =>
+            Task.FromResult<Campaign?>(null);
+
+        public Task<ListPageResult<Campaign>> ListAsync(
+            WorkspaceType? typeFilter,
+            int? limit = null,
+            int offset = 0,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(new ListPageResult<Campaign>([], false));
+
+        public Task<Result<Campaign>> AddAsync(Campaign added, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<Campaign> UpdateAsync(Campaign updated, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<bool> DeleteAsync(Guid id, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<int> CountAsync(CancellationToken cancellationToken = default) =>
+            Task.FromResult(Campaign is null ? 0 : 1);
+    }
 }

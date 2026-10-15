@@ -82,6 +82,7 @@ public sealed partial class WizardIntelligenceProvider(
     ISessionAttachmentStore sessionAttachmentStore,
     IHumanPromptRegistry humanPromptRegistry,
     IServiceProvider serviceProvider,
+    ICanonicalCampaignContextResolver campaignResolver,
     IProviderHealthTracker? healthTracker = null,
     GuardrailsPipeline? guardrailsPipeline = null,
     IModelCallExecutor? modelCallExecutor = null,
@@ -121,6 +122,8 @@ public sealed partial class WizardIntelligenceProvider(
     private IModelCallExecutor ModelCallExecutor => _tokenAccounting.Executor;
 
     private readonly Lazy<ITurnExecutionFacade>? _turnCoordinator = turnCoordinator;
+
+    private readonly ICanonicalCampaignContextResolver _campaignResolver = campaignResolver;
 
     /// <summary>
     /// Ordinary connection admission, resolved as a required service of the container that composed
@@ -4584,35 +4587,9 @@ public sealed partial class WizardIntelligenceProvider(
         ArcanumInvocationContext? invocation,
         CancellationToken cancellationToken)
     {
-        Campaign? campaign = null;
-
-        string? campaignId = null;
-
-        string? workspaceRoot = null;
-
-        bool sanctumEnabled = false;
-
-        SanctumMode sanctumMode = SanctumMode.Strict;
-
-        if (!string.IsNullOrWhiteSpace(request.WorkingDirectory))
-        {
-            campaign = await campaignRepository
-                .GetByPathAsync(request.WorkingDirectory, cancellationToken)
-                .ConfigureAwait(false);
-
-            if (campaign is not null)
-            {
-                campaignId = campaign.Id.ToString();
-
-                workspaceRoot = campaign.Path;
-
-                SanctumConfig sanctumConfig = CampaignRepository.GetSanctumConfig(campaign);
-
-                sanctumEnabled = sanctumConfig.Enabled;
-
-                sanctumMode = sanctumConfig.Mode;
-            }
-        }
+        // The Sanctum is the bound Campaign's: its policy, its mode and its disabled tools come from that Campaign, not from whether the
+        // working directory string equals its registered path (SanctumCampaignResolution).
+        BoundSanctum sanctum = await BindSanctumAsync(request, invocation, cancellationToken).ConfigureAwait(false);
 
         IReadOnlyList<AITool> inferenceTools = ApplyInferenceToolFilters(
             request,
@@ -4627,20 +4604,101 @@ public sealed partial class WizardIntelligenceProvider(
 
         return new ToolExecutionPipeline.TurnContext
         {
-            Campaign = campaign,
-            CampaignId = campaignId,
-            WorkspaceRoot = workspaceRoot,
+            Campaign = sanctum.Campaign,
+            CampaignId = sanctum.CampaignId?.ToString(),
+            WorkspaceRoot = ResolveSanctumWorkspaceRoot(request, sanctum.Campaign),
             PersistedSessionId = grimoireTurn.SessionId,
             AssistantEntryId = grimoireTurn.AssistantEntryId,
             InvocationId = grimoireTurn.AssistantEntryId?.ToString("D"),
             ModelUsed = targetModel,
             Invocation = invocation,
-            SanctumEnabled = sanctumEnabled,
-            SanctumMode = sanctumMode,
+            SanctumEnabled = sanctum.Enabled,
+            SanctumMode = sanctum.Mode,
+            SanctumPolicyUnreadable = sanctum.PolicyUnreadable,
             InferenceTools = inferenceTools,
             VisibleAttachmentIds = visibleAttachmentIds,
             SpellScriptRoots = spellScriptRoots,
         };
+    }
+
+    /// <summary>
+    /// The Sanctum the turn runs under. <see cref="PolicyUnreadable"/> is set when the turn is bound to a Campaign whose Sanctum could not be
+    /// read; the turn then runs as an enabled Strict Sanctum that refuses every tool call, because an unreadable policy is not an absent one.
+    /// </summary>
+    private readonly record struct BoundSanctum(
+        Campaign? Campaign,
+        Guid? CampaignId,
+        bool Enabled,
+        SanctumMode Mode,
+        bool PolicyUnreadable);
+
+    private async Task<BoundSanctum> BindSanctumAsync(
+        PingRequest request,
+        ArcanumInvocationContext? invocation,
+        CancellationToken cancellationToken)
+    {
+        SanctumCampaignResolution.Resolved resolved = await SanctumCampaignResolution
+            .ResolveAsync(
+                request.SessionId,
+                request.CampaignId,
+                request.WorkingDirectory,
+                invocation?.Campaign,
+                _campaignResolver,
+                campaignRepository,
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        if (resolved.PolicyUnreadable || (resolved.CampaignId is not null && resolved.Loaded is null))
+        {
+            logger.LogWarning(
+                "The Sanctum policy of the Campaign {CampaignId} this turn is bound to could not be read; the turn's tool calls are refused.",
+                resolved.CampaignId);
+
+            return new BoundSanctum(null, resolved.CampaignId, Enabled: true, SanctumMode.Strict, PolicyUnreadable: true);
+        }
+
+        if (resolved.CampaignId is not { } campaignId || resolved.Loaded is not { } campaign)
+        {
+            return default;
+        }
+
+        try
+        {
+            SanctumConfig config = CampaignRepository.GetSanctumConfig(campaign);
+
+            return new BoundSanctum(campaign, campaignId, config.Enabled, config.Mode, PolicyUnreadable: false);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            logger.LogWarning(
+                "The Sanctum policy of Campaign {CampaignId} could not be read ({ExceptionType}); the turn's tool calls are refused.",
+                campaignId,
+                exception.GetType().Name);
+
+            return new BoundSanctum(null, campaignId, Enabled: true, SanctumMode.Strict, PolicyUnreadable: true);
+        }
+    }
+
+    /// <summary>
+    /// The directory the Sanctum preflight resolves a tool's relative paths against: the one the tools themselves resolve against, which is
+    /// the request's working directory, or the Campaign's root when the turn has none. The guard judges each resolved path against the
+    /// Campaign's own root, so a working directory below that root narrows where a relative path lands without widening what is allowed.
+    /// </summary>
+    private static string? ResolveSanctumWorkspaceRoot(PingRequest request, Campaign? campaign)
+    {
+        if (!string.IsNullOrWhiteSpace(request.WorkingDirectory))
+        {
+            try
+            {
+                return Path.TrimEndingDirectorySeparator(Path.GetFullPath(request.WorkingDirectory.Trim()));
+            }
+            catch (Exception exception) when (exception is ArgumentException or NotSupportedException or PathTooLongException)
+            {
+                // A spelling that cannot be normalised cannot anchor anything; the Campaign's own root is the only root left.
+            }
+        }
+
+        return campaign?.Path;
     }
 
     private IReadOnlyList<AITool> ApplyInferenceToolFilters(
