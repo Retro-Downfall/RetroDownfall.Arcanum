@@ -194,11 +194,14 @@ internal sealed partial class LongRestDiscoveryStore(ArcanumDbContext db, TimePr
     // survived; current work revalidates its exact bytes and canonical labels under its fresh capability before executing or reusing paid
     // evidence. The label comparison is the loose, spelling-insensitive one on purpose: a mis-spelled protected label must still count.
     //
-    // The last two questions are attribution. A leaf's consolidated and transformation-output flags are projections of rows the sweep itself
-    // writes when it applies a decision, so no trigger on them can tell a foreign writer from the sweep. What distinguishes them is whose
-    // receipt set the flag: every receipt that sets one on a leaf of this generation must belong to one of its own committed work items,
-    // unless the leaf was frozen with the flag already set. The question is set-based and conservative (it asks for attribution, not for the
-    // full proof of the receipt that the per-leaf read makes), so a step that skips the corpus pass still refuses a foreign consolidation.
+    // The last four questions are attribution, in both directions. A leaf's consolidated and transformation-output flags are projections of rows
+    // the sweep itself writes when it applies a decision, so no trigger on them can tell a foreign writer from the sweep. What distinguishes them
+    // is whose receipt set the flag: every receipt that sets one on a leaf of this generation must belong to one of its own committed work items,
+    // unless the leaf was frozen with the flag already set. And a flag the leaf was frozen with must still be explained by a row: an ordinary
+    // erasure of the memory a consolidation suppressed removes that consolidation's receipt, so the survivor stops being a transformation output
+    // with nothing having written the survivor, and no trigger sees a row that only disappears. The questions are set-based and conservative (they
+    // ask for attribution and for existence, not for the full proof of the receipt that the per-leaf read makes), so a step that skips the corpus
+    // pass still refuses a foreign consolidation and a vanished one, which is exactly what the per-leaf read refuses.
     internal static readonly string FrozenSourceMetadataSql = $"""
         SELECT NOT EXISTS (
             SELECT 1 FROM long_rest_discovery_leaves leaf
@@ -228,7 +231,15 @@ internal sealed partial class LongRestDiscoveryStore(ArcanumDbContext db, TimePr
             SELECT 1 FROM long_rest_discovery_leaves leaf
             JOIN long_rest_receipts receipt ON receipt.SurvivorVersionId = leaf.VersionId AND receipt.OutcomeCode = 1
             WHERE leaf.GenerationId = $generation AND COALESCE(json_extract(leaf.SnapshotJson, '$.isTransformationOutput'), 0) = 0
-                AND receipt.ReceiptId NOT IN (SELECT ReceiptId FROM long_rest_work_items WHERE GenerationId = $generation AND ReceiptId IS NOT NULL));
+                AND receipt.ReceiptId NOT IN (SELECT ReceiptId FROM long_rest_work_items WHERE GenerationId = $generation AND ReceiptId IS NOT NULL))
+          AND NOT EXISTS (
+            SELECT 1 FROM long_rest_discovery_leaves leaf
+            WHERE leaf.GenerationId = $generation AND json_extract(leaf.SnapshotJson, '$.isConsolidated') = 1
+                AND NOT EXISTS (SELECT 1 FROM long_rest_suppressions suppression WHERE suppression.SourceVersionId = leaf.VersionId))
+          AND NOT EXISTS (
+            SELECT 1 FROM long_rest_discovery_leaves leaf
+            WHERE leaf.GenerationId = $generation AND json_extract(leaf.SnapshotJson, '$.isTransformationOutput') = 1
+                AND NOT EXISTS (SELECT 1 FROM long_rest_receipts receipt WHERE receipt.OutcomeCode = 1 AND receipt.SurvivorVersionId = leaf.VersionId));
         """;
 
     private static async Task<bool> FrozenSourceMetadataMatchesAsync(SqliteConnection connection, SqliteTransaction transaction,

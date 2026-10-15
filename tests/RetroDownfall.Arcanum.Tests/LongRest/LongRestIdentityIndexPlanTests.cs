@@ -70,6 +70,28 @@ public sealed class LongRestIdentityIndexPlanTests(GrimoireFixture fixture) : IA
         AssertLabelSearches(await ExplainAsync(LongRestDiscoveryStore.FrozenSourceMetadataSql), expected: 2);
     }
 
+    /// <summary>
+    /// Attribution asks, per leaf and in both directions, which receipt or suppression set a flag and whether the row a frozen flag rests on is
+    /// still there. Each is a probe of one leaf's version, so each must be an index search and never a scan of the receipts of every consolidation.
+    /// </summary>
+    [SkippableFact]
+
+    public async Task The_attribution_questions_probe_receipts_and_suppressions_by_version_through_an_index()
+    {
+        RequireSqlCipher();
+
+        string plan = await ExplainAsync(LongRestDiscoveryStore.FrozenSourceMetadataSql);
+
+        // Forward and reverse: a flag set by a receipt the sweep does not own, and a frozen flag whose receipt is gone.
+        Assert.Equal(2, Regex.Matches(plan, @"SEARCH receipt USING INDEX idx_long_rest_receipts_survivor_version \(SurvivorVersionId=\?\)").Count);
+
+        Assert.Equal(2, Regex.Matches(plan, @"SEARCH suppression USING (COVERING )?INDEX sqlite_autoindex_long_rest_suppressions_1 \(SourceVersionId=\?\)").Count);
+
+        Assert.DoesNotContain("SCAN receipt", plan, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("SCAN suppression", plan, StringComparison.Ordinal);
+    }
+
     [SkippableFact]
 
     public async Task The_snapshot_label_subqueries_find_each_label_through_the_normalized_index()
