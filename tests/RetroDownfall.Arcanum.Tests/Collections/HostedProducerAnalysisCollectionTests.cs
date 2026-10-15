@@ -55,6 +55,7 @@ public sealed class HostedProducerAnalysisCollectionTests
             "RetroDownfall.Arcanum.Tests.Operations.HostedGrimoireProducerInventoryTests.BackupLiveSourceHasExactCliCallerAuthority",
             "RetroDownfall.Arcanum.Tests.Operations.HostedGrimoireProducerInventoryTests.EveryApplicationHostedServiceHasExactlyOneEntry",
             "RetroDownfall.Arcanum.Tests.Operations.HostedGrimoireProducerInventoryTests.EveryDiscoveredProducerSiteIsCataloguedExactlyOnce",
+            "RetroDownfall.Arcanum.Tests.Operations.HostedGrimoireProducerInventoryTests.Every_additional_root_stays_within_its_ratchet_ceiling",
             "RetroDownfall.Arcanum.Tests.Operations.HostedGrimoireProducerInventoryTests.Every_production_root_stays_within_its_ratchet_ceiling",
             "RetroDownfall.Arcanum.Tests.Operations.HostedGrimoireProducerInventoryTests.FrameworkCollectionIndexerUsesProductionReferencePackIdentity",
             "RetroDownfall.Arcanum.Tests.Operations.HostedGrimoireProducerInventoryTests.LiveSourceCannotBecomeReachableFromHostedOrUnadmittedCaller",
@@ -97,7 +98,7 @@ public sealed class HostedProducerAnalysisCollectionTests
     }
 
     [Fact]
-    public void Additional_production_graph_lane_has_exactly_the_four_known_consumers()
+    public void Additional_production_graph_lane_has_exactly_its_known_consumers()
     {
         static bool HasAdditionalTrait(MethodInfo method) =>
             method.GetCustomAttributesData().Any(static attribute =>
@@ -129,6 +130,7 @@ public sealed class HostedProducerAnalysisCollectionTests
         string[] expected =
         [
             "RetroDownfall.Arcanum.Tests.Covenant.CovenantArchitectureBoundaryTests.Every_effectful_recovery_handler_has_the_required_source_effects",
+            "RetroDownfall.Arcanum.Tests.Operations.HostedGrimoireProducerInventoryTests.Every_additional_root_stays_within_its_ratchet_ceiling",
             "RetroDownfall.Arcanum.Tests.Operations.HostedGrimoireProducerInventoryTests.ProductionImmutableArraySequenceEqualityUsesDefaultValueEquality",
             "RetroDownfall.Arcanum.Tests.Operations.HostedGrimoireProducerInventoryTests.ProductionSchemaLazyFactoriesAreProvenAsBoundedData",
             "RetroDownfall.Arcanum.Tests.Operations.HostedGrimoireProducerInventoryTests.ProductionSequenceOperationUsesTheSameReviewedComparerProof",
@@ -143,6 +145,8 @@ public sealed class HostedProducerAnalysisCollectionTests
     [InlineData(typeof(ArcanumAuthenticatedHttpSenderTests))]
     [InlineData(typeof(AuthorityCarrierBanTests))]
     [InlineData(typeof(AdmittedEntryCensusTests))]
+    [InlineData(typeof(SingleGateCensusTests))]
+    [InlineData(typeof(CheckerLimitPinTests))]
     public void Production_compilation_consumers_are_isolated_from_parallel_suite(Type consumer)
     {
         CustomAttributeData collection = Assert.Single(

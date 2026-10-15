@@ -2172,6 +2172,29 @@ internal static partial class HostedGrimoireProducerInventory
 
     // The authored implementers of the framework slots (ToString, Equals, GetHashCode, CompareTo, GetFormat, ...) that reach
     // a producer site or cannot be followed, over the given compilations.
+    // The classes of framework entry point a limit pin asks about (see ProducerGraph.FrameworkEntryPointsThatReach).
+    internal enum FrameworkEntryPoints
+    {
+        // An authored override of a member whose first declaration is the framework's.
+        Overrides,
+
+        // An authored implementation of IDisposable.Dispose or IAsyncDisposable.DisposeAsync.
+        Disposals,
+
+        // An authored property getter with a body.
+        Accessors,
+    }
+
+    // The authored framework entry points of one class that reach a classified producer site or cannot be followed, over the given compilations.
+    internal static IReadOnlyList<string> ProbeFrameworkEntryPointsThatReach(IReadOnlyList<CSharpCompilation> compilations, FrameworkEntryPoints kind) =>
+        new ProducerGraph(compilations, DefaultEvaluationEnvironmentMaximumMembers, DefaultEvaluationEnvironmentMaximumDepth, DefaultTraversalMaximumDepth, DefaultMaximumAnalyzedStatesPerRoot, false, sitesOnly: true)
+            .FrameworkEntryPointsThatReach(kind);
+
+    // The authored methods a predicate selects that reach a classified producer site or cannot be followed, over the given compilations.
+    internal static IReadOnlyList<string> ProbeMembersThatReach(IReadOnlyList<CSharpCompilation> compilations, Func<INamedTypeSymbol, IMethodSymbol, bool> selected) =>
+        new ProducerGraph(compilations, DefaultEvaluationEnvironmentMaximumMembers, DefaultEvaluationEnvironmentMaximumDepth, DefaultTraversalMaximumDepth, DefaultMaximumAnalyzedStatesPerRoot, false, sitesOnly: true)
+            .MembersThatReach(selected);
+
     internal static IReadOnlyList<string> ProbeCallbackImplementersThatReach(IReadOnlyList<CSharpCompilation> compilations) =>
         new ProducerGraph(compilations, DefaultEvaluationEnvironmentMaximumMembers, DefaultEvaluationEnvironmentMaximumDepth, DefaultTraversalMaximumDepth, DefaultMaximumAnalyzedStatesPerRoot, false, sitesOnly: true)
             .CallbackImplementersThatReach();

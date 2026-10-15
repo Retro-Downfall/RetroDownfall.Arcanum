@@ -1072,42 +1072,138 @@ public sealed partial class HostedGrimoireProducerInventoryTests
 
     // Constant Value Identity merges the states of a callee that is reached with the same constant from different callers, and
     // the environment keeps only the first caller. A walk that enumerates the sources a member's value bindings hold, to follow
-    // them to their callers, would read a caller that the state does not name, so it has to skip a constant. The one such walk
-    // today is the search for the owner of an inherited group; a new one must say what it does with a constant before this scan
-    // accepts it.
+    // them to their callers, would read a caller that the state does not name, so it has to skip a constant. The scan reads the
+    // compiled checker, so a foreach, a .Values read, a LINQ call, a copy, an alias and a lambda are one thing to it: every method
+    // that enumerates the value-binding dictionary and reads a source's caller either calls the guard or is one of the reviewed readers
+    // below, each of which only names a source (an identity) or compares or copies sources whole. A method that enumerates the dictionary
+    // and never reads a caller cannot follow a source to it.
+    private const string ConstantGuard = "TryConstantValueIdentity";
+
+    private static readonly (string Method, string Reason)[] ReviewedValueBindingReaders =
+    [
+        ("BindDeclaredRootFactoryContext", "copies the entries into the factory's context whole, each with its own source and caller"),
+        ("BindDemandedReceiverReadonlyFieldContext", "rebinds the demanded entries whole, each with its own source and caller"),
+        ("CleanupBindingIdentity", "names each source by its caller's identity in a cache key; a constant stays distinct by caller, which is never fewer states"),
+        ("EvaluationEnvironmentLocalBindingIdentity", "names each source by its caller's identity in a state identity; a constant stays distinct by caller, which is never fewer states"),
+        ("HasReviewedValueConversions", "copies the captured entries and reviews the conversion of the one source bound to the parameter it is asked about"),
+        ("PerUnitMaterializationValueCompatible", "compares two sources by caller identity and expression span and refuses on any difference"),
+        ("PreservePerUnitReconcilerFieldContext", "keeps the field sources of a constructor context whole and refuses on any disagreement"),
+    ];
+
+    private static bool IsTheChecker(Type type) =>
+        (type.FullName ?? "").StartsWith("RetroDownfall.Arcanum.Tests.Support.HostedGrimoireProducerInventory", StringComparison.Ordinal);
+
     [Fact]
-    public void EveryWalkOverTheSourcesOfAMembersValueBindingsSkipsAConstant()
+    public void EveryEnumerationOfAMembersValueBindingsIsGuardedAgainstAConstant()
     {
-        string support = Path.Combine(TestRepositoryPaths.RepositoryRoot(), "tests", "RetroDownfall.Arcanum.Tests", "Support");
+        IReadOnlyList<ValueBindingEnumerationScan.Enumeration> enumerations = ValueBindingEnumerationScan.Enumerations(typeof(HostedGrimoireProducerInventory).Assembly, IsTheChecker, ConstantGuard);
 
-        List<string> walks = [];
+        // Not vacuous: the checker enumerates its bindings in many places, and the walk that follows a source to its caller is guarded.
+        Assert.NotEmpty(enumerations);
 
-        List<string> unguarded = [];
+        Assert.Contains(enumerations, static item => item.Guarded && item.ReadsCaller && item.Method.EndsWith(".PerUnitPhysicalGroupSharesWork", StringComparison.Ordinal));
 
-        foreach (string file in Directory.EnumerateFiles(support, "HostedGrimoireProducerInventory*.cs"))
+        string[] unreviewed = [.. enumerations.Where(static item => item.ReadsCaller && !item.Guarded)
+            .Select(static item => item.Method[(item.Method.LastIndexOf('.') + 1)..])
+            .Except(ReviewedValueBindingReaders.Select(static reader => reader.Method), StringComparer.Ordinal)];
+
+        Assert.Empty(unreviewed);
+
+        // A reviewed reader that no longer enumerates, or that is now guarded, is a stale row.
+        Assert.Equal(
+            ReviewedValueBindingReaders.Select(static reader => reader.Method).Order(StringComparer.Ordinal),
+            enumerations.Where(static item => item.ReadsCaller && !item.Guarded).Select(static item => item.Method[(item.Method.LastIndexOf('.') + 1)..]).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal));
+    }
+
+    // The twin: methods of the compiled test assembly that enumerate a dictionary of bound sources in every spelling, with the guard and without.
+    [Fact]
+    public void TheValueBindingScanSeesEveryWayOfEnumeratingTheBindingsAndOnlyThose()
+    {
+        IReadOnlyList<ValueBindingEnumerationScan.Enumeration> enumerations = ValueBindingEnumerationScan.Enumerations(
+            typeof(BindingsProbe).Assembly, static type => type == typeof(BindingsProbe) || type.DeclaringType == typeof(BindingsProbe), "Guard");
+
+        static string Short(ValueBindingEnumerationScan.Enumeration item) => item.Method[(item.Method.LastIndexOf('.') + 1)..];
+
+        string[] unguardedReaders = [.. enumerations.Where(static item => item.ReadsCaller && !item.Guarded).Select(Short).Order(StringComparer.Ordinal)];
+
+        Assert.Equal(["ByAlias", "ByCopyAndForeach", "ByDeconstruction", "ByForeach", "ByLambdaInLinq", "ByValues"], unguardedReaders);
+
+        // The guarded walk is found and guarded; the walk that never reads a caller and the point lookup are not readers at all.
+        Assert.Contains(enumerations, static item => Short(item) == "Guarded" && item.Guarded && item.ReadsCaller);
+
+        Assert.Contains(enumerations, static item => Short(item) == "CopyOnly" && !item.ReadsCaller);
+
+        Assert.DoesNotContain(enumerations, static item => Short(item) == "LookupOnly");
+    }
+
+    internal sealed record BoundValueSource(string Caller);
+
+    internal static class BindingsProbe
+    {
+        internal static void Guard() { }
+
+        internal static int ByForeach(IReadOnlyDictionary<Microsoft.CodeAnalysis.ISymbol, BoundValueSource> bindings)
         {
-            string[] lines = File.ReadAllLines(file);
+            int total = 0;
 
-            for (int index = 0; index < lines.Length; index++)
+            foreach (KeyValuePair<Microsoft.CodeAnalysis.ISymbol, BoundValueSource> pair in bindings)
             {
-                if (!System.Text.RegularExpressions.Regex.IsMatch(lines[index], @"\bValueBindings\??\.Values\b"))
-                {
-                    continue;
-                }
-
-                string site = Path.GetFileName(file) + ":" + (index + 1);
-
-                walks.Add(site);
-
-                if (!string.Join('\n', lines.Skip(index).Take(12)).Contains("TryConstantValueIdentity", StringComparison.Ordinal))
-                {
-                    unguarded.Add(site);
-                }
+                total += pair.Value.Caller.Length;
             }
+
+            return total;
         }
 
-        Assert.NotEmpty(walks);
+        internal static int ByDeconstruction(IReadOnlyDictionary<Microsoft.CodeAnalysis.ISymbol, BoundValueSource> bindings)
+        {
+            int total = 0;
 
-        Assert.Empty(unguarded);
+            foreach ((Microsoft.CodeAnalysis.ISymbol _, BoundValueSource source) in bindings)
+            {
+                source.Deconstruct(out string caller);
+
+                total += caller.Length;
+            }
+
+            return total;
+        }
+
+        internal static int ByValues(Dictionary<Microsoft.CodeAnalysis.ISymbol, BoundValueSource> bindings) => bindings.Values.Sum(static source => source.Caller.Length);
+
+        internal static IEnumerable<string> ByLambdaInLinq(IReadOnlyDictionary<Microsoft.CodeAnalysis.ISymbol, BoundValueSource> bindings) => bindings.Select(static pair => pair.Value.Caller);
+
+        internal static int ByAlias(IReadOnlyDictionary<Microsoft.CodeAnalysis.ISymbol, BoundValueSource> bindings)
+        {
+            IEnumerable<KeyValuePair<Microsoft.CodeAnalysis.ISymbol, BoundValueSource>> alias = bindings;
+
+            return alias.Count(static pair => pair.Value.Caller.Length > 0);
+        }
+
+        internal static int ByCopyAndForeach(IReadOnlyDictionary<Microsoft.CodeAnalysis.ISymbol, BoundValueSource> bindings)
+        {
+            Dictionary<Microsoft.CodeAnalysis.ISymbol, BoundValueSource> copy = new(bindings, Microsoft.CodeAnalysis.SymbolEqualityComparer.Default);
+
+            int total = 0;
+
+            foreach (BoundValueSource source in copy.Values)
+            {
+                total += source.Caller.Length;
+            }
+
+            return total;
+        }
+
+        internal static int Guarded(IReadOnlyDictionary<Microsoft.CodeAnalysis.ISymbol, BoundValueSource> bindings)
+        {
+            Guard();
+
+            return bindings.Values.Sum(static source => source.Caller.Length);
+        }
+
+        internal static Dictionary<Microsoft.CodeAnalysis.ISymbol, BoundValueSource> CopyOnly(IReadOnlyDictionary<Microsoft.CodeAnalysis.ISymbol, BoundValueSource> bindings) =>
+            bindings.ToDictionary(static pair => pair.Key, static pair => pair.Value, Microsoft.CodeAnalysis.SymbolEqualityComparer.Default);
+
+        internal static int LookupOnly(IReadOnlyDictionary<Microsoft.CodeAnalysis.ISymbol, BoundValueSource> bindings, Microsoft.CodeAnalysis.ISymbol key) =>
+            bindings.TryGetValue(key, out BoundValueSource? source) ? source.Caller.Length : bindings.ContainsKey(key) ? 1 : 0;
     }
 }

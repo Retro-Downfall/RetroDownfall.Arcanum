@@ -393,37 +393,11 @@ public sealed class SingleGateCensusTests(ITestOutputHelper output)
 
             string reviewed = data + ".GrimoireConnectionAdmissionGate";
 
-            List<Registration> registrations = [];
-
-            foreach (Compilation compilation in compilations)
-            {
-                foreach (SyntaxTree tree in compilation.SyntaxTrees)
-                {
-                    SemanticModel model = compilation.GetSemanticModel(tree);
-
-                    foreach (SyntaxNode node in tree.GetRoot().DescendantNodes().Where(static node => node is InvocationExpressionSyntax or BaseObjectCreationExpressionSyntax))
-                    {
-                        IMethodSymbol? method = model.GetSymbolInfo(node).Symbol as IMethodSymbol;
-
-                        if (method is null || !IsContainerRegistrationApi(method))
-                        {
-                            continue;
-                        }
-
-                        ITypeSymbol[] named = [.. method.TypeArguments, .. TypeofOperands(model, node)];
-
-                        foreach (ITypeSymbol type in named.Where(type => AuthorityCarrierScanner.Qualified(type) == contract || AuthorityCarrierScanner.Qualified(type) == reviewed))
-                        {
-                            registrations.Add(new(
-                                AuthorityCarrierScanner.Qualified(EnclosingMember(model.GetEnclosingSymbol(node.SpanStart))),
-                                AuthorityCarrierScanner.Qualified(type),
-                                FactoryShape(model, node, reviewed)));
-                        }
-                    }
-                }
-            }
-
-            return registrations;
+            return
+            [
+                .. ContainerRegistrationScanner.Find(compilations, type => AuthorityCarrierScanner.Qualified(type) == contract || AuthorityCarrierScanner.Qualified(type) == reviewed)
+                    .Select(registration => new Registration(registration.Enclosing, AuthorityCarrierScanner.Qualified(registration.Watched), FactoryShape(registration.Model, registration.Node, reviewed))),
+            ];
         }
 
         /// <summary>
@@ -477,7 +451,7 @@ public sealed class SingleGateCensusTests(ITestOutputHelper output)
                             continue;
                         }
 
-                        string enclosing = AuthorityCarrierScanner.Qualified(EnclosingMember(model.GetEnclosingSymbol(creation.SpanStart)));
+                        string enclosing = AuthorityCarrierScanner.Qualified(ContainerRegistrationScanner.EnclosingMember(model.GetEnclosingSymbol(creation.SpanStart)));
 
                         if (!creators.Contains(enclosing, StringComparer.Ordinal))
                         {
@@ -489,20 +463,6 @@ public sealed class SingleGateCensusTests(ITestOutputHelper output)
 
             return [.. findings.Order(StringComparer.Ordinal)];
         }
-
-        // The container's registration surface: everything in the dependency-injection namespaces except resolving a service from a provider.
-        private static bool IsContainerRegistrationApi(IMethodSymbol method)
-        {
-            string space = method.ContainingNamespace?.ToDisplayString() ?? "";
-
-            return space.StartsWith("Microsoft.Extensions.DependencyInjection", StringComparison.Ordinal)
-                && method.ContainingType.Name is not ("ServiceProviderServiceExtensions" or "ServiceProviderKeyedServiceExtensions" or "ActivatorUtilities");
-        }
-
-        private static IEnumerable<ITypeSymbol> TypeofOperands(SemanticModel model, SyntaxNode node) =>
-            node.DescendantNodesAndSelf().OfType<TypeOfExpressionSyntax>()
-                .Select(typeOf => model.GetTypeInfo(typeOf.Type).Type)
-                .OfType<ITypeSymbol>();
 
         // How the registration supplies the service: a factory that creates the reviewed gate, a factory that resolves it from the provider by
         // its own type, or anything else (a generic implementation type, an instance, a typeof pair, a descriptor).
@@ -551,18 +511,6 @@ public sealed class SingleGateCensusTests(ITestOutputHelper output)
             }
 
             return "other";
-        }
-
-        private static ISymbol EnclosingMember(ISymbol? enclosing)
-        {
-            ISymbol? current = enclosing;
-
-            while (current is IMethodSymbol { MethodKind: MethodKind.AnonymousFunction or MethodKind.LocalFunction })
-            {
-                current = current.ContainingSymbol;
-            }
-
-            return current ?? throw new InvalidOperationException("A reference has no enclosing member.");
         }
     }
 }
