@@ -347,7 +347,7 @@ internal sealed partial class LongRestDiscoveryStore
     /// over the generation, so what it selects for a leaf is what those reads select for it, and every join is a lookup by key. A clean
     /// generation joins no label, because a clean leaf has none and the set-based question has already refused a clean leaf that has one.
     /// </summary>
-    internal static readonly string FrozenMetadataCorpusSql = $"""
+    internal const string FrozenMetadataCorpusSql = $"""
         SELECT leaf.MemoryId, leaf.VersionId, leaf.SourceDigest, leaf.InsertionSequence, leaf.MutationEpoch, leaf.EmbeddingDigest, leaf.EmbeddingDimensions,
             json_extract(leaf.SnapshotJson, '$.isConsolidated'), json_extract(leaf.SnapshotJson, '$.isTransformationOutput'), leaf.SnapshotJson, leaf.LabelJson,
             v.VersionId IS NOT NULL AND c.ClaimId IS NOT NULL AND h.ClaimId IS NOT NULL AND m.Id IS NOT NULL,
@@ -357,7 +357,7 @@ internal sealed partial class LongRestDiscoveryStore
                 FROM (SELECT d.DependentVersionId, d.RelationCode FROM annal_dependencies d JOIN annal_heads ih ON ih.CurrentVersionId = d.DependentVersionId
                     WHERE d.DependencyVersionId = v.VersionId ORDER BY d.DependentVersionId, d.RelationCode LIMIT 17) y),
             {SagaLongRestService.SnapshotColumns},
-            {string.Join(", ", ArtifactSensitivityLedger.LabelColumnList.Split(", ").Select(static column => "label." + column))}
+            {ArtifactSensitivityLedger.LabelColumnListAsLabel}
         FROM long_rest_discovery_leaves leaf
         LEFT JOIN annal_versions v ON v.VersionId = leaf.VersionId
         LEFT JOIN annal_claims c ON c.ClaimId = v.ClaimId AND c.SubjectStoreCode = 1 AND c.SubjectId = leaf.MemoryId
@@ -380,9 +380,10 @@ internal sealed partial class LongRestDiscoveryStore
     /// recomputed from what the rows say now.</para>
     /// <para>Two kinds of leaf still need more than the row. A leaf the sweep itself consolidated, or produced, no longer has the flags it
     /// was frozen with, and the receipt that explains the difference must be proved in full (<see cref="VerifyOwnProjectionAsync"/>), as the
-    /// per-leaf read does; those leaves are proved after the statement has been read through, one at a time, so the work grows with the
-    /// decisions the sweep applied and not with the corpus. And a protected leaf whose label the exact-spelling join does not find is handed
-    /// to the per-leaf read, which makes the point read of the label and so decides it as it always did.</para>
+    /// per-leaf read does; those leaves are proved after the statement has been read through, one at a time, and a receipt is proved once
+    /// however many leaves its decision consolidated, so the work grows with the decisions the sweep applied and not with the corpus. And a
+    /// protected leaf whose label the exact-spelling join does not find is handed to the per-leaf read, which makes the point read of the
+    /// label and so decides it as it always did.</para>
     /// </remarks>
     internal static async Task VerifyFrozenMetadataCorpusAsync(SqliteConnection connection, SqliteTransaction transaction,
         LongRestDiscoveryGeneration generation, CancellationToken ct)
@@ -470,9 +471,11 @@ internal sealed partial class LongRestDiscoveryStore
             }
         }
 
+        HashSet<string> proved = new(StringComparer.Ordinal);
+
         foreach ((LongRestSourceLeaf live, LongRestSnapshot frozen) in explained)
         {
-            await VerifyOwnProjectionAsync(connection, transaction, generation, live, frozen, ct).ConfigureAwait(false);
+            await VerifyOwnProjectionAsync(connection, transaction, generation, live, frozen, ct, proved).ConfigureAwait(false);
         }
 
         foreach (string memory in exact)
@@ -485,16 +488,28 @@ internal sealed partial class LongRestDiscoveryStore
     {
         using JsonDocument document = JsonDocument.Parse(json);
 
-        return [.. document.RootElement.EnumerateArray().Select(static element =>
-            new LongRestDependency(element[0].GetString()!, (AnnalDependencyRelation)element[1].GetInt32(), element[2].GetInt32()))];
+        List<LongRestDependency> dependencies = [];
+
+        foreach (JsonElement element in document.RootElement.EnumerateArray())
+        {
+            dependencies.Add(new(element[0].GetString()!, (AnnalDependencyRelation)element[1].GetInt32(), element[2].GetInt32()));
+        }
+
+        return [.. dependencies];
     }
 
     private static LongRestIncomingDependency[] ReadIncomingDependencies(string json)
     {
         using JsonDocument document = JsonDocument.Parse(json);
 
-        return [.. document.RootElement.EnumerateArray().Select(static element =>
-            new LongRestIncomingDependency(element[0].GetString()!, (AnnalDependencyRelation)element[1].GetInt32(), true))];
+        List<LongRestIncomingDependency> dependencies = [];
+
+        foreach (JsonElement element in document.RootElement.EnumerateArray())
+        {
+            dependencies.Add(new(element[0].GetString()!, (AnnalDependencyRelation)element[1].GetInt32(), true));
+        }
+
+        return [.. dependencies];
     }
 
     private static string MetadataLeafJson(LongRestSourceLeaf leaf) => JsonSerializer.Serialize(leaf with { Content = null, Vector = [] }, LongRestJsonContext.Default.LongRestSourceLeaf);

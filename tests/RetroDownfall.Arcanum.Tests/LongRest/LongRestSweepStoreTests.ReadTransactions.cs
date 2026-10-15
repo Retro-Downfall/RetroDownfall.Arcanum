@@ -103,13 +103,14 @@ public sealed partial class LongRestSweepStoreTests
 
         Assert.Null(LongRestSweepHarness.Require(await fixture.H.Store.ReadNextProtectedPartitionAsync(CanonicalCampaignContext.GlobalOnly, null, bound.Token)));
 
-        Assert.Equal(1, tally.ReadTransactions);
+        // The attempt store's one, and the discovery store's own for the partition probe: the counter reads every store, and SQLite's own
+        // trace of the connection agrees with it.
+        Assert.Equal(2, tally.ReadTransactions);
 
         Assert.Equal(0, tally.WriterTransactions);
 
         Assert.Equal(0, trace.ImmediateTransactions);
 
-        // The attempt store's one, and the discovery store's own for the partition probe.
         Assert.Equal(2, trace.DeferredTransactions);
     }
 

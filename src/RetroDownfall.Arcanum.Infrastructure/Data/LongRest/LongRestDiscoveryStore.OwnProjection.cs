@@ -10,8 +10,13 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.LongRest;
 
 internal sealed partial class LongRestDiscoveryStore
 {
+    /// <param name="proved">
+    /// The receipts already proved in full by the pass this leaf is part of. A decision that consolidated sixteen leaves left one receipt, and
+    /// the proof of a receipt is a function of the receipt and the generation alone, so a pass that meets it again for the next leaf of the
+    /// same decision need not prove it again. Only a receipt that proved is remembered, and a receipt that does not prove ends the pass.
+    /// </param>
     private static async Task VerifyOwnProjectionAsync(SqliteConnection connection, SqliteTransaction transaction,
-        LongRestDiscoveryGeneration generation, LongRestSourceLeaf live, LongRestSnapshot frozen, CancellationToken ct)
+        LongRestDiscoveryGeneration generation, LongRestSourceLeaf live, LongRestSnapshot frozen, CancellationToken ct, HashSet<string>? proved = null)
     {
         if ((frozen.IsConsolidated && !live.Snapshot.IsConsolidated) || (frozen.IsTransformationOutput && !live.Snapshot.IsTransformationOutput))
         {
@@ -55,9 +60,12 @@ internal sealed partial class LongRestDiscoveryStore
             {
                 // Every present causer of a newly set flag must be attributable. One own receipt
                 // cannot conceal an external receipt that also sets the same projection bit.
-                if ((cause.Source && !frozen.IsConsolidated) || (cause.Survivor && !frozen.IsTransformationOutput))
+                if (((cause.Source && !frozen.IsConsolidated) || (cause.Survivor && !frozen.IsTransformationOutput))
+                    && (proved is null || !proved.Contains(cause.Receipt)))
                 {
                     await VerifyOwnReceiptAsync(connection, transaction, generation, cause.Receipt, ct).ConfigureAwait(false);
+
+                    _ = proved?.Add(cause.Receipt);
                 }
 
                 explainedConsolidation |= cause.Source;

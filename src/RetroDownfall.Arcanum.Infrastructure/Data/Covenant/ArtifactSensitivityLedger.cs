@@ -40,6 +40,11 @@ internal sealed partial class ArtifactSensitivityLedger(ICovenantConnectionSourc
         + "ArtifactContentDigest, SensitivityCode, ProvenanceModeCode, ExactGenerationIds, GenerationBloom, ProducingPlanDigest, "
         + "ProducingAdmissionDigest, ProducingMaintenanceReceiptDigest, CreatedAtUtc";
 
+    /// <summary><see cref="LabelColumnList"/> with each column qualified by the alias <c>label</c>, for a read that joins the ledger to something else.</summary>
+    internal const string LabelColumnListAsLabel = "label.LabelId, label.ArtifactKindCode, label.ArtifactId, label.SessionId, label.CampaignId, label.TurnId, "
+        + "label.ArtifactRevision, label.ArtifactContentDigest, label.SensitivityCode, label.ProvenanceModeCode, label.ExactGenerationIds, "
+        + "label.GenerationBloom, label.ProducingPlanDigest, label.ProducingAdmissionDigest, label.ProducingMaintenanceReceiptDigest, label.CreatedAtUtc";
+
     /// <summary>How many columns <see cref="LabelColumnList"/> names.</summary>
     internal const int LabelColumnCount = 16;
 

@@ -5,6 +5,7 @@ using Microsoft.Data.Sqlite;
 using RetroDownfall.Arcanum.Core.Annals;
 using RetroDownfall.Arcanum.Core.LongRest;
 using RetroDownfall.Arcanum.Core.Weave;
+using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Data.LongRest;
 using RetroDownfall.Arcanum.Tests.Fixtures;
 using RetroDownfall.Arcanum.Tests.Support;
@@ -176,6 +177,18 @@ public sealed class LongRestMetadataCorpusEquivalenceTests
         Assert.Equal(nameof(InvalidDataException), v.PerLeaf);
 
         Assert.Equal(nameof(InvalidDataException), v.Set);
+    }
+
+    /// <summary>
+    /// The qualified label columns are a constant, so that the statement is one and is not built while the process starts; they must stay the
+    /// columns the decoder reads, in its order.
+    /// </summary>
+    [Fact]
+    public void The_qualified_label_columns_are_the_decoders_columns_in_its_order()
+    {
+        Assert.Equal(ArtifactSensitivityLedger.LabelColumnListAsLabel, "label." + ArtifactSensitivityLedger.LabelColumnList.Replace(", ", ", label.", StringComparison.Ordinal));
+
+        Assert.Equal(ArtifactSensitivityLedger.LabelColumnCount, ArtifactSensitivityLedger.LabelColumnList.Split(", ").Length);
     }
 
     /// <summary>The corpus nothing has touched is admitted by both, so a refusal above is a refusal of the mutation and not of the harness.</summary>
@@ -360,7 +373,7 @@ public sealed class LongRestMetadataCorpusEquivalenceTests
         Assert.Equal(1, trace.Statements.Count(static statement => statement.Contains("long_rest_discovery_leaves", StringComparison.Ordinal)));
     }
 
-    private sealed record Verdicts(string PerLeaf, string Set);
+    internal sealed record Verdicts(string PerLeaf, string Set);
 
     private static async Task BlindAsync(Scenario s)
     {
@@ -374,7 +387,7 @@ public sealed class LongRestMetadataCorpusEquivalenceTests
 
     private static Task<Verdicts> VerdictsAsync(LongRestSweepHarness h, LongRestDiscoveryGeneration generation) => VerdictsAsync(h.Connection, generation);
 
-    private static async Task<Verdicts> VerdictsAsync(SqliteConnection connection, LongRestDiscoveryGeneration generation) =>
+    internal static async Task<Verdicts> VerdictsAsync(SqliteConnection connection, LongRestDiscoveryGeneration generation) =>
         new(await RunAsync(connection, generation, perLeaf: true), await RunAsync(connection, generation, perLeaf: false));
 
     private static async Task<string> RunAsync(SqliteConnection connection, LongRestDiscoveryGeneration generation, bool perLeaf)
