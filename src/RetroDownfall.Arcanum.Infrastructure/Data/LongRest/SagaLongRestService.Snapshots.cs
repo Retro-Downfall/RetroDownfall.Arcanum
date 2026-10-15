@@ -144,7 +144,7 @@ internal sealed partial class SagaLongRestService
     /// </summary>
     internal static Result<LongRestSnapshot> SnapshotFrom(DbDataReader reader, int first, string memoryId)
     {
-        DateTimeOffset? retired = Time(reader, first + 13);
+        DateTimeOffset? retired = Time(reader.IsDBNull(first + 13) ? null : reader.GetString(first + 13));
 
         // A retirement asserts no content. Bind its retained predecessor's asserted digest
         // without materializing protected plaintext or accepting an unproved caller digest.
@@ -156,28 +156,29 @@ internal sealed partial class SagaLongRestService
 
         string hash = Convert.ToHexString((byte[])reader[first + 4]);
 
-        Guid? campaign = GuidValue(reader, first + 8);
+        Guid? campaign = GuidValue(reader.IsDBNull(first + 8) ? null : reader.GetString(first + 8));
 
         if (reader.GetInt32(first + 15) == 1
-            && (reader.GetInt32(first + 7) != reader.GetInt32(first + 20) || campaign != GuidValue(reader, first + 21)))
+            && (reader.GetInt32(first + 7) != reader.GetInt32(first + 20)
+                || campaign != GuidValue(reader.IsDBNull(first + 21) ? null : reader.GetString(first + 21))))
         {
             return Result<LongRestSnapshot>.Failure(new Error(ErrorCodes.LongRest.StaleInput,
                 "The subject no longer carries its exact version's scope."));
         }
 
         return new LongRestSnapshot(memoryId, reader.GetString(first), reader.GetString(first + 1), reader.GetInt32(first + 2),
-            (AnnalContentHashFormat)reader.GetInt32(first + 3), hash, (AnnalOrigin)reader.GetInt32(first + 5), GuidValue(reader, first + 6),
+            (AnnalContentHashFormat)reader.GetInt32(first + 3), hash, (AnnalOrigin)reader.GetInt32(first + 5),
+            GuidValue(reader.IsDBNull(first + 6) ? null : reader.GetString(first + 6)),
             (SagaMemoryScopeKind)reader.GetInt32(first + 7), campaign, (ContentSensitivity)reader.GetInt32(first + 9),
-            UtcInstantText.Parse(reader.GetString(first + 10)), Time(reader, first + 11), UtcInstantText.Parse(reader.GetString(first + 12)),
-            retired, Time(reader, first + 14), reader.GetInt32(first + 15) == 1, reader.GetInt32(first + 18) == 1,
+            UtcInstantText.Parse(reader.GetString(first + 10)), Time(reader.IsDBNull(first + 11) ? null : reader.GetString(first + 11)),
+            UtcInstantText.Parse(reader.GetString(first + 12)), retired, Time(reader.IsDBNull(first + 14) ? null : reader.GetString(first + 14)),
+            reader.GetInt32(first + 15) == 1, reader.GetInt32(first + 18) == 1,
             reader.GetInt32(first + 16) == 1, reader.GetInt32(first + 17) == 1, reader.GetInt32(first + 19) == 1, [], []);
     }
 
-    private static DateTimeOffset? Time(DbDataReader reader, int ordinal) =>
-        reader.IsDBNull(ordinal) ? null : UtcInstantText.Parse(reader.GetString(ordinal));
+    private static DateTimeOffset? Time(string? text) => text is null ? null : UtcInstantText.Parse(text);
 
-    private static Guid? GuidValue(DbDataReader reader, int ordinal) =>
-        reader.IsDBNull(ordinal) ? null : Guid.Parse(reader.GetString(ordinal));
+    private static Guid? GuidValue(string? text) => text is null ? null : Guid.Parse(text);
 
     private static void Add(DbCommand command, string name, object? value)
     {

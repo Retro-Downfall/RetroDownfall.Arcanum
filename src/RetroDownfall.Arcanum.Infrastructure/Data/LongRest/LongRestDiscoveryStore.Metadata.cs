@@ -210,7 +210,19 @@ internal sealed partial class LongRestDiscoveryStore
 
         LongRestVerificationCounters.ScrubWindow();
 
-        foreach (string memory in await ReadScrubWindowAsync(connection, transaction, generation, ct).ConfigureAwait(false))
+        List<string> window = [];
+
+        await using (SqliteCommand command = LeafKeys(connection, transaction, generation, null, true))
+        {
+            await using SqliteDataReader reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
+
+            while (await reader.ReadAsync(ct).ConfigureAwait(false))
+            {
+                window.Add(reader.GetString(0));
+            }
+        }
+
+        foreach (string memory in window)
         {
             _ = await ReadFrozenMetadataLeafAsync(connection, transaction, generation, memory, ct).ConfigureAwait(false);
         }
