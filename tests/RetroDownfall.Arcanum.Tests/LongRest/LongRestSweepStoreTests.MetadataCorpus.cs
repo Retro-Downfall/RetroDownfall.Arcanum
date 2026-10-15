@@ -75,4 +75,70 @@ public sealed partial class LongRestSweepStoreTests
 
         Assert.Equal(nameof(InvalidDataException), refused.Set);
     }
+
+    /// <summary>
+    /// What a seam costs once the sweep has acted: the statements it runs are a constant, plus the statements of one proof for each receipt it
+    /// has to prove, and nothing else. They do not depend on how many memories the corpus holds, nor on how many leaves a decision consolidated
+    /// (a decision that consolidated sixteen leaves is one receipt, however many leaves it flagged), and a second decision costs the statements
+    /// of the first decision's proof again and no more. Counted by SQLite's own trace, never by the stores.
+    /// </summary>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task A_seam_after_decisions_costs_a_constant_and_one_proof_for_each_receipt_whatever_the_corpus_and_the_leaves_consolidated(bool protect)
+    {
+        await using Fixture small = await Fixture.CreateAsync(protect, sourceCount: 6);
+
+        await using Fixture large = await Fixture.CreateAsync(protect, sourceCount: 40);
+
+        int untouched = await SeamStatementsAsync(small);
+
+        Assert.Equal(untouched, await SeamStatementsAsync(large));
+
+        int consolidatedSmall = (await DecideNextAsync(small)).Inputs.Length;
+
+        int consolidatedLarge = (await DecideNextAsync(large)).Inputs.Length;
+
+        // The two decisions flagged a different number of leaves, so equal statements are not an accident of equal work.
+        Assert.NotEqual(consolidatedSmall, consolidatedLarge);
+
+        int oneReceiptSmall = await SeamStatementsAsync(small);
+
+        int oneReceiptLarge = await SeamStatementsAsync(large);
+
+        Assert.Equal(oneReceiptSmall, oneReceiptLarge);
+
+        int proof = oneReceiptLarge - untouched;
+
+        Assert.True(proof > 0, "A receipt that consolidated leaves must be proved.");
+
+        _ = await DecideNextAsync(large);
+
+        Assert.Equal(untouched + (2 * proof), await SeamStatementsAsync(large));
+    }
+
+    private static async Task<LongRestSweepWork> DecideNextAsync(Fixture fixture)
+    {
+        LongRestSweep sweep = await fixture.BeginAsync();
+
+        LongRestSweepWork work = LongRestSweepHarness.Require(await fixture.Store.ReadNextWorkAsync(sweep, fixture.Capability, CancellationToken.None))!;
+
+        LongRestAdjudication accepted = await fixture.AcceptAsync(sweep, work);
+
+        _ = LongRestSweepHarness.Require(await fixture.Store.CommitDecisionAsync(sweep, accepted, fixture.Capability, CancellationToken.None));
+
+        return work;
+    }
+
+    /// <summary>The statements one seam over the generation runs: the set-based question and the read of every leaf.</summary>
+    private static async Task<int> SeamStatementsAsync(Fixture fixture)
+    {
+        await using Microsoft.Data.Sqlite.SqliteTransaction transaction = fixture.H.Connection.BeginTransaction(deferred: true);
+
+        using SqliteStatementTrace trace = new(fixture.H.Connection);
+
+        await LongRestDiscoveryStore.VerifyFrozenMetadataAsync(fixture.H.Connection, transaction, fixture.Generation, LongRestVerificationDepth.Seam, CancellationToken.None);
+
+        return trace.Count;
+    }
 }

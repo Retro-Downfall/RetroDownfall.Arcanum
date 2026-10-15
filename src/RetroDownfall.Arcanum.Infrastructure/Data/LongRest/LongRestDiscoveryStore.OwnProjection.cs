@@ -10,6 +10,11 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.LongRest;
 
 internal sealed partial class LongRestDiscoveryStore
 {
+    /// <summary>
+    /// The projection flags a leaf has now that it did not freeze, each explained by an applied receipt of the sweep that proves in full. A leaf
+    /// is read page by page here; the set read of a generation's leaves (<see cref="VerifyFrozenMetadataCorpusAsync"/>) carries the same causes
+    /// in the row it already read and decides them by <see cref="ExplainProjectionAsync"/>, which is the one body of the decision.
+    /// </summary>
     /// <param name="proved">
     /// The receipts already proved in full by the pass this leaf is part of. A decision that consolidated sixteen leaves left one receipt, and
     /// the proof of a receipt is a function of the receipt and the generation alone, so a pass that meets it again for the next leaf of the
@@ -18,16 +23,11 @@ internal sealed partial class LongRestDiscoveryStore
     private static async Task VerifyOwnProjectionAsync(SqliteConnection connection, SqliteTransaction transaction,
         LongRestDiscoveryGeneration generation, LongRestSourceLeaf live, LongRestSnapshot frozen, CancellationToken ct, HashSet<string>? proved = null)
     {
-        if ((frozen.IsConsolidated && !live.Snapshot.IsConsolidated) || (frozen.IsTransformationOutput && !live.Snapshot.IsTransformationOutput))
-        {
-            throw new InvalidDataException();
-        }
+        RequireFrozenProjectionStillSet(live, frozen);
 
         string? cursor = null;
 
-        bool explainedConsolidation = frozen.IsConsolidated;
-
-        bool explainedOutput = frozen.IsTransformationOutput;
+        (bool Consolidation, bool Output) explained = (frozen.IsConsolidated, frozen.IsTransformationOutput);
 
         while (true)
         {
@@ -56,30 +56,55 @@ internal sealed partial class LongRestDiscoveryStore
                 break;
             }
 
-            foreach (var cause in page)
-            {
-                // Every present causer of a newly set flag must be attributable. One own receipt
-                // cannot conceal an external receipt that also sets the same projection bit.
-                if (((cause.Source && !frozen.IsConsolidated) || (cause.Survivor && !frozen.IsTransformationOutput))
-                    && (proved is null || !proved.Contains(cause.Receipt)))
-                {
-                    await VerifyOwnReceiptAsync(connection, transaction, generation, cause.Receipt, ct).ConfigureAwait(false);
-
-                    _ = proved?.Add(cause.Receipt);
-                }
-
-                explainedConsolidation |= cause.Source;
-
-                explainedOutput |= cause.Survivor;
-            }
+            explained = await ExplainProjectionAsync(connection, transaction, generation, frozen, page, explained, ct, proved).ConfigureAwait(false);
 
             cursor = page[^1].Receipt;
         }
 
-        if (live.Snapshot.IsConsolidated != explainedConsolidation || live.Snapshot.IsTransformationOutput != explainedOutput)
+        RequireProjectionExplained(live, explained);
+    }
+
+    /// <summary>A flag the leaf froze must still be set: nothing but an erasure clears one, and an erasure is refused elsewhere.</summary>
+    private static void RequireFrozenProjectionStillSet(LongRestSourceLeaf live, LongRestSnapshot frozen)
+    {
+        if ((frozen.IsConsolidated && !live.Snapshot.IsConsolidated) || (frozen.IsTransformationOutput && !live.Snapshot.IsTransformationOutput))
         {
             throw new InvalidDataException();
         }
+    }
+
+    /// <summary>Every flag the leaf has now is one it froze or one a receipt it was shown to have caused explains, and no flag more.</summary>
+    private static void RequireProjectionExplained(LongRestSourceLeaf live, (bool Consolidation, bool Output) explained)
+    {
+        if (live.Snapshot.IsConsolidated != explained.Consolidation || live.Snapshot.IsTransformationOutput != explained.Output)
+        {
+            throw new InvalidDataException();
+        }
+    }
+
+    /// <summary>
+    /// Takes a leaf's present causers, the applied receipts that name its version as a source or as a survivor, and says which flags they
+    /// explain once added to those already explained. Every present causer of a newly set flag must be attributable: one own receipt cannot
+    /// conceal an external receipt that also sets the same projection bit, so each such receipt is proved in full, and a receipt already proved by
+    /// the pass is not proved again.
+    /// </summary>
+    private static async Task<(bool Consolidation, bool Output)> ExplainProjectionAsync(SqliteConnection connection, SqliteTransaction transaction,
+        LongRestDiscoveryGeneration generation, LongRestSnapshot frozen, IReadOnlyList<(string Receipt, bool Source, bool Survivor)> causes,
+        (bool Consolidation, bool Output) explained, CancellationToken ct, HashSet<string>? proved)
+    {
+        foreach ((string receipt, bool source, bool survivor) in causes)
+        {
+            if (((source && !frozen.IsConsolidated) || (survivor && !frozen.IsTransformationOutput)) && (proved is null || !proved.Contains(receipt)))
+            {
+                await VerifyOwnReceiptAsync(connection, transaction, generation, receipt, ct).ConfigureAwait(false);
+
+                _ = proved?.Add(receipt);
+            }
+
+            explained = (explained.Consolidation || source, explained.Output || survivor);
+        }
+
+        return explained;
     }
 
     private static Task VerifyOwnReceiptAsync(SqliteConnection connection, SqliteTransaction transaction,

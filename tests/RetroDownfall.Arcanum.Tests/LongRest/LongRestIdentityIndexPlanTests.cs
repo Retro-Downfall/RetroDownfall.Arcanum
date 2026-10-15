@@ -158,8 +158,18 @@ public sealed class LongRestIdentityIndexPlanTests(GrimoireFixture fixture) : IA
             Assert.True(Regex.IsMatch(plan, $@"(^|\n)SEARCH {alias} USING "), $"{alias} is not found by a key lookup:\n{plan}");
         }
 
-        // The only scans are of the two derived tables of a version's dependencies, each at most seventeen rows by construction.
-        Assert.False(Regex.IsMatch(plan, @"(^|\n)SCAN (?!x(\n|$)|y(\n|$))"), plan);
+        // The receipts that explain a leaf's flags are found by key as well: the suppression of a version by its primary key and the receipt that
+        // made it by the receipt's, and the receipts that name a version their survivor by the survivor index. Reading them costs a lookup for each
+        // leaf, never a read of the receipts or of the suppressions.
+        Assert.Matches(@"SEARCH suppression USING INDEX sqlite_autoindex_long_rest_suppressions_1 \(SourceVersionId=\?\)", plan);
+
+        Assert.Matches(@"SEARCH applied USING INDEX sqlite_autoindex_long_rest_receipts_1 \(ReceiptId=\?\)", plan);
+
+        Assert.Matches(@"SEARCH receipt USING INDEX idx_long_rest_receipts_survivor_version \(SurvivorVersionId=\?\)", plan);
+
+        // The only scans are of the three derived tables, each at most seventeen rows by construction: a version's dependencies, the dependencies
+        // that name it, and the receipts that name it their survivor.
+        Assert.False(Regex.IsMatch(plan, @"(^|\n)SCAN (?!x(\n|$)|y(\n|$)|z(\n|$))"), plan);
 
         // The statement's own order is the order the leaves are walked in. A sort of a version's incoming dependencies is inside a
         // subquery, over the rows of one version, and is the same sort the point read makes.

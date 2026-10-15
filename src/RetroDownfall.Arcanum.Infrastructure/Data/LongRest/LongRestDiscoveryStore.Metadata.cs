@@ -342,26 +342,36 @@ internal sealed partial class LongRestDiscoveryStore
     }
 
     // The columns of a leaf, then whether the live rows a snapshot is made of all exist, then the dependencies and the incoming dependencies of its
-    // version as JSON arrays of at most seventeen elements (one more than the bound, so an excess is seen), then the snapshot's columns, then
-    // the label's. The snapshot and label columns are the ones the point reads select, defined once and read by the one decoder each has.
+    // version as JSON arrays of at most seventeen elements (one more than the bound, so an excess is seen), then the applied receipt that
+    // suppressed the version, if one did, and the applied receipts that name it their survivor, as a JSON array of at most seventeen, then the
+    // snapshot's columns, then the label's. The snapshot and label columns are the ones the point reads select, defined once and read by the
+    // one decoder each has.
     private const int CorpusFound = 11;
 
     private const int CorpusDependencies = 12;
 
     private const int CorpusIncoming = 13;
 
+    private const int CorpusSuppressingReceipt = 14;
+
+    private const int CorpusSurvivorReceipts = 15;
+
     private const int CorpusStoredSnapshot = 9;
 
     private const int CorpusStoredLabel = 10;
 
-    private const int CorpusSnapshot = 14;
+    private const int CorpusSnapshot = 16;
+
+    /// <summary>The most applied receipts that name one version their survivor which the set read carries in a row; a leaf with more is read by the point read.</summary>
+    private const int CorpusSurvivorReceiptBound = 16;
 
     private const int CorpusLabel = CorpusSnapshot + SagaLongRestService.SnapshotColumnCount;
 
     /// <summary>
     /// The statement that reads every leaf of a generation beside the live rows it must still describe. It is the point reads of a leaf joined
     /// over the generation, so what it selects for a leaf is what those reads select for it, and every join is a lookup by key. A clean
-    /// generation joins no label, because a clean leaf has none and the set-based question has already refused a clean leaf that has one.
+    /// generation joins no label, because a clean leaf has none and the set-based question has already refused a clean leaf that has one. It
+    /// also carries, for each leaf, the applied receipts that could explain a flag the leaf has now and did not freeze, found by key.
     /// </summary>
     internal const string FrozenMetadataCorpusSql = $"""
         SELECT leaf.MemoryId, leaf.VersionId, leaf.SourceDigest, leaf.InsertionSequence, leaf.MutationEpoch, leaf.EmbeddingDigest, leaf.EmbeddingDimensions,
@@ -372,6 +382,10 @@ internal sealed partial class LongRestDiscoveryStore
             (SELECT json_group_array(json_array(y.DependentVersionId, y.RelationCode) ORDER BY y.DependentVersionId, y.RelationCode)
                 FROM (SELECT d.DependentVersionId, d.RelationCode FROM annal_dependencies d JOIN annal_heads ih ON ih.CurrentVersionId = d.DependentVersionId
                     WHERE d.DependencyVersionId = v.VersionId ORDER BY d.DependentVersionId, d.RelationCode LIMIT 17) y),
+            (SELECT suppression.ReceiptId FROM long_rest_suppressions suppression JOIN long_rest_receipts applied ON applied.ReceiptId = suppression.ReceiptId
+                WHERE suppression.SourceVersionId = v.VersionId AND applied.OutcomeCode = 1),
+            (SELECT json_group_array(z.ReceiptId ORDER BY z.ReceiptId)
+                FROM (SELECT receipt.ReceiptId FROM long_rest_receipts receipt WHERE receipt.SurvivorVersionId = v.VersionId AND receipt.OutcomeCode = 1 LIMIT 17) z),
             {SagaLongRestService.SnapshotColumns},
             {ArtifactSensitivityLedger.LabelColumnListAsLabel}
         FROM long_rest_discovery_leaves leaf
@@ -394,19 +408,25 @@ internal sealed partial class LongRestDiscoveryStore
     /// and so a corpus of them took five for each leaf; here the live rows are joined to the leaves in one statement whose every join is a
     /// lookup by key, and the same comparison runs on each row as it is read. Nothing is cached and nothing is skipped: the digest is
     /// recomputed from what the rows say now.</para>
-    /// <para>Two kinds of leaf still need more than the row. A leaf the sweep itself consolidated, or produced, no longer has the flags it
-    /// was frozen with, and the receipt that explains the difference must be proved in full (<see cref="VerifyOwnProjectionAsync"/>), as the
-    /// per-leaf read does; those leaves are proved after the statement has been read through, one at a time, and a receipt is proved once
-    /// however many leaves its decision consolidated, so the work grows with the decisions the sweep applied and not with the corpus. And a
-    /// protected leaf whose label the exact-spelling join does not find is handed to the per-leaf read, which makes the point read of the
-    /// label and so decides it as it always did.</para>
+    /// <para>A leaf the sweep itself consolidated, or produced, no longer has the flags it was frozen with, and the applied receipts that
+    /// explain the difference must be proved in full (<see cref="ExplainProjectionAsync"/>), as the per-leaf read does. The statement carries
+    /// those receipts in the row: the one that suppressed the version, which its key makes at most one, and the ones that name it their
+    /// survivor, up to a bound. The decision is made from the row, and the proofs run after the statement has been read through, a receipt
+    /// once however many leaves its decision consolidated, so a seam runs one statement for the corpus and one proof for each receipt it has
+    /// to prove, whatever the corpus holds and however many leaves each decision consolidated. A proof is a hash of the receipt's inputs, which
+    /// SQLite cannot compute, and it reads no leaf content, so it is the part of a seam that stays a statement for each receipt.</para>
+    /// <para>Two kinds of leaf are handed to the per-leaf read instead, which decides them as it always did: a protected leaf whose label
+    /// the exact-spelling join does not find, or whose memory id is not in D form, and a leaf that more receipts name their survivor than a
+    /// row carries. A truncated list is never the basis of a verdict.</para>
     /// </remarks>
     internal static async Task VerifyFrozenMetadataCorpusAsync(SqliteConnection connection, SqliteTransaction transaction,
         LongRestDiscoveryGeneration generation, CancellationToken ct)
     {
-        List<(LongRestSourceLeaf Live, LongRestSnapshot Frozen)> explained = [];
+        List<(LongRestSourceLeaf Live, LongRestSnapshot Frozen, (string Receipt, bool Source, bool Survivor)[] Causes)> explained = [];
 
         List<string> exact = [];
+
+        bool isProtected = generation.Scope.ProtectedPartitionDigest is not null;
 
         await using (SqliteCommand command = Command(connection, transaction, FrozenMetadataCorpusSql, ("$generation", Format(generation.GenerationId)),
             ("$partition", generation.Scope.ProtectedPartitionDigest?.Bytes), ("@materialize", 0)))
@@ -417,28 +437,30 @@ internal sealed partial class LongRestDiscoveryStore
             {
                 string memory = reader.GetString(0);
 
-                ArtifactSensitivityLabel? label = null;
+                string[]? survivors = ReadSurvivorReceipts(reader.GetString(CorpusSurvivorReceipts));
 
-                if (generation.Scope.ProtectedPartitionDigest is not null)
+                if (survivors is null || (isProtected && (reader.IsDBNull(CorpusLabel) || !IsDForm(memory))))
                 {
-                    if (reader.IsDBNull(CorpusLabel) || !IsDForm(memory))
-                    {
-                        exact.Add(memory);
+                    exact.Add(memory);
 
-                        continue;
-                    }
-
-                    Result<ArtifactSensitivityLabel> decoded = ArtifactSensitivityLedger.Materialize(reader, CorpusLabel);
-
-                    if (decoded.IsFailure)
-                    {
-                        throw new InvalidDataException();
-                    }
-
-                    label = decoded.Value;
+                    continue;
                 }
 
                 LongRestVerificationCounters.MetadataLeafRead();
+
+                // The leaf's own columns first, then the live rows, in the order the point read takes them, so that a corpus with more than one
+                // fault is refused by the same kind of exception as by the point read.
+                CovenantDigest digest = new((byte[])reader[2]);
+
+                long sequence = reader.GetInt64(3);
+
+                long epoch = reader.GetInt64(4);
+
+                LongRestSourceEmbeddingBinding? embedding = reader.IsDBNull(5) ? null : new(LongRestSourceEmbeddingKind.ObservedSaga, reader.GetInt32(6), new((byte[])reader[5]));
+
+                bool consolidated = reader.GetInt32(7) == 1;
+
+                bool output = reader.GetInt32(8) == 1;
 
                 if (!reader.GetBoolean(CorpusFound))
                 {
@@ -463,9 +485,19 @@ internal sealed partial class LongRestDiscoveryStore
 
                 LongRestSnapshot snapshot = described.Value with { Dependencies = dependencies, IncomingDependencies = incoming };
 
-                bool consolidated = reader.GetInt32(7) == 1;
+                ArtifactSensitivityLabel? label = null;
 
-                bool output = reader.GetInt32(8) == 1;
+                if (isProtected)
+                {
+                    Result<ArtifactSensitivityLabel> decoded = ArtifactSensitivityLedger.Materialize(reader, CorpusLabel);
+
+                    if (decoded.IsFailure)
+                    {
+                        throw new InvalidDataException();
+                    }
+
+                    label = decoded.Value;
+                }
 
                 LongRestSnapshot frozen = snapshot with { IsConsolidated = consolidated, IsTransformationOutput = output };
 
@@ -477,28 +509,79 @@ internal sealed partial class LongRestDiscoveryStore
                     throw new InvalidDataException();
                 }
 
-                LongRestSourceEmbeddingBinding? embedding = reader.IsDBNull(5) ? null : new(LongRestSourceEmbeddingKind.ObservedSaga, reader.GetInt32(6), new((byte[])reader[5]));
-
-                LongRestSourceLeaf current = ProveMetadataLeaf(generation, snapshot, label, frozen, new((byte[])reader[2]), reader.GetInt64(3), reader.GetInt64(4), embedding);
+                LongRestSourceLeaf current = ProveMetadataLeaf(generation, snapshot, label, frozen, digest, sequence, epoch, embedding);
 
                 if (snapshot.IsConsolidated != consolidated || snapshot.IsTransformationOutput != output)
                 {
-                    explained.Add((current, frozen));
+                    explained.Add((current, frozen, Causers(reader.IsDBNull(CorpusSuppressingReceipt) ? null : reader.GetString(CorpusSuppressingReceipt), survivors)));
                 }
             }
         }
 
         HashSet<string> proved = new(StringComparer.Ordinal);
 
-        foreach ((LongRestSourceLeaf live, LongRestSnapshot frozen) in explained)
+        foreach ((LongRestSourceLeaf live, LongRestSnapshot frozen, (string Receipt, bool Source, bool Survivor)[] causes) in explained)
         {
-            await VerifyOwnProjectionAsync(connection, transaction, generation, live, frozen, ct, proved).ConfigureAwait(false);
+            RequireFrozenProjectionStillSet(live, frozen);
+
+            RequireProjectionExplained(live, await ExplainProjectionAsync(connection, transaction, generation, frozen, causes,
+                (frozen.IsConsolidated, frozen.IsTransformationOutput), ct, proved).ConfigureAwait(false));
         }
 
         foreach (string memory in exact)
         {
             _ = await ReadFrozenMetadataLeafAsync(connection, transaction, generation, memory, ct).ConfigureAwait(false);
         }
+    }
+
+    /// <summary>
+    /// The applied receipts that touch a version, as the point read pages them: each with whether it suppressed the version and whether it
+    /// names the version its survivor. A version has at most one suppression (its key), so the receipt that suppressed it is one receipt; the
+    /// receipts that name it a survivor are the ones the row carried, and a receipt that does both is one cause.
+    /// </summary>
+    private static (string Receipt, bool Source, bool Survivor)[] Causers(string? suppressing, string[] survivors)
+    {
+        List<(string Receipt, bool Source, bool Survivor)> causes = [];
+
+        if (suppressing is not null)
+        {
+            causes.Add((suppressing, true, Array.IndexOf(survivors, suppressing) >= 0));
+        }
+
+        foreach (string survivor in survivors)
+        {
+            if (!string.Equals(survivor, suppressing, StringComparison.Ordinal))
+            {
+                causes.Add((survivor, false, true));
+            }
+        }
+
+        return [.. causes];
+    }
+
+    /// <summary>The receipts a row carries that name its version a survivor, or null where it had more than the set read carries and the point read must decide.</summary>
+    private static string[]? ReadSurvivorReceipts(string json)
+    {
+        if (json == "[]")
+        {
+            return [];
+        }
+
+        using JsonDocument document = JsonDocument.Parse(json);
+
+        if (document.RootElement.GetArrayLength() > CorpusSurvivorReceiptBound)
+        {
+            return null;
+        }
+
+        List<string> receipts = [];
+
+        foreach (JsonElement element in document.RootElement.EnumerateArray())
+        {
+            receipts.Add(element.GetString()!);
+        }
+
+        return [.. receipts];
     }
 
     /// <summary>

@@ -461,6 +461,96 @@ public sealed class LongRestMetadataCorpusEquivalenceTests
         Assert.Equal(name == "none" ? "admitted" : nameof(InvalidDataException), changed.Set);
     }
 
+    /// <summary>
+    /// Receipts that name a leaf's version their survivor, or its source, written into the corpus without the proof a real decision leaves: the
+    /// live flags then differ from the frozen ones and only a receipt that proves in full can explain them. None of these proves, so both reads
+    /// must refuse, whichever way each reaches the receipt: in the row the set read already holds, or, for a version that more receipts name than
+    /// a row carries, by the point read.
+    /// </summary>
+    public static TheoryData<string, string> Causers => new()
+    {
+        { "survivor-unproved", AppliedReceipts(1) },
+        { "survivor-of-sixteen", AppliedReceipts(16) },
+        { "survivor-of-seventeen", AppliedReceipts(17) },
+        { "suppressed-by-an-unapplied-receipt", UnappliedSuppression() },
+        { "suppressed-and-survivor-by-one-receipt", AppliedReceipts(1) + SuppressionBy(1, 6, 4) },
+    };
+
+    private const string ReceiptFields = "ReceiptId, PolicyVersion, KindCode, OutcomeCode, ReasonCode, InputHash, OutputHash, RequestedSurvivorVersionId, SurvivorMemoryId, SurvivorVersionId, CreatedAtUtc";
+
+    /// <summary>Applied receipts, the number named, each with the fourth memory's head as its survivor.</summary>
+    private static string AppliedReceipts(int count) => $"""
+        WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < {count})
+        INSERT INTO long_rest_receipts ({ReceiptFields})
+        SELECT printf('%064X', i), 1, 2, 1, 0, printf('%064X', i), printf('%064X', i), {Head(MemoryId(4))}, '{MemoryId(4)}', {Head(MemoryId(4))}, '2026-10-10T00:00:00.0000000Z' FROM n;
+        """;
+
+    /// <summary>A suppression of one memory's head in favour of another's, written by receipt number <paramref name="receipt"/>.</summary>
+    private static string SuppressionBy(int receipt, int source, int survivor) => $"""
+        INSERT INTO long_rest_suppressions (SourceVersionId, SurvivorVersionId, ReceiptId)
+        VALUES ({Head(MemoryId(source))}, {Head(MemoryId(survivor == source ? 6 : survivor))}, printf('%064X', {receipt}));
+        """;
+
+    private static string UnappliedSuppression() => $"""
+        INSERT INTO long_rest_receipts ({ReceiptFields})
+        VALUES (printf('%064X', 1), 1, 2, 2, 1, printf('%064X', 1), printf('%064X', 1), NULL, NULL, NULL, '2026-10-10T00:00:00.0000000Z');
+        INSERT INTO long_rest_suppressions (SourceVersionId, SurvivorVersionId, ReceiptId)
+        VALUES ({Head(MemoryId(4))}, {Head(MemoryId(6))}, printf('%064X', 1));
+        """;
+
+    [Theory]
+    [MemberData(nameof(Causers))]
+    public async Task On_a_plain_corpus_the_receipts_that_name_a_leaf_are_decided_alike_by_both_reads(string name, string sql)
+    {
+        (LongRestSweepHarness h, LongRestDiscoveryGeneration generation) = await CorpusAsync(withHistory: true);
+
+        await using LongRestSweepHarness harness = h;
+
+        foreach (string trigger in Watchers.Concat(["annal_versions_guard_update", "annal_dependencies_guard_update", "long_rest_discovery_leaves_guard_update",
+            "long_rest_suppressions_validate_insert"]))
+        {
+            await h.ExecuteAsync($"DROP TRIGGER IF EXISTS {trigger};");
+        }
+
+        await h.ExecuteAsync(sql);
+
+        Verdicts v = await VerdictsAsync(h, generation);
+
+        Assert.Equal(v.PerLeaf, v.Set);
+
+        Assert.True(v.Set == nameof(InvalidDataException), $"{name}: {v.Set}");
+    }
+
+    /// <summary>
+    /// A row carries the receipts that name a version their survivor up to a bound, and the set read decides the leaf itself; a version that more
+    /// receipts name is decided by the point read, which pages them, so a leaf is never decided by a truncated list. The paging statement is the
+    /// witness of which way a leaf went.
+    /// </summary>
+    [Theory]
+    [InlineData(16, false)]
+    [InlineData(17, true)]
+    public async Task A_leaf_that_more_receipts_name_than_a_row_carries_is_paged_by_the_point_read(int receipts, bool paged)
+    {
+        (LongRestSweepHarness h, LongRestDiscoveryGeneration generation) = await CorpusAsync(withHistory: false);
+
+        await using LongRestSweepHarness harness = h;
+
+        foreach (string trigger in Watchers.Concat(["long_rest_discovery_leaves_guard_update"]))
+        {
+            await h.ExecuteAsync($"DROP TRIGGER IF EXISTS {trigger};");
+        }
+
+        await h.ExecuteAsync(AppliedReceipts(receipts));
+
+        using SqliteStatementTrace trace = new(h.Connection);
+
+        await using SqliteTransaction transaction = h.Connection.BeginTransaction(deferred: true);
+
+        _ = await Assert.ThrowsAsync<InvalidDataException>(() => LongRestDiscoveryStore.VerifyFrozenMetadataCorpusAsync(h.Connection, transaction, generation, CancellationToken.None));
+
+        Assert.Equal(paged, trace.Statements.Any(static statement => statement.Contains("ORDER BY receipt.ReceiptId LIMIT 128", StringComparison.Ordinal)));
+    }
+
     /// <summary>The set read of a corpus with a history is one statement however long the history is, and a clean corpus without one is the same.</summary>
     [Theory]
     [InlineData(false)]
