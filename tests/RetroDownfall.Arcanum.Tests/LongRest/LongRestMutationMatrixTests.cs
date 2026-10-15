@@ -31,7 +31,12 @@ namespace RetroDownfall.Arcanum.Tests.LongRest;
 /// The oracle for Seams-and-Steps. A step re-proves the generation row, the fence, the set-based metadata question, the exact inputs it
 /// acts on and one rotating window of leaves; a seam re-proves every leaf. This matrix mutates the corpus a sweep rests on, by every route
 /// that can change it, between two units, once on a leaf the next unit uses and once on a leaf it does not, for a clean sweep and a
-/// protected one, and requires that the next step's verdict equal the full recompute's wherever a send could follow.
+/// protected one. The contract has two halves. Wherever a step acts on what changed, because a trigger, the set-based question, the fence or
+/// the generation row sees it, or because the leaf is one the unit's request derives from, the next step's verdict equals the full recompute's
+/// and no send follows. For the one class nothing but a seam sees, a write-guarded row changed with its guard bypassed on a leaf the unit does
+/// not act on, the step admits and the exposure is bounded instead: the unit sends nothing built from that leaf, the rotating window reaches it
+/// within ceil(leaves / window) revisions, and publish and completion refuse it. <c>LongRestMutationMatrixTests.Hierarchy.cs</c> runs the same
+/// oracle in the middle of the hierarchy build.
 /// </summary>
 /// <remarks>
 /// <para>Each row names the mechanism that refuses it, and the test proves the name rather than trusting it: a <see cref="Mechanism.Trigger"/>
@@ -43,7 +48,7 @@ namespace RetroDownfall.Arcanum.Tests.LongRest;
 /// make every row look covered whatever its mechanism.</para>
 /// </remarks>
 [Collection("Grimoire")]
-public sealed class LongRestMutationMatrixTests
+public sealed partial class LongRestMutationMatrixTests
 {
     private const int Leaves = 40;
 
@@ -195,12 +200,57 @@ public sealed class LongRestMutationMatrixTests
                 INSERT INTO long_rest_suppressions (SourceVersionId, SurvivorVersionId, ReceiptId) VALUES ($source, $survivor, 'forged-receipt');
                 """, ("$hash", new string('a', 64)), ("$survivorMemory", s.Partner(m)), ("$survivor", survivor.Version), ("$source", source.Version));
         }),
+        // An ordinary operation, not a bypass: the memory an earlier consolidation suppressed is deleted, pruned or erased. The erasure plan removes the
+        // consolidation's receipt with it, so the survivor stops being a transformation output without anything having written the survivor.
+        new("consolidated-source-delete", Mechanism.Attribution, static async (s, m) =>
+            Assert.True(await s.F.H.Saga.Store.DeleteAsync(await s.ConsolidatedSourceOfAsync(m), CancellationToken.None)),
+            CleanOnly: true, Prepare: static s => s.ConsolidateAsync()),
+        new("consolidated-source-prune", Mechanism.Attribution, static async (s, m) =>
+        {
+            string source = await s.ConsolidatedSourceOfAsync(m);
+
+            // Only the suppressed source is old enough for the Saga retention rule; every other memory is fresh.
+            await s.SqlAsync("UPDATE saga_memories SET CreatedAt = $fresh WHERE Id <> $source;", ("$fresh", DateTimeOffset.UtcNow.ToString("o", CultureInfo.InvariantCulture)), ("$source", source));
+
+            await s.SqlAsync("UPDATE saga_memories SET CreatedAt = '2000-01-01T00:00:00.0000000+00:00' WHERE Id = $source;", ("$source", source));
+
+            await using Retention retention = new(s.F, SagaPruneSettings());
+
+            DataRetentionRequest request = new(DataRetentionOperation.Prune);
+
+            DataRetentionPlan plan = await retention.Service.PlanAsync(request);
+
+            Assert.Single(plan.CandidateIds);
+
+            Result<DataRetentionApplyResult> applied = await retention.Service.ApplyAsync(new(request, plan.PlanId));
+
+            Assert.True(applied.IsSuccess, applied.IsFailure ? applied.Error.Message : "");
+
+            Assert.Equal(0L, await s.F.H.ScalarAsync($"SELECT count(*) FROM saga_memories WHERE Id = '{source}';"));
+        }, CleanOnly: true, Prepare: static s => s.ConsolidateAsync()),
+        new("consolidated-source-erase", Mechanism.Attribution, static async (s, m) => await ErasureKernelAsync(s, await s.ConsolidatedSourceOfAsync(m)),
+            ProtectedOnly: true, Prepare: static s => s.ConsolidateAsync()),
         new("leaf-snapshot", Mechanism.Seam, static async (s, m) =>
         {
             await s.SqlAsync("DROP TRIGGER long_rest_discovery_leaves_guard_update;");
 
-            await s.SqlAsync("UPDATE long_rest_discovery_leaves SET SnapshotJson = json_set(SnapshotJson, '$.isConsolidated', json('true')) WHERE GenerationId = $g AND MemoryId = $m;", ("$g", s.GenerationText), ("$m", m));
+            await s.SqlAsync("UPDATE long_rest_discovery_leaves SET SnapshotJson = json_set(SnapshotJson, '$.revision', 99) WHERE GenerationId = $g AND MemoryId = $m;", ("$g", s.GenerationText), ("$m", m));
         }, AttemptOnly: true),
+
+        // A frozen flag no row explains. The rows a flag projects from are the sweep's own writes, so the flag a leaf was frozen with is asked of the
+        // rows themselves, in the set-based question every gate asks.
+        new("frozen-flag-consolidated", Mechanism.AntiJoin, static async (s, m) =>
+        {
+            await s.SqlAsync("DROP TRIGGER long_rest_discovery_leaves_guard_update;");
+
+            await s.SqlAsync("UPDATE long_rest_discovery_leaves SET SnapshotJson = json_set(SnapshotJson, '$.isConsolidated', json('true')) WHERE GenerationId = $g AND MemoryId = $m;", ("$g", s.GenerationText), ("$m", m));
+        }),
+        new("frozen-flag-output", Mechanism.AntiJoin, static async (s, m) =>
+        {
+            await s.SqlAsync("DROP TRIGGER long_rest_discovery_leaves_guard_update;");
+
+            await s.SqlAsync("UPDATE long_rest_discovery_leaves SET SnapshotJson = json_set(SnapshotJson, '$.isTransformationOutput', json('true')) WHERE GenerationId = $g AND MemoryId = $m;", ("$g", s.GenerationText), ("$m", m));
+        }),
         new("summary-text", Mechanism.Scan, static (s, _) => s.SqlAsync("""
             UPDATE long_rest_discovery_nodes SET Summary = 'tampered summary'
             WHERE GenerationId = $g AND NodeId = (SELECT min(NodeId) FROM long_rest_discovery_nodes WHERE GenerationId = $g AND Layer = 1);
@@ -546,6 +596,40 @@ public sealed class LongRestMutationMatrixTests
         }
     }
 
+    /// <summary>
+    /// The same ordinary erasure while the sweep is parked: nothing is running to see it, and the footing the sweep resumes on has lost the receipt
+    /// that made a survivor a transformation output. Readmission is a seam, so it re-proves every leaf before the first send.
+    /// </summary>
+    [Theory]
+    [InlineData(false, "consolidated-source-delete")]
+    [InlineData(true, "consolidated-source-erase")]
+    public async Task A_parked_sweep_readmitted_after_a_consolidated_source_is_removed_sends_nothing(bool isProtected, string name)
+    {
+        Row row = Rows.Single(candidate => candidate.Name == name);
+
+        await using Scenario s = await Scenario.CreateAsync(isProtected, Leaves, prepare: row.Prepare);
+
+        string code = await s.ParkAsync();
+
+        Assert.Equal(isProtected ? LongRestParkCodes.AuthorizedRequestRequired : LongRestParkCodes.Interrupted, code);
+
+        await row.Apply(s, s.Bystander);
+
+        int sends = s.F.Handler.SendCount;
+
+        long billed = (long)(await s.F.H.ScalarAsync("SELECT count(*) FROM BillableOperations;"))!;
+
+        _ = await Record.ExceptionAsync(s.ReadmitAsync);
+
+        Assert.Equal(sends, s.F.Handler.SendCount);
+
+        Assert.Equal(billed, await s.F.H.ScalarAsync("SELECT count(*) FROM BillableOperations;"));
+
+        LongRunningOperation? operation = await s.F.Operations.GetAsync(s.F.Operation);
+
+        Assert.True(operation is null || operation.State != LongRunningOperationState.Completed, "A sweep whose footing changed must not complete on it.");
+    }
+
     private static async Task ApplyBypassAsync(Scenario s, string bypass)
     {
         switch (bypass)
@@ -603,7 +687,7 @@ public sealed class LongRestMutationMatrixTests
                 break;
 
             case "erasure-kernel":
-                await ErasureKernelAsync(s);
+                await ErasureKernelAsync(s, s.Bystander);
 
                 break;
 
@@ -618,12 +702,12 @@ public sealed class LongRestMutationMatrixTests
     }
 
     /// <summary>The Covenant erasure kernel removes one protected leaf's artifact, its source and every generation that froze it.</summary>
-    private static async Task ErasureKernelAsync(Scenario s)
+    private static async Task ErasureKernelAsync(Scenario s, string memory)
     {
         using CovenantConnectionSource connections = new(s.F.H.Saga.Context, FixtureOrdinaryConnectionFactory.For(s.F.H.Saga.Context));
 
         ArtifactSensitivityLabel label = LongRestSweepHarness.Require(await new ArtifactSensitivityLedger(connections)
-            .TryReadLabelAsync(SensitiveArtifactKind.Saga, Guid.Parse(s.Bystander), CancellationToken.None))!;
+            .TryReadLabelAsync(SensitiveArtifactKind.Saga, Guid.Parse(memory), CancellationToken.None))!;
 
         await s.F.Authority.DisposeAsync();
 
@@ -680,11 +764,42 @@ public sealed class LongRestMutationMatrixTests
         }
     }
 
+    /// <summary>Only the Saga memory rule is on, so a prune reaches nothing else the corpus rests on.</summary>
+    private static ArcanumSettings SagaPruneSettings()
+    {
+        static RetentionRuleSettings Off() => new() { Enabled = false, Days = 30 };
+
+        return new()
+        {
+            Retention = new RetentionSettings
+            {
+                AutomaticSweepsEnabled = false,
+                ActiveSessions = Off(),
+                ArchivedSessions = Off(),
+                Entries = Off(),
+                Attachments = Off(),
+                UploadedFiles = Off(),
+                CompletedBatches = Off(),
+                SagaMemories = new() { Enabled = true, Days = 1 },
+                LexiconEntries = Off(),
+                WorkspaceIndexes = Off(),
+                SessionEntryEmbeddings = Off(),
+                AuditLogs = Off(),
+                GuardrailLogs = Off(),
+                IdempotencyClaims = Off(),
+                Accounting = Off(),
+                LongRunningOperations = Off(),
+                SanctumBreaches = Off(),
+                DaemonHistory = Off(),
+            },
+        };
+    }
+
     private sealed class Retention : IAsyncDisposable
     {
         private readonly string _root = Path.Combine(Path.GetTempPath(), "arcanum-matrix-reset-" + Guid.NewGuid().ToString("N"));
 
-        internal Retention(LongRestMaintenanceTests.MaintenanceFixture f)
+        internal Retention(LongRestMaintenanceTests.MaintenanceFixture f, ArcanumSettings? settings = null)
         {
             Directory.CreateDirectory(_root);
 
@@ -693,7 +808,7 @@ public sealed class LongRestMutationMatrixTests
                 Directory.CreateDirectory(Path.Combine(_root, child));
             }
 
-            Service = new(f.H.Saga.Context, new TestOptionsMonitor<ArcanumSettings>(f.Options.CurrentValue), f.Operations,
+            Service = new(f.H.Saga.Context, new TestOptionsMonitor<ArcanumSettings>(settings ?? f.Options.CurrentValue), f.Operations,
                 TimeProvider.System, NullLogger<DataRetentionService>.Instance, FixtureLabeledArtifactGuard.For(f.H.Saga.Context),
                 Path.Combine(_root, "attachments"), Path.Combine(_root, "files"), Path.Combine(_root, "logs"));
         }
@@ -782,19 +897,88 @@ public sealed class LongRestMutationMatrixTests
         /// <summary>A second leaf that is neither an input of the unit nor the leaf under test, for a mutation that names a pair.</summary>
         internal string Partner(string memory) => _memories.Skip(2).Last(candidate => candidate != memory && candidate != Bystander);
 
-        internal string Bystander { get; private set; } = "";
+        internal string Bystander { get; set; } = "";
+
+        internal bool IsProtected { get; private set; }
+
+        /// <summary>A leaf a prepared corpus needs the bystander to be, because it is the one that was given a history before capture.</summary>
+        private string? _fixedBystander;
+
+        internal string Memory(int index) => _memories[index];
+
+        /// <summary>The survivor of the consolidation a prepared corpus was given, if it was given one.</summary>
+        internal string? FixedSurvivor => _fixedBystander;
+
+        /// <summary>
+        /// Gives two leaves a history before anything is captured: the first input and one leaf outside the window are each the survivor of a
+        /// consolidation whose source is another memory of the corpus. The sources are suppressed, so they are not captured; the survivors are
+        /// captured as transformation outputs.
+        /// </summary>
+        internal async Task ConsolidateAsync()
+        {
+            _fixedBystander = Memory(_memories.Length - 5);
+
+            await ConsolidateAsync(Memory(3), Memory(0));
+
+            await ConsolidateAsync(Memory(5), _fixedBystander);
+        }
+
+        private async Task ConsolidateAsync(string source, string survivor)
+        {
+            LongRestTarget consumed = await F.H.TargetAsync(source);
+
+            LongRestTarget kept = await F.H.TargetAsync(survivor);
+
+            if (!IsProtected)
+            {
+                Result<LongRestReceipt> applied = await new SagaLongRestService(F.H.Saga.Context, TimeProvider.System).ApplyAsync(
+                    new(LongRestTransformationKind.Supersession, [consumed, kept], kept.ExpectedVersionId), CancellationToken.None);
+
+                Assert.True(applied.IsSuccess, applied.IsFailure ? applied.Error.ToString() : "");
+
+                return;
+            }
+
+            // A protected consolidation is written only under a protected sweep's own capability, which this corpus has none of before it is
+            // captured. The write guard is lifted for the one insert and restored whole, so the rows are the ones a protected sweep would have left.
+            string guard = (string)(await F.H.ScalarAsync("SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = 'long_rest_suppressions_validate_insert';"))!;
+
+            await SqlAsync("DROP TRIGGER long_rest_suppressions_validate_insert;");
+
+            string receipt = "protected-history-" + source;
+
+            await SqlAsync("""
+                INSERT INTO long_rest_receipts (ReceiptId, PolicyVersion, KindCode, OutcomeCode, ReasonCode, InputHash, OutputHash, RequestedSurvivorVersionId, SurvivorMemoryId, SurvivorVersionId, CreatedAtUtc)
+                VALUES ($receipt, 1, 2, 1, 0, $hash, $hash, $survivor, $survivorMemory, $survivor, '2026-10-10T00:00:00.0000000Z');
+                INSERT INTO long_rest_receipt_inputs (ReceiptId, Ordinal, MemoryId, VersionId, ContentHashFormatCode, ContentHash, SnapshotHash, SnapshotJson)
+                VALUES ($receipt, 1, $sourceMemory, $source, 1, zeroblob(32), $hash, '{}'), ($receipt, 2, $survivorMemory, $survivor, 1, zeroblob(32), $hash, '{}');
+                INSERT INTO long_rest_suppressions (SourceVersionId, SurvivorVersionId, ReceiptId) VALUES ($source, $survivor, $receipt);
+                """, ("$receipt", receipt), ("$hash", new string('a', 64)), ("$survivor", kept.ExpectedVersionId), ("$survivorMemory", survivor),
+                ("$source", consumed.ExpectedVersionId), ("$sourceMemory", source));
+
+            await SqlAsync(guard);
+        }
+
+        /// <summary>The memory an earlier consolidation suppressed in favour of this one.</summary>
+        internal async Task<string> ConsolidatedSourceOfAsync(string survivor) => (string)(await F.H.ScalarAsync($"""
+            SELECT claim.SubjectId FROM long_rest_suppressions suppression JOIN annal_versions version ON version.VersionId = suppression.SourceVersionId
+            JOIN annal_claims claim ON claim.ClaimId = version.ClaimId
+            WHERE suppression.SurvivorVersionId = (SELECT head.CurrentVersionId FROM annal_claims owner JOIN annal_heads head ON head.ClaimId = owner.ClaimId
+                WHERE owner.SubjectStoreCode = 1 AND owner.SubjectId = '{survivor}');
+            """))!;
 
         internal LongRestSweepWork Work { get; private set; } = null!;
 
         internal static Guid Id(int index) => new("a0000000-0000-0000-0000-" + index.ToString("D12", CultureInfo.InvariantCulture));
 
-        internal static async Task<Scenario> CreateAsync(bool isProtected, int leaves, bool queueUnit = true, bool related = true, Func<Scenario, Task>? prepare = null)
+        internal static async Task<Scenario> CreateAsync(bool isProtected, int leaves, bool queueUnit = true, bool related = true, Func<Scenario, Task>? prepare = null,
+            Func<int, float[]>? vectorOf = null, Func<Scenario, Task<bool>>? stopWhen = null)
         {
             LongRestMaintenanceTests.MaintenanceFixture f = await LongRestMaintenanceTests.MaintenanceFixture.CreateAsync(ownWorker: true,
                 protectedSources: isProtected, sourceCount: leaves, sourceId: Id,
                 sourceText: index => related && index < 2 ? $"orchard apples harvest ledger entry {index}" : $"observation about topic{index} with detail{index}");
 
-            Scenario s = new(f);
+            Scenario s = new(f) { IsProtected = isProtected };
 
             string[] memories = [.. Enumerable.Range(0, leaves).Select(index => Id(index).ToString("D"))];
 
@@ -802,9 +986,18 @@ public sealed class LongRestMutationMatrixTests
 
             for (int index = 0; index < leaves; index++)
             {
-                float[] vector = new float[leaves];
+                float[] vector;
 
-                vector[related && index < 2 ? 0 : index] = 1;
+                if (vectorOf is null)
+                {
+                    vector = new float[leaves];
+
+                    vector[related && index < 2 ? 0 : index] = 1;
+                }
+                else
+                {
+                    vector = vectorOf(index);
+                }
 
                 await f.H.SetEmbeddingAsync(memories[index], vector);
             }
@@ -852,7 +1045,15 @@ public sealed class LongRestMutationMatrixTests
                 progress = LongRestSweepHarness.Require(await f.ProcessAsync(f.Operation, "fixture-worker", s.Capability, CancellationToken.None));
 
                 s.BuildUnits.Add((progress.Phase, Cost.Of(tally)));
-            } while (progress.Phase != LongRestSweepPhase.Discover && ++guard < 80);
+
+                if (stopWhen is not null && await stopWhen(s))
+                {
+                    // Handed over in the middle of the hierarchy build, between two units.
+                    s.Generation = LongRestSweepHarness.Require(await f.H.Store.ReadGenerationMetadataAsync(f.Operation, CancellationToken.None))!;
+
+                    return s;
+                }
+            } while (progress.Phase != LongRestSweepPhase.Discover && ++guard < 200);
 
             Assert.Equal(LongRestSweepPhase.Discover, progress.Phase);
 
@@ -871,7 +1072,7 @@ public sealed class LongRestMutationMatrixTests
 
                 Assert.Equal([memories[0], memories[1]], s.Work.Inputs.Select(input => input.Snapshot.MemoryId).Order());
 
-                s.Inputs = [.. s.Work.Inputs.Select(input => input.Snapshot.MemoryId)];
+                s.Inputs = [.. s.Work.Inputs.Select(input => input.Snapshot.MemoryId).Order()];
 
                 CovenantDigest payload = new(SHA256.HashData("matrix payload"u8));
 
@@ -881,8 +1082,25 @@ public sealed class LongRestMutationMatrixTests
                 s._unit = (string)(await f.H.ScalarAsync($"SELECT WorkItemId FROM long_rest_work_items WHERE GenerationId = '{s.GenerationText}' AND KindCode = 3 AND DispositionCode = 1;"))!;
             }
 
-            // The bystander is a leaf the unit does not act on and the rotating window does not cover.
+            // The bystander is a leaf the unit does not act on and the rotating window does not cover. A prepared corpus names it, and the window is
+            // turned until it is outside it: the window follows the sweep's revision and nothing else.
             List<string> window = await s.WindowAsync();
+
+            if (s._fixedBystander is { } fixedBystander)
+            {
+                for (int turn = 0; turn < Windows && window.Contains(fixedBystander); turn++)
+                {
+                    await s.AdvanceSweepRevisionAsync();
+
+                    window = await s.WindowAsync();
+                }
+
+                Assert.DoesNotContain(fixedBystander, window);
+
+                s.Bystander = fixedBystander;
+
+                return s;
+            }
 
             s.Bystander = memories.Skip(2).Last(memory => !window.Contains(memory));
 
