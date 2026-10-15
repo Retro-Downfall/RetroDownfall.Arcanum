@@ -296,7 +296,7 @@ public static class ArcanumMetrics
 
     /// <summary>
     /// Paid Long Rest summaries the embedding provider's context window refused at their embedding (the last guard of Embedding-Bounded Summary).
-    /// The summary request states the recipe's summary bound and caps its answer with it, so a refusal here means the model ignored the bound.
+    /// The summary request states the recipe's summary bound (its output cap stays the fixed answer reservation), so a refusal here means the model ignored the bound.
     /// Never carries an identity or any content.
     /// </summary>
     public static readonly Counter<long> LongRestEmbeddingWindowRefusedTotal = Meter.CreateCounter<long>(

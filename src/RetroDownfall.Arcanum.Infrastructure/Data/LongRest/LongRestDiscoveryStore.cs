@@ -116,7 +116,7 @@ internal sealed partial class LongRestDiscoveryStore(ArcanumDbContext db, TimePr
                     return Refuse<LongRestDiscoveryGeneration>(ErrorCodes.LongRest.InvalidRequest, "The owning sweep operation does not exist.");
                 }
 
-                command.CommandText = "SELECT COALESCE(max(InsertionSequence), 0) FROM long_rest_sources;";
+                command.CommandText = LongRestLiveFenceReader.InsertionBoundarySql;
 
                 long highwater = (long)(await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false))!;
 

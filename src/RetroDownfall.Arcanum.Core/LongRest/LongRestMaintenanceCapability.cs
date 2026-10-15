@@ -272,8 +272,7 @@ public sealed class LongRestMaintenanceCapability
             || work.OperationId != OperationId || work.Scope != _operationScope
             || work.Fence.CanonicalScope != CanonicalScope || work.Fence.Configuration != Configuration
             || work.Fence.DatasetGeneration != Authority.Snapshot.DatasetGeneration
-            || work.Fence.RuntimeAuthorityGeneration != Authority.Snapshot.RuntimeAuthorityGeneration
-            || work.Fence.CapabilityGeneration != Authority.Snapshot.CapabilityGeneration)
+            || work.Fence.RuntimeAuthorityGeneration != Authority.Snapshot.RuntimeAuthorityGeneration)
         {
             return Stale("A dispatch requires the active operation's exact source and authority fence.");
         }

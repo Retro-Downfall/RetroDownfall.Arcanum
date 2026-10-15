@@ -8,9 +8,9 @@
 
 **Design thesis:** a memory system is safe only when every retained claim, derivative, retrieval, provider call, mutation, and disclosure remains bound to its origin, authority, scope, sensitivity, revision history, and evidence of use.
 
-**Document status:** current as of **2026-09-05**, reconciled through GitHub issue #128 and issue #250's pre-readiness offline-transition recovery over issue #123's complete attested full installation reset.
+**Document status:** current as of **2026-10-15**, reconciled through GitHub issue #128, issue #93 and issue #91, and issue #250's pre-readiness offline-transition recovery over issue #123's complete attested full installation reset.
 
-**Branch status.** None. `long-term-memory` was the implementation branch this document was written against; it was merged into `main` and deleted, and everything described here — including the `Arcanum.DESIGN.md` sections cited in §22 — is on `main`. Nothing in this document is waiting on a mirror.
+**Branch status.** `long-term-memory` was the implementation branch this document was first written against; it was merged into `main` and deleted. The sections on #77, #93 and #91 describe work delivered on the `memory-enhancement` integration branch, and reach `main` when that branch merges; everything else described here, including the `Arcanum.DESIGN.md` sections cited in §22, is on `main`. Nothing in this document is waiting on a mirror.
 
 ---
 
@@ -104,7 +104,9 @@ Two defects were found by writing the end-to-end proof rather than by review, an
 | **#106** | XL | Counterfactual memory evaluation lab. Prerequisite for #95. |
 | **#76** | XL | Campaign-scoped retrieval. |
 | **#77** | XL | Campaign rollup — a genuinely Campaign-scoped summary. |
-| **#75** | Epic | The Long Rest: bounded deterministic Saga consolidation and receipts in #93, discovery and resumable sweeps in #91, and usefulness, decay and ranking in #95. |
+| **#93** | XL, landed | One bounded operator-declared Saga consolidation (`ExactDuplicates`, `EquivalentObservations` or `Supersession` over one to sixteen exact targets) with immutable content-free receipts, exact-source suppression, zero-write replay and erasure closure (§20.4; DESIGN §21.16). Similarity discovery is #91. |
+| **#91** | XL, landed | Hybrid FTS5, vector and RAPTOR-style discovery that produces exact candidate groups for the #93 policy; one durable `long-rest-sweep` operation per exact Global or Campaign partition behind the independent default-off `Arcanum:Features:LongRest` opt-in; clean sweeps run and are readmitted only by a background worker under its own work lease, protected sweeps only under a fresh authenticated Session turn's borrowed lease; recovery only parks a sweep and each authority class readmits its own, within a bounded failure budget and cooldown; unknown-usage settlement and cap; per-send accounting and, for protected work, a disclosure receipt before every dispatch (§20.4; DESIGN §10.8.2 and §21.16.1 through §21.16.5; API §8.36). |
+| **#75** | Epic | The Long Rest: bounded deterministic Saga consolidation and receipts in #93 and discovery and resumable sweeps in #91, both landed; usefulness, decay and ranking in #95 remain open. |
 | **#78** | Epic, landed | Memory curation, via #96, #97, #98, #99, and #100, all landed. Bounded Saga consolidation is the #93 API slice (§20.4); its remaining carve-outs are scoped agent recall in #101 and decay in #95. Covenant `show` is content-free by rule rather than printing full content. |
 | **#101** | M | Scoped read-only agent recall. |
 | **#103** | XL | Dynamic Context Injection v2 — secure provider-cacheable prefix. |
@@ -1215,6 +1217,8 @@ Make Saga get better as it grows instead of only getting bigger.
 - Stable checkpoints advance only after committed work; cancellation or failure leaves every unprocessed item eligible for retry.
 - Sweeps stop before another dispatch when Campaign binding, deletion, reset, restore, feature, or authority generations change.
 
+**Delivered.** #93 and #91 are delivered on the `memory-enhancement` integration branch and reach `main` when that branch merges. #91 ships behind the independent default-off `Arcanum:Features:LongRest` opt-in (API §8.36, DESIGN §21.16). #95 remains open, so #75 stays open.
+
 **#95 — Counterfactual credit, decay, and explainable ranking (XL).**
 
 - **Retrieval and admission counts alone produce no positive usefulness credit.**
@@ -1222,7 +1226,7 @@ Make Saga get better as it grows instead of only getting bigger.
 - Superseded, retired, and dormant versions are excluded appropriately; pinned and operator-authored versions honor their approved exemptions. **Decay excludes, it does not delete.**
 - `memory explain` reports score components, policy version, and evidence class without exposing protected content.
 
-Sweep mechanics follow the Tapestry precedent: a gated `BackgroundService`, cancellable at every item and batch boundary, checkpointed so a killed process resumes rather than restarts, no whole-sweep deadline, reconciled at startup and at the end of every sweep. Consolidation model spend is priced, reserved, and audited like any other model call — it must be attributable, never hidden.
+Sweep mechanics follow the Tapestry precedent in being a gated `BackgroundService`, cancellable at every item and batch boundary, with no whole-sweep deadline, and in resuming a killed sweep from its checkpoint rather than restarting it. Unlike the Tapestry, recovery never runs a Long Rest sweep: startup and background reconciliation only park an interrupted one, and the Long Rest worker (clean work, after a cooldown and within a bounded failure budget) or a fresh authenticated Session request (protected work) readmits it (DESIGN §10.8.2, §21.16.3). Consolidation model spend is priced, reserved, and audited like any other model call — it must be attributable, never hidden.
 
 ### 20.5 Memory curation (#78, Epic)
 
@@ -1344,8 +1348,8 @@ The following documents own or explain the detailed contracts summarized here. T
   - §10.23 What an installation holds, and what a turn had to drop
   - §10.24 The release benchmark
   - §10.25–§10.25.1 Evolving an installed tier through a declared version chain
-- [`docs/Arcanum.Engineering.md`](Arcanum.Engineering.md): agent and operator orientation. Present on both branches, but the running Covenant status paragraph it carries is **(branch)**-only and is the most precise running record of what each slice landed.
-- [`ArcanumOATH.Human.md`](ArcanumOATH.Human.md): plain-language mental model and guided claim lifecycle for readers who do not need implementation-level contracts. Kept identical on both branches alongside this document.
+- [`docs/Arcanum.Engineering.md`](Arcanum.Engineering.md): agent and operator orientation, carrying the running Covenant status paragraph, which is the most precise running record of what each slice landed.
+- [`ArcanumOATH.Human.md`](ArcanumOATH.Human.md): plain-language mental model and guided claim lifecycle for readers who do not need implementation-level contracts. Kept in step with this document.
 - [`Arcanum.CHAT-LOOP.md`](Arcanum.CHAT-LOOP.md): the shared model/tool-loop and attachment continuation ordering that the OATH runtime integration extends.
 - GitHub issues [#73](https://github.com/Retro-Downfall/RetroDownfall.Arcanum/issues/73) through [#115](https://github.com/Retro-Downfall/RetroDownfall.Arcanum/issues/115): the delivery units. Issue bodies are authoritative for acceptance criteria; the implementation-plan checklists remain the mechanical source of truth.
 

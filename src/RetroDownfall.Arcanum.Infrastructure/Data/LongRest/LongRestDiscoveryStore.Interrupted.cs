@@ -2,6 +2,7 @@ using Microsoft.Data.Sqlite;
 
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.LongRest;
+using RetroDownfall.Arcanum.Core.Primitives;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Data.LongRest;
 
@@ -70,7 +71,7 @@ internal sealed partial class LongRestDiscoveryStore
             {
                 // The same settlement predicate the in-frame Unknown-Usage Settlement writes, under the reboot's own failure code.
                 if (await LongRestAttemptStore.SettleSentAsync(connection, transaction, interrupted.Unit, interrupted.Work.Bytes, interrupted.Attempt,
-                    interrupted.Ordinal, interrupted.Revision, interrupted.FailureCount, "LongRest.InterruptedTransport", null, ct).ConfigureAwait(false) != 1)
+                    interrupted.Ordinal, interrupted.Revision, interrupted.FailureCount, ErrorCodes.LongRest.InterruptedTransport, null, ct).ConfigureAwait(false) != 1)
                 {
                     throw new InvalidDataException();
                 }

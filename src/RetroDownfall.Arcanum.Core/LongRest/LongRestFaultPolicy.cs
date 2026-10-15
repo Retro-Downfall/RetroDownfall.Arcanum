@@ -129,6 +129,9 @@ public static class LongRestFaultPolicy
 
         [ErrorCodes.LongRest.TransportUnknown] = LongRestFaultClass.NeedsOperator,
 
+        // An attempt's failure reason, never a park code: it is in the table so that every code the surface writes has a class.
+        [ErrorCodes.LongRest.InterruptedTransport] = LongRestFaultClass.NeedsOperator,
+
         [ErrorCodes.LongRest.ModelContextTooSmall] = LongRestFaultClass.NeedsOperator,
 
         [LongRestParkCodes.AuthorizedRequestRequired] = LongRestFaultClass.NeedsOperator,

@@ -16,8 +16,8 @@ public static class LongRestRecipeResolver
 {
     /// <summary>
     /// The chat choice: an explicit <paramref name="model"/> when one is named (an admitted choice resolves exactly), else the
-    /// fast model when it is set, else the default model. A fast model that is set but matches nothing fails; it never falls
-    /// back to the default model.
+    /// fast model when it is set, else the default model, else the first model any configured provider advertises. A fast model
+    /// that is set but matches nothing fails; it never falls back to the default model.
     /// </summary>
     public static bool TryResolveChat(ArcanumSettings settings, string? model, out ProviderSettings? provider, out string resolvedModel)
     {
