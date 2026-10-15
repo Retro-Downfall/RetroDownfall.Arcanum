@@ -235,6 +235,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests
 
             """ + settle + """
 
+
             private sealed class Holder
             {
                 private RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireWorkLease? current;

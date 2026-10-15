@@ -2270,7 +2270,6 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
                 public Box(ContentSensitivity value) { level = value; }
                 public ContentSensitivity Level { get { System.IO.File.Delete("getter-marker"); return level; } }
             }
-
             private static Box First() { System.IO.File.Delete("first-marker"); return new Box(ContentSensitivity.None); }
             private static Box Second() { System.IO.File.Delete("second-marker"); return new Box(ContentSensitivity.CovenantDerived); }
             """ + "\npublic static void Entry() { " + entry + " }\n" + callers + "\n";
@@ -3059,7 +3058,6 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
                 public Box(ContentSensitivity value) { level = value; }
                 public ContentSensitivity Level { get { System.IO.File.Delete("getter-marker"); return level; } }
             }
-
             private static Box First() { System.IO.File.Delete("first-marker"); return new Box(ContentSensitivity.None); }
             private static Box Second() { System.IO.File.Delete("second-marker"); return new Box(ContentSensitivity.CovenantDerived); }
             """;
@@ -3883,7 +3881,6 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
                 public Box(ContentSensitivity value) { level = value; }
                 public ContentSensitivity Level { get { System.IO.File.Delete("getter-marker"); return level; } }
             }
-
             private static Box First() { System.IO.File.Delete("first-marker"); return new Box(ContentSensitivity.None); }
             private static Box Second() { System.IO.File.Delete("second-marker"); return new Box(ContentSensitivity.CovenantDerived); }
             """ + (receiver == "local" ? "" : "private static uint Observe(Box input) => CovenantPolicyV1Manifest.GetCode(input.Level);");
@@ -4501,7 +4498,6 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
                 unknown.Invoke();
                 return Copy(value);
             }
-
             private static byte Copy<T>(T value) where T : struct, Enum
             {
                 System.IO.File.Delete("copy-marker");
@@ -4995,7 +4991,6 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
                 public Box(Mode value) { level = value; }
                 public Mode Level { get { System.IO.File.Delete("getter-marker"); return level; } }
             }
-
             private static Box First() { System.IO.File.Delete("first-marker"); return new Box(Mode.A); }
             private static Box Second() { System.IO.File.Delete("second-marker"); return new Box(Mode.B); }
             private static Box Third() { System.IO.File.Delete("third-marker"); return new Box(Mode.C); }
@@ -22632,12 +22627,10 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
                     }
                 }
             }
-
             internal static class Target
             {
                 private static void Capture(object value) { }
                 private static string ReadName(string value) => value;
-
                 private static int ReadValue(Value value, string name) => value.Level;
             """
             + escapedMethod
@@ -38156,7 +38149,6 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
                         _ = await ReadReceiptAsync(connection, transaction, new string('A', 64), token).ConfigureAwait(false);
                     }
                 }
-
                 internal sealed class BlobSourceWorker(ArcanumDbContext db, IGrimoireConnectionAdmissionGate gate) : IHostedService
                 {
                     public async Task StartAsync(CancellationToken token)
@@ -38168,10 +38160,8 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
                         SagaLongRestService service = new(db, TimeProvider.System);
                         await service.FixtureBlobReadAsync(token).ConfigureAwait(false);
                     }
-
                     public Task StopAsync(CancellationToken token) => Task.CompletedTask;
                 }
-
                 internal static class BlobSourceRegistration
                 {
                     internal static void Register(IServiceCollection services) => services.AddHostedService<BlobSourceWorker>();
@@ -38615,7 +38605,6 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
                             new() { Type = RetroDownfall.Arcanum.Core.Configuration.AiProviderKind.OpenAICompatible, Endpoint = "https://provider.invalid/v1" },
                             "source-fixture-model", 3, new()), cancellationToken).ConfigureAwait(false);
                     }
-
                     private static extern IHost UnknownHost();
                     private static extern Microsoft.Extensions.Options.IOptionsFactory<Microsoft.Extensions.Http.HttpClientFactoryOptions> UnknownHttpOptionsFactory();
                     private static extern Microsoft.Extensions.Http.HttpMessageHandlerBuilder UnknownHttpBuilder();
@@ -38628,18 +38617,15 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
                         public T Get(string? name) => throw new NotSupportedException();
                         public IDisposable OnChange(Action<T, string?> listener) => throw new NotSupportedException();
                     }
-
                     private sealed class SourceHostGenericObserver<T> : IObserver<T>
                     {
                         public void OnNext(T value)
                         {
                             if (value is System.Diagnostics.DiagnosticListener listener) listener.Subscribe(new SourceHostObserver());
                         }
-
                         public void OnCompleted() { }
                         public void OnError(Exception error) { }
                     }
-
                     private sealed class SourceHostHttpFactory : System.Net.Http.IHttpClientFactory
                     {
                         public System.Net.Http.HttpClient CreateClient(string name)
@@ -38648,20 +38634,17 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
                             return new();
                         }
                     }
-
                     private sealed class SourceHostProviderFactory : IServiceProviderFactory<IServiceCollection>
                     {
                         public IServiceCollection CreateBuilder(IServiceCollection services) => services;
                         public IServiceProvider CreateServiceProvider(IServiceCollection services) => UnknownProvider();
                     }
-
                     private sealed class SourceHostObserver : IObserver<System.Diagnostics.DiagnosticListener>, IObserver<KeyValuePair<string, object?>>
                     {
                         public void OnNext(System.Diagnostics.DiagnosticListener listener)
                         {
                             if (listener.Name == "Microsoft.Extensions.Hosting") listener.Subscribe(this);
                         }
-
                         public void OnNext(KeyValuePair<string, object?> observed)
                         {
                             if (observed.Key == "HostBuilding" && observed.Value is IHostBuilder adapter)
@@ -38670,7 +38653,6 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
                                 adapter.ConfigureServices((context, services) => services.AddSingleton<System.Net.Http.IHttpClientFactory, SourceHostHttpFactory>());
                             }
                         }
-
                         public void OnCompleted() { }
                         public void OnError(Exception error) { }
                     }
@@ -39232,7 +39214,6 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
             {
                 protected override System.Data.Common.DbCommand CreateDbCommand() { System.IO.File.Delete("command-override"); return base.CreateDbCommand(); }
             }
-
             internal static class BlobInput
             {
                 internal static extern System.Data.Common.DbDataReader Unknown();
@@ -39242,61 +39223,43 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
                 internal static int IndexValue { get { System.IO.File.Delete("index-getter"); return 0; } }
                 internal static Task<System.Data.Common.DbDataReader> ReadEffectAsync(System.Data.Common.DbCommand command, CancellationToken token) { System.IO.File.Delete("reader-helper"); return command.ExecuteReaderAsync(token); }
             }
-
             internal static class BlobPipeline
             {
                 internal static async Task RunAsync(BlobContext db, CancellationToken token) { {{body}} }
                 private static Task<System.Data.Common.DbDataReader> ReadAsync(System.Data.Common.DbCommand command, CancellationToken token) => command.ExecuteReaderAsync(token);
             }
-
             internal sealed class BlobAuthoredReader : System.Data.Common.DbDataReader
             {
                 public override object this[int ordinal] { get { System.IO.File.Delete("reader-override"); return new byte[0]; } }
                 public override object this[string name] => throw new NotSupportedException();
                 public override int Depth => 0;
-
                 public override int FieldCount => 1;
-
                 public override bool HasRows => true;
-
                 public override bool IsClosed => false;
-
                 public override int RecordsAffected => 0;
-
                 public override bool GetBoolean(int ordinal) => false;
-
                 public override byte GetByte(int ordinal) => 0;
-
                 public override long GetBytes(int ordinal, long offset, byte[]? buffer, int bufferOffset, int length) => 0;
                 public override char GetChar(int ordinal) => 'a';
                 public override long GetChars(int ordinal, long offset, char[]? buffer, int bufferOffset, int length) => 0;
                 public override string GetDataTypeName(int ordinal) => "blob";
                 public override DateTime GetDateTime(int ordinal) => default;
-
                 public override decimal GetDecimal(int ordinal) => 0;
-
                 public override double GetDouble(int ordinal) => 0;
                 public override System.Collections.IEnumerator GetEnumerator() => throw new NotSupportedException();
                 public override Type GetFieldType(int ordinal) => typeof(byte[]);
                 public override float GetFloat(int ordinal) => 0;
-
                 public override Guid GetGuid(int ordinal) => default;
-
                 public override short GetInt16(int ordinal) => 0;
-
                 public override int GetInt32(int ordinal) => 0;
-
                 public override long GetInt64(int ordinal) => 0;
                 public override string GetName(int ordinal) => "blob";
                 public override int GetOrdinal(string name) => 0;
                 public override string GetString(int ordinal) => "";
                 public override object GetValue(int ordinal) => this[ordinal];
                 public override int GetValues(object[] values) => 0;
-
                 public override bool IsDBNull(int ordinal) => false;
-
                 public override bool NextResult() => false;
-
                 public override bool Read() => true;
             }
             """;
