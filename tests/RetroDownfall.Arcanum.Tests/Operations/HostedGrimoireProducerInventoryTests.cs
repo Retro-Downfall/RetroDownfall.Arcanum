@@ -38198,7 +38198,8 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
 
         Assert.Equal(10, blobs.Length);
 
-        Assert.Single(blobs, static site => site.Member == "ReadSnapshotAsync");
+        // The snapshot row's hash is read by the shared row decoder that the point read and the set-based seam both use.
+        Assert.Single(blobs, static site => site.Member == "SnapshotFrom");
 
         Assert.Single(blobs, static site => site.Member == "ReadReceiptAsync");
 
