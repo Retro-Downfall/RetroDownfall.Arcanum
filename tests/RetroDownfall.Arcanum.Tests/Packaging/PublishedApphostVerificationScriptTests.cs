@@ -838,8 +838,18 @@ public sealed class PublishedApphostVerificationScriptTests
                 printf 'perplexity-mode=%s\n' "${ARCANUM_OLLAMA_QUALIFICATION_PERPLEXITY:-}" >> "${FAKE_DOTNET_LOG:?}"
                 printf 'perplexity-reference=%s\n' "${ARCANUM_OLLAMA_QUALIFICATION_PERPLEXITY_KEY_VARIABLE:-}" >> "${FAKE_DOTNET_LOG:?}"
 
+                printf 'long-rest-chat-model=%s\n' "${ARCANUM_OLLAMA_LONG_REST_CHAT_MODEL:-}" >> "${FAKE_DOTNET_LOG:?}"
+                printf 'long-rest-default-model=%s\n' "${ARCANUM_OLLAMA_LONG_REST_DEFAULT_MODEL:-}" >> "${FAKE_DOTNET_LOG:?}"
+                printf 'long-rest-embedding-model=%s\n' "${ARCANUM_OLLAMA_LONG_REST_EMBEDDING_MODEL:-}" >> "${FAKE_DOTNET_LOG:?}"
+                printf 'long-rest-embedding-window=%s\n' "${ARCANUM_OLLAMA_LONG_REST_EMBEDDING_WINDOW:-}" >> "${FAKE_DOTNET_LOG:?}"
+                printf 'long-rest-embedding-dimensions=%s\n' "${ARCANUM_OLLAMA_LONG_REST_EMBEDDING_DIMENSIONS:-}" >> "${FAKE_DOTNET_LOG:?}"
+                printf 'long-rest-endpoint=%s\n' "${ARCANUM_OLLAMA_LONG_REST_ENDPOINT:-}" >> "${FAKE_DOTNET_LOG:?}"
+                printf 'long-rest-results=%s\n' "${ARCANUM_OLLAMA_LONG_REST_RESULTS:-}" >> "${FAKE_DOTNET_LOG:?}"
+                printf 'long-rest-opt-in=%s\n' "${ARCANUM_RUN_LOCAL_OLLAMA_LONG_REST_QUALIFICATION:-}" >> "${FAKE_DOTNET_LOG:?}"
+
                 expected_published='FullyQualifiedName=RetroDownfall.Arcanum.Tests.Packaging.PublishedArcanumSessionSmokeTests.Published_executable_creates_initial_session_and_completes_provider_contract_exchange'
                 expected_ollama='FullyQualifiedName=RetroDownfall.Arcanum.Tests.Packaging.PublishedArcanumOllamaQualificationTests.Published_native_aot_preserves_corrected_file_context_and_runs_vision_across_restart'
+                expected_long_rest='FullyQualifiedName=RetroDownfall.Arcanum.Tests.Packaging.PublishedArcanumOllamaLongRestQualificationTests.Published_native_aot_long_rest_sweeps_recovers_a_killed_host_and_leaves_turns_unharmed'
                 selected=''
 
                 while (($#)); do
@@ -898,6 +908,21 @@ public sealed class PublishedApphostVerificationScriptTests
 
                       if [[ "${FAKE_APPEND_RECEIPT_BYTES_WITHOUT_NEWLINE:-0}" == 1 ]]; then
                         printf '%s' 'trailing-bytes' >> "${ARCANUM_OLLAMA_QUALIFICATION_RECEIPT:?}"
+                      fi
+                    fi
+                    ;;
+                  ollama-long-rest | ollama-long-rest-crlf)
+                    if [[ "$selected" == "$expected_long_rest" ]]; then
+                      printf '%s\n' 'CALIBRATION-REPORT-FIXTURE' > "${ARCANUM_OLLAMA_LONG_REST_RESULTS:?}/long-rest-calibration.txt"
+
+                      if [[ "${FAKE_DOTNET_RECEIPT_KIND}" == ollama-long-rest-crlf ]]; then
+                        printf '%s\r\n' 'local-ollama-long-rest-qualification:v1' > "${ARCANUM_OLLAMA_LONG_REST_RECEIPT:?}"
+                      else
+                        printf '%s\n' 'local-ollama-long-rest-qualification:v1' > "${ARCANUM_OLLAMA_LONG_REST_RECEIPT:?}"
+                      fi
+
+                      if [[ "${FAKE_APPEND_RECEIPT_BYTES_WITHOUT_NEWLINE:-0}" == 1 ]]; then
+                        printf '%s' 'trailing-bytes' >> "${ARCANUM_OLLAMA_LONG_REST_RECEIPT:?}"
                       fi
                     fi
                     ;;

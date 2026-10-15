@@ -772,6 +772,8 @@ public sealed class ReleasePipelineTests
             ["verify-published-apphost.sh"] = 1,
 
             ["verify-local-ollama-aot.sh"] = 1,
+
+            ["verify-local-ollama-long-rest.sh"] = 1,
         };
 
         string[] files =
@@ -797,9 +799,14 @@ public sealed class ReleasePipelineTests
                 expectedMinimums.Remove(name);
             }
 
-            // 15 minutes everywhere except the local Ollama qualification, whose single test legitimately
-            // spends longer than that in cold model turns and carries its own 30 minute bound.
-            int allowedMinutes = name == "verify-local-ollama-aot.sh" ? 30 : 15;
+            // 15 minutes everywhere except the two local Ollama qualifications, whose single tests legitimately spend longer than
+            // that in real-model work and carry their own bounds: 30 minutes for cold vision turns, and 90 for the Long Rest sweeps.
+            int allowedMinutes = name switch
+            {
+                "verify-local-ollama-aot.sh" => 30,
+                "verify-local-ollama-long-rest.sh" => 90,
+                _ => 15,
+            };
 
             foreach (string invocation in invocations)
             {
