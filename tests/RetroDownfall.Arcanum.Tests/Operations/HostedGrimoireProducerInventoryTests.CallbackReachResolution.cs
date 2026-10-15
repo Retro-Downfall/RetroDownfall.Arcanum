@@ -102,4 +102,18 @@ public sealed partial class HostedGrimoireProducerInventoryTests
         // the implementations and a small factor, never by the product of the implementations and the formatters.
         Assert.True(firstSteps <= implementations * 64, firstSteps + " formatting steps for " + implementations + " implementations.");
     }
+
+    // The program-wide queries a graph answers from an index or a memo (the call sites of a method, the constructors of a type, the implementers
+    // of an interface method, whether a parameter is written, whether a callable mutates a local) return what the pass or computation they replace returns, in the same order, over a
+    // sample of the production source.
+    [Fact]
+    public void TheProgramIndexesAnswerWhatThePassesTheyReplaceAnswer()
+    {
+        (int calls, int constructors, int implementers, int parameters, int mutations, IReadOnlyList<string> mismatches) =
+            HostedGrimoireProducerInventory.ProbeProgramIndexes(HostedGrimoireProducerInventory.ProductionCompilations, 24);
+
+        Assert.True(mismatches.Count == 0, "Queries the index or memo and the pass or computation disagree on: " + string.Join(" | ", mismatches.Take(20)));
+
+        Assert.True(calls >= 40 && constructors >= 20 && implementers >= 10 && parameters >= 20 && mutations >= 100, $"The sample holds {calls} call-site queries, {constructors} constructor queries, {implementers} implementer queries, {parameters} parameter queries and {mutations} mutation queries.");
+    }
 }
