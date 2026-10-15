@@ -241,13 +241,24 @@ internal static partial class WindowsJobObjectInterop
 /// </summary>
 internal sealed class WindowsJobObjectSession : IDisposable
 {
+    /// <summary>
+    /// Committed memory the job-wide ceiling leaves for the trusted sandbox broker, which is a member of
+    /// the job beside the tool it creates. An estimate for the Native AOT apphost the shipping broker is,
+    /// not a measured figure.
+    /// </summary>
+    internal const ulong BrokerJobMemoryHeadroomBytes = 64UL * 1024UL * 1024UL;
+
     private readonly IWindowsJobObjectApi _api;
+
+    private readonly ResourceLimits _limits;
 
     private SafeJobHandle? _job;
 
-    private WindowsJobObjectSession(IWindowsJobObjectApi api, SafeJobHandle job)
+    private WindowsJobObjectSession(IWindowsJobObjectApi api, ResourceLimits limits, SafeJobHandle job)
     {
         _api = api;
+
+        _limits = limits;
 
         _job = job;
     }
@@ -256,7 +267,17 @@ internal sealed class WindowsJobObjectSession : IDisposable
     /// Builds the Win32 limit payload from <see cref="ResourceLimits"/>. Returns <c>null</c> when
     /// no Job Object–enforceable limit is configured (caller should skip job creation).
     /// </summary>
-    internal static WindowsJobObjectLimits? BuildLimits(ResourceLimits limits)
+    /// <param name="limits">The configured Sanctum limits.</param>
+    /// <param name="brokered">
+    /// <see langword="true"/> when the process assigned to the job is the trusted sandbox broker rather
+    /// than the tool. The broker creates the tool inside the same job and stays alive until it exits, so
+    /// it takes one active-process slot of its own: the limit is the configured count plus that slot, and
+    /// the job-wide memory ceiling gains <see cref="BrokerJobMemoryHeadroomBytes"/>. The per-process
+    /// memory ceiling and the CPU limit are unchanged, because they bind the tool alone. The tool's tree
+    /// therefore gets exactly <see cref="ResourceLimits.MaxProcessCount"/> active processes, as it does
+    /// when the tool itself is assigned.
+    /// </param>
+    internal static WindowsJobObjectLimits? BuildLimits(ResourceLimits limits, bool brokered = false)
     {
         ulong? memoryBytes = ResolveMemoryBytes(limits);
 
@@ -273,9 +294,18 @@ internal sealed class WindowsJobObjectSession : IDisposable
             return null;
         }
 
+        ulong? jobMemoryBytes = memoryBytes;
+
+        if (brokered)
+        {
+            activeProcesses += 1;
+
+            jobMemoryBytes += BrokerJobMemoryHeadroomBytes;
+        }
+
         return new WindowsJobObjectLimits(
             ProcessMemoryBytes: memoryBytes,
-            JobMemoryBytes: memoryBytes,
+            JobMemoryBytes: jobMemoryBytes,
             PerProcessUserTime100Ns: cpuTicks,
             ActiveProcessLimit: activeProcesses);
     }
@@ -321,7 +351,41 @@ internal sealed class WindowsJobObjectSession : IDisposable
             return null;
         }
 
-        return new WindowsJobObjectSession(api, job);
+        return new WindowsJobObjectSession(api, limits, job);
+    }
+
+    /// <summary>
+    /// Makes room in the job for the sandbox broker, which is about to be assigned to it. Called once,
+    /// before <see cref="Assign"/>, and only for a run whose started process is the broker: the limits
+    /// are written again as <see cref="BuildLimits"/> builds them for a brokered job, so the tool the
+    /// broker creates keeps the configured process count.
+    /// </summary>
+    internal ResourceLimitError? ReserveBrokerSlot()
+    {
+        SafeJobHandle? job = _job;
+
+        if (job is null || job.IsInvalid)
+        {
+            return new ResourceLimitError(
+                "execute_command: Windows Job Object handle was already closed before the sandbox broker was accounted for.");
+        }
+
+        WindowsJobObjectLimits? brokered = BuildLimits(_limits, brokered: true);
+
+        if (brokered is null)
+        {
+            return null;
+        }
+
+        if (!_api.ConfigureLimits(job, brokered.Value))
+        {
+            int lastError = _api.GetLastError();
+
+            return new ResourceLimitError(
+                $"execute_command: Windows Job Object limits could not be widened for the sandbox broker (Win32 error {lastError}).");
+        }
+
+        return null;
     }
 
     internal ResourceLimitError? Assign(Process process)

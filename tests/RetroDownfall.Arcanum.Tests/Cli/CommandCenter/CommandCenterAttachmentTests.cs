@@ -520,6 +520,13 @@ public sealed class CommandCenterTurnAttachmentBuilderTests : IDisposable
     /// than a regular file. The test makes the closest thing a user account can make on demand, a file
     /// whose data the system compresses in place, and skips when the volume will not.
     /// </summary>
+    /// <remarks>
+    /// On a machine that is not the Windows lane that skip is the honest answer. On the lane, where
+    /// <c>ARCANUM_REQUIRE_WINDOWS_SUITE=true</c>, it is a hole in the only evidence for this behaviour, so
+    /// the test fails there instead and says what the volume did: the exit code and output of
+    /// <c>compact.exe</c>, the attributes and link target it left, the volume's file system and the kind
+    /// the repository's own path policy reads for the file.
+    /// </remarks>
     [SkippableFact]
     public async Task Windows_a_reparse_point_that_names_no_other_location_stages()
     {
@@ -529,9 +536,18 @@ public sealed class CommandCenterTurnAttachmentBuilderTests : IDisposable
         string content = string.Concat(Enumerable.Repeat("arcanum attachment ", 8192));
         File.WriteAllText(path, content, Encoding.UTF8);
 
-        Skip.IfNot(
-            TryMakeCompressedReparsePoint(path),
-            "The volume did not turn the file into a reparse point that names no other location.");
+        if (!TryMakeCompressedReparsePoint(path, out string diagnostic))
+        {
+            string reason =
+                "The volume did not turn the file into a reparse point that names no other location. " + diagnostic;
+
+            if (WindowsLaneRequired())
+            {
+                Assert.Fail(reason);
+            }
+
+            Skip.If(true, reason);
+        }
 
         TurnAttachmentBuildResult result = await CommandCenterTurnAttachmentBuilder.BuildAsync(
             "read @compressed.txt",
@@ -551,24 +567,77 @@ public sealed class CommandCenterTurnAttachmentBuilderTests : IDisposable
             statusLine);
     }
 
-    private static bool TryMakeCompressedReparsePoint(string path)
+    /// <summary>The Windows lane sets this so a skipped Windows test is a failure there, as in <c>WindowsCiSurfaceTests</c>.</summary>
+    private static bool WindowsLaneRequired() =>
+        string.Equals(
+            global::System.Environment.GetEnvironmentVariable("ARCANUM_REQUIRE_WINDOWS_SUITE"),
+            "true",
+            StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Compresses <paramref name="path"/> in place and reports whether that left a reparse point that
+    /// names no other location. <paramref name="diagnostic"/> says what the volume did either way.
+    /// </summary>
+    /// <remarks>
+    /// A file system filter may hide the reparse attribute from an ordinary attribute query, so the kind
+    /// the repository's path policy reads through a handle counts as well: a regular file it reports as
+    /// anything other than a regular file is a reparse point.
+    /// </remarks>
+    private static bool TryMakeCompressedReparsePoint(string path, out string diagnostic)
     {
-        using System.Diagnostics.Process? compact = System.Diagnostics.Process.Start(
-            new ProcessStartInfo("compact.exe", ["/c", "/exe:xpress4k", path]) { UseShellExecute = false });
+        ProcessStartInfo startInfo = new("compact.exe", ["/c", "/exe:xpress4k", path])
+        {
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+        };
+
+        using System.Diagnostics.Process? compact = System.Diagnostics.Process.Start(startInfo);
 
         if (compact is null)
         {
+            diagnostic = "compact.exe could not be started.";
+
             return false;
         }
+
+        Task<string> standardOutput = compact.StandardOutput.ReadToEndAsync();
+
+        Task<string> standardError = compact.StandardError.ReadToEndAsync();
 
         if (!compact.WaitForExit(30_000))
         {
             compact.Kill(entireProcessTree: true);
+
+            diagnostic = "compact.exe did not exit within 30 seconds.";
+
             return false;
         }
 
+        // Exit has been observed, so the pipes are closed and both reads complete.
+        string output = standardOutput.GetAwaiter().GetResult().Trim();
+
+        string error = standardError.GetAwaiter().GetResult().Trim();
+
         FileAttributes attributes = File.GetAttributes(path);
-        return (attributes & FileAttributes.ReparsePoint) != 0 && new FileInfo(path).LinkTarget is null;
+
+        string? linkTarget = new FileInfo(path).LinkTarget;
+
+        string fileSystem = new DriveInfo(Path.GetPathRoot(Path.GetFullPath(path))!).DriveFormat;
+
+        bool kindKnown = FileHandleIdentityInterop.TryGetPathMetadata(path, out FileHandleMetadata metadata);
+
+        string kind = kindKnown ? metadata.Kind.ToString() : "unavailable";
+
+        diagnostic =
+            $"compact.exe exited {compact.ExitCode}; stdout: [{output}]; stderr: [{error}]; "
+            + $"attributes: {attributes}; link target: {linkTarget ?? "none"}; "
+            + $"file system: {fileSystem}; path-policy kind: {kind}.";
+
+        bool reparsePoint = (attributes & FileAttributes.ReparsePoint) != 0
+            || (kindKnown && metadata.Kind == FileSystemObjectKind.Other);
+
+        return reparsePoint && linkTarget is null;
     }
 
     private static ArcanumSettings DefaultSettings() =>

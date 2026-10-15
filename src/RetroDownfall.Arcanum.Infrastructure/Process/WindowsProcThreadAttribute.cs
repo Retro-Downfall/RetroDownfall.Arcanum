@@ -14,7 +14,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.ProcessExecution;
 /// </remarks>
 internal static class WindowsProcThreadAttribute
 {
-
     /// <summary>
     /// <c>PROC_THREAD_ATTRIBUTE_HANDLE_LIST</c>: attribute number 2, the handles the child inherits.
     /// </summary>
@@ -26,5 +25,4 @@ internal static class WindowsProcThreadAttribute
     /// the thread-level ideal-processor attribute, not this one.
     /// </summary>
     internal const uint SecurityCapabilities = 0x00020009;
-
 }

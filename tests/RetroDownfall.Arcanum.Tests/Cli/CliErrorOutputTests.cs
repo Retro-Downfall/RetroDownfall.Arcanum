@@ -10,57 +10,46 @@ namespace RetroDownfall.Arcanum.Tests.Cli;
 /// Nearly two hundred themed error sites render through <see cref="CliErrorOutput"/>. It builds its own stderr-bound console per write, so the process-global <see cref="AnsiConsole"/> — the one <c>CliApplicationFactory</c> strips of colour for <c>--plain</c>, <c>--output-format json</c>, <c>NO_COLOR</c> and <c>ARCANUM_NO_COLOR</c> — is no longer in the path. The colour decision has to be reached here or those four contracts stop applying to every command failure.
 /// </summary>
 /// <remarks>
-/// Asserted on the settings rather than on rendered bytes because Spectre's <see cref="AnsiSupport.Detect"/> answers from the process's own streams: under a test runner they are redirected, so a <c>Detect</c> console emits no escapes either and a byte-level assertion would pass while the contract was broken. <see cref="AnsiSupport.No"/> is the only state that holds on an operator's terminal too.
+/// Asserted on the settings rather than on rendered bytes because what an <see cref="AnsiSupport.Detect"/> console emits depends on the ambient environment, not on the contract. On a developer machine the test runner redirects the streams, so a <c>Detect</c> console emits no escapes and a byte-level assertion would pass while the contract was broken; on a GitHub Actions runner the provider enricher (<c>GITHUB_ACTIONS=true</c>) forces ANSI on for any <c>Detect</c> console. <see cref="AnsiSupport.No"/> is the only state that holds everywhere, on an operator's terminal and, built through <see cref="CliConsoleFactory"/>, on a CI runner. The byte-level coverage under a pinned GitHub Actions environment lives in <see cref="CliDiagnosticConsoleTests"/>.
 ///
 /// <para>The collection is <c>ProcessEnvironment</c> because the no-colour variables are read live from the process environment; it disables parallelization, which also makes the <see cref="Console.Error"/> swap in the render test safe.</para>
 /// </remarks>
 [Collection("ProcessEnvironment")]
 public sealed class CliErrorOutputTests
 {
-
     [Fact]
     public void Plain_forces_colour_off_on_the_diagnostic_console()
     {
-
         AssertColourSuppressed(new CliInvocationOptions(Json: false, Plain: true, Yes: false));
-
     }
 
     [Fact]
     public void Json_forces_colour_off_on_the_diagnostic_console()
     {
-
         AssertColourSuppressed(new CliInvocationOptions(Json: true, Plain: false, Yes: false));
-
     }
 
     [Fact]
     public void Print_forces_colour_off_on_the_diagnostic_console()
     {
-
         AssertColourSuppressed(
             new CliInvocationOptions(Json: false, Plain: false, Yes: false, Print: true));
-
     }
 
     [Fact]
     public void No_color_forces_colour_off_on_the_diagnostic_console()
     {
-
         AssertColourSuppressed(
             new CliInvocationOptions(Json: false, Plain: false, Yes: false),
             noColor: "1");
-
     }
 
     [Fact]
     public void Arcanum_no_color_forces_colour_off_on_the_diagnostic_console()
     {
-
         AssertColourSuppressed(
             new CliInvocationOptions(Json: false, Plain: false, Yes: false),
             arcanumNoColor: "true");
-
     }
 
     /// <summary>
@@ -69,7 +58,6 @@ public sealed class CliErrorOutputTests
     [Fact]
     public void An_invocation_with_no_opt_out_leaves_the_decision_to_the_stream()
     {
-
         using EnvironmentScope environment = new(noColor: null, arcanumNoColor: null);
 
         using IDisposable invocation = CliInvocationContext.Push(
@@ -80,7 +68,6 @@ public sealed class CliErrorOutputTests
         Assert.Equal(AnsiSupport.Detect, settings.Ansi);
 
         Assert.Equal(ColorSystemSupport.Detect, settings.ColorSystem);
-
     }
 
     /// <summary>
@@ -89,7 +76,6 @@ public sealed class CliErrorOutputTests
     [Fact]
     public void Plain_writes_the_rendered_text_to_standard_error_without_escapes()
     {
-
         using EnvironmentScope environment = new(noColor: null, arcanumNoColor: null);
 
         using IDisposable invocation = CliInvocationContext.Push(
@@ -101,17 +87,13 @@ public sealed class CliErrorOutputTests
 
         try
         {
-
             Console.SetError(captured);
 
             CliErrorOutput.WriteMarkupLine("[red]Error:[/] the vault refused the key");
-
         }
         finally
         {
-
             Console.SetError(originalError);
-
         }
 
         string written = captured.ToString();
@@ -121,7 +103,6 @@ public sealed class CliErrorOutputTests
         Assert.DoesNotContain('\u001b', written);
 
         Assert.DoesNotContain("[red]", written, StringComparison.Ordinal);
-
     }
 
     private static void AssertColourSuppressed(
@@ -129,7 +110,6 @@ public sealed class CliErrorOutputTests
         string? noColor = null,
         string? arcanumNoColor = null)
     {
-
         using EnvironmentScope environment = new(noColor, arcanumNoColor);
 
         using IDisposable invocation = CliInvocationContext.Push(options);
@@ -139,12 +119,10 @@ public sealed class CliErrorOutputTests
         Assert.Equal(AnsiSupport.No, settings.Ansi);
 
         Assert.Equal(ColorSystemSupport.NoColors, settings.ColorSystem);
-
     }
 
     private sealed class EnvironmentScope : IDisposable
     {
-
         private readonly string? _originalNoColor = System.Environment.GetEnvironmentVariable("NO_COLOR");
 
         private readonly string? _originalArcanumNoColor =
@@ -152,22 +130,16 @@ public sealed class CliErrorOutputTests
 
         internal EnvironmentScope(string? noColor, string? arcanumNoColor)
         {
-
             System.Environment.SetEnvironmentVariable("NO_COLOR", noColor);
 
             System.Environment.SetEnvironmentVariable("ARCANUM_NO_COLOR", arcanumNoColor);
-
         }
 
         public void Dispose()
         {
-
             System.Environment.SetEnvironmentVariable("NO_COLOR", _originalNoColor);
 
             System.Environment.SetEnvironmentVariable("ARCANUM_NO_COLOR", _originalArcanumNoColor);
-
         }
-
     }
-
 }

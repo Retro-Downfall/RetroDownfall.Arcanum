@@ -21,10 +21,15 @@ namespace RetroDownfall.Arcanum.Tests.Process;
 /// <para>Only that one flag is dropped. The protected flag <c>P</c>, the auto-inherit-request flag
 /// <c>AR</c> and every ACE stay in the text, so a restore that lost protection or an entry still
 /// differs.</para>
+///
+/// <para>Only the comparisons that really grant and then remove use that normalised form
+/// (<see cref="Of"/>). A comparison where nothing may write the DACL at all uses <see cref="Exact"/>,
+/// because there even the <c>AI</c> bookkeeping flag must not appear: a refused purge that still
+/// rewrote the root through <c>SetAccessControl</c> would set it while leaving every ACE string
+/// intact, which the normalised form cannot see.</para>
 /// </remarks>
 internal static class WindowsDaclText
 {
-
     private const string DaclMarker = "D:";
 
     private const string AutoInherited = "AI";
@@ -37,11 +42,17 @@ internal static class WindowsDaclText
     /// The DACL of <paramref name="path"/> as SDDL, comparable across a grant and its removal.
     /// </summary>
     [SupportedOSPlatform("windows")]
-    internal static string Of(string path) =>
-        WithoutAutoInheritedFlag(
-            new DirectoryInfo(path)
-                .GetAccessControl(AccessControlSections.Access)
-                .GetSecurityDescriptorSddlForm(AccessControlSections.Access));
+    internal static string Of(string path) => WithoutAutoInheritedFlag(Exact(path));
+
+    /// <summary>
+    /// The DACL of <paramref name="path"/> as SDDL exactly as Windows reports it, <c>AI</c> included,
+    /// for a comparison across an operation that must not write the DACL at all.
+    /// </summary>
+    [SupportedOSPlatform("windows")]
+    internal static string Exact(string path) =>
+        new DirectoryInfo(path)
+            .GetAccessControl(AccessControlSections.Access)
+            .GetSecurityDescriptorSddlForm(AccessControlSections.Access);
 
     /// <summary>
     /// <paramref name="sddl"/> with the <c>AI</c> control flag removed from its <c>D:</c> component and
@@ -53,16 +64,13 @@ internal static class WindowsDaclText
     /// </remarks>
     internal static string WithoutAutoInheritedFlag(string sddl)
     {
-
         ArgumentNullException.ThrowIfNull(sddl);
 
         if (!sddl.StartsWith(DaclMarker, StringComparison.Ordinal))
         {
-
             throw new ArgumentException(
                 $"Expected a DACL-only SDDL string beginning '{DaclMarker}', got '{sddl}'.",
                 nameof(sddl));
-
         }
 
         int aclStart = sddl.IndexOf('(', DaclMarker.Length);
@@ -77,36 +85,29 @@ internal static class WindowsDaclText
 
         while (index < flags.Length)
         {
-
             if (flags[index] == Protected)
             {
-
                 _ = kept.Append(Protected);
 
                 index++;
 
                 continue;
-
             }
 
             if (flags.AsSpan(index).StartsWith(AutoInherited, StringComparison.Ordinal))
             {
-
                 index += AutoInherited.Length;
 
                 continue;
-
             }
 
             if (flags.AsSpan(index).StartsWith(AutoInheritRequested, StringComparison.Ordinal))
             {
-
                 _ = kept.Append(AutoInheritRequested);
 
                 index += AutoInheritRequested.Length;
 
                 continue;
-
             }
 
             // Anything else (NO_ACCESS_CONTROL, a flag this reader does not know) is kept verbatim,
@@ -114,11 +115,8 @@ internal static class WindowsDaclText
             _ = kept.Append(flags, index, flags.Length - index);
 
             break;
-
         }
 
         return DaclMarker + kept + (aclStart < 0 ? string.Empty : sddl[aclStart..]);
-
     }
-
 }

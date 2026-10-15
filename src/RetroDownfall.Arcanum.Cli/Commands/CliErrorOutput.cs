@@ -23,8 +23,6 @@ namespace RetroDownfall.Arcanum.Cli.Commands;
 /// </remarks>
 internal static class CliErrorOutput
 {
-
     internal static void WriteMarkupLine(string markup) =>
         CliConsoleFactory.CreateDiagnostic().MarkupLine(markup);
-
 }

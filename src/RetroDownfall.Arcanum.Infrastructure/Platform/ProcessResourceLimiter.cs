@@ -184,7 +184,12 @@ public sealed class ProcessResourceLimiter : IProcessResourceLimiter
             return Task.CompletedTask;
         };
 
-        return new ProcessResourceLimiterResult(null, cleanup, WasOomKilledAsync: null, AssignAfterStart: assignAfterStart);
+        return new ProcessResourceLimiterResult(
+            null,
+            cleanup,
+            WasOomKilledAsync: null,
+            AssignAfterStart: assignAfterStart,
+            ReserveBrokerSlot: session.ReserveBrokerSlot);
     }
 
     private ProcessResourceLimiterResult ApplyOnMacOs(ProcessStartInfo startInfo, ResourceLimits limits)

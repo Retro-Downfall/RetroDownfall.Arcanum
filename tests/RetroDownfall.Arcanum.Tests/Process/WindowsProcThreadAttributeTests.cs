@@ -11,7 +11,6 @@ namespace RetroDownfall.Arcanum.Tests.Process;
 /// </summary>
 public sealed class WindowsProcThreadAttributeTests
 {
-
     // winbase.h: ProcThreadAttributeValue(Number, Thread, Input, Additive) =
     //   (Number & 0xFFFF) | (Thread ? 0x10000 : 0) | (Input ? 0x20000 : 0) | (Additive ? 0x40000 : 0)
     private const uint ThreadFlag = 0x00010000;
@@ -30,21 +29,17 @@ public sealed class WindowsProcThreadAttributeTests
     [Fact]
     public void The_security_capabilities_key_is_the_input_attribute_numbered_nine()
     {
-
         Assert.Equal(
             WindowsProcThreadAttribute.SecurityCapabilities,
             AttributeValue(ProcThreadAttributeSecurityCapabilities, thread: false, input: true, additive: false));
-
     }
 
     [Fact]
     public void The_handle_list_key_is_the_input_attribute_numbered_two()
     {
-
         Assert.Equal(
             WindowsProcThreadAttribute.HandleList,
             AttributeValue(ProcThreadAttributeHandleList, thread: false, input: true, additive: false));
-
     }
 
     /// <summary>
@@ -54,7 +49,6 @@ public sealed class WindowsProcThreadAttributeTests
     [Fact]
     public void The_security_capabilities_key_is_not_the_ideal_processor_key()
     {
-
         Assert.NotEqual(
             WindowsProcThreadAttribute.SecurityCapabilities,
             AttributeValue(ProcThreadAttributeIdealProcessor, thread: false, input: true, additive: false));
@@ -62,7 +56,6 @@ public sealed class WindowsProcThreadAttributeTests
         Assert.NotEqual(
             WindowsProcThreadAttribute.SecurityCapabilities,
             AttributeValue(ProcThreadAttributeIdealProcessor, thread: true, input: true, additive: false));
-
     }
 
     [Theory]
@@ -78,9 +71,7 @@ public sealed class WindowsProcThreadAttributeTests
         bool additive,
         uint expected)
     {
-
         Assert.Equal(expected, AttributeValue(number, thread, input, additive));
-
     }
 
     private static uint AttributeValue(ushort number, bool thread, bool input, bool additive) =>
@@ -88,5 +79,4 @@ public sealed class WindowsProcThreadAttributeTests
         | (thread ? ThreadFlag : 0u)
         | (input ? InputFlag : 0u)
         | (additive ? AdditiveFlag : 0u);
-
 }

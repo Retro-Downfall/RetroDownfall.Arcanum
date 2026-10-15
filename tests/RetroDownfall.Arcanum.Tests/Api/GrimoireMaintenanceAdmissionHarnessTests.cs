@@ -399,6 +399,19 @@ public sealed class GrimoireMaintenanceAdmissionHarnessTests
 
         // Ordinary startup performs the real health probe. It is not participant seeding.
         // Retained-closed recovery scenarios must instead require no ordinary effects at all.
+        //
+        // The probe is a hosted background service: it yields once, then takes a work lease and begins
+        // its effect group on a pool continuation, and starting the host does not wait for that. The
+        // wait is only for the first effect to exist; the assertion below still demands exactly one,
+        // of the probe's kind.
+        using (CancellationTokenSource probeDeadline = new(TimeSpan.FromSeconds(10)))
+        {
+            while (recovered.Admission.Effects.Count == 0)
+            {
+                await Task.Delay(TimeSpan.FromMilliseconds(10), probeDeadline.Token);
+            }
+        }
+
         Assert.Equal(GrimoireWorkKind.ProviderHealthProbe, Assert.Single(recovered.Admission.Effects).Kind);
 
         Assert.Equal(0, recovered.Chat.Calls);

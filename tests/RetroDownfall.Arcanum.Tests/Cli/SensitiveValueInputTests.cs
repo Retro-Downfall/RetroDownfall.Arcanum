@@ -120,12 +120,121 @@ public sealed class SensitiveValueInputTests
 
         Assert.Equal(ColorSystemSupport.NoColors, plain.ColorSystem);
 
-        AnsiConsoleSettings styled = SensitiveValueInput.CreatePromptSettings(
-            new CliInvocationOptions(Json: false, Plain: false, Yes: false));
+        // Both no-colour variables are cleared while the settings are built, because an operator's own
+        // NO_COLOR would otherwise make the "styled" answer depend on the machine the suite runs on.
+        AnsiConsoleSettings styled;
+
+        using (new EnvironmentScope(gitHubActions: null, noColor: null, arcanumNoColor: null))
+        {
+            styled = SensitiveValueInput.CreatePromptSettings(
+                new CliInvocationOptions(Json: false, Plain: false, Yes: false));
+        }
 
         Assert.Equal(InteractionSupport.Yes, styled.Interactive);
 
         Assert.Equal(AnsiSupport.Detect, styled.Ansi);
+
+        Assert.Equal(ColorSystemSupport.Detect, styled.ColorSystem);
+    }
+
+    /// <summary>
+    /// Spectre's colour detector knows <c>NO_COLOR</c> but not Arcanum's own <c>ARCANUM_NO_COLOR</c>,
+    /// and a prompt that shows a default value (the <c>daemon install</c> service account) draws it
+    /// in green. The prompt console therefore decides colour itself, on stderr, with the provider
+    /// detector of a GitHub Actions job live: <c>GITHUB_ACTIONS=true</c> must not bring escapes back.
+    /// </summary>
+    [Theory]
+    [InlineData("ARCANUM_NO_COLOR")]
+    [InlineData("NO_COLOR")]
+    public void A_no_colour_variable_keeps_the_prompt_console_free_of_ansi_inside_GitHub_Actions(string variable)
+    {
+        using EnvironmentScope environment = new(
+            gitHubActions: "true",
+            noColor: variable == "NO_COLOR" ? "1" : null,
+            arcanumNoColor: variable == "ARCANUM_NO_COLOR" ? "1" : null);
+
+        string written = WritePromptDefault(new CliInvocationOptions(Json: false, Plain: false, Yes: false), out AnsiConsoleSettings settings);
+
+        Assert.Equal(AnsiSupport.No, settings.Ansi);
+
+        Assert.Equal(ColorSystemSupport.NoColors, settings.ColorSystem);
+
+        Assert.Equal(InteractionSupport.Yes, settings.Interactive);
+
+        Assert.Contains(@"(HOST\me)", written, StringComparison.Ordinal);
+
+        Assert.DoesNotContain('\u001b', written);
+    }
+
+    /// <summary>
+    /// The control. Without it the no-colour cases above could pass because the GitHub Actions
+    /// detector never ran, which would leave them proving nothing.
+    /// </summary>
+    [Fact]
+    public void Control_a_prompt_console_with_no_opt_out_is_forced_to_ansi_by_the_GitHub_Actions_detector()
+    {
+        using EnvironmentScope environment = new(gitHubActions: "true", noColor: null, arcanumNoColor: null);
+
+        string written = WritePromptDefault(new CliInvocationOptions(Json: false, Plain: false, Yes: false), out AnsiConsoleSettings settings);
+
+        Assert.Equal(AnsiSupport.Detect, settings.Ansi);
+
+        Assert.Contains('\u001b', written);
+    }
+
+    /// <summary>
+    /// Writes a default value the way <c>daemon install</c>'s account prompt does, through a console
+    /// built from <see cref="SensitiveValueInput.CreatePromptSettings"/> over a swapped
+    /// <see cref="Console.Error"/>, and returns what reached standard error.
+    /// </summary>
+    private static string WritePromptDefault(CliInvocationOptions options, out AnsiConsoleSettings settings)
+    {
+        TextWriter originalError = Console.Error;
+
+        StringWriter stderr = new();
+
+        Console.SetError(stderr);
+
+        try
+        {
+            settings = SensitiveValueInput.CreatePromptSettings(options);
+
+            CliConsoleFactory.Create(settings).Write(new Markup(@"[green bold](HOST\me)[/]"));
+        }
+        finally
+        {
+            Console.SetError(originalError);
+        }
+
+        return stderr.ToString();
+    }
+
+    private sealed class EnvironmentScope : IDisposable
+    {
+        private readonly string? _originalGitHubActions = System.Environment.GetEnvironmentVariable("GITHUB_ACTIONS");
+
+        private readonly string? _originalNoColor = System.Environment.GetEnvironmentVariable("NO_COLOR");
+
+        private readonly string? _originalArcanumNoColor =
+            System.Environment.GetEnvironmentVariable("ARCANUM_NO_COLOR");
+
+        internal EnvironmentScope(string? gitHubActions, string? noColor, string? arcanumNoColor)
+        {
+            System.Environment.SetEnvironmentVariable("GITHUB_ACTIONS", gitHubActions);
+
+            System.Environment.SetEnvironmentVariable("NO_COLOR", noColor);
+
+            System.Environment.SetEnvironmentVariable("ARCANUM_NO_COLOR", arcanumNoColor);
+        }
+
+        public void Dispose()
+        {
+            System.Environment.SetEnvironmentVariable("GITHUB_ACTIONS", _originalGitHubActions);
+
+            System.Environment.SetEnvironmentVariable("NO_COLOR", _originalNoColor);
+
+            System.Environment.SetEnvironmentVariable("ARCANUM_NO_COLOR", _originalArcanumNoColor);
+        }
     }
 
     /// <summary>
