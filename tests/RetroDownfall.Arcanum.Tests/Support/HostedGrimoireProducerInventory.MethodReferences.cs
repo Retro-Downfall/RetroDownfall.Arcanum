@@ -11,7 +11,9 @@ namespace RetroDownfall.Arcanum.Tests.Support;
 // identity, never on a name or on the type a caller happens to name, so a pin on an interface slot is not bypassed by a caller of the
 // class registered for it:
 //   - the method itself (the link named by its containing type, an interface slot or a class);
-//   - the interface slots it implements and the methods that implement a slot, explicit implementations included;
+//   - the interface slots it implements and the methods that implement a slot, explicit implementations included, and the method a class
+//     inherits from its base class to implement a slot the derived class names (the base declares the method and does not implement the slot);
+//   - a slot of a generic interface that an implementer closes in its own base list, matched on the open definition;
 //   - another interface member that the same implementation satisfies (an alias interface);
 //   - the methods those override and the methods that override them;
 //   - the calls through any of them, through the concrete type, inside a lambda or a local function, and every method group that names one.
@@ -103,8 +105,33 @@ internal static partial class HostedGrimoireProducerInventory
         return Implements(first, second) || Implements(second, first) || Overrides(first, second) || Overrides(second, first);
     }
 
+    // The interface slots of the given name that each declared class or struct runs a method for, as pairs of the slot's identity and the
+    // implementing method's identity. The type's own view of the interface decides: it resolves a method the type inherits from its base
+    // class, and a slot of a generic interface that the type closes, which the implementing class's own members and the open slot never show.
+    private static IReadOnlyList<(string Slot, string Implementation)> SlotImplementations(IReadOnlyList<Compilation> compilations, string method)
+    {
+        HashSet<(string, string)> pairs = [];
+
+        foreach (INamedTypeSymbol type in DeclaredTypesOf(compilations).Where(static type => type.TypeKind is TypeKind.Class or TypeKind.Struct))
+        {
+            foreach (INamedTypeSymbol contract in type.AllInterfaces)
+            {
+                foreach (IMethodSymbol slot in contract.GetMembers(method).OfType<IMethodSymbol>())
+                {
+                    if (type.FindImplementationForInterfaceMember(slot) is IMethodSymbol implementation)
+                    {
+                        pairs.Add((MethodKey(slot), MethodKey(implementation)));
+                    }
+                }
+            }
+        }
+
+        return [.. pairs];
+    }
+
     // The link methods of a door: the method `method` of the type `containingType`, and every method of that name that is related to a link
-    // already found, to a fixed point.
+    // already found, to a fixed point. Two methods are related when one is a slot the other implements (for any class or struct that names the
+    // slot, the implementation being the method that type runs, declared by it or inherited), or one overrides the other.
     private static IReadOnlyList<IMethodSymbol> MethodLinks(IReadOnlyList<Compilation> compilations, string containingType, string method, out IReadOnlyList<IMethodSymbol> pool)
     {
         IMethodSymbol[] named = [.. DeclaredTypesOf(compilations)
@@ -112,6 +139,13 @@ internal static partial class HostedGrimoireProducerInventory
                 || candidate.ExplicitInterfaceImplementations.Any(implemented => implemented.Name == method)))];
 
         pool = named;
+
+        // Only methods the compilations declare are links: a slot of a framework interface is not one, so an implementation of it does not draw
+        // every other implementation of the framework's slot into the door.
+        HashSet<string> declared = [.. named.Select(MethodKey)];
+
+        IReadOnlyList<(string Slot, string Implementation)> implementations = [.. SlotImplementations(compilations, method)
+            .Where(pair => declared.Contains(pair.Slot) && declared.Contains(pair.Implementation))];
 
         HashSet<string> identities = [.. named.Where(candidate => TypeKey(candidate.ContainingType) == containingType).Select(MethodKey)];
 
@@ -126,6 +160,16 @@ internal static partial class HostedGrimoireProducerInventory
                 if (known.Any(link => MethodsRelated(candidate, link)))
                 {
                     grew |= identities.Add(MethodKey(candidate));
+                }
+            }
+
+            foreach ((string slot, string implementation) in implementations)
+            {
+                if (identities.Contains(slot) != identities.Contains(implementation))
+                {
+                    identities.Add(identities.Contains(slot) ? implementation : slot);
+
+                    grew = true;
                 }
             }
         }
