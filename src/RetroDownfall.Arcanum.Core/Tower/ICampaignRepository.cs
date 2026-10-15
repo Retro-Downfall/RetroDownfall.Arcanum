@@ -22,6 +22,11 @@ public interface ICampaignRepository
     /// normalisation form of an accented name. This is how a directory below a Campaign root (or the root spelled differently) is
     /// recognised as that Campaign's workspace.
     /// </summary>
+    /// <remarks>
+    /// This member deliberately has no default body. A store that fell back to <see cref="GetByPathAsync"/> would silently leave every
+    /// directory below a Campaign root, or the root spelled another way, without that Campaign's Sanctum, so each implementer decides what
+    /// it answers. A test pins that the member stays without a body.
+    /// </remarks>
     Task<Campaign?> GetByContainedPathAsync(string path, CancellationToken cancellationToken = default);
 
     Task<Campaign?> GetByNameAsync(string name, CancellationToken cancellationToken = default);
