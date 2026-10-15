@@ -421,7 +421,11 @@ internal sealed partial class LongRestSweepCoordinator(ILongRunningOperationStor
     {
         LongRestSweepConfiguration options = configuration.Capture();
 
-        if (!options.Enabled || options.Recipe.IsFailure || !configuration.IsCurrent(options.Stamp)) throw new Refused(Unavailable());
+        if (!options.Enabled || !configuration.IsCurrent(options.Stamp)) throw new Refused(Unavailable());
+
+        // An enabled configuration whose recipe cannot resolve says so, in the one content-free sentence its other readers give, instead
+        // of the generic "could not be proved": the request, and so the protected turn that made it, ends with a reason.
+        if (options.Recipe.IsFailure) throw new Refused(new Error(ErrorCodes.LongRest.Unavailable, options.Recipe.Error.Message));
 
         return options;
     }
