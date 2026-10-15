@@ -266,6 +266,21 @@ public sealed class CheckerLimitPinTests(ITestOutputHelper output)
                     Assembly.Load("fixture");
                 }
 
+                // An unsafe accessor reads a field or invokes a member of another type without the source naming a call of it; a delegate built from
+                // a method object and a handler added through an event object run authored code the same way.
+                public static void ViaAccessors(Row row, Keeper keeper, IGrimoireWorkLease lease)
+                {
+                    ref int id = ref Accessors.Id(row);
+                    Accessors.Carry(keeper, lease);
+                    Accessors.Count(keeper);
+                }
+
+                public static void Delegates(MethodInfo method, EventInfo eventInfo, object target, Delegate handler)
+                {
+                    method.CreateDelegate(typeof(Action), target);
+                    eventInfo.AddEventHandler(target, handler);
+                }
+
                 public static void Plain(MethodInfo method, FieldInfo field, object target)
                 {
                     method.Invoke(target, new object[] { 1 });
@@ -274,6 +289,24 @@ public sealed class CheckerLimitPinTests(ITestOutputHelper output)
                     Expression<Func<int>> expression = () => 1;
                     expression.Compile();
                 }
+            }
+
+            public sealed class Keeper { private void Carry(IGrimoireWorkLease lease) { } private int Count() => 1; }
+
+            public static class Accessors
+            {
+                [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "<Id>k__BackingField")]
+                public static extern ref int Id(Row @this);
+
+                [UnsafeAccessor(UnsafeAccessorKind.Method, Name = "Carry")]
+                public static extern void Carry(Keeper @this, IGrimoireWorkLease lease);
+
+                [UnsafeAccessor(UnsafeAccessorKind.Method, Name = "Count")]
+                public static extern int Count(Keeper @this);
+
+                // Declared and never called: an accessor nothing uses reads nothing.
+                [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "<Id>k__BackingField")]
+                public static extern ref int Unused(Row @this);
             }
 
             // Serializers, loggers, observers.
@@ -676,18 +709,42 @@ public sealed class CheckerLimitPinTests(ITestOutputHelper output)
         Show(nameof(CheckerLimitScans.CarrierReflection), findings);
 
         // Two constructions of authored tools by the container's activator, each handed the provider and the registered tool, neither of which
-        // holds a lease. The product reads and writes no member by reflection, invokes none, and loads no assembly: the
-        // compiled model and the source-generated serializers use the reflection API to name members, which hands no value to a member.
-        // The third finding is the design-time context factory loading the pinned SQLCipher library so that the EF tools can open a model; the
-        // factory is allocated only by those tools (Production_allocates_the_context_in_the_installation_reset_and_in_a_design_time_factory_only).
+        // holds a lease. The product reads and writes no member by reflection, invokes none, builds no delegate from a method object, adds no
+        // handler through an event object, and loads no assembly: the compiled model and the source-generated serializers use the reflection API
+        // to name members, which hands no value to a member. The third finding is the design-time context factory loading the pinned SQLCipher
+        // library so that the EF tools can open a model; the factory is allocated only by those tools
+        // (Production_allocates_the_context_in_the_installation_reset_and_in_a_design_time_factory_only).
         Assert.Equal(
             [
                 "Microsoft.Extensions.DependencyInjection.ActivatorUtilities.CreateInstance in RetroDownfall.Arcanum.Api.ApiBootstrapper.AddArcanumApiServices",
                 "Microsoft.Extensions.DependencyInjection.ActivatorUtilities.CreateInstance in RetroDownfall.Arcanum.Api.ApiBootstrapper.AddArcanumApiServices",
                 "System.Runtime.InteropServices.NativeLibrary.Load in RetroDownfall.Arcanum.Infrastructure.Data.ArcanumDbContextFactory.InitializeDesignTimeNativeRuntime",
             ],
-            findings);
+            findings.Where(static finding => !finding.StartsWith("UnsafeAccessor ", StringComparison.Ordinal)));
+
+        // The unsafe accessors are the EF compiled model's: it reads and writes the backing fields of its entity types through them, in the
+        // members that build the model. The entity classes hold the columns of the Grimoire and no lease or group, which the scan checks for
+        // every accessor (the type it reads or returns and every argument), so no finding carries a handle.
+        Assert.Equal(ReviewedUnsafeAccessors.Order(StringComparer.Ordinal), findings.Where(static finding => finding.StartsWith("UnsafeAccessor ", StringComparison.Ordinal)));
     }
+
+    /// <summary>The generated accessor classes of the compiled model, and the generated member that calls each: entity fields only, none holding a handle.</summary>
+    private static readonly string[] ReviewedUnsafeAccessors =
+    [
+        .. new (string Accessors, string Holder)[]
+        {
+            ("Apprentice", "ApprenticeEntityType.Create"),
+            ("Campaign", "CampaignEntityType.Create"),
+            ("Entry", "EntryEntityType.Create"),
+            ("Entry", "EntryEntityType.CreateForeignKey1"),
+            ("MageSetting", "MageSettingEntityType.Create"),
+            ("Prompt", "PromptEntityType.Create"),
+            ("Prompt", "PromptEntityType.CreateForeignKey1"),
+            ("Session", "EntryEntityType.CreateForeignKey1"),
+            ("Session", "SessionEntityType.Create"),
+            ("WorkspaceContext", "WorkspaceContextEntityType.Create"),
+        }.Select(static pair => $"UnsafeAccessor {P}Infrastructure.Generated.{pair.Accessors}UnsafeAccessors in {P}Infrastructure.Generated.{pair.Holder}"),
+    ];
 
     [Fact]
     public void The_reflection_scan_finds_each_reflective_call_and_marks_the_ones_handed_a_handle()
@@ -709,6 +766,16 @@ public sealed class CheckerLimitPinTests(ITestOutputHelper output)
         Assert.Contains("System.Linq.Expressions.Expression`1.Compile in Fixture.Reflective.Plain", findings);
 
         Assert.Contains("System.Reflection.Assembly.Load in Fixture.Reflective.Load", findings);
+
+        // The unsafe accessors that are called are reflective accesses, the one handed a handle marked; the one nothing calls is not.
+        // The accessors of a class that one member calls are one finding, marked when any of them is handed or returns a handle.
+        Assert.Single(findings, static finding => finding.StartsWith("UnsafeAccessor ", StringComparison.Ordinal));
+
+        Assert.Contains("UnsafeAccessor Fixture.Accessors in Fixture.Reflective.ViaAccessors carries an authority handle", findings);
+
+        Assert.Contains("System.Reflection.MethodInfo.CreateDelegate in Fixture.Reflective.Delegates", findings);
+
+        Assert.Contains("System.Reflection.EventInfo.AddEventHandler in Fixture.Reflective.Delegates", findings);
 
         Assert.DoesNotContain(findings, static finding => finding.Contains("Plain", StringComparison.Ordinal) && finding.Contains("carries", StringComparison.Ordinal));
     }

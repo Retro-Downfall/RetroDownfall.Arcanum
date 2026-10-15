@@ -390,30 +390,57 @@ internal static class CheckerLimitScans
         "Microsoft.Extensions.DependencyInjection.ActivatorUtilities.CreateInstance", "Microsoft.Extensions.DependencyInjection.ActivatorUtilities.CreateFactory",
         "System.Reflection.Assembly.Load", "System.Reflection.Assembly.LoadFrom", "System.Reflection.Assembly.LoadFile", "System.Runtime.Loader.AssemblyLoadContext.LoadFromAssemblyPath",
         "System.Runtime.Loader.AssemblyLoadContext.LoadFromStream", "System.Runtime.InteropServices.NativeLibrary.Load",
+        "System.Reflection.MethodInfo.CreateDelegate", "System.Reflection.EventInfo.AddEventHandler", "System.Reflection.Emit.DynamicMethod.CreateDelegate",
     };
 
+    // An extern method that the runtime binds to a member of another type, whatever that member's accessibility (UnsafeAccessorAttribute).
+    private static bool IsUnsafeAccessor(IMethodSymbol method) => method.IsExtern
+        && method.GetAttributes().Any(static attribute => attribute.AttributeClass is { } owner && Key(owner) == "System.Runtime.CompilerServices.UnsafeAccessorAttribute");
+
     /// <summary>
-    /// A call that reads, writes or invokes a member by reflection, loads an assembly or a native library, or builds an object from an argument array: each is reported with the
-    /// member that holds it, and with <c>carries</c> when an argument it is handed holds an authority handle, which a reflective store could keep.
+    /// A call that reads, writes or invokes a member by reflection, builds a delegate from a method object or adds a handler through an event
+    /// object, loads an assembly or a native library, builds an object from an argument array, or calls an unsafe accessor (an extern method the
+    /// runtime binds to a field or member of another type): each is reported with the member that holds it, and with <c>carries</c> when an
+    /// argument it is handed, or the type it reads or returns, holds an authority handle, which a reflective store could keep.
     /// </summary>
     internal static string[] CarrierReflection(IReadOnlyList<Compilation> compilations)
     {
         List<string> findings = [];
 
+        // The accessors of one class that one member calls are one finding: a compiled model calls each accessor of an entity type many times.
+        Dictionary<string, bool> accessors = new(StringComparer.Ordinal);
+
         foreach ((SemanticModel model, SyntaxNode node) in Nodes(compilations))
         {
-            if (node is not InvocationExpressionSyntax call
-                || model.GetSymbolInfo(call).Symbol is not IMethodSymbol { ContainingType: { } owner } method
-                || !ReflectiveInvocations.Contains(Key(owner.OriginalDefinition) + "." + method.Name))
+            if (node is not InvocationExpressionSyntax call || model.GetSymbolInfo(call).Symbol is not IMethodSymbol { ContainingType: { } owner } method)
+            {
+                continue;
+            }
+
+            bool unsafeAccessor = IsUnsafeAccessor(method);
+
+            if (!unsafeAccessor && !ReflectiveInvocations.Contains(Key(owner.OriginalDefinition) + "." + method.Name))
             {
                 continue;
             }
 
             bool carries = model.GetOperation(call) is IInvocationOperation invocation
-                && invocation.Arguments.Any(argument => HoldsBeforeConversion(argument.Value));
+                && (invocation.Arguments.Any(argument => HoldsBeforeConversion(argument.Value))
+                    || unsafeAccessor && (AuthorityCarrierScanner.Holds(method.ReturnType) is not null || method.Parameters.Any(static parameter => AuthorityCarrierScanner.Holds(parameter.Type) is not null)));
 
-            findings.Add($"{Key(owner.OriginalDefinition)}.{method.Name} in {Where(model, node)}{(carries ? " carries an authority handle" : "")}");
+            if (unsafeAccessor)
+            {
+                string head = $"UnsafeAccessor {Key(owner.OriginalDefinition)} in {Where(model, node)}";
+
+                accessors[head] = accessors.GetValueOrDefault(head) || carries;
+            }
+            else
+            {
+                findings.Add($"{Key(owner.OriginalDefinition)}.{method.Name} in {Where(model, node)}{(carries ? " carries an authority handle" : "")}");
+            }
         }
+
+        findings.AddRange(accessors.Select(static pair => pair.Key + (pair.Value ? " carries an authority handle" : "")));
 
         return Ordered(findings);
     }
