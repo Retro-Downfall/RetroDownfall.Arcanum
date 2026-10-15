@@ -174,7 +174,8 @@ public static class LongRestRecipeResolver
                 problems.Add("the embedding provider '" + embeddingHost.Name + "' has a contextWindowLimit of "
                     + ArcanumSettingClamps.ContextWindowLimit(embeddingHost.ContextWindowLimit).ToString(System.Globalization.CultureInfo.InvariantCulture)
                     + " tokens, below the " + LongRestPromptLayout.MinimumEmbeddingWindowTokens.ToString(System.Globalization.CultureInfo.InvariantCulture)
-                    + " one Long Rest summary needs; raise its contextWindowLimit or choose an embedding provider with a larger window");
+                    + " the smallest Long Rest summary bound (" + LongRestPromptLayout.MinimumSummaryUtf8Bytes.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                    + " bytes) needs; raise its contextWindowLimit or choose an embedding provider with a larger window");
             }
         }
 

@@ -1,6 +1,8 @@
 using System.Text.RegularExpressions;
 
 using RetroDownfall.Arcanum.Api.Intelligence;
+using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Build;
@@ -1524,6 +1526,72 @@ public sealed class DocumentationCodeContradictionTests
         Assert.DoesNotContain("found beside the executable", compendium, StringComparison.Ordinal);
 
         Assert.Contains("each of its ancestors", compendium, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The Long Rest prerequisites paragraph on provider-entry windows tells an operator to give a small-window embedding model its
+    /// own provider entry. Three of its claims are claims about code. A summary within the bound passes the local window gate when
+    /// the embedding model shares the chat entry (<c>LongRestSummaryBoundTests</c> pins that), so the paragraph may not say the
+    /// sweep parks as a context-too-small refusal for it; a provider that rejects the call is classified as a rejection. And the
+    /// second entry it asks for is subject to two validation rules the paragraph has to state: an OpenAI-compatible entry lists at
+    /// least one model, and two entries cannot reference the same credential variable, while an omitted reference derives a
+    /// distinct one per entry.
+    /// </summary>
+    [Fact]
+    public void The_embedding_entry_guidance_matches_the_shared_entry_behavior_and_the_rules_validation_enforces_on_the_second_entry()
+    {
+        ConfigurationValidator validator = new();
+
+        static ProviderSettings Entry(string name, ModelEntry[] models, string? credential = null) => new()
+        {
+            Name = name,
+            Type = AiProviderKind.OpenAICompatible,
+            Endpoint = "https://provider.test/v1",
+            Models = models,
+            CredentialEnvironmentVariable = credential,
+            ContextWindowLimit = 2048,
+        };
+
+        // An OpenAI-compatible entry without a model is a validation error.
+        Result noModels = validator.Validate(new ArcanumSettings { Providers = [Entry("embedder", [])] });
+
+        Assert.True(noModels.IsFailure);
+
+        Assert.Contains(noModels.Error.Details!, static error => error.Pointer == "providers[0]" && error.Detail.Contains("no configured models", StringComparison.Ordinal));
+
+        // Two entries naming the same credential variable collide, whatever the case.
+        Result collision = validator.Validate(new ArcanumSettings
+        {
+            Providers = [Entry("chat", ["model"], "SHARED_KEY"), Entry("embedder", ["embedding"], "shared_key")],
+        });
+
+        Assert.True(collision.IsFailure);
+
+        Assert.Contains(collision.Error.Details!, static error => error.Pointer == "providers[0].credentialEnvironmentVariable");
+
+        Assert.Contains(collision.Error.Details!, static error => error.Pointer == "providers[1].credentialEnvironmentVariable");
+
+        // Omitting the reference derives one per entry, so two entries without one are valid.
+        Assert.True(validator.Validate(new ArcanumSettings { Providers = [Entry("chat", ["model"]), Entry("embedder", ["embedding"])] }).IsSuccess);
+
+        string paragraph = DocumentSection(
+            ReadDocument("Compendium.README.md"),
+            "**Context windows are per provider entry.**",
+            "An authenticated management or eligible Session request schedules");
+
+        // The shared-entry case is not a local refusal.
+        Assert.DoesNotContain("ModelContextTooSmall", paragraph, StringComparison.Ordinal);
+
+        Assert.Contains("cut off silently", paragraph, StringComparison.Ordinal);
+
+        Assert.Contains("`LongRest.ProviderRejected`", paragraph, StringComparison.Ordinal);
+
+        // The second entry's two validation rules.
+        Assert.Contains("lists the embedding model in its `models`", paragraph, StringComparison.Ordinal);
+
+        Assert.Contains("must name a different variable from the chat entry's", paragraph, StringComparison.Ordinal);
+
+        Assert.Contains("`arcanum key provider set <entry>`", paragraph, StringComparison.Ordinal);
     }
 
     private static string ReadDocument(string fileName) =>
