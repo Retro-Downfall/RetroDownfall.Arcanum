@@ -123,6 +123,20 @@ public sealed partial class HostedGrimoireProducerInventoryTests
         Assert.True(otherBindings >= 1, "A member over the same syntax with other bindings read the answer of the member it was made from.");
     }
 
+    // The answers for the implementers of an authored type are keyed by the anchor member whole too, because they are the answers of its implementations:
+    // the same member asks once, and a member over the very same syntax with another binding environment is another key, not a hit on the first member's.
+    [Fact]
+    public void TheAnswersForAnAuthoredTypeAreKeyedByTheWholeAnchorMember()
+    {
+        (int first, int repeated, int otherBindings) = HostedGrimoireProducerInventory.ProbeCallbackImplementersKey(HostedGrimoireProducerInventory.ProductionCompilations);
+
+        Assert.True(first >= 1, "No authored type of the production source was judged and remembered.");
+
+        Assert.Equal(0, repeated);
+
+        Assert.True(otherBindings >= 1, "A member over the same syntax with other bindings read the answer for a type of the member it was made from.");
+    }
+
     // A repeated formatting step can only repeat a name in the Unresolved list of a resolution, so the Formatting Steps rule changes no verdict while no
     // reader counts the names. Every read of an Unresolved member in the checker is a test of the list for empty, a set (Distinct), a copy of the
     // names into another list (Add, AddRange), a hand-over of the list whole, or a use of a flag of the same name in a condition.

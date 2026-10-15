@@ -1643,10 +1643,25 @@ internal static partial class HostedGrimoireProducerInventory
 
         // The authored implementers of the framework slots (the ToString, Equals, GetHashCode, CompareTo, GetFormat and
         // Format members) of the families a value of the type can have, judged by the scan: whether any of them reaches a
-        // producer site or cannot be followed. A result that was cut by a cycle is not remembered.
-        private readonly Dictionary<(string Type, CallbackFamilies Families), bool> callbackImplementerReach = [];
+        // producer site or cannot be followed. A result that was cut by a cycle is not remembered. The answer is the answer of
+        // the implementations judged for the anchor member (below), so the key holds the anchor itself as well as the type and the
+        // families: a member over the same syntax with other bindings is another key, for the type as for each implementation.
+        private readonly Dictionary<(AuthoredMember Anchor, string Type, CallbackFamilies Families), bool> callbackImplementerReach = new(CallbackImplementerComparer.Instance);
 
-        private readonly HashSet<(string Type, CallbackFamilies Families)> callbackImplementerReachInProgress = [];
+        private readonly HashSet<(AuthoredMember Anchor, string Type, CallbackFamilies Families)> callbackImplementerReachInProgress = new(CallbackImplementerComparer.Instance);
+
+        private sealed class CallbackImplementerComparer : IEqualityComparer<(AuthoredMember Anchor, string Type, CallbackFamilies Families)>
+        {
+            internal static readonly CallbackImplementerComparer Instance = new();
+
+            public bool Equals((AuthoredMember Anchor, string Type, CallbackFamilies Families) left, (AuthoredMember Anchor, string Type, CallbackFamilies Families) right) =>
+                ReferenceEquals(left.Anchor, right.Anchor)
+                && left.Families == right.Families
+                && string.Equals(left.Type, right.Type, StringComparison.Ordinal);
+
+            public int GetHashCode((AuthoredMember Anchor, string Type, CallbackFamilies Families) key) =>
+                HashCode.Combine(System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(key.Anchor), key.Type, key.Families);
+        }
 
         // Whether the members one authored implementation of a callback slot runs can reach a producer site or cannot be followed. The
         // resolution starts from the implementation alone, in a collector of its own, so the answer is the same for every type and
@@ -1709,7 +1724,7 @@ internal static partial class HostedGrimoireProducerInventory
                 return false;
             }
 
-            (string, CallbackFamilies) key = (type.ToDisplayString(), families);
+            (AuthoredMember, string, CallbackFamilies) key = (member, type.ToDisplayString(), families);
 
             if (callbackImplementerReach.TryGetValue(key, out bool known))
             {
@@ -1864,6 +1879,48 @@ internal static partial class HostedGrimoireProducerInventory
                 }
 
                 CallbackImplementationReaches(other, slot, implementation);
+
+                return (first, repeated, callbackImplementationResolutions - before - first);
+            }
+
+            return (0, 0, 0);
+        }
+
+        // Fixture seam: the key of the answers for a type. The implementers of one authored type are judged for an anchor member, again for the same
+        // anchor, and then for a second member made over the very same syntax with another binding environment: the first resolves implementations,
+        // the repeat resolves none, and the member with other bindings is another key at this level too, so it resolves them again.
+        internal (int First, int Repeated, int OtherBindings) ProbeCallbackImplementersKey()
+        {
+            AuthoredMember anchor = AuthoredMembers.First();
+
+            AuthoredMember other = anchor with { AdmissionBindings = new Dictionary<ISymbol, IReadOnlySet<string>>(SymbolEqualityComparer.Default) };
+
+            foreach (AuthoredFormatter formatter in AuthoredFormatters())
+            {
+                CallbackFamilies families = formatter.Implementations.Aggregate(CallbackFamilies.None, static (all, implementation) => all | FamilyOf(implementation.Slot));
+
+                if (families == CallbackFamilies.None)
+                {
+                    continue;
+                }
+
+                int before = callbackImplementationResolutions;
+
+                CallbackImplementersReach(anchor, formatter.Type, families);
+
+                int first = callbackImplementationResolutions - before;
+
+                CallbackImplementersReach(anchor, formatter.Type, families);
+
+                int repeated = callbackImplementationResolutions - before - first;
+
+                // An answer computed while a cycle was being cut is not remembered, so it is asked again: only a remembered one tells the key.
+                if (first == 0 || repeated != 0)
+                {
+                    continue;
+                }
+
+                CallbackImplementersReach(other, formatter.Type, families);
 
                 return (first, repeated, callbackImplementationResolutions - before - first);
             }

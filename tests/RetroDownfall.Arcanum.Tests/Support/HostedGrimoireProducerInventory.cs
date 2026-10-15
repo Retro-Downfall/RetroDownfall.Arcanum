@@ -2186,6 +2186,12 @@ internal static partial class HostedGrimoireProducerInventory
         new ProducerGraph(compilations, DefaultEvaluationEnvironmentMaximumMembers, DefaultEvaluationEnvironmentMaximumDepth, DefaultTraversalMaximumDepth, DefaultMaximumAnalyzedStatesPerRoot, false, sitesOnly: true)
             .ProbeCallbackReachKey();
 
+    // The key of the answers for a type: the implementers of one authored type judged for an anchor member, for the same member again, and for a
+    // member over the same syntax with other bindings.
+    internal static (int First, int Repeated, int OtherBindings) ProbeCallbackImplementersKey(IReadOnlyList<CSharpCompilation> compilations) =>
+        new ProducerGraph(compilations, DefaultEvaluationEnvironmentMaximumMembers, DefaultEvaluationEnvironmentMaximumDepth, DefaultTraversalMaximumDepth, DefaultMaximumAnalyzedStatesPerRoot, false, sitesOnly: true)
+            .ProbeCallbackImplementersKey();
+
     // The semantic model of a tree in a compilation, as two discoveries over the compilation and a discovery over another compilation
     // that holds the same tree are given it: whether the two discoveries over one compilation read one model, and whether the other
     // compilation reads a model of its own.
