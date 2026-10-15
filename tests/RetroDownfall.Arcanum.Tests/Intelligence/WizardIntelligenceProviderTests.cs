@@ -3218,7 +3218,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
                 SkipSpellRouting = true,
                 UnattendedMode = true,
             },
-            InvocationContexts.AttendedSession(),
+            InvocationContexts.AttendedSession(campaign.Id),
             CancellationToken.None);
 
         Assert.True(result.IsSuccess);
@@ -4100,7 +4100,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
                 WorkingDirectory = _workspace.Root,
                 SkipSpellRouting = true,
             },
-            InvocationContexts.AttendedSession(),
+            InvocationContexts.AttendedSession(campaign.Id),
             CancellationToken.None);
 
         Assert.True(result.IsSuccess);
@@ -4229,7 +4229,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
                 WorkingDirectory = _workspace.Root,
                 SkipSpellRouting = true,
             },
-            InvocationContexts.AttendedSession(),
+            InvocationContexts.AttendedSession(campaign.Id),
             CancellationToken.None);
 
         Assert.True(result.IsSuccess);
@@ -4291,7 +4291,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
                 WorkingDirectory = _workspace.Root,
                 SkipSpellRouting = true,
             },
-            InvocationContexts.AttendedSession(),
+            InvocationContexts.AttendedSession(campaign.Id),
             CancellationToken.None);
 
         Assert.True(result.IsSuccess);
@@ -4347,7 +4347,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
                 WorkingDirectory = _workspace.Root,
                 SkipSpellRouting = true,
             },
-            InvocationContexts.AttendedSession(),
+            InvocationContexts.AttendedSession(campaign.Id),
             CancellationToken.None);
 
         Assert.True(result.IsSuccess);
@@ -9554,7 +9554,8 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
         IHumanPromptRegistry? humanPrompts = null,
         SessionTurnConcurrencyGate? sessionTurnGate = null,
         CovenantDispatchGate? covenantDispatch = null,
-        CovenantToolCapabilityRegistry? covenantToolCapabilities = null)
+        CovenantToolCapabilityRegistry? covenantToolCapabilities = null,
+        ICanonicalCampaignContextResolver? campaignResolver = null)
     {
         settings ??= DefaultSettings();
 
@@ -9665,7 +9666,8 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
             serviceProvider: ordinaryProvider,
             modelTokenEstimator: modelTokenEstimator,
             covenantDispatch: covenantDispatch,
-            covenantToolCapabilities: covenantToolCapabilities);
+            covenantToolCapabilities: covenantToolCapabilities,
+            campaignResolver: campaignResolver ?? RefusingCampaignResolver.Instance);
     }
 
     private static GuardrailsPipeline CreateGuardrailsPipeline(ArcanumSettings settings, FakeGuardrailAuditLogger? audit = null) =>
@@ -11061,8 +11063,12 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
             _campaign = campaign;
         }
 
+        /// <summary>
+        /// The canonical context most tests invoke with names a placeholder Campaign that no scenario registers. A turn bound to a Campaign
+        /// reads that Campaign's row, so an identifier the scenario did not register stands for an ordinary Campaign with its Sanctum off.
+        /// </summary>
         public Task<Campaign?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default) =>
-            Task.FromResult(_campaign?.Id == id ? _campaign : null);
+            Task.FromResult<Campaign?>(_campaign?.Id == id ? _campaign : PlainCampaign(id));
 
         public Task<Campaign?> GetByPathAsync(string path, CancellationToken cancellationToken = default) =>
             Task.FromResult(
@@ -11070,6 +11076,36 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
                     && string.Equals(path.Trim(), _campaign.Path.Trim(), StringComparison.OrdinalIgnoreCase)
                     ? _campaign
                     : null);
+
+        /// <summary>The registered Campaign whose root is the directory or one of its ancestors, matched by whole components.</summary>
+        public Task<Campaign?> GetByContainedPathAsync(string path, CancellationToken cancellationToken = default)
+        {
+            if (_campaign is null)
+            {
+                return Task.FromResult<Campaign?>(null);
+            }
+
+            string root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(_campaign.Path.Trim()));
+
+            string candidate = Path.TrimEndingDirectorySeparator(Path.GetFullPath(path.Trim()));
+
+            bool contained = string.Equals(candidate, root, StringComparison.OrdinalIgnoreCase)
+                || candidate.StartsWith(root + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
+
+            return Task.FromResult(contained ? _campaign : null);
+        }
+
+        private static Campaign PlainCampaign(Guid id) =>
+            new()
+            {
+                Id = id,
+                Name = "plain-campaign",
+                NameLower = "plain-campaign",
+                Path = string.Empty,
+                Type = Core.Workspaces.WorkspaceType.Custom,
+                CreatedAt = DateTimeOffset.UtcNow,
+                UpdatedAt = DateTimeOffset.UtcNow,
+            };
 
         public Task<Campaign?> GetByNameAsync(string name, CancellationToken cancellationToken = default) =>
             Task.FromResult<Campaign?>(null);

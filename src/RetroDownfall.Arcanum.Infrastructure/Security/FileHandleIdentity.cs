@@ -323,6 +323,18 @@ internal static partial class FileHandleIdentityInterop
             return true;
         }
 
+        return TryGetPathMetadataIgnoringTestSeam(path, out metadata);
+    }
+
+    /// <summary>
+    /// The real platform lookup that follows a final symbolic link, bypassing <see cref="TryGetPathMetadataForTests"/> for the same reason
+    /// <see cref="TryGetPathMetadataNoFollowIgnoringTestSeam"/> bypasses its own seam. One query names the directory a path reaches,
+    /// through every link along the way, which is what an answer that must not depend on the spelling of the path needs.
+    /// </summary>
+    internal static bool TryGetPathMetadataIgnoringTestSeam(string path, out FileHandleMetadata metadata)
+    {
+        metadata = default;
+
         if (OperatingSystem.IsWindows())
         {
             return TryGetWindowsPathMetadata(path, out metadata);

@@ -1680,12 +1680,15 @@ internal sealed class ApprenticeService(
 
             string planPrompt = ApprenticePromptBuilder.BuildPlanGenerationPrompt(apprentice);
 
+            // The Campaign the Apprentice is bound to is named on every turn it runs, so its Sanctum governs the turn however its workspace
+            // path relates to the Campaign's registered root.
             PingRequest planRequest = new(
                 Prompt: planPrompt,
                 Model: ResolveModel(),
                 WorkingDirectory: apprentice.WorkspacePath,
                 UnattendedMode: true,
-                SkipSpellRouting: true);
+                SkipSpellRouting: true,
+                CampaignId: apprentice.CampaignId);
 
             Result<PromptTurnResult> planResult = await intelligence
                 .ExecutePromptAsync(
@@ -2560,7 +2563,8 @@ internal sealed class ApprenticeService(
                 Model: ResolveModel(),
                 WorkingDirectory: apprentice.WorkspacePath,
                 UnattendedMode: true,
-                SkipSpellRouting: true);
+                SkipSpellRouting: true,
+                CampaignId: apprentice.CampaignId);
 
             Result<PromptTurnResult> weaveResult = await intelligence
                 .ExecutePromptAsync(weaveRequest, ArcanumInvocationContext.None, cancellationToken)
@@ -3581,14 +3585,16 @@ internal sealed class ApprenticeService(
                     WorkingDirectory: apprentice.WorkspacePath,
                     UnattendedMode: true,
                     SkipSpellRouting: true,
-                    StatelessMessages: [new CoreChatMessage("user", stepPrompt)])
+                    StatelessMessages: [new CoreChatMessage("user", stepPrompt)],
+                    CampaignId: apprentice.CampaignId)
                 : new PingRequest(
                     Prompt: stepPrompt,
                     Model: ResolveModel(),
                     WorkingDirectory: apprentice.WorkspacePath,
                     SessionId: apprentice.SessionId,
                     UnattendedMode: true,
-                    SkipSpellRouting: true);
+                    SkipSpellRouting: true,
+                    CampaignId: apprentice.CampaignId);
 
             await foreach (IntelligenceEvent frame in intelligence
                 .StreamPromptAsync(stepRequest, ArcanumInvocationContext.None, linkedCts.Token)

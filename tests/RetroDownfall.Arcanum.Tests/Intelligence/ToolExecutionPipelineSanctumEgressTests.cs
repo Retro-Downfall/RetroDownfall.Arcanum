@@ -72,6 +72,68 @@ public sealed class ToolExecutionPipelineSanctumEgressTests : IDisposable
         Assert.Equal(harness.CampaignId, breach.CampaignId);
     }
 
+    // An audit-only Sanctum records a breach of the first target and lets the call run, but it refuses a redirect hop that leaves the
+    // allowed domains, exactly as a Strict one does: following a hop whose destination was chosen by the remote server is not a breach the
+    // operator asked to be told about and carry on from. A change that lets an audit-only Sanctum record and follow a hop must change this
+    // test and the enforcement-modes paragraph of the design document together.
+    [Fact]
+    public async Task ReadUrl_InAuditOnlySanctum_RefusesAndRecordsAnOffAllowlistRedirectHop()
+    {
+        SanctumPipelineHarness harness = SanctumPipelineHarness.Create(_root, [AllowedHost]);
+
+        ToolExecutionPipeline.TurnContext auditOnly = new()
+        {
+            Campaign = harness.Campaign,
+            CampaignId = harness.CampaignId,
+            WorkspaceRoot = _root,
+            SanctumEnabled = true,
+            SanctumMode = SanctumMode.AuditOnly,
+        };
+
+        RecordingReadProvider provider = new();
+
+        ToolExecutionPipeline.ProcessedToolCall processed = await RunReadUrlAsync(
+            harness,
+            provider,
+            "https://allowed.test/page",
+            auditOnly);
+
+        Assert.False(processed.Denied);
+
+        Func<Uri, CancellationToken, ValueTask<bool>>? ward = provider.LastOptions?.RedirectEgressWard;
+
+        Assert.NotNull(ward);
+
+        Assert.True(
+            await ward(new Uri("https://allowed.test/hop"), CancellationToken.None));
+
+        Assert.Empty(harness.Breaches.Records);
+
+        Assert.False(
+            await ward(new Uri("https://off-list.test/hop"), CancellationToken.None));
+
+        SanctumBreachRecord breach = Assert.Single(harness.Breaches.Records);
+
+        Assert.Equal("NetworkEgress", breach.BreachType);
+
+        Assert.Equal(ArcanumReadUrlTool.ToolName, breach.ToolName);
+
+        // The contrast the paragraph above draws: the first target outside the list is recorded and allowed in the same mode.
+        RecordingReadProvider firstTarget = new();
+
+        ToolExecutionPipeline.ProcessedToolCall offList = await RunReadUrlAsync(
+            harness,
+            firstTarget,
+            "https://off-list.test/page",
+            auditOnly);
+
+        Assert.False(offList.Denied);
+
+        Assert.Equal(1, firstTarget.ReadCount);
+
+        Assert.Equal(2, harness.Breaches.Records.Count);
+    }
+
     [Fact]
     public async Task ReadUrl_OffAllowlistFirstHop_IsDeniedBeforeToolRuns()
     {

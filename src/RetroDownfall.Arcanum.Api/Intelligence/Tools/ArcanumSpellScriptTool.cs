@@ -82,6 +82,13 @@ public sealed class ArcanumSpellScriptTool : AIFunction
 
     private readonly string? _campaignWorkspaceRoot;
 
+    /// <summary>
+    /// The root of the Campaign whose Sanctum governs the turn this tool belongs to, once the turn is bound. Set by the provider after it
+    /// has resolved the governing Campaign, and only ever for lookups of that Campaign's limits and boundary: the workspace root above is
+    /// still the directory the script is sandboxed to.
+    /// </summary>
+    private string? _governingCampaignRoot;
+
     private readonly bool _allowUnsandboxedToolChildren;
 
     /// <summary>
@@ -173,6 +180,21 @@ public sealed class ArcanumSpellScriptTool : AIFunction
             operatorDeclaredSecretEnvironmentVariables)
     {
     }
+
+    /// <summary>
+    /// The directory the Sanctum's per-workspace lookups (limits, child-process boundary, breach record) are keyed on: the governing
+    /// Campaign's root once the turn is bound, otherwise the working directory the tool was built with.
+    /// </summary>
+    private string? SanctumLookupRoot => _governingCampaignRoot ?? _campaignWorkspaceRoot;
+
+    /// <summary>
+    /// Tells this tool which Campaign governs the turn it belongs to, by that Campaign's registered root. A turn is governed by the Campaign
+    /// it is bound to (its Session, an explicit identifier, or the registered root containing its working directory), and a Session-bound
+    /// turn has no working directory for the Sanctum to find that Campaign from. The limits, boundary and breach record for a script then
+    /// come from the governing Campaign instead of being looked up by a directory that may name none, or another one.
+    /// </summary>
+    internal void BindGoverningCampaignRoot(string? campaignRoot) =>
+        _governingCampaignRoot = string.IsNullOrWhiteSpace(campaignRoot) ? null : campaignRoot;
 
     public override string Name => ToolName;
 
@@ -321,13 +343,13 @@ public sealed class ArcanumSpellScriptTool : AIFunction
         ResourceLimits? resourceLimits = _sanctumGuard is null
             ? null
             : await _sanctumGuard
-                .GetEffectiveResourceLimitsForWorkspaceAsync(_campaignWorkspaceRoot, cancellationToken)
+                .GetEffectiveResourceLimitsForWorkspaceAsync(SanctumLookupRoot, cancellationToken)
                 .ConfigureAwait(false);
 
         SanctumChildProcessBoundary? boundary = _sanctumGuard is null
             ? null
             : await _sanctumGuard
-                .GetChildProcessBoundaryForWorkspaceAsync(_campaignWorkspaceRoot, cancellationToken)
+                .GetChildProcessBoundaryForWorkspaceAsync(SanctumLookupRoot, cancellationToken)
                 .ConfigureAwait(false);
 
         ChildProcessSandboxRequest sandboxRequest = ChildProcessSandboxRoots.ForSpellScript(
@@ -387,7 +409,7 @@ public sealed class ArcanumSpellScriptTool : AIFunction
 
                 return await ResourceLimitDenialFormatter.RecordAndDescribeAsync(
                     _sanctumGuard,
-                    _campaignWorkspaceRoot,
+                    SanctumLookupRoot,
                     ToolName,
                     resourceLimits ?? new ResourceLimits(),
                     runResult.ExceededResource,
