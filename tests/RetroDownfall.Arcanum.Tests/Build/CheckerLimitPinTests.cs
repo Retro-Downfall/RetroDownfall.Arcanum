@@ -694,8 +694,11 @@ public sealed class CheckerLimitPinTests(ITestOutputHelper output)
     // The framework calls authored members through its own types: overrides, and disposals.
     // ---------------------------------------------------------------------------------------------------------------------------------
 
-    private string[] ReachingMembers(HostedGrimoireProducerInventory.FrameworkEntryPoints kind) =>
-        [.. HostedGrimoireProducerInventory.ProbeFrameworkEntryPointsThatReach(HostedGrimoireProducerInventory.ProductionCompilations, kind)];
+    // One graph over the production compilations answers every class of entry point, once for the class of tests.
+    private static readonly Lazy<IReadOnlyDictionary<HostedGrimoireProducerInventory.FrameworkEntryPoints, IReadOnlyList<string>>> ProductionEntryPoints =
+        new(static () => HostedGrimoireProducerInventory.ProbeAllFrameworkEntryPointsThatReach(HostedGrimoireProducerInventory.ProductionCompilations), LazyThreadSafetyMode.ExecutionAndPublication);
+
+    private static string[] ReachingMembers(HostedGrimoireProducerInventory.FrameworkEntryPoints kind) => [.. ProductionEntryPoints.Value[kind]];
 
     private static string TypeOfFinding(string finding)
     {

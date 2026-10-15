@@ -67,7 +67,7 @@ internal static class CheckerLimitScans
         {
             foreach (SyntaxTree tree in compilation.SyntaxTrees.Where(IsAnalysedTree))
             {
-                SemanticModel model = compilation.GetSemanticModel(tree);
+                SemanticModel model = SharedSemanticModels.Of(compilation, tree);
 
                 foreach (SyntaxNode node in tree.GetRoot().DescendantNodes())
                 {

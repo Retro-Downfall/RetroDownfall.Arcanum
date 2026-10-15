@@ -54,7 +54,7 @@ internal static class ContainerRegistrationScanner
                     continue;
                 }
 
-                SemanticModel model = compilation.GetSemanticModel(tree);
+                SemanticModel model = SharedSemanticModels.Of(compilation, tree);
 
                 foreach (SyntaxNode node in tree.GetRoot().DescendantNodes().Where(static node => node is InvocationExpressionSyntax or BaseObjectCreationExpressionSyntax))
                 {

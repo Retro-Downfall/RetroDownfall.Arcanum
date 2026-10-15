@@ -2190,6 +2190,14 @@ internal static partial class HostedGrimoireProducerInventory
         new ProducerGraph(compilations, DefaultEvaluationEnvironmentMaximumMembers, DefaultEvaluationEnvironmentMaximumDepth, DefaultTraversalMaximumDepth, DefaultMaximumAnalyzedStatesPerRoot, false, sitesOnly: true)
             .FrameworkEntryPointsThatReach(kind);
 
+    // Every class of framework entry point, answered by one graph over the compilations: the graph is the cost, and its scans are shared.
+    internal static IReadOnlyDictionary<FrameworkEntryPoints, IReadOnlyList<string>> ProbeAllFrameworkEntryPointsThatReach(IReadOnlyList<CSharpCompilation> compilations)
+    {
+        ProducerGraph graph = new(compilations, DefaultEvaluationEnvironmentMaximumMembers, DefaultEvaluationEnvironmentMaximumDepth, DefaultTraversalMaximumDepth, DefaultMaximumAnalyzedStatesPerRoot, false, sitesOnly: true);
+
+        return Enum.GetValues<FrameworkEntryPoints>().ToDictionary(static kind => kind, kind => graph.FrameworkEntryPointsThatReach(kind));
+    }
+
     // The authored methods a predicate selects that reach a classified producer site or cannot be followed, over the given compilations.
     internal static IReadOnlyList<string> ProbeMembersThatReach(IReadOnlyList<CSharpCompilation> compilations, Func<INamedTypeSymbol, IMethodSymbol, bool> selected) =>
         new ProducerGraph(compilations, DefaultEvaluationEnvironmentMaximumMembers, DefaultEvaluationEnvironmentMaximumDepth, DefaultTraversalMaximumDepth, DefaultMaximumAnalyzedStatesPerRoot, false, sitesOnly: true)
