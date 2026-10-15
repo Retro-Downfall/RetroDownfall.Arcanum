@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Text.Json;
 
 using Microsoft.Data.Sqlite;
 
@@ -256,6 +257,91 @@ public sealed class LongRestMetadataCorpusEquivalenceTests
         Assert.Equal(nameof(InvalidDataException), after.PerLeaf);
 
         Assert.Equal(nameof(InvalidDataException), after.Set);
+    }
+
+    /// <summary>
+    /// A protected leaf is joined to its label by <c>upper(MemoryId)</c> and the point read finds the label by the uppercase D form of the Guid it
+    /// parses from the memory id, which are one string only for a memory id that is a Guid in D form. Capture refuses any other, and the hash
+    /// that binds a leaf refuses it too, so such a leaf is never admitted; but the two reads must agree on how they refuse it, and that must not
+    /// rest on how capture behaves. Here a leaf is renamed to the spelling without hyphens everywhere the corpus names it, its label stored under
+    /// that spelling and its manifest rewritten to match, so that nothing but the label's key distinguishes the reads: the point read does not find
+    /// that label and refuses, and the set read must hand the leaf to it and refuse in the same way.
+    /// </summary>
+    [Fact]
+    public async Task A_protected_leaf_whose_memory_id_is_not_in_D_form_is_refused_by_both_reads()
+    {
+        await using Scenario s = await Scenario.CreateAsync(isProtected: true, LongRestMutationMatrixTests.Leaves, queueUnit: false);
+
+        await BlindAsync(s);
+
+        Verdicts before = await VerdictsAsync(s);
+
+        Assert.Equal("admitted", before.PerLeaf);
+
+        Assert.Equal("admitted", before.Set);
+
+        string spelled = s.Bystander.Replace("-", "", StringComparison.Ordinal);
+
+        LongRestSourceLeaf leaf;
+
+        await using (SqliteTransaction transaction = s.F.H.Connection.BeginTransaction(deferred: true))
+        {
+            leaf = await LongRestDiscoveryStore.ReadFrozenMetadataLeafAsync(s.F.H.Connection, transaction, s.Generation, s.Bystander, CancellationToken.None);
+        }
+
+        LongRestSourceLeaf renamed = leaf with { Snapshot = leaf.Snapshot with { MemoryId = spelled } };
+
+        await s.SqlAsync("PRAGMA foreign_keys = OFF;");
+
+        foreach (string trigger in await TriggersAsync(s))
+        {
+            await s.SqlAsync($"DROP TRIGGER {trigger};");
+        }
+
+        foreach ((string table, string column) in new[]
+        {
+            ("saga_memories", "Id"), ("saga_memory_embeddings", "MemoryId"), ("annal_claims", "SubjectId"), ("long_rest_sources", "MemoryId"),
+            ("long_rest_discovery_leaves", "MemoryId"),
+        })
+        {
+            await s.SqlAsync($"UPDATE {table} SET {column} = $spelled WHERE {column} = $memory;", ("$spelled", spelled), ("$memory", s.Bystander));
+        }
+
+        await s.SqlAsync("UPDATE artifact_sensitivity SET ArtifactId = upper($spelled) WHERE ArtifactKindCode = 6 AND ArtifactId = upper($memory);",
+            ("$spelled", spelled), ("$memory", s.Bystander));
+
+        await s.SqlAsync("UPDATE long_rest_discovery_leaves SET SnapshotJson = $snapshot WHERE GenerationId = $generation AND MemoryId = $spelled;",
+            ("$snapshot", JsonSerializer.Serialize(renamed.Snapshot, LongRestJsonContext.Default.LongRestSnapshot)), ("$generation", s.GenerationText), ("$spelled", spelled));
+
+        // The set-based question every seam asks first is satisfied by the renamed corpus, so what follows is decided by the two reads of the leaves.
+        await using (SqliteTransaction transaction = s.F.H.Connection.BeginTransaction(deferred: true))
+        {
+            Assert.True(await LongRestDiscoveryStore.FrozenSourceMetadataMatchesAsync(s.F.H.Connection, transaction, s.Generation, CancellationToken.None));
+        }
+
+        Verdicts after = await VerdictsAsync(s);
+
+        Assert.Equal(after.PerLeaf, after.Set);
+
+        Assert.Equal(nameof(InvalidDataException), after.Set);
+    }
+
+    private static async Task<List<string>> TriggersAsync(Scenario s)
+    {
+        List<string> names = [];
+
+        await using SqliteCommand command = s.F.H.Connection.CreateCommand();
+
+        command.CommandText = "SELECT name FROM sqlite_master WHERE type = 'trigger';";
+
+        await using SqliteDataReader reader = await command.ExecuteReaderAsync();
+
+        while (await reader.ReadAsync())
+        {
+            names.Add(reader.GetString(0));
+        }
+
+        return names;
     }
 
     // The plain corpus, one column at a time.

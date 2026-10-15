@@ -421,7 +421,7 @@ internal sealed partial class LongRestDiscoveryStore
 
                 if (generation.Scope.ProtectedPartitionDigest is not null)
                 {
-                    if (reader.IsDBNull(CorpusLabel))
+                    if (reader.IsDBNull(CorpusLabel) || !IsDForm(memory))
                     {
                         exact.Add(memory);
 
@@ -500,6 +500,13 @@ internal sealed partial class LongRestDiscoveryStore
             _ = await ReadFrozenMetadataLeafAsync(connection, transaction, generation, memory, ct).ConfigureAwait(false);
         }
     }
+
+    /// <summary>
+    /// Whether a memory id is a Guid in D form, in either case. The statement joins a leaf to its label by the memory id in upper case, and the
+    /// point read finds the label by the upper case D form of the Guid it parses from that id: the same key exactly when the id is in D form.
+    /// A protected leaf with any other spelling is decided by the point read, so that the set read does not rest on how capture spells an id.
+    /// </summary>
+    private static bool IsDForm(string memory) => Guid.TryParseExact(memory, "D", out Guid parsed) && string.Equals(memory, parsed.ToString("D"), StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
     /// A manifest the leaf stored, as text, or null where the leaf stored none. The per-leaf read compares a manifest with the one it expects
