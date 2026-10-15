@@ -1,4 +1,5 @@
 using RetroDownfall.Arcanum.Cli.Infrastructure;
+using RetroDownfall.Arcanum.Cli.UX;
 
 using Spectre.Console;
 
@@ -120,12 +121,12 @@ internal sealed class SystemSensitiveValueConsole : ISensitiveValueConsole
         Console.In.ReadLineAsync(cancellationToken).AsTask();
 
     public string PromptHidden(string prompt, CliInvocationOptions options) =>
-        AnsiConsole
+        CliConsoleFactory
             .Create(SensitiveValueInput.CreatePromptSettings(options))
             .Prompt(new TextPrompt<string>(prompt).Secret());
 
     public string PromptVisible(string prompt, string defaultValue, CliInvocationOptions options) =>
-        AnsiConsole
+        CliConsoleFactory
             .Create(SensitiveValueInput.CreatePromptSettings(options))
             .Prompt(new TextPrompt<string>(prompt).DefaultValue(defaultValue));
 }

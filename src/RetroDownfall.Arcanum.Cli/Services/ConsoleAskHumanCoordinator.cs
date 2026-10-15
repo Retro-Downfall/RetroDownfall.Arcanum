@@ -518,12 +518,13 @@ internal sealed class ConsoleAskHumanCoordinator
             TaskScheduler.Default);
     }
 
-    private static IAnsiConsole CreateStandardErrorConsole() =>
-        AnsiConsole.Create(
-            new AnsiConsoleSettings
-            {
-                Out = new AnsiConsoleOutput(Console.Error),
-            });
+    /// <summary>
+    /// The default operator-diagnostic sink: standard error under the same colour policy as every
+    /// other stderr writer, so <c>--plain</c>, <c>--json</c>, <c>--print</c> and the no-colour
+    /// variables reach the <c>ask_human</c> diagnostics too.
+    /// </summary>
+    internal static IAnsiConsole CreateStandardErrorConsole() =>
+        CliConsoleFactory.CreateDiagnostic();
 
     private static Task<string?> DefaultReadLineAsync(
         string promptMarkup,

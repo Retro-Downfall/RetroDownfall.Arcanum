@@ -1,6 +1,5 @@
 using System.Diagnostics;
 using System.Runtime.Versioning;
-using System.Security.AccessControl;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Win32;
 using RetroDownfall.Arcanum.Core.Sanctum;
@@ -56,7 +55,7 @@ public sealed class WindowsAppContainerBrokerTests : IDisposable
 
         Assert.True(File.Exists(executable), $"Published executable does not exist: {executable}");
 
-        string daclBefore = Sddl(_workspace);
+        string daclBefore = WindowsDaclText.Of(_workspace);
         int profilesBefore = ArcanumProfileCount();
 
         ProcessStartInfo startInfo = new()
@@ -92,12 +91,16 @@ public sealed class WindowsAppContainerBrokerTests : IDisposable
                 NullLogger.Instance);
         }
 
-        Assert.True(
-            result.Outcome == CappedChildProcessOutcome.Completed,
-            $"Outcome {result.Outcome}; exit {result.ExitCode}; stderr: {result.Stderr.Text}; detail: {result.FilesystemSandboxDenialMessage}");
-        Assert.Equal(0, result.ExitCode);
+        // One diagnostic for both assertions. A broker that refused its own setup exits with a code in
+        // the 70s (WindowsAppContainerBrokerExit) and says why on the one stderr it shares with the
+        // target, which an assertion on the bare exit code would discard.
+        string diagnostic =
+            $"Outcome {result.Outcome}; exit {result.ExitCode}; stderr: {result.Stderr.Text}; detail: {result.FilesystemSandboxDenialMessage}";
+
+        Assert.True(result.Outcome == CappedChildProcessOutcome.Completed, diagnostic);
+        Assert.True(result.ExitCode == 0, diagnostic);
         Assert.Contains("broker-ok", result.Stdout.Text, StringComparison.Ordinal);
-        Assert.Equal(daclBefore, Sddl(_workspace));
+        Assert.Equal(daclBefore, WindowsDaclText.Of(_workspace));
         Assert.Equal(profilesBefore, ArcanumProfileCount());
     }
 
@@ -126,12 +129,6 @@ public sealed class WindowsAppContainerBrokerTests : IDisposable
         Assert.Contains("WindowsJobAssignedSignalPath", error.ToString(), StringComparison.Ordinal);
         Assert.Equal(profilesBefore, ArcanumProfileCount());
     }
-
-    [SupportedOSPlatform("windows")]
-    private static string Sddl(string path) =>
-        new DirectoryInfo(path)
-            .GetAccessControl(AccessControlSections.Access)
-            .GetSecurityDescriptorSddlForm(AccessControlSections.Access);
 
     [SupportedOSPlatform("windows")]
     private static int ArcanumProfileCount()

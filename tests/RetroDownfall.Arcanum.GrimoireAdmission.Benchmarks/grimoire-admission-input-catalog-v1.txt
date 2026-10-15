@@ -1725,6 +1725,7 @@ R	src/RetroDownfall.Arcanum.Infrastructure/Process/WindowsAppContainerLauncher.c
 R	src/RetroDownfall.Arcanum.Infrastructure/Process/WindowsAppContainerPolicy.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Process/WindowsAppContainerRestoreJournal.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Process/WindowsBrokerTargetResolver.cs
+R	src/RetroDownfall.Arcanum.Infrastructure/Process/WindowsProcThreadAttribute.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Repositories/ApprenticeRepository.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Repositories/CampaignPathIdentityReader.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Repositories/CampaignRepository.cs

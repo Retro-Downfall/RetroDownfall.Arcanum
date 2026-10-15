@@ -283,8 +283,10 @@ public sealed partial class WorkspaceIndexingServiceTests
 
         try
         {
+            // Watching, not the count: the count is a reservation taken before the factory runs, so a
+            // failing attempt still in flight would satisfy it.
             Assert.True(
-                await BecomesTrueAsync(() => Task.FromResult(service.ActiveWatcherCount == 1), TimeSpan.FromSeconds(10)),
+                await BecomesTrueAsync(() => Task.FromResult(service.GetRuntimeStatus(_workspace.Root).Watching), TimeSpan.FromSeconds(10)),
                 "The watcher was not re-created: the loop slept through its retry deadline.");
         }
         finally
@@ -341,8 +343,9 @@ public sealed partial class WorkspaceIndexingServiceTests
 
             Assert.True((await closed.CompleteAsync(CovenantExclusiveLeaseDisposition.RollbackAndReopen, CancellationToken.None)).IsSuccess);
 
+            // Watching, not the count: the count is a reservation taken before the factory runs.
             Assert.True(
-                await BecomesTrueAsync(() => Task.FromResult(service.ActiveWatcherCount == 1), TimeSpan.FromSeconds(10)),
+                await BecomesTrueAsync(() => Task.FromResult(service.GetRuntimeStatus(_workspace.Root).Watching), TimeSpan.FromSeconds(10)),
                 "The watcher was not re-created after maintenance reopened Grimoire admission.");
         }
         finally

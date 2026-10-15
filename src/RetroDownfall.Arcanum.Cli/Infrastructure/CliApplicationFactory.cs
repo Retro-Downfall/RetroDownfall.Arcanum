@@ -993,7 +993,7 @@ internal static class CliApplicationFactory
 
         InteractionSupport interaction = stdoutRedirected ? InteractionSupport.No : InteractionSupport.Detect;
 
-        AnsiConsole.Console = AnsiConsole.Create(new AnsiConsoleSettings
+        AnsiConsole.Console = CliConsoleFactory.Create(new AnsiConsoleSettings
         {
             Ansi = ansi,
             ColorSystem = colorSystem,
@@ -1012,7 +1012,7 @@ internal static class CliApplicationFactory
             return;
         }
 
-        AnsiConsole.Console = AnsiConsole.Create(new AnsiConsoleSettings
+        AnsiConsole.Console = CliConsoleFactory.Create(new AnsiConsoleSettings
         {
             Ansi = AnsiSupport.No,
             ColorSystem = ColorSystemSupport.NoColors,
